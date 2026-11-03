@@ -81,6 +81,27 @@ function withoutHoverMedia(source: string): string {
   }
 }
 
+describe("long-press cue", () => {
+  it("shrinks a held item and keeps the pressed layer while it is held", () => {
+    expect(ruleFor(css, '.norea-state-layer[data-pressing="true"]').body).toMatch(/transform: scale\(0\.97\);/);
+    expect(ruleFor(css, '.norea-state-layer[data-pressing="true"]::after').body).toMatch(/opacity: 0\.12;/);
+  });
+
+  it("eases library items and chapter rows into and out of the held scale with a motion token", () => {
+    const library = readFileSync(new URL("./library.css", stylesDir), "utf8");
+    const novel = readFileSync(new URL("./novel.css", stylesDir), "utf8");
+    for (const [source, selector] of [
+      [library, ".norea-library-card"],
+      [library, ".norea-library-row"],
+      [novel, ".norea-novel-chapter .norea-novel-chapter-open"],
+    ] as const) {
+      expect(ruleFor(source, selector).body, selector).toMatch(
+        /transition: transform var\(--norea-duration-slow\) var\(--norea-ease-standard\);/,
+      );
+    }
+  });
+});
+
 describe("hover styles", () => {
   it("apply only on hover-capable pointers, so a touch never leaves a sticky hover", () => {
     const sheets = readdirSync(stylesDir).filter((name) => name.endsWith(".css"));

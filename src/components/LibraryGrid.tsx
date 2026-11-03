@@ -1,13 +1,8 @@
 import { Skeleton, VisuallyHidden } from "@mantine/core";
-import {
-  memo,
-  useRef,
-  type CSSProperties,
-  type MouseEvent,
-  type PointerEvent,
-} from "react";
+import { memo, type CSSProperties, type MouseEvent } from "react";
 import type { LibraryNovel } from "../db/queries/novel";
 import { useTranslation, type TranslationKey } from "../i18n";
+import { useLongPress } from "../lib/use-long-press";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import type { LibraryDisplayMode } from "../store/library";
 import { ConsoleCover } from "./ConsolePrimitives";
@@ -187,37 +182,21 @@ function useLibraryItemPress(
   onActivate?: (id: number) => void,
   onLongPress?: (id: number) => void,
 ) {
-  const longPressTimer = useRef<number | null>(null);
-  const suppressNextClick = useRef(false);
-
-  const cancelTimer = () => {
-    if (longPressTimer.current !== null) {
-      window.clearTimeout(longPressTimer.current);
-      longPressTimer.current = null;
-    }
-  };
+  const longPress = useLongPress(
+    onLongPress ? () => onLongPress(novelId) : undefined,
+    LONG_PRESS_MS,
+  );
 
   return {
+    ...longPress.handlers,
+    "data-pressing": longPress.pressing ? "true" : undefined,
     onClick: (event: MouseEvent<HTMLButtonElement>) => {
-      if (suppressNextClick.current) {
+      if (longPress.consumeFired()) {
         event.preventDefault();
-        suppressNextClick.current = false;
         return;
       }
       onActivate?.(novelId);
     },
-    onPointerCancel: cancelTimer,
-    onPointerDown: (event: PointerEvent<HTMLButtonElement>) => {
-      suppressNextClick.current = false;
-      if (!onLongPress || event.button !== 0) return;
-      longPressTimer.current = window.setTimeout(() => {
-        suppressNextClick.current = true;
-        longPressTimer.current = null;
-        onLongPress(novelId);
-      }, LONG_PRESS_MS);
-    },
-    onPointerLeave: cancelTimer,
-    onPointerUp: cancelTimer,
   };
 }
 

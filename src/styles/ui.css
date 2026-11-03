@@ -28,6 +28,15 @@
   opacity: 0.12;
 }
 
+/* Long-press cue: a held item shrinks and keeps the pressed layer until the long press fires. */
+.norea-state-layer[data-pressing="true"] {
+  transform: scale(0.97);
+}
+
+.norea-state-layer[data-pressing="true"]::after {
+  opacity: 0.12;
+}
+
 @media (any-pointer: coarse) {
   /*
    * D8: touch targets reach --norea-control-md, which never drops below 44px.

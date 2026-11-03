@@ -378,6 +378,11 @@
   min-width: 0;
 }
 
+.norea-library-card,
+.norea-library-row {
+  transition: transform var(--norea-duration-slow) var(--norea-ease-standard);
+}
+
 .norea-library-card {
   -webkit-touch-callout: none;
   background: none;

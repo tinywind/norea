@@ -21,10 +21,10 @@ import {
   useMemo,
   useRef,
   useState,
-  type PointerEvent as ReactPointerEvent,
 } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation, type TranslationKey } from "../../i18n";
+import { useLongPress } from "../../lib/use-long-press";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
 import { type ChapterDownloadPhase } from "../../lib/tasks/task-types";
 import {
@@ -149,8 +149,7 @@ function ChapterListItem({
   };
   const downloadActive = status?.kind === "queued" || status?.kind === "running";
   const failedMessage = status?.kind === "failed" ? status.error : null;
-  const longPressTimerRef = useRef<number | null>(null);
-  const longPressTriggeredRef = useRef(false);
+  const longPress = useLongPress(reorderMode ? undefined : onToggleSelected, 450);
   const progress = getChapterReadingProgress(chapter);
   const releaseTime = chapter.releaseTime
     ? normalizeDateText(chapter.releaseTime)
@@ -165,25 +164,6 @@ function ChapterListItem({
       ? t("novel.sourceDuplicateChapters", { count: duplicateSourceChapterCount })
       : null,
   ].filter(Boolean).join("\n");
-  const clearLongPressTimer = () => {
-    if (longPressTimerRef.current === null) return;
-    window.clearTimeout(longPressTimerRef.current);
-    longPressTimerRef.current = null;
-  };
-  const handlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
-    if (reorderMode) return;
-    if (event.pointerType === "mouse" && event.button !== 0) return;
-
-    clearLongPressTimer();
-    longPressTriggeredRef.current = false;
-    longPressTimerRef.current = window.setTimeout(() => {
-      longPressTriggeredRef.current = true;
-      onToggleSelected();
-    }, 450);
-  };
-
-  useEffect(() => clearLongPressTimer, []);
-
   const renderStatus = () => {
     if (downloadActive) {
       return (
@@ -347,11 +327,9 @@ function ChapterListItem({
             </span>
           ) : undefined
         }
+        data-pressing={longPress.pressing ? "true" : undefined}
         onClick={() => {
-          if (longPressTriggeredRef.current) {
-            longPressTriggeredRef.current = false;
-            return;
-          }
+          if (longPress.consumeFired()) return;
           if (reorderMode) return;
           if (selectionMode) {
             onToggleSelected();
@@ -361,12 +339,9 @@ function ChapterListItem({
         }}
         onContextMenu={(event) => {
           event.preventDefault();
-          if (!reorderMode && !longPressTriggeredRef.current) onToggleSelected();
+          if (!reorderMode && !longPress.fired()) onToggleSelected();
         }}
-        onPointerCancel={clearLongPressTimer}
-        onPointerDown={handlePointerDown}
-        onPointerLeave={clearLongPressTimer}
-        onPointerUp={clearLongPressTimer}
+        {...longPress.handlers}
         selected={isSelected}
         subtitle={
           <span
