@@ -53,3 +53,43 @@ export async function recordNovelCoverFetched(novelId: number, nowSeconds = Math
      ON CONFLICT(novel_id) DO UPDATE SET cover_fetched_at=excluded.cover_fetched_at`,
     [novelId, nowSeconds]);
 }
+
+/** A library source novel with what the check cadence needs. */
+export interface CheckCandidate {
+  novelId: number;
+  pluginId: string;
+  /** The source's status text, such as "Completed". */
+  status: string | null;
+  lastReadAt: number | null;
+  lastCheckedAt: number | null;
+  consecutiveFailures: number;
+  totalChapters: number;
+  unreadChapters: number;
+  /** The novel has its own goal other than None. */
+  hasGoal: boolean;
+}
+
+export async function listCheckCandidates(): Promise<CheckCandidate[]> {
+  const db = await getDb();
+  const rows = await db.select<(Omit<CheckCandidate, "hasGoal"> & { hasGoal: unknown })[]>(
+    `SELECT n.id AS novelId,n.plugin_id AS pluginId,n.status,n.last_read_at AS lastReadAt,
+       f.last_checked_at AS lastCheckedAt,COALESCE(f.consecutive_failures,0) AS consecutiveFailures,
+       COALESCE(s.total_chapters,0) AS totalChapters,COALESCE(s.chapters_unread,0) AS unreadChapters,
+       (g.novel_id IS NOT NULL AND g.kind <> 'none') AS hasGoal
+     FROM novel n
+     LEFT JOIN novel_freshness f ON f.novel_id=n.id
+     LEFT JOIN novel_stats s ON s.novel_id=n.id
+     LEFT JOIN novel_download_goal g ON g.novel_id=n.id
+     WHERE n.in_library=1 AND n.is_local=0
+     ORDER BY n.id`);
+  return rows.map((row) => ({ ...row, hasGoal: row.hasGoal === 1 || row.hasGoal === true }));
+}
+
+/** Checks each source started since `sinceSeconds`, for the per-source hourly budget. */
+export async function countRecentChecksBySource(sinceSeconds: number): Promise<Map<string, number>> {
+  const db = await getDb();
+  const rows = await db.select<{ pluginId: string; count: number }[]>(
+    `SELECT n.plugin_id AS pluginId,COUNT(*) AS count FROM novel_freshness f JOIN novel n ON n.id=f.novel_id
+     WHERE f.last_checked_at >= $1 GROUP BY n.plugin_id`, [sinceSeconds]);
+  return new Map(rows.map((row) => [row.pluginId, row.count]));
+}

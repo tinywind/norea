@@ -16,6 +16,8 @@ import {
   type LibrarySortField,
 } from "../lib/library-settings-options";
 import {
+  CHECK_INTERVAL_CHOICES,
+  normalizeCheckIntervalHours,
   useLibraryStore,
   type DefaultChapterSort,
 } from "../store/library";
@@ -36,6 +38,8 @@ export function LibrarySettingsPanel() {
   const setDefaultChapterSort = useLibraryStore(
     (s) => s.setDefaultChapterSort,
   );
+  const checkIntervalHours = useLibraryStore((s) => normalizeCheckIntervalHours(s.checkIntervalHours));
+  const setCheckIntervalHours = useLibraryStore((s) => s.setCheckIntervalHours);
 
   return (
     <Stack gap="md">
@@ -120,6 +124,26 @@ export function LibrarySettingsPanel() {
         </SettingsFieldRow>
       </SettingsSection>
 
+      <SettingsSection title={t("librarySettings.group.updates")}>
+        <SettingsFieldRow
+          label={t("librarySettings.checkInterval")}
+          description={t("librarySettings.checkInterval.description")}
+        >
+          <Select
+            allowDeselect={false}
+            data={CHECK_INTERVAL_CHOICES.map((hours) => ({
+              value: String(hours),
+              label: hours === 0
+                ? t("librarySettings.checkInterval.off")
+                : t("librarySettings.checkInterval.hours", { count: hours }),
+            }))}
+            value={String(checkIntervalHours)}
+            onChange={(value) => {
+              if (value !== null) setCheckIntervalHours(Number(value));
+            }}
+          />
+        </SettingsFieldRow>
+      </SettingsSection>
     </Stack>
   );
 }

@@ -64,6 +64,7 @@ export const SETTINGS_SEARCH_ROWS: readonly SettingsSearchRow[] = [
   { section: "library", label: "librarySettings.defaultCategory" },
   { section: "library", label: "librarySettings.sort" },
   { section: "library", label: "librarySettings.defaultChapterSort" },
+  { section: "library", label: "librarySettings.checkInterval", synonyms: "settingsSearch.synonyms.checkInterval" },
 
   { section: "downloads", label: "settings.data.mediaStorage.folder.label", synonyms: "settingsSearch.synonyms.storage" },
   { section: "downloads", label: "settings.data.mediaStorage.change.label", synonyms: "settingsSearch.synonyms.storage" },

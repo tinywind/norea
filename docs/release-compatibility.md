@@ -128,6 +128,9 @@ requirements must be decided explicitly before implementation.
   "Earlier unread chapters". Its nav badge counts flagged chapters found after
   the `updates-seen` localStorage time, which is device state: device snapshots
   carry it with the other settings and portable backups leave it out.
+  The automatic check interval is an additive `checkIntervalHours` field (0, 6,
+  12 or 24; default 12) in the `norea-library-settings` entry, which both backup
+  kinds carry; a missing or unknown value reads as 12.
 - The reader option "Download next chapter in advance" is retired; download
   goals replace it (RD4). Stored `autoDownloadNextChapter` values stay in the
   `reader-settings` entry and are read once at startup. Off for all novels, it

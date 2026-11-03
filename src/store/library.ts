@@ -27,6 +27,15 @@ export type LibrarySortOrder =
 
 export type DefaultChapterSort = "asc" | "desc";
 
+/** Hours between automatic checks for new chapters in novels being read; 0 turns them off. */
+export const CHECK_INTERVAL_CHOICES = [0, 6, 12, 24] as const;
+export type CheckIntervalHours = (typeof CHECK_INTERVAL_CHOICES)[number];
+export const DEFAULT_CHECK_INTERVAL_HOURS: CheckIntervalHours = 12;
+
+export function normalizeCheckIntervalHours(value: unknown): CheckIntervalHours {
+  return CHECK_INTERVAL_CHOICES.find((choice) => choice === value) ?? DEFAULT_CHECK_INTERVAL_HOURS;
+}
+
 interface LibraryState {
   pendingLocalImportFiles: readonly File[];
   selectedCategoryId: number | null;
@@ -48,6 +57,7 @@ interface LibraryState {
   repairNeededOnlyMode: boolean;
   incognitoMode: boolean;
   defaultChapterSort: DefaultChapterSort;
+  checkIntervalHours: CheckIntervalHours;
   queueLocalImportFiles: (files: readonly File[]) => void;
   takePendingLocalImportFiles: () => File[];
   setSelectedCategoryId: (id: number | null) => void;
@@ -70,6 +80,7 @@ interface LibraryState {
   clearFilters: () => void;
   setIncognitoMode: (incognitoMode: boolean) => void;
   setDefaultChapterSort: (defaultChapterSort: DefaultChapterSort) => void;
+  setCheckIntervalHours: (hours: number) => void;
 }
 
 export const useLibraryStore = create<LibraryState>()(
@@ -95,6 +106,7 @@ export const useLibraryStore = create<LibraryState>()(
       repairNeededOnlyMode: false,
       incognitoMode: false,
       defaultChapterSort: "asc",
+      checkIntervalHours: DEFAULT_CHECK_INTERVAL_HOURS,
       queueLocalImportFiles: (files) =>
         set((state) => ({
           pendingLocalImportFiles: [...state.pendingLocalImportFiles, ...files],
@@ -155,6 +167,8 @@ export const useLibraryStore = create<LibraryState>()(
       setIncognitoMode: (incognitoMode) => set({ incognitoMode }),
       setDefaultChapterSort: (defaultChapterSort) =>
         set({ defaultChapterSort }),
+      setCheckIntervalHours: (hours) =>
+        set({ checkIntervalHours: normalizeCheckIntervalHours(hours) }),
     }),
     {
       name: "norea-library-settings",
@@ -175,6 +189,7 @@ export const useLibraryStore = create<LibraryState>()(
         defaultCategoryId: state.defaultCategoryId,
         incognitoMode: state.incognitoMode,
         defaultChapterSort: state.defaultChapterSort,
+        checkIntervalHours: state.checkIntervalHours,
       }),
     },
   ),
