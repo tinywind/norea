@@ -266,12 +266,13 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
       try {
         const page = await listLibraryUpdatesPage(UPDATES_INDEX_REFRESH_LIMIT, null, requested);
         if (disposed) return;
-        if (getUpdatesIndexRevision() === startedAtRevision && requested === useUpdatesStore.getState().view) {
+        // A page read after a change is never older than the rows on screen, so it is shown even when
+        // more changes arrived meanwhile; a running check changes the index for every novel it finds.
+        if (requested === useUpdatesStore.getState().view) {
           replaceWindow(page);
           observedUpdatesIndexRevision.current = startedAtRevision;
-        } else {
-          dirtyWhileRefreshing = true;
         }
+        if (getUpdatesIndexRevision() !== startedAtRevision) dirtyWhileRefreshing = true;
       } catch {
         return;
       } finally {
