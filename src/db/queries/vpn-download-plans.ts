@@ -68,6 +68,10 @@ function assertPlan(value: unknown): asserts value is VpnDownloadPlan {
       (range.attemptProfileId !== null && !isIdentity(range.attemptProfileId))) {
       throw new Error("Invalid VPN download range state.");
     }
+    if (range.consumedReallowRevisions !== undefined && (!isObject(range.consumedReallowRevisions) ||
+      !Object.entries(range.consumedReallowRevisions).every(([id, revision]) => isIdentity(id) && isCounter(revision)))) {
+      throw new Error("Invalid VPN download reallow revisions.");
+    }
     const reservesProfile = range.phase !== "completed" && range.phase !== "cancelled";
     if (rangeIds.has(range.id) || (reservesProfile && profiles.has(range.profileId))) {
       throw new Error("VPN download range IDs and unfinished profile assignments must be distinct.");
@@ -379,17 +383,20 @@ export async function updateVpnDownloadPlan(
       const sameChallenge = previous.challenge?.kind === range.challenge?.kind && previous.challenge?.url === range.challenge?.url;
       if (range.id === restartRangeId) {
         if (range.phase !== "paused" || range.generation <= previous.generation || range.attemptedProfileIds.length !== 0 ||
+          Object.keys(range.consumedReallowRevisions ?? {}).length !== 0 ||
           range.attemptProfileId !== null || !sameChallenge || range.profileId !== previous.profileId || range.profileHash !== previous.profileHash) {
           throw new Error("A VPN profile pass restart requires a paused target, a higher generation and an empty attempt state; profile and challenge must be preserved.");
         }
       } else if (previous.attemptedProfileIds.some((id, index) => range.attemptedProfileIds[index] !== id) ||
+        Object.entries(previous.consumedReallowRevisions ?? {}).some(([id, revision]) => (range.consumedReallowRevisions?.[id] ?? -1) < revision) ||
         (previous.challenge !== null && range.challenge === null)) {
         throw new Error("VPN recovery attempts and challenges can only be cleared by full chapter settlement.");
       }
       if (restartRangeId !== undefined && range.id !== restartRangeId) {
         const changed = (["profileId", "profileHash", "phase", "userPaused", "pauseReason", "attemptProfileId", "generation"] as const)
           .some(field => range[field] !== previous[field]);
-        if (changed || !sameChallenge || JSON.stringify(range.attemptedProfileIds) !== JSON.stringify(previous.attemptedProfileIds)) {
+        if (changed || !sameChallenge || JSON.stringify(range.attemptedProfileIds) !== JSON.stringify(previous.attemptedProfileIds) ||
+          JSON.stringify(range.consumedReallowRevisions ?? {}) !== JSON.stringify(previous.consumedReallowRevisions ?? {})) {
           throw new Error("An explicit VPN profile pass restart cannot change sibling range state.");
         }
       }
@@ -413,6 +420,7 @@ export async function settleVpnDownloadChapter(
     assertJobOwner(parseStoredChapterDownloadJob(row), plan, range);
     range.checkpoint += 1;
     range.attemptedProfileIds = [];
+    delete range.consumedReallowRevisions;
     range.attemptProfileId = null;
     range.challenge = null;
     if (range.checkpoint === range.selectedChapterIds.length) range.phase = "completed";

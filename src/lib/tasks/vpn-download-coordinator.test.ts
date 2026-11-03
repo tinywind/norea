@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { SavedVpnProfile } from "../plugin-vpn-profiles";
 import { SourceAccessRequiredError, sourceAccessScopeKey } from "../plugins/source-access";
+import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import type { ChapterDownloadJob } from "./chapter-download";
 import type { SourceAccessBlock } from "./source-access-gate";
 import type { TaskHandle } from "./task-types";
@@ -97,6 +98,8 @@ class Runtime implements VpnDownloadRuntime {
     return this.write(() => {
       const previous = this.stored.get(value.id)!;
       if (previous.revision !== expectedRevision || value.revision !== expectedRevision) throw new Error("Stale CAS");
+      const assigned = value.ranges.filter(item => item.phase !== "completed" && item.phase !== "cancelled").map(item => item.profileId);
+      if (new Set(assigned).size !== assigned.length) throw new Error("Unfinished profile assignments must be distinct");
       for (const item of value.ranges) {
         const old = previous.ranges.find(old => old.id === item.id)!;
         if (item.checkpoint !== old.checkpoint) throw new Error("Non-atomic checkpoint");
@@ -124,6 +127,7 @@ class Runtime implements VpnDownloadRuntime {
       item.checkpoint++;
       item.challenge = null;
       item.attemptedProfileIds = [];
+      delete item.consumedReallowRevisions;
       item.attemptProfileId = null;
       if (item.checkpoint === item.selectedChapterIds.length) item.phase = "completed";
       value.revision++;
@@ -247,6 +251,213 @@ function current(coordinator: VpnDownloadCoordinator, rangeId: string): VpnDownl
 }
 
 describe("VPN download coordinator", () => {
+  it("persists an accepted timeout behind a sibling write even when Pause changes its epoch", async () => {
+    const runtime = new Runtime();
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan([range("a", "a", [1]), range("b", "b", [2])]);
+    let pauseSibling: Promise<void> | undefined;
+    let pauseTimedOut: Promise<void> | undefined;
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(2));
+      runtime.writeBarrier = deferred();
+      pauseSibling = coordinator.pauseRange("plan", "b");
+      await until(() => expect(runtime.writesActive).toBe(1));
+      const [taskId, task] = runtime.task("a");
+      task.result.reject(new Error("webview_extract: timeout after 35000ms")); task.cleanup.resolve(undefined);
+      await until(() => expect(runtime.events).toContain(`cleanup:1:${task.worker.generation}`));
+      expect(runtime.events).toContain(`waiting:${taskId}`);
+      pauseTimedOut = coordinator.pauseRange("plan", "a");
+      runtime.writeBarrier.resolve(undefined); runtime.writeBarrier = null;
+      await Promise.all([pauseSibling, pauseTimedOut]);
+      expect(runtime.stored.get("plan")!.ranges[0]).toMatchObject({
+        phase: "paused", userPaused: true, pauseReason: "user-paused", checkpoint: 0, attemptedProfileIds: ["a"],
+      });
+      expect(runtime.tasks.size).toBe(2);
+      await coordinator.resumeRange("plan", "a");
+      await until(() => expect(runtime.tasks.size).toBe(3));
+      expect(current(coordinator, "a").profileId).toBe("c");
+    } finally {
+      runtime.writeBarrier?.resolve(undefined); runtime.writeBarrier = null;
+      await Promise.all([pauseSibling, pauseTimedOut]);
+      await coordinator.stopAutomatic();
+    }
+  });
+
+  it("does not retry a consumed reallowed profile on ordinary Resume after process restore", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a")];
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const restored = new VpnDownloadCoordinator(runtime);
+    const value = plan();
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(1));
+      const original = runtime.task("a")[1];
+      original.result.reject(new PluginVpnUnavailableError()); original.cleanup.resolve(undefined);
+      await until(() => expect(current(coordinator, "a").pauseReason).toBe("profiles-exhausted"));
+      const issue = runtime.issues[0]!;
+      await coordinator.reallowProfile(issue.batchId, issue.ip, issue.revision);
+      await until(() => expect(runtime.tasks.size).toBe(2));
+      const retry = runtime.task("a", 1)[1];
+      retry.result.reject(new Error("webview_extract: timeout after 35000ms")); retry.cleanup.resolve(undefined);
+      await until(() => expect(current(coordinator, "a").pauseReason).toBe("profiles-exhausted"));
+      await coordinator.stopAutomatic();
+      await restored.restore();
+      await restored.resumeRange("plan", "a");
+      await until(() => expect(current(restored, "a").pauseReason === "profiles-exhausted" || runtime.tasks.size > 2).toBe(true));
+      expect(runtime.tasks.size).toBe(2);
+      expect(current(restored, "a")).toMatchObject({ checkpoint: 0, attemptedProfileIds: ["a"] });
+      expect(runtime.issues).toMatchObject([{ excluded: false, revision: 2 }]);
+    } finally { await coordinator.stopAutomatic(); await restored.stopAutomatic(); }
+  });
+
+  it("atomically exchanges released sibling assignments after simultaneous timeouts without taking a held profile", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b"), profile("c")];
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const held = range("c", "c", [3]); held.userPaused = true;
+    const value = plan([range("a", "a", [1]), range("b", "b", [2]), held]);
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(2));
+      for (const id of ["a", "b"]) {
+        const task = runtime.task(id)[1];
+        task.result.reject(new Error("webview_extract: timeout after 35000ms"));
+        task.cleanup.resolve(undefined);
+      }
+      await until(() => expect(runtime.tasks.size).toBe(4));
+      expect(current(coordinator, "a")).toMatchObject({ profileId: "b", checkpoint: 0, selectedChapterIds: [1], attemptedProfileIds: ["a", "b"] });
+      expect(current(coordinator, "b")).toMatchObject({ profileId: "a", checkpoint: 0, selectedChapterIds: [2], attemptedProfileIds: ["b", "a"] });
+      expect(current(coordinator, "c")).toMatchObject({ profileId: "c", userPaused: true, phase: "paused", generation: 0 });
+      expect(runtime.issues).toEqual([]);
+      expect(runtime.notices).toEqual([]);
+      runtime.succeed("a", 1); runtime.succeed("b", 1);
+      await until(() => expect([current(coordinator, "a").checkpoint, current(coordinator, "b").checkpoint]).toEqual([1, 1]));
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it("stops a pause-policy canary after a scraper timeout instead of reconnecting the same profile", async () => {
+    const runtime = new Runtime();
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan(); value.policies.captcha = "pause";
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(1));
+      await coordinator.handleTaskChallenge(runtime.task("a")[0], runtime.block("a"));
+      await coordinator.pauseRange("plan", "a");
+      const issue = runtime.issues[0]!;
+      await coordinator.reallowProfile(issue.batchId, issue.ip, issue.revision);
+      await coordinator.resumeRange("plan", "a");
+      await until(() => expect(runtime.tasks.size).toBe(2));
+      const retry = runtime.task("a", 1)[1];
+      retry.result.reject(new Error("webview_extract: timeout after 35000ms"));
+      retry.cleanup.resolve(undefined);
+      await until(() => expect(current(coordinator, "a").pauseReason === "download-failed" || runtime.tasks.size > 2).toBe(true));
+      expect(runtime.tasks.size).toBe(2);
+      expect(runtime.native.size).toBe(0);
+      expect(current(coordinator, "a")).toMatchObject({
+        phase: "paused", pauseReason: "download-failed", checkpoint: 0, attemptedProfileIds: ["a"],
+        challenge: { kind: "captcha" },
+      });
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it.each([
+    "webview_extract: timeout after 35000ms",
+    "webview_fetch: timeout after 30000ms",
+    "Android scraper extract timed out",
+    "scraper: navigation failed (-11): net::ERR_TUNNEL_CONNECTION_FAILED at https://source.test",
+  ])("retries the same unfinished chapter on another route after %s without excluding the IP", async message => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b")];
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan();
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(1));
+      const original = runtime.task("a")[1];
+      original.result.reject(new Error(message));
+      await until(() => expect(runtime.events).toContain("waiting:task-1"));
+      expect(runtime.tasks.size).toBe(1);
+      original.cleanup.resolve(undefined);
+      await until(() => expect(runtime.tasks.size).toBe(2));
+      const replacement = runtime.task("a", 1)[1];
+      expect(replacement.job.id).toBe(9);
+      expect(replacement.worker.generation).toBeGreaterThan(original.worker.generation);
+      expect(current(coordinator, "a")).toMatchObject({
+        profileId: "b", checkpoint: 0, selectedChapterIds: [9, 2, 7],
+      });
+      expect(runtime.issues).toEqual([]);
+      expect(runtime.events.indexOf(`cleanup:9:${original.worker.generation}`))
+        .toBeLessThan(runtime.events.findIndex(event => event.startsWith("connect:a:b:")));
+      runtime.succeed("a", 1);
+      await until(() => expect(runtime.tasks.size).toBe(3));
+      expect(runtime.task("a", 2)[1].job.id).toBe(2);
+      expect(current(coordinator, "a")).toMatchObject({ checkpoint: 1, attemptedProfileIds: [] });
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it("bounds repeated scraper timeouts to one profile pass without poisoning other work", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b")];
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan();
+    try {
+      await coordinator.start(value, jobsFor(value));
+      for (let attempt = 0; attempt < 2; attempt++) {
+        await until(() => expect(runtime.tasks.size).toBe(attempt + 1));
+        const task = runtime.task("a", attempt)[1];
+        task.result.reject(new Error("webview_extract: timeout after 35000ms"));
+        task.cleanup.resolve(undefined);
+      }
+      await until(() => expect(current(coordinator, "a").pauseReason).toBe("profiles-exhausted"));
+      await coordinator.profilesChanged();
+      expect(runtime.tasks.size).toBe(2);
+      expect(runtime.issues).toEqual([]);
+      expect(current(coordinator, "a")).toMatchObject({ checkpoint: 0, attemptedProfileIds: ["a", "b"] });
+      const next = plan([range("next", "a", [20])], "next-work");
+      await coordinator.start(next, jobsFor(next));
+      await until(() => expect(runtime.tasks.size).toBe(3));
+      expect(runtime.task("next")[1].job.id).toBe(20);
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it("does not loop over a previously reallowed IP after a scraper timeout", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a")];
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan();
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(1));
+      const original = runtime.task("a")[1];
+      original.result.reject(new PluginVpnUnavailableError()); original.cleanup.resolve(undefined);
+      await until(() => expect(current(coordinator, "a").pauseReason).toBe("profiles-exhausted"));
+      const issue = runtime.issues[0]!;
+      await coordinator.reallowProfile(issue.batchId, issue.ip, issue.revision);
+      await until(() => expect(runtime.tasks.size).toBe(2));
+      const retry = runtime.task("a", 1)[1];
+      retry.result.reject(new Error("webview_extract: timeout after 35000ms")); retry.cleanup.resolve(undefined);
+      await until(() => expect(current(coordinator, "a").pauseReason).toBe("profiles-exhausted"));
+      await coordinator.profilesChanged();
+      expect(runtime.tasks.size).toBe(2);
+      expect(runtime.issues).toMatchObject([{ excluded: false, revision: 2 }]);
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it("keeps an explicit pause when a timed-out scraper is still settling", async () => {
+    const runtime = new Runtime(); runtime.holdCleanup = true;
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan();
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(1));
+      const task = runtime.task("a")[1];
+      task.result.reject(new Error("webview_extract: timeout after 35000ms"));
+      const paused = coordinator.pauseRange("plan", "a");
+      task.cleanup.resolve(undefined); await paused;
+      await coordinator.profilesChanged();
+      expect(runtime.tasks.size).toBe(1);
+      expect(current(coordinator, "a")).toMatchObject({ checkpoint: 0, userPaused: true, pauseReason: "user-paused" });
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
   it("keeps a healthy connection through its frozen range and automatically assigns its released profile to a waiting work", async () => {
     const runtime = new Runtime(); runtime.profiles = [profile("a")];
     const coordinator = new VpnDownloadCoordinator(runtime); coordinator.setWorkerLimit(1);
@@ -843,7 +1054,11 @@ describe("VPN download coordinator", () => {
     expect(current(coordinator, "a")).toMatchObject({ attemptedProfileIds: [], attemptProfileId: null, challenge: null });
   });
 
-  it.each(["HTTP 503", "Request timed out", "Storage write failed"])("does not rotate for an unstructured task failure: %s", async message => {
+  it.each([
+    "HTTP 503", "Request timed out", "Storage write failed",
+    "scraper: TLS certificate error 3 at https://source.test",
+    "scraper: navigation failed (-11): net::ERR_CERT_AUTHORITY_INVALID at https://source.test",
+  ])("does not rotate for an unstructured task failure: %s", async message => {
     const runtime = new Runtime();
     const coordinator = new VpnDownloadCoordinator(runtime);
     const value = plan();

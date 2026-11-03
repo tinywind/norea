@@ -45,6 +45,7 @@ export interface VpnDownloadRangeState extends VpnDownloadRangePlan {
   userPaused: boolean;
   pauseReason: string | null;
   attemptedProfileIds: string[];
+  consumedReallowRevisions?: Record<string, number>;
   attemptProfileId: string | null;
   generation: number;
   challenge: SourceAccessChallenge | null;

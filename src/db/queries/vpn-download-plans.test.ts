@@ -308,6 +308,41 @@ it("retains the one-pass recovery budget and challenge until full chapter settle
     .toEqual(["profile-a", "spare", "second-spare"]);
 });
 
+it.each([[null], [[]], [{ "": 2 }], [{ "profile-a": -1 }], [{ "profile-a": 1.5 }], [{ "profile-a": "2" }]])(
+  "rejects malformed consumed reallow revisions: %s", async revisions => {
+    const value = plan(); Object.assign(value.ranges[0]!, { consumedReallowRevisions: revisions });
+    await expect(createVpnDownloadPlan(value, jobs(value))).rejects.toThrow(/reallow|revision|range/i);
+    expect(queueRows()).toEqual([]);
+  },
+);
+
+it.each([{}, { "profile-a": 1 }])("does not forget consumed reallow revisions in an ordinary update: %s", async revisions => {
+  const value = plan(); Object.assign(value.ranges[0]!, { consumedReallowRevisions: { "profile-a": 2 } });
+  await createVpnDownloadPlan(value, jobs(value));
+  const next = structuredClone(value); Object.assign(next.ranges[0]!, { consumedReallowRevisions: revisions });
+  await expect(updateVpnDownloadPlan(next, 0)).rejects.toThrow(/reallow|recovery|attempt/i);
+  sqlite.close(); sqlite = new DatabaseSync(join(directory, "norea.db"));
+  expect(await listVpnDownloadPlans()).toEqual([value]);
+});
+
+it("clears consumed reallow revisions only with full settlement or an explicit pass restart", async () => {
+  const value = plan();
+  Object.assign(value.ranges[0]!, { consumedReallowRevisions: { "profile-a": 2 }, attemptedProfileIds: ["profile-a"] });
+  Object.assign(value.ranges[1]!, { consumedReallowRevisions: { "profile-b": 4 }, attemptedProfileIds: ["profile-b"] });
+  await createVpnDownloadPlan(value, jobs(value));
+  const settled = await settleVpnDownloadChapter(value.id, "lane-a", 31, 2);
+  expect(settled.ranges[0]).not.toHaveProperty("consumedReallowRevisions");
+  expect(settled.ranges[1]).toEqual(value.ranges[1]);
+  const next = structuredClone(settled);
+  Object.assign(next.ranges[1]!, { generation: 3, attemptedProfileIds: [], attemptProfileId: null });
+  Reflect.deleteProperty(next.ranges[1]!, "consumedReallowRevisions");
+  const restarted = await updateVpnDownloadPlan(next, next.revision, { restartPassRangeId: "lane-b" });
+  expect(restarted.ranges[1]).not.toHaveProperty("consumedReallowRevisions");
+  sqlite.close(); sqlite = new DatabaseSync(join(directory, "norea.db"));
+  expect(await listVpnDownloadPlans()).toEqual([restarted]);
+  expect(queueRows().map(row => row.chapter_id)).toEqual([4, 12, 22]);
+});
+
 it("explicitly restarts only a paused range's profile pass with current CAS and a newer generation, preserving challenge, jobs and siblings across reopen", async () => {
   const value = exhaustedPlan();
   await createVpnDownloadPlan(value, jobs(value));
