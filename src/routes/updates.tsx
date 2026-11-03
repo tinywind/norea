@@ -1,15 +1,14 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { Button, Group, Loader, Stack, Text } from "@mantine/core";
-import { DetailsGlyph } from "../components/ActionGlyphs";
-import {
-  ConsolePanel,
-  ConsoleStatusDot,
-} from "../components/ConsolePrimitives";
+import { Button, Loader, Progress, Stack } from "@mantine/core";
 import { PageFrame, StateView } from "../components/AppFrame";
 import { IconButton } from "../components/IconButton";
 import { RefreshIcon } from "../components/ui/icons";
+import {
+  groupFailuresBySource,
+  UpdateFailures,
+} from "../components/updates/UpdateFailures";
 import {
   daysBefore,
   groupUpdatesByDate,
@@ -32,13 +31,14 @@ import {
   type ChapterDownloadStatus,
 } from "../lib/tasks/chapter-download";
 import {
+  cancelLibraryUpdateCheck,
   checkLibraryUpdates,
-  type UpdateCheckFailure,
 } from "../lib/updates/check-library-updates";
 import {
   getUpdatesIndexRevision,
   subscribeUpdatesIndexChanges,
 } from "../lib/updates/update-index-events";
+import { isAbortError } from "../lib/abort";
 import { describeError } from "../lib/errors";
 import { useTranslation, type AppLocale } from "../i18n";
 import { useUpdatesStore } from "../store/updates";
@@ -94,43 +94,6 @@ function formatUpdateDay(
   }).format(date);
 }
 
-interface FailureRowProps {
-  failure: UpdateCheckFailure;
-  onOpenNovel: () => void;
-}
-
-function FailureRow({ failure, onOpenNovel }: FailureRowProps) {
-  const { t } = useTranslation();
-  const sourceName = failure.pluginName ?? failure.pluginId;
-  const reason =
-    failure.reason.kind === "plugin-missing"
-      ? t("updates.pluginMissing", { id: failure.reason.pluginId })
-      : failure.reason.message;
-
-  return (
-    <div className="norea-updates-failure-row">
-      <div className="norea-updates-failure-main">
-        <Group gap="xs" wrap="nowrap">
-          <ConsoleStatusDot status="error" label={t("common.failed")} />
-          <button
-            className="norea-updates-link"
-            type="button"
-            onClick={onOpenNovel}
-          >
-            {failure.novelName}
-          </button>
-        </Group>
-        <Text className="norea-updates-row-meta" title={reason}>
-          {sourceName} / {reason}
-        </Text>
-      </div>
-      <IconButton label={t("updates.details")} onClick={onOpenNovel} size="lg">
-        <DetailsGlyph />
-      </IconButton>
-    </div>
-  );
-}
-
 interface UpdatesPageProps {
   active?: boolean;
 }
@@ -157,6 +120,10 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
   const replaceWindow = useUpdatesStore((state) => state.replaceWindow);
   const initialLocalLoadRequested = useRef(false);
   const observedUpdatesIndexRevision = useRef(getUpdatesIndexRevision());
+  const [checkProgress, setCheckProgress] = useState<{
+    current: number;
+    total: number;
+  } | null>(null);
   const [downloadStatuses, setDownloadStatuses] = useState<
     ReadonlyMap<number, ChapterDownloadStatus>
   >(() => new Map());
@@ -173,10 +140,12 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
       const loadedWindowSize = useUpdatesStore.getState().updates.length;
       return checkLibraryUpdates(Math.max(UPDATES_PAGE_SIZE, loadedWindowSize), {
         aggregateTaskTitle: t("tasks.task.checkLibraryUpdates"),
+        onProgress: ({ current, total }) => setCheckProgress({ current, total }),
         taskTitle: (novel) =>
           t("tasks.task.checkUpdates", { name: novel.name }),
       });
     },
+    onMutate: () => setCheckProgress(null),
     onSuccess: (result) => {
       applyCheckResult(result);
       void queryClient.invalidateQueries({
@@ -480,23 +449,68 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
     );
   };
 
-  const result = lastCheckResult ?? undefined;
+  const failedSources = useMemo(
+    () => groupFailuresBySource(lastCheckResult?.failures ?? []),
+    [lastCheckResult],
+  );
+  const checkError =
+    check.error && !isAbortError(check.error) ? check.error : null;
+  const progressValue =
+    checkProgress && checkProgress.total > 0
+      ? (checkProgress.current / checkProgress.total) * 100
+      : 100;
 
   return (
     <div className="norea-updates-page">
       <header className="norea-updates-app-bar">
-        <div className="norea-updates-app-bar-text">
+        <div className="norea-updates-app-bar-row">
           <h1 className="norea-updates-app-bar-title">{t("updates.title")}</h1>
+          <IconButton
+            disabled={check.isPending}
+            label={t("updates.check")}
+            onClick={() => check.mutate()}
+            size="lg"
+          >
+            {check.isPending ? <Loader size="sm" /> : <RefreshIcon />}
+          </IconButton>
         </div>
-        <IconButton
-          disabled={check.isPending}
-          label={t("updates.check")}
-          onClick={() => check.mutate()}
-          size="lg"
-        >
-          {check.isPending ? <Loader size="sm" /> : <RefreshIcon />}
-        </IconButton>
+        {check.isPending ? (
+          <div className="norea-updates-progress" role="status">
+            <Progress
+              animated={!checkProgress?.total}
+              aria-hidden="true"
+              className="norea-updates-progress-bar"
+              size="xs"
+              striped={!checkProgress?.total}
+              value={progressValue}
+            />
+            <span className="norea-updates-progress-text">
+              {checkProgress && checkProgress.total > 0
+                ? t("updates.checkingProgress", {
+                    current: checkProgress.current,
+                    total: checkProgress.total,
+                  })
+                : t("updates.checkingLibrarySources")}
+            </span>
+            <Button
+              onClick={() => cancelLibraryUpdateCheck()}
+              size="compact-sm"
+              variant="subtle"
+            >
+              {t("common.cancel")}
+            </Button>
+          </div>
+        ) : null}
       </header>
+
+      {check.isPending ? null : (
+        <UpdateFailures
+          active={active}
+          onOpenNovel={openNovel}
+          onRetryAll={() => check.mutate()}
+          sources={failedSources}
+        />
+      )}
 
       <PageFrame className="norea-updates-frame" size="wide">
         {isInitialLoading ? (
@@ -516,16 +530,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
           />
         ) : (
           <Stack gap="md">
-            {check.isPending ? (
-              <StateView
-                title={
-                  <Group gap="sm">
-                    <Loader size="sm" />
-                    <Text c="dimmed">{t("updates.checkingLibrarySources")}</Text>
-                  </Group>
-                }
-              />
-            ) : check.error ? (
+            {checkError && !check.isPending ? (
               <StateView
                 action={{
                   label: t("common.retry"),
@@ -533,34 +538,11 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                 }}
                 color="danger"
                 details={{
-                  content: describeError(check.error),
+                  content: describeError(checkError),
                   label: t("common.details"),
                 }}
                 title={t("updates.checkFailed")}
               />
-            ) : result && result.failures.length > 0 ? (
-              <ConsolePanel
-                className="norea-updates-failures"
-                title={t("updates.sourceFailures")}
-              >
-                <Stack gap={0}>
-                  {result.failures.map((failure) => (
-                    <FailureRow
-                      key={failure.novelId}
-                      failure={failure}
-                      onOpenNovel={() => openNovel(failure.novelId)}
-                    />
-                  ))}
-                </Stack>
-                <div className="norea-updates-failure-footer">
-                  <Text className="norea-updates-row-meta">
-                    {t("updates.failureFooter")}
-                  </Text>
-                  <Button onClick={() => check.mutate()} variant="light">
-                    {t("updates.retryFailedCheck")}
-                  </Button>
-                </div>
-              </ConsolePanel>
             ) : null}
 
             {updates.length > 0 ? (

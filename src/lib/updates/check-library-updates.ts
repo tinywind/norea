@@ -19,6 +19,8 @@ interface LibraryNovelForUpdate {
   name: string;
 }
 
+const LIBRARY_UPDATE_CHECK_KEY = "library.checkUpdates";
+
 export interface UpdateCheckFailure {
   novelId: number;
   novelName: string;
@@ -191,7 +193,16 @@ export async function checkLibraryUpdates(
     kind: "library.checkUpdates",
     priority: "deferred",
     title: options.aggregateTaskTitle ?? "Check library updates",
-    dedupeKey: "library.checkUpdates",
+    dedupeKey: LIBRARY_UPDATE_CHECK_KEY,
     run: (context) => runLibraryUpdateCheck(limit, options, context),
   }).promise;
+}
+
+/**
+ * Cancels the running library update check. Novels already handed to their
+ * source finish their check; the remaining novels are not started.
+ */
+export function cancelLibraryUpdateCheck(): boolean {
+  const record = taskScheduler.getTaskByDedupeKey(LIBRARY_UPDATE_CHECK_KEY);
+  return record ? taskScheduler.cancel(record.id) : false;
 }
