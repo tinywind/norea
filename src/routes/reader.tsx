@@ -1,14 +1,15 @@
 import { Box } from "@mantine/core";
+import { useMediaQuery } from "@mantine/hooks";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useCallback, useEffect, useMemo, useRef } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { BlockingLoadingOverlay, StateView } from "../components/AppFrame";
 import { PdfReaderContent } from "../components/PdfReaderContent";
 import {
-  getChapterLabel,
-  ReaderBottomStrip,
+  ReaderBottomBar,
   ReaderChapterPanel,
+  ReaderChapterSheet,
   ReaderSettingsOverlay,
-  ReaderTopChrome,
+  ReaderTopBar,
 } from "../components/reader/ReaderChrome";
 import { useNextReaderChapter } from "../components/reader/use-next-reader-chapter";
 import { useReaderChapterDocument } from "../components/reader/use-reader-chapter-document";
@@ -34,7 +35,9 @@ import {
   novelDetailQueryKey,
 } from "../lib/reader-query-invalidation";
 import { enqueueChapterMediaRepair } from "../lib/tasks/chapter-download";
+import { useLibraryStore } from "../store/library";
 import { useReaderStore } from "../store/reader";
+import { useReaderLayoutStore } from "../store/reader-layout";
 import "../styles/reader.css";
 
 interface ReaderPageProps {
@@ -201,32 +204,75 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         Boolean(chapter)));
   const {
     readerChromeVisible,
-    readerSeekbarVisible,
-    readerSeekbarMounted,
+    readerChromeDismissible,
     readerSettingsOpen,
+    chapterListOpen,
     openReaderSettingsPanel,
     closeReaderSettingsPanel,
+    openChapterList,
+    closeChapterList,
+    closeTopReaderOverlay,
     openReaderSettingsPage,
     handleReaderMenuTap,
+    hideReaderChrome,
     handleReaderActivity,
     handleFrequentReaderActivity,
-    showReaderSeekbarForActivity,
     handleReaderSeekbarActiveChange,
+    chromeFocusHandlers,
   } = useReaderChrome({
-    active,
     chapterId,
     fullPageReader,
-    showSeekbar: effectiveReaderGeneral.showSeekbar,
     readerStateVisible,
   });
+  const openAdjacentChapter = useCallback(
+    (direction: 1 | -1) => {
+      void openAdjacent(direction);
+    },
+    [openAdjacent],
+  );
   useReaderKeyboard({
     active,
-    readerSettingsOpen,
     contentRef,
-    closeReaderSettingsPanel,
+    closeTopReaderOverlay,
+    modalOverlayOpen: readerSettingsOpen || chapterListOpen,
+    readerChromeDismissible,
+    hideReaderChrome,
     handleReaderActivity,
     handleReaderBack,
+    openAdjacentChapter,
   });
+  const chapterPanelAvailable = useMediaQuery("(min-width: 1200px)", undefined, {
+    getInitialValueInEffect: false,
+  });
+  const chapterPanelOpen = useReaderLayoutStore(
+    (state) => state.chapterPanelOpen,
+  );
+  const setChapterPanelOpen = useReaderLayoutStore(
+    (state) => state.setChapterPanelOpen,
+  );
+  const showChapterPanel = chapterPanelAvailable && chapterPanelOpen;
+  const toggleChapters = useCallback(() => {
+    if (chapterPanelAvailable) {
+      setChapterPanelOpen(!chapterPanelOpen);
+      return;
+    }
+    openChapterList();
+  }, [
+    chapterPanelAvailable,
+    chapterPanelOpen,
+    openChapterList,
+    setChapterPanelOpen,
+  ]);
+  const openChapterFromList = useCallback(
+    (target: (typeof chapters)[number]) => {
+      closeChapterList();
+      openChapter(target);
+    },
+    [closeChapterList, openChapter],
+  );
+  const setIncognitoMode = useLibraryStore((state) => state.setIncognitoMode);
+  const [seekbarContainer, setSeekbarContainer] =
+    useState<HTMLElement | null>(null);
   useEffect(() => {
     if (
       !chapter ||
@@ -252,19 +298,6 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     hasChapterContent,
     queryClient,
   ]);
-  const readerContentGeneral = useMemo(
-    () =>
-      effectiveReaderGeneral.showSeekbar === readerSeekbarMounted
-        ? effectiveReaderGeneral
-        : {
-            ...effectiveReaderGeneral,
-            showSeekbar: readerSeekbarMounted,
-          },
-    [effectiveReaderGeneral, readerSeekbarMounted],
-  );
-  const readerOverlayBottom = fullPageReader
-    ? "calc(var(--norea-safe-area-bottom) + 0.5rem)"
-    : "calc(var(--norea-app-bottom-inset) + 2rem)";
   const handleProgressChange = useCallback(
     (nextProgress: number) => {
       const targetChapterId = chapter?.id;
@@ -385,9 +418,10 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       key={readerContentKey}
       ref={contentRef}
       appearanceSettings={effectiveReaderAppearance}
-      bottomOverlayOffset={readerOverlayBottom}
+      chromeDismissible={readerChromeDismissible}
+      chromeVisible={readerChromeVisible}
       dataUrl={content}
-      generalSettings={readerContentGeneral}
+      generalSettings={effectiveReaderGeneral}
       initialProgress={readerProgress}
       localMediaContext={readerLocalMediaContext}
       onToggleChrome={handleReaderMenuTap}
@@ -396,9 +430,9 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       }
       onPageIndexChange={handlePageIndexChange}
       onBoundaryPage={handleBoundaryPage}
-      onSeekbarActivity={showReaderSeekbarForActivity}
+      onSeekbarActivity={handleReaderActivity}
       onSeekbarActiveChange={handleReaderSeekbarActiveChange}
-      seekbarVisible={readerSeekbarVisible}
+      seekbarContainer={seekbarContainer}
       viewportHeight="100%"
     />
   ) : (
@@ -406,9 +440,10 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       key={readerContentKey}
       ref={contentRef}
       appearanceSettings={effectiveReaderAppearance}
-      bottomOverlayOffset={readerOverlayBottom}
+      chromeDismissible={readerChromeDismissible}
+      chromeVisible={readerChromeVisible}
       contentKey={readerContentKey}
-      generalSettings={readerContentGeneral}
+      generalSettings={effectiveReaderGeneral}
       html={content}
       preparedDocument={readerPreparation.document}
       initialProgress={readerProgress}
@@ -420,9 +455,9 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       onPageIndexChange={handlePageIndexChange}
       onBoundaryPage={handleBoundaryPage}
       onMediaError={handleRemoteMediaError}
-      onSeekbarActivity={showReaderSeekbarForActivity}
+      onSeekbarActivity={handleReaderActivity}
       onSeekbarActiveChange={handleReaderSeekbarActiveChange}
-      seekbarVisible={readerSeekbarVisible}
+      seekbarContainer={seekbarContainer}
       viewportHeight="100%"
     />
   );
@@ -432,25 +467,24 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       className="norea-reader-shell"
       data-chrome-visible={readerChromeVisible}
       data-full-page={fullPageReader}
-      data-seekbar-visible={readerSeekbarVisible}
       aria-busy={readerBusy}
       onPointerDown={handleReaderActivity}
       onPointerMove={handleFrequentReaderActivity}
       onWheel={handleFrequentReaderActivity}
     >
-      <ReaderTopChrome
-        chapter={chapter}
-        chapterCount={chapters.length}
-        chapterIndex={chapterIndex}
+      <ReaderTopBar
+        bookmarked={Boolean(chapter?.bookmark)}
         bookmarkDisabled={!chapter}
         bookmarkLoading={bookmarkMutation.isPending}
+        chapterName={chapter?.name}
+        focusHandlers={chromeFocusHandlers}
         incognitoMode={incognitoMode}
         novelName={currentNovel?.name}
         onBack={handleReaderBack}
+        onIncognitoModeChange={setIncognitoMode}
         onOpenSettings={openReaderSettingsPanel}
         onRepairMedia={() => repairMediaMutation.mutate()}
         onToggleBookmark={() => bookmarkMutation.mutate()}
-        progress={readerProgress}
         repairMediaDisabled={!chapter || !currentNovel}
         repairMediaLoading={repairMediaMutation.isPending}
         repairMediaAttention={remoteMediaError}
@@ -458,14 +492,36 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         showMediaRepair={showMediaRepair}
       />
       <Box className="norea-reader-body">
-        <ReaderChapterPanel
-          chapters={chapters}
-          currentChapterId={chapter?.id}
-          loading={chapterListQuery.isLoading}
-          onOpenChapter={openChapter}
-        />
+        {showChapterPanel ? (
+          <ReaderChapterPanel
+            chapters={chapters}
+            currentChapterId={chapter?.id}
+            loading={chapterListQuery.isLoading}
+            onOpenChapter={openChapter}
+          />
+        ) : null}
         <Box className="norea-reader-content-frame">{readerContent}</Box>
       </Box>
+      <ReaderBottomBar
+        chapterListExpanded={showChapterPanel || chapterListOpen}
+        focusHandlers={chromeFocusHandlers}
+        hasNextChapter={!!nextChapter}
+        hasPreviousChapter={!!previousChapter}
+        onNextChapter={() => openAdjacentChapter(1)}
+        onOpenChapters={toggleChapters}
+        onOpenSettings={openReaderSettingsPanel}
+        onPreviousChapter={() => openAdjacentChapter(-1)}
+        seekSlotRef={setSeekbarContainer}
+        settingsOpen={readerSettingsOpen}
+      />
+      <ReaderChapterSheet
+        chapters={chapters}
+        currentChapterId={chapter?.id}
+        loading={chapterListQuery.isLoading}
+        onClose={closeChapterList}
+        onOpenChapter={openChapterFromList}
+        opened={chapterListOpen && !chapterPanelAvailable}
+      />
       {readerSettingsOpen ? (
         <ReaderSettingsOverlay
           novelId={chapterNovelId}
@@ -476,28 +532,6 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
           sourceName={currentSourceName}
         />
       ) : null}
-      <ReaderBottomStrip
-        currentLabel={
-          chapter ? getChapterLabel(chapter, t) : t("reader.sample")
-        }
-        hasNextChapter={!!nextChapter}
-        hasPreviousChapter={!!previousChapter}
-        nextLabel={
-          nextChapter ? getChapterLabel(nextChapter, t) : t("reader.next")
-        }
-        onNextChapter={() => {
-          void openAdjacent(1);
-        }}
-        onPreviousChapter={() => {
-          void openAdjacent(-1);
-        }}
-        previousLabel={
-          previousChapter
-            ? getChapterLabel(previousChapter, t)
-            : t("common.previous")
-        }
-        progress={readerProgress}
-      />
       {readerBusy ? (
         <BlockingLoadingOverlay
           cancelLabel={t("common.back")}

@@ -328,7 +328,7 @@ a {
   visibility: hidden;
 }
 
-.norea-app-main[data-reader-full-page="true"] .norea-app-scroll {
+.norea-app-main[data-reader-active="true"] .norea-app-scroll {
   overflow: hidden;
 }
 
@@ -384,16 +384,8 @@ a {
   z-index: var(--norea-z-nav);
 }
 
-.norea-mobile-nav[data-reader-full-page="true"] {
-  opacity: 0;
-  pointer-events: none;
-  transform: translateY(100%);
-}
-
-.norea-mobile-nav[data-reader-full-page="true"][data-reader-visible="true"] {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateY(0);
+.norea-mobile-nav[data-reader-active="true"] {
+  display: none;
 }
 
 .norea-mobile-nav-link {

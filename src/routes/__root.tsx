@@ -51,7 +51,6 @@ import { isAndroidRuntime, isTauriRuntime } from "../lib/tauri-runtime";
 import { useAppearanceStore } from "../store/appearance";
 import { useBrowseStore } from "../store/browse";
 import { useLibraryStore } from "../store/library";
-import { useReaderStore } from "../store/reader";
 import { BrowsePage, type BrowseTab } from "./browse";
 import { DownloadsPage } from "./downloads";
 import { HistoryPage } from "./history";
@@ -283,12 +282,6 @@ export function RootLayout() {
   const notificationTranslateRef = useRef(t);
   notificationTranslateRef.current = t;
   const showLabelsInNav = useAppearanceStore((s) => s.showLabelsInNav);
-  const fullPageReaderActive = useReaderStore(
-    (state) => state.fullPageReaderActive,
-  );
-  const fullPageReaderChromeVisible = useReaderStore(
-    (state) => state.fullPageReaderChromeVisible,
-  );
   const location = useRouterState({
     select: (state) => ({
       historyIndex: getAppNavigationHistoryIndex(state.location.state),
@@ -488,8 +481,7 @@ export function RootLayout() {
 
   const pageVisited = (page: PersistentPage) =>
     visitedPages.has(page) || activePersistentPage === page;
-  const readerFullPageActive = pathname === "/reader" && fullPageReaderActive;
-  const mobileNavVisible = !readerFullPageActive || fullPageReaderChromeVisible;
+  const readerActive = pathname === "/reader";
 
   return (
     <AppShell
@@ -498,7 +490,7 @@ export function RootLayout() {
           ? { sm: "3.5rem", "1200px": "11.5rem" }
           : "3.5rem",
         breakpoint: "sm",
-        collapsed: { mobile: true, desktop: readerFullPageActive },
+        collapsed: { mobile: true, desktop: readerActive },
       }}
       padding={0}
     >
@@ -527,11 +519,11 @@ export function RootLayout() {
       </AppShell.Navbar>
       <AppShell.Main
         className="norea-app-main"
-        data-reader-full-page={readerFullPageActive}
+        data-reader-active={readerActive}
         style={{
           background: "var(--norea-color-bg)",
           color: "var(--norea-color-ink)",
-          padding: readerFullPageActive ? 0 : undefined,
+          padding: readerActive ? 0 : undefined,
         }}
       >
         <div className="norea-app-scroll">
@@ -596,8 +588,7 @@ export function RootLayout() {
       </AppShell.Main>
       <nav
         className="norea-mobile-nav"
-        data-reader-full-page={readerFullPageActive}
-        data-reader-visible={mobileNavVisible}
+        data-reader-active={readerActive}
         data-show-labels={showLabelsInNav}
         aria-label={t("nav.primary")}
       >

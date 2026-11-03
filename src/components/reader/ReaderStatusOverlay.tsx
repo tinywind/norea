@@ -5,7 +5,6 @@ import {
   useTranslation,
   type AppLocale,
 } from "../../i18n";
-import { type PageInfo } from "./reader-content-metrics";
 interface BatteryManagerLike {
   level: number;
   charging: boolean;
@@ -18,22 +17,16 @@ function formatClock(date: Date, locale: AppLocale): string {
 }
 
 interface ReaderStatusOverlayProps {
-  showScrollPercentage: boolean;
+  showProgress: boolean;
   showBatteryAndTime: boolean;
-  isPagedReader: boolean;
-  progress: number;
-  pageInfo: PageInfo;
+  progressLabel: string;
   textColor: string;
-  bottom: number | string;
 }
 export function ReaderStatusOverlay({
-  showScrollPercentage,
+  showProgress,
   showBatteryAndTime,
-  isPagedReader,
-  progress,
-  pageInfo,
+  progressLabel,
   textColor,
-  bottom: overlayBottom,
 }: ReaderStatusOverlayProps) {
   const { locale, t } = useTranslation();
   const [now, setNow] = useState(() => new Date());
@@ -79,40 +72,19 @@ export function ReaderStatusOverlay({
     };
   }, [showBatteryAndTime, t]);
 
+  if (!showProgress && !showBatteryAndTime) return null;
+
   return (
-    <>
-      {" "}
-      {(showScrollPercentage || showBatteryAndTime) && (
-        <Box
-          style={{
-            position: "fixed",
-            left: "0.75rem",
-            right: "0.75rem",
-            bottom: overlayBottom,
-            display: "flex",
-            justifyContent: "space-between",
-            gap: "0.75rem",
-            color: textColor,
-            fontSize: "0.75rem",
-            pointerEvents: "none",
-            opacity: 0.78,
-            zIndex: 4,
-          }}
-        >
-          <span>
-            {showScrollPercentage
-              ? isPagedReader
-                ? `${pageInfo.current}/${pageInfo.total}`
-                : `${Math.round(progress)}%`
-              : ""}
-          </span>
-          <span>
-            {showBatteryAndTime
-              ? [battery, formatClock(now, locale)].filter(Boolean).join(" | ")
-              : ""}
-          </span>
-        </Box>
-      )}
-    </>
+    <Box
+      className="norea-reader-status-overlay"
+      style={{ color: textColor }}
+    >
+      <span>{showProgress ? progressLabel : ""}</span>
+      <span>
+        {showBatteryAndTime
+          ? [battery, formatClock(now, locale)].filter(Boolean).join(" | ")
+          : ""}
+      </span>
+    </Box>
   );
 }

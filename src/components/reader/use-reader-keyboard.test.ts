@@ -12,6 +12,12 @@ class KeyboardTarget extends EventTarget {
   isContentEditable = false;
 }
 
+interface Modifiers {
+  ctrlKey?: boolean;
+  altKey?: boolean;
+  shiftKey?: boolean;
+}
+
 describe("reader keyboard ownership", () => {
   let dispose: (() => void) | undefined;
 
@@ -23,7 +29,9 @@ describe("reader keyboard ownership", () => {
     vi.clearAllMocks();
   });
 
-  function mountKeyboard(readerSettingsOpen = false) {
+  function mountKeyboard(
+    options: { overlayOpen?: boolean; modalOverlayOpen?: boolean; chromeDismissible?: boolean } = {},
+  ) {
     const target = new KeyboardTarget();
     const content = {
       completeIfAtEnd: vi.fn(() => false),
@@ -31,32 +39,45 @@ describe("reader keyboard ownership", () => {
       scrollByPage: vi.fn(),
       scrollToStart: vi.fn(),
     };
-    const closeReaderSettingsPanel = vi.fn();
+    const closeTopReaderOverlay = vi.fn(() => options.overlayOpen ?? false);
     const handleReaderActivity = vi.fn();
     const handleReaderBack = vi.fn(() => true);
+    const hideReaderChrome = vi.fn();
+    const openAdjacentChapter = vi.fn();
     vi.stubGlobal("Element", KeyboardTarget);
     vi.stubGlobal("HTMLElement", KeyboardTarget);
     vi.stubGlobal("window", target);
     vi.spyOn(console, "warn").mockImplementation(() => undefined);
     useReaderKeyboard({
       active: true,
-      readerSettingsOpen,
       contentRef: { current: content },
-      closeReaderSettingsPanel,
+      closeTopReaderOverlay,
+      modalOverlayOpen: options.modalOverlayOpen ?? false,
+      readerChromeDismissible: options.chromeDismissible ?? false,
+      hideReaderChrome,
       handleReaderActivity,
       handleReaderBack,
+      openAdjacentChapter,
     });
     dispose = vi.mocked(useEffect).mock.calls[0]![0]() as () => void;
-    return { target, content, closeReaderSettingsPanel, handleReaderActivity, handleReaderBack };
+    return {
+      target,
+      content,
+      closeTopReaderOverlay,
+      handleReaderActivity,
+      handleReaderBack,
+      hideReaderChrome,
+      openAdjacentChapter,
+    };
   }
 
-  function keyEvent(key: string, modifiers: { ctrlKey?: boolean; altKey?: boolean } = {}) {
+  function keyEvent(key: string, modifiers: Modifiers = {}) {
     const event = new Event("keydown", { cancelable: true });
     Object.defineProperty(event, "key", { value: key });
     Object.defineProperty(event, "ctrlKey", { value: modifiers.ctrlKey ?? false });
     Object.defineProperty(event, "altKey", { value: modifiers.altKey ?? false });
     Object.defineProperty(event, "metaKey", { value: false });
-    Object.defineProperty(event, "shiftKey", { value: false });
+    Object.defineProperty(event, "shiftKey", { value: modifiers.shiftKey ?? false });
     return event;
   }
 
@@ -97,14 +118,6 @@ describe("reader keyboard ownership", () => {
     expect(content.scrollByPage).toHaveBeenCalledWith(direction, `key-${key}`);
   });
 
-  it("closes reader settings with Escape without paging", () => {
-    const { target, content, closeReaderSettingsPanel } = mountKeyboard(true);
-    target.dispatchEvent(keyEvent("Escape"));
-
-    expect(closeReaderSettingsPanel).toHaveBeenCalledOnce();
-    expect(content.scrollByPage).not.toHaveBeenCalled();
-  });
-
   it.each([
     [" ", 1],
     ["ArrowDown", 1],
@@ -119,6 +132,13 @@ describe("reader keyboard ownership", () => {
     expect(handleReaderActivity).toHaveBeenCalledOnce();
   });
 
+  it("pages back with Shift+Space", () => {
+    const { target, content } = mountKeyboard();
+    target.dispatchEvent(keyEvent(" ", { shiftKey: true }));
+
+    expect(content.scrollByPage).toHaveBeenCalledWith(-1, "key- ");
+  });
+
   it("returns to the chapter start with Home", () => {
     const { target, content } = mountKeyboard();
     target.dispatchEvent(keyEvent("Home"));
@@ -126,7 +146,29 @@ describe("reader keyboard ownership", () => {
     expect(content.scrollToStart).toHaveBeenCalledOnce();
   });
 
-  it("leaves the reader with Escape when no overlay is open", () => {
+  it("closes the topmost overlay with Escape before anything else", () => {
+    const { target, content, handleReaderBack, hideReaderChrome } = mountKeyboard({
+      overlayOpen: true,
+      chromeDismissible: true,
+    });
+    target.dispatchEvent(keyEvent("Escape"));
+
+    expect(hideReaderChrome).not.toHaveBeenCalled();
+    expect(handleReaderBack).not.toHaveBeenCalled();
+    expect(content.scrollByPage).not.toHaveBeenCalled();
+  });
+
+  it("hides dismissible chrome with Escape before leaving the reader", () => {
+    const { target, handleReaderBack, hideReaderChrome } = mountKeyboard({
+      chromeDismissible: true,
+    });
+    target.dispatchEvent(keyEvent("Escape"));
+
+    expect(hideReaderChrome).toHaveBeenCalledOnce();
+    expect(handleReaderBack).not.toHaveBeenCalled();
+  });
+
+  it("leaves the reader with Escape when nothing else is open", () => {
     const { target, content, handleReaderBack } = mountKeyboard();
     target.dispatchEvent(keyEvent("Escape"));
 
@@ -134,19 +176,55 @@ describe("reader keyboard ownership", () => {
     expect(content.scrollByPage).not.toHaveBeenCalled();
   });
 
-  it("ignores paging keys while reader settings are open", () => {
-    const { target, content, closeReaderSettingsPanel } = mountKeyboard(true);
-    target.dispatchEvent(keyEvent("ArrowRight"));
+  it("leaves Escape to an open menu or text field", () => {
+    const { target, handleReaderBack, closeTopReaderOverlay } = mountKeyboard();
+    target.closest.mockReturnValue(target);
+    const event = keyEvent("Escape");
+    target.dispatchEvent(event);
 
-    expect(content.scrollByPage).not.toHaveBeenCalled();
-    expect(closeReaderSettingsPanel).not.toHaveBeenCalled();
+    expect(event.defaultPrevented).toBe(false);
+    expect(closeTopReaderOverlay).not.toHaveBeenCalled();
+    expect(handleReaderBack).not.toHaveBeenCalled();
   });
 
-  it("still pages when a modifier is held", () => {
-    const { target, content } = mountKeyboard();
-    target.dispatchEvent(keyEvent("ArrowRight", { ctrlKey: true }));
+  it("ignores paging keys while a modal reader overlay is open", () => {
+    const { target, content, openAdjacentChapter } = mountKeyboard({ modalOverlayOpen: true });
+    target.dispatchEvent(keyEvent("ArrowRight"));
+    target.dispatchEvent(keyEvent("]"));
 
-    expect(content.scrollByPage).toHaveBeenCalledWith(1, "key-ArrowRight");
+    expect(content.scrollByPage).not.toHaveBeenCalled();
+    expect(openAdjacentChapter).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["]", {}, 1],
+    ["[", {}, -1],
+    ["ArrowRight", { ctrlKey: true }, 1],
+    ["ArrowLeft", { ctrlKey: true }, -1],
+  ] as const)("opens the adjacent chapter with %s %j", (key, modifiers, direction) => {
+    const { target, content, openAdjacentChapter } = mountKeyboard();
+    const event = keyEvent(key, modifiers);
+    target.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(true);
+    expect(openAdjacentChapter).toHaveBeenCalledWith(direction);
+    expect(content.scrollByPage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["ArrowRight", { altKey: true }],
+    ["ArrowRight", { shiftKey: true }],
+    ["ArrowRight", { ctrlKey: true, shiftKey: true }],
+    ["Home", { ctrlKey: true }],
+  ] as const)("leaves %s %j to the platform", (key, modifiers) => {
+    const { target, content, openAdjacentChapter } = mountKeyboard();
+    const event = keyEvent(key, modifiers);
+    target.dispatchEvent(event);
+
+    expect(event.defaultPrevented).toBe(false);
+    expect(content.scrollByPage).not.toHaveBeenCalled();
+    expect(content.scrollToStart).not.toHaveBeenCalled();
+    expect(openAdjacentChapter).not.toHaveBeenCalled();
   });
 
   it("removes its paging listener on unmount", () => {

@@ -117,8 +117,6 @@ describe("coarse pointer touch floor", () => {
   it("grows the hit area with a transparent pseudo-element where the bar height is fixed", () => {
     for (const control of [
       ".mantine-Input-section .mantine-ActionIcon-root",
-      ".norea-reader-icon-button",
-      ".norea-reader-strip-link",
       ".norea-library-selection-icon",
       ".norea-novel-selection-icon",
       ".norea-mobile-nav-link",
@@ -130,12 +128,13 @@ describe("coarse pointer touch floor", () => {
       expect(body, control).not.toMatch(/background/);
       expect(ruleFor(coarse, `html:root ${control}`).body, control).toMatch(/position: relative;/);
     }
-    for (const control of [
-      ".mantine-Input-section .mantine-ActionIcon-root",
-      ".norea-reader-icon-button.mantine-ActionIcon-root",
-    ]) {
-      expect(ruleFor(coarse, `html:root ${control}`).body, control).toMatch(/min-height: 0;/);
-    }
+    expect(
+      ruleFor(coarse, "html:root .mantine-Input-section .mantine-ActionIcon-root").body,
+    ).toMatch(/min-height: 0;/);
+  });
+
+  it("lets reader bar buttons take the full touch floor instead of a hit-area overlay", () => {
+    expect(coarse).not.toMatch(/norea-reader-/);
   });
 
   it("keeps the touch floor out of fine pointer layouts", () => {
@@ -155,7 +154,6 @@ describe("tap highlight", () => {
       ".norea-reader-chapter-row",
       ".norea-reader-floating-seekbar",
       ".norea-reader-icon-button",
-      ".norea-reader-strip-link",
       ".reader-viewport",
     ]);
     const sheets = readdirSync(stylesDir).filter((name) => name.endsWith(".css") && name !== "reader.css");

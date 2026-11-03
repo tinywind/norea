@@ -44,7 +44,8 @@ GlobalWorkerOptions.workerSrc = pdfWorkerUrl;
 
 interface PdfReaderContentProps {
   appearanceSettings?: ReaderAppearanceSettings;
-  bottomOverlayOffset?: number | string;
+  chromeDismissible?: boolean;
+  chromeVisible?: boolean;
   dataUrl: string;
   generalSettings?: ReaderGeneralSettings;
   initialProgress?: number;
@@ -55,7 +56,7 @@ interface PdfReaderContentProps {
   onSeekbarActivity?: () => void;
   onSeekbarActiveChange?: (active: boolean) => void;
   onToggleChrome?: () => void;
-  seekbarVisible?: boolean;
+  seekbarContainer?: HTMLElement | null;
   viewportHeight?: string;
 }
 
@@ -484,7 +485,8 @@ function PdfReaderContentInner(
 ) {
   const {
     dataUrl,
-    bottomOverlayOffset = "1rem",
+    chromeDismissible = false,
+    chromeVisible = true,
     initialProgress = 0,
     onBoundaryPage,
     onPageIndexChange,
@@ -493,7 +495,7 @@ function PdfReaderContentInner(
     onSeekbarActiveChange,
     onToggleChrome,
     localMediaContext,
-    seekbarVisible = true,
+    seekbarContainer = null,
     viewportHeight: requestedViewportHeight,
     appearanceSettings,
     generalSettings,
@@ -1330,6 +1332,10 @@ function PdfReaderContentInner(
 
   const handleClick = (event: MouseEvent<HTMLDivElement>) => {
     if (isInteractiveTarget(event.target)) return;
+    if (chromeDismissible) {
+      onToggleChrome?.();
+      return;
+    }
     const node = viewportRef.current;
     if (!node) return;
     const action = getTapZoneAction(
@@ -1590,16 +1596,26 @@ function PdfReaderContentInner(
         </div>
       </div>
       <ReaderSeekbars
-        bottomOffset={bottomOverlayOffset}
+        container={seekbarContainer}
         label={t("reader.progressAria", { progress: Math.round(progress) })}
         onActivity={onSeekbarActivity}
         onActiveChange={onSeekbarActiveChange}
         onCommit={commitSeekProgress}
         onSeek={seekToProgress}
+        positionLabel={
+          pageCount > 0
+            ? t("reader.pageLabel", {
+                current: isPagedReader
+                  ? pageNumber
+                  : getScrollPageIndex(progress, pageCount),
+                total: pageCount,
+              })
+            : `${Math.round(progress)}%`
+        }
         progress={progress}
-        showHorizontal={general.showSeekbar}
+        showHorizontal={general.showSeekbar && !general.verticalSeekbar}
         showVertical={general.showSeekbar && general.verticalSeekbar}
-        visible={seekbarVisible}
+        visible={chromeVisible}
       />
     </Box>
   );

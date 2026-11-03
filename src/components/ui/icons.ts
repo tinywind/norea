@@ -10,6 +10,7 @@ import {
   IconCheck,
   IconChecks,
   IconChevronDown,
+  IconChevronLeft,
   IconChevronRight,
   IconChevronUp,
   IconCloudCheck,
@@ -30,6 +31,7 @@ import {
   IconHistory,
   IconInfoCircle,
   IconInfoSquareRounded,
+  IconListNumbers,
   IconPencil,
   IconPin,
   IconPinnedOff,
@@ -114,6 +116,8 @@ export const ClearCookiesIcon = withAppDefaults(IconCookieOff);
 export const ChevronDownIcon = withAppDefaults(IconChevronDown);
 export const ChevronUpIcon = withAppDefaults(IconChevronUp);
 export const ChevronRightIcon = withAppDefaults(IconChevronRight);
+export const ChevronLeftIcon = withAppDefaults(IconChevronLeft);
+export const ChapterListIcon = withAppDefaults(IconListNumbers);
 export const DragIcon = withAppDefaults(IconGripVertical);
 export const ImportIcon = withAppDefaults(IconFileImport);
 export const FolderIcon = withAppDefaults(IconFolder);

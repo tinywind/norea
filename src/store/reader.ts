@@ -192,8 +192,6 @@ export interface MergeNovelReaderStateInput {
 interface ReaderState {
   general: ReaderGeneralSettings;
   appearance: ReaderAppearanceSettings;
-  fullPageReaderActive: boolean;
-  fullPageReaderChromeVisible: boolean;
   lastReadChapterByNovel: Record<number, number>;
   novelPageIndexByNovel: Record<number, number>;
   readerSettingsByNovel: Record<number, ReaderNovelSettingsOverride>;
@@ -230,8 +228,6 @@ interface ReaderState {
   saveCustomTheme: (theme: ReaderThemeDefinition) => void;
   deleteCustomTheme: (themeId: string) => void;
   applyTapZonePreset: (presetId: ReaderTapPresetId) => void;
-  setFullPageReaderActive: (active: boolean) => void;
-  setFullPageReaderChromeVisible: (visible: boolean) => void;
   setLastReadChapter: (novelId: number, chapterId: number) => void;
   setNovelPageIndex: (novelId: number, pageIndex: number) => void;
   mergeNovelReaderState: (input: MergeNovelReaderStateInput) => void;
@@ -958,8 +954,6 @@ export const useReaderStore = create<ReaderState>()(
     (set) => ({
       general: READER_GENERAL_DEFAULTS,
       appearance: READER_APPEARANCE_DEFAULTS,
-      fullPageReaderActive: false,
-      fullPageReaderChromeVisible: false,
       lastReadChapterByNovel: {},
       novelPageIndexByNovel: {},
       readerSettingsByNovel: {},
@@ -1202,10 +1196,6 @@ export const useReaderStore = create<ReaderState>()(
             },
           };
         }),
-      setFullPageReaderActive: (active) =>
-        set({ fullPageReaderActive: active }),
-      setFullPageReaderChromeVisible: (visible) =>
-        set({ fullPageReaderChromeVisible: visible }),
       setLastReadChapter: (novelId, chapterId) =>
         set((state) => ({
           lastReadChapterByNovel: {
@@ -1300,8 +1290,6 @@ export const useReaderStore = create<ReaderState>()(
         set({
           general: READER_GENERAL_DEFAULTS,
           appearance: READER_APPEARANCE_DEFAULTS,
-          fullPageReaderActive: false,
-          fullPageReaderChromeVisible: false,
           ...(options?.keepScopedSettings
             ? {}
             : { readerSettingsByNovel: {}, readerSettingsBySource: {} }),

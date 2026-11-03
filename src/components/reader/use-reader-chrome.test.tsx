@@ -18,12 +18,15 @@ function Probe(props: ChromeOptions) {
 }
 
 const baseOptions: ChromeOptions = {
-  active: true,
   chapterId: 11,
   fullPageReader: true,
-  showSeekbar: true,
   readerStateVisible: false,
 };
+
+const outside = {
+  relatedTarget: null,
+  currentTarget: { contains: () => false },
+} as unknown as Parameters<Chrome["chromeFocusHandlers"]["onBlur"]>[0];
 
 async function render(options: Partial<ChromeOptions> = {}) {
   await act(async () => root.render(<Probe {...baseOptions} {...options} />));
@@ -53,6 +56,7 @@ beforeEach(() => {
     clearTimeout: (id: number) => clearTimeout(id),
   }));
   vi.stubGlobal("IS_REACT_ACT_ENVIRONMENT", true);
+  vi.stubGlobal("Node", class {});
   root = createRoot(container as unknown as Element);
 });
 
@@ -67,7 +71,63 @@ describe("reader chrome contract", () => {
   it("keeps the chrome visible in normal mode and a center tap does not hide it", async () => {
     await render({ fullPageReader: false });
     expect(chrome.readerChromeVisible).toBe(true);
+    expect(chrome.readerChromeDismissible).toBe(false);
     await run(() => chrome.handleReaderMenuTap());
+    expect(chrome.readerChromeVisible).toBe(true);
+  });
+
+  it("marks visible full-page chrome as dismissible by any tap", async () => {
+    await render();
+    expect(chrome.readerChromeDismissible).toBe(false);
+    await run(() => chrome.handleReaderMenuTap());
+    expect(chrome.readerChromeDismissible).toBe(true);
+    await run(() => chrome.hideReaderChrome());
+    expect(chrome.readerChromeVisible).toBe(false);
+  });
+
+  it("keeps the chrome and focus while focus stays inside it past the timeout", async () => {
+    await render();
+    await run(() => chrome.handleReaderMenuTap());
+    await run(() => chrome.chromeFocusHandlers.onFocus());
+    await run(() => vi.advanceTimersByTime(12_000));
+    expect(chrome.readerChromeVisible).toBe(true);
+    await run(() => chrome.chromeFocusHandlers.onBlur(outside));
+    await run(() => vi.advanceTimersByTime(5000));
+    expect(chrome.readerChromeVisible).toBe(false);
+  });
+
+  it("keeps the chrome during a seekbar drag and restarts the wait after it", async () => {
+    await render();
+    await run(() => chrome.handleReaderMenuTap());
+    await run(() => chrome.handleReaderSeekbarActiveChange(true));
+    await run(() => vi.advanceTimersByTime(12_000));
+    expect(chrome.readerChromeVisible).toBe(true);
+    await run(() => chrome.handleReaderSeekbarActiveChange(false));
+    await run(() => vi.advanceTimersByTime(4000));
+    expect(chrome.readerChromeVisible).toBe(true);
+    await run(() => vi.advanceTimersByTime(1000));
+    expect(chrome.readerChromeVisible).toBe(false);
+  });
+
+  it("closes the chapter list before settings as the topmost overlay", async () => {
+    await render();
+    await run(() => chrome.openReaderSettingsPanel());
+    await run(() => chrome.openChapterList());
+    let closed = false;
+    await run(() => { closed = chrome.closeTopReaderOverlay(); });
+    expect(closed).toBe(true);
+    expect(chrome.chapterListOpen).toBe(false);
+    expect(chrome.readerSettingsOpen).toBe(true);
+    await run(() => { closed = chrome.closeTopReaderOverlay(); });
+    expect(chrome.readerSettingsOpen).toBe(false);
+    await run(() => { closed = chrome.closeTopReaderOverlay(); });
+    expect(closed).toBe(false);
+  });
+
+  it("keeps the chrome while an overlay is open", async () => {
+    await render();
+    await run(() => chrome.openReaderSettingsPanel());
+    await run(() => vi.advanceTimersByTime(12_000));
     expect(chrome.readerChromeVisible).toBe(true);
   });
 

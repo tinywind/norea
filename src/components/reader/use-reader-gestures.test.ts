@@ -63,6 +63,7 @@ let selectionText = "";
 
 function mountGestures(
   overrides: {
+    chromeDismissible?: boolean;
     general?: Partial<ReaderGeneralSettings>;
     interactionBlocked?: boolean;
     isPagedReader?: boolean;
@@ -73,6 +74,7 @@ function mountGestures(
   const nativeWheelActionLockedUntilRef = { current: 0 };
   const general = { ...READER_GENERAL_DEFAULTS, ...overrides.general };
   const handlers = useReaderGestures({
+    chromeDismissible: overrides.chromeDismissible ?? false,
     interactionBlocked: overrides.interactionBlocked ?? false,
     isPagedReader: overrides.isPagedReader ?? false,
     general,
@@ -216,6 +218,16 @@ describe("reader tap contract", () => {
     tap(handlers, ZONE_POINTS.middleCenter);
     expect(scrollByPage).not.toHaveBeenCalled();
     expect(onToggleChrome).not.toHaveBeenCalled();
+  });
+
+  it("hides visible full-page chrome with any tap instead of paging", () => {
+    const { handlers, scrollByPage, onToggleChrome } = mountGestures({
+      chromeDismissible: true,
+    });
+    tap(handlers, ZONE_POINTS.middleRight);
+    tap(handlers, ZONE_POINTS.middleLeft);
+    expect(onToggleChrome).toHaveBeenCalledTimes(2);
+    expect(scrollByPage).not.toHaveBeenCalled();
   });
 
   it("still pages when a tap ends while text is selected", () => {

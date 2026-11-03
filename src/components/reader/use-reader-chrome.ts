@@ -1,130 +1,72 @@
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useRef, useState } from "react";
-import { useReaderStore } from "../../store/reader";
+import {
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+  type FocusEvent,
+} from "react";
 const FULL_PAGE_CHROME_HIDE_DELAY_MS = 5000;
-const READER_SEEKBAR_HIDE_DELAY_MS = 2000;
-const READER_SEEKBAR_FADE_OUT_MS = 500;
 const READER_ACTIVITY_THROTTLE_MS = 250;
 
 interface ReaderChromeOptions {
-  active: boolean;
   chapterId: number;
   fullPageReader: boolean;
-  showSeekbar: boolean;
   readerStateVisible: boolean;
 }
 export function useReaderChrome({
-  active,
   chapterId,
   fullPageReader,
-  showSeekbar,
   readerStateVisible,
 }: ReaderChromeOptions) {
   const navigate = useNavigate();
   const chromeHideTimerRef = useRef<number | null>(null);
-  const readerSeekbarHideTimerRef = useRef<number | null>(null);
-  const readerSeekbarFadeTimerRef = useRef<number | null>(null);
-  const readerSeekbarEnabledRef = useRef(false);
-  const readerSeekbarPinnedByChromeRef = useRef(false);
-  const readerSeekbarActiveRef = useRef(false);
+  const focusInsideChromeRef = useRef(false);
+  const seekbarActiveRef = useRef(false);
+  const overlayOpenRef = useRef(false);
+  const chromeVisibleRef = useRef(false);
   const lastReaderActivityAtRef = useRef(-READER_ACTIVITY_THROTTLE_MS);
   const [fullPageChromeVisible, setFullPageChromeVisible] = useState(false);
-  const [readerSeekbarActivityVisible, setReaderSeekbarActivityVisible] =
-    useState(false);
-  const [readerSeekbarRenderMounted, setReaderSeekbarRenderMounted] =
-    useState(false);
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
-  const setFullPageReaderActive = useReaderStore(
-    (state) => state.setFullPageReaderActive,
-  );
-  const setFullPageReaderChromeVisible = useReaderStore(
-    (state) => state.setFullPageReaderChromeVisible,
-  );
-  const clearFullPageChromeTimer = useCallback(() => {
+  const [chapterListOpen, setChapterListOpen] = useState(false);
+  const chromeAutoHide = fullPageReader && !readerStateVisible;
+  const readerChromeVisible = !chromeAutoHide || fullPageChromeVisible;
+  const overlayOpen = readerSettingsOpen || chapterListOpen;
+  chromeVisibleRef.current = chromeAutoHide && fullPageChromeVisible;
+  overlayOpenRef.current = overlayOpen;
+
+  const clearChromeHideTimer = useCallback(() => {
     if (chromeHideTimerRef.current !== null) {
       window.clearTimeout(chromeHideTimerRef.current);
       chromeHideTimerRef.current = null;
     }
   }, []);
 
-  const scheduleFullPageChromeHide = useCallback(() => {
+  const scheduleChromeHide = useCallback(() => {
+    clearChromeHideTimer();
     if (!fullPageReader) return;
-    clearFullPageChromeTimer();
     chromeHideTimerRef.current = window.setTimeout(() => {
-      setFullPageChromeVisible(false);
       chromeHideTimerRef.current = null;
-    }, FULL_PAGE_CHROME_HIDE_DELAY_MS);
-  }, [clearFullPageChromeTimer, fullPageReader]);
-
-  const clearReaderSeekbarHideTimer = useCallback(() => {
-    if (readerSeekbarHideTimerRef.current !== null) {
-      window.clearTimeout(readerSeekbarHideTimerRef.current);
-      readerSeekbarHideTimerRef.current = null;
-    }
-  }, []);
-
-  const clearReaderSeekbarFadeTimer = useCallback(() => {
-    if (readerSeekbarFadeTimerRef.current !== null) {
-      window.clearTimeout(readerSeekbarFadeTimerRef.current);
-      readerSeekbarFadeTimerRef.current = null;
-    }
-  }, []);
-
-  const fadeOutReaderSeekbar = useCallback(() => {
-    clearReaderSeekbarFadeTimer();
-    setReaderSeekbarActivityVisible(false);
-    readerSeekbarFadeTimerRef.current = window.setTimeout(() => {
-      readerSeekbarFadeTimerRef.current = null;
       if (
-        !readerSeekbarEnabledRef.current ||
-        (!readerSeekbarActiveRef.current &&
-          !readerSeekbarPinnedByChromeRef.current)
-      ) {
-        setReaderSeekbarRenderMounted(false);
-      }
-    }, READER_SEEKBAR_FADE_OUT_MS);
-  }, [clearReaderSeekbarFadeTimer]);
-
-  const scheduleReaderSeekbarHide = useCallback(() => {
-    clearReaderSeekbarHideTimer();
-    readerSeekbarHideTimerRef.current = window.setTimeout(() => {
-      readerSeekbarHideTimerRef.current = null;
-      if (
-        readerSeekbarActiveRef.current ||
-        readerSeekbarPinnedByChromeRef.current
+        focusInsideChromeRef.current ||
+        seekbarActiveRef.current ||
+        overlayOpenRef.current
       ) {
         return;
       }
-      fadeOutReaderSeekbar();
-    }, READER_SEEKBAR_HIDE_DELAY_MS);
-  }, [clearReaderSeekbarHideTimer, fadeOutReaderSeekbar]);
+      setFullPageChromeVisible(false);
+    }, FULL_PAGE_CHROME_HIDE_DELAY_MS);
+  }, [clearChromeHideTimer, fullPageReader]);
 
-  const showReaderSeekbarForActivity = useCallback(() => {
-    if (!readerSeekbarEnabledRef.current) return;
-    clearReaderSeekbarFadeTimer();
-    setReaderSeekbarRenderMounted(true);
-    setReaderSeekbarActivityVisible(true);
-    if (readerSeekbarPinnedByChromeRef.current) {
-      clearReaderSeekbarHideTimer();
-      return;
-    }
-    scheduleReaderSeekbarHide();
-  }, [
-    clearReaderSeekbarFadeTimer,
-    clearReaderSeekbarHideTimer,
-    scheduleReaderSeekbarHide,
-  ]);
-
-  const handleFullPageActivity = useCallback(() => {
-    if (fullPageReader && fullPageChromeVisible) {
-      scheduleFullPageChromeHide();
-    }
-  }, [fullPageChromeVisible, fullPageReader, scheduleFullPageChromeHide]);
+  const hideReaderChrome = useCallback(() => {
+    clearChromeHideTimer();
+    setFullPageChromeVisible(false);
+  }, [clearChromeHideTimer]);
 
   const handleReaderActivity = useCallback(() => {
     lastReaderActivityAtRef.current = performance.now();
-    handleFullPageActivity();
-  }, [handleFullPageActivity]);
+    if (chromeVisibleRef.current) scheduleChromeHide();
+  }, [scheduleChromeHide]);
 
   const handleFrequentReaderActivity = useCallback(() => {
     const now = performance.now();
@@ -136,160 +78,100 @@ export function useReaderChrome({
 
   const handleReaderSeekbarActiveChange = useCallback(
     (active: boolean) => {
-      readerSeekbarActiveRef.current = active;
-      if (active) {
-        clearReaderSeekbarFadeTimer();
-        clearReaderSeekbarHideTimer();
-        setReaderSeekbarRenderMounted(true);
-        setReaderSeekbarActivityVisible(true);
-        return;
-      }
-      showReaderSeekbarForActivity();
+      seekbarActiveRef.current = active;
+      if (!active && chromeVisibleRef.current) scheduleChromeHide();
     },
-    [
-      clearReaderSeekbarFadeTimer,
-      clearReaderSeekbarHideTimer,
-      showReaderSeekbarForActivity,
-    ],
+    [scheduleChromeHide],
   );
 
   const handleReaderMenuTap = useCallback(() => {
-    showReaderSeekbarForActivity();
-    if (!fullPageReader) return;
+    if (!chromeAutoHide) return;
     if (fullPageChromeVisible) {
-      clearFullPageChromeTimer();
-      setFullPageChromeVisible(false);
+      hideReaderChrome();
       return;
     }
     setFullPageChromeVisible(true);
-    scheduleFullPageChromeHide();
+    scheduleChromeHide();
   }, [
-    clearFullPageChromeTimer,
+    chromeAutoHide,
     fullPageChromeVisible,
-    fullPageReader,
-    scheduleFullPageChromeHide,
-    showReaderSeekbarForActivity,
+    hideReaderChrome,
+    scheduleChromeHide,
   ]);
 
+  const chromeFocusHandlers = {
+    onFocus: () => {
+      focusInsideChromeRef.current = true;
+    },
+    onBlur: (event: FocusEvent<HTMLElement>) => {
+      const next = event.relatedTarget;
+      if (next instanceof Node && event.currentTarget.contains(next)) return;
+      focusInsideChromeRef.current = false;
+      if (chromeVisibleRef.current) scheduleChromeHide();
+    },
+  };
+
   const openReaderSettingsPanel = useCallback(() => {
-    clearFullPageChromeTimer();
+    clearChromeHideTimer();
     setFullPageChromeVisible(true);
     setReaderSettingsOpen(true);
-  }, [clearFullPageChromeTimer]);
+  }, [clearChromeHideTimer]);
 
   const closeReaderSettingsPanel = useCallback(() => {
     setReaderSettingsOpen(false);
   }, []);
+
+  const openChapterList = useCallback(() => {
+    clearChromeHideTimer();
+    setChapterListOpen(true);
+  }, [clearChromeHideTimer]);
+
+  const closeChapterList = useCallback(() => {
+    setChapterListOpen(false);
+  }, []);
+
+  const closeTopReaderOverlay = useCallback((): boolean => {
+    if (chapterListOpen) {
+      setChapterListOpen(false);
+      return true;
+    }
+    if (readerSettingsOpen) {
+      setReaderSettingsOpen(false);
+      return true;
+    }
+    return false;
+  }, [chapterListOpen, readerSettingsOpen]);
 
   const openReaderSettingsPage = useCallback(() => {
     void navigate({ to: "/settings", search: { section: "reader" } });
   }, [navigate]);
 
   useEffect(() => {
-    clearFullPageChromeTimer();
+    if (!overlayOpen && chromeVisibleRef.current) scheduleChromeHide();
+  }, [overlayOpen, scheduleChromeHide]);
+
+  useEffect(() => {
+    clearChromeHideTimer();
     setFullPageChromeVisible(false);
-    return clearFullPageChromeTimer;
-  }, [chapterId, clearFullPageChromeTimer, fullPageReader]);
-
-  const readerChromeAutoHide = fullPageReader && !readerStateVisible;
-  const readerChromeVisible = !readerChromeAutoHide || fullPageChromeVisible;
-  const readerSeekbarEnabled = showSeekbar && !readerStateVisible;
-  const readerSeekbarPinnedByChrome =
-    readerSeekbarEnabled && readerChromeAutoHide && readerChromeVisible;
-  const readerSeekbarVisible =
-    readerSeekbarEnabled &&
-    (readerSeekbarActivityVisible || readerSeekbarPinnedByChrome);
-  const readerSeekbarMounted =
-    readerSeekbarEnabled &&
-    (readerSeekbarRenderMounted || readerSeekbarVisible);
-  const sharedFullPageReaderChromeVisible =
-    fullPageReader && readerChromeVisible;
-  useEffect(() => {
-    readerSeekbarEnabledRef.current = readerSeekbarEnabled;
-    readerSeekbarPinnedByChromeRef.current = readerSeekbarPinnedByChrome;
-    if (!readerSeekbarEnabled) {
-      clearReaderSeekbarHideTimer();
-      clearReaderSeekbarFadeTimer();
-      readerSeekbarActiveRef.current = false;
-      setReaderSeekbarActivityVisible(false);
-      setReaderSeekbarRenderMounted(false);
-      return;
-    }
-    if (readerSeekbarPinnedByChrome) {
-      clearReaderSeekbarHideTimer();
-      clearReaderSeekbarFadeTimer();
-      setReaderSeekbarRenderMounted(true);
-      setReaderSeekbarActivityVisible(true);
-      return;
-    }
-    if (readerSeekbarActivityVisible) {
-      scheduleReaderSeekbarHide();
-    }
-  }, [
-    clearReaderSeekbarFadeTimer,
-    clearReaderSeekbarHideTimer,
-    readerSeekbarActivityVisible,
-    readerSeekbarEnabled,
-    readerSeekbarPinnedByChrome,
-    scheduleReaderSeekbarHide,
-  ]);
-
-  useEffect(() => {
-    if (!readerSeekbarEnabled) {
-      return;
-    }
-    clearReaderSeekbarFadeTimer();
-    setReaderSeekbarRenderMounted(true);
-    setReaderSeekbarActivityVisible(true);
-    if (readerSeekbarPinnedByChromeRef.current) {
-      clearReaderSeekbarHideTimer();
-      return;
-    }
-    scheduleReaderSeekbarHide();
-  }, [
-    chapterId,
-    clearReaderSeekbarFadeTimer,
-    clearReaderSeekbarHideTimer,
-    readerSeekbarEnabled,
-    scheduleReaderSeekbarHide,
-  ]);
-
-  useEffect(
-    () => () => {
-      clearReaderSeekbarHideTimer();
-      clearReaderSeekbarFadeTimer();
-    },
-    [clearReaderSeekbarFadeTimer, clearReaderSeekbarHideTimer],
-  );
-
-  useEffect(() => {
-    setFullPageReaderChromeVisible(sharedFullPageReaderChromeVisible);
-  }, [setFullPageReaderChromeVisible, sharedFullPageReaderChromeVisible]);
-
-  useEffect(() => {
-    setFullPageReaderActive(active && fullPageReader);
-    return () => setFullPageReaderActive(false);
-  }, [active, fullPageReader, setFullPageReaderActive]);
-
-  useEffect(
-    () => () => {
-      setFullPageReaderChromeVisible(false);
-    },
-    [setFullPageReaderChromeVisible],
-  );
+    return clearChromeHideTimer;
+  }, [chapterId, clearChromeHideTimer, fullPageReader]);
 
   return {
     readerChromeVisible,
-    readerSeekbarVisible,
-    readerSeekbarMounted,
+    readerChromeDismissible: chromeAutoHide && readerChromeVisible,
     readerSettingsOpen,
+    chapterListOpen,
     openReaderSettingsPanel,
     closeReaderSettingsPanel,
+    openChapterList,
+    closeChapterList,
+    closeTopReaderOverlay,
     openReaderSettingsPage,
     handleReaderMenuTap,
+    hideReaderChrome,
     handleReaderActivity,
     handleFrequentReaderActivity,
-    showReaderSeekbarForActivity,
     handleReaderSeekbarActiveChange,
+    chromeFocusHandlers,
   };
 }

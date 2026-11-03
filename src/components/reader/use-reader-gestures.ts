@@ -16,6 +16,8 @@ const WHEEL_PAGE_DELTA_THRESHOLD = 20;
 const NATIVE_WHEEL_ACTION_LOCK_MS = 240;
 
 interface ReaderGestureOptions {
+  /** While dismissible chrome is visible, any tap hides it instead of paging. */
+  chromeDismissible: boolean;
   interactionBlocked: boolean;
   isPagedReader: boolean;
   general: Pick<
@@ -29,6 +31,7 @@ interface ReaderGestureOptions {
   nativeWheelActionLockedUntilRef: RefObject<number>;
 }
 export function useReaderGestures({
+  chromeDismissible,
   interactionBlocked,
   isPagedReader,
   general,
@@ -45,6 +48,10 @@ export function useReaderGestures({
   const handleClick = (event: MouseEvent<HTMLDivElement>) => {
     if (interactionBlocked) return;
     if (isInteractiveTarget(event.target)) return;
+    if (chromeDismissible) {
+      onToggleChrome?.();
+      return;
+    }
     const node = viewportRef.current;
     if (!node) return;
     const rect = node.getBoundingClientRect();

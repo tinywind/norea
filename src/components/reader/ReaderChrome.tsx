@@ -1,14 +1,25 @@
-import { useEffect, useRef, useState } from "react";
-import { type ChapterListRow, type ChapterRow } from "../../db/queries/chapter";
+import { Popover, Switch } from "@mantine/core";
+import { useEffect, useRef, useState, type FocusEvent } from "react";
+import { type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation, type TranslationKey } from "../../i18n";
 import {
   normalizeFontScalePercent,
   useAppearanceStore,
 } from "../../store/appearance";
-import { ReaderSettingsGlyph, RetryGlyph } from "../ActionGlyphs";
 import { BackIconButton } from "../BackIconButton";
 import { IconButton } from "../IconButton";
 import { ReaderSettingsPanel } from "../ReaderSettingsPanel";
+import {
+  BookmarkIcon,
+  ChapterListIcon,
+  ChevronLeftIcon,
+  ChevronRightIcon,
+  CloseIcon,
+  OverflowIcon,
+  ReaderSettingsIcon,
+  RepairIcon,
+} from "../ui/icons";
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 const FINISHED_PROGRESS = 100;
 const READER_CHAPTER_ROW_HEIGHT = 36;
@@ -16,6 +27,11 @@ const READER_CHAPTER_ROW_HEIGHT = 36;
 const READER_CHAPTER_PANEL_FALLBACK_ROWS = 36;
 
 const READER_CHAPTER_PANEL_OVERSCAN = 12;
+
+interface ReaderChromeFocusHandlers {
+  onFocus: () => void;
+  onBlur: (event: FocusEvent<HTMLElement>) => void;
+}
 
 export function getChapterLabel(
   chapter: Pick<ChapterListRow, "chapterNumber" | "position">,
@@ -27,65 +43,37 @@ export function getChapterLabel(
     : `${prefix} ${chapter.position}`;
 }
 
-function getReaderTitle(
-  chapter: ChapterRow | null | undefined,
-  t: (key: TranslationKey) => string,
-): string {
-  return chapter?.name ?? t("reader.title");
-}
-
-function getReaderMeta(
-  chapter: ChapterRow | null | undefined,
-  novelName: string | undefined,
-  chapterIndex: number,
-  chapterCount: number,
-  t: ReturnType<typeof useTranslation>["t"],
-): string {
-  if (!chapter) return t("reader.sampleContent");
-  const indexLabel =
-    chapterIndex >= 0 && chapterCount > 0
-      ? `${chapterIndex + 1} / ${chapterCount}`
-      : getChapterLabel(chapter, t);
-  return [
-    novelName?.trim(),
-    indexLabel,
-    chapter.isDownloaded ? undefined : t("reader.notDownloaded"),
-  ]
-    .filter(Boolean)
-    .join(" / ");
-}
-
-export function ReaderTopChrome({
-  chapter,
-  chapterCount,
-  chapterIndex,
+export function ReaderTopBar({
+  chapterName,
+  bookmarked,
   bookmarkDisabled,
   bookmarkLoading,
+  focusHandlers,
   incognitoMode,
   novelName,
   onBack,
+  onIncognitoModeChange,
   onOpenSettings,
   onRepairMedia,
   onToggleBookmark,
-  progress,
   repairMediaDisabled,
   repairMediaLoading,
   repairMediaAttention,
   settingsOpen,
   showMediaRepair,
 }: {
-  chapter: ChapterRow | null | undefined;
-  chapterCount: number;
-  chapterIndex: number;
+  chapterName: string | undefined;
+  bookmarked: boolean;
   bookmarkDisabled: boolean;
   bookmarkLoading: boolean;
+  focusHandlers: ReaderChromeFocusHandlers;
   incognitoMode: boolean;
   novelName?: string;
   onBack: () => void;
+  onIncognitoModeChange: (incognitoMode: boolean) => void;
   onOpenSettings: () => void;
   onRepairMedia: () => void;
   onToggleBookmark: () => void;
-  progress: number;
   repairMediaDisabled: boolean;
   repairMediaLoading: boolean;
   repairMediaAttention: boolean;
@@ -93,29 +81,33 @@ export function ReaderTopChrome({
   showMediaRepair: boolean;
 }) {
   const { t } = useTranslation();
+  const [overflowOpen, setOverflowOpen] = useState(false);
+  const trimmedNovelName = novelName?.trim();
+  const title = trimmedNovelName || chapterName || t("reader.title");
+  const subtitle = trimmedNovelName ? chapterName : undefined;
 
   return (
-    <header className="norea-reader-topbar">
+    <header className="norea-reader-topbar" {...focusHandlers}>
       <BackIconButton
         className="norea-reader-icon-button norea-state-layer"
         label={t("reader.backToNovel")}
         onClick={onBack}
       />
       <div className="norea-reader-topbar-title">
-        <div className="norea-reader-title" title={getReaderTitle(chapter, t)}>
-          {getReaderTitle(chapter, t)}
+        <div className="norea-reader-title" title={title}>
+          {title}
         </div>
-        <div className="norea-reader-meta">
-          {getReaderMeta(chapter, novelName, chapterIndex, chapterCount, t)}
-        </div>
+        {subtitle ? (
+          <div className="norea-reader-subtitle" title={subtitle}>
+            {subtitle}
+          </div>
+        ) : null}
       </div>
-      <div className="norea-reader-topbar-spacer" />
       {incognitoMode ? (
         <span className="norea-reader-status" data-status="muted">
           {t("reader.incognito")}
         </span>
       ) : null}
-      <span className="norea-reader-status">{Math.round(progress)}%</span>
       {showMediaRepair ? (
         <IconButton
           className="norea-reader-icon-button norea-state-layer"
@@ -125,17 +117,16 @@ export function ReaderTopChrome({
           size="sm"
           tone={repairMediaAttention ? "warning" : "default"}
         >
-          <RetryGlyph />
+          <RepairIcon />
         </IconButton>
       ) : null}
       <IconButton
-        active={Boolean(chapter?.bookmark)}
+        active={bookmarked}
+        aria-pressed={bookmarked}
         className="norea-reader-icon-button norea-state-layer"
         disabled={bookmarkDisabled || bookmarkLoading}
         label={
-          chapter?.bookmark
-            ? t("reader.removeBookmark")
-            : t("reader.bookmarkChapter")
+          bookmarked ? t("reader.removeBookmark") : t("reader.bookmarkChapter")
         }
         onClick={onToggleBookmark}
         size="sm"
@@ -144,31 +135,114 @@ export function ReaderTopChrome({
       </IconButton>
       <IconButton
         active={settingsOpen}
+        aria-expanded={settingsOpen}
         className="norea-reader-icon-button norea-state-layer"
         label={t("reader.openSettings")}
         onClick={onOpenSettings}
         size="sm"
       >
-        <ReaderSettingsGlyph />
+        <ReaderSettingsIcon />
       </IconButton>
+      <Popover
+        opened={overflowOpen}
+        onChange={setOverflowOpen}
+        position="bottom-end"
+        shadow="md"
+      >
+        <Popover.Target>
+          <IconButton
+            aria-expanded={overflowOpen}
+            className="norea-reader-icon-button norea-state-layer"
+            label={t("reader.moreActions")}
+            onClick={() => setOverflowOpen((current) => !current)}
+            size="sm"
+          >
+            <OverflowIcon />
+          </IconButton>
+        </Popover.Target>
+        <Popover.Dropdown className="norea-reader-overflow">
+          <Switch
+            checked={incognitoMode}
+            description={t("more.pauseHistory.description")}
+            label={t("more.pauseHistory")}
+            labelPosition="left"
+            onChange={(event) =>
+              onIncognitoModeChange(event.currentTarget.checked)
+            }
+          />
+        </Popover.Dropdown>
+      </Popover>
     </header>
   );
 }
 
-function BookmarkIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M6 4h12v16l-6-3.5L6 20V4z" />
-    </svg>
-  );
-}
+export function ReaderBottomBar({
+  focusHandlers,
+  hasNextChapter,
+  hasPreviousChapter,
+  chapterListExpanded,
+  onNextChapter,
+  onOpenChapters,
+  onOpenSettings,
+  onPreviousChapter,
+  seekSlotRef,
+  settingsOpen,
+}: {
+  focusHandlers: ReaderChromeFocusHandlers;
+  hasNextChapter: boolean;
+  hasPreviousChapter: boolean;
+  chapterListExpanded: boolean;
+  onNextChapter: () => void;
+  onOpenChapters: () => void;
+  onOpenSettings: () => void;
+  onPreviousChapter: () => void;
+  seekSlotRef: (element: HTMLDivElement | null) => void;
+  settingsOpen: boolean;
+}) {
+  const { t } = useTranslation();
 
-function CloseIcon() {
   return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M6 6l12 12" />
-      <path d="M18 6L6 18" />
-    </svg>
+    <footer className="norea-reader-bottombar" {...focusHandlers}>
+      <IconButton
+        className="norea-reader-icon-button norea-reader-bottombar-previous norea-state-layer"
+        disabled={!hasPreviousChapter}
+        label={t("reader.previousChapter")}
+        onClick={onPreviousChapter}
+        size="sm"
+      >
+        <ChevronLeftIcon />
+      </IconButton>
+      <div className="norea-reader-seek-slot" ref={seekSlotRef} />
+      <IconButton
+        className="norea-reader-icon-button norea-reader-bottombar-next norea-state-layer"
+        disabled={!hasNextChapter}
+        label={t("reader.nextChapter")}
+        onClick={onNextChapter}
+        size="sm"
+      >
+        <ChevronRightIcon />
+      </IconButton>
+      <IconButton
+        active={chapterListExpanded}
+        aria-expanded={chapterListExpanded}
+        className="norea-reader-icon-button norea-reader-bottombar-chapters norea-state-layer"
+        label={t("reader.chapters")}
+        onClick={onOpenChapters}
+        size="sm"
+      >
+        <ChapterListIcon />
+      </IconButton>
+      <IconButton
+        active={settingsOpen}
+        aria-expanded={settingsOpen}
+        className="norea-reader-icon-button norea-reader-bottombar-settings norea-state-layer"
+        label={t("reader.openSettings")}
+        onClick={onOpenSettings}
+        size="sm"
+      >
+        <ReaderSettingsIcon />
+      </IconButton>
+    </footer>
   );
 }
 
@@ -232,7 +306,7 @@ export function ReaderSettingsOverlay({
               onClick={onOpenSettingsPage}
               size="sm"
             >
-              <ReaderSettingsGlyph />
+              <ReaderSettingsIcon />
             </IconButton>
             <IconButton
               className="norea-reader-icon-button norea-state-layer"
@@ -256,19 +330,22 @@ export function ReaderSettingsOverlay({
   );
 }
 
-export function ReaderChapterPanel({
+function ReaderChapterList({
   chapters,
+  className,
   currentChapterId,
   loading,
   onOpenChapter,
 }: {
   chapters: ChapterListRow[];
+  className: string;
   currentChapterId: number | undefined;
   loading: boolean;
   onOpenChapter: (chapter: ChapterListRow) => void;
 }) {
   const { t } = useTranslation();
-  const panelRef = useRef<HTMLElement | null>(null);
+  const listRef = useRef<HTMLDivElement | null>(null);
+  const scrolledToCurrentRef = useRef(false);
   const fontScalePercent = useAppearanceStore(
     (state) => state.fontScalePercent,
   );
@@ -278,6 +355,9 @@ export function ReaderChapterPanel({
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(
     chapterRowHeight * READER_CHAPTER_PANEL_FALLBACK_ROWS,
+  );
+  const currentIndex = chapters.findIndex(
+    (item) => item.id === currentChapterId,
   );
   const totalHeight = chapters.length * chapterRowHeight;
   const startIndex = Math.max(
@@ -293,7 +373,7 @@ export function ReaderChapterPanel({
   const offsetY = startIndex * chapterRowHeight;
 
   useEffect(() => {
-    const element = panelRef.current;
+    const element = listRef.current;
     if (!element) return;
 
     const updateViewportHeight = () => {
@@ -310,14 +390,26 @@ export function ReaderChapterPanel({
     };
   }, []);
 
+  useEffect(() => {
+    const element = listRef.current;
+    if (!element || scrolledToCurrentRef.current || currentIndex < 0) return;
+    scrolledToCurrentRef.current = true;
+    const target = Math.max(
+      0,
+      currentIndex * chapterRowHeight -
+        element.clientHeight / 2 +
+        chapterRowHeight / 2,
+    );
+    element.scrollTop = target;
+    setScrollTop(element.scrollTop);
+  }, [chapterRowHeight, currentIndex]);
+
   return (
-    <aside
-      className="norea-reader-chapter-panel"
-      aria-label={t("reader.chapters")}
+    <div
+      className={className}
       onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}
-      ref={panelRef}
+      ref={listRef}
     >
-      <div className="norea-reader-panel-kicker">{t("reader.chapters")}</div>
       {loading ? (
         <div className="norea-reader-panel-empty">
           {t("reader.loadingIndex")}
@@ -374,66 +466,48 @@ export function ReaderChapterPanel({
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+interface ReaderChapterListProps {
+  chapters: ChapterListRow[];
+  currentChapterId: number | undefined;
+  loading: boolean;
+  onOpenChapter: (chapter: ChapterListRow) => void;
+}
+
+export function ReaderChapterPanel(props: ReaderChapterListProps) {
+  const { t } = useTranslation();
+
+  return (
+    <aside
+      className="norea-reader-chapter-panel"
+      aria-label={t("reader.chapters")}
+    >
+      <h2 className="norea-reader-panel-kicker">{t("reader.chapters")}</h2>
+      <ReaderChapterList {...props} className="norea-reader-chapter-scroll" />
     </aside>
   );
 }
 
-export function ReaderBottomStrip({
-  currentLabel,
-  hasNextChapter,
-  hasPreviousChapter,
-  nextLabel,
-  onNextChapter,
-  onPreviousChapter,
-  previousLabel,
-  progress,
-}: {
-  currentLabel: string;
-  hasNextChapter: boolean;
-  hasPreviousChapter: boolean;
-  nextLabel: string;
-  onNextChapter: () => void;
-  onPreviousChapter: () => void;
-  previousLabel: string;
-  progress: number;
-}) {
+export function ReaderChapterSheet({
+  onClose,
+  opened,
+  ...props
+}: ReaderChapterListProps & { onClose: () => void; opened: boolean }) {
   const { t } = useTranslation();
-  const roundedProgress = Math.round(progress);
 
   return (
-    <footer className="norea-reader-bottom-strip">
-      <button
-        className="norea-reader-strip-link norea-state-layer"
-        disabled={!hasPreviousChapter}
-        onClick={onPreviousChapter}
-        type="button"
-      >
-        {previousLabel}
-      </button>
-      <div className="norea-reader-strip-progress">
-        <div className="norea-reader-strip-current">{currentLabel}</div>
-        <div
-          aria-label={t("reader.progressAria", { progress: roundedProgress })}
-          aria-valuemax={100}
-          aria-valuemin={0}
-          aria-valuenow={roundedProgress}
-          className="norea-reader-progress-track"
-          role="meter"
-        >
-          <span
-            className="norea-reader-progress-bar"
-            style={{ width: `${roundedProgress}%` }}
-          />
-        </div>
-      </div>
-      <button
-        className="norea-reader-strip-link norea-state-layer"
-        disabled={!hasNextChapter}
-        onClick={onNextChapter}
-        type="button"
-      >
-        {nextLabel}
-      </button>
-    </footer>
+    <ResponsiveSheet
+      onClose={onClose}
+      opened={opened}
+      title={t("reader.chapters")}
+    >
+      <ReaderChapterList
+        {...props}
+        className="norea-reader-chapter-scroll norea-reader-chapter-scroll--sheet"
+      />
+    </ResponsiveSheet>
   );
 }

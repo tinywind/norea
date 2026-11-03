@@ -5,16 +5,19 @@ import {
   type CSSProperties,
   type KeyboardEvent,
 } from "react";
+import { createPortal } from "react-dom";
 
 type ReaderSeekbarOrientation = "horizontal" | "vertical";
 
 interface ReaderSeekbarsProps {
-  bottomOffset?: number | string;
+  /** The reader bottom bar slot that hosts the horizontal seekbar and label. */
+  container: HTMLElement | null;
   label: string;
   onActivity?: () => void;
   onActiveChange?: (active: boolean) => void;
   onCommit?: () => void;
   onSeek: (progress: number) => void;
+  positionLabel: string;
   progress: number;
   showHorizontal: boolean;
   showVertical: boolean;
@@ -268,56 +271,45 @@ function ReaderSeekbar({
 }
 
 export function ReaderSeekbars({
-  bottomOffset = "1rem",
+  container,
   label,
   onActivity,
   onActiveChange,
   onCommit,
   onSeek,
+  positionLabel,
   progress,
   showHorizontal,
   showVertical,
   visible = true,
 }: ReaderSeekbarsProps) {
-  if (!showHorizontal && !showVertical) return null;
-
-  const renderHorizontal = showHorizontal && !showVertical;
+  const seekbarProps = {
+    label,
+    onActivity,
+    onActiveChange,
+    onCommit,
+    onSeek,
+    progress,
+  };
 
   return (
-    <div
-      className="norea-reader-seekbars"
-      data-visible={visible}
-      style={
-        {
-          "--norea-reader-seek-bottom":
-            typeof bottomOffset === "number"
-              ? `${bottomOffset}px`
-              : bottomOffset,
-        } as CSSProperties
-      }
-    >
-      {renderHorizontal ? (
-        <ReaderSeekbar
-          label={label}
-          onActivity={onActivity}
-          onActiveChange={onActiveChange}
-          onCommit={onCommit}
-          onSeek={onSeek}
-          orientation="horizontal"
-          progress={progress}
-        />
-      ) : null}
+    <>
+      {container
+        ? createPortal(
+            <>
+              {showHorizontal ? (
+                <ReaderSeekbar {...seekbarProps} orientation="horizontal" />
+              ) : null}
+              <span className="norea-reader-seek-label">{positionLabel}</span>
+            </>,
+            container,
+          )
+        : null}
       {showVertical ? (
-        <ReaderSeekbar
-          label={label}
-          onActivity={onActivity}
-          onActiveChange={onActiveChange}
-          onCommit={onCommit}
-          onSeek={onSeek}
-          orientation="vertical"
-          progress={progress}
-        />
+        <div className="norea-reader-seekbars" data-visible={visible}>
+          <ReaderSeekbar {...seekbarProps} orientation="vertical" />
+        </div>
       ) : null}
-    </div>
+    </>
   );
 }

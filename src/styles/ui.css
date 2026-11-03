@@ -51,7 +51,6 @@
    */
   html:root .mantine-Input-section .mantine-ActionIcon-root,
   html:root .mantine-Input-section .mantine-CloseButton-root,
-  html:root .norea-reader-icon-button.mantine-ActionIcon-root,
   html:root .norea-library-selection-icon.mantine-ActionIcon-root,
   html:root .norea-novel-selection-icon.mantine-ActionIcon-root {
     min-height: 0;
@@ -60,8 +59,6 @@
 
   html:root .mantine-Input-section .mantine-ActionIcon-root,
   html:root .mantine-Input-section .mantine-CloseButton-root,
-  html:root .norea-reader-icon-button,
-  html:root .norea-reader-strip-link,
   html:root .norea-library-selection-icon,
   html:root .norea-novel-selection-icon,
   html:root .norea-mobile-nav-link {
@@ -71,8 +68,6 @@
 
   html:root .mantine-Input-section .mantine-ActionIcon-root::before,
   html:root .mantine-Input-section .mantine-CloseButton-root::before,
-  html:root .norea-reader-icon-button::before,
-  html:root .norea-reader-strip-link::before,
   html:root .norea-library-selection-icon::before,
   html:root .norea-novel-selection-icon::before,
   html:root .norea-mobile-nav-link::before {

@@ -49,7 +49,8 @@ export interface ReaderContentHandle {
 
 interface ReaderContentProps {
   appearanceSettings?: ReaderAppearanceSettings;
-  bottomOverlayOffset?: number | string;
+  chromeDismissible?: boolean;
+  chromeVisible?: boolean;
   contentKey?: number | string;
   generalSettings?: ReaderGeneralSettings;
   html: string;
@@ -64,7 +65,7 @@ interface ReaderContentProps {
   onSeekbarActiveChange?: (active: boolean) => void;
   onToggleChrome?: () => void;
   onBoundaryPage?: (direction: 1 | -1) => void;
-  seekbarVisible?: boolean;
+  seekbarContainer?: HTMLElement | null;
   viewportHeight?: string;
 }
 
@@ -76,7 +77,8 @@ function ReaderContentInner(
   const {
     html,
     preparedDocument,
-    bottomOverlayOffset,
+    chromeDismissible = false,
+    chromeVisible = true,
     contentKey,
     initialProgress = 0,
     interactionBlocked = false,
@@ -88,7 +90,7 @@ function ReaderContentInner(
     onSeekbarActiveChange,
     onToggleChrome,
     onBoundaryPage,
-    seekbarVisible = true,
+    seekbarContainer = null,
     viewportHeight: requestedViewportHeight,
     appearanceSettings,
     generalSettings,
@@ -154,7 +156,6 @@ function ReaderContentInner(
       : typeof window !== "undefined"
         ? window.innerHeight
         : 0;
-  const overlayBottom = bottomOverlayOffset ?? "0.5rem";
   const requestedPageColumnsPerSpread = general.twoPageReader ? 2 : 1;
   const {
     patchMediaElements,
@@ -235,6 +236,12 @@ function ReaderContentInner(
     onProgressChange,
     onPageIndexChange,
   });
+  const positionLabel = isPagedReader
+    ? t("reader.pageLabel", {
+        current: pageInfo.current,
+        total: pageInfo.total,
+      })
+    : `${Math.round(progress)}%`;
   useImperativeHandle(
     ref,
     () => ({
@@ -280,6 +287,7 @@ function ReaderContentInner(
 
   const { handleClick, handleWheel, handleTouchStart, handleTouchEnd } =
     useReaderGestures({
+      chromeDismissible,
       interactionBlocked,
       isPagedReader,
       general,
@@ -449,27 +457,25 @@ function ReaderContentInner(
         {appearance.customCss.trim() ? (
           <style>{appearance.customCss}</style>
         ) : null}
-        <ReaderStatusOverlay
-          showScrollPercentage={general.showScrollPercentage}
-          showBatteryAndTime={general.showBatteryAndTime}
-          isPagedReader={isPagedReader}
-          progress={progress}
-          pageInfo={pageInfo}
-          textColor={appearance.textColor}
-          bottom={overlayBottom}
-        />
       </Box>
+      <ReaderStatusOverlay
+        showProgress={general.showScrollPercentage && !chromeVisible}
+        showBatteryAndTime={general.showBatteryAndTime}
+        progressLabel={positionLabel}
+        textColor={appearance.textColor}
+      />
       <ReaderSeekbars
-        bottomOffset={overlayBottom}
+        container={seekbarContainer}
         label={t("reader.progressAria", { progress: Math.round(progress) })}
         onActivity={onSeekbarActivity}
         onActiveChange={onSeekbarActiveChange}
         onCommit={commitSeekProgress}
         onSeek={seekToProgress}
+        positionLabel={positionLabel}
         progress={progress}
-        showHorizontal={general.showSeekbar}
+        showHorizontal={general.showSeekbar && !general.verticalSeekbar}
         showVertical={general.showSeekbar && general.verticalSeekbar}
-        visible={seekbarVisible}
+        visible={chromeVisible}
       />
     </Box>
   );
