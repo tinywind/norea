@@ -91,6 +91,14 @@ import type {
 export type { SourceAccessBlock } from "./source-access-gate";
 export type * from "./task-types";
 
+/** A blocked scope whose verification canary proved access, matched by revision. */
+export interface SourceAccessConfirmation {
+  rangeId?: string;
+  revision: number;
+  scopeKey: string;
+  sourceId: string;
+}
+
 const TASK_BULK_EVENT_CHUNK_SIZE = 250;
 const SNAPSHOT_FLUSH_FALLBACK_MS = 100;
 
@@ -243,6 +251,9 @@ export class TaskScheduler {
   private ordinaryChapterDownloadHolds = 0;
   private automaticWorkPaused = false;
   private readonly snapshotListeners = new Set<() => void>();
+  private readonly sourceAccessConfirmedListeners = new Set<
+    (confirmation: SourceAccessConfirmation) => void
+  >();
   private readonly sourceTaskSettlementWaiters = new Map<
     string,
     Set<() => void>
@@ -979,6 +990,7 @@ export class TaskScheduler {
 
     // Authentication is proven by the source response, not later media or
     // storage work. Keep the running canary pinned to its verified hostname.
+    const block = this.sourceAccess.get(scopeKey);
     this.sourceAccess.clear(scopeKey);
     this.debug("source access verified", entry, {
       scopeKey,
@@ -986,6 +998,15 @@ export class TaskScheduler {
     });
     this.publishSnapshot();
     this.requestDrain();
+    if (block) {
+      const confirmation: SourceAccessConfirmation = {
+        ...(block.rangeId ? { rangeId: block.rangeId } : {}),
+        revision: expectedRevision,
+        scopeKey,
+        sourceId: block.sourceId,
+      };
+      for (const listener of this.sourceAccessConfirmedListeners) listener(confirmation);
+    }
     return true;
   }
 
@@ -1649,6 +1670,16 @@ export class TaskScheduler {
       this.snapshotListeners.delete(listener);
     };
   };
+
+  /** Called each time the coordinator's verification confirms access for a blocked scope. */
+  subscribeSourceAccessConfirmed(
+    listener: (confirmation: SourceAccessConfirmation) => void,
+  ): () => void {
+    this.sourceAccessConfirmedListeners.add(listener);
+    return () => {
+      this.sourceAccessConfirmedListeners.delete(listener);
+    };
+  }
 
   subscribeEvents(listener: (event: TaskEvent) => void): () => void {
     this.eventListeners.add(listener);

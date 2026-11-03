@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { SourceAccessRequiredError } from "../plugins/source-access";
-import { TaskScheduler, type SourceTaskKind } from "./scheduler";
+import { TaskScheduler, type SourceAccessConfirmation, type SourceTaskKind } from "./scheduler";
 
 const SCOPE_KEY = "plugin:source-a:site:source.test";
 
@@ -75,5 +75,37 @@ describe("verify in place and resume (RD13)", () => {
     expect(request.settled()).toBeNull();
     expect(request.runs()).toBe(1);
     expect(scheduler.getSnapshot().sourceAccessBlocks).toHaveLength(1);
+  });
+
+  it("announces confirmed access for the verified scope and revision", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const confirmations: SourceAccessConfirmation[] = [];
+    scheduler.subscribeSourceAccessConfirmed((confirmation) => confirmations.push(confirmation));
+    const request = enqueueChallengedRequest(scheduler, "source.globalSearch");
+
+    await settle();
+    const [block] = scheduler.getSnapshot().sourceAccessBlocks;
+    expect(confirmations).toEqual([]);
+    expect(scheduler.beginSourceAccessVerification(SCOPE_KEY)).toBe(true);
+    await request.handle.promise;
+
+    expect(confirmations).toEqual([
+      { revision: block!.revision, scopeKey: SCOPE_KEY, sourceId: "source-a" },
+    ]);
+  });
+
+  it("announces nothing when the browser closes or the wait is cancelled", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const confirmations: SourceAccessConfirmation[] = [];
+    scheduler.subscribeSourceAccessConfirmed((confirmation) => confirmations.push(confirmation));
+    const request = enqueueChallengedRequest(scheduler, "source.globalSearch");
+
+    await settle();
+    expect(scheduler.keepSourceAccessBlocked(SCOPE_KEY)).toBe(true);
+    const [block] = scheduler.getSnapshot().sourceAccessBlocks;
+    expect(scheduler.cancelSourceAccessBlock(SCOPE_KEY, block!.revision)).toBe(true);
+    await request.handle.promise.catch(() => undefined);
+
+    expect(confirmations).toEqual([]);
   });
 });

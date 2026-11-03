@@ -47,6 +47,7 @@ import type { NovelItem, Plugin } from "../../lib/plugins/types";
 import {
   taskScheduler,
   type TaskHandle,
+  type TaskScheduler,
 } from "../../lib/tasks/scheduler";
 import { openPluginSite } from "../../lib/plugins/open-plugin-site";
 import { isAbortError } from "../../lib/abort";
@@ -77,6 +78,26 @@ export function isCloudflareError(message: string): boolean {
   return /\bcloudflare\b|\bcaptcha\b|\bchallenge\b|\bcf-chl|just a moment|attention required|verification (?:is )?required/i.test(
     message,
   );
+}
+
+/** Whether a source's search ended on an access check, so verifying it should search it again. */
+export function isAccessFailure(result: GlobalSearchResult): boolean {
+  return Boolean(result.error) && (result.accessRequired === true || isCloudflareError(result.error!));
+}
+
+/**
+ * Retries the failed search of each listed source when the source-access
+ * coordinator confirms access to that source, whichever surface verified it.
+ */
+export function retryOnSourceAccessConfirmed(
+  scheduler: Pick<TaskScheduler, "subscribeSourceAccessConfirmed">,
+  pluginIds: readonly string[],
+  retry: (pluginId: string) => void,
+): () => void {
+  const failed = new Set(pluginIds);
+  return scheduler.subscribeSourceAccessConfirmed(({ rangeId, sourceId }) => {
+    if (rangeId === undefined && failed.has(sourceId)) retry(sourceId);
+  });
 }
 
 function sortPluginsByName(plugins: readonly Plugin[]): Plugin[] {
@@ -710,6 +731,10 @@ export function BrowseSearchTab({
     () => failures.map(({ plugin }) => plugin.id),
     [failures],
   );
+  const accessFailedPluginIds = useMemo(
+    () => settledResults.flatMap(({ plugin, result }) => (isAccessFailure(result) ? [plugin.id] : [])),
+    [settledResults],
+  );
   const hasOnlyEmptyResults =
     hasSearchTerm &&
     scopedPlugins.length > 0 &&
@@ -971,6 +996,11 @@ export function BrowseSearchTab({
   const retrySource = useCallback((pluginId: string) => {
     setRetryPluginIds((current) => withRetryPluginId(current, pluginId));
   }, []);
+
+  useEffect(() => {
+    if (accessFailedPluginIds.length === 0) return;
+    return retryOnSourceAccessConfirmed(taskScheduler, accessFailedPluginIds, retrySource);
+  }, [accessFailedPluginIds, retrySource]);
 
   const openSource = (plugin: Plugin) => {
     setLastUsedPluginId(plugin.id);

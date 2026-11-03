@@ -4,6 +4,7 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { GlobalSearchResult } from "../../lib/plugins/global-search";
 import type { Plugin } from "../../lib/plugins/types";
+import type { SourceAccessConfirmation } from "../../lib/tasks/scheduler";
 import type { SourceAccessBlock } from "../../lib/tasks/source-access-gate";
 
 const mocks = vi.hoisted(() => ({ blocks: [] as SourceAccessBlock[] }));
@@ -15,7 +16,9 @@ vi.mock("../../lib/tasks/hooks", () => ({
 }));
 
 import {
+  isAccessFailure,
   isCloudflareError,
+  retryOnSourceAccessConfirmed,
   SearchFailures,
   sortSourceResults,
   withRetryPluginId,
@@ -64,6 +67,45 @@ describe("withRetryPluginId", () => {
   it("keeps the same list when the source is already queued", () => {
     const current = ["source-a"];
     expect(withRetryPluginId(current, "source-a")).toBe(current);
+  });
+});
+
+describe("retryOnSourceAccessConfirmed", () => {
+  function fakeScheduler() {
+    const listeners = new Set<(confirmation: SourceAccessConfirmation) => void>();
+    return {
+      confirm: (confirmation: SourceAccessConfirmation) => {
+        for (const listener of listeners) listener(confirmation);
+      },
+      listenerCount: () => listeners.size,
+      subscribeSourceAccessConfirmed: (listener: (confirmation: SourceAccessConfirmation) => void) => {
+        listeners.add(listener);
+        return () => listeners.delete(listener);
+      },
+    };
+  }
+
+  it("retries only an access-failed source once access to it is confirmed", () => {
+    const scheduler = fakeScheduler();
+    const retry = vi.fn();
+    const stop = retryOnSourceAccessConfirmed(scheduler, ["source-a"], retry);
+
+    scheduler.confirm({ revision: 1, scopeKey: "plugin:source-b:site:b.test", sourceId: "source-b" });
+    scheduler.confirm({ rangeId: "range-1", revision: 2, scopeKey: "plugin:source-a:site:a.test", sourceId: "source-a" });
+    expect(retry).not.toHaveBeenCalled();
+
+    scheduler.confirm({ revision: 3, scopeKey: "plugin:source-a:site:a.test", sourceId: "source-a" });
+    expect(retry).toHaveBeenCalledExactlyOnceWith("source-a");
+
+    stop();
+    expect(scheduler.listenerCount()).toBe(0);
+  });
+
+  it("treats access checks, not ordinary failures, as waiting for verification", () => {
+    expect(isAccessFailure({ ...result("a", 0), accessRequired: true, error: "Blocked" })).toBe(true);
+    expect(isAccessFailure({ ...result("a", 0), error: "Just a moment..." })).toBe(true);
+    expect(isAccessFailure({ ...result("a", 0), error: "HTTP 403" })).toBe(false);
+    expect(isAccessFailure(result("a", 0))).toBe(false);
   });
 });
 

@@ -3,12 +3,15 @@ import type { NovelItem, Plugin } from "./types";
 import { enqueueSourceTask } from "../tasks/source-tasks";
 import { taskScheduler, type TaskHandle } from "../tasks/scheduler";
 import { cancelAndroidScraperExecutor } from "../android-scraper";
+import { isSourceAccessRequiredError } from "./source-access";
 
 export interface GlobalSearchResult {
   pluginId: string;
   pluginName: string;
   novels: NovelItem[];
   error?: string;
+  /** The search ended on a source access check rather than an ordinary failure. */
+  accessRequired?: boolean;
 }
 
 export interface GlobalSearchOptions {
@@ -133,6 +136,7 @@ export async function globalSearch(
         pluginName: plugin.name,
         novels: [],
         error: error instanceof Error ? error.message : String(error),
+        ...(isSourceAccessRequiredError(error) ? { accessRequired: true } : {}),
       };
     }
     if (signal?.aborted) return;

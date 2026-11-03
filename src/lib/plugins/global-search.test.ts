@@ -3,6 +3,7 @@ import { cancelAndroidScraperExecutor } from "../android-scraper";
 import { taskScheduler } from "../tasks/scheduler";
 import { PluginManager } from "./manager";
 import { globalSearch } from "./global-search";
+import { SourceAccessRequiredError } from "./source-access";
 import type { NovelItem, Plugin } from "./types";
 
 vi.mock("../android-scraper", () => ({
@@ -94,6 +95,28 @@ describe("globalSearch", () => {
     expect(bad.novels).toEqual([]);
     const ok = results.find((r) => r.pluginId === "ok")!;
     expect(ok.error).toBeUndefined();
+  });
+
+  it("marks a search that ended on an access check apart from ordinary failures", async () => {
+    const manager = makeManager([
+      makePlugin("checked", async () => {
+        throw new SourceAccessRequiredError("Complete the challenge.", {
+          kind: "cloudflare",
+          url: "https://cdn.elsewhere.test/challenge",
+        });
+      }),
+      makePlugin("bad", async () => {
+        throw new Error("source unreachable");
+      }),
+    ]);
+
+    const results = await globalSearch(manager, "x");
+
+    expect(results.find((r) => r.pluginId === "checked")).toMatchObject({
+      accessRequired: true,
+      error: "Complete the challenge.",
+    });
+    expect(results.find((r) => r.pluginId === "bad")?.accessRequired).toBeUndefined();
   });
 
   it("searches only the supplied source scope", async () => {
