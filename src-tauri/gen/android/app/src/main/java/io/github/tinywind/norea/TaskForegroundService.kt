@@ -9,7 +9,7 @@ import android.content.Intent
 import android.os.Build
 import android.os.IBinder
 import android.os.PowerManager
-import android.util.Log
+import io.github.tinywind.norea.AppLog as Log
 
 class TaskForegroundService : Service() {
   private var wakeLock: PowerManager.WakeLock? = null

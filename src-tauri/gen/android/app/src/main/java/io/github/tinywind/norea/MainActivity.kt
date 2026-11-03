@@ -66,6 +66,7 @@ class MainActivity : TauriActivity() {
   private var safeAreaInsetsJson = insetsJson(Insets.NONE)
 
   override fun onCreate(savedInstanceState: Bundle?) {
+    AndroidAppLoggingBridge.register()
     RustlsPlatformVerifierBridge.init(applicationContext)
     AndroidNetworkState.start(applicationContext)
     enableEdgeToEdge()

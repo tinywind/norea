@@ -2,7 +2,7 @@ package io.github.tinywind.norea
 
 import android.content.Context
 import android.util.Base64
-import android.util.Log
+import io.github.tinywind.norea.AppLog as Log
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import org.json.JSONArray

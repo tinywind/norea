@@ -97,6 +97,7 @@ android {
             "@mipmap/ic_launcher_round",
         )
         applicationId = "io.github.tinywind.norea"
+        testInstrumentationRunner = "io.github.tinywind.norea.LogTestRunner"
         minSdk = 24
         targetSdk = 36
         versionCode = tauriProperties.getProperty("tauri.android.versionCode", "1").toInt()

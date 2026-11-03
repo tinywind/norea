@@ -111,8 +111,10 @@ version = "0.2.0"
 dependencies = [
  "getrandom 0.4.3",
  "jni 0.22.4",
+ "libc",
  "log",
  "openvpn-connect",
+ "regex",
  "reqwest 0.13.5",
  "rustls-platform-verifier",
  "serde",

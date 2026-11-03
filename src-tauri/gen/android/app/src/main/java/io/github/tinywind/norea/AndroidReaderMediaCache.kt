@@ -1,7 +1,7 @@
 package io.github.tinywind.norea
 
 import android.content.Context
-import android.util.Log
+import io.github.tinywind.norea.AppLog as Log
 import org.json.JSONObject
 import androidx.documentfile.provider.DocumentFile
 import java.io.File

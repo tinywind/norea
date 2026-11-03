@@ -1,4 +1,5 @@
 mod android_file_open;
+mod app_logging;
 #[cfg(target_os = "android")]
 mod android_tls;
 mod backup;
@@ -48,9 +49,9 @@ fn parse_runtime_log_level(level: &str) -> Result<log::LevelFilter, String> {
 }
 
 #[tauri::command]
-fn set_runtime_log_level(level: String) -> Result<(), String> {
-    log::set_max_level(parse_runtime_log_level(&level)?);
-    Ok(())
+async fn set_runtime_log_level(level: String) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || app_logging::set_runtime_level(&level))
+        .await.map_err(|error| format!("Set native log level task: {error}"))?
 }
 
 #[tauri::command]
@@ -68,6 +69,10 @@ fn write_frontend_log(level: String, message: String) -> Result<(), String> {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    app_logging::install_panic_hook();
+    if let Err(error) = app_logging::initialize("io.github.tinywind.norea") {
+        eprintln!("Application logging initialization failed: {error}");
+    }
     let migrations = database::schema_migrations();
 
     let plugin_vpn = plugin_vpn::PluginVpnState::bind()
@@ -109,6 +114,16 @@ pub fn run() {
 
     builder
         .plugin(
+            tauri::plugin::Builder::<_, ()>::new("local-logging")
+                .setup(|app, _| {
+                    if let Err(error) = app_logging::configure(app) {
+                        eprintln!("Application log destination setup failed: {error}");
+                    }
+                    Ok(())
+                })
+                .build(),
+        )
+        .plugin(
             tauri::plugin::Builder::<_, ()>::new("device-restore-guard")
                 .setup(|app, _| device_backup::device_backup_restore_check(app.clone()).map_err(Into::into))
                 .build(),
@@ -134,13 +149,7 @@ pub fn run() {
         // WebView exists deadlocks the Android main thread (tauri-apps/tauri#13990).
         .plugin(
             tauri_plugin_log::Builder::default()
-                .level(log::LevelFilter::Trace)
-                .level_for("h2", log::LevelFilter::Warn)
-                .level_for("hyper", log::LevelFilter::Warn)
-                .level_for("hyper_util", log::LevelFilter::Warn)
-                .level_for("reqwest", log::LevelFilter::Warn)
-                .level_for("sqlx", log::LevelFilter::Info)
-                .level_for("tracing", log::LevelFilter::Warn)
+                .skip_logger()
                 .build(),
         )
         .plugin(tauri_plugin_deep_link::init())
@@ -267,6 +276,7 @@ pub fn run() {
             scraper::scraper_clear_cookies,
             scraper::scraper_open_devtools,
             set_runtime_log_level,
+            app_logging::record_frontend_crash,
             task_notifications::task_notification_reconcile,
             tray::tray_set_task_progress,
             update::download_and_open_update,
@@ -289,7 +299,6 @@ pub fn run() {
             app.manage(scraper::ScraperState::default());
             tray::init(app).map_err(|err| format!("tray init: {err}"))?;
             scraper::init_scraper(app.handle()).map_err(|err| format!("scraper init: {err}"))?;
-            log::set_max_level(log::LevelFilter::Info);
             Ok(())
         })
         .build(context)

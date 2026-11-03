@@ -6,7 +6,7 @@ import android.net.Uri
 import android.net.http.SslError
 import android.os.Handler
 import android.os.Looper
-import android.util.Log
+import io.github.tinywind.norea.AppLog as Log
 import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager

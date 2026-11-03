@@ -101,7 +101,7 @@ internal class AndroidTaskNotificationBridge(
           if (active) resumeBackgroundWorkWebViews() else releaseBackgroundWorkWebViews()
         }
       } catch (error: RuntimeException) {
-        android.util.Log.w("NoreaTasks", "Task notification update failed", error)
+        AppLog.w("NoreaTasks", "Task notification update failed", error)
       }
     }
   }
@@ -114,7 +114,7 @@ internal class AndroidTaskNotificationBridge(
       try {
         AndroidTaskNotifications.stopRuntime(activity)
       } catch (error: RuntimeException) {
-        android.util.Log.w("NoreaTasks", "Background execution cleanup failed", error)
+        AppLog.w("NoreaTasks", "Background execution cleanup failed", error)
       }
     }
   }

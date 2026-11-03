@@ -1,7 +1,7 @@
 package io.github.tinywind.norea
 
 import android.net.Uri
-import android.util.Log
+import io.github.tinywind.norea.AppLog as Log
 
 internal const val SCRAPER_LOG_TAG = "NoreaScraper"
 

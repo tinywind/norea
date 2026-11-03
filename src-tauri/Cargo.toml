@@ -22,6 +22,7 @@ serde_json = "1.0.149"
 serde = { version = "1.0.228", features = ["derive"] }
 sha2 = "0.11.1"
 log = "0.4.29"
+regex = "1.13.1"
 tauri = { version = "2.11.1", features = ["protocol-asset", "tray-icon", "unstable"] }
 tauri-plugin-log = "2.8.0"
 tauri-plugin-sql = { version = "2.4.0", features = ["sqlite"] }
@@ -37,13 +38,14 @@ reqwest = { version = "0.13.3", default-features = false, features = ["rustls", 
 
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
+libc = "0.2.191"
 rustls-platform-verifier = "=0.7.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]
 tauri-plugin-single-instance = "2.4.1"
 tauri-winrt-notification = "0.8.1"
 webview2-com = "0.39.1"
-windows = { version = "0.62.2", features = ["Foundation_Collections", "Networking_Connectivity", "UI_Notifications", "Win32_Foundation", "Win32_Networking_WinHttp", "Win32_System_Com", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging"] }
+windows = { version = "0.62.2", features = ["Foundation_Collections", "Networking_Connectivity", "UI_Notifications", "Win32_Foundation", "Win32_Networking_WinHttp", "Win32_Storage_FileSystem", "Win32_System_Com", "Win32_System_SystemInformation", "Win32_UI_WindowsAndMessaging"] }
 
 [target.'cfg(any(target_os = "android", target_os = "windows"))'.dependencies]
 getrandom = "=0.4.3"

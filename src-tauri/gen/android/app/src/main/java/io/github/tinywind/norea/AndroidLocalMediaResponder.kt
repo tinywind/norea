@@ -3,7 +3,7 @@ package io.github.tinywind.norea
 import android.content.Context
 import android.net.Uri
 import android.util.Base64
-import android.util.Log
+import io.github.tinywind.norea.AppLog as Log
 import android.webkit.WebResourceResponse
 import java.io.ByteArrayInputStream
 import java.io.File

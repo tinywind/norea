@@ -8,7 +8,7 @@ import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
-import android.util.Log
+import io.github.tinywind.norea.AppLog as Log
 import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
 import java.io.ByteArrayOutputStream

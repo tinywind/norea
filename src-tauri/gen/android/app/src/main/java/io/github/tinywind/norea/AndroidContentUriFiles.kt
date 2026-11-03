@@ -4,7 +4,7 @@ import android.content.Context
 import android.net.Uri
 import android.provider.OpenableColumns
 import android.util.Base64
-import android.util.Log
+import io.github.tinywind.norea.AppLog as Log
 import android.webkit.MimeTypeMap
 import org.json.JSONObject
 import java.io.File
