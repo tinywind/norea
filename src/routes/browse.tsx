@@ -73,6 +73,24 @@ const INSTALLED_QUERY_KEY = ["plugin", "installed"] as const;
 const MAX_PLUGIN_SOURCE_FILE_BYTES = 5 * 1024 * 1024;
 const MAX_PLUGIN_SOURCE_FILE_SIZE_LABEL = "5 MiB";
 
+function withPendingId(
+  ids: ReadonlySet<string>,
+  id: string,
+): ReadonlySet<string> {
+  const next = new Set(ids);
+  next.add(id);
+  return next;
+}
+
+function withoutPendingId(
+  ids: ReadonlySet<string>,
+  id: string,
+): ReadonlySet<string> {
+  const next = new Set(ids);
+  next.delete(id);
+  return next;
+}
+
 export type BrowseTab = "search" | "sources" | "server";
 
 interface SourceInstanceForm {
@@ -427,6 +445,13 @@ export function BrowsePage({
     }
   }, [pendingRepoUrl, clearPendingRepoUrl]);
 
+  const [installingPluginIds, setInstallingPluginIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+  const [uninstallingPluginIds, setUninstallingPluginIds] = useState<
+    ReadonlySet<string>
+  >(() => new Set());
+
   const addRepoMutation = useMutation({
     meta: { errorPresentation: "inline" },
     mutationFn: async () => {
@@ -515,8 +540,14 @@ export function BrowsePage({
         subject: { pluginId: item.id, url: item.url },
         run: () => pluginManager.installPlugin(item),
       }).promise,
+    onMutate: (item) => {
+      setInstallingPluginIds((ids) => withPendingId(ids, item.id));
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["plugin"] });
+    },
+    onSettled: (_plugin, _error, item) => {
+      setInstallingPluginIds((ids) => withoutPendingId(ids, item.id));
     },
   });
 
@@ -539,10 +570,16 @@ export function BrowsePage({
             inputs: sourceInstanceInputs(form),
           }),
       }).promise,
+    onMutate: ({ item }) => {
+      setInstallingPluginIds((ids) => withPendingId(ids, item.id));
+    },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["plugin"] });
       setSourceTemplate(null);
       setSourceForm(DEFAULT_SOURCE_INSTANCE_FORM);
+    },
+    onSettled: (_plugin, _error, { item }) => {
+      setInstallingPluginIds((ids) => withoutPendingId(ids, item.id));
     },
   });
 
@@ -589,6 +626,7 @@ export function BrowsePage({
       }).promise;
     },
     onMutate: (id) => {
+      setUninstallingPluginIds((ids) => withPendingId(ids, id));
       if (lastUsedPluginId === id) {
         setLastUsedPluginId(null);
       }
@@ -598,6 +636,9 @@ export function BrowsePage({
     },
     onSuccess: () => {
       queryClient.invalidateQueries({ queryKey: ["plugin"] });
+    },
+    onSettled: (_result, _error, id) => {
+      setUninstallingPluginIds((ids) => withoutPendingId(ids, id));
     },
   });
 
@@ -749,7 +790,7 @@ export function BrowsePage({
                   : null
               }
               onUninstall={(id) => uninstallMutation.mutate(id)}
-              uninstalling={uninstallMutation.isPending}
+              uninstallingPluginIds={uninstallingPluginIds}
               lastUsedPluginId={lastUsedPluginId}
               onClearCookies={setCookiePlugin}
               onOpenSettings={setSettingsPlugin}
@@ -774,9 +815,7 @@ export function BrowsePage({
                   installMutation.mutate(item);
                 }
               }}
-              installing={
-                installMutation.isPending || installSourceMutation.isPending
-              }
+              installingPluginIds={installingPluginIds}
               failures={availableFailures}
             />
 
@@ -1280,7 +1319,7 @@ interface InstalledSectionProps {
   canClearCookies: boolean;
   clearingCookiePluginId: string | null;
   onUninstall: (id: string) => void;
-  uninstalling: boolean;
+  uninstallingPluginIds: ReadonlySet<string>;
   lastUsedPluginId: string | null;
   onClearCookies: (plugin: Plugin) => void;
   onOpenSource: (plugin: Plugin) => void;
@@ -1455,13 +1494,13 @@ function PluginRow({
   );
 }
 
-function InstalledSection({
+export function InstalledSection({
   plugins,
   locale,
   canClearCookies,
   clearingCookiePluginId,
   onUninstall,
-  uninstalling,
+  uninstallingPluginIds,
   lastUsedPluginId,
   onClearCookies,
   onOpenSource,
@@ -1490,7 +1529,7 @@ function InstalledSection({
                 onOpenSource={onOpenSource}
                 onOpenSettings={onOpenSettings}
                 onUninstall={onUninstall}
-                uninstalling={uninstalling}
+                uninstalling={uninstallingPluginIds.has(plugin.id)}
               />
             ))}
           </Stack>
@@ -1513,18 +1552,18 @@ interface AvailableSectionProps {
   hasRepository: boolean;
   installedPluginsById: ReadonlyMap<string, Plugin>;
   onInstall: (item: PluginItem) => void;
-  installing: boolean;
+  installingPluginIds: ReadonlySet<string>;
   failures: readonly RepoFetchFailure[];
 }
 
-function AvailableSection({
+export function AvailableSection({
   query,
   entries,
   locale,
   hasRepository,
   installedPluginsById,
   onInstall,
-  installing,
+  installingPluginIds,
   failures,
 }: AvailableSectionProps) {
   const { t } = useTranslation();
@@ -1580,7 +1619,7 @@ function AvailableSection({
                   locale={locale}
                   repoUrl={repoUrl}
                   installedVersion={installedVersion}
-                  installing={installing}
+                  installing={installingPluginIds.has(item.id)}
                   onInstall={onInstall}
                 />
               );
