@@ -144,10 +144,14 @@ export function UpdateRow({
         className="norea-updates-row-open"
         onClick={onOpen}
         subtitle={
-          <>
-            <span className="norea-updates-row-chapter">{entry.chapterName}</span>
+          nested ? (
             <UpdateMeta entry={entry} />
-          </>
+          ) : (
+            <>
+              <span className="norea-updates-row-chapter">{entry.chapterName}</span>
+              <UpdateMeta entry={entry} />
+            </>
+          )
         }
         title={nested ? entry.chapterName : entry.novelName}
       />

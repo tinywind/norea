@@ -76,9 +76,10 @@ describe("UpdateRow", () => {
     expect(failed('button[aria-label="novel.downloadChapter"]')).toHaveLength(0);
   });
 
-  it("leaves the cover to the run row when nested", () => {
+  it("leaves the cover and the novel name to the run row when nested", () => {
     const $ = render(<UpdateRow {...rowProps} nested />);
     expect($('button[aria-label^="updates.openNovel"]')).toHaveLength(0);
+    expect($("button").first().text()).toBe("The ReturnSource Foo · 2h ago");
   });
 });
 
