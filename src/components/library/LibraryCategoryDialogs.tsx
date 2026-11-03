@@ -14,6 +14,7 @@ import {
   type LibraryCategory,
 } from "../../db/queries/category";
 import { useTranslation } from "../../i18n";
+import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { useLibraryStore } from "../../store/library";
 import { TextButton } from "../TextButton";
 type CategoryEditorState =
@@ -107,6 +108,13 @@ export const LibraryCategoryDialogs = forwardRef<
     setCategoryName("");
   }, [createCategoryMutation, renameCategoryMutation]);
 
+  const closeCategoryDelete = useCallback(() => {
+    deleteCategoryMutation.reset();
+    setCategoryDeleteTarget(null);
+  }, [deleteCategoryMutation]);
+  useOverlayBackNavigation(active && categoryEditor !== null, closeCategoryEditor);
+  useOverlayBackNavigation(active && categoryDeleteTarget !== null, closeCategoryDelete);
+
   const handleCategorySubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
       event.preventDefault();
@@ -191,10 +199,7 @@ export const LibraryCategoryDialogs = forwardRef<
       </Modal>
       <Modal
         opened={active && categoryDeleteTarget !== null}
-        onClose={() => {
-          deleteCategoryMutation.reset();
-          setCategoryDeleteTarget(null);
-        }}
+        onClose={closeCategoryDelete}
         title={t("categories.delete")}
       >
         <Stack gap="sm">
@@ -216,10 +221,7 @@ export const LibraryCategoryDialogs = forwardRef<
             <TextButton
               type="button"
               variant="subtle"
-              onClick={() => {
-                deleteCategoryMutation.reset();
-                setCategoryDeleteTarget(null);
-              }}
+              onClick={closeCategoryDelete}
             >
               {t("common.cancel")}
             </TextButton>

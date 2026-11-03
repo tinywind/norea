@@ -21,6 +21,7 @@ import {
   type LocalNovelImportResult,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
+import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { clearLocalImportFileCache } from "../../lib/local-import";
 import { importLocalFileToLibrary } from "../../lib/local-import-library";
 import { LOCAL_NOVEL_NAME, LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
@@ -224,6 +225,9 @@ export const LibraryLocalImport = forwardRef<
   const localImportSummary = localImportAnalyzing
     ? t("library.localImport.analyzing")
     : getLocalImportSummary(localImportItems, t);
+  const localHomeErrorOpen = active && Boolean(openLocalHome.error);
+  useOverlayBackNavigation(active && localImportOpen, closeLocalImportReview);
+  useOverlayBackNavigation(localHomeErrorOpen, () => openLocalHome.reset());
 
   useImperativeHandle(
     ref,
@@ -313,7 +317,7 @@ export const LibraryLocalImport = forwardRef<
         </Stack>
       </Modal>
       <Modal
-        opened={active && Boolean(openLocalHome.error)}
+        opened={localHomeErrorOpen}
         onClose={() => openLocalHome.reset()}
         title={t("library.localNovel.title")}
       >

@@ -7,6 +7,7 @@ import { PlusGlyph, TrashGlyph } from "./ActionGlyphs";
 import { IconButton } from "./IconButton";
 import { LibraryTagFilters, type LibraryTag, type LibraryTagId } from "./library/LibraryCategories";
 import { useTranslation } from "../i18n";
+import { useOverlayBackNavigation } from "../lib/android-back-navigation";
 
 interface CategoriesDrawerProps {
   allCount: number;
@@ -44,6 +45,7 @@ export function CategoriesDrawer({
   onToggleTag,
 }: CategoriesDrawerProps) {
   const { t } = useTranslation();
+  useOverlayBackNavigation(opened, onClose);
 
   return (
     <Drawer

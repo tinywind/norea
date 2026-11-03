@@ -32,6 +32,7 @@ vi.mock("@tanstack/react-query", () => ({
     return mutation;
   },
 }));
+vi.mock("../../lib/android-back-navigation", () => ({ useOverlayBackNavigation: vi.fn() }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: vi.fn() } }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../db/queries/category", () => ({ addNovelsToCategory: mocks.addCategory, removeNovelsFromCategory: mocks.removeCategory }));
@@ -49,6 +50,7 @@ vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: vi.fn()
 vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ lastReadChapterByNovel: {} }) } }));
 vi.mock("./use-library-download-availability", () => ({ useLibraryDownloadAvailability: mocks.availability }));
 import { useLibrarySelection } from "./use-library-selection";
+import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { cancelChapterDownloadRequest, getChapterDownloadRequestSnapshot } from "../../lib/tasks/chapter-download-requests";
 
 function chapter(id: number, overrides: Partial<LibraryDownloadChapter> = {}): LibraryDownloadChapter {
@@ -173,4 +175,18 @@ it("clears a stale selection when the filtered result is empty", async () => {
   useLibrarySelection({ search: "missing" }, "nameAsc");
   await mocks.mutations[4]!.mutationFn("");
   expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
+});
+
+it("clears the library selection on back only while novels are selected", () => {
+  const selection = useLibrarySelection({}, "nameAsc");
+  expect(useOverlayBackNavigation).toHaveBeenLastCalledWith(true, selection.clearSelection);
+  vi.mocked(useOverlayBackNavigation).mock.lastCall![1]();
+  expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
+
+  mocks.selected = new Set();
+  useLibrarySelection({}, "nameAsc");
+  expect(useOverlayBackNavigation).toHaveBeenLastCalledWith(false, expect.any(Function));
+  mocks.selected = new Set([1]);
+  useLibrarySelection({}, "nameAsc", false);
+  expect(useOverlayBackNavigation).toHaveBeenLastCalledWith(false, expect.any(Function));
 });

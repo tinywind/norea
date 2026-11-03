@@ -12,6 +12,7 @@ import {
   type LibraryNovelRefreshFilter,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
+import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { showErrorToast } from "../../lib/runtime/error-toast";
 import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-requests";
 import { REQUEST_CANCELLED_ERROR, throwIfAborted } from "../../lib/abort";
@@ -189,6 +190,7 @@ export function useLibrarySelection(
     selectionRequestRef.current += 1;
     setSelectedIds(new Set());
   }, []);
+  useOverlayBackNavigation(active && selectedIds.size > 0, clearSelection);
 
   const selectAllMutation = useMutation({
     mutationFn: async () => {
