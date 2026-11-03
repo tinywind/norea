@@ -18,6 +18,7 @@ import {
   type NovelDetailRecord,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
+import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { syncLocalChapterStorageAfterOrderChange } from "../../lib/local-chapter-storage";
 import { clearLocalImportFileCache } from "../../lib/local-import";
 import { importLocalFileToLibrary } from "../../lib/local-import-library";
@@ -175,6 +176,9 @@ export function useLocalNovelEditor(
     setLocalMetadataOpen(false);
   }
 
+  const localMetadataEditorOpen = Boolean(novel?.isLocal) && localMetadataOpen;
+  useOverlayBackNavigation(localMetadataEditorOpen, closeLocalMetadataEditor);
+
   function handleLocalMetadataSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
     if (!novel?.isLocal || localMetadataForm.name.trim() === "") return;
@@ -225,7 +229,7 @@ export function useLocalNovelEditor(
         type="file"
       />
       <Modal
-        opened={Boolean(novel?.isLocal) && localMetadataOpen}
+        opened={localMetadataEditorOpen}
         onClose={closeLocalMetadataEditor}
         size="lg"
         title={t("novel.local.editMetadata")}

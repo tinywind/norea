@@ -6,6 +6,7 @@ import type { ChapterListRow } from "../db/queries/chapter";
 import type { NovelDetailRecord } from "../db/queries/novel";
 
 const mocks = vi.hoisted(() => ({
+  navigate: vi.fn(),
   source: { data: null as null | { serverUrl: string; workId: string }, isPending: false, isFetching: false, error: null as unknown },
   available: { data: { paths: new Map<string, boolean>(), numbers: new Map<number, boolean>() } as { paths: Map<string, boolean>; numbers: Map<number, boolean> } | undefined, isLoading: false, error: null as unknown },
   sync: { serverError: null as unknown, sourceError: null as unknown },
@@ -28,13 +29,12 @@ vi.mock("@tanstack/react-query", () => ({ useQuery: (options: { queryKey: unknow
     ? { data: mocks.chapters, isLoading: false }
     : { ...mocks.novelQuery, data: mocks.novel };
 } }));
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn(), useRouterState: () => "/novel?id=3" }));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate, useRouterState: () => "/novel?id=3" }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({
   t: (key: string, values?: Record<string, unknown>) => key === "novel.chapterCount"
     ? `${values?.cached}/${values?.total} stored`
     : key === "novel.serverChapterStatus" ? `Server: ${values?.status}` : key,
 }) }));
-vi.mock("../lib/android-back-navigation", () => ({ usePageBackNavigation: vi.fn() }));
 vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown) => unknown) => selector({ defaultChapterSort: "asc", setDefaultChapterSort: vi.fn() }) }));
 vi.mock("../store/reader", () => ({ useReaderStore: (selector: (state: unknown) => unknown) => selector({ lastReadChapterByNovel: {} }) }));
 vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () => ({ sourceDuplicateChapters: [], toggle: {}, refreshMetadata: { error: mocks.metadataError }, fullRefreshMetadata: {} }) }));
@@ -50,6 +50,7 @@ vi.mock("../lib/content-sync/novel-source", () => ({ readServerNovelSource: vi.f
 import { NovelDetailPage } from "./novel";
 import { PageActivityContext } from "../lib/page-activity";
 import { buildBatchDownloadTargets, buildPreviousChapterDownloadTargets } from "../components/novel/novel-detail-model";
+import { collectElements, mountBackNavigationHarness } from "../lib/android-back-navigation.test-support";
 
 const chapter: ChapterListRow = {
   id: 1, novelId: 3, name: "Saved chapter", path: "/chapter", chapterNumber: "1", position: 1, page: "1",
@@ -95,6 +96,7 @@ function renderPage(active = true) {
 }
 
 beforeEach(() => {
+  mocks.navigate.mockReset();
   mocks.queries.length = 0;
   mocks.source.data = null;
   mocks.source.isPending = false;
@@ -294,4 +296,29 @@ it("still queries server availability when the source plugin cannot provide chap
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   renderPage();
   expect(mocks.queries.find(query => query.queryKey[1] === "novel-chapters")?.enabled).toBe(true);
+});
+
+it("closes the novel reader settings drawer on back before leaving the page", async () => {
+  const harness = mountBackNavigationHarness();
+  let tree: ReturnType<typeof NovelDetailPage> | undefined;
+  function PageProbe() {
+    tree = NovelDetailPage({ id: 3 });
+    return null;
+  }
+  const drawer = () => collectElements(tree).find((element) => element.props.title === "readerSettings.novel.title")!;
+  const workspace = () => collectElements(tree).find((element) => typeof element.props.onOpenReaderSettings === "function")!;
+  try {
+    await harness.render(<PageProbe />);
+    await harness.run(() => (workspace().props.onOpenReaderSettings as () => void)());
+    expect(drawer().props.opened).toBe(true);
+
+    expect(harness.pressBack()).toBe(true);
+    expect(drawer().props.opened).toBe(false);
+    expect(mocks.navigate).not.toHaveBeenCalled();
+
+    harness.pressBack();
+    expect(mocks.navigate).toHaveBeenCalledWith({ to: "/", replace: true });
+  } finally {
+    await harness.unmount();
+  }
 });

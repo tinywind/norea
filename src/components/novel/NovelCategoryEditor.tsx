@@ -8,7 +8,7 @@ import {
   setNovelCategories,
 } from "../../db/queries/category";
 import { useTranslation } from "../../i18n";
-import { usePageBackNavigation } from "../../lib/android-back-navigation";
+import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { describeError } from "../../lib/errors";
 import { ConsoleChip, ConsolePanel } from "../ConsolePrimitives";
 import { TextButton } from "../TextButton";
@@ -62,11 +62,7 @@ export function NovelCategoryEditor({ active, novelId, novelName }: NovelCategor
     ? t(error.code === "work-not-found" ? "categories.workNotFound" : "categories.selectionUnavailable")
     : error ? describeError(error) : null;
   const close = () => { if (!save.isPending) setOpened(false); };
-  usePageBackNavigation(() => {
-    if (!active || !opened) return false;
-    close();
-    return true;
-  });
+  useOverlayBackNavigation(active && opened, close);
 
   return <>
     <ConsolePanel p="sm" style={{ flexShrink: 0 }}>

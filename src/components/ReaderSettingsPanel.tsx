@@ -23,6 +23,7 @@ import {
 } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
 import { useTranslation, type TranslationKey } from "../i18n";
+import { useOverlayBackNavigation } from "../lib/android-back-navigation";
 import {
   READER_PAGE_TRANSITION_DURATION_MAX_MS,
   READER_PAGE_TRANSITION_DURATION_MIN_MS,
@@ -257,6 +258,8 @@ export function ReaderSettingsPanel({
   );
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [keepScopedSettings, setKeepScopedSettings] = useState(true);
+  const closeResetConfirmation = () => setResetConfirmOpen(false);
+  useOverlayBackNavigation(resetConfirmOpen, closeResetConfirmation);
   const targetOverride =
     targetKind === "source" ? sourceSettingsOverride : novelSettingsOverride;
   const sourceSettingsEnabled = Boolean(sourceSettingsOverride?.enabled);
@@ -1157,7 +1160,7 @@ export function ReaderSettingsPanel({
       <Modal
         centered
         opened={resetConfirmOpen}
-        onClose={() => setResetConfirmOpen(false)}
+        onClose={closeResetConfirmation}
         title={t("readerSettings.reset.title")}
       >
         <Stack gap="md">

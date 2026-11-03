@@ -1,4 +1,4 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { usePageActivity } from "./page-activity";
 
 export interface PageBackNavigationHandler {
@@ -52,10 +52,37 @@ export function usePageBackNavigation(onBack: () => boolean): void {
   const onBackRef = useRef(onBack);
   onBackRef.current = onBack;
 
-  useEffect(() => {
+  // Layout effects run before passive effects in the same commit, so a page
+  // registers below any overlay that is already open when it mounts or
+  // becomes active again.
+  useLayoutEffect(() => {
     if (!active) return;
     return registerPageBackNavigationHandler({
       back: () => onBackRef.current(),
     });
   }, [active]);
+}
+
+/**
+ * Closes an overlay on Android back while it is open. The handler registers
+ * only while `opened` is true and after the page handler, so it consumes back
+ * before the page can navigate.
+ */
+export function useOverlayBackNavigation(
+  opened: boolean,
+  onClose: () => void,
+): void {
+  const active = usePageActivity();
+  const onCloseRef = useRef(onClose);
+  onCloseRef.current = onClose;
+
+  useEffect(() => {
+    if (!active || !opened) return;
+    return registerPageBackNavigationHandler({
+      back: () => {
+        onCloseRef.current();
+        return true;
+      },
+    });
+  }, [active, opened]);
 }

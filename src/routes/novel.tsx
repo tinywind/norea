@@ -52,7 +52,7 @@ import {
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
 import { listServerChapterAvailability, readServerNovelSource } from "../lib/content-sync/novel-source";
-import { usePageBackNavigation } from "../lib/android-back-navigation";
+import { useOverlayBackNavigation, usePageBackNavigation } from "../lib/android-back-navigation";
 import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
@@ -335,6 +335,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   }
 
   usePageBackNavigation(goBack);
+  const closeReaderSettings = () => setReaderSettingsOpen(false);
+  useOverlayBackNavigation(readerSettingsOpen, closeReaderSettings);
 
   function openChapter(chapter: ChapterListRow): void {
     void navigate({ to: "/reader", search: { chapterId: chapter.id } });
@@ -702,7 +704,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
           content: "norea-reader-settings-drawer-content",
         }}
         opened={readerSettingsOpen}
-        onClose={() => setReaderSettingsOpen(false)}
+        onClose={closeReaderSettings}
         position="right"
         size="lg"
         title={t("readerSettings.novel.title", { name: novel.name })}

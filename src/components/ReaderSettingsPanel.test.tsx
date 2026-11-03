@@ -2,6 +2,7 @@ import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 
 const hookState = vi.hoisted(() => ({ index: 0, slots: [] as unknown[] }));
+const backState = vi.hoisted(() => ({ overlays: [] as Array<{ opened: boolean; onClose: () => void }> }));
 vi.hoisted(() => {
   const values = new Map<string, string>();
   const storage = {
@@ -22,6 +23,11 @@ vi.mock("react", async (original) => ({
   },
 }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("../lib/android-back-navigation", () => ({
+  useOverlayBackNavigation: (opened: boolean, onClose: () => void) => {
+    backState.overlays.push({ opened, onClose });
+  },
+}));
 vi.mock("../store/reader", async (original) => {
   const actual = await original<typeof import("../store/reader")>();
   return {
@@ -63,11 +69,13 @@ const readerTarget = { kind: "novel" as const, novelId: 7, sourceId: "source-a",
 
 function renderReaderPanel() {
   hookState.index = 0;
+  backState.overlays = [];
   return elements(ReaderSettingsPanel({ editEffectiveScope: true, inlineAutomation: true, target: readerTarget }));
 }
 
 function renderGlobalPanel() {
   hookState.index = 0;
+  backState.overlays = [];
   return elements(ReaderSettingsPanel());
 }
 
@@ -194,5 +202,19 @@ it("states the novel scope and leaves global settings when resetting a novel ove
   confirmResetButton(tree).props.onClick!();
 
   expect(useReaderStore.getState().readerSettingsByNovel[readerTarget.novelId]).toBeUndefined();
+  expect(useReaderStore.getState().appearance.textSize).toBe(26);
+});
+
+it("closes the reset confirmation on back without resetting settings", () => {
+  useReaderStore.getState().setAppearance({ textSize: 26 });
+  resetButton(renderGlobalPanel()).props.onClick!();
+  expect(resetModal(renderGlobalPanel()).props.opened).toBe(true);
+  const openOverlays = backState.overlays.filter((overlay) => overlay.opened);
+  expect(openOverlays).toHaveLength(1);
+
+  openOverlays[0]!.onClose();
+
+  expect(resetModal(renderGlobalPanel()).props.opened).toBe(false);
+  expect(backState.overlays.some((overlay) => overlay.opened)).toBe(false);
   expect(useReaderStore.getState().appearance.textSize).toBe(26);
 });
