@@ -33,6 +33,7 @@ import {
   ContinueReadingShelf,
   isContinueReadingShelfVisible,
 } from "../components/library/ContinueReadingShelf";
+import { LibrarySearchSources } from "../components/library/LibrarySearchSources";
 import { useLibraryQuery } from "../components/library/use-library-query";
 import { useLibraryEntry } from "../components/library/use-library-entry";
 import { StorageRecoveryBanner } from "../components/runtime/StorageRecovery";
@@ -264,8 +265,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     [toggleSelected],
   );
 
+  const trimmedSearch = debouncedSearch.trim();
   const filterActive =
-    debouncedSearch.trim() !== "" ||
+    trimmedSearch !== "" ||
     selectedSourceId !== null ||
     downloadedOnlyMode ||
     unreadOnlyMode ||
@@ -535,7 +537,20 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                       </Button>
                     </div>
                   ) : null}
+                  {trimmedSearch !== "" ? (
+                    <LibrarySearchSources
+                      empty={false}
+                      onClearFilters={clearAllFilters}
+                      query={trimmedSearch}
+                    />
+                  ) : null}
                 </>
+              ) : trimmedSearch !== "" ? (
+                <LibrarySearchSources
+                  empty
+                  onClearFilters={clearAllFilters}
+                  query={trimmedSearch}
+                />
               ) : filterActive ? (
                 <div className="norea-library-state">
                   <StateView

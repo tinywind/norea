@@ -1013,6 +1013,7 @@
   "library.search.aria": "Search library",
   "library.search.placeholder": "Search library...",
   "library.search.close": "Close search",
+  "library.searchSources": "Search sources for “{query}”",
   "library.viewOptions.title": "View options",
   "library.viewOptions.short": "View",
   "library.viewOptions.filter": "Filter",

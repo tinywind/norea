@@ -718,6 +718,12 @@
   font-weight: var(--norea-weight-medium);
 }
 
+.norea-library-search-sources {
+  display: flex;
+  justify-content: center;
+  padding: var(--norea-space-2) var(--norea-space-3) var(--norea-space-4);
+}
+
 .norea-library-load-more {
   display: flex;
   justify-content: center;

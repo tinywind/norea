@@ -1013,6 +1013,7 @@
   "library.search.aria": "서재 검색",
   "library.search.placeholder": "서재 검색...",
   "library.search.close": "검색 닫기",
+  "library.searchSources": "소스에서 “{query}” 검색",
   "library.viewOptions.title": "보기 옵션",
   "library.viewOptions.short": "보기",
   "library.viewOptions.filter": "필터",
