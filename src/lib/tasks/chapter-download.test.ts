@@ -99,6 +99,7 @@ vi.mock("../content-sync/media-repair", () => ({
 vi.mock("../content-sync/novel-source", () => ({
   tryDownloadServerChapter: vi.fn(async () => false),
 }));
+vi.mock("../plugins/sync-novel", () => ({ syncNovelFromSource: vi.fn() }));
 vi.mock("./scheduler", () => ({
   TASK_PAUSE_ABORT_MESSAGE: "Task was paused.",
   taskScheduler: {
@@ -139,6 +140,8 @@ import type { ScraperExecutorId } from "./scraper-queue";
 import { isTauriRuntime } from "../tauri-runtime";
 import { watchChapterDownloadActivity } from "./chapter-download-activity";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
+import { syncNovelFromSource } from "../plugins/sync-novel";
+import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { TaskUserCancelledError } from "./task-errors";
 import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
 import { installChapterDownloadBatchInterceptor } from "./chapter-download-batch-interceptor";
@@ -588,6 +591,54 @@ describe("VPN range chapter acquisition", () => {
     await expect(capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1" }))
       .rejects.toMatchObject({ code: "source-access-required" });
     expect(settled).toBe(false);
+  });
+
+  describe("recovered folder chapters missing on the content server", () => {
+    const folderJob = { ...job, chapterPath: "norea-folder:7" };
+    const workerPlugin = { id: "source-a", name: "Source A (worker)", getBaseUrl: () => "https://source.test",
+      getChapterAcquisitionPlan: pluginMocks.getChapterAcquisitionPlan, getChapterResource: pluginMocks.getChapterResource };
+    let path = "norea-folder:7";
+    beforeEach(async () => {
+      path = "norea-folder:7";
+      const chapter = (await getChapterById(7))!;
+      vi.mocked(getChapterById).mockImplementation(async () => ({ ...chapter, path }));
+      pluginMocks.getPluginForExecutor.mockImplementation((_id, executor) => executor === "vpn:0:8" ? workerPlugin : undefined);
+    });
+
+    it("resolves the source path through the worker's plugin route and downloads from the source", async () => {
+      vi.mocked(syncNovelFromSource).mockImplementation(async () => { path = "/novel/7"; return {} as never; });
+      let settled = false;
+      enqueueVpnDownloadChapter(folderJob, worker, async () => { settled = true; });
+      await capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1" });
+      expect(syncNovelFromSource).toHaveBeenCalledOnce();
+      expect(vi.mocked(syncNovelFromSource).mock.calls[0]![0]).toBe(workerPlugin);
+      expect(vi.mocked(syncNovelFromSource).mock.calls[0]![1]).toMatchObject({ path: "/novel" });
+      expect(pluginMocks.getChapterResource).toHaveBeenCalledWith("/novel/7", "text");
+      expect(settled).toBe(true);
+    });
+
+    it("uses an already resolved source path for a frozen folder job without refreshing again", async () => {
+      path = "/novel/7";
+      enqueueVpnDownloadChapter(folderJob, worker, async () => undefined);
+      await capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1" });
+      expect(vi.mocked(tryDownloadServerChapter).mock.calls[0]![0]).toMatchObject({ id: 7, chapterPath: "/novel/7" });
+      expect(syncNovelFromSource).not.toHaveBeenCalled();
+      expect(pluginMocks.getChapterResource).toHaveBeenCalledWith("/novel/7", "text");
+    });
+
+    it("reports a content error, not a VPN failure, when the source has no matching chapter", async () => {
+      vi.mocked(syncNovelFromSource).mockResolvedValue({} as never);
+      vi.mocked(getNovelById).mockResolvedValue({ ...(await getNovelById(11))!, id: 12 });
+      let settled = false;
+      enqueueVpnDownloadChapter(folderJob, worker, async () => { settled = true; });
+      const failure = await capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1" })
+        .then(() => null, (error: unknown) => error);
+      expect(failure).toBeInstanceOf(Error);
+      expect((failure as Error).message).toMatch(/not on the content server.*no matching chapter/);
+      expect(isPluginVpnUnavailableError(failure)).toBe(false);
+      expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+      expect(settled).toBe(false);
+    });
   });
 
   it("verifies the real source rather than satisfying a VPN canary from a content server", async () => {

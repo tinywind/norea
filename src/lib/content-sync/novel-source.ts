@@ -75,7 +75,11 @@ export async function tryDownloadServerChapter(
   if (novel.pluginId !== job.pluginId || chapter.path !== job.chapterPath) {
     throw new Error("Content server download identity does not match the local chapter.");
   }
-  const serverRequired = chapter.path.startsWith("norea-folder:") || Boolean(source && novel.isLocal);
+  // A recovered folder chapter can still come from an installed source once a source refresh resolves its path.
+  const folderChapter = chapter.path.startsWith("norea-folder:");
+  if (folderChapter && !novel.isLocal && !pluginManager.getPlugin(novel.pluginId)) await pluginManager.loadInstalledFromDb();
+  const sourceResolvable = !novel.isLocal && !novel.path.startsWith("norea-folder:") && Boolean(pluginManager.getPlugin(novel.pluginId));
+  const serverRequired = (folderChapter && !sourceResolvable) || Boolean(source && novel.isLocal);
   if (!serverRequired && (!source || pluginManager.getPlugin(novel.pluginId))
     && (unavailableUntil.get(serverUrl) ?? 0) > Date.now()) return false;
   const target = { pluginId: novel.pluginId, novelPath: novel.path, chapterPath: chapter.path };

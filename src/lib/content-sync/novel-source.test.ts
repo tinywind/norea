@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CatalogEntry } from "./native";
 
 const cache = new Map<string, string>();
@@ -150,6 +150,44 @@ it("accepts a chapter-number match within the exact work without creating anothe
   vi.mocked(contentServerRequest).mockResolvedValueOnce(stored);
   expect(await tryDownloadServerChapter(job)).toBe(true);
   expect(downloadServerChapterFromServer).toHaveBeenCalledWith(stored, "http://configured", { token: "device-key", target: entry.manifest.identity });
+});
+
+describe("recovered folder chapters", () => {
+  const folderJob = { ...job, chapterPath: "norea-folder:7" };
+  beforeEach(async () => {
+    vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 3, path: "norea-folder:7", chapterNumber: "7", position: 7 } as never);
+    await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
+  });
+
+  it("leaves a chapter missing on the server to an installed source instead of failing", async () => {
+    vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
+    vi.mocked(pluginManager.loadInstalledFromDb).mockImplementationOnce(async () => {
+      vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+    });
+    expect(await tryDownloadServerChapter(folderJob)).toBe(false);
+    expect(pluginManager.loadInstalledFromDb).toHaveBeenCalledOnce();
+    // A missing chapter does not delay the next server lookup.
+    vi.mocked(contentServerRequest).mockResolvedValueOnce({ ...entry, manifest: { identity: { ...entry.manifest.identity, chapterPath: "norea-folder:7" }, chapter: { chapterNumber: "7" } } } as CatalogEntry);
+    expect(await tryDownloadServerChapter(folderJob)).toBe(true);
+  });
+
+  it("keeps the 30 second server skip for other server failures", async () => {
+    vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+    vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(503));
+    expect(await tryDownloadServerChapter(folderJob)).toBe(false);
+    expect(await tryDownloadServerChapter(folderJob)).toBe(false);
+    expect(contentServerRequest).toHaveBeenCalledOnce();
+  });
+
+  it.each([
+    ["no installed source", { id: 3, pluginId: "source-a", path: "/novel/a", name: "A work" }, undefined],
+    ["a local work", { id: 3, pluginId: "source-a", path: "/novel/a", name: "A work", isLocal: true }, { id: "source-a" }],
+  ])("still reports the server miss for %s", async (_case, novel, plugin) => {
+    vi.mocked(getNovelById).mockResolvedValue(novel as never);
+    vi.mocked(pluginManager.getPlugin).mockReturnValue(plugin as never);
+    vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
+    await expect(tryDownloadServerChapter(folderJob)).rejects.toThrow("Content server request failed (404)");
+  });
 });
 
 it("restores the original server after a restart even when the configured server changes", async () => {

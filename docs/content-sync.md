@@ -97,7 +97,12 @@ handles the download. The server lookup timeout defaults to 3 seconds
 and can be set from 1 to 120 seconds. This deadline includes device registration
 and metadata lookup, and also applies to work-home server refreshes. Chapter file
 transfers have their own timeout. Server-only chapters report unavailable-server
-errors instead of sending their folder identities to a source plugin.
+errors instead of sending their folder identities to a source plugin. A recovered
+folder chapter of a work whose source plugin is installed is source-capable: when
+the server lacks it, the download refreshes that work once per session through the
+task's plugin fetch route, including a VPN download worker's route, so matching
+source chapter numbers replace folder identities, then downloads from the source.
+It fails as a content error only when the source has no matching chapter.
 After a server failure, source-capable chapters skip server attempts for 30 seconds;
 a missing chapter does not trigger this delay. A failed chapter transfer also falls
 back to the source plugin. Cancelling a transfer releases the download task without

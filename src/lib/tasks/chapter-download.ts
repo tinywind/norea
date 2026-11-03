@@ -44,6 +44,7 @@ import {
 } from "../chapter-content-storage";
 import { convertEpubToHtml, mergeEpubHtmlSections } from "../epub-html";
 import { getPluginBaseUrl } from "../plugins/base-url";
+import { syncNovelFromSource } from "../plugins/sync-novel";
 import {
   captureChapterPage,
   validateChapterAcquisitionPlan,
@@ -1024,6 +1025,46 @@ function resolveSourceTaskName(
   return pluginManager.getPlugin(pluginId)?.name ?? trimmedName ?? pluginId;
 }
 
+const RECOVERED_CHAPTER_PATH_PREFIX = "norea-folder:";
+const recoveredSourceRefreshes = new Map<number, Promise<void>>();
+
+/** A frozen job keeps a recovered folder identity after a source refresh gave its chapter row a source path. */
+function chapterDownloadSourceJob<T extends Pick<ChapterDownloadJob, "chapterPath">>(job: T, chapterPath: string): T {
+  return job.chapterPath !== chapterPath && job.chapterPath.startsWith(RECOVERED_CHAPTER_PATH_PREFIX) &&
+    !chapterPath.startsWith(RECOVERED_CHAPTER_PATH_PREFIX) ? { ...job, chapterPath } : job;
+}
+
+/**
+ * Refreshes the work once per session through the task's plugin route so recovered
+ * folder chapters gain source paths. Returns the chapter's source path, or null.
+ */
+async function resolveRecoveredChapterSourcePath(
+  plugin: Plugin, novel: NonNullable<Awaited<ReturnType<typeof getNovelById>>>, chapterId: number, signal: AbortSignal,
+): Promise<string | null> {
+  if (novel.isLocal || novel.path.startsWith(RECOVERED_CHAPTER_PATH_PREFIX) || novel.pluginId !== plugin.id) return null;
+  for (;;) {
+    let refresh = recoveredSourceRefreshes.get(novel.id);
+    const shared = refresh !== undefined;
+    if (!refresh) {
+      const pending = syncNovelFromSource(plugin, { name: novel.name, path: novel.path, cover: novel.cover ?? undefined },
+        { novelId: novel.id, chapterRefreshMode: "full", preserveMissingMetadata: true, signal }).then(() => undefined);
+      refresh = pending;
+      recoveredSourceRefreshes.set(novel.id, pending);
+      void pending.catch(() => { if (recoveredSourceRefreshes.get(novel.id) === pending) recoveredSourceRefreshes.delete(novel.id); });
+    }
+    try {
+      await abortableStep(signal, refresh);
+      break;
+    } catch (error) {
+      // Another task's cancelled or failed refresh is no verdict for this task; run its own once.
+      if (!shared || signal.aborted) throw error;
+      if (recoveredSourceRefreshes.get(novel.id) === refresh) recoveredSourceRefreshes.delete(novel.id);
+    }
+  }
+  const chapter = await getChapterById(chapterId);
+  return chapter && !chapter.path.startsWith(RECOVERED_CHAPTER_PATH_PREFIX) ? chapter.path : null;
+}
+
 async function resolveChapterDownloadSourceAccessUrl(
   job: ChapterDownloadJob,
 ): Promise<string> {
@@ -1031,15 +1072,16 @@ async function resolveChapterDownloadSourceAccessUrl(
   const plugin = pluginManager.getPluginForExecutor(job.pluginId, "immediate");
   const chapter = await getChapterById(job.id);
   if (!chapter) throw missingLocalChapterError(job);
+  const sourceJob = chapterDownloadSourceJob(job, chapter.path);
   const contentType = normalizeChapterContentType(
     chapter.sourceContentType ?? job.contentType ?? chapter.contentType,
   );
   const acquisitionPlan = validateChapterAcquisitionPlan(
-    plugin.getChapterAcquisitionPlan(job.chapterPath, contentType),
+    plugin.getChapterAcquisitionPlan(sourceJob.chapterPath, contentType),
   );
   return acquisitionPlan.type === "page"
     ? acquisitionPlan.url
-    : (absolutePluginUrl(plugin, job.chapterPath) ?? getPluginBaseUrl(plugin));
+    : (absolutePluginUrl(plugin, sourceJob.chapterPath) ?? getPluginBaseUrl(plugin));
 }
 
 function enqueueChapterDownloadForExecutor(
@@ -1165,7 +1207,8 @@ function enqueueChapterDownloadForExecutor(
           );
           return;
         }
-        if (!(options.vpnWorker && sourceAccessVerification) && await tryDownloadServerChapter(job, signal, setChapterDownloadPhase)) {
+        let sourceJob = chapterDownloadSourceJob(job, chapter.path);
+        if (!(options.vpnWorker && sourceAccessVerification) && await tryDownloadServerChapter(sourceJob, signal, setChapterDownloadPhase)) {
           if (signal.aborted) throw abortReason(signal);
           await completeJob();
           reportProgress(
@@ -1186,16 +1229,24 @@ function enqueueChapterDownloadForExecutor(
         );
         const novel = await getNovelById(chapter.novelId);
         if (!novel) throw missingLocalChapterError(job);
+        if (sourceJob.chapterPath.startsWith(RECOVERED_CHAPTER_PATH_PREFIX)) {
+          const sourcePath = await resolveRecoveredChapterSourcePath(plugin, novel, job.id, signal);
+          if (!sourcePath) throw new Error("This chapter is not on the content server, and its source has no matching chapter.");
+          sourceJob = chapterDownloadSourceJob(sourceJob, sourcePath);
+          const refreshed = await withChapterDownloadWrite(job.id, signal, () => getChapterById(job.id));
+          if (!refreshed) throw missingLocalChapterError(job);
+          chapter = refreshed;
+        }
         const contentType = normalizeChapterContentType(
           chapter.sourceContentType ?? job.contentType ?? chapter.contentType,
         );
         const acquisitionPlan = validateChapterAcquisitionPlan(
-          plugin.getChapterAcquisitionPlan(job.chapterPath, contentType),
+          plugin.getChapterAcquisitionPlan(sourceJob.chapterPath, contentType),
         );
         const acquisitionUrl =
           acquisitionPlan.type === "page"
             ? acquisitionPlan.url
-            : (absolutePluginUrl(plugin, job.chapterPath) ??
+            : (absolutePluginUrl(plugin, sourceJob.chapterPath) ??
               getPluginBaseUrl(plugin));
         let trustedAccessUrl = acquisitionUrl;
         if (setSourceAccessUrl?.(acquisitionUrl) === false) {
@@ -1245,7 +1296,7 @@ function enqueueChapterDownloadForExecutor(
             );
           }
           const bytes = validateChapterResource(
-            await loadChapterResource(plugin, job.chapterPath, contentType),
+            await loadChapterResource(plugin, sourceJob.chapterPath, contentType),
             contentType,
           );
           confirmSourceAccess?.();
@@ -1306,7 +1357,7 @@ function enqueueChapterDownloadForExecutor(
           );
           return;
         }
-        let baseUrl = absolutePluginUrl(plugin, job.chapterPath);
+        let baseUrl = absolutePluginUrl(plugin, sourceJob.chapterPath);
         const storedHtmlSource = !sourceAccessVerification && previousHtml?.trim()
           ? restoreProtectedRemoteChapterMediaSources(previousHtml, baseUrl)
           : null;
@@ -1337,7 +1388,7 @@ function enqueueChapterDownloadForExecutor(
             confirmSourceAccess?.();
           } else {
             const resource = validateChapterContentResource(
-              await loadChapterResource(plugin, job.chapterPath, contentType),
+              await loadChapterResource(plugin, sourceJob.chapterPath, contentType),
               contentType,
             );
             confirmSourceAccess?.();
