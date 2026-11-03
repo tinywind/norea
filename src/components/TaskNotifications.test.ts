@@ -153,7 +153,10 @@ describe("per-plugin source access notifications", () => {
   });
   it("preserves dismissal until the challenge identity changes",()=>{
     const a=accessBlock();const sync=mount([a]);
-    expect(notificationsStore.getState().notifications[0]?.autoClose).toBe(5_000);
+    const notice = notificationsStore.getState().notifications[0]!;
+    expect(notice.autoClose).toBe(false);
+    const action = (notice.message as ReactElement<{ children: unknown[] }>).props.children.at(-1) as ReactElement<{ size?: string }>;
+    expect(action.props.size).toBeUndefined();
     notifications.hide("source-access-required:source-a");sync([{...a}]);
     expect(notificationsStore.getState().notifications).toEqual([]);
     sync([{...a,revision:2}]);
@@ -238,7 +241,8 @@ describe("per-range VPN notifications", () => {
   it("navigates to Tasks for exhaustion without reconnecting or opening a browser", async () => {
     mount([plan([range("a", { pauseReason: "profiles-exhausted" })])]);
     const item = notificationsStore.getState().notifications[0]!;
-    expect(item).toMatchObject({ id: id("a"), autoClose: 5_000, color: "orange" });
+    expect(item).toMatchObject({ id: id("a"), autoClose: false, color: "orange" });
+    expect((actionButton(id("a")) as ReactElement<{ size?: string }>).props.size).toBeUndefined();
     actionButton(id("a")).props.onClick();
     await vi.waitFor(() => expect(vpnMocks.navigate).toHaveBeenCalledWith({ to: "/tasks" }));
     expect(vpnMocks.open).not.toHaveBeenCalled(); expect(vpnMocks.initialize).not.toHaveBeenCalled();

@@ -172,8 +172,8 @@ export function TaskNotifications() {
         const wasShown = shown.has(item.sourceId);
         shown.set(item.sourceId, identity);
         const notification = {
-          id, autoClose: 5_000, color: "orange", title: item.title,
-          message: <>{item.body} <Button variant="subtle" size="compact-xs" onClick={() => handleNotificationAction({ type: "verifySource", sourceId: item.sourceId, scopeKey: item.scopeKey, revision: item.revision })}>{item.actionLabel}</Button></>,
+          id, autoClose: false, color: "orange", title: item.title,
+          message: <>{item.body} <Button variant="subtle" onClick={() => handleNotificationAction({ type: "verifySource", sourceId: item.sourceId, scopeKey: item.scopeKey, revision: item.revision })}>{item.actionLabel}</Button></>,
           withCloseButton: true,
           closeButtonProps: { "aria-label": t("sourceAccess.dismissNotification") },
           onClose: () => {
@@ -245,8 +245,8 @@ export function TaskNotifications() {
         const wasShown = shown.has(item.id);
         shown.set(item.id, identity);
         const notification = {
-          id: item.id, autoClose: 5_000, color: "orange", title: item.title,
-          message: <>{item.body} <Button variant="subtle" size="compact-xs" onClick={() => handleNotificationAction(item.action)}>{item.actionLabel}</Button></>,
+          id: item.id, autoClose: false, color: "orange", title: item.title,
+          message: <>{item.body} <Button variant="subtle" onClick={() => handleNotificationAction(item.action)}>{item.actionLabel}</Button></>,
           withCloseButton: true,
           closeButtonProps: { "aria-label": t("sourceAccess.dismissNotification") },
           onClose: () => {
