@@ -1178,7 +1178,7 @@
   "browse.uninstallConfirm.title": "Uninstall {name}?",
   "browse.uninstallConfirm.message": "The plugin and its saved settings are removed from this device. Novels in your library stay.",
   "browse.removeRepositoryConfirm.title": "Remove the repository?",
-  "browse.removeRepositoryConfirm.message": "{url} and its cached plugin list are removed, and saved source filters are cleared. Installed plugins stay installed.",
+  "browse.removeRepositoryConfirm.message": "{url} and its cached plugin list are removed. Installed plugins stay installed and keep their settings.",
   "browse.cookies.clear": "Clear cookies",
   "browse.cookies.confirmTitle": "Clear {name} cookies?",
   "browse.cookies.confirmMessage": "This removes the site cookies used by {name}. You may need to sign in or complete site verification again.",

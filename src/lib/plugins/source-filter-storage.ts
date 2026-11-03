@@ -202,20 +202,3 @@ export function writeSourceFilters(
     }),
   );
 }
-
-export function clearSourceFilterStorage(): void {
-  const storage = browserLocalStorage();
-  if (!storage) return;
-
-  const keys: string[] = [];
-  for (let index = 0; index < storage.length; index += 1) {
-    const key = storage.key(index);
-    if (key?.startsWith(SOURCE_FILTER_STORAGE_PREFIX)) {
-      keys.push(key);
-    }
-  }
-
-  for (const key of keys) {
-    storage.removeItem(key);
-  }
-}

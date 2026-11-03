@@ -37,7 +37,6 @@ import {
   useInstalledPlugins,
   useRepositories,
   type AvailableEntry,
-  type AvailableResult,
   type PluginPublisherLookup,
   type PluginUpdate,
   type RepoFetchFailure,
@@ -77,7 +76,6 @@ import {
   trimAppNavigationHistoryTo,
 } from "../lib/navigation-history";
 import { pluginManager } from "../lib/plugins/manager";
-import { clearSourceFilterStorage } from "../lib/plugins/source-filter-storage";
 import type { Plugin, PluginItem } from "../lib/plugins/types";
 import { comparePluginVersions } from "../lib/plugins/version";
 import { enqueueMainTask } from "../lib/tasks/main-tasks";
@@ -387,12 +385,7 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
         run: () => removeRepository(id),
       }).promise;
     },
-    onSuccess: () => {
-      clearSourceFilterStorage();
-      setPluginLanguageFilter([]);
-      queryClient.setQueryData<AvailableResult>(AVAILABLE_QUERY_KEY, { entries: [], failures: [] });
-      reloadRepositories();
-    },
+    onSuccess: reloadRepositories,
   });
 
   const editRepositories = useMutation({
