@@ -1,4 +1,5 @@
-import type { ReactNode } from "react";
+import { Button } from "@mantine/core";
+import { useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePageBackNavigation } from "../../lib/android-back-navigation";
 import {
@@ -17,34 +18,58 @@ interface OverlayProps {
 }
 
 const rendered = vi.hoisted(() => ({
-  overlays: new Map<unknown, OverlayProps>(),
+  overlays: new Map<unknown, OverlayProps & { kind: string }>(),
   buttons: new Map<unknown, OverlayProps>(),
+  desktop: false,
 }));
 
 vi.mock("@mantine/core", () => {
   const Pass = ({ children }: OverlayProps) => children;
-  const Overlay = (props: OverlayProps) => {
-    rendered.overlays.set(props.title, props);
+  const overlay = (kind: string) => (props: OverlayProps) => {
+    rendered.overlays.set(props.title, { ...props, kind });
     return props.opened ? props.children : null;
   };
   const Button = (props: OverlayProps) => {
     rendered.buttons.set(props.children, props);
     return null;
   };
-  return { Button, Group: Pass, Modal: Overlay, Stack: Pass, Text: () => null };
+  return {
+    Box: Pass,
+    Button,
+    Drawer: overlay("drawer"),
+    Group: Pass,
+    Modal: overlay("modal"),
+    Stack: Pass,
+    Text: () => null,
+  };
 });
+vi.mock("@mantine/hooks", () => ({ useMediaQuery: () => rendered.desktop }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
 import { ConfirmDialog, useConfirm, type ConfirmOptions } from "./ConfirmDialog";
+import { ResponsiveSheet } from "./ResponsiveSheet";
 
 let harness: BackNavigationHarness;
 let confirm: (options: ConfirmOptions) => Promise<boolean>;
 const pageBack = vi.fn(() => true);
 
+let setSheetOpened: (opened: boolean) => void;
+
 function Page() {
   usePageBackNavigation(pageBack);
   confirm = useConfirm();
-  return null;
+  const [sheetOpened, setOpened] = useState(false);
+  setSheetOpened = setOpened;
+  return (
+    <ResponsiveSheet
+      footer={<Button>Apply</Button>}
+      onClose={() => setOpened(false)}
+      opened={sheetOpened}
+      title="Filters"
+    >
+      {null}
+    </ResponsiveSheet>
+  );
 }
 
 function App({ dialog = true, page = true }: { dialog?: boolean; page?: boolean }) {
@@ -54,6 +79,10 @@ function App({ dialog = true, page = true }: { dialog?: boolean; page?: boolean 
       {dialog ? <ConfirmDialog /> : null}
     </>
   );
+}
+
+async function openSheet() {
+  await harness.run(() => setSheetOpened(true));
 }
 
 const overlay = (title: string) => rendered.overlays.get(title);
@@ -76,6 +105,7 @@ async function request(options: ConfirmOptions): Promise<{ result: Promise<boole
 beforeEach(async () => {
   rendered.overlays.clear();
   rendered.buttons.clear();
+  rendered.desktop = false;
   pageBack.mockClear();
   harness = mountBackNavigationHarness();
   await harness.render(<App />);
@@ -149,5 +179,59 @@ describe("ConfirmDialog overlay contract", () => {
     const { result } = await request(deleteOptions);
     await harness.render(<App dialog={false} />);
     await expect(result).resolves.toBe(false);
+  });
+});
+
+describe("ResponsiveSheet overlay contract", () => {
+  it("is a bottom drawer with its footer below 768px", async () => {
+    await openSheet();
+    expect(overlay("Filters")).toMatchObject({ kind: "drawer", opened: true, position: "bottom" });
+    expect(button("Apply")).toBeDefined();
+  });
+
+  it("is a modal from 768px up", async () => {
+    rendered.desktop = true;
+    await harness.render(<App />);
+    await openSheet();
+    expect(overlay("Filters")).toMatchObject({ kind: "modal", opened: true });
+  });
+
+  it("keeps Mantine's focus trap and focus return", async () => {
+    await openSheet();
+    expect(overlay("Filters")).not.toHaveProperty("trapFocus", false);
+    expect(overlay("Filters")).not.toHaveProperty("returnFocus", false);
+  });
+
+  it("closes on Android back without reaching the page", async () => {
+    await openSheet();
+
+    expect(harness.pressBack()).toBe(true);
+    expect(overlay("Filters")?.opened).toBe(false);
+    expect(pageBack).not.toHaveBeenCalled();
+
+    harness.pressBack();
+    expect(pageBack).toHaveBeenCalledOnce();
+  });
+
+  it("closes a confirmation opened on top of it before closing itself", async () => {
+    await openSheet();
+    const { result } = await request(deleteOptions);
+
+    expect(harness.pressBack()).toBe(true);
+    await expect(result).resolves.toBe(false);
+    expect(overlay("Filters")?.opened).toBe(true);
+
+    expect(harness.pressBack()).toBe(true);
+    expect(overlay("Filters")?.opened).toBe(false);
+    expect(pageBack).not.toHaveBeenCalled();
+  });
+
+  it("leaves the sheet open when the confirmation on top is dismissed", async () => {
+    await openSheet();
+    const { result } = await request(deleteOptions);
+
+    await harness.run(() => overlay("Delete?")!.onClose!());
+    await expect(result).resolves.toBe(false);
+    expect(overlay("Filters")?.opened).toBe(true);
   });
 });

@@ -25,6 +25,7 @@ import {
 } from "../components/ActionGlyphs";
 import { SegmentedToggle } from "../components/SegmentedToggle";
 import { TextButton } from "../components/TextButton";
+import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
 import {
   ConsoleChip,
   ConsolePanel,
@@ -860,19 +861,11 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
       </ConsoleStatusStrip>
 
       {sourceFilters && (
-        <Drawer
+        <ResponsiveSheet
           opened={filterDrawerOpen}
           onClose={() => setFilterDrawerOpen(false)}
           title={t("source.drawerTitle", { name: plugin.name })}
-          position="right"
-          size="md"
-        >
-          <Stack gap="md">
-            <PluginFilters
-              schema={sourceFilters}
-              values={pendingFilters}
-              onChange={setPendingFilters}
-            />
+          footer={
             <Group justify="space-between">
               <TextButton
                 variant="subtle"
@@ -901,8 +894,14 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
                 </TextButton>
               </Group>
             </Group>
-          </Stack>
-        </Drawer>
+          }
+        >
+          <PluginFilters
+            schema={sourceFilters}
+            values={pendingFilters}
+            onChange={setPendingFilters}
+          />
+        </ResponsiveSheet>
       )}
       {hasPluginSettings ? (
         <Drawer
