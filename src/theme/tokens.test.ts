@@ -7,7 +7,6 @@ const stylesDir = new URL("../styles/", import.meta.url);
 const NOT_YET_MIGRATED = new Set([
   "browse.css",
   "downloads.css",
-  "novel.css",
   "novel-merge.css",
   "plugin-vpn-finder.css",
   "reader.css",

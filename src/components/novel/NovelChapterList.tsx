@@ -53,7 +53,7 @@ import {
   normalizeDateText,
   parseChapterDndId,
 } from "./novel-detail-model";
-const CHAPTER_ROW_HEIGHT = 54;
+const CHAPTER_ROW_HEIGHT = 58;
 
 const CHAPTER_LIST_OVERSCAN = 8;
 
