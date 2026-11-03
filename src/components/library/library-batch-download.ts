@@ -1,11 +1,22 @@
 import {
   hasStoredChapterContent,
+  listLibraryDownloadChapters,
   listUnqueuedChapterDownloadIds,
   type LibraryDownloadChapter,
 } from "../../db/queries/chapter";
+import { getNovelById } from "../../db/queries/novel";
 import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
 import { isChapterDownloadQueued } from "../../lib/tasks/chapter-download";
 export type LibraryBatchDownloadMode = "all" | "unread" | "next10" | "next30";
+
+export const LIBRARY_BATCH_DOWNLOAD_MODES: readonly LibraryBatchDownloadMode[] = [
+  "all",
+  "unread",
+  "next10",
+  "next30",
+];
+
+export type LibraryBatchDownloadCounts = Record<LibraryBatchDownloadMode, number>;
 
 function canQueueChapterDownload(chapter: LibraryDownloadChapter): boolean {
   return (
@@ -68,4 +79,28 @@ export function getLibraryBatchDownloadTargets(
         .slice(0, limit);
     }
   }
+}
+
+/** How many chapters each batch download mode would queue for the novels. */
+export async function countLibraryBatchDownloadTargets(
+  novelIds: Iterable<number>,
+  lastReadChapterByNovel: Readonly<Record<number, number | undefined>>,
+  signal?: AbortSignal,
+): Promise<LibraryBatchDownloadCounts> {
+  const counts: LibraryBatchDownloadCounts = { all: 0, unread: 0, next10: 0, next30: 0 };
+  for (const novelId of novelIds) {
+    signal?.throwIfAborted();
+    const novel = await getNovelById(novelId);
+    if (!novel || novel.isLocal) continue;
+    const chapters = await listLibraryDownloadChapters(novelId);
+    signal?.throwIfAborted();
+    for (const mode of LIBRARY_BATCH_DOWNLOAD_MODES) {
+      counts[mode] += getLibraryBatchDownloadTargets(
+        mode,
+        chapters,
+        lastReadChapterByNovel[novelId],
+      ).length;
+    }
+  }
+  return counts;
 }

@@ -10,6 +10,7 @@ vi.mock("../client", () => ({
 import { getDb, runDatabaseTransaction } from "../client";
 import {
   addNovelsToCategory,
+  countNovelsByCategory,
   deleteCategory,
   getLibraryCategoryCounts,
   getNovelCategoryIds,
@@ -232,5 +233,29 @@ describe("work category assignments", () => {
       BEGIN SELECT RAISE(ABORT, 'Category write failed'); END`);
     await expect(setNovelCategories(1, [13])).rejects.toThrow("Category write failed");
     expect(await getNovelCategoryIds(1)).toEqual([12, 11]);
+  });
+});
+
+describe("countNovelsByCategory", () => {
+  it("counts selected novels per category across chunks", async () => {
+    const ids = Array.from({ length: 501 }, (_, index) => index + 1);
+    mockSelect
+      .mockResolvedValueOnce([{ categoryId: 4, count: 3 }, { categoryId: 5, count: 1 }])
+      .mockResolvedValueOnce([{ categoryId: 4, count: 1 }]);
+
+    const counts = await countNovelsByCategory([...ids, 1, 0]);
+
+    expect(mockSelect).toHaveBeenCalledTimes(2);
+    const [sql, params] = mockSelect.mock.calls[0]!;
+    expect(sql).toContain("JOIN category c ON c.id = nc.category_id");
+    expect(sql).toContain("GROUP BY nc.category_id");
+    expect(params).toHaveLength(500);
+    expect(mockSelect.mock.calls[1]![1]).toEqual([501]);
+    expect([...counts]).toEqual([[4, 4], [5, 1]]);
+  });
+
+  it("does not query without valid novel ids", async () => {
+    await expect(countNovelsByCategory([0, -2])).resolves.toEqual(new Map());
+    expect(mockSelect).not.toHaveBeenCalled();
   });
 });

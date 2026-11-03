@@ -4,17 +4,22 @@ import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
 
 const mocks = vi.hoisted(() => ({
   listIds: vi.fn(),
+  listChapters: vi.fn(),
+  getNovel: vi.fn(),
   queued: new Set<number>(),
 }));
 vi.mock("../../db/queries/chapter", async (importOriginal) => ({
   ...await importOriginal<typeof import("../../db/queries/chapter")>(),
+  listLibraryDownloadChapters: mocks.listChapters,
   listUnqueuedChapterDownloadIds: mocks.listIds,
 }));
+vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   isChapterDownloadQueued: (id: number) => mocks.queued.has(id),
 }));
 
 import {
+  countLibraryBatchDownloadTargets,
   getLibraryBatchDownloadTargets,
   hasLibraryBatchDownloadTargets,
 } from "./library-batch-download";
@@ -104,5 +109,19 @@ describe("library download availability", () => {
     release([]);
     await expect(scan).rejects.toMatchObject({ name: "AbortError" });
     expect(mocks.listIds).toHaveBeenCalledExactlyOnceWith(7, 0);
+  });
+});
+
+describe("library batch download counts", () => {
+  it("counts each mode across source novels and skips local works", async () => {
+    mocks.getNovel.mockImplementation(async (id: number) => ({ id, isLocal: id === 3 }));
+    mocks.listChapters.mockImplementation(async (id: number) => id === 1
+      ? [chapter(1, { unread: false }), chapter(2), chapter(3, { isDownloaded: true, unread: false })]
+      : [chapter(10), chapter(11)]);
+
+    await expect(countLibraryBatchDownloadTargets([1, 2, 3], { 1: 1 })).resolves.toEqual({
+      all: 4, unread: 3, next10: 1, next30: 1,
+    });
+    expect(mocks.listChapters).not.toHaveBeenCalledWith(3);
   });
 });

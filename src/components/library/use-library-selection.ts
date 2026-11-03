@@ -1,3 +1,4 @@
+import { notifications } from "@mantine/notifications";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { addNovelsToCategory, removeNovelsFromCategory } from "../../db/queries/category";
@@ -45,6 +46,8 @@ export function useLibrarySelection(
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
     () => new Set(),
   );
+  const [selecting, setSelecting] = useState(false);
+  const selectionMode = selecting || selectedIds.size > 0;
   const selectionRequestRef = useRef(0);
   const selectionScope = JSON.stringify([libraryFilter, sortOrder, active]);
   const selectionScopeRef = useRef(selectionScope);
@@ -73,14 +76,24 @@ export function useLibrarySelection(
     void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
   }, [queryClient]);
 
+  const exitSelection = useCallback(() => {
+    selectionRequestRef.current += 1;
+    setSelectedIds(new Set());
+    setSelecting(false);
+  }, []);
+
   const assignCategoryMutation = useMutation({
-    mutationFn: ({ categoryId, novelIds, mode = "add" }: AssignCategoryInput) =>
-      mode === "remove"
-        ? removeNovelsFromCategory(novelIds, categoryId)
-        : addNovelsToCategory(novelIds, categoryId),
-    onSuccess: () => {
+    mutationFn: async ({ add, novelIds, remove }: AssignCategoryInput) => {
+      for (const categoryId of add) await addNovelsToCategory(novelIds, categoryId);
+      for (const categoryId of remove) await removeNovelsFromCategory(novelIds, categoryId);
+    },
+    onSuccess: (_result, { novelIds }) => {
       invalidateLibraryCategories();
-      setSelectedIds(new Set());
+      exitSelection();
+      notifications.show({
+        color: "ok",
+        message: t("library.categoryAction.done", { count: novelIds.length }),
+      });
     },
     onError: (error) => {
       showErrorToast(t("library.editSelectedCategories"), error);
@@ -136,6 +149,14 @@ export function useLibrarySelection(
       await handle.materialized;
       return total;
     },
+    onSuccess: (total) => {
+      notifications.show({
+        color: total > 0 ? "ok" : undefined,
+        message: total > 0
+          ? t("library.batchDownload.queued", { count: total })
+          : t("library.batchDownload.nothingQueued"),
+      });
+    },
     onSettled: () => {
       void queryClient.invalidateQueries({
         queryKey: ["novel", "library", "batch-download"],
@@ -147,13 +168,16 @@ export function useLibrarySelection(
   });
 
   const deleteSelectedDownloadsMutation = useMutation({
-    mutationFn: (novelIds: readonly number[]) =>
+    mutationFn: ({ downloadedChapters, novelIds }: DeleteSelectedDownloadsInput) =>
       confirmContentDeletion({
         kind: "downloads", scope: "novel",
         ids: novelIds,
-        title: t("tasks.task.deleteDownloadCache"),
+        title: t("library.deleteSelectedDownloadsConfirm", {
+          chapters: downloadedChapters,
+          count: novelIds.length,
+        }),
       }),
-    onSuccess: changed => { if (changed) setSelectedIds(new Set()); },
+    onSuccess: changed => { if (changed) exitSelection(); },
     onSettled: () => {
       invalidateLibraryCategories();
       void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
@@ -164,10 +188,14 @@ export function useLibrarySelection(
   });
 
   const removeSelectedFromLibraryMutation = useMutation({
-    mutationFn: (novelIds: readonly number[]) => confirmContentDeletion({ kind: "library", ids: novelIds, title: t("library.removeSelectedFromLibrary") }),
+    mutationFn: (novelIds: readonly number[]) => confirmContentDeletion({
+      kind: "library",
+      ids: novelIds,
+      title: t("library.removeSelectedFromLibraryConfirm", { count: novelIds.length }),
+    }),
     onSuccess: changed => {
       if (!changed) return;
-      setSelectedIds(new Set());
+      exitSelection();
       invalidateLibraryCategories();
       void queryClient.invalidateQueries({ queryKey: ["download-cache"] });
     },
@@ -189,8 +217,10 @@ export function useLibrarySelection(
   const clearSelection = useCallback(() => {
     selectionRequestRef.current += 1;
     setSelectedIds(new Set());
+    setSelecting(true);
   }, []);
-  useOverlayBackNavigation(active && selectedIds.size > 0, clearSelection);
+  const enterSelection = useCallback(() => setSelecting(true), []);
+  useOverlayBackNavigation(active && selectionMode, exitSelection);
 
   const selectAllMutation = useMutation({
     mutationFn: async () => {
@@ -209,8 +239,11 @@ export function useLibrarySelection(
 
   return {
     selectedIds,
+    selectionMode,
     toggleSelected,
     clearSelection,
+    enterSelection,
+    exitSelection,
     selectAllMutation,
     assignCategoryMutation,
     batchDownloadMutation,
@@ -220,8 +253,13 @@ export function useLibrarySelection(
   };
 }
 
+interface DeleteSelectedDownloadsInput {
+  downloadedChapters: number;
+  novelIds: readonly number[];
+}
+
 interface AssignCategoryInput {
-  mode?: "add" | "remove";
-  categoryId: number;
-  novelIds: number[];
+  add: readonly number[];
+  novelIds: readonly number[];
+  remove: readonly number[];
 }

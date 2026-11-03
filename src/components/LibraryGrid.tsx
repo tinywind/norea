@@ -11,7 +11,7 @@ import { useTranslation, type TranslationKey } from "../i18n";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import type { LibraryDisplayMode } from "../store/library";
 import { ConsoleCover } from "./ConsolePrimitives";
-import { DownloadedIcon } from "./ui/icons";
+import { CheckIcon, DownloadedIcon } from "./ui/icons";
 import { ListRow } from "./ui/ListRow";
 
 const LONG_PRESS_MS = 500;
@@ -24,6 +24,8 @@ interface LibraryGridProps {
   showUnreadBadges: boolean;
   showNumberBadges: boolean;
   selectedIds?: ReadonlySet<number>;
+  /** Taps toggle selection and every item shows its check state. */
+  selectionMode?: boolean;
   onActivate?: (id: number) => void;
   onLongPress?: (id: number) => void;
 }
@@ -36,6 +38,7 @@ export function LibraryGrid({
   showUnreadBadges,
   showNumberBadges,
   selectedIds,
+  selectionMode = false,
   onActivate,
   onLongPress,
 }: LibraryGridProps) {
@@ -45,6 +48,7 @@ export function LibraryGrid({
     onActivate,
     onLongPress,
     selected: selectedIds?.has(novel.id) ?? false,
+    selectionMode,
     showDownloadBadges,
     showNumberBadges,
     showUnreadBadges,
@@ -75,6 +79,9 @@ export function LibraryGrid({
       {novels.map((novel, index) => (
         <li className="norea-library-grid-item" key={novel.id}>
           <LibraryCard displayMode={displayMode} {...itemProps(novel, index)} />
+          {selectionMode || !onLongPress ? null : (
+            <SelectToggle name={novel.name} onSelect={() => onLongPress(novel.id)} />
+          )}
         </li>
       ))}
     </ul>
@@ -87,9 +94,41 @@ interface LibraryItemProps {
   onActivate?: (id: number) => void;
   onLongPress?: (id: number) => void;
   selected: boolean;
+  selectionMode: boolean;
   showDownloadBadges: boolean;
   showNumberBadges: boolean;
   showUnreadBadges: boolean;
+}
+
+/**
+ * Selects a card with a pointer that can hover. It stays out of the tab
+ * order: keyboard users enter selection mode from the overflow menu.
+ */
+function SelectToggle({ name, onSelect }: { name: string; onSelect: () => void }) {
+  const { t } = useTranslation();
+  return (
+    <button
+      aria-label={t("library.selection.selectNamed", { name })}
+      className="norea-library-select-toggle"
+      onClick={onSelect}
+      tabIndex={-1}
+      type="button"
+    >
+      <CheckIcon size="1rem" />
+    </button>
+  );
+}
+
+function SelectionCheck({ selected }: { selected: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="norea-library-check"
+      data-checked={selected ? "true" : undefined}
+    >
+      {selected ? <CheckIcon size="1rem" /> : null}
+    </span>
+  );
 }
 
 /** Click and long-press handlers for a library item button. */
@@ -139,6 +178,7 @@ const LibraryCard = memo(function LibraryCard({
   onActivate,
   onLongPress,
   selected,
+  selectionMode,
   showDownloadBadges,
   showNumberBadges,
   showUnreadBadges,
@@ -152,6 +192,7 @@ const LibraryCard = memo(function LibraryCard({
 
   return (
     <button
+      aria-pressed={selectionMode ? selected : undefined}
       className="norea-library-card norea-state-layer"
       data-selected={selected ? "true" : undefined}
       type="button"
@@ -175,6 +216,7 @@ const LibraryCard = memo(function LibraryCard({
             style={{ "--norea-library-progress": `${progress}%` } as CSSProperties}
           />
         ) : null}
+        {selectionMode ? <SelectionCheck selected={selected} /> : null}
         {displayMode === "compact" ? (
           <span className="norea-library-card-overlay">
             <span className="norea-library-card-title">{novel.name}</span>
@@ -200,6 +242,7 @@ const LibraryListRow = memo(function LibraryListRow({
   onActivate,
   onLongPress,
   selected,
+  selectionMode,
   showDownloadBadges,
   showNumberBadges,
   showUnreadBadges,
@@ -211,10 +254,12 @@ const LibraryListRow = memo(function LibraryListRow({
 
   return (
     <ListRow
+      aria-pressed={selectionMode ? selected : undefined}
       className="norea-library-row"
       leading={
         <span aria-hidden="true" className="norea-library-row-cover">
           <ConsoleCover alt={novel.name} height={60} src={coverSource} width={40} />
+          {selectionMode ? <SelectionCheck selected={selected} /> : null}
         </span>
       }
       selected={selected}
@@ -250,7 +295,7 @@ function LibraryBadges({
   showDownloadBadges,
   showNumberBadges,
   showUnreadBadges,
-}: Omit<LibraryItemProps, "onActivate" | "onLongPress" | "selected">) {
+}: Omit<LibraryItemProps, "onActivate" | "onLongPress" | "selected" | "selectionMode">) {
   const { t } = useTranslation();
   const unread = showUnreadBadges && novel.chaptersUnread > 0;
   const downloaded = showDownloadBadges && novel.chaptersDownloaded > 0;

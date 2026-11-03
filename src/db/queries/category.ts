@@ -150,6 +150,37 @@ export async function removeNovelsFromCategory(
   );
 }
 
+const CATEGORY_MEMBERSHIP_CHUNK = 500;
+
+/** How many of the given novels belong to each category. */
+export async function countNovelsByCategory(
+  novelIds: readonly number[],
+): Promise<Map<number, number>> {
+  const uniqueNovelIds = Array.from(new Set(novelIds)).filter(
+    (id) => Number.isInteger(id) && id > 0,
+  );
+  const counts = new Map<number, number>();
+  if (uniqueNovelIds.length === 0) return counts;
+
+  const db = await getDb();
+  for (let start = 0; start < uniqueNovelIds.length; start += CATEGORY_MEMBERSHIP_CHUNK) {
+    const chunk = uniqueNovelIds.slice(start, start + CATEGORY_MEMBERSHIP_CHUNK);
+    const placeholders = chunk.map((_, index) => "$" + (index + 1)).join(", ");
+    const rows = await db.select<{ categoryId: number; count: number }[]>(
+      `SELECT nc.category_id AS categoryId, COUNT(*) AS count
+       FROM novel_category nc
+       JOIN category c ON c.id = nc.category_id
+       WHERE nc.novel_id IN (${placeholders})
+       GROUP BY nc.category_id`,
+      chunk,
+    );
+    for (const row of rows) {
+      counts.set(row.categoryId, (counts.get(row.categoryId) ?? 0) + Number(row.count));
+    }
+  }
+  return counts;
+}
+
 export class NovelCategoryError extends Error {
   constructor(readonly code: "work-not-found" | "category-not-found") {
     super(code === "work-not-found"

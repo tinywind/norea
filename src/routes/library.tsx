@@ -1,25 +1,21 @@
-import { Loader, Text, UnstyledButton } from "@mantine/core";
+import { Loader, Text } from "@mantine/core";
 import { useDebouncedValue, useMediaQuery } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import {
-  CheckGlyph,
-  DownloadedGlyph,
-  PlusGlyph,
-  TrashGlyph,
-} from "../components/ActionGlyphs";
+import { PlusGlyph } from "../components/ActionGlyphs";
 import { PageFrame, StateView } from "../components/AppFrame";
-import { IconButton } from "../components/IconButton";
-import { LibraryBatchDownloadPicker } from "../components/library/LibraryBatchDownloadPicker";
 import {
   CategoryList,
   CategoryManager,
   CategoryTabs,
   getLibraryCategoryEntries,
-  SelectionCategoryPicker,
 } from "../components/library/LibraryCategories";
+import {
+  LibraryCategorySheet,
+  LibraryDownloadSheet,
+} from "../components/library/LibrarySelectionSheets";
 import { LibraryAppBar } from "../components/library/LibraryAppBar";
 import {
   LibraryCategoryDialogs,
@@ -47,12 +43,21 @@ import {
 import { type LibraryNovelRefreshFilter } from "../db/queries/novel";
 import {
   CategoryIcon,
+  DeleteDownloadIcon,
+  DownloadIcon,
   FolderIcon,
   ImportIcon,
+  OverflowIcon,
   RefreshIcon,
+  SelectIcon,
   SettingsIcon,
+  TrashIcon,
 } from "../components/ui/icons";
-import type { OverflowMenuItem } from "../components/ui/OverflowMenu";
+import {
+  OverflowMenu,
+  type OverflowMenuItem,
+} from "../components/ui/OverflowMenu";
+import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
 import { useTranslation } from "../i18n";
 import { showErrorToast } from "../lib/runtime/error-toast";
 import { refreshLibraryMetadata } from "../lib/updates/refresh-library-metadata";
@@ -153,8 +158,11 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   } = useLibraryQuery(active, libraryFilter, sortOrder);
   const {
     selectedIds,
+    selectionMode,
     toggleSelected,
     clearSelection,
+    enterSelection,
+    exitSelection,
     selectAllMutation,
     assignCategoryMutation,
     batchDownloadMutation,
@@ -163,6 +171,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     removeSelectedFromLibraryMutation,
   } = useLibrarySelection(libraryFilter, sortOrder, active);
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
+  const [downloadSheetOpen, setDownloadSheetOpen] = useState(false);
+  const [categorySheetOpen, setCategorySheetOpen] = useState(false);
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
   const [viewOptionsTab, setViewOptionsTab] =
     useState<LibraryViewOptionsTab>("filter");
@@ -234,13 +244,13 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
   const handleActivate = useCallback(
     (id: number) => {
-      if (selectedIds.size > 0) {
+      if (selectionMode) {
         toggleSelected(id);
         return;
       }
       void navigate({ to: "/novel", search: { id } });
     },
-    [selectedIds, toggleSelected, navigate],
+    [selectionMode, toggleSelected, navigate],
   );
 
   const handleLongPress = useCallback(
@@ -305,6 +315,12 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
           },
         ]),
     {
+      disabled: summary.totalNovels === 0,
+      icon: SelectIcon,
+      label: t("library.selection.start"),
+      onClick: enterSelection,
+    },
+    {
       icon: ImportIcon,
       label: t("library.localImport.open"),
       onClick: openLocalImportInput,
@@ -332,6 +348,74 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     <>
       <PageFrame className="norea-library-page" size="full">
         <div className="norea-library-shell">
+          {active && selectionMode ? (
+            <SelectionBar
+              actions={
+                <>
+                  <SelectionAction
+                    disabled={
+                      selectedIds.size === 0 ||
+                      batchDownloadAvailability.data !== true ||
+                      batchDownloadMutation.isPending
+                    }
+                    icon={DownloadIcon}
+                    label={t("library.selection.download")}
+                    onClick={() => setDownloadSheetOpen(true)}
+                  />
+                  <SelectionAction
+                    disabled={selectedIds.size === 0}
+                    icon={CategoryIcon}
+                    label={t("library.selection.categories")}
+                    onClick={() => setCategorySheetOpen(true)}
+                  />
+                  <OverflowMenu
+                    items={[
+                      {
+                        disabled:
+                          selectedDownloadedChapterCount === 0 ||
+                          deleteSelectedDownloadsMutation.isPending,
+                        icon: DeleteDownloadIcon,
+                        label: t("library.deleteSelectedDownloads"),
+                        onClick: () =>
+                          deleteSelectedDownloadsMutation.mutate({
+                            downloadedChapters: selectedDownloadedChapterCount,
+                            novelIds: selectedNovelIds,
+                          }),
+                      },
+                      {
+                        danger: true,
+                        disabled: removeSelectedFromLibraryMutation.isPending,
+                        icon: TrashIcon,
+                        label: t("library.removeSelectedFromLibrary"),
+                        onClick: () =>
+                          removeSelectedFromLibraryMutation.mutate(selectedNovelIds),
+                      },
+                    ]}
+                    label={t("common.more")}
+                    trigger={
+                      <SelectionAction
+                        disabled={selectedIds.size === 0}
+                        icon={OverflowIcon}
+                        label={t("common.more")}
+                      />
+                    }
+                  />
+                </>
+              }
+              clearDisabled={selectedIds.size === 0}
+              label={t("library.selectedCount", { count: selectedIds.size })}
+              onClear={clearSelection}
+              onExit={exitSelection}
+              onSelectAll={() => selectAllMutation.mutate()}
+              selectAllDisabled={
+                isInitialLibraryLoading ||
+                Boolean(libraryError) ||
+                summary.totalNovels === 0 ||
+                selectAllMutation.isPending
+              }
+              selectAllPending={selectAllMutation.isPending}
+            />
+          ) : (
           <LibraryAppBar
             onOpenViewOptions={() => openViewOptions()}
             onRefresh={() => metadataRefreshMutation.mutate()}
@@ -342,6 +426,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             search={search}
             wide={wide}
           />
+          )}
           <div className="norea-library-columns">
           {desktop ? (
             <aside
@@ -372,103 +457,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               sourceActive={selectedSourceId !== null}
             />
             <StorageRecoveryStatus />
-
-            {selectedIds.size > 0 ? (
-              <div className="norea-library-selection-strip">
-                <span>
-                  {t("library.selectedCount", { count: selectedIds.size })}
-                </span>
-                <div className="norea-library-selection-actions">
-                  <LibraryBatchDownloadPicker
-                    available={batchDownloadAvailability.data === true}
-                    onDownload={(mode) => batchDownloadMutation.mutate(mode)}
-                    preparing={
-                      batchDownloadMutation.isPending ||
-                      batchDownloadAvailability.isPending
-                    }
-                    t={t}
-                  />
-                  <IconButton
-                    className="norea-library-selection-icon norea-state-layer"
-                    disabled={isInitialLibraryLoading || Boolean(libraryError) || summary.totalNovels === 0 || selectAllMutation.isPending}
-                    label={t("library.selection.selectAll")}
-                    onClick={() => selectAllMutation.mutate()}
-                    size="sm"
-                    title={t("library.selection.selectAll")}
-                  >
-                    {selectAllMutation.isPending ? <Loader size={14} /> : <CheckGlyph />}
-                  </IconButton>
-                  {selectedIds.size > 0 ? <>
-                  <SelectionCategoryPicker
-                    assigning={assignCategoryMutation.isPending}
-                    categories={assignableCategories}
-                    onAssign={(categoryId, mode) =>
-                      assignCategoryMutation.mutate({
-                        categoryId,
-                        mode,
-                        novelIds: selectedNovelIds,
-                      })
-                    }
-                    t={t}
-                  />
-                  <IconButton
-                    className="norea-library-selection-icon norea-state-layer"
-                    disabled={
-                      selectedDownloadedChapterCount === 0 ||
-                      deleteSelectedDownloadsMutation.isPending ||
-                      removeSelectedFromLibraryMutation.isPending
-                    }
-                    label={
-                      selectedDownloadedChapterCount > 0
-                        ? t("library.deleteSelectedDownloads")
-                        : t("library.deleteSelectedDownloadsUnavailable")
-                    }
-                    onClick={() => {
-                      deleteSelectedDownloadsMutation.mutate(selectedNovelIds);
-                    }}
-                    size="sm"
-                    title={
-                      selectedDownloadedChapterCount > 0
-                        ? t("library.deleteSelectedDownloads")
-                        : t("library.deleteSelectedDownloadsUnavailable")
-                    }
-                    tone="danger"
-                  >
-                    {deleteSelectedDownloadsMutation.isPending ? (
-                      <Loader size={14} />
-                    ) : (
-                      <DownloadedGlyph />
-                    )}
-                  </IconButton>
-                  <IconButton
-                    className="norea-library-selection-icon norea-state-layer"
-                    disabled={
-                      removeSelectedFromLibraryMutation.isPending ||
-                      deleteSelectedDownloadsMutation.isPending
-                    }
-                    label={t("library.removeSelectedFromLibrary")}
-                    onClick={() => {
-                      removeSelectedFromLibraryMutation.mutate(
-                        selectedNovelIds,
-                      );
-                    }}
-                    size="sm"
-                    title={t("library.removeSelectedFromLibrary")}
-                    tone="danger"
-                  >
-                    {removeSelectedFromLibraryMutation.isPending ? (
-                      <Loader size={14} />
-                    ) : (
-                      <TrashGlyph />
-                    )}
-                  </IconButton>
-                  <UnstyledButton onClick={clearSelection}>
-                    {t("common.done")}
-                  </UnstyledButton>
-                  </> : null}
-                </div>
-              </div>
-            ) : null}
 
             <div className="norea-library-body" ref={libraryBodyRef}>
               {isInitialLibraryLoading ? (
@@ -502,6 +490,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     showUnreadBadges={showUnreadBadges}
                     showNumberBadges={showNumberBadges}
                     selectedIds={selectedIds}
+                    selectionMode={selectionMode}
                     onActivate={handleActivate}
                     onLongPress={handleLongPress}
                   />
@@ -567,6 +556,26 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         sources={sourceRows}
         sourcesLoading={sourceFilters.isLoading}
         tab={viewOptionsTab}
+      />
+      <LibraryDownloadSheet
+        novelIds={selectedNovelIds}
+        onClose={() => setDownloadSheetOpen(false)}
+        onDownload={(mode) => batchDownloadMutation.mutate(mode)}
+        opened={active && selectionMode && downloadSheetOpen}
+      />
+      <LibraryCategorySheet
+        applying={assignCategoryMutation.isPending}
+        categories={assignableCategories}
+        novelIds={selectedNovelIds}
+        onApply={(change) =>
+          assignCategoryMutation.mutate(
+            { ...change, novelIds: selectedNovelIds },
+            { onSuccess: () => setCategorySheetOpen(false) },
+          )
+        }
+        onClose={() => setCategorySheetOpen(false)}
+        onCreateCategory={openCreateCategory}
+        opened={active && selectionMode && categorySheetOpen}
       />
       <LibraryLocalImport active={active} ref={localImportRef} />
       <LibraryCategoryDialogs active={active} ref={categoryDialogsRef} />

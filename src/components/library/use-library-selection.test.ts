@@ -9,6 +9,8 @@ const mocks = vi.hoisted(() => ({
   mutations: [] as Mutation[],
   selected: new Set([1]),
   setSelected: vi.fn(),
+  selecting: false,
+  setSelecting: vi.fn(),
   listIds: vi.fn(),
   listChapters: vi.fn(),
   getNovel: vi.fn(),
@@ -22,7 +24,9 @@ const mocks = vi.hoisted(() => ({
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
   useEffect: vi.fn(),
-  useState: () => [mocks.selected, mocks.setSelected],
+  useState: (initial: unknown) => typeof initial === "function"
+    ? [mocks.selected, mocks.setSelected]
+    : [mocks.selecting, mocks.setSelecting],
   useRef: (current: unknown) => ({ current }),
 }));
 vi.mock("@tanstack/react-query", () => ({
@@ -50,6 +54,7 @@ vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: vi.fn()
 vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ lastReadChapterByNovel: {} }) } }));
 vi.mock("./use-library-download-availability", () => ({ useLibraryDownloadAvailability: mocks.availability }));
 import { useLibrarySelection } from "./use-library-selection";
+import { notifications } from "@mantine/notifications";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { cancelChapterDownloadRequest, getChapterDownloadRequestSnapshot } from "../../lib/tasks/chapter-download-requests";
 
@@ -62,6 +67,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.mutations.length = 0;
   mocks.selected = new Set([1]);
+  mocks.selecting = false;
   mocks.listIds.mockReset().mockResolvedValue([]);
   mocks.queued.clear();
   mocks.listChapters.mockReset().mockImplementation(async (id: number) => [chapter(id)]);
@@ -133,20 +139,23 @@ it("skips empty batches and handles a later background batch failure", async () 
 });
 
 
-it("removes selected category assignments without removing novels from the library", async () => {
+it("applies category additions and removals without removing novels from the library", async () => {
   const selection = useLibrarySelection({}, "nameAsc");
+  type Input = { add: number[]; novelIds: number[]; remove: number[] };
   const change = selection.assignCategoryMutation as unknown as {
-    mutationFn: (input: { categoryId: number; novelIds: number[]; mode?: "add" | "remove" }) => Promise<void>;
-    onSuccess: () => void;
+    mutationFn: (input: Input) => Promise<void>;
+    onSuccess: (result: void, input: Input) => void;
   };
-  await change.mutationFn({ categoryId: 7, novelIds: [1, 2], mode: "remove" });
+  const input = { add: [3], novelIds: [1, 2], remove: [7] };
+  await change.mutationFn(input);
+  expect(mocks.addCategory).toHaveBeenCalledWith([1, 2], 3);
   expect(mocks.removeCategory).toHaveBeenCalledWith([1, 2], 7);
-  expect(mocks.addCategory).not.toHaveBeenCalled();
-  change.onSuccess();
+  change.onSuccess(undefined, input);
   expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["category"] });
   expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["novel", "library"] });
-  await change.mutationFn({ categoryId: 7, novelIds: [1], mode: "add" });
-  expect(mocks.addCategory).toHaveBeenCalledWith([1], 7);
+  expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
+  expect(mocks.setSelecting).toHaveBeenLastCalledWith(false);
+  expect(vi.mocked(notifications.show)).toHaveBeenCalledWith(expect.objectContaining({ message: "library.categoryAction.done" }));
 });
 
 it("selects every matching work beyond the visible library page", async () => {
@@ -177,16 +186,30 @@ it("clears a stale selection when the filtered result is empty", async () => {
   expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
 });
 
-it("clears the library selection on back only while novels are selected", () => {
+it("exits selection mode on back only while selection mode is on", () => {
   const selection = useLibrarySelection({}, "nameAsc");
-  expect(useOverlayBackNavigation).toHaveBeenLastCalledWith(true, selection.clearSelection);
+  expect(useOverlayBackNavigation).toHaveBeenLastCalledWith(true, selection.exitSelection);
   vi.mocked(useOverlayBackNavigation).mock.lastCall![1]();
   expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
+  expect(mocks.setSelecting).toHaveBeenLastCalledWith(false);
 
   mocks.selected = new Set();
   useLibrarySelection({}, "nameAsc");
   expect(useOverlayBackNavigation).toHaveBeenLastCalledWith(false, expect.any(Function));
+  mocks.selecting = true;
+  expect(useLibrarySelection({}, "nameAsc").selectionMode).toBe(true);
+  expect(useOverlayBackNavigation).toHaveBeenLastCalledWith(true, expect.any(Function));
+  mocks.selecting = false;
   mocks.selected = new Set([1]);
   useLibrarySelection({}, "nameAsc", false);
   expect(useOverlayBackNavigation).toHaveBeenLastCalledWith(false, expect.any(Function));
+});
+
+it("confirms a queued batch download with its chapter count", () => {
+  useLibrarySelection({}, "nameAsc");
+  const batch = mocks.mutations[1] as unknown as { onSuccess: (total: number) => void };
+  batch.onSuccess(12);
+  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith(expect.objectContaining({ message: "library.batchDownload.queued" }));
+  batch.onSuccess(0);
+  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith(expect.objectContaining({ message: "library.batchDownload.nothingQueued" }));
 });

@@ -133,16 +133,6 @@
   min-width: 0;
 }
 
-.norea-library-selection-icon svg {
-  fill: none;
-  height: 0.9375rem;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-  width: 0.9375rem;
-}
-
 .norea-library-app-bar {
   align-items: center;
   background: var(--norea-color-surface);
@@ -345,129 +335,6 @@
   color: var(--norea-color-danger);
 }
 
-.norea-library-selection-strip {
-  align-items: center;
-  background: var(--norea-color-accent-soft);
-  border-bottom: 1px solid var(--norea-color-rule);
-  color: var(--norea-color-accent);
-  display: flex;
-  flex: 0 0 1.875rem;
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
-  gap: var(--norea-space-3);
-  justify-content: space-between;
-  padding: 0 var(--norea-space-4);
-}
-
-.norea-library-selection-actions {
-  align-items: center;
-  display: inline-flex;
-  gap: var(--norea-space-2);
-}
-
-.norea-library-selection-strip button {
-  color: var(--norea-color-accent);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-sm);
-  font-weight: 600;
-}
-
-.norea-library-selection-icon {
-  align-items: center;
-  border: 1px solid currentColor;
-  border-radius: var(--norea-radius-sm);
-  display: inline-flex;
-  justify-content: center;
-  opacity: 0.85;
-}
-
-.norea-library-selection-icon:hover {
-  opacity: 1;
-}
-
-.norea-library-selection-icon:disabled {
-  cursor: not-allowed;
-  opacity: 0.35;
-}
-
-.norea-library-category-assign-popover {
-  border-color: var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-md);
-  padding: var(--norea-space-2);
-}
-
-.norea-library-batch-download-popover {
-  border-color: var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-md);
-  padding: var(--norea-space-2);
-}
-
-.norea-library-batch-download-list {
-  display: grid;
-  gap: var(--norea-space-1);
-}
-
-.norea-library-batch-download-option {
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink-muted);
-  display: grid;
-  font-family: var(--norea-font-ui);
-  gap: var(--norea-space-1);
-  line-height: 1.25;
-  padding: var(--norea-space-2);
-  text-align: left;
-}
-
-.norea-library-batch-download-option:hover:not(:disabled) {
-  background: var(--norea-color-surface-raised);
-  color: var(--norea-color-ink);
-}
-
-.norea-library-batch-download-option:disabled {
-  cursor: not-allowed;
-  opacity: 0.45;
-}
-
-.norea-library-batch-download-label {
-  color: var(--norea-color-ink);
-  font-size: var(--norea-text-sm);
-  font-weight: 700;
-}
-
-.norea-library-batch-download-description {
-  color: var(--norea-color-ink-muted);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
-  font-weight: 500;
-}
-
-.norea-library-category-assign-list {
-  display: grid;
-  gap: var(--norea-space-1);
-}
-
-.norea-library-category-assign-option {
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink-muted);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-sm);
-  font-weight: 600;
-  line-height: 1.2;
-  min-height: 1.75rem;
-  overflow: hidden;
-  padding: var(--norea-space-2);
-  text-align: left;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.norea-library-category-assign-option:hover {
-  background: var(--norea-color-surface-raised);
-  color: var(--norea-color-ink);
-}
-
 .norea-library-body {
   background: var(--norea-color-surface);
   flex: 1;
@@ -557,6 +424,60 @@
   width: 100%;
 }
 
+.norea-library-grid-item {
+  position: relative;
+}
+
+.norea-library-check {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border: 0.125rem solid var(--norea-color-ink-muted);
+  border-radius: 50%;
+  color: var(--norea-color-on-accent);
+  display: flex;
+  height: 1.5rem;
+  justify-content: center;
+  left: var(--norea-space-1);
+  position: absolute;
+  top: var(--norea-space-1);
+  width: 1.5rem;
+  z-index: 3;
+}
+
+.norea-library-check[data-checked="true"] {
+  background: var(--norea-color-accent);
+  border-color: var(--norea-color-accent);
+}
+
+.norea-library-row-cover {
+  display: block;
+  position: relative;
+}
+
+.norea-library-select-toggle {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border: 0.125rem solid var(--norea-color-ink-muted);
+  border-radius: 50%;
+  color: var(--norea-color-ink-muted);
+  cursor: pointer;
+  display: none;
+  height: 1.75rem;
+  justify-content: center;
+  left: var(--norea-space-2);
+  padding: 0;
+  position: absolute;
+  top: var(--norea-space-2);
+  width: 1.75rem;
+  z-index: 3;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .norea-library-grid-item:hover .norea-library-select-toggle {
+    display: flex;
+  }
+}
+
 .norea-library-card-progress {
   background: var(--norea-color-accent);
   bottom: 0;
@@ -579,6 +500,10 @@
   right: var(--norea-space-1);
   top: var(--norea-space-1);
   z-index: 2;
+}
+
+.norea-library-card[aria-pressed] .norea-library-card-cover .norea-library-badges {
+  left: calc(var(--norea-space-2) + 1.5rem);
 }
 
 .norea-library-badge {

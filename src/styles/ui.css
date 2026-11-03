@@ -49,7 +49,6 @@
    */
   html:root .mantine-Input-section .mantine-ActionIcon-root,
   html:root .mantine-Input-section .mantine-CloseButton-root,
-  html:root .norea-library-selection-icon.mantine-ActionIcon-root,
   html:root .norea-novel-selection-icon.mantine-ActionIcon-root {
     min-height: 0;
     min-width: 0;
@@ -57,7 +56,6 @@
 
   html:root .mantine-Input-section .mantine-ActionIcon-root,
   html:root .mantine-Input-section .mantine-CloseButton-root,
-  html:root .norea-library-selection-icon,
   html:root .norea-novel-selection-icon,
   html:root .norea-mobile-nav-link {
     overflow: visible;
@@ -66,7 +64,6 @@
 
   html:root .mantine-Input-section .mantine-ActionIcon-root::before,
   html:root .mantine-Input-section .mantine-CloseButton-root::before,
-  html:root .norea-library-selection-icon::before,
   html:root .norea-novel-selection-icon::before,
   html:root .norea-mobile-nav-link::before {
     content: "";
@@ -169,4 +166,66 @@
   color: var(--norea-color-ink-muted);
   font-size: var(--norea-text-sm);
   min-width: 0;
+}
+
+.norea-selection-bar {
+  align-items: center;
+  background: var(--norea-color-surface-raised);
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--norea-space-1);
+  min-height: 3.5rem;
+  padding: 0 var(--norea-space-2);
+}
+
+.norea-selection-bar-count {
+  flex: 1 1 auto;
+  font-size: var(--norea-text-md);
+  font-weight: var(--norea-weight-bold);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-selection-bar-actions {
+  display: flex;
+  gap: var(--norea-space-1);
+}
+
+@media (max-width: 767px) {
+  /* The action bar takes the bottom navigation's place while selecting. */
+  body:has(.norea-selection-bar) .norea-mobile-nav {
+    visibility: hidden;
+  }
+
+  .norea-selection-bar-actions {
+    background: var(--norea-color-surface-raised);
+    border-top: 1px solid var(--norea-color-rule);
+    bottom: 0;
+    gap: 0;
+    height: var(--norea-mobile-nav-height);
+    left: 0;
+    padding: 0 var(--norea-safe-area-right) var(--norea-safe-area-bottom) var(--norea-safe-area-left);
+    position: fixed;
+    right: 0;
+    z-index: var(--norea-z-nav);
+  }
+
+  .norea-selection-action {
+    flex: 1 1 0;
+    font-size: var(--norea-text-xs);
+    height: 100%;
+    padding-inline: var(--norea-space-1);
+  }
+
+  .norea-selection-action .mantine-Button-inner {
+    flex-direction: column;
+    gap: 0.125rem;
+  }
+
+  .norea-selection-action .mantine-Button-section {
+    margin: 0;
+  }
 }

@@ -1,12 +1,11 @@
-import { Button, Modal, Popover, SegmentedControl, Text, UnstyledButton } from "@mantine/core";
-import { useEffect, useRef, useState } from "react";
+import { Button, Modal, Text, UnstyledButton } from "@mantine/core";
+import { useEffect, useRef } from "react";
 import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
 } from "../../db/queries/category";
 import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
-import { IconButton } from "../IconButton";
 import { EditIcon, PlusIcon, TrashIcon } from "../ui/icons";
 import { OverflowMenu } from "../ui/OverflowMenu";
 import { type TranslateFn } from "./LibraryViewOptions";
@@ -212,80 +211,5 @@ export function CategoryManager({
         }}
       />
     </Modal>
-  );
-}
-
-interface SelectionCategoryPickerProps {
-  assigning: boolean;
-  categories: readonly LibraryCategory[];
-  onAssign: (categoryId: number, mode: "add" | "remove") => void;
-  t: TranslateFn;
-}
-
-export function SelectionCategoryPicker({
-  assigning,
-  categories,
-  onAssign,
-  t,
-}: SelectionCategoryPickerProps) {
-  const [mode, setMode] = useState<"add" | "remove">("add");
-  return (
-    <Popover position="bottom-end" shadow="md" width={280}>
-      <Popover.Target>
-        <IconButton
-          className="norea-library-selection-icon norea-state-layer"
-          disabled={categories.length === 0 || assigning}
-          label={t("library.editSelectedCategories")}
-          size="sm"
-          title={t("library.editSelectedCategories")}
-        >
-          <FolderPlusIcon />
-        </IconButton>
-      </Popover.Target>
-      <Popover.Dropdown className="norea-library-category-assign-popover">
-        <SegmentedControl
-          fullWidth
-          size="xs"
-          aria-label={t("library.editSelectedCategories")}
-          value={mode}
-          onChange={(value) => setMode(value as "add" | "remove")}
-          data={[
-            { value: "add", label: t("library.categoryAction.add") },
-            { value: "remove", label: t("library.categoryAction.remove") },
-          ]}
-        />
-        <Text c="dimmed" size="xs" p="xs">
-          {t("library.categoryAction.hint")}
-        </Text>
-        <div className="norea-library-category-assign-list">
-          {categories.length > 0 ? (
-            categories.map((category) => (
-              <UnstyledButton
-                className="norea-library-category-assign-option"
-                disabled={assigning}
-                key={category.id}
-                onClick={() => onAssign(category.id, mode)}
-              >
-                <span>{category.name}</span>
-              </UnstyledButton>
-            ))
-          ) : (
-            <Text c="dimmed" size="sm">
-              {t("library.addCategoryFirst")}
-            </Text>
-          )}
-        </div>
-      </Popover.Dropdown>
-    </Popover>
-  );
-}
-
-function FolderPlusIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M4 6h6l2 2h8v10H4z" />
-      <path d="M12 13h6" />
-      <path d="M15 10v6" />
-    </svg>
   );
 }
