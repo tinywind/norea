@@ -1,0 +1,128 @@
+.norea-history-app-bar {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  gap: var(--norea-space-1);
+  min-height: 3.5rem;
+  padding: 0 var(--norea-space-2) 0 var(--norea-space-4);
+  position: sticky;
+  top: 0;
+  z-index: 3;
+}
+
+.norea-history-app-bar-title {
+  color: var(--norea-color-ink);
+  flex: 1 1 auto;
+  font-size: var(--norea-text-xl);
+  font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-history-frame {
+  --norea-page-block: var(--norea-space-4);
+}
+
+.norea-history-filters {
+  display: grid;
+  gap: var(--norea-space-2);
+}
+
+.norea-history-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+}
+
+.norea-history-sections {
+  display: grid;
+  gap: var(--norea-space-4);
+}
+
+.norea-history-section-title {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-bold);
+  margin: 0;
+  padding: var(--norea-space-2) var(--norea-space-1);
+}
+
+.norea-history-row {
+  align-items: center;
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  min-width: 0;
+}
+
+.norea-history-row[data-removing="true"] {
+  opacity: 0.55;
+}
+
+.norea-history-row .norea-history-row-open {
+  align-self: stretch;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-inline: var(--norea-space-1);
+}
+
+.norea-history-row-meta {
+  display: block;
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-history-progress {
+  background: var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+  display: block;
+  height: 0.25rem;
+  margin-top: var(--norea-space-1);
+  max-width: 15rem;
+  overflow: hidden;
+}
+
+.norea-history-progress-bar {
+  background: var(--norea-color-accent);
+  display: block;
+  height: 100%;
+  width: var(--norea-history-progress);
+}
+
+.norea-history-progress-bar[data-status="finished"] {
+  background: var(--norea-color-ok);
+}
+
+.norea-history-row-trailing {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--norea-space-1);
+  padding-inline: var(--norea-space-1);
+}
+
+.norea-history-row-busy {
+  align-items: center;
+  display: inline-flex;
+  height: 2.5rem;
+  justify-content: center;
+  width: 2.5rem;
+}
+
+.norea-history-row-skeleton {
+  gap: var(--norea-space-3);
+  padding: var(--norea-space-2) var(--norea-space-1);
+}
+
+.norea-history-row-skeleton-text {
+  display: grid;
+  flex: 1 1 auto;
+  gap: var(--norea-space-2);
+}
