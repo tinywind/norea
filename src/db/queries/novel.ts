@@ -442,8 +442,9 @@ function buildLibraryCursorClause(
 
 async function selectLibraryNovels(
   filter: LibraryNovelPageFilter,
+  readMode: DatabaseReadMode = "queued",
 ): Promise<LibraryNovel[]> {
-  const db = await getDb();
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const params: unknown[] = [];
   const conditions = buildLibraryFilterConditions(filter, params);
   const sortConfig = LIBRARY_SORT_CONFIG[filter.sortOrder ?? "dateAddedDesc"];
@@ -538,6 +539,7 @@ function getLibraryNovelCursor(
 
 export async function listLibraryNovelPage(
   filter: LibraryNovelPageFilter = {},
+  readMode: DatabaseReadMode = "queued",
 ): Promise<LibraryNovelPage> {
   const sortOrder = filter.sortOrder ?? "dateAddedDesc";
   const normalizedLimit = clampRouteQueryLimit(
@@ -547,7 +549,7 @@ export async function listLibraryNovelPage(
   const rows = await selectLibraryNovels({
     ...filter,
     limit: normalizedLimit + 1,
-  });
+  }, readMode);
   const novels = rows.slice(0, normalizedLimit);
   const hasMore = rows.length > normalizedLimit;
   return {
@@ -559,8 +561,9 @@ export async function listLibraryNovelPage(
 
 export async function getLibraryNovelSummary(
   filter: LibraryFilter = {},
+  readMode: DatabaseReadMode = "queued",
 ): Promise<LibraryNovelSummary> {
-  const db = await getDb();
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const params: unknown[] = [];
   const conditions = buildLibraryFilterConditions(filter, params);
   const rows = await db.select<RawLibraryNovelSummary[]>(
@@ -596,8 +599,9 @@ export async function getLibraryNovelSummary(
 
 export async function listLibrarySourceFilters(
   filter: Omit<LibraryFilter, "limit" | "sortOrder" | "sourceId"> = {},
+  readMode: DatabaseReadMode = "queued",
 ): Promise<LibrarySourceFilter[]> {
-  const db = await getDb();
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const params: unknown[] = [];
   const conditions = buildLibraryFilterConditions(filter, params);
   const rows = await db.select<RawLibrarySourceFilter[]>(

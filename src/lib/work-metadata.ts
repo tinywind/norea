@@ -26,10 +26,14 @@ export interface WorkMetadataOperationResult { paths?: string[]; body?: string |
 export type WorkMetadataChange = Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">;
 const listeners = new Set<(identity?: WorkMetadataChange) => void>();
 let publicationSnapshots: Map<string, string | null> | null = null;
+let publicationChanges: Array<WorkMetadataChange | undefined> | null = null;
 export function subscribeWorkMetadataChanges(listener: (identity?: WorkMetadataChange) => void): () => void {
   listeners.add(listener); return () => listeners.delete(listener);
 }
-export function notifyWorkMetadataChanges(identity?: WorkMetadataChange): void { for (const listener of listeners) listener(identity); }
+export function notifyWorkMetadataChanges(identity?: WorkMetadataChange): void {
+  if (publicationChanges) { publicationChanges.push(identity); return; }
+  for (const listener of listeners) listener(identity);
+}
 
 export async function registerNativeWorkChapterDirectories(directories: Record<string, string>, reset = false): Promise<void> {
   if (!reset && Object.keys(directories).length === 0) return;
@@ -89,8 +93,11 @@ async function rawWorkMetadataOperation(input: WorkMetadataOperation): Promise<W
 export async function withWorkMetadataRollback<T>(run: () => Promise<T>, options: { preserveCoverSourcesOnRollback?: boolean } = {}): Promise<T> {
   if (publicationSnapshots) return run();
   const snapshots = new Map<string, string | null>();
+  const changes: Array<WorkMetadataChange | undefined> = [];
   publicationSnapshots = snapshots;
-  try { return await run(); }
+  publicationChanges = changes;
+  let result: T;
+  try { result = await run(); }
   catch (error) {
     const failures: unknown[] = [error];
     for (const [path, body] of [...snapshots].reverse()) {
@@ -106,7 +113,9 @@ export async function withWorkMetadataRollback<T>(run: () => Promise<T>, options
     }
     if (failures.length > 1) throw new AggregateError(failures, "work metadata: publication and rollback failed");
     throw error;
-  } finally { publicationSnapshots = null; }
+  } finally { publicationSnapshots = null; publicationChanges = null; }
+  for (const identity of changes) notifyWorkMetadataChanges(identity);
+  return result;
 }
 
 export async function listStoredNovelMetadata(): Promise<StoredNovelMetadata[]> {

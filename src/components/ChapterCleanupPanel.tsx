@@ -50,7 +50,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
   const { t, locale } = useTranslation();
   const queryClient = useQueryClient();
   const serverSetting = useContentSyncStore(state => state.serverUrl);
-  const categories = useQuery({ queryKey: ["category", "list"], queryFn: listCategories, staleTime: Infinity, enabled: opened, meta: { errorPresentation: "inline" } });
+  const categories = useQuery({ queryKey: ["category", "list"], queryFn: () => listCategories(), staleTime: Infinity, enabled: opened, meta: { errorPresentation: "inline" } });
   const [filters, setFilters] = useState<ChapterCleanupFilters>({ server: "server-contains-local", reading: "read", categories: { mode: "all" } });
   const [preview, setPreview] = useState<ChapterCleanupPreview | null>(null);
   const [confirming, setConfirming] = useState(false);

@@ -1,4 +1,4 @@
-import { getDb, runDatabaseTransaction } from "../client";
+import { getDb, getReadOnlyDb, runDatabaseTransaction, type DatabaseReadMode } from "../client";
 
 export const UNCATEGORIZED_CATEGORY_ID = -1;
 
@@ -10,8 +10,8 @@ export interface LibraryCategory {
   novelCount: number;
 }
 
-export async function listCategories(): Promise<LibraryCategory[]> {
-  const db = await getDb();
+export async function listCategories(readMode: DatabaseReadMode = "queued"): Promise<LibraryCategory[]> {
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const rows = await db.select<
     Array<Omit<LibraryCategory, "isSystem"> & { isSystem: number }>
   >(`
@@ -39,8 +39,8 @@ export interface LibraryCategoryCounts {
   uncategorized: number;
 }
 
-export async function getLibraryCategoryCounts(): Promise<LibraryCategoryCounts> {
-  const db = await getDb();
+export async function getLibraryCategoryCounts(readMode: DatabaseReadMode = "queued"): Promise<LibraryCategoryCounts> {
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const totalRows = await db.select<{ count: number }[]>(
     "SELECT COUNT(*) AS count FROM novel WHERE in_library = 1",
   );

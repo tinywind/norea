@@ -77,7 +77,7 @@ export function useLibraryQuery(
         cursor: pageParam,
         limit: LIBRARY_PAGE_SIZE,
         sortOrder,
-      }),
+      }, "committed"),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
     staleTime: Infinity,
   });
@@ -86,7 +86,7 @@ export function useLibraryQuery(
   const librarySummary = useQuery({
     enabled: active && libraryRowsLoaded,
     queryKey: ["novel", "library", "summary", libraryFilter] as const,
-    queryFn: () => getLibraryNovelSummary(libraryFilter),
+    queryFn: () => getLibraryNovelSummary(libraryFilter, "committed"),
     staleTime: Infinity,
   });
 
@@ -98,14 +98,14 @@ export function useLibraryQuery(
   const tagSummary = useQuery({
     enabled: active && libraryRowsLoaded,
     queryKey: ["novel", "library", "summary", tagFilter] as const,
-    queryFn: () => getLibraryNovelSummary(tagFilter),
+    queryFn: () => getLibraryNovelSummary(tagFilter, "committed"),
     staleTime: Infinity,
   });
 
   const sourceFilters = useQuery({
     enabled: active && libraryRowsLoaded,
     queryKey: ["novel", "library", "sources", librarySourceFilter] as const,
-    queryFn: () => listLibrarySourceFilters(librarySourceFilter),
+    queryFn: () => listLibrarySourceFilters(librarySourceFilter, "committed"),
     staleTime: Infinity,
   });
 
@@ -113,14 +113,14 @@ export function useLibraryQuery(
     meta: { errorPresentation: "inline" },
     enabled: active && libraryRowsLoaded,
     queryKey: ["category", "list"],
-    queryFn: listCategories,
+    queryFn: () => listCategories("committed"),
     staleTime: Infinity,
   });
 
   const categoryCounts = useQuery({
     enabled: active && libraryRowsLoaded,
     queryKey: ["category", "counts"],
-    queryFn: getLibraryCategoryCounts,
+    queryFn: () => getLibraryCategoryCounts("committed"),
     staleTime: Infinity,
   });
 

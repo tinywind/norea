@@ -27,7 +27,7 @@ export function NovelCategoryEditor({ active, novelId, novelName }: NovelCategor
   const categoriesQuery = useQuery({
     meta: { errorPresentation: "inline" },
     queryKey: ["category", "list"],
-    queryFn: listCategories,
+    queryFn: () => listCategories(),
     enabled: active,
   });
   const membershipKey = ["category", "novel", novelId];

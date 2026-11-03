@@ -26,7 +26,7 @@ export function LibrarySettingsPanel() {
   const categories = useQuery({
     meta: { errorPresentation: "inline" },
     queryKey: ["category", "list"],
-    queryFn: listCategories,
+    queryFn: () => listCategories(),
     staleTime: Infinity,
   });
   const displayMode = useLibraryStore((s) => s.displayMode);
