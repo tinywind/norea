@@ -39,6 +39,8 @@ interface LibraryState {
   showDownloadBadges: boolean;
   showUnreadBadges: boolean;
   showNumberBadges: boolean;
+  showContinueReading: boolean;
+  continueReadingCollapsed: boolean;
   downloadedOnlyMode: boolean;
   unreadOnlyMode: boolean;
   localOnlyMode: boolean;
@@ -58,6 +60,8 @@ interface LibraryState {
   setShowDownloadBadges: (showDownloadBadges: boolean) => void;
   setShowUnreadBadges: (showUnreadBadges: boolean) => void;
   setShowNumberBadges: (showNumberBadges: boolean) => void;
+  setShowContinueReading: (showContinueReading: boolean) => void;
+  setContinueReadingCollapsed: (continueReadingCollapsed: boolean) => void;
   setDownloadedOnlyMode: (downloadedOnlyMode: boolean) => void;
   setUnreadOnlyMode: (unreadOnlyMode: boolean) => void;
   setLocalOnlyMode: (localOnlyMode: boolean) => void;
@@ -82,6 +86,8 @@ export const useLibraryStore = create<LibraryState>()(
       showDownloadBadges: true,
       showUnreadBadges: true,
       showNumberBadges: false,
+      showContinueReading: true,
+      continueReadingCollapsed: false,
       downloadedOnlyMode: false,
       unreadOnlyMode: false,
       localOnlyMode: false,
@@ -120,6 +126,10 @@ export const useLibraryStore = create<LibraryState>()(
         set({ showUnreadBadges }),
       setShowNumberBadges: (showNumberBadges) =>
         set({ showNumberBadges }),
+      setShowContinueReading: (showContinueReading) =>
+        set({ showContinueReading }),
+      setContinueReadingCollapsed: (continueReadingCollapsed) =>
+        set({ continueReadingCollapsed }),
       setDownloadedOnlyMode: (downloadedOnlyMode) =>
         set({ downloadedOnlyMode }),
       setUnreadOnlyMode: (unreadOnlyMode) =>
@@ -155,6 +165,8 @@ export const useLibraryStore = create<LibraryState>()(
         showDownloadBadges: state.showDownloadBadges,
         showUnreadBadges: state.showUnreadBadges,
         showNumberBadges: state.showNumberBadges,
+        showContinueReading: state.showContinueReading,
+        continueReadingCollapsed: state.continueReadingCollapsed,
         downloadedOnlyMode: state.downloadedOnlyMode,
         unreadOnlyMode: state.unreadOnlyMode,
         localOnlyMode: state.localOnlyMode,

@@ -626,6 +626,98 @@
   gap: var(--norea-space-2);
 }
 
+.norea-continue-shelf {
+  padding: var(--norea-space-2) var(--norea-space-3) 0;
+}
+
+.norea-continue-shelf-heading {
+  font-size: var(--norea-text-md);
+  font-weight: var(--norea-weight-medium);
+  margin: 0;
+}
+
+.norea-continue-shelf-toggle {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  gap: var(--norea-space-1);
+  min-height: var(--norea-control-sm);
+  padding: 0 var(--norea-space-2);
+  margin-inline-start: calc(-1 * var(--norea-space-2));
+}
+
+.norea-continue-shelf-list {
+  display: flex;
+  gap: var(--norea-space-2);
+  list-style: none;
+  margin: 0;
+  overflow-x: auto;
+  padding: var(--norea-space-1) 0 var(--norea-space-2);
+  scrollbar-width: thin;
+}
+
+.norea-continue-shelf-list > li {
+  flex: 0 0 5.5rem;
+  min-width: 0;
+}
+
+.norea-continue-card {
+  -webkit-touch-callout: none;
+  background: none;
+  border: 0;
+  border-radius: var(--norea-radius-md);
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  flex-direction: column;
+  font: inherit;
+  gap: var(--norea-space-1);
+  padding: var(--norea-space-1);
+  text-align: left;
+  width: 100%;
+}
+
+.norea-continue-card-cover {
+  border-radius: var(--norea-radius-sm);
+  display: block;
+  overflow: hidden;
+}
+
+.norea-continue-card-cover .norea-console-cover {
+  aspect-ratio: 2 / 3;
+  display: flex;
+  height: auto;
+  width: 100%;
+}
+
+.norea-continue-card-meta {
+  align-items: center;
+  color: var(--norea-color-ink-muted);
+  display: flex;
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
+  gap: var(--norea-space-1);
+  justify-content: space-between;
+  min-height: 1.375rem;
+}
+
+.norea-continue-card-chapter {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-continue-card-next {
+  color: var(--norea-color-accent);
+  font-weight: var(--norea-weight-medium);
+}
+
 .norea-library-load-more {
   display: flex;
   justify-content: center;
@@ -657,6 +749,10 @@
 }
 
 @media (any-pointer: coarse) {
+  .norea-continue-shelf-toggle {
+    min-height: var(--norea-control-md);
+  }
+
   /* D8: sheet choices are full-height touch rows, not just their 20px boxes. */
   :where(.norea-library-view-options, .norea-library-category-sheet)
     :where(.mantine-Checkbox-label, .mantine-Radio-label, .mantine-Switch-label) {

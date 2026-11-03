@@ -309,6 +309,8 @@ function DisplayOptions() {
   const setShowDownloadBadges = useLibraryStore((s) => s.setShowDownloadBadges);
   const showNumberBadges = useLibraryStore((s) => s.showNumberBadges);
   const setShowNumberBadges = useLibraryStore((s) => s.setShowNumberBadges);
+  const showContinueReading = useLibraryStore((s) => s.showContinueReading);
+  const setShowContinueReading = useLibraryStore((s) => s.setShowContinueReading);
   const listMode = displayMode === "list";
 
   return (
@@ -375,6 +377,11 @@ function DisplayOptions() {
           checked={showNumberBadges}
           label={t("librarySettings.numberBadges")}
           onChange={(event) => setShowNumberBadges(event.currentTarget.checked)}
+        />
+        <Switch
+          checked={showContinueReading}
+          label={t("librarySettings.continueReading")}
+          onChange={(event) => setShowContinueReading(event.currentTarget.checked)}
         />
       </Stack>
     </Stack>

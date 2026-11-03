@@ -29,6 +29,10 @@ import {
   LibraryLocalImport,
   type LibraryLocalImportHandle,
 } from "../components/library/LibraryLocalImport";
+import {
+  ContinueReadingShelf,
+  isContinueReadingShelfVisible,
+} from "../components/library/ContinueReadingShelf";
 import { useLibraryQuery } from "../components/library/use-library-query";
 import { useLibraryEntry } from "../components/library/use-library-entry";
 import { StorageRecoveryBanner } from "../components/runtime/StorageRecovery";
@@ -109,6 +113,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const showDownloadBadges = useLibraryStore((s) => s.showDownloadBadges);
   const showUnreadBadges = useLibraryStore((s) => s.showUnreadBadges);
   const showNumberBadges = useLibraryStore((s) => s.showNumberBadges);
+  const showContinueReading = useLibraryStore((s) => s.showContinueReading);
   const downloadedOnlyMode = useLibraryStore((s) => s.downloadedOnlyMode);
   const unreadOnlyMode = useLibraryStore((s) => s.unreadOnlyMode);
   const localOnlyMode = useLibraryStore((s) => s.localOnlyMode);
@@ -267,6 +272,20 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     localOnlyMode ||
     completedOnlyMode ||
     repairNeededOnlyMode;
+
+  const showContinueShelf = isContinueReadingShelfVisible({
+    enabled: showContinueReading,
+    filterActive,
+    search,
+    selectedCategoryId,
+    selectionMode,
+  });
+  const openChapter = useCallback(
+    (chapterId: number) => {
+      void navigate({ to: "/reader", search: { chapterId } });
+    },
+    [navigate],
+  );
 
   const libraryError = novels.error;
   const isInitialLibraryLoading = novels.isLoading;
@@ -462,6 +481,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             <StorageRecoveryBanner />
 
             <div className="norea-library-body" ref={libraryBodyRef}>
+              {showContinueShelf && !isInitialLibraryLoading && !libraryError ? (
+                <ContinueReadingShelf active={active} onOpen={openChapter} />
+              ) : null}
               {isInitialLibraryLoading ? (
                 <LibraryGridSkeleton
                   displayMode={displayMode}
