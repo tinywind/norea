@@ -1,23 +1,41 @@
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from "vitest";
 
+const recovery = vi.hoisted(() => ({ stopped: false }));
+
 vi.mock("./plugin-vpn", async (importOriginal) => ({
   ...await importOriginal<typeof import("./plugin-vpn")>(),
+  getPluginVpnStatus: vi.fn(),
+  isPluginVpnRecoveryStopped: () => recovery.stopped,
+  releasePluginVpnRecoveryProfile: vi.fn(),
+  replacePluginVpnRecoveryProfile: vi.fn(),
   restorePluginVpnConnection: vi.fn(),
+  resumePluginVpnRecovery: () => { recovery.stopped = false; },
   startPluginVpnStatusListener: vi.fn(),
 }));
 
+vi.mock("./plugin-vpn-profiles", () => ({ listSavedPluginVpnProfiles: vi.fn() }));
+
 import {
+  getPluginVpnStatus,
+  recordPluginVpnProfileSuccess,
+  releasePluginVpnRecoveryProfile,
+  replacePluginVpnRecoveryProfile,
   restorePluginVpnConnection,
   startPluginVpnStatusListener,
   type PluginVpnStatus,
   type PluginVpnStatusEvent,
 } from "./plugin-vpn";
+import { listSavedPluginVpnProfiles, type SavedVpnProfile } from "./plugin-vpn-profiles";
 import { requestPluginVpnRecovery, startPluginVpnLifecycle } from "./plugin-vpn-lifecycle";
 import { useNetworkStore } from "./network";
 import { usePluginVpnStore } from "../store/plugin-vpn";
 
 const restoreMock = vi.mocked(restorePluginVpnConnection);
 const statusListenerMock = vi.mocked(startPluginVpnStatusListener);
+const statusMock = vi.mocked(getPluginVpnStatus);
+const replaceMock = vi.mocked(replacePluginVpnRecoveryProfile);
+const releaseMock = vi.mocked(releasePluginVpnRecoveryProfile);
+const vaultMock = vi.mocked(listSavedPluginVpnProfiles);
 const CONNECTED_STATUS: PluginVpnStatus = {
   error: null,
   phase: "connected",
@@ -47,6 +65,11 @@ describe("plugin VPN app lifecycle", () => {
     vi.stubGlobal("document", documentTarget);
     vi.stubGlobal("window", new EventTarget());
     restoreMock.mockReset().mockResolvedValue(null);
+    recovery.stopped = false;
+    statusMock.mockReset().mockRejectedValue(new Error("status unavailable"));
+    replaceMock.mockReset().mockResolvedValue(true);
+    releaseMock.mockReset().mockImplementation(async () => { recovery.stopped = true; return true; });
+    vaultMock.mockReset().mockResolvedValue({ limit: 20, profiles: [], cleanupError: null });
     unlisten = vi.fn<() => void>();
     statusListenerMock.mockReset().mockImplementation(async (onEvent) => {
       emitStatus = onEvent;
@@ -229,6 +252,107 @@ describe("plugin VPN app lifecycle", () => {
     stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError: vi.fn() });
     await vi.advanceTimersByTimeAsync(600_000);
     expect(restoreMock).toHaveBeenCalledTimes(1);
+  });
+
+  describe("profile failover", () => {
+    const timeout = new Error("OpenVPN connection failed (CONNECTION_TIMEOUT)");
+    const saved = (name: string, approvalSequence: number): SavedVpnProfile => ({
+      id: name.repeat(64), hash: name.repeat(64), ip: `198.51.100.${approvalSequence}`, protocol: "tcp", approvedAt: approvalSequence, approvalSequence,
+    });
+    const failing = saved("a", 1);
+    const statusFor = (profile: SavedVpnProfile): PluginVpnStatus => ({
+      ...ERROR_STATUS, phase: "disabled", profile: { ...CONNECTED_STATUS.profile!, hash: profile.hash, remoteHost: profile.ip },
+    });
+
+    it("switches to the most recently successful retained profile after three failures of the same profile", async () => {
+      vi.useFakeTimers();
+      const older = saved("b", 2); const succeeded = saved("c", 3); const newest = saved("d", 4);
+      recordPluginVpnProfileSuccess(succeeded.hash);
+      vaultMock.mockResolvedValue({ limit: 20, profiles: [failing, older, newest, succeeded], cleanupError: null });
+      statusMock.mockResolvedValue(statusFor(failing));
+      restoreMock.mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout);
+      replaceMock.mockImplementationOnce(async () => { statusMock.mockResolvedValue(statusFor(succeeded)); return true; });
+      restoreMock.mockRejectedValueOnce(timeout).mockResolvedValueOnce(CONNECTED_STATUS);
+      const onError = vi.fn(); const onRestored = vi.fn(); const onStopped = vi.fn();
+      stop = startPluginVpnLifecycle({ onRestored, onError, onStopped });
+      await vi.advanceTimersByTimeAsync(5_000 + 15_000);
+      expect(restoreMock).toHaveBeenCalledTimes(4);
+      expect(replaceMock.mock.calls).toEqual([[succeeded]]);
+      // The replacement starts its own failure count instead of switching again.
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(restoreMock).toHaveBeenCalledTimes(5);
+      expect(replaceMock).toHaveBeenCalledTimes(1);
+      expect(onRestored).toHaveBeenCalledExactlyOnceWith(CONNECTED_STATUS);
+      expect(onError).toHaveBeenCalledOnce();
+      expect(onStopped).not.toHaveBeenCalled();
+      expect(releaseMock).not.toHaveBeenCalled();
+    });
+
+    it("skips a candidate that a download worker leases", async () => {
+      vi.useFakeTimers();
+      const leased = saved("e", 3); const idle = saved("f", 2);
+      vaultMock.mockResolvedValue({ limit: 20, profiles: [failing, leased, idle], cleanupError: null });
+      statusMock.mockResolvedValue(statusFor(failing));
+      restoreMock.mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout).mockResolvedValueOnce(CONNECTED_STATUS);
+      replaceMock.mockRejectedValueOnce(new Error("VPN profile is reserved by a download worker"));
+      stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError: vi.fn(), onStopped: vi.fn() });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(replaceMock.mock.calls).toEqual([[leased], [idle]]);
+      expect(restoreMock).toHaveBeenCalledTimes(4);
+    });
+
+    it("releases the profile and notifies once when no other retained profile remains", async () => {
+      vi.useFakeTimers();
+      const other = saved("b", 2);
+      vaultMock.mockResolvedValue({ limit: 20, profiles: [failing, other], cleanupError: null });
+      statusMock.mockResolvedValue(statusFor(failing));
+      restoreMock.mockRejectedValue(timeout);
+      replaceMock.mockImplementation(async () => { statusMock.mockResolvedValue(statusFor(other)); return true; });
+      const onStopped = vi.fn(); const onError = vi.fn();
+      stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError, onStopped });
+      await vi.advanceTimersByTimeAsync(600_000);
+      // Three attempts per profile, then the second pass excludes both failed profiles.
+      expect(restoreMock).toHaveBeenCalledTimes(6);
+      expect(replaceMock.mock.calls).toEqual([[other]]);
+      expect(releaseMock).toHaveBeenCalledOnce();
+      expect(onStopped).toHaveBeenCalledOnce();
+      expect(onError).toHaveBeenCalledOnce();
+      window.dispatchEvent(new Event("focus"));
+      requestPluginVpnRecovery();
+      emitStatus?.({ kind: "error", status: ERROR_STATUS });
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(restoreMock).toHaveBeenCalledTimes(6);
+    });
+
+    it("resumes stopped recovery on a new network route", async () => {
+      vi.useFakeTimers();
+      statusMock.mockResolvedValue(statusFor(failing));
+      vaultMock.mockResolvedValue({ limit: 20, profiles: [failing], cleanupError: null });
+      restoreMock.mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout).mockRejectedValueOnce(timeout).mockResolvedValueOnce(CONNECTED_STATUS);
+      const onRestored = vi.fn();
+      stop = startPluginVpnLifecycle({ onRestored, onError: vi.fn(), onStopped: vi.fn() });
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(releaseMock).toHaveBeenCalledOnce();
+      expect(restoreMock).toHaveBeenCalledTimes(3);
+      useNetworkStore.setState({ connectivity: "online", revision: 2 });
+      await vi.advanceTimersByTimeAsync(0);
+      expect(restoreMock).toHaveBeenCalledTimes(4);
+      expect(onRestored).toHaveBeenCalledExactlyOnceWith(CONNECTED_STATUS);
+    });
+
+    it("does not switch profiles after an explicit Off supersedes the failover", async () => {
+      vi.useFakeTimers();
+      vaultMock.mockResolvedValue({ limit: 20, profiles: [failing, saved("b", 2)], cleanupError: null });
+      statusMock.mockResolvedValue(statusFor(failing));
+      restoreMock.mockRejectedValue(timeout);
+      replaceMock.mockResolvedValue(false);
+      const onStopped = vi.fn();
+      stop = startPluginVpnLifecycle({ onRestored: vi.fn(), onError: vi.fn(), onStopped });
+      await vi.advanceTimersByTimeAsync(600_000);
+      expect(restoreMock).toHaveBeenCalledTimes(3);
+      expect(releaseMock).not.toHaveBeenCalled();
+      expect(onStopped).not.toHaveBeenCalled();
+    });
   });
 
   it("removes resume listeners and ignores completion after teardown", async () => {

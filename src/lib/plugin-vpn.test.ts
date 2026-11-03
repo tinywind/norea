@@ -39,7 +39,11 @@ import {
   disconnectPluginVpn,
   ensureAndroidPluginVpnProxy,
   importPluginVpnProfile,
+  isPluginVpnRecoveryStopped,
   loadPluginVpnFinderServers,
+  pluginVpnProfileSucceededAt,
+  releasePluginVpnRecoveryProfile,
+  replacePluginVpnRecoveryProfile,
   pluginVpnFinderProfileIp,
   preparePluginVpnProfileChange,
   removePluginVpnProfile,
@@ -143,6 +147,49 @@ describe("plugin VPN", () => {
       ["plugin_vpn_connect", { credentials: EMPTY_CREDENTIALS }],
     ]);
     expect(usePluginVpnStore.getState().enabled).toBe(true);
+  });
+
+  it("replaces a failing recovery profile without clearing On or opening a direct route", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    await expect(replacePluginVpnRecoveryProfile({ id: "b".repeat(64), hash: "b".repeat(64) })).resolves.toBe(true);
+    expect(invokeMock.mock.calls).toEqual([
+      ["plugin_vpn_disconnect", { preserveBlock: true }],
+      ["plugin_vpn_apply_saved_profile", { id: "b".repeat(64), expectedHash: "b".repeat(64) }],
+    ]);
+    expect(usePluginVpnStore.getState().enabled).toBe(true);
+  });
+
+  it("surfaces a worker-leased replacement refusal and skips replacement after Off", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    invokeMock.mockResolvedValueOnce(STATUS).mockRejectedValueOnce(new Error("VPN profile is reserved by a download worker"));
+    await expect(replacePluginVpnRecoveryProfile({ id: "b".repeat(64), hash: "b".repeat(64) })).rejects.toThrow("reserved by a download worker");
+    await disconnectPluginVpn();
+    invokeMock.mockClear();
+    await expect(replacePluginVpnRecoveryProfile({ id: "b".repeat(64), hash: "b".repeat(64) })).resolves.toBe(false);
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("releases the profile once recovery stops and stays stopped until the user connects", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    await expect(releasePluginVpnRecoveryProfile()).resolves.toBe(true);
+    expect(invokeMock.mock.calls).toEqual([["plugin_vpn_release_profile"]]);
+    expect(isPluginVpnRecoveryStopped()).toBe(true);
+    expect(usePluginVpnStore.getState().enabled).toBe(true);
+    invokeMock.mockClear();
+    await expect(restorePluginVpnConnection()).resolves.toBeNull();
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    invokeMock.mockResolvedValueOnce(STATUS).mockResolvedValueOnce(CONNECTED_STATUS);
+    await expect(connectPluginVpn(EMPTY_CREDENTIALS)).resolves.toEqual(CONNECTED_STATUS);
+    expect(isPluginVpnRecoveryStopped()).toBe(false);
+    expect(pluginVpnProfileSucceededAt(STATUS.profile!.hash)).toBeGreaterThan(0);
+  });
+
+  it("keeps recovery running when the native release fails", async () => {
+    usePluginVpnStore.getState().setEnabled(true);
+    invokeMock.mockRejectedValueOnce(new Error("OpenVPN session cleanup timed out"));
+    await expect(releasePluginVpnRecoveryProfile()).rejects.toThrow("cleanup timed out");
+    expect(isPluginVpnRecoveryStopped()).toBe(false);
   });
 
   it("never restores a manually disabled VPN", async () => {

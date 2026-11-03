@@ -252,6 +252,7 @@ pub fn run() {
             plugin_vpn::state::plugin_vpn_cancel_finder_query,
             plugin_vpn::state::plugin_vpn_connect,
             plugin_vpn::state::plugin_vpn_disconnect,
+            plugin_vpn::state::plugin_vpn_release_profile,
             plugin_vpn::state::plugin_vpn_load_finder_servers,
             plugin_vpn::state::plugin_vpn_import_profile,
             plugin_vpn::state::plugin_vpn_remove_profile,

@@ -458,6 +458,12 @@ the OpenVPN tunnel. A failed connection or recovery attempt retains the user's
 On setting and keeps the proxy blocked, including between recovery attempts.
 Direct routing is restored only by an explicit disconnect or a profile action
 that switches VPN use off. A server switch preserves blocked routing.
+After three consecutive failed automatic reconnects to the same profile,
+recovery applies another approved retained profile that no download worker
+leases, preferring profiles that recently connected. When none remains, Norea
+stops automatic reconnection, releases the profile to download workers, keeps
+plugin traffic blocked and shows one notice that opens network settings. A user
+connect, Off or a new network route resumes recovery.
 
 While VPN use is On, host-mediated source fetches and page acquisition wait for
 a confirmed connected tunnel before starting network work. A single media run

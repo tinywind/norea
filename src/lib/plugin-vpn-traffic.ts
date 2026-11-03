@@ -1,7 +1,7 @@
 import { usePluginVpnStore } from "../store/plugin-vpn";
 import { requestAbortedError } from "./abort";
 import { requireNetworkOnline, isNetworkOnline, NetworkUnavailableError, useNetworkStore } from "./network";
-import { getPluginVpnStatus, isRetryablePluginVpnError } from "./plugin-vpn";
+import { getPluginVpnStatus, isPluginVpnRecoveryStopped, isRetryablePluginVpnError } from "./plugin-vpn";
 import { requestPluginVpnRecovery } from "./plugin-vpn-lifecycle";
 import type { ScraperExecutorId } from "./tasks/scraper-queue";
 import { getVpnDownloadWorkerContext } from "./tasks/vpn-worker-context";
@@ -39,6 +39,7 @@ export function waitForPluginVpnReady(
   try { requireNetworkOnline(); } catch (error) { return Promise.reject(error); }
   if (executor?.startsWith("vpn:") && isAndroidRuntime()) return waitForDownloadWorkerReady(executor, signal, deadline);
   if (!usePluginVpnStore.getState().enabled) return Promise.resolve(false);
+  if (isPluginVpnRecoveryStopped()) return Promise.reject(new PluginVpnUnavailableError(false));
 
   return new Promise<boolean>((resolve, reject) => {
     let active = true;

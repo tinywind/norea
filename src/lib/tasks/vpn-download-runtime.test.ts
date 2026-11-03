@@ -10,7 +10,7 @@ const boundary = vi.hoisted(() => ({
   blocks: [] as SourceAccessBlock[], listeners: new Set<() => void>(),
   effects: [] as string[], complete: new Map<number, () => void>(), reject: new Map<number, (error: Error) => void>(),
   invoke: vi.fn(), catalog: vi.fn(), enqueue: vi.fn(), configure: vi.fn(), close: vi.fn(), show: vi.fn(),
-  profiles: vi.fn(), status: vi.fn(), connect: vi.fn(), disconnect: vi.fn(),
+  profiles: vi.fn(), status: vi.fn(), recoveryStopped: vi.fn(() => false), connect: vi.fn(), disconnect: vi.fn(),
   stop: vi.fn(), restart: vi.fn(), createPlan: vi.fn(), cancelPlan: vi.fn(), cancelTask: vi.fn(),
   settleTask: vi.fn(), restoreEffects: [] as string[],
   pendingJobs: new Map<number, ChapterDownloadJob>(), handover: vi.fn(), persistPending: vi.fn(), cancelOrdinary: vi.fn(), discardOrdinary: vi.fn(),
@@ -100,7 +100,10 @@ vi.mock("../../db/queries/vpn-download-profile-issues", () => ({
   },
 }));
 vi.mock("../plugin-vpn-profiles", () => ({ SAVED_PLUGIN_VPN_PROFILES_CHANGED_EVENT: "norea-vpn-profiles-changed", listSavedPluginVpnProfiles: boundary.profiles }));
-vi.mock("../plugin-vpn", () => ({ getPluginVpnStatus: boundary.status, PLUGIN_VPN_PROFILE_RELEASED_EVENT: "norea-plugin-vpn-profile-released" }));
+vi.mock("../plugin-vpn", () => ({
+  getPluginVpnStatus: boundary.status, isPluginVpnRecoveryStopped: boundary.recoveryStopped,
+  PLUGIN_VPN_PROFILE_RELEASED_EVENT: "norea-plugin-vpn-profile-released",
+}));
 vi.mock("../plugin-vpn-download-workers", () => ({
   getPluginVpnDownloadGenerationFloor: async () => 0,
   connectPluginVpnDownloadWorker: boundary.connect, disconnectPluginVpnDownloadWorker: boundary.disconnect,
@@ -172,6 +175,7 @@ beforeEach(async () => {
   vi.resetModules(); vi.clearAllMocks(); boundary.plans.clear(); boundary.jobs = []; boundary.effects = []; boundary.complete.clear(); boundary.reject.clear();
   boundary.restoreEffects = []; boundary.issues = []; boundary.blocks = []; boundary.listeners.clear();
   boundary.pendingJobs.clear();
+  boundary.recoveryStopped.mockReset().mockReturnValue(false);
   boundary.handover.mockReset().mockResolvedValue({ jobs: [], pending: [], commitReady: async () => [], release: vi.fn() });
   boundary.cancelOrdinary.mockReset().mockResolvedValue(undefined);
   boundary.discardOrdinary.mockReset();
@@ -497,6 +501,30 @@ describe("automatic VPN run admission", () => {
       expect(ranges.filter(range => range.pauseReason === "runtime-error")).toEqual([]);
       expect(new Set(boundary.configure.mock.calls.map(([, config]) => config.profileId)).size).toBe(10);
       expect(boundary.enqueue).toHaveBeenCalledTimes(10);
+    } finally { await restored.cancelVpnDownloadRun(); }
+  });
+
+  it("leases the browsing profile to a worker once its automatic recovery stopped and released it", async () => {
+    const foreground = { id: "p0", hash: "hash-p0", ip: "192.0.2.1", protocol: "tcp", approvedAt: 1, approvalSequence: 1 };
+    const range = { id: "plan-0-0", profileId: foreground.id, profileHash: foreground.hash, startChapterId: 700, endChapterId: 700,
+      chapterIds: [700], selectedChapterIds: [700], checkpoint: 0, phase: "paused" as const, userPaused: false, pauseReason: "interrupted",
+      attemptedProfileIds: [], attemptProfileId: null, generation: 0, challenge: null };
+    boundary.plans.set("plan-0", { id: "plan-0", batchId: "device-run", pluginId: "source-test", novelId: 7, title: "Work", mode: "parallel",
+      policies: { captcha: "nextProfile", cloudflare: "nextProfile" }, createdAt: 1, revision: 0, ranges: [range] });
+    boundary.jobs.push({ id: 700, pluginId: "source-test", novelId: 7, novelName: "Work", chapterPath: "/chapter/700", title: "Chapter 700",
+      batchId: "device-run", vpnBatchId: "device-run", vpnPlanId: "plan-0", vpnRangeId: range.id });
+    boundary.catalog.mockImplementation(async () => [{ id: 700, name: "Chapter 700", chapterNumber: "700" }]);
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [foreground], cleanupError: null });
+    boundary.status.mockResolvedValue({ phase: "disabled", profile: { hash: foreground.hash, remoteHost: foreground.ip }, supported: true, proxyPort: 123, error: null });
+    boundary.recoveryStopped.mockReturnValue(true);
+    boundary.connect.mockImplementation(async (worker, profile) =>
+      ({ supported: true, worker, phase: "connected", profile: { ...foreground, id: profile.id }, proxyPort: 12000, error: null }));
+    const restored = await restartProcess(1);
+    (await import("../../store/plugin-vpn")).usePluginVpnStore.setState({ enabled: true });
+    await restored.initializeVpnDownloadRuntime();
+    try {
+      await vi.waitFor(() => expect(boundary.connect).toHaveBeenCalled(), { timeout: 3_000 });
+      expect(boundary.connect.mock.calls.map(([, profile]) => profile.id)).toEqual([foreground.id]);
     } finally { await restored.cancelVpnDownloadRun(); }
   });
 

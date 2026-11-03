@@ -16,7 +16,7 @@ import { useVpnDownloadStore } from "../../store/vpn-download";
 import { androidCloseVpnDownloadWorker, androidConfigureVpnDownloadWorker, androidShowVpnDownloadWorker } from "../android-scraper";
 import { describeError } from "../errors";
 import { isNetworkOnline, useNetworkStore } from "../network";
-import { getPluginVpnStatus, PLUGIN_VPN_PROFILE_RELEASED_EVENT } from "../plugin-vpn";
+import { getPluginVpnStatus, isPluginVpnRecoveryStopped, PLUGIN_VPN_PROFILE_RELEASED_EVENT } from "../plugin-vpn";
 import { connectPluginVpnDownloadWorker, disconnectPluginVpnDownloadWorker, getPluginVpnDownloadGenerationFloor, stopPluginVpnDownloadWorkers } from "../plugin-vpn-download-workers";
 import { listSavedPluginVpnProfiles, SAVED_PLUGIN_VPN_PROFILES_CHANGED_EVENT, type SavedVpnProfile } from "../plugin-vpn-profiles";
 import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
@@ -131,8 +131,10 @@ function report(error: unknown): void { publish({ error: describeError(error) })
 async function availableProfiles(): Promise<readonly SavedVpnProfile[]> {
   const [vault, status] = await Promise.all([listSavedPluginVpnProfiles(), getPluginVpnStatus()]);
   if (vault.cleanupError) throw new Error(vault.cleanupError);
-  // Native leases refuse the foreground profile while its connection is requested, including the disabled reconnect backoff.
-  const foreground = status.phase !== "disabled" || usePluginVpnStore.getState().enabled ? status.profile : null;
+  // Native leases refuse the foreground profile while its connection is requested, including the disabled reconnect backoff;
+  // stopped recovery releases it.
+  const requested = usePluginVpnStore.getState().enabled && !isPluginVpnRecoveryStopped();
+  const foreground = status.phase !== "disabled" || requested ? status.profile : null;
   reservedProfiles = foreground
     ? vault.profiles.filter(profile => profile.hash === foreground.hash || profile.ip === foreground.remoteHost).map(profile => profile.id) : [];
   return vault.profiles;

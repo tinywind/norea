@@ -863,6 +863,29 @@ pub(crate) async fn plugin_vpn_disconnect(
     disconnect(state.inner(), Some(preserve_block)).await
 }
 
+/// Ends automatic recovery: download workers may lease the profile again, but plugin
+/// traffic stays blocked until the user connects or turns the VPN off.
+#[tauri::command]
+pub(crate) async fn plugin_vpn_release_profile(
+    state: State<'_, PluginVpnState>,
+) -> Result<PluginVpnStatus, String> {
+    ensure_supported()?;
+    release_profile(state.inner()).await
+}
+
+async fn release_profile(state: &PluginVpnState) -> Result<PluginVpnStatus, String> {
+    disconnect(state, Some(true)).await?;
+    let _foreground = state.shared.foreground.lock().await;
+    let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+    // A connection the user started after the disconnect keeps its request.
+    if runtime.phase == PluginVpnPhase::Disabled && runtime.connection_requested {
+        runtime.connection_requested = false;
+        #[cfg(any(target_os = "android", target_os = "windows", test))]
+        state.set_disconnected_proxy(true);
+    }
+    Ok(state.status_from_runtime(&runtime))
+}
+
 async fn disconnect(
     state: &PluginVpnState,
     preserve_block: Option<bool>,
@@ -1722,6 +1745,45 @@ pub(crate) mod tests {
         assert!(state.read_saved_profile_lease(&pool, "worker-a").await.is_err());
         state.release_saved_profile("worker-a").await.unwrap();
         assert!(state.saved_profile_lease(&pool, "worker-a").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn releasing_a_failed_foreground_profile_lets_workers_lease_it_while_plugin_traffic_stays_blocked() {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let directory = tempfile::tempdir().unwrap();
+        let pool = SqlitePoolOptions::new().max_connections(1).connect_with(
+            SqliteConnectOptions::new().filename(directory.path().join("verdicts.db")).create_if_missing(true)
+        ).await.unwrap();
+        sqlx::query("CREATE TABLE vpn_gate_server_verdict (ip TEXT PRIMARY KEY NOT NULL, verdict TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()))").execute(&pool).await.unwrap();
+        let bytes = format!("client\ndev tun\nproto tcp\nremote 8.8.4.4 443\n<ca>\ncertificate\n</ca>\n{VPN_GATE_PROFILE_MARKER}\nauth-user-pass\n").into_bytes();
+        let mut vault = SavedProfileVault::open(directory.path().join("profiles")).unwrap();
+        let saved = vault.capture(&pool, "8.8.4.4", &bytes).await.unwrap().saved_profile.unwrap();
+        let state = PluginVpnState::bind().unwrap();
+        assert!(state.shared.saved_profiles.set(Ok(tokio::sync::Mutex::new(vault))).is_ok());
+        state.shared.state.lock().unwrap().profile = Some(PluginVpnProfile::from(validate_profile(&bytes).unwrap()));
+        let (generation, _cancellation) = state.begin_connection(0).unwrap();
+        state.set_connection_error(generation, "OpenVPN connection failed (CONNECTION_TIMEOUT)".to_string());
+        assert!(state.reserve_saved_profile(&pool, "worker", &saved.id, &saved.hash).await.is_err());
+
+        let status = release_profile(&state).await.unwrap();
+        assert_eq!(status.phase, PluginVpnPhase::Disabled);
+        assert!(!state.shared.state.lock().unwrap().connection_requested);
+        let destination = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let target = destination.local_addr().unwrap();
+        let mut client = tokio::net::TcpStream::connect(state.shared.proxy.address()).await.unwrap();
+        client.write_all(format!("CONNECT {target} HTTP/1.1\r\nHost: {target}\r\n\r\n").as_bytes()).await.unwrap();
+        let mut response = [0u8; 256];
+        let size = tokio::time::timeout(std::time::Duration::from_secs(3), client.read(&mut response)).await.unwrap().unwrap();
+        assert!(String::from_utf8_lossy(&response[..size]).starts_with("HTTP/1.1 502"));
+        let lease = state.reserve_saved_profile(&pool, "worker", &saved.id, &saved.hash).await.unwrap();
+        assert_eq!(lease.owner, "worker");
+
+        state.release_saved_profile("worker").await.unwrap();
+        disconnect(&state, Some(true)).await.unwrap();
+        assert!(state.reserve_saved_profile(&pool, "worker", &saved.id, &saved.hash).await.is_err());
+        disconnect(&state, Some(false)).await.unwrap();
+        assert!(!state.shared.state.lock().unwrap().connection_requested);
     }
 
     #[test]

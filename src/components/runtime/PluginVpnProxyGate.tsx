@@ -17,6 +17,8 @@ import { isAndroidRuntime, isTauriRuntime } from "../../lib/tauri-runtime";
 import { useAppearanceStore } from "../../store/appearance";
 import { StartupSplash } from "./StartupSplash";
 
+const PLUGIN_VPN_RECOVERY_STOPPED_NOTIFICATION_ID = "plugin-vpn-recovery-stopped";
+
 export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
   const appLocale = useAppearanceStore((state) => state.appLocale);
   const queryClient = useQueryClient();
@@ -81,6 +83,32 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
           ),
           error,
         );
+      },
+      onStopped: () => {
+        void queryClient.invalidateQueries({ queryKey: PLUGIN_VPN_QUERY_KEY });
+        const locale = useAppearanceStore.getState().appLocale;
+        notifications.show({
+          id: PLUGIN_VPN_RECOVERY_STOPPED_NOTIFICATION_ID,
+          autoClose: false,
+          color: "warn",
+          title: translate(locale, "settings.data.pluginVpn.toast.recoveryStoppedTitle"),
+          message: (
+            <Stack gap="xs" align="flex-start">
+              <Text size="sm">{translate(locale, "settings.data.pluginVpn.toast.recoveryStoppedBody")}</Text>
+              <Button
+                size="xs"
+                variant="light"
+                onClick={() => {
+                  notifications.hide(PLUGIN_VPN_RECOVERY_STOPPED_NOTIFICATION_ID);
+                  // This gate renders outside RouterProvider, and the route tree is loaded after it.
+                  void import("../../router").then(({ router }) => router.navigate({ to: "/settings", search: { section: "network" } }));
+                }}
+              >
+                {translate(locale, "settings.data.pluginVpn.toast.openNetworkSettings")}
+              </Button>
+            </Stack>
+          ),
+        });
       },
     });
     void startPluginVpnStatusListener(onStatusEvent)

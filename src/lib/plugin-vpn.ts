@@ -141,12 +141,29 @@ let recoveryAttempt: Promise<PluginVpnStatus | null> | null = null;
 let activeProfileSwitches = 0;
 let profileReplacementPending = false;
 let sessionCredentials: PluginVpnCredentials | null = null;
+let recoveryStopped = false;
+const profileSuccesses = new Map<string, number>();
 
 function clearPluginVpnIntent(): void {
   connectionGeneration += 1;
   profileReplacementPending = false;
   sessionCredentials = null;
+  recoveryStopped = false;
   usePluginVpnStore.getState().setEnabled(false);
+}
+
+/** Notes a profile hash that reached a connected tunnel, for recovery to prefer. */
+export function recordPluginVpnProfileSuccess(hash: string): void {
+  profileSuccesses.set(hash, Date.now());
+}
+
+export function pluginVpnProfileSucceededAt(hash: string): number {
+  return profileSuccesses.get(hash) ?? 0;
+}
+
+/** True after automatic recovery gave up and released the browsing profile; user connect or Off clears it. */
+export function isPluginVpnRecoveryStopped(): boolean {
+  return recoveryStopped;
 }
 
 function trackPluginVpnConnection(
@@ -388,6 +405,7 @@ function startPluginVpnConnection(
   const current = () => generation === connectionGeneration && isCurrent();
   profileReplacementPending = false;
   sessionCredentials = { ...credentials };
+  recoveryStopped = false;
   usePluginVpnStore.getState().setEnabled(true);
   return trackPluginVpnConnection(
     (async () => {
@@ -436,6 +454,7 @@ async function establishPluginVpnConnection(
     if (status.error) throw new Error(status.error);
     throw new PluginVpnConnectionNotEstablishedError();
   }
+  if (status.profile) recordPluginVpnProfileSuccess(status.profile.hash);
   return status;
 }
 
@@ -472,8 +491,50 @@ export async function removePluginVpnProfile(): Promise<PluginVpnStatus> {
   return invoke<PluginVpnStatus>("plugin_vpn_remove_profile");
 }
 
+/**
+ * Applies another retained profile for automatic recovery. Keeps On and blocked routing, and
+ * returns false when an explicit user action superseded the switch.
+ * Throws when native refuses the profile, for example while a download worker leases it.
+ */
+export async function replacePluginVpnRecoveryProfile(profile: { id: string; hash: string }): Promise<boolean> {
+  const generation = connectionGeneration;
+  const current = () => generation === connectionGeneration && usePluginVpnStore.getState().enabled && !recoveryStopped;
+  if (!current() || connectionAttempt || activeProfileSwitches > 0 || profileReplacementPending) return false;
+  activeProfileSwitches += 1;
+  try {
+    await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: true });
+    if (!current()) return false;
+    await invoke<PluginVpnStatus>("plugin_vpn_apply_saved_profile", { id: profile.id, expectedHash: profile.hash });
+    return current();
+  } finally {
+    activeProfileSwitches -= 1;
+    notifyProfileRelease();
+  }
+}
+
+/** Stops automatic recovery and frees the browsing profile for download workers; plugin traffic stays blocked. */
+export async function releasePluginVpnRecoveryProfile(): Promise<boolean> {
+  const generation = connectionGeneration;
+  if (!usePluginVpnStore.getState().enabled || connectionAttempt || activeProfileSwitches > 0) return false;
+  recoveryStopped = true;
+  try {
+    await invoke<PluginVpnStatus>("plugin_vpn_release_profile");
+  } catch (error) {
+    if (generation === connectionGeneration) recoveryStopped = false;
+    throw error;
+  }
+  if (generation !== connectionGeneration) return false;
+  notifyProfileRelease();
+  return true;
+}
+
+/** Lets automatic recovery try again after new evidence, such as a different network route. */
+export function resumePluginVpnRecovery(): void {
+  recoveryStopped = false;
+}
+
 export function restorePluginVpnConnection(): Promise<PluginVpnStatus | null> {
-  if (!isNetworkOnline() || !usePluginVpnStore.getState().enabled || activeProfileSwitches > 0 || profileReplacementPending) {
+  if (!isNetworkOnline() || !usePluginVpnStore.getState().enabled || recoveryStopped || activeProfileSwitches > 0 || profileReplacementPending) {
     return Promise.resolve(null);
   }
   if (recoveryAttempt) return recoveryAttempt;

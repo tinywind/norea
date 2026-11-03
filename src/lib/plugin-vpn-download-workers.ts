@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { PluginVpnPhase } from "./plugin-vpn";
+import { recordPluginVpnProfileSuccess, type PluginVpnPhase } from "./plugin-vpn";
 import type { SavedVpnProfile } from "./plugin-vpn-profiles";
 import type { VpnDownloadWorkerRef } from "./tasks/vpn-download-types";
 import { PluginVpnUnavailableError } from "./plugin-vpn-traffic";
@@ -26,8 +26,11 @@ export async function connectPluginVpnDownloadWorker(
   worker: VpnDownloadWorkerRef,
   profile: Pick<SavedVpnProfile, "id" | "hash">,
 ): Promise<PluginVpnDownloadWorkerStatus> {
-  try { return await invoke("plugin_vpn_download_worker_connect", { worker, profileId: profile.id, expectedHash: profile.hash }); }
+  let status: PluginVpnDownloadWorkerStatus;
+  try { status = await invoke("plugin_vpn_download_worker_connect", { worker, profileId: profile.id, expectedHash: profile.hash }); }
   catch (error) { throw classifiedWorkerError(error, "vpn-worker-connection-failed"); }
+  if (status.phase === "connected" && status.profile) recordPluginVpnProfileSuccess(status.profile.hash);
+  return status;
 }
 
 function classifiedWorkerError(error: unknown, code: string): unknown {
