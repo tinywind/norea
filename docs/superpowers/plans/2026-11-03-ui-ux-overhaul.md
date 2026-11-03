@@ -431,8 +431,8 @@ Verify with the focused Vitest files, plus `pnpm tsc` when requested.
 ## Phase 1 - Decisions and contracts
 
 - [x] **1.1** Record decisions D1-D8 in this file (see "Decision record"). Behavior additions are still unapproved and stay out of the main line.
-- [ ] **1.2** Define the overlay contract as a test, `src/components/ui/overlay-contract.test.tsx`, written when `ResponsiveSheet` lands (Phase 3), not as a separate doc. The contract covers initial focus, focus return, Escape on nested overlays, Android back precedence and pending dismissal.
-- [ ] **1.3** Record the reader gesture contract as tests in `use-reader-gestures` before 4.1 changes behavior. It covers:
+- [x] **1.2** Define the overlay contract as a test, `src/components/ui/overlay-contract.test.tsx`, written when `ResponsiveSheet` lands (Phase 3), not as a separate doc. The contract covers initial focus, focus return, Escape on nested overlays, Android back precedence and pending dismissal.
+- [x] **1.3** Record the reader gesture contract as tests in `use-reader-gestures` before 4.1 changes behavior. It covers:
   - tap vs text selection
   - links
   - media interception (`ReaderContent.tsx:418`)
@@ -442,19 +442,19 @@ Verify with the focused Vitest files, plus `pnpm tsc` when requested.
 
 ## Phase 2 - Tokens, palette and Mantine mapping (visual only)
 
-- [ ] **2.1 Fonts (D1, D7).**
+- [x] **2.1 Fonts (D1, D7).**
   - Add the font files and `src/theme/fonts.css`.
   - Set `--norea-font-ui`. Remove Inter and Source Serif 4 from the chrome (`src/main.tsx:190`, `src/styles/app.css:57-59`).
   - Numbers use `font-variant-numeric: tabular-nums` in the UI font, and the monospace meta font goes away.
   - Measure `dist/` before and after.
-- [ ] **2.2 Tokens.** Add `src/theme/tokens.css` and import it. Keep the `--norea-design-*` names as aliases until the end of Phase 4.
-- [ ] **2.3 Palette roles.** Add `src/theme/palette-roles.ts` plus the contrast gate test. Write the roles from `src/main.tsx`.
-- [ ] **2.4 Mantine mapping.**
+- [x] **2.2 Tokens.** Add `src/theme/tokens.css` and import it. Keep the `--norea-design-*` names as aliases until the end of Phase 4.
+- [x] **2.3 Palette roles.** Add `src/theme/palette-roles.ts` plus the contrast gate test. Write the roles from `src/main.tsx`.
+- [x] **2.4 Mantine mapping.**
   - Add `cssVariablesResolver`, concrete `colors.dark` and `colors.norea` ramps, and the token-backed `radius`, `spacing` and `fontSizes`.
   - Add `src/theme/mantine-theme.test.ts`.
   - Delete the dead variables.
   - Check: a Modal, Select, Popover, Drawer and Notification in Lavender dark and Midnight Dusk dark all use `--norea-color-surface`.
-- [ ] **2.5 Semantic colors.**
+- [x] **2.5 Semantic colors.**
   - Do not pass `var(--norea-color-*)` to Mantine `color` props. Mantine turns `var()` colors into `color-mix()` (`node_modules/@mantine/core/esm/core/MantineProvider/color-functions/rgba/rgba.mjs:5`, `darken/darken.mjs:4`), and filled variants default to white text (`default-variant-colors-resolver/default-variant-colors-resolver.mjs:23`).
   - Instead, register `danger`, `warn`, `ok` and `info` as concrete 10-step theme colors from `palette-roles.ts`, next to `norea`. Add a `variantColorResolver` that returns concrete background, hover, text and border for the `filled`, `light`, `outline`, `subtle` and `default` variants. Each foreground is solved for ≥4.5:1.
   - Then replace the 92 raw color props with those theme color names.
@@ -463,16 +463,16 @@ Verify with the focused Vitest files, plus `pnpm tsc` when requested.
   - Replace the hover overlay with state layers.
   - Derive the cover fallback from the accent hue instead of random HSL stripes (`ConsolePrimitives.tsx:177-190`).
   - Replace the Mantine light shades in the tap-zone previews (`ReaderSettingsPanel.tsx:1191-1214`).
-- [ ] **2.6 Mechanical CSS migration.**
+- [x] **2.6 Mechanical CSS migration.**
   - Work one file per commit, applying the mapping tables.
   - Remove uppercase and kicker letter-spacing. Replace the meta font with tabular numerals. Remove `color-mix`.
   - Reconcile the virtualized row constants in the same commit.
   - Diff review checks that only values changed. Compare screenshots at 75%, 100% and 150% scale.
-- [ ] **2.7 Touch floor and focus.**
+- [x] **2.7 Touch floor and focus.**
   - Inside `@media (any-pointer: coarse)`, interactive selectors reach `--norea-control-md`.
   - Replace `-webkit-tap-highlight-color: transparent` with state layers.
   - Switch focus to outlines, with forced-colors support.
-- [ ] **2.8 Guard test** becomes strict.
+- [x] **2.8 Guard test** becomes strict.
 
 **Exit criteria:**
 - No text under 12px at 100% scale.
@@ -483,32 +483,32 @@ Verify with the focused Vitest files, plus `pnpm tsc` when requested.
 
 ## Phase 3 - Shell, navigation and first primitives
 
-- [ ] **3.1 Icons (D2).** `src/components/ui/icons.ts`, first consumed by the nav.
+- [x] **3.1 Icons (D2).** `src/components/ui/icons.ts`, first consumed by the nav.
   - Then migrate per page in Phase 4, fixing semantic collisions in the same slice. Collisions today:
     - select-all and mark-read share one path (`ActionGlyphs.tsx:8`, `NovelChapterList.tsx:695`)
     - `DownloadedGlyph` is both a filter and a delete
     - `RefreshGlyph` means refresh, clear cookies and clear selection
     - `DetailsGlyph` means both "open source" and "edit metadata"
-- [ ] **3.2 Five-item navigation (D3).**
+- [x] **3.2 Five-item navigation (D3).**
   - `NAV_ITEMS` (`__root.tsx:96-138`), the More page, rail badges, the active pill, the 1200px key, and no nested `<main>`.
   - Remove the four tab-visibility switches from Settings (`settings.tsx:1108-1146`) and drop `visibleWhen` filtering.
   - Keep the persisted `show*Tab` fields in `src/store/appearance.ts` as ignored values, so existing stores rehydrate.
-- [ ] **3.3 Downloads hub (D4).**
+- [x] **3.3 Downloads hub (D4).**
   - Router entry with a validated `view` search param.
   - Persistent-page bookkeeping (`__root.tsx:61,641`).
   - `TaskNotificationRoute` mapping (`src/lib/tasks/task-notification-model.ts:19,322,398`, `src/components/TaskNotifications.tsx:42`).
   - `norea://tasks` activation to `?view=queue` (`src/lib/deep-link.ts:28`), tested for cold and warm activation and for back history.
   - The Rust protocol is unchanged.
   - Remove the `/tasks` route (`src/router.tsx:90`) with no alias, per D4. Update every in-app `to: "/tasks"`, including `__root.tsx:90-91,126,161` and the notification model.
-- [ ] **3.4 `ResponsiveSheet` and `ConfirmDialog`/`useConfirm`.** These land with their first consumers, plus the overlay-contract test.
+- [x] **3.4 `ResponsiveSheet` and `ConfirmDialog`/`useConfirm`.** These land with their first consumers, plus the overlay-contract test.
   - Then replace every `window.confirm`, and add confirmation to:
     - plugin uninstall (`browse.tsx:751`)
     - repository remove (`browse.tsx:729`)
     - cancel all/source/work (`tasks.tsx:658,1006,1259`)
     - VPN run cancel (`VpnDownloadPanel.tsx:73`)
     - VPN work and range cancel (`VpnDownloadRanges.tsx:90,155`)
-- [ ] **3.5 Page transitions.** `PageSlot` (`src/styles/app.css:302-309`) cross-fades over `--norea-duration-base`.
-- [ ] **3.6 Startup copy.**
+- [x] **3.5 Page transitions.** `PageSlot` (`src/styles/app.css:302-309`) cross-fades over `--norea-duration-base`.
+- [x] **3.6 Startup copy.**
   - Merge the two sequential splash cards (`PluginVpnProxyGate.tsx:104-133`, `ChapterMediaStorageGate.tsx:75-83`) into one neutral splash.
   - Rewrite `storageSetup.*` and `pluginVpn.bootstrap.*` without implementation terms, and fix the `storageSetup.useAppStorage` key/label mismatch.
   - Gating behavior (whether local reading proceeds while the plugin proxy is pending) is a separate decision tied to the plugin fetch invariant. It is not changed here.
@@ -791,35 +791,65 @@ Visual commits come before behavior commits within a slice.
 
 ## Phase 5 - Motion and feedback
 
-- [ ] **5.1 State layers.** Apply them on every primitive. Restrict hover to `@media (hover: hover)`.
-- [ ] **5.2 Transitions.**
+- [x] **5.1 State layers.** Apply them on every primitive. Restrict hover to `@media (hover: hover)`.
+- [x] **5.2 Transitions.**
   - Sheets and dialogs: enter and exit, with a scrim.
   - The selection bar slides in.
   - `Collapse` for expandable groups.
   - Removed rows fade and collapse.
   - Progress bars animate their width.
   - Scroll-mode tap paging scrolls smoothly (`use-reader-scroll-layout.ts:320`), with reduced motion honored in that JS path.
-- [ ] **5.3 Feedback.**
+- [x] **5.3 Feedback.**
   - Success messages for save, assign, import, merge and batch download.
   - Inline progress for long checks.
   - Optimistic bookmark and library toggles with rollback on error.
-- [ ] **5.4 Long-press cue.** Scale to 0.97 plus a state layer. Use haptics only if an existing bridge supports them; no new plugin.
+- [x] **5.4 Long-press cue.** Scale to 0.97 plus a state layer. Use haptics only if an existing bridge supports them; no new plugin.
 - [ ] **5.5 Reduced motion** check on Windows with animations disabled, and on Android with animator scale set to 0.
 
 ## Phase 6 - Copy and localization
 
-- [ ] **6.1** Remove jargon from visible strings:
+- [x] **6.1** Remove jargon from visible strings:
   - cached, indexed, fan-out, eligible, lane, priority, prepared origin
   - "Chapter index", "Media fallback", "Force stop and continue"
   - "Server: Complete/Incomplete"
-- [ ] **6.2** Unify ko terminology: pick one Korean term for "chapter" (two are mixed today) and one for "library" (a native word and a loanword are mixed). Translate "Ch.", "Ref" and "Page-fit media".
-- [ ] **6.3** Prune unused keys and verify en/ko parity. Examples:
+- [x] **6.2** Unify ko terminology: pick one Korean term for "chapter" (two are mixed today) and one for "library" (a native word and a loanword are mixed). Translate "Ch.", "Ref" and "Page-fit media".
+  - Glossary (the most common existing term won; the spec has none):
+
+    | Concept | ko term | Replaced |
+    |---|---|---|
+    | novel, work | 작품 | 소설 |
+    | chapter | 챕터 (number label `{number}화`) | 회차, 새 화 |
+    | library | 서재 | 라이브러리 |
+    | download | 다운로드 | 받기, 내려받기 |
+    | Needs attention | 확인 필요 | |
+    | verify a source | 인증 | 확인, 검증 |
+    | reading progress | 읽기 진도 | 진행률, 진행 상황 |
+    | pause | 일시 중지 | 일시 정지, 일시정지 |
+    | repository | 저장소 | |
+    | storage folder / space | 저장 폴더 / 저장 공간 | 저장소, 미디어 저장소 |
+    | Extensions | 확장 프로그램 | 확장 기능 |
+    | bookmark | 북마크 | 책갈피 |
+    | content | 콘텐츠 | 컨텐츠 |
+    | migrate to another source | 옮기기 | 이관 |
+    | Off (option) | 끔 | 끄기 |
+- [x] **6.3** Prune unused keys and verify en/ko parity. Examples:
   - `novel.lastRead`, `novel.updated`, `novel.unreadCount`, `novel.released`
   - `novel.notInLibrary`, `novel.never`
   - `novel.local.moveChapterUp/Down`, `novel.selection.deleteDownloadsConfirm`
   - keys orphaned by Phases 3-4
-- [ ] **6.4** Remove reachable dev artifacts: `reader.sample`, `reader.sampleContent`, `SAMPLE_CHAPTER_HTML` (`use-reader-chapter-document.ts:363`), and the `http://127.0.0.1:8080` placeholder (`ContentServerSettings.tsx:262`).
-- [ ] **6.5** Accessible labels on search inputs (`SearchBar.tsx:26`) and on every icon-only control that remains.
+- [x] **6.4** Remove reachable dev artifacts: `reader.sample`, `reader.sampleContent`, `SAMPLE_CHAPTER_HTML` (`use-reader-chapter-document.ts:363`), and the `http://127.0.0.1:8080` placeholder (`ContentServerSettings.tsx:262`).
+- [x] **6.5** Accessible labels on search inputs (`SearchBar.tsx:26`) and on every icon-only control that remains.
+
+## Status and known gaps
+
+As of 2026-11-04 on `0.2`, Phases 0-6 and every Phase 7 slice (RD1-RD23 except the superseded RD16, Systems A, B and C) have landed; see `git log` for the per-item commits. Phase 4 slices have no checkboxes: all eight landed (4.1 reader through 4.8 migrate source).
+
+Known gaps, not verified on a device:
+- 5.5 reduced-motion checks on Windows with animations off and on Android with animator scale 0.
+- `norea://repo/add` on Android: the deep-link manifest block was updated by hand to match the plugin's generator; a targeted `tauri android build` must leave it unchanged, and a tapped link must open the repository confirm.
+- The shared full-screen modal safe-area rule (`src/styles/app.css`) on a phone with a status bar and gesture bar, including the GitHub source form and category manager that had no rule before.
+- "Backup folder unavailable [Choose folder]": the Rust unit test only compiles here (Linux host, no GTK), and losing the Android folder grant was not reproduced on a device.
+- Settings rows name their controls only visually: the Switch or Select inside `SettingsFieldRow` has no programmatic label.
 
 ## Phase 7 - Feature redesigns (spec §2)
 
