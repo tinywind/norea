@@ -1324,6 +1324,28 @@ class AndroidScraperBridge(
       profileCookieManager(view).flush()
       logState(state, "pageFinished url=$url", url)
       onFinished?.invoke(url)
+      state.activeExtractId?.let { requestId ->
+        view.evaluateJavascript("""
+          JSON.stringify({
+            readyState: document.readyState,
+            visibility: document.visibilityState,
+            hidden: document.hidden,
+            viewportWidth: window.innerWidth,
+            viewportHeight: window.innerHeight,
+            elementCount: document.querySelectorAll("*").length,
+            bodyTextLength: document.body ? document.body.textContent.length : 0,
+            captureRunPresent: typeof window.__noreaChapterCaptureRunId === "string",
+            captureObserverPresent: !!window.__noreaChapterCaptureObserver,
+            nativeBridgeType: typeof window.AndroidScraper,
+            nativePostType: typeof window.AndroidScraper === "object" ? typeof window.AndroidScraper.postExtractResultWithNonce : "missing",
+            capturePostType: window.ReactNativeWebView ? typeof window.ReactNativeWebView.postMessage : "missing",
+            manualMarkerPresent: !!document.querySelector("[data-norea-manual-action]"),
+            challengeTitle: /just a moment|attention required|access denied|cloudflare/i.test(document.title)
+          })
+        """.trimIndent()) { snapshot ->
+          if (state.activeExtractId == requestId) logState(state, "extract diagnostic id=$requestId state=$snapshot")
+        }
+      }
     }
 
     override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
