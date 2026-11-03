@@ -48,3 +48,29 @@ it("starts the browser-only preview without requiring native IPC", async () => {
   await vi.waitFor(() => expect(boundary.start).toHaveBeenCalledOnce());
   expect(boundary.invoke).not.toHaveBeenCalled();
 });
+
+it.each(["error", "unhandledRejection"] as const)("captures %s while the restore fence is still pending", async kind => {
+  const browser = Object.assign(new EventTarget(), {
+    __TAURI_INTERNALS__: {},
+    location: { href: "http://tauri.localhost/" },
+  });
+  vi.stubGlobal("window", browser);
+  let confirm!: () => void;
+  boundary.invoke.mockImplementationOnce(() => new Promise<void>(resolve => { confirm = resolve; }));
+  await loadEntry();
+  const failure = new Error("early-crash-proof");
+  const event = Object.assign(new Event(kind === "error" ? "error" : "unhandledrejection"),
+    kind === "error" ? { error: failure, message: failure.message, filename: "http://tauri.localhost/bootstrap.js" } : { reason: failure });
+  browser.dispatchEvent(event);
+  await vi.waitFor(() => expect(boundary.invoke).toHaveBeenCalledWith("record_frontend_crash", {
+    crash: {
+      kind,
+      message: "early-crash-proof",
+      stack: failure.stack,
+      url: kind === "error" ? "http://tauri.localhost/bootstrap.js" : "http://tauri.localhost/",
+    },
+  }));
+  expect(boundary.start).not.toHaveBeenCalled();
+  confirm();
+  await vi.waitFor(() => expect(boundary.start).toHaveBeenCalledOnce());
+});
