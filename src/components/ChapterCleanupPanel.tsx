@@ -7,6 +7,7 @@ import {
   approveChapterCleanupTargets, chapterCleanupProtectedCounts, previewChapterCleanup,
   type ChapterCleanupFilters, type ChapterCleanupPreview, type ChapterCleanupServerMode, type ChapterCleanupSkipReason,
 } from "../lib/chapter-cleanup";
+import { useOverlayBackNavigation } from "../lib/android-back-navigation";
 import { listGoalProtectedChapterIds } from "../lib/download-goals/goal-protection";
 import { enqueueChapterCleanup, type ChapterCleanupResult } from "../lib/tasks/chapter-cleanup";
 import { taskScheduler } from "../lib/tasks/scheduler";
@@ -61,6 +62,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
   const [goalKeptIds, setGoalKeptIds] = useState<ReadonlySet<number>>(() => new Set());
   const [approval, setApproval] = useState({ includeUnread: false, includeGoalKept: false });
   const offerToStopDownloadGoals = useStopDownloadGoalsOffer();
+  useOverlayBackNavigation(opened, onClose);
   const [confirming, setConfirming] = useState(false);
   const [inspecting, setInspecting] = useState(false);
   const [checked, setChecked] = useState(0);

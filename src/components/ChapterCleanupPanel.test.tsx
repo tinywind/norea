@@ -17,6 +17,8 @@ vi.mock("@mantine/core", async () => {
 vi.mock("../lib/tasks/chapter-cleanup", () => ({ enqueueChapterCleanup: vi.fn() }));
 vi.mock("../lib/chapter-cleanup", () => ({ previewChapterCleanup: vi.fn() }));
 vi.mock("../db/queries/category", () => ({ listCategories: vi.fn(), UNCATEGORIZED_CATEGORY_ID: -1 }));
+const backNavigation = vi.hoisted(() => vi.fn());
+vi.mock("../lib/android-back-navigation", () => ({ useOverlayBackNavigation: backNavigation }));
 
 import { ChapterCleanupPanel } from "./ChapterCleanupPanel";
 
@@ -34,5 +36,11 @@ describe("ChapterCleanupPanel", () => {
     expect(html).toContain("Preview");
     expect(html).not.toContain("Delete downloaded files");
     expect(html).not.toContain("Delete from server");
+  });
+
+  it("closes on Android Back instead of leaving the page underneath", () => {
+    const onClose = vi.fn();
+    renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><ChapterCleanupPanel opened onClose={onClose} /></QueryClientProvider>);
+    expect(backNavigation).toHaveBeenCalledWith(true, onClose);
   });
 });

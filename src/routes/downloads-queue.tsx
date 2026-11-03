@@ -1392,7 +1392,7 @@ export function DownloadsQueueView({
         <NeedsAttentionSection active={active} blocks={ordinaryBlocks} sectionRef={attentionRef} snapshot={snapshot} vpn={vpn} />
       ) : null}
       {vpnLaunchOpened ? <VpnDownloadLaunchDialog snapshot={vpn} onClose={() => setVpnLaunchOpened(false)} /> : null}
-      <TaskSortSheet onClose={() => setSortOpened(false)} opened={sortOpened} />
+      <TaskSortSheet onClose={() => setSortOpened(false)} opened={active && sortOpened} />
 
       {!hasDownloads && otherTasks.length === 0 ? (
         <StateView

@@ -759,7 +759,7 @@ export function DownloadsStorageView({
         />
       )}
       {viewSwitcher}
-      <ChapterCleanupPanel opened={cleanupOpened} onClose={() => setCleanupOpened(false)} />
+      <ChapterCleanupPanel opened={active && cleanupOpened} onClose={() => setCleanupOpened(false)} />
       {rows.length > 0 ? (
         <FinishedChapterCleanupRow
           onOpenSetting={() => { void navigate({ to: "/settings", search: { section: "downloads" } }); }}
