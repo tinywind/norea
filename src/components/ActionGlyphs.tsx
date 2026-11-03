@@ -45,31 +45,12 @@ export function CloseGlyph({ className }: ActionGlyphProps) {
   );
 }
 
-export function LibraryAddedGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M5 4h10a4 4 0 0 1 4 4v12H9a4 4 0 0 0-4 4z" />
-      <path d="m9 12 2 2 5-5" />
-    </svg>
-  );
-}
-
 export function DetailsGlyph({ className }: ActionGlyphProps) {
   return (
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
       <circle cx="12" cy="12" r="8" />
       <path d="M12 11v5" />
       <path d="M12 8h.01" />
-    </svg>
-  );
-}
-
-export function ExternalLinkGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M14 4h6v6" />
-      <path d="M20 4l-9 9" />
-      <path d="M20 14v5a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h5" />
     </svg>
   );
 }
@@ -105,33 +86,6 @@ export function SearchGlyph({ className }: ActionGlyphProps) {
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
       <circle cx="11" cy="11" r="6" />
       <path d="m16 16 4 4" />
-    </svg>
-  );
-}
-
-export function SettingsGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="3" />
-      <path d="M12 2v3" />
-      <path d="M12 19v3" />
-      <path d="M4.93 4.93l2.12 2.12" />
-      <path d="M16.95 16.95l2.12 2.12" />
-      <path d="M2 12h3" />
-      <path d="M19 12h3" />
-      <path d="M4.93 19.07l2.12-2.12" />
-      <path d="M16.95 7.05l2.12-2.12" />
-    </svg>
-  );
-}
-
-export function ReaderSettingsGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M4 7h16" />
-      <path d="M4 17h16" />
-      <path d="M8 7a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
-      <path d="M16 21a2 2 0 1 0 0-4 2 2 0 0 0 0 4z" />
     </svg>
   );
 }

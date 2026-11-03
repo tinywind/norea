@@ -13,7 +13,6 @@ import {
   Group,
   Paper,
   Text,
-  type BoxProps,
   type PaperProps,
 } from "@mantine/core";
 import { TextButton } from "./TextButton";
@@ -318,24 +317,5 @@ export function ConsoleSectionHeader({
         </Group>
       ) : null}
     </Group>
-  );
-}
-
-interface ConsoleStatusStripProps extends BoxProps {
-  children: ReactNode;
-}
-
-export function ConsoleStatusStrip({
-  children,
-  className,
-  ...props
-}: ConsoleStatusStripProps) {
-  return (
-    <Box
-      className={`norea-console-status-strip${className ? ` ${className}` : ""}`}
-      {...props}
-    >
-      {children}
-    </Box>
   );
 }

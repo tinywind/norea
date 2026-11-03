@@ -54,6 +54,7 @@ let confirm: (options: ConfirmOptions) => Promise<boolean>;
 const pageBack = vi.fn(() => true);
 
 let setSheetOpened: (opened: boolean) => void;
+let sheetVariant: { desktopVariant?: "modal" | "side"; fullScreenOnPhone?: boolean } = {};
 
 function Page() {
   usePageBackNavigation(pageBack);
@@ -62,6 +63,7 @@ function Page() {
   setSheetOpened = setOpened;
   return (
     <ResponsiveSheet
+      {...sheetVariant}
       footer={<Button>Apply</Button>}
       onClose={() => setOpened(false)}
       opened={sheetOpened}
@@ -106,6 +108,7 @@ beforeEach(async () => {
   rendered.overlays.clear();
   rendered.buttons.clear();
   rendered.desktop = false;
+  sheetVariant = {};
   pageBack.mockClear();
   harness = mountBackNavigationHarness();
   await harness.render(<App />);
@@ -194,6 +197,26 @@ describe("ResponsiveSheet overlay contract", () => {
     await harness.render(<App />);
     await openSheet();
     expect(overlay("Filters")).toMatchObject({ kind: "modal", opened: true });
+  });
+
+  it("is a right side drawer from 768px up when asked for the side variant", async () => {
+    rendered.desktop = true;
+    sheetVariant = { desktopVariant: "side" };
+    await harness.render(<App />);
+    await openSheet();
+    expect(overlay("Filters")).toMatchObject({ kind: "drawer", opened: true, position: "right", size: "24rem" });
+    expect(button("Apply")).toBeDefined();
+  });
+
+  it("is a full-screen dialog below 768px for long forms", async () => {
+    sheetVariant = { desktopVariant: "side", fullScreenOnPhone: true };
+    await harness.render(<App />);
+    await openSheet();
+    expect(overlay("Filters")).toMatchObject({ kind: "modal", fullScreen: true, opened: true });
+
+    expect(harness.pressBack()).toBe(true);
+    expect(overlay("Filters")?.opened).toBe(false);
+    expect(pageBack).not.toHaveBeenCalled();
   });
 
   it("keeps Mantine's focus trap and focus return", async () => {

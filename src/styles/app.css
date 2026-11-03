@@ -767,8 +767,7 @@ a {
 .norea-console-kicker,
 .norea-console-panel-title,
 .norea-console-section-count,
-.norea-console-status,
-.norea-console-status-strip {
+.norea-console-status {
   font-family: var(--norea-font-ui);
   font-variant-numeric: tabular-nums;
 }
@@ -959,20 +958,6 @@ button.norea-console-chip:disabled {
   background: var(--norea-color-accent-soft);
   border-color: var(--norea-color-accent);
   color: var(--norea-color-accent);
-}
-
-.norea-console-status-strip {
-  align-items: center;
-  background: var(--norea-color-surface-raised);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink-muted);
-  display: flex;
-  flex-wrap: wrap;
-  font-size: var(--norea-text-xs);
-  gap: var(--norea-space-3);
-  justify-content: space-between;
-  padding: var(--norea-space-2) var(--norea-space-3);
 }
 
 @media (max-width: 767px) {

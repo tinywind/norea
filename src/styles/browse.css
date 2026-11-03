@@ -28,9 +28,7 @@
   --norea-page-block: var(--norea-space-3);
 }
 
-.norea-browse-tabs,
-.norea-source-tools,
-.norea-source-workbench {
+.norea-browse-tabs {
   display: grid;
   gap: var(--norea-space-3);
   min-width: 0;
@@ -211,18 +209,6 @@
   display: flex;
   font-size: var(--norea-text-sm);
   gap: var(--norea-space-2);
-}
-
-.norea-source-workbench {
-  align-items: start;
-}
-
-.norea-source-header-action-divider {
-  align-self: stretch;
-  background: var(--norea-color-rule);
-  display: inline-block;
-  min-height: 2rem;
-  width: 1px;
 }
 
 .norea-plugin-settings-editor {
@@ -462,70 +448,30 @@
   z-index: 2;
 }
 
-.norea-source-library-mark svg {
-  fill: none;
-  height: 1rem;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-  width: 1rem;
-}
-
-.norea-source-workbench {
-  grid-template-columns: minmax(15rem, 17.5rem) minmax(0, 1fr);
-}
-
-.norea-source-results-panel {
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-md);
+.norea-source-frame {
+  --norea-page-block: var(--norea-space-3);
   display: grid;
   gap: var(--norea-space-3);
-  min-width: 0;
-  padding: var(--norea-space-3);
 }
 
-.norea-source-filter-row {
-  align-items: center;
+.norea-source-search {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.norea-source-applied-filters,
+.norea-filter-chips {
   display: flex;
   flex-wrap: wrap;
   gap: var(--norea-space-2);
-  min-width: 0;
 }
 
-.norea-source-filter-trigger {
-  flex: 0 0 auto;
+.norea-source-applied-filters {
+  padding: var(--norea-space-2) var(--norea-space-4) 0;
 }
 
-.norea-source-active-filter {
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-full);
-  color: var(--norea-color-ink-muted);
-  display: inline-flex;
-  flex: 0 1 auto;
-  font-size: var(--norea-text-xs);
-  font-weight: 600;
-  line-height: 1.2;
+.norea-source-applied-filter {
   max-width: 100%;
-  min-width: 0;
-  overflow: hidden;
-  padding: var(--norea-space-1) 0.5625rem;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.norea-source-state-body {
-  align-items: center;
-  display: grid;
-  gap: var(--norea-space-3);
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: var(--norea-space-3);
-}
-
-.norea-source-state-copy {
-  min-width: 0;
 }
 
 .norea-source-grid {
@@ -556,11 +502,6 @@
   display: grid;
   gap: var(--norea-space-2);
   padding: var(--norea-space-2);
-}
-
-.norea-source-load-more-action {
-  flex: 1 1 auto;
-  width: 100%;
 }
 
 .norea-source-card {
@@ -597,8 +538,7 @@
   white-space: nowrap;
 }
 
-.norea-source-card-meta,
-.norea-source-card-path {
+.norea-source-card-meta {
   color: var(--norea-color-ink-muted);
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
@@ -609,12 +549,6 @@
   white-space: nowrap;
 }
 
-@media (max-width: 1199px) {
-  .norea-source-workbench {
-    grid-template-columns: 1fr;
-  }
-}
-
 @media (max-width: 767px) {
   .norea-plugin-settings-editor .norea-settings-form-row {
     gap: var(--norea-space-2);
@@ -623,9 +557,5 @@
 
   .norea-plugin-settings-editor .norea-settings-form-label {
     font-size: var(--norea-text-sm);
-  }
-
-  .norea-source-results-panel {
-    padding: var(--norea-space-3);
   }
 }

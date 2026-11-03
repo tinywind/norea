@@ -1,4 +1,5 @@
 import {
+  Button,
   Checkbox,
   Select,
   Stack,
@@ -6,7 +7,7 @@ import {
   Text,
   TextInput,
 } from "@mantine/core";
-import { SegmentedToggle } from "./SegmentedToggle";
+import { CheckIcon, MinusIcon } from "./ui/icons";
 import { useTranslation } from "../i18n";
 import { FilterTypes, type Filters } from "../lib/plugins/filterTypes";
 
@@ -40,6 +41,19 @@ function emptyFilterValue(def: Filters[string]): unknown {
     default:
       return "";
   }
+}
+
+type ExcludableState = "" | "+" | "-";
+
+const NEXT_EXCLUDABLE_STATE: Record<ExcludableState, ExcludableState> = {
+  "": "+",
+  "+": "-",
+  "-": "",
+};
+
+/** The state a tri-state option chip moves to when tapped: off, include, exclude, off. */
+export function nextExcludableState(state: ExcludableState): ExcludableState {
+  return NEXT_EXCLUDABLE_STATE[state];
 }
 
 function setEntry(
@@ -158,7 +172,7 @@ export function PluginFilters({
             const include = v.include ?? [];
             const exclude = v.exclude ?? [];
 
-            const setOption = (option: string, state: "" | "+" | "-") => {
+            const setOption = (option: string, state: ExcludableState) => {
               const nextInclude = include.filter((x) => x !== option);
               const nextExclude = exclude.filter((x) => x !== option);
               if (state === "+") nextInclude.push(option);
@@ -170,38 +184,54 @@ export function PluginFilters({
                 }),
               );
             };
+            const stateLabels: Record<ExcludableState, string> = {
+              "": t("pluginFilters.off"),
+              "+": t("pluginFilters.include"),
+              "-": t("pluginFilters.exclude"),
+            };
+            const labelId = `norea-plugin-filter-${key}`;
 
             return (
               <Stack gap={4} key={key}>
-                <Text size="sm" fw={500}>
+                <Text fw={500} id={labelId} size="sm">
                   {def.label}
                 </Text>
-                <Stack gap={4}>
+                <Text c="dimmed" size="xs">
+                  {t("pluginFilters.triStateHint")}
+                </Text>
+                <div aria-labelledby={labelId} className="norea-filter-chips" role="group">
                   {def.options.map((o) => {
-                    const state = include.includes(o.value)
+                    const state: ExcludableState = include.includes(o.value)
                       ? "+"
                       : exclude.includes(o.value)
                         ? "-"
                         : "";
                     return (
-                      <SegmentedToggle
+                      <Button
+                        aria-label={t("pluginFilters.optionState", {
+                          option: o.label,
+                          state: stateLabels[state],
+                        })}
+                        color={state === "-" ? "danger" : undefined}
+                        data-state={state === "+" ? "include" : state === "-" ? "exclude" : "off"}
                         key={o.value}
-                        value={state}
-                        data={[
-                          {
-                            label: `${o.label} (${t("pluginFilters.off")})`,
-                            value: "",
-                          },
-                          { label: t("pluginFilters.include"), value: "+" },
-                          { label: t("pluginFilters.exclude"), value: "-" },
-                        ]}
-                        onChange={(next) =>
-                          setOption(o.value, next as "" | "+" | "-")
+                        leftSection={
+                          state === "+" ? (
+                            <CheckIcon size="1rem" />
+                          ) : state === "-" ? (
+                            <MinusIcon size="1rem" />
+                          ) : undefined
                         }
-                      />
+                        onClick={() => setOption(o.value, nextExcludableState(state))}
+                        radius="xl"
+                        size="compact-sm"
+                        variant={state === "" ? "default" : "light"}
+                      >
+                        {o.label}
+                      </Button>
                     );
                   })}
-                </Stack>
+                </div>
               </Stack>
             );
           }

@@ -1,8 +1,8 @@
 import type { NovelItem, Plugin } from "../lib/plugins/types";
 import { useNovelCoverSource } from "../lib/use-novel-cover-source";
 import { useTranslation } from "../i18n";
-import { LibraryAddedGlyph } from "./ActionGlyphs";
 import { ConsoleCover } from "./ConsolePrimitives";
+import { InLibraryIcon } from "./ui/icons";
 
 interface SourceNovelCoverProps {
   className?: string;
@@ -58,7 +58,7 @@ export function SourceNovelCover({
         role="img"
         title={t("novel.inLibrary")}
       >
-        <LibraryAddedGlyph />
+        <InLibraryIcon size="1rem" />
       </span>
     </span>
   );

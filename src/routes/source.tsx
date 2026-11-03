@@ -2,49 +2,49 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
-  Anchor,
-  Badge,
-  Box,
+  ActionIcon,
+  Button,
   Drawer,
   Group,
-  Loader,
-  Stack,
-  Text,
+  Indicator,
+  TextInput,
 } from "@mantine/core";
 import {
   BlockingLoadingOverlay,
   PageFrame,
-  PageHeader,
   StateView,
 } from "../components/AppFrame";
+import { CoverGridSkeleton } from "../components/browse/CoverGridSkeleton";
+import { PluginSettingsDialog } from "../components/browse/PluginSettingsDialog";
 import {
-  ChevronDownGlyph,
-  ExternalLinkGlyph,
-  ReaderSettingsGlyph,
-  SettingsGlyph,
-} from "../components/ActionGlyphs";
-import { SegmentedToggle } from "../components/SegmentedToggle";
-import { TextButton } from "../components/TextButton";
-import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
-import {
-  ConsoleChip,
-  ConsolePanel,
-  ConsoleSectionHeader,
-  ConsoleStatusDot,
-  ConsoleStatusStrip,
-} from "../components/ConsolePrimitives";
+  hasPluginInputs,
+  useInstalledPlugins,
+} from "../components/browse/use-plugin-catalog";
+import { IconButton } from "../components/IconButton";
 import {
   PluginFilters,
   type ResolvedFilterValues,
 } from "../components/PluginFilters";
-import { IconButton } from "../components/IconButton";
-import { PluginSettingsEditor } from "../components/PluginSettingsEditor";
 import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
-import { SearchBar } from "../components/SearchBar";
 import { SourceNovelCover } from "../components/SourceNovelCover";
-import { usePageBackNavigation } from "../lib/android-back-navigation";
-import { getPluginBaseUrl } from "../lib/plugins/base-url";
+import {
+  BackIcon,
+  CloseIcon,
+  FilterIcon,
+  ReaderSettingsIcon,
+  SearchIcon,
+  SettingsIcon,
+  SourceIcon,
+} from "../components/ui/icons";
+import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
+import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
+import {
+  useOverlayBackNavigation,
+  usePageBackNavigation,
+} from "../lib/android-back-navigation";
+import { describeError } from "../lib/errors";
 import { enqueueOpenNovelFromSourceTask } from "../lib/plugins/open-novel-task";
+import { openPluginSite } from "../lib/plugins/open-plugin-site";
 import { FilterTypes, type Filters } from "../lib/plugins/filterTypes";
 import { pluginManager } from "../lib/plugins/manager";
 import {
@@ -58,22 +58,17 @@ import {
   trimAppNavigationHistoryTo,
 } from "../lib/navigation-history";
 import { useLibraryNovelMembership } from "../lib/use-library-novel-membership";
-import {
-  enqueueOpenSiteTask,
-  enqueueSourceTask,
-} from "../lib/tasks/source-tasks";
+import { enqueueSourceTask } from "../lib/tasks/source-tasks";
 import {
   taskScheduler,
   type TaskHandle,
 } from "../lib/tasks/scheduler";
 import { isAbortError } from "../lib/abort";
-import { isTauriRuntime } from "../lib/tauri-runtime";
 import { useTranslation } from "../i18n";
 import "../styles/browse.css";
 
-const INSTALLED_QUERY_KEY = ["plugin", "installed"] as const;
-
-type SourceFilterMode = "keyword" | "filters";
+/** More text fields than this open the filter form full screen on phones. */
+const MAX_SHEET_TEXT_FILTERS = 2;
 
 interface ListingPage {
   items: NovelItem[];
@@ -163,7 +158,7 @@ function formatActiveFilter(
   }
 }
 
-function getActiveFilterLabels(
+export function getActiveFilterLabels(
   schema: Filters,
   filters: ResolvedFilterValues,
 ): Array<{ key: string; label: string }> {
@@ -173,12 +168,8 @@ function getActiveFilterLabels(
   });
 }
 
-function hasPluginInputs(plugin: Plugin | null | undefined): boolean {
-  if (!plugin) return false;
-  return (
-    Object.keys(plugin.pluginInputs ?? {}).length > 0 ||
-    Object.keys(plugin.pluginSettings ?? {}).length > 0
-  );
+function countTextFilters(schema: Filters): number {
+  return Object.values(schema).filter((filter) => filter.type === FilterTypes.TextInput).length;
 }
 
 interface SourceNovelButtonProps {
@@ -213,19 +204,7 @@ function SourceNovelButton({
       <span className="norea-source-card-title" title={item.name}>
         {item.name}
       </span>
-      <span className="norea-source-card-path" title={item.path}>
-        {item.path}
-      </span>
     </button>
-  );
-}
-
-function BackGlyph() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M15 18l-6-6 6-6" />
-      <path d="M9 12h11" />
-    </svg>
   );
 }
 
@@ -243,17 +222,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
   const queryClient = useQueryClient();
   const isInLibrary = useLibraryNovelMembership();
 
-  const installed = useQuery({
-    meta: { errorPresentation: "inline" },
-    queryKey: INSTALLED_QUERY_KEY,
-    queryFn: async () => {
-      if (isTauriRuntime()) {
-        await pluginManager.loadInstalledFromDb();
-      }
-      return pluginManager.list();
-    },
-    staleTime: 0,
-  });
+  const installed = useInstalledPlugins(true);
   const plugin = useMemo(
     () =>
       installed.data?.find((entry) => entry.id === pluginId) ??
@@ -263,16 +232,13 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
 
   const [page, setPage] = useState(1);
   const [loadedPages, setLoadedPages] = useState<ListingPage[]>([]);
-  const [filterMode, setFilterMode] = useState<SourceFilterMode>(() =>
-    query.trim().length > 0 ? "keyword" : "filters",
-  );
+  const [searchOpen, setSearchOpen] = useState(() => query.trim().length > 0);
   const [search, setSearch] = useState(query);
   const [submittedSearch, setSubmittedSearch] = useState(query);
 
-  const [filterDrawerOpen, setFilterDrawerOpen] = useState(false);
-  const [settingsDrawerOpen, setSettingsDrawerOpen] = useState(false);
-  const [readerSettingsDrawerOpen, setReaderSettingsDrawerOpen] =
-    useState(false);
+  const [filterSheetOpen, setFilterSheetOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
   const openTaskRef = useRef<TaskHandle<number> | null>(null);
   const initialFilters = useMemo<ResolvedFilterValues>(
     () => (plugin?.filters ? readSourceFilters(plugin, plugin.filters) : {}),
@@ -293,20 +259,17 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
   useEffect(() => {
     setSearch(query);
     setSubmittedSearch(query);
-    setFilterMode(query.trim().length > 0 ? "keyword" : "filters");
+    setSearchOpen(query.trim().length > 0);
   }, [query]);
 
   const trimmedSearch = submittedSearch.trim();
-  const isKeywordMode = filterMode === "keyword";
-  const isFilterMode = filterMode === "filters";
-  const hasKeywordSearch = isKeywordMode && trimmedSearch.length > 0;
-  const shouldLoadListing = isFilterMode || hasKeywordSearch;
+  const isKeywordMode = trimmedSearch.length > 0;
   const popularModeLabel = t("source.popular");
   const activeFilterScope = JSON.stringify(activeFilters);
   const listingScopeKey = [
-    filterMode,
+    isKeywordMode ? "keyword" : "filters",
     isKeywordMode ? trimmedSearch : "",
-    isFilterMode ? activeFilterScope : "",
+    isKeywordMode ? "" : activeFilterScope,
     pluginId,
   ].join("|");
 
@@ -321,12 +284,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
 
   const listing = useQuery({
     meta: { errorPresentation: "inline" },
-    enabled: canLoadSourceListing(
-      plugin,
-      filterOwner,
-      pluginId,
-      shouldLoadListing,
-    ),
+    enabled: canLoadSourceListing(plugin, filterOwner, pluginId, true),
     // Source failures (blocked sites, parser errors) are not transient, and
     // the default three retries only delay the visible error by ~7 seconds.
     retry: false,
@@ -338,7 +296,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
       page,
     ] as const,
     queryFn: async ({ signal }) => {
-      if (!plugin || !shouldLoadListing) {
+      if (!plugin) {
         return {
           items: [],
           page,
@@ -395,15 +353,10 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     },
   });
 
-  function openPluginSite(): void {
+  const openSite = useCallback((): void => {
     if (!plugin) return;
-    const url = getPluginBaseUrl(plugin);
-    void enqueueOpenSiteTask(
-      plugin,
-      url,
-      t("tasks.task.openSite", { source: plugin.name }),
-    ).promise.catch(() => undefined);
-  }
+    openPluginSite(plugin, t("tasks.task.openSite", { source: plugin.name }));
+  }, [plugin, t]);
 
   useEffect(() => {
     const data = listing.data;
@@ -419,10 +372,6 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     });
   }, [listing.data, listingScopeKey, page]);
 
-  const accumulated = useMemo(
-    () => loadedPages.flatMap((entry) => entry.items),
-    [loadedPages],
-  );
   const accumulatedNovels = useMemo<AccumulatedNovel[]>(
     () =>
       loadedPages.flatMap((entry) =>
@@ -496,6 +445,13 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
 
   usePageBackNavigation(goBack);
 
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearch("");
+    setSubmittedSearch("");
+  }, []);
+  useOverlayBackNavigation(readerSettingsOpen, () => setReaderSettingsOpen(false));
+
   useEffect(
     () => () => {
       cancelOpenNovel();
@@ -505,15 +461,8 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
 
   if (!plugin && installed.isLoading) {
     return (
-      <PageFrame>
-        <StateView
-          title={
-            <Group gap="sm">
-              <Loader size="sm" />
-              {t("common.loading")}
-            </Group>
-          }
-        />
+      <PageFrame size="wide">
+        <CoverGridSkeleton label={t("common.loading")} />
       </PageFrame>
     );
   }
@@ -522,376 +471,262 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     return (
       <PageFrame>
         <StateView
+          action={{ label: t("common.back"), onClick: () => void goBack() }}
           color={installed.error ? "danger" : "warn"}
-          title={t("source.pluginNotLoaded")}
-          message={
-            installed.error instanceof Error
-              ? installed.error.message
-              : t("source.pluginNotLoadedMessage", { id: pluginId })
+          details={
+            installed.error
+              ? { content: describeError(installed.error), label: t("common.details") }
+              : undefined
           }
+          title={t("source.pluginNotLoaded")}
+          message={t("source.pluginNotLoadedMessage", { id: pluginId })}
         />
       </PageFrame>
     );
   }
 
   const sourceFilters = plugin.filters;
-  const filterCount = sourceFilters
-    ? Object.keys(sourceFilters).length
-    : 0;
-  const hasPluginSettings = hasPluginInputs(plugin);
+  const hasFilters = !!sourceFilters && Object.keys(sourceFilters).length > 0;
   const activeFilterCount = countActiveFilters(activeFilters);
   const hasNextPage =
-    shouldLoadListing &&
     !listing.isFetching &&
     !!listing.data &&
     listing.data.page === page &&
     listing.data.scopeKey === listingScopeKey &&
     listing.data.items.length > 0;
-  const showLoadMoreButton =
-    hasNextPage || (listing.isFetching && page > 1);
-  const sourceStatus: "active" | "done" | "error" = listing.error
-    ? "error"
-    : listing.isFetching
-      ? "active"
-      : "done";
-  const activeFilterLabels = isFilterMode && sourceFilters
-    ? getActiveFilterLabels(sourceFilters, activeFilters)
-    : [];
-  const blockingLoading = open.isPending || (listing.isFetching && page === 1);
+  const showLoadMoreButton = hasNextPage || (listing.isFetching && page > 1);
+  const activeFilterLabels =
+    !isKeywordMode && sourceFilters
+      ? getActiveFilterLabels(sourceFilters, activeFilters)
+      : [];
+  const currentPage =
+    listing.data?.scopeKey === listingScopeKey ? listing.data : undefined;
+  const noResults =
+    !listing.isFetching &&
+    accumulatedNovels.length === 0 &&
+    currentPage?.page === 1 &&
+    currentPage.items.length === 0;
+  const firstPageLoading =
+    accumulatedNovels.length === 0 && !listing.error && !noResults;
+
+  const applyFilters = (filters: ResolvedFilterValues) => {
+    closeSearch();
+    setActiveFilters(filters);
+    writeSourceFilters(plugin, filters);
+  };
+  const removeFilter = (key: string) => {
+    if (!sourceFilters) return;
+    const empty = emptySourceFilterValues(sourceFilters)[key];
+    if (!empty) return;
+    applyFilters({ ...activeFilters, [key]: empty });
+  };
+  const overflowItems: OverflowMenuItem[] = [
+    { icon: SourceIcon, label: t("common.openSite"), onClick: openSite },
+    ...(hasPluginInputs(plugin)
+      ? [{ icon: SettingsIcon, label: t("source.sourceSettings"), onClick: () => setSettingsOpen(true) }]
+      : []),
+    {
+      icon: ReaderSettingsIcon,
+      label: t("source.readerSettings"),
+      onClick: () => setReaderSettingsOpen(true),
+    },
+  ];
 
   return (
-    <PageFrame size="wide" className="norea-source-page">
-      {blockingLoading ? (
+    <div className="norea-source-page">
+      {open.isPending ? (
         <BlockingLoadingOverlay
-          cancelLabel={open.isPending ? t("common.cancel") : t("common.back")}
-          label={
-            open.isPending
-              ? t("globalSearch.openingNovel")
-              : isKeywordMode
-                ? t("source.searching", {
-                    name: plugin.name,
-                    query: trimmedSearch,
-                  })
-                : t("source.loadingMode", { mode: popularModeLabel })
-          }
-          onCancel={open.isPending ? cancelOpenNovel : goBack}
+          cancelLabel={t("common.cancel")}
+          label={t("globalSearch.openingNovel")}
+          onCancel={cancelOpenNovel}
         />
       ) : null}
-      <PageHeader
-        title={plugin.name}
-        description={
-          <Anchor
-            size="xs"
-            c="dimmed"
-            onClick={(event) => {
+      <header className="norea-browse-app-bar">
+        <IconButton label={t("common.back")} onClick={goBack} size="lg">
+          <BackIcon />
+        </IconButton>
+        {searchOpen ? (
+          <form
+            className="norea-source-search"
+            onSubmit={(event) => {
               event.preventDefault();
-              openPluginSite();
+              setSubmittedSearch(search.trim());
             }}
+            role="search"
           >
-            {getPluginBaseUrl(plugin)}
-          </Anchor>
-        }
-        actions={
+            <TextInput
+              aria-label={t("source.searchPlaceholder", { name: plugin.name })}
+              autoFocus
+              leftSection={<SearchIcon size="1.125rem" />}
+              onChange={(event) => setSearch(event.currentTarget.value)}
+              placeholder={t("source.searchPlaceholder", { name: plugin.name })}
+              rightSection={
+                <ActionIcon
+                  aria-label={t("source.closeSearch")}
+                  onClick={closeSearch}
+                  variant="subtle"
+                >
+                  <CloseIcon size="1.125rem" />
+                </ActionIcon>
+              }
+              type="search"
+              value={search}
+            />
+          </form>
+        ) : (
           <>
+            <h1 className="norea-browse-app-bar-title">{plugin.name}</h1>
             <IconButton
-              label={t("common.back")}
+              label={t("source.searchPlaceholder", { name: plugin.name })}
+              onClick={() => setSearchOpen(true)}
               size="lg"
-              onClick={goBack}
             >
-              <BackGlyph />
+              <SearchIcon />
             </IconButton>
-            <span className="norea-source-header-action-divider" aria-hidden />
-            <IconButton
-              active={readerSettingsDrawerOpen}
-              label={t("readerSettings.source.open", { name: plugin.name })}
-              size="lg"
-              variant="subtle"
-              onClick={() => setReaderSettingsDrawerOpen(true)}
-            >
-              <ReaderSettingsGlyph />
-            </IconButton>
-            <span className="norea-source-header-action-divider" aria-hidden />
-            {hasPluginSettings ? (
-              <IconButton
-                active={settingsDrawerOpen}
-                label={t("pluginSettings.open", { name: plugin.name })}
-                size="lg"
-                variant="subtle"
-                onClick={() => setSettingsDrawerOpen(true)}
+            {hasFilters ? (
+              <Indicator
+                disabled={activeFilterCount === 0}
+                label={activeFilterCount}
+                offset={6}
+                size={16}
               >
-                <SettingsGlyph />
-              </IconButton>
-            ) : null}
-            <Badge variant="light">{plugin.lang}</Badge>
-            <Badge variant="default">
-              v{plugin.version}
-            </Badge>
-          </>
-        }
-      />
-
-      <div className="norea-source-workbench">
-        <aside className="norea-source-tools">
-          <ConsolePanel title={t("source.controls")}>
-            <Stack gap="sm" p="sm">
-              <SegmentedToggle
-                value={filterMode}
-                onChange={(value) => setFilterMode(value as SourceFilterMode)}
-                data={[
-                  {
-                    value: "keyword",
-                    label: t("source.filterMode.keyword"),
-                  },
-                  {
-                    value: "filters",
-                    label: t("source.filterMode.filters"),
-                  },
-                ]}
-              />
-
-              {isKeywordMode ? (
-                <SearchBar
-                  value={search}
-                  onChange={setSearch}
-                  onSubmit={() => {
-                    setFilterMode("keyword");
-                    setSubmittedSearch(search);
+                <IconButton
+                  label={
+                    activeFilterCount > 0
+                      ? t("source.filtersActive", { count: activeFilterCount })
+                      : t("source.filters")
+                  }
+                  onClick={() => {
+                    setPendingFilters(activeFilters);
+                    setFilterSheetOpen(true);
                   }}
-                  placeholder={t("source.searchPlaceholder", {
-                    name: plugin.name,
-                  })}
-                />
-              ) : null}
+                  size="lg"
+                >
+                  <FilterIcon />
+                </IconButton>
+              </Indicator>
+            ) : null}
+          </>
+        )}
+        <OverflowMenu items={overflowItems} label={t("common.more")} />
+      </header>
 
-              {isFilterMode && filterCount > 0 ? (
-                <div className="norea-source-filter-row">
-                  <TextButton
-                    className="norea-source-filter-trigger"
-                    variant="light"
-                    size="sm"
-                    onClick={() => {
-                      setPendingFilters(activeFilters);
-                      setFilterDrawerOpen(true);
-                    }}
-                  >
-                    {t("source.filtersButton", {
-                      active: activeFilterCount,
-                      total: filterCount,
-                    })}
-                  </TextButton>
-                  {activeFilterLabels.map((filter) => (
-                    <span
-                      className="norea-source-active-filter"
-                      key={filter.key}
-                      title={filter.label}
-                    >
-                      {filter.label}
-                    </span>
-                  ))}
-                </div>
-              ) : null}
-            </Stack>
-          </ConsolePanel>
+      {activeFilterLabels.length > 0 ? (
+        <div
+          aria-label={t("source.appliedFilters")}
+          className="norea-source-applied-filters"
+          role="group"
+        >
+          {activeFilterLabels.map((filter) => (
+            <Button
+              aria-label={t("source.removeFilter", { filter: filter.label })}
+              className="norea-source-applied-filter"
+              key={filter.key}
+              onClick={() => removeFilter(filter.key)}
+              radius="xl"
+              rightSection={<CloseIcon size="0.875rem" />}
+              size="compact-sm"
+              variant="light"
+            >
+              {filter.label}
+            </Button>
+          ))}
+        </div>
+      ) : null}
 
-          <ConsolePanel title={t("source.state")}>
-            <div className="norea-source-state-body">
-              <Stack className="norea-source-state-copy" gap="sm">
-                <Group gap={6} wrap="wrap">
-                  <ConsoleStatusDot
-                    status={sourceStatus}
-                    label={
-                      listing.error
-                        ? t("source.error")
-                        : listing.isFetching
-                          ? t("common.fetching")
-                          : t("common.ready")
-                    }
-                  />
-                  <ConsoleChip>{plugin.lang.toUpperCase()}</ConsoleChip>
-                  <ConsoleChip>v{plugin.version}</ConsoleChip>
-                  {isKeywordMode ? (
-                    <ConsoleChip active>{t("source.searchMode")}</ConsoleChip>
-                  ) : (
-                    <ConsoleChip active>{popularModeLabel}</ConsoleChip>
-                  )}
-                </Group>
-                <Box style={{ minWidth: 0 }}>
-                  <Text className="norea-console-kicker">
-                    {t("source.preparedOrigin")}
-                  </Text>
-                  <Anchor
-                    size="sm"
-                    truncate
-                    onClick={(event) => {
-                      event.preventDefault();
-                      openPluginSite();
-                    }}
-                  >
-                    {getPluginBaseUrl(plugin)}
-                  </Anchor>
-                </Box>
-              </Stack>
-              <IconButton
-                label={t("common.openWebView")}
-                size="lg"
-                variant="default"
-                onClick={openPluginSite}
-              >
-                <ExternalLinkGlyph />
-              </IconButton>
-            </div>
-          </ConsolePanel>
-        </aside>
-
-
-        <section className="norea-source-results-panel">
-          <ConsoleSectionHeader
-            eyebrow={
+      <PageFrame className="norea-source-frame" size="wide">
+        {firstPageLoading ? (
+          <CoverGridSkeleton
+            label={
               isKeywordMode
-                ? t("source.searchEyebrow")
-                : t("source.catalogEyebrow")
+                ? t("source.searching", { name: plugin.name, query: trimmedSearch })
+                : t("source.loadingMode", { mode: popularModeLabel })
             }
-            title={
-              isKeywordMode
-                ? hasKeywordSearch
-                  ? `"${trimmedSearch}"`
-                  : t("source.filterMode.keyword")
-                : popularModeLabel
-            }
-            count={t("source.loadedCount", { count: accumulated.length })}
           />
+        ) : listing.error && accumulatedNovels.length === 0 ? (
+          <StateView
+            action={{ label: t("common.retry"), onClick: () => void listing.refetch() }}
+            color="danger"
+            details={{ content: describeError(listing.error), label: t("common.details") }}
+            secondaryAction={{ label: t("common.openSite"), onClick: openSite }}
+            title={t("source.error")}
+          />
+        ) : noResults ? (
+          <StateView title={t("source.noResults")} />
+        ) : (
+          <>
+            <div className="norea-source-grid">
+              {accumulatedNovels.map(({ item, key }) => (
+                <SourceNovelButton
+                  key={key}
+                  item={item}
+                  disabled={open.isPending}
+                  inLibrary={isInLibrary(plugin.id, item.path)}
+                  plugin={plugin}
+                  onOpen={(novel) => {
+                    if (!open.isPending) open.mutate(novel);
+                  }}
+                />
+              ))}
+            </div>
+            {listing.error ? (
+              <StateView
+                action={{ label: t("common.retry"), onClick: () => void listing.refetch() }}
+                color="danger"
+                details={{ content: describeError(listing.error), label: t("common.details") }}
+                secondaryAction={{ label: t("common.openSite"), onClick: openSite }}
+                title={t("source.error")}
+              />
+            ) : showLoadMoreButton ? (
+              <Button
+                className="norea-source-load-more"
+                disabled={!hasNextPage}
+                loading={listing.isFetching && page > 1}
+                onClick={() => setPage((current) => current + 1)}
+                variant="default"
+              >
+                {t("common.loadMore")}
+              </Button>
+            ) : null}
+          </>
+        )}
 
-          {isKeywordMode && !hasKeywordSearch ? (
-            <StateView color="info" title={t("source.keywordPrompt")} />
-          ) : listing.isLoading && page === 1 ? (
-            <StateView
-              title={
-                <Group gap="sm">
-                  <Loader size="sm" />
-                  {isKeywordMode
-                    ? t("source.searching", {
-                        name: plugin.name,
-                        query: trimmedSearch,
-                      })
-                    : t("source.loadingMode", { mode: popularModeLabel })}
-                </Group>
-              }
-            />
-          ) : listing.error ? (
-            <StateView
-              color="danger"
-              title={t("source.error")}
-              message={
-                listing.error instanceof Error
-                  ? listing.error.message
-                  : String(listing.error)
-              }
-            />
-          ) : accumulated.length === 0 ? (
-            <StateView
-              color="info"
-              title={t("source.noResults")}
-            />
-          ) : (
-            <>
-              <div className="norea-source-grid">
-                {accumulatedNovels.map(({ item, key }) => (
-                  <SourceNovelButton
-                    key={key}
-                    item={item}
-                    disabled={open.isPending}
-                    inLibrary={isInLibrary(plugin.id, item.path)}
-                    plugin={plugin}
-                    onOpen={(novel) => {
-                      if (!open.isPending) open.mutate(novel);
-                    }}
-                  />
-                ))}
-              </div>
-              {showLoadMoreButton ? (
-                <div className="norea-source-load-more">
-                  <IconButton
-                    className="norea-source-load-more-action"
-                    label={t("common.loadMore")}
-                    variant="default"
-                    size="lg"
-                    onClick={() => setPage((p) => p + 1)}
-                    loading={listing.isFetching && page > 1}
-                    disabled={!hasNextPage}
-                  >
-                    <ChevronDownGlyph />
-                  </IconButton>
-                </div>
-              ) : null}
-            </>
-          )}
+        {open.error && !isAbortError(open.error) ? (
+          <StateView
+            color="danger"
+            details={{ content: describeError(open.error), label: t("common.details") }}
+            title={t("common.openFailed")}
+          />
+        ) : null}
+      </PageFrame>
 
-          {open.error && !isAbortError(open.error) ? (
-            <StateView
-              color="danger"
-              title={t("common.openFailed")}
-              message={
-                open.error instanceof Error
-                  ? open.error.message
-                  : String(open.error)
-              }
-            />
-          ) : null}
-        </section>
-      </div>
-
-      <ConsoleStatusStrip>
-        <span>{plugin.name}</span>
-        <span>
-          {isKeywordMode
-            ? hasKeywordSearch
-              ? t("source.status.search", { query: trimmedSearch })
-              : t("source.status.mode", {
-                  mode: t("source.filterMode.keyword"),
-                })
-            : t("source.status.mode", { mode: popularModeLabel })}
-        </span>
-        <span>{t("source.status.page", { page })}</span>
-        <span>{t("source.status.loadedNovels", { count: accumulated.length })}</span>
-        <span>
-          {t("source.status.activeFilters", {
-            count: isFilterMode ? activeFilterCount : 0,
-          })}
-        </span>
-      </ConsoleStatusStrip>
-
-      {sourceFilters && (
+      {sourceFilters && hasFilters ? (
         <ResponsiveSheet
-          opened={filterDrawerOpen}
-          onClose={() => setFilterDrawerOpen(false)}
+          desktopVariant="side"
+          fullScreenOnPhone={countTextFilters(sourceFilters) > MAX_SHEET_TEXT_FILTERS}
+          opened={filterSheetOpen}
+          onClose={() => setFilterSheetOpen(false)}
           title={t("source.drawerTitle", { name: plugin.name })}
           footer={
             <Group justify="space-between">
-              <TextButton
+              <Button
                 variant="subtle"
-                onClick={() => {
-                  setPendingFilters(emptySourceFilterValues(sourceFilters));
-                }}
+                onClick={() => setPendingFilters(emptySourceFilterValues(sourceFilters))}
               >
                 {t("common.reset")}
-              </TextButton>
+              </Button>
               <Group gap="xs">
-                <TextButton
-                  variant="default"
-                  onClick={() => setFilterDrawerOpen(false)}
-                >
+                <Button variant="default" onClick={() => setFilterSheetOpen(false)}>
                   {t("common.cancel")}
-                </TextButton>
-                <TextButton
+                </Button>
+                <Button
                   onClick={() => {
-                    setFilterMode("filters");
-                    setActiveFilters(pendingFilters);
-                    writeSourceFilters(plugin, pendingFilters);
-                    setFilterDrawerOpen(false);
+                    applyFilters(pendingFilters);
+                    setFilterSheetOpen(false);
                   }}
                 >
                   {t("common.apply")}
-                </TextButton>
+                </Button>
               </Group>
             </Group>
           }
@@ -902,32 +737,19 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
             onChange={setPendingFilters}
           />
         </ResponsiveSheet>
-      )}
-      {hasPluginSettings ? (
-        <Drawer
-          opened={settingsDrawerOpen}
-          onClose={() => setSettingsDrawerOpen(false)}
-          title={t("pluginSettings.title", { name: plugin.name })}
-          position="right"
-          size="md"
-        >
-          <PluginSettingsEditor
-            key={plugin.id}
-            plugin={plugin}
-            onSaved={() => {
-              setSettingsDrawerOpen(false);
-              void listing.refetch();
-            }}
-          />
-        </Drawer>
       ) : null}
+      <PluginSettingsDialog
+        onClose={() => setSettingsOpen(false)}
+        onSaved={() => void listing.refetch()}
+        plugin={settingsOpen ? plugin : null}
+      />
       <Drawer
         classNames={{
           body: "norea-reader-settings-drawer-body",
           content: "norea-reader-settings-drawer-content",
         }}
-        opened={readerSettingsDrawerOpen}
-        onClose={() => setReaderSettingsDrawerOpen(false)}
+        opened={readerSettingsOpen}
+        onClose={() => setReaderSettingsOpen(false)}
         title={t("readerSettings.source.title", { name: plugin.name })}
         position="right"
         size="lg"
@@ -940,6 +762,6 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
           }}
         />
       </Drawer>
-    </PageFrame>
+    </div>
   );
 }
