@@ -122,16 +122,12 @@ import {
   useNotificationStore,
 } from "../store/notifications";
 import { describeError } from "../lib/errors";
+import {
+  useSettingsSection,
+  type SettingsCategoryId,
+} from "../lib/use-settings-section";
 import { APP_THEME_OPTIONS } from "../theme/md3";
 import "../styles/settings.css";
-
-type SettingsCategoryId =
-  | "app"
-  | "reader"
-  | "library"
-  | "browse"
-  | "data"
-  | "about";
 
 interface SettingsCategory {
   content: ReactNode;
@@ -207,24 +203,6 @@ function updateSettingsToast(
 }
 
 type UpdateBusy = `${UpdateChannel}:check` | `${UpdateChannel}:install`;
-
-function normalizeSection(section: string | undefined): SettingsCategoryId {
-  switch (section?.toLowerCase()) {
-    case "reader":
-      return "reader";
-    case "library":
-      return "library";
-    case "browse":
-      return "browse";
-    case "data":
-      return "data";
-    case "about":
-      return "about";
-    case "app":
-    default:
-      return "app";
-  }
-}
 
 function fontScalePercentToRootFontSize(fontScalePercent: number): number {
   return Math.round((ROOT_FONT_SIZE_PX * fontScalePercent) / 100);
@@ -1818,14 +1796,8 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
   const queryClient = useQueryClient();
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [cleanupOpened, setCleanupOpened] = useState(false);
-  const [activeSection, setActiveSection] = useState<SettingsCategoryId>(() =>
-    normalizeSection(section),
-  );
+  const [activeSection, selectCategory] = useSettingsSection(section);
   const isBusy = busyAction !== null;
-
-  useEffect(() => {
-    setActiveSection(normalizeSection(section));
-  }, [section]);
 
   async function handleExport(): Promise<void> {
     const toastId = "settings:backup:export";
@@ -2111,10 +2083,6 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
   const activeCategory =
     categories.find((category) => category.id === activeSection) ??
     categories[0];
-
-  const selectCategory = (id: SettingsCategoryId) => {
-    setActiveSection(id);
-  };
 
   return (
     <PageFrame className="norea-settings-page" size="full">
