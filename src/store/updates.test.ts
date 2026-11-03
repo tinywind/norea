@@ -60,7 +60,7 @@ describe("updates store download completion", () => {
 
 describe("updates store check results", () => {
   const result = (failedNovelIds: number[]) => ({
-    checkedNovels: 1, newChapters: 0, skippedNovels: 0, hasMoreUpdates: false, nextUpdateCursor: null, updates: [],
+    checkedNovels: 1, deferredNovels: 0, newChapters: 0, skippedNovels: 0, hasMoreUpdates: false, nextUpdateCursor: null, updates: [],
     failures: failedNovelIds.map((novelId) => ({
       novelId, novelName: `Novel ${novelId}`, pluginId: "s", reason: { kind: "error" as const, message: "x" },
     })),
@@ -85,7 +85,7 @@ describe("updates store views", () => {
 
     useUpdatesStore.getState().replaceWindow({ hasMore: false, nextCursor: null, updates: [row(5), row(6)] });
     useUpdatesStore.getState().applyCheckResult({
-      checkedNovels: 1, newChapters: 1, skippedNovels: 0, failures: [], hasMoreUpdates: false, nextUpdateCursor: null, updates: [row(9)],
+      checkedNovels: 1, deferredNovels: 0, newChapters: 1, skippedNovels: 0, failures: [], hasMoreUpdates: false, nextUpdateCursor: null, updates: [row(9)],
     });
     expect(useUpdatesStore.getState().updates.map((entry) => entry.chapterId)).toEqual([5, 6]);
     expect(useUpdatesStore.getState().lastCheckResult?.newChapters).toBe(1);

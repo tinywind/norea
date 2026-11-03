@@ -57,6 +57,7 @@ export async function runDueChecks(nowMs = Date.now()): Promise<void> {
     try {
       await checkForNewChapters({
         aggregateTaskTitle: translate(locale, "tasks.task.checkLibraryUpdates"),
+        automatic: true,
         limit: 1,
         novelIds: due,
         taskTitle: (novel) => translate(locale, "tasks.task.checkUpdates", { name: novel.name }),

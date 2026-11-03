@@ -543,6 +543,11 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
             </Button>
           </div>
         ) : null}
+        {!check.isPending && lastCheckResult && lastCheckResult.deferredNovels > 0 ? (
+          <p className="norea-updates-note" role="status">
+            {t("updates.deferredBySourceLimit", { count: lastCheckResult.deferredNovels })}
+          </p>
+        ) : null}
       </header>
 
       {check.isPending ? null : (

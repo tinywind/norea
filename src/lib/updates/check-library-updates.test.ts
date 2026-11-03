@@ -5,6 +5,9 @@ const mocks = vi.hoisted(() => ({
   records: [] as { id: string; kind: string; status: string }[],
   enqueueMain: vi.fn(),
   novels: [] as unknown[],
+  recent: new Map<string, number>(),
+  latest: undefined as { status: string } | undefined,
+  activeChecks: new Map<string, Promise<unknown>>(),
 }));
 
 vi.mock("../../db/client", () => ({ getDb: vi.fn(async () => ({ select: async () => mocks.novels })) }));
@@ -12,7 +15,10 @@ vi.mock("../../db/queries/chapter", () => ({
   listLibraryUpdatesPage: vi.fn(async () => ({ hasMore: false, nextCursor: null, updates: [] })),
 }));
 vi.mock("../../db/queries/novel", () => ({ listLibraryNovelRefreshTargets: vi.fn(async () => mocks.novels) }));
-vi.mock("../../db/queries/novel-freshness", () => ({ recordNovelCheck: vi.fn(async () => undefined) }));
+vi.mock("../../db/queries/novel-freshness", () => ({
+  countRecentChecksBySource: vi.fn(async () => new Map(mocks.recent)),
+  recordNovelCheck: vi.fn(async () => undefined),
+}));
 vi.mock("../plugins/manager", () => ({
   pluginManager: {
     getPlugin: (id: string) => (id === "gone" ? undefined : { id, name: `Source ${id}`, getBaseUrl: () => "https://example.test" }),
@@ -26,14 +32,19 @@ vi.mock("../tasks/batch-window", () => ({
   },
 }));
 vi.mock("../tasks/source-tasks", () => ({
-  enqueueSourceTask: vi.fn((task: { run: (context: unknown) => Promise<unknown> }) => ({
-    id: "task",
-    promise: task.run({ executor: "immediate", signal: new AbortController().signal }),
-  })),
+  enqueueSourceTask: vi.fn((task: { dedupeKey: string; run: (context: unknown) => Promise<unknown> }) => {
+    const active = mocks.activeChecks.get(task.dedupeKey);
+    if (active) return { id: "task", promise: active };
+    const promise = task.run({ executor: "immediate", signal: new AbortController().signal })
+      .finally(() => mocks.activeChecks.delete(task.dedupeKey));
+    mocks.activeChecks.set(task.dedupeKey, promise);
+    return { id: "task", promise };
+  }),
 }));
 vi.mock("../tasks/scheduler", () => ({
   taskScheduler: {
     cancel: mocks.cancel,
+    getTaskByDedupeKey: () => mocks.latest,
     getSnapshot: () => ({ records: mocks.records }),
     enqueueMain: mocks.enqueueMain.mockImplementation((task: { run: (context: unknown) => Promise<unknown> }) => ({
       id: "main",
@@ -45,6 +56,7 @@ vi.mock("../tasks/scheduler", () => ({
 import { recordNovelCheck } from "../../db/queries/novel-freshness";
 import { syncNovelFromSource } from "../plugins/sync-novel";
 import { enqueueSourceTask } from "../tasks/source-tasks";
+import { SOURCE_CHECKS_PER_HOUR } from "./check-cadence";
 import { cancelLibraryUpdateCheck, checkForNewChapters, newChapterCheckDedupeKey } from "./check-library-updates";
 
 const novel = (id: number, pluginId = "source") => ({ id, pluginId, path: `/n/${id}`, name: `Novel ${id}` });
@@ -52,6 +64,8 @@ const novel = (id: number, pluginId = "source") => ({ id, pluginId, path: `/n/${
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.records = [];
+  mocks.recent = new Map();
+  mocks.latest = undefined;
   mocks.novels = [novel(1), novel(2), novel(3, "gone")];
   vi.mocked(syncNovelFromSource).mockImplementation(async (_plugin, item) => {
     if (item.path === "/n/2") throw new Error("Timed out");
@@ -91,4 +105,42 @@ it("cancels every running check for new chapters", () => {
 it("does nothing when no check is running", () => {
   expect(cancelLibraryUpdateCheck()).toBe(false);
   expect(mocks.cancel).not.toHaveBeenCalled();
+});
+
+it("leaves novels beyond their source's hourly budget for later", async () => {
+  mocks.recent = new Map([["source", SOURCE_CHECKS_PER_HOUR - 1]]);
+  const result = await checkForNewChapters({ limit: 10 });
+  expect(vi.mocked(enqueueSourceTask).mock.calls.map(([task]) => [task.subject?.novelId, task.priority])).toEqual([[1, "user"]]);
+  expect(result.deferredNovels).toBe(1);
+});
+
+it("joins a manual check to the running automatic one instead of checking its novels again", async () => {
+  mocks.novels = [novel(1), novel(2), novel(4)];
+  let releaseFirst!: () => void;
+  const firstStarted = new Promise<void>((started) => {
+    vi.mocked(syncNovelFromSource).mockImplementation(async (_plugin, item) => {
+      if (item.path === "/n/1") {
+        started();
+        await new Promise<void>((release) => { releaseFirst = release; });
+      }
+      return { changed: true, changedChapters: 1, newChapters: 1, novelId: 1, chapterCount: 5, duplicateChapters: [] };
+    });
+  });
+  const automatic = checkForNewChapters({ automatic: true, limit: 1, novelIds: [1, 2] });
+  await firstStarted;
+  mocks.latest = { status: "queued" };
+  const progress = vi.fn();
+  const manual = checkForNewChapters({ limit: 10, onProgress: progress });
+  await vi.waitFor(() => expect(vi.mocked(enqueueSourceTask).mock.calls.length).toBe(2));
+  releaseFirst();
+
+  const [automaticResult, manualResult] = await Promise.all([automatic, manual]);
+  expect(mocks.enqueueMain).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(enqueueSourceTask).mock.calls.map(([task]) => [task.subject?.novelId, task.priority])).toEqual([
+    [1, "deferred"], [1, "user"], [2, "user"], [4, "user"],
+  ]);
+  expect(vi.mocked(syncNovelFromSource).mock.calls.map(([, item]) => item.path)).toEqual(["/n/1", "/n/2", "/n/4"]);
+  expect(manualResult).toMatchObject({ checkedNovels: 3, newChapters: 3 });
+  expect(automaticResult.checkedNovels).toBe(3);
+  expect(progress).toHaveBeenLastCalledWith(expect.objectContaining({ current: 3, total: 3 }));
 });

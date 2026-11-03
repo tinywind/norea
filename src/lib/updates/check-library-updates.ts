@@ -5,7 +5,7 @@ import {
   type LibraryUpdatesCursor,
 } from "../../db/queries/chapter";
 import { listLibraryNovelRefreshTargets, type LibraryNovelRefreshFilter } from "../../db/queries/novel";
-import { recordNovelCheck } from "../../db/queries/novel-freshness";
+import { countRecentChecksBySource, recordNovelCheck } from "../../db/queries/novel-freshness";
 import { isAbortError } from "../abort";
 import { pluginManager } from "../plugins/manager";
 import { syncNovelFromSource, type SyncNovelFromSourceResult } from "../plugins/sync-novel";
@@ -14,6 +14,7 @@ import { LOCAL_PLUGIN_ID, type Plugin } from "../plugins/types";
 import { runBoundedTaskBatch } from "../tasks/batch-window";
 import { enqueueSourceTask } from "../tasks/source-tasks";
 import { taskScheduler, type TaskHandle, type TaskRunContext } from "../tasks/scheduler";
+import { SOURCE_CHECKS_PER_HOUR } from "./check-cadence";
 
 export interface NovelForCheck {
   id: number;
@@ -23,6 +24,7 @@ export interface NovelForCheck {
 }
 
 const LIBRARY_UPDATE_CHECK_KEY = "library.checkUpdates";
+const HOUR_SECONDS = 60 * 60;
 
 export interface UpdateCheckFailure {
   novelId: number;
@@ -38,6 +40,8 @@ export interface UpdateCheckResult {
   checkedNovels: number;
   /** Chapters the check inserted into novels that already had chapters. */
   newChapters: number;
+  /** Novels left for later because their source used its hourly check budget. */
+  deferredNovels: number;
   skippedNovels: number;
   failures: UpdateCheckFailure[];
   hasMoreUpdates: boolean;
@@ -52,6 +56,8 @@ export interface NewChapterCheckOptions {
   /** Rows of the Updates list returned with the result. */
   limit: number;
   aggregateTaskTitle?: string;
+  /** A cadence run: a manual check started meanwhile joins it instead of waiting behind it. */
+  automatic?: boolean;
   onProgress?: (progress: {
     current: number;
     detail?: string;
@@ -124,11 +130,120 @@ export function checkNovelForNewChapters(
   });
 }
 
+type CheckProgress = Parameters<NonNullable<NewChapterCheckOptions["onProgress"]>>[0];
+
+/** One running library check; a manual check started during an automatic one joins it. */
+interface CheckRun {
+  automatic: boolean;
+  /** Novels not handed to their source yet, in check order. */
+  pending: NovelForCheck[];
+  /** Every novel this run covers, by id. */
+  covered: Map<number, NovelForCheck>;
+  /** Handed to their source and not settled yet. */
+  inFlight: Set<number>;
+  /** Novels a user asked for, checked at user priority. */
+  userRequested: Set<number>;
+  /** Novels left out because their source used its hourly budget. */
+  deferredNovels: number;
+  onProgress: Set<(progress: CheckProgress) => void>;
+  taskTitle: (novel: NovelForCheck) => string;
+  /** Settles once the run has listed its own novels. */
+  listed: Promise<void>;
+  promise: Promise<UpdateCheckResult> | null;
+}
+
+let activeRun: CheckRun | null = null;
+
+/**
+ * The novels a manual check may add, within each source's hourly budget: checks recorded in the
+ * last hour plus the ones the running check has not recorded yet.
+ */
+async function withinSourceBudget(
+  novels: readonly NovelForCheck[],
+  unrecorded: Iterable<NovelForCheck>,
+): Promise<NovelForCheck[]> {
+  const used = await countRecentChecksBySource(Math.floor(Date.now() / 1000) - HOUR_SECONDS);
+  for (const novel of unrecorded) used.set(novel.pluginId, (used.get(novel.pluginId) ?? 0) + 1);
+  return novels.filter((novel) => {
+    if (novel.pluginId === LOCAL_PLUGIN_ID) return true;
+    const count = used.get(novel.pluginId) ?? 0;
+    if (count >= SOURCE_CHECKS_PER_HOUR) return false;
+    used.set(novel.pluginId, count + 1);
+    return true;
+  });
+}
+
+function unrecordedNovels(run: CheckRun): NovelForCheck[] {
+  return [...run.pending, ...[...run.inFlight].map((id) => run.covered.get(id)!)];
+}
+
+/**
+ * Adds a manual check to a running automatic one: novels it already checked are not checked
+ * again, its remaining requested novels move to the front at user priority, and novels outside
+ * it are added within their source's hourly budget.
+ */
+async function joinRun(run: CheckRun, options: NewChapterCheckOptions): Promise<boolean> {
+  await run.listed;
+  const requested = await listNovelsForCheck(options);
+  const outside = requested.filter((novel) => !run.covered.has(novel.id));
+  const budgeted = await withinSourceBudget(outside, unrecordedNovels(run));
+  if (activeRun !== run) return false;
+  run.deferredNovels += outside.length - budgeted.length;
+  const fresh = budgeted.filter((novel) => !run.covered.has(novel.id));
+  const requestedIds = new Set(requested.map((novel) => novel.id));
+  const promoted = run.pending.filter((novel) => requestedIds.has(novel.id));
+  run.pending = [...promoted, ...fresh, ...run.pending.filter((novel) => !requestedIds.has(novel.id))];
+  for (const novel of [...promoted, ...fresh]) {
+    run.covered.set(novel.id, novel);
+    run.userRequested.add(novel.id);
+  }
+  for (const id of run.inFlight) {
+    const novel = run.covered.get(id)!;
+    const plugin = requestedIds.has(id) ? pluginManager.getPlugin(novel.pluginId) : undefined;
+    const queued = taskScheduler.getTaskByDedupeKey(newChapterCheckDedupeKey(novel.pluginId, novel.path))?.status === "queued";
+    // Enqueueing the same check again at user priority moves its queued source task forward.
+    if (plugin && queued) {
+      checkNovelForNewChapters(plugin, novel, { priority: "user", title: run.taskTitle(novel) }).promise.catch(() => undefined);
+    }
+  }
+  if (options.onProgress) run.onProgress.add(options.onProgress);
+  return true;
+}
+
 async function runNewChapterCheck(
   options: NewChapterCheckOptions,
   context?: TaskRunContext,
 ): Promise<UpdateCheckResult> {
-  const novels = await listNovelsForCheck(options);
+  let finishListing!: () => void;
+  const run: CheckRun = {
+    automatic: options.automatic ?? false,
+    pending: [],
+    covered: new Map(),
+    inFlight: new Set(),
+    userRequested: new Set(),
+    deferredNovels: 0,
+    onProgress: new Set(options.onProgress ? [options.onProgress] : []),
+    taskTitle: (novel) => options.taskTitle?.(novel) ?? novel.name,
+    listed: new Promise((resolve) => { finishListing = resolve; }),
+    promise: null,
+  };
+  // Registered before the first await, so a check started while this one lists its novels joins it.
+  activeRun = run;
+  try {
+    const listed = await listNovelsForCheck(options);
+    const novels = run.automatic ? listed : await withinSourceBudget(listed, []);
+    run.pending = [...novels];
+    for (const novel of novels) {
+      run.covered.set(novel.id, novel);
+      if (!run.automatic) run.userRequested.add(novel.id);
+    }
+    run.deferredNovels = listed.length - novels.length;
+  } catch (error) {
+    if (activeRun === run) activeRun = null;
+    throw error;
+  } finally {
+    finishListing();
+  }
   const failures: UpdateCheckFailure[] = [];
   let checkedNovels = 0;
   let newChapters = 0;
@@ -136,66 +251,82 @@ async function runNewChapterCheck(
   let skippedNovels = 0;
 
   const reportProgress = (detail?: string) => {
-    const progress = { current: processedNovels, detail, total: novels.length };
-    options.onProgress?.(progress);
+    const progress = { current: processedNovels, detail, total: run.covered.size };
+    for (const listener of run.onProgress) listener(progress);
     context?.setProgress({
       current: processedNovels,
-      total: novels.length,
+      total: run.covered.size,
     });
     if (detail) context?.setDetail(detail);
   };
 
-  reportProgress();
+  const checkNovel = async (novel: NovelForCheck) => {
+    if (novel.pluginId === LOCAL_PLUGIN_ID) {
+      skippedNovels += 1;
+      processedNovels += 1;
+      reportProgress(novel.name);
+      return;
+    }
 
-  await runBoundedTaskBatch({
-    items: novels,
-    shouldContinue: () => !context?.signal.aborted,
-    materialize: async (novel) => {
-      if (novel.pluginId === LOCAL_PLUGIN_ID) {
-        skippedNovels += 1;
-        processedNovels += 1;
-        reportProgress(novel.name);
-        return;
-      }
+    const plugin = pluginManager.getPlugin(novel.pluginId);
+    if (!plugin) {
+      failures.push({
+        novelId: novel.id,
+        novelName: novel.name,
+        pluginId: novel.pluginId,
+        reason: { kind: "plugin-missing", pluginId: novel.pluginId },
+      });
+      processedNovels += 1;
+      reportProgress(novel.name);
+      return;
+    }
 
-      const plugin = pluginManager.getPlugin(novel.pluginId);
-      if (!plugin) {
-        failures.push({
-          novelId: novel.id,
-          novelName: novel.name,
-          pluginId: novel.pluginId,
-          reason: { kind: "plugin-missing", pluginId: novel.pluginId },
-        });
-        processedNovels += 1;
-        reportProgress(novel.name);
-        return;
-      }
+    run.inFlight.add(novel.id);
+    try {
+      const result = await checkNovelForNewChapters(plugin, novel, {
+        priority: run.userRequested.has(novel.id) ? "user" : "deferred",
+        title: run.taskTitle(novel),
+      }).promise;
+      checkedNovels += 1;
+      newChapters += result.newChapters;
+    } catch (error) {
+      failures.push({
+        novelId: novel.id,
+        novelName: novel.name,
+        pluginId: novel.pluginId,
+        pluginName: plugin.name,
+        reason: { kind: "error", message: describeError(error) },
+      });
+    } finally {
+      run.inFlight.delete(novel.id);
+      processedNovels += 1;
+      reportProgress(novel.name);
+    }
+  };
 
-      try {
-        const result = await checkNovelForNewChapters(plugin, novel, {
-          title: options.taskTitle?.(novel) ?? novel.name,
-        }).promise;
-        checkedNovels += 1;
-        newChapters += result.newChapters;
-      } catch (error) {
-        failures.push({
-          novelId: novel.id,
-          novelName: novel.name,
-          pluginId: novel.pluginId,
-          pluginName: plugin.name,
-          reason: { kind: "error", message: describeError(error) },
-        });
-      } finally {
-        processedNovels += 1;
-        reportProgress(novel.name);
-      }
-    },
-  });
+  // Novels a joining check adds while a batch runs are taken by that batch, or by the next one.
+  function* takePending(): Generator<NovelForCheck> {
+    while (run.pending.length > 0) yield run.pending.shift()!;
+  }
+
+  try {
+    reportProgress();
+    while (run.pending.length > 0 && !context?.signal.aborted) {
+      await runBoundedTaskBatch({
+        items: takePending(),
+        shouldContinue: () => !context?.signal.aborted,
+        materialize: checkNovel,
+      });
+    }
+  } finally {
+    if (activeRun === run) activeRun = null;
+  }
 
   const updatesPage = await listLibraryUpdatesPage(options.limit);
 
   return {
     checkedNovels,
+    deferredNovels: run.deferredNovels,
     newChapters,
     skippedNovels,
     failures,
@@ -207,18 +338,36 @@ async function runNewChapterCheck(
 
 /**
  * "Check for new chapters" for the library, a filtered part of it, or chosen novels such as the
- * ones that failed last time. Sources run in parallel and each source stays serial.
+ * ones that failed last time. Sources run in parallel and each source stays serial. A manual
+ * check ignores the cadence but not each source's hourly budget; started during an automatic
+ * check, it joins that check instead of waiting behind it.
  */
 export async function checkForNewChapters(options: NewChapterCheckOptions): Promise<UpdateCheckResult> {
+  const running = activeRun;
+  if (!options.automatic && running?.automatic && running.promise && await joinRun(running, options)) {
+    const result = await running.promise!;
+    const updatesPage = await listLibraryUpdatesPage(options.limit);
+    return {
+      ...result,
+      hasMoreUpdates: updatesPage.hasMore,
+      nextUpdateCursor: updatesPage.nextCursor,
+      updates: updatesPage.updates,
+    };
+  }
   const scope = options.novelIds ? { novelIds: [...options.novelIds].sort((left, right) => left - right) }
     : options.filter ? { filter: options.filter } : null;
-  return taskScheduler.enqueueMain<UpdateCheckResult>({
+  const handle = taskScheduler.enqueueMain<UpdateCheckResult>({
     kind: "library.checkUpdates",
     priority: "deferred",
     title: options.aggregateTaskTitle ?? "Check for new chapters",
     dedupeKey: scope ? `${LIBRARY_UPDATE_CHECK_KEY}:${JSON.stringify(scope)}` : LIBRARY_UPDATE_CHECK_KEY,
-    run: (context) => runNewChapterCheck(options, context),
-  }).promise;
+    run: (context) => {
+      const promise = runNewChapterCheck(options, context);
+      if (activeRun) activeRun.promise = promise;
+      return promise;
+    },
+  });
+  return handle.promise;
 }
 
 /**
