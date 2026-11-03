@@ -415,155 +415,34 @@
   top: 0;
 }
 
-.norea-novel-chapter-row {
+.norea-novel-chapter {
   align-items: center;
-  background: var(--norea-color-surface);
-  border-top: 1px solid var(--norea-color-rule);
+  border-bottom: 1px solid var(--norea-color-rule);
   box-sizing: border-box;
-  display: grid;
-  gap: var(--norea-space-3);
-  grid-template-areas: "selection content actions";
-  grid-template-columns: 2rem minmax(0, 1fr) auto;
-  height: 3.625rem;
-  min-height: 3.625rem;
-  padding: var(--norea-space-2) 0 var(--norea-space-2) var(--norea-space-2);
+  display: flex;
+  height: 3.75rem;
+  min-width: 0;
 }
 
-.norea-novel-chapter-row[data-has-drag="true"] {
-  grid-template-areas: "drag selection content actions";
-  grid-template-columns: 2rem 2rem minmax(0, 1fr) auto;
-}
-
-.norea-novel-chapter-row[data-dragging="true"] {
+.norea-novel-chapter[data-dragging="true"] {
   opacity: 0.55;
 }
 
-.norea-novel-chapter-row:hover,
-.norea-novel-chapter-row--current,
-.norea-novel-chapter-row[data-selected="true"] {
-  background: var(--norea-color-accent-soft);
-}
-
-.norea-novel-chapter-open:focus-visible,
-.norea-novel-chapter-drag-handle:focus-visible {
-  outline: var(--norea-focus-width) solid var(--norea-color-focus);
-  outline-offset: 0.125rem;
-}
-
-.norea-novel-chapter-open {
-  align-items: center;
+.norea-novel-chapter .norea-novel-chapter-open {
   align-self: stretch;
-  background: transparent;
-  border: 0;
-  color: inherit;
-  cursor: pointer;
-  display: grid;
-  font: inherit;
-  gap: inherit;
-  grid-area: content;
-  grid-template-areas: "position main flags progress";
-  grid-template-columns: 3.25rem minmax(14rem, 1fr) minmax(4rem, auto) minmax(9.5rem, 0.35fr);
+  flex: 1 1 auto;
+  min-height: 0;
   min-width: 0;
-  padding: 0;
-  text-align: left;
+  padding-block: var(--norea-space-1);
 }
 
-.norea-novel-chapter-selection {
+.norea-novel-chapter .norea-list-item-title {
   align-items: center;
-  cursor: pointer;
   display: flex;
-  grid-area: selection;
-  justify-content: center;
-}
-
-.norea-novel-chapter-selection input {
-  accent-color: var(--norea-color-accent);
-  cursor: pointer;
-  height: 1rem;
-  margin: 0;
-  width: 1rem;
-}
-
-.norea-novel-chapter-drag-handle {
-  align-items: center;
-  background: transparent;
-  border: 0;
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink-muted);
-  cursor: grab;
-  display: inline-flex;
-  font: inherit;
-  grid-area: drag;
-  height: 2rem;
-  justify-content: center;
-  padding: 0;
-  width: 2rem;
-}
-
-.norea-novel-chapter-drag-handle:hover {
-  background: var(--norea-color-surface-raised);
-  color: var(--norea-color-ink);
-}
-
-.norea-novel-chapter-drag-handle:active {
-  cursor: grabbing;
-}
-
-.norea-novel-chapter-drag-handle[data-disabled="true"] {
-  color: var(--norea-color-icon-subtle);
-  cursor: default;
-  opacity: var(--norea-disabled-opacity);
-}
-
-.norea-novel-chapter-drag-handle svg {
-  fill: currentColor;
-  height: 1rem;
-  stroke: none;
-  width: 1rem;
-}
-
-.norea-novel-chapter-position {
-  align-self: stretch;
-  color: var(--norea-color-ink-muted);
-  display: flex;
-  flex-direction: column;
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
   gap: var(--norea-space-1);
-  grid-area: position;
-  justify-content: center;
-  min-width: 0;
-}
-
-.norea-novel-chapter-current-dot {
-  background: var(--norea-color-accent);
-  border-radius: var(--norea-radius-full);
-  display: inline-block;
-  height: 0.4375rem;
-  width: 0.4375rem;
-}
-
-.norea-novel-chapter-main {
-  display: grid;
-  gap: var(--norea-space-1);
-  grid-area: main;
-  min-width: 0;
-}
-
-.norea-novel-chapter-title-line {
-  align-items: center;
-  display: flex;
-  gap: var(--norea-space-2);
-  min-width: 0;
 }
 
 .norea-novel-chapter-title {
-  color: var(--norea-color-ink);
-  flex: 1 1 auto;
-  font-size: var(--norea-text-sm);
-  font-weight: 650;
-  line-height: 1.3;
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -572,156 +451,96 @@
 
 .norea-novel-chapter-title[data-read="true"] {
   color: var(--norea-color-ink-muted);
-  font-weight: 500;
+  font-weight: var(--norea-weight-regular);
+}
+
+.norea-novel-chapter-bookmark {
+  color: var(--norea-color-accent);
+  flex: 0 0 auto;
+}
+
+/* The current chapter carries an accent edge so it differs from hover and selection. */
+.norea-novel-chapter[data-current="true"] {
+  box-shadow: inset 0.1875rem 0 0 var(--norea-color-accent);
+}
+
+.norea-novel-chapter[data-current="true"] .norea-novel-chapter-title {
+  color: var(--norea-color-accent);
+}
+
+.norea-novel-chapter[data-selected="true"] {
+  background: var(--norea-color-selected);
 }
 
 .norea-novel-chapter-meta {
-  color: var(--norea-color-ink-muted);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
-  line-height: 1.35;
-}
-
-.norea-novel-chapter-meta-row {
-  align-items: center;
-  color: var(--norea-color-ink-muted);
   display: flex;
-  flex-wrap: wrap;
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
   font-variant-numeric: tabular-nums;
-  gap: var(--norea-space-1) var(--norea-space-2);
-  line-height: 1.2;
-  min-width: 0;
-}
-
-.norea-novel-chapter-download-status {
-  color: var(--norea-color-accent);
-  flex: 1;
+  gap: var(--norea-space-2);
   min-width: 0;
   overflow: hidden;
-  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.norea-novel-chapter-percent {
-  color: var(--norea-color-ink-muted);
-  font-weight: 700;
+.norea-novel-chapter-meta > span + span::before {
+  content: "· ";
 }
 
-.norea-novel-chapter-percent--inline {
-  display: none;
-}
-
-.norea-novel-chapter-flags {
-  align-items: center;
-  display: inline-flex;
-  gap: var(--norea-space-1);
+.norea-novel-chapter-status {
+  color: var(--norea-color-accent);
   min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
 
-.norea-novel-chapter-flags--desktop {
-  grid-area: flags;
-  justify-content: flex-end;
+.norea-novel-chapter-status[data-tone="danger"] {
+  color: var(--norea-color-danger);
 }
 
-.norea-novel-chapter-flags--inline {
-  display: none;
-  justify-content: flex-start;
-}
-
-.norea-novel-chapter-flag {
-  align-items: center;
-  border: 1px solid var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink-muted);
-  display: inline-flex;
-  height: 1.5rem;
-  justify-content: center;
-  width: 1.5rem;
-}
-
-.norea-novel-chapter-flag[data-tone="done"] {
-  color: var(--norea-color-ok);
-}
-
-.norea-novel-chapter-flag[data-tone="warning"] {
+.norea-novel-chapter-status[data-tone="warn"],
+.norea-novel-chapter-badge {
   color: var(--norea-color-warn);
 }
 
-.norea-novel-chapter-flag[data-tone="error"] {
-  color: var(--norea-color-danger);
-}
-
-.norea-novel-chapter-progress {
+.norea-novel-chapter-check {
   align-items: center;
-  color: var(--norea-color-ink-muted);
-  display: grid;
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
-  gap: var(--norea-space-2);
-  grid-area: progress;
-  grid-template-columns: minmax(5.5rem, 1fr) 2.25rem;
-}
-
-.norea-novel-chapter-progress span {
-  color: var(--norea-color-ink-muted);
-  font-weight: 700;
-  text-align: right;
-}
-
-.norea-novel-chapter-actions {
-  align-items: center;
-  align-self: stretch;
-  display: flex;
-  gap: var(--norea-space-1);
-  grid-area: actions;
-  justify-content: flex-end;
-}
-
-.norea-novel-icon-button {
-  align-items: center;
-  border: 1px solid var(--norea-color-rule-strong);
+  border: 0.125rem solid var(--norea-color-rule-strong);
   border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink-muted);
+  color: var(--norea-color-on-accent);
   display: inline-flex;
-  flex: 0 0 auto;
-  height: 2.5rem;
+  height: 1.25rem;
   justify-content: center;
-  width: 2.5rem;
+  width: 1.25rem;
 }
 
-.norea-novel-chapter-actions .norea-novel-icon-button {
-  height: 2.5rem;
-  min-height: 2.5rem;
-  width: 2.5rem;
-}
-
-.norea-novel-icon-button:hover:not(:disabled) {
-  background: var(--norea-color-surface-raised);
-  color: var(--norea-color-ink);
-}
-
-.norea-novel-icon-button:disabled {
-  cursor: not-allowed;
-  opacity: 0.46;
-}
-
-.norea-novel-icon-button[data-tone="accent"] {
-  background: var(--norea-color-accent-soft);
+.norea-novel-chapter-check[data-checked="true"] {
+  background: var(--norea-color-accent);
   border-color: var(--norea-color-accent);
-  color: var(--norea-color-accent);
 }
 
-.norea-novel-icon-button[data-tone="danger"],
-.norea-novel-icon-button[data-tone="error"] {
-  color: var(--norea-color-danger);
+.norea-novel-chapter-trailing,
+.norea-novel-chapter-reorder {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--norea-space-1);
+  padding-inline: var(--norea-space-1);
 }
 
-.norea-novel-icon-button[data-busy="true"] {
-  opacity: 0.65;
+.norea-novel-chapter-progress-slot {
+  align-items: center;
+  display: inline-flex;
+  height: var(--norea-control-md);
+  justify-content: center;
+  width: var(--norea-control-md);
+}
+
+.norea-novel-chapter-state-button[data-state="downloaded"] {
+  color: var(--norea-color-ok);
+}
+
+.norea-novel-chapter-drag-handle {
+  cursor: grab;
+  touch-action: none;
 }
 
 .norea-novel-chapter-sort-button[data-active="true"] {
@@ -783,102 +602,6 @@
   font-size: var(--norea-text-xs);
   font-variant-numeric: tabular-nums;
   line-height: 1.25;
-}
-
-.norea-novel-icon-button svg {
-  fill: none;
-  height: 1.125rem;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-  width: 1.125rem;
-}
-
-.norea-novel-chapter-flag svg {
-  fill: none;
-  height: 0.9375rem;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 2;
-  width: 0.9375rem;
-}
-
-.norea-novel-spin-icon {
-  animation: norea-novel-spin 0.9s linear infinite;
-}
-
-@keyframes norea-novel-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
-@media (max-width: 991px) {
-  .norea-novel-chapter-row {
-    gap: var(--norea-space-2);
-    grid-template-areas: "content actions";
-    grid-template-columns: minmax(0, 1fr) auto;
-    min-height: 3.25rem;
-    padding: var(--norea-space-1) 0 var(--norea-space-1) var(--norea-space-2);
-  }
-
-  .norea-novel-chapter-row[data-has-drag="true"] {
-    grid-template-areas: "drag content actions";
-    grid-template-columns: 2rem minmax(0, 1fr) auto;
-  }
-
-  .norea-novel-chapter-open {
-    grid-template-areas: "position main flags";
-    grid-template-columns: 2.625rem minmax(0, 1fr) auto;
-  }
-
-  .norea-novel-chapter-selection {
-    display: none;
-  }
-
-  .norea-novel-chapter-row[data-selection-mode="true"] {
-    grid-template-areas: "selection content actions";
-    grid-template-columns: 2rem minmax(0, 1fr) auto;
-  }
-
-  .norea-novel-chapter-row[data-selection-mode="true"][data-has-drag="true"] {
-    grid-template-areas: "drag selection content actions";
-    grid-template-columns: 2rem 2rem minmax(0, 1fr) auto;
-  }
-
-  .norea-novel-chapter-row[data-selection-mode="true"]
-    .norea-novel-chapter-selection {
-    display: flex;
-  }
-
-  .norea-novel-chapter-percent--inline {
-    display: inline;
-  }
-
-  .norea-novel-chapter-progress {
-    display: none;
-  }
-
-  .norea-novel-chapter-flags--desktop {
-    display: inline-flex;
-    justify-content: flex-end;
-  }
-
-  .norea-novel-chapter-flags--inline {
-    display: none;
-  }
-}
-
-@media (max-width: 767px) {
-  .norea-novel-chapter-flags--desktop {
-    justify-content: flex-end;
-  }
-
-  .norea-novel-chapter-actions {
-    justify-content: flex-end;
-  }
 }
 
 @media (any-pointer: coarse) {

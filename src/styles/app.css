@@ -881,31 +881,6 @@ a {
   display: none;
 }
 
-.norea-console-progress {
-  background: var(--norea-color-rule);
-  border-radius: var(--norea-radius-sm);
-  display: inline-block;
-  height: 0.25rem;
-  min-width: 3.5rem;
-  overflow: hidden;
-  vertical-align: middle;
-  width: 100%;
-}
-
-.norea-console-progress-bar {
-  background: var(--norea-color-accent);
-  display: block;
-  height: 100%;
-}
-
-.norea-console-progress-bar[data-status="done"] {
-  background: var(--norea-color-ok);
-}
-
-.norea-console-progress-bar[data-status="idle"] {
-  background: var(--norea-color-icon-subtle);
-}
-
 .norea-console-status {
   align-items: center;
   color: var(--norea-color-ink-muted);

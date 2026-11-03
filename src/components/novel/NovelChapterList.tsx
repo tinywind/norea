@@ -14,14 +14,13 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Text, Tooltip } from "@mantine/core";
+import { Button, Loader, VisuallyHidden } from "@mantine/core";
 import {
   useEffect,
   useId,
   useMemo,
   useRef,
   useState,
-  type ReactNode,
   type PointerEvent as ReactPointerEvent,
 } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
@@ -32,28 +31,34 @@ import {
   normalizeFontScalePercent,
   useAppearanceStore,
 } from "../../store/appearance";
-import {
-  ClockGlyph,
-  DownloadedGlyph,
-  DownloadGlyph,
-  DragHandleGlyph,
-  RetryGlyph,
-  SpinnerGlyph,
-  TrashGlyph,
-} from "../ActionGlyphs";
-import { ConsoleProgress } from "../ConsolePrimitives";
 import { IconButton } from "../IconButton";
+import {
+  BookmarkedIcon,
+  CheckIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
+  DeleteDownloadIcon,
+  DownloadedIcon,
+  DownloadIcon,
+  DragIcon,
+  RepairIcon,
+  RetryIcon,
+} from "../ui/icons";
+import { ListRow } from "../ui/ListRow";
+import { OverflowMenu } from "../ui/OverflowMenu";
 import {
   beforeChapterIdForMove,
   chapterDndId,
   EMPTY_CHAPTER_DND_IDS,
   FINISHED_PROGRESS,
-  formatChapterPosition,
+  formatChapterNumber,
   getChapterReadingProgress,
   normalizeDateText,
   parseChapterDndId,
 } from "./novel-detail-model";
-const CHAPTER_ROW_HEIGHT = 58;
+
+/** Row height in px at 100% UI scale; `.norea-novel-chapter` sets the same height in rem. */
+export const CHAPTER_ROW_HEIGHT = 60;
 
 const CHAPTER_LIST_OVERSCAN = 8;
 
@@ -87,6 +92,7 @@ interface ChapterListItemProps {
   duplicateSourceChapterCount: number;
   isCurrent: boolean;
   isSelected: boolean;
+  reorderMode: boolean;
   selectionMode: boolean;
   status: ChapterDownloadStatus | undefined;
   deleteBusy: boolean;
@@ -95,6 +101,8 @@ interface ChapterListItemProps {
   onOpen: () => void;
   onDownload: () => void;
   onDeleteDownload: () => void;
+  onMoveDown: () => void;
+  onMoveUp: () => void;
   onRepairMedia: () => void;
   onToggleSelected: () => void;
 }
@@ -107,6 +115,7 @@ function ChapterListItem({
   duplicateSourceChapterCount,
   isCurrent,
   isSelected,
+  reorderMode,
   selectionMode,
   status,
   deleteBusy,
@@ -115,13 +124,14 @@ function ChapterListItem({
   onOpen,
   onDownload,
   onDeleteDownload,
+  onMoveDown,
+  onMoveUp,
   onRepairMedia,
   onToggleSelected,
 }: ChapterListItemProps) {
   const { t } = useTranslation();
-  const downloadStatusId = useId();
-  const canDrag = (canMoveUp || canMoveDown) && !reorderBusy;
-  const hasReorderControls = canMoveUp || canMoveDown;
+  const metaId = useId();
+  const canDrag = reorderMode && (canMoveUp || canMoveDown) && !reorderBusy;
   const {
     attributes,
     isDragging,
@@ -137,86 +147,31 @@ function ChapterListItem({
     transform: CSS.Transform.toString(transform),
     transition,
   };
-  const isQueued = status?.kind === "queued";
-  const isRunning = status?.kind === "running";
-  const downloadStatusLabel =
-    status?.kind === "queued" || status?.kind === "running"
-      ? t(
-          status.phase
-            ? CHAPTER_DOWNLOAD_LABELS[status.kind][status.phase]
-            : status.kind === "queued"
-              ? "common.queued"
-              : "common.downloading",
-        )
-      : null;
+  const downloadActive = status?.kind === "queued" || status?.kind === "running";
   const failedMessage = status?.kind === "failed" ? status.error : null;
-  const downloadActionLabel = failedMessage
-    ? t("novel.retryDownload")
-    : t("novel.downloadChapter");
-  const showDownloadButton = !chapter.isDownloaded && !isQueued && !isRunning;
   const longPressTimerRef = useRef<number | null>(null);
   const longPressTriggeredRef = useRef(false);
   const progress = getChapterReadingProgress(chapter);
-  const progressStatus =
-    progress >= FINISHED_PROGRESS
-      ? "done"
-      : chapter.progress > 0
-        ? "active"
-        : "idle";
   const releaseTime = chapter.releaseTime
     ? normalizeDateText(chapter.releaseTime)
     : null;
-  const hasSourceDuplicateChapter = duplicateSourceChapterCount > 0;
-  const hasChapterFlags =
-    chapter.bookmark ||
-    !chapter.unread ||
-    chapter.isDownloaded ||
-    chapter.mediaRepairNeeded ||
-    hasSourceDuplicateChapter ||
-    Boolean(status);
-  const renderChapterFlags = () => (
-    <>
-      {chapter.bookmark ? (
-        <ChapterFlag label={t("novel.bookmarked")} tone="warning">
-          <BookmarkIcon />
-        </ChapterFlag>
-      ) : null}
-      {!chapter.unread ? (
-        <ChapterFlag label={t("common.read")} tone="done">
-          <ReadIcon />
-        </ChapterFlag>
-      ) : null}
-      {chapter.isDownloaded ? (
-        <ChapterFlag label={t("novel.downloaded")} tone="done">
-          <DownloadedGlyph />
-        </ChapterFlag>
-      ) : null}
-      {chapter.mediaRepairNeeded ? (
-        <ChapterFlag label={t("novel.mediaRepairNeeded")} tone="warning">
-          <RetryGlyph />
-        </ChapterFlag>
-      ) : null}
-      {hasSourceDuplicateChapter ? (
-        <ChapterFlag
-          label={t("novel.sourceDuplicateChapters", {
-            count: duplicateSourceChapterCount,
-          })}
-          tone="warning"
-        >
-          <AlertIcon />
-        </ChapterFlag>
-      ) : null}
-      {status ? (
-        <ChapterDownloadStatusIcon status={status} label={downloadStatusLabel} />
-      ) : null}
-    </>
-  );
+  const details = [
+    downloadActive && status.phase
+      ? t(CHAPTER_DOWNLOAD_LABELS[status.kind][status.phase])
+      : null,
+    failedMessage,
+    chapter.serverComplete === true ? t("novel.serverComplete") : null,
+    duplicateSourceChapterCount > 0
+      ? t("novel.sourceDuplicateChapters", { count: duplicateSourceChapterCount })
+      : null,
+  ].filter(Boolean).join("\n");
   const clearLongPressTimer = () => {
     if (longPressTimerRef.current === null) return;
     window.clearTimeout(longPressTimerRef.current);
     longPressTimerRef.current = null;
   };
   const handlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>) => {
+    if (reorderMode) return;
     if (event.pointerType === "mouse" && event.button !== 0) return;
 
     clearLongPressTimer();
@@ -226,54 +181,154 @@ function ChapterListItem({
       onToggleSelected();
     }, 450);
   };
-  const handlePointerEnd = () => {
-    clearLongPressTimer();
-  };
 
   useEffect(() => clearLongPressTimer, []);
+
+  const renderStatus = () => {
+    if (downloadActive) {
+      return (
+        <span className="norea-novel-chapter-status">
+          {t(status.kind === "queued" ? "common.queued" : "common.downloading")}
+        </span>
+      );
+    }
+    if (failedMessage) {
+      return (
+        <span className="norea-novel-chapter-status" data-tone="danger">
+          {t("novel.downloadFailed")}
+          <VisuallyHidden>{`: ${failedMessage}`}</VisuallyHidden>
+        </span>
+      );
+    }
+    if (chapter.mediaRepairNeeded) {
+      return (
+        <span className="norea-novel-chapter-status" data-tone="warn">
+          {t("novel.mediaRepairNeeded")}
+        </span>
+      );
+    }
+    return null;
+  };
+
+  const renderTrailing = () => {
+    if (reorderMode) return null;
+    if (downloadActive) {
+      return (
+        <span className="norea-novel-chapter-progress-slot">
+          <Loader aria-hidden="true" size="xs" />
+        </span>
+      );
+    }
+    if (chapter.mediaRepairNeeded && canDeleteDownload) {
+      return (
+        <Button
+          disabled={deleteBusy}
+          leftSection={<RepairIcon size="1rem" />}
+          loading={repairBusy}
+          onClick={onRepairMedia}
+          size="compact-sm"
+          variant="subtle"
+        >
+          {t("novel.repair")}
+        </Button>
+      );
+    }
+    if (failedMessage) {
+      return (
+        <Button
+          aria-label={t("novel.retryDownload")}
+          leftSection={<RetryIcon size="1rem" />}
+          onClick={onDownload}
+          size="compact-sm"
+          variant="subtle"
+        >
+          {t("common.retry")}
+        </Button>
+      );
+    }
+    if (chapter.isDownloaded) {
+      if (!canDeleteDownload) return null;
+      return (
+        <OverflowMenu
+          items={[{
+            danger: true,
+            disabled: deleteBusy,
+            icon: DeleteDownloadIcon,
+            label: t("novel.deleteDownload"),
+            onClick: onDeleteDownload,
+          }]}
+          label={t("novel.downloaded")}
+          trigger={
+            <IconButton
+              className="norea-novel-chapter-state-button"
+              data-state="downloaded"
+              disabled={deleteBusy}
+              label={t("novel.downloaded")}
+              size="lg"
+            >
+              {deleteBusy ? <Loader size="xs" /> : <DownloadedIcon size="1.25rem" />}
+            </IconButton>
+          }
+        />
+      );
+    }
+    return (
+      <IconButton
+        className="norea-novel-chapter-state-button"
+        label={t("novel.downloadChapter")}
+        onClick={onDownload}
+        size="lg"
+      >
+        <DownloadIcon size="1.25rem" />
+      </IconButton>
+    );
+  };
+
+  const trailing = renderTrailing();
 
   return (
     <div
       ref={setNodeRef}
-      className={`norea-novel-chapter-row${
-        isCurrent ? " norea-novel-chapter-row--current" : ""
-      }`}
+      className="norea-novel-chapter"
+      data-current={isCurrent ? "true" : undefined}
       data-dragging={isDragging ? "true" : undefined}
-      data-has-drag={hasReorderControls ? "true" : undefined}
       data-selected={isSelected ? "true" : undefined}
-      data-selection-mode={selectionMode ? "true" : undefined}
       style={style}
     >
-      <label
-        className="norea-novel-chapter-selection"
-        onClick={(event) => event.stopPropagation()}
-      >
-        <input
-          aria-label={t("novel.toggleChapterSelection", {
-            name: chapter.name,
-          })}
-          checked={isSelected}
-          onChange={onToggleSelected}
-          type="checkbox"
-        />
-      </label>
-      {hasReorderControls ? (
-        <button
-          {...(canDrag ? attributes : undefined)}
-          {...(canDrag ? listeners : undefined)}
-          aria-label={t("novel.local.dragChapter")}
-          className="norea-novel-chapter-drag-handle"
-          data-disabled={canDrag ? undefined : "true"}
-          disabled={!canDrag}
-          title={t("novel.local.dragChapter")}
-          type="button"
-        >
-          <DragHandleGlyph />
-        </button>
+      {reorderMode ? (
+        <div className="norea-novel-chapter-reorder">
+          <IconButton
+            {...(canDrag ? attributes : undefined)}
+            {...(canDrag ? listeners : undefined)}
+            className="norea-novel-chapter-drag-handle"
+            disabled={!canDrag}
+            label={t("novel.local.dragChapter")}
+            size="lg"
+          >
+            <DragIcon size="1.25rem" />
+          </IconButton>
+          <IconButton
+            disabled={!canMoveUp || reorderBusy}
+            label={t("novel.local.moveChapterUp")}
+            onClick={onMoveUp}
+            size="lg"
+          >
+            <ChevronUpIcon size="1.25rem" />
+          </IconButton>
+          <IconButton
+            disabled={!canMoveDown || reorderBusy}
+            label={t("novel.local.moveChapterDown")}
+            onClick={onMoveDown}
+            size="lg"
+          >
+            <ChevronDownIcon size="1.25rem" />
+          </IconButton>
+        </div>
       ) : null}
-      <button
-        aria-busy={isRunning}
-        aria-describedby={downloadStatusLabel ? downloadStatusId : undefined}
+      <ListRow
+        aria-busy={downloadActive || undefined}
+        aria-current={isCurrent ? "true" : undefined}
+        aria-describedby={metaId}
         aria-label={
           selectionMode
             ? t("novel.toggleChapterSelection", { name: chapter.name })
@@ -281,11 +336,23 @@ function ChapterListItem({
         }
         aria-pressed={selectionMode ? isSelected : undefined}
         className="norea-novel-chapter-open"
+        leading={
+          selectionMode ? (
+            <span
+              aria-hidden="true"
+              className="norea-novel-chapter-check"
+              data-checked={isSelected ? "true" : undefined}
+            >
+              {isSelected ? <CheckIcon size="1rem" /> : null}
+            </span>
+          ) : undefined
+        }
         onClick={() => {
           if (longPressTriggeredRef.current) {
             longPressTriggeredRef.current = false;
             return;
           }
+          if (reorderMode) return;
           if (selectionMode) {
             onToggleSelected();
             return;
@@ -294,143 +361,46 @@ function ChapterListItem({
         }}
         onContextMenu={(event) => {
           event.preventDefault();
-          if (!longPressTriggeredRef.current) onToggleSelected();
+          if (!reorderMode && !longPressTriggeredRef.current) onToggleSelected();
         }}
-        onPointerCancel={handlePointerEnd}
+        onPointerCancel={clearLongPressTimer}
         onPointerDown={handlePointerDown}
-        onPointerLeave={handlePointerEnd}
-        onPointerUp={handlePointerEnd}
-        type="button"
-      >
-        <span className="norea-novel-chapter-position">
-          <span>{formatChapterPosition(chapter.position)}</span>
-          {isCurrent ? (
-            <span
-              aria-label={t("common.current")}
-              className="norea-novel-chapter-current-dot"
-              role="img"
-              title={t("common.current")}
-            />
-          ) : null}
-        </span>
-
-        <span className="norea-novel-chapter-main">
-          <span className="norea-novel-chapter-title-line">
-            <Text
-              component="span"
-              className="norea-novel-chapter-title"
-              data-read={!chapter.unread}
-              title={chapter.name}
-            >
-              {chapter.name}
-            </Text>
-          </span>
-          <span className="norea-novel-chapter-meta-row">
-            {downloadStatusLabel ? (
-              <span
-                className="norea-novel-chapter-download-status"
-                id={downloadStatusId}
-                title={downloadStatusLabel}
-              >
-                {downloadStatusLabel}
-              </span>
-            ) : (
-              <>
-                {chapter.serverComplete !== undefined ? (
-                  <Text component="span" className="norea-novel-chapter-meta">
-                    {t("novel.serverChapterStatus", {
-                      status: t(chapter.serverComplete ? "contentSync.complete" : "contentSync.incomplete"),
-                    })}
-                  </Text>
-                ) : null}
-                {releaseTime ? (
-                  <Text component="span" className="norea-novel-chapter-meta">
-                    {releaseTime}
-                  </Text>
-                ) : null}
-                <span className="norea-novel-chapter-percent norea-novel-chapter-percent--inline">
-                  {progress}%
-                </span>
-                {hasChapterFlags ? (
-                  <span
-                    className="norea-novel-chapter-flags norea-novel-chapter-flags--inline"
-                    aria-label={t("novel.chapterStatus")}
-                  >
-                    {renderChapterFlags()}
-                  </span>
-                ) : null}
-              </>
-            )}
-          </span>
-        </span>
-
-        {hasChapterFlags ? (
+        onPointerLeave={clearLongPressTimer}
+        onPointerUp={clearLongPressTimer}
+        selected={isSelected}
+        subtitle={
           <span
-            className="norea-novel-chapter-flags norea-novel-chapter-flags--desktop"
-            aria-label={t("novel.chapterStatus")}
+            className="norea-novel-chapter-meta"
+            id={metaId}
+            title={details || undefined}
           >
-            {renderChapterFlags()}
+            <span>{t("novel.chapterShort", { number: formatChapterNumber(chapter) })}</span>
+            {releaseTime ? <span>{releaseTime}</span> : null}
+            {progress > 0 && progress < FINISHED_PROGRESS ? (
+              <span>{t("novel.percentRead", { progress })}</span>
+            ) : null}
+            {chapter.serverComplete === false ? (
+              <span className="norea-novel-chapter-badge">{t("novel.serverIncomplete")}</span>
+            ) : null}
+            {renderStatus()}
           </span>
-        ) : null}
-
-        <span className="norea-novel-chapter-progress">
-          <ConsoleProgress value={progress} status={progressStatus} />
-          <span>{progress}%</span>
-        </span>
-      </button>
-
-      <div className="norea-novel-chapter-actions">
-        {showDownloadButton ? (
-          <IconButton
-            className="norea-novel-icon-button"
-            disabled={deleteBusy}
-            label={downloadActionLabel}
-            size="lg"
-            title={failedMessage ?? downloadActionLabel}
-            tone={failedMessage ? "danger" : "default"}
-            onClick={(event) => {
-              event.stopPropagation();
-              onDownload();
-            }}
-          >
-            <DownloadGlyph />
-          </IconButton>
-        ) : null}
-        {chapter.mediaRepairNeeded ? (
-          <IconButton
-            className="norea-novel-icon-button"
-            data-busy={repairBusy ? "true" : undefined}
-            disabled={repairBusy || deleteBusy}
-            label={t("novel.repairChapterMedia")}
-            size="lg"
-            onClick={(event) => {
-              event.stopPropagation();
-              onRepairMedia();
-            }}
-          >
-            {repairBusy ? (
-              <SpinnerGlyph className="norea-novel-spin-icon" />
-            ) : (
-              <RetryGlyph />
-            )}
-          </IconButton>
-        ) : null}
-        {(chapter.isDownloaded || chapter.mediaRepairNeeded) && canDeleteDownload ? (
-          <IconButton
-            className="norea-novel-icon-button"
-            data-busy={deleteBusy ? "true" : undefined}
-            disabled={deleteBusy}
-            label={t("novel.deleteDownloadedChapter")}
-            size="lg"
-            onClick={(event) => {
-              event.stopPropagation();
-              onDeleteDownload();
-            }}
-          >
-            <TrashGlyph />
-          </IconButton>
-        ) : null}
-      </div>
+        }
+        title={
+          <>
+            <span className="norea-novel-chapter-title" data-read={chapter.unread ? undefined : "true"}>
+              {chapter.name}
+            </span>
+            {chapter.bookmark ? (
+              <>
+                <BookmarkedIcon className="norea-novel-chapter-bookmark" size="1rem" />
+                <VisuallyHidden>{t("novel.bookmarked")}</VisuallyHidden>
+              </>
+            ) : null}
+            {isCurrent ? <VisuallyHidden>{t("novel.currentChapter")}</VisuallyHidden> : null}
+          </>
+        }
+      />
+      {trailing ? <div className="norea-novel-chapter-trailing">{trailing}</div> : null}
     </div>
   );
 }
@@ -438,13 +408,14 @@ function ChapterListItem({
 interface VirtualChapterListProps {
   chapters: ServerAwareChapterListRow[];
   canDeleteDownloads: boolean;
-  canReorderChapters: boolean;
   deleteBusyChapterId: number | undefined;
   duplicateSourceChapterCounts: ReadonlyMap<number, number>;
   deletePending: boolean;
   lastReadChapterId: number | undefined;
   repairBusyChapterId: number | undefined;
   repairPending: boolean;
+  /** Shows drag handles and move buttons in place of the row actions. */
+  reorderMode: boolean;
   reorderPending: boolean;
   /** The page's scroll container; the list renders only the rows inside its viewport. */
   scrollElement: HTMLElement | null;
@@ -462,13 +433,13 @@ interface VirtualChapterListProps {
 export function VirtualChapterList({
   chapters,
   canDeleteDownloads,
-  canReorderChapters,
   deleteBusyChapterId,
   duplicateSourceChapterCounts,
   deletePending,
   lastReadChapterId,
   repairBusyChapterId,
   repairPending,
+  reorderMode,
   reorderPending,
   scrollElement,
   selectedChapterIds,
@@ -513,10 +484,10 @@ export function VirtualChapterList({
   const offsetY = startIndex * chapterRowHeight;
   const sortableChapterIds = useMemo(
     () =>
-      canReorderChapters
+      reorderMode
         ? chapters.map((chapter) => chapterDndId(chapter.id))
         : EMPTY_CHAPTER_DND_IDS,
-    [canReorderChapters, chapters],
+    [reorderMode, chapters],
   );
   useEffect(() => {
     const list = listRef.current;
@@ -553,7 +524,7 @@ export function VirtualChapterList({
   }, [chapterRowHeight, scrollElement]);
 
   const handleDragEnd = (event: DragEndEvent) => {
-    if (!canReorderChapters || reorderPending) return;
+    if (!reorderMode || reorderPending) return;
     const overId = event.over?.id;
     if (!overId) return;
 
@@ -589,14 +560,15 @@ export function VirtualChapterList({
                 chapter={chapter}
                 canDeleteDownload={canDeleteDownloads}
                 canMoveDown={
-                  canReorderChapters && displayIndex < chapters.length - 1
+                  reorderMode && displayIndex < chapters.length - 1
                 }
-                canMoveUp={canReorderChapters && displayIndex > 0}
+                canMoveUp={reorderMode && displayIndex > 0}
                 duplicateSourceChapterCount={
                   duplicateSourceChapterCounts.get(chapter.id) ?? 0
                 }
                 isCurrent={chapter.id === lastReadChapterId}
                 isSelected={selectedChapterIds.has(chapter.id)}
+                reorderMode={reorderMode}
                 selectionMode={selectionMode}
                 status={statuses.get(chapter.id)}
                 deleteBusy={deletePending && deleteBusyChapterId === chapter.id}
@@ -605,6 +577,13 @@ export function VirtualChapterList({
                 onOpen={() => onOpen(chapter)}
                 onDownload={() => onDownload(chapter)}
                 onDeleteDownload={() => onDeleteDownload(chapter.id)}
+                onMoveDown={() =>
+                  onReorderChapter(chapter.id, chapters[displayIndex + 2]?.id ?? null)
+                }
+                onMoveUp={() => {
+                  const previous = chapters[displayIndex - 1];
+                  if (previous) onReorderChapter(chapter.id, previous.id);
+                }}
                 onRepairMedia={() => onRepairMedia(chapter)}
                 onToggleSelected={() => onToggleSelected(chapter.id)}
               />
@@ -615,7 +594,7 @@ export function VirtualChapterList({
     </div>
   );
 
-  if (!canReorderChapters) return chapterList;
+  if (!reorderMode) return chapterList;
 
   return (
     <DndContext
@@ -630,83 +609,5 @@ export function VirtualChapterList({
         {chapterList}
       </SortableContext>
     </DndContext>
-  );
-}
-
-interface ChapterFlagProps {
-  children: ReactNode;
-  label: string;
-  tone?: "default" | "done" | "warning" | "error";
-}
-
-function ChapterFlag({ children, label, tone = "default" }: ChapterFlagProps) {
-  return (
-    <Tooltip label={label} openDelay={350} withArrow>
-      <span
-        aria-label={label}
-        className="norea-novel-chapter-flag"
-        data-tone={tone}
-        role="img"
-        title={label}
-      >
-        {children}
-      </span>
-    </Tooltip>
-  );
-}
-
-function ChapterDownloadStatusIcon({
-  label,
-  status,
-}: {
-  label: string | null;
-  status: ChapterDownloadStatus;
-}) {
-  if (status.kind === "done" || status.kind === "cancelled") return null;
-
-  if (status.kind === "failed") {
-    return (
-      <ChapterFlag label={status.error} tone="error">
-        <AlertIcon />
-      </ChapterFlag>
-    );
-  }
-
-  if (!label) return null;
-
-  return (
-    <ChapterFlag label={label}>
-      {status.kind === "running" ? (
-        <SpinnerGlyph className="norea-novel-spin-icon" />
-      ) : (
-        <ClockGlyph />
-      )}
-    </ChapterFlag>
-  );
-}
-
-function BookmarkIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M7 4h10v16l-5-3-5 3z" />
-    </svg>
-  );
-}
-
-export function ReadIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M4 12l5 5L20 6" />
-    </svg>
-  );
-}
-
-function AlertIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M12 4l9 16H3z" />
-      <path d="M12 9v5" />
-      <path d="M12 18h.01" />
-    </svg>
   );
 }

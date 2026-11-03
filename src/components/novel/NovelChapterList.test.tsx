@@ -1,10 +1,12 @@
 import { MantineProvider } from "@mantine/core";
 import { load } from "cheerio";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
+import type { ComponentProps } from "react";
 import type { ChapterListRow } from "../../db/queries/chapter";
 import type { ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
-import { VirtualChapterList } from "./NovelChapterList";
+import { CHAPTER_ROW_HEIGHT, VirtualChapterList } from "./NovelChapterList";
 
 const chapter: ChapterListRow = {
   id: 1,
@@ -30,148 +32,192 @@ const chapter: ChapterListRow = {
   updatedAt: 1,
 };
 
-describe("chapter row controls", () => {
-  it.each([[false, false], [true, true], [false, true]])(
-    "keeps selection and stored-body actions outside the primary button (downloaded: %s, repair: %s)",
-    (isDownloaded, mediaRepairNeeded) => {
-      const $ = load(renderToStaticMarkup(
-        <MantineProvider>
-          <VirtualChapterList
-            chapters={[
-              { ...chapter, isDownloaded, mediaRepairNeeded },
-              { ...chapter, id: 2, position: 2, name: "Second chapter" },
-            ]}
-            canDeleteDownloads
-            canReorderChapters
-            deleteBusyChapterId={undefined}
-            duplicateSourceChapterCounts={new Map()}
-            deletePending={false}
-            lastReadChapterId={undefined}
-            repairBusyChapterId={undefined}
-            repairPending={false}
-            reorderPending={false}
-            scrollElement={null}
-            selectedChapterIds={new Set([1])}
-            selectionMode
-            statuses={new Map()}
-            onDeleteDownload={vi.fn()}
-            onDownload={vi.fn()}
-            onOpen={vi.fn()}
-            onRepairMedia={vi.fn()}
-            onReorderChapter={vi.fn()}
-            onToggleSelected={vi.fn()}
-          />
-        </MantineProvider>,
-      ));
-      const row = $(".norea-novel-chapter-row").first();
-      const primary = row.children("button.norea-novel-chapter-open");
+type ListProps = ComponentProps<typeof VirtualChapterList>;
+type Row = ListProps["chapters"][number];
 
-      expect(row.attr("role")).toBeUndefined();
-      expect(row.attr("tabindex")).toBeUndefined();
-      expect(primary).toHaveLength(1);
-      expect(primary.attr("type")).toBe("button");
-      expect(primary.attr("aria-pressed")).toBe("true");
-      expect(primary.find("button, input, [tabindex]")).toHaveLength(0);
-      expect(row.children("button.norea-novel-chapter-drag-handle")).toHaveLength(1);
-      expect(row.find("input[type='checkbox']")).toHaveLength(1);
-      expect(row.find(".norea-novel-chapter-actions button")).toHaveLength(
-        isDownloaded ? 2 : mediaRepairNeeded ? 3 : 1,
-      );
-    },
-  );
-});
-
-function renderChapterStatus(status: ChapterDownloadStatus, overrides: Partial<ChapterListRow> & { serverComplete?: boolean } = {}) {
+function renderList(overrides: Partial<ListProps> = {}) {
+  const props: ListProps = {
+    chapters: [chapter],
+    canDeleteDownloads: true,
+    deleteBusyChapterId: undefined,
+    duplicateSourceChapterCounts: new Map(),
+    deletePending: false,
+    lastReadChapterId: undefined,
+    repairBusyChapterId: undefined,
+    repairPending: false,
+    reorderMode: false,
+    reorderPending: false,
+    scrollElement: null,
+    selectedChapterIds: new Set(),
+    selectionMode: false,
+    statuses: new Map(),
+    onDeleteDownload: vi.fn(),
+    onDownload: vi.fn(),
+    onOpen: vi.fn(),
+    onRepairMedia: vi.fn(),
+    onReorderChapter: vi.fn(),
+    onToggleSelected: vi.fn(),
+    ...overrides,
+  };
   return load(renderToStaticMarkup(
     <MantineProvider>
-      <VirtualChapterList
-        chapters={[{ ...chapter, releaseTime: "2026-10-12", ...overrides }]}
-        canDeleteDownloads
-        canReorderChapters={false}
-        deleteBusyChapterId={undefined}
-        duplicateSourceChapterCounts={new Map()}
-        deletePending={false}
-        lastReadChapterId={undefined}
-        repairBusyChapterId={undefined}
-        repairPending={false}
-        reorderPending={false}
-        scrollElement={null}
-        selectedChapterIds={new Set()}
-        selectionMode={false}
-        statuses={new Map([[chapter.id, status]])}
-        onDeleteDownload={vi.fn()}
-        onDownload={vi.fn()}
-        onOpen={vi.fn()}
-        onRepairMedia={vi.fn()}
-        onReorderChapter={vi.fn()}
-        onToggleSelected={vi.fn()}
-      />
+      <VirtualChapterList {...props} />
     </MantineProvider>,
   ));
 }
 
-describe("server chapter completeness", () => {
-  it.each([[false, "Server: Incomplete"], [true, "Server: Complete"]] as const)(
-    "shows server completeness without changing local download actions (%s)",
-    (serverComplete, label) => {
-      const $ = renderChapterStatus({ kind: "done" }, { serverComplete });
+function renderRow(row: Partial<Row> = {}, status?: ChapterDownloadStatus, overrides: Partial<ListProps> = {}) {
+  return renderList({
+    chapters: [{ ...chapter, ...row }],
+    statuses: status ? new Map([[chapter.id, status]]) : new Map(),
+    ...overrides,
+  });
+}
 
-      expect($(".norea-novel-chapter-meta-row").text()).toContain(label);
-      expect($(".norea-novel-chapter-actions button[aria-label='Download chapter']")).toHaveLength(1);
-      expect($(".norea-novel-chapter-actions button[aria-label='Repair chapter media']")).toHaveLength(0);
-    },
-  );
+const openButton = ($: ReturnType<typeof renderList>) => $("button[aria-label='Open First chapter']");
+const describedText = ($: ReturnType<typeof renderList>) => {
+  const button = openButton($).length ? openButton($) : $("button[aria-pressed]");
+  return $(`#${button.attr("aria-describedby")}`).text();
+};
+const siblingButtons = ($: ReturnType<typeof renderList>) =>
+  openButton($).parent().children("div").find("button");
 
-  it("preserves a complete local copy when the server copy is incomplete", () => {
-    const $ = renderChapterStatus({ kind: "done" }, { serverComplete: false, isDownloaded: true });
+describe("chapter row structure", () => {
+  it("makes the whole row one button with its actions beside it, not inside it", () => {
+    const $ = renderRow({ isDownloaded: true });
+    const primary = openButton($);
 
-    expect($(".norea-novel-chapter-meta-row").text()).toContain("Server: Incomplete");
-    expect($(".norea-novel-chapter-actions button[aria-label='Download chapter']")).toHaveLength(0);
-    expect($(".norea-novel-chapter-actions button[aria-label='Repair chapter media']")).toHaveLength(0);
-    expect($(".norea-novel-chapter-flags--desktop [aria-label='Downloaded']")).toHaveLength(1);
+    expect(primary).toHaveLength(1);
+    expect(primary.attr("type")).toBe("button");
+    expect(primary.find("button, input, a, [tabindex]")).toHaveLength(0);
+    expect(siblingButtons($).map((_, button) => $(button).attr("aria-label")).get()).toEqual(["Downloaded"]);
   });
 
-  it("keeps a local repair badge even when the server copy is complete", () => {
-    const $ = renderChapterStatus({ kind: "done" }, { serverComplete: true, mediaRepairNeeded: true });
+  it("toggles selection with a pressed state and no extra checkbox control in selection mode", () => {
+    const $ = renderRow({}, undefined, { selectedChapterIds: new Set([1]), selectionMode: true });
+    const primary = $("button[aria-label='Select First chapter']");
 
-    expect($(".norea-novel-chapter-meta-row").text()).toContain("Server: Complete");
-    expect($(".norea-novel-chapter-flags--desktop [aria-label='Remote media remains']")).toHaveLength(1);
-    expect($(".norea-novel-chapter-actions button[aria-label='Repair chapter media']")).toHaveLength(1);
+    expect(primary.attr("aria-pressed")).toBe("true");
+    expect($("input")).toHaveLength(0);
+  });
+
+  it("shows the chapter number, date and partial reading progress in the description", () => {
+    const $ = renderRow({ chapterNumber: "12", releaseTime: "2026-10-12", progress: 45 });
+    expect(describedText($)).toBe("Ch. 122026-10-1245% read");
+  });
+
+  it("marks the current chapter and dims read titles", () => {
+    const $ = renderList({
+      chapters: [{ ...chapter, unread: false }, { ...chapter, id: 2, name: "Second chapter", position: 2 }],
+      lastReadChapterId: 2,
+    });
+    expect($("button[aria-current='true']").attr("aria-label")).toBe("Open Second chapter");
+    expect(openButton($).find("[data-read='true']").text()).toBe("First chapter");
+  });
+
+  it("announces a bookmark without a separate flag control", () => {
+    const $ = renderRow({ bookmark: true });
+    expect(openButton($).text()).toContain("Bookmarked");
+  });
+
+  it("offers drag and move buttons in reorder mode instead of the download state", () => {
+    const $ = renderList({
+      chapters: [chapter, { ...chapter, id: 2, name: "Second chapter", position: 2 }],
+      reorderMode: true,
+    });
+    const labels = $("button").map((_, button) => $(button).attr("aria-label")).get();
+    expect(labels.filter((label) => label === "Reorder chapter")).toHaveLength(2);
+    expect(labels).toContain("Move chapter up");
+    expect(labels).not.toContain("Download chapter");
+    expect($("button[aria-label='Move chapter up']").first().prop("disabled")).toBe(true);
   });
 });
 
-describe("chapter download stage", () => {
-  it.each<[
-    ChapterDownloadStatus,
-    string,
-  ]>([
-    [{ kind: "running", phase: "local" }, "Checking download status"],
-    [{ kind: "running", phase: "server-lookup" }, "Checking content server"],
-    [{ kind: "running", phase: "server-download" }, "Content server: downloading"],
-    [{ kind: "running", phase: "source-download" }, "Original site: downloading"],
-    [{ kind: "queued", phase: "local" }, "Download status check queued"],
-    [{ kind: "queued", phase: "server-lookup" }, "Content server check queued"],
-    [{ kind: "queued", phase: "server-download" }, "Content server download queued"],
-    [{ kind: "queued", phase: "source-download" }, "Original site download queued"],
-    [{ kind: "running" }, "Downloading"],
-    [{ kind: "queued" }, "Queued"],
-  ])("shows %j as visible text without hover", (status, expected) => {
-    const $ = renderChapterStatus(status);
-    const primary = $(".norea-novel-chapter-open");
-    const description = primary.find(".norea-novel-chapter-download-status");
-
-    expect(description.text()).toBe(expected);
-    expect(primary.attr("aria-describedby")).toBe(description.attr("id"));
-    expect(primary.find(".norea-novel-chapter-meta-row").text()).toBe(expected);
-    expect(primary.find("button, input, [tabindex]")).toHaveLength(0);
-    expect($(".norea-novel-chapter-actions button")).toHaveLength(0);
+describe("download state", () => {
+  it.each<[string, Partial<Row>, ChapterDownloadStatus | undefined, string[]]>([
+    ["not downloaded", {}, undefined, ["Download chapter"]],
+    ["downloaded", { isDownloaded: true }, undefined, ["Downloaded"]],
+    ["failed", {}, { kind: "failed", error: "Timed out" }, ["Retry download"]],
+    ["missing media", { contentBytes: 10, mediaRepairNeeded: true }, undefined, []],
+    ["queued", {}, { kind: "queued", phase: "server-lookup" }, []],
+  ])("shows one trailing control when %s", (_name, row, status, labels) => {
+    const $ = renderRow(row, status);
+    expect(siblingButtons($).map((_, button) => $(button).attr("aria-label")).get().filter(Boolean)).toEqual(labels);
   });
 
-  it("restores chapter metadata after the download finishes", () => {
-    const $ = renderChapterStatus({ kind: "done" });
+  it("repairs missing media in place with a labeled button", () => {
+    const $ = renderRow({ contentBytes: 10, mediaRepairNeeded: true });
+    expect(describedText($)).toContain("Media missing");
+    expect(siblingButtons($).text()).toBe("Repair");
+  });
 
-    expect($(".norea-novel-chapter-download-status")).toHaveLength(0);
-    expect($(".norea-novel-chapter-open").attr("aria-describedby")).toBeUndefined();
-    expect($(".norea-novel-chapter-meta-row").text()).toContain("2026-10-12");
+  it("shows a failure reason inline and keeps the raw error out of the visible text", () => {
+    const $ = renderRow({}, { kind: "failed", error: "Timed out" });
+    const description = $(`#${openButton($).attr("aria-describedby")}`);
+    expect(description.text()).toContain("Download failed");
+    expect(description.attr("title")).toBe("Timed out");
+    expect(siblingButtons($).text()).toBe("Retry");
+  });
+
+  it.each<[ChapterDownloadStatus, string, string]>([
+    [{ kind: "running", phase: "server-download" }, "Downloading", "Content server: downloading"],
+    [{ kind: "queued", phase: "source-download" }, "Queued", "Original site download queued"],
+  ])("keeps the download phase as detail behind %j", (status, visible, detail) => {
+    const $ = renderRow({}, status);
+    const description = $(`#${openButton($).attr("aria-describedby")}`);
+    expect(description.text()).toContain(visible);
+    expect(description.text()).not.toContain(detail);
+    expect(description.attr("title")).toBe(detail);
+    expect(openButton($).attr("aria-busy")).toBe("true");
+  });
+
+  it("keeps duplicate-source detail out of the default view", () => {
+    const $ = renderList({ duplicateSourceChapterCounts: new Map([[1, 2]]) });
+    const description = $(`#${openButton($).attr("aria-describedby")}`);
+    expect(description.text()).not.toContain("duplicate");
+    expect(description.attr("title")).toBe("2 duplicate source chapters skipped");
+  });
+
+  it("shows no download control for chapters of a local work", () => {
+    const $ = renderRow({ isDownloaded: true }, undefined, { canDeleteDownloads: false });
+    expect(siblingButtons($)).toHaveLength(0);
+  });
+});
+
+describe("server chapter completeness", () => {
+  it("shows Incomplete on server and keeps the download action", () => {
+    const $ = renderRow({ serverComplete: false });
+    expect(describedText($)).toContain("Incomplete on server");
+    expect(siblingButtons($).attr("aria-label")).toBe("Download chapter");
+  });
+
+  it("preserves a complete local copy when the server copy is incomplete", () => {
+    const $ = renderRow({ serverComplete: false, isDownloaded: true });
+    expect(describedText($)).toContain("Incomplete on server");
+    expect(siblingButtons($).attr("aria-label")).toBe("Downloaded");
+  });
+
+  it("moves a complete server copy into the details", () => {
+    const $ = renderRow({ serverComplete: true });
+    const description = $(`#${openButton($).attr("aria-describedby")}`);
+    expect(description.text()).not.toContain("server");
+    expect(description.attr("title")).toBe("Complete on server");
+  });
+});
+
+describe("row geometry", () => {
+  it("windows rows at the height the stylesheet gives them", () => {
+    const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
+    const rule = /\.norea-novel-chapter \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(rule).toContain(`height: ${CHAPTER_ROW_HEIGHT / 16}rem;`);
+  });
+
+  it("renders only a window of a long list", () => {
+    const chapters = Array.from({ length: 500 }, (_, index) => ({ ...chapter, id: index + 1, position: index + 1, name: `Chapter ${index + 1}` }));
+    const $ = renderList({ chapters });
+    const rendered = $("button[aria-label^='Open Chapter']").length;
+    expect(rendered).toBeGreaterThan(0);
+    expect(rendered).toBeLessThan(40);
+    expect($("[style*='height:30000px']")).toHaveLength(1);
   });
 });

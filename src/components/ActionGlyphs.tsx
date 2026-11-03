@@ -100,19 +100,6 @@ export function DetailsGlyph({ className }: ActionGlyphProps) {
   );
 }
 
-export function DragHandleGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="9" cy="7" r="1" />
-      <circle cx="15" cy="7" r="1" />
-      <circle cx="9" cy="12" r="1" />
-      <circle cx="15" cy="12" r="1" />
-      <circle cx="9" cy="17" r="1" />
-      <circle cx="15" cy="17" r="1" />
-    </svg>
-  );
-}
-
 export function EditGlyph({ className }: ActionGlyphProps) {
   return (
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">

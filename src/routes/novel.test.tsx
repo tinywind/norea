@@ -35,7 +35,7 @@ vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate, us
 vi.mock("../i18n", () => ({ useTranslation: () => ({
   t: (key: string, values?: Record<string, unknown>) => key === "novel.chapterSummary"
     ? `${values?.downloaded}/${values?.total} stored`
-    : key === "novel.serverChapterStatus" ? `Server: ${values?.status}` : key,
+    : key,
 }) }));
 vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown) => unknown) => selector({ defaultChapterSort: "asc", setDefaultChapterSort: vi.fn() }) }));
 vi.mock("../store/reader", () => ({ useReaderStore: (selector: (state: unknown) => unknown) => selector({ lastReadChapterByNovel: {} }) }));
@@ -177,7 +177,7 @@ it.each([true, false])("shows saved work details and chapters while server bindi
   const $ = renderPage();
   expect($("h1").text()).toBe("Saved novel");
   expect($("p").filter((_, paragraph) => $(paragraph).text() === "Saved summary")).toHaveLength(1);
-  expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
+  expect($("button[aria-label='novel.openChapter']").text()).toContain("Saved chapter");
   expect($("button").filter((_, button) => $(button).text() === "novel.startReading").prop("disabled")).toBe(false);
   expect($.text()).not.toContain("novel.loading");
   expect(await overflowLabels()).not.toContain("novel.openInWebView");
@@ -203,7 +203,7 @@ it("keeps automatic content-server failures off the work page", () => {
   mocks.sync.serverError = new Error("Server refresh failed");
   mocks.chapters = [{ ...chapter }];
   const $ = renderPage();
-  expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
+  expect($("button[aria-label='novel.openChapter']").text()).toContain("Saved chapter");
   expect($.text()).not.toContain("Server unavailable");
   expect($.text()).not.toContain("novel.syncFailed");
   expect($.text()).not.toContain("contentSync.workRefreshFailed");
@@ -213,7 +213,7 @@ it("keeps saved chapters visible beside a retryable source refresh notice", () =
   mocks.sync.sourceError = new Error("Source refresh failed");
   mocks.chapters = [{ ...chapter }];
   const $ = renderPage();
-  expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
+  expect($("button[aria-label='novel.openChapter']").text()).toContain("Saved chapter");
   expect($.text()).toContain("novel.syncFailed");
   expect($.text()).toContain("contentSync.sourceRefreshFailed");
   expect($("button").filter((_, button) => $(button).text() === "common.retry")).toHaveLength(1);
@@ -322,7 +322,7 @@ it("shows available packages and downloaded chapters without deleting canonical 
     { ...chapter, id: 2, name: "Local downloaded chapter", path: "/local", isDownloaded: true },
     { ...chapter, id: 3, name: "Metadata without a package", path: "/missing" },
   ];
-  const text = renderPage()(".norea-novel-chapter-open").text();
+  const text = renderPage()("button[aria-label='novel.openChapter']").text();
   expect(text).toContain("Available package");
   expect(text).toContain("Local downloaded chapter");
   expect(text).not.toContain("Metadata without a package");
@@ -335,10 +335,10 @@ it("keeps an incomplete server chapter visible and downloadable without a source
   mocks.chapters = [{ ...chapter }];
 
   const $ = renderPage();
-  expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
-  expect($(".norea-novel-chapter-meta-row").text()).toContain("Server: contentSync.incomplete");
+  expect($("button[aria-label='novel.openChapter']").text()).toContain("Saved chapter");
+  expect($("button[aria-label='novel.openChapter']").text()).toContain("novel.serverIncomplete");
   expect($("button[aria-label='novel.downloadChapter']")).toHaveLength(1);
-  expect($("button[aria-label='novel.repairChapterMedia']")).toHaveLength(0);
+  expect($("button").filter((_, button) => $(button).text() === "novel.repair")).toHaveLength(0);
   expect(mocks.chapters[0]).toMatchObject({ isDownloaded: false, mediaRepairNeeded: false });
 });
 
@@ -348,11 +348,11 @@ it("preserves a complete local chapter when its server copy is incomplete", () =
   mocks.chapters = [{ ...chapter, isDownloaded: true, contentBytes: 100 }];
 
   const $ = renderPage();
-  expect($(".norea-novel-chapter-meta-row").text()).toContain("Server: contentSync.incomplete");
-  expect($(".norea-novel-chapter-flags--desktop [aria-label='novel.downloaded']")).toHaveLength(1);
-  expect($(".norea-novel-chapter-flags--desktop [aria-label='novel.mediaRepairNeeded']")).toHaveLength(0);
+  expect($("button[aria-label='novel.openChapter']").text()).toContain("novel.serverIncomplete");
+  expect($("button[aria-label='novel.downloaded']")).toHaveLength(1);
+  expect($.text()).not.toContain("novel.mediaRepairNeeded");
   expect($("button[aria-label='novel.downloadChapter']")).toHaveLength(0);
-  expect($("button[aria-label='novel.repairChapterMedia']")).toHaveLength(0);
+  expect($("button").filter((_, button) => $(button).text() === "novel.repair")).toHaveLength(0);
   expect(mocks.chapters[0]).toMatchObject({ isDownloaded: true, mediaRepairNeeded: false });
 });
 
@@ -360,7 +360,7 @@ it("shows and counts a stored partial body even when its server package is unava
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   mocks.chapters = [{ ...chapter, contentBytes: 100, mediaRepairNeeded: true }];
   const $ = renderPage();
-  expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
+  expect($("button[aria-label='novel.openChapter']").text()).toContain("Saved chapter");
   expect($.text()).toContain("1/1 stored");
   expect(mocks.chapters[0]).toMatchObject({ isDownloaded: false, mediaRepairNeeded: true });
 });
@@ -370,14 +370,14 @@ it("shows saved chapters immediately while server availability is still pending"
   mocks.available.data = undefined;
   mocks.available.isLoading = true;
   mocks.chapters = [{ ...chapter }];
-  expect(renderPage()(".norea-novel-chapter-open").text()).toContain("Saved chapter");
+  expect(renderPage()("button[aria-label='novel.openChapter']").text()).toContain("Saved chapter");
 });
 
 it("shows a server folder chapter matching the cached source chapter number without a plugin", () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   mocks.available.data = { paths: new Map([["norea-folder:1", false]]), numbers: new Map([[1, false]]) };
   mocks.chapters = [{ ...chapter, name: "Server chapter", path: "/chapter/1", chapterNumber: "1.0" }];
-  expect(renderPage()(".norea-novel-chapter-open").text()).toContain("Server chapter");
+  expect(renderPage()("button[aria-label='novel.openChapter']").text()).toContain("Server chapter");
 });
 
 it("shows source-only chapters and source controls for a bound work with its original path and installed plugin", async () => {
@@ -386,7 +386,7 @@ it("shows source-only chapters and source controls for a bound work with its ori
   mocks.installed = true;
   mocks.chapters = [{ ...chapter, name: "New source chapter" }];
   const $ = renderPage();
-  expect($(".norea-novel-chapter-open").text()).toContain("New source chapter");
+  expect($("button[aria-label='novel.openChapter']").text()).toContain("New source chapter");
   expect(await overflowLabels()).toContain("novel.openInWebView");
   expect(mocks.queries.find(query => query.queryKey[1] === "novel-chapters")?.enabled).toBe(true);
 });

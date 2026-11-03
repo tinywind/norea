@@ -16,7 +16,6 @@ import {
   type BoxProps,
   type PaperProps,
 } from "@mantine/core";
-import { useTranslation } from "../i18n";
 import { TextButton } from "./TextButton";
 
 interface ConsoleCoverProps {
@@ -193,38 +192,6 @@ function hashTitle(value: string): number {
     hash = Math.imul(hash, 0x01000193);
   }
   return hash >>> 0;
-}
-
-interface ConsoleProgressProps {
-  className?: string;
-  status?: "active" | "done" | "idle";
-  value: number;
-}
-
-export function ConsoleProgress({
-  className,
-  status = "active",
-  value,
-}: ConsoleProgressProps) {
-  const { t } = useTranslation();
-  const clamped = Math.max(0, Math.min(100, Math.round(value)));
-
-  return (
-    <span
-      className={`norea-console-progress${className ? ` ${className}` : ""}`}
-      aria-label={t("reader.progressAria", { progress: clamped })}
-      role="meter"
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-valuenow={clamped}
-    >
-      <span
-        className="norea-console-progress-bar"
-        data-status={status}
-        style={{ width: `${clamped}%` }}
-      />
-    </span>
-  );
 }
 
 interface ConsoleStatusDotProps {

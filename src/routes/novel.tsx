@@ -19,6 +19,7 @@ import {
   DragIcon,
   EditIcon,
   ImportIcon,
+  MarkReadIcon,
   MigrateIcon,
   ReaderSettingsIcon,
   RefreshAllIcon,
@@ -43,10 +44,7 @@ import {
   ChapterSortPicker,
   SelectionClearIcon,
 } from "../components/novel/NovelActions";
-import {
-  ReadIcon,
-  VirtualChapterList,
-} from "../components/novel/NovelChapterList";
+import { VirtualChapterList } from "../components/novel/NovelChapterList";
 import { NovelWorkspace } from "../components/novel/NovelWorkspace";
 import { NovelCategoryEditor } from "../components/novel/NovelCategoryEditor";
 import {
@@ -758,7 +756,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                       setSelectedChapterReadState.variables?.unread === false ? (
                         <Loader size={14} />
                       ) : (
-                        <ReadIcon />
+                        <MarkReadIcon size="1rem" />
                       )}
                     </IconButton>
                     <IconButton
@@ -874,7 +872,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 <VirtualChapterList
                   chapters={chapters}
                   canDeleteDownloads={!novel.isLocal}
-                  canReorderChapters={novel.isLocal && reorderMode}
+                  reorderMode={novel.isLocal && reorderMode}
                   deleteBusyChapterId={clearDownload.variables}
                   duplicateSourceChapterCounts={sourceDuplicateChapterCounts}
                   deletePending={clearDownload.isPending}
