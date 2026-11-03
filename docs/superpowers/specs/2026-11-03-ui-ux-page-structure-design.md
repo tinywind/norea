@@ -614,13 +614,14 @@ All of it keeps the existing per-source serial execution and cooldown (plugin fe
 **Concept.** The user does not "run VPN downloads". The app downloads a source's goal work over one of two **routes**: Direct, or VPN workers. The route belongs to the source, not to a global run. While a source is on the VPN route, all of its goal work and new requests use it, and the route ends by itself when that source has nothing left.
 
 **When a source switches to VPN** (setting "VPN downloads": Off / Ask / Automatic; Android only):
-- **Ask** (default, V1): when a source is **diagnosed** as limiting downloads, the novel status line and Needs attention offer "Speed up with VPN". One tap switches that source.
+- **Automatic** (default, V1, updated by the user on 2026-11-03: "just handle it well"): when a source is **diagnosed** as limiting downloads and VPN downloads are supported and usable, the source switches to the VPN route without asking, and the novel row shows a small "VPN" label.
+- **Ask** (opt-in): the novel status line and Needs attention offer "Speed up with VPN" instead. One tap switches that source.
+- **VPN machinery is invisible by default.** Runs, ranges, workers, profiles and IPs never appear in the default Downloads view. VPN-owned work shows in the same per-novel list as ordinary downloads. The technical breakdown lives only in a per-novel "Details" sheet. The user sees a VPN problem only when the app cannot solve it alone: a manual verification, or no eligible server at all.
   - Limiting means repeated reachability-class failures (timeouts, connection failures, IP-level blocks), or sustained throughput below 50% of that source's own baseline over the last 10 chapters.
   - A long ETA alone is not a trigger.
-  - The first switch on a device explains that downloads go through public volunteer relays, and asks for consent.
+  - The first automatic switch on a device shows a one-time notice that downloads go through public volunteer relays, with a link to turn the behavior off.
   - The user can choose "Always use VPN for this source". It is remembered as a per-source preference, separate from the live connection, so a keep-ahead goal does not flap the route as new chapters arrive.
   - Idle worker connections close after 5 minutes without work.
-- **Automatic** (opt-in): the same trigger switches the source without asking. It shows a toast "Downloading Foo through VPN".
 - CAPTCHA-only blocks stay Verify-first and never trigger the route.
 - This reverses the 2026-11-03 rule that ordinary requests stay ordinary until the user launches VPN downloading, so it needs the user's approval (V1).
 
@@ -785,7 +786,7 @@ The earlier VPN design documents stay as history. This section governs where the
 | G2 | Default keep-ahead for **active** novels (opened within 14 days), under storage, mobile-data and battery budgets | 3 ahead, mobile data off | No | It covers a session offline without mass downloads for old titles. Today's default is 1. |
 | G3 | Bounded automatic retry for transient failures: 3 fresh enqueues with backoff, visible "Retrying · Cancel", persisted budget | Yes | **Yes**, 627c530's manual-retry rule | It removes taps for failures that heal by themselves, while keeping fresh enqueues and visibility |
 | G4 | Server lane as a second execution route of the same job, with revalidation and source fallback | Yes | No | Server chapters stop waiting behind the source's serial queue |
-| V1 | VPN route trigger: Ask (default) / Automatic / Off, using a diagnosed limit only, consent on first use, per-source "Always" preference | Ask | **Yes**, "ordinary until launched" (`2026-11-03-automatic-vpn-download-queue-design.md:57`) | It removes the hunt for the feature without surprise connections |
+| V1 | VPN route trigger: Automatic (default, user update 2026-11-03) / Ask / Off, using a diagnosed limit only, per-source "Always" preference | Automatic | **Yes**, "ordinary until launched" (`2026-11-03-automatic-vpn-download-queue-design.md:57`) | It removes the hunt for the feature without surprise connections |
 | V2 | Resume VPN routes after an ordinary restart when the user opted in; never after a device restore or a user pause | Opt-in, default on | **Yes**, explicit restart resume (`same:188`) | Today every restart needs Resume, plus a notification for each range |
 | V3 | Fixed-size contiguous chunks with deferred profile lease, size validated on device | Yes, after measurement | Partly (partition rule) | Parallelism grows with available servers, and no worker idles while a range waits for its own profile |
 | V4 | Automatic discovery and testing (no reversal) plus a usage policy: "Approved only" (default) or "Use tested servers automatically" (opt-in) | Approved only, with "Approve all working" | **Yes**, for the opt-in policy (`same:116`, `vpn-profile-downloads.md:51`) | It removes the manual hunt for servers. Using unmarked relays stays the user's explicit choice. |
@@ -1359,8 +1360,8 @@ Needs attention covers:
 ### 12.3 Implementation mapping
 
 - `src/routes/tasks.tsx` and `src/routes/downloads.tsx` become `src/routes/downloads.tsx` with `DownloadsQueueView`, `NeedsAttention`, `DownloadsStorageView` and `StorageNovelDetail`.
-- `VpnDownloadPanel.tsx` becomes the gated card plus the launch dialog.
-- `VpnDownloadRanges.tsx` becomes the expanded content, with all controls kept.
+- `VpnDownloadLaunchDialog.tsx` holds the launch options; VPN work renders as ordinary novel rows.
+- `VpnDownloadWorks.tsx` renders the per-novel Details sheet.
 - `TaskNotifications.tsx` handles the RD20 routes.
 
 ## 13. Settings
