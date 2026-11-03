@@ -2,12 +2,18 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
   effects: [] as (() => (() => void) | undefined)[],
+  deps: [] as unknown[][],
+  attempt: 0,
   invalidateQueries: vi.fn(async () => undefined), server: vi.fn(), source: vi.fn(),
   setState: vi.fn(), serverUrl: "http://server",
 }));
 vi.mock("react", () => ({
-  useEffect: (effect: () => (() => void) | undefined) => { mocks.effects.push(effect); },
-  useRef: (current: unknown) => ({ current }), useState: () => [null, mocks.setState],
+  useCallback: (callback: unknown) => callback,
+  useEffect: (effect: () => (() => void) | undefined, deps: unknown[]) => { mocks.effects.push(effect); mocks.deps.push(deps); },
+  useRef: (current: unknown) => ({ current }),
+  useState: (initial: unknown) => initial === 0
+    ? [mocks.attempt, (update: (current: number) => number) => { mocks.attempt = update(mocks.attempt); }]
+    : [null, mocks.setState],
 }));
 const queryClient = { invalidateQueries: mocks.invalidateQueries };
 vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => queryClient }));
@@ -18,7 +24,7 @@ vi.mock("./novel-detail-model", () => ({ novelKey: (id: number) => ["novel", id]
 import { useServerNovelSync } from "./use-server-novel-sync";
 
 beforeEach(() => {
-  vi.clearAllMocks(); mocks.effects.length = 0;
+  vi.clearAllMocks(); mocks.effects.length = 0; mocks.deps.length = 0; mocks.attempt = 0;
   mocks.server.mockReset().mockResolvedValue(true);
   mocks.source.mockReset().mockResolvedValue(true);
 });
@@ -27,7 +33,7 @@ it("keeps rendering independent of pending work refresh and cancels on exit", as
   let complete!: (value: boolean) => void;
   mocks.server.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
   mocks.source.mockImplementation(() => new Promise(() => undefined));
-  expect(useServerNovelSync(42, true, "Book")).toEqual({ serverError: null, sourceError: null });
+  expect(useServerNovelSync(42, true, "Book")).toEqual({ serverError: null, sourceError: null, retry: expect.any(Function) });
   const cleanup = mocks.effects[0]!()!;
   const signal = mocks.server.mock.calls[0]![1] as AbortSignal;
   expect(signal.aborted).toBe(false);
@@ -73,4 +79,19 @@ it("still refreshes the original source when the server fails", async () => {
   await vi.waitFor(() => expect(mocks.source).toHaveBeenCalledOnce());
   expect(mocks.setState).toHaveBeenCalledWith(failure);
   expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["novel", 42], exact: true });
+});
+
+it("runs the server and source refresh again on retry", async () => {
+  mocks.server.mockRejectedValueOnce(new Error("Server offline"));
+  const { retry } = useServerNovelSync(42, true, "Book");
+  mocks.effects[0]!();
+  await vi.waitFor(() => expect(mocks.source).toHaveBeenCalledOnce());
+
+  retry();
+  useServerNovelSync(42, true, "Book");
+  expect(mocks.deps[1]).not.toEqual(mocks.deps[0]);
+  mocks.effects[1]!();
+  await vi.waitFor(() => expect(mocks.source).toHaveBeenCalledTimes(2));
+  expect(mocks.server).toHaveBeenCalledTimes(2);
+  expect(mocks.setState).toHaveBeenCalledWith(null);
 });

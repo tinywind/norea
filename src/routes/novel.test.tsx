@@ -9,7 +9,7 @@ const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
   source: { data: null as null | { serverUrl: string; workId: string }, isPending: false, isFetching: false, error: null as unknown },
   available: { data: { paths: new Map<string, boolean>(), numbers: new Map<number, boolean>() } as { paths: Map<string, boolean>; numbers: Map<number, boolean> } | undefined, isLoading: false, error: null as unknown },
-  sync: { serverError: null as unknown, sourceError: null as unknown },
+  sync: { serverError: null as unknown, sourceError: null as unknown, retry: vi.fn() },
   metadataError: null as unknown,
   novelQuery: { isLoading: false, error: null as unknown },
   installed: false,
@@ -112,6 +112,7 @@ beforeEach(() => {
   mocks.available.error = null;
   mocks.sync.serverError = null;
   mocks.sync.sourceError = null;
+  mocks.sync.retry.mockReset();
   mocks.metadataError = null;
   mocks.installed = false;
 });
@@ -164,7 +165,7 @@ it("keeps saved work details visible when server binding cannot be read", () => 
   expect($.text()).not.toContain("novel.loadFailed");
 });
 
-it("keeps saved chapters visible without automatic server or source refresh errors", () => {
+it("keeps saved chapters visible beside a non-blocking automatic refresh notice", () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   mocks.available.data = undefined;
   mocks.available.error = new Error("Server unavailable");
@@ -174,8 +175,36 @@ it("keeps saved chapters visible without automatic server or source refresh erro
   const $ = renderPage();
   expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
   expect($.text()).not.toContain("Server unavailable");
-  expect($.text()).not.toContain("contentSync.workRefreshFailed");
-  expect($.text()).not.toContain("contentSync.sourceRefreshFailed");
+  expect($.text()).toContain("novel.syncFailed");
+  expect($.text()).toContain("contentSync.workRefreshFailed");
+  expect($.text()).toContain("contentSync.sourceRefreshFailed");
+  expect($("button").filter((_, button) => $(button).text() === "common.retry")).toHaveLength(1);
+  expect($.text()).not.toContain("Server refresh failed");
+  expect($("[title='Server refresh failed\nSource refresh failed']")).toHaveLength(1);
+});
+
+it("shows no refresh notice when automatic refresh succeeds", () => {
+  mocks.chapters = [{ ...chapter }];
+  expect(renderPage().text()).not.toContain("novel.syncFailed");
+});
+
+it("runs the automatic refresh again from the notice", async () => {
+  mocks.sync.sourceError = new Error("Source refresh failed");
+  const harness = mountBackNavigationHarness();
+  let tree: ReturnType<typeof NovelDetailPage> | undefined;
+  function PageProbe() {
+    tree = NovelDetailPage({ id: 3 });
+    return null;
+  }
+  try {
+    await harness.render(<PageProbe />);
+    const notice = collectElements(tree).find((element) => element.props.title === "novel.syncFailed")!;
+    expect(notice.props.message).toBeTruthy();
+    await harness.run(() => (notice.props.action as { onClick: () => void }).onClick());
+    expect(mocks.sync.retry).toHaveBeenCalledTimes(1);
+  } finally {
+    await harness.unmount();
+  }
 });
 
 it("still reports an explicit metadata refresh failure", () => {

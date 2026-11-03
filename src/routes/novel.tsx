@@ -51,6 +51,7 @@ import {
 } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
+import { describeError } from "../lib/errors";
 import { listServerChapterAvailability, readServerNovelSource } from "../lib/content-sync/novel-source";
 import { useOverlayBackNavigation, usePageBackNavigation } from "../lib/android-back-navigation";
 import {
@@ -121,7 +122,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     enabled: active && Boolean(serverSourceQuery.data && novelQuery.data),
     staleTime: 30_000,
   });
-  useServerNovelSync(id, active, novelQuery.data?.name ?? "");
+  const serverSync = useServerNovelSync(id, active, novelQuery.data?.name ?? "");
 
   const rows = useMemo(() => {
     const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;
@@ -417,6 +418,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     : (novel.pluginName ?? sourcePlugin?.name ?? novel.pluginId);
   const metadataRefreshError =
     refreshMetadata.error ?? fullRefreshMetadata.error;
+  const syncErrors = [serverSync.serverError, serverSync.sourceError].filter(Boolean);
 
   return (
     <>
@@ -639,6 +641,22 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   ? metadataRefreshError.message
                   : String(metadataRefreshError)}
               </Text>
+            ) : null}
+
+            {syncErrors.length > 0 ? (
+              <StateView
+                action={{ label: t("common.retry"), onClick: serverSync.retry }}
+                color="yellow"
+                title={t("novel.syncFailed")}
+                message={
+                  <span title={syncErrors.map(describeError).join("\n")}>
+                    {[
+                      serverSync.serverError ? t("contentSync.workRefreshFailed") : null,
+                      serverSync.sourceError ? t("contentSync.sourceRefreshFailed") : null,
+                    ].filter(Boolean).join(" ")}
+                  </span>
+                }
+              />
             ) : null}
 
             {chaptersQuery.isLoading ? (

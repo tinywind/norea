@@ -1,5 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../i18n";
 import { refreshServerNovelFromSource, syncServerNovelOnOpen } from "../../lib/content-sync/work-refresh";
 import { useContentSyncStore } from "../../store/content-sync";
@@ -13,6 +13,7 @@ export function useServerNovelSync(id: number, active: boolean, name: string) {
   title.current = t("tasks.task.refreshNovelMetadata", { name });
   const [serverError, setServerError] = useState<unknown>(null);
   const [sourceError, setSourceError] = useState<unknown>(null);
+  const [attempt, setAttempt] = useState(0);
   useEffect(() => {
     if (!active || id <= 0) return;
     const controller = new AbortController();
@@ -40,6 +41,7 @@ export function useServerNovelSync(id: number, active: boolean, name: string) {
       catch (error) { if (!controller.signal.aborted) setSourceError(error); }
     })();
     return () => controller.abort();
-  }, [id, active, serverUrl, queryClient]);
-  return { serverError, sourceError };
+  }, [id, active, serverUrl, queryClient, attempt]);
+  const retry = useCallback(() => setAttempt(current => current + 1), []);
+  return { serverError, sourceError, retry };
 }

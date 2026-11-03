@@ -1300,6 +1300,7 @@
   "novel.loading": "Loading novel",
   "novel.loadingMessage": "Loading novel...",
   "novel.loadFailed": "Failed to load novel",
+  "novel.syncFailed": "Couldn't refresh this work",
   "novel.notFound": "Not found",
   "novel.notFoundMessage": "No novel matches id {id}.",
   "novel.chapterIndex": "Chapter index",
