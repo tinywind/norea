@@ -262,3 +262,24 @@ describe("page slot transition", () => {
     );
   });
 });
+
+describe("toast placement", () => {
+  it("lifts bottom toasts by an offset that defaults to the bottom navigation inset", () => {
+    expect(ruleFor(css, '.norea-toasts[data-position^="bottom"]').body).toMatch(
+      /bottom: calc\(var\(--mantine-spacing-md\) \+ var\(--norea-toast-bottom-offset\)\);/,
+    );
+    expect(ruleFor(css, ":root").body).toMatch(/--norea-toast-bottom-offset: var\(--norea-app-bottom-inset\);/);
+  });
+
+  it("clears only the safe area in the reader and the reader bars while they show", () => {
+    expect(ruleFor(css, 'body:has(.norea-app-main[data-reader-active="true"])').body).toMatch(
+      /--norea-toast-bottom-offset: var\(--norea-safe-area-bottom\);/,
+    );
+    const readerBars = /body:has\(\s*\.norea-page-slot\[data-active="true"\]\s*\.norea-reader-shell:is\(:not\(\[data-full-page="true"\]\), \[data-chrome-visible="true"\]\)\s*\) \{\s*--norea-toast-bottom-offset: calc\(\s*var\(--norea-safe-area-bottom\) \+ (2 \* )?var\(--norea-reader-bar-height\)\s*\);/g;
+    const phone = css.replace(mediaBlock(css, "(min-width: 768px)"), "");
+    expect([...phone.matchAll(readerBars)].map((match) => match[1])).toEqual(["2 * "]);
+    expect([...mediaBlock(css, "(min-width: 768px)").matchAll(readerBars)].map((match) => match[1])).toEqual([undefined]);
+    const reader = readFileSync(new URL("./reader.css", stylesDir), "utf8");
+    expect(ruleFor(reader, ":root").body).toMatch(/--norea-reader-bar-height:/);
+  });
+});

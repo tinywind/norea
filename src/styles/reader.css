@@ -1,7 +1,11 @@
-.norea-reader-shell {
+:root {
+  /* On :root so the toast offset in ui.css can clear the reader bars. */
   --norea-reader-bar-height: calc(
     var(--norea-control-sm) + var(--norea-space-2) + 1px
   );
+}
+
+.norea-reader-shell {
   background: var(--norea-reader-bg, var(--norea-color-bg));
   box-sizing: border-box;
   color: var(--norea-reader-ink, var(--norea-color-ink));

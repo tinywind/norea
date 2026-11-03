@@ -271,3 +271,40 @@
     margin: 0;
   }
 }
+
+/*
+ * S10: toasts sit above the bottom navigation (or the phone selection bar,
+ * which takes its place), the visible reader bars and the safe area.
+ */
+:root {
+  --norea-toast-bottom-offset: var(--norea-app-bottom-inset);
+}
+
+body:has(.norea-app-main[data-reader-active="true"]) {
+  --norea-toast-bottom-offset: var(--norea-safe-area-bottom);
+}
+
+/* Phone reader bottom bar: the seek row above the button row. */
+body:has(
+    .norea-page-slot[data-active="true"]
+      .norea-reader-shell:is(:not([data-full-page="true"]), [data-chrome-visible="true"])
+  ) {
+  --norea-toast-bottom-offset: calc(
+    var(--norea-safe-area-bottom) + 2 * var(--norea-reader-bar-height)
+  );
+}
+
+@media (min-width: 768px) {
+  body:has(
+      .norea-page-slot[data-active="true"]
+        .norea-reader-shell:is(:not([data-full-page="true"]), [data-chrome-visible="true"])
+    ) {
+    --norea-toast-bottom-offset: calc(
+      var(--norea-safe-area-bottom) + var(--norea-reader-bar-height)
+    );
+  }
+}
+
+.norea-toasts[data-position^="bottom"] {
+  bottom: calc(var(--mantine-spacing-md) + var(--norea-toast-bottom-offset));
+}

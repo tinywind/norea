@@ -1,6 +1,5 @@
 import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
-import { Notifications } from "@mantine/notifications";
 import "@mantine/notifications/styles.css";
 import "pretendard/dist/web/variable/pretendardvariable-dynamic-subset.css";
 import {
@@ -14,6 +13,7 @@ import { RouterProvider } from "@tanstack/react-router";
 import { StrictMode, useEffect, useMemo, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { ChapterMediaStorageGate } from "./components/runtime/ChapterMediaStorageGate";
+import { AppToasts } from "./components/ui/AppToasts";
 import { PluginVpnProxyGate } from "./components/runtime/PluginVpnProxyGate";
 import { translate } from "./i18n";
 import { describeError } from "./lib/errors";
@@ -203,7 +203,7 @@ function AppProviders() {
       cssVariablesResolver={mantineTheme.cssVariablesResolver}
       forceColorScheme={colorScheme}
     >
-      <Notifications position="top-right" autoClose={5_000} />
+      <AppToasts />
       <QueryClientProvider client={queryClient}>
         <PluginVpnProxyGate>
           <ChapterMediaStorageGate>
