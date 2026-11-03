@@ -177,6 +177,54 @@
   color: var(--norea-color-ink);
 }
 
+.norea-novel-categories {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+  list-style: none;
+  margin: var(--norea-space-2) 0 0;
+  padding: 0;
+}
+
+.norea-novel-category-chip {
+  align-items: center;
+  background: var(--norea-color-accent-soft);
+  border: 1px solid transparent;
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-on-accent-soft);
+  cursor: pointer;
+  display: inline-flex;
+  font: inherit;
+  font-size: var(--norea-text-sm);
+  gap: var(--norea-space-1);
+  max-width: 100%;
+  min-height: 2rem;
+  overflow: hidden;
+  padding: 0 var(--norea-space-3);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-novel-category-chip[data-empty="true"] {
+  background: transparent;
+  border-color: var(--norea-color-rule-strong);
+  color: var(--norea-color-ink);
+}
+
+.norea-novel-category-sheet .mantine-Checkbox-label {
+  align-items: center;
+  display: flex;
+  min-height: var(--norea-control-sm);
+}
+
+.norea-novel-toast {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+  justify-content: space-between;
+}
+
 .norea-novel-actions {
   display: flex;
   flex-wrap: wrap;
@@ -830,5 +878,11 @@
 
   .norea-novel-chapter-actions {
     justify-content: flex-end;
+  }
+}
+
+@media (any-pointer: coarse) {
+  .norea-novel-category-chip {
+    min-height: var(--norea-control-md);
   }
 }

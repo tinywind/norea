@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   available: { data: { paths: new Map<string, boolean>(), numbers: new Map<number, boolean>() } as { paths: Map<string, boolean>; numbers: Map<number, boolean> } | undefined, isLoading: false, error: null as unknown },
   sync: { serverError: null as unknown, sourceError: null as unknown, retry: vi.fn() },
   metadataError: null as unknown,
+  toggleMutate: vi.fn(),
+  toast: vi.fn(),
   novelQuery: { isLoading: false, error: null as unknown },
   installed: false,
   queries: [] as { queryKey: unknown[]; enabled?: boolean }[],
@@ -37,7 +39,8 @@ vi.mock("../i18n", () => ({ useTranslation: () => ({
 }) }));
 vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown) => unknown) => selector({ defaultChapterSort: "asc", setDefaultChapterSort: vi.fn() }) }));
 vi.mock("../store/reader", () => ({ useReaderStore: (selector: (state: unknown) => unknown) => selector({ lastReadChapterByNovel: {} }) }));
-vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () => ({ sourceDuplicateChapters: [], toggle: {}, refreshMetadata: { error: mocks.metadataError }, fullRefreshMetadata: {} }) }));
+vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () => ({ sourceDuplicateChapters: [], toggle: { mutate: mocks.toggleMutate }, refreshMetadata: { error: mocks.metadataError }, fullRefreshMetadata: {} }) }));
+vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.toast, hide: vi.fn() } }));
 vi.mock("../components/novel/use-server-novel-sync", () => ({ useServerNovelSync: () => mocks.sync }));
 vi.mock("../components/novel/use-novel-chapter-actions", () => ({ useNovelChapterActions: () => ({ clearDownload: {}, clearSelectedDownloads: {}, setSelectedChapterReadState: {}, setRelativeChapterReadState: {}, repairMedia: {} }) }));
 vi.mock("../components/novel/use-novel-download-statuses", () => ({ useNovelDownloadStatuses: () => new Map() }));
@@ -140,6 +143,8 @@ beforeEach(() => {
   mocks.sync.retry.mockReset();
   mocks.metadataError = null;
   mocks.installed = false;
+  mocks.toggleMutate.mockReset();
+  mocks.toast.mockReset();
 });
 
 it("pauses detail, chapter, and server queries while its page slot is hidden", () => {
@@ -299,6 +304,7 @@ it("offers the source refresh, migration and reader actions in the overflow for 
     expect(await overflowLabels()).toEqual([
       "novel.checkNewChapters",
       "novel.refreshAllDetails",
+      "categories.editWork",
       "novel.mergeSource",
       "novel.openInWebView",
       "novel.readerSettingsForNovel",
@@ -412,6 +418,52 @@ it("closes the novel reader settings drawer on back before leaving the page", as
 
     harness.pressBack();
     expect(mocks.navigate).toHaveBeenCalledWith({ to: "/", replace: true });
+  } finally {
+    await harness.unmount();
+  }
+});
+
+it("offers Change category in the added-to-library toast and opens the category sheet from it", async () => {
+  mocks.novel.inLibrary = true;
+  const harness = mountBackNavigationHarness();
+  let tree: ReturnType<typeof NovelDetailPage> | undefined;
+  function PageProbe() {
+    tree = NovelDetailPage({ id: 3 });
+    return null;
+  }
+  const find = (predicate: (props: Record<string, unknown>) => boolean) =>
+    collectElements(tree).find((element) => predicate(element.props))!;
+  try {
+    await harness.render(<PageProbe />);
+    await harness.run(() => (find((props) => typeof props.onToggleLibrary === "function").props.onToggleLibrary as () => void)());
+    const options = mocks.toggleMutate.mock.calls[0]![1] as { onSuccess: (result: unknown) => void };
+    await harness.run(() => options.onSuccess({ inLibrary: true, novel: { id: 3 } }));
+    const message = (mocks.toast.mock.calls[0]![0] as { message: ReturnType<typeof NovelDetailPage> }).message;
+    const changeCategory = collectElements(message).find((element) => element.props.children === "novel.changeCategory")!;
+    const editor = () => collectElements(find((props) => props.categoryChips !== undefined).props.categoryChips as ReturnType<typeof NovelDetailPage>)[0]!;
+    expect(editor().props.sheetOpen).toBe(false);
+    await harness.run(() => (changeCategory.props.onClick as () => void)());
+    expect(editor().props.sheetOpen).toBe(true);
+  } finally {
+    mocks.novel.inLibrary = false;
+    await harness.unmount();
+  }
+});
+
+it("shows no category toast when the library toggle removes the novel", async () => {
+  const harness = mountBackNavigationHarness();
+  let tree: ReturnType<typeof NovelDetailPage> | undefined;
+  function PageProbe() {
+    tree = NovelDetailPage({ id: 3 });
+    return null;
+  }
+  try {
+    await harness.render(<PageProbe />);
+    const workspace = collectElements(tree).find((element) => typeof element.props.onToggleLibrary === "function")!;
+    await harness.run(() => (workspace.props.onToggleLibrary as () => void)());
+    const options = mocks.toggleMutate.mock.calls[0]![1] as { onSuccess: (result: unknown) => void };
+    await harness.run(() => options.onSuccess(undefined));
+    expect(mocks.toast).not.toHaveBeenCalled();
   } finally {
     await harness.unmount();
   }

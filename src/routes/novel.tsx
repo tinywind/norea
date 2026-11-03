@@ -1,4 +1,5 @@
 import { Button, Drawer, Loader, Text } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
@@ -14,6 +15,7 @@ import { PageFrame, StateView } from "../components/AppFrame";
 import { IconButton } from "../components/IconButton";
 import {
   BackIcon,
+  CategoryIcon,
   DragIcon,
   EditIcon,
   ImportIcon,
@@ -99,6 +101,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const [serverManagerSource, setServerManagerSource] =
     useState<ServerNovelSource | null>(null);
   const [reorderMode, setReorderMode] = useState(false);
+  const [categorySheetOpen, setCategorySheetOpen] = useState(false);
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const chaptersHeadingId = useId();
@@ -261,6 +264,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     setChapterSelectionMode(false);
     setSelectedChapterIds(new Set());
     setReorderMode(false);
+    setCategorySheetOpen(false);
     chapterSelectionGuardRef.current = false;
   }, [id]);
 
@@ -386,6 +390,29 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     void navigate({ to: "/reader", search: { chapterId: chapter.id } });
   }
 
+  function showAddedToLibrary(novelId: number): void {
+    const toastId = `novel-added-to-library:${novelId}`;
+    notifications.show({
+      color: "ok",
+      id: toastId,
+      message: (
+        <span className="norea-novel-toast">
+          <span>{t("novel.addedToLibrary")}</span>
+          <Button
+            onClick={() => {
+              notifications.hide(toastId);
+              setCategorySheetOpen(true);
+            }}
+            size="compact-sm"
+            variant="subtle"
+          >
+            {t("novel.changeCategory")}
+          </Button>
+        </span>
+      ),
+    });
+  }
+
   function openSourceNovel(pluginId: string, url: string | null) {
     if (!url) return;
     const plugin = pluginManager.getPlugin(pluginId);
@@ -487,6 +514,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
       },
     );
   }
+  if (novel.inLibrary) {
+    overflowItems.push({
+      icon: CategoryIcon,
+      label: t("categories.editWork"),
+      onClick: () => setCategorySheetOpen(true),
+    });
+  }
   if (novel.inLibrary && allowSourceAccess && !novel.isLocal) {
     overflowItems.push({
       icon: MigrateIcon,
@@ -565,8 +599,17 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
               <NovelWorkspace
                 key={novel.id}
                 allowSourceAccess={allowSourceAccess}
-                categoryChips={novel.inLibrary ? <NovelCategoryEditor key={novel.id}
-                  active={active} novelId={novel.id} novelName={novel.name} /> : null}
+                categoryChips={novel.inLibrary ? (
+                  <NovelCategoryEditor
+                    key={novel.id}
+                    active={active}
+                    novelId={novel.id}
+                    novelName={novel.name}
+                    onCloseSheet={() => setCategorySheetOpen(false)}
+                    onOpenSheet={() => setCategorySheetOpen(true)}
+                    sheetOpen={categorySheetOpen}
+                  />
+                ) : null}
                 chapters={chapters}
                 downloadStatuses={statuses}
                 lastReadChapterId={lastReadChapterId}
@@ -574,7 +617,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 novel={novel}
                 onBatchDownload={downloadChapters}
                 onRead={openChapter}
-                onToggleLibrary={() => toggle.mutate()}
+                onToggleLibrary={() =>
+                  toggle.mutate(undefined, {
+                    onSuccess: (result) => {
+                      if (result?.inLibrary) showAddedToLibrary(result.novel.id);
+                    },
+                  })
+                }
                 sourceName={sourceName}
                 titleRef={titleRef}
               />
