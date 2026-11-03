@@ -1,7 +1,8 @@
-import { MantineProvider } from "@mantine/core";
+import { MantineProvider, Select, Switch } from "@mantine/core";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
+import { TextButton } from "./TextButton";
 import { SettingsAdvancedGroup, SettingsFieldRow } from "./SettingsPrimitives";
 
 function render(node: ReactNode): string {
@@ -41,6 +42,51 @@ describe("settings rows", () => {
     );
     expect(markup).toMatch(/role="status"[^>]*>Restart to apply</);
     expect(markup).toMatch(/role="alert"[^>]*>Failed to load</);
+  });
+});
+
+function labelIdOf(markup: string, label: string): string {
+  const match = new RegExp(`id="([^"]+)"[^>]*>${label}<`).exec(markup);
+  if (!match) throw new Error(`No label element for ${label}`);
+  return match[1];
+}
+
+describe("settings row control labels", () => {
+  it("names a switch after the row label", () => {
+    const markup = render(
+      <SettingsFieldRow label="Keep screen on">
+        <Switch checked={false} onChange={() => undefined} />
+      </SettingsFieldRow>,
+    );
+    const labelId = labelIdOf(markup, "Keep screen on");
+    expect(markup).toMatch(new RegExp(`<input[^>]*aria-labelledby="${labelId}"[^>]*role="switch"|<input[^>]*role="switch"[^>]*aria-labelledby="${labelId}"`));
+  });
+
+  it("names a select after the row label", () => {
+    const markup = render(
+      <SettingsFieldRow label="Language">
+        <Select data={["English"]} value="English" />
+      </SettingsFieldRow>,
+    );
+    const labelId = labelIdOf(markup, "Language");
+    expect(markup).toMatch(new RegExp(`<input[^>]*aria-labelledby="${labelId}"`));
+  });
+
+  it("keeps a control's own name and leaves buttons alone", () => {
+    const named = render(
+      <SettingsFieldRow label="Autoplay">
+        <Switch aria-label="Autoplay video" checked={false} onChange={() => undefined} />
+      </SettingsFieldRow>,
+    );
+    expect(named).toContain('aria-label="Autoplay video"');
+    expect(named).not.toContain("aria-labelledby");
+
+    const button = render(
+      <SettingsFieldRow label="Backup">
+        <TextButton onClick={() => undefined}>Export</TextButton>
+      </SettingsFieldRow>,
+    );
+    expect(button).not.toContain("aria-labelledby");
   });
 });
 

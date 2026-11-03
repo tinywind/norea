@@ -1,5 +1,23 @@
-import { Collapse, Slider, Text } from "@mantine/core";
-import { useEffect, useId, useRef, useState, type ReactNode } from "react";
+import {
+  ColorInput,
+  Collapse,
+  NumberInput,
+  PasswordInput,
+  Select,
+  Slider,
+  Switch,
+  Text,
+  TextInput,
+} from "@mantine/core";
+import {
+  cloneElement,
+  isValidElement,
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type ReactNode,
+} from "react";
 import { useTranslation } from "../i18n";
 import { settingsRowSelector, useSettingsRevealStore } from "./settings/settings-reveal";
 import { ConsolePanel } from "./ConsolePrimitives";
@@ -25,6 +43,30 @@ interface SettingsFieldRowProps {
   layout?: "inline" | "stacked";
   /** Inline status for this row, such as progress or a required restart. */
   status?: string | null;
+}
+
+interface LabelledControlProps {
+  "aria-label"?: string;
+  "aria-labelledby"?: string;
+  label?: ReactNode;
+}
+
+/** Form controls that take their accessible name from the row label when they have none. */
+const ROW_LABELLED_CONTROLS = new Set<unknown>([
+  ColorInput,
+  NumberInput,
+  PasswordInput,
+  Select,
+  Switch,
+  TextInput,
+]);
+
+function labelRowControl(children: ReactNode, labelId: string): ReactNode {
+  if (!isValidElement<LabelledControlProps>(children)) return children;
+  if (!ROW_LABELLED_CONTROLS.has(children.type)) return children;
+  const props = children.props;
+  if (props["aria-label"] || props["aria-labelledby"] || props.label) return children;
+  return cloneElement(children, { "aria-labelledby": labelId });
 }
 
 interface SettingsInlineControlsProps {
@@ -65,6 +107,7 @@ export function SettingsFieldRow({
 }: SettingsFieldRowProps) {
   const { t } = useTranslation();
   const descriptionId = useId();
+  const labelId = useId();
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const hasCopy = Boolean(label || description || error || status);
   const collapsibleDescription = Boolean(
@@ -82,7 +125,9 @@ export function SettingsFieldRow({
         <div className="norea-settings-form-copy">
           {label ? (
             <div className="norea-settings-form-label-row">
-              <Text className="norea-settings-form-label">{label}</Text>
+              <Text className="norea-settings-form-label" id={labelId}>
+                {label}
+              </Text>
               {collapsibleDescription ? (
                 <IconButton
                   active={descriptionOpen}
@@ -119,7 +164,9 @@ export function SettingsFieldRow({
         </div>
       ) : null}
       {children ? (
-        <div className="norea-settings-form-control">{children}</div>
+        <div className="norea-settings-form-control">
+          {label ? labelRowControl(children, labelId) : children}
+        </div>
       ) : null}
     </div>
   );
