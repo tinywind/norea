@@ -421,8 +421,13 @@ async function performNovelSourceRefresh(
     await flushWorkMetadata(db, {
       novelId, chapters: Object.fromEntries(detail.chapters.map(chapter => [String(chapter.chapterNumber), chapter.name])),
     });
-    await markWorkMetadataRefreshed(db, { pluginId: plugin.id, novelPath: item.path });
+    const stored = novelResult.rowsAffected > 0 || (reconciled?.changed ?? false) || chapterMutation.rowsAffected > 0;
+    // A check that changed nothing leaves the content-server upload revision alone; other refreshes
+    // still republish the retained details, which can repair a conflicting work file.
+    const republish = stored || !options.markFoundByCheck;
+    if (republish) await markWorkMetadataRefreshed(db, { pluginId: plugin.id, novelPath: item.path });
     return {
+      republish,
       changedChapters: chapterMutation.rowsAffected,
       newChapters,
       cover: optionalText(novelRow.cover) ?? cover,
@@ -435,7 +440,7 @@ async function performNovelSourceRefresh(
     };
   });
   if (!result) return null;
-  notifyWorkMetadataChanges({ pluginId: plugin.id, novelPath: item.path });
+  if (result.republish) notifyWorkMetadataChanges({ pluginId: plugin.id, novelPath: item.path });
 
   rememberSourceDuplicateChapters(result.novelId, duplicateChapters);
 

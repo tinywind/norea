@@ -219,8 +219,10 @@ from an older database during startup.
 Work metadata and covers transfer separately from chapter files. Sync records a
 work cursor, per-work fingerprints, and local metadata/cover change revisions.
 Normal sync reads only changed work files; external edits require an explicit
-rescan. Every successful source refresh advances the upload revision, even when
-the metadata is unchanged. A revision is acknowledged only after both metadata and
+rescan. A check for new chapters advances the upload revision only when it
+changed the stored details or chapter list. Other successful source refreshes
+(Rebuild chapter list, opening a work, import) advance it even when nothing
+changed, which republishes the retained details. A revision is acknowledged only after both metadata and
 cover upload succeed. Remote installations record their exact committed revision;
 local refreshes that complete during transfer stay pending. Server lookups cannot
 replace a pending local revision. Pending local edits and failed transfers remain

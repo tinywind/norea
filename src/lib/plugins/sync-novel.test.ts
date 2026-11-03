@@ -184,6 +184,22 @@ describe("syncNovelFromSource", () => {
     } finally { unsubscribe(); }
   });
 
+  it("leaves the upload revision alone when a check finds nothing changed", async () => {
+    mockedUpsertSourceChaptersInDb.mockResolvedValue({ chunks: 1, rowsAffected: 0 });
+    const changed = vi.fn();
+    const unsubscribe = subscribeWorkMetadataChanges(changed);
+    try {
+      expect((await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { markFoundByCheck: true })).changed).toBe(false);
+      expect(mockExecute).not.toHaveBeenCalledWith(expect.stringContaining("INSERT INTO work_metadata_sync_journal"), expect.anything());
+      expect(changed).not.toHaveBeenCalled();
+
+      mockedUpsertSourceChaptersInDb.mockResolvedValue({ chunks: 1, rowsAffected: 1 });
+      await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { markFoundByCheck: true });
+      expect(mockExecute).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO work_metadata_sync_journal"), ["demo", "/novel"]);
+      expect(changed).toHaveBeenCalledOnce();
+    } finally { unsubscribe(); }
+  });
+
   it("does not notify an upload when the source metadata transaction fails", async () => {
     mockedRunDatabaseTransaction.mockRejectedValueOnce(new Error("Commit failed"));
     const changed = vi.fn();
