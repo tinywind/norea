@@ -134,3 +134,54 @@ describe("manual download retries", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 });
+
+describe("fresh automatic retries waiting for their backoff", () => {
+  it("keeps a fresh attempt queued with its retry time until the backoff ends", async () => {
+    const run = vi.fn().mockResolvedValue(undefined);
+    const handle = scheduler.enqueueSource({ ...spec(run), notBefore: Date.now() + 30_000 });
+    await settle();
+    expect(scheduler.getTask(handle.id)).toMatchObject({ status: "queued", canCancel: true, retryAt: Date.now() + 30_000 });
+    const other = scheduler.enqueueSource({ ...spec(async () => undefined), dedupeKey: "download:other" });
+    await settle();
+    await expect(other.promise).resolves.toBeUndefined();
+    await vi.advanceTimersByTimeAsync(29_999);
+    expect(run).not.toHaveBeenCalled();
+    await vi.advanceTimersByTimeAsync(1);
+    await expect(handle.promise).resolves.toBeUndefined();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(scheduler.getTask(handle.id)?.retryAt).toBeUndefined();
+  });
+
+  it("starts a waiting attempt at once when the user asks for the same download", async () => {
+    const run = vi.fn().mockResolvedValue(undefined);
+    const waiting = scheduler.enqueueSource({ ...spec(run), priority: "background", notBefore: Date.now() + 600_000 });
+    const requested = scheduler.enqueueSource({ ...spec(run), priority: "user" });
+    expect(requested.id).toBe(waiting.id);
+    await settle();
+    await expect(waiting.promise).resolves.toBeUndefined();
+    expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("cancels a waiting attempt without running it", async () => {
+    const run = vi.fn().mockResolvedValue(undefined);
+    const handle = scheduler.enqueueSource({ ...spec(run), notBefore: Date.now() + 120_000 });
+    const cancelled = expect(handle.promise).rejects.toMatchObject({ name: "AbortError", cancelledByUser: true });
+    expect(scheduler.cancel(handle.id)).toBe(true);
+    await cancelled;
+    await vi.advanceTimersByTimeAsync(120_000);
+    expect(run).not.toHaveBeenCalled();
+    expect(scheduler.getTask(handle.id)?.retryAt).toBeUndefined();
+  });
+
+  it("forgets a failed record once its fresh attempt replaces it", async () => {
+    const error = networkError();
+    const handle = scheduler.enqueueSource(spec(vi.fn().mockRejectedValue(error)));
+    const failed = expect(handle.promise).rejects.toBe(error);
+    await settle();
+    await failed;
+    expect(scheduler.getSnapshot().failed).toBe(1);
+    expect(scheduler.forgetSettledTask(handle.id)).toBe(true);
+    expect(scheduler.getTask(handle.id)).toBeUndefined();
+    expect(scheduler.getSnapshot().failed).toBe(0);
+  });
+});

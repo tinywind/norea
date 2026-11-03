@@ -100,6 +100,18 @@ vi.mock("../content-sync/novel-source", () => ({
   tryDownloadServerChapter: vi.fn(async () => false),
 }));
 vi.mock("../plugins/sync-novel", () => ({ syncNovelFromSource: vi.fn() }));
+const failureMocks = vi.hoisted(() => ({
+  record: vi.fn(async (): Promise<{ nextRetryAt: number | null } | null> => null),
+  forget: vi.fn(async () => undefined),
+  refresh: vi.fn(async () => undefined),
+  snapshot: vi.fn((): { chapterId: number; jobJson: string; nextRetryAt: number | null }[] => []),
+}));
+vi.mock("./chapter-download-failures", () => ({
+  recordFailedChapterDownloadAttempt: failureMocks.record,
+  forgetChapterDownloadFailures: failureMocks.forget,
+  refreshChapterDownloadFailures: failureMocks.refresh,
+  getChapterDownloadFailureSnapshot: failureMocks.snapshot,
+}));
 vi.mock("./scheduler", () => ({
   TASK_PAUSE_ABORT_MESSAGE: "Task was paused.",
   taskScheduler: {
@@ -111,6 +123,7 @@ vi.mock("./scheduler", () => ({
     cancel: vi.fn(),
     waitForSourceTaskSettlement: vi.fn(async () => undefined),
     subscribeEvents: vi.fn(() => () => undefined),
+    forgetSettledTask: vi.fn(),
   },
 }));
 
@@ -151,6 +164,7 @@ import {
   cancelChapterDownloadTasks,
   enqueueChapterDownloadBatch,
   enqueueChapterDownload,
+  failedChapterDownloadJob,
   enqueueVpnDownloadChapter,
   enqueueChapterMediaRepair,
   discardQueuedChapterDownloads,
@@ -3211,6 +3225,78 @@ describe("enqueueChapterDownload", () => {
     );
 
     expect(clearChapterMedia).not.toHaveBeenCalled();
+  });
+});
+
+describe("automatic retries after a failed chapter download", () => {
+  async function realScheduler() {
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) =>
+      scheduler.enqueueSource({ ...spec, sourceCooldownMs: 0 }));
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation((key) => scheduler.getTaskByDedupeKey(key));
+    vi.mocked(taskScheduler.forgetSettledTask).mockImplementation((id) => scheduler.forgetSettledTask(id));
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
+    Object.defineProperty(document, "visibilityState", { configurable: true, value: "visible" });
+    return scheduler;
+  }
+  const job = { id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7", batchId: "batch-a", batchTitle: "Batch" };
+
+  it("replaces the failed record with a fresh attempt that waits and stops when cancelled", async () => {
+    const scheduler = await realScheduler();
+    const error = new Error("Failed to fetch");
+    pluginMocks.getChapterResource.mockRejectedValueOnce(error);
+    const retryAt = Date.now() + 30_000;
+    failureMocks.record.mockResolvedValueOnce({ nextRetryAt: retryAt });
+    const original = enqueueChapterDownload(job);
+    await expect(original.promise).rejects.toBe(error);
+    await waitForChapterDownloadQueueMutations();
+    await waitForChapterDownloadQueueMutations();
+
+    expect(failureMocks.record).toHaveBeenCalledWith(expect.objectContaining({ id: 7, pluginId: "source-a" }), error);
+    expect(scheduler.getTask(original.id)).toBeUndefined();
+    const waiting = scheduler.getTaskByDedupeKey("chapter.download:7");
+    expect(waiting).toMatchObject({ status: "queued", retryAt, canCancel: true });
+    expect(waiting?.subject?.batchId).toBeUndefined();
+    expect(backendQueueValues.get(7)).toMatchObject({ id: 7, retryAt });
+    expect(pluginMocks.getChapterResource).toHaveBeenCalledTimes(1);
+
+    expect(scheduler.cancel(waiting!.id)).toBe(true);
+    await flushMicrotasks(50);
+    await waitForChapterDownloadQueueMutations();
+    expect(failureMocks.forget).toHaveBeenCalledWith([7]);
+    expect(backendQueueValues.has(7)).toBe(false);
+    expect(pluginMocks.getChapterResource).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a failure without retry budget as a failed record and removes its queue row", async () => {
+    const scheduler = await realScheduler();
+    const error = new Error("Failed to fetch novel data: (404)");
+    pluginMocks.getChapterResource.mockRejectedValueOnce(error);
+    failureMocks.record.mockResolvedValueOnce({ nextRetryAt: null });
+    const original = enqueueChapterDownload(job);
+    await expect(original.promise).rejects.toBe(error);
+    await waitForChapterDownloadQueueMutations();
+
+    expect(failureMocks.record).toHaveBeenCalledTimes(1);
+    expect(scheduler.getTask(original.id)).toMatchObject({ status: "failed", canRetry: true });
+    expect(backendQueueValues.has(7)).toBe(false);
+  });
+
+  it("clears the recorded failure when the chapter is already stored", async () => {
+    await realScheduler();
+    vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 1, isDownloaded: true } as never);
+    await enqueueChapterDownload(job).promise;
+    expect(failureMocks.forget).toHaveBeenCalledWith([7]);
+  });
+
+  it("restores a waiting attempt from its queue row and the failure table", () => {
+    expect(failedChapterDownloadJob(JSON.stringify({ ...job, retryAt: 99 }))).toEqual(
+      expect.objectContaining({ id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7" }));
+    expect(failedChapterDownloadJob(JSON.stringify({ ...job, retryAt: 99 }))?.retryAt).toBeUndefined();
+    expect(failedChapterDownloadJob(JSON.stringify({ ...job, vpnPlanId: "plan", vpnRangeId: "range" }))).toBeNull();
+    expect(failedChapterDownloadJob("not json")).toBeNull();
   });
 });
 

@@ -101,7 +101,7 @@ export function classifyDownloadFailure(error: unknown): DownloadFailure {
   if (errorCode(error) === "chapter-media-http-retry") {
     return failure("transient", { retryAfterMs: retryAfter((error as { retryAfterMs?: unknown }).retryAfterMs) });
   }
-  if (STORAGE_FAILURE.test(message)) return failure("storage");
+  if (errorCode(error) === "chapter-media-finalization-failed" || STORAGE_FAILURE.test(message)) return failure("storage");
   if (CONTENT_FAILURE.test(message)) return failure("content");
   const name = errorName(error);
   if (name && PLUGIN_PARSE_ERROR_NAMES.has(name)) return failure("content");

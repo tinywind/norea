@@ -68,7 +68,11 @@ requirements must be decided explicitly before implementation.
   challenged URL for challenges, the attempt count, the next automatic attempt
   time, and the failed job's queue JSON. It changes no existing table; queue
   rows, plans, chapters and reading state upgrade unchanged. A row is removed with
-  its chapter row through the foreign key. The attempt count is the persisted retry
+  its chapter row through the foreign key, and when its chapter later downloads,
+  the user cancels it, or the user retries it, which starts a fresh budget.
+  An ordinary queue row may carry an optional `retryAt` in its job JSON while a
+  fresh automatic attempt waits for its backoff; restored rows keep that wait.
+  Rows without it start at once, as before, and the SQL schema is unchanged. The attempt count is the persisted retry
   budget, so restarts cannot reset it. Full device snapshots include the table
   under the exact-schema policy; restore keeps the rows but clears every
   scheduled retry time, so a restored snapshot never starts automatic downloads.

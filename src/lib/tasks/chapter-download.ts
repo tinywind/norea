@@ -11,6 +11,12 @@ import { createServerChapterMediaFetcher } from "../content-sync/media-repair";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
 import { beginChapterDownloadQueueWrite, notifyChapterDownloadsSettled } from "./chapter-download-activity";
+import {
+  forgetChapterDownloadFailures,
+  getChapterDownloadFailureSnapshot,
+  recordFailedChapterDownloadAttempt,
+  refreshChapterDownloadFailures,
+} from "./chapter-download-failures";
 import type { ChapterDownloadPhase } from "./task-types";
 import type { VpnDownloadWorkerRef } from "./vpn-download-types";
 import { vpnDownloadExecutor } from "./vpn-worker-context";
@@ -104,6 +110,8 @@ export interface ChapterDownloadJob {
   novelName?: string;
   novelPath?: string;
   priority?: TaskPriority;
+  /** The earliest start of an automatic retry after a transient failure. */
+  retryAt?: number;
   title: string;
 }
 
@@ -116,7 +124,7 @@ export interface ChapterMediaRepairJob {
 }
 
 export type ChapterDownloadStatus =
-  | { kind: "queued"; phase?: ChapterDownloadPhase }
+  | { kind: "queued"; phase?: ChapterDownloadPhase; retryAt?: number }
   | { kind: "running"; phase?: ChapterDownloadPhase }
   | { kind: "done" }
   | { kind: "cancelled" }
@@ -624,6 +632,7 @@ function normalizeQueuedChapterDownloadJob(
     novelName: readStringField(record, "novelName"),
     novelPath: readStringField(record, "novelPath"),
     priority: "background",
+    ...(readPositiveIntegerField(record, "retryAt") ? { retryAt: readPositiveIntegerField(record, "retryAt") } : {}),
     title,
   };
 }
@@ -975,7 +984,11 @@ function emitChapterDownloadBatchSettled(batchId: string): void {
 function statusFromTask(task: TaskRecord): ChapterDownloadStatus | null {
   switch (task.status) {
     case "queued":
-      return { kind: "queued", ...(task.chapterDownloadPhase ? { phase: task.chapterDownloadPhase } : {}) };
+      return {
+        kind: "queued",
+        ...(task.chapterDownloadPhase ? { phase: task.chapterDownloadPhase } : {}),
+        ...(task.retryAt ? { retryAt: task.retryAt } : {}),
+      };
     case "running":
       return { kind: "running", ...(task.chapterDownloadPhase ? { phase: task.chapterDownloadPhase } : {}) };
     case "succeeded":
@@ -1103,6 +1116,7 @@ function enqueueChapterDownloadForExecutor(
   const completeJob = async (): Promise<void> => {
     await options.onCompleted?.();
     completeChapterDownloadJob(job, queueOwnerId);
+    if (isTauriRuntime()) forgetFailures([job.id]);
   };
   const waitForBackendQueue =
     options.waitForBackendQueue ?? (options.persistBeforeStart !== false);
@@ -1118,7 +1132,13 @@ function enqueueChapterDownloadForExecutor(
   const backendQueueWrite = registration?.write ?? requestedQueueWrite;
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.download",
-    ...(!options.vpnWorker ? { retryManually: () => enqueueChapterDownload(job) } : {}),
+    ...(!options.vpnWorker ? {
+      retryManually: () => {
+        if (isTauriRuntime()) forgetFailures([job.id]);
+        return enqueueChapterDownload(withoutRetryTime(job));
+      },
+      ...(job.retryAt ? { notBefore: job.retryAt } : {}),
+    } : {}),
     priority: job.priority ?? "background",
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
@@ -1520,6 +1540,13 @@ function enqueueChapterDownloadForExecutor(
     (error) => {
       if (!isTaskUserCancelledError(error) && [...chapterDownloadHandoverCohorts].some(cohort => cohort.has(job.id))) return;
       if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
+      if (!options.vpnWorker && isTauriRuntime()) {
+        if (isTaskUserCancelledError(error)) forgetFailures([job.id]);
+        else if (!isAbortError(error)) {
+          settleFailedChapterDownload(job, queueOwnerId, handle.id, error);
+          return;
+        }
+      }
       removeQueuedChapterDownloadJob(job, queueOwnerId);
     },
   );
@@ -1531,6 +1558,99 @@ function enqueueChapterDownloadForExecutor(
     void handle.promise.then(clear, clear);
   }
   return handle;
+}
+
+function forgetFailures(chapterIds: readonly number[]): void {
+  void forgetChapterDownloadFailures(chapterIds).catch((error: unknown) => {
+    console.warn("[chapter-download] failed to clear download failures:", error);
+  });
+}
+
+function withoutRetryTime(job: ChapterDownloadJob): ChapterDownloadJob {
+  if (job.retryAt === undefined) return job;
+  const next = { ...job };
+  delete next.retryAt;
+  return next;
+}
+
+function isChapterDownloadActive(chapterId: number): boolean {
+  const status = getChapterDownloadStatus(chapterId);
+  return status?.kind === "queued" || status?.kind === "running" || pendingBackendChapterDownloadJobsById.has(chapterId);
+}
+
+/**
+ * Persists a terminal failure and, while its class and persisted budget allow it,
+ * queues a fresh attempt that waits for the backoff. The failed record is replaced
+ * by the waiting attempt so the row shows "Retrying in" from the first failure.
+ * Runs in the queue mutation order, so waiting for queue mutations covers the decision.
+ */
+function settleFailedChapterDownload(
+  job: ChapterDownloadJob,
+  queueOwnerId: string,
+  failedTaskId: string,
+  error: unknown,
+): void {
+  void queueBackendChapterDownloadMutation("settle failed chapter download", async () => {
+    let nextRetryAt: number | null = null;
+    try {
+      nextRetryAt = (await recordFailedChapterDownloadAttempt(withoutRetryTime(job), error))?.nextRetryAt ?? null;
+    } catch (recordError) {
+      console.warn("[chapter-download] failed to record a download failure:", recordError);
+    }
+    if (backendChapterDownloadRegistrations.get(job.id)?.ownerId !== queueOwnerId) return;
+    const state = job.batchId ? chapterDownloadBatchStates.get(job.batchId) : undefined;
+    if (state && !state.queuedChapterIds.delete(job.id)) return;
+    if (nextRetryAt === null || isChapterDownloadActive(job.id)) {
+      pendingBackendChapterDownloadJobsById.delete(job.id);
+      backendChapterDownloadRegistrations.delete(job.id);
+      await removeBackendChapterDownloadJobs([job.id]);
+      return;
+    }
+    const retryJob: ChapterDownloadJob = { ...withoutRetryTime(job), priority: "background", retryAt: nextRetryAt };
+    delete retryJob.batchId;
+    delete retryJob.batchTitle;
+    void enqueueChapterDownload(retryJob).promise.catch(() => undefined);
+    taskScheduler.forgetSettledTask(failedTaskId);
+  });
+}
+
+/**
+ * Queues the scheduled retries whose queue rows were lost, for example when the
+ * process stopped between recording a failure and queueing its next attempt.
+ */
+async function resumeScheduledChapterDownloadRetries(): Promise<void> {
+  await refreshChapterDownloadFailures();
+  for (const row of getChapterDownloadFailureSnapshot()) {
+    if (row.nextRetryAt === null || isChapterDownloadActive(row.chapterId)) continue;
+    const job = failedChapterDownloadJob(row.jobJson);
+    if (!job || job.id !== row.chapterId) continue;
+    void enqueueChapterDownload({ ...job, priority: "background", retryAt: row.nextRetryAt }).promise.catch(() => undefined);
+  }
+}
+
+/** The ordinary job a failure row recorded, or null for VPN-owned or unreadable jobs. */
+export function failedChapterDownloadJob(jobJson: string): ChapterDownloadJob | null {
+  let value: unknown;
+  try { value = JSON.parse(jobJson); } catch { return null; }
+  if (value === null || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (record.vpnPlanId !== undefined || record.vpnRangeId !== undefined || record.vpnBatchId !== undefined) return null;
+  const job = normalizeQueuedChapterDownloadJob(value);
+  return job ? withoutRetryTime(job) : null;
+}
+
+/** Manual "Retry all": clears the recorded failures, so each chapter starts a fresh budget, and queues them now. */
+export async function retryFailedChapterDownloads(chapterIds: readonly number[]): Promise<number> {
+  const wanted = new Set(chapterIds);
+  const jobs = getChapterDownloadFailureSnapshot()
+    .filter((row) => wanted.has(row.chapterId))
+    .map((row) => failedChapterDownloadJob(row.jobJson))
+    .filter((job): job is ChapterDownloadJob => job !== null);
+  await forgetChapterDownloadFailures(jobs.map((job) => job.id));
+  for (const job of jobs) {
+    void enqueueChapterDownload({ ...job, priority: "user" }).promise.catch(() => undefined);
+  }
+  return jobs.length;
 }
 
 export function enqueueChapterDownload(
@@ -2088,6 +2208,9 @@ export function startChapterDownloadQueueExecutor(
 
   let onRestored!: () => void;
   chapterDownloadQueueRestoration = new Promise<void>((resolve) => { onRestored = resolve; });
+  void chapterDownloadQueueRestoration.then(resumeScheduledChapterDownloadRetries).catch((error: unknown) => {
+    console.warn("[chapter-download] failed to resume scheduled retries:", error);
+  });
   void runBackendChapterDownloadExecutor(onRestored).catch((error) => {
     onRestored();
     chapterDownloadQueueExecutorStarted = false;

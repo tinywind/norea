@@ -90,6 +90,28 @@ type ChapterDownloadTaskHeading = {
   title: string;
 };
 
+function isRetryWaiting(task: TaskRecord): boolean {
+  return task.status === "queued" && task.retryAt !== undefined;
+}
+
+function RetryCountdown({ retryAt }: { retryAt: number }) {
+  const { t } = useTranslation();
+  const [now, setNow] = useState(() => Date.now());
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
+    return () => window.clearInterval(timer);
+  }, [retryAt]);
+  const seconds = Math.max(1, Math.ceil((retryAt - now) / 1_000));
+  const time = seconds < 60
+    ? t("time.secondsShort", { count: seconds })
+    : t("time.minutesShort", { count: Math.ceil(seconds / 60) });
+  return (
+    <Text className="norea-task-row-detail" lineClamp={1} role="status">
+      {t("tasks.retryingIn", { time })}
+    </Text>
+  );
+}
+
 function isActiveTask(task: TaskRecord): boolean {
   return ACTIVE_STATUSES.has(task.status);
 }
@@ -500,7 +522,9 @@ const TaskRow = memo(function TaskRow({
         <Text className="norea-task-row-meta" lineClamp={1}>
           {taskMeta(t, currentTask)}
         </Text>
-        {sourcePaused ? (
+        {isRetryWaiting(currentTask) ? (
+          <RetryCountdown retryAt={currentTask.retryAt!} />
+        ) : sourcePaused ? (
           <Text className="norea-task-row-detail" lineClamp={1}>
             {sourceQueuesPaused
               ? t("tasks.allSourcesPaused")
@@ -610,6 +634,8 @@ function TaskWorkGroup({
   const confirm = useConfirm();
   const canMove = hasQueuedTask(group.tasks);
   const canCancel = hasCancellableActiveTask(group.tasks);
+  const retryWaits = group.tasks.filter(isRetryWaiting).map((task) => task.retryAt!);
+  const nextRetryAt = retryWaits.length > 0 ? Math.min(...retryWaits) : null;
 
   return (
     <div
@@ -624,6 +650,7 @@ function TaskWorkGroup({
           <span className="norea-task-group-count">
             {t("tasks.count", { count: group.tasks.length })}
           </span>
+          {nextRetryAt !== null ? <RetryCountdown retryAt={nextRetryAt} /> : null}
         </div>
         <div className="norea-task-group-actions">
           <IconButton
@@ -1177,9 +1204,11 @@ export function DownloadsQueueView({
   const taskStats = useMemo(() => {
     const count = (status: TaskRecord["status"]) =>
       tasks.filter((task) => task.status === status).length;
+    const retrying = tasks.filter(isRetryWaiting).length;
     return {
       running: count("running"),
-      queued: count("queued"),
+      queued: count("queued") - retrying,
+      retrying,
       failed: count("failed"),
       succeeded: count("succeeded"),
     };
@@ -1358,6 +1387,11 @@ export function DownloadsQueueView({
             <SummaryPill>
               {t("tasks.summary.queued", { count: taskStats.queued })}
             </SummaryPill>
+            {taskStats.retrying > 0 ? (
+              <SummaryPill>
+                {t("tasks.summary.retrying", { count: taskStats.retrying })}
+              </SummaryPill>
+            ) : null}
             <SummaryPill
               tone={
                 snapshot.sourceAccessBlocks.length > 0 ? "warning" : undefined

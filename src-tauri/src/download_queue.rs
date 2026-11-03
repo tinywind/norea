@@ -53,6 +53,8 @@ pub struct ChapterDownloadQueueJob {
     novel_name: Option<String>,
     novel_path: Option<String>,
     priority: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    retry_at: Option<i64>,
     title: String,
 }
 
@@ -343,6 +345,15 @@ mod tests {
         let restored: ChapterDownloadQueueJob = serde_json::from_value(stored.clone()).unwrap();
         assert_eq!(serde_json::to_value(restored).unwrap(), stored);
         assert!(serde_json::to_value(job(6, None, None)).unwrap().get("vpnBatchId").is_none());
+    }
+
+    #[test]
+    fn automatic_retry_time_survives_json_roundtrip() {
+        let mut value = serde_json::to_value(job(7, None, None)).unwrap();
+        assert!(value.get("retryAt").is_none());
+        value["retryAt"] = 1_700_000_030_000_i64.into();
+        let restored: ChapterDownloadQueueJob = serde_json::from_value(value).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap()["retryAt"], 1_700_000_030_000_i64);
     }
 
     #[test]

@@ -392,7 +392,9 @@ export class TaskScheduler {
             ...activeEntry.record,
             priority: requestedPriority,
           };
-          if (isUiInteraction(activeEntry)) this.clearTaskRetry(activeEntry);
+          if (isUiInteraction(activeEntry) || activeEntry.record.retryAt !== undefined) {
+            this.clearTaskRetry(activeEntry);
+          }
           this.handleUiResponsiveSourceEnqueue(activeEntry);
           this.publishSnapshot();
           this.requestDrain();
@@ -438,6 +440,18 @@ export class TaskScheduler {
     };
 
     this.entries.set(id, entry);
+    const retryDelay = spec.notBefore === undefined ? 0 : spec.notBefore - Date.now();
+    if (spec.lane === "source" && Number.isFinite(retryDelay) && retryDelay > 0) {
+      entry.record.retryAt = spec.notBefore;
+      entry.retryTimer = setTimeout(() => {
+        entry.retryTimer = undefined;
+        if (this.entries.get(id) !== entry || entry.record.status !== "queued" || entry.record.retryAt === undefined) return;
+        entry.record = { ...entry.record };
+        delete entry.record.retryAt;
+        this.publish(entry, entry.record.status);
+        this.drain();
+      }, Math.min(2_147_483_647, Math.ceil(retryDelay)));
+    }
     if (!this.networkAvailable && this.requiresNetwork(entry)) {
       entry.record.waitingForNetwork = true;
       entry.record.detail = this.networkWaitingDetail;
@@ -1175,6 +1189,15 @@ export class TaskScheduler {
     this.publishSnapshot();
     this.requestDrain();
     return retried;
+  }
+
+  /** Drops one settled failed or cancelled record, for example after its automatic retry was queued. */
+  forgetSettledTask(id: string): boolean {
+    const entry = this.entries.get(id);
+    if (!entry || (entry.record.status !== "failed" && entry.record.status !== "cancelled")) return false;
+    this.deleteEntry(entry);
+    this.publishSnapshot();
+    return true;
   }
 
   clearFailedTasks(): number {
@@ -2159,6 +2182,10 @@ export class TaskScheduler {
   private clearTaskRetry(entry: TaskEntry): void {
     if (entry.retryTimer !== undefined) clearTimeout(entry.retryTimer);
     entry.retryTimer = undefined;
+    if (entry.record.retryAt !== undefined) {
+      entry.record = { ...entry.record };
+      delete entry.record.retryAt;
+    }
   }
 
   private requeueRetryableTask(entry: TaskEntry, error: unknown): boolean {

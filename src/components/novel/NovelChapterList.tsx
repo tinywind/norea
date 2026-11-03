@@ -168,7 +168,7 @@ function ChapterListItem({
     if (downloadActive) {
       return (
         <span className="norea-novel-chapter-status">
-          {t(status.kind === "queued" ? "common.queued" : "common.downloading")}
+          {t(status.kind === "running" ? "common.downloading" : status.retryAt ? "novel.downloadRetrying" : "common.queued")}
         </span>
       );
     }

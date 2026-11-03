@@ -70,6 +70,18 @@ describe("task work group order", () => {
     state.vpn.ownedChapterIds = [];
   });
 
+  it("shows a waiting automatic retry with its countdown and Cancel, counted as retrying instead of queued", () => {
+    const waiting = { ...chapter(1, 1, "queued"), retryAt: Date.now() + 90_000 };
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), records: [waiting, chapter(2, 2, "queued")], total: 2,
+      sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($(".norea-task-summary-pill").map((_, element) => $(element).text()).get())
+      .toEqual(["Running 0", "Queued 1", "Retrying 1", "Blocked 0", "Failed 0", "Done 0"]);
+    expect($.text()).toContain("Retrying in 2m");
+  });
+
   it("shows a newly accepted request before chapter tasks or catalogs are ready", () => {
     state.snapshot = new TaskScheduler().getSnapshot();
     state.requests = [{ id: "request", title: "Newly requested work", novelIds: [42], total: null, phase: "preparing", error: null }];

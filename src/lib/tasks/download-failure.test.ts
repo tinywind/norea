@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { ChapterMediaHttpRetryError, ChapterMediaIncompleteError } from "../chapter-media/errors";
+import { ChapterMediaFinalizationError, ChapterMediaHttpRetryError, ChapterMediaIncompleteError } from "../chapter-media/errors";
 import { cloudflareAccessError } from "../http/response";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import { automaticRetryDelayMs, classifyDownloadFailure } from "./download-failure";
@@ -66,6 +66,7 @@ describe("classifyDownloadFailure", () => {
   it.each([
     new Error("chapter_content_save: write failed: No space left on device (os error 28)"),
     new Error("error returned from database: (code: 13) database or disk is full"),
+    new ChapterMediaFinalizationError(new Error("rename failed")),
   ])("treats %s as a storage failure", (error) => {
     expect(classifyDownloadFailure(error).failureClass).toBe("storage");
   });

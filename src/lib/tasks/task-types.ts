@@ -134,6 +134,8 @@ export interface TaskRecord {
   detail?: string;
   chapterDownloadPhase?: ChapterDownloadPhase;
   waitingForNetwork?: boolean;
+  /** When an automatic retry waits for its backoff, the time it becomes eligible to start. */
+  retryAt?: number;
   error?: string;
   canCancel: boolean;
   canRetry: boolean;
@@ -206,6 +208,8 @@ export interface TaskSpec<T> {
   canCancel?: boolean;
   canRetry?: boolean;
   retryManually?: () => TaskHandle<T>;
+  /** A fresh automatic retry stays queued until this time; a higher-priority request starts it sooner. */
+  notBefore?: number;
   canCompleteWithoutSourceAccess?: boolean;
   exclusive?: boolean;
   requiresForegroundExecutor?: boolean;
