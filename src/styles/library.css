@@ -1278,16 +1278,6 @@
     width: 100%;
   }
 
-  .norea-library-icon-button {
-    display: none;
-  }
-
-  .norea-library-local-import-button,
-  .norea-library-sort-button,
-  .norea-library-refresh-button {
-    display: inline-flex;
-  }
-
   .norea-library-mobile-search-button,
   .norea-library-mobile-view-button {
     align-items: center;

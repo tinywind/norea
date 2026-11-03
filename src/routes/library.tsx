@@ -412,7 +412,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   t={t}
                 />
                 <IconButton
-                  className="norea-library-icon-button norea-library-local-import-button"
+                  className="norea-library-icon-button"
                   label={t("library.localImport.open")}
                   onClick={openLocalImportInput}
                   size="sm"
