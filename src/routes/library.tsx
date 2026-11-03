@@ -509,7 +509,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     t={t}
                   />
                   <IconButton
-                    className="norea-library-selection-icon"
+                    className="norea-library-selection-icon norea-state-layer"
                     disabled={isInitialLibraryLoading || Boolean(libraryError) || summary.totalNovels === 0 || selectAllMutation.isPending}
                     label={t("library.selection.selectAll")}
                     onClick={() => selectAllMutation.mutate()}
@@ -532,7 +532,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     t={t}
                   />
                   <IconButton
-                    className="norea-library-selection-icon"
+                    className="norea-library-selection-icon norea-state-layer"
                     disabled={
                       selectedDownloadedChapterCount === 0 ||
                       deleteSelectedDownloadsMutation.isPending ||
@@ -561,7 +561,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     )}
                   </IconButton>
                   <IconButton
-                    className="norea-library-selection-icon"
+                    className="norea-library-selection-icon norea-state-layer"
                     disabled={
                       removeSelectedFromLibraryMutation.isPending ||
                       deleteSelectedDownloadsMutation.isPending

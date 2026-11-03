@@ -1,0 +1,28 @@
+.norea-state-layer {
+  position: relative;
+}
+
+.norea-state-layer::after {
+  background: currentColor;
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity var(--norea-duration-fast) var(--norea-ease-standard);
+}
+
+@media (hover: hover) {
+  .norea-state-layer:hover:not(:disabled):not([data-disabled])::after {
+    opacity: 0.08;
+  }
+}
+
+.norea-state-layer:focus-visible::after {
+  opacity: 0.08;
+}
+
+.norea-state-layer:active:not(:disabled):not([data-disabled])::after {
+  opacity: 0.12;
+}

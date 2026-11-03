@@ -399,7 +399,6 @@
 }
 
 .norea-novel-selection-icon:hover {
-  background: var(--norea-design-selection-hover-overlay);
   opacity: 1;
 }
 
@@ -764,10 +763,6 @@
   padding: 0.5rem;
   text-align: left;
   width: 100%;
-}
-
-.norea-novel-batch-download-option:hover:not(:disabled) {
-  background: var(--norea-design-hover-overlay);
 }
 
 .norea-novel-batch-download-option:disabled {

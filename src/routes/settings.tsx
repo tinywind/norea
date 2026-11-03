@@ -1710,7 +1710,7 @@ function SettingsCategoryList({
               <UnstyledButton
                 key={category.id}
                 aria-current={selected ? "page" : undefined}
-                className="norea-settings-nav-item"
+                className="norea-settings-nav-item norea-state-layer"
                 data-active={selected}
                 onClick={() => onSelect(category.id)}
                 type="button"

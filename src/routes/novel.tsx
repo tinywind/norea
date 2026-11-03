@@ -491,7 +491,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 </span>
                 <div className="norea-novel-selection-actions">
                   <IconButton
-                    className="norea-novel-selection-icon"
+                    className="norea-novel-selection-icon norea-state-layer"
                     disabled={allChaptersSelected}
                     label={t("novel.selection.selectAll")}
                     onClick={selectAllChapters}
@@ -501,7 +501,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     <CheckGlyph />
                   </IconButton>
                   <IconButton
-                    className="norea-novel-selection-icon"
+                    className="norea-novel-selection-icon norea-state-layer"
                     disabled={selectedChapterCount === 0}
                     label={t("novel.selection.clearSelected")}
                     onClick={clearSelectedChapters}
@@ -511,7 +511,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     <SelectionClearIcon />
                   </IconButton>
                   <IconButton
-                    className="norea-novel-selection-icon"
+                    className="norea-novel-selection-icon norea-state-layer"
                     disabled={
                       selectedDownloadTargets.length === 0 ||
                       chapterSelectionBusy
@@ -532,7 +532,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     <DownloadGlyph />
                   </IconButton>
                   <IconButton
-                    className="norea-novel-selection-icon"
+                    className="norea-novel-selection-icon norea-state-layer"
                     disabled={
                       novel.isLocal ||
                       selectedDownloadedChapterIds.length === 0 ||
@@ -563,7 +563,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     )}
                   </IconButton>
                   <IconButton
-                    className="norea-novel-selection-icon"
+                    className="norea-novel-selection-icon norea-state-layer"
                     disabled={selectedUnreadCount === 0 || chapterSelectionBusy}
                     label={t("novel.selection.markRead")}
                     onClick={() =>
@@ -583,7 +583,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     )}
                   </IconButton>
                   <IconButton
-                    className="norea-novel-selection-icon"
+                    className="norea-novel-selection-icon norea-state-layer"
                     disabled={selectedReadCount === 0 || chapterSelectionBusy}
                     label={t("novel.selection.markUnread")}
                     onClick={() =>
@@ -627,7 +627,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     />
                   ) : null}
                   <IconButton
-                    className="norea-novel-selection-icon"
+                    className="norea-novel-selection-icon norea-state-layer"
                     label={t("novel.selection.close")}
                     onClick={closeChapterSelectionMode}
                     size="sm"

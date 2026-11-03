@@ -87,7 +87,6 @@
 
 .norea-settings-nav-item:hover,
 .norea-settings-nav-item:focus-visible {
-  background: var(--norea-design-hover-overlay);
   color: var(--norea-design-ink);
 }
 
@@ -499,7 +498,6 @@
 
 .norea-reader-tap-preset:hover,
 .norea-reader-tap-preset:focus-visible {
-  background: var(--norea-design-hover-overlay);
   border-color: var(--norea-design-rule-strong);
 }
 

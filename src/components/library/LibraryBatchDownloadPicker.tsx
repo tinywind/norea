@@ -60,7 +60,7 @@ export function LibraryBatchDownloadPicker({
     >
       <Popover.Target>
         <IconButton
-          className="norea-library-selection-icon"
+          className="norea-library-selection-icon norea-state-layer"
           disabled={disabled}
           label={t("library.batchDownload.open")}
           onClick={() => setOpened((current) => !current)}

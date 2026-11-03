@@ -102,7 +102,7 @@ export function NovelBatchDownloadMenu({
         <div className="norea-novel-batch-download-list">
           {options.map((option) => (
             <button
-              className="norea-novel-batch-download-option"
+              className="norea-novel-batch-download-option norea-state-layer"
               disabled={option.chapters.length === 0}
               key={option.key}
               onClick={() => {
@@ -148,7 +148,7 @@ export function ChapterRelativeReadMenu({
     >
       <Popover.Target>
         <IconButton
-          className="norea-novel-selection-icon"
+          className="norea-novel-selection-icon norea-state-layer"
           disabled={busy || (previousDownloadCount === 0 && (!showReadActions || (beforeCount === 0 && afterCount === 0)))}
           label={t("novel.selection.moreActions")}
           onClick={() => setOpened((current) => !current)}
@@ -161,7 +161,7 @@ export function ChapterRelativeReadMenu({
       <Popover.Dropdown className="norea-novel-batch-download-menu">
         <div className="norea-novel-batch-download-list">
           <button
-            className="norea-novel-batch-download-option"
+            className="norea-novel-batch-download-option norea-state-layer"
             disabled={busy || previousDownloadCount === 0}
             onClick={() => {
               onDownloadPrevious();
@@ -178,7 +178,7 @@ export function ChapterRelativeReadMenu({
           </button>
           {showReadActions ? <>
           <button
-            className="norea-novel-batch-download-option"
+            className="norea-novel-batch-download-option norea-state-layer"
             disabled={busy || beforeCount === 0}
             onClick={() => {
               onMarkPreviousRead();
@@ -196,7 +196,7 @@ export function ChapterRelativeReadMenu({
             </span>
           </button>
           <button
-            className="norea-novel-batch-download-option"
+            className="norea-novel-batch-download-option norea-state-layer"
             disabled={busy || afterCount === 0}
             onClick={() => {
               onMarkFollowingUnread();
@@ -252,7 +252,7 @@ export function NovelMetadataRefreshMenu({
       <Popover.Dropdown className="norea-novel-batch-download-menu">
         <div className="norea-novel-batch-download-list">
           <button
-            className="norea-novel-batch-download-option"
+            className="norea-novel-batch-download-option norea-state-layer"
             disabled={busy}
             onClick={() => {
               onRefresh();
@@ -268,7 +268,7 @@ export function NovelMetadataRefreshMenu({
             </span>
           </button>
           <button
-            className="norea-novel-batch-download-option"
+            className="norea-novel-batch-download-option norea-state-layer"
             disabled={busy}
             onClick={() => {
               onFullRefresh();

@@ -93,7 +93,6 @@
 }
 
 .norea-library-category:hover {
-  background: var(--norea-design-hover-overlay);
   color: var(--norea-design-ink);
 }
 
@@ -230,7 +229,6 @@
 }
 
 .norea-library-tag-row:hover {
-  background: var(--norea-design-hover-overlay);
   color: var(--norea-design-ink);
 }
 
@@ -774,7 +772,6 @@
 }
 
 .norea-library-selection-icon:hover {
-  background: var(--norea-design-selection-hover-overlay);
   opacity: 1;
 }
 

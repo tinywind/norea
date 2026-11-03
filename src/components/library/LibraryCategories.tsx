@@ -155,7 +155,7 @@ function CategoryButton({
   return (
     <div className="norea-library-category-row" data-active={active}>
       <UnstyledButton
-        className="norea-library-category"
+        className="norea-library-category norea-state-layer"
         data-active={active}
         aria-pressed={active}
         onClick={onClick}
@@ -211,7 +211,7 @@ export function SelectionCategoryPicker({
     <Popover position="bottom-end" shadow="md" width={280}>
       <Popover.Target>
         <IconButton
-          className="norea-library-selection-icon"
+          className="norea-library-selection-icon norea-state-layer"
           disabled={categories.length === 0 || assigning}
           label={t("library.editSelectedCategories")}
           size="sm"
@@ -304,7 +304,7 @@ export function LibraryTagFilters({
       <div className="norea-library-tags-title">{t("library.tags.title")}</div>
       {tags.map((tag) => (
         <UnstyledButton
-          className="norea-library-tag-row"
+          className="norea-library-tag-row norea-state-layer"
           key={tag.id}
           data-active={activeTags.includes(tag.id)}
           aria-pressed={activeTags.includes(tag.id)}

@@ -50,8 +50,6 @@
   --norea-design-warn-soft: rgba(154, 106, 26, 0.08);
   --norea-design-error: #c44a3a;
   --norea-design-ok: #3a7a4a;
-  --norea-design-hover-overlay: rgba(255, 255, 255, 0.65);
-  --norea-design-selection-hover-overlay: rgba(255, 255, 255, 0.55);
   --norea-design-shadow-floating: 0 0.5rem 1.25rem rgba(15, 23, 42, 0.14);
   --norea-font-ui: "Pretendard Variable", Pretendard, system-ui, -apple-system,
     "Segoe UI", "Malgun Gothic", Roboto, "Noto Sans KR", sans-serif;

@@ -1285,7 +1285,7 @@ function TapZonePresetCard({
     <UnstyledButton
       aria-label={`${t("readerSettings.tapControls")} ${index + 1}`}
       aria-pressed={selected}
-      className="norea-reader-tap-preset"
+      className="norea-reader-tap-preset norea-state-layer"
       data-selected={selected}
       onClick={() => onApply(preset.id)}
       type="button"

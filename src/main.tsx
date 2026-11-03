@@ -37,6 +37,7 @@ import { useAppearanceStore } from "./store/appearance";
 import { useLoggingStore } from "./store/logging";
 import "./theme/tokens.css";
 import "./styles/app.css";
+import "./styles/ui.css";
 import { createNoreaMantineTheme } from "./theme/mantine-theme";
 import { normalizeCustomAccentColor, resolveMd3Palette } from "./theme/md3";
 import {
@@ -186,21 +187,9 @@ function AppProviders() {
     )) {
       root.style.setProperty(name, value);
     }
-    root.style.setProperty(
-      "--norea-design-hover-overlay",
-      colorScheme === "dark"
-        ? "rgba(255, 255, 255, 0.08)"
-        : "rgba(255, 255, 255, 0.65)",
-    );
-    root.style.setProperty(
-      "--norea-design-selection-hover-overlay",
-      colorScheme === "dark"
-        ? "rgba(255, 255, 255, 0.14)"
-        : "rgba(255, 255, 255, 0.55)",
-    );
     document.body.style.background = roles.bg;
     document.body.style.color = roles.ink;
-  }, [appLocale, colorScheme, roles]);
+  }, [appLocale, roles]);
 
   useEffect(() => {
     setRuntimeLogLevel(logLevel);
