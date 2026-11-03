@@ -67,6 +67,15 @@ export function isInteractiveTarget(target: EventTarget | null): boolean {
   );
 }
 
+/** True while the user holds a non-empty text selection in the document. */
+export function hasReaderTextSelection(): boolean {
+  if (typeof window === "undefined") return false;
+  const selection = window.getSelection?.();
+  return Boolean(
+    selection && !selection.isCollapsed && selection.toString().trim() !== "",
+  );
+}
+
 export function getProgress(node: HTMLElement, pageReader: boolean): number {
   if (pageReader) {
     const total = getPagedPageCount(node);

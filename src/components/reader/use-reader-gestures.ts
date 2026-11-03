@@ -8,9 +8,11 @@ import {
   getNormalizedWheelDelta,
   getReaderDebugSnapshot,
   getTapZone,
+  hasReaderTextSelection,
   isInteractiveTarget,
   logReaderInput,
 } from "./reader-content-metrics";
+import { getReaderLinkElement, openReaderLink } from "./reader-links";
 const WHEEL_PAGE_COOLDOWN_MS = 220;
 const WHEEL_PAGE_DELTA_THRESHOLD = 20;
 const NATIVE_WHEEL_ACTION_LOCK_MS = 240;
@@ -45,9 +47,23 @@ export function useReaderGestures({
   const wheelCooldownTimerRef = useRef<number | null>(null);
   const wheelPagingLockedRef = useRef(false);
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
+  const selectionAtPointerDownRef = useRef(false);
+  const handlePointerDown = () => {
+    selectionAtPointerDownRef.current = hasReaderTextSelection();
+  };
   const handleClick = (event: MouseEvent<HTMLDivElement>) => {
+    const link = getReaderLinkElement(event.target);
+    if (link) {
+      event.preventDefault();
+      if (!interactionBlocked) openReaderLink(link);
+      return;
+    }
     if (interactionBlocked) return;
     if (isInteractiveTarget(event.target)) return;
+    const selectionTap =
+      selectionAtPointerDownRef.current || hasReaderTextSelection();
+    selectionAtPointerDownRef.current = false;
+    if (selectionTap) return;
     if (chromeDismissible) {
       onToggleChrome?.();
       return;
@@ -154,9 +170,16 @@ export function useReaderGestures({
     const dx = touch.clientX - touchStartRef.current.x;
     const dy = touch.clientY - touchStartRef.current.y;
     touchStartRef.current = null;
+    if (hasReaderTextSelection()) return;
     if (Math.abs(dx) > 60 && Math.abs(dx) > Math.abs(dy)) {
       scrollByPage(dx < 0 ? 1 : -1, "swipe");
     }
   };
-  return { handleClick, handleWheel, handleTouchStart, handleTouchEnd };
+  return {
+    handleClick,
+    handlePointerDown,
+    handleWheel,
+    handleTouchStart,
+    handleTouchEnd,
+  };
 }

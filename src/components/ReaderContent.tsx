@@ -285,18 +285,23 @@ function ReaderContentInner(
     renderedHtml,
   ]);
 
-  const { handleClick, handleWheel, handleTouchStart, handleTouchEnd } =
-    useReaderGestures({
-      chromeDismissible,
-      interactionBlocked,
-      isPagedReader,
-      general,
-      viewportRef,
-      getActiveScrollNode,
-      scrollByPage,
-      onToggleChrome,
-      nativeWheelActionLockedUntilRef,
-    });
+  const {
+    handleClick,
+    handlePointerDown,
+    handleWheel,
+    handleTouchStart,
+    handleTouchEnd,
+  } = useReaderGestures({
+    chromeDismissible,
+    interactionBlocked,
+    isPagedReader,
+    general,
+    viewportRef,
+    getActiveScrollNode,
+    scrollByPage,
+    onToggleChrome,
+    nativeWheelActionLockedUntilRef,
+  });
 
   const { contentBoxStyle, readerContentRuntimeCss } = useReaderContentStyle({
     appearance,
@@ -426,6 +431,7 @@ function ReaderContentInner(
         onClickCapture={stopReaderMediaClick}
         onDoubleClickCapture={stopReaderMediaClick}
         onClick={handleClick}
+        onPointerDown={handlePointerDown}
         onScroll={isPagedReader ? undefined : updateProgressFromScroll}
         onWheel={handleWheel}
         onTouchStart={handleTouchStart}
@@ -437,7 +443,6 @@ function ReaderContentInner(
           overflowY: isPagedReader ? "hidden" : "auto",
           overflowAnchor: "none",
           color: appearance.textColor,
-          cursor: "pointer",
           scrollBehavior: "auto",
         }}
       >

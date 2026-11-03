@@ -227,6 +227,19 @@ describe("reader keyboard ownership", () => {
     expect(openAdjacentChapter).not.toHaveBeenCalled();
   });
 
+  it("leaves keys to an active text selection", () => {
+    const { target, content, openAdjacentChapter } = mountKeyboard();
+    Object.assign(target, {
+      getSelection: () => ({ isCollapsed: false, toString: () => "selected words" }),
+    });
+    target.dispatchEvent(keyEvent("ArrowRight"));
+    target.dispatchEvent(keyEvent(" "));
+    target.dispatchEvent(keyEvent("]"));
+
+    expect(content.scrollByPage).not.toHaveBeenCalled();
+    expect(openAdjacentChapter).not.toHaveBeenCalled();
+  });
+
   it("removes its paging listener on unmount", () => {
     const { target, content } = mountKeyboard();
     dispose?.();

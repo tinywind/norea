@@ -5,7 +5,13 @@ import {
   type ReaderGeneralSettings,
 } from "../../store/reader";
 import { stopReaderMediaClick } from "./reader-content-media";
+import { openReaderLink } from "./reader-links";
 import { useReaderGestures } from "./use-reader-gestures";
+
+vi.mock("./reader-links", async (importOriginal) => ({
+  ...await importOriginal<typeof import("./reader-links")>(),
+  openReaderLink: vi.fn(),
+}));
 
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
@@ -22,6 +28,7 @@ class FakeElement extends FakeNode {
     readonly tagName: string,
     parent: FakeElement | null = null,
     readonly role: string | null = null,
+    readonly href: string | null = null,
   ) {
     super();
     this.parentElement = parent;
@@ -30,7 +37,12 @@ class FakeElement extends FakeNode {
   private matches(selector: string): boolean {
     const roleMatch = /^\[role='([^']+)'\]$/.exec(selector);
     if (roleMatch) return this.role === roleMatch[1];
+    if (selector === "a[href]") return this.tagName === "a" && this.href !== null;
     return selector === this.tagName;
+  }
+
+  getAttribute(name: string): string | null {
+    return name === "href" ? this.href : null;
   }
 
   closest(selectors: string): FakeElement | null {
@@ -98,7 +110,10 @@ function tap(
   point: { clientX: number; clientY: number },
   target: FakeElement = new FakeElement("p"),
 ) {
-  handlers.handleClick({ ...point, target } as unknown as Parameters<Handlers["handleClick"]>[0]);
+  const event = { ...point, target, preventDefault: vi.fn() };
+  handlers.handlePointerDown();
+  handlers.handleClick(event as unknown as Parameters<Handlers["handleClick"]>[0]);
+  return event;
 }
 
 function swipe(handlers: Handlers, from: { x: number; y: number }, to: { x: number; y: number }) {
@@ -148,6 +163,7 @@ afterEach(() => {
   vi.useRealTimers();
   vi.unstubAllGlobals();
   vi.restoreAllMocks();
+  vi.mocked(openReaderLink).mockClear();
 });
 
 describe("reader tap contract", () => {
@@ -198,7 +214,7 @@ describe("reader tap contract", () => {
   });
 
   it.each([
-    ["a link", () => new FakeElement("span", new FakeElement("a"))],
+    ["an anchor without a destination", () => new FakeElement("span", new FakeElement("a"))],
     ["a button", () => new FakeElement("button")],
     ["a slider", () => new FakeElement("span", new FakeElement("div", null, "slider"))],
     ["media", () => new FakeElement("img")],
@@ -230,11 +246,40 @@ describe("reader tap contract", () => {
     expect(scrollByPage).not.toHaveBeenCalled();
   });
 
-  it("still pages when a tap ends while text is selected", () => {
-    const { handlers, scrollByPage } = mountGestures();
+  it("leaves a tap that ends a text selection to the selection", () => {
+    const { handlers, scrollByPage, onToggleChrome } = mountGestures();
     selectionText = "selected words";
     tap(handlers, ZONE_POINTS.middleRight);
+    tap(handlers, ZONE_POINTS.middleCenter);
+    expect(scrollByPage).not.toHaveBeenCalled();
+    expect(onToggleChrome).not.toHaveBeenCalled();
+  });
+
+  it("only clears an existing selection with the next tap, then pages again", () => {
+    const { handlers, scrollByPage } = mountGestures();
+    selectionText = "selected words";
+    handlers.handlePointerDown();
+    selectionText = "";
+    handlers.handleClick({
+      ...ZONE_POINTS.middleRight,
+      target: new FakeElement("p"),
+      preventDefault: vi.fn(),
+    } as unknown as Parameters<Handlers["handleClick"]>[0]);
+    expect(scrollByPage).not.toHaveBeenCalled();
+    tap(handlers, ZONE_POINTS.middleRight);
     expect(scrollByPage).toHaveBeenCalledWith(1, "tap-next");
+  });
+
+  it("opens a chapter link outside the app instead of paging or toggling chrome", () => {
+    const { handlers, scrollByPage, onToggleChrome } = mountGestures({
+      chromeDismissible: true,
+    });
+    const anchor = new FakeElement("a", null, null, "https://example.com/notes");
+    const event = tap(handlers, ZONE_POINTS.middleRight, new FakeElement("span", anchor));
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(openReaderLink).toHaveBeenCalledWith(anchor);
+    expect(scrollByPage).not.toHaveBeenCalled();
+    expect(onToggleChrome).not.toHaveBeenCalled();
   });
 });
 
@@ -271,6 +316,13 @@ describe("reader swipe contract", () => {
       [1, "swipe"],
       [-1, "swipe"],
     ]);
+  });
+
+  it("does not page while a swipe adjusts a text selection", () => {
+    const { handlers, scrollByPage } = mountGestures();
+    selectionText = "selected words";
+    swipe(handlers, { x: 200, y: 100 }, { x: 50, y: 100 });
+    expect(scrollByPage).not.toHaveBeenCalled();
   });
 
   it("ignores short and mostly vertical swipes", () => {

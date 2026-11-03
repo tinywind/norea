@@ -1,6 +1,7 @@
 import type { RefObject } from "react";
 import { useEffect } from "react";
 import { type ReaderContentHandle } from "../ReaderContent";
+import { hasReaderTextSelection } from "./reader-content-metrics";
 function logReaderRouteInput(event: string, details: Record<string, unknown>) {
   if (!import.meta.env.DEV) return;
   console.warn("[reader-input:route]", event, details);
@@ -68,7 +69,7 @@ export function useReaderKeyboard({
         handleReaderBack();
         return;
       }
-      if (modalOverlayOpen) return;
+      if (modalOverlayOpen || hasReaderTextSelection()) return;
       if (
         target &&
         (target.closest(

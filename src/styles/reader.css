@@ -366,8 +366,12 @@
   max-width: 100%;
   min-width: 0;
   overflow-wrap: anywhere;
-  pointer-events: none;
   word-break: break-word;
+}
+
+/* Paged columns move only by page steps; native panning would misalign them. */
+.reader-viewport-paged .reader-content {
+  touch-action: pinch-zoom;
 }
 
 .reader-content :where(*) {
