@@ -35,10 +35,10 @@ webtoons or read manga and comics page by page.
 - Add novels to your library and organize them with categories. Add or remove
   category assignments for selected works, or edit them from the work home.
 - Choose the category shown when entering the library, with All as the default.
-- Filter by unread, downloaded, local, and fully read tags. Tablet and desktop
-  layouts expose these filters directly; narrow layouts include them in the
-  category drawer. Select all filtered works beside Download, including works
-  beyond the currently loaded page.
+- Filter by unread, downloaded, local, completed, and needs-repair works and by
+  one source. Unread and Downloaded are one-tap chips on every width; View
+  options holds every filter beside sort and display choices. In selection
+  mode, Select all includes filtered works beyond the currently loaded page.
 - Sort your library by undownloaded chapter count, from fewest or most first.
 - Import local plain text, HTML, Markdown, EPUB, and PDF files.
 - Open TXT, Markdown, EPUB, and PDF files with installed Windows or Android builds,
@@ -238,8 +238,7 @@ require fetching their metadata from the source site again.
 
 After app data is cleared, selecting an existing content folder restores its
 works to the library in the background. The library and storage settings show
-the current work, inspected folders, recovered works and chapters, and skipped
-folders. Each recovered work becomes available immediately; library and plugin
+inspected folders, recovered works and chapters, and skipped folders. Each recovered work becomes available immediately; library and plugin
 repository queries do not wait for the scan. Recovery reads local files without
 rewriting them or contacting the content server or source sites.
 
