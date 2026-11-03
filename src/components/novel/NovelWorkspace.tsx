@@ -33,8 +33,8 @@ import {
 } from "../ConsolePrimitives";
 import {
   buildBatchDownloadTargets,
+  findContinueReadingChapter,
   findFirstChapter,
-  findLastReadChapter,
   getNovelReadingPercent,
   splitGenres,
   type BatchDownloadOption,
@@ -187,8 +187,8 @@ export function NovelWorkspace({
   });
   const genres = useMemo(() => splitGenres(novel.genres), [novel.genres]);
   const firstChapter = useMemo(() => findFirstChapter(chapters), [chapters]);
-  const lastReadChapter = useMemo(
-    () => findLastReadChapter(chapters, lastReadChapterId),
+  const continueReadingChapter = useMemo(
+    () => findContinueReadingChapter(chapters, lastReadChapterId),
     [chapters, lastReadChapterId],
   );
   const readPercent = useMemo(
@@ -399,9 +399,11 @@ export function NovelWorkspace({
             </div>
             <div className="norea-novel-read-actions">
               <NovelReadButton
-                disabled={!lastReadChapter}
+                disabled={!continueReadingChapter}
                 label={t("novel.continueReading")}
-                onClick={() => lastReadChapter && onRead(lastReadChapter)}
+                onClick={() =>
+                  continueReadingChapter && onRead(continueReadingChapter)
+                }
                 tone="accent"
               >
                 <PlayGlyph />

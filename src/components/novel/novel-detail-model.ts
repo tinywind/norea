@@ -198,12 +198,21 @@ export function findFirstChapter(
   }, null);
 }
 
-export function findLastReadChapter(
-  chapters: ChapterListRow[],
+export function findContinueReadingChapter(
+  chapters: readonly ChapterListRow[],
   lastReadChapterId: number | undefined,
 ): ChapterListRow | null {
-  if (lastReadChapterId === undefined) return null;
-  return chapters.find((chapter) => chapter.id === lastReadChapterId) ?? null;
+  const readingOrder = getReadingOrderChapters(chapters);
+  const lastReadIndex =
+    lastReadChapterId === undefined
+      ? -1
+      : readingOrder.findIndex((chapter) => chapter.id === lastReadChapterId);
+  if (lastReadIndex >= 0) {
+    const lastRead = readingOrder[lastReadIndex]!;
+    if (lastRead.progress < FINISHED_PROGRESS) return lastRead;
+    return readingOrder[lastReadIndex + 1] ?? lastRead;
+  }
+  return readingOrder.find((chapter) => chapter.unread) ?? readingOrder[0] ?? null;
 }
 
 export function resolveNovelSourceUrl(novel: NovelDetailRecord): string | null {
