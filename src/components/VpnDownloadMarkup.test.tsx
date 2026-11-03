@@ -14,7 +14,7 @@ vi.mock("../i18n", async original => {
 });
 vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ queryKey }: { queryKey: readonly string[] }) => ({
-    data: queryKey[0] === "vpn-download-profile-issues" ? [] : queryKey[0] === "plugin-vpn" && queryKey.length === 1 ? { profile: null }
+    data: queryKey[0] === "vpn-download-profile-issues" || queryKey[1] === "automatic-profiles" ? [] : queryKey[0] === "plugin-vpn" && queryKey.length === 1 ? { profile: null }
       : queryKey[0] === "vpn-gate-server-verdicts"
       ? [1, 2, 3].map(id => ({ ip: `192.0.2.${id}`, verdict: "works", updatedAt: 1 }))
       : { limit: 20, cleanupError: null, profiles: [1, 2].map(id => ({ id: `profile-${id}`, ip: `192.0.2.${id}`, protocol: "udp", hash: "a".repeat(64), approvedAt: 1, approvalSequence: id })) },

@@ -3,6 +3,7 @@ import { Alert, Group, Progress, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
+import { AUTOMATIC_PLUGIN_VPN_PROFILES_QUERY_KEY, listAutomaticPluginVpnProfiles } from "../lib/plugin-vpn-automatic";
 import { listSavedPluginVpnProfiles, SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY } from "../lib/plugin-vpn-profiles";
 import type { VpnDownloadDraftWork, VpnDownloadHandoverWork, VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-drafts";
 import { isVpnDownloadVerificationNeeded } from "../lib/tasks/vpn-download-notifications";
@@ -58,7 +59,7 @@ const PHASE_KEYS: Record<VpnDownloadRangeState["phase"], TranslationKey> = {
 };
 const PAUSE_KEYS: Record<string, TranslationKey> = {
   "profiles-exhausted": "vpnDownload.reason.exhausted", "profile-unavailable": "vpnDownload.reason.unavailable",
-  "profile-in-use": "vpnDownload.reason.inUse", interrupted: "vpnDownload.reason.interrupted", offline: "network.waiting",
+  interrupted: "vpnDownload.reason.interrupted", offline: "network.waiting",
   "challenge-captcha": "vpnDownload.reason.captcha", "challenge-cloudflare": "vpnDownload.reason.cloudflare",
   "manual-verification": "vpnDownload.reason.verification", "verification-unavailable": "vpnDownload.reason.verificationUnavailable",
   "authentication-required": "vpnDownload.reason.authentication", "download-failed": "vpnDownload.reason.downloadFailed",
@@ -181,7 +182,8 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
   const vault = useQuery({ queryKey: SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY, queryFn: listSavedPluginVpnProfiles, meta: { errorPresentation: "inline" } });
   const { pendingKeys, errors, run } = usePendingActions();
   const runEnabled = !snapshot.run || snapshot.run.status === "running";
-  const profiles = vault.data?.profiles ?? [];
+  const automatic = useQuery({ queryKey: AUTOMATIC_PLUGIN_VPN_PROFILES_QUERY_KEY, queryFn: listAutomaticPluginVpnProfiles, meta: { errorPresentation: "inline" } });
+  const profiles = [...vault.data?.profiles ?? [], ...automatic.data ?? []];
 
   return (
     <Stack gap="md">
@@ -206,7 +208,9 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
         const label = (id: number) => snapshot.chapterLabels[plan.id]?.[id] ?? t("vpnDownload.chapterId", { id });
         const interval = `${label(range.startChapterId)} / ${label(range.endChapterId)}`;
         const stateKey = rangeStateKey(range, runEnabled);
-        const profile = profiles.find(candidate => candidate.id === range.profileId && candidate.hash === range.profileHash);
+        // The server is secondary detail, shown only while this range holds a lease on it.
+        const leased = range.phase === "connecting" || range.phase === "running";
+        const profile = leased ? profiles.find(candidate => candidate.id === range.profileId && candidate.hash === range.profileHash) : undefined;
         const verify = isVpnDownloadVerificationNeeded(plan, range);
         const resume = !terminal(range) && range.phase === "paused" && range.userPaused && range.pauseReason !== "work-paused";
         const canAct = !pendingKeys.has(key) && runEnabled && snapshot.capabilities.supported;
@@ -219,8 +223,8 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
             </Group>
             <Progress aria-label={t("vpnDownload.progressLabel")} value={range.selectedChapterIds.length ? range.checkpoint / range.selectedChapterIds.length * 100 : 100} size="xs" />
             <Text size="sm" c="dimmed">{stateKey ? t(stateKey) : range.pauseReason}</Text>
-            {!terminal(range) ? <Text size="sm" c="dimmed" className="norea-vpn-download-heading">
-              {profile ? t("vpnDownload.server", { ip: profile.ip, protocol: profile.protocol.toUpperCase() }) : t("vpnDownload.serverPending")}
+            {profile ? <Text size="xs" c="dimmed" className="norea-vpn-download-heading">
+              {t("vpnDownload.server", { ip: profile.ip, protocol: profile.protocol.toUpperCase() })}
             </Text> : null}
             {verify || resume ? <SettingsInlineControls>
               {verify ? <TextButton aria-label={actionLabel(t("vpnDownload.openVerification"))} disabled={!canAct}

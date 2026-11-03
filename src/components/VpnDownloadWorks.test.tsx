@@ -7,6 +7,7 @@ import type { OverflowMenuItem } from "./ui/OverflowMenu";
 const mocks = vi.hoisted(() => ({
   states: [] as unknown[], refs: [] as { current: unknown }[], index: 0, refIndex: 0,
   profiles: [] as { id: string; ip: string; protocol: "udp" | "tcp"; hash: string; approvedAt: number; approvalSequence: number }[],
+  automatic: [] as { id: string; ip: string; protocol: "udp" | "tcp"; hash: string; score: number; testedAt: number; failures: number }[],
 }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
@@ -17,7 +18,10 @@ vi.mock("react", async original => ({
   },
   useRef: (initial: unknown) => mocks.refs[mocks.refIndex++] ?? (mocks.refs[mocks.refIndex - 1] = { current: initial }),
 }));
-vi.mock("@tanstack/react-query", () => ({ useQuery: () => ({ data: { limit: 20, cleanupError: null, profiles: mocks.profiles }, isPending: false, isError: false }) }));
+vi.mock("@tanstack/react-query", () => ({ useQuery: ({ queryKey }: { queryKey: readonly string[] }) => ({
+  data: queryKey[1] === "automatic-profiles" ? mocks.automatic : { limit: 20, cleanupError: null, profiles: mocks.profiles }, isPending: false, isError: false,
+}) }));
+vi.mock("../lib/plugin-vpn-automatic", () => ({ AUTOMATIC_PLUGIN_VPN_PROFILES_QUERY_KEY: ["plugin-vpn", "automatic-profiles"], listAutomaticPluginVpnProfiles: vi.fn() }));
 vi.mock("../lib/plugin-vpn-profiles", () => ({ SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY: ["plugin-vpn", "saved-profiles"], listSavedPluginVpnProfiles: vi.fn() }));
 vi.mock("../lib/tasks/vpn-download-runtime", () => ({
   cancelVpnDownloadDraft: vi.fn(), cancelVpnDownloadHandoverWork: vi.fn(), cancelVpnDownloadRange: vi.fn(), openVpnDownloadVerification: vi.fn(),
@@ -76,6 +80,7 @@ const row = (view: ReactElement<Props>[], id: string) => controls(view.find(elem
 beforeEach(() => {
   vi.clearAllMocks(); mocks.states = []; mocks.refs = [];
   mocks.profiles = [{ id: "a", ip: "192.0.2.1", protocol: "udp", hash: "hash-a", approvedAt: 1, approvalSequence: 1 }];
+  mocks.automatic = [{ id: "b", ip: "203.0.113.2", protocol: "tcp", hash: "hash-b", score: 4, testedAt: 1, failures: 0 }];
   confirm.mockResolvedValue(true);
   for (const action of Object.values(actions)) action.mockResolvedValue(undefined);
 });
@@ -135,16 +140,20 @@ it("cancels all pending and enrolled parts of one work only after confirmation",
   expect(actions.cancelRange.mock.calls).toEqual([["plan", "lane-a"], ["plan", "lane-b"]]);
 });
 
-it("shows each range's interval, state and server in Details without a profile id or hash", () => {
+it("shows each range's interval and state in Details, with the server only while it is leased", () => {
   const value = withPlans(activePlan());
   value.chapterLabels = { plan: { 90: "Opening", 35: "Extra 1.5", 1: "Next", 4: "Ending" } };
+  value.plans[0]!.ranges.push({ ...activePlan().ranges[1]!, id: "lane-c", profileId: "a", profileHash: "hash-a", phase: "paused", pauseReason: null });
   const view = renderDetails(value);
   expect(text(row(view, "lane-a"))).toContain("Opening / Extra 1.5");
   expect(text(row(view, "lane-a"))).toContain("vpnDownload.reason.captcha");
-  expect(text(row(view, "lane-a"))).toContain('vpnDownload.server{"ip":"192.0.2.1","protocol":"UDP"}');
+  expect(text(row(view, "lane-a"))).not.toContain("vpnDownload.server");
   expect(text(row(view, "lane-b"))).toContain("vpnDownload.phase.running");
-  expect(text(row(view, "lane-b"))).toContain("vpnDownload.serverPending");
+  expect(text(row(view, "lane-b"))).toContain('vpnDownload.server{"ip":"203.0.113.2","protocol":"TCP"}');
+  expect(text(row(view, "lane-c"))).toContain("vpnDownload.phase.waitingWorker");
+  expect(text(row(view, "lane-c"))).not.toContain("vpnDownload.server");
   expect(text(view)).not.toContain("hash-");
+  expect(text(view)).not.toContain("vpnDownload.reason.inUse");
 });
 
 it("offers range actions only for a manual verification or a range the user paused", async () => {

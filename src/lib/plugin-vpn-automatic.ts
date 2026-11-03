@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { PluginVpnServerProtocol } from "./plugin-vpn";
 
+export const AUTOMATIC_PLUGIN_VPN_PROFILES_QUERY_KEY = ["plugin-vpn", "automatic-profiles"] as const;
+
 /** A VPN Gate server that passed an automatic test. It never carries or changes an O/X verdict. */
 export interface AutomaticVpnProfile {
   id: string;
