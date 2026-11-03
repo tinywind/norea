@@ -29,7 +29,6 @@
 }
 
 .norea-browse-tabs,
-.norea-browse-tab-stack,
 .norea-source-tools,
 .norea-source-workbench {
   display: grid;
@@ -38,53 +37,184 @@
 }
 
 .norea-browse-tab-list {
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-md);
   overflow-x: auto;
-  padding: var(--norea-space-1);
 }
 
 .norea-browse-tab-panel {
   min-width: 0;
+  padding-top: var(--norea-space-3);
+}
+
+.norea-plugin-icon {
+  align-items: center;
+  background: var(--norea-color-surface-raised);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink-muted);
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-size: var(--norea-text-md);
+  font-weight: var(--norea-weight-bold);
+  height: 2.5rem;
+  justify-content: center;
+  overflow: hidden;
+  width: 2.5rem;
+}
+
+.norea-plugin-icon img {
+  height: 100%;
+  object-fit: cover;
+  width: 100%;
+}
+
+.norea-browse-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+}
+
+.norea-browse-sources,
+.norea-extensions-frame {
+  display: grid;
+  gap: var(--norea-space-4);
+  min-width: 0;
+}
+
+.norea-extensions-frame {
+  --norea-page-block: var(--norea-space-3);
+}
+
+.norea-source-list,
+.norea-extension-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+
+.norea-source-row,
+.norea-extension-row,
+.norea-extension-repository {
+  align-items: center;
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  min-width: 0;
+}
+
+.norea-source-row .norea-source-row-open,
+.norea-extension-repository > .norea-list-item {
+  align-self: stretch;
+  flex: 1 1 auto;
+  min-width: 0;
+  padding-inline: var(--norea-space-1);
+}
+
+.norea-extension-row {
+  gap: var(--norea-space-3);
+  min-height: 3.5rem;
+  padding: var(--norea-space-2) var(--norea-space-1);
+}
+
+.norea-extension-row[data-current="true"] {
+  background: var(--norea-color-selected);
+}
+
+.norea-source-row-trailing,
+.norea-extension-row-trailing {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--norea-space-1);
+  padding-inline: var(--norea-space-1);
+}
+
+.norea-extension-busy {
+  align-items: center;
+  display: inline-flex;
+  height: 2.5rem;
+  justify-content: center;
+  width: 2.5rem;
+}
+
+.norea-source-row-skeleton {
+  gap: var(--norea-space-3);
+  min-height: 3.5rem;
+  padding: var(--norea-space-2) var(--norea-space-4);
+}
+
+.norea-extension-skeleton-text {
+  display: grid;
+  flex: 1 1 auto;
+  gap: var(--norea-space-2);
+}
+
+.norea-extension-section,
+.norea-source-group {
+  display: grid;
+  gap: var(--norea-space-2);
+  min-width: 0;
+}
+
+.norea-extension-section-header {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-2);
+  justify-content: space-between;
+}
+
+.norea-extension-section-title,
+.norea-source-group-title {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-bold);
+  margin: 0;
+  padding: var(--norea-space-2) var(--norea-space-1) 0;
+}
+
+.norea-source-group-title:has(.norea-source-group-toggle) {
+  padding: 0;
+}
+
+.norea-source-group-toggle {
+  align-items: center;
+  background: none;
+  border: 0;
+  border-radius: var(--norea-radius-sm);
+  color: inherit;
+  cursor: pointer;
+  display: flex;
+  font: inherit;
+  gap: var(--norea-space-2);
+  min-height: 2.75rem;
+  padding: var(--norea-space-2) var(--norea-space-1);
+  width: 100%;
+}
+
+.norea-source-group-count {
+  flex: 1 1 auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--norea-weight-medium);
+  text-align: left;
+}
+
+.norea-source-show-all {
+  justify-self: start;
+}
+
+.norea-extension-filters {
+  display: grid;
+  gap: var(--norea-space-2);
+}
+
+.norea-extension-progress {
+  align-items: center;
+  color: var(--norea-color-ink-muted);
+  display: flex;
+  font-size: var(--norea-text-sm);
+  gap: var(--norea-space-2);
 }
 
 .norea-source-workbench {
   align-items: start;
-}
-
-.norea-browse-panel {
-  overflow: hidden;
-}
-
-.norea-browse-filter-panel {
-  padding: var(--norea-space-3);
-}
-
-.norea-browse-filter-title-row {
-  align-items: center;
-  display: grid;
-  gap: var(--norea-space-3);
-  grid-template-columns: minmax(0, 1fr) minmax(15rem, 21.25rem);
-}
-
-.norea-browse-filter-title {
-  color: var(--norea-color-ink);
-  font-family: var(--norea-font-heading);
-  font-size: var(--norea-text-md);
-  font-weight: 700;
-  min-width: 0;
-}
-
-.norea-browse-language-input {
-  min-width: 0;
-}
-
-.norea-browse-repository-actions {
-  align-items: center;
-  display: inline-flex;
-  flex: 0 0 auto;
-  gap: var(--norea-space-1);
 }
 
 .norea-source-header-action-divider {
@@ -93,27 +223,6 @@
   display: inline-block;
   min-height: 2rem;
   width: 1px;
-}
-
-.norea-browse-plugin-row {
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-sm);
-  min-height: 3.75rem;
-  padding: 0.5625rem var(--norea-space-3);
-}
-
-.norea-browse-repo-row {
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-sm);
-  min-height: 3.125rem;
-  padding: var(--norea-space-1) var(--norea-space-2);
-}
-
-.norea-browse-plugin-row:hover,
-.norea-browse-repo-row:hover {
-  background: var(--norea-color-surface-raised);
 }
 
 .norea-plugin-settings-editor {
@@ -164,11 +273,6 @@
   width: 100%;
 }
 
-.norea-action-strip {
-  flex: 0 0 auto;
-}
-
-.norea-icon-count svg,
 .norea-icon-state svg {
   fill: none;
   height: 0.9375rem;
@@ -179,7 +283,6 @@
   width: 0.9375rem;
 }
 
-.norea-icon-count,
 .norea-icon-state {
   align-items: center;
   color: var(--norea-color-ink-muted);
@@ -193,17 +296,6 @@
   width: 1.625rem;
 }
 
-.norea-icon-count {
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xs);
-  font-variant-numeric: tabular-nums;
-  font-weight: 800;
-  gap: var(--norea-space-1);
-  min-height: 1.625rem;
-  white-space: nowrap;
-}
-
-.norea-icon-count[data-tone="error"],
 .norea-icon-state[data-tone="error"] {
   color: var(--norea-color-danger);
 }
@@ -406,7 +498,6 @@
   font-weight: 800;
 }
 
-.norea-search-inline-state,
 .norea-search-pending {
   min-height: 1.75rem;
 }
@@ -655,14 +746,6 @@
 @media (max-width: 991px) {
   .norea-search-active-row,
   .norea-search-result-heading {
-    display: none;
-  }
-
-  .norea-browse-filter-title-row {
-    grid-template-columns: 1fr;
-  }
-
-  .norea-browse-filter-title {
     display: none;
   }
 

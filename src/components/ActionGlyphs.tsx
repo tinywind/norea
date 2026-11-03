@@ -2,14 +2,6 @@ interface ActionGlyphProps {
   className?: string;
 }
 
-export function CheckGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M4 12l5 5L20 6" />
-    </svg>
-  );
-}
-
 export function ArrowDownGlyph({ className }: ActionGlyphProps) {
   return (
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
@@ -53,15 +45,6 @@ export function CloseGlyph({ className }: ActionGlyphProps) {
   );
 }
 
-export function ClockGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <circle cx="12" cy="12" r="8" />
-      <path d="M12 8v5l3 2" />
-    </svg>
-  );
-}
-
 export function LibraryAddedGlyph({ className }: ActionGlyphProps) {
   return (
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
@@ -77,15 +60,6 @@ export function DetailsGlyph({ className }: ActionGlyphProps) {
       <circle cx="12" cy="12" r="8" />
       <path d="M12 11v5" />
       <path d="M12 8h.01" />
-    </svg>
-  );
-}
-
-export function EditGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M12 20h9" />
-      <path d="M16.5 3.5a2.1 2.1 0 0 1 3 3L7 19l-4 1 1-4z" />
     </svg>
   );
 }
@@ -138,15 +112,6 @@ export function UnpinGlyph({ className }: ActionGlyphProps) {
   );
 }
 
-export function PlusGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M12 5v14" />
-      <path d="M5 12h14" />
-    </svg>
-  );
-}
-
 export function RefreshGlyph({ className }: ActionGlyphProps) {
   return (
     <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
@@ -154,19 +119,6 @@ export function RefreshGlyph({ className }: ActionGlyphProps) {
       <path d="M4 12A8 8 0 0 1 17.66 6.34" />
       <path d="M17 3v4h-4" />
       <path d="M7 21v-4h4" />
-    </svg>
-  );
-}
-
-export function RepositoryGlyph({ className }: ActionGlyphProps) {
-  return (
-    <svg className={className} aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M5 6h14" />
-      <path d="M5 12h14" />
-      <path d="M5 18h14" />
-      <path d="M8 4v4" />
-      <path d="M8 10v4" />
-      <path d="M8 16v4" />
     </svg>
   );
 }

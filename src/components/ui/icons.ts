@@ -8,6 +8,7 @@ import {
   IconBell,
   IconBookmark,
   IconBookmarkFilled,
+  IconBrandGithub,
   IconBooks,
   IconCategory,
   IconCheck,
@@ -39,6 +40,7 @@ import {
   IconInfoSquareRounded,
   IconListNumbers,
   IconMinus,
+  IconPackages,
   IconPencil,
   IconPin,
   IconPinnedOff,
@@ -46,6 +48,7 @@ import {
   IconPlayerPlay,
   IconPlayerSkipBack,
   IconPlus,
+  IconPuzzle,
   IconRefresh,
   IconRefreshDot,
   IconReload,
@@ -142,3 +145,6 @@ export const FolderIcon = withAppDefaults(IconFolder);
 export const CategoryIcon = withAppDefaults(IconCategory);
 export const VpnIcon = withAppDefaults(IconShieldLock);
 export const ServerIcon = withAppDefaults(IconServer);
+export const ExtensionsIcon = withAppDefaults(IconPuzzle);
+export const RepositoryIcon = withAppDefaults(IconPackages);
+export const GithubIcon = withAppDefaults(IconBrandGithub);

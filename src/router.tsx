@@ -13,6 +13,7 @@ import {
 import { RootLayout } from "./routes/__root";
 import { BrowsePage, type BrowseTab } from "./routes/browse";
 import { DownloadsPage } from "./routes/downloads";
+import { ExtensionsPage } from "./routes/extensions";
 import { HistoryPage } from "./routes/history";
 import { LibraryPage } from "./routes/library";
 import { MorePage } from "./routes/more";
@@ -39,6 +40,16 @@ export const browseRoute = createRoute({
     tab: search.tab === "server" ? "server" : search.tab === "sources" ? "sources" : "search",
   }),
   component: BrowseRoutePage,
+});
+
+export const extensionsRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/browse/extensions",
+  validateSearch: (search: Record<string, unknown>): { plugin?: string } =>
+    typeof search.plugin === "string" && search.plugin !== ""
+      ? { plugin: search.plugin }
+      : {},
+  component: ExtensionsRoutePage,
 });
 
 const readerRoute = createRoute({
@@ -102,6 +113,7 @@ const sourceRoute = createRoute({
 const routeTree = rootRoute.addChildren([
   libraryRoute,
   browseRoute,
+  extensionsRoute,
   readerRoute,
   settingsRoute,
   novelRoute,
@@ -118,6 +130,11 @@ export const router = createRouter({ routeTree });
 function BrowseRoutePage() {
   const { q, tab } = browseRoute.useSearch();
   return <BrowsePage query={q} tab={tab} />;
+}
+
+function ExtensionsRoutePage() {
+  const { plugin } = extensionsRoute.useSearch();
+  return <ExtensionsPage focusPluginId={plugin} />;
 }
 
 function DownloadsRoutePage() {

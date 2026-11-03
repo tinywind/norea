@@ -362,10 +362,7 @@ export function RootLayout() {
       onRepoAdd: (repoUrl) => {
         if (disposed) return;
         useBrowseStore.getState().setPendingRepoUrl(repoUrl);
-        void navigate({
-          to: "/browse",
-          search: { q: "", tab: "sources" },
-        });
+        void navigate({ to: "/browse/extensions", search: {} });
       },
       onTaskNotificationAction: action => {
         if (disposed) return;
