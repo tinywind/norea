@@ -13,11 +13,14 @@ import {
   HistoryRowsSkeleton,
 } from "../components/history/HistoryRows";
 import { SearchBar } from "../components/SearchBar";
-import { CheckIcon } from "../components/ui/icons";
+import { useConfirm } from "../components/ui/ConfirmDialog";
+import { CheckIcon, TrashIcon } from "../components/ui/icons";
+import { OverflowMenu } from "../components/ui/OverflowMenu";
 import {
   clearNovelHistory,
   getAdjacentChapter,
   listRecentlyRead,
+  type ChapterListRow,
   type RecentlyReadEntry,
 } from "../db/queries/chapter";
 import { useTranslation, type TranslationKey } from "../i18n";
@@ -86,6 +89,21 @@ function matchesSearch(entry: RecentlyReadEntry, search: string): boolean {
   );
 }
 
+/** Clears every novel's history, one novel at a time, until none is left. */
+async function clearAllHistory(): Promise<void> {
+  const cleared = new Set<number>();
+  for (;;) {
+    const pending = (await listRecentlyRead(HISTORY_LIMIT)).filter(
+      (entry) => !cleared.has(entry.novelId),
+    );
+    if (pending.length === 0) return;
+    for (const entry of pending) {
+      await clearNovelHistory(entry.novelId);
+      cleared.add(entry.novelId);
+    }
+  }
+}
+
 function groupByDateBucket(
   entries: readonly RecentlyReadEntry[],
 ): HistoryDateSection[] {
@@ -101,6 +119,7 @@ export function HistoryPage() {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const confirm = useConfirm();
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [progressFilter, setProgressFilter] =
@@ -111,12 +130,17 @@ export function HistoryPage() {
     queryKey: ["chapter", "history", HISTORY_LIMIT] as const,
     queryFn: () => listRecentlyRead(HISTORY_LIMIT),
   });
+  const invalidateHistory = () => {
+    void queryClient.invalidateQueries({ queryKey: ["chapter", "history"] });
+    void queryClient.invalidateQueries({ queryKey: ["novel"] });
+  };
   const removeHistory = useMutation({
     mutationFn: clearNovelHistory,
-    onSuccess: () => {
-      void queryClient.invalidateQueries({ queryKey: ["chapter", "history"] });
-      void queryClient.invalidateQueries({ queryKey: ["novel"] });
-    },
+    onSuccess: invalidateHistory,
+  });
+  const clearHistory = useMutation({
+    mutationFn: clearAllHistory,
+    onSettled: invalidateHistory,
   });
 
   const visibleEntries = useMemo(
@@ -145,9 +169,16 @@ export function HistoryPage() {
   const openNovel = (novelId: number) => {
     void navigate({ to: "/novel", search: { id: novelId } });
   };
-  const continueReading = (entry: RecentlyReadEntry) => {
+  const continueReading = (
+    entry: RecentlyReadEntry,
+    nextChapter: ChapterListRow | null | undefined,
+  ) => {
     if (entry.progress < FINISHED_PROGRESS) {
       openChapter(entry.chapterId);
+      return;
+    }
+    if (nextChapter !== undefined) {
+      openChapter(nextChapter?.id ?? entry.chapterId);
       return;
     }
 
@@ -155,11 +186,41 @@ export function HistoryPage() {
       .then((nextChapter) => openChapter(nextChapter?.id ?? entry.chapterId))
       .catch(() => openChapter(entry.chapterId));
   };
+  const confirmRemove = async (entry: RecentlyReadEntry) => {
+    const confirmed = await confirm({
+      confirmLabel: t("common.remove"),
+      danger: true,
+      message: t("history.removeConfirm.message", { name: entry.novelName }),
+      title: t("history.removeConfirm.title"),
+    });
+    if (confirmed) removeHistory.mutate(entry.novelId);
+  };
+  const confirmClearAll = async () => {
+    const confirmed = await confirm({
+      confirmLabel: t("history.clearAll.confirm"),
+      danger: true,
+      message: t("history.clearAll.message"),
+      title: t("history.clearAll.title"),
+    });
+    if (confirmed) clearHistory.mutate();
+  };
 
   return (
     <div className="norea-history-page">
       <header className="norea-history-app-bar">
         <h1 className="norea-history-app-bar-title">{t("history.title")}</h1>
+        <OverflowMenu
+          items={[
+            {
+              danger: true,
+              disabled: !query.data?.length || clearHistory.isPending,
+              icon: TrashIcon,
+              label: t("history.clearAll.action"),
+              onClick: () => void confirmClearAll(),
+            },
+          ]}
+          label={t("common.more")}
+        />
       </header>
 
       <PageFrame className="norea-history-frame" size="wide">
@@ -230,12 +291,13 @@ export function HistoryPage() {
                   <HistoryRow
                     key={entry.novelId}
                     entry={entry}
-                    onContinue={() => continueReading(entry)}
-                    onOpen={() => openNovel(entry.novelId)}
-                    onRemove={() => removeHistory.mutate(entry.novelId)}
+                    onContinue={(nextChapter) => continueReading(entry, nextChapter)}
+                    onOpenNovel={() => openNovel(entry.novelId)}
+                    onRemove={() => void confirmRemove(entry)}
                     removing={
-                      removeHistory.isPending &&
-                      removeHistory.variables === entry.novelId
+                      clearHistory.isPending ||
+                      (removeHistory.isPending &&
+                        removeHistory.variables === entry.novelId)
                     }
                   />
                 ))}

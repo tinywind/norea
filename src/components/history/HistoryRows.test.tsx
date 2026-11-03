@@ -3,8 +3,15 @@ import { load } from "cheerio";
 import { readFileSync } from "node:fs";
 import type { ComponentProps } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { describe, expect, it, vi } from "vitest";
-import type { RecentlyReadEntry } from "../../db/queries/chapter";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ChapterListRow, RecentlyReadEntry } from "../../db/queries/chapter";
+import {
+  collectElements,
+  mountBackNavigationHarness,
+  type BackNavigationHarness,
+} from "../../lib/android-back-navigation.test-support";
+
+const next = vi.hoisted(() => ({ data: undefined as unknown }));
 
 vi.mock("../../i18n", () => ({
   formatRelativeTimeForLocale: () => "3h ago",
@@ -20,6 +27,9 @@ vi.mock("../../i18n", () => ({
 }));
 vi.mock("../../lib/use-novel-cover-source", () => ({ useNovelCoverSource: () => null }));
 vi.mock("../../lib/plugins/manager", () => ({ pluginManager: { getPlugin: () => undefined } }));
+vi.mock("@tanstack/react-query", () => ({
+  useQuery: (options: { enabled: boolean }) => ({ data: options.enabled ? next.data : undefined }),
+}));
 
 import { HistoryRow } from "./HistoryRows";
 
@@ -45,7 +55,7 @@ function render(overrides: Partial<ComponentProps<typeof HistoryRow>> = {}) {
         <HistoryRow
           entry={entry}
           onContinue={vi.fn()}
-          onOpen={vi.fn()}
+          onOpenNovel={vi.fn()}
           onRemove={vi.fn()}
           removing={false}
           {...overrides}
@@ -54,6 +64,10 @@ function render(overrides: Partial<ComponentProps<typeof HistoryRow>> = {}) {
     ),
   );
 }
+
+afterEach(() => {
+  next.data = undefined;
+});
 
 describe("HistoryRow", () => {
   it("keeps the row body and its actions as sibling controls", () => {
@@ -80,4 +94,64 @@ describe("HistoryRow", () => {
 it("keeps the meta line and progress bar visible on phones", () => {
   const css = readFileSync(new URL("../../styles/history.css", import.meta.url), "utf8");
   expect(css).not.toMatch(/display:\s*none/);
+});
+
+describe("HistoryRow actions", () => {
+  let harness: BackNavigationHarness | undefined;
+  let tree: ReturnType<typeof HistoryRow> | undefined;
+  const onContinue = vi.fn();
+  const onOpenNovel = vi.fn();
+  const onRemove = vi.fn();
+
+  afterEach(async () => {
+    await harness?.unmount();
+    harness = undefined;
+    vi.clearAllMocks();
+  });
+
+  async function mount(row: RecentlyReadEntry) {
+    function Probe() {
+      tree = HistoryRow({ entry: row, onContinue, onOpenNovel, onRemove, removing: false });
+      return null;
+    }
+    harness = mountBackNavigationHarness();
+    await harness.render(<Probe />);
+    const elements = collectElements(tree);
+    return {
+      menu: elements.find((element) => Array.isArray(element.props.items))!.props.items as {
+        danger?: boolean;
+        label: string;
+        onClick: () => void;
+      }[],
+      row: elements.find((element) => element.props.title === row.novelName)!,
+    };
+  }
+
+  it("continues an unfinished chapter on tap", async () => {
+    const { row } = await mount(entry);
+    (row.props.onClick as () => void)();
+    expect(onContinue).toHaveBeenCalledWith(undefined);
+  });
+
+  it("names the next chapter of a finished one and continues there", async () => {
+    const nextChapter = { id: 53, position: 53 } as ChapterListRow;
+    next.data = nextChapter;
+    const finished = { ...entry, progress: 100 };
+    expect(render({ entry: finished }).text()).toContain('history.nextChapter{"number":53} · 3h ago');
+    const { row } = await mount(finished);
+    (row.props.onClick as () => void)();
+    expect(onContinue).toHaveBeenCalledWith(nextChapter);
+  });
+
+  it("keeps novel details and a danger removal in the overflow", async () => {
+    const { menu } = await mount(entry);
+    expect(menu.map((item) => [item.label, item.danger ?? false])).toEqual([
+      ["history.novelDetails", false],
+      ["history.remove", true],
+    ]);
+    menu[0]!.onClick();
+    menu[1]!.onClick();
+    expect(onOpenNovel).toHaveBeenCalledOnce();
+    expect(onRemove).toHaveBeenCalledOnce();
+  });
 });
