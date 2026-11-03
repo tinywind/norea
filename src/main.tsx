@@ -35,6 +35,7 @@ import { redactUrlsForLog } from "./lib/url-log";
 import { router } from "./router";
 import { useAppearanceStore } from "./store/appearance";
 import { useLoggingStore } from "./store/logging";
+import "./theme/tokens.css";
 import "./styles/app.css";
 import { makeMantineColorScale, resolveMd3Palette } from "./theme/md3";
 
