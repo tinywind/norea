@@ -14,7 +14,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Button, Loader, VisuallyHidden } from "@mantine/core";
+import { Button, Loader, Skeleton, VisuallyHidden } from "@mantine/core";
 import {
   useEffect,
   useId,
@@ -609,5 +609,21 @@ export function VirtualChapterList({
         {chapterList}
       </SortableContext>
     </DndContext>
+  );
+}
+
+const SKELETON_ROWS = 8;
+
+/** Placeholder chapter rows at the real row height while chapters load. */
+export function ChapterRowsSkeleton() {
+  return (
+    <div aria-hidden="true">
+      {Array.from({ length: SKELETON_ROWS }, (_, index) => (
+        <div className="norea-novel-chapter norea-novel-chapter-skeleton" key={index}>
+          <Skeleton height="0.875rem" radius="sm" width="55%" />
+          <Skeleton height="0.75rem" radius="sm" width="30%" />
+        </div>
+      ))}
+    </div>
   );
 }

@@ -1,9 +1,8 @@
-import { Button, Drawer, Loader, Text } from "@mantine/core";
+import { Button, Drawer, Text, VisuallyHidden } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { PlusGlyph } from "../components/ActionGlyphs";
 import { PageFrame, StateView } from "../components/AppFrame";
 import { IconButton } from "../components/IconButton";
 import {
@@ -39,8 +38,11 @@ import {
   sourceDuplicateChapterCountsById,
 } from "../components/novel/novel-detail-model";
 import { ChapterSortPicker } from "../components/novel/NovelActions";
-import { VirtualChapterList } from "../components/novel/NovelChapterList";
-import { NovelWorkspace } from "../components/novel/NovelWorkspace";
+import {
+  ChapterRowsSkeleton,
+  VirtualChapterList,
+} from "../components/novel/NovelChapterList";
+import { NovelHeroSkeleton, NovelWorkspace } from "../components/novel/NovelWorkspace";
 import { NovelCategoryEditor } from "../components/novel/NovelCategoryEditor";
 import {
   ServerChapterManager,
@@ -443,13 +445,24 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
   if (novelQuery.isLoading) {
     return (
-      <PageFrame>
-        <StateView
-          color="info"
-          title={t("novel.loading")}
-          message={t("novel.loadingMessage")}
-        />
-      </PageFrame>
+      <div aria-busy="true" className="norea-novel-page">
+        <header className="norea-novel-app-bar">
+          <IconButton label={t("common.back")} onClick={goBack} size="lg">
+            <BackIcon />
+          </IconButton>
+        </header>
+        <PageFrame className="norea-novel-frame" size="wide">
+          <div className="norea-novel-layout" role="status">
+            <VisuallyHidden>{t("novel.loading")}</VisuallyHidden>
+            <aside className="norea-novel-info-pane">
+              <NovelHeroSkeleton />
+            </aside>
+            <section className="norea-novel-chapters">
+              <ChapterRowsSkeleton />
+            </section>
+          </div>
+        </PageFrame>
+      </div>
     );
   }
 
@@ -792,28 +805,24 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
               ) : null}
 
               {chaptersQuery.isLoading ? (
-                <StateView
-                  color="info"
-                  title={t("novel.loadingChapters")}
-                  message={t("novel.loadingChaptersMessage")}
-                />
+                <div role="status">
+                  <VisuallyHidden>{t("novel.loadingChapters")}</VisuallyHidden>
+                  <ChapterRowsSkeleton />
+                </div>
               ) : chapters.length === 0 ? (
                 <StateView
-                  color="info"
                   title={t("novel.noChapters")}
-                  message={t("novel.noChaptersMessage")}
+                  message={t(novel.isLocal ? "novel.noLocalChaptersMessage" : "novel.noChaptersMessage")}
                   action={
                     novel.isLocal
                       ? {
-                          icon: addLocalChapters.isPending ? (
-                            <Loader size={14} />
-                          ) : (
-                            <PlusGlyph />
-                          ),
                           label: t("novel.local.addChapters"),
                           onClick: openLocalChapterInput,
                         }
-                      : undefined
+                      : {
+                          label: t("common.refresh"),
+                          onClick: () => fullRefreshMetadata.mutate(),
+                        }
                   }
                 />
               ) : (

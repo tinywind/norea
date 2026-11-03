@@ -12,6 +12,7 @@ const mocks = vi.hoisted(() => ({
   sync: { serverError: null as unknown, sourceError: null as unknown, retry: vi.fn() },
   metadataError: null as unknown,
   toggleMutate: vi.fn(),
+  fullRefresh: vi.fn(),
   clearDownloadMutate: vi.fn(),
   confirm: vi.fn(),
   toast: vi.fn(),
@@ -41,7 +42,7 @@ vi.mock("../i18n", () => ({ useTranslation: () => ({
 }) }));
 vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown) => unknown) => selector({ defaultChapterSort: "asc", setDefaultChapterSort: vi.fn() }) }));
 vi.mock("../store/reader", () => ({ useReaderStore: (selector: (state: unknown) => unknown) => selector({ lastReadChapterByNovel: {} }) }));
-vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () => ({ sourceDuplicateChapters: [], toggle: { mutate: mocks.toggleMutate }, refreshMetadata: { error: mocks.metadataError }, fullRefreshMetadata: {} }) }));
+vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () => ({ sourceDuplicateChapters: [], toggle: { mutate: mocks.toggleMutate }, refreshMetadata: { error: mocks.metadataError }, fullRefreshMetadata: { mutate: mocks.fullRefresh } }) }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.toast, hide: vi.fn() } }));
 vi.mock("../components/novel/use-server-novel-sync", () => ({ useServerNovelSync: () => mocks.sync }));
 vi.mock("../components/novel/use-novel-chapter-actions", () => ({ useNovelChapterActions: () => ({ clearDownload: { mutate: mocks.clearDownloadMutate }, clearSelectedDownloads: {}, setSelectedChapterReadState: {}, setRelativeChapterReadState: {}, repairMedia: {} }) }));
@@ -147,6 +148,7 @@ beforeEach(() => {
   mocks.metadataError = null;
   mocks.installed = false;
   mocks.toggleMutate.mockReset();
+  mocks.fullRefresh.mockReset();
   mocks.clearDownloadMutate.mockReset();
   mocks.confirm.mockReset();
   mocks.toast.mockReset();
@@ -561,5 +563,31 @@ it("keeps the download when the confirmation is cancelled", async () => {
     const list = find((props) => typeof props.onDeleteDownload === "function")!;
     await run(() => (list.props.onDeleteDownload as (id: number) => void)(1));
     expect(mocks.clearDownloadMutate).not.toHaveBeenCalled();
+  });
+});
+
+it("shows the page shape with a back button while the novel loads", () => {
+  mocks.novelQuery.isLoading = true;
+  const $ = renderPage();
+  expect($("[role='status']").text()).toBe("novel.loading");
+  expect($("button[aria-label='common.back']")).toHaveLength(1);
+  expect($(".mantine-Skeleton-root").length).toBeGreaterThan(8);
+  expect($("h1")).toHaveLength(0);
+});
+
+it.each([
+  [false, "common.refresh", () => mocks.fullRefresh],
+  [true, "novel.local.addChapters", undefined],
+] as const)("offers the next step from an empty chapter list (local: %s)", async (isLocal, label, called) => {
+  mocks.novel.isLocal = isLocal;
+  mocks.chapters = [];
+  await withPageTree(async (find, run) => {
+    const empty = find((props) => props.title === "novel.noChapters")!;
+    const action = empty.props.action as { label: string; onClick: () => void };
+    expect(action.label).toBe(label);
+    if (called) {
+      await run(() => action.onClick());
+      expect(called()).toHaveBeenCalledTimes(1);
+    }
   });
 });

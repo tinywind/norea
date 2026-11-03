@@ -391,6 +391,20 @@
   min-width: 0;
 }
 
+.norea-novel-chapter-skeleton {
+  align-items: flex-start;
+  flex-direction: column;
+  gap: var(--norea-space-2);
+  justify-content: center;
+  padding-inline: var(--norea-space-4);
+}
+
+.norea-novel-cover-skeleton {
+  aspect-ratio: 2 / 3;
+  height: auto;
+  width: 100%;
+}
+
 .norea-novel-chapter[data-dragging="true"] {
   opacity: 0.55;
 }

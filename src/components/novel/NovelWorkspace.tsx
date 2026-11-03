@@ -1,4 +1,4 @@
-import { Button } from "@mantine/core";
+import { Button, Skeleton } from "@mantine/core";
 import {
   useEffect,
   useId,
@@ -283,6 +283,27 @@ function NovelSummary({
           {expanded ? t("novel.summaryLess") : t("common.more")}
         </Button>
       ) : null}
+    </div>
+  );
+}
+
+/** The header zone's shape while the novel loads. */
+export function NovelHeroSkeleton() {
+  return (
+    <div aria-hidden="true" className="norea-novel-hero">
+      <div className="norea-novel-identity">
+        <div className="norea-novel-cover">
+          <Skeleton className="norea-novel-cover-skeleton" radius="sm" />
+        </div>
+        <div className="norea-novel-identity-text">
+          <Skeleton height="1.5rem" radius="sm" width="80%" />
+          <Skeleton height="0.875rem" mt="xs" radius="sm" width="50%" />
+          <Skeleton height="0.875rem" radius="sm" width="40%" />
+        </div>
+      </div>
+      <Skeleton height="2.75rem" radius="sm" />
+      <Skeleton height="0.875rem" radius="sm" />
+      <Skeleton height="0.875rem" radius="sm" width="70%" />
     </div>
   );
 }
