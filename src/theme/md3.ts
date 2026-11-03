@@ -475,31 +475,3 @@ export function resolveMd3Palette(
       : {}),
   };
 }
-
-export function makeMantineColorScale(
-  palette: Md3Palette,
-): [
-  string,
-  string,
-  string,
-  string,
-  string,
-  string,
-  string,
-  string,
-  string,
-  string,
-] {
-  return [
-    palette.primaryContainer,
-    palette.primaryContainer,
-    palette.inversePrimary,
-    palette.inversePrimary,
-    palette.primary,
-    palette.primary,
-    palette.primary,
-    palette.primary,
-    palette.onPrimaryContainer,
-    palette.onPrimaryContainer,
-  ];
-}

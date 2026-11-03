@@ -1,4 +1,4 @@
-import { createTheme, MantineProvider } from "@mantine/core";
+import { MantineProvider } from "@mantine/core";
 import "@mantine/core/styles.css";
 import { Notifications } from "@mantine/notifications";
 import "@mantine/notifications/styles.css";
@@ -37,20 +37,14 @@ import { useAppearanceStore } from "./store/appearance";
 import { useLoggingStore } from "./store/logging";
 import "./theme/tokens.css";
 import "./styles/app.css";
-import {
-  makeMantineColorScale,
-  normalizeCustomAccentColor,
-  resolveMd3Palette,
-} from "./theme/md3";
+import { createNoreaMantineTheme } from "./theme/mantine-theme";
+import { normalizeCustomAccentColor, resolveMd3Palette } from "./theme/md3";
 import {
   paletteRoleCssVariables,
   resolvePaletteRoles,
 } from "./theme/palette-roles";
 
 installRuntimeLogLevelFilter(useLoggingStore.getState().logLevel);
-
-const UI_FONT_FAMILY =
-  '"Pretendard Variable", Pretendard, system-ui, -apple-system, "Segoe UI", "Malgun Gothic", Roboto, "Noto Sans KR", sans-serif';
 
 const queryClient = new QueryClient({
   queryCache: new QueryCache({
@@ -179,40 +173,9 @@ function AppProviders() {
       }),
     [colorScheme, customAccentColor, palette],
   );
-  const theme = useMemo(
-    () =>
-      createTheme({
-        fontFamily: UI_FONT_FAMILY,
-        headings: { fontFamily: UI_FONT_FAMILY },
-        primaryColor: "norea",
-        colors: {
-          norea: makeMantineColorScale(palette),
-        },
-        defaultRadius: "sm",
-        components: {
-          Alert: {
-            defaultProps: {
-              radius: "sm",
-            },
-          },
-          Button: {
-            defaultProps: {
-              radius: "sm",
-            },
-          },
-          Paper: {
-            defaultProps: {
-              radius: "sm",
-            },
-          },
-          TextInput: {
-            defaultProps: {
-              radius: "sm",
-            },
-          },
-        },
-      }),
-    [palette],
+  const mantineTheme = useMemo(
+    () => createNoreaMantineTheme(roles, colorScheme),
+    [colorScheme, roles],
   );
 
   useEffect(() => {
@@ -246,7 +209,11 @@ function AppProviders() {
   useRuntimeViewport(fontScalePercent, androidViewScalePercent);
 
   return (
-    <MantineProvider theme={theme} forceColorScheme={colorScheme}>
+    <MantineProvider
+      theme={mantineTheme.theme}
+      cssVariablesResolver={mantineTheme.cssVariablesResolver}
+      forceColorScheme={colorScheme}
+    >
       <Notifications position="top-right" autoClose={5_000} />
       <QueryClientProvider client={queryClient}>
         <PluginVpnProxyGate>
