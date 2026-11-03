@@ -1,6 +1,7 @@
 import { Box, Loader, Text } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { StateView } from "../components/AppFrame";
 import { PdfReaderContent } from "../components/PdfReaderContent";
@@ -13,6 +14,10 @@ import {
   ReaderTopBar,
 } from "../components/reader/ReaderChrome";
 import { getReaderChromeThemeStyle } from "../components/reader/reader-chrome-theme";
+import {
+  ReaderEndOfNovel,
+  useNovelEndCheck,
+} from "../components/reader/ReaderEndOfNovel";
 import { useNextReaderChapter } from "../components/reader/use-next-reader-chapter";
 import { useReaderChapterDocument } from "../components/reader/use-reader-chapter-document";
 import { useReaderChapterNavigation } from "../components/reader/use-reader-chapter-navigation";
@@ -42,12 +47,15 @@ import { useReaderStore } from "../store/reader";
 import { useReaderLayoutStore } from "../store/reader-layout";
 import "../styles/reader.css";
 
+const FINISHED_PROGRESS = 100;
+
 interface ReaderPageProps {
   chapterId: number;
 }
 
 export function ReaderPage({ chapterId }: ReaderPageProps) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const active = usePageActivity();
   const queryClient = useQueryClient();
   const contentRef = useRef<ReaderContentHandle | null>(null);
@@ -119,6 +127,23 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     chapterIndex >= 0 && chapterIndex < chapters.length - 1
       ? chapters[chapterIndex + 1]
       : undefined;
+  const isLastChapter =
+    chapterListQuery.isSuccess &&
+    chapterIndex >= 0 &&
+    chapterIndex === chapters.length - 1;
+  const [endReachedChapterId, setEndReachedChapterId] = useState<number | null>(null);
+  const chapterPosition = chapter?.position;
+  const { refetch: refetchChapterList } = chapterListQuery;
+  const countNewChapters = useCallback(async () => {
+    const { data } = await refetchChapterList();
+    if (chapterPosition === undefined) return 0;
+    return (data ?? []).filter((item) => item.position > chapterPosition).length;
+  }, [chapterPosition, refetchChapterList]);
+  const novelEndCheck = useNovelEndCheck({
+    chapterId,
+    countNewChapters,
+    novel: currentNovel,
+  });
   const bookmarkMutation = useMutation({
     meta: { errorPresentation: "toast" },
     mutationFn: async () => {
@@ -336,6 +361,9 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
           ? { ...current, progress: nextProgress }
           : current,
       );
+      setEndReachedChapterId(
+        nextProgress >= FINISHED_PROGRESS ? targetChapterId : null,
+      );
       persistProgress({
         chapterId: targetChapterId,
         novelId: currentNovelId,
@@ -357,10 +385,18 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   );
   const handleBoundaryPage = useCallback(
     (direction: 1 | -1) => {
+      if (direction === 1 && isLastChapter && chapter) {
+        setEndReachedChapterId(chapter.id);
+      }
       void openAdjacent(direction);
     },
-    [openAdjacent],
+    [chapter, isLastChapter, openAdjacent],
   );
+  const showNovelEnd =
+    hasChapterContent &&
+    chapter !== undefined &&
+    endReachedChapterId === chapter.id &&
+    (isLastChapter || novelEndCheck.check.status === "found");
 
   const readerChromeThemeStyle = useMemo(
     () => getReaderChromeThemeStyle(effectiveReaderAppearance),
@@ -535,7 +571,20 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
             onOpenChapter={openChapter}
           />
         ) : null}
-        <Box className="norea-reader-content-frame">{readerContent}</Box>
+        <Box className="norea-reader-content-frame">
+          {readerContent}
+          {showNovelEnd ? (
+            <ReaderEndOfNovel
+              check={novelEndCheck.check}
+              novel={currentNovel}
+              onBackToNovel={() => {
+                void navigate({ to: "/novel", search: { id: currentNovelId } });
+              }}
+              onCheck={() => void novelEndCheck.run()}
+              onContinue={() => openAdjacentChapter(1)}
+            />
+          ) : null}
+        </Box>
         {readerSettingsOpen && wideReader ? (
           <ReaderSettingsSidePanel
             content={readerSettingsContent}

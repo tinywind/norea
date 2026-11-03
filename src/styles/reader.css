@@ -318,6 +318,52 @@
   height: 100%;
   min-width: 0;
   overflow: hidden;
+  position: relative;
+}
+
+.norea-reader-end-card {
+  background: var(--norea-reader-chrome-bg, var(--norea-color-surface));
+  border: 1px solid var(--norea-reader-rule, var(--norea-color-rule));
+  border-radius: var(--norea-radius-lg);
+  bottom: var(--norea-space-4);
+  box-shadow: var(--norea-shadow-floating);
+  box-sizing: border-box;
+  color: var(--norea-reader-ink, var(--norea-color-ink));
+  display: grid;
+  gap: var(--norea-space-2);
+  left: var(--norea-space-3);
+  margin-inline: auto;
+  max-width: 28rem;
+  padding: var(--norea-space-4);
+  position: absolute;
+  right: var(--norea-space-3);
+  z-index: 6;
+}
+
+.norea-reader-end-title {
+  font-size: var(--norea-text-lg);
+  font-weight: var(--norea-weight-bold);
+  margin: 0;
+}
+
+.norea-reader-end-message {
+  font-size: var(--norea-text-sm);
+  margin: 0;
+}
+
+.norea-reader-end-message:empty {
+  display: none;
+}
+
+.norea-reader-end-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+}
+
+/* Full-page mode floats the bottom bar over the content; stay above it. */
+.norea-reader-shell[data-full-page="true"] .norea-reader-end-card {
+  bottom: calc(var(--norea-reader-bar-height) * 2 + var(--norea-space-3));
 }
 
 .norea-reader-content-stage,
