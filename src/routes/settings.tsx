@@ -37,6 +37,7 @@ import {
 } from "../components/SettingsPrimitives";
 import { TextButton } from "../components/TextButton";
 import { VpnGateServerVerdictControl } from "../components/VpnGateServerVerdictControl";
+import { useConfirm } from "../components/ui/ConfirmDialog";
 import {
   clearReadingProgress,
   clearUpdatesTab,
@@ -362,6 +363,7 @@ type PluginVpnOperation =
 
 function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const vpnEnabled = usePluginVpnStore((state) => state.enabled);
   const online = useNetworkStore((state) => state.connectivity === "online");
@@ -549,9 +551,13 @@ function PluginVpnSettingsSection({ isBusy }: { isBusy: boolean }) {
   }
 
   async function removeProfile(): Promise<void> {
-    if (!window.confirm(t("settings.data.pluginVpn.profile.removeConfirm"))) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: t("settings.data.pluginVpn.profile.remove"),
+      message: t("settings.data.pluginVpn.profile.removeConfirm"),
+      confirmLabel: t("settings.data.pluginVpn.profile.remove"),
+      danger: true,
+    });
+    if (!confirmed) return;
     setVpnOperation({ kind: "remove" });
     try {
       updateStatus(await removePluginVpnProfile());
@@ -1371,6 +1377,7 @@ function AboutSettingsSection({
   onOpenRelease: () => void;
 }) {
   const { locale, t } = useTranslation();
+  const confirm = useConfirm();
   const logLevel = useLoggingStore((state) => state.logLevel);
   const setLogLevel = useLoggingStore((state) => state.setLogLevel);
   const [buildInfo, setBuildInfo] = useState<BuildInfo | null>(null);
@@ -1454,15 +1461,14 @@ function AboutSettingsSection({
 
   async function openUpdate(candidate: UpdateCandidate): Promise<void> {
     if (!canInstallUpdate(candidate)) return;
-    if (
-      !window.confirm(
-        t("settings.about.update.installConfirm", {
-          name: candidate.assetName,
-        }),
-      )
-    ) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: t("settings.about.update.install"),
+      message: t("settings.about.update.installConfirm", {
+        name: candidate.assetName,
+      }),
+      confirmLabel: t("settings.about.update.install"),
+    });
+    if (!confirmed) return;
 
     setUpdateBusy(`${candidate.channel}:install` as UpdateBusy);
     const toastId = `settings:update:${candidate.channel}:install`;
@@ -1749,6 +1755,7 @@ interface SettingsPageProps {
 
 export function SettingsPage({ section }: SettingsPageProps = {}) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [cleanupOpened, setCleanupOpened] = useState(false);
@@ -1794,9 +1801,13 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
   }
 
   async function handleImport(): Promise<void> {
-    if (!window.confirm(t("settings.data.restoreWarning"))) {
-      return;
-    }
+    const confirmed = await confirm({
+      title: t("settings.data.importBackup"),
+      message: t("settings.data.restoreWarning"),
+      confirmLabel: t("settings.data.importBackup"),
+      danger: true,
+    });
+    if (!confirmed) return;
     const toastId = "settings:backup:restore";
     setBusyAction(toastId);
     showSettingsLoadingToast(
@@ -1851,9 +1862,13 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
     action: () => Promise<{ rowsAffected: number }>,
     successMessage: (rowsAffected: number) => string,
   ): Promise<void> {
-    if (!window.confirm(warning)) {
-      return;
-    }
+    const confirmed = await confirm({
+      title,
+      message: warning,
+      confirmLabel: title,
+      danger: true,
+    });
+    if (!confirmed) return;
     setBusyAction(kind);
     showSettingsLoadingToast(kind, title, message);
     try {
@@ -1918,9 +1933,12 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
   async function handleClearWebViewCache(): Promise<void> {
     const kind = "maintenance.clearWebViewCache";
     const title = t("settings.data.webViewCache.button");
-    if (!window.confirm(t("settings.data.webViewCache.warning"))) {
-      return;
-    }
+    const confirmed = await confirm({
+      title,
+      message: t("settings.data.webViewCache.warning"),
+      confirmLabel: title,
+    });
+    if (!confirmed) return;
     setBusyAction(kind);
     showSettingsLoadingToast(
       kind,

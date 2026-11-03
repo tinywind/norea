@@ -11,6 +11,7 @@ import { PageSlot } from "../components/PageSlot";
 import { SiteBrowserOverlay } from "../components/SiteBrowserOverlay";
 import { TaskNotifications } from "../components/TaskNotifications";
 import { ContentDeletionDialog } from "../components/ContentDeletionDialog";
+import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import {
   BrowseIcon,
   HistoryIcon,
@@ -604,6 +605,7 @@ export function RootLayout() {
       <SiteBrowserOverlay />
       <TaskNotifications />
       <ContentDeletionDialog />
+      <ConfirmDialog />
     </AppShell>
   );
 }

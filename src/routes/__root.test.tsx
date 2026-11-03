@@ -68,6 +68,7 @@ vi.mock("../lib/tasks/hooks", () => ({
 }));
 vi.mock("../components/SiteBrowserOverlay", () => ({ SiteBrowserOverlay: () => null }));
 vi.mock("../components/TaskNotifications", () => ({ TaskNotifications: () => null }));
+vi.mock("../components/ui/ConfirmDialog", () => ({ ConfirmDialog: () => null }));
 vi.mock("./browse", () => ({ BrowsePage: () => null }));
 vi.mock("./downloads", () => ({ DownloadsPage: () => null }));
 vi.mock("./history", () => ({ HistoryPage: () => null }));
