@@ -666,8 +666,8 @@ export class VpnDownloadCoordinator {
       const profiles = await this.runtime.listProfiles();
       if (!this.owns(range, epoch, lease)) return;
       if (!profiles.some(profile => profile.id === lease.profile.id && profile.hash === lease.profile.hash)) {
-        await this.fail(range, epoch, "profile-unavailable");
-        return;
+        await this.closeLease(lease);
+        continue;
       }
       if (!this.runtime.isOnline()) { await this.networkChanged(false); return; }
       if (this.workerAboveLimit(lease)) { await this.releaseWorkerForCapacity(range, epoch, lease); return; }
@@ -750,7 +750,8 @@ export class VpnDownloadCoordinator {
       const state = this.state(range);
       const plan = this.plans.get(range.planId)!;
       const excluded = profiles.some(profile => profile.id === state.profileId && this.profileExcluded(range, profile));
-      const nextProfile = (excluded || state.attemptProfileId === null && state.attemptedProfileIds.includes(state.profileId)) &&
+      const missing = !profiles.some(profile => profile.id === state.profileId && profile.hash === state.profileHash);
+      const nextProfile = missing || (excluded || state.attemptProfileId === null && state.attemptedProfileIds.includes(state.profileId)) &&
         (!state.challenge || plan.policies[state.challenge.kind] === "nextProfile");
       const candidates = nextProfile
         ? profiles.filter(profile => this.profileEligibleForAttempt(range, profile))

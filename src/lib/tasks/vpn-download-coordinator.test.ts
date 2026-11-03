@@ -1188,20 +1188,63 @@ describe("VPN download coordinator", () => {
     expect(runtime.native.size).toBe(1);
   });
 
-  it.each(["removed", "hash-changed"])("stops only the affected worker at the next chapter boundary when its exact profile is %s", async change => {
+  it.each([["removed", "c", "hash-c"], ["hash-changed", "a", "replacement-hash"]])("moves only the affected range to an idle eligible profile at the next chapter boundary when its exact profile is %s", async (change, profileId, profileHash) => {
     const runtime = new Runtime();
     const coordinator = new VpnDownloadCoordinator(runtime);
     const value = plan([range("a", "a", [1, 2]), range("b", "b", [3, 4])]);
     await coordinator.start(value, jobsFor(value));
     await until(() => expect(runtime.tasks.size).toBe(2));
+    const original = runtime.task("a")[1].worker.generation;
     if (change === "removed") runtime.profiles = runtime.profiles.filter(item => item.id !== "a");
     else runtime.profiles[0]!.hash = "replacement-hash";
     runtime.succeed("a");
     runtime.succeed("b");
-    await until(() => expect(current(coordinator, "a").pauseReason).toBe("profile-unavailable"));
+    await until(() => expect(runtime.task("a", 1)[1].job.id).toBe(2));
     await until(() => expect(runtime.task("b", 1)[1].job.id).toBe(4));
-    expect(current(coordinator, "a").checkpoint).toBe(1);
-    expect([...runtime.tasks.values()].filter(item => item.worker.rangeId === "a")).toHaveLength(1);
+    expect(current(coordinator, "a")).toMatchObject({ checkpoint: 1, profileId, profileHash, pauseReason: null, attemptedProfileIds: [] });
+    expect(runtime.events).toContain(`disconnect:a:${original}`);
+    expect(runtime.notices).toEqual([]);
+  });
+
+  it("reassigns a range whose assigned profile was removed before the restart instead of stopping it", async () => {
+    const runtime = new Runtime();
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan([range("a", "gone", [1])]);
+    await coordinator.start(value, jobsFor(value));
+    await until(() => expect(runtime.tasks.size).toBe(1));
+    expect(current(coordinator, "a")).toMatchObject({ profileId: "a", profileHash: "hash-a", phase: "running" });
+    expect(runtime.notices).toEqual([]);
+  });
+
+  it("waits for a leased eligible profile instead of pausing when its assigned profile disappears", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b")];
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan([range("a", "a", [1, 2]), range("b", "b", [3])]);
+    await coordinator.start(value, jobsFor(value));
+    await until(() => expect(runtime.tasks.size).toBe(2));
+    runtime.profiles = [profile("b")];
+    runtime.succeed("a");
+    await until(() => expect(current(coordinator, "a").pauseReason).toBe("profile-in-use"));
+    expect(runtime.notices).toEqual([]);
+    runtime.succeed("b");
+    await until(() => expect(runtime.task("a", 1)[1].job.id).toBe(2));
+    expect(current(coordinator, "a").profileId).toBe("b");
+  });
+
+  it("pauses once as exhausted when no eligible profile exists, then continues when a new one is saved", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a")];
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan([range("a", "a", [1, 2])]);
+    await coordinator.start(value, jobsFor(value));
+    await until(() => expect(runtime.tasks.size).toBe(1));
+    runtime.profiles = [];
+    runtime.succeed("a");
+    await until(() => expect(current(coordinator, "a").pauseReason).toBe("profiles-exhausted"));
+    expect(runtime.notices.map(notice => notice.reason)).toEqual(["profiles-exhausted"]);
+    runtime.profiles = [profile("e")];
+    await coordinator.profilesChanged();
+    await until(() => expect(runtime.task("a", 1)[1].job.id).toBe(2));
+    expect(current(coordinator, "a")).toMatchObject({ checkpoint: 1, profileId: "e" });
   });
 
   it("keeps manual ownership and the challenge until explicitly resumed same-session canary settles", async () => {
@@ -1429,7 +1472,7 @@ describe("VPN download coordinator", () => {
     expect(runtime.native.get(original.worker.slot)?.worker).toEqual(original.worker);
   });
 
-  it("checks the retained hash after durable resume writes and immediately before dispatch", async () => {
+  it("checks the retained hash after durable resume writes and dispatches on a replacement instead", async () => {
     const runtime = new Runtime();
     const coordinator = new VpnDownloadCoordinator(runtime);
     const value = plan();
@@ -1444,8 +1487,11 @@ describe("VPN download coordinator", () => {
       return stored;
     };
     await coordinator.resumeRange("plan", "a");
-    await until(() => expect(current(coordinator, "a").pauseReason).toBe("profile-unavailable"));
-    expect(runtime.tasks.size).toBe(1);
+    await until(() => expect(runtime.tasks.size).toBe(2));
+    const [taskId, replacement] = runtime.task("a", 1);
+    expect(runtime.native.get(replacement.worker.slot)?.profile.id).toBe("b");
+    expect(runtime.verifications).toEqual([taskId]);
+    expect(current(coordinator, "a")).toMatchObject({ profileId: "b", challenge: { kind: "captcha" } });
   });
 
   it("cancels a refused scheduler canary without dispatching a replacement or clearing its challenge", async () => {
