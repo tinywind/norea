@@ -1,10 +1,18 @@
 import {
   DEFAULT_THEME,
+  MantineProvider,
+  Menu,
+  Notification,
+  Popover,
+  Select,
+  Tooltip,
   defaultCssVariablesResolver,
   mergeMantineTheme,
   toRgba,
   type MantineTheme,
 } from "@mantine/core";
+import { createElement as h } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { BLACK, contrastRatio, parseColor, requireColor } from "./color";
 import {
@@ -103,8 +111,68 @@ describe("createNoreaMantineTheme CSS variables", () => {
 
   it.each(CASES)("$label puts Mantine overlays on the palette surface", ({ roles, mantine, merged }) => {
     const resolved = mantine.cssVariablesResolver(merged);
-    expect(resolved.dark["--mantine-color-body"]).toBe(roles.surface);
+    for (const scheme of SCHEMES) {
+      expect(resolved[scheme]["--mantine-color-body"], scheme).toBe(roles.surface);
+    }
     expect(merged.colors.dark![6]).toBe(roles.surface);
+  });
+});
+
+function renderOverlays({ mantine }: ThemeCase, scheme: ColorScheme): string {
+  const target = (label: string) => h("button", { type: "button" }, label);
+  return renderToStaticMarkup(
+    h(
+      MantineProvider,
+      { theme: mantine.theme, forceColorScheme: scheme },
+      h(
+        Popover,
+        { opened: true, withinPortal: false },
+        h(Popover.Target, null, target("popover")),
+        h(Popover.Dropdown, null, "popover"),
+      ),
+      h(Select, {
+        comboboxProps: { withinPortal: false },
+        data: ["option"],
+        dropdownOpened: true,
+      }),
+      h(
+        Menu,
+        { opened: true, withinPortal: false },
+        h(Menu.Target, null, target("menu")),
+        h(Menu.Dropdown, null, "menu"),
+      ),
+      h(Tooltip, { label: "tooltip", opened: true, withinPortal: false }, target("tooltip")),
+      h(Notification, null, "notification"),
+    ),
+  );
+}
+
+function inlineStyleOf(html: string, className: string): string[] {
+  return [...html.matchAll(/<div style="([^"]*)" class="([^"]*)"/g)]
+    .filter((match) => match[2]!.split(" ").includes(className))
+    .map((match) => match[1]!);
+}
+
+describe("createNoreaMantineTheme overlay surfaces", () => {
+  const overlayCases = CASES.filter(
+    (entry) => entry.label === "lavender light" || entry.label === "midnight-dusk dark",
+  );
+
+  it.each(overlayCases)("$label paints dropdowns, tooltips and notifications from the palette", (entry) => {
+    const { roles } = entry;
+    const scheme = entry.label.endsWith("light") ? "light" : "dark";
+    const html = renderOverlays(entry, scheme);
+
+    for (const name of ["Popover", "Select", "Menu"]) {
+      const [style] = inlineStyleOf(html, `mantine-${name}-dropdown`);
+      expect(style, name).toContain(`background-color:${roles.surface}`);
+      expect(style, name).toContain(`--popover-border-color:${roles.rule}`);
+    }
+    const [tooltip] = inlineStyleOf(html, "mantine-Tooltip-tooltip");
+    expect(tooltip).toContain(`--tooltip-bg:${roles.inverseSurface}`);
+    expect(tooltip).toContain(`--tooltip-color:${roles.onInverseSurface}`);
+    const [notification] = inlineStyleOf(html, "mantine-Notification-root");
+    expect(notification).toContain(`background-color:${roles.surface}`);
   });
 });
 

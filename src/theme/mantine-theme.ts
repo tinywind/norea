@@ -164,6 +164,11 @@ export function createNoreaMantineTheme(
   const defaultHover = formatRgb(mixRgb(surface, ink, DEFAULT_HOVER_MIX));
   const defaultBorder = `${BORDER_WIDTH} solid ${roles.ruleStrong}`;
   const transparentBorder = `${BORDER_WIDTH} solid transparent`;
+  // Mantine paints light-scheme dropdowns white; Combobox-based inputs render through Popover, while Menu, ColorInput and HoverCard resolve their own theme entry.
+  const overlayDropdownStyles = {
+    backgroundColor: roles.surface,
+    "--popover-border-color": roles.rule,
+  };
 
   const variantColorResolver: VariantColorsResolver = (input) => {
     if (input.variant === "default") {
@@ -295,9 +300,26 @@ export function createNoreaMantineTheme(
       Modal: { defaultProps: { zIndex: "var(--norea-z-overlay)" } },
       Drawer: { defaultProps: { zIndex: "var(--norea-z-overlay)" } },
       // Portaled dropdowns and tooltips open from inside modals and drawers, so they sit one layer above them.
-      Popover: { defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" } },
-      Menu: { defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" } },
-      Tooltip: { defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" } },
+      Popover: {
+        defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" },
+        styles: { dropdown: overlayDropdownStyles },
+      },
+      Menu: {
+        defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" },
+        styles: { dropdown: overlayDropdownStyles },
+      },
+      ColorInput: { styles: { dropdown: overlayDropdownStyles } },
+      HoverCard: { styles: { dropdown: overlayDropdownStyles } },
+      Tooltip: {
+        defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" },
+        styles: {
+          tooltip: {
+            "--tooltip-bg": roles.inverseSurface,
+            "--tooltip-color": roles.onInverseSurface,
+          },
+        },
+      },
+      Notification: { styles: { root: { backgroundColor: roles.surface } } },
       Notifications: { defaultProps: { zIndex: "var(--norea-z-toast)" } },
     },
   });

@@ -44,6 +44,9 @@ export interface PaletteRoles {
   info: StatusRole;
   selected: string;
   focus: string;
+  /** Tooltip and snackbar surface, opposite to the scheme. */
+  inverseSurface: string;
+  onInverseSurface: string;
   shadowFloating: string;
 }
 
@@ -141,6 +144,7 @@ export function resolvePaletteRoles(
       ? blackOrWhite(accent)
       : onPrimary;
   const accentSoft = mixRgb(surface, accent, SOFT_MIX[scheme]);
+  const inverseSurface = requireColor(palette.inverseSurface);
   const focus =
     minContrast(accent, [bg, surface]) >= NON_TEXT_CONTRAST ? accent : ink;
 
@@ -179,6 +183,15 @@ export function resolvePaletteRoles(
     info: statusRole(fixedHue("info"), surface, ink, scheme),
     selected: formatRgb(accentSoft),
     focus: formatRgb(focus),
+    inverseSurface: formatRgb(inverseSurface),
+    onInverseSurface: formatRgb(
+      ensureContrast(
+        requireColor(palette.inverseOnSurface),
+        [inverseSurface],
+        TEXT_CONTRAST,
+        blackOrWhite(inverseSurface),
+      ),
+    ),
     shadowFloating: SHADOW_FLOATING[scheme],
   };
 }

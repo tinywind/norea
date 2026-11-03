@@ -89,6 +89,15 @@ describe("resolvePaletteRoles contrast gate", () => {
     );
   });
 
+  it.each(ALL_CASES)("$label keeps inverse surface text readable", ({ roles }) => {
+    expectContrast(
+      roles.onInverseSurface,
+      roles.inverseSurface,
+      TEXT_CONTRAST,
+      "on-inverse-surface",
+    );
+  });
+
   it.each(ALL_CASES)("$label keeps status colors readable as text and on soft fills", ({ roles }) => {
     for (const name of STATUS_ROLE_NAMES) {
       for (const surface of [roles.bg, roles.surface, roles.surfaceRaised]) {
