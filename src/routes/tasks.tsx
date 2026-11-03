@@ -1127,15 +1127,16 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
   const allPaused = hasVpnRun ? (vpn.run?.status === "paused" || vpn.run?.status === "interrupted") &&
     (!sourceTasks.length || snapshot.sourceQueuesPaused) : snapshot.sourceQueuesPaused;
   const ordinaryBlocks = snapshot.sourceAccessBlocks.filter(block => !block.rangeId);
-  const taskStats = useMemo(
-    () => ({
-      running: snapshot.running,
-      queued: snapshot.queued,
-      failed: snapshot.failed,
-      succeeded: snapshot.succeeded,
-    }),
-    [snapshot.failed, snapshot.queued, snapshot.running, snapshot.succeeded],
-  );
+  const taskStats = useMemo(() => {
+    const count = (status: TaskRecord["status"]) =>
+      tasks.filter((task) => task.status === status).length;
+    return {
+      running: count("running"),
+      queued: count("queued"),
+      failed: count("failed"),
+      succeeded: count("succeeded"),
+    };
+  }, [tasks]);
   const hasCancellableTasks = useMemo(
     () => hasCancellableActiveTask(tasks) || hasVpnRun || requests.length > 0,
     [tasks, hasVpnRun, requests.length],
@@ -1226,7 +1227,7 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
         title={
           <span className="norea-task-page-title">
             {t("tasks.title")}
-            <span className="norea-task-title-count">{snapshot.total}</span>
+            <span className="norea-task-title-count">{tasks.length}</span>
           </span>
         }
         actions={

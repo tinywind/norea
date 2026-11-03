@@ -50,6 +50,19 @@ describe("task work group order", () => {
     state.vpn.ownedChapterIds = [];
   });
 
+  it("counts the header total and summary pills from the same tasks as the visible list", () => {
+    state.vpn.ownedChapterIds = [1];
+    workTitles([
+      chapter(1, 1, "queued", 0), { ...chapter(2, 2, "running", 1), vpnWorker: { rangeId: "range", slot: 9 as const, generation: 1 } },
+      chapter(3, 3, "queued", 2), chapter(4, 4, "failed"), chapter(5, 5, "succeeded"),
+    ]);
+    const $ = load(renderToStaticMarkup(<MantineProvider><TasksPage /></MantineProvider>));
+    expect($(".norea-task-title-count").text()).toBe("3");
+    expect($(".norea-task-summary-pill").map((_, element) => $(element).text()).get())
+      .toEqual(["Running 0", "Queued 1", "Blocked 0", "Failed 1", "Done 1"]);
+    state.vpn.ownedChapterIds = [];
+  });
+
   it("shows a newly accepted request before chapter tasks or catalogs are ready", () => {
     state.snapshot = new TaskScheduler().getSnapshot();
     state.requests = [{ id: "request", title: "Newly requested work", novelIds: [42], total: null, phase: "preparing", error: null }];
