@@ -52,6 +52,9 @@ import {
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
+import { isAbortError } from "../lib/abort";
+import { isNetworkUnavailableError } from "../lib/network";
+import { normalizeSourceAccessRequiredError } from "../lib/plugins/source-access";
 import { listServerChapterAvailability, readServerNovelSource } from "../lib/content-sync/novel-source";
 import { useOverlayBackNavigation, usePageBackNavigation } from "../lib/android-back-navigation";
 import {
@@ -418,7 +421,14 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     : (novel.pluginName ?? sourcePlugin?.name ?? novel.pluginId);
   const metadataRefreshError =
     refreshMetadata.error ?? fullRefreshMetadata.error;
-  const syncErrors = [serverSync.serverError, serverSync.sourceError].filter(Boolean);
+  // Automatic content-server lookups stay silent on normal pages (docs/content-sync.md);
+  // offline and challenge failures are already surfaced by the task queue.
+  const sourceRefreshFailure = serverSync.sourceError &&
+    !isAbortError(serverSync.sourceError) &&
+    !isNetworkUnavailableError(serverSync.sourceError) &&
+    normalizeSourceAccessRequiredError(serverSync.sourceError) === null
+    ? serverSync.sourceError
+    : null;
 
   return (
     <>
@@ -643,17 +653,14 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
               </Text>
             ) : null}
 
-            {syncErrors.length > 0 ? (
+            {sourceRefreshFailure ? (
               <StateView
                 action={{ label: t("common.retry"), onClick: serverSync.retry }}
                 color="yellow"
                 title={t("novel.syncFailed")}
                 message={
-                  <span title={syncErrors.map(describeError).join("\n")}>
-                    {[
-                      serverSync.serverError ? t("contentSync.workRefreshFailed") : null,
-                      serverSync.sourceError ? t("contentSync.sourceRefreshFailed") : null,
-                    ].filter(Boolean).join(" ")}
+                  <span title={describeError(sourceRefreshFailure)}>
+                    {t("contentSync.sourceRefreshFailed")}
                   </span>
                 }
               />

@@ -165,22 +165,41 @@ it("keeps saved work details visible when server binding cannot be read", () => 
   expect($.text()).not.toContain("novel.loadFailed");
 });
 
-it("keeps saved chapters visible beside a non-blocking automatic refresh notice", () => {
+it("keeps automatic content-server failures off the work page", () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   mocks.available.data = undefined;
   mocks.available.error = new Error("Server unavailable");
   mocks.sync.serverError = new Error("Server refresh failed");
-  mocks.sync.sourceError = new Error("Source refresh failed");
   mocks.chapters = [{ ...chapter }];
   const $ = renderPage();
   expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
   expect($.text()).not.toContain("Server unavailable");
+  expect($.text()).not.toContain("novel.syncFailed");
+  expect($.text()).not.toContain("contentSync.workRefreshFailed");
+});
+
+it("keeps saved chapters visible beside a retryable source refresh notice", () => {
+  mocks.sync.sourceError = new Error("Source refresh failed");
+  mocks.chapters = [{ ...chapter }];
+  const $ = renderPage();
+  expect($(".norea-novel-chapter-open").text()).toContain("Saved chapter");
   expect($.text()).toContain("novel.syncFailed");
-  expect($.text()).toContain("contentSync.workRefreshFailed");
   expect($.text()).toContain("contentSync.sourceRefreshFailed");
   expect($("button").filter((_, button) => $(button).text() === "common.retry")).toHaveLength(1);
-  expect($.text()).not.toContain("Server refresh failed");
-  expect($("[title='Server refresh failed\nSource refresh failed']")).toHaveLength(1);
+  expect($.text()).not.toContain("Source refresh failed");
+  expect($("[title='Source refresh failed']")).toHaveLength(1);
+});
+
+it("leaves offline and verification source failures to the task queue", () => {
+  mocks.chapters = [{ ...chapter }];
+  mocks.sync.sourceError = Object.assign(new Error("offline"), { code: "network-unavailable" });
+  expect(renderPage().text()).not.toContain("novel.syncFailed");
+  mocks.sync.sourceError = {
+    code: "source-access-required",
+    message: "Verify",
+    challenge: { kind: "cloudflare", url: "https://example.com/" },
+  };
+  expect(renderPage().text()).not.toContain("novel.syncFailed");
 });
 
 it("shows no refresh notice when automatic refresh succeeds", () => {
