@@ -1221,6 +1221,8 @@
   "reader.loadingContent": "리더 콘텐츠 불러오는 중...",
   "reader.downloadingChapter": "챕터 다운로드 중",
   "reader.downloadingChapterMessage": "리더가 이 챕터를 가져오는 동안 잠시 기다려 주세요.",
+  "reader.downloadFailed": "챕터 다운로드 실패",
+  "reader.offline": "오프라인 상태입니다",
   "reader.loadFailed": "챕터 불러오기 실패",
   "reader.chapterNotFound": "챕터를 찾을 수 없음",
   "reader.chapterNotFoundMessage": "로컬 DB에 id {id} 챕터 행이 없습니다.",

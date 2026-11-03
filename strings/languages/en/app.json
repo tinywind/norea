@@ -1222,6 +1222,8 @@
   "reader.loadingContent": "Loading reader content...",
   "reader.downloadingChapter": "Downloading chapter",
   "reader.downloadingChapterMessage": "Please wait while the reader fetches this chapter.",
+  "reader.downloadFailed": "Chapter download failed",
+  "reader.offline": "You are offline",
   "reader.loadFailed": "Failed to load chapter",
   "reader.chapterNotFound": "Chapter not found",
   "reader.chapterNotFoundMessage": "No chapter row with id {id} exists in the local DB.",

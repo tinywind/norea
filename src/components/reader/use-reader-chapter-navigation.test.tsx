@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, expect, it, vi } from "vitest";
+import { useNetworkStore } from "../../lib/network";
 import { cancelChapterDownloadBatches, enqueueChapterDownload } from "../../lib/tasks/chapter-download";
 import { taskScheduler } from "../../lib/tasks/scheduler";
 import { useReaderChapterNavigation } from "./use-reader-chapter-navigation";
@@ -73,6 +74,7 @@ afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = undefined;
   queryClient?.clear();
+  useNetworkStore.setState({ connectivity: "online" });
   vi.clearAllMocks();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
@@ -131,4 +133,29 @@ it("cancels an admitted VPN chapter handle when leaving the reader without cance
   expect(cancelChapterDownloadBatches).toHaveBeenCalledExactlyOnceWith(["download"]);
   expect(cancel).not.toHaveBeenCalled();
   expect(current.autoDownloadingChapterId).toBeNull();
+});
+
+it("shows a retryable failure instead of staying busy when the chapter download rejects", async () => {
+  mount();
+  vi.mocked(enqueueChapterDownload).mockImplementationOnce(() => ({
+    id: "download", promise: Promise.reject(new Error("Source failed")),
+  }) as ReturnType<typeof enqueueChapterDownload>);
+  await render({ ...chapter, contentBytes: 0 });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(current.chapterUnavailable).toEqual({ reason: "failed", message: "Source failed" });
+  expect(current.awaitingChapterDownload).toBe(false);
+  expect(current.autoDownloadingChapterId).toBeNull();
+
+  await act(async () => current.retryChapterDownload());
+  expect(enqueueChapterDownload).toHaveBeenCalledTimes(2);
+  expect(current.chapterUnavailable).toBeNull();
+  expect(current.awaitingChapterDownload).toBe(true);
+});
+
+it("reports an offline chapter without a stored body as unavailable instead of busy", async () => {
+  mount();
+  useNetworkStore.setState({ connectivity: "offline" });
+  await render({ ...chapter, contentBytes: 0 });
+  expect(current.chapterUnavailable).toEqual({ reason: "offline" });
+  expect(current.awaitingChapterDownload).toBe(false);
 });

@@ -149,6 +149,9 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
 
   const {
     autoDownloadingChapterId,
+    awaitingChapterDownload,
+    chapterUnavailable,
+    retryChapterDownload,
     initialProgressOverride,
     setInitialProgressOverride,
     openChapter,
@@ -178,7 +181,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     readerPreparation.isPending ||
     (chapterId > 0 &&
       !hasChapterContent &&
-      (chapterQuery.isLoading || Boolean(chapter && !hasStoredChapterContent(chapter))));
+      (chapterQuery.isLoading || awaitingChapterDownload));
   const progress = chapter?.progress ?? 0;
   const activeInitialProgressOverride =
     initialProgressOverride &&
@@ -338,6 +341,27 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         color="orange"
         title={t("reader.chapterNotFound")}
         message={t("reader.chapterNotFoundMessage", { id: chapterId })}
+      />
+    </Box>
+  ) : chapterId > 0 &&
+    !hasChapterContent &&
+    chapterUnavailable?.reason === "failed" ? (
+    <Box className="norea-reader-state-frame">
+      <StateView
+        action={{ label: t("common.retry"), onClick: retryChapterDownload }}
+        color="red"
+        title={t("reader.downloadFailed")}
+        message={chapterUnavailable.message}
+      />
+    </Box>
+  ) : chapterId > 0 &&
+    !hasChapterContent &&
+    chapterUnavailable?.reason === "offline" ? (
+    <Box className="norea-reader-state-frame">
+      <StateView
+        color="orange"
+        title={t("reader.offline")}
+        message={t("network.waiting")}
       />
     </Box>
   ) : chapterId > 0 && chapter && !hasChapterContent ? (

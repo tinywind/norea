@@ -20,6 +20,7 @@ import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
 } from "../../lib/navigation-history";
+import { useNetworkStore } from "../../lib/network";
 import { usePageActivity } from "../../lib/page-activity";
 import {
   chapterDetailQueryKey,
@@ -44,6 +45,9 @@ type ReaderNavigationChapter = Pick<
   | "chapterNumber"
   | "contentType"
 >;
+type ReaderChapterUnavailable =
+  | { reason: "failed"; message: string }
+  | { reason: "offline" };
 interface ReaderChapterNavigationOptions {
   chapterId: number;
   chapter: ReaderNavigationChapter | undefined;
@@ -69,6 +73,7 @@ export function useReaderChapterNavigation({
     select: (state) => state.location.href,
   });
   const queryClient = useQueryClient();
+  const connectivity = useNetworkStore((status) => status.connectivity);
   const openRequestRef = useRef(0);
   const autoDownloadingChapterRef = useRef<number | null>(null);
   const activeChapterOpenTaskRef = useRef<{
@@ -80,6 +85,10 @@ export function useReaderChapterNavigation({
   const [autoDownloadingChapterId, setAutoDownloadingChapterId] = useState<
     number | null
   >(null);
+  const [downloadFailure, setDownloadFailure] = useState<{
+    chapterId: number;
+    message: string;
+  } | null>(null);
   const [initialProgressOverride, setInitialProgressOverride] = useState<{
     chapterId: number;
     progress: number;
@@ -145,6 +154,7 @@ export function useReaderChapterNavigation({
 
       autoDownloadingChapterRef.current = targetChapter.id;
       setAutoDownloadingChapterId(targetChapter.id);
+      setDownloadFailure(null);
       void (async () => {
         try {
           const novel = await queryClient.fetchQuery({
@@ -188,8 +198,13 @@ export function useReaderChapterNavigation({
           void queryClient.invalidateQueries({
             queryKey: novelLibraryQueryKey,
           });
-        } catch {
-          // The reader stays open and continues showing any partial content.
+        } catch (error) {
+          if (openRequestRef.current === requestId) {
+            setDownloadFailure({
+              chapterId: targetChapter.id,
+              message: error instanceof Error ? error.message : String(error),
+            });
+          }
         } finally {
           if (
             activeChapterOpenTaskRef.current?.chapterId === targetChapter.id &&
@@ -218,9 +233,26 @@ export function useReaderChapterNavigation({
     if (!chapter || hasStoredChapterContent(chapter)) return;
     if (autoDownloadingChapterRef.current === chapter.id) return;
     if (suppressedAutoDownloadChapterRef.current === chapter.id) return;
+    if (downloadFailure?.chapterId === chapter.id) return;
 
     void openChapter(chapter);
+  }, [chapter, downloadFailure, openChapter]);
+
+  const retryChapterDownload = useCallback(() => {
+    if (chapter) openChapter(chapter);
   }, [chapter, openChapter]);
+
+  const chapterMissingContent = Boolean(
+    chapter && !hasStoredChapterContent(chapter),
+  );
+  const chapterUnavailable: ReaderChapterUnavailable | null =
+    !chapterMissingContent
+      ? null
+      : downloadFailure && downloadFailure.chapterId === chapter?.id
+        ? { reason: "failed", message: downloadFailure.message }
+        : connectivity === "offline" || connectivity === "limited"
+          ? { reason: "offline" }
+          : null;
 
   const openAdjacent = useCallback(
     async (direction: 1 | -1) => {
@@ -303,6 +335,9 @@ export function useReaderChapterNavigation({
 
   return {
     autoDownloadingChapterId,
+    awaitingChapterDownload: chapterMissingContent && !chapterUnavailable,
+    chapterUnavailable,
+    retryChapterDownload,
     initialProgressOverride,
     setInitialProgressOverride,
     openChapter,
