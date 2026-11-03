@@ -25,6 +25,7 @@ import { ConsoleStatusDot } from "../components/ConsolePrimitives";
 import { IconButton } from "../components/IconButton";
 import { VpnDownloadPanel } from "../components/VpnDownloadPanel";
 import { TextButton } from "../components/TextButton";
+import { useConfirm } from "../components/ui/ConfirmDialog";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
 import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
@@ -383,6 +384,10 @@ function hasCancellableActiveTask(records: TaskRecord[]): boolean {
   return records.some((task) => task.canCancel && isActiveTask(task));
 }
 
+function cancellableActiveTaskCount(records: TaskRecord[]): number {
+  return records.filter((task) => task.canCancel && isActiveTask(task)).length;
+}
+
 function activeChapterDownloadBatchIds(records: TaskRecord[]): string[] {
   const batchIds = new Set<string>();
   for (const task of records) {
@@ -598,6 +603,7 @@ function TaskWorkGroup({
   sourceId: string;
 }) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
   const canMove = hasQueuedTask(group.tasks);
   const canCancel = hasCancellableActiveTask(group.tasks);
 
@@ -655,7 +661,17 @@ function TaskWorkGroup({
           {canCancel ? (
             <IconButton
               label={t("tasks.cancelWorkCurrent")}
-              onClick={() => {
+              onClick={async () => {
+                const confirmed = await confirm({
+                  title: t("tasks.cancelGroupConfirm.title", { name: group.title }),
+                  message: t("tasks.cancelWorkConfirm.message", {
+                    count: cancellableActiveTaskCount(group.tasks),
+                  }),
+                  confirmLabel: t("tasks.cancelWorkCurrent"),
+                  cancelLabel: t("common.keep"),
+                  danger: true,
+                });
+                if (!confirmed) return;
                 cancelChapterDownloadBatches(
                   activeChapterDownloadBatchIds(group.tasks),
                 );
@@ -955,6 +971,7 @@ function TaskGroup({
   title: string;
 }) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
   const hasCancellableTasks = hasCancellableActiveTask(tasks);
   const sourceCollapsed = Boolean(sourceId && collapsed);
   const sourceItems = sourceId ? groupSourceTasksByWork(tasks) : [];
@@ -1008,7 +1025,17 @@ function TaskGroup({
           {sourceId && hasCancellableTasks ? (
             <IconButton
               label={t("tasks.cancelSourceCurrent")}
-              onClick={() => {
+              onClick={async () => {
+                const confirmed = await confirm({
+                  title: t("tasks.cancelGroupConfirm.title", { name: title }),
+                  message: t("tasks.cancelSourceConfirm.message", {
+                    count: cancellableActiveTaskCount(tasks),
+                  }),
+                  confirmLabel: t("tasks.cancelSourceCurrent"),
+                  cancelLabel: t("common.keep"),
+                  danger: true,
+                });
+                if (!confirmed) return;
                 cancelChapterDownloadBatches(
                   activeChapterDownloadBatchIds(tasks),
                 );
@@ -1093,6 +1120,7 @@ interface TasksPageProps {
 
 export function TasksPage({ active = true }: TasksPageProps = {}) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
   const snapshot = useTaskSnapshot(active);
   const vpn = useVpnDownloadRuntimeSnapshot(active);
   const requests = useChapterDownloadRequestSnapshot(active);
@@ -1266,15 +1294,30 @@ export function TasksPage({ active = true }: TasksPageProps = {}) {
             <IconButton
               disabled={!hasCancellableTasks || queueActionPending}
               label={t("tasks.cancelAllCurrent")}
-              onClick={() => runQueueAction(async () => {
-                const cancellingVpn = hasVpnRun ? cancelVpnDownloadRun() : Promise.resolve();
-                for (const request of requests) cancelChapterDownloadRequest(request.id);
-                cancelChapterDownloadBatches(
-                  activeChapterDownloadBatchIds(tasks),
-                );
-                taskScheduler.cancelActiveTasks({ discardQueued: true });
-                await cancellingVpn;
-              })}
+              onClick={async () => {
+                const count = cancellableActiveTaskCount(tasks) + requests.length;
+                const message = [
+                  count > 0 ? t("tasks.cancelAllConfirm.message", { count }) : null,
+                  hasVpnRun ? t("tasks.cancelAllConfirm.vpnRun") : null,
+                ].filter(Boolean).join(" ");
+                const confirmed = await confirm({
+                  title: t("tasks.cancelAllConfirm.title"),
+                  message,
+                  confirmLabel: t("tasks.cancelAllCurrent"),
+                  cancelLabel: t("common.keep"),
+                  danger: true,
+                });
+                if (!confirmed) return;
+                await runQueueAction(async () => {
+                  const cancellingVpn = hasVpnRun ? cancelVpnDownloadRun() : Promise.resolve();
+                  for (const request of requests) cancelChapterDownloadRequest(request.id);
+                  cancelChapterDownloadBatches(
+                    activeChapterDownloadBatchIds(tasks),
+                  );
+                  taskScheduler.cancelActiveTasks({ discardQueued: true });
+                  await cancellingVpn;
+                });
+              }}
               size="lg"
               tone="danger"
             >

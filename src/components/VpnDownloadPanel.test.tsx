@@ -29,6 +29,8 @@ vi.mock("../lib/tasks/vpn-download-runtime", () => ({
   cancelVpnDownloadDraft: vi.fn(), cancelVpnDownloadHandoverWork: vi.fn(), resumeVpnDownloadRange: vi.fn(), pauseVpnDownloadRange: vi.fn(), cancelVpnDownloadRange: vi.fn(), openVpnDownloadVerification: vi.fn(),
 }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+const confirm = vi.hoisted(() => vi.fn());
+vi.mock("./ui/ConfirmDialog", () => ({ useConfirm: () => confirm }));
 import { VpnDownloadPanel } from "./VpnDownloadPanel";
 import { VpnDownloadSettings } from "./VpnDownloadSettings";
 
@@ -127,6 +129,11 @@ it.each(["paused", "interrupted"] as const)("offers Resume for a %s run instead 
   expect(button(view, "vpnDownload.launch")).toBeUndefined();
   await button(view, "vpnDownload.resume").props.onClick!();
   expect(mocks.resume).toHaveBeenCalledOnce();
+  confirm.mockResolvedValueOnce(false);
   await button(render(), "vpnDownload.cancelRun").props.onClick!();
+  expect(mocks.cancel).not.toHaveBeenCalled();
+  confirm.mockResolvedValueOnce(true);
+  await button(render(), "vpnDownload.cancelRun").props.onClick!();
+  expect(confirm).toHaveBeenLastCalledWith(expect.objectContaining({ danger: true, message: "vpnDownload.cancelRunConfirm.message" }));
   expect(mocks.cancel).toHaveBeenCalledOnce();
 });

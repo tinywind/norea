@@ -26,6 +26,8 @@ vi.mock("../lib/tasks/vpn-download-runtime", () => ({ pauseVpnDownloadRun: mocks
 vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn() }));
 vi.mock("../lib/tasks/chapter-download-requests", () => ({ cancelChapterDownloadRequest: mocks.cancelRequest }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+const confirm = vi.hoisted(() => vi.fn());
+vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => confirm }));
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { TasksPage } from "./tasks";
 
@@ -40,6 +42,7 @@ function render() { mocks.index = 0; mocks.refIndex = 0; return elements(TasksPa
 const button = (label: string) => render().find(element => element.props.label === label)!;
 beforeEach(() => {
   vi.clearAllMocks(); mocks.states = []; mocks.refs = [];
+  confirm.mockResolvedValue(true);
   mocks.pause.mockReset().mockResolvedValue(undefined); mocks.resume.mockReset().mockResolvedValue(undefined); mocks.cancel.mockReset().mockResolvedValue(undefined);
   mocks.vpn = { drafts: [], plans: [], loading: false, error: null, capabilities: { supported: true, parallelSupported: true, maxWorkers: 10 }, chapterLabels: {},
     run: { id: "run", status: "running", workerCount: 3, captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile", activeWorkers: 0, connectingWorkers: 0, closingWorkers: 0 } };
@@ -51,7 +54,10 @@ it("cancels a VPN run and preparing requests even before any ordinary chapter ro
   const control = button("tasks.cancelAllCurrent");
   expect(control.props.disabled).toBe(false);
   const cancelling = control.props.onClick!();
-  expect(mocks.cancel).toHaveBeenCalledOnce();
+  await vi.waitFor(() => expect(mocks.cancel).toHaveBeenCalledOnce());
+  expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    danger: true, message: "tasks.cancelAllConfirm.message tasks.cancelAllConfirm.vpnRun",
+  }));
   expect(mocks.cancelRequest).toHaveBeenCalledWith("preparing");
   expect(button("tasks.cancelAllCurrent").props.disabled).toBe(true);
   finish(); await cancelling;

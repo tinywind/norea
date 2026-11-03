@@ -16,6 +16,7 @@ import {
 import { useVpnDownloadStore } from "../store/vpn-download";
 import { SettingsInlineControls } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
+import { useConfirm } from "./ui/ConfirmDialog";
 import { VpnDownloadRanges } from "./VpnDownloadRanges";
 import { VpnDownloadSettings } from "./VpnDownloadSettings";
 
@@ -29,6 +30,7 @@ const RUN_STATUS_KEYS: Record<VpnDownloadRunSnapshot["status"], TranslationKey> 
 
 export function VpnDownloadPanel({ snapshot }: { snapshot: VpnDownloadRuntimeSnapshot }) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
   const workerCount = useVpnDownloadStore(state => state.workerCount);
   const captchaPolicy = useVpnDownloadStore(state => state.captchaPolicy);
   const cloudflarePolicy = useVpnDownloadStore(state => state.cloudflarePolicy);
@@ -70,7 +72,11 @@ export function VpnDownloadPanel({ snapshot }: { snapshot: VpnDownloadRuntimeSna
             {run?.status === "paused" || run?.status === "interrupted" ?
               <TextButton disabled={pending} loading={pending} onClick={() => act(resumeVpnDownloadRun)}>{t("vpnDownload.resume")}</TextButton> :
               <TextButton disabled={pending || run?.status === "cancelling"} onClick={() => act(pauseVpnDownloadRun)}>{t("vpnDownload.pause")}</TextButton>}
-            <TextButton tone="danger" disabled={pending || run?.status === "cancelling"} onClick={() => act(cancelVpnDownloadRun)}>{t("vpnDownload.cancelRun")}</TextButton>
+            <TextButton tone="danger" disabled={pending || run?.status === "cancelling"} onClick={async () => {
+              const confirmed = await confirm({ title: t("vpnDownload.cancelRunConfirm.title"), message: t("vpnDownload.cancelRunConfirm.message"),
+                confirmLabel: t("vpnDownload.cancelRun"), cancelLabel: t("common.keep"), danger: true });
+              if (confirmed) await act(cancelVpnDownloadRun);
+            }}>{t("vpnDownload.cancelRun")}</TextButton>
           </>}
         </SettingsInlineControls>
       </Group>

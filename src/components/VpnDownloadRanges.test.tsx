@@ -15,6 +15,8 @@ vi.mock("react", async original => ({
 }));
 vi.mock("../store/vpn-download", () => ({ useVpnDownloadStore: (select: (value: unknown) => unknown) => select({ mode: "parallel", workerCount: 2 }) }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string, values?: Record<string, unknown>) => `${key}${values ? JSON.stringify(values) : ""}` }) }));
+const confirm = vi.hoisted(() => vi.fn());
+vi.mock("./ui/ConfirmDialog", () => ({ useConfirm: () => confirm }));
 import { VpnDownloadRanges } from "./VpnDownloadRanges";
 
 interface Props { children?: ReactNode; label?: string; disabled?: boolean; onClick?: () => unknown; "data-vpn-range"?: string; "data-vpn-work"?: string }
@@ -55,6 +57,7 @@ const button = (view: ReactElement<Props>[], key: string) => view.find(element =
 const row = (view: ReactElement<Props>[], id: string) => controls(view.find(element => element.props["data-vpn-range"] === id));
 beforeEach(() => {
   vi.clearAllMocks(); mocks.states = []; mocks.refs = [];
+  confirm.mockResolvedValue(true);
   for (const action of Object.values(actions)) action.mockResolvedValue(undefined);
 });
 
@@ -153,8 +156,24 @@ it("cancels all pending and enrolled parts of one work without targeting another
   value.plans = [activePlan(), { ...activePlan(), id: "other", novelId: 99, title: "Other work", ranges: [{ ...activePlan().ranges[1]!, id: "other-range" }] }];
   const group = controls(render(value).find(element => element.props["data-vpn-work"] === '["source",42]'));
   await button(group, "vpnDownload.cancelWork").props.onClick!();
+  expect(confirm).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    danger: true, message: 'vpnDownload.cancelWorkConfirm.message{"count":3}',
+  }));
   expect(actions.cancelDraft).toHaveBeenCalledExactlyOnceWith("draft");
   expect(actions.cancelRange.mock.calls).toEqual([["plan", "lane-a"], ["plan", "lane-b"]]);
+});
+
+it("keeps work and ranges running when their cancellation is not confirmed", async () => {
+  const value = snapshot(); value.plans = [activePlan()];
+  confirm.mockResolvedValue(false);
+  const view = render(value);
+  await button(view, "vpnDownload.cancelWork").props.onClick!();
+  await button(row(view, "lane-b"), "vpnDownload.cancelRange").props.onClick!();
+  expect(confirm).toHaveBeenLastCalledWith(expect.objectContaining({
+    danger: true, message: expect.stringContaining('"completed":0,"total":2'),
+  }));
+  expect(actions.cancelDraft).not.toHaveBeenCalled();
+  expect(actions.cancelRange).not.toHaveBeenCalled();
 });
 
 it("routes work pause and resume through the whole-work boundary rather than individual range snapshots", async () => {

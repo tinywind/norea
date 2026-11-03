@@ -37,6 +37,7 @@ import {
 import { IconButton } from "../components/IconButton";
 import { PluginSettingsEditor } from "../components/PluginSettingsEditor";
 import { TextButton } from "../components/TextButton";
+import { useConfirm } from "../components/ui/ConfirmDialog";
 import {
   getCachedRepoIndex,
   setCachedRepoIndex,
@@ -314,6 +315,7 @@ export function BrowsePage({
   tab = "search",
 }: BrowsePageProps) {
   const { locale, t } = useTranslation();
+  const confirm = useConfirm();
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const repos = useQuery({
@@ -767,9 +769,18 @@ export function BrowsePage({
                 });
               }}
               refreshing={available.isFetching}
-              onRemove={(id) => {
+              onRemove={async (id) => {
                 debugRepositoryFlow("remove clicked", { id });
-                removeRepoMutation.mutate(id);
+                const repository = repos.data?.find((item) => item.id === id);
+                const confirmed = await confirm({
+                  title: t("browse.removeRepositoryConfirm.title"),
+                  message: t("browse.removeRepositoryConfirm.message", {
+                    url: repository?.url ?? "",
+                  }),
+                  confirmLabel: t("common.remove"),
+                  danger: true,
+                });
+                if (confirmed) removeRepoMutation.mutate(id);
               }}
               removing={removeRepoMutation.isPending}
             />
@@ -789,7 +800,17 @@ export function BrowsePage({
                   ? (clearCookiesMutation.variables?.id ?? null)
                   : null
               }
-              onUninstall={(id) => uninstallMutation.mutate(id)}
+              onUninstall={async (id) => {
+                const confirmed = await confirm({
+                  title: t("browse.uninstallConfirm.title", {
+                    name: installedPluginsById.get(id)?.name ?? id,
+                  }),
+                  message: t("browse.uninstallConfirm.message"),
+                  confirmLabel: t("browse.uninstall"),
+                  danger: true,
+                });
+                if (confirmed) uninstallMutation.mutate(id);
+              }}
               uninstallingPluginIds={uninstallingPluginIds}
               lastUsedPluginId={lastUsedPluginId}
               onClearCookies={setCookiePlugin}

@@ -7,6 +7,7 @@ import type { VpnDownloadDraftWork, VpnDownloadHandoverWork, VpnDownloadRuntimeS
 import type { VpnDownloadPlan, VpnDownloadRangeState } from "../lib/tasks/vpn-download-types";
 import { SettingsInlineControls } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
+import { useConfirm } from "./ui/ConfirmDialog";
 
 export interface VpnDownloadRangeActions {
   retryDraft: (draftId: string) => Promise<void>;
@@ -41,6 +42,7 @@ export function VpnDownloadRanges({ snapshot, profiles, actions }: {
   actions: VpnDownloadRangeActions;
 }) {
   const { t } = useTranslation();
+  const confirm = useConfirm();
   const [pendingKeys, setPendingKeys] = useState<ReadonlySet<string>>(() => new Set());
   const [errors, setErrors] = useState<Record<string, string | null>>({});
   const pending = useRef(new Set<string>());
@@ -88,11 +90,16 @@ export function VpnDownloadRanges({ snapshot, profiles, actions }: {
                 workHeld ? <TextButton aria-label={actionLabel(t("vpnDownload.resumeWork"))} disabled={workBusy || !runEnabled}
                   onClick={() => { if (runEnabled) return run(workKey, () => actions.resumeWork(work.pluginId, work.novelId)); }}>{t("vpnDownload.resumeWork")}</TextButton> : null}
               <TextButton tone="danger" aria-label={actionLabel(t("vpnDownload.cancelWork"))} disabled={workBusy}
-                onClick={() => run(workKey, () => Promise.all([
-                  ...work.drafts.map(draft => actions.cancelDraft(draft.id)),
-                  ...work.handover.map(waiting => actions.cancelHandoverWork(waiting.id)),
-                  ...unfinished.map(({ planId, range }) => actions.cancelRange(planId, range.id)),
-                ]))}>{t("vpnDownload.cancelWork")}</TextButton>
+                onClick={async () => {
+                  const confirmed = await confirm({ title: t("vpnDownload.cancelWorkConfirm.title", { title: work.title }),
+                    message: t("vpnDownload.cancelWorkConfirm.message", { count: work.drafts.length + work.handover.length + unfinished.length }),
+                    confirmLabel: t("vpnDownload.cancelWork"), cancelLabel: t("common.keep"), danger: true });
+                  if (confirmed) await run(workKey, () => Promise.all([
+                    ...work.drafts.map(draft => actions.cancelDraft(draft.id)),
+                    ...work.handover.map(waiting => actions.cancelHandoverWork(waiting.id)),
+                    ...unfinished.map(({ planId, range }) => actions.cancelRange(planId, range.id)),
+                  ]));
+                }}>{t("vpnDownload.cancelWork")}</TextButton>
             </SettingsInlineControls> : null}
             {errors[workKey] ? <Alert color="danger" role="alert">{errors[workKey]}</Alert> : null}
             {work.handover.map(waiting => <Stack key={waiting.id} gap="xs" className="norea-vpn-download-range">
@@ -153,7 +160,12 @@ export function VpnDownloadRanges({ snapshot, profiles, actions }: {
                     {range.challenge ? <TextButton aria-label={actionLabel(t("vpnDownload.openVerification"))} disabled={busy || !snapshot.capabilities.supported || !runEnabled}
                       onClick={() => { if (snapshot.capabilities.supported && runEnabled) return run(key, () => actions.openVerification(plan.id, range.id)); }}>{t("vpnDownload.openVerification")}</TextButton> : null}
                     <TextButton tone="danger" aria-label={actionLabel(t("vpnDownload.cancelRange"))} disabled={busy}
-                      onClick={() => run(key, () => actions.cancelRange(plan.id, range.id))}>{t("vpnDownload.cancelRange")}</TextButton>
+                      onClick={async () => {
+                        const confirmed = await confirm({ title: t("vpnDownload.cancelRangeConfirm.title"),
+                          message: t("vpnDownload.cancelRangeConfirm.message", { title: plan.title, interval, completed: range.checkpoint, total: range.selectedChapterIds.length }),
+                          confirmLabel: t("vpnDownload.cancelRange"), cancelLabel: t("common.keep"), danger: true });
+                        if (confirmed) await run(key, () => actions.cancelRange(plan.id, range.id));
+                      }}>{t("vpnDownload.cancelRange")}</TextButton>
                   </SettingsInlineControls> : null}
                   {errors[key] ? <Alert color="danger" role="alert">{errors[key]}</Alert> : null}
                 </Stack>
