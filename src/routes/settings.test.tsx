@@ -27,7 +27,7 @@ function detail(markup: string): string {
 
 describe("settings sections", () => {
   it("lists every section in order with a current-state summary", () => {
-    const markup = renderSettings("appearance");
+    const markup = renderSettings();
     const order = [
       "Appearance",
       "General",
@@ -43,6 +43,25 @@ describe("settings sections", () => {
     expect(order.every((index) => index >= 0)).toBe(true);
     expect([...order].sort((left, right) => left - right)).toEqual(order);
     expect(markup).toContain("Moss · System");
+    expect(markup).not.toContain("Theme mode");
+  });
+
+  it("opens a section as its own page with Back instead of a section picker", () => {
+    const markup = renderSettings("network");
+
+    expect(markup).toContain('aria-label="Back"');
+    expect(markup).toContain("Plugin VPN");
+    expect(markup).not.toContain("norea-settings-index");
+    expect(markup).not.toContain("Settings section");
+    expect(markup).not.toContain("Tauri 2");
+  });
+
+  it("edits global reader defaults without the scope card", () => {
+    const markup = renderSettings("reader");
+
+    expect(markup).toContain("Reading mode");
+    expect(markup).not.toContain("norea-reader-settings-scope-card");
+    expect(markup).not.toContain("Editing global reader settings");
   });
 
   it("keeps the label switch in Appearance and drops the retired tab switches", () => {

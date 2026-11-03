@@ -20,7 +20,6 @@
   background: var(--norea-color-bg);
   display: flex;
   flex: 1 1 auto;
-  height: auto;
   min-height: 0;
   overflow: hidden;
 }
@@ -29,31 +28,17 @@
   background: var(--norea-color-surface-raised);
   border-right: 1px solid var(--norea-color-rule);
   display: flex;
-  flex: 0 0 13.75rem;
+  flex: 0 0 18rem;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
-  width: 13.75rem;
-}
-
-.norea-settings-nav-header {
-  align-items: center;
-  border-bottom: 1px solid var(--norea-color-rule);
-  display: flex;
-  flex: 0 0 2.375rem;
-  padding: 0 var(--norea-space-3);
-}
-
-.norea-settings-detail-title {
-  color: var(--norea-color-ink);
-  font-family: var(--norea-font-ui);
-  font-weight: 600;
 }
 
 .norea-settings-nav-scroll {
-  flex: 1;
+  flex: 1 1 auto;
   min-height: 0;
+  overflow: auto;
 }
 
 .norea-settings-index-list {
@@ -66,72 +51,50 @@
   box-shadow: inset 0.1875rem 0 0 var(--norea-color-accent);
 }
 
+.norea-settings-index-chevron {
+  color: var(--norea-color-icon-subtle);
+}
+
 .norea-settings-detail {
   background: var(--norea-color-surface);
   display: flex;
-  flex: 1;
+  flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
   min-width: 0;
   overflow: hidden;
 }
 
-.norea-settings-detail-inner {
-  display: flex;
-  flex: 1;
-  flex-direction: column;
-  height: 100%;
-  min-height: 0;
-  padding: 0;
-}
-
-.norea-settings-detail-header {
+.norea-settings-app-bar {
   align-items: center;
-  background: var(--norea-color-surface-raised);
-  border-bottom: 1px solid var(--norea-color-rule-strong);
-  flex: 0 0 3.5rem;
-  gap: var(--norea-space-3);
-  margin: 0;
+  background: var(--norea-color-surface);
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--norea-space-1);
   min-height: 3.5rem;
   padding: 0 var(--norea-space-4);
-  position: relative;
 }
 
-.norea-settings-detail-header::before {
-  background: var(--norea-color-accent);
-  border-radius: var(--norea-radius-full);
-  bottom: 0.75rem;
-  content: "";
-  left: 0;
-  position: absolute;
-  top: 0.75rem;
-  width: 0.1875rem;
+.norea-settings-app-bar:has(.norea-icon-button) {
+  padding-left: var(--norea-space-1);
 }
 
-.norea-settings-detail-copy {
-  flex: 1;
-  min-width: 0;
-}
-
-.norea-settings-detail-title {
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-lg);
-  font-weight: 700;
-  line-height: 1.2;
+.norea-settings-app-bar-title {
+  color: var(--norea-color-ink);
+  flex: 1 1 auto;
+  font-size: var(--norea-text-xl);
+  font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
   margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.norea-settings-section-select {
-  display: none;
-  flex: 0 0 min(13rem, 100%);
-  width: min(13rem, 100%);
-}
-
 .norea-settings-detail-body {
-  display: block;
-  flex: 1;
-  margin-top: 0;
+  flex: 1 1 auto;
   min-height: 0;
   overflow: auto;
 }
@@ -287,11 +250,6 @@
   padding: var(--norea-space-3);
 }
 
-.norea-settings-switch-list {
-  display: grid;
-  gap: var(--norea-space-2);
-}
-
 .norea-settings-slider-control {
   align-items: center;
   display: grid;
@@ -308,57 +266,6 @@
   font-weight: 700;
   line-height: 1;
   text-align: right;
-}
-
-.norea-settings-data {
-  display: grid;
-  gap: var(--norea-space-4);
-  margin-inline: auto;
-  max-width: 68rem;
-  min-width: 0;
-  padding: var(--norea-space-4);
-}
-
-.norea-settings-data > .norea-settings-group {
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-sm);
-  min-width: 0;
-}
-
-.norea-settings-data .norea-settings-group-body {
-  padding: 0 var(--norea-space-4);
-}
-
-.norea-settings-data .norea-settings-form-row {
-  align-items: start;
-  gap: var(--norea-space-3) 1.25rem;
-  grid-template-columns: minmax(0, 1fr);
-  padding: var(--norea-space-3) 0;
-}
-
-.norea-settings-data .norea-settings-form-description {
-  line-height: 1.5;
-  margin-top: var(--norea-space-1);
-}
-
-.norea-settings-data .norea-settings-form-control {
-  justify-self: stretch;
-  max-width: none;
-  min-width: 0;
-}
-
-.norea-settings-data .norea-settings-form-control :where(.mantine-InputWrapper-root) {
-  width: 100%;
-}
-
-.norea-settings-data .norea-settings-inline-controls {
-  justify-content: flex-start;
-}
-
-.norea-settings-data .norea-text-button:disabled {
-  background: var(--norea-color-surface-raised);
-  border-color: var(--norea-color-rule);
-  color: var(--norea-color-ink-muted);
 }
 
 .norea-settings-connection {
@@ -404,25 +311,6 @@
 .norea-settings-error {
   margin-block: var(--norea-space-3);
   overflow-wrap: anywhere;
-}
-
-@media (min-width: 992px) {
-  .norea-settings-data .norea-settings-form-row[data-layout="inline"][data-copy="visible"] {
-    align-items: center;
-    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
-  }
-
-  .norea-settings-data .norea-settings-form-row[data-layout="inline"] > .norea-settings-form-control {
-    display: flex;
-    justify-content: flex-end;
-    justify-self: end;
-    max-width: 26rem;
-    width: 100%;
-  }
-
-  .norea-settings-data .norea-settings-inline-controls {
-    justify-content: flex-end;
-  }
 }
 
 .norea-reader-tap-preset-grid {
@@ -599,10 +487,6 @@
 }
 
 @media (max-width: 767px) {
-  .norea-settings-data {
-    padding: var(--norea-space-3);
-  }
-
   .norea-settings-page {
     height: auto;
     min-height: var(--norea-app-content-height);
@@ -610,52 +494,25 @@
   }
 
   .norea-settings-page > :where(div),
-  .norea-settings-shell {
+  .norea-settings-shell,
+  .norea-settings-detail {
     min-height: var(--norea-app-content-height);
   }
 
-  .norea-settings-shell {
+  .norea-settings-shell,
+  .norea-settings-detail {
     display: block;
-    height: auto;
     overflow: visible;
   }
 
-  .norea-settings-nav {
-    display: none;
+  .norea-settings-app-bar {
+    position: sticky;
+    top: 0;
+    z-index: 2;
   }
 
-  .norea-settings-detail,
-  .norea-settings-detail-inner {
-    min-height: var(--norea-app-content-height);
-  }
-
-  .norea-settings-section-select {
-    display: block;
-  }
-
-  .norea-settings-detail-header {
-    align-items: center;
-    flex-wrap: nowrap !important;
-    flex-direction: row;
-    gap: var(--norea-space-3);
-    height: auto;
-    min-height: 3.75rem;
-    padding: 0 var(--norea-space-3);
-  }
-
-  .norea-settings-detail-copy {
-    flex: 1 1 50%;
-    min-width: 0;
-  }
-
-  .norea-settings-section-select {
-    flex: 0 1 50%;
-    min-width: 0;
-    width: 50%;
-  }
-
-  .norea-settings-section-select :where(.mantine-InputWrapper-root) {
-    width: 100%;
+  .norea-settings-detail-body {
+    overflow: visible;
   }
 }
 

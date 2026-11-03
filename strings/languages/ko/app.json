@@ -398,7 +398,6 @@
   "tasks.empty.main": "아직 메인 앱 작업이 없습니다.",
   "tasks.empty.source": "아직 소스 작업이 없습니다.",
   "settings.title": "설정",
-  "settings.sectionSelect.label": "설정 섹션",
   "settings.toast.saved": "저장되었습니다.",
   "settings.toast.reset": "기본값으로 되돌렸습니다.",
   "pluginVpn.bootstrap.title": "네트워크 설정을 마치지 못했습니다",

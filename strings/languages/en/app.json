@@ -398,7 +398,6 @@
   "tasks.empty.main": "No main app tasks yet.",
   "tasks.empty.source": "No source tasks yet.",
   "settings.title": "Settings",
-  "settings.sectionSelect.label": "Settings section",
   "settings.toast.saved": "Saved",
   "settings.toast.reset": "Reset to default",
   "pluginVpn.bootstrap.title": "Network setup didn't finish",
