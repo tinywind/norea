@@ -6,10 +6,10 @@ import { getTableConfig, SQLiteTable } from "drizzle-orm/sqlite-core";
 import { expect, it } from "vitest";
 import * as schema from "./schema";
 
-function applyRegisteredMigrations(db: DatabaseSync, fromVersion = 0): void {
+function applyRegisteredMigrations(db: DatabaseSync, fromVersion = 0, toVersion = Infinity): void {
   const registration = readFileSync("src-tauri/src/database.rs", "utf8");
   for (const match of registration.matchAll(/version:\s*(\d+),\s*description:[\s\S]*?sql:\s*include_str!\("([^"]+)"\)/g)) {
-    if (Number(match[1]) > fromVersion) db.exec(readFileSync(`src-tauri/src/${match[2]}`, "utf8"));
+    if (Number(match[1]) > fromVersion && Number(match[1]) <= toVersion) db.exec(readFileSync(`src-tauri/src/${match[2]}`, "utf8"));
   }
 }
 
@@ -94,5 +94,26 @@ it("upgrades v2 plans with shared batch membership without changing queued jobs 
     expect(() => db.exec(`UPDATE vpn_download_profile_issue SET cause='cookie=secret'`)).toThrow();
     expect(() => db.exec(`UPDATE vpn_download_profile_issue SET excluded=2`)).toThrow();
     expect(db.prepare("SELECT cause,excluded FROM vpn_download_profile_issue").get()).toEqual({ cause: "captcha", excluded: 1 });
+  } finally { db.close(); }
+});
+
+it("upgrades populated v3 storage to chapter download failure tracking without changing existing rows", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    applyRegisteredMigrations(db, 0, 3);
+    expect(db.prepare("SELECT name FROM sqlite_schema WHERE name='chapter_download_failure'").all()).toEqual([]);
+    db.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Work',1);
+      INSERT INTO chapter(id,novel_id,path,name,position,progress) VALUES(1,1,'/one','One',1,40),(2,1,'/two','Two',2,0);
+      INSERT INTO chapter_download_queue VALUES(1,'{"id":1,"pluginId":"source","chapterPath":"/one","title":"One"}',10,20,NULL,0);
+      INSERT INTO vpn_download_plan VALUES('plan','{"batchId":"batch"}',2)`);
+    const before = ["chapter", "chapter_download_queue", "vpn_download_plan"].map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+    applyRegisteredMigrations(db, 3);
+    expect(["chapter", "chapter_download_queue", "vpn_download_plan"].map((table) => db.prepare(`SELECT * FROM ${table}`).all()))
+      .toEqual(before);
+    db.exec(`INSERT INTO chapter_download_failure VALUES(2,'source','media-incomplete','Missing images',NULL,1,NULL,'{}',10)`);
+    expect(() => db.exec(`INSERT INTO chapter_download_failure VALUES(1,'source','unknown','x',NULL,1,NULL,'{}',10)`)).toThrow();
+    expect(() => db.exec(`INSERT INTO chapter_download_failure VALUES(1,'source','content','x',NULL,0,NULL,'{}',10)`)).toThrow();
+    db.exec("DELETE FROM chapter WHERE id=2");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM chapter_download_failure").get()).toEqual({ count: 0 });
   } finally { db.close(); }
 });

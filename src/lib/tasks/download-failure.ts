@@ -3,19 +3,12 @@ import {
   isTransientMediaNetworkError,
 } from "../chapter-media/errors";
 import type { ChapterMediaFailure } from "../chapter-media/types";
+import type { CHAPTER_DOWNLOAD_FAILURE_CLASSES } from "../../db/schema";
 import { describeError } from "../errors";
 import { normalizeSourceAccessRequiredError } from "../plugins/source-access";
 import { redactUrlsForLog } from "../url-log";
 
-export const DOWNLOAD_FAILURE_CLASSES = [
-  "transient",
-  "challenge",
-  "content",
-  "storage",
-  "media-incomplete",
-] as const;
-
-export type DownloadFailureClass = (typeof DOWNLOAD_FAILURE_CLASSES)[number];
+export type DownloadFailureClass = (typeof CHAPTER_DOWNLOAD_FAILURE_CLASSES)[number];
 
 export interface DownloadFailure {
   failureClass: DownloadFailureClass;

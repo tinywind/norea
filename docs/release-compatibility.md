@@ -63,6 +63,17 @@ requirements must be decided explicitly before implementation.
   recorded profile and an existing plan's assignment is only a preference.
   Existing plans keep their checkpoints, attempts and queue rows unchanged.
   These fields do not change the SQL schema, backup tables or source plugin format.
+- Database migration 4 adds `chapter_download_failure`, one row per chapter with
+  the last terminal download failure: its class, a redacted message summary, the
+  challenged URL for challenges, the attempt count, the next automatic attempt
+  time, and the failed job's queue JSON. It changes no existing table; queue
+  rows, plans, chapters and reading state upgrade unchanged. A row is removed with
+  its chapter row through the foreign key. The attempt count is the persisted retry
+  budget, so restarts cannot reset it. Full device snapshots include the table
+  under the exact-schema policy; restore keeps the rows but clears every
+  scheduled retry time, so a restored snapshot never starts automatic downloads.
+  Portable file backups exclude the table, and their restore drops it with the
+  replaced chapter rows.
 - Automatically tested VPN Gate servers live in `plugin-vpn/automatic-profiles/`
   beside the approved `saved-profiles/` vault, with their own index and private
   files. They never write or change an O/X verdict; an entry leaves the pool when

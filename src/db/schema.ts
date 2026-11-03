@@ -179,6 +179,31 @@ export const chapterDownloadQueueTable = sqliteTable(
   }),
 );
 
+export const CHAPTER_DOWNLOAD_FAILURE_CLASSES = ["transient", "challenge", "content", "storage", "media-incomplete"] as const;
+
+// ChapterDownloadFailure: the last terminal failure of a chapter download and
+// its automatic retry budget. Cleared when the chapter downloads or is deleted.
+export const chapterDownloadFailureTable = sqliteTable("chapter_download_failure", {
+  chapterId: integer("chapter_id").primaryKey().notNull()
+    .references(() => chapterTable.id, { onDelete: "cascade" }),
+  pluginId: text("plugin_id").notNull(),
+  failureClass: text("failure_class", { enum: CHAPTER_DOWNLOAD_FAILURE_CLASSES }).notNull(),
+  messageSummary: text("message_summary").notNull(),
+  challengeUrl: text("challenge_url"),
+  attempts: integer("attempts").notNull(),
+  nextRetryAt: integer("next_retry_at"),
+  jobJson: text("job_json").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+}, (t) => ({
+  sourceIdx: index("chapter_download_failure_source_idx").on(t.pluginId, t.failureClass),
+  classCheck: check("chapter_download_failure_class",
+    sql`${t.failureClass} IN ('transient', 'challenge', 'content', 'storage', 'media-incomplete')`),
+  attemptsCheck: check("chapter_download_failure_attempts", sql`${t.attempts} > 0`),
+  nextRetryCheck: check("chapter_download_failure_next_retry",
+    sql`${t.nextRetryAt} IS NULL OR ${t.nextRetryAt} >= 0`),
+  updatedAtCheck: check("chapter_download_failure_updated_at", sql`${t.updatedAt} >= 0`),
+}));
+
 export const vpnDownloadPlanTable = sqliteTable("vpn_download_plan", {
   id: text("id").primaryKey().notNull(),
   payload: text("payload").notNull(),

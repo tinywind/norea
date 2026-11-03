@@ -46,6 +46,12 @@ pub fn schema_migrations() -> Vec<Migration> {
             sql: include_str!("migrations/0003_vpn_download_profile_issues.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 4,
+            description: "persist chapter download failures and retry budgets",
+            sql: include_str!("migrations/0004_chapter_download_failures.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -158,6 +164,42 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn registered_v3_upgrade_preserves_queue_and_plans_and_tracks_failures_per_chapter() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
+            SqlxMigration::new(migration.version, migration.description.into(),
+                MigrationType::ReversibleUp, migration.sql.into(), false)
+        }).collect();
+        let pool = bootstrap(&path, &migrations[..3]).await.unwrap();
+        sqlx::query("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Work',1)").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO chapter(id,novel_id,path,name,position,progress) VALUES(1,1,'/one','One',1,40),(2,1,'/two','Two',2,0)")
+            .execute(&pool).await.unwrap();
+        let job = r#"{"id":1,"pluginId":"source","chapterPath":"/one","title":"One"}"#;
+        sqlx::query("INSERT INTO chapter_download_queue VALUES(1,?1,10,20,NULL,0)").bind(job).execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO vpn_download_plan VALUES('plan','{\"batchId\":\"batch\"}',2)").execute(&pool).await.unwrap();
+        pool.close().await;
+        for _ in 0..2 {
+            let pool = bootstrap(&path, &migrations).await.unwrap();
+            assert_eq!(sqlx::query_as::<_, (String, i64)>("SELECT job_json,attempt_count FROM chapter_download_queue")
+                .fetch_one(&pool).await.unwrap(), (job.into(), 0));
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT progress FROM chapter WHERE id=1").fetch_one(&pool).await.unwrap(), 40);
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT revision FROM vpn_download_plan").fetch_one(&pool).await.unwrap(), 2);
+            pool.close().await;
+        }
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        sqlx::query("INSERT INTO chapter_download_failure VALUES(2,'source','transient','Timed out',NULL,1,30000,'{}',10)")
+            .execute(&pool).await.unwrap();
+        assert!(sqlx::query("INSERT INTO chapter_download_failure VALUES(1,'source','unknown','x',NULL,1,NULL,'{}',10)")
+            .execute(&pool).await.is_err());
+        assert!(sqlx::query("INSERT INTO chapter_download_failure VALUES(99,'source','content','x',NULL,1,NULL,'{}',10)")
+            .execute(&pool).await.is_err());
+        sqlx::query("DELETE FROM chapter WHERE id=2").execute(&pool).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chapter_download_failure").fetch_one(&pool).await.unwrap(), 0);
+        pool.close().await;
+    }
+
+    #[tokio::test]
     async fn registered_v1_upgrade_preserves_library_chapters_and_ordinary_queue() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join(DB_FILE);
@@ -185,7 +227,7 @@ mod tests {
             assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vpn_download_plan")
                 .fetch_one(&pool).await.unwrap(), 0);
             assert_eq!(sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version")
-                .fetch_all(&pool).await.unwrap(), vec![1,2,3]);
+                .fetch_all(&pool).await.unwrap(), vec![1,2,3,4]);
             pool.close().await;
         }
     }

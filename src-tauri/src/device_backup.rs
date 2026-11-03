@@ -346,6 +346,11 @@ async fn restore_database(source: &Path, pool: &SqlitePool) -> Result<(), String
                 sqlx::query("UPDATE chapter_download_queue SET leased_at_ms=NULL")
                     .execute(&mut *connection).await.map_err(failure)?;
             }
+            // Restored failures stay listed, but a restore never starts automatic retries by itself.
+            if has_table("chapter_download_failure") {
+                sqlx::query("UPDATE chapter_download_failure SET next_retry_at=NULL")
+                    .execute(&mut *connection).await.map_err(failure)?;
+            }
             if has_table("download_cache_work") {
                 sqlx::query("UPDATE download_cache_work SET status='cancelled',cancel_requested=1,finished_at_ms=? WHERE status IN ('queued','running')")
                     .bind(now_millis() as i64).execute(&mut *connection).await.map_err(failure)?;
@@ -1240,6 +1245,21 @@ mod tests {
         restore_database(&source, &pool).await.unwrap();
         assert_eq!(sqlx::query_as::<_, (i64, String, Option<i64>, i64)>("SELECT chapter_id,job_json,leased_at_ms,attempt_count FROM chapter_download_queue").fetch_all(&pool).await.unwrap(), [(1, "{\"vpnPlanId\":\"plan\",\"vpnRangeId\":\"range\",\"chapterPath\":\"frozen-payload\"}".into(), None, 4)]);
         assert_eq!(sqlx::query_scalar::<_, String>("SELECT payload FROM vpn_download_plan").fetch_one(&pool).await.unwrap(), "{\"status\":\"paused\",\"attemptedProfileIds\":[\"retained-id\"],\"checkpoint\":7}");
+    }
+
+    #[tokio::test]
+    async fn restore_keeps_chapter_download_failures_without_scheduled_retries() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = database(&dir.path().join("live.db")).await;
+        pool.execute("CREATE TABLE chapter_download_failure(chapter_id INTEGER PRIMARY KEY,plugin_id TEXT NOT NULL,failure_class TEXT NOT NULL,message_summary TEXT NOT NULL,challenge_url TEXT,attempts INTEGER NOT NULL,next_retry_at INTEGER,job_json TEXT NOT NULL,updated_at INTEGER NOT NULL);
+            INSERT INTO chapter_download_failure VALUES(1,'source','transient','Timed out',NULL,2,500,'{}',10),(2,'source','content','Not found',NULL,1,NULL,'{}',10);").await.unwrap();
+        let source = dir.path().join("snapshot.db");
+        sqlx::query("VACUUM INTO ?").bind(source.to_str().unwrap()).execute(&pool).await.unwrap();
+        pool.execute("DELETE FROM chapter_download_failure;").await.unwrap();
+        restore_database(&source, &pool).await.unwrap();
+        assert_eq!(sqlx::query_as::<_, (i64, String, i64, Option<i64>)>(
+            "SELECT chapter_id,failure_class,attempts,next_retry_at FROM chapter_download_failure ORDER BY chapter_id")
+            .fetch_all(&pool).await.unwrap(), [(1, "transient".into(), 2, None), (2, "content".into(), 1, None)]);
     }
 
     #[tokio::test]
