@@ -86,7 +86,7 @@ describe("source access browser controls", () => {
   });
 
   it.each(["queued", "loading", "ready", "error"] as const)("closes a %s browser without requesting verification", (phase) => {
-    const close = findControl(openBrowser(phase), "siteBrowser.close");
+    const close = findControl(openBrowser(phase), "sourceAccess.closeKeepPaused");
     expect(close).toBeDefined();
     expect(close!.props.disabled).not.toBe(true);
     close!.props.onClick!();
@@ -101,7 +101,7 @@ describe("source access browser controls", () => {
     const renderLoading = () => BlockingLoadingOverlay({ label: "Loading source" });
     expect(renderLoading()).not.toBeNull();
 
-    const close = findControl(openBrowser(phase), "siteBrowser.close");
+    const close = findControl(openBrowser(phase), "sourceAccess.closeKeepPaused");
     expect(renderLoading()).toBeNull();
 
     close!.props.onClick!();
@@ -171,7 +171,7 @@ describe("source access browser controls", () => {
       sourceId: "source-a",
       context: { mode: "source-access", revision: 3, scopeKey: "plugin:source-a:site:source.test" },
     });
-    findControl(SiteBrowserOverlay(), "siteBrowser.close")!.props.onClick!();
+    findControl(SiteBrowserOverlay(), "sourceAccess.closeKeepPaused")!.props.onClick!();
     expect(useSiteBrowserStore.getState().completion?.outcome).toBe("keep-paused");
   });
 
@@ -187,6 +187,49 @@ describe("source access browser controls", () => {
     expect(forceStop!.props.disabled).not.toBe(true);
     forceStop!.props.onClick!();
     expect(cancel).toHaveBeenCalledWith("plugin:source-a:site:source.test", 3);
+  });
+});
+
+function textOf(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (!isValidElement<{ children?: ReactNode }>(node)) return "";
+  return Children.toArray(node.props.children).map(textOf).join(" ");
+}
+
+function findByType(node: ReactNode, type: string): ReactElement<{ children?: ReactNode }> | undefined {
+  if (!isValidElement<{ children?: ReactNode }>(node)) return undefined;
+  if (node.type === type) return node;
+  for (const child of Children.toArray(node.props.children)) {
+    const match = findByType(child, type);
+    if (match) return match;
+  }
+  return undefined;
+}
+
+describe("site browser chrome", () => {
+  afterEach(() => {
+    useSiteBrowserStore.getState().hide();
+  });
+
+  it("titles a plain site browser with the page host and closes it with a plain close", () => {
+    openBrowser("ready");
+    useSiteBrowserStore.setState({ context: { mode: "browse" } });
+    const view = SiteBrowserOverlay();
+    expect(textOf(findByType(view, "h2"))).toBe("source.test");
+    expect(findControl(view, "siteBrowser.close")).toBeDefined();
+    expect(findControl(view, "sourceAccess.verifyAndResume")).toBeUndefined();
+  });
+
+  it("offers Verify and resume, Keep paused and the skip action for an access check", () => {
+    const view = openBrowser("ready");
+    expect(textOf(findByType(view, "h2"))).toContain("sourceAccess.captchaTitle");
+    for (const label of [
+      "sourceAccess.verifyAndResume",
+      "sourceAccess.keepPaused",
+      "sourceAccess.forceStopAndContinue",
+    ]) {
+      expect(findControl(view, label)).toBeDefined();
+    }
   });
 });
 

@@ -1,0 +1,130 @@
+.norea-site-browser {
+  background: var(--norea-color-bg);
+  box-sizing: border-box;
+  color: var(--norea-color-ink);
+  display: flex;
+  flex-direction: column;
+  inset: 0;
+  padding: var(--norea-safe-area-top) var(--norea-safe-area-right)
+    var(--norea-safe-area-bottom) var(--norea-safe-area-left);
+  position: fixed;
+  z-index: var(--norea-z-site-browser);
+}
+
+.norea-site-browser-bar {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border-bottom: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--norea-space-2);
+  min-height: 3.5rem;
+  padding: 0 var(--norea-space-2) 0 var(--norea-space-4);
+  position: relative;
+  z-index: 1;
+}
+
+.norea-site-browser-title {
+  align-items: baseline;
+  display: flex;
+  flex: 1 1 auto;
+  font-size: var(--norea-text-md);
+  font-weight: var(--norea-weight-bold);
+  gap: var(--norea-space-2);
+  margin: 0;
+  min-width: 0;
+}
+
+.norea-site-browser-title-main,
+.norea-site-browser-title-host {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-site-browser-title-main {
+  flex: 0 1 auto;
+}
+
+.norea-site-browser-title-host {
+  color: var(--norea-color-ink-muted);
+  flex: 1 1 auto;
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-medium);
+}
+
+.norea-site-browser-address {
+  background: var(--norea-color-surface);
+  flex: 0 0 auto;
+  padding: var(--norea-space-2) var(--norea-space-4);
+}
+
+.norea-site-browser-address-input {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.norea-site-browser-page {
+  flex: 1 1 auto;
+  min-height: 0;
+  position: relative;
+}
+
+.norea-site-browser-cover {
+  align-items: center;
+  background: var(--norea-color-bg);
+  display: flex;
+  gap: var(--norea-space-2);
+  inset: 0;
+  justify-content: center;
+  position: absolute;
+  z-index: 1;
+}
+
+.norea-site-browser-error {
+  overflow-y: auto;
+  padding: var(--norea-space-6);
+}
+
+.norea-site-browser-error-copy {
+  display: grid;
+  gap: var(--norea-space-3);
+  max-width: 32rem;
+  min-width: 0;
+  width: 100%;
+}
+
+.norea-site-browser-error-detail {
+  overflow-wrap: anywhere;
+}
+
+.norea-site-browser-footer {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border-top: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: var(--norea-space-3);
+  justify-content: space-between;
+  padding: var(--norea-space-3) var(--norea-space-4);
+}
+
+.norea-site-browser-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+  justify-content: flex-end;
+  margin-left: auto;
+}
+
+@media (max-width: 767px) {
+  .norea-site-browser-actions {
+    width: 100%;
+  }
+
+  .norea-site-browser-skip {
+    margin-right: auto;
+  }
+}

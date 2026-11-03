@@ -40,8 +40,8 @@ export function SiteBrowserAddressBar({
   };
 
   return (
-    <form noValidate onSubmit={submit} style={{ flexShrink: 0 }}>
-      <Group px="md" py="xs" gap="xs" wrap="nowrap" align="flex-start">
+    <form className="norea-site-browser-address" noValidate onSubmit={submit}>
+      <Group gap="xs" wrap="nowrap" align="flex-start">
         <TextInput
           aria-label={t("siteBrowser.address")}
           autoCapitalize="none"
@@ -62,7 +62,7 @@ export function SiteBrowserAddressBar({
             }
           }}
           spellCheck={false}
-          style={{ flex: 1, minWidth: 0 }}
+          className="norea-site-browser-address-input"
           type="url"
           value={draft ?? url}
         />

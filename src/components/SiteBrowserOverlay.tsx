@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Box, Button, Group, Loader, Stack, Text } from "@mantine/core";
-import { CloseGlyph } from "./ActionGlyphs";
+import { Button, Loader, Text } from "@mantine/core";
 import { IconButton } from "./IconButton";
+import { CloseIcon } from "./ui/icons";
 import { SiteBrowserAddressBar } from "./SiteBrowserAddressBar";
 import { useTranslation } from "../i18n";
 import {
@@ -15,8 +15,8 @@ import { taskScheduler } from "../lib/tasks/scheduler";
 import { cancelSourceAccessWait } from "../lib/tasks/source-access-coordinator";
 import { redactUrlForLog, redactUrlsForLog } from "../lib/url-log";
 import { useSiteBrowserStore } from "../store/site-browser";
+import "../styles/site-browser.css";
 
-const CHROME_HEIGHT = 40;
 const BOUNDS_RESYNC_DELAYS_MS = [100, 500, 1000, 2000] as const;
 const SCRAPER_ORIGIN_POLL_INTERVAL_MS = 500;
 const SITE_BROWSER_HIDDEN_DOM_EVENT = "norea-site-browser-hidden";
@@ -26,6 +26,15 @@ function reportScraperError(action: string, error: unknown): void {
     `[site-browser] ${action} failed`,
     redactUrlsForLog(error instanceof Error ? error.message : String(error)),
   );
+}
+
+function siteHost(url: string | null): string | null {
+  if (!url) return null;
+  try {
+    return new URL(url).host || null;
+  } catch {
+    return null;
+  }
 }
 
 function debugSiteBrowser(message: string, data?: unknown): void {
@@ -542,69 +551,38 @@ export function SiteBrowserOverlay() {
     displayedOrigin !== null &&
     sourceAccessContext !== null;
 
+  const pageHost = siteHost(currentObservation?.url ?? currentUrl);
+  const closeLabel = sourceAccessContext
+    ? t("sourceAccess.closeKeepPaused")
+    : t("siteBrowser.close");
+
   return (
-    <Box
+    <div
       aria-describedby={
         sourceAccessContext ? "norea-site-browser-instructions" : undefined
       }
       aria-labelledby="norea-site-browser-title"
       aria-modal="true"
+      className="norea-site-browser"
       role="dialog"
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 1000,
-        backgroundColor: "var(--mantine-color-body)",
-        boxSizing: "border-box",
-        display: "flex",
-        flexDirection: "column",
-        paddingTop: "var(--norea-safe-area-top)",
-        paddingRight: "var(--norea-safe-area-right)",
-        paddingBottom: "var(--norea-safe-area-bottom)",
-        paddingLeft: "var(--norea-safe-area-left)",
-      }}
     >
-      <Group
-        h={CHROME_HEIGHT}
-        px="md"
-        justify="space-between"
-        wrap="nowrap"
-        style={{
-          borderBottom: "1px solid var(--mantine-color-default-border)",
-          backgroundColor: "var(--mantine-color-body)",
-          flexShrink: 0,
-          position: "relative",
-          zIndex: 1,
-        }}
-      >
-        {sourceAccessContext ? (
-          <Group gap="xs" wrap="nowrap" style={{ flex: 1, minWidth: 0 }}>
-            <Text id="norea-site-browser-title" size="sm" fw={600}>
-              {sourceAccessTitle}
-            </Text>
-            <Text size="sm" c="dimmed" lineClamp={1} style={{ minWidth: 0 }}>
-              {displayedOriginLabel}
-            </Text>
-          </Group>
-        ) : (
-          <Text
-            id="norea-site-browser-title"
-            size="sm"
-            c="dimmed"
-            lineClamp={1}
-            style={{ flex: 1, minWidth: 0 }}
-          >
-            {t("siteBrowser.title")}
-          </Text>
-        )}
-        <IconButton
-          label={t("siteBrowser.close")}
-          size="lg"
-          onClick={closeBrowser}
-        >
-          <CloseGlyph />
+      <header className="norea-site-browser-bar">
+        <h2 className="norea-site-browser-title" id="norea-site-browser-title">
+          {sourceAccessContext ? (
+            <>
+              <span className="norea-site-browser-title-main">{sourceAccessTitle}</span>
+              <span className="norea-site-browser-title-host">{displayedOriginLabel}</span>
+            </>
+          ) : (
+            <span className="norea-site-browser-title-main">
+              {pageHost ?? t("siteBrowser.title")}
+            </span>
+          )}
+        </h2>
+        <IconButton label={closeLabel} onClick={closeBrowser} size="lg">
+          <CloseIcon />
         </IconButton>
-      </Group>
+      </header>
       <SiteBrowserAddressBar
         key={`${browserTaskId}:${openSequence}`}
         url={currentObservation?.url ?? currentUrl ?? ""}
@@ -615,29 +593,15 @@ export function SiteBrowserOverlay() {
           }
         }}
       />
-      <div
-        ref={placeholderRef}
-        style={{ flex: 1, minHeight: 0, position: "relative" }}
-      >
+      <div className="norea-site-browser-page" ref={placeholderRef}>
         {phase === "error" ? (
-          <Box
-            role="alert"
-            style={{
-              position: "absolute",
-              inset: 0,
-              overflowY: "auto",
-              backgroundColor: "var(--mantine-color-body)",
-              display: "grid",
-              placeItems: "center",
-              padding: "var(--mantine-spacing-xl)",
-            }}
-          >
-            <Stack gap="md" style={{ width: "100%", maxWidth: "32rem", minWidth: 0 }}>
+          <div className="norea-site-browser-cover norea-site-browser-error" role="alert">
+            <div className="norea-site-browser-error-copy">
               <Text fw={600}>{t("siteBrowser.navigationFailed")}</Text>
-              <Text size="sm" c="dimmed">
+              <Text c="dimmed" size="sm">
                 {t("siteBrowser.navigationFailedDescription")}
               </Text>
-              <Text size="sm" style={{ overflowWrap: "anywhere" }}>
+              <Text className="norea-site-browser-error-detail" size="sm">
                 {navigationError}
               </Text>
               <Button
@@ -649,90 +613,67 @@ export function SiteBrowserOverlay() {
               >
                 {t("common.retry")}
               </Button>
-            </Stack>
-          </Box>
+            </div>
+          </div>
         ) : browserLoading ? (
-          <Box
-            aria-busy="true"
-            role="status"
-            style={{
-              position: "absolute",
-              inset: 0,
-              zIndex: 1,
-              backgroundColor: "var(--mantine-color-body)",
-              display: "grid",
-              placeItems: "center",
-            }}
-          >
-            <Group gap="sm">
-              <Loader size="sm" />
-              <Text>{t("common.loading")}</Text>
-            </Group>
-          </Box>
+          <div aria-busy="true" className="norea-site-browser-cover" role="status">
+            <Loader size="sm" />
+            <Text>{t("common.loading")}</Text>
+          </div>
         ) : null}
       </div>
       {sourceAccessContext ? (
-        <Box
-          id="norea-site-browser-instructions"
-          px="md"
-          py="sm"
-          style={{
-            borderTop: "1px solid var(--mantine-color-default-border)",
-            backgroundColor: "var(--mantine-color-body)",
-            flexShrink: 0,
-          }}
-        >
-          <Group justify="space-between" align="center" wrap="wrap" gap="sm">
-            <Text size="sm">
-              {t("sourceAccess.browserInstructions", {
-                source: sourceAccessContext.sourceName,
-              })}
-            </Text>
-            <Group gap="xs">
-              <Button
-                color="danger"
-                variant="light"
-                onClick={() =>
-                  cancelSourceAccessWait(
-                    sourceAccessContext.scopeKey,
-                    sourceAccessContext.revision,
-                  )
-                }
-              >
-                {t("sourceAccess.forceStopAndContinue")}
-              </Button>
-              <Button
-                variant="default"
-                onClick={() =>
-                  finishSourceAccess(
-                    browserTaskId,
-                    sourceAccessContext.revision,
-                    openSequence,
-                    "keep-paused",
-                  )
-                }
-              >
-                {keepPausedLabel}
-              </Button>
-              <Button
-                disabled={!canVerifySourceAccess}
-                onClick={() => {
-                  if (!sourceId) return;
-                  void verifySourceAccess(
-                    browserTaskId,
-                    sourceAccessContext.revision,
-                    openSequence,
-                    sourceAccessContext.scopeKey,
-                    sourceId,
-                  );
-                }}
-              >
-                {verifyLabel}
-              </Button>
-            </Group>
-          </Group>
-        </Box>
+        <footer className="norea-site-browser-footer" id="norea-site-browser-instructions">
+          <Text size="sm">
+            {t("sourceAccess.browserInstructions", {
+              source: sourceAccessContext.sourceName,
+            })}
+          </Text>
+          <div className="norea-site-browser-actions">
+            <Button
+              className="norea-site-browser-skip"
+              color="danger"
+              onClick={() =>
+                cancelSourceAccessWait(
+                  sourceAccessContext.scopeKey,
+                  sourceAccessContext.revision,
+                )
+              }
+              variant="subtle"
+            >
+              {t("sourceAccess.forceStopAndContinue")}
+            </Button>
+            <Button
+              variant="default"
+              onClick={() =>
+                finishSourceAccess(
+                  browserTaskId,
+                  sourceAccessContext.revision,
+                  openSequence,
+                  "keep-paused",
+                )
+              }
+            >
+              {keepPausedLabel}
+            </Button>
+            <Button
+              disabled={!canVerifySourceAccess}
+              onClick={() => {
+                if (!sourceId) return;
+                void verifySourceAccess(
+                  browserTaskId,
+                  sourceAccessContext.revision,
+                  openSequence,
+                  sourceAccessContext.scopeKey,
+                  sourceId,
+                );
+              }}
+            >
+              {verifyLabel}
+            </Button>
+          </div>
+        </footer>
       ) : null}
-    </Box>
+    </div>
   );
 }
