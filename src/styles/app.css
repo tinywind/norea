@@ -290,12 +290,23 @@ a {
   width: 100%;
 }
 
+.norea-page-slot {
+  transition: opacity var(--norea-duration-base) var(--norea-ease-standard);
+}
+
+/*
+ * A page that leaves fades out above the incoming page, then hides once the
+ * fade ends. Interaction and accessibility state change at once.
+ */
 .norea-page-slot[data-active="false"] {
   inset: 0;
   opacity: 0;
   overflow: hidden;
   pointer-events: none;
   position: absolute;
+  transition:
+    opacity var(--norea-duration-base) var(--norea-ease-standard),
+    visibility 0s linear var(--norea-duration-base);
   visibility: hidden;
 }
 

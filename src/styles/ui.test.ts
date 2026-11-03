@@ -165,3 +165,23 @@ describe("tap highlight", () => {
     }
   });
 });
+
+describe("page slot transition", () => {
+  it("cross-fades pages with motion tokens", () => {
+    expect(ruleFor(appCss, ".norea-page-slot").body).toMatch(
+      /transition: opacity var\(--norea-duration-base\) var\(--norea-ease-standard\);/,
+    );
+  });
+
+  it("keeps a leaving page visible only until its fade ends", () => {
+    const { body } = ruleFor(appCss, '.norea-page-slot[data-active="false"]');
+
+    expect(body).toMatch(/opacity: 0;/);
+    expect(body).toMatch(/visibility: hidden;/);
+    expect(body).toMatch(/pointer-events: none;/);
+    expect(body).toMatch(/position: absolute;/);
+    expect(body).toMatch(
+      /transition:\s*opacity var\(--norea-duration-base\) var\(--norea-ease-standard\),\s*visibility 0s linear var\(--norea-duration-base\);/,
+    );
+  });
+});
