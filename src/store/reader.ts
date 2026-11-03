@@ -21,7 +21,6 @@ export type ReaderTapPresetId =
   | "balanced"
   | "side-columns"
   | "vertical-scroll"
-  | "bottom-forward"
   | "bottom-forward-wide"
   | "top-center-previous";
 export type ReaderTapZone =
@@ -501,20 +500,6 @@ export const READER_TAP_PRESETS: ReaderTapPreset[] = [
     },
   },
   {
-    id: "bottom-forward",
-    zones: {
-      topLeft: "previous",
-      topCenter: "previous",
-      topRight: "previous",
-      middleLeft: "previous",
-      middleCenter: "menu",
-      middleRight: "next",
-      bottomLeft: "next",
-      bottomCenter: "next",
-      bottomRight: "next",
-    },
-  },
-  {
     id: "bottom-forward-wide",
     zones: {
       topLeft: "previous",
@@ -665,9 +650,16 @@ function normalizeGeneral(
   return normalized;
 }
 
+/** Removed presets whose zone maps match a remaining preset. */
+const RETIRED_TAP_PRESET_IDS: Readonly<Record<string, ReaderTapPresetId>> = {
+  "bottom-forward": "balanced",
+};
+
 function normalizeTapZonePresetId(value: unknown): ReaderTapPresetId {
-  return READER_TAP_PRESETS.some((preset) => preset.id === value)
-    ? (value as ReaderTapPresetId)
+  const presetId =
+    typeof value === "string" ? (RETIRED_TAP_PRESET_IDS[value] ?? value) : value;
+  return READER_TAP_PRESETS.some((preset) => preset.id === presetId)
+    ? (presetId as ReaderTapPresetId)
     : DEFAULT_TAP_ZONE_PRESET.id;
 }
 

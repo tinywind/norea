@@ -498,6 +498,10 @@
   width: 12rem;
 }
 
+.norea-reader-tap-preset-name {
+  margin-bottom: var(--norea-space-2);
+}
+
 .norea-reader-tap-preset:hover,
 .norea-reader-tap-preset:focus-visible {
   border-color: var(--norea-color-rule-strong);

@@ -48,6 +48,7 @@ import {
   READER_GENERAL_DEFAULTS,
   READER_PRESET_THEMES,
   READER_TAP_PRESETS,
+  TAP_ZONE_DEFAULTS,
   useReaderStore,
 } from "./reader";
 
@@ -171,6 +172,41 @@ describe("useReaderStore", () => {
     expect(useReaderStore.getState().general.tapZones).toEqual(
       selectedGeneral.tapZones,
     );
+  });
+
+  it("offers each tap zone layout once", () => {
+    const layouts = READER_TAP_PRESETS.map((preset) => JSON.stringify(preset.zones));
+    expect(new Set(layouts).size).toBe(layouts.length);
+    expect(READER_TAP_PRESETS.map((preset) => preset.id)).not.toContain("bottom-forward");
+  });
+
+  it("rehydrates the removed bottom-forward preset as balanced in every scope", async () => {
+    const customZones = { ...TAP_ZONE_DEFAULTS, topLeft: "none" as const, bottomRight: "previous" as const };
+    localStorageHarness.values.set(
+      "reader-settings",
+      JSON.stringify({
+        state: {
+          general: { tapZonePresetId: "bottom-forward", tapZones: customZones },
+          readerSettingsBySource: {
+            "source-a": { enabled: true, general: { tapZonePresetId: "bottom-forward" } },
+          },
+          readerSettingsByNovel: {
+            7: { enabled: true, general: { tapZonePresetId: "bottom-forward", tapZones: customZones } },
+          },
+        },
+        version: 0,
+      }),
+    );
+
+    await useReaderStore.persist.rehydrate();
+
+    const state = useReaderStore.getState();
+    expect(state.general.tapZonePresetId).toBe("balanced");
+    expect(state.general.tapZones).toEqual(customZones);
+    expect(state.readerSettingsBySource["source-a"]?.general?.tapZonePresetId).toBe("balanced");
+    expect(state.readerSettingsBySource["source-a"]?.general?.tapZones).toBeUndefined();
+    expect(state.readerSettingsByNovel[7]?.general?.tapZonePresetId).toBe("balanced");
+    expect(state.readerSettingsByNovel[7]?.general?.tapZones).toEqual(customZones);
   });
 
   it("setAppearance clamps textSize to [12, 36] and rounds", () => {

@@ -54,6 +54,14 @@ const TAP_ACTION_LABEL_KEYS: Record<ReaderTapAction, TranslationKey> = {
   next: "readerSettings.tapAction.next",
 };
 
+const TAP_PRESET_LABEL_KEYS: Record<ReaderTapPresetId, TranslationKey> = {
+  balanced: "readerSettings.tapPreset.balanced",
+  "side-columns": "readerSettings.tapPreset.sideColumns",
+  "vertical-scroll": "readerSettings.tapPreset.verticalScroll",
+  "bottom-forward-wide": "readerSettings.tapPreset.bottomForwardWide",
+  "top-center-previous": "readerSettings.tapPreset.topCenterPrevious",
+};
+
 const READER_THEME_LABEL_KEYS: Record<string, TranslationKey> = {
   paper: "readerSettings.theme.paper",
   sepia: "readerSettings.theme.sepia",
@@ -1060,10 +1068,9 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
           >
             <SettingsWideField>
               <div className="norea-reader-tap-preset-grid">
-                {READER_TAP_PRESETS.map((preset, index) => (
+                {READER_TAP_PRESETS.map((preset) => (
                   <TapZonePresetCard
                     key={preset.id}
-                    index={index}
                     preset={preset}
                     selected={preset.id === general.tapZonePresetId}
                     onApply={editor.handleApplyTapZonePreset}
@@ -1435,12 +1442,10 @@ function SettingSlider({
 }
 
 function TapZonePresetCard({
-  index,
   preset,
   selected,
   onApply,
 }: {
-  index: number;
   preset: ReaderTapPreset;
   selected: boolean;
   onApply: (presetId: ReaderTapPresetId) => void;
@@ -1449,13 +1454,15 @@ function TapZonePresetCard({
 
   return (
     <UnstyledButton
-      aria-label={`${t("readerSettings.tapControls")} ${index + 1}`}
       aria-pressed={selected}
       className="norea-reader-tap-preset norea-state-layer"
       data-selected={selected}
       onClick={() => onApply(preset.id)}
       type="button"
     >
+      <Text className="norea-reader-tap-preset-name" fw={700} size="sm">
+        {t(TAP_PRESET_LABEL_KEYS[preset.id])}
+      </Text>
       <TapZonePreview preset={preset} />
     </UnstyledButton>
   );
@@ -1466,7 +1473,7 @@ function TapZonePreview({ preset }: { preset: ReaderTapPreset }) {
   const actions = READER_TAP_ZONES.map((zone) => preset.zones[zone]);
 
   return (
-    <SimpleGrid cols={3} spacing={4}>
+    <SimpleGrid aria-hidden="true" cols={3} spacing={4}>
       {actions.map((action, index) => (
         <Text
           key={`${preset.id}-${index}`}
