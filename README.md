@@ -33,7 +33,8 @@ webtoons or read manga and comics page by page.
 
 - Browse and search installed reading sources.
 - Add novels to your library and organize them with categories. Add or remove
-  category assignments for selected works, or edit them from the work home.
+  category assignments for selected works, or edit them from the category chips
+  on the work page or the "Change category" action shown after adding a work.
 - Choose the category shown when entering the library, with All as the default.
 - Filter by unread, downloaded, local, completed, and needs-repair works and by
   one source. Unread and Downloaded are one-tap chips on every width; View
@@ -54,7 +55,10 @@ webtoons or read manga and comics page by page.
 - Read text, webtoon, and manga chapters in paged or scrolling mode.
 - Change themes, font size, text color, tap zones, and keyboard navigation.
 - Track reading progress, history, unread chapters, and downloaded chapters.
-- Download chapters for later reading.
+- Download chapters for later reading. On the work page, Download offers all,
+  unread, next 10, or next 30 missing chapters, and each chapter row shows its
+  download state with Retry after a failure, Repair for missing media, and
+  Delete download for a downloaded chapter.
   Library batch downloads remain available whenever selected works have
   undownloaded chapters outside the current download queue. Select one or more
   chapters to download missing chapters before the lowest selected chapter
@@ -217,8 +221,9 @@ Under Settings > Data > Content server > Upload conflicts, choose whether to
 prefer complete chapters, keep server data, or replace it with app data.
 Then use Sync now to apply the selected policy. Deletion confirmations let you
 also remove matching data from the other side; additional options start unchecked.
-Removing library membership can also delete device downloads or the whole server
-work. Delete work from server in Browse -> Content server or Manage server
+Deleting one chapter's download from its row removes it from this device only.
+Removing library membership can also delete device downloads or, for works the
+server holds, the whole server work. Delete work from server in Browse -> Content server or Manage server
 data removes server metadata, the cover, and all chapters, with an option to
 remove the whole device work and its reading state. Chapter download deletion
 keeps work information and reading progress. Explicit server deletions made in
