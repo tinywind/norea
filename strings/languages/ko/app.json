@@ -98,6 +98,8 @@
   "vpnDownload.progressLabel": "범위 다운로드 진행률",
   "vpnDownload.currentChapter": "현재 챕터: {chapter}",
   "vpnDownload.userPaused": "직접 일시 정지함",
+  "vpnDownload.attentionSummary": "VPN 다운로드: 작품 {works}개의 구간 {ranges}개가 일시 정지됨",
+  "vpnDownload.attentionSummaryBody": "다운로드에서 다시 시작하거나 멈춘 이유를 확인하세요.",
   "vpnDownload.rangeAction": "{action}: {title}, {interval}",
   "vpnDownload.pause": "일시 정지",
   "vpnDownload.resume": "재개",

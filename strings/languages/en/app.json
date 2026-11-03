@@ -98,6 +98,8 @@
   "vpnDownload.progressLabel": "Range download progress",
   "vpnDownload.currentChapter": "Current chapter: {chapter}",
   "vpnDownload.userPaused": "Paused by you",
+  "vpnDownload.attentionSummary": "VPN downloads: {ranges} parts in {works} works are paused",
+  "vpnDownload.attentionSummaryBody": "Open Downloads to resume them or see why they stopped.",
   "vpnDownload.rangeAction": "{action}: {title}, {interval}",
   "vpnDownload.pause": "Pause",
   "vpnDownload.resume": "Resume",

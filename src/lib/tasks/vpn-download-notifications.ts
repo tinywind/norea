@@ -42,8 +42,13 @@ export function isVpnDownloadVerificationCurrent(
     range.profileId === action.profileId && range.generation === action.generation && range.checkpoint === action.checkpoint;
 }
 
+export const VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID = "vpn-download-required:summary";
+
 export function vpnDownloadNotifications(plans: readonly VpnDownloadPlan[], t: TaskNotificationTranslate): VpnDownloadNotification[] {
   const items: VpnDownloadNotification[] = [];
+  const pausedWorks = new Set<string>();
+  let pausedRanges = 0;
+  let firstPaused: { plan: VpnDownloadPlan; range: VpnDownloadRangeState } | null = null;
   for (const plan of plans) {
     for (const [index, range] of plan.ranges.entries()) {
       const reasonKey = range.pauseReason ? MANUAL_PAUSE_KEYS[range.pauseReason] : undefined;
@@ -53,16 +58,39 @@ export function vpnDownloadNotifications(plans: readonly VpnDownloadPlan[], t: T
         type: "verifyVpnDownload", planId: plan.id, sourceId: plan.pluginId, rangeId: range.id,
         profileId: range.profileId, generation: range.generation, checkpoint: range.checkpoint,
       }) : null;
-      items.push({
-        id: `vpn-download-required:${JSON.stringify([plan.id, range.id])}`,
-        planId: plan.id, rangeId: range.id,
-        title: t("vpnDownload.rangeAction", {
-          action: t("vpnDownload.phase.paused"), title: plan.title, interval: t("vpnDownload.interval", { number: index + 1 }),
-        }),
-        body: t(reasonKey), actionLabel: t(verification ? "sourceAccess.notificationAction" : "downloads.title"),
-        action: verification ?? { type: "openTasks" },
-      });
+      if (verification) {
+        // A verification opens the exact worker session, so it keeps its own notification.
+        items.push({
+          id: `vpn-download-required:${JSON.stringify([plan.id, range.id])}`,
+          planId: plan.id, rangeId: range.id,
+          title: t("vpnDownload.rangeAction", {
+            action: t("vpnDownload.phase.paused"), title: plan.title, interval: t("vpnDownload.interval", { number: index + 1 }),
+          }),
+          body: t(reasonKey), actionLabel: t("sourceAccess.notificationAction"),
+          action: verification,
+        });
+        continue;
+      }
+      pausedRanges += 1;
+      pausedWorks.add(JSON.stringify([plan.pluginId, plan.novelId]));
+      firstPaused ??= { plan, range };
     }
+  }
+  if (firstPaused) {
+    const reasonKey = MANUAL_PAUSE_KEYS[firstPaused.range.pauseReason!]!;
+    items.push({
+      id: VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID,
+      planId: firstPaused.plan.id, rangeId: firstPaused.range.id,
+      title: pausedRanges === 1
+        ? t("vpnDownload.rangeAction", {
+          action: t("vpnDownload.phase.paused"), title: firstPaused.plan.title,
+          interval: t("vpnDownload.interval", { number: firstPaused.plan.ranges.indexOf(firstPaused.range) + 1 }),
+        })
+        : t("vpnDownload.attentionSummary", { ranges: pausedRanges, works: pausedWorks.size }),
+      body: pausedRanges === 1 ? t(reasonKey) : t("vpnDownload.attentionSummaryBody"),
+      actionLabel: t("downloads.title"),
+      action: { type: "openTasks" },
+    });
   }
   return items;
 }

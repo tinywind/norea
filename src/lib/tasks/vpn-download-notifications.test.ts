@@ -1,6 +1,6 @@
 import { expect, it } from "vitest";
 import type { VpnDownloadPlan, VpnDownloadRangeState } from "./vpn-download-types";
-import { hasActiveVpnDownloads, isVpnDownloadVerificationCurrent, vpnDownloadNotifications } from "./vpn-download-notifications";
+import { hasActiveVpnDownloads, isVpnDownloadVerificationCurrent, VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID, vpnDownloadNotifications } from "./vpn-download-notifications";
 import type { TaskNotificationTranslate } from "./task-notification-model";
 
 const t = ((key: string, params?: Record<string, string | number>) =>
@@ -41,15 +41,30 @@ it("never emits manual cards for automatic rotation, offline waits or user pause
   ])], t)).toEqual([]);
 });
 
-it("opens only Tasks for exhaustion, restart and authentication notices without a current manual browser", () => {
+it("groups exhaustion, restart and authentication pauses into one Downloads notice", () => {
   const items = vpnDownloadNotifications([plan([
     range("exhausted", { pauseReason: "profiles-exhausted" }),
     range("restored", { pauseReason: "interrupted", generation: 0 }),
     range("auth", { pauseReason: "authentication-required" }),
   ])], t);
-  expect(items.map(item => item.action)).toEqual([{ type: "openTasks" }, { type: "openTasks" }, { type: "openTasks" }]);
-  expect(items[0]?.body).toBe("vpnDownload.reason.exhausted");
-  expect(items[1]?.body).toBe("vpnDownload.reason.interrupted");
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({
+    id: VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID,
+    title: `vpnDownload.attentionSummary:${JSON.stringify({ ranges: 3, works: 1 })}`,
+    body: "vpnDownload.attentionSummaryBody",
+    action: { type: "openTasks" },
+  });
+});
+
+it("keeps a single paused range's own title and reason", () => {
+  const items = vpnDownloadNotifications([plan([range("restored", { pauseReason: "interrupted", generation: 0 })])], t);
+  expect(items).toHaveLength(1);
+  expect(items[0]).toMatchObject({ id: VPN_DOWNLOAD_ATTENTION_NOTIFICATION_ID, body: "vpnDownload.reason.interrupted" });
+});
+
+it("keeps manual verifications separate from the grouped notice", () => {
+  const items = vpnDownloadNotifications([plan([range("a"), range("restored", { pauseReason: "interrupted", generation: 0 })])], t);
+  expect(items.map(item => item.action.type)).toEqual(["verifyVpnDownload", "openTasks"]);
 });
 
 it("validates the current paused challenge owner, including its settled chapter checkpoint", () => {
