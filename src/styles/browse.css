@@ -535,9 +535,27 @@
 }
 
 .norea-source-load-more {
+  justify-self: center;
+  min-width: 12rem;
+}
+
+.norea-server-browse {
+  display: grid;
+  gap: var(--norea-space-3);
+  min-width: 0;
+}
+
+.norea-server-browse-toolbar {
+  align-items: center;
   display: flex;
-  padding-top: var(--norea-space-1);
-  width: 100%;
+  gap: var(--norea-space-2);
+  min-width: 0;
+}
+
+.norea-source-card-skeleton {
+  display: grid;
+  gap: var(--norea-space-2);
+  padding: var(--norea-space-2);
 }
 
 .norea-source-load-more-action {
@@ -557,24 +575,6 @@
   justify-items: start;
   padding: var(--norea-space-2);
   text-align: left;
-}
-
-.norea-content-server-work {
-  align-content: start;
-  display: grid;
-  gap: var(--norea-space-2);
-  min-width: 0;
-}
-
-.norea-content-server-work > .norea-text-button {
-  height: auto;
-  min-height: 2rem;
-  padding: var(--norea-space-2);
-}
-
-.norea-content-server-work > .norea-text-button .mantine-Button-label {
-  line-height: 1.2;
-  white-space: normal;
 }
 
 .norea-source-card:hover {
@@ -597,6 +597,7 @@
   white-space: nowrap;
 }
 
+.norea-source-card-meta,
 .norea-source-card-path {
   color: var(--norea-color-ink-muted);
   font-family: var(--norea-font-ui);

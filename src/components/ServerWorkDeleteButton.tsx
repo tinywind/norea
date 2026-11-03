@@ -8,12 +8,11 @@ interface ServerWorkDeleteButtonProps {
   source: ServerNovelSource;
   name: string;
   disabled?: boolean;
-  compact?: boolean;
   onOpenChange?: (opened: boolean) => void;
   onDeleted?: () => void;
 }
 
-export function ServerWorkDeleteButton({ source, name, disabled, compact, onOpenChange, onDeleted }: ServerWorkDeleteButtonProps) {
+export function ServerWorkDeleteButton({ source, name, disabled, onOpenChange, onDeleted }: ServerWorkDeleteButtonProps) {
   const { t } = useTranslation();
   const remove = useMutation({
     mutationFn: async () => {
@@ -25,6 +24,6 @@ export function ServerWorkDeleteButton({ source, name, disabled, compact, onOpen
   });
   return <TextButton size="sm" tone="danger" disabled={disabled || remove.isPending}
     aria-label={`${t("contentSync.deleteWorkServer")}: ${name}`} onClick={() => remove.mutate()}>
-    {t(compact ? "contentSync.deleteServer" : "contentSync.deleteWorkServer")}
+    {t("contentSync.deleteWorkServer")}
   </TextButton>;
 }

@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   effects: [] as Array<() => void>,
   pages: [] as ServerWorkPage[],
   open: vi.fn(),
+  navigate: vi.fn(),
   server: "http://server",
   browseQueryKeys: [] as unknown[][],
 }));
@@ -20,17 +21,22 @@ vi.mock("react", async original => ({ ...await original<typeof import("react")>(
     }];
   },
   useEffect: (effect: () => void) => { mocks.effects.push(effect); },
+  useMemo: (factory: () => unknown) => factory(),
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
-  useQuery: ({ queryKey }: { queryKey: string[] }) => ({ data: queryKey[2] === "device" ? "device" : { items: [] } }),
+  useQuery: ({ queryKey }: { queryKey: string[] }) => ({
+    data: queryKey[0] === "plugin"
+      ? [{ id: "source-a", name: "Source A" }]
+      : queryKey[2] === "device" ? "device" : { items: [{ id: "source-a", workCount: 2 }, { id: "source-b", workCount: 1 }] },
+  }),
   useInfiniteQuery: ({ queryKey }: { queryKey: unknown[] }) => {
     mocks.browseQueryKeys.push(queryKey);
     return { data: { pages: mocks.pages } };
   },
   useMutation: () => ({ mutate: mocks.open, isPending: false }),
 }));
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => vi.fn() }));
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../store/content-sync", () => ({ useContentSyncStore: (select: (state: { serverUrl: string; deviceName: string }) => unknown) => select({ serverUrl: mocks.server, deviceName: "Phone" }) }));
 vi.mock("../../store/content-server-browse", async original => {
@@ -44,17 +50,18 @@ vi.mock("../../store/content-server-browse", async original => {
 vi.mock("../../lib/use-library-novel-membership", () => ({ useLibraryNovelMembership: () => () => false }));
 
 import { BrowseServerTab } from "./BrowseServerTab";
-import { ServerWorkDeleteButton } from "../ServerWorkDeleteButton";
 import { SearchBar } from "../SearchBar";
-import { Select } from "@mantine/core";
+import { Button } from "@mantine/core";
+import { StateView } from "../AppFrame";
 import { useContentServerBrowseStore } from "../../store/content-server-browse";
 
 interface ControlProps {
+  "aria-pressed"?: boolean;
+  action?: { onClick: () => void };
   children?: ReactNode;
   disabled?: boolean;
-  source?: { workId: string };
-  onOpenChange?: (opened: boolean) => void;
   value?: string;
+  onClick?: () => void;
   onChange?: (value: string) => void;
   onSubmit?: () => void;
 }
@@ -77,41 +84,42 @@ beforeEach(() => {
   mocks.pages = [{ items: [work("first"), work("second")], total: 2, hasMore: false }];
 });
 
-it("unlocks the remaining cards when a refetch removes the work whose confirmation was open", () => {
-  const first = render().find(element => element.type === ServerWorkDeleteButton && element.props.source?.workId === "first")!;
-  first.props.onOpenChange!(true);
-  expect(render().filter(element => element.type === "button").every(element => element.props.disabled)).toBe(true);
-  mocks.pages = [{ items: [work("second")], total: 1, hasMore: false }];
-  render();
-  mocks.effects.at(-1)!();
-  const remaining = render();
-  expect(remaining.find(element => element.type === "button")!.props.disabled).toBe(false);
-  expect(remaining.find(element => element.type === ServerWorkDeleteButton)!.props.disabled).toBe(false);
-  expect(mocks.open).not.toHaveBeenCalled();
+const chip = (elements: ReactElement<ControlProps>[], label: string) =>
+  elements.find(element => element.type === Button && element.props.children === label)!;
+
+it("names source chips after installed plugins and falls back to the id", () => {
+  const elements = render();
+  expect(chip(elements, "Source A")).toBeDefined();
+  expect(chip(elements, "source-b")).toBeDefined();
+  expect(chip(elements, "contentSync.allSources").props["aria-pressed"]).toBe(true);
 });
 
-it("does not let an old removed card close another work's confirmation", () => {
-  const first = render().find(element => element.type === ServerWorkDeleteButton && element.props.source?.workId === "first")!;
-  first.props.onOpenChange!(true);
-  mocks.pages = [{ items: [work("second")], total: 1, hasMore: false }];
-  render(); mocks.effects.at(-1)!();
-  const second = render().find(element => element.type === ServerWorkDeleteButton)!;
-  second.props.onOpenChange!(true);
-  first.props.onOpenChange!(false);
-  expect(render().find(element => element.type === "button")!.props.disabled).toBe(true);
+it("opens a work from its card and offers no server deletion on the grid", () => {
+  const cards = render().filter(element => element.type === "button");
+  expect(cards).toHaveLength(2);
+  cards[0]!.props.onClick!();
+  expect(mocks.open).toHaveBeenCalledWith(expect.objectContaining({ id: "first" }));
+  expect(JSON.stringify(cards.map(card => card.props.children))).not.toContain("deleteServer");
+});
+
+it("links to the content server settings when no server is configured", () => {
+  mocks.server = "";
+  const state = render().find(element => element.type === StateView)!;
+  state.props.action!.onClick();
+  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: "data" } });
 });
 
 it("retains the search and source when returning from a work", () => {
   render().find(element => element.type === SearchBar)!.props.onChange!("  saved search  ");
   render().find(element => element.type === SearchBar)!.props.onSubmit!();
-  render().find(element => element.type === Select)!.props.onChange!("source-a");
+  chip(render(), "Source A").props.onClick!();
 
   mocks.state.length = 0;
   render();
   mocks.effects.forEach(effect => effect());
   const returned = render();
   expect(returned.find(element => element.type === SearchBar)!.props.value).toBe("  saved search  ");
-  expect(returned.find(element => element.type === Select)!.props.value).toBe("source-a");
+  expect(chip(returned, "Source A").props["aria-pressed"]).toBe(true);
   expect(mocks.browseQueryKeys.at(-1)).toEqual(["content-server", "http://server", "browse", "saved search", "source-a"]);
 });
 
