@@ -43,8 +43,6 @@ export function LibrarySettingsPanel() {
   const setShowUnreadBadges = useLibraryStore((s) => s.setShowUnreadBadges);
   const showNumberBadges = useLibraryStore((s) => s.showNumberBadges);
   const setShowNumberBadges = useLibraryStore((s) => s.setShowNumberBadges);
-  const incognitoMode = useLibraryStore((s) => s.incognitoMode);
-  const setIncognitoMode = useLibraryStore((s) => s.setIncognitoMode);
   const defaultChapterSort = useLibraryStore((s) => s.defaultChapterSort);
   const setDefaultChapterSort = useLibraryStore(
     (s) => s.setDefaultChapterSort,
@@ -168,20 +166,6 @@ export function LibrarySettingsPanel() {
             checked={showNumberBadges}
             onChange={(event) =>
               setShowNumberBadges(event.currentTarget.checked)
-            }
-          />
-        </SettingsFieldRow>
-      </SettingsSection>
-
-      <SettingsSection title={t("librarySettings.group.privacy")}>
-        <SettingsFieldRow
-          label={t("librarySettings.incognito")}
-          description={t("librarySettings.incognito.description")}
-        >
-          <Switch
-            checked={incognitoMode}
-            onChange={(event) =>
-              setIncognitoMode(event.currentTarget.checked)
             }
           />
         </SettingsFieldRow>

@@ -14,6 +14,7 @@ import { BrowsePage, type BrowseTab } from "./routes/browse";
 import { DownloadsPage } from "./routes/downloads";
 import { HistoryPage } from "./routes/history";
 import { LibraryPage } from "./routes/library";
+import { MorePage } from "./routes/more";
 import { SettingsPage } from "./routes/settings";
 import { TasksPage } from "./routes/tasks";
 import { UpdatesPage } from "./routes/updates";
@@ -91,6 +92,12 @@ const tasksRoute = createRoute({
   component: TasksPage,
 });
 
+const moreRoute = createRoute({
+  getParentRoute: () => rootRoute,
+  path: "/more",
+  component: MorePage,
+});
+
 const sourceRoute = createRoute({
   getParentRoute: () => rootRoute,
   path: "/source",
@@ -108,6 +115,7 @@ const routeTree = rootRoute.addChildren([
   updatesRoute,
   downloadsRoute,
   tasksRoute,
+  moreRoute,
   sourceRoute,
 ]);
 

@@ -22,7 +22,7 @@
     var(--norea-native-safe-area-left)
   );
   --norea-viewport-height: 100vh;
-  --norea-mobile-nav-content-height: 3.25rem;
+  --norea-mobile-nav-content-height: 3.5rem;
   --norea-mobile-nav-height: calc(
     var(--norea-mobile-nav-content-height) + var(--norea-safe-area-bottom)
   );
@@ -343,8 +343,8 @@ a {
   grid-template-columns: repeat(auto-fit, minmax(0, 1fr));
   height: var(--norea-mobile-nav-height);
   left: 0;
-  padding: 0.375rem calc(0.625rem + var(--norea-safe-area-right))
-    calc(0.375rem + var(--norea-safe-area-bottom))
+  padding: var(--norea-space-1) calc(0.625rem + var(--norea-safe-area-right))
+    calc(var(--norea-space-1) + var(--norea-safe-area-bottom))
     calc(0.625rem + var(--norea-safe-area-left));
   position: fixed;
   right: 0;
@@ -382,8 +382,25 @@ a {
   white-space: nowrap;
 }
 
+.norea-mobile-nav-link .norea-rail-icon {
+  border-radius: var(--norea-radius-full);
+  height: 1.75rem;
+  transition: background-color var(--norea-duration-fast) var(--norea-ease-standard);
+  width: 3.5rem;
+}
+
 .norea-mobile-nav-link--active {
   color: var(--norea-color-accent);
+}
+
+.norea-mobile-nav-link--active .norea-rail-icon {
+  background: var(--norea-color-accent-soft);
+  color: var(--norea-color-on-accent-soft);
+}
+
+.norea-mobile-nav-link .norea-rail-badge {
+  right: calc(50% - 1.75rem);
+  top: 0;
 }
 
 .norea-mobile-nav[data-show-labels="true"] .norea-rail-label {

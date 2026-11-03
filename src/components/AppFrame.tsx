@@ -81,11 +81,11 @@ export function PageFrame({
   }`;
 
   return (
-    <main className={classNames}>
+    <div className={classNames}>
       <Stack className="norea-page-frame-stack" gap="lg">
         {children}
       </Stack>
-    </main>
+    </div>
   );
 }
 

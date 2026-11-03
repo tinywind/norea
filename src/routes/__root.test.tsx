@@ -11,8 +11,9 @@ const location = vi.hoisted(() => ({
   historyKey: "reader-entry",
   href: "/reader?chapterId=11",
   pathname: "/reader",
-  search: { chapterId: 11 },
+  search: { chapterId: 11 } as Record<string, unknown>,
 }));
+const taskAttention = vi.hoisted(() => ({ count: 0 }));
 
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
@@ -20,8 +21,23 @@ vi.mock("react", async (importOriginal) => ({
 }));
 vi.mock("@mantine/core", () => {
   const Container = ({ children }: { children?: ReactNode }) => children;
+  const Anchor = ({
+    "aria-label": label,
+    children,
+    className,
+    to,
+  }: {
+    "aria-label"?: string;
+    children?: ReactNode;
+    className?: string;
+    to?: string;
+  }) => (
+    <a aria-label={label} className={className} href={to}>
+      {children}
+    </a>
+  );
   return {
-    Anchor: Container,
+    Anchor,
     AppShell: Object.assign(Container, { Navbar: Container, Main: Container }),
     MantineProvider: Container,
   };
@@ -47,12 +63,16 @@ vi.mock("../lib/deep-link", () => ({
 vi.mock("../lib/system-file-import", () => ({
   importSystemOpenedFile: vi.fn(),
 }));
+vi.mock("../lib/tasks/hooks", () => ({
+  useTaskAttentionCount: () => taskAttention.count,
+}));
 vi.mock("../components/SiteBrowserOverlay", () => ({ SiteBrowserOverlay: () => null }));
 vi.mock("../components/TaskNotifications", () => ({ TaskNotifications: () => null }));
 vi.mock("./browse", () => ({ BrowsePage: () => null }));
 vi.mock("./downloads", () => ({ DownloadsPage: () => null }));
 vi.mock("./history", () => ({ HistoryPage: () => null }));
 vi.mock("./library", () => ({ LibraryPage: () => null }));
+vi.mock("./more", () => ({ MorePage: () => null }));
 vi.mock("./novel", () => ({ NovelDetailPage: () => null }));
 vi.mock("./novel-merge", () => ({ NovelMergePage: () => null }));
 vi.mock("./reader", () => ({ ReaderPage: () => null }));
@@ -164,5 +184,100 @@ describe("system file opening from an active reader", () => {
     await handlers.onFiles([new File(["# New chapter"], "new.md")]);
 
     expect(await queryClient.fetchQuery(options)).toEqual([11, 12]);
+  });
+});
+
+describe("primary navigation", () => {
+  const readerLocation = { ...location };
+
+  function renderNavigation(pathname: string): string {
+    Object.assign(location, { href: pathname, pathname, search: {} });
+    return renderToStaticMarkup(
+      <MantineProvider>
+        <QueryClientProvider client={new QueryClient()}>
+          <RootLayout />
+        </QueryClientProvider>
+      </MantineProvider>,
+    );
+  }
+
+  function navLinks(markup: string, linkClassName: string) {
+    return [
+      ...markup.matchAll(
+        /<a aria-label="([^"]*)" class="([^"]*)" href="([^"]*)">(.*?)<\/a>/g,
+      ),
+    ]
+      .filter(([, , className]) => className.split(" ").includes(linkClassName))
+      .map(([, label, className, href, content]) => ({
+        active: className.includes("--active"),
+        content,
+        href,
+        label,
+      }));
+  }
+
+  afterEach(() => {
+    Object.assign(location, readerLocation);
+    taskAttention.count = 0;
+  });
+
+  it("offers Library, Updates, History, Browse and More in both navs", () => {
+    const markup = renderNavigation("/");
+    const expected = [
+      { href: "/", label: "Library" },
+      { href: "/updates", label: "Updates" },
+      { href: "/history", label: "History" },
+      { href: "/browse", label: "Browse" },
+      { href: "/more", label: "More" },
+    ];
+    const destinations = (linkClassName: string) =>
+      navLinks(markup, linkClassName).map(({ href, label }) => ({ href, label }));
+
+    expect(destinations("norea-rail-link")).toEqual(expected);
+    expect(destinations("norea-mobile-nav-link")).toEqual(expected);
+  });
+
+  it("renders the rail brand as plain content and no nested main landmark", () => {
+    const markup = renderNavigation("/");
+
+    expect(markup).toContain('<div class="norea-rail-brand">');
+    expect(markup).not.toContain("<main");
+  });
+
+  it("badges More with active and failed tasks", () => {
+    taskAttention.count = 120;
+    const markup = renderNavigation("/");
+    const more = navLinks(markup, "norea-rail-link").find(
+      (link) => link.href === "/more",
+    );
+
+    expect(more?.label).toBe("More, 120 active or failed tasks");
+    expect(more?.content).toContain(
+      '<span aria-hidden="true" class="norea-rail-badge">99+</span>',
+    );
+    expect(markup.match(/norea-rail-badge/g)).toHaveLength(2);
+  });
+
+  it("shows no badge when no task needs attention", () => {
+    expect(renderNavigation("/")).not.toContain("norea-rail-badge");
+  });
+
+  it.each(["/more", "/tasks", "/downloads", "/settings"])(
+    "marks More as current on %s",
+    (pathname) => {
+      const active = navLinks(renderNavigation(pathname), "norea-mobile-nav-link")
+        .filter((link) => link.active)
+        .map((link) => link.href);
+
+      expect(active).toEqual(["/more"]);
+    },
+  );
+
+  it("marks only Library as current on the library page", () => {
+    const active = navLinks(renderNavigation("/"), "norea-rail-link")
+      .filter((link) => link.active)
+      .map((link) => link.href);
+
+    expect(active).toEqual(["/"]);
   });
 });

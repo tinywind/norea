@@ -15,6 +15,20 @@ export function useTaskSnapshot(active = true): TaskSnapshot {
   );
 }
 
+function getTaskAttentionCount(): number {
+  const { failed, queued, running } = taskScheduler.getSnapshot();
+  return running + queued + failed;
+}
+
+/** Counts active (running or queued) and failed tasks for navigation badges. */
+export function useTaskAttentionCount(): number {
+  return useSyncExternalStore(
+    taskScheduler.subscribe,
+    getTaskAttentionCount,
+    getTaskAttentionCount,
+  );
+}
+
 export function useVpnDownloadRuntimeSnapshot(active = true) {
   return useSyncExternalStore(
     active ? subscribeVpnDownloadRuntime : subscribeInactiveTaskSnapshot,

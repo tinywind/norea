@@ -13,11 +13,9 @@ import { TaskNotifications } from "../components/TaskNotifications";
 import { ContentDeletionDialog } from "../components/ContentDeletionDialog";
 import {
   BrowseIcon,
-  DownloadedIcon,
-  DownloadsIcon,
   HistoryIcon,
   LibraryIcon,
-  SettingsIcon,
+  MoreIcon,
   UpdatesIcon,
   type AppIcon,
 } from "../components/ui/icons";
@@ -26,6 +24,7 @@ import { startAndroidBackNavigationBridge } from "../lib/android-back-navigation
 import { startAndroidFileOpenListener } from "../lib/android-file-open";
 import { startDesktopFileOpenListener } from "../lib/desktop-file-open";
 import { startDeepLinkListener } from "../lib/deep-link";
+import { useTaskAttentionCount } from "../lib/tasks/hooks";
 import { applyTaskNotificationAction } from "../lib/tasks/task-notification-actions";
 import {
   getAppNavigationHistoryIndex,
@@ -54,6 +53,7 @@ import { BrowsePage, type BrowseTab } from "./browse";
 import { DownloadsPage } from "./downloads";
 import { HistoryPage } from "./history";
 import { LibraryPage } from "./library";
+import { MorePage } from "./more";
 import { NovelDetailPage } from "./novel";
 import { NovelMergePage } from "./novel-merge";
 import { ReaderPage } from "./reader";
@@ -69,6 +69,7 @@ const PersistentHistoryPage = memo(HistoryPage);
 const PersistentDownloadsPage = memo(DownloadsPage);
 const PersistentTasksPage = memo(TasksPage);
 const PersistentSettingsPage = memo(SettingsPage);
+const PersistentMorePage = memo(MorePage);
 const StackedNovelPage = memo(NovelDetailPage);
 const StackedNovelMergePage = memo(NovelMergePage);
 const StackedReaderPage = memo(ReaderPage);
@@ -85,19 +86,23 @@ type NavItem = {
   compactKey: TranslationKey;
   icon: AppIcon;
   labelKey: TranslationKey;
-  to:
-    | "/"
-    | "/browse"
-    | "/updates"
-    | "/history"
-    | "/downloads"
-    | "/tasks"
-    | "/settings";
-  visibleWhen?: "updates" | "history" | "downloads" | "tasks";
+  to: "/" | "/updates" | "/history" | "/browse" | "/more";
 };
 
 const NAV_ITEMS: readonly NavItem[] = [
   { to: "/", labelKey: "nav.library", compactKey: "nav.library", icon: LibraryIcon },
+  {
+    to: "/updates",
+    labelKey: "nav.updates",
+    compactKey: "nav.updates",
+    icon: UpdatesIcon,
+  },
+  {
+    to: "/history",
+    labelKey: "nav.history",
+    compactKey: "nav.history",
+    icon: HistoryIcon,
+  },
   {
     to: "/browse",
     labelKey: "nav.browse",
@@ -105,40 +110,26 @@ const NAV_ITEMS: readonly NavItem[] = [
     icon: BrowseIcon,
   },
   {
-    to: "/updates",
-    labelKey: "nav.updates",
-    compactKey: "nav.updates",
-    icon: UpdatesIcon,
-    visibleWhen: "updates",
-  },
-  {
-    to: "/history",
-    labelKey: "nav.history",
-    compactKey: "nav.history",
-    icon: HistoryIcon,
-    visibleWhen: "history",
-  },
-  {
-    to: "/downloads",
-    labelKey: "nav.downloads",
-    compactKey: "nav.downloads",
-    icon: DownloadedIcon,
-    visibleWhen: "downloads",
-  },
-  {
-    to: "/tasks",
-    labelKey: "nav.tasks",
-    compactKey: "nav.tasks",
-    icon: DownloadsIcon,
-    visibleWhen: "tasks",
-  },
-  {
-    to: "/settings",
-    labelKey: "nav.settings",
-    compactKey: "nav.settings",
-    icon: SettingsIcon,
+    to: "/more",
+    labelKey: "nav.more",
+    compactKey: "nav.more",
+    icon: MoreIcon,
   },
 ] as const;
+
+/** Destinations opened from More keep the More item marked as current. */
+const MORE_PATHNAMES: ReadonlySet<string> = new Set([
+  "/more",
+  "/tasks",
+  "/downloads",
+  "/settings",
+]);
+
+function isNavItemActive(item: NavItem, pathname: string): boolean {
+  if (item.to === "/") return pathname === "/";
+  if (item.to === "/more") return MORE_PATHNAMES.has(pathname);
+  return pathname === item.to || pathname.startsWith(`${item.to}/`);
+}
 
 type PersistentPage =
   | "library"
@@ -147,7 +138,8 @@ type PersistentPage =
   | "history"
   | "downloads"
   | "tasks"
-  | "settings";
+  | "settings"
+  | "more";
 
 function getPersistentPage(pathname: string): PersistentPage | null {
   switch (pathname) {
@@ -165,6 +157,8 @@ function getPersistentPage(pathname: string): PersistentPage | null {
       return "tasks";
     case "/settings":
       return "settings";
+    case "/more":
+      return "more";
     default:
       return null;
   }
@@ -214,41 +208,36 @@ function StackedPage({ entry }: { entry: PageStackEntry }) {
   }
 }
 
-function isNavItemVisible(
-  item: NavItem,
-  visible: {
-    downloads: boolean;
-    history: boolean;
-    tasks: boolean;
-    updates: boolean;
-  },
-): boolean {
-  if (item.visibleWhen === "history") return visible.history;
-  if (item.visibleWhen === "updates") return visible.updates;
-  if (item.visibleWhen === "downloads") return visible.downloads;
-  if (item.visibleWhen === "tasks") return visible.tasks;
-  return true;
+function formatNavBadge(count: number): string {
+  return count > 99 ? "99+" : String(count);
 }
 
 function AppNavLink({
+  active,
   activeClassName,
+  badgeCount = 0,
   className,
   item,
   label,
 }: {
+  active: boolean;
   activeClassName: string;
+  badgeCount?: number;
   className: string;
   item: NavItem;
   label: string;
 }) {
+  const { t } = useTranslation();
+  const accessibleLabel =
+    badgeCount > 0 ? t("nav.taskAttention", { label, count: badgeCount }) : label;
+
   return (
     <Anchor
       activeOptions={{ exact: item.to === "/" }}
-      activeProps={{ className: `${className} ${activeClassName}` }}
-      aria-label={label}
-      className={className}
+      aria-label={accessibleLabel}
+      className={active ? `${className} ${activeClassName}` : className}
       component={Link}
-      title={label}
+      title={accessibleLabel}
       to={item.to}
       underline="never"
     >
@@ -256,8 +245,40 @@ function AppNavLink({
         <item.icon />
       </span>
       <span className="norea-rail-label">{label}</span>
+      {badgeCount > 0 ? (
+        <span aria-hidden="true" className="norea-rail-badge">
+          {formatNavBadge(badgeCount)}
+        </span>
+      ) : null}
     </Anchor>
   );
+}
+
+function NavLinks({
+  activeClassName,
+  className,
+  labelKey,
+  pathname,
+}: {
+  activeClassName: string;
+  className: string;
+  labelKey: "compactKey" | "labelKey";
+  pathname: string;
+}) {
+  const { t } = useTranslation();
+  const taskAttentionCount = useTaskAttentionCount();
+
+  return NAV_ITEMS.map((item) => (
+    <AppNavLink
+      active={isNavItemActive(item, pathname)}
+      activeClassName={activeClassName}
+      badgeCount={item.to === "/more" ? taskAttentionCount : 0}
+      className={className}
+      item={item}
+      key={item.to}
+      label={t(item[labelKey])}
+    />
+  ));
 }
 
 export function RootLayout() {
@@ -265,10 +286,6 @@ export function RootLayout() {
   const notificationTranslateRef = useRef(t);
   notificationTranslateRef.current = t;
   const showLabelsInNav = useAppearanceStore((s) => s.showLabelsInNav);
-  const showHistoryTab = useAppearanceStore((s) => s.showHistoryTab);
-  const showUpdatesTab = useAppearanceStore((s) => s.showUpdatesTab);
-  const showDownloadsTab = useAppearanceStore((s) => s.showDownloadsTab);
-  const showTasksTab = useAppearanceStore((s) => s.showTasksTab);
   const fullPageReaderActive = useReaderStore(
     (state) => state.fullPageReaderActive,
   );
@@ -462,20 +479,12 @@ export function RootLayout() {
     visitedPages.has(page) || activePersistentPage === page;
   const readerFullPageActive = pathname === "/reader" && fullPageReaderActive;
   const mobileNavVisible = !readerFullPageActive || fullPageReaderChromeVisible;
-  const navItems = NAV_ITEMS.filter((item) =>
-    isNavItemVisible(item, {
-      downloads: showDownloadsTab,
-      history: showHistoryTab,
-      tasks: showTasksTab,
-      updates: showUpdatesTab,
-    }),
-  );
 
   return (
     <AppShell
       navbar={{
         width: showLabelsInNav
-          ? { sm: "3.5rem", "1201px": "11.5rem" }
+          ? { sm: "3.5rem", "1200px": "11.5rem" }
           : "3.5rem",
         breakpoint: "sm",
         collapsed: { mobile: true, desktop: readerFullPageActive },
@@ -483,13 +492,7 @@ export function RootLayout() {
       padding={0}
     >
       <AppShell.Navbar className="norea-app-rail" data-show-labels={showLabelsInNav}>
-        <Anchor
-          aria-label="Norea"
-          className="norea-rail-brand"
-          component={Link}
-          to="/"
-          underline="never"
-        >
+        <div className="norea-rail-brand">
           <img
             alt=""
             aria-hidden="true"
@@ -497,21 +500,18 @@ export function RootLayout() {
             src="/app-icon.svg"
           />
           <span className="norea-rail-title">Norea</span>
-        </Anchor>
+        </div>
         <nav
           className="norea-rail-nav"
           data-show-labels={showLabelsInNav}
           aria-label={t("nav.primary")}
         >
-          {navItems.map((item) => (
-            <AppNavLink
-              activeClassName="norea-rail-link--active"
-              className="norea-rail-link"
-              item={item}
-              key={item.to}
-              label={t(item.labelKey)}
-            />
-          ))}
+          <NavLinks
+            activeClassName="norea-rail-link--active"
+            className="norea-rail-link"
+            labelKey="labelKey"
+            pathname={pathname}
+          />
         </nav>
       </AppShell.Navbar>
       <AppShell.Main
@@ -569,6 +569,11 @@ export function RootLayout() {
               <PersistentSettingsPage section={settingsSection} />
             </PageSlot>
           ) : null}
+          {pageVisited("more") ? (
+            <PageSlot active={activePersistentPage === "more"}>
+              <PersistentMorePage />
+            </PageSlot>
+          ) : null}
           {nextPageStack.map((entry) => (
             <PageSlot
               active={entry.instanceKey === activeStackKey}
@@ -589,15 +594,12 @@ export function RootLayout() {
         data-show-labels={showLabelsInNav}
         aria-label={t("nav.primary")}
       >
-        {navItems.map((item) => (
-          <AppNavLink
-            activeClassName="norea-mobile-nav-link--active"
-            className="norea-mobile-nav-link"
-            item={item}
-            key={item.to}
-            label={t(item.compactKey)}
-          />
-        ))}
+        <NavLinks
+          activeClassName="norea-mobile-nav-link--active"
+          className="norea-mobile-nav-link"
+          labelKey="compactKey"
+          pathname={pathname}
+        />
       </nav>
       <SiteBrowserOverlay />
       <TaskNotifications />
