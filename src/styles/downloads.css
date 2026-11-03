@@ -46,36 +46,36 @@
 }
 
 .norea-downloads-novel {
-  background: var(--norea-design-surface);
-  border-color: var(--norea-design-rule);
-  border-radius: var(--norea-border-radius);
+  background: var(--norea-color-surface);
+  border-color: var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
   overflow: hidden;
 }
 
 .norea-downloads-novel-row {
   align-items: flex-start;
   display: grid;
-  gap: 0.75rem;
+  gap: var(--norea-space-3);
   grid-template-columns: 3.5rem minmax(0, 1fr) max-content;
-  padding: 0.625rem 0.75rem;
+  padding: var(--norea-space-3);
 }
 
 .norea-downloads-novel-main {
   display: grid;
-  gap: 0.25rem;
+  gap: var(--norea-space-1);
 }
 
 .norea-downloads-chapter-main {
   display: grid;
-  gap: 0.25rem;
+  gap: var(--norea-space-1);
   min-width: 0;
 }
 
 .norea-downloads-novel-title {
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   display: block;
   font-family: var(--norea-font-ui);
-  font-size: 0.9375rem;
+  font-size: var(--norea-text-md);
   font-weight: 700;
   line-height: 1.25;
   margin: 0;
@@ -94,9 +94,10 @@
 }
 
 .norea-downloads-novel-status {
-  color: var(--norea-design-ink-subtle);
-  font-family: var(--norea-font-meta);
-  font-size: 0.71875rem;
+  color: var(--norea-color-ink-muted);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
   line-height: 1.35;
 }
 
@@ -113,9 +114,10 @@
 }
 
 .norea-downloads-chapter-status {
-  color: var(--norea-design-ink-subtle);
-  font-family: var(--norea-font-meta);
-  font-size: 0.71875rem;
+  color: var(--norea-color-ink-muted);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
   line-height: 1.4;
   min-width: 0;
   overflow: hidden;
@@ -129,27 +131,27 @@
 }
 
 .norea-downloads-chapter-list {
-  background: color-mix(in srgb, var(--norea-design-panel), transparent 30%);
-  border-top: 1px solid var(--norea-design-rule);
+  background: var(--norea-color-surface-raised);
+  border-top: 1px solid var(--norea-color-rule);
   display: grid;
 }
 
 .norea-downloads-chapter-row {
   align-items: flex-start;
   display: grid;
-  gap: 0.625rem;
+  gap: var(--norea-space-3);
   grid-template-columns: minmax(0, 1fr) auto;
-  padding: 0.5rem 0.75rem 0.5rem 5rem;
+  padding: var(--norea-space-2) var(--norea-space-3) var(--norea-space-2) 5rem;
 }
 
 .norea-downloads-chapter-row + .norea-downloads-chapter-row {
-  border-top: 1px solid var(--norea-design-rule);
+  border-top: 1px solid var(--norea-color-rule);
 }
 
 .norea-downloads-chapter-title {
-  color: var(--norea-design-ink);
+  color: var(--norea-color-ink);
   display: block;
-  font-size: 0.8125rem;
+  font-size: var(--norea-text-sm);
   font-weight: 650;
   min-width: 0;
   overflow: hidden;
@@ -158,9 +160,9 @@
 }
 
 .norea-downloads-note {
-  color: var(--norea-design-ink-subtle);
-  font-size: 0.8125rem;
-  padding: 0.625rem 0.75rem 0.625rem 5rem;
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  padding: var(--norea-space-3) var(--norea-space-3) var(--norea-space-3) 5rem;
 }
 
 @media (max-width: 767px) {
@@ -188,9 +190,9 @@
 
   .norea-downloads-novel-row {
     align-items: flex-start;
-    gap: 0.5rem;
+    gap: var(--norea-space-2);
     grid-template-columns: 2.625rem minmax(0, 1fr) max-content;
-    padding: 0.5rem;
+    padding: var(--norea-space-2);
   }
 
   .norea-downloads-novel-row .norea-console-cover {
@@ -203,11 +205,11 @@
   }
 
   .norea-downloads-chapter-row {
-    padding: 0.5rem;
+    padding: var(--norea-space-2);
   }
 
   .norea-downloads-note {
-    padding: 0.625rem 0.5rem;
+    padding: var(--norea-space-3) var(--norea-space-2);
   }
 }
 
