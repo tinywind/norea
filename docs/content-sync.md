@@ -11,7 +11,7 @@ when the server is unavailable.
 
 1. Start the server using its README.
 2. Save the server URL and a device name in Norea.
-3. Open Browse > Content server to search titles or filter by source. Results
+3. Open Browse > Server to search titles or filter by source. Results
    load one page at a time, without waiting for a full sync. The device registers
    automatically; no account or password is required. Search and source filters
    remain when you return from a work and are kept separately for each server.
@@ -127,8 +127,8 @@ chapter's exclusion. Deletions originating outside this app retain the existing
 sync policy: completed local chapters can fill missing server copies. To replace
 existing complete chapters, select **Replace with app data** under Upload
 conflicts, then choose **Sync now**.
-**Delete work from server** is available on each work in Browse -> Content server
-and in the work's **Manage server data** page. After confirmation, it removes
+**Delete work from server** is available in the work's **Manage server data**
+page. After confirmation, it removes
 the whole server work folder, metadata, cover, and chapter index, using the
 registered device key. Its optional device action removes the matching work's
 database records, files, library membership, and reading state. Keeping device

@@ -31,7 +31,10 @@ webtoons or read manga and comics page by page.
 
 ## What you can do
 
-- Browse and search installed reading sources.
+- Browse and search installed reading sources. Search runs across every
+  installed source, only pinned ones, or a custom set, and collapses sources
+  without results; Sources lists them pinned first and by language. Manage
+  plugins under Browse -> Extensions, which lists available updates.
 - Add novels to your library and organize them with categories. Add or remove
   category assignments for selected works, or edit them from the category chips
   on the work page or the "Change category" action shown after adding a work.
@@ -71,7 +74,7 @@ webtoons or read manga and comics page by page.
   chapters to download missing chapters before the lowest selected chapter
   position, regardless of the displayed sort order.
 - Share complete chapters through an optional [content server](docs/content-sync.md).
-  Browse its works under Browse -> Content server, add them to your library, and
+  Browse its works under Browse -> Server, add them to your library, and
   download chapters without waiting for a full sync. Devices register
   automatically. Search and source filters remain when returning from a work.
 - Save a complete device database and settings snapshot to the content server
@@ -124,7 +127,7 @@ successful run or the dev-0.2 prerelease.
 ## First run
 
 1. Install and open Norea.
-2. Add a reading source list from Browse -> Sources.
+2. Add a reading source list from Browse -> Extensions.
 3. Install one or more sources.
 4. Search a source, open a novel, and add it to your library.
 5. Open a chapter to read. Download chapters you want available later.
@@ -138,8 +141,8 @@ self-hosted examples.
 
 To add the sample source list:
 
-1. Open Browse -> Sources.
-2. Choose Set repository.
+1. Open Browse -> Extensions.
+2. Choose the repository row (No repository configured).
 3. Paste this URL:
 
    ```text
@@ -147,7 +150,7 @@ To add the sample source list:
    ```
 
 4. Save it.
-5. Install sources from Available source plugins.
+5. Install sources from the Available section.
 
 Only install and use sources you are allowed to access in your country and under
 the source site's terms.
@@ -230,7 +233,7 @@ Then use Sync now to apply the selected policy. Deletion confirmations let you
 also remove matching data from the other side; additional options start unchecked.
 Deleting one chapter's download from its row removes it from this device only.
 Removing library membership can also delete device downloads or, for works the
-server holds, the whole server work. Delete work from server in Browse -> Content server or Manage server
+server holds, the whole server work. Delete work from server in the work page's Manage server
 data removes server metadata, the cover, and all chapters, with an option to
 remove the whole device work and its reading state. Chapter download deletion
 keeps work information and reading progress. Explicit server deletions made in

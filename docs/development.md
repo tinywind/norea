@@ -153,9 +153,9 @@ matching GitHub Release.
 Use this path when checking that the app still works end to end:
 
 1. Start the Windows desktop app with `pnpm tauri dev`.
-2. Open Browse -> Sources.
+2. Open Browse -> Extensions.
 3. Set the repository URL to the sample catalog from the README.
-4. Refresh the repository and install one source plugin.
+4. Refresh the repository from its row menu and install one source plugin.
 5. Browse or search that source and open a novel detail page.
 6. Add the novel to the library.
 7. Open a chapter in the reader and confirm paged or scrolling mode works.
