@@ -33,6 +33,7 @@ describe("reader keyboard ownership", () => {
     };
     const closeReaderSettingsPanel = vi.fn();
     const handleReaderActivity = vi.fn();
+    const handleReaderBack = vi.fn(() => true);
     vi.stubGlobal("Element", KeyboardTarget);
     vi.stubGlobal("HTMLElement", KeyboardTarget);
     vi.stubGlobal("window", target);
@@ -43,15 +44,19 @@ describe("reader keyboard ownership", () => {
       contentRef: { current: content },
       closeReaderSettingsPanel,
       handleReaderActivity,
-      handleReaderBack: vi.fn(() => true),
+      handleReaderBack,
     });
     dispose = vi.mocked(useEffect).mock.calls[0]![0]() as () => void;
-    return { target, content, closeReaderSettingsPanel, handleReaderActivity };
+    return { target, content, closeReaderSettingsPanel, handleReaderActivity, handleReaderBack };
   }
 
-  function keyEvent(key: string) {
+  function keyEvent(key: string, modifiers: { ctrlKey?: boolean; altKey?: boolean } = {}) {
     const event = new Event("keydown", { cancelable: true });
     Object.defineProperty(event, "key", { value: key });
+    Object.defineProperty(event, "ctrlKey", { value: modifiers.ctrlKey ?? false });
+    Object.defineProperty(event, "altKey", { value: modifiers.altKey ?? false });
+    Object.defineProperty(event, "metaKey", { value: false });
+    Object.defineProperty(event, "shiftKey", { value: false });
     return event;
   }
 
@@ -98,6 +103,50 @@ describe("reader keyboard ownership", () => {
 
     expect(closeReaderSettingsPanel).toHaveBeenCalledOnce();
     expect(content.scrollByPage).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    [" ", 1],
+    ["ArrowDown", 1],
+    ["PageDown", 1],
+    ["ArrowUp", -1],
+    ["ArrowLeft", -1],
+  ])("pages with %j in direction %i", (key, direction) => {
+    const { target, content, handleReaderActivity } = mountKeyboard();
+    target.dispatchEvent(keyEvent(String(key)));
+
+    expect(content.scrollByPage).toHaveBeenCalledWith(direction, `key-${key}`);
+    expect(handleReaderActivity).toHaveBeenCalledOnce();
+  });
+
+  it("returns to the chapter start with Home", () => {
+    const { target, content } = mountKeyboard();
+    target.dispatchEvent(keyEvent("Home"));
+
+    expect(content.scrollToStart).toHaveBeenCalledOnce();
+  });
+
+  it("leaves the reader with Escape when no overlay is open", () => {
+    const { target, content, handleReaderBack } = mountKeyboard();
+    target.dispatchEvent(keyEvent("Escape"));
+
+    expect(handleReaderBack).toHaveBeenCalledOnce();
+    expect(content.scrollByPage).not.toHaveBeenCalled();
+  });
+
+  it("ignores paging keys while reader settings are open", () => {
+    const { target, content, closeReaderSettingsPanel } = mountKeyboard(true);
+    target.dispatchEvent(keyEvent("ArrowRight"));
+
+    expect(content.scrollByPage).not.toHaveBeenCalled();
+    expect(closeReaderSettingsPanel).not.toHaveBeenCalled();
+  });
+
+  it("still pages when a modifier is held", () => {
+    const { target, content } = mountKeyboard();
+    target.dispatchEvent(keyEvent("ArrowRight", { ctrlKey: true }));
+
+    expect(content.scrollByPage).toHaveBeenCalledWith(1, "key-ArrowRight");
   });
 
   it("removes its paging listener on unmount", () => {
