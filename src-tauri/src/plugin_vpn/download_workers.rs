@@ -326,7 +326,8 @@ pub(crate) fn plugin_vpn_download_worker_status(worker: DownloadVpnWorkerRef, wo
 pub(crate) async fn plugin_vpn_download_worker_validate(worker: DownloadVpnWorkerRef, app: AppHandle, workers: State<'_, DownloadVpnWorkers>, state: State<'_, PluginVpnState>) -> Result<DownloadVpnWorkerStatus, DownloadVpnWorkerError> {
     let slot = workers.worker_slot(&worker)?;
     slot.snapshot(&worker)?;
-    let lease = state.saved_profile_lease(&app, &worker.lease_owner()).await?;
+    let pool = super::state::saved_profile_database(&app).await?;
+    let lease = state.saved_profile_lease(&pool, &worker.lease_owner()).await?;
     if !lease.as_ref().is_some_and(|lease| !lease.is_revoked()) { return Err("The retained VPN profile is no longer approved or available".into()); }
     let status = slot.snapshot(&worker)?;
     if status.phase != PluginVpnPhase::Connected {
@@ -366,17 +367,43 @@ pub(crate) async fn plugin_vpn_download_worker_connect(worker: DownloadVpnWorker
     slot.snapshot(&worker).map_err(Into::into)
 }
 
+/// Reserves the profile and reads its bytes. The global operation lock is held only inside these
+/// calls, so handshakes on other slots proceed concurrently; `finish_connect` rechecks revocation.
+#[cfg(any(target_os = "android", target_os = "windows", test))]
+async fn prepare_connect(slot: &DownloadWorkerSlot, worker: &DownloadVpnWorkerRef, id: &str, hash: &str, pool: &sqlx::SqlitePool, state: &PluginVpnState) -> Result<String, DownloadVpnWorkerError> {
+    let owner = worker.lease_owner();
+    let lease = state.reserve_saved_profile(pool, &owner, id, hash).await?;
+    if !slot.install_lease(worker, lease)? { state.release_saved_profile(&owner).await?; return Err("VPN download connection was cancelled".into()); }
+    let (_, bytes) = state.read_saved_profile_lease(pool, &owner).await?;
+    if !slot.is_requested(worker) { return Err("VPN download connection was cancelled".into()); }
+    String::from_utf8(bytes).map_err(|_| "Saved VPN profile must be UTF-8".into())
+}
+
+/// Publishes the route only if the slot generation is current and the lease survived the handshake.
+/// A network change after `network_revision` was read invalidates the slot, so publication still fails closed.
+#[cfg(any(target_os = "android", target_os = "windows", test))]
+async fn finish_connect(
+    slot: &DownloadWorkerSlot, worker: &DownloadVpnWorkerRef, id: &str, hash: &str, pool: &sqlx::SqlitePool, state: &PluginVpnState,
+    registered: bool, session: WorkerSession, connector: Arc<dyn ProxyConnector>, network_revision: u64, online: bool,
+) -> Result<(), DownloadVpnWorkerError> {
+    if !registered {
+        settle_session(&session, STOP_TIMEOUT).await?;
+        return Err("VPN download connection was superseded".into());
+    }
+    let lease = state.saved_profile_lease(pool, &worker.lease_owner()).await?;
+    if !lease.is_some_and(|lease| !lease.is_revoked() && lease.profile.id == id && lease.profile.hash == hash) ||
+        !slot.publish(worker, connector, network_revision, online) {
+        return Err("VPN download connection was cancelled or its profile was revoked".into());
+    }
+    Ok(())
+}
+
 #[cfg(any(target_os = "android", target_os = "windows"))]
 async fn connect_locked(slot: &Arc<DownloadWorkerSlot>, worker: &DownloadVpnWorkerRef, id: &str, hash: &str, app: &AppHandle, state: &PluginVpnState, cancellation: tokio::sync::watch::Receiver<bool>) -> Result<(), DownloadVpnWorkerError> {
     crate::network::require_online()?;
-    let owner = worker.lease_owner();
-    let lease = state.reserve_saved_profile(app, &owner, id, hash).await?;
-    if !slot.install_lease(worker, lease)? { state.release_saved_profile(&owner).await?; return Err("VPN download connection was cancelled".into()); }
-    let mut allocation = state.read_saved_profile_lease(app, &owner).await?;
-    if !slot.is_requested(worker) { return Err("VPN download connection was cancelled".into()); }
-    let profile = String::from_utf8(allocation.take_bytes()).map_err(|_| "Saved VPN profile must be UTF-8".to_string())?;
+    let pool = super::state::saved_profile_database(app).await?;
+    let profile = prepare_connect(slot, worker, id, hash, &pool, state).await?;
     let connection = super::engine::connect(profile, super::engine::EngineCredentials { username: "vpn".into(), password: "vpn".into(), private_key_password: String::new(), challenge_response: String::new() }, cancellation).await;
-    drop(allocation);
     let super::engine::EngineConnection { connector, control, lifecycle, completion } = connection.map_err(|message| DownloadVpnWorkerError { code: "vpn-worker-connection-failed", message })?;
     let (sender, receiver) = tokio::sync::watch::channel(None);
     let control: Arc<dyn WorkerEngineControl> = Arc::new(control);
@@ -400,22 +427,10 @@ async fn connect_locked(slot: &Arc<DownloadWorkerSlot>, worker: &DownloadVpnWork
             message: result.as_ref().err().cloned().unwrap_or_else(|| "OpenVPN disconnected unexpectedly".into()) });
         sender.send_replace(Some(result));
     });
-    if !registered {
-        let session = WorkerSession { worker: worker.clone(), control, completion: receiver, published: false };
-        settle_session(&session, STOP_TIMEOUT).await?;
-        return Err("VPN download connection was superseded".into());
-    }
-    let lease = state.saved_profile_lease(app, &owner).await?;
+    let session = WorkerSession { worker: worker.clone(), control, completion: receiver, published: false };
     let network = crate::network::network_status();
-    if !lease.is_some_and(|lease| !lease.is_revoked() && lease.profile.id == id && lease.profile.hash == hash) ||
-        !slot.publish(worker, connector, network.revision, network.connectivity == crate::network::Connectivity::Online) {
-        return Err("VPN download connection was cancelled or its profile was revoked".into());
-    }
-    Ok(())
+    finish_connect(slot, worker, id, hash, &pool, state, registered, session, connector, network.revision, network.connectivity == crate::network::Connectivity::Online).await
 }
-
-#[cfg(not(any(target_os = "android", target_os = "windows")))]
-async fn connect_locked(_: &Arc<DownloadWorkerSlot>, _: &DownloadVpnWorkerRef, _: &str, _: &str, _: &AppHandle, _: &PluginVpnState, _: tokio::sync::watch::Receiver<bool>) -> Result<(), DownloadVpnWorkerError> { Err("Isolated VPN download workers are unsupported".into()) }
 
 #[cfg(test)]
 mod tests {
@@ -831,6 +846,123 @@ mod tests {
         slot.clear_resources(&current.lease_owner());
         assert!(slot.resources().is_none());
         assert_eq!(slot.snapshot(&current).unwrap().phase, PluginVpnPhase::Disabled);
+    }
+
+    struct ConnectFixture {
+        _directory: tempfile::TempDir,
+        pool: sqlx::SqlitePool,
+        state: PluginVpnState,
+        workers: DownloadVpnWorkers,
+        profiles: Vec<SavedVpnProfile>,
+    }
+
+    async fn connect_fixture() -> ConnectFixture {
+        use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+        use super::super::saved_profiles::SavedProfileVault;
+        let directory = tempfile::tempdir().unwrap();
+        let pool = SqlitePoolOptions::new().max_connections(1).connect_with(
+            SqliteConnectOptions::new().filename(directory.path().join("verdicts.db")).create_if_missing(true),
+        ).await.unwrap();
+        sqlx::query("CREATE TABLE vpn_gate_server_verdict(ip TEXT PRIMARY KEY,verdict TEXT NOT NULL,updated_at INTEGER NOT NULL DEFAULT(unixepoch()))").execute(&pool).await.unwrap();
+        let mut vault = SavedProfileVault::open(directory.path().join("plugin-vpn/saved-profiles")).unwrap();
+        let mut profiles = Vec::new();
+        for ip in ["8.8.4.4", "1.1.1.1"] {
+            let bytes = format!("client\ndev tun\nproto tcp\nremote {ip} 443\n<ca>\ncertificate\n</ca>\n{}\nauth-user-pass\n", super::super::VPN_GATE_PROFILE_MARKER).into_bytes();
+            profiles.push(vault.capture(&pool, ip, &bytes).await.unwrap().saved_profile.unwrap());
+        }
+        let state = super::super::state::tests::backup_worker_test_state(directory.path().join("plugin-vpn/profile.ovpn"), Ok(vault));
+        ConnectFixture { _directory: directory, pool, state, workers: DownloadVpnWorkers::bind().unwrap(), profiles }
+    }
+
+    /// Mirrors `connect_locked` with a gated handshake in place of the engine.
+    async fn gated_connect(
+        fixture: &ConnectFixture, worker: &DownloadVpnWorkerRef, profile: &SavedVpnProfile, handshaking: Arc<tokio::sync::Barrier>,
+        handshake: tokio::sync::watch::Receiver<bool>,
+    ) -> (Result<(), DownloadVpnWorkerError>, Arc<TestEngineControl>, tokio::sync::watch::Sender<Option<Result<(), String>>>) {
+        let slot = fixture.workers.worker_slot(worker).unwrap();
+        let _operation = slot.operation.lock().await;
+        let bytes = prepare_connect(&slot, worker, &profile.id, &profile.hash, &fixture.pool, &fixture.state).await.unwrap();
+        assert!(bytes.contains(&profile.ip));
+        handshaking.wait().await;
+        let mut handshake = handshake;
+        while !*handshake.borrow() { handshake.changed().await.unwrap(); }
+        let control = Arc::new(TestEngineControl::default());
+        let (completion, receiver) = tokio::sync::watch::channel(None);
+        let registered = slot.register_session(worker, control.clone(), receiver.clone());
+        let session = WorkerSession { worker: worker.clone(), control: control.clone(), completion: receiver, published: false };
+        let result = finish_connect(&slot, worker, &profile.id, &profile.hash, &fixture.pool, &fixture.state, registered, session,
+            Arc::new(TestEngineConnector("tunnel")), 1, true).await;
+        (result, control, completion)
+    }
+
+    #[tokio::test]
+    async fn handshakes_on_different_slots_overlap_instead_of_queueing_on_the_global_operation_lock() {
+        let fixture = connect_fixture().await;
+        let a = worker("range-a", 0, 1);
+        let b = worker("range-b", 1, 1);
+        let _cancel_a = fixture.workers.worker_slot(&a).unwrap().request_connect(&a, 1).unwrap();
+        let _cancel_b = fixture.workers.worker_slot(&b).unwrap().request_connect(&b, 1).unwrap();
+        // Both handshakes must be in flight at once before either may finish.
+        let handshaking = Arc::new(tokio::sync::Barrier::new(3));
+        let (release, handshake) = tokio::sync::watch::channel(false);
+        let connecting = async {
+            tokio::join!(
+                gated_connect(&fixture, &a, &fixture.profiles[0], handshaking.clone(), handshake.clone()),
+                gated_connect(&fixture, &b, &fixture.profiles[1], handshaking.clone(), handshake.clone()),
+                async { handshaking.wait().await; release.send_replace(true); },
+            )
+        };
+        let ((first, _control_a, _completion_a), (second, _control_b, _completion_b), ()) =
+            tokio::time::timeout(Duration::from_secs(2), connecting).await.expect("worker handshakes were serialized");
+        first.unwrap();
+        second.unwrap();
+        for (identity, profile) in [(&a, &fixture.profiles[0]), (&b, &fixture.profiles[1])] {
+            let status = fixture.workers.worker_slot(identity).unwrap().snapshot(identity).unwrap();
+            assert_eq!(status.phase, PluginVpnPhase::Connected);
+            assert_eq!(status.profile.unwrap().id, profile.id);
+        }
+    }
+
+    #[tokio::test]
+    async fn revocation_during_a_handshake_tears_down_only_that_worker_and_releases_its_lease() {
+        let fixture = connect_fixture().await;
+        let a = worker("range-a", 0, 1);
+        let b = worker("range-b", 1, 1);
+        let slot_a = fixture.workers.worker_slot(&a).unwrap();
+        let _cancel_a = slot_a.request_connect(&a, 1).unwrap();
+        let _cancel_b = fixture.workers.worker_slot(&b).unwrap().request_connect(&b, 1).unwrap();
+        let handshaking = Arc::new(tokio::sync::Barrier::new(3));
+        let (release, handshake) = tokio::sync::watch::channel(false);
+        let revoking = async {
+            handshaking.wait().await;
+            tokio::time::timeout(Duration::from_millis(500), super::super::state::tests::revoke_saved_profile_for_test(&fixture.state, &fixture.pool, &fixture.profiles[0].ip))
+                .await.expect("revocation waited for an in-flight handshake");
+            release.send_replace(true);
+        };
+        let ((revoked, control_a, completion_a), (kept, _control_b, _completion_b), ()) = tokio::time::timeout(Duration::from_secs(2), async {
+            tokio::join!(
+                gated_connect(&fixture, &a, &fixture.profiles[0], handshaking.clone(), handshake.clone()),
+                gated_connect(&fixture, &b, &fixture.profiles[1], handshaking.clone(), handshake.clone()),
+                revoking,
+            )
+        }).await.unwrap();
+        let error = revoked.unwrap_err();
+        assert!(error.message.contains("revoked"), "{}", error.message);
+        kept.unwrap();
+        let (address, server) = origin().await;
+        assert!(request(&slot_a.proxy, address).await.starts_with("HTTP/1.1 502"));
+        // Same failure path as `plugin_vpn_download_worker_connect`.
+        assert!(slot_a.fail(&a, error));
+        assert!(control_a.cancellations.load(Ordering::SeqCst) > 0);
+        completion_a.send_replace(Some(Ok(())));
+        cleanup_locked(&slot_a, &fixture.state).await.unwrap();
+        assert!(slot_a.resources().is_none());
+        assert!(fixture.state.saved_profile_lease(&fixture.pool, &a.lease_owner()).await.unwrap().is_none());
+        assert_eq!(slot_a.snapshot(&a).unwrap().phase, PluginVpnPhase::Error);
+        let b_slot = fixture.workers.worker_slot(&b).unwrap();
+        assert_eq!(b_slot.snapshot(&b).unwrap().phase, PluginVpnPhase::Connected);
+        assert!(request(&b_slot.proxy, address).await.ends_with("tunnel"));
+        server.abort();
     }
 
     #[tokio::test]

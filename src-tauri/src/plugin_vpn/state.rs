@@ -61,6 +61,9 @@ struct PluginVpnShared {
     saved_profiles: OnceLock<Result<tokio::sync::Mutex<SavedProfileVault>, String>>,
     recovered_saved_profiles: OnceLock<tokio::sync::Mutex<SavedProfileVault>>,
     operation: tokio::sync::Mutex<()>,
+    // Serializes foreground connect/disconnect without holding `operation` across a handshake.
+    // Lock order: `foreground` before `operation`.
+    foreground: tokio::sync::Mutex<()>,
     state: Mutex<PluginVpnRuntime>,
 }
 
@@ -142,19 +145,6 @@ pub(crate) struct PluginVpnCredentials {
     challenge_response: String,
 }
 
-pub(crate) struct SavedVpnProfileLeaseRead<'a> {
-    pub(crate) lease: SavedVpnProfileLease,
-    bytes: Vec<u8>,
-    _operation: tokio::sync::MutexGuard<'a, ()>,
-}
-
-impl SavedVpnProfileLeaseRead<'_> {
-    /// Keep this allocation alive through engine connection so revocation cannot race the connection.
-    pub(crate) fn take_bytes(&mut self) -> Vec<u8> {
-        std::mem::take(&mut self.bytes)
-    }
-}
-
 impl PluginVpnCredentials {
     fn resolve_for_profile(mut self, profile: &str) -> Self {
         if is_vpn_gate_finder_profile(profile) {
@@ -201,6 +191,7 @@ impl PluginVpnState {
                 saved_profiles: OnceLock::new(),
                 recovered_saved_profiles: OnceLock::new(),
                 operation: tokio::sync::Mutex::new(()),
+                foreground: tokio::sync::Mutex::new(()),
                 state: Mutex::new(PluginVpnRuntime {
                     generation: 0,
                     network_revision: 0,
@@ -353,11 +344,10 @@ impl PluginVpnState {
         Ok(())
     }
 
-    pub(crate) async fn reserve_saved_profile<R: tauri::Runtime>(
-        &self, app: &AppHandle<R>, owner: &str, id: &str, expected_hash: &str,
+    pub(crate) async fn reserve_saved_profile(
+        &self, pool: &sqlx::SqlitePool, owner: &str, id: &str, expected_hash: &str,
     ) -> Result<SavedVpnProfileLease, String> {
         let _operation = self.shared.operation.lock().await;
-        let pool = saved_profile_database(app).await?;
         let foreground = {
             let runtime = self.shared.state.lock().expect("plugin VPN state lock");
             let mut unsettled = runtime.connecting_cancellation.is_some();
@@ -365,24 +355,22 @@ impl PluginVpnState {
             { unsettled |= runtime.control.is_some() || runtime.session_completion.is_some(); }
             foreground_profile_exclusion(runtime.profile.as_ref(), runtime.phase, runtime.connection_requested, unsettled)
         };
-        self.saved_profiles()?.lock().await.reserve(&pool, owner, id, expected_hash, foreground.as_ref()).await
+        self.saved_profiles()?.lock().await.reserve(pool, owner, id, expected_hash, foreground.as_ref()).await
     }
 
-    pub(crate) async fn read_saved_profile_lease<'a, R: tauri::Runtime>(
-        &'a self, app: &AppHandle<R>, owner: &str,
-    ) -> Result<SavedVpnProfileLeaseRead<'a>, String> {
-        let operation = self.shared.operation.lock().await;
-        let pool = saved_profile_database(app).await?;
-        let (lease, bytes) = self.saved_profiles()?.lock().await.read_lease(&pool, owner).await?;
-        Ok(SavedVpnProfileLeaseRead { lease, bytes, _operation: operation })
+    /// Revocation during the caller's handshake stays visible through the lease flag; recheck it before publishing a route.
+    pub(crate) async fn read_saved_profile_lease(
+        &self, pool: &sqlx::SqlitePool, owner: &str,
+    ) -> Result<(SavedVpnProfileLease, Vec<u8>), String> {
+        let _operation = self.shared.operation.lock().await;
+        self.saved_profiles()?.lock().await.read_lease(pool, owner).await
     }
 
-    pub(crate) async fn saved_profile_lease<R: tauri::Runtime>(
-        &self, app: &AppHandle<R>, owner: &str,
+    pub(crate) async fn saved_profile_lease(
+        &self, pool: &sqlx::SqlitePool, owner: &str,
     ) -> Result<Option<SavedVpnProfileLease>, String> {
         let _operation = self.shared.operation.lock().await;
-        let pool = saved_profile_database(app).await?;
-        self.saved_profiles()?.lock().await.lease(&pool, owner).await
+        self.saved_profiles()?.lock().await.lease(pool, owner).await
     }
 
     pub(crate) async fn release_saved_profile(&self, owner: &str) -> Result<(), String> {
@@ -587,7 +575,7 @@ pub(crate) async fn plugin_vpn_apply_finder_profile(
     import_profile_bytes(state.inner(), bytes, "apply a Finder profile", None).await
 }
 
-async fn saved_profile_database<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<sqlx::SqlitePool, String> {
+pub(crate) async fn saved_profile_database<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<sqlx::SqlitePool, String> {
     let instances = app.state::<DbInstances>();
     let databases = instances.0.read().await;
     match databases.get("sqlite:norea.db") {
@@ -704,7 +692,8 @@ pub(crate) async fn plugin_vpn_connect(
 ) -> Result<PluginVpnStatus, String> {
     ensure_supported()?;
     let request_generation = state.request_connection();
-    let _operation = state.shared.operation.lock().await;
+    let _foreground = state.shared.foreground.lock().await;
+    let operation = state.shared.operation.lock().await;
     crate::network::require_online()?;
     let profile_path = state.profile_path()?;
     if state.status().profile.as_ref().is_some_and(|profile| !profile.is_vpn_gate_finder) {
@@ -742,6 +731,9 @@ pub(crate) async fn plugin_vpn_connect(
             return Err("plugin VPN connection was superseded".to_string());
         }
     }
+    // The Connecting phase now excludes this profile from worker leases, so worker
+    // handshakes need not wait behind this one.
+    drop(operation);
 
     #[cfg(any(target_os = "android", target_os = "windows"))]
     let connection = match super::engine::connect(
@@ -920,6 +912,7 @@ async fn disconnect(
         let _ = cancellation.send(true);
     }
 
+    let _foreground = state.shared.foreground.lock().await;
     let _operation = state.shared.operation.lock().await;
 
     #[cfg(any(target_os = "android", target_os = "windows"))]
@@ -1589,6 +1582,11 @@ pub(crate) mod tests {
 
     const PROFILE: &[u8] = b"client\ndev tun\nremote vpn.example.test 1194\n";
 
+    pub(crate) async fn revoke_saved_profile_for_test(state: &PluginVpnState, pool: &sqlx::SqlitePool, ip: &str) {
+        let _operation = state.shared.operation.lock().await;
+        state.saved_profiles().unwrap().lock().await.revoke(pool, ip, None).await.unwrap();
+    }
+
     pub(crate) fn backup_worker_test_state(path: PathBuf, vault: Result<SavedProfileVault, String>) -> PluginVpnState {
         let state = PluginVpnState::bind().unwrap();
         state.shared.profile_path.set(path).unwrap();
@@ -1671,36 +1669,45 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn saved_profile_engine_reads_hold_the_operation_lock_until_connection_settles() {
-        use std::collections::HashMap;
+    async fn worker_lease_reads_and_revocation_do_not_wait_for_a_connecting_handshake() {
         use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
         let directory = tempfile::tempdir().unwrap();
         let pool = SqlitePoolOptions::new().max_connections(1).connect_with(
             SqliteConnectOptions::new().filename(directory.path().join("verdicts.db")).create_if_missing(true)
         ).await.unwrap();
         sqlx::query("CREATE TABLE vpn_gate_server_verdict (ip TEXT PRIMARY KEY NOT NULL, verdict TEXT NOT NULL, updated_at INTEGER NOT NULL DEFAULT (unixepoch()))").execute(&pool).await.unwrap();
-        let app = tauri::test::mock_app();
-        let mut databases = HashMap::new();
-        databases.insert("sqlite:norea.db".to_string(), DbPool::Sqlite(pool.clone()));
-        app.manage(DbInstances(tokio::sync::RwLock::new(databases)));
         let bytes = format!("client\ndev tun\nproto tcp\nremote 8.8.4.4 443\n<ca>\ncertificate\n</ca>\n{VPN_GATE_PROFILE_MARKER}\nauth-user-pass\n").into_bytes();
         let mut vault = SavedProfileVault::open(directory.path().join("profiles")).unwrap();
         let saved = vault.capture(&pool, "8.8.4.4", &bytes).await.unwrap().saved_profile.unwrap();
         let state = PluginVpnState::bind().unwrap();
         assert!(state.shared.saved_profiles.set(Ok(tokio::sync::Mutex::new(vault))).is_ok());
+        let (cancellation, _cancelled) = tokio::sync::watch::channel(false);
         {
             let mut runtime = state.shared.state.lock().unwrap();
             runtime.profile = Some(PluginVpnProfile::from(validate_profile(&bytes).unwrap()));
-            runtime.phase = PluginVpnPhase::Connected;
+            runtime.phase = PluginVpnPhase::Connecting;
+            runtime.connection_requested = true;
+            runtime.connecting_cancellation = Some(cancellation);
         }
-        assert!(state.reserve_saved_profile(app.handle(), "occupied", &saved.id, &saved.hash).await.is_err());
-        state.shared.state.lock().unwrap().phase = PluginVpnPhase::Disabled;
-        let lease = state.reserve_saved_profile(app.handle(), "worker-a", &saved.id, &saved.hash).await.unwrap();
+        // A foreground handshake holds only the foreground lock; its Connecting phase still excludes its profile.
+        let foreground = state.shared.foreground.lock().await;
+        let refused = tokio::time::timeout(std::time::Duration::from_millis(500), state.reserve_saved_profile(&pool, "occupied", &saved.id, &saved.hash)).await
+            .expect("worker reservation waited for the foreground handshake");
+        assert!(refused.unwrap_err().contains("current foreground profile"));
+        drop(foreground);
+        {
+            let mut runtime = state.shared.state.lock().unwrap();
+            runtime.phase = PluginVpnPhase::Disabled;
+            runtime.connection_requested = false;
+            runtime.connecting_cancellation = None;
+        }
+        let lease = state.reserve_saved_profile(&pool, "worker-a", &saved.id, &saved.hash).await.unwrap();
         assert_eq!(lease.owner, "worker-a");
-        let mut allocation = state.read_saved_profile_lease(app.handle(), "worker-a").await.unwrap();
-        assert_eq!(allocation.take_bytes(), bytes);
-        assert_eq!(allocation.lease.profile.hash, saved.hash);
-        assert!(state.shared.operation.try_lock().is_err());
+        let (read, read_bytes) = state.read_saved_profile_lease(&pool, "worker-a").await.unwrap();
+        assert_eq!(read_bytes, bytes);
+        assert_eq!(read.profile.hash, saved.hash);
+        // The worker handshake runs after the read returns, without the operation lock.
+        assert!(state.shared.operation.try_lock().is_ok());
         let revoke = {
             let state = state.clone();
             let pool = pool.clone();
@@ -1709,14 +1716,12 @@ pub(crate) mod tests {
                 state.saved_profiles().unwrap().lock().await.revoke(&pool, "8.8.4.4", None).await.unwrap();
             })
         };
-        tokio::task::yield_now().await;
-        assert!(!revoke.is_finished());
-        drop(allocation);
-        revoke.await.unwrap();
-        assert!(state.saved_profile_lease(app.handle(), "worker-a").await.unwrap().unwrap().revoked);
-        assert!(state.read_saved_profile_lease(app.handle(), "worker-a").await.is_err());
+        tokio::time::timeout(std::time::Duration::from_millis(500), revoke).await.expect("revocation waited for a worker handshake").unwrap();
+        assert!(lease.is_revoked());
+        assert!(state.saved_profile_lease(&pool, "worker-a").await.unwrap().unwrap().revoked);
+        assert!(state.read_saved_profile_lease(&pool, "worker-a").await.is_err());
         state.release_saved_profile("worker-a").await.unwrap();
-        assert!(state.saved_profile_lease(app.handle(), "worker-a").await.unwrap().is_none());
+        assert!(state.saved_profile_lease(&pool, "worker-a").await.unwrap().is_none());
     }
 
     #[test]
