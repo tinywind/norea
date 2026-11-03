@@ -14,6 +14,7 @@ use tauri::{AppHandle, Manager, State};
 use tauri_plugin_sql::{DbInstances, DbPool};
 
 use super::finder::{VpnGateFinder, VpnGateServer};
+use super::saved_profiles::automatic::AutomaticVpnProfile;
 use super::saved_profiles::{
     ForegroundVpnProfile, SavedProfileVault, SavedVpnProfileCaptureSource, SavedVpnProfileLease,
     SavedVpnProfileSelection, SavedVpnProfileVaultSnapshot, VpnGateServerVerdictMutation,
@@ -592,6 +593,75 @@ pub(crate) async fn plugin_vpn_list_saved_profiles(
     let _operation = state.shared.operation.lock().await;
     let pool = saved_profile_database(&app).await?;
     state.saved_profiles()?.lock().await.snapshot(&pool).await
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_list_automatic_profiles(
+    app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<Vec<AutomaticVpnProfile>, String> {
+    ensure_supported()?;
+    let _operation = state.shared.operation.lock().await;
+    let pool = saved_profile_database(&app).await?;
+    state.saved_profiles()?.lock().await.automatic_profiles(&pool).await
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_record_automatic_profile_result(
+    id: String, expected_hash: String, connected: bool, state: State<'_, PluginVpnState>,
+) -> Result<(), String> {
+    ensure_supported()?;
+    let _operation = state.shared.operation.lock().await;
+    state.saved_profiles()?.lock().await.record_automatic_result(&id, &expected_hash, connected)
+}
+
+/// Test-connects one cached Finder candidate and adds it to the automatic pool when the tunnel
+/// carries a TCP connection. Returns false for a failed test or a candidate that must not be tested.
+#[tauri::command]
+pub(crate) async fn plugin_vpn_test_automatic_candidate(
+    candidate_id: String, app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<bool, String> {
+    if !cfg!(target_os = "android") { return Err("Automatic VPN servers are supported only on Android".to_string()); }
+    let (ip, score, bytes) = state.shared.finder.candidate_profile(&candidate_id)?;
+    let pool = saved_profile_database(&app).await?;
+    {
+        let _operation = state.shared.operation.lock().await;
+        if state.saved_profiles()?.lock().await.automatic_candidate_known(&pool, &ip).await? { return Ok(false); }
+    }
+    if let Err(error) = test_candidate_tunnel(&bytes).await {
+        log::info!("automatic VPN server test failed for {ip}: {error}");
+        return Ok(false);
+    }
+    let tested_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map_err(|error| format!("system clock is before the Unix epoch: {error}"))?.as_secs() as i64;
+    let _operation = state.shared.operation.lock().await;
+    state.saved_profiles()?.lock().await.add_automatic(&pool, &ip, &bytes, score, tested_at).await?;
+    Ok(true)
+}
+
+#[cfg(target_os = "android")]
+async fn test_candidate_tunnel(bytes: &[u8]) -> Result<(), String> {
+    const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(15);
+    let profile = String::from_utf8(bytes.to_vec()).map_err(|_| "VPN Gate profile must be UTF-8".to_string())?;
+    let (_cancel, cancellation) = tokio::sync::watch::channel(false);
+    let credentials = super::engine::EngineCredentials {
+        username: VPN_GATE_PUBLIC_CREDENTIAL.into(), password: VPN_GATE_PUBLIC_CREDENTIAL.into(),
+        private_key_password: String::new(), challenge_response: String::new(),
+    };
+    let connection = super::engine::connect(profile, credentials, cancellation).await?;
+    let target = super::proxy::ProxyTarget { host: "www.vpngate.net".into(), port: 443 };
+    let reachable = tokio::time::timeout(REACHABILITY_TIMEOUT, connection.connector.connect(&target)).await;
+    if !matches!(tokio::time::timeout(DISCONNECT_TIMEOUT, connection.control.stop()).await, Ok(Ok(()))) { connection.control.cancel(); }
+    let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, connection.completion).await;
+    match reachable {
+        Ok(Ok(_stream)) => Ok(()),
+        Ok(Err(error)) => Err(format!("the tunnel did not carry a TCP connection: {error}")),
+        Err(_) => Err("the tunnel did not carry a TCP connection in time".to_string()),
+    }
+}
+
+#[cfg(not(target_os = "android"))]
+async fn test_candidate_tunnel(_bytes: &[u8]) -> Result<(), String> {
+    Err("Automatic VPN servers are supported only on Android".to_string())
 }
 
 #[tauri::command]

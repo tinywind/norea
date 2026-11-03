@@ -72,6 +72,8 @@
   "vpnDownload.workerCountHint": "1~10개 중 선택하세요. 전체 대기 작품에 필요한 만큼 사용 가능한 프로필을 배정합니다.",
   "vpnDownload.resumeAfterRestart": "재시작 후 VPN 다운로드 이어서 받기",
   "vpnDownload.resumeAfterRestartHint": "앱을 다시 시작하면 끝나지 않은 VPN 다운로드를 이어서 받습니다. 직접 일시 정지한 다운로드와 기기 복원으로 멈춘 다운로드는 일시 정지 상태로 남습니다.",
+  "vpnDownload.useTestedServers": "테스트한 서버 자동 사용",
+  "vpnDownload.useTestedServersHint": "저장한 서버가 작동하지 않으면 공개 VPN Gate 서버를 찾아 테스트하고 통과한 서버를 사용합니다. 끄면 직접 승인(O)한 서버만 사용합니다.",
   "vpnDownload.captchaPolicy": "CAPTCHA 발생 시",
   "vpnDownload.cloudflarePolicy": "Cloudflare 보호 감지 시",
   "vpnDownload.policy.pause": "일시 정지",

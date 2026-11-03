@@ -16,9 +16,10 @@ import { useVpnDownloadStore } from "../../store/vpn-download";
 import { androidCloseVpnDownloadWorker, androidConfigureVpnDownloadWorker, androidShowVpnDownloadWorker } from "../android-scraper";
 import { describeError } from "../errors";
 import { isNetworkOnline, useNetworkStore } from "../network";
-import { getPluginVpnStatus, isPluginVpnRecoveryStopped, PLUGIN_VPN_PROFILE_RELEASED_EVENT } from "../plugin-vpn";
+import { getPluginVpnStatus, isPluginVpnRecoveryStopped, loadPluginVpnFinderServers, PLUGIN_VPN_PROFILE_RELEASED_EVENT } from "../plugin-vpn";
+import { listAutomaticPluginVpnProfiles, recordAutomaticPluginVpnProfileResult, testAutomaticPluginVpnCandidate } from "../plugin-vpn-automatic";
 import { connectPluginVpnDownloadWorker, disconnectPluginVpnDownloadWorker, getPluginVpnDownloadGenerationFloor, stopPluginVpnDownloadWorkers } from "../plugin-vpn-download-workers";
-import { listSavedPluginVpnProfiles, SAVED_PLUGIN_VPN_PROFILES_CHANGED_EVENT, type SavedVpnProfile } from "../plugin-vpn-profiles";
+import { listSavedPluginVpnProfiles, SAVED_PLUGIN_VPN_PROFILES_CHANGED_EVENT } from "../plugin-vpn-profiles";
 import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
 import { installChapterDownloadBatchInterceptor } from "./chapter-download-batch-interceptor";
 import { cancelChapterDownloadRequest, getChapterDownloadRequestSnapshot, subscribeChapterDownloadRequests } from "./chapter-download-requests";
@@ -28,7 +29,10 @@ import type { TaskHandle } from "./task-types";
 import { VpnDownloadCoordinator, type VpnDownloadRuntime } from "./vpn-download-coordinator";
 import type { VpnDownloadDraftWork, VpnDownloadHandoverWork, VpnDownloadRuntimeSnapshot } from "./vpn-download-drafts";
 import { planVpnDownloadRanges, type VpnDownloadRangeAssignment } from "./vpn-download-ranges";
-import type { VpnDownloadLaunchOptions, VpnDownloadPlan, VpnDownloadRangeState, VpnDownloadRunSnapshot, VpnDownloadWorkerRef } from "./vpn-download-types";
+import type {
+  VpnDownloadLaunchOptions, VpnDownloadPlan, VpnDownloadProfile, VpnDownloadProfileCandidate, VpnDownloadRangeState,
+  VpnDownloadRunSnapshot, VpnDownloadWorkerRef,
+} from "./vpn-download-types";
 import { MAX_VPN_DOWNLOAD_WORKERS } from "./vpn-download-types";
 import { registerVpnDownloadWorkerContext, vpnDownloadExecutor } from "./vpn-worker-context";
 
@@ -127,16 +131,50 @@ function publish(update: Partial<VpnDownloadRuntimeSnapshot> = {}): void {
 
 function report(error: unknown): void { publish({ error: describeError(error) }); }
 
-async function availableProfiles(): Promise<readonly SavedVpnProfile[]> {
-  const [vault, status] = await Promise.all([listSavedPluginVpnProfiles(), getPluginVpnStatus()]);
+/** VPN Gate list refreshes for discovery happen at most every 6 hours, or every 10 minutes while no server is eligible. */
+const FINDER_REFRESH_MS = 6 * 60 * 60 * 1000;
+const EMPTY_POOL_REFRESH_MS = 10 * 60 * 1000;
+const MAX_CANDIDATES_PER_DISCOVERY = 12;
+let finderRefreshedAt = 0;
+const testedCandidates = new Set<string>();
+
+async function availableProfiles(): Promise<readonly VpnDownloadProfile[]> {
+  const automaticEnabled = useVpnDownloadStore.getState().useTestedServers;
+  const [vault, status, automatic] = await Promise.all([
+    listSavedPluginVpnProfiles(), getPluginVpnStatus(), automaticEnabled ? listAutomaticPluginVpnProfiles() : Promise.resolve([]),
+  ]);
   if (vault.cleanupError) throw new Error(vault.cleanupError);
+  const profiles: VpnDownloadProfile[] = [
+    ...vault.profiles,
+    ...automatic.map(({ id, ip, protocol, hash, score }) => ({ id, ip, protocol, hash, score, automatic: true })),
+  ];
   // Native leases refuse the foreground profile while its connection is requested, including the disabled reconnect backoff;
   // stopped recovery releases it.
   const requested = usePluginVpnStore.getState().enabled && !isPluginVpnRecoveryStopped();
   const foreground = status.phase !== "disabled" || requested ? status.profile : null;
   reservedProfiles = foreground
-    ? vault.profiles.filter(profile => profile.hash === foreground.hash || profile.ip === foreground.remoteHost).map(profile => profile.id) : [];
-  return vault.profiles;
+    ? profiles.filter(profile => profile.hash === foreground.hash || profile.ip === foreground.remoteHost).map(profile => profile.id) : [];
+  return profiles;
+}
+
+async function findProfileCandidates({ poolEmpty }: { poolEmpty: boolean }): Promise<readonly VpnDownloadProfileCandidate[]> {
+  if (!useVpnDownloadStore.getState().useTestedServers || !snapshot.capabilities.supported || !isNetworkOnline()) return [];
+  const age = Date.now() - finderRefreshedAt;
+  const refresh = age >= FINDER_REFRESH_MS || poolEmpty && age >= EMPTY_POOL_REFRESH_MS;
+  try {
+    const [servers, known] = await Promise.all([loadPluginVpnFinderServers(refresh), availableProfiles()]);
+    if (refresh) { finderRefreshedAt = Date.now(); testedCandidates.clear(); }
+    const knownIps = new Set(known.map(profile => profile.ip));
+    return servers.filter(server => !testedCandidates.has(server.candidateId) && !knownIps.has(server.ip))
+      .sort((left, right) => right.score - left.score).slice(0, MAX_CANDIDATES_PER_DISCOVERY)
+      .map(({ candidateId, ip, score }) => ({ candidateId, ip, score }));
+  } catch (error) { report(error); return []; }
+}
+
+async function testProfileCandidate(candidate: VpnDownloadProfileCandidate): Promise<boolean> {
+  testedCandidates.add(candidate.candidateId);
+  try { return await testAutomaticPluginVpnCandidate(candidate.candidateId); }
+  catch (error) { report(error); return false; }
 }
 
 async function disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void> {
@@ -174,6 +212,9 @@ const adapter: VpnDownloadRuntime = {
   recordProfileIssue: recordVpnDownloadProfileIssue,
   reallowProfile: reallowVpnDownloadProfile,
   reservedProfileIds: () => reservedProfiles,
+  findProfileCandidates,
+  testProfileCandidate,
+  recordProfileResult: (profile, connected) => { void recordAutomaticPluginVpnProfileResult(profile, connected).catch(report); },
   connectWorker: async (worker, profile, signal) => {
     if (!snapshot.capabilities.supported) throw new Error("Isolated VPN download workers are not supported on this device.");
     const plan = coordinator.getPlans().find(plan => plan.ranges.some(range => range.id === worker.rangeId));
@@ -332,6 +373,7 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
     });
     useVpnDownloadStore.subscribe((next, previous) => {
       coordinator.setWorkerLimit(next.mode === "single" ? 1 : Math.min(next.workerCount, snapshot.capabilities.maxWorkers || MAX_VPN_DOWNLOAD_WORKERS));
+      if (next.useTestedServers !== previous.useTestedServers && !deviceRestore) void coordinator.profilesChanged().catch(report);
       if (next.mode === "off" && previous.mode !== "off") {
         automaticStopEpoch++;
         if (activeRun && ["starting", "running"].includes(activeRun.status)) { holdRunAdmission(activeRun); publish(); }

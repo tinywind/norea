@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { VpnDownloadLaunchOptions } from "../lib/tasks/vpn-download-types";
 
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-const store = vi.hoisted(() => ({ resumeAfterRestart: true, setResumeAfterRestart: vi.fn() }));
+const store = vi.hoisted(() => ({ resumeAfterRestart: true, setResumeAfterRestart: vi.fn(), useTestedServers: true, setUseTestedServers: vi.fn() }));
 vi.mock("../store/vpn-download", () => ({ useVpnDownloadStore: (select: (value: unknown) => unknown) => select({
   mode: "parallel", workerCount: 2, captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile",
   setMode: vi.fn(), setWorkerCount: vi.fn(), setCaptchaPolicy: vi.fn(), setCloudflarePolicy: vi.fn(), ...store,
@@ -60,7 +60,7 @@ it.each([0, 11, 1.5, "", null])("does not submit an invalid worker count %s", co
 it("limits a single-worker device and guards callbacks while submission is pending", () => {
   expect(get(render({ supported: true, parallelSupported: false, maxWorkers: 1 }), "vpnDownload.workerCount").props.max).toBe(1);
   const view = render(capabilities, true);
-  for (const key of ["vpnDownload.workerCount", "vpnDownload.captchaPolicy", "vpnDownload.cloudflarePolicy", "vpnDownload.resumeAfterRestart"]) {
+  for (const key of ["vpnDownload.workerCount", "vpnDownload.captchaPolicy", "vpnDownload.cloudflarePolicy", "vpnDownload.resumeAfterRestart", "vpnDownload.useTestedServers"]) {
     expect(get(view, key).props.disabled).toBe(true);
   }
   get(view, "vpnDownload.workerCount").props.onChange!(3);
@@ -74,5 +74,14 @@ it("stores the restart resume choice directly instead of in the unsubmitted laun
   const onToggle = toggle.props.onChange as unknown as (event: { currentTarget: { checked: boolean } }) => void;
   onToggle({ currentTarget: { checked: false } });
   expect(store.setResumeAfterRestart).toHaveBeenCalledWith(false);
+  expect(change).not.toHaveBeenCalled();
+});
+
+it("uses tested servers by default and stores Approved only directly", () => {
+  const toggle = get(render(), "vpnDownload.useTestedServers");
+  expect(toggle.props.checked).toBe(true);
+  const onToggle = toggle.props.onChange as unknown as (event: { currentTarget: { checked: boolean } }) => void;
+  onToggle({ currentTarget: { checked: false } });
+  expect(store.setUseTestedServers).toHaveBeenCalledWith(false);
   expect(change).not.toHaveBeenCalled();
 });

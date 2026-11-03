@@ -6,7 +6,10 @@ import type { ChapterDownloadJob } from "./chapter-download";
 import type { SourceAccessBlock } from "./source-access-gate";
 import type { TaskHandle } from "./task-types";
 import { TaskUserCancelledError } from "./task-errors";
-import type { VpnDownloadPlan, VpnDownloadProfileIssue, VpnDownloadProfileIssueInput, VpnDownloadRangeState, VpnDownloadWorkerRef } from "./vpn-download-types";
+import type {
+  VpnDownloadPlan, VpnDownloadProfile, VpnDownloadProfileCandidate, VpnDownloadProfileIssue, VpnDownloadProfileIssueInput,
+  VpnDownloadRangeState, VpnDownloadWorkerRef,
+} from "./vpn-download-types";
 import { VpnDownloadCoordinator, type VpnDownloadRuntime } from "./vpn-download-coordinator";
 
 function deferred<T = void>() {
@@ -69,6 +72,23 @@ class Runtime implements VpnDownloadRuntime {
   maxConcurrentWrites = 0;
   writeBarrier: ReturnType<typeof deferred> | null = null;
   connect: ((worker: VpnDownloadWorkerRef, value: SavedVpnProfile, signal: AbortSignal) => Promise<"connected" | "authentication-required">) | null = null;
+  candidates: VpnDownloadProfileCandidate[] = [];
+  readonly discoveries: boolean[] = [];
+  readonly tested: string[] = [];
+  readonly results: [string, boolean][] = [];
+  test: ((candidate: VpnDownloadProfileCandidate) => Promise<boolean>) | null = null;
+
+  async findProfileCandidates(options: { poolEmpty: boolean }): Promise<readonly VpnDownloadProfileCandidate[]> {
+    this.discoveries.push(options.poolEmpty);
+    const found = this.candidates;
+    this.candidates = [];
+    return copy(found);
+  }
+  async testProfileCandidate(candidate: VpnDownloadProfileCandidate): Promise<boolean> {
+    this.tested.push(candidate.candidateId);
+    return this.test ? this.test(candidate) : false;
+  }
+  recordProfileResult(value: VpnDownloadProfile, connected: boolean): void { this.results.push([value.id, connected]); }
 
   seed(value: VpnDownloadPlan): void {
     this.stored.set(value.id, copy(value));
@@ -1304,6 +1324,84 @@ describe("VPN download coordinator", () => {
       await until(() => expect(runtime.tasks.size).toBe(3));
       expect(runtime.task("second")[1].job.id).toBe(3);
       expect(current(coordinator, "late")).toMatchObject({ phase: "paused", generation: 0 });
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it("discovers and tests servers when no profile is eligible, then retries the same chapter on the one that passed", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a")];
+    runtime.connect = async (_worker, value) => { if (value.id === "a") throw new PluginVpnUnavailableError(); return "connected"; };
+    runtime.candidates = [{ candidateId: "dead", ip: "203.0.113.1", score: 9 }, { candidateId: "live", ip: "203.0.113.2", score: 5 }];
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    runtime.test = async candidate => {
+      if (candidate.candidateId !== "live") return false;
+      runtime.profiles.push({ ...profile("y"), ip: candidate.ip, automatic: true, score: candidate.score } as SavedVpnProfile);
+      return true;
+    };
+    const value = plan();
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(1));
+      expect(runtime.discoveries).toEqual([true]);
+      expect(runtime.tested.sort()).toEqual(["dead", "live"]);
+      expect(current(coordinator, "a")).toMatchObject({ profileId: "y", checkpoint: 0, attemptedProfileIds: ["a", "y"] });
+      expect(runtime.task("a")[1].job.id).toBe(9);
+      expect(runtime.notices).toEqual([]);
+      expect(runtime.results).toEqual([["y", true]]);
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it("pauses only the exhausted range when discovery finds no working server", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a")];
+    runtime.connect = async (_worker, value) => { if (value.id === "a") throw new PluginVpnUnavailableError(); return "connected"; };
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const first = plan([range("a", "a", [1])], "first");
+    const second = Object.assign(plan([range("b", "b", [2])], "second"), { createdAt: 2 });
+    try {
+      await coordinator.start(first, jobsFor(first));
+      await until(() => expect(current(coordinator, "a").pauseReason).toBe("profiles-exhausted"));
+      expect(runtime.discoveries).toEqual([true]);
+      runtime.profiles.push(profile("b"));
+      await coordinator.start(second, jobsFor(second));
+      await until(() => expect(runtime.task("b")?.[1].job.id).toBe(2));
+      expect(runtime.notices.map(notice => [notice.rangeId, notice.reason])).toEqual([["a", "profiles-exhausted"]]);
+      expect(runtime.discoveries).toEqual([true]);
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it("tests candidates only in idle slots, at most three at once, while ranges wait for leased profiles", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a")];
+    const coordinator = new VpnDownloadCoordinator(runtime); coordinator.setWorkerLimit(5);
+    runtime.candidates = ["c1", "c2", "c3", "c4", "c5"].map((candidateId, index) => ({ candidateId, ip: `203.0.113.${index + 1}`, score: 10 - index }));
+    const gates = new Map<string, ReturnType<typeof deferred<boolean>>>();
+    runtime.test = candidate => { const gate = deferred<boolean>(); gates.set(candidate.candidateId, gate); return gate.promise; };
+    const value = plan([range("a", "a", [1]), range("b", "b", [2])]);
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(1));
+      await until(() => expect(gates.size).toBe(3));
+      expect(runtime.discoveries).toEqual([false]);
+      expect([...gates.keys()]).toEqual(["c1", "c2", "c3"]);
+      runtime.profiles.push({ ...profile("z"), automatic: true, score: 1 } as SavedVpnProfile);
+      gates.get("c1")!.resolve(true);
+      await until(() => expect(runtime.tasks.size).toBe(2));
+      expect(current(coordinator, "b").profileId).toBe("z");
+      gates.get("c2")!.resolve(false); gates.get("c3")!.resolve(false);
+      await new Promise(resolve => setTimeout(resolve, 5));
+      expect(runtime.tested).toEqual(["c1", "c2", "c3"]);
+    } finally { for (const gate of gates.values()) gate.resolve(false); await coordinator.stopAutomatic(); }
+  });
+
+  it("reports automatic server failures for retirement but never approved ones", async () => {
+    const runtime = new Runtime();
+    runtime.profiles = [profile("a"), { ...profile("t"), automatic: true, score: 3 } as SavedVpnProfile];
+    runtime.connect = async () => { throw new PluginVpnUnavailableError(); };
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan();
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(current(coordinator, "a").pauseReason).toBe("profiles-exhausted"));
+      expect(runtime.events.filter(event => event.startsWith("connect:")).map(event => event.split(":")[2])).toEqual(["a", "t"]);
+      expect(runtime.results).toEqual([["t", false]]);
     } finally { await coordinator.stopAutomatic(); }
   });
 

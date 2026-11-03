@@ -63,6 +63,15 @@ requirements must be decided explicitly before implementation.
   recorded profile and an existing plan's assignment is only a preference.
   Existing plans keep their checkpoints, attempts and queue rows unchanged.
   These fields do not change the SQL schema, backup tables or source plugin format.
+- Automatically tested VPN Gate servers live in `plugin-vpn/automatic-profiles/`
+  beside the approved `saved-profiles/` vault, with their own index and private
+  files. They never write or change an O/X verdict; an entry leaves the pool when
+  its IP receives any verdict, after repeated worker tunnel failures, or beyond the
+  retention capacity, which the pool applies separately from approved files. The
+  pool is rediscoverable device-local data: device snapshots and portable backups
+  exclude it, restore leaves it in place, and an unreadable index starts an empty
+  pool instead of disabling approved profiles. The "Use tested servers
+  automatically" choice is part of the VPN download settings in localStorage.
 
 - Work metadata version 1 stores a `chapters` map from source chapter numbers
   to titles. Source metadata fetches merge this catalog; downloads, download deletions,

@@ -14,6 +14,8 @@ export function VpnDownloadSettings({ capabilities, value, onChange, disabled = 
   const { t } = useTranslation();
   const resumeAfterRestart = useVpnDownloadStore(state => state.resumeAfterRestart);
   const setResumeAfterRestart = useVpnDownloadStore(state => state.setResumeAfterRestart);
+  const useTestedServers = useVpnDownloadStore(state => state.useTestedServers);
+  const setUseTestedServers = useVpnDownloadStore(state => state.setUseTestedServers);
   const maxWorkers = capabilities.parallelSupported ? Math.max(1, Math.min(MAX_VPN_DOWNLOAD_WORKERS, capabilities.maxWorkers)) : 1;
   const unavailable = disabled || !capabilities.supported;
   const policyOptions = [{ value: "nextProfile", label: t("vpnDownload.policy.nextProfile") }, { value: "pause", label: t("vpnDownload.policy.pause") }];
@@ -38,6 +40,9 @@ export function VpnDownloadSettings({ capabilities, value, onChange, disabled = 
       <Switch aria-label={t("vpnDownload.resumeAfterRestart")} checked={resumeAfterRestart} disabled={unavailable}
         label={t("vpnDownload.resumeAfterRestart")} description={t("vpnDownload.resumeAfterRestartHint")} labelPosition="left"
         onChange={event => { if (!unavailable) setResumeAfterRestart(event.currentTarget.checked); }} />
+      <Switch aria-label={t("vpnDownload.useTestedServers")} checked={useTestedServers} disabled={unavailable}
+        label={t("vpnDownload.useTestedServers")} description={t("vpnDownload.useTestedServersHint")} labelPosition="left"
+        onChange={event => { if (!unavailable) setUseTestedServers(event.currentTarget.checked); }} />
     </Stack>
   );
 }

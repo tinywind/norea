@@ -14,7 +14,7 @@ const boundary = vi.hoisted(() => ({
   stop: vi.fn(), restart: vi.fn(), createPlan: vi.fn(), cancelPlan: vi.fn(), cancelTask: vi.fn(),
   settleTask: vi.fn(), restoreEffects: [] as string[],
   pendingJobs: new Map<number, ChapterDownloadJob>(), handover: vi.fn(), persistPending: vi.fn(), cancelOrdinary: vi.fn(), discardOrdinary: vi.fn(),
-  requestEnqueue: vi.fn(),
+  requestEnqueue: vi.fn(), automatic: vi.fn(), finder: vi.fn(), testCandidate: vi.fn(), recordResult: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: boundary.invoke }));
 vi.mock("../../db/client", () => ({
@@ -100,8 +100,12 @@ vi.mock("../../db/queries/vpn-download-profile-issues", () => ({
   },
 }));
 vi.mock("../plugin-vpn-profiles", () => ({ SAVED_PLUGIN_VPN_PROFILES_CHANGED_EVENT: "norea-vpn-profiles-changed", listSavedPluginVpnProfiles: boundary.profiles }));
+vi.mock("../plugin-vpn-automatic", () => ({
+  listAutomaticPluginVpnProfiles: boundary.automatic, testAutomaticPluginVpnCandidate: boundary.testCandidate,
+  recordAutomaticPluginVpnProfileResult: boundary.recordResult,
+}));
 vi.mock("../plugin-vpn", () => ({
-  getPluginVpnStatus: boundary.status, isPluginVpnRecoveryStopped: boundary.recoveryStopped,
+  getPluginVpnStatus: boundary.status, isPluginVpnRecoveryStopped: boundary.recoveryStopped, loadPluginVpnFinderServers: boundary.finder,
   PLUGIN_VPN_PROFILE_RELEASED_EVENT: "norea-plugin-vpn-profile-released",
 }));
 vi.mock("../plugin-vpn-download-workers", () => ({
@@ -213,6 +217,10 @@ beforeEach(async () => {
     boundary.plans.delete(id); boundary.jobs = boundary.jobs.filter(job => job.vpnPlanId !== id);
   });
   boundary.profiles.mockResolvedValue({ limit: 20, profiles, cleanupError: null });
+  boundary.automatic.mockReset().mockResolvedValue([]);
+  boundary.finder.mockReset().mockResolvedValue([]);
+  boundary.testCandidate.mockReset().mockResolvedValue(false);
+  boundary.recordResult.mockReset().mockResolvedValue(undefined);
   boundary.status.mockResolvedValue({ phase: "disabled", profile: null, supported: true, proxyPort: 123, error: null });
   boundary.connect.mockImplementation(async (worker, profile) => {
     boundary.effects.push(`connect:${worker.slot}`);
@@ -320,6 +328,44 @@ describe("automatic VPN run admission", () => {
       await vi.waitFor(() => expect(boundary.enqueue.mock.calls.some(([job]) => job.id === 8)).toBe(true));
       expect(new Set(runtime.getVpnDownloadRuntimeSnapshot().plans.map(plan => plan.batchId)).size).toBe(1);
     } finally { release(catalog); await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("leases tested servers by default, discovering them through the Finder when no profile is eligible", async () => {
+    const tested = { id: "f".repeat(64), ip: "203.0.113.7", protocol: "tcp" as const, hash: "f".repeat(64), score: 9, testedAt: 1, failures: 0 };
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [profiles[0]!], cleanupError: null });
+    boundary.finder.mockResolvedValue([{ candidateId: "candidate-7", ip: tested.ip, score: 9 }, { candidateId: "known", ip: profiles[0]!.ip, score: 99 }]);
+    boundary.testCandidate.mockImplementation(async () => { boundary.automatic.mockResolvedValue([tested]); return true; });
+    boundary.connect.mockImplementation(async (worker, profile) => {
+      if (profile.id === profiles[0]!.id) throw Object.assign(new Error("Tunnel refused"), { code: "plugin-vpn-unavailable" });
+      return { supported: true, worker, phase: "connected", profile, proxyPort: 12000 + worker.slot, error: null };
+    });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Discover a server" })!;
+    await batch.materialized;
+    try {
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
+      expect(boundary.finder).toHaveBeenCalledWith(true);
+      expect(boundary.testCandidate.mock.calls).toEqual([["candidate-7"]]);
+      expect(boundary.connect).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: tested.id, hash: tested.hash }));
+      expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges[0]).toMatchObject({ profileId: tested.id, phase: "running" });
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("uses only approved profiles and never discovers servers when tested servers are turned off", async () => {
+    useVpnDownloadStore.getState().setUseTestedServers(false);
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [], cleanupError: null });
+    boundary.automatic.mockResolvedValue([{ id: "f".repeat(64), ip: "203.0.113.7", protocol: "tcp", hash: "f".repeat(64), score: 9, testedAt: 1, failures: 0 }]);
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Approved only" })!;
+    await batch.materialized;
+    try {
+      await vi.waitFor(() => expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]?.ranges[0]?.pauseReason).toBe("profiles-exhausted"));
+      expect(boundary.automatic).not.toHaveBeenCalled();
+      expect(boundary.finder).not.toHaveBeenCalled();
+      expect(boundary.connect).not.toHaveBeenCalled();
+    } finally { await runtime.cancelVpnDownloadRun(); }
   });
 
   it("waits for approved profiles without losing pending intent or requiring another per-work start", async () => {

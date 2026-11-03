@@ -5,7 +5,7 @@ import type { SourceAccessBlock } from "./source-access-gate";
 import { isTaskUserCancelledError } from "./task-errors";
 import type { TaskHandle } from "./task-types";
 import type {
-  VpnDownloadPlan, VpnDownloadProfile, VpnDownloadProfileIssue, VpnDownloadProfileIssueCause,
+  VpnDownloadPlan, VpnDownloadProfile, VpnDownloadProfileCandidate, VpnDownloadProfileIssue, VpnDownloadProfileIssueCause,
   VpnDownloadProfileIssueInput, VpnDownloadRangeState, VpnDownloadWorkerRef,
 } from "./vpn-download-types";
 import { isVpnDownloadWorkerSlot, MAX_VPN_DOWNLOAD_WORKERS } from "./vpn-download-types";
@@ -33,6 +33,12 @@ export interface VpnDownloadRuntime {
   reallowProfile(batchId: string, ip: string, expectedRevision: number): Promise<VpnDownloadProfileIssue>;
   reservedProfileIds(): readonly string[];
   connectWorker(worker: VpnDownloadWorkerRef, profile: VpnDownloadProfile, signal: AbortSignal): Promise<"connected" | "authentication-required">;
+  /** Untested servers to try; empty when automatic servers are off or the list refresh is throttled. */
+  findProfileCandidates(options: { poolEmpty: boolean }): Promise<readonly VpnDownloadProfileCandidate[]>;
+  /** Test-connects one candidate; true when it passed and joined the automatic pool. The runtime reports its own errors. */
+  testProfileCandidate(candidate: VpnDownloadProfileCandidate): Promise<boolean>;
+  /** Records a worker tunnel outcome so repeatedly failing automatic servers retire. */
+  recordProfileResult(profile: VpnDownloadProfile, connected: boolean): void;
   disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void>;
   showWorker(worker: VpnDownloadWorkerRef, url: string): Promise<void>;
   enqueueChapter(job: ChapterDownloadJob, worker: VpnDownloadWorkerRef, planId: string): TaskHandle<unknown>;
@@ -77,11 +83,16 @@ interface RangeRuntime {
   task?: EnrolledChapter;
   run?: { epoch: number };
   transition: Promise<void>;
-  /** Leased candidates this range waits for. */
+  /** Leased candidates this range waits for; empty while it waits for discovery. */
   waitingProfiles?: string[];
   /** Holds one dispatch budget unit between scheduling and slot allocation. */
   dispatching?: boolean;
+  awaitingDiscovery?: boolean;
+  /** The epoch whose discovery already ran without yielding an eligible profile. */
+  discoveredEpoch?: number;
 }
+
+const MAX_PROFILE_TESTS = 3;
 
 const clone = <T>(value: T): T => structuredClone(value);
 const terminal = (range: VpnDownloadRangeState): boolean => range.phase === "completed" || range.phase === "cancelled";
@@ -135,6 +146,8 @@ export class VpnDownloadCoordinator {
   private restoring = false;
   private automaticStopEpoch = 0;
   private workerLimit = 2;
+  private readonly probes = new Set<number>();
+  private discovery?: Promise<void>;
   private readonly connectedProfiles = new Map<string, number>();
   private successSequence = 0;
   private readonly failedProfiles = new Map<string, number>();
@@ -243,6 +256,7 @@ export class VpnDownloadCoordinator {
     range.userHeld = false;
     range.networkHeld = !this.online;
     range.waitingProfiles = undefined;
+    range.awaitingDiscovery = false;
     const epoch = ++range.epoch;
     await this.updateRange(range, next => {
       next.userPaused = false;
@@ -319,6 +333,7 @@ export class VpnDownloadCoordinator {
     const pending: Promise<void>[] = [];
     for (const range of this.ranges.values()) {
       range.waitingProfiles = undefined;
+      range.awaitingDiscovery = false;
       const state = this.state(range);
       if (epochs.get(range) !== range.epoch || range.userHeld || state.pauseReason !== "profiles-exhausted" || state.userPaused || range.manual || this.cancellingPlans.has(range.planId)) continue;
       if (profiles.some(profile => this.profileEligibleForAttempt(range, profile))) {
@@ -343,6 +358,7 @@ export class VpnDownloadCoordinator {
 
   async stopForRestore(): Promise<void> {
     await this.stopAutomatic();
+    await this.discovery;
     await Promise.all([...this.writes.values()]);
     await Promise.all(this.slots.filter((lease): lease is WorkerLease => lease !== undefined).map(lease => this.closeLease(lease)));
   }
@@ -567,7 +583,7 @@ export class VpnDownloadCoordinator {
   }
 
   private occupiedSlots(): number {
-    return this.slots.filter(Boolean).length;
+    return this.slots.filter(Boolean).length + this.probes.size;
   }
 
   private freeSlots(): number {
@@ -575,7 +591,7 @@ export class VpnDownloadCoordinator {
   }
 
   private freeSlotIndex(): number {
-    return this.slots.findIndex(lease => !lease);
+    return this.slots.findIndex((lease, slot) => !lease && !this.probes.has(slot));
   }
 
   private availableSlot(range: RangeRuntime): boolean {
@@ -598,11 +614,13 @@ export class VpnDownloadCoordinator {
       this.slots.some(lease => lease && lease.owner !== range && lease.profile.id === profileId);
   }
 
-  /** Recent successes first, then servers that have not failed this session, in pool order otherwise. */
+  /** Recent successes first, then servers that have not failed this session, then O-approved before automatic, then test score. */
   private rankProfiles(profiles: readonly VpnDownloadProfile[]): VpnDownloadProfile[] {
     return [...profiles].sort((left, right) =>
       (this.connectedProfiles.get(right.id) ?? 0) - (this.connectedProfiles.get(left.id) ?? 0) ||
-      (this.failedProfiles.get(left.id) ?? 0) - (this.failedProfiles.get(right.id) ?? 0));
+      (this.failedProfiles.get(left.id) ?? 0) - (this.failedProfiles.get(right.id) ?? 0) ||
+      Number(left.automatic === true) - Number(right.automatic === true) ||
+      (right.score ?? 0) - (left.score ?? 0));
   }
 
   private recordProfileResult(profile: VpnDownloadProfile, connected: boolean): void {
@@ -612,6 +630,51 @@ export class VpnDownloadCoordinator {
     } else {
       this.connectedProfiles.delete(profile.id);
       this.failedProfiles.set(profile.id, (this.failedProfiles.get(profile.id) ?? 0) + 1);
+    }
+    if (profile.automatic) this.runtime.recordProfileResult(clone(profile), connected);
+  }
+
+  /** Discovery tests servers only while a runnable range lacks a free eligible profile, and only in idle slots. */
+  private profileDemand(): boolean {
+    return [...this.ranges.values()].some(range => !range.worker && this.canWork(range, range.epoch) &&
+      (range.awaitingDiscovery || range.waitingProfiles !== undefined));
+  }
+
+  /** A range that waits for discovery is covered by the run that started after it; a later waiter gets its own run. */
+  private requestDiscovery(): Promise<void> {
+    if (this.discovery) return this.discovery;
+    const covered = [...this.ranges.values()].filter(range => range.awaitingDiscovery);
+    const discovery = this.runDiscovery(covered.length > 0).finally(() => {
+      this.discovery = undefined;
+      for (const range of covered) {
+        if (!range.awaitingDiscovery) continue;
+        range.awaitingDiscovery = false;
+        range.waitingProfiles = undefined;
+        range.discoveredEpoch = range.epoch;
+      }
+      if ([...this.ranges.values()].some(range => range.awaitingDiscovery)) void this.requestDiscovery();
+      this.schedule();
+    });
+    this.discovery = discovery;
+    return discovery;
+  }
+
+  private async runDiscovery(poolEmpty: boolean): Promise<void> {
+    const candidates = [...await this.runtime.findProfileCandidates({ poolEmpty })];
+    const active = new Set<Promise<void>>();
+    while (candidates.length || active.size) {
+      while (candidates.length && active.size < MAX_PROFILE_TESTS && this.freeSlots() > 0 && this.freeSlotIndex() >= 0 && this.profileDemand()) {
+        const slot = this.freeSlotIndex();
+        const candidate = candidates.shift()!;
+        this.probes.add(slot);
+        const test: Promise<void> = this.runtime.testProfileCandidate(clone(candidate))
+          .then(async passed => { if (passed) await this.profilesChanged(); })
+          .catch(() => undefined)
+          .finally(() => { this.probes.delete(slot); active.delete(test); this.schedule(); });
+        active.add(test);
+      }
+      if (!active.size) break;
+      await Promise.race(active);
     }
   }
 
@@ -794,15 +857,24 @@ export class VpnDownloadCoordinator {
       const candidates = this.rankProfiles(profiles.filter(profile => this.profileEligibleForAttempt(range, profile) &&
         (!pinned || profile.id === state.profileId && profile.hash === state.profileHash)));
       if (!candidates.length) {
-        await this.fail(range, epoch, "profiles-exhausted");
+        if (pinned || range.discoveredEpoch === epoch) {
+          await this.fail(range, epoch, "profiles-exhausted");
+          return;
+        }
+        range.awaitingDiscovery = true;
+        range.waitingProfiles = [];
+        range.dispatching = false;
+        await this.updateRange(range, next => { next.phase = "paused"; next.pauseReason = null; }, epoch);
+        void this.requestDiscovery();
         return;
       }
       const selected = candidates.find(profile => !this.profileReserved(range, profile.id));
       if (!selected) {
-        // Every eligible profile is leased; wait for a release.
+        // Every eligible profile is leased; wait for a release while discovery looks for more servers.
         range.waitingProfiles = candidates.map(profile => profile.id);
         range.dispatching = false;
         await this.updateRange(range, next => { next.phase = "paused"; next.pauseReason = null; }, epoch);
+        if (this.freeSlots() > 0) void this.requestDiscovery();
         return;
       }
       if (!this.availableSlot(range)) return;

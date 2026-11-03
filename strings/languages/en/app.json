@@ -72,6 +72,8 @@
   "vpnDownload.workerCountHint": "Choose 1 to 10. The app uses as many available profiles as needed across all queued works.",
   "vpnDownload.resumeAfterRestart": "Resume VPN downloads after restart",
   "vpnDownload.resumeAfterRestartHint": "Continue unfinished VPN downloads when the app starts again. Downloads you paused and downloads stopped by a device restore stay paused.",
+  "vpnDownload.useTestedServers": "Use tested servers automatically",
+  "vpnDownload.useTestedServersHint": "When saved servers stop working, find and test public VPN Gate servers and use the ones that pass. Turn this off to use only servers you approved (O).",
   "vpnDownload.captchaPolicy": "On CAPTCHA",
   "vpnDownload.cloudflarePolicy": "On Cloudflare protection",
   "vpnDownload.policy.pause": "Pause",

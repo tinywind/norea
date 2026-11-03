@@ -19,6 +19,8 @@ use super::{
 
 #[path = "saved_profiles_backup.rs"]
 pub(crate) mod backup;
+#[path = "saved_profiles_automatic.rs"]
+pub(crate) mod automatic;
 
 const INDEX_FILE: &str = "index.json";
 const MAX_INDEX_BYTES: usize = 128 * 1024;
@@ -129,9 +131,13 @@ impl Default for VaultIndex {
 pub(crate) struct SavedProfileVault {
     directory: PathBuf,
     index: VaultIndex,
+    automatic: automatic::AutomaticProfilePool,
     leases: HashMap<String, SavedVpnProfileLease>,
     publication_failed: bool,
 }
+
+/// Automatic servers live beside the approved vault, outside device backups of `saved-profiles`.
+fn automatic_directory(directory: &Path) -> PathBuf { directory.with_file_name("automatic-profiles") }
 
 impl SavedProfileVault {
     pub(super) fn quarantine_and_open(directory: PathBuf, active: Option<SavedVpnProfileSelection>) -> Result<Self, String> {
@@ -155,6 +161,7 @@ impl SavedProfileVault {
             fs::rename(&directory, target).map_err(|error| format!("could not quarantine the unusable VPN profile vault: {error}"))?;
         }
         let mut vault = Self {
+            automatic: automatic::AutomaticProfilePool::open(automatic_directory(&directory)),
             directory,
             index: VaultIndex { active, ..VaultIndex::default() },
             leases: HashMap::new(),
@@ -269,6 +276,7 @@ impl SavedProfileVault {
             validate_selection(&active.id, &active.hash)?;
         }
         Ok(Self {
+            automatic: automatic::AutomaticProfilePool::open(automatic_directory(&directory)),
             directory,
             index,
             leases: HashMap::new(),
@@ -347,6 +355,8 @@ impl SavedProfileVault {
             }
             self.persist()?;
         }
+        let marked = marked_ips(pool).await?;
+        for ip in self.automatic.reconcile(&marked)? { self.invalidate_ip(&ip); }
         Ok(self.cleanup_orphans())
     }
 
@@ -518,6 +528,7 @@ impl SavedProfileVault {
         self.index.limit = limit;
         self.evict_oldest();
         self.persist()?;
+        for ip in self.automatic.set_limit(limit)? { self.invalidate_ip(&ip); }
         Ok(self.snapshot_with_error(self.cleanup_orphans()))
     }
 
@@ -548,6 +559,52 @@ impl SavedProfileVault {
             return Err("saved VPN profile hash or protocol changed".to_string());
         }
         Ok((profile, bytes))
+    }
+
+    /// Worker leases may use an approved profile or an automatic server; the foreground uses approved ones only.
+    async fn read_leasable(
+        &mut self,
+        pool: &SqlitePool,
+        id: &str,
+        expected_hash: &str,
+    ) -> Result<(SavedVpnProfile, Vec<u8>), String> {
+        validate_selection(id, expected_hash)?;
+        self.reconcile(pool).await?;
+        if self.index.profiles.iter().any(|profile| profile.id == id && profile.hash == expected_hash) {
+            return self.read_retained(pool, id, expected_hash).await;
+        }
+        let (profile, bytes) = self.automatic.read(id, expected_hash)?
+            .ok_or_else(|| "saved VPN profile is no longer approved or available".to_string())?;
+        Ok((profile.lease_profile(), bytes))
+    }
+
+    pub(crate) async fn automatic_profiles(&mut self, pool: &SqlitePool) -> Result<Vec<automatic::AutomaticVpnProfile>, String> {
+        self.reconcile(pool).await?;
+        Ok(self.automatic.profiles())
+    }
+
+    /// True when a Finder candidate should not be tested: the user marked its IP, it is in either pool, or a worker leases it.
+    pub(crate) async fn automatic_candidate_known(&mut self, pool: &SqlitePool, ip: &str) -> Result<bool, String> {
+        validate_ip(ip)?;
+        self.reconcile(pool).await?;
+        Ok(marked_ips(pool).await?.contains(ip) || self.automatic.contains_ip(ip) ||
+            self.leases.values().any(|lease| lease.profile.ip == ip))
+    }
+
+    pub(crate) async fn add_automatic(
+        &mut self, pool: &SqlitePool, ip: &str, bytes: &[u8], score: u64, tested_at: i64,
+    ) -> Result<automatic::AutomaticVpnProfile, String> {
+        self.require_healthy()?;
+        self.reconcile(pool).await?;
+        let (profile, removed) = self.automatic.add(ip, bytes, score, tested_at, self.index.limit, &marked_ips(pool).await?)?;
+        for ip in removed { self.invalidate_ip(&ip); }
+        Ok(profile)
+    }
+
+    pub(crate) fn record_automatic_result(&mut self, id: &str, hash: &str, connected: bool) -> Result<(), String> {
+        validate_selection(id, hash)?;
+        if let Some(ip) = self.automatic.record_result(id, hash, connected)? { self.invalidate_ip(&ip); }
+        Ok(())
     }
 
     pub(crate) async fn read_for_apply(
@@ -621,7 +678,7 @@ impl SavedProfileVault {
                     .to_string(),
             );
         }
-        let (profile, _) = self.read_retained(pool, id, expected_hash).await?;
+        let (profile, _) = self.read_leasable(pool, id, expected_hash).await?;
         if foreground
             .is_some_and(|current| current.remote_hosts.contains(&profile.ip) || current.hash == profile.hash)
         {
@@ -658,7 +715,7 @@ impl SavedProfileVault {
             .filter(|lease| !lease.revoked)
             .ok_or_else(|| "saved VPN profile lease is missing or revoked".to_string())?;
         let (profile, bytes) = self
-            .read_retained(pool, &lease.profile.id, &lease.profile.hash)
+            .read_leasable(pool, &lease.profile.id, &lease.profile.hash)
             .await?;
         if profile.approval_sequence != lease.profile.approval_sequence {
             return Err("saved VPN profile lease approval changed".to_string());
@@ -670,6 +727,14 @@ impl SavedProfileVault {
         self.leases.remove(owner);
         Ok(())
     }
+}
+
+async fn marked_ips(pool: &SqlitePool) -> Result<HashSet<String>, String> {
+    let ips: Vec<String> = sqlx::query_scalar("SELECT ip FROM vpn_gate_server_verdict")
+        .fetch_all(pool)
+        .await
+        .map_err(|error| format!("could not read VPN Gate verdicts: {error}"))?;
+    Ok(ips.into_iter().collect())
 }
 
 pub(crate) fn profile_hash(bytes: &[u8]) -> String {
@@ -908,6 +973,46 @@ mod tests {
         sqlx::query("CREATE TABLE vpn_gate_server_verdict (ip TEXT PRIMARY KEY NOT NULL, verdict TEXT NOT NULL CHECK(verdict IN ('works', 'fails')), updated_at INTEGER NOT NULL DEFAULT (unixepoch()))").execute(&pool).await.unwrap();
         let vault = SavedProfileVault::open(directory.path().join("profiles")).unwrap();
         (directory, pool, vault)
+    }
+
+    #[tokio::test]
+    async fn automatic_servers_lease_to_workers_apart_from_o_files_and_leave_on_any_verdict() {
+        let (directory, pool, mut vault) = fixture().await;
+        let verdicts = || async { sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vpn_gate_server_verdict").fetch_one(&pool).await.unwrap() };
+        let added = vault.add_automatic(&pool, "8.8.8.8", &profile("8.8.8.8", "tcp"), 7, 1).await.unwrap();
+        vault.add_automatic(&pool, "8.8.4.4", &profile("8.8.4.4", "udp"), 3, 1).await.unwrap();
+        assert_eq!(verdicts().await, 0);
+        assert!(vault.snapshot(&pool).await.unwrap().profiles.is_empty());
+        assert!(directory.path().join("automatic-profiles/8.8.8.8.ovpn").exists());
+        assert!(!directory.path().join("profiles/8.8.8.8.ovpn").exists());
+        assert!(vault.read_for_apply(&pool, &added.id, &added.hash).await.is_err());
+        let lease = vault.reserve(&pool, "download:0:1:range", &added.id, &added.hash, None).await.unwrap();
+        assert_eq!(lease.profile.approval_sequence, 0);
+        assert_eq!(vault.read_lease(&pool, "download:0:1:range").await.unwrap().1, profile("8.8.8.8", "tcp"));
+        assert!(vault.automatic_candidate_known(&pool, "8.8.8.8").await.unwrap());
+        vault.revoke(&pool, "8.8.8.8", Some(VpnGateServerVerdictValue::Fails)).await.unwrap();
+        assert!(vault.read_lease(&pool, "download:0:1:range").await.is_err());
+        vault.capture(&pool, "8.8.4.4", &profile("8.8.4.4", "udp")).await.unwrap();
+        assert!(vault.automatic_profiles(&pool).await.unwrap().is_empty());
+        assert!(vault.add_automatic(&pool, "8.8.8.8", &profile("8.8.8.8", "tcp"), 7, 2).await.is_err());
+        let rows: Vec<(String, String)> = sqlx::query_as("SELECT ip, verdict FROM vpn_gate_server_verdict ORDER BY ip").fetch_all(&pool).await.unwrap();
+        assert_eq!(rows, vec![("8.8.4.4".to_string(), "works".to_string()), ("8.8.8.8".to_string(), "fails".to_string())]);
+    }
+
+    #[tokio::test]
+    async fn automatic_pool_follows_the_retention_capacity_and_retires_failing_servers() {
+        let (_directory, pool, mut vault) = fixture().await;
+        vault.set_limit(&pool, 2).await.unwrap();
+        for (ip, score) in [("8.8.8.8", 9), ("8.8.4.4", 5), ("1.1.1.1", 7)] {
+            vault.add_automatic(&pool, ip, &profile(ip, "tcp"), score, 1).await.unwrap();
+        }
+        let kept = vault.automatic_profiles(&pool).await.unwrap();
+        assert_eq!(kept.iter().map(|profile| profile.ip.as_str()).collect::<Vec<_>>(), vec!["8.8.8.8", "1.1.1.1"]);
+        let best = kept[0].clone();
+        vault.reserve(&pool, "download:1:2:range", &best.id, &best.hash, None).await.unwrap();
+        for _ in 0..automatic::RETIRE_AFTER_FAILURES { vault.record_automatic_result(&best.id, &best.hash, false).unwrap(); }
+        assert!(vault.read_lease(&pool, "download:1:2:range").await.is_err());
+        assert_eq!(vault.automatic_profiles(&pool).await.unwrap().iter().map(|profile| profile.ip.as_str()).collect::<Vec<_>>(), vec!["1.1.1.1"]);
     }
 
     #[tokio::test]

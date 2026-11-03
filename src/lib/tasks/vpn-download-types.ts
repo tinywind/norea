@@ -32,8 +32,19 @@ export interface VpnDownloadRunSnapshot extends VpnDownloadLaunchOptions {
   closingWorkers: number;
 }
 
-/** A server a VPN download worker can lease. */
-export type VpnDownloadProfile = Pick<SavedVpnProfile, "id" | "ip" | "hash" | "protocol">;
+/** A server a VPN download worker can lease: an approved (O) saved profile, or a tested server from the automatic pool. */
+export type VpnDownloadProfile = Pick<SavedVpnProfile, "id" | "ip" | "hash" | "protocol"> & {
+  automatic?: boolean;
+  /** The VPN Gate score recorded when an automatic server passed its test. */
+  score?: number;
+};
+
+/** An untested VPN Gate server from the cached server list. */
+export interface VpnDownloadProfileCandidate {
+  candidateId: string;
+  ip: string;
+  score: number;
+}
 
 export interface VpnDownloadWorkerRef {
   rangeId: string;

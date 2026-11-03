@@ -248,6 +248,21 @@ impl VpnGateFinder {
             })
     }
 
+    /// The IP, VPN Gate score and profile bytes of a cached candidate, for automatic testing.
+    pub(super) fn candidate_profile(&self, candidate_id: &str) -> Result<(String, u64, Vec<u8>), String> {
+        let bytes = self.profile_bytes(candidate_id)?;
+        let cache = self
+            .cache
+            .lock()
+            .map_err(|_| "VPN Gate server cache is unavailable".to_string())?;
+        let server = cache
+            .as_ref()
+            .and_then(|cached| cached.candidates.iter().find(|candidate| candidate.server.candidate_id == candidate_id))
+            .map(|candidate| (candidate.server.ip.clone(), candidate.server.score))
+            .ok_or_else(|| "VPN Gate profile is no longer available; refresh the server list".to_string())?;
+        Ok((server.0, server.1, bytes))
+    }
+
     fn cached_servers(
         &self,
         fetched_since: Option<Instant>,

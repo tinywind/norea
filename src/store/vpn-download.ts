@@ -10,6 +10,8 @@ interface VpnDownloadSettings {
   captchaPolicy: VpnDownloadChallengePolicy;
   cloudflarePolicy: VpnDownloadChallengePolicy;
   resumeAfterRestart: boolean;
+  /** Lease tested VPN Gate servers without an O verdict; off means approved (O) profiles only. */
+  useTestedServers: boolean;
 }
 
 interface VpnDownloadStore extends VpnDownloadSettings {
@@ -18,6 +20,7 @@ interface VpnDownloadStore extends VpnDownloadSettings {
   setCaptchaPolicy: (policy: VpnDownloadChallengePolicy) => void;
   setCloudflarePolicy: (policy: VpnDownloadChallengePolicy) => void;
   setResumeAfterRestart: (resume: boolean) => void;
+  setUseTestedServers: (use: boolean) => void;
 }
 
 export function normalizeVpnDownloadSettings(value: unknown): VpnDownloadSettings {
@@ -30,6 +33,7 @@ export function normalizeVpnDownloadSettings(value: unknown): VpnDownloadSetting
     captchaPolicy: stored.captchaPolicy === "pause" ? "pause" : "nextProfile",
     cloudflarePolicy: stored.cloudflarePolicy === "pause" ? "pause" : "nextProfile",
     resumeAfterRestart: stored.resumeAfterRestart !== false,
+    useTestedServers: stored.useTestedServers !== false,
   };
 }
 
@@ -41,10 +45,12 @@ export const useVpnDownloadStore = create<VpnDownloadStore>()(persist(
     setCaptchaPolicy: (captchaPolicy) => set({ captchaPolicy }),
     setCloudflarePolicy: (cloudflarePolicy) => set({ cloudflarePolicy }),
     setResumeAfterRestart: (resumeAfterRestart) => set({ resumeAfterRestart }),
+    setUseTestedServers: (useTestedServers) => set({ useTestedServers }),
   }),
   {
     name: "vpn-download-settings",
-    partialize: ({ mode, workerCount, captchaPolicy, cloudflarePolicy, resumeAfterRestart }) => ({ mode, workerCount, captchaPolicy, cloudflarePolicy, resumeAfterRestart }),
+    partialize: ({ mode, workerCount, captchaPolicy, cloudflarePolicy, resumeAfterRestart, useTestedServers }) =>
+      ({ mode, workerCount, captchaPolicy, cloudflarePolicy, resumeAfterRestart, useTestedServers }),
     merge: (persisted, current) => ({ ...current, ...normalizeVpnDownloadSettings(persisted) }),
   },
 ));
