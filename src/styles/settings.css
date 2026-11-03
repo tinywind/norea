@@ -675,3 +675,20 @@
     min-height: var(--norea-control-md);
   }
 }
+
+/* RD18 settings search. */
+.norea-settings-search {
+  display: grid;
+  gap: var(--norea-space-2);
+  padding: var(--norea-space-3) var(--norea-space-3) 0;
+}
+
+.norea-settings-form-row,
+.norea-settings-advanced {
+  transition: background-color var(--norea-duration-slow) var(--norea-ease-standard);
+}
+
+.norea-settings-form-row[data-search-hit="true"],
+.norea-settings-advanced[data-search-hit="true"] {
+  background: var(--norea-color-accent-soft);
+}

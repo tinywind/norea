@@ -21,6 +21,7 @@ vi.mock("../lib/android-back-navigation", () => ({
 }));
 
 import { SettingsIndex } from "../components/settings/SettingsIndex";
+import { SettingsSearch } from "../components/settings/SettingsSearch";
 import { SettingsPage } from "./settings";
 
 interface ElementProps {
@@ -79,6 +80,22 @@ describe("phone settings navigation", () => {
     render("reader");
     expect(mocks.back!()).toBe(true);
     expect(mocks.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: undefined }, replace: true });
+  });
+});
+
+describe("settings search placement", () => {
+  it("puts the search field above the section list on phones and in the desktop side nav", () => {
+    for (const wide of [false, true]) {
+      mocks.wide = wide;
+      const tree = render();
+      const searchIndex = tree.findIndex((element) => element.type === SettingsSearch);
+      expect(searchIndex, `wide: ${wide}`).toBeGreaterThanOrEqual(0);
+      expect(searchIndex).toBeLessThan(tree.findIndex((element) => element.type === SettingsIndex));
+    }
+  });
+
+  it("offers no search inside an open phone section", () => {
+    expect(render("network").some((element) => element.type === SettingsSearch)).toBe(false);
   });
 });
 

@@ -1,4 +1,4 @@
-import { useState, type ReactNode } from "react";
+import { useRef, useState, type ReactNode } from "react";
 import { useMediaQuery } from "@mantine/hooks";
 import { PageFrame } from "../components/AppFrame";
 import { IconButton } from "../components/IconButton";
@@ -17,8 +17,15 @@ import {
   type SettingsIndexEntry,
 } from "../components/settings/SettingsIndex";
 import type { SettingsBusyProps } from "../components/settings/settings-busy";
+import { SETTINGS_SECTION_TITLE_KEYS } from "../components/settings/settings-section-titles";
+import {
+  openSettingsSearchResult,
+  SettingsSearch,
+  useSettingsRevealScroll,
+} from "../components/settings/SettingsSearch";
+import type { SettingsSearchResult } from "../components/settings/settings-search-index";
 import { BackIcon } from "../components/ui/icons";
-import { useTranslation, type TranslationKey } from "../i18n";
+import { useTranslation } from "../i18n";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
 import {
   SETTINGS_SECTION_IDS,
@@ -26,19 +33,6 @@ import {
   type SettingsSectionId,
 } from "../lib/use-settings-section";
 import "../styles/settings.css";
-
-const SECTION_TITLE_KEYS: Record<SettingsSectionId, TranslationKey> = {
-  appearance: "settings.category.appearance.title",
-  general: "settings.category.general.title",
-  reader: "settings.category.reader.title",
-  library: "settings.category.library.title",
-  downloads: "settings.category.downloads.title",
-  backup: "settings.category.backup.title",
-  network: "settings.category.network.title",
-  reset: "settings.category.reset.title",
-  about: "settings.category.about.title",
-  developer: "settings.category.developer.title",
-};
 
 function SettingsSectionContent({
   busy,
@@ -82,6 +76,8 @@ function SettingsDetail({
   onBack?: () => void;
 }) {
   const { t } = useTranslation();
+  const bodyRef = useRef<HTMLDivElement>(null);
+  useSettingsRevealScroll(bodyRef, id);
 
   return (
     <section
@@ -95,10 +91,12 @@ function SettingsDetail({
           </IconButton>
         ) : null}
         <h1 className="norea-settings-app-bar-title" id={`settings-${id}-title`}>
-          {t(SECTION_TITLE_KEYS[id])}
+          {t(SETTINGS_SECTION_TITLE_KEYS[id])}
         </h1>
       </header>
-      <div className="norea-settings-detail-body">{children}</div>
+      <div className="norea-settings-detail-body" ref={bodyRef}>
+        {children}
+      </div>
     </section>
   );
 }
@@ -111,6 +109,10 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
   const { t } = useTranslation();
   const [busyAction, setBusyAction] = useState<string | null>(null);
   const [selectedSection, selectSection] = useSettingsSection(section);
+  const [searchQuery, setSearchQuery] = useState("");
+  const selectSearchResult = (result: SettingsSearchResult) =>
+    openSettingsSearchResult(result, selectSection);
+  const searching = searchQuery.trim() !== "";
   const wide = useMediaQuery("(min-width: 768px)", undefined, {
     getInitialValueInEffect: false,
   });
@@ -120,7 +122,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
   };
   const entries: SettingsIndexEntry[] = SETTINGS_SECTION_IDS.map((id) => ({
     id,
-    title: t(SECTION_TITLE_KEYS[id]),
+    title: t(SETTINGS_SECTION_TITLE_KEYS[id]),
   }));
 
   usePageBackNavigation(() => {
@@ -139,11 +141,18 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
               <h1 className="norea-settings-app-bar-title">{t("settings.title")}</h1>
             </header>
             <div className="norea-settings-nav-scroll">
-              <SettingsIndex
-                activeId={activeSection}
-                entries={entries}
-                onSelect={selectSection}
+              <SettingsSearch
+                onQueryChange={setSearchQuery}
+                onSelect={selectSearchResult}
+                query={searchQuery}
               />
+              {searching ? null : (
+                <SettingsIndex
+                  activeId={activeSection}
+                  entries={entries}
+                  onSelect={selectSection}
+                />
+              )}
             </div>
           </aside>
           <SettingsDetail id={activeSection}>
@@ -165,7 +174,14 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
               </h1>
             </header>
             <div className="norea-settings-detail-body">
-              <SettingsIndex entries={entries} onSelect={selectSection} />
+              <SettingsSearch
+                onQueryChange={setSearchQuery}
+                onSelect={selectSearchResult}
+                query={searchQuery}
+              />
+              {searching ? null : (
+                <SettingsIndex entries={entries} onSelect={selectSection} />
+              )}
             </div>
           </section>
         ) : (

@@ -1,6 +1,7 @@
 import { Collapse, Slider, Text } from "@mantine/core";
-import { useEffect, useId, useState, type ReactNode } from "react";
+import { useEffect, useId, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "../i18n";
+import { settingsRowSelector, useSettingsRevealStore } from "./settings/settings-reveal";
 import { ConsolePanel } from "./ConsolePrimitives";
 import { IconButton } from "./IconButton";
 import { ChevronDownIcon, InfoIcon } from "./ui/icons";
@@ -75,6 +76,7 @@ export function SettingsFieldRow({
       className="norea-settings-form-row"
       data-copy={hasCopy ? "visible" : "empty"}
       data-layout={layout}
+      data-settings-label={label}
     >
       {hasCopy ? (
         <div className="norea-settings-form-copy">
@@ -139,14 +141,29 @@ export function SettingsAdvancedGroup({
 }: SettingsAdvancedGroupProps) {
   const { t } = useTranslation();
   const bodyId = useId();
+  const rootRef = useRef<HTMLDivElement>(null);
   const [opened, setOpened] = useState(forceOpen);
+  const revealTarget = useSettingsRevealStore((state) => state.target);
 
   useEffect(() => {
     if (forceOpen) setOpened(true);
   }, [forceOpen]);
 
+  useEffect(() => {
+    const root = rootRef.current;
+    if (!revealTarget || !root) return;
+    if (root.matches(settingsRowSelector(revealTarget.label)) || root.querySelector(settingsRowSelector(revealTarget.label))) {
+      setOpened(true);
+    }
+  }, [revealTarget]);
+
   return (
-    <div className="norea-settings-advanced" data-expanded={opened}>
+    <div
+      className="norea-settings-advanced"
+      data-expanded={opened}
+      data-settings-label={label}
+      ref={rootRef}
+    >
       <button
         aria-controls={bodyId}
         aria-expanded={opened}
