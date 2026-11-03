@@ -69,6 +69,7 @@ vi.mock("../lib/tasks/hooks", () => ({
 vi.mock("../components/SiteBrowserOverlay", () => ({ SiteBrowserOverlay: () => null }));
 vi.mock("../components/TaskNotifications", () => ({ TaskNotifications: () => null }));
 vi.mock("../components/ui/ConfirmDialog", () => ({ ConfirmDialog: () => null }));
+vi.mock("../components/library/use-window-file-drop-import", () => ({ useWindowFileDropImport: () => undefined }));
 vi.mock("./browse", () => ({ BrowsePage: () => null }));
 vi.mock("./downloads", () => ({
   DownloadsPage: ({ view }: { view: string }) => (

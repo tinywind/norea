@@ -11,6 +11,7 @@ import { PageSlot } from "../components/PageSlot";
 import { SiteBrowserOverlay } from "../components/SiteBrowserOverlay";
 import { TaskNotifications } from "../components/TaskNotifications";
 import { ContentDeletionDialog } from "../components/ContentDeletionDialog";
+import { useWindowFileDropImport } from "../components/library/use-window-file-drop-import";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import {
   BrowseIcon,
@@ -481,6 +482,7 @@ export function RootLayout() {
     visitedPages.has(page) || activePersistentPage === page;
   const readerActive = pathname === "/reader";
   useBodyFlag("reader-active", readerActive);
+  useWindowFileDropImport(!isAndroidRuntime());
 
   return (
     <AppShell

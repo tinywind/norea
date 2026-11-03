@@ -284,6 +284,16 @@ function formatLimit(format: LocalImportFormat): number {
   return LOCAL_IMPORT_LIMITS.fileBytes;
 }
 
+/** Whether local import reads this file type, by extension or MIME type. */
+export function isSupportedLocalImportFile(file: Pick<File, "name" | "type">): boolean {
+  try {
+    formatFromFile(file);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 export function localImportFileSizeLimit(
   file: Pick<File, "name" | "type">,
 ): number {
