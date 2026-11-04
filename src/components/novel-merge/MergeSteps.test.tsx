@@ -142,6 +142,16 @@ describe("MergeMapStep", () => {
     expect(rows.last().text()).toContain("novelMerge.map.mappedTo");
   });
 
+  it("marks each row's decision and each open conflict with a status icon", () => {
+    const $ = renderMapStep();
+    const rows = $("button.norea-merge-source-row");
+
+    expect(rows.first().attr("data-undecided")).toBe("true");
+    expect(rows.first().find(".norea-list-item-leading .norea-merge-row-status")).toHaveLength(1);
+    expect(rows.last().find(".norea-list-item-leading .norea-merge-row-status")).toHaveLength(1);
+    expect($(".norea-merge-conflict-row:not([data-resolved]) .norea-merge-conflict-title .norea-merge-row-status")).toHaveLength(1);
+  });
+
   it("shows the source list and the target picker side by side on desktop", () => {
     media.desktop = true;
     const $ = renderMapStep();

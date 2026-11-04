@@ -10,7 +10,7 @@ import type {
   NovelMergeCopyConflict,
 } from "../../lib/novel-merge-matching";
 import type { ChapterItem } from "../../lib/plugins/types";
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, SearchIcon } from "../ui/icons";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, MinusIcon, SearchIcon, WarningIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import {
@@ -361,10 +361,13 @@ export function MergeMapStep({
           data-resolved={resolved ? "true" : undefined}
         >
           <Text className="norea-merge-conflict-title" size="sm">
-            {t("novelMerge.conflict.title", {
-              count: row.conflict.sourceChapterIds.length,
-              target: targetLabel,
-            })}
+            {resolved ? null : <WarningIcon className="norea-merge-row-status" />}
+            <span className="norea-merge-conflict-label">
+              {t("novelMerge.conflict.title", {
+                count: row.conflict.sourceChapterIds.length,
+                target: targetLabel,
+              })}
+            </span>
           </Text>
           <div className="norea-merge-conflict-choice">
             <Text c="dimmed" component="span" size="xs">
@@ -388,12 +391,16 @@ export function MergeMapStep({
     const chapter = sourceById.get(row.sourceChapterId);
     if (!chapter) return null;
     const active = row.sourceChapterId === activeId;
+    const decision = decisions[chapter.id];
+    // Each row carries its decision as an icon beside the status text, never as a color edge alone.
+    const StatusIcon = decision === undefined ? WarningIcon : decision.kind === "exclude" ? MinusIcon : CheckIcon;
     return (
       <ListRow
         aria-haspopup={twoPanes ? undefined : "dialog"}
         aria-pressed={twoPanes ? active : undefined}
         className="norea-merge-source-row"
-        data-undecided={decisions[chapter.id] === undefined ? "true" : undefined}
+        data-undecided={decision === undefined ? "true" : undefined}
+        leading={<StatusIcon className="norea-merge-row-status" />}
         onClick={() => {
           setActiveId(chapter.id);
           if (!twoPanes) setSheetOpen(true);
