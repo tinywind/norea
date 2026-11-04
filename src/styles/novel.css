@@ -482,7 +482,6 @@
 .norea-novel-chapter-meta {
   display: flex;
   font-variant-numeric: tabular-nums;
-  gap: var(--norea-space-2);
   min-width: 0;
   overflow: hidden;
   white-space: nowrap;
