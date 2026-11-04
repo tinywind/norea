@@ -571,9 +571,11 @@
 /* RD8 quick add on cover-grid cards. */
 .norea-quick-add-card {
   --norea-quick-add-inset: var(--norea-space-1);
+  -webkit-touch-callout: none;
   display: grid;
   min-width: 0;
   position: relative;
+  user-select: none;
 }
 
 .norea-source-card ~ .norea-quick-add-button,

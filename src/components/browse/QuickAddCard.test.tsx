@@ -1,5 +1,6 @@
 import { MantineProvider } from "@mantine/core";
 import { load } from "cheerio";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vitest";
 
@@ -34,4 +35,11 @@ it("shows a pending state and disables the + while the add runs", () => {
   expect($("[role=status]").attr("aria-label")).toBe("quickAdd.adding");
   expect($(".norea-quick-add-button").attr("disabled")).toBeDefined();
   expect($(".norea-source-card").attr("aria-busy")).toBe("true");
+});
+
+it("keeps a long-press from selecting the card's title text", () => {
+  const css = readFileSync(new URL("../../styles/browse.css", import.meta.url), "utf8");
+  const rule = /\.norea-quick-add-card \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("user-select: none;");
+  expect(rule).toContain("-webkit-touch-callout: none;");
 });
