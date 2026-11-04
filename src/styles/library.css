@@ -401,11 +401,13 @@
   position: relative;
 }
 
+/* White ring on a translucent dark fill, so the unchecked state reads on light and dark covers alike. */
 .norea-library-check {
   align-items: center;
-  background: var(--norea-color-surface);
-  border: 0.125rem solid var(--norea-color-ink-muted);
+  background: rgb(0 0 0 / 0.25);
+  border: 0.125rem solid #fff;
   border-radius: 50%;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
   color: var(--norea-color-on-accent);
   display: flex;
   height: 1.5rem;
@@ -429,10 +431,11 @@
 
 .norea-library-select-toggle {
   align-items: center;
-  background: var(--norea-color-surface);
-  border: 0.125rem solid var(--norea-color-ink-muted);
+  background: rgb(0 0 0 / 0.25);
+  border: 0.125rem solid #fff;
   border-radius: 50%;
-  color: var(--norea-color-ink-muted);
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
+  color: #fff;
   cursor: pointer;
   display: none;
   height: 1.75rem;
@@ -484,6 +487,13 @@
   flex: 0 0 auto;
 }
 
+/* When space runs short the downloaded count gives way first, clipped on its line rather than wrapping. */
+.norea-library-badge-group > .norea-library-badge[data-kind="downloaded"] {
+  flex-shrink: 1;
+  min-width: 0;
+  overflow: hidden;
+}
+
 .norea-library-card-cover .norea-library-badges {
   left: var(--norea-space-1);
   position: absolute;
@@ -492,10 +502,9 @@
   z-index: 2;
 }
 
-/* The selection check takes the top-left corner, so the counts move to the bottom edge with the full cover width. */
+/* The counts stay at the top while selecting and only leave the top-left corner to the check. */
 .norea-library-card[aria-pressed] .norea-library-card-cover .norea-library-badges {
-  bottom: var(--norea-space-1);
-  top: auto;
+  left: calc(var(--norea-space-1) * 2 + 1.5rem);
 }
 
 .norea-library-badge {
@@ -540,7 +549,7 @@
   display: -webkit-box;
   font-size: var(--norea-text-sm);
   font-weight: var(--norea-weight-medium);
-  line-height: var(--norea-leading-tight);
+  line-height: var(--norea-leading-normal);
   overflow: hidden;
   overflow-wrap: anywhere;
 }

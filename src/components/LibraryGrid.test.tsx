@@ -99,6 +99,19 @@ it("keeps the downloaded and unread counts in one pill that never wraps", () => 
   expect(css).toMatch(/\.norea-library-badge-group \{[^}]*display: inline-flex;/);
 });
 
+it("keeps the counts at the top while selecting and draws the check as a ring that reads on any cover", () => {
+  const css = readFileSync(new URL("../styles/library.css", import.meta.url), "utf8");
+  const selecting = /\.norea-library-card\[aria-pressed\] \.norea-library-card-cover \.norea-library-badges \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(selecting).toContain("left: calc(var(--norea-space-1) * 2 + 1.5rem)");
+  expect(selecting).not.toContain("bottom");
+  expect(css).toMatch(/\.norea-library-badge-group > \.norea-library-badge\[data-kind="downloaded"\] \{[^}]*flex-shrink: 1;/);
+  const check = /\.norea-library-check \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(check).toContain("background: rgb(0 0 0 / 0.25)");
+  expect(check).toContain("border: 0.125rem solid #fff");
+  expect(check).toContain("box-shadow: 0 1px 3px rgb(0 0 0 / 0.35)");
+  expect(/\.norea-library-card-title \{([^}]*)\}/.exec(css)?.[1]).toContain("line-height: var(--norea-leading-normal)");
+});
+
 it("shows a goal novel's offline state on its downloaded badge, even before anything is downloaded", () => {
   const $ = load(renderToStaticMarkup(
     <MantineProvider>

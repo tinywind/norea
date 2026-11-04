@@ -433,11 +433,13 @@
 }
 
 /* Server-grid selection: the chapter list's round check, over the cover. */
+/* The same check as library covers: a white ring on a translucent dark fill. */
 .norea-source-select-check {
   align-items: center;
-  background: var(--norea-color-surface);
-  border: 0.125rem solid var(--norea-color-rule-strong);
+  background: rgb(0 0 0 / 0.25);
+  border: 0.125rem solid #fff;
   border-radius: 50%;
+  box-shadow: 0 1px 3px rgb(0 0 0 / 0.35);
   box-sizing: border-box;
   color: var(--norea-color-on-accent);
   display: inline-flex;
