@@ -179,6 +179,11 @@ export function createNoreaMantineTheme(
   // Modal and Drawer paint their content, sticky header and full-screen inner from --mantine-color-body.
   const overlayRootStyles = { "--mantine-color-body": roles.overlaySurface };
   const scrimStyles = { "--overlay-bg": "var(--norea-scrim)" };
+  // Toasts sit on the inverse (snackbar) surface; their accent bar keeps 3:1 against it.
+  const toastAccents: Record<NoreaThemeColor, string> = {
+    norea: roles.inverseAccent,
+    ...roles.inverseStatus,
+  };
   const popoverDefaults = {
     radius: "md",
     shadow: "var(--norea-shadow-1)",
@@ -368,7 +373,25 @@ export function createNoreaMantineTheme(
           },
         },
       },
-      Notification: { styles: { root: { backgroundColor: roles.surface } } },
+      Notification: {
+        defaultProps: { radius: "md" },
+        styles: {
+          root: { backgroundColor: roles.inverseSurface, boxShadow: "var(--norea-shadow-2)" },
+          title: { color: roles.onInverseSurface },
+          description: { color: roles.onInverseSurface },
+          closeButton: { color: roles.onInverseSurface },
+        },
+        vars: (_theme: unknown, props: { color?: string }) => ({
+          root: {
+            "--notification-color":
+              props.color === undefined
+                ? toastAccents.norea
+                : isNoreaThemeColor(props.color)
+                  ? toastAccents[props.color]
+                  : undefined,
+          },
+        }),
+      },
       Notifications: {
         defaultProps: {
           transitionDuration: MOTION_DURATION_BASE_MS,

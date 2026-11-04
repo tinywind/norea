@@ -18,6 +18,12 @@
   .norea-state-layer:hover:not(:disabled):not([data-disabled])::after {
     opacity: 0.08;
   }
+
+  /* Toast buttons on the inverse surface show only the state layer on hover. */
+  .norea-toasts .mantine-Notification-root .mantine-Button-root:hover,
+  .norea-toasts .mantine-Notification-closeButton:hover {
+    background-color: transparent;
+  }
 }
 
 .norea-state-layer:focus-visible::after {
@@ -411,6 +417,23 @@ body[data-norea-reader-bars] {
 
 .norea-toasts[data-position^="bottom"] {
   bottom: calc(var(--mantine-spacing-md) + var(--norea-toast-bottom-offset));
+}
+
+/*
+ * Toasts sit on the inverse surface, so their buttons take the inverse
+ * accent and the shared state layer instead of Mantine's surface-tuned fills.
+ */
+.norea-toasts .mantine-Notification-root .mantine-Button-root,
+.norea-toasts .mantine-Notification-closeButton {
+  background-color: transparent;
+}
+
+.norea-toasts .mantine-Notification-root .mantine-Button-root {
+  color: var(--norea-color-inverse-accent);
+}
+
+.norea-toasts .mantine-Notification-closeButton:active {
+  background-color: transparent;
 }
 
 /* A bottom sheet kept from 768px up (desktopVariant "bottom") stays a readable width. */

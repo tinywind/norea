@@ -152,6 +152,7 @@ function renderOverlays({ mantine }: ThemeCase, scheme: ColorScheme): string {
       ),
       h(Tooltip, { label: "tooltip", opened: true, withinPortal: false }, target("tooltip")),
       h(Notification, null, "notification"),
+      h(Notification, { color: "danger", title: "failed" }, "danger notification"),
     ),
   );
 }
@@ -180,8 +181,10 @@ describe("createNoreaMantineTheme overlay surfaces", () => {
     const [tooltip] = inlineStyleOf(html, "mantine-Tooltip-tooltip");
     expect(tooltip).toContain(`--tooltip-bg:${roles.inverseSurface}`);
     expect(tooltip).toContain(`--tooltip-color:${roles.onInverseSurface}`);
-    const [notification] = inlineStyleOf(html, "mantine-Notification-root");
-    expect(notification).toContain(`background-color:${roles.surface}`);
+    const [notification, danger] = inlineStyleOf(html, "mantine-Notification-root");
+    expect(notification).toContain(`background-color:${roles.inverseSurface}`);
+    expect(notification).toContain(`--notification-color:${roles.inverseAccent}`);
+    expect(danger).toContain(`--notification-color:${roles.inverseStatus.danger}`);
   });
 });
 

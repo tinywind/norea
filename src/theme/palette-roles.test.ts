@@ -94,6 +94,13 @@ describe("resolvePaletteRoles contrast gate", () => {
       TEXT_CONTRAST,
       "on-inverse-surface",
     );
+    expectContrast(roles.inverseAccent, roles.inverseSurface, TEXT_CONTRAST, "inverse-accent");
+  });
+
+  it.each(ALL_CASES)("$label keeps toast accent bars visible on the inverse surface", ({ roles }) => {
+    for (const name of STATUS_ROLE_NAMES) {
+      expectContrast(roles.inverseStatus[name], roles.inverseSurface, NON_TEXT_CONTRAST, `inverse-${name}`);
+    }
   });
 
   it.each(ALL_CASES)("$label keeps status colors readable as text and on soft fills", ({ roles }) => {

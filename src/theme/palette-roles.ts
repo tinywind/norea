@@ -47,6 +47,10 @@ export interface PaletteRoles {
   /** Tooltip and snackbar surface, opposite to the scheme. */
   inverseSurface: string;
   onInverseSurface: string;
+  /** Action text on the inverse surface, such as a toast's button, at 4.5:1. */
+  inverseAccent: string;
+  /** Toast accent bars on the inverse surface, at 3:1. */
+  inverseStatus: Record<StatusRoleName, string>;
   shadowFloating: string;
   /** Sheets, dialogs, menus and popovers: `surface` lifted toward `ink`, always set apart from `bg`. */
   overlaySurface: string;
@@ -195,6 +199,15 @@ export function resolvePaletteRoles(
   const focus =
     minContrast(accent, [bg, surface]) >= NON_TEXT_CONTRAST ? accent : ink;
 
+  const onInverseSurface = ensureContrast(
+    requireColor(palette.inverseOnSurface),
+    [inverseSurface],
+    TEXT_CONTRAST,
+    blackOrWhite(inverseSurface),
+  );
+  const onInverse = (color: Rgb) =>
+    formatRgb(ensureContrast(color, [inverseSurface], NON_TEXT_CONTRAST, onInverseSurface));
+
   const danger = ensureContrast(
     requireColor(palette.error),
     surfaces,
@@ -231,14 +244,16 @@ export function resolvePaletteRoles(
     selected: formatRgb(accentSoft),
     focus: formatRgb(focus),
     inverseSurface: formatRgb(inverseSurface),
-    onInverseSurface: formatRgb(
-      ensureContrast(
-        requireColor(palette.inverseOnSurface),
-        [inverseSurface],
-        TEXT_CONTRAST,
-        blackOrWhite(inverseSurface),
-      ),
+    onInverseSurface: formatRgb(onInverseSurface),
+    inverseAccent: formatRgb(
+      ensureContrast(accent, [inverseSurface], TEXT_CONTRAST, onInverseSurface),
     ),
+    inverseStatus: {
+      danger: onInverse(danger),
+      warn: onInverse(fixedHue("warn")),
+      ok: onInverse(fixedHue("ok")),
+      info: onInverse(fixedHue("info")),
+    },
     shadowFloating: SHADOW_FLOATING[scheme],
     overlaySurface: formatRgb(overlaySurface),
     overlayBorder: formatRgb(
@@ -272,6 +287,7 @@ export function paletteRoleCssVariables(
     "--norea-color-overlay-border": roles.overlayBorder,
     "--norea-color-inverse-surface": roles.inverseSurface,
     "--norea-color-on-inverse-surface": roles.onInverseSurface,
+    "--norea-color-inverse-accent": roles.inverseAccent,
     "--norea-scrim": roles.scrim,
     "--norea-shadow-1": roles.shadow1,
     "--norea-shadow-2": roles.shadow2,
