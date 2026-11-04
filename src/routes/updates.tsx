@@ -4,7 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Button, Loader, Progress, Stack } from "@mantine/core";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { IconButton } from "../components/IconButton";
-import { RefreshIcon } from "../components/ui/icons";
+import { RefreshIcon, UpdatesIcon } from "../components/ui/icons";
 import {
   groupFailuresBySource,
   UpdateFailures,
@@ -652,6 +652,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                     label: t("updates.check"),
                     onClick: () => check.mutate(undefined),
                   }}
+                  icon={UpdatesIcon}
                   message={t(view === "new" ? "updates.newChapters.emptyMessage" : "updates.caughtUpCurrentMessage")}
                   title={t(view === "new" ? "updates.newChapters.empty" : "updates.caughtUp")}
                 />

@@ -7,6 +7,7 @@ import {
 import {
   Alert,
   Box,
+  Button,
   Group,
   Loader,
   Paper,
@@ -18,6 +19,7 @@ import {
 } from "@mantine/core";
 import { BackIconButton } from "./BackIconButton";
 import { TextButton } from "./TextButton";
+import type { AppIcon } from "./ui/icons";
 import { useSiteBrowserStore } from "../store/site-browser";
 
 interface BlockingLoadingOverlayProps {
@@ -217,29 +219,74 @@ export function PageSection({
 
 interface StateViewProps {
   action?: { label: string; onClick: () => void };
+  /** `danger` and `warn` draw an alert; no color or `info` draws a plain empty state. */
   color?: AlertProps["color"];
   /** Diagnostic text, such as a raw error, collapsed under `label`. */
   details?: { content: ReactNode; label: string };
+  /** The empty state's leading glyph, usually the page's own icon. */
+  icon?: AppIcon;
   message?: ReactNode;
   secondaryAction?: { label: string; onClick: () => void };
   title: ReactNode;
+}
+
+function isEmptyStateColor(color: AlertProps["color"]): boolean {
+  return color === undefined || color === "info";
 }
 
 export function StateView({
   action,
   color,
   details,
+  icon: Icon,
   message,
   secondaryAction,
   title,
 }: StateViewProps) {
+  const detailsBlock = details ? (
+    <details className="norea-state-details">
+      <summary>{details.label}</summary>
+      <Text c="dimmed" component="div" size="xs">
+        {details.content}
+      </Text>
+    </details>
+  ) : null;
+
+  if (isEmptyStateColor(color)) {
+    return (
+      <div className="norea-empty-state">
+        {Icon ? <Icon className="norea-empty-state-icon" /> : null}
+        <div className="norea-empty-state-title">{title}</div>
+        {message ? <div className="norea-empty-state-message">{message}</div> : null}
+        {action || secondaryAction ? (
+          <Group gap="xs" justify="center" mt="xs">
+            {action ? (
+              <Button
+                onClick={action.onClick}
+                variant={secondaryAction ? "default" : "filled"}
+              >
+                {action.label}
+              </Button>
+            ) : null}
+            {secondaryAction ? (
+              <Button onClick={secondaryAction.onClick} variant="subtle">
+                {secondaryAction.label}
+              </Button>
+            ) : null}
+          </Group>
+        ) : null}
+        {detailsBlock}
+      </div>
+    );
+  }
+
   return (
     <Alert
       className="norea-surface"
       color={color}
       radius="sm"
       title={title}
-      variant={color ? "light" : "default"}
+      variant="light"
     >
       {message ? <Text size="sm">{message}</Text> : null}
       {action || secondaryAction ? (
@@ -260,14 +307,7 @@ export function StateView({
           ) : null}
         </Group>
       ) : null}
-      {details ? (
-        <details className="norea-state-details">
-          <summary>{details.label}</summary>
-          <Text c="dimmed" component="div" size="xs">
-            {details.content}
-          </Text>
-        </details>
-      ) : null}
+      {detailsBlock}
     </Alert>
   );
 }

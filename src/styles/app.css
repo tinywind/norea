@@ -1298,6 +1298,45 @@ button.norea-console-chip:disabled {
   overflow-wrap: anywhere;
 }
 
+/* StateView without an alert color: a quiet centered block, not a boxed alert. */
+.norea-empty-state {
+  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--norea-space-2);
+  padding-block: var(--norea-space-7);
+  padding-inline: var(--norea-space-4);
+  text-align: center;
+}
+
+.norea-empty-state-icon {
+  color: var(--norea-color-icon-subtle);
+  height: 2.5rem;
+  margin-bottom: var(--norea-space-1);
+  width: 2.5rem;
+}
+
+.norea-empty-state-title {
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-md);
+  font-weight: var(--norea-weight-medium);
+  line-height: var(--norea-leading-tight);
+  max-width: 32ch;
+  text-wrap: balance;
+}
+
+.norea-empty-state-message {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  line-height: var(--norea-leading-normal);
+  max-width: 32ch;
+  text-wrap: balance;
+}
+
+.norea-empty-state .norea-state-details {
+  text-align: start;
+}
+
 .norea-recovery-banner {
   align-items: flex-start;
   background: var(--norea-color-surface-raised);
