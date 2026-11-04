@@ -249,9 +249,12 @@ requirements must be decided explicitly before implementation.
   refresh repairs missing work details in that document even when the source
   returns the same metadata already cached in SQLite. Recovery does not rewrite
   original metadata files merely to fill missing fields from the database.
-- Overlapping source refreshes use the newest request for each work. An earlier
-  response is checked again inside the database queue and cannot publish after
-  a later request. Superseded callers receive the newer request's result.
+- Overlapping source refreshes use the newest request for each work, except that
+  a check for new chapters supersedes only earlier checks: a full refresh still
+  publishes its whole chapter list and refetches the cover after a later check.
+  An earlier response is checked again inside the database queue and cannot
+  publish after a later request that supersedes it. Superseded callers receive
+  that request's result.
   Metadata publication notifies visible detail and chapter queries, including
   background refreshes. Database failures restore transaction-owned file writes
   without automatically rebuilding metadata from unrelated external files.

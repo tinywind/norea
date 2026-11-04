@@ -72,8 +72,10 @@ const sourceDuplicateChaptersByNovelId = new Map<
 >();
 const sourceRefreshes = new Map<string, {
   generation: number;
+  fullGeneration: number;
   pending: number;
   latest: Promise<SyncNovelFromSourceResult> | null;
+  latestFull: Promise<SyncNovelFromSourceResult> | null;
 }>();
 
 export function getSourceDuplicateChapterInfo(
@@ -283,14 +285,20 @@ export async function syncNovelFromSource(
 ): Promise<SyncNovelFromSourceResult> {
   options.signal?.throwIfAborted();
   const key = JSON.stringify([plugin.id, item.path]);
-  const state = sourceRefreshes.get(key) ?? { generation: 0, pending: 0, latest: null };
+  const state = sourceRefreshes.get(key) ?? { generation: 0, fullGeneration: 0, pending: 0, latest: null, latestFull: null };
   const generation = ++state.generation;
+  const full = options.chapterRefreshMode !== "since";
+  if (full) state.fullGeneration = generation;
   state.pending++;
   sourceRefreshes.set(key, state);
+  // A later check for new chapters covers only the newest chapters, so it supersedes an earlier
+  // check but never a full refresh, which alone rewrites every chapter and refetches the cover.
+  const isCurrent = full ? () => state.fullGeneration === generation : () => state.generation === generation;
   const promise: Promise<SyncNovelFromSourceResult> = performNovelSourceRefresh(
-    plugin, item, options, () => state.generation === generation,
-  ).then(result => result ?? state.latest!);
+    plugin, item, options, isCurrent,
+  ).then(result => result ?? (full ? state.latestFull! : state.latest!));
   state.latest = promise;
+  if (full) state.latestFull = promise;
   try { return await promise; }
   finally { if (--state.pending === 0) sourceRefreshes.delete(key); }
 }
