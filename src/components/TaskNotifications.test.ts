@@ -9,7 +9,7 @@ import type { SourceAccessBlock } from "../lib/tasks/scheduler";
 import * as sourceAccessCoordinator from "../lib/tasks/source-access-coordinator";
 import type { VpnDownloadPlan, VpnDownloadRangeState } from "../lib/tasks/vpn-download-types";
 import type { VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-drafts";
-import { TaskNotifications } from "./TaskNotifications";
+import { BATCH_COMPLETION_FLUSH_MS, TaskNotifications } from "./TaskNotifications";
 
 const vpnMocks = vi.hoisted(() => ({
   getSnapshot: vi.fn(), subscribe: vi.fn(),
@@ -104,6 +104,44 @@ describe("download completion notifications", () => {
       expect(client.getQueryState(metadataKey)?.isInvalidated).toBe(false);
     } finally {
       dispose(); client.clear(); vi.unstubAllGlobals();
+    }
+  });
+
+  it("patches cached chapters at most four times a second for 1000 batch completions without losing one", async () => {
+    vi.useFakeTimers();
+    const client = new QueryClient();
+    const chaptersKey = ["novel", "detail", 7, "chapters"];
+    const chapterIds = Array.from({ length: 1000 }, (_, index) => index + 1);
+    client.setQueryData(chaptersKey, chapterIds.map((id) => ({ id, isDownloaded: false })));
+    vi.spyOn(chapterQueries, "getChapterById").mockImplementation(async (id) => ({
+      id, isDownloaded: true, mediaRepairNeeded: false, contentBytes: 1, mediaBytes: 0, contentType: "html",
+    }) as chapterQueries.ChapterRow);
+    const setQueryData = vi.spyOn(client, "setQueryData");
+    const patches = () => setQueryData.mock.calls.filter(([key]) => JSON.stringify(key) === JSON.stringify(chaptersKey));
+    vi.mocked(useQueryClient).mockReturnValue(client);
+    let completion: Parameters<typeof chapterDownloads.subscribeChapterDownloads>[0] | undefined;
+    // Download goals subscribe later in the same effect; keep the notification listener.
+    vi.spyOn(chapterDownloads, "subscribeChapterDownloads").mockImplementation(listener => { completion ??= listener; return () => {}; });
+    vi.spyOn(chapterDownloads, "subscribeChapterDownloadBatchesSettled").mockImplementation(() => () => {});
+    vi.spyOn(chapterDownloads, "startChapterDownloadQueueExecutor").mockImplementation(() => {});
+    vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => setTimeout(() => callback(performance.now()), 16));
+    vi.stubGlobal("cancelAnimationFrame", (handle: ReturnType<typeof setTimeout>) => clearTimeout(handle));
+    TaskNotifications();
+    const dispose = vi.mocked(useEffect).mock.calls[0]![0]() as () => void;
+    try {
+      const startedAt = performance.now();
+      for (const id of chapterIds) {
+        completion!({ job: { id, novelId: 7, batchId: "batch" }, status: { kind: "done" } } as Parameters<NonNullable<typeof completion>>[0]);
+        await vi.advanceTimersByTimeAsync(5);
+      }
+      await vi.advanceTimersByTimeAsync(BATCH_COMPLETION_FLUSH_MS);
+      const elapsedMs = performance.now() - startedAt;
+
+      expect(patches().length).toBeGreaterThan(0);
+      expect(patches().length).toBeLessThanOrEqual(Math.ceil(elapsedMs / BATCH_COMPLETION_FLUSH_MS) + 1);
+      expect(client.getQueryData<{ isDownloaded: boolean }[]>(chaptersKey)?.every((chapter) => chapter.isDownloaded)).toBe(true);
+    } finally {
+      dispose(); client.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
     }
   });
 });

@@ -36,6 +36,10 @@ import { startTrayTaskProgress } from "../lib/tasks/tray-progress";
 import { useNotificationStore } from "../store/notifications";
 import { WindowsTaskNotificationBridge } from "./WindowsTaskNotificationBridge";
 
+// A large batch finishes many chapters per second; patching cached chapter lists per
+// frame re-rendered open novel pages for every completion.
+export const BATCH_COMPLETION_FLUSH_MS = 250;
+
 export function TaskNotifications() {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -50,7 +54,7 @@ export function TaskNotifications() {
   }, [navigate, t]);
 
   useEffect(() => {
-    let completionFrame: number | null = null;
+    let completionTimer: ReturnType<typeof setTimeout> | undefined;
     let pendingCompletions = new Map<number, Set<number>>();
     let pendingCompletionWithoutNovel = false;
 
@@ -73,10 +77,8 @@ export function TaskNotifications() {
     };
 
     const flushBatchCompletions = async () => {
-      if (completionFrame !== null) {
-        cancelAnimationFrame(completionFrame);
-        completionFrame = null;
-      }
+      clearTimeout(completionTimer);
+      completionTimer = undefined;
       const completions = pendingCompletions;
       const invalidateUnknownNovel = pendingCompletionWithoutNovel;
       pendingCompletions = new Map();
@@ -100,9 +102,9 @@ export function TaskNotifications() {
         } else {
           pendingCompletionWithoutNovel = true;
         }
-        completionFrame ??= requestAnimationFrame(() => {
+        completionTimer ??= setTimeout(() => {
           void flushBatchCompletions().catch(() => undefined);
-        });
+        }, BATCH_COMPLETION_FLUSH_MS);
         return;
       }
       if (event.job.novelId && event.job.novelId > 0) {
@@ -147,8 +149,8 @@ export function TaskNotifications() {
       unsubscribeChapterDownloads();
       if (pendingCompletions.size > 0 || pendingCompletionWithoutNovel) {
         void flushBatchCompletions().catch(() => undefined);
-      } else if (completionFrame !== null) {
-        cancelAnimationFrame(completionFrame);
+      } else {
+        clearTimeout(completionTimer);
       }
     };
   }, [queryClient, t]);
