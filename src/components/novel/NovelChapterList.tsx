@@ -369,7 +369,7 @@ function ChapterListItem({
             <span>{t("novel.chapterShort", { number: formatChapterNumber(chapter) })}</span>
             {releaseTime ? <span>{releaseTime}</span> : null}
             {partlyRead ? (
-              <span>{t("novel.percentRead", { progress })}</span>
+              <VisuallyHidden>{t("novel.percentRead", { progress })}</VisuallyHidden>
             ) : null}
             {chapter.serverComplete === false ? (
               <span className="norea-novel-chapter-badge">{t("novel.serverIncomplete")}</span>
