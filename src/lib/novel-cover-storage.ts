@@ -10,7 +10,10 @@ const NOVEL_COVER_BASENAME = "cover";
 const DEFAULT_COVER_EXTENSION = "img";
 const ANDROID_LOCAL_MEDIA_SRC_PREFIX = "/__norea_android_media__/file/";
 const WINDOWS_NOREA_MEDIA_SRC_PREFIX = "http://norea-media.localhost/";
-const MAX_UNUSED_COVER_SOURCES = 100;
+// Object URLs pin fetched image bytes, while stored covers are plain URL strings
+// that let remounted cards render without another native lookup.
+const MAX_UNUSED_COVER_OBJECT_URLS = 100;
+const MAX_UNUSED_COVER_URLS = 1000;
 
 type NovelCoverChangeListener = (novelId: number) => void;
 
@@ -191,7 +194,16 @@ function getOrCreateNovelCoverCacheEntry(
 
 function trimUnusedNovelCoverSources(): void {
   const unused = [...novelCoverDisplayCache].filter(([, entry]) => entry.resolved && entry.consumers === 0);
-  for (const [key, entry] of unused.slice(0, Math.max(0, unused.length - MAX_UNUSED_COVER_SOURCES))) {
+  const ownsObjectUrl = ([, entry]: (typeof unused)[number]) => entry.source?.src.startsWith("blob:") ?? false;
+  evictOldestNovelCoverSources(unused.filter(ownsObjectUrl), MAX_UNUSED_COVER_OBJECT_URLS);
+  evictOldestNovelCoverSources(unused.filter((item) => !ownsObjectUrl(item)), MAX_UNUSED_COVER_URLS);
+}
+
+function evictOldestNovelCoverSources(
+  entries: [string, NovelCoverDisplayCacheEntry][],
+  limit: number,
+): void {
+  for (const [key, entry] of entries.slice(0, Math.max(0, entries.length - limit))) {
     novelCoverDisplayCache.delete(key);
     entry.source?.dispose();
   }

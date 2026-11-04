@@ -246,6 +246,72 @@ describe("cached novel cover display sources", () => {
     visible.release();
   });
 
+  describe("library cards remounted by a filter change", () => {
+    const plugin = makePlugin();
+    const options = { allowSourceFallback: true, plugin };
+    const libraryNovel = (index: number) => ({
+      ...novel,
+      id: 1000 + index,
+      path: `/book/${index}`,
+      cover: `https://source.test/covers/${index}.jpg`,
+    });
+
+    beforeEach(() => {
+      vi.mocked(resolvedNovelStorageDir).mockImplementation(id => `contents/demo/${id}`);
+      workMetadataMock.mockImplementation(async () => ({ cover: { fileName: "cover.jpg", modifiedAt: 1 } }));
+    });
+
+    async function mountAndUnmount(novels: ReturnType<typeof libraryNovel>[]): Promise<string[]> {
+      const handles = [];
+      const sources = [];
+      for (const item of novels) {
+        const handle = acquireCachedNovelCoverSource(item, options);
+        handles.push(handle);
+        sources.push(await handle.promise);
+      }
+      for (const handle of handles) handle.release();
+      return sources.map(src => src ?? "");
+    }
+
+    it("serves every stored cover of a large library synchronously on remount", async () => {
+      const novels = Array.from({ length: 300 }, (_, index) => libraryNovel(index));
+      const sources = await mountAndUnmount(novels);
+      expect(workMetadataMock).toHaveBeenCalledTimes(novels.length);
+
+      expect(novels.map(item => peekCachedNovelCoverSrc(item, options))).toEqual(sources);
+      await expect(mountAndUnmount(novels)).resolves.toEqual(sources);
+      expect(workMetadataMock).toHaveBeenCalledTimes(novels.length);
+      expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+    });
+
+    it("replaces only the remounted cover whose stored image changed", async () => {
+      const novels = Array.from({ length: 3 }, (_, index) => libraryNovel(index));
+      const [changed, unchanged] = novels;
+      const sources = await mountAndUnmount(novels);
+      workMetadataMock.mockImplementation(async () => ({ cover: { fileName: "cover.png", modifiedAt: 2 } }));
+      notifyNovelCoverChanged(changed!.id, changed);
+
+      expect(peekCachedNovelCoverSrc(changed!, options)).toBeUndefined();
+      expect(peekCachedNovelCoverSrc(unchanged!, options)).toBe(sources[1]);
+      const [replaced] = await mountAndUnmount([changed!]);
+      expect(replaced).toContain(`contents/demo/${changed!.id}/cover.png?v=`);
+      expect(peekCachedNovelCoverSrc(changed!, options)).toBe(replaced);
+    });
+
+    it("evicts the least recently used stored cover past the bound", async () => {
+      const novels = Array.from({ length: 1001 }, (_, index) => libraryNovel(index));
+      for (const item of novels) {
+        const handle = acquireCachedNovelCoverSource(item);
+        await handle.promise;
+        handle.release();
+      }
+
+      expect(peekCachedNovelCoverSrc(novels[0]!)).toBeUndefined();
+      expect(peekCachedNovelCoverSrc(novels[1]!)).toEqual(expect.any(String));
+      expect(peekCachedNovelCoverSrc(novels[1000]!)).toEqual(expect.any(String));
+    });
+  });
+
   it("reuses a resolved stored cover without another native lookup", async () => {
     const plugin = makePlugin();
     const displayNovel = {

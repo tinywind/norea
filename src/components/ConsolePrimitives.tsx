@@ -17,6 +17,36 @@ import {
 } from "@mantine/core";
 import { TextButton } from "./TextButton";
 
+const MAX_LOADED_COVER_SOURCES = 1000;
+// Local covers are data URLs of up to a few megabytes, so remembered sources
+// are bounded by their total length as well as their count.
+const MAX_LOADED_COVER_SOURCE_CHARS = 16 * 1024 * 1024;
+const loadedCoverSources = new Set<string>();
+let loadedCoverSourceChars = 0;
+
+/**
+ * Records a cover the WebView has already shown, so the same source renders
+ * without the title placeholder when its card mounts again.
+ */
+export function rememberLoadedCoverSource(src: string): void {
+  forgetLoadedCoverSource(src);
+  loadedCoverSources.add(src);
+  loadedCoverSourceChars += src.length;
+  for (const oldest of loadedCoverSources) {
+    if (
+      loadedCoverSources.size <= MAX_LOADED_COVER_SOURCES &&
+      loadedCoverSourceChars <= MAX_LOADED_COVER_SOURCE_CHARS
+    ) {
+      break;
+    }
+    forgetLoadedCoverSource(oldest);
+  }
+}
+
+function forgetLoadedCoverSource(src: string): void {
+  if (loadedCoverSources.delete(src)) loadedCoverSourceChars -= src.length;
+}
+
 interface ConsoleCoverProps {
   alt: string;
   className?: string;
@@ -38,7 +68,9 @@ export function ConsoleCover({
   const [failedSrc, setFailedSrc] = useState<string | null>(null);
   const [loadedSrc, setLoadedSrc] = useState<string | null>(null);
   const showImage = normalizedSrc !== null && failedSrc !== normalizedSrc;
-  const imageLoaded = showImage && loadedSrc === normalizedSrc;
+  const previouslyLoaded =
+    showImage && normalizedSrc !== null && loadedCoverSources.has(normalizedSrc);
+  const imageLoaded = previouslyLoaded || (showImage && loadedSrc === normalizedSrc);
   const fallbackStyle = useMemo(() => createCoverFallbackStyle(alt), [alt]);
 
   useEffect(() => {
@@ -65,13 +97,22 @@ export function ConsoleCover({
         <img
           alt={alt}
           className="norea-console-cover-image"
-          decoding="async"
+          decoding={previouslyLoaded ? "sync" : "async"}
           draggable={false}
-          loading="lazy"
-          onError={() => setFailedSrc(normalizedSrc)}
+          loading={previouslyLoaded ? "eager" : "lazy"}
+          onError={() => {
+            if (normalizedSrc) forgetLoadedCoverSource(normalizedSrc);
+            setFailedSrc(normalizedSrc);
+          }}
           onLoad={(event) => {
-            if (isBlankCoverImage(event.currentTarget)) setFailedSrc(normalizedSrc);
-            else setLoadedSrc(normalizedSrc);
+            if (!normalizedSrc) return;
+            if (isBlankCoverImage(event.currentTarget)) {
+              forgetLoadedCoverSource(normalizedSrc);
+              setFailedSrc(normalizedSrc);
+            } else {
+              rememberLoadedCoverSource(normalizedSrc);
+              setLoadedSrc(normalizedSrc);
+            }
           }}
           src={normalizedSrc ?? undefined}
           style={{ objectFit: fit }}

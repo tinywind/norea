@@ -5,7 +5,7 @@ vi.mock("../i18n", () => ({
   useTranslation: () => ({ locale: "en", t: (key: string) => key }),
 }));
 
-import { ConsoleCover, isBlankCoverImage } from "./ConsolePrimitives";
+import { ConsoleCover, isBlankCoverImage, rememberLoadedCoverSource } from "./ConsolePrimitives";
 
 function coverStyle(title: string): string {
   const html = renderToStaticMarkup(<ConsoleCover alt={title} src={null} />);
@@ -34,6 +34,37 @@ describe("ConsoleCover image", () => {
     const html = renderToStaticMarkup(<ConsoleCover alt="Moonlit Archive" src="https://source.test/cover.jpg" />);
     expect(html.indexOf("norea-console-cover-fallback-title")).toBeGreaterThan(-1);
     expect(html.indexOf("norea-console-cover-fallback-title")).toBeLessThan(html.indexOf("<img"));
+  });
+
+  it("draws a remounted cover that was already shown without the title placeholder", () => {
+    const src = "http://norea-media.localhost/contents/demo/remounted/cover.jpg?v=1";
+    rememberLoadedCoverSource(src);
+    const html = renderToStaticMarkup(<ConsoleCover alt="Moonlit Archive" src={src} />);
+    expect(html).not.toContain("norea-console-cover-fallback-title");
+    expect(html).toContain('decoding="sync"');
+    expect(html).toContain('loading="eager"');
+  });
+
+  it("forgets the least recently shown covers past the bound", () => {
+    const oldest = "http://norea-media.localhost/contents/demo/oldest/cover.jpg?v=1";
+    const touched = "http://norea-media.localhost/contents/demo/touched/cover.jpg?v=1";
+    rememberLoadedCoverSource(oldest);
+    rememberLoadedCoverSource(touched);
+    for (let index = 0; index < 999; index++) {
+      if (index === 500) rememberLoadedCoverSource(touched);
+      rememberLoadedCoverSource(`http://norea-media.localhost/contents/demo/${index}/cover.jpg?v=1`);
+    }
+    const render = (src: string) => renderToStaticMarkup(<ConsoleCover alt="Moonlit Archive" src={src} />);
+    expect(render(oldest)).toContain("norea-console-cover-fallback-title");
+    expect(render(touched)).not.toContain("norea-console-cover-fallback-title");
+  });
+
+  it("bounds remembered data URL covers by their total length", () => {
+    const largeCover = (index: number) => `data:image/png;base64,${String(index).padStart(8, "0")}${"A".repeat(4 * 1024 * 1024)}`;
+    for (let index = 0; index < 5; index++) rememberLoadedCoverSource(largeCover(index));
+    const render = (src: string) => renderToStaticMarkup(<ConsoleCover alt="Moonlit Archive" src={src} />);
+    expect(render(largeCover(0))).toContain("norea-console-cover-fallback-title");
+    expect(render(largeCover(4))).not.toContain("norea-console-cover-fallback-title");
   });
 
   it("treats a 1x1 placeholder pixel as a missing cover", () => {
