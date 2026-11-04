@@ -73,9 +73,11 @@ describe("header style", () => {
   });
 });
 
-it("keeps the library header flush with the top on phones, like every other page header", () => {
+it("keeps the library and settings headers flush with the top on phones, like every other page header", () => {
   const app = readFileSync(new URL("./app.css", import.meta.url), "utf8");
   const phone = app.slice(app.indexOf("@media (max-width: 767px)"));
   expect(phone).not.toMatch(/^\s*\.norea-page-frame \{\s*padding-top/m);
-  expect(phone).toMatch(/\.norea-page-frame:not\(\.norea-library-page\) \{\s*padding-top/);
+  expect(phone).toMatch(
+    /\.norea-page-frame:not\(\.norea-library-page\):not\(\.norea-settings-page\) \{\s*padding-top/,
+  );
 });

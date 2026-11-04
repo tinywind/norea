@@ -1185,8 +1185,8 @@ button.norea-console-chip:disabled {
 }
 
 @media (max-width: 767px) {
-  /* Pages that draw their own bar inside the frame (library) set the block padding to 0 and keep it. */
-  .norea-page-frame:not(.norea-library-page) {
+  /* Pages that draw their own bar inside the frame (library, settings) set the block padding to 0 and keep it. */
+  .norea-page-frame:not(.norea-library-page):not(.norea-settings-page) {
     padding-top: var(--norea-space-4);
   }
 

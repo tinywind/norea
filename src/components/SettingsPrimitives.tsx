@@ -20,7 +20,6 @@ import {
 } from "react";
 import { useTranslation } from "../i18n";
 import { settingsRowSelector, useSettingsRevealStore } from "./settings/settings-reveal";
-import { ConsolePanel } from "./ConsolePrimitives";
 import { IconButton } from "./IconButton";
 import { ChevronDownIcon, InfoIcon } from "./ui/icons";
 
@@ -78,22 +77,25 @@ export function SettingsSection({
   description,
   title,
 }: SettingsSectionProps) {
+  const titleId = useId();
   return (
-    <ConsolePanel
+    <section
+      aria-labelledby={title ? titleId : undefined}
       className="norea-settings-group"
-      title={
-        title ? (
-          <>
-            <Text className="norea-settings-group-title">{title}</Text>
-            {description ? (
-              <Text className="norea-settings-group-description">{description}</Text>
-            ) : null}
-          </>
-        ) : undefined
-      }
+      data-titled={title ? "true" : undefined}
     >
+      {title ? (
+        <div className="norea-settings-group-header">
+          <Text className="norea-settings-group-title" component="h2" id={titleId}>
+            {title}
+          </Text>
+          {description ? (
+            <Text className="norea-settings-group-description">{description}</Text>
+          ) : null}
+        </div>
+      ) : null}
       <div className="norea-settings-group-body">{children}</div>
-    </ConsolePanel>
+    </section>
   );
 }
 

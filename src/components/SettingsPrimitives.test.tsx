@@ -3,7 +3,7 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { TextButton } from "./TextButton";
-import { SettingsAdvancedGroup, SettingsFieldRow } from "./SettingsPrimitives";
+import { SettingsAdvancedGroup, SettingsFieldRow, SettingsSection } from "./SettingsPrimitives";
 
 function render(node: ReactNode): string {
   return renderToStaticMarkup(<MantineProvider>{node}</MantineProvider>);
@@ -11,6 +11,30 @@ function render(node: ReactNode): string {
 
 const LONG_DESCRIPTION =
   "This description explains a setting in enough detail that it no longer fits on one short line below the label.";
+
+describe("settings groups", () => {
+  it("names a group with a plain heading that labels the section", () => {
+    const markup = render(
+      <SettingsSection title="Notifications">
+        <SettingsFieldRow label="Show progress" />
+      </SettingsSection>,
+    );
+    const headingId = /<h2[^>]*class="[^"]*norea-settings-group-title[^"]*"[^>]*id="([^"]+)"/.exec(markup)?.[1];
+    expect(headingId).toBeTruthy();
+    expect(markup).toMatch(new RegExp(`<section aria-labelledby="${headingId}" class="norea-settings-group" data-titled="true"`));
+    expect(markup).not.toContain("norea-console-panel");
+  });
+
+  it("leaves an untitled group unlabelled", () => {
+    const markup = render(
+      <SettingsSection>
+        <SettingsFieldRow label="Show progress" />
+      </SettingsSection>,
+    );
+    expect(markup).toMatch(/<section class="norea-settings-group">/);
+    expect(markup).not.toContain("norea-settings-group-header");
+  });
+});
 
 describe("settings rows", () => {
   it("keeps a short description inline", () => {

@@ -23,6 +23,7 @@ import {
 } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
 import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
+import { WarningIcon } from "./ui/icons";
 import { useTranslation, type TranslationKey } from "../i18n";
 import {
   READER_PAGE_TRANSITION_DURATION_MAX_MS,
@@ -736,14 +737,17 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
       ) : null,
     lockedNotice: (
       <div className="norea-reader-settings-disabled-notice" role="status">
-        <span className="norea-reader-settings-disabled-title">
-          {t("readerSettings.scope.disabledTitle")}
-        </span>
-        <span className="norea-reader-settings-disabled-description">
-          {t("readerSettings.scope.disabledDescription", {
-            scope: editor.appliedScopeLabel,
-          })}
-        </span>
+        <WarningIcon className="norea-reader-settings-disabled-icon" />
+        <div className="norea-reader-settings-disabled-copy">
+          <span className="norea-reader-settings-disabled-title">
+            {t("readerSettings.scope.disabledTitle")}
+          </span>
+          <span className="norea-reader-settings-disabled-description">
+            {t("readerSettings.scope.disabledDescription", {
+              scope: editor.appliedScopeLabel,
+            })}
+          </span>
+        </div>
       </div>
     ),
     readingMode: (

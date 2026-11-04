@@ -92,7 +92,7 @@ function SettingsDetail({
         title={t(SETTINGS_SECTION_TITLE_KEYS[id])}
         titleId={`settings-${id}-title`}
       />
-      <div className="norea-settings-detail-body" ref={bodyRef}>
+      <div className="norea-settings-detail-body norea-settings-sections" ref={bodyRef}>
         {children}
       </div>
     </section>
