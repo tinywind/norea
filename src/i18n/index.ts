@@ -111,16 +111,40 @@ export function formatRelativeTimeForLocale(
   return formatDateForLocale(locale, timestamp);
 }
 
+/** Plugin catalogs name languages in English ("Japanese") or natively ("한국어"), not by code. */
+const ENGLISH_LANGUAGE_NAME_CODES: Readonly<Record<string, string>> = {
+  arabic: "ar",
+  chinese: "zh",
+  english: "en",
+  french: "fr",
+  german: "de",
+  indonesian: "id",
+  italian: "it",
+  japanese: "ja",
+  korean: "ko",
+  polish: "pl",
+  portuguese: "pt",
+  russian: "ru",
+  spanish: "es",
+  thai: "th",
+  turkish: "tr",
+  ukrainian: "uk",
+  vietnamese: "vi",
+};
+
 export function formatPluginLanguageForLocale(
   locale: AppLocale,
   lang: string,
 ): string {
-  if (lang === "multi") return translate(locale, "pluginLanguage.multi");
+  const name = lang.trim().toLowerCase();
+  if (name === "multi") return translate(locale, "pluginLanguage.multi");
+  const code = ENGLISH_LANGUAGE_NAME_CODES[name] ?? lang;
   try {
     const displayNames = new Intl.DisplayNames([normalizeAppLocale(locale)], {
       type: "language",
     });
-    return displayNames.of(lang) ?? lang;
+    const label = displayNames.of(code);
+    return label && label.toLowerCase() !== code.toLowerCase() ? label : lang;
   } catch {
     return lang;
   }
