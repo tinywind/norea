@@ -79,7 +79,7 @@ it("draws the phone action bar as the bottom navigation's twin, with the safe ar
   const app = readFileSync(new URL("../../styles/app.css", import.meta.url), "utf8");
   const phone = css.slice(css.lastIndexOf("@media (max-width: 767px)"));
   const bar = /\.norea-selection-bar-actions \{([^}]*)\}/.exec(phone)![1]!;
-  const nav = /\.norea-mobile-nav \{([^}]*)\}/.exec(app)![1]!;
+  const nav = /^\.norea-mobile-nav \{([^}]*)\}/m.exec(app)![1]!;
   const declaration = (body: string, property: string) =>
     new RegExp(`(?:^|;)\\s*${property}: ([^;]+);`).exec(body)?.[1]?.replace(/\s+/g, " ");
   for (const property of ["height", "padding", "box-sizing", "background", "border-top"]) {

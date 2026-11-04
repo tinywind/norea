@@ -74,7 +74,7 @@ interface AndroidLayoutConfig {
 }
 
 let androidNativePxPerCssPx = 1;
-let nativeKeyboardInset = "0px";
+let nativeKeyboardInsetPx = 0;
 
 function positiveNumber(value: unknown): number | null {
   const numeric = typeof value === "number" ? value : Number(value);
@@ -236,7 +236,7 @@ function applyNativeSafeAreaInsets(insets: RuntimeSafeAreaInsets): void {
     NATIVE_SAFE_AREA_LEFT_PROPERTY,
     safeInsetPx(insets.left),
   );
-  nativeKeyboardInset = safeInsetPx(insets.keyboard, true);
+  nativeKeyboardInsetPx = Number.parseFloat(safeInsetPx(insets.keyboard, true));
   applyKeyboardInset();
 }
 
@@ -259,7 +259,7 @@ function clearNativeSafeAreaInsets(): void {
   root.style.removeProperty(NATIVE_SAFE_AREA_RIGHT_PROPERTY);
   root.style.removeProperty(NATIVE_SAFE_AREA_BOTTOM_PROPERTY);
   root.style.removeProperty(NATIVE_SAFE_AREA_LEFT_PROPERTY);
-  nativeKeyboardInset = "0px";
+  nativeKeyboardInsetPx = 0;
 }
 
 function applyRuntimeSafeAreaInsets(): void {
@@ -317,16 +317,80 @@ export function keyboardInsetPx(
   return Math.max(0, Math.round(layoutHeight - viewport.height - viewport.offsetTop));
 }
 
+/** Space kept above a revealed field, so its label stays in view too. */
+const FIELD_REVEAL_MARGIN_PX = 16;
+const REVEAL_TARGETS = "input, textarea, select, [contenteditable='true']";
+const REVEAL_ANCHORS = ".norea-settings-form-row, .mantine-InputWrapper-root";
+
+/** The scroll position that puts a field's top `margin` below its scroll container's top. */
+export function fieldRevealScrollTop(
+  scrollTop: number,
+  fieldTop: number,
+  containerTop: number,
+  margin = FIELD_REVEAL_MARGIN_PX,
+): number {
+  return Math.max(0, Math.round(scrollTop + fieldTop - containerTop - margin));
+}
+
+/** The part of a scroll box a sticky header covers: its scroll padding or a sticky child such as a sheet header. */
+function stickyHeaderHeight(container: HTMLElement, containerTop: number): number {
+  let covered = Number.parseFloat(getComputedStyle(container).scrollPaddingTop) || 0;
+  for (const child of Array.from(container.children)) {
+    if (getComputedStyle(child).position !== "sticky") continue;
+    covered = Math.max(covered, child.getBoundingClientRect().bottom - containerTop);
+  }
+  return covered;
+}
+
+function scrollContainerOf(element: HTMLElement): HTMLElement | null {
+  for (let node = element.parentElement; node; node = node.parentElement) {
+    const { overflowY } = getComputedStyle(node);
+    if ((overflowY === "auto" || overflowY === "scroll") && node.scrollHeight > node.clientHeight) return node;
+  }
+  return null;
+}
+
+/**
+ * Scrolls the focused field's own scroll container, not the window, so the field
+ * sits at the top of what the keyboard leaves visible, below any sticky header. Window-level scrolling
+ * would also move overflow-hidden ancestors such as the app shell.
+ */
+function revealFocusedField(): void {
+  const field = document.activeElement;
+  if (!(field instanceof HTMLElement) || !field.matches(REVEAL_TARGETS)) return;
+  const anchor = field.closest<HTMLElement>(REVEAL_ANCHORS) ?? field;
+  const container = scrollContainerOf(anchor);
+  if (!container) return;
+  const containerTop = container.getBoundingClientRect().top;
+  container.scrollTop = fieldRevealScrollTop(
+    container.scrollTop,
+    anchor.getBoundingClientRect().top,
+    containerTop + stickyHeaderHeight(container, containerTop),
+  );
+}
+
+function keyboardOpen(): boolean {
+  return document.documentElement.dataset.noreaKeyboard === "open";
+}
+
 /**
  * The larger of the visual-viewport estimate and the native IME inset. Android
  * edge-to-edge windows keep the WebView full height under the keyboard, so only
- * the native inset reports it there.
+ * the native inset reports it there. While it is open the shell shrinks to the
+ * area above it and the focused field is brought to the top of that area.
  */
 function applyKeyboardInset(): void {
-  document.documentElement.style.setProperty(
-    KEYBOARD_INSET_PROPERTY,
-    `max(${keyboardInsetPx(window.innerHeight, window.visualViewport)}px, ${nativeKeyboardInset})`,
-  );
+  const root = document.documentElement;
+  const inset = Math.max(keyboardInsetPx(window.innerHeight, window.visualViewport), nativeKeyboardInsetPx);
+  const wasOpen = keyboardOpen();
+  root.style.setProperty(KEYBOARD_INSET_PROPERTY, `${inset}px`);
+  if (inset > 0) root.dataset.noreaKeyboard = "open";
+  else delete root.dataset.noreaKeyboard;
+  if (inset > 0 && !wasOpen) requestAnimationFrame(revealFocusedField);
+}
+
+function revealFieldOnFocus(): void {
+  if (keyboardOpen()) requestAnimationFrame(revealFocusedField);
 }
 
 function isAndroidEnterBlurInput(
@@ -374,8 +438,10 @@ export function useRuntimeViewport(
     if (!isAndroidRuntime()) return;
 
     document.addEventListener("keydown", blurAndroidInputOnEnter, true);
+    document.addEventListener("focusin", revealFieldOnFocus);
     return () => {
       document.removeEventListener("keydown", blurAndroidInputOnEnter, true);
+      document.removeEventListener("focusin", revealFieldOnFocus);
     };
   }, []);
 
@@ -399,6 +465,7 @@ export function useRuntimeViewport(
     return () => {
       cancelAnimationFrame(frame);
       document.documentElement.style.removeProperty(KEYBOARD_INSET_PROPERTY);
+      delete document.documentElement.dataset.noreaKeyboard;
       window.removeEventListener("resize", scheduleRuntimeUpdate);
       window.visualViewport?.removeEventListener(
         "resize",

@@ -348,9 +348,29 @@ a {
   );
 }
 
+/*
+ * While the keyboard is open the shell ends at the keyboard's top edge, so every page scrolls in
+ * the area that stays visible; the bottom navigation would sit under the keyboard, so it hides.
+ */
+html[data-norea-keyboard="open"] :where(.norea-app-main, .norea-reader-shell) {
+  height: calc(
+    var(--norea-viewport-height) - var(--norea-keyboard-inset) - var(--norea-safe-area-bottom)
+  );
+}
+
+html[data-norea-keyboard="open"] .norea-app-main {
+  padding-block-end: var(--app-shell-footer-offset, 0rem);
+}
+
+html[data-norea-keyboard="open"] .norea-mobile-nav {
+  display: none;
+}
+
 .norea-app-scroll {
   flex: 1 1 auto;
   min-height: 0;
+  /* The sticky app bar covers this much of the scroll box; focus and field reveals land below it. */
+  scroll-padding-top: var(--norea-app-bar-height);
   overflow-x: hidden;
   overflow-y: auto;
   overscroll-behavior: contain;

@@ -88,7 +88,7 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
         error={backups.error ? message(backups.error) : null}>
         <div className="norea-settings-connection">
           <Select aria-label={t("deviceBackup.savedDevices")} placeholder={t("deviceBackup.chooseDevice")}
-            value={selected} onChange={setSelected} searchable clearable disabled={busy || !serverUrl}
+            value={selected} onChange={setSelected} clearable disabled={busy || !serverUrl}
             data={(backups.data ?? []).map(item => ({ value: item.deviceName, label: item.deviceName }))}
             nothingFoundMessage={t("deviceBackup.empty")} />
           <IconButton label={t("common.refresh")} loading={backups.isFetching} disabled={busy || !serverUrl}
