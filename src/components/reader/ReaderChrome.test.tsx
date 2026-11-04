@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ReactElement, ReactNode } from "react";
 import { expect, it, vi } from "vitest";
 
@@ -83,4 +84,9 @@ it("disables chapter steps at the ends of the chapter list and reports the chapt
   expect(withLabel(tree, "reader.nextChapter")[0]!.props.disabled).toBe(false);
   expect(withLabel(tree, "reader.chapters")[0]!.props["aria-expanded"]).toBe(true);
   expect(withLabel(tree, "reader.openSettings")).toHaveLength(1);
+});
+
+it("centers the bottom bar position label when no horizontal seekbar shares its slot", () => {
+  const css = readFileSync(new URL("../../styles/reader.css", import.meta.url), "utf8");
+  expect(css).toMatch(/\.norea-reader-seek-label:only-child \{\s*margin-inline: auto;/);
 });

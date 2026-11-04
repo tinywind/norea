@@ -85,6 +85,11 @@
   white-space: nowrap;
 }
 
+/* Without a horizontal seekbar (scroll mode) the label is the slot's only content and sits centered. */
+.norea-reader-seek-label:only-child {
+  margin-inline: auto;
+}
+
 .norea-reader-icon-button,
 .norea-reader-chapter-row {
   appearance: none;
@@ -349,6 +354,19 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--norea-space-2);
+}
+
+/* The card takes the reader theme's colors, so outline actions do too instead of the app's light surface. */
+.norea-reader-end-actions .mantine-Button-root[data-variant="default"] {
+  background: transparent;
+  border-color: var(--norea-reader-ink-muted, var(--norea-color-rule-strong));
+  color: var(--norea-reader-ink, var(--norea-color-ink));
+}
+
+@media (hover: hover) {
+  .norea-reader-end-actions .mantine-Button-root[data-variant="default"]:hover:not(:disabled) {
+    background: var(--norea-reader-chrome-raised, var(--norea-color-surface-raised));
+  }
 }
 
 /* Full-page mode floats the bottom bar over the content; stay above it. */
@@ -649,7 +667,7 @@
   gap: var(--norea-space-2);
   inset: 0;
   justify-content: center;
-  line-height: 1.4;
+  line-height: var(--norea-leading-normal);
   padding: var(--norea-space-4);
   pointer-events: auto;
   position: absolute;

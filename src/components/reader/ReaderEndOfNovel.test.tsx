@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ReactElement, ReactNode } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import en from "../../../strings/languages/en/app.json";
@@ -170,4 +171,12 @@ it("refreshes the novel in place, counts new chapters and resets for another cha
 
   await harness.render(<Probe chapterId={10} />);
   expect(state!.check).toEqual({ status: "idle" });
+});
+
+it("draws outline actions in the reader theme colors instead of the app surface", () => {
+  const css = readFileSync(new URL("../../styles/reader.css", import.meta.url), "utf8");
+  const rule = /\.norea-reader-end-actions \.mantine-Button-root\[data-variant="default"\] \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(rule).toContain("background: transparent");
+  expect(rule).toContain("color: var(--norea-reader-ink");
+  expect(rule).toContain("border-color: var(--norea-reader-ink-muted");
 });
