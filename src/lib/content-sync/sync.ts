@@ -37,6 +37,20 @@ async function catalogCache(server: string): Promise<CatalogCache> {
   return saved ? JSON.parse(saved) as CatalogCache : { cursor: 0, tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] };
 }
 function saveCatalog(server: string, cache: CatalogCache): Promise<void> { return saveCache(`norea-content-catalog:${server}`, cache); }
+const UPLOADED_FINGERPRINT_DIGEST = /^[0-9a-f]{64}$/;
+async function digestHex(text: string): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(text));
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+/**
+ * The catalog is parsed and rewritten whole several times per synchronization pass. A stored
+ * package fingerprint lists every chapter file and repeats the novel summary, so keep its digest.
+ */
+async function compactUploadedFingerprints(cache: CatalogCache): Promise<boolean> {
+  const expanded = Object.entries(cache.uploaded).filter(([, fingerprint]) => !UPLOADED_FINGERPRINT_DIGEST.test(fingerprint));
+  await Promise.all(expanded.map(async ([id, fingerprint]) => { cache.uploaded[id] = await digestHex(fingerprint); }));
+  return expanded.length > 0;
+}
 function identity(row: ContentSyncChapter): string { return contentIdentity(row.pluginId, row.novelPath, row.chapterPath); }
 function storageDir(row: ContentSyncChapter): string {
   return resolvedChapterStorageDir(row.chapterId) ?? chapterStorageRelativeDir(
@@ -45,8 +59,8 @@ function storageDir(row: ContentSyncChapter): string {
   );
 }
 async function contentFingerprint(row: ContentSyncChapter, stagePath: string): Promise<string> {
-  return JSON.stringify([await fingerprintContentChapter({ storageDir: storageDir(row), stagePath }),
-    row.novelName, row.author, row.summary, row.chapterName, row.chapterNumber, row.position, row.page, row.contentType]);
+  return digestHex(JSON.stringify([await fingerprintContentChapter({ storageDir: storageDir(row), stagePath }),
+    row.novelName, row.author, row.summary, row.chapterName, row.chapterNumber, row.position, row.page, row.contentType]));
 }
 interface UploadChapterLookup {
   entry: CatalogEntry;
@@ -278,6 +292,7 @@ async function performSync(uploadContent = true, rescan = false): Promise<void> 
     const token = await initializeDevice(serverUrl);
     const cache = await catalogCache(serverUrl);
     assertDevice(serverUrl, token);
+    if (await compactUploadedFingerprints(cache)) await saveCatalog(serverUrl, cache);
     const deletedWorks = await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token), rescan);
     await pullCatalog(serverUrl, token, cache);
     if (uploadContent) {

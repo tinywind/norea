@@ -1,4 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import { createHash } from "node:crypto";
 const native = vi.hoisted(() => ({ download: vi.fn(), install: vi.fn(), stage: vi.fn() }));
 
 vi.mock("../../db/queries/content-sync", () => ({
@@ -990,4 +991,39 @@ it("times out queued deletion and never runs the expired destructive callback la
     await runContentSyncOperation(async () => undefined);
     expect(remove).not.toHaveBeenCalled();
   } finally { vi.useRealTimers(); }
+});
+
+it("stores a SHA-256 digest of each uploaded chapter fingerprint instead of the expanded fingerprint", async () => {
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "n", chapterPath: "c",
+    novelName: "Novel", summary: "A long summary", chapterName: "Chapter", contentType: "html", position: 1, page: "1", isDownloaded: true, mediaRepairNeeded: false }] as never);
+  await syncContentServer();
+  const saved = JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!);
+  const expanded = JSON.stringify(["fingerprint-a", "Novel", undefined, "A long summary", "Chapter", undefined, 1, "1", "html"]);
+  expect(saved.uploaded).toEqual({ '["p","n","c"]': createHash("sha256").update(expanded).digest("hex") });
+});
+
+it("compacts expanded fingerprints left by earlier catalogs before they are rewritten again", async () => {
+  const key = "norea-content-catalog:http://localhost:7788";
+  const summary = "A summary repeated in every chapter fingerprint. ".repeat(20);
+  const uploaded: Record<string, string> = {};
+  const downloads: Record<string, boolean> = {};
+  for (let index = 0; index < 2000; index += 1) {
+    const id = JSON.stringify(["p", "n", `c${index}`]);
+    uploaded[id] = JSON.stringify([JSON.stringify([["index.html", 4096, 1], ["media/1.jpg", 90_000, 1]]), "Novel", null, summary, `Chapter ${index}`, String(index), index, "1", "html"]);
+    downloads[id] = true;
+  }
+  const legacy = JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true,
+    tombstones: {}, uploaded, downloads, excluded: [], pendingUploads: [] });
+  memory.set(key, legacy);
+
+  await syncContentServer();
+
+  const compacted = memory.get(key)!;
+  const saved = JSON.parse(compacted);
+  expect(Object.keys(saved.uploaded)).toEqual(Object.keys(uploaded));
+  expect(saved.uploaded['["p","n","c7"]']).toBe(createHash("sha256").update(uploaded['["p","n","c7"]']!).digest("hex"));
+  expect(Object.values(saved.uploaded).every((value) => /^[0-9a-f]{64}$/.test(value as string))).toBe(true);
+  expect(saved.downloads).toEqual(downloads);
+  expect(compacted.length).toBeLessThan(legacy.length / 5);
+  expect(uploadContentChapter).not.toHaveBeenCalled();
 });
