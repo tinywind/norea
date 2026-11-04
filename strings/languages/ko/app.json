@@ -1402,7 +1402,6 @@
   "novel.serverComplete": "서버에 전체 사본",
   "novel.deleteDownload": "다운로드 삭제",
   "novel.currentChapter": "현재 챕터",
-  "novel.deleteDownloadMessage": "이 기기에서 \"{name}\"의 다운로드 파일을 삭제할까요? 나중에 다시 다운로드할 수 있습니다.",
   "novelMerge.title": "“{name}” 옮기기",
   "novelMerge.missingSource": "원본 작품 없음",
   "novelMerge.missingSourceDescription": "작품 메뉴에서 이 화면을 여세요.",

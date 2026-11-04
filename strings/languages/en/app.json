@@ -1402,7 +1402,6 @@
   "novel.serverComplete": "Full copy on server",
   "novel.deleteDownload": "Delete download",
   "novel.currentChapter": "Current chapter",
-  "novel.deleteDownloadMessage": "Delete the downloaded files of \"{name}\" from this device? You can download it again later.",
   "novelMerge.title": "Migrate “{name}”",
   "novelMerge.missingSource": "Missing source novel",
   "novelMerge.missingSourceDescription": "Open this screen from a novel's menu.",

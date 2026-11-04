@@ -28,7 +28,6 @@ import {
   ServerIcon,
   SourceIcon,
 } from "../components/ui/icons";
-import { useConfirm } from "../components/ui/ConfirmDialog";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
 import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
@@ -96,7 +95,6 @@ interface NovelDetailPageProps {
 export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const confirm = useConfirm();
   const currentHref = useRouterState({ select: (state) => state.location.href });
   const active = usePageActivity();
   const defaultChapterSort = useLibraryStore((s) => s.defaultChapterSort);
@@ -442,15 +440,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     void navigate({ to: "/reader", search: { chapterId: chapter.id } });
   }
 
-  async function deleteChapterDownload(chapterId: number): Promise<void> {
-    const chapter = chapters.find((row) => row.id === chapterId);
-    const confirmed = await confirm({
-      confirmLabel: t("common.delete"),
-      danger: true,
-      message: t("novel.deleteDownloadMessage", { name: chapter?.name ?? String(chapterId) }),
-      title: t("novel.deleteDownload"),
-    });
-    if (confirmed) clearDownload.mutate(chapterId);
+  function deleteChapterDownload(chapterId: number): void {
+    clearDownload.mutate(chapterId);
   }
 
   function showAddedToLibrary(novelId: number): void {
@@ -980,7 +971,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   onToggleSelected={toggleChapterSelected}
                   onDeleteDownload={(chapterId) => {
                     if (novel.isLocal) return;
-                    void deleteChapterDownload(chapterId);
+                    deleteChapterDownload(chapterId);
                   }}
                 />
               )}

@@ -628,29 +628,14 @@ it("jumps to a chapter by number or title and reports a miss inline", async () =
   });
 });
 
-it("asks a single-line confirmation before deleting one chapter's download", async () => {
+it("deletes one chapter's download at once, without a confirmation", async () => {
   mocks.novel.isLocal = false;
   mocks.chapters = [{ ...chapter, isDownloaded: true }];
-  let answer!: (confirmed: boolean) => void;
-  mocks.confirm.mockImplementation(() => new Promise<boolean>((resolve) => { answer = resolve; }));
   await withPageTree(async (find, run) => {
     const list = find((props) => typeof props.onDeleteDownload === "function")!;
     await run(() => (list.props.onDeleteDownload as (id: number) => void)(1));
-    expect(mocks.confirm).toHaveBeenCalledWith(expect.objectContaining({ danger: true, title: "novel.deleteDownload" }));
-    expect(mocks.clearDownloadMutate).not.toHaveBeenCalled();
-    await run(() => answer(true));
+    expect(mocks.confirm).not.toHaveBeenCalled();
     expect(mocks.clearDownloadMutate).toHaveBeenCalledWith(1);
-  });
-});
-
-it("keeps the download when the confirmation is cancelled", async () => {
-  mocks.novel.isLocal = false;
-  mocks.chapters = [{ ...chapter, isDownloaded: true }];
-  mocks.confirm.mockResolvedValue(false);
-  await withPageTree(async (find, run) => {
-    const list = find((props) => typeof props.onDeleteDownload === "function")!;
-    await run(() => (list.props.onDeleteDownload as (id: number) => void)(1));
-    expect(mocks.clearDownloadMutate).not.toHaveBeenCalled();
   });
 });
 
