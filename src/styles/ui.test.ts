@@ -183,8 +183,6 @@ describe("coarse pointer touch floor", () => {
     for (const selector of [
       "html:root .norea-icon-button",
       "html:root .mantine-ActionIcon-root",
-      "html:root .norea-text-button",
-      "html:root .mantine-Button-root",
       "html:root .mantine-CloseButton-root",
       "html:root .norea-rail-link",
       "html:root button.norea-console-chip",
@@ -192,6 +190,15 @@ describe("coarse pointer touch floor", () => {
       const { body } = ruleFor(coarse, selector);
       expect(body, selector).toMatch(/min-height: var\(--norea-control-md\);/);
       expect(body, selector).toMatch(/min-width: var\(--norea-control-md\);/);
+    }
+  });
+
+  it("gives labeled buttons the touch height with a floor wider than the icon square", () => {
+    for (const selector of ["html:root .norea-text-button", "html:root .mantine-Button-root"]) {
+      const { body } = ruleFor(coarse, selector);
+      expect(body, selector).toMatch(/min-height: var\(--norea-control-md\);/);
+      expect(body, selector).toMatch(/min-width: 4\.5rem;/);
+      expect(body, selector).not.toMatch(/min-width: var\(--norea-control-md\);/);
     }
   });
 

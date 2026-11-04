@@ -50,13 +50,18 @@
    */
   html:root .norea-icon-button,
   html:root .mantine-ActionIcon-root,
-  html:root .norea-text-button,
-  html:root .mantine-Button-root,
   html:root .mantine-CloseButton-root,
   html:root .norea-rail-link,
   html:root button.norea-console-chip {
     min-height: var(--norea-control-md);
     min-width: var(--norea-control-md);
+  }
+
+  /* Labeled buttons take the touch height but a wider floor than an icon's square. */
+  html:root .norea-text-button,
+  html:root .mantine-Button-root {
+    min-height: var(--norea-control-md);
+    min-width: 4.5rem;
   }
 
   html:root .mantine-Menu-item {

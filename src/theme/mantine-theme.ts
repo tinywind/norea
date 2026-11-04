@@ -323,7 +323,7 @@ export function createNoreaMantineTheme(
       // a bar or a list row and for text links; `light` marks only a selected chip or a pressed
       // toggle. Icon-only buttons are always borderless, so ActionIcon defaults to `subtle`.
       ActionIcon: { classNames: { root: STATE_LAYER_CLASS }, defaultProps: { variant: "subtle" } },
-      Button: { classNames: { root: STATE_LAYER_CLASS }, defaultProps: { radius: "sm" } },
+      Button: { classNames: { root: STATE_LAYER_CLASS }, defaultProps: { radius: "md" } },
       CloseButton: { classNames: { root: STATE_LAYER_CLASS } },
       Paper: { defaultProps: { radius: "sm" } },
       TextInput: { defaultProps: { radius: "sm" } },

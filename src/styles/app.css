@@ -169,8 +169,18 @@ a {
   --input-height-sm: var(--norea-control-sm);
 }
 
+/* Labeled buttons pad at least half their height, so a one-word label never reads as a square. */
 [data-mantine-color-scheme] .mantine-Button-root {
   --button-height-sm: var(--norea-control-sm);
+  --button-padding-x-sm: 1.25rem;
+  --button-padding-x-compact-sm: var(--norea-space-3);
+}
+
+@media (any-pointer: coarse) {
+  [data-mantine-color-scheme] .mantine-Button-root {
+    --button-padding-x-sm: 1.5rem;
+    --button-padding-x-compact-sm: var(--norea-space-4);
+  }
 }
 
 @media (forced-colors: active) {
@@ -817,12 +827,12 @@ a {
 
 .norea-text-button {
   --norea-text-button-height: var(--norea-control-sm);
-  --norea-text-button-padding-inline: 0.875rem;
-  border-radius: var(--norea-radius-sm);
+  --norea-text-button-padding-inline: var(--norea-space-4);
+  border-radius: var(--norea-radius-md);
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-sm);
   font-variant-numeric: tabular-nums;
-  font-weight: 800;
+  font-weight: var(--norea-weight-medium);
   height: var(--norea-text-button-height);
   line-height: 1;
   min-height: var(--norea-text-button-height);
@@ -832,13 +842,20 @@ a {
 
 .norea-text-button--sm {
   --norea-text-button-height: 1.75rem;
-  --norea-text-button-padding-inline: 0.625rem;
+  --norea-text-button-padding-inline: var(--norea-space-3);
   font-size: var(--norea-text-xs);
 }
 
 .norea-text-button--lg {
   --norea-text-button-height: var(--norea-control-sm);
-  --norea-text-button-padding-inline: 0.875rem;
+  --norea-text-button-padding-inline: var(--norea-space-4);
+}
+
+@media (any-pointer: coarse) {
+  .norea-text-button--sm,
+  .norea-text-button--lg {
+    --norea-text-button-padding-inline: 1.25rem;
+  }
 }
 
 .norea-text-button[data-variant="default"] {
