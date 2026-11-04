@@ -133,10 +133,11 @@ export function useNovelChapterActions(
   });
 
   function downloadChapter(chapter: ChapterListRow): void {
-    downloadChapters([chapter], "user");
+    downloadChapters([chapter]);
   }
 
-  function downloadChapters(chaptersToDownload: ChapterListRow[], priority?: "user"): void {
+  /** Downloads chapters the user chose, ahead of automatic goal work. */
+  function downloadChapters(chaptersToDownload: ChapterListRow[]): void {
     if (!novel || chaptersToDownload.length === 0) return;
     const batchNovel = novel;
     const chapterDownloadJobs = chaptersToDownload.map((chapter) => ({
@@ -149,12 +150,12 @@ export function useNovelChapterActions(
       novelId: batchNovel.id,
       novelName: batchNovel.name,
       novelPath: batchNovel.path,
-      priority,
+      priority: "user" as const,
       title: t("tasks.task.downloadChapter", { name: chapter.name }),
     }));
     const title = t("tasks.task.downloadChapterBatch", { count: chaptersToDownload.length });
     void submitChapterDownloadRequest({
-      key: JSON.stringify([batchNovel.pluginId, batchNovel.id, chapterDownloadJobs.map(job => job.id).sort((left, right) => left - right), priority]),
+      key: JSON.stringify([batchNovel.pluginId, batchNovel.id, chapterDownloadJobs.map(job => job.id).sort((left, right) => left - right)]),
       title,
       novelIds: [batchNovel.id],
       total: chaptersToDownload.length,

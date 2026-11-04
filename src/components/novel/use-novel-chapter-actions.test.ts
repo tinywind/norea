@@ -74,7 +74,7 @@ it.each([false, true])("admits the chapter request before its queue is materiali
     expect(getChapterDownloadRequestSnapshot()).toMatchObject([{ novelIds: [3], total: 1, phase: "preparing" }]);
   } finally { release(); }
   await vi.waitFor(() => expect(getChapterDownloadRequestSnapshot()).toEqual([]));
-  expect(vi.mocked(enqueueChapterDownloadBatch).mock.calls[0]?.[0].jobs).toEqual([expect.objectContaining({ id: 7, novelId: 3 })]);
+  expect(vi.mocked(enqueueChapterDownloadBatch).mock.calls[0]?.[0].jobs).toEqual([expect.objectContaining({ id: 7, novelId: 3, priority: "user" })]);
 });
 
 it("keeps the batch deletion pending until the files and records are deleted", async () => {
