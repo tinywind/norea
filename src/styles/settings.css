@@ -320,6 +320,11 @@
   min-width: 0;
 }
 
+/* Buttons beside a field share one width, so fields in consecutive rows line up. */
+.norea-settings-inline-controls > :where(.mantine-Button-root) {
+  min-width: 6.5rem;
+}
+
 .norea-settings-wide-field {
   min-width: 0;
   width: 100%;
