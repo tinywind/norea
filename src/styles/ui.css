@@ -108,29 +108,59 @@
   transform-origin: left;
 }
 
+/* Sheet and dialog anatomy, shared by ResponsiveSheet and ConfirmDialog. */
+.norea-responsive-sheet-header {
+  border-bottom: 1px solid transparent;
+  min-height: 3.5rem;
+  transition: border-color var(--norea-duration-fast) var(--norea-ease-standard);
+}
+
+/* The divider appears once the body scrolls under the header. */
+.norea-responsive-sheet[data-scrolled="true"] .norea-responsive-sheet-header {
+  border-bottom-color: var(--norea-color-rule);
+}
+
+.norea-responsive-sheet-title {
+  display: grid;
+  font-size: var(--norea-text-lg);
+  font-weight: var(--norea-weight-bold);
+  gap: 0.125rem;
+  line-height: var(--norea-leading-tight);
+  min-width: 0;
+}
+
+.norea-responsive-sheet-subtitle {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-regular);
+  overflow-wrap: anywhere;
+}
+
+/* 44px at the default UI scale; coarse pointers also get the touch floor below. */
+.norea-responsive-sheet-close {
+  flex: 0 0 auto;
+  height: 2.75rem;
+  width: 2.75rem;
+}
+
+.norea-responsive-sheet-scroll-sentinel {
+  display: block;
+  height: 0;
+}
+
 .norea-responsive-sheet--drawer {
   border-bottom: 0;
   border-radius: var(--norea-radius-xl) var(--norea-radius-xl) 0 0;
   box-shadow: var(--norea-shadow-sheet);
   height: auto;
-  margin: 0 var(--norea-safe-area-right) 0 var(--norea-safe-area-left);
-  max-height: calc(var(--norea-viewport-height) * 0.9);
+  /* The keyboard inset keeps inputs at the bottom of the sheet above the Android keyboard. */
+  margin: 0 var(--norea-safe-area-right) var(--norea-keyboard-inset)
+    var(--norea-safe-area-left);
+  max-height: calc((var(--norea-viewport-height) - var(--norea-keyboard-inset)) * 0.9);
 }
 
 .norea-responsive-sheet--drawer .norea-responsive-sheet-header {
   padding-top: var(--norea-space-5);
-}
-
-.norea-responsive-sheet--drawer .norea-responsive-sheet-header::before {
-  background: var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-full);
-  content: "";
-  height: 0.25rem;
-  left: 50%;
-  position: absolute;
-  top: var(--norea-space-2);
-  transform: translateX(-50%);
-  width: 2rem;
 }
 
 .norea-responsive-sheet--drawer .norea-responsive-sheet-body {
@@ -138,21 +168,29 @@
 }
 
 .norea-responsive-sheet.norea-responsive-sheet--resizable {
-  height: calc(var(--norea-viewport-height) * var(--norea-sheet-fraction, 0.55));
+  height: calc(
+    (var(--norea-viewport-height) - var(--norea-keyboard-inset)) *
+      var(--norea-sheet-fraction, 0.55)
+  );
 }
 
-.norea-responsive-sheet--resizable .norea-responsive-sheet-header::before {
-  content: none;
-}
-
+/* One handle for every bottom sheet: a pill on a full-width touch strip. */
 .norea-responsive-sheet-handle {
-  cursor: ns-resize;
+  cursor: grab;
   height: var(--norea-space-5);
   left: 0;
   position: absolute;
   right: 0;
   top: 0;
   touch-action: none;
+}
+
+.norea-responsive-sheet--resizable .norea-responsive-sheet-handle {
+  cursor: ns-resize;
+}
+
+.norea-responsive-sheet-handle[data-disabled] {
+  cursor: default;
 }
 
 .norea-responsive-sheet-handle::before {
@@ -164,7 +202,7 @@
   position: absolute;
   top: var(--norea-space-2);
   transform: translateX(-50%);
-  width: 2rem;
+  width: 2.25rem;
 }
 
 .norea-responsive-sheet--side {
@@ -192,6 +230,14 @@
 .norea-responsive-sheet--drawer .norea-responsive-sheet-footer,
 .norea-responsive-sheet--side .norea-responsive-sheet-footer {
   padding-bottom: calc(var(--norea-space-3) + var(--norea-safe-area-bottom));
+}
+
+/* Footer buttons: right-aligned with the primary action last. */
+.norea-sheet-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2);
+  justify-content: flex-end;
 }
 
 .norea-list-item {
@@ -287,6 +333,17 @@
 }
 
 @media (max-width: 767px) {
+  /* Phone footers: equal-width buttons, stacked once there are more than two. */
+  .norea-sheet-actions > * {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .norea-sheet-actions > :first-child:nth-last-child(n + 3),
+  .norea-sheet-actions > :first-child:nth-last-child(n + 3) ~ * {
+    flex-basis: 100%;
+  }
+
   /* The action bar takes the bottom navigation's place while selecting. */
   body[data-norea-selection-bar] .norea-mobile-nav {
     visibility: hidden;
@@ -360,7 +417,7 @@ body[data-norea-reader-bars] {
 @media (min-width: 768px) {
   .norea-responsive-sheet--drawer {
     margin-inline: auto;
-    max-width: 40rem;
+    max-width: var(--norea-bottom-sheet-max-width);
   }
 }
 

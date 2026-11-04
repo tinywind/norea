@@ -1,5 +1,5 @@
 import { Button } from "@mantine/core";
-import { useState, type ReactNode } from "react";
+import { isValidElement, useState, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { usePageBackNavigation } from "../../lib/android-back-navigation";
 import {
@@ -23,10 +23,18 @@ const rendered = vi.hoisted(() => ({
   desktop: false,
 }));
 
+/** The visible text of a title, which may wrap the text with a sheet handle or subtitle. */
+function textOf(node: ReactNode): string {
+  if (typeof node === "string" || typeof node === "number") return String(node);
+  if (Array.isArray(node)) return node.map(textOf).join("");
+  if (isValidElement<{ children?: ReactNode }>(node)) return textOf(node.props.children);
+  return "";
+}
+
 vi.mock("@mantine/core", () => {
   const Pass = ({ children }: OverlayProps) => children;
   const overlay = (kind: string) => (props: OverlayProps) => {
-    rendered.overlays.set(props.title, { ...props, kind });
+    rendered.overlays.set(textOf(props.title), { ...props, kind });
     return props.opened ? props.children : null;
   };
   const Button = (props: OverlayProps) => {
@@ -54,7 +62,8 @@ let confirm: (options: ConfirmOptions) => Promise<boolean>;
 const pageBack = vi.fn(() => true);
 
 let setSheetOpened: (opened: boolean) => void;
-let sheetVariant: { desktopVariant?: "modal" | "side"; fullScreenOnPhone?: boolean } = {};
+let sheetVariant: { busy?: boolean; desktopVariant?: "modal" | "side"; fullScreenOnPhone?: boolean } = {};
+const sheetClose = vi.fn();
 
 function Page() {
   usePageBackNavigation(pageBack);
@@ -65,7 +74,10 @@ function Page() {
     <ResponsiveSheet
       {...sheetVariant}
       footer={<Button>Apply</Button>}
-      onClose={() => setOpened(false)}
+      onClose={() => {
+        sheetClose();
+        setOpened(false);
+      }}
       opened={sheetOpened}
       title="Filters"
     >
@@ -109,6 +121,7 @@ beforeEach(async () => {
   rendered.buttons.clear();
   rendered.desktop = false;
   sheetVariant = {};
+  sheetClose.mockClear();
   pageBack.mockClear();
   harness = mountBackNavigationHarness();
   await harness.render(<App />);
@@ -204,7 +217,12 @@ describe("ResponsiveSheet overlay contract", () => {
     sheetVariant = { desktopVariant: "side" };
     await harness.render(<App />);
     await openSheet();
-    expect(overlay("Filters")).toMatchObject({ kind: "drawer", opened: true, position: "right", size: "24rem" });
+    expect(overlay("Filters")).toMatchObject({
+      kind: "drawer",
+      opened: true,
+      position: "right",
+      size: "var(--norea-side-sheet-width)",
+    });
     expect(button("Apply")).toBeDefined();
   });
 
@@ -256,5 +274,35 @@ describe("ResponsiveSheet overlay contract", () => {
     await harness.run(() => overlay("Delete?")!.onClose!());
     await expect(result).resolves.toBe(false);
     expect(overlay("Filters")?.opened).toBe(true);
+  });
+
+  it("ignores Escape, outside clicks, the close button and Android back while busy", async () => {
+    sheetVariant = { busy: true };
+    await harness.render(<App />);
+    await openSheet();
+    expect(overlay("Filters")).toMatchObject({
+      closeButtonProps: { "aria-label": "common.close", disabled: true },
+      closeOnClickOutside: false,
+      closeOnEscape: false,
+    });
+
+    await harness.run(() => overlay("Filters")!.onClose!());
+    expect(harness.pressBack()).toBe(true);
+    expect(sheetClose).not.toHaveBeenCalled();
+    expect(overlay("Filters")?.opened).toBe(true);
+    expect(pageBack).not.toHaveBeenCalled();
+  });
+
+  it("closes normally once the work ends", async () => {
+    sheetVariant = { busy: true };
+    await harness.render(<App />);
+    await openSheet();
+    sheetVariant = {};
+    await harness.render(<App />);
+    expect(overlay("Filters")).toMatchObject({ closeOnClickOutside: true, closeOnEscape: true });
+
+    expect(harness.pressBack()).toBe(true);
+    expect(sheetClose).toHaveBeenCalledOnce();
+    expect(overlay("Filters")?.opened).toBe(false);
   });
 });

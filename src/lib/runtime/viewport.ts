@@ -14,6 +14,7 @@ const NATIVE_SAFE_AREA_RIGHT_PROPERTY = "--norea-native-safe-area-right";
 const NATIVE_SAFE_AREA_BOTTOM_PROPERTY = "--norea-native-safe-area-bottom";
 const NATIVE_SAFE_AREA_LEFT_PROPERTY = "--norea-native-safe-area-left";
 const MOBILE_NAV_CONTENT_HEIGHT_PROPERTY = "--norea-mobile-nav-content-height";
+const KEYBOARD_INSET_PROPERTY = "--norea-keyboard-inset";
 const ANDROID_MIN_VIEWPORT_WIDTH = 320;
 const ANDROID_MAX_VIEWPORT_WIDTH = 1920;
 const ANDROID_ENTER_BLUR_INPUT_TYPES = new Set([
@@ -298,6 +299,26 @@ function applyRuntimeUiScale(
   root.style.removeProperty(MOBILE_NAV_CONTENT_HEIGHT_PROPERTY);
 }
 
+/**
+ * How much of the layout viewport's bottom the on-screen keyboard covers.
+ * Zero when the WebView resizes for the keyboard, because the visual viewport
+ * then fills the layout viewport.
+ */
+export function keyboardInsetPx(
+  layoutHeight: number,
+  viewport: Pick<VisualViewport, "height" | "offsetTop"> | null | undefined,
+): number {
+  if (!viewport) return 0;
+  return Math.max(0, Math.round(layoutHeight - viewport.height - viewport.offsetTop));
+}
+
+function applyKeyboardInset(): void {
+  document.documentElement.style.setProperty(
+    KEYBOARD_INSET_PROPERTY,
+    `${keyboardInsetPx(window.innerHeight, window.visualViewport)}px`,
+  );
+}
+
 function isAndroidEnterBlurInput(
   target: EventTarget | null,
 ): target is HTMLInputElement {
@@ -357,6 +378,7 @@ export function useRuntimeViewport(
       frame = requestAnimationFrame(() => {
         applyRuntimeUiScale(fontScalePercent, androidViewScalePercent);
         applyRuntimeSafeAreaInsets();
+        applyKeyboardInset();
       });
     };
 
@@ -366,6 +388,7 @@ export function useRuntimeViewport(
     window.visualViewport?.addEventListener("scroll", scheduleRuntimeUpdate);
     return () => {
       cancelAnimationFrame(frame);
+      document.documentElement.style.removeProperty(KEYBOARD_INSET_PROPERTY);
       window.removeEventListener("resize", scheduleRuntimeUpdate);
       window.visualViewport?.removeEventListener(
         "resize",

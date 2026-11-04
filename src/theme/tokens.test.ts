@@ -235,6 +235,14 @@ describe("overlay tokens", () => {
       "--norea-radius-xl",
       "--norea-color-overlay-border",
       "--norea-z-popover",
+      "--norea-z-overlay-nested",
+      "--norea-z-confirm",
+      "--norea-dialog-sm",
+      "--norea-dialog-md",
+      "--norea-dialog-lg",
+      "--norea-dialog-xl",
+      "--norea-side-sheet-width",
+      "--norea-bottom-sheet-max-width",
     ]) {
       expect(consumers, token).toContain(`var(${token})`);
     }

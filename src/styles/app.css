@@ -22,6 +22,8 @@
     var(--norea-native-safe-area-left)
   );
   --norea-viewport-height: 100vh;
+  /* The part of the layout viewport the Android keyboard covers; set by the runtime viewport. */
+  --norea-keyboard-inset: 0px;
   --norea-mobile-nav-content-height: 3.5rem;
   --norea-mobile-nav-height: calc(
     var(--norea-mobile-nav-content-height) + var(--norea-safe-area-bottom)
@@ -351,13 +353,14 @@ a {
 .mantine-Modal-root[data-full-screen] .mantine-Modal-inner {
   background: var(--mantine-color-body);
   padding: var(--norea-safe-area-top) var(--norea-safe-area-right)
-    var(--norea-safe-area-bottom) var(--norea-safe-area-left);
+    calc(var(--norea-safe-area-bottom) + var(--norea-keyboard-inset))
+    var(--norea-safe-area-left);
 }
 
 .mantine-Modal-root[data-full-screen] .mantine-Modal-content {
   height: calc(
     var(--norea-viewport-height) - var(--norea-safe-area-top) -
-      var(--norea-safe-area-bottom)
+      var(--norea-safe-area-bottom) - var(--norea-keyboard-inset)
   );
 }
 

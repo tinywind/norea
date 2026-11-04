@@ -1,8 +1,9 @@
-import { Button, Group, Modal, Stack, Text } from "@mantine/core";
+import { Box, Button, Modal, Text } from "@mantine/core";
 import { useCallback, useEffect, useRef } from "react";
 import { create } from "zustand";
 import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
+import { SHEET_CLASS_NAMES, SHEET_DIALOG_WIDTHS, SheetActions } from "./ResponsiveSheet";
 
 export interface ConfirmOptions {
   title: string;
@@ -85,35 +86,43 @@ export function ConfirmDialog() {
     [],
   );
 
+  // A centered dialog at every width: a confirmation interrupts, and it stacks above the sheet it came from.
   return (
     <Modal
       centered
+      classNames={{
+        ...SHEET_CLASS_NAMES,
+        body: `${SHEET_CLASS_NAMES.body} norea-responsive-sheet-body--with-footer`,
+      }}
       opened={request !== undefined}
       onClose={() => settle(false)}
+      size={SHEET_DIALOG_WIDTHS.sm}
       title={shown?.title}
       // Confirmations open from inside sheets, drawers and their dropdowns, so they sit above all of them.
       zIndex="var(--norea-z-confirm)"
     >
       {shown ? (
-        <Stack gap="md">
+        <>
           <Text size="sm">{shown.message}</Text>
-          <Group justify="flex-end" gap="xs">
-            <Button
-              data-autofocus={shown.danger ? true : undefined}
-              variant="default"
-              onClick={() => settle(false)}
-            >
-              {shown.cancelLabel ?? t("common.cancel")}
-            </Button>
-            <Button
-              color={shown.danger ? "danger" : undefined}
-              data-autofocus={shown.danger ? undefined : true}
-              onClick={() => settle(true)}
-            >
-              {shown.confirmLabel}
-            </Button>
-          </Group>
-        </Stack>
+          <Box className="norea-responsive-sheet-footer">
+            <SheetActions>
+              <Button
+                data-autofocus={shown.danger ? true : undefined}
+                variant="default"
+                onClick={() => settle(false)}
+              >
+                {shown.cancelLabel ?? t("common.cancel")}
+              </Button>
+              <Button
+                color={shown.danger ? "danger" : undefined}
+                data-autofocus={shown.danger ? undefined : true}
+                onClick={() => settle(true)}
+              >
+                {shown.confirmLabel}
+              </Button>
+            </SheetActions>
+          </Box>
+        </>
       ) : null}
     </Modal>
   );

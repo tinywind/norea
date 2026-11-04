@@ -285,14 +285,14 @@ describe("toast placement", () => {
 });
 
 describe("full-screen dialogs", () => {
-  it("keep every full-screen modal inside the safe-area insets", () => {
+  it("keep every full-screen modal inside the safe-area insets and above the keyboard", () => {
     const inner = ruleFor(appCss, ".mantine-Modal-root[data-full-screen] .mantine-Modal-inner").body;
     expect(inner).toMatch(
-      /padding: var\(--norea-safe-area-top\) var\(--norea-safe-area-right\)\s+var\(--norea-safe-area-bottom\) var\(--norea-safe-area-left\);/,
+      /padding: var\(--norea-safe-area-top\) var\(--norea-safe-area-right\)\s+calc\(var\(--norea-safe-area-bottom\) \+ var\(--norea-keyboard-inset\)\)\s+var\(--norea-safe-area-left\);/,
     );
     const content = ruleFor(appCss, ".mantine-Modal-root[data-full-screen] .mantine-Modal-content").body;
     expect(content).toMatch(
-      /height: calc\(\s*var\(--norea-viewport-height\) - var\(--norea-safe-area-top\) -\s+var\(--norea-safe-area-bottom\)\s*\);/,
+      /height: calc\(\s*var\(--norea-viewport-height\) - var\(--norea-safe-area-top\) -\s+var\(--norea-safe-area-bottom\) - var\(--norea-keyboard-inset\)\s*\);/,
     );
   });
 
