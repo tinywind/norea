@@ -597,6 +597,28 @@ export async function getLibraryNovelSummary(
   };
 }
 
+/** Stored chapters of exactly these works, counted like the library's downloaded totals. */
+export async function countLibraryStoredChapters(
+  novelIds: readonly number[],
+  readMode: DatabaseReadMode = "queued",
+): Promise<number> {
+  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
+  const unique = [...new Set(novelIds)];
+  let total = 0;
+  for (let index = 0; index < unique.length; index += 500) {
+    const chunk = unique.slice(index, index + 500);
+    const rows = await db.select<{ storedChapters: number | null }[]>(
+      `SELECT SUM(${LIBRARY_STORED_CHAPTER_COUNT_SQL}) AS storedChapters
+       FROM novel n
+       LEFT JOIN novel_stats s ON s.novel_id = n.id
+       WHERE n.id IN (${chunk.map((_, offset) => `$${offset + 1}`).join(", ")})`,
+      chunk,
+    );
+    total += rows[0]?.storedChapters ?? 0;
+  }
+  return total;
+}
+
 export async function listLibrarySourceFilters(
   filter: Omit<LibraryFilter, "limit" | "sortOrder" | "sourceId"> = {},
   readMode: DatabaseReadMode = "queued",

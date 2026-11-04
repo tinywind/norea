@@ -11,6 +11,7 @@ import { getDb } from "../client";
 import {
   listLibraryNovelPage,
   listLibraryNovelIds,
+  countLibraryStoredChapters,
   getLibraryNovelSummary,
   listLibraryNovelRefreshTargets,
   listLibraryNovels,
@@ -241,4 +242,13 @@ it("combines tag, category, source and search filters across pages and refresh t
   expect(second.hasMore).toBe(false);
   expect((await getLibraryNovelSummary(filter)).totalNovels).toBe(2);
   expect((await listLibraryNovelRefreshTargets(filter)).map((row) => row.id).sort()).toEqual([1, 3]);
+});
+
+it("counts the stored chapters of exactly the given works beyond one SQL chunk", async () => {
+  sqlite.exec("UPDATE chapter SET content_bytes=50 WHERE id=204");
+  expect(await countLibraryStoredChapters([1, 2])).toBe(5);
+  expect(await countLibraryStoredChapters([2, 2, 7])).toBe(4);
+  expect(await countLibraryStoredChapters([])).toBe(0);
+  for (let id = 8; id <= 620; id++) addNovel(id, `Paged ${id}`, 1, 1, 0);
+  expect(await countLibraryStoredChapters(Array.from({ length: 620 }, (_, index) => index + 1))).toBe(613 + 1 + 4 + 0 + 2 + 2);
 });

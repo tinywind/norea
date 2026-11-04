@@ -1,7 +1,7 @@
 import { Button } from "@mantine/core";
 import { useDebouncedValue, useMediaQuery } from "@mantine/hooks";
 import { notifications } from "@mantine/notifications";
-import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageFrame, StateView } from "../components/AppFrame";
@@ -44,7 +44,7 @@ import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
 } from "../db/queries/category";
-import { type LibraryNovelRefreshFilter } from "../db/queries/novel";
+import { countLibraryStoredChapters, type LibraryNovelRefreshFilter } from "../db/queries/novel";
 import {
   CategoryIcon,
   DeleteDownloadIcon,
@@ -292,12 +292,15 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const libraryError = novels.error;
   const isInitialLibraryLoading = novels.isLoading;
   const selectedNovelIds = Array.from(selectedIds);
-  const selectedDownloadedChapterCount = selectedIds.size === summary.totalNovels
-    ? summary.downloadedChapters
-    : rows.reduce(
-        (total, novel) => selectedIds.has(novel.id) ? total + novel.chaptersDownloaded : total,
-        0,
-      );
+  const selectedDownloads = useQuery({
+    enabled: active && selectedIds.size > 0,
+    queryKey: [
+      "novel", "library", "summary", "selected-stored-chapters",
+      [...selectedNovelIds].sort((left, right) => left - right),
+    ] as const,
+    queryFn: () => countLibraryStoredChapters(selectedNovelIds, "committed"),
+  });
+  const selectedDownloadedChapterCount = selectedIds.size === 0 ? 0 : selectedDownloads.data;
   const manualCategories = categories.data ?? [];
   const sourceRows = sourceFilters.data ?? [];
   const categoryEntries = getLibraryCategoryEntries(
@@ -392,13 +395,13 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     items={[
                       {
                         disabled:
-                          selectedDownloadedChapterCount === 0 ||
+                          !selectedDownloadedChapterCount ||
                           deleteSelectedDownloadsMutation.isPending,
                         icon: DeleteDownloadIcon,
                         label: t("library.deleteSelectedDownloads"),
                         onClick: () =>
                           deleteSelectedDownloadsMutation.mutate({
-                            downloadedChapters: selectedDownloadedChapterCount,
+                            downloadedChapters: selectedDownloadedChapterCount ?? 0,
                             novelIds: selectedNovelIds,
                           }),
                       },
