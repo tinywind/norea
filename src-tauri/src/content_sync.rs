@@ -6,9 +6,9 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Mutex,
+        Arc, Mutex,
     },
-    time::{Duration, SystemTime, UNIX_EPOCH},
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager};
 use zip::ZipArchive;
@@ -16,6 +16,10 @@ use zip::ZipArchive;
 const MAX_MEDIA_ZIP_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const MAX_FILES: usize = 10_000;
+const UPLOAD_ATTEMPTS: u32 = 2;
+const UPLOAD_RETRY_DELAY: Duration = if cfg!(test) { Duration::from_millis(10) } else { Duration::from_secs(3) };
+const MIN_UPLOAD_TIMEOUT: Duration = Duration::from_secs(600);
+const MIN_UPLOAD_BYTES_PER_SECOND: u64 = 64 * 1024;
 static NEXT_STAGE: AtomicU64 = AtomicU64::new(0);
 static INSTALL_LOCK: Mutex<()> = Mutex::new(());
 
@@ -562,26 +566,76 @@ fn checked_response(mut response: reqwest::blocking::Response) -> Result<reqwest
     Err(failure(format!("server returned {}: {detail}", status.as_u16())))
 }
 
+struct CountingReader {
+    file: File,
+    sent: Arc<AtomicU64>,
+}
+
+impl Read for CountingReader {
+    fn read(&mut self, buffer: &mut [u8]) -> std::io::Result<usize> {
+        let count = self.file.read(buffer)?;
+        self.sent.fetch_add(count as u64, Ordering::Relaxed);
+        Ok(count)
+    }
+}
+
+fn upload_timeout(bytes: u64) -> Duration {
+    MIN_UPLOAD_TIMEOUT.max(Duration::from_secs(bytes / MIN_UPLOAD_BYTES_PER_SECOND))
+}
+
+fn error_chain(error: &dyn std::error::Error) -> String {
+    let mut text = error.to_string();
+    let mut source = error.source();
+    while let Some(cause) = source {
+        text.push_str(": ");
+        text.push_str(&cause.to_string());
+        source = cause.source();
+    }
+    text
+}
+
 fn upload_chapter_files(source: &Path, metadata: Value, server_url: &str, token: &str, conflict_policy: UploadConflictPolicy) -> Result<Value, String> {
     let manifest = chapter_file_manifest(source, metadata)?;
-    let mut form = reqwest::blocking::multipart::Form::new()
-        .text("metadata", serde_json::to_string(&manifest).map_err(failure)?);
-    for record in manifest["files"].as_array().unwrap() {
-        let path = record["path"].as_str().unwrap();
-        let part = reqwest::blocking::multipart::Part::reader_with_length(
-            File::open(source.join(path)).map_err(failure)?, record["size"].as_u64().unwrap())
-            .file_name(path.to_string());
-        form = form.part(path.to_string(), part);
-    }
+    let metadata = serde_json::to_string(&manifest).map_err(failure)?;
+    let records = manifest["files"].as_array().unwrap();
+    let total: u64 = records.iter().map(|record| record["size"].as_u64().unwrap()).sum();
     let mut url = endpoint(server_url, "chapter-files")?;
     url.query_pairs_mut().append_pair("conflictPolicy", match conflict_policy {
         UploadConflictPolicy::PreferComplete => "prefer-complete",
         UploadConflictPolicy::KeepServer => "keep-server",
         UploadConflictPolicy::ReplaceServer => "replace-server",
     });
-    let response = checked_response(http_client()?.post(url)
-        .bearer_auth(token).multipart(form).send().map_err(failure)?)?;
-    serde_json::from_reader(response.take(16 * 1024 * 1024)).map_err(failure)
+    let client = http_client()?;
+    let mut attempt = 1;
+    loop {
+        let sent = Arc::new(AtomicU64::new(0));
+        let mut form = reqwest::blocking::multipart::Form::new().text("metadata", metadata.clone());
+        for record in records {
+            let path = record["path"].as_str().unwrap();
+            let reader = CountingReader { file: File::open(source.join(path)).map_err(failure)?, sent: sent.clone() };
+            let part = reqwest::blocking::multipart::Part::reader_with_length(reader, record["size"].as_u64().unwrap())
+                .file_name(path.to_string());
+            form = form.part(path.to_string(), part);
+        }
+        let started = Instant::now();
+        let outcome = client.post(url.clone()).timeout(upload_timeout(total))
+            .bearer_auth(token).multipart(form).send();
+        // Connection drops, timeouts and gateway failures are transient; server rejections are final.
+        let transient = match &outcome {
+            Ok(response) => matches!(response.status().as_u16(), 408 | 502 | 503 | 504),
+            Err(error) => !error.is_builder(),
+        };
+        if transient && attempt < UPLOAD_ATTEMPTS {
+            attempt += 1;
+            std::thread::sleep(UPLOAD_RETRY_DELAY);
+            continue;
+        }
+        let response = outcome.map_err(|error| failure(format!(
+            "upload stopped after sending {} of {total} bytes in {} s (attempt {attempt} of {UPLOAD_ATTEMPTS}): {}",
+            sent.load(Ordering::Relaxed), started.elapsed().as_secs(), error_chain(&error),
+        )))?;
+        return serde_json::from_reader(checked_response(response)?.take(16 * 1024 * 1024)).map_err(failure);
+    }
 }
 
 #[tauri::command]
@@ -892,6 +946,110 @@ mod tests {
         let manifest = chapter_file_manifest(root.path(), metadata()).unwrap();
         assert_eq!(manifest["files"].as_array().unwrap().len(), 1);
         assert_eq!(manifest["files"][0]["path"], "content.html");
+    }
+
+    #[test]
+    fn upload_timeout_grows_with_body_size() {
+        assert_eq!(upload_timeout(0), MIN_UPLOAD_TIMEOUT);
+        assert_eq!(upload_timeout(32 * 1024 * 1024), MIN_UPLOAD_TIMEOUT);
+        assert_eq!(upload_timeout(64 * 1024 * 1024), Duration::from_secs(1024));
+        assert_eq!(upload_timeout(512 * 1024 * 1024), Duration::from_secs(8192));
+    }
+
+    fn read_request_head(connection: &mut std::net::TcpStream) -> String {
+        let mut head = Vec::new();
+        while !head.ends_with(b"\r\n\r\n") {
+            let mut byte = [0];
+            connection.read_exact(&mut byte).unwrap();
+            head.push(byte[0]);
+            assert!(head.len() < 64 * 1024);
+        }
+        String::from_utf8(head).unwrap()
+    }
+
+    fn read_request_body(connection: &mut std::net::TcpStream) {
+        connection.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+        let head = read_request_head(connection);
+        let length = head.lines().find_map(|line| {
+            let (name, value) = line.split_once(':')?;
+            name.eq_ignore_ascii_case("content-length").then(|| value.trim().parse::<usize>().unwrap())
+        }).unwrap();
+        let mut body = vec![0; length];
+        connection.read_exact(&mut body).unwrap();
+    }
+
+    fn large_upload_source(root: &Path) -> PathBuf {
+        let source = root.join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("content.html"), vec![b'a'; 8 * 1024 * 1024]).unwrap();
+        source
+    }
+
+    #[test]
+    fn upload_retries_once_after_the_server_drops_the_connection() {
+        use std::net::TcpListener;
+        let root = workspace();
+        let source = large_upload_source(root.path());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let receiver = std::thread::spawn(move || {
+            let (mut dropped, _) = listener.accept().unwrap();
+            read_request_head(&mut dropped);
+            drop(dropped);
+            let (mut connection, _) = listener.accept().unwrap();
+            read_request_body(&mut connection);
+            let reply = br#"{"id":"uploaded"}"#;
+            write!(connection, "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", reply.len()).unwrap();
+            connection.write_all(reply).unwrap();
+        });
+        let uploaded = upload_chapter_files(&source, metadata(), &server, "device", UploadConflictPolicy::PreferComplete).unwrap();
+        receiver.join().unwrap();
+        assert_eq!(uploaded, json!({"id":"uploaded"}));
+    }
+
+    #[test]
+    fn upload_failure_reports_progress_and_transport_cause_after_retrying() {
+        use std::net::TcpListener;
+        let root = workspace();
+        let source = large_upload_source(root.path());
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let receiver = std::thread::spawn(move || {
+            for _ in 0..UPLOAD_ATTEMPTS {
+                let (mut connection, _) = listener.accept().unwrap();
+                read_request_head(&mut connection);
+            }
+        });
+        let error = upload_chapter_files(&source, metadata(), &server, "device", UploadConflictPolicy::PreferComplete).unwrap_err();
+        receiver.join().unwrap();
+        assert!(error.starts_with("content sync: upload stopped after sending "), "{error}");
+        assert!(error.contains(&format!(" of {} bytes in ", 8 * 1024 * 1024)), "{error}");
+        assert!(error.contains(&format!("(attempt {UPLOAD_ATTEMPTS} of {UPLOAD_ATTEMPTS})")), "{error}");
+        assert!(error.contains("for url (") && error.matches(": ").count() > 2, "{error}");
+    }
+
+    #[test]
+    fn upload_does_not_retry_server_rejections() {
+        use std::net::TcpListener;
+        let root = workspace();
+        let source = root.path().join("source");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("content.html"), b"<p>Body</p>").unwrap();
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let receiver = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            read_request_body(&mut connection);
+            let reply = br#"{"message":"Chapter files are incomplete"}"#;
+            write!(connection, "HTTP/1.1 400 Bad Request\r\nContent-Length: {}\r\nConnection: close\r\n\r\n", reply.len()).unwrap();
+            connection.write_all(reply).unwrap();
+            listener.set_nonblocking(true).unwrap();
+            std::thread::sleep(Duration::from_millis(200));
+            assert!(listener.accept().is_err());
+        });
+        let error = upload_chapter_files(&source, metadata(), &server, "device", UploadConflictPolicy::PreferComplete).unwrap_err();
+        receiver.join().unwrap();
+        assert_eq!(error, "content sync: server returned 400: Chapter files are incomplete");
     }
 
     #[test]
