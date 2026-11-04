@@ -45,7 +45,7 @@ const optionLabels = ($: ReturnType<typeof render>) =>
 it("asks to remove a novel from the library with optional download and server deletion", () => {
   const $ = render({ ...unshelve, downloadedCount: 4, serverWork: true });
   expect($("h2 .norea-responsive-sheet-title-text").text()).toBe("contentDeletion.unshelveTitle");
-  expect($.text()).toContain("contentDeletion.unregister");
+  expect($.text()).toContain("contentDeletion.summary.library:1");
   expect(optionLabels($)).toEqual([
     "contentDeletion.alsoDeleteDownloads:4",
     "contentDeletion.alsoDeleteFromServer",
@@ -76,4 +76,12 @@ it("keeps the device and server choices for deleting downloads", () => {
   expect($("h2 .norea-responsive-sheet-title-text").text()).toBe("contentDeletion.title");
   expect(optionLabels($)).toEqual(["contentDeletion.serverChapters"]);
   expect($("button").last().text()).toBe("contentDeletion.confirm");
+});
+
+it("states the deletion in one sentence ahead of the optional checkboxes", () => {
+  const $ = render({ kind: "downloads", scope: "chapter", ids: [7, 8], title: "Downloads", serverUrl: "http://server.test" });
+  expect($("p").map((_, element) => $(element).text()).get()).toEqual(["contentDeletion.summary.chapterDownloads:2"]);
+  expect($.text()).not.toContain("contentDeletion.hint");
+  expect(render({ kind: "downloads", scope: "all", title: "Downloads", serverUrl: "" })("p").text())
+    .toBe("contentDeletion.summary.allDownloads");
 });

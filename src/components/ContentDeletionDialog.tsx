@@ -86,8 +86,13 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
   };
   const failed = results.filter(result => result.status === "failed");
   const succeeded = new Set(results.filter(result => result.status === "succeeded").map(result => result.id));
-  const defaultLabel = request.kind === "library" ? "contentDeletion.unregister" : fromServer
-    ? request.kind === "server-work" ? "contentDeletion.serverWork" : "contentDeletion.serverChapters" : "contentDeletion.localDownloads";
+  // One sentence states what the confirm button does; the optional extras follow as checkboxes.
+  const summary = request.kind === "library" ? t("contentDeletion.summary.library", { count: new Set(request.ids).size })
+    : request.kind === "server-work" ? t("contentDeletion.summary.serverWork")
+    : request.kind === "server-chapters" ? t("contentDeletion.summary.serverChapters", { count: request.chapters.length })
+    : request.scope === "all" ? t("contentDeletion.summary.allDownloads")
+    : t(request.scope === "chapter" ? "contentDeletion.summary.chapterDownloads" : "contentDeletion.summary.novelDownloads",
+      { count: new Set(request.ids).size });
   const unshelve = request.kind === "library";
   const localOption = request.kind === "library" && request.downloadedCount !== undefined
     ? request.downloadedCount > 0 ? t("contentDeletion.alsoDeleteDownloads", { count: request.downloadedCount }) : null
@@ -103,13 +108,8 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
       <Button color="danger" loading={busy} onClick={() => { void execute(); }}>{t(failed.length ? "contentDeletion.retry" : unshelve && !options.local && !options.server ? "common.remove" : "contentDeletion.confirm")}</Button>
     </SheetActions>}>
     <Stack>
-      <Text size="sm">{request.kind === "server-work" ? t("contentDeletion.workCount", { count: 1 })
-        : request.kind === "server-chapters" ? t("contentDeletion.chapterCount", { count: request.chapters.length })
-        : request.kind === "downloads" && request.scope === "all" ? t("contentDeletion.allDownloads")
-        : t(request.kind === "downloads" && request.scope === "chapter" ? "contentDeletion.chapterCount" : "contentDeletion.workCount", { count: new Set(request.ids).size })}</Text>
+      <Text size="sm">{summary}</Text>
       {busy ? <Text size="sm" role="status">{t("contentDeletion.waiting")}</Text> : null}
-      <Text size="sm">{t(defaultLabel)}</Text>
-      {unshelve ? null : <Text size="sm" c="dimmed">{t("contentDeletion.hint")}</Text>}
       {(request.kind === "library" || fromServer) && localOption ? <Checkbox checked={options.local} disabled={busy || actions !== null}
         onChange={event => { const checked = event.currentTarget.checked; setOptions(current => ({ ...current, local: checked })); }}
         label={localOption} /> : null}

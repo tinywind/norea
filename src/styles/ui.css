@@ -137,7 +137,7 @@
   display: grid;
   font-size: var(--norea-text-lg);
   font-weight: var(--norea-weight-bold);
-  gap: 0.125rem;
+  gap: var(--norea-space-1);
   line-height: var(--norea-leading-tight);
   min-width: 0;
 }
@@ -146,6 +146,7 @@
   color: var(--norea-color-ink-muted);
   font-size: var(--norea-text-sm);
   font-weight: var(--norea-weight-regular);
+  line-height: var(--norea-leading-normal);
   overflow-wrap: anywhere;
 }
 
