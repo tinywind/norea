@@ -9,6 +9,13 @@ import {
   clampBackfillLimit,
 } from "../../lib/performance-budgets";
 
+/**
+ * A chapter whose text is stored, including one whose media is still missing; the
+ * library and novel pages count stored chapters by the same rule.
+ */
+const STORED_CHAPTER_SQL = "(c.is_downloaded = 1 OR c.content_bytes > 0)";
+const STORED_CHAPTER_UNALIASED_SQL = "(is_downloaded = 1 OR content_bytes > 0)";
+
 export interface DownloadCacheResult {
   rowsAffected: number;
 }
@@ -120,7 +127,7 @@ export async function listDownloadCacheNovels(): Promise<DownloadCacheNovel[]> {
      FROM novel n
      JOIN chapter c ON c.novel_id = n.id
      LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
-     WHERE c.is_downloaded = 1
+     WHERE ${STORED_CHAPTER_SQL}
        AND n.is_local = 0
      GROUP BY n.id
      ORDER BY lastDownloadedAt DESC, n.name COLLATE NOCASE ASC`,
@@ -153,7 +160,7 @@ export async function listDownloadCacheChapters(
      FROM chapter c
      JOIN novel n ON n.id = c.novel_id
      WHERE c.novel_id = $1
-       AND c.is_downloaded = 1
+       AND ${STORED_CHAPTER_SQL}
        AND n.is_local = 0
      ORDER BY c.position ASC, c.id ASC`,
     [novelId],
@@ -228,7 +235,7 @@ export async function deleteDownloadCacheChapter(
        is_downloaded = 0,
        updated_at    = unixepoch()
      WHERE id = $1
-       AND is_downloaded = 1
+       AND ${STORED_CHAPTER_UNALIASED_SQL}
        AND EXISTS (
          SELECT 1 FROM novel n
          WHERE n.id = chapter.novel_id
@@ -253,7 +260,7 @@ export async function deleteDownloadCacheNovel(
        is_downloaded = 0,
        updated_at    = unixepoch()
      WHERE novel_id = $1
-       AND is_downloaded = 1
+       AND ${STORED_CHAPTER_UNALIASED_SQL}
        AND EXISTS (
          SELECT 1 FROM novel n
          WHERE n.id = chapter.novel_id
@@ -275,7 +282,7 @@ export async function deleteAllDownloadCache(): Promise<DownloadCacheResult> {
        media_bytes_checked_at = NULL,
        is_downloaded = 0,
        updated_at    = unixepoch()
-     WHERE is_downloaded = 1
+     WHERE ${STORED_CHAPTER_UNALIASED_SQL}
        AND EXISTS (
          SELECT 1 FROM novel n
          WHERE n.id = chapter.novel_id

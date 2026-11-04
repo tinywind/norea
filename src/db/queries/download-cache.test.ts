@@ -151,7 +151,7 @@ describe("deleteAllDownloadCache", () => {
     expect(sql).toContain("media_bytes   = 0");
     expect(sql).toContain("media_repair_needed = 0");
     expect(sql).toContain("media_bytes_checked_at = NULL");
-    expect(sql).toContain("WHERE is_downloaded = 1");
+    expect(sql).toContain("WHERE (is_downloaded = 1 OR content_bytes > 0)");
     expect(sql).toContain("n.is_local = 0");
   });
 });

@@ -508,10 +508,10 @@ function DownloadCacheNovelCard({
               <Badge
                 className="norea-downloads-library-badge"
                 color="warn"
-                title={t("downloads.mediaFallback")}
+                title={t("downloads.mediaFallbackCount", { count: novel.mediaRepairNeededChapters })}
                 variant="light"
               >
-                {t("downloads.mediaFallback")}
+                {t("downloads.mediaFallbackCount", { count: novel.mediaRepairNeededChapters })}
               </Badge>
             ) : null}
           </div>

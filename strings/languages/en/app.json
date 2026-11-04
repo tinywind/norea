@@ -1253,6 +1253,7 @@
   "downloads.deleteChapter": "Delete download of {name}",
   "downloads.repairChapterMedia": "Repair images for {name}",
   "downloads.mediaFallback": "Missing images",
+  "downloads.mediaFallbackCount": "Missing images in {count}",
   "downloads.filterMediaFallback": "Show only chapters missing images",
   "downloads.chapterMeta": "Chapter {position} / {size}",
   "downloads.readState": "Read",

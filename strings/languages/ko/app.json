@@ -1252,6 +1252,7 @@
   "downloads.deleteChapter": "{name} 다운로드 삭제",
   "downloads.repairChapterMedia": "{name} 이미지 복구",
   "downloads.mediaFallback": "이미지 누락",
+  "downloads.mediaFallbackCount": "이미지 누락 {count}개",
   "downloads.filterMediaFallback": "이미지가 빠진 챕터만 보기",
   "downloads.chapterMeta": "{position}화 / {size}",
   "downloads.readState": "읽음",
