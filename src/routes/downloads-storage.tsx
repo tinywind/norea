@@ -459,6 +459,8 @@ function DownloadCacheNovelCard({
             aria-label={t("downloads.selectNovel", { name: novel.novelName })}
             checked={selected}
             className="norea-downloads-select"
+            radius="xl"
+            size="md"
             onChange={onToggleSelected}
             onClick={(event) => event.stopPropagation()}
           />
@@ -733,6 +735,7 @@ export function DownloadsStorageView({
             />
           }
           allSelected={visibleRows.length > 0 && selectedRows.length === visibleRows.length}
+          below={subrow}
           label={t("library.selectedCount", { count: selectedRows.length })}
           onDeselectAll={() => setSelectedIds(new Set())}
           onExit={exitSelection}

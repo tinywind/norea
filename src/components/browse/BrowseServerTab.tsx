@@ -1,4 +1,5 @@
-import { useMemo } from "react";
+import { useEffect, useMemo } from "react";
+import { createPortal } from "react-dom";
 import { Button, Loader } from "@mantine/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -24,7 +25,14 @@ import { useInstalledPlugins } from "./use-plugin-catalog";
 import { useServerLibraryAdd } from "./use-server-library-add";
 import { useServerWorkSelection } from "./use-server-work-selection";
 
-export function BrowseServerTab({ active }: { active: boolean }) {
+interface BrowseServerTabProps {
+  active: boolean;
+  /** Where the selection header renders; the page swaps its own header for this slot while selecting. */
+  selectionHeaderSlot?: HTMLElement | null;
+  onSelectionModeChange?: (selecting: boolean) => void;
+}
+
+export function BrowseServerTab({ active, onSelectionModeChange, selectionHeaderSlot }: BrowseServerTabProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
@@ -96,15 +104,19 @@ export function BrowseServerTab({ active }: { active: boolean }) {
     );
   };
 
+  const selecting = selection.selectionMode;
+  useEffect(() => {
+    onSelectionModeChange?.(selecting);
+  }, [onSelectionModeChange, selecting]);
+  useEffect(() => () => onSelectionModeChange?.(false), [onSelectionModeChange]);
+
   const selectionHint = selection.gathering
     ? t("serverLibraryAdd.gathering", { loaded: selection.gathering.loaded, total: selection.gathering.total })
     : selection.inLibraryCount > 0
       ? t("serverLibraryAdd.inLibraryExcluded", { count: selection.inLibraryCount })
       : t("serverLibraryAdd.selectionHint");
 
-  return (
-    <div className="norea-server-browse">
-      {selection.selectionMode ? (
+  const selectionBar = selection.selectionMode ? (
         <SelectionBar
           actions={
             <SelectionAction
@@ -127,6 +139,12 @@ export function BrowseServerTab({ active }: { active: boolean }) {
           selectAllDisabled={!enabled || matchingTotal === 0 || !!selection.gathering}
           selectAllPending={!!selection.gathering}
         />
+  ) : null;
+
+  return (
+    <div className="norea-server-browse">
+      {selectionBar ? (
+        selectionHeaderSlot ? createPortal(selectionBar, selectionHeaderSlot) : selectionBar
       ) : (
         <div className="norea-server-browse-toolbar">
           <SearchBar value={draft} onChange={value => setFilters(server, { draft: value })} onSubmit={() => setFilters(server, { query: draft.trim() })} placeholder={t("contentSync.search")} />

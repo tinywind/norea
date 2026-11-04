@@ -1,3 +1,4 @@
+import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
 import { Badge, Button, Tabs } from "@mantine/core";
 import { PageFrame, PageHeader } from "../components/AppFrame";
@@ -33,6 +34,46 @@ export function BrowsePage({
   const showServerTab = serverConfigured || tab === "server";
   const installedPlugins = installed.data ?? [];
   const updateCount = usePluginUpdateCount(active);
+  const [serverSelecting, setServerSelecting] = useState(false);
+  const [selectionHeaderSlot, setSelectionHeaderSlot] = useState<HTMLDivElement | null>(null);
+  const selecting = serverSelecting && tab === "server";
+
+  const header = (
+    <PageHeader
+      actions={
+        <Button
+          aria-label={
+            updateCount > 0
+              ? t("browse.extensionsWithUpdates", { count: updateCount })
+              : t("extensions.title")
+          }
+          leftSection={<ExtensionsIcon size="1.125rem" />}
+          onClick={() => {
+            void navigate({ to: "/browse/extensions", search: {} });
+          }}
+          rightSection={
+            updateCount > 0 ? (
+              <Badge aria-hidden="true" circle size="sm">
+                {updateCount > 99 ? "99+" : updateCount}
+              </Badge>
+            ) : undefined
+          }
+          variant="subtle"
+        >
+          {t("extensions.title")}
+        </Button>
+      }
+      title={t("browse.title")}
+    >
+      <Tabs.List className="norea-app-bar-tabs">
+        <Tabs.Tab value="search">{t("browse.tab.search")}</Tabs.Tab>
+        <Tabs.Tab value="sources">{t("browse.tab.sources")}</Tabs.Tab>
+        {showServerTab ? (
+          <Tabs.Tab value="server">{t("browse.tab.server")}</Tabs.Tab>
+        ) : null}
+      </Tabs.List>
+    </PageHeader>
+  );
 
   return (
     <Tabs
@@ -48,40 +89,11 @@ export function BrowsePage({
         });
       }}
     >
-      <PageHeader
-        actions={
-          <Button
-            aria-label={
-              updateCount > 0
-                ? t("browse.extensionsWithUpdates", { count: updateCount })
-                : t("extensions.title")
-            }
-            leftSection={<ExtensionsIcon size="1.125rem" />}
-            onClick={() => {
-              void navigate({ to: "/browse/extensions", search: {} });
-            }}
-            rightSection={
-              updateCount > 0 ? (
-                <Badge aria-hidden="true" circle size="sm">
-                  {updateCount > 99 ? "99+" : updateCount}
-                </Badge>
-              ) : undefined
-            }
-            variant="subtle"
-          >
-            {t("extensions.title")}
-          </Button>
-        }
-        title={t("browse.title")}
-      >
-        <Tabs.List className="norea-app-bar-tabs">
-          <Tabs.Tab value="search">{t("browse.tab.search")}</Tabs.Tab>
-          <Tabs.Tab value="sources">{t("browse.tab.sources")}</Tabs.Tab>
-          {showServerTab ? (
-            <Tabs.Tab value="server">{t("browse.tab.server")}</Tabs.Tab>
-          ) : null}
-        </Tabs.List>
-      </PageHeader>
+      {selecting ? (
+        <div className="norea-browse-selection-header" ref={setSelectionHeaderSlot} />
+      ) : (
+        header
+      )}
 
       <PageFrame size="wide" className="norea-browse-frame">
         <Tabs.Panel value="search" className="norea-browse-tab-panel">
@@ -105,7 +117,13 @@ export function BrowsePage({
 
         {showServerTab ? (
           <Tabs.Panel value="server" className="norea-browse-tab-panel">
-            {active && tab === "server" ? <BrowseServerTab active /> : null}
+            {active && tab === "server" ? (
+              <BrowseServerTab
+                active
+                onSelectionModeChange={setServerSelecting}
+                selectionHeaderSlot={selecting ? selectionHeaderSlot : null}
+              />
+            ) : null}
           </Tabs.Panel>
         ) : null}
       </PageFrame>
