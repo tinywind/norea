@@ -375,3 +375,72 @@ describe("reader settings sheet", () => {
       .not.toMatch(/safe-area-bottom/);
   });
 });
+
+/*
+ * One-side stripes: a colored edge on one side of a card, row, callout or
+ * alert says nothing a full border, a tint or an icon cannot. Only the
+ * current-location indicators below keep one, so the current item differs
+ * from hover and selection.
+ */
+describe("one-side stripes", () => {
+  const CURRENT_LOCATION_INDICATORS = new Set([
+    "app.css .norea-rail-link",
+    "app.css .norea-rail-link--active",
+    "novel.css .norea-novel-chapter[data-current=\"true\"]",
+    "reader.css .norea-reader-chapter-row",
+    "reader.css .norea-reader-chapter-row[data-current=\"true\"]",
+    "settings.css .norea-settings-index-row[data-selected=\"true\"]",
+  ]);
+  const SIDE = "(?:left|right|inline-start|inline-end)";
+
+  function widerThanHairline(value: string): boolean {
+    if (/\b(?:medium|thick)\b/.test(value)) return true;
+    const length = /(?:^|\s)(\d*\.?\d+)(px|rem|em)\b/.exec(value);
+    if (!length) return false;
+    const size = Number(length[1]);
+    return length[2] === "px" ? size > 1 : size > 0.0625;
+  }
+
+  function stripes(body: string): string[] {
+    const found: string[] = [];
+    for (const match of body.matchAll(new RegExp(`(?:^|;)\\s*(border-${SIDE}(?:-width)?)\\s*:\\s*([^;]+)`, "g"))) {
+      if (widerThanHairline(match[2]!)) found.push(`${match[1]}: ${match[2]!.trim()}`);
+    }
+    for (const match of body.matchAll(new RegExp(`(?:^|;)\\s*(border-${SIDE}-color)\\s*:\\s*([^;]+)`, "g"))) {
+      if (!/^(?:transparent|inherit|initial|unset)$/.test(match[2]!.trim())) found.push(`${match[1]}: ${match[2]!.trim()}`);
+    }
+    for (const match of body.matchAll(/(?:^|;)\s*box-shadow\s*:\s*([^;]+)/g)) {
+      const edge = /inset\s+(-?\d*\.?\d+)(?:px|rem|em)?\s+0(?:px|rem)?\s+0(?:px|rem)?\s/.exec(match[1]!);
+      if (edge && Number(edge[1]) !== 0) found.push(`box-shadow: ${match[1]!.trim()}`);
+    }
+    return found;
+  }
+
+  it("keeps one-side colored edges to the current-location indicators", () => {
+    const offenders: string[] = [];
+    for (const name of readdirSync(stylesDir).filter((file) => file.endsWith(".css"))) {
+      const source = readFileSync(new URL(`./${name}`, stylesDir), "utf8");
+      for (const rule of rules(source)) {
+        const found = stripes(rule.body);
+        if (found.length === 0) continue;
+        // A refinement of an indicator, such as the current row while selected, keeps its edge.
+        const indicator = (selector: string) =>
+          [...CURRENT_LOCATION_INDICATORS].some((allowed) => {
+            const full = `${name} ${selector}`;
+            return full.startsWith(allowed) && /^(?:$|[[:])/.test(full.slice(allowed.length));
+          });
+        if (rule.selectors.every(indicator)) continue;
+        offenders.push(`${name} ${rule.selectors.join(", ")}: ${found.join("; ")}`);
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it("flags the stripe shapes it guards against", () => {
+    expect(stripes("border-left: 0.25rem solid var(--norea-color-warn);")).toHaveLength(1);
+    expect(stripes("border-left-color: var(--norea-color-accent);")).toHaveLength(1);
+    expect(stripes("box-shadow: inset 0.1875rem 0 0 var(--norea-color-warn);")).toHaveLength(1);
+    expect(stripes("border-right: 1px solid var(--norea-color-rule);")).toEqual([]);
+    expect(stripes("box-shadow: inset 0 0 0 1px var(--norea-color-accent);")).toEqual([]);
+  });
+});
