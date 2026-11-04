@@ -285,6 +285,15 @@ describe("reader tap contract", () => {
     expect(scrollByPage).toHaveBeenCalledWith(1, "tap-next");
   });
 
+  it("pages on every quick touch tap even though the click count keeps rising", () => {
+    const { handlers, scrollByPage } = mountGestures();
+    for (let detail = 1; detail <= 5; detail += 1) {
+      tap(handlers, ZONE_POINTS.middleRight, undefined, { detail });
+    }
+    expect(scrollByPage).toHaveBeenCalledTimes(5);
+    expect(scrollByPage).toHaveBeenLastCalledWith(1, "tap-next");
+  });
+
   it("leaves a mouse double-click to select a word instead of paging or toggling chrome", () => {
     const { handlers, scrollByPage, onToggleChrome } = mountGestures();
     tap(handlers, ZONE_POINTS.middleRight, undefined, { pointerType: "mouse" });

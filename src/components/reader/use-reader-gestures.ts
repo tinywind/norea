@@ -73,7 +73,8 @@ export function useReaderGestures({
     }
     if (interactionBlocked) return;
     if (isInteractiveTarget(event.target)) return;
-    if (event.detail > 1) {
+    // Only a mouse double-click selects a word; quick touch taps also count up `detail` and each one pages.
+    if (event.detail > 1 && pointerTypeRef.current === "mouse") {
       clearPendingMouseTap();
       selectionAtPointerDownRef.current = false;
       return;

@@ -60,6 +60,8 @@ export function useReaderScrollLayout({
   const pageScrollCompletionTimerRef = useRef<number | null>(null);
   const pageScrollCompletionFrameRef = useRef<number | null>(null);
   const pageScrollAnimatingRef = useRef(false);
+  /** The page a running paged animation lands on, so quick taps advance from it instead of the mid-animation page. */
+  const pagedTargetPageRef = useRef<number | null>(null);
   const scrollStepAnimationRef = useRef<{ cancel: () => void; targetTop: number } | null>(null);
   const nativeWheelActionLockedUntilRef = useRef(0);
   const pendingVirtualScrollAdjustmentRef = useRef(0);
@@ -255,7 +257,10 @@ export function useReaderScrollLayout({
         completedForNavigationRef.current = false;
       }
       if (isPagedReader) {
-        const currentPage = getPagedPageIndex(node);
+        const currentPage =
+          pageScrollAnimatingRef.current && pagedTargetPageRef.current !== null
+            ? pagedTargetPageRef.current
+            : getPagedPageIndex(node);
         const targetPage = currentPage + direction;
         logReaderInput("page-step-request", () => ({
           source,
@@ -275,6 +280,7 @@ export function useReaderScrollLayout({
           return;
         }
         scrollPagedTo(getPagedLeft(node, targetPage));
+        pagedTargetPageRef.current = targetPage;
         return;
       }
       if (performance.now() < nativeWheelActionLockedUntilRef.current) {
