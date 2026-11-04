@@ -23,10 +23,35 @@ export interface ServerWorkSummary {
 export interface ServerWorkPage { items: ServerWorkSummary[]; total: number; hasMore: boolean }
 export interface ServerSourceSummary { id: string; workCount: number }
 
-export function listServerWorks(server: string, token: string, query: string, source: string, offset: number, signal?: AbortSignal): Promise<ServerWorkPage> {
-  const params = new URLSearchParams({ q: query, offset: String(offset), limit: "40" });
+/** The server's largest accepted catalog page. */
+const SERVER_WORK_PAGE_MAX = 100;
+
+export function listServerWorks(server: string, token: string, query: string, source: string, offset: number, signal?: AbortSignal, limit = 40): Promise<ServerWorkPage> {
+  const params = new URLSearchParams({ q: query, offset: String(offset), limit: String(limit) });
   if (source) params.set("source", source);
   return contentServerRequest(server, `/catalog/works?${params}`, token, "GET", undefined, signal);
+}
+
+/**
+ * Every work matching the search and source, fetched in the largest pages the
+ * server accepts. Concurrent server changes can shift offset pages, so works
+ * are deduplicated by id. `onPage` receives the works loaded so far and the
+ * server's current total.
+ */
+export async function listAllServerWorks(
+  server: string, token: string, query: string, source: string,
+  onPage?: (loaded: number, total: number) => void, signal?: AbortSignal,
+): Promise<ServerWorkSummary[]> {
+  const works = new Map<string, ServerWorkSummary>();
+  let offset = 0;
+  for (;;) {
+    signal?.throwIfAborted();
+    const page = await listServerWorks(server, token, query, source, offset, signal, SERVER_WORK_PAGE_MAX);
+    for (const work of page.items) works.set(work.id, work);
+    offset += page.items.length;
+    onPage?.(works.size, Math.max(page.total, works.size));
+    if (!page.hasMore || page.items.length === 0) return [...works.values()];
+  }
 }
 
 export async function readServerCover(server: string, token: string, id: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; contentType: string }> {

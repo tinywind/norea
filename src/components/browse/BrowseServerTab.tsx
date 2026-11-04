@@ -14,11 +14,15 @@ import { StateView } from "../AppFrame";
 import { ContentServerCover } from "../ContentServerCover";
 import { IconButton } from "../IconButton";
 import { SearchBar } from "../SearchBar";
-import { CheckIcon, InLibraryIcon, RefreshIcon } from "../ui/icons";
+import { AddToLibraryIcon, CheckIcon, InLibraryIcon, RefreshIcon, SelectIcon } from "../ui/icons";
+import { OverflowMenu } from "../ui/OverflowMenu";
+import { SelectionAction, SelectionBar } from "../ui/SelectionBar";
 import { CoverGridSkeleton } from "./CoverGridSkeleton";
 import { QuickAddCard } from "./QuickAddCard";
 import { useQuickAddToLibrary, type QuickAddTarget } from "./use-quick-add";
 import { useInstalledPlugins } from "./use-plugin-catalog";
+import { useServerLibraryAdd } from "./use-server-library-add";
+import { useServerWorkSelection } from "./use-server-work-selection";
 
 export function BrowseServerTab({ active }: { active: boolean }) {
   const { t } = useTranslation();
@@ -52,6 +56,8 @@ export function BrowseServerTab({ active }: { active: boolean }) {
     getNextPageParam: (last, _pages, offset) => last.hasMore ? offset + last.items.length : undefined,
     enabled, staleTime: 30_000,
   });
+  const selection = useServerWorkSelection({ active, isInLibrary, query, server, source, token: device.data });
+  const bulkAdd = useServerLibraryAdd(server);
   const open = useMutation({
     meta: { errorPresentation: "inline" },
     mutationFn: (work: ServerWorkSummary) => openServerNovel(server, work),
@@ -67,6 +73,7 @@ export function BrowseServerTab({ active }: { active: boolean }) {
   );
   const error = device.error ?? sources.error ?? works.error ?? open.error;
   const items = works.data?.pages.flatMap(page => page.items) ?? [];
+  const matchingTotal = works.data?.pages[0]?.total ?? 0;
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: ["content-server", server] }); };
 
   if (!server) {
@@ -89,14 +96,57 @@ export function BrowseServerTab({ active }: { active: boolean }) {
     );
   };
 
+  const selectionHint = selection.gathering
+    ? t("serverLibraryAdd.gathering", { loaded: selection.gathering.loaded, total: selection.gathering.total })
+    : selection.inLibraryCount > 0
+      ? t("serverLibraryAdd.inLibraryExcluded", { count: selection.inLibraryCount })
+      : t("serverLibraryAdd.selectionHint");
+
   return (
     <div className="norea-server-browse">
-      <div className="norea-server-browse-toolbar">
-        <SearchBar value={draft} onChange={value => setFilters(server, { draft: value })} onSubmit={() => setFilters(server, { query: draft.trim() })} placeholder={t("contentSync.search")} />
-        <IconButton label={t("common.refresh")} loading={works.isRefetching} onClick={refresh} size="lg">
-          <RefreshIcon />
-        </IconButton>
-      </div>
+      {selection.selectionMode ? (
+        <SelectionBar
+          actions={
+            <SelectionAction
+              disabled={selection.selected.size === 0 || !!selection.gathering}
+              icon={AddToLibraryIcon}
+              label={t("quickAdd.add")}
+              onClick={() => bulkAdd.request({
+                count: selection.selected.size,
+                onStarted: selection.exit,
+                works: [...selection.selected.values()],
+              })}
+            />
+          }
+          allSelected={selection.allSelected}
+          hint={selectionHint}
+          label={t("library.selectedCount", { count: selection.selected.size })}
+          onDeselectAll={selection.deselectAll}
+          onExit={selection.exit}
+          onSelectAll={selection.selectAll}
+          selectAllDisabled={!enabled || matchingTotal === 0 || !!selection.gathering}
+          selectAllPending={!!selection.gathering}
+        />
+      ) : (
+        <div className="norea-server-browse-toolbar">
+          <SearchBar value={draft} onChange={value => setFilters(server, { draft: value })} onSubmit={() => setFilters(server, { query: draft.trim() })} placeholder={t("contentSync.search")} />
+          <IconButton label={t("common.refresh")} loading={works.isRefetching} onClick={refresh} size="lg">
+            <RefreshIcon />
+          </IconButton>
+          <OverflowMenu
+            items={[
+              { disabled: !enabled || items.length === 0, icon: SelectIcon, label: t("library.selection.start"), onClick: () => selection.enter() },
+              {
+                disabled: !enabled || matchingTotal === 0,
+                icon: AddToLibraryIcon,
+                label: t("serverLibraryAdd.addAll", { count: matchingTotal }),
+                onClick: () => bulkAdd.request({ count: matchingTotal, works: { query, source } }),
+              },
+            ]}
+            label={t("common.more")}
+          />
+        </div>
+      )}
       {(sources.data?.items.length ?? 0) > 0 ? (
         <div aria-label={t("contentSync.sourceFilter")} className="norea-browse-chips" role="group">
           {sourceChip("", t("contentSync.allSources"))}
@@ -113,21 +163,42 @@ export function BrowseServerTab({ active }: { active: boolean }) {
         {items.map(work => {
           const inLibrary = isInLibrary(work.identity.pluginId, work.identity.novelPath);
           const target: QuickAddTarget = { kind: "server", server, work };
-          return (
-            <QuickAddCard className="norea-source-card norea-state-layer" disabled={open.isPending} inLibrary={inLibrary} key={`${server}:${work.id}`}
-              name={work.novel.name} onAdd={() => quickAdd.add(target)} onOpen={() => open.mutate(work)} pending={quickAdd.isPending(target)}>
+          const selected = selection.selected.has(work.id);
+          const content = (
+            <>
               <span className="norea-source-cover-frame">
                 <ContentServerCover server={server} token={device.data!} work={work} />
                 {inLibrary ? <span className="norea-source-library-mark" role="img" aria-label={t("novel.inLibrary")}><InLibraryIcon size="1rem" /></span> : null}
+                {selection.selectionMode && !inLibrary ? (
+                  <span aria-hidden="true" className="norea-source-select-check" data-checked={selected ? "true" : undefined}>
+                    {selected ? <CheckIcon size="1rem" /> : null}
+                  </span>
+                ) : null}
               </span>
               <span className="norea-source-card-title" title={work.novel.name}>{work.novel.name}</span>
               <span className="norea-source-card-meta">{t("contentSync.catalogCount", { count: work.chapterCount })}</span>
+            </>
+          );
+          return selection.selectionMode ? (
+            <div className="norea-quick-add-card" key={`${server}:${work.id}`}>
+              <button aria-label={t("library.selection.selectNamed", { name: work.novel.name })} aria-pressed={selected}
+                className="norea-source-card norea-state-layer" data-in-library={inLibrary ? "true" : undefined}
+                data-selected={selected ? "true" : undefined} disabled={inLibrary} onClick={() => selection.toggle(work)} type="button">
+                {content}
+              </button>
+            </div>
+          ) : (
+            <QuickAddCard className="norea-source-card norea-state-layer" disabled={open.isPending} inLibrary={inLibrary} key={`${server}:${work.id}`}
+              name={work.novel.name} onAdd={() => quickAdd.add(target)} onOpen={() => open.mutate(work)} onSelect={() => selection.enter(work)}
+              pending={quickAdd.isPending(target)}>
+              {content}
             </QuickAddCard>
           );
         })}
       </div>
       {open.isPending ? <div className="norea-search-progress" role="status"><Loader size="xs" />{t("common.loading")}</div> : null}
       {quickAdd.categorySheet}
+      {bulkAdd.sheet}
       {works.hasNextPage ? (
         <Button className="norea-source-load-more" loading={works.isFetchingNextPage} onClick={() => { void works.fetchNextPage(); }} variant="default">
           {t("common.loadMore")}

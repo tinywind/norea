@@ -51,6 +51,7 @@ export type MainTaskKind =
   | "backup.export"
   | "backup.auto"
   | "backup.restore"
+  | "library.addServerWorks"
   | "library.checkUpdates"
   | "maintenance.clearLibraryMembership"
   | "maintenance.clearDownloadedContent"

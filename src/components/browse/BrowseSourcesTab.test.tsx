@@ -77,6 +77,40 @@ it("offers a name filter only above eight sources", async () => {
   expect(hasFilter(await mountTab())).toBe(true);
 });
 
+function rowMenu(elements: Awaited<ReturnType<typeof mountTab>>, index = 0): MenuItem[] {
+  const rows = elements.filter((element) => Array.isArray(element.props.menuItems));
+  return rows[index]!.props.menuItems as MenuItem[];
+}
+
+it("offers Open site only when the source has a usable site URL", async () => {
+  mocks.plugins = [plugin("alpha"), { ...plugin("beta"), getBaseUrl: () => "" } as Plugin];
+  const elements = await mountTab();
+  expect(rowMenu(elements, 0).map((item) => item.label)).toContain("common.openSite");
+  expect(rowMenu(elements, 1).map((item) => item.label)).not.toContain("common.openSite");
+});
+
+it("opens the source's plugin settings in place only when the plugin exposes settings", async () => {
+  mocks.plugins = [
+    plugin("alpha"),
+    { ...plugin("beta"), pluginSettings: { token: { type: "Text", label: "Token", value: "" } } } as unknown as Plugin,
+  ];
+  const elements = await mountTab();
+  expect(rowMenu(elements, 0).map((item) => item.label)).not.toContain("common.settings");
+  await harness!.run(() => rowMenu(elements, 1).find((item) => item.label === "common.settings")!.onClick());
+  const dialog = collectElements(tree).find((element) => "plugin" in element.props && "onClose" in element.props);
+  expect((dialog!.props.plugin as Plugin).id).toBe("beta");
+  expect(mocks.navigate).not.toHaveBeenCalled();
+});
+
+it("opens source-scoped reader settings in place from the row overflow", async () => {
+  const elements = await mountTab();
+  expect(collectElements(tree).some((element) => element.props.target !== undefined)).toBe(false);
+  await harness!.run(() => rowMenu(elements).find((item) => item.label === "source.readerSettings")!.onClick());
+  const panel = collectElements(tree).find((element) => element.props.target !== undefined);
+  expect(panel!.props.target).toEqual({ kind: "source", sourceId: "alpha", label: "alpha" });
+  expect(mocks.navigate).not.toHaveBeenCalled();
+});
+
 const plugins = [plugin("Zeta", "en"), plugin("Alpha", "ko"), plugin("Beta", "en"), plugin("Gamma", "ja")];
 
 describe("groupSources", () => {

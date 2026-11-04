@@ -18,6 +18,12 @@ when the server is unavailable.
 4. Open a work to view its cover and available chapters. Use the usual library
    and download buttons. Downloads use the server's files without contacting
    the original site or requiring its plugin.
+   To add many works at once, choose Select (overflow menu, or a cover's
+   long-press menu), or choose "Add all N works to library" for every work
+   matching the current search and source. Select all also includes pages the
+   grid has not loaded. The add runs as one background task in Downloads,
+   at most three works at a time; works already in the library are skipped,
+   chapters are not downloaded, and failed or unreached works can be retried.
 5. Choose a sync mode. Sync now remains available in every mode.
 
 | Mode | When synchronization runs |
@@ -38,9 +44,10 @@ banners to normal pages. Saved work details and local reading stay usable when
 the server is slow or unavailable. Explicit server actions still report failures
 that prevent completion. Sync does not refresh plugin repositories.
 A work becomes visible after its metadata and cover are installed.
-Sync preserves existing library membership; add a server work to the library
-from its detail page. Sync now uploads stored local chapters and updates the
-remote catalog independently of browsing or selected chapter downloads.
+Sync preserves existing library membership; add server works to the library
+from Browse > Server or a work's detail page. Sync now uploads stored local
+chapters and updates the remote catalog independently of browsing or selected
+chapter downloads.
 
 Settings > Data > Content server includes **Upload conflicts**:
 

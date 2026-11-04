@@ -16,7 +16,7 @@ vi.mock("./works", async original => ({ ...await original<typeof import("./works
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { installStoredNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest } from "./client";
-import { listServerWorks, openServerNovel, refreshServerNovel, serverCoverSource } from "./browse";
+import { listAllServerWorks, listServerWorks, openServerNovel, refreshServerNovel, serverCoverSource } from "./browse";
 import { rememberServerNovelSource } from "./novel-source";
 import { contentWorkId, recordInstalledWorkMetadata } from "./works";
 import { findNovelBySource } from "../../db/queries/novel";
@@ -73,6 +73,20 @@ it("queries a bounded page without fetching synchronization history", async () =
   expect(contentServerRequest).toHaveBeenCalledOnce();
   const path = vi.mocked(contentServerRequest).mock.calls[0]![1];
   expect(path).toBe("/catalog/works?q=Book+%26+title&offset=40&limit=40&source=source");
+});
+
+it("lists every matching work in pages of 100, deduplicating shifted pages", async () => {
+  const summary = (id: string) => ({ id }) as never;
+  vi.mocked(contentServerRequest)
+    .mockResolvedValueOnce({ items: [summary("a"), summary("b")], total: 3, hasMore: true })
+    .mockResolvedValueOnce({ items: [summary("b"), summary("c")], total: 3, hasMore: false });
+  const progress: Array<[number, number]> = [];
+  const works = await listAllServerWorks("http://server", "device", "Book", "", (loaded, total) => progress.push([loaded, total]));
+  expect(works.map(work => work.id)).toEqual(["a", "b", "c"]);
+  expect(vi.mocked(contentServerRequest).mock.calls.map(call => call[1])).toEqual([
+    "/catalog/works?q=Book&offset=0&limit=100", "/catalog/works?q=Book&offset=2&limit=100",
+  ]);
+  expect(progress).toEqual([[2, 3], [3, 3]]);
 });
 
 it("installs only the selected work and retains its origin for later downloads", async () => {

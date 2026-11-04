@@ -17,6 +17,7 @@ import { enqueueSourceTask } from "../../lib/tasks/source-tasks";
 import { isTauriRuntime } from "../../lib/tauri-runtime";
 import { useBrowseStore } from "../../store/browse";
 import { StateView } from "../AppFrame";
+import { ReaderSettingsPanel } from "../ReaderSettingsPanel";
 import { useConfirm } from "../ui/ConfirmDialog";
 import {
   ChevronDownIcon,
@@ -24,12 +25,14 @@ import {
   ClearCookiesIcon,
   ExtensionsIcon,
   PinIcon,
+  ReaderSettingsIcon,
   SettingsIcon,
   SourceIcon,
   UnpinIcon,
 } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import { PluginIcon } from "./PluginIcon";
 import { PluginSettingsDialog } from "./PluginSettingsDialog";
 import {
@@ -41,6 +44,15 @@ import {
 /** Above this many sources the tab offers a name filter. */
 export const SOURCE_FILTER_THRESHOLD = 8;
 const SKELETON_ROWS = 5;
+
+function hasPluginSite(plugin: Plugin): boolean {
+  try {
+    getPluginBaseUrl(plugin);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 export interface SourceLanguageGroup {
   lang: string;
@@ -144,6 +156,10 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
     () => new Set(),
   );
   const [settingsPlugin, setSettingsPlugin] = useState<Plugin | null>(null);
+  // The plugin stays set after closing so the sheet keeps its content through the exit transition.
+  const [readerSettings, setReaderSettings] = useState<{ opened: boolean; plugin: Plugin } | null>(
+    null,
+  );
   const canClearCookies = isTauriRuntime();
 
   const plugins = useMemo(() => installed.data ?? [], [installed.data]);
@@ -216,10 +232,17 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
       ...(hasPluginInputs(plugin)
         ? [{ icon: SettingsIcon, label: t("common.settings"), onClick: () => setSettingsPlugin(plugin) }]
         : []),
+      ...(hasPluginSite(plugin)
+        ? [{
+            icon: SourceIcon,
+            label: t("common.openSite"),
+            onClick: () => openPluginSite(plugin, t("tasks.task.openSite", { source: plugin.name })),
+          }]
+        : []),
       {
-        icon: SourceIcon,
-        label: t("common.openSite"),
-        onClick: () => openPluginSite(plugin, t("tasks.task.openSite", { source: plugin.name })),
+        icon: ReaderSettingsIcon,
+        label: t("source.readerSettings"),
+        onClick: () => setReaderSettings({ opened: true, plugin }),
       },
       ...(canClearCookies
         ? [{
@@ -359,6 +382,23 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
       ) : null}
 
       <PluginSettingsDialog onClose={() => setSettingsPlugin(null)} plugin={settingsPlugin} />
+      {readerSettings ? (
+        <ResponsiveSheet
+          desktopVariant="side"
+          fullScreenOnPhone
+          opened={readerSettings.opened}
+          onClose={() => setReaderSettings({ ...readerSettings, opened: false })}
+          title={t("readerSettings.source.title", { name: readerSettings.plugin.name })}
+        >
+          <ReaderSettingsPanel
+            target={{
+              kind: "source",
+              sourceId: readerSettings.plugin.id,
+              label: readerSettings.plugin.name,
+            }}
+          />
+        </ResponsiveSheet>
+      ) : null}
     </div>
   );
 }

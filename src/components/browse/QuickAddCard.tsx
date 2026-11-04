@@ -2,7 +2,7 @@ import { Loader, Menu } from "@mantine/core";
 import { useState, type MouseEvent, type ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import { useLongPress } from "../../lib/use-long-press";
-import { AddToLibraryIcon, InLibraryIcon, OpenWorkIcon, PlusIcon } from "../ui/icons";
+import { AddToLibraryIcon, InLibraryIcon, OpenWorkIcon, SelectIcon } from "../ui/icons";
 
 const LONG_PRESS_MS = 450;
 
@@ -16,6 +16,8 @@ interface QuickAddCardProps {
   name: string;
   onAdd: () => void;
   onOpen: () => void;
+  /** Adds "Select" to the long-press menu, for a grid with selection mode. */
+  onSelect?: () => void;
   pending: boolean;
   selected?: boolean;
 }
@@ -33,16 +35,19 @@ export function QuickAddCard({
   name,
   onAdd,
   onOpen,
+  onSelect,
   pending,
   selected,
 }: QuickAddCardProps) {
   const { t } = useTranslation();
   const [menuOpen, setMenuOpen] = useState(false);
-  const longPress = useLongPress(disabled ? undefined : () => setMenuOpen(true), LONG_PRESS_MS);
+  // Where the grid supports selection, long-press and right-click enter it, as on the library.
+  const pressAction = onSelect ?? (() => setMenuOpen(true));
+  const longPress = useLongPress(disabled ? undefined : pressAction, LONG_PRESS_MS);
 
   const openMenu = (event: MouseEvent) => {
     event.preventDefault();
-    if (!disabled) setMenuOpen(true);
+    if (!disabled) pressAction();
   };
 
   return (
@@ -72,7 +77,7 @@ export function QuickAddCard({
           title={t("quickAdd.add")}
           type="button"
         >
-          <PlusIcon size="1.125rem" />
+          <AddToLibraryIcon size="1.125rem" />
         </button>
       ) : null}
       {pending ? (
@@ -96,6 +101,11 @@ export function QuickAddCard({
             <Menu.Item leftSection={<OpenWorkIcon size="1.125rem" />} onClick={onOpen}>
               {t("quickAdd.open")}
             </Menu.Item>
+            {onSelect ? (
+              <Menu.Item leftSection={<SelectIcon size="1.125rem" />} onClick={onSelect}>
+                {t("library.selection.start")}
+              </Menu.Item>
+            ) : null}
           </Menu.Dropdown>
         </Menu>
       ) : null}
