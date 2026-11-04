@@ -17,10 +17,12 @@ export interface ContinueReadingEntry {
   novelPath: string;
   pluginId: string;
   chapterId: number;
+  chapterNumber: string | null;
   position: number;
   progress: number;
   readAt: number;
   nextChapterId: number | null;
+  nextChapterNumber: string | null;
   nextChapterPosition: number | null;
 }
 
@@ -32,14 +34,16 @@ interface RawContinueReadingEntry
 /** The chapter a tap resumes, following History's rule. */
 export function getContinueReadingTarget(entry: ContinueReadingEntry): {
   chapterId: number;
+  chapterNumber: string | null;
   next: boolean;
   position: number;
 } {
   if (entry.progress < FINISHED_PROGRESS || entry.nextChapterId === null) {
-    return { chapterId: entry.chapterId, next: false, position: entry.position };
+    return { chapterId: entry.chapterId, chapterNumber: entry.chapterNumber, next: false, position: entry.position };
   }
   return {
     chapterId: entry.nextChapterId,
+    chapterNumber: entry.nextChapterNumber,
     next: true,
     position: entry.nextChapterPosition ?? entry.position,
   };
@@ -64,12 +68,16 @@ export async function listContinueReading(
          n.path        AS novelPath,
          n.plugin_id   AS pluginId,
          c.id          AS chapterId,
+         c.chapter_number AS chapterNumber,
          c.position    AS position,
          c.progress    AS progress,
          c.read_at     AS readAt,
          (SELECT nc.id FROM chapter nc
            WHERE nc.novel_id = n.id AND nc.position > c.position
            ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS nextChapterId,
+         (SELECT nc.chapter_number FROM chapter nc
+           WHERE nc.novel_id = n.id AND nc.position > c.position
+           ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS nextChapterNumber,
          (SELECT nc.position FROM chapter nc
            WHERE nc.novel_id = n.id AND nc.position > c.position
            ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS nextChapterPosition

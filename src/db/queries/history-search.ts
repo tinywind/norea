@@ -61,6 +61,7 @@ export async function listReadingHistoryPage({
          instr(lower(novelName), lower(${termParam})) > 0
          OR instr(lower(chapterName), lower(${termParam})) > 0
          OR instr(CAST(position AS TEXT), ${termParam}) > 0
+         OR instr(COALESCE(chapterNumber, ''), ${termParam}) > 0
        )`;
   }
   let cursorClause = "";
@@ -80,6 +81,7 @@ export async function listReadingHistoryPage({
          c.id          AS chapterId,
          c.novel_id    AS novelId,
          c.name        AS chapterName,
+         c.chapter_number AS chapterNumber,
          c.position    AS position,
          c.read_at     AS readAt,
          c.progress    AS progress,

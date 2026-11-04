@@ -10,6 +10,7 @@ import { formatRelativeTimeForLocale, useTranslation } from "../../i18n";
 import { pluginManager } from "../../lib/plugins/manager";
 import { useNovelCoverSource } from "../../lib/use-novel-cover-source";
 import { ConsoleCover } from "../ConsolePrimitives";
+import { formatChapterNumber } from "../novel/novel-detail-model";
 import { InfoIcon, TrashIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { OverflowMenu } from "../ui/OverflowMenu";
@@ -84,8 +85,8 @@ export function HistoryRow({
           <>
             <span className="norea-history-row-meta">
               {finished && nextChapter.data
-                ? `${t("history.nextChapter", { number: nextChapter.data.position })} · ${readAt}`
-                : `${t("history.chapterNumber", { number: entry.position })} · ${
+                ? `${t("history.nextChapter", { number: formatChapterNumber(nextChapter.data) })} · ${readAt}`
+                : `${t("history.chapterNumber", { number: formatChapterNumber(entry) })} · ${
                     finished ? t("common.finished") : `${progress}%`
                   } · ${readAt}`}
             </span>

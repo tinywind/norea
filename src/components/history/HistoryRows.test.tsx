@@ -36,6 +36,7 @@ import { HistoryRow } from "./HistoryRows";
 const entry: RecentlyReadEntry = {
   chapterId: 52,
   chapterName: "Chapter 52",
+  chapterNumber: null,
   novelCover: null,
   novelId: 4,
   novelInLibrary: true,
@@ -82,6 +83,10 @@ describe("HistoryRow", () => {
     const $ = render();
     expect($('[aria-hidden="true"] [style="--norea-history-progress:45%"]')).toHaveLength(1);
     expect(render({ entry: { ...entry, progress: 100 } }).text()).toContain("Ch. 52 · common.finished · 3h ago");
+  });
+
+  it("names the chapter by its number, not its list position", () => {
+    expect(render({ entry: { ...entry, chapterNumber: "0", position: 1 } }).text()).toContain("Ch. 0 · 45% · 3h ago");
   });
 
   it("replaces the row actions with a status while the novel is being removed", () => {
@@ -137,7 +142,7 @@ describe("HistoryRow actions", () => {
     const nextChapter = { id: 53, position: 53 } as ChapterListRow;
     next.data = nextChapter;
     const finished = { ...entry, progress: 100 };
-    expect(render({ entry: finished }).text()).toContain('history.nextChapter{"number":53} · 3h ago');
+    expect(render({ entry: finished }).text()).toContain('history.nextChapter{"number":"53"} · 3h ago');
     const { row } = await mount(finished);
     (row.props.onClick as () => void)();
     expect(onContinue).toHaveBeenCalledWith(nextChapter);

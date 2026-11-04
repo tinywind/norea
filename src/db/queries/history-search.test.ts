@@ -60,6 +60,16 @@ it("searches beyond the latest 100 entries by novel name, chapter name or number
   expect((await listReadingHistoryPage({ search: "Opening" })).entries).toEqual([]);
 });
 
+it("returns the chapter's own number and finds it by that number", async () => {
+  sqlite.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES (1,'s','/1','Prologue first',1);
+    INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at) VALUES
+    (10,1,'/a','Prologue','0',1,20,500)`);
+
+  const [entry] = (await listReadingHistoryPage()).entries;
+  expect(entry).toMatchObject({ chapterId: 10, chapterNumber: "0", position: 1 });
+  expect((await listReadingHistoryPage({ search: "0" })).entries.map((row) => row.chapterId)).toEqual([10]);
+});
+
 it("applies the progress filter in the query, so pages stay full", async () => {
   seedNovels(30);
 

@@ -1206,6 +1206,7 @@ export interface RecentlyReadEntry {
   chapterId: number;
   novelId: number;
   chapterName: string;
+  chapterNumber: string | null;
   position: number;
   readAt: number;
   progress: number;
@@ -1239,6 +1240,7 @@ export async function listRecentlyRead(
        c.id              AS chapterId,
        c.novel_id        AS novelId,
        c.name            AS chapterName,
+       c.chapter_number  AS chapterNumber,
        c.position,
        c.read_at         AS readAt,
        c.progress,

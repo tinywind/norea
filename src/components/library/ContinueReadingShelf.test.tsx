@@ -34,7 +34,7 @@ import { useLibraryStore } from "../../store/library";
 import { ContinueReadingShelf, isContinueReadingShelfVisible } from "./ContinueReadingShelf";
 
 const reading: ContinueReadingEntry = {
-  chapterId: 11, nextChapterId: null, nextChapterPosition: null, novelCover: null, novelId: 1,
+  chapterId: 11, chapterNumber: null, nextChapterId: null, nextChapterNumber: null, nextChapterPosition: null, novelCover: null, novelId: 1,
   novelIsLocal: false, novelName: "Reading", novelPath: "/1", pluginId: "s", position: 2,
   progress: 40, readAt: 2,
 };
@@ -106,6 +106,14 @@ it("resumes an unfinished chapter with a progress ring and opens the next chapte
   expect(next.some((element) => element.props.children === "history.chapterNumber:8")).toBe(true);
   (next[0]!.props.onClick as () => void)();
   expect(onOpen).toHaveBeenLastCalledWith(21);
+});
+
+it("labels a card with the chapter's number, not its list position", async () => {
+  mocks.data = [{ ...reading, chapterNumber: "0", position: 1 }, { ...finished, nextChapterNumber: "7.5" }];
+  const cards = (await render()).filter((element) => element.props.entry);
+
+  expect((await renderCard(cards[0]!)).some((element) => element.props.children === "history.chapterNumber:0")).toBe(true);
+  expect((await renderCard(cards[1]!)).some((element) => element.props.children === "history.chapterNumber:7.5")).toBe(true);
 });
 
 it("collapses and expands from its heading and remembers the choice", async () => {

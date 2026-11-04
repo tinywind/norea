@@ -13,6 +13,7 @@ import { novelLibraryQueryKey } from "../../lib/reader-query-invalidation";
 import { useNovelCoverSource } from "../../lib/use-novel-cover-source";
 import { useLibraryStore } from "../../store/library";
 import { ConsoleCover } from "../ConsolePrimitives";
+import { formatChapterNumber } from "../novel/novel-detail-model";
 import { ChevronDownIcon, ChevronRightIcon } from "../ui/icons";
 
 /** Under the library key, so reading progress and library changes refresh it. */
@@ -74,7 +75,7 @@ function ContinueReadingCard({
       <VisuallyHidden>{entry.novelName}</VisuallyHidden>
       <span className="norea-continue-card-meta">
         <span className="norea-continue-card-chapter">
-          {t("history.chapterNumber", { number: target.position })}
+          {t("history.chapterNumber", { number: formatChapterNumber(target) })}
         </span>
         {target.next ? (
           <span className="norea-continue-card-next">{t("library.continueReading.next")}</span>

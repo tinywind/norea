@@ -88,19 +88,21 @@ it("returns at most six novels in one query", async () => {
 
 it("resumes an unfinished chapter and opens the next chapter of a finished one", () => {
   const base: ContinueReadingEntry = {
-    chapterId: 11, nextChapterId: 12, nextChapterPosition: 3, novelCover: null, novelId: 1,
+    chapterId: 11, chapterNumber: "1", nextChapterId: 12, nextChapterNumber: "2", nextChapterPosition: 3, novelCover: null, novelId: 1,
     novelIsLocal: false, novelName: "N", novelPath: "/1", pluginId: "s", position: 2,
     progress: 40, readAt: 1,
   };
 
-  expect(getContinueReadingTarget(base)).toEqual({ chapterId: 11, next: false, position: 2 });
+  expect(getContinueReadingTarget(base)).toEqual({ chapterId: 11, chapterNumber: "1", next: false, position: 2 });
   expect(getContinueReadingTarget({ ...base, progress: 100 })).toEqual({
     chapterId: 12,
+    chapterNumber: "2",
     next: true,
     position: 3,
   });
   expect(getContinueReadingTarget({ ...base, nextChapterId: null, progress: 100 })).toEqual({
     chapterId: 11,
+    chapterNumber: "1",
     next: false,
     position: 2,
   });

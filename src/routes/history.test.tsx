@@ -61,6 +61,7 @@ import { HistoryPage } from "./history";
 const entry: RecentlyReadEntry = {
   chapterId: 52,
   chapterName: "Chapter 52",
+  chapterNumber: null,
   novelCover: null,
   novelId: 4,
   novelInLibrary: true,
