@@ -7,7 +7,7 @@ vi.mock("@mantine/core", async () => {
   const wrap = (tag: string) => ({ children }: { children?: React.ReactNode }) => React.createElement(tag, null, children);
   return {
     Modal: ({ opened, children }: { opened: boolean; children: React.ReactNode }) => opened ? React.createElement("section", null, children) : null,
-    Alert: wrap("aside"), Group: wrap("div"), Stack: wrap("div"), Text: wrap("span"),
+    Alert: wrap("aside"), Box: wrap("div"), Group: wrap("div"), Stack: wrap("div"), Text: wrap("span"),
     Select: ({ label, data, value }: { label: string; data: { value: string; label: string }[]; value: string }) =>
       React.createElement("label", null, label, React.createElement("select", { value, readOnly: true }, data.map(item => React.createElement("option", { key: item.value, value: item.value }, item.label)))),
     MultiSelect: wrap("div"),
@@ -41,6 +41,8 @@ describe("ChapterCleanupPanel", () => {
   it("closes on Android Back instead of leaving the page underneath", () => {
     const onClose = vi.fn();
     renderToStaticMarkup(<QueryClientProvider client={new QueryClient()}><ChapterCleanupPanel opened onClose={onClose} /></QueryClientProvider>);
-    expect(backNavigation).toHaveBeenCalledWith(true, onClose);
+    expect(backNavigation).toHaveBeenCalledWith(true, expect.any(Function));
+    backNavigation.mock.calls.at(-1)![1]();
+    expect(onClose).toHaveBeenCalledOnce();
   });
 });

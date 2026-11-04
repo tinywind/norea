@@ -1,17 +1,17 @@
-import { Alert, Checkbox, Group, Modal, Stack, Text } from "@mantine/core";
+import { Alert, Checkbox, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
-import { usePageBackNavigation } from "../lib/android-back-navigation";
 import { prepareContentDeletion, runContentDeletion, type ContentDeletionAction, type ContentDeletionRequest, type ContentDeletionResult } from "../lib/content-deletion";
 import { removeDeletedServerWorkFromQueries } from "../lib/content-sync/management-query-cache";
 import { describeError } from "../lib/errors";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
 import { finishContentDeletion, useContentDeletionStore } from "../store/content-deletion";
 import { TextButton } from "./TextButton";
+import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
 import { useStopDownloadGoalsOffer } from "./use-stop-download-goals-offer";
 
 export function ContentDeletionDialog() {
@@ -37,7 +37,6 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
   const fromServer = request.kind === "server-work" || request.kind === "server-chapters";
   const serverUrl = "source" in request ? request.source.serverUrl : request.serverUrl;
   const close = () => { if (!running.current) finishContentDeletion(id, results.some(result => result.status === "succeeded")); };
-  usePageBackNavigation(() => { close(); return true; });
   const execute = async () => {
     if (running.current) return;
     running.current = true; setBusy(true); setError(null);
@@ -82,10 +81,14 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
   const serverOption = !fromServer && serverUrl && !(request.kind === "library" && request.serverWork === false)
     ? t(request.kind === "library" ? "contentDeletion.alsoDeleteFromServer" : "contentDeletion.serverChapters")
     : null;
-  return <Modal opened onClose={close} title={t(unshelve ? "contentDeletion.unshelveTitle" : "contentDeletion.title")} centered zIndex={400}
-    closeOnClickOutside={!busy} closeOnEscape={!busy} withCloseButton={!busy}>
+  // Deletion opens from inside sheets and managers, so it takes the nested layer.
+  return <ResponsiveSheet busy={busy} nested opened onClose={close} subtitle={request.title}
+    title={t(unshelve ? "contentDeletion.unshelveTitle" : "contentDeletion.title")}
+    footer={<SheetActions>
+      <TextButton disabled={busy} onClick={close}>{t(results.length ? "common.done" : "common.cancel")}</TextButton>
+      <TextButton tone="danger" loading={busy} onClick={() => { void execute(); }}>{t(failed.length ? "contentDeletion.retry" : unshelve && !options.local && !options.server ? "common.remove" : "contentDeletion.confirm")}</TextButton>
+    </SheetActions>}>
     <Stack>
-      <Text fw={600}>{request.title}</Text>
       <Text size="sm">{request.kind === "server-work" ? t("contentDeletion.workCount", { count: 1 })
         : request.kind === "server-chapters" ? t("contentDeletion.chapterCount", { count: request.chapters.length })
         : request.kind === "downloads" && request.scope === "all" ? t("contentDeletion.allDownloads")
@@ -114,10 +117,6 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
         </Alert> : null}
       </Stack> : null}
       {error ? <Alert color="danger" title={t("common.actionFailed")}>{error}</Alert> : null}
-      <Group justify="flex-end">
-        <TextButton disabled={busy} onClick={close}>{t(results.length ? "common.done" : "common.cancel")}</TextButton>
-        <TextButton tone="danger" loading={busy} onClick={() => { void execute(); }}>{t(failed.length ? "contentDeletion.retry" : unshelve && !options.local && !options.server ? "common.remove" : "contentDeletion.confirm")}</TextButton>
-      </Group>
     </Stack>
-  </Modal>;
+  </ResponsiveSheet>;
 }

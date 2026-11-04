@@ -1,8 +1,8 @@
-import { Group, Modal, SimpleGrid, Stack, Text, Textarea, TextInput } from "@mantine/core";
-import { useMediaQuery } from "@mantine/hooks";
+import { SimpleGrid, Stack, Text, Textarea, TextInput } from "@mantine/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   useEffect,
+  useId,
   useRef,
   useState,
   type ChangeEvent,
@@ -19,7 +19,6 @@ import {
   type NovelDetailRecord,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
-import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { syncLocalChapterStorageAfterOrderChange } from "../../lib/local-chapter-storage";
 import { clearLocalImportFileCache } from "../../lib/local-import";
 import { importLocalFileToLibrary } from "../../lib/local-import-library";
@@ -27,6 +26,7 @@ import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { type DefaultChapterSort } from "../../store/library";
 import { LocalCoverPicker } from "../LocalCoverPicker";
 import { TextButton } from "../TextButton";
+import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
 import { chaptersKey, novelKey } from "./novel-detail-model";
 const LOCAL_IMPORT_ACCEPT = ".txt,.html,.htm,.md,.markdown,.epub,.pdf";
 const EMPTY_LOCAL_NOVEL_FORM: LocalNovelMetadataInput = {
@@ -86,9 +86,7 @@ export function useLocalNovelEditor(
   );
   const [localMetadataOpen, setLocalMetadataOpen] = useState(false);
   const [coverPending, setCoverPending] = useState(false);
-  const phone = useMediaQuery("(max-width: 767px)", undefined, {
-    getInitialValueInEffect: false,
-  });
+  const metadataFormId = useId();
   const [localMetadataForm, setLocalMetadataForm] =
     useState<LocalNovelMetadataInput>(EMPTY_LOCAL_NOVEL_FORM);
   const addLocalChapters = useMutation({
@@ -183,7 +181,6 @@ export function useLocalNovelEditor(
   }
 
   const localMetadataEditorOpen = Boolean(novel?.isLocal) && localMetadataOpen;
-  useOverlayBackNavigation(localMetadataEditorOpen, closeLocalMetadataEditor);
 
   function handleLocalMetadataSubmit(event: FormEvent<HTMLFormElement>): void {
     event.preventDefault();
@@ -234,17 +231,39 @@ export function useLocalNovelEditor(
         onChange={handleLocalChapterFilesSelected}
         type="file"
       />
-      <Modal
-        closeOnClickOutside={!updateLocalMetadata.isPending}
-        closeOnEscape={!updateLocalMetadata.isPending}
-        fullScreen={phone}
+      <ResponsiveSheet
+        busy={updateLocalMetadata.isPending}
+        footer={
+          <SheetActions>
+            <TextButton
+              disabled={updateLocalMetadata.isPending}
+              onClick={closeLocalMetadataEditor}
+              type="button"
+              variant="subtle"
+            >
+              {t("common.cancel")}
+            </TextButton>
+            <TextButton
+              disabled={
+                localMetadataForm.name.trim() === "" ||
+                coverPending ||
+                updateLocalMetadata.isPending
+              }
+              form={metadataFormId}
+              loading={updateLocalMetadata.isPending}
+              type="submit"
+            >
+              {t("common.save")}
+            </TextButton>
+          </SheetActions>
+        }
+        fullScreenOnPhone
         opened={localMetadataEditorOpen}
         onClose={closeLocalMetadataEditor}
         size="lg"
         title={t("novel.local.editMetadata")}
-        withCloseButton={!updateLocalMetadata.isPending}
       >
-        <form onSubmit={handleLocalMetadataSubmit}>
+        <form id={metadataFormId} onSubmit={handleLocalMetadataSubmit}>
           <Stack gap="sm">
             <TextInput
               autoFocus
@@ -340,30 +359,9 @@ export function useLocalNovelEditor(
                   : String(updateLocalMetadata.error)}
               </Text>
             ) : null}
-            <Group justify="flex-end">
-              <TextButton
-                disabled={updateLocalMetadata.isPending}
-                onClick={closeLocalMetadataEditor}
-                type="button"
-                variant="subtle"
-              >
-                {t("common.cancel")}
-              </TextButton>
-              <TextButton
-                disabled={
-                  localMetadataForm.name.trim() === "" ||
-                  coverPending ||
-                  updateLocalMetadata.isPending
-                }
-                loading={updateLocalMetadata.isPending}
-                type="submit"
-              >
-                {t("common.save")}
-              </TextButton>
-            </Group>
           </Stack>
         </form>
-      </Modal>
+      </ResponsiveSheet>
     </>
   );
   return {

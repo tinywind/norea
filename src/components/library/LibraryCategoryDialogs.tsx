@@ -1,8 +1,9 @@
-import { Group, Modal, Stack, Text, TextInput } from "@mantine/core";
+import { Stack, Text, TextInput } from "@mantine/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   forwardRef,
   useCallback,
+  useId,
   useImperativeHandle,
   useRef,
   useState,
@@ -15,13 +16,12 @@ import {
   type LibraryCategory,
 } from "../../db/queries/category";
 import { useTranslation } from "../../i18n";
-import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { useLibraryStore } from "../../store/library";
 import { TextButton } from "../TextButton";
+import { useConfirm } from "../ui/ConfirmDialog";
 import { getFocusReturnTarget } from "../ui/OverflowMenu";
+import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
 
-// Category dialogs open from the Manage categories dialog too, so they sit above it.
-const CATEGORY_DIALOG_Z_INDEX = "var(--norea-z-overlay-nested)";
 type CategoryEditorState =
   | { mode: "create" }
   | { category: LibraryCategory; mode: "rename" };
@@ -51,8 +51,8 @@ export const LibraryCategoryDialogs = forwardRef<
   const [categoryEditor, setCategoryEditor] =
     useState<CategoryEditorState | null>(null);
   const [categoryName, setCategoryName] = useState("");
-  const [categoryDeleteTarget, setCategoryDeleteTarget] =
-    useState<LibraryCategory | null>(null);
+  const confirm = useConfirm();
+  const formId = useId();
   const focusReturnRef = useRef<HTMLElement | null>(null);
   const rememberFocusReturn = useCallback(() => {
     focusReturnRef.current = getFocusReturnTarget(document.activeElement);
@@ -83,8 +83,9 @@ export const LibraryCategoryDialogs = forwardRef<
     },
   });
 
+  // The confirmation closes before the delete runs, so a failure surfaces as a toast.
   const deleteCategoryMutation = useMutation({
-    meta: { errorPresentation: "inline" },
+    meta: { errorPresentation: "toast" },
     mutationFn: (id: number) => deleteCategory(id),
     onSuccess: (_data, id) => {
       invalidateLibraryCategories();
@@ -94,7 +95,6 @@ export const LibraryCategoryDialogs = forwardRef<
       if (useLibraryStore.getState().defaultCategoryId === id) {
         useLibraryStore.getState().setDefaultCategoryId(null);
       }
-      setCategoryDeleteTarget(null);
     },
   });
 
@@ -128,20 +128,19 @@ export const LibraryCategoryDialogs = forwardRef<
   }, [categorySaving, createCategoryMutation, renameCategoryMutation]);
 
   const openDeleteCategory = useCallback(
-    (category: LibraryCategory) => {
+    async (category: LibraryCategory) => {
       rememberFocusReturn();
-      deleteCategoryMutation.reset();
-      setCategoryDeleteTarget(category);
+      const confirmed = await confirm({
+        title: t("categories.delete"),
+        message: t("library.deleteCategory.message", { name: category.name }),
+        confirmLabel: t("common.delete"),
+        danger: true,
+      });
+      restoreFocus();
+      if (confirmed) deleteCategoryMutation.mutate(category.id);
     },
-    [deleteCategoryMutation, rememberFocusReturn],
+    [confirm, deleteCategoryMutation, rememberFocusReturn, restoreFocus, t],
   );
-  const closeCategoryDelete = useCallback(() => {
-    if (deleteCategoryMutation.isPending) return;
-    deleteCategoryMutation.reset();
-    setCategoryDeleteTarget(null);
-  }, [deleteCategoryMutation]);
-  useOverlayBackNavigation(active && categoryEditor !== null, closeCategoryEditor);
-  useOverlayBackNavigation(active && categoryDeleteTarget !== null, closeCategoryDelete);
 
   const handleCategorySubmit = useCallback(
     (event: FormEvent<HTMLFormElement>) => {
@@ -171,115 +170,65 @@ export const LibraryCategoryDialogs = forwardRef<
       : t("categories.add");
   const categoryMutationError =
     createCategoryMutation.error ?? renameCategoryMutation.error;
-  const deleting = deleteCategoryMutation.isPending;
 
   useImperativeHandle(
     ref,
     () => ({
       createCategory: openCreateCategory,
       renameCategory: openRenameCategory,
-      deleteCategory: openDeleteCategory,
+      deleteCategory: (category) => void openDeleteCategory(category),
     }),
     [openCreateCategory, openDeleteCategory, openRenameCategory],
   );
   return (
-    <>
-      {" "}
-      <Modal
-        closeOnClickOutside={!categorySaving}
-        closeOnEscape={!categorySaving}
-        onClose={closeCategoryEditor}
-        onExitTransitionEnd={restoreFocus}
-        opened={active && categoryEditor !== null}
-        returnFocus={false}
-        title={categoryEditorTitle}
-        withCloseButton={!categorySaving}
-        zIndex={CATEGORY_DIALOG_Z_INDEX}
-      >
-        <form onSubmit={handleCategorySubmit}>
-          <Stack gap="sm">
-            <TextInput
-              autoFocus
-              label={t("library.categoryName")}
-              onChange={(event) => setCategoryName(event.currentTarget.value)}
-              value={categoryName}
-            />
-            {categoryMutationError ? (
-              <Text c="danger" role="alert" size="sm">
-                {categoryMutationError instanceof Error
-                  ? categoryMutationError.message
-                  : String(categoryMutationError)}
-              </Text>
-            ) : null}
-            <Group justify="flex-end">
-              <TextButton
-                disabled={categorySaving}
-                type="button"
-                variant="subtle"
-                onClick={closeCategoryEditor}
-              >
-                {t("common.cancel")}
-              </TextButton>
-              <TextButton
-                disabled={categoryName.trim() === ""}
-                loading={categorySaving}
-                type="submit"
-              >
-                {t("common.save")}
-              </TextButton>
-            </Group>
-          </Stack>
-        </form>
-      </Modal>
-      <Modal
-        closeOnClickOutside={!deleting}
-        closeOnEscape={!deleting}
-        onClose={closeCategoryDelete}
-        onExitTransitionEnd={restoreFocus}
-        opened={active && categoryDeleteTarget !== null}
-        returnFocus={false}
-        title={t("categories.delete")}
-        withCloseButton={!deleting}
-        zIndex={CATEGORY_DIALOG_Z_INDEX}
-      >
+    <ResponsiveSheet
+      busy={categorySaving}
+      footer={
+        <SheetActions>
+          <TextButton
+            disabled={categorySaving}
+            type="button"
+            variant="subtle"
+            onClick={closeCategoryEditor}
+          >
+            {t("common.cancel")}
+          </TextButton>
+          <TextButton
+            disabled={categoryName.trim() === ""}
+            form={formId}
+            loading={categorySaving}
+            type="submit"
+          >
+            {t("common.save")}
+          </TextButton>
+        </SheetActions>
+      }
+      // Category dialogs open from the Manage categories dialog too, so they sit above it.
+      nested
+      onClose={closeCategoryEditor}
+      onExitTransitionEnd={restoreFocus}
+      opened={active && categoryEditor !== null}
+      returnFocus={false}
+      size="sm"
+      title={categoryEditorTitle}
+    >
+      <form id={formId} onSubmit={handleCategorySubmit}>
         <Stack gap="sm">
-          <Text size="sm">
-            {categoryDeleteTarget
-              ? t("library.deleteCategory.message", {
-                  name: categoryDeleteTarget.name,
-                })
-              : ""}
-          </Text>
-          {deleteCategoryMutation.error ? (
+          <TextInput
+            autoFocus
+            label={t("library.categoryName")}
+            onChange={(event) => setCategoryName(event.currentTarget.value)}
+            value={categoryName}
+          />
+          {categoryMutationError ? (
             <Text c="danger" role="alert" size="sm">
-              {deleteCategoryMutation.error instanceof Error
-                ? deleteCategoryMutation.error.message
-                : String(deleteCategoryMutation.error)}
+              {categoryMutationError instanceof Error
+                ? categoryMutationError.message
+                : String(categoryMutationError)}
             </Text>
           ) : null}
-          <Group justify="flex-end">
-            <TextButton
-              disabled={deleting}
-              type="button"
-              variant="subtle"
-              onClick={closeCategoryDelete}
-            >
-              {t("common.cancel")}
-            </TextButton>
-            <TextButton
-              loading={deleting}
-              tone="danger"
-              onClick={() => {
-                if (categoryDeleteTarget) {
-                  deleteCategoryMutation.mutate(categoryDeleteTarget.id);
-                }
-              }}
-            >
-              {t("common.delete")}
-            </TextButton>
-          </Group>
         </Stack>
-      </Modal>
-    </>
+      </form>
+    </ResponsiveSheet>
   );
 });

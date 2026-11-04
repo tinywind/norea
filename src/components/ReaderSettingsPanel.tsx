@@ -1,8 +1,8 @@
 import { useMemo, useState } from "react";
 import {
+  Button,
   Checkbox,
   ColorInput,
-  Modal,
   NumberInput,
   Select,
   SimpleGrid,
@@ -22,8 +22,8 @@ import {
   SettingsWideField,
 } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
+import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
 import { useTranslation, type TranslationKey } from "../i18n";
-import { useOverlayBackNavigation } from "../lib/android-back-navigation";
 import {
   READER_PAGE_TRANSITION_DURATION_MAX_MS,
   READER_PAGE_TRANSITION_DURATION_MIN_MS,
@@ -312,7 +312,6 @@ export function useReaderSettingsEditor({
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
   const [keepScopedSettings, setKeepScopedSettings] = useState(true);
   const closeResetConfirmation = () => setResetConfirmOpen(false);
-  useOverlayBackNavigation(resetConfirmOpen, closeResetConfirmation);
   const targetOverride =
     targetKind === "source" ? sourceSettingsOverride : novelSettingsOverride;
   const sourceSettingsEnabled = Boolean(sourceSettingsOverride?.enabled);
@@ -669,7 +668,6 @@ export function useReaderSettingsEditor({
     setActiveGeneral,
     setKeepScopedSettings,
     setReaderMode,
-    setResetConfirmOpen,
   };
 }
 
@@ -1241,10 +1239,22 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
       </>
     ),
     resetConfirmation: (
-      <Modal
-        centered
+      // A sheet rather than useConfirm: the global reset carries the keep-scoped-settings option.
+      <ResponsiveSheet
+        footer={
+          <SheetActions>
+            <Button variant="default" onClick={editor.closeResetConfirmation}>
+              {t("common.cancel")}
+            </Button>
+            <Button color="danger" onClick={editor.resetActiveReaderSettings}>
+              {t("common.reset")}
+            </Button>
+          </SheetActions>
+        }
+        nested
         opened={editor.resetConfirmOpen}
         onClose={editor.closeResetConfirmation}
+        size="sm"
         title={t("readerSettings.reset.title")}
       >
         <Stack gap="md">
@@ -1268,19 +1278,8 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
               }
             />
           ) : null}
-          <SettingsInlineControls>
-            <TextButton onClick={() => editor.setResetConfirmOpen(false)}>
-              {t("common.cancel")}
-            </TextButton>
-            <TextButton
-              tone="danger"
-              onClick={editor.resetActiveReaderSettings}
-            >
-              {t("common.reset")}
-            </TextButton>
-          </SettingsInlineControls>
         </Stack>
-      </Modal>
+      </ResponsiveSheet>
     ),
   };
 }

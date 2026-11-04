@@ -1,9 +1,8 @@
-import { Alert, Badge, Group, Loader, Modal, Pagination, Stack, Text } from "@mantine/core";
+import { Alert, Badge, Group, Loader, Pagination, Stack, Text } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
-import { usePageBackNavigation } from "../../lib/android-back-navigation";
 import type { ServerChapterPage, ServerChapterSummary } from "../../lib/content-sync/chapters";
 import { findServerWork, loadServerChapterPage } from "../../lib/content-sync/management";
 import type { ServerNovelSource } from "../../lib/content-sync/novel-source";
@@ -14,6 +13,7 @@ import { StateView } from "../AppFrame";
 import { ConsolePanel, ConsoleSectionHeader } from "../ConsolePrimitives";
 import { ServerWorkDeleteButton } from "../ServerWorkDeleteButton";
 import { TextButton } from "../TextButton";
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 /**
  * The content-server work that "Manage server data" opens for this novel, or
@@ -72,20 +72,13 @@ export function ServerChapterManager({ source, name, onClose }: { source: Server
       if (remaining) setPage(current => Math.min(current, Math.max(1, Math.ceil(remaining.total / 100))));
     },
   });
-  usePageBackNavigation(() => {
-    if (workDeletionActive) return false;
-    if (remove.isPending) return true;
-    onClose();
-    return true;
-  });
   const busy = remove.isPending || workDeletionActive;
   const unavailable = chapters.isFetching || !!chapters.error || busy;
   const refresh = () => { setSelected(new Set()); remove.reset(); void chapters.refetch(); };
   const changePage = (next: number) => { setSelected(new Set()); remove.reset(); setPage(next); };
   const error = remove.error ?? chapters.error;
   const close = () => { if (!busy) onClose(); };
-  return <Modal opened onClose={close} fullScreen title={t("contentSync.manageChapters")}
-    closeOnEscape={!busy} withCloseButton={!busy}>
+  return <ResponsiveSheet busy={busy} fullScreenOnPhone opened onClose={close} size="lg" title={t("contentSync.manageChapters")}>
     <Stack className="norea-server-management" gap="md">
       <ConsoleSectionHeader title={name} eyebrow={t("contentSync.manageChapters")}
         actions={<TextButton onClick={close} disabled={busy}>{t("contentSync.backToWork")}</TextButton>} />
@@ -131,5 +124,5 @@ export function ServerChapterManager({ source, name, onClose }: { source: Server
         </Group> : null}
       </ConsolePanel>
     </Stack>
-  </Modal>;
+  </ResponsiveSheet>;
 }

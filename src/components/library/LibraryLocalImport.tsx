@@ -1,7 +1,6 @@
 import {
   Group,
   Loader,
-  Modal,
   Stack,
   Text,
 } from "@mantine/core";
@@ -18,12 +17,12 @@ import {
 } from "react";
 import { upsertLocalNovel } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
-import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { clearLocalImportFileCache } from "../../lib/local-import";
 import { importLocalFileToLibrary } from "../../lib/local-import-library";
 import { LOCAL_NOVEL_NAME, LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { useLibraryStore } from "../../store/library";
 import { TextButton } from "../TextButton";
+import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
 import {
   beginLocalImport,
   getLocalImportResultCounts,
@@ -198,8 +197,6 @@ export const LibraryLocalImport = forwardRef<
   const readyCount = items.filter((item) => item.status === "ready").length;
   const result = batch?.phase === "result" ? getLocalImportResultCounts(batch) : null;
   const localHomeErrorOpen = active && Boolean(openLocalHome.error);
-  useOverlayBackNavigation(active && batch !== null, dismissBatch);
-  useOverlayBackNavigation(localHomeErrorOpen, () => openLocalHome.reset());
 
   useImperativeHandle(
     ref,
@@ -219,14 +216,51 @@ export const LibraryLocalImport = forwardRef<
         onChange={handleLocalImportFilesSelected}
         type="file"
       />
-      <Modal
-        closeOnClickOutside={!busy}
-        closeOnEscape={!busy}
+      <ResponsiveSheet
+        busy={busy}
+        footer={
+          result ? (
+            <SheetActions>
+              <TextButton
+                onClick={() => {
+                  dismissBatch();
+                  openLocalHome.mutate();
+                }}
+                type="button"
+                variant="subtle"
+              >
+                {t("library.localNovel.create")}
+              </TextButton>
+              <TextButton onClick={dismissBatch} type="button">
+                {t("common.done")}
+              </TextButton>
+            </SheetActions>
+          ) : (
+            <SheetActions>
+              <TextButton
+                disabled={busy}
+                onClick={dismissBatch}
+                type="button"
+                variant="subtle"
+              >
+                {t("common.cancel")}
+              </TextButton>
+              <TextButton
+                disabled={busy || readyCount === 0}
+                loading={batch?.phase === "importing"}
+                onClick={() => void importReadyFiles()}
+                type="button"
+              >
+                {t("library.localImport.importReady", { count: readyCount })}
+              </TextButton>
+            </SheetActions>
+          )
+        }
+        fullScreenOnPhone
         onClose={dismissBatch}
         opened={active && batch !== null}
         size="lg"
         title={t("library.localImport.title")}
-        withCloseButton={!busy}
       >
         <Stack gap="sm">
           {batch?.phase === "analyzing" ? (
@@ -257,60 +291,23 @@ export const LibraryLocalImport = forwardRef<
             </Text>
           ) : null}
 
-          <Group justify="space-between" wrap="wrap">
-            <Text aria-live="polite" c="dimmed" size="sm">
-              {result
-                ? t("library.localImport.result", result)
-                : batch?.phase === "analyzing"
-                  ? null
-                  : getLocalImportSummary(items, t)}
-            </Text>
-            {result ? (
-              <Group gap="xs">
-                <TextButton
-                  onClick={() => {
-                    dismissBatch();
-                    openLocalHome.mutate();
-                  }}
-                  type="button"
-                  variant="subtle"
-                >
-                  {t("library.localNovel.create")}
-                </TextButton>
-                <TextButton onClick={dismissBatch} type="button">
-                  {t("common.done")}
-                </TextButton>
-              </Group>
-            ) : (
-              <Group gap="xs">
-                <TextButton
-                  disabled={busy}
-                  onClick={dismissBatch}
-                  type="button"
-                  variant="subtle"
-                >
-                  {t("common.cancel")}
-                </TextButton>
-                <TextButton
-                  disabled={busy || readyCount === 0}
-                  loading={batch?.phase === "importing"}
-                  onClick={() => void importReadyFiles()}
-                  type="button"
-                >
-                  {t("library.localImport.importReady", { count: readyCount })}
-                </TextButton>
-              </Group>
-            )}
-          </Group>
+          <Text aria-live="polite" c="dimmed" size="sm">
+            {result
+              ? t("library.localImport.result", result)
+              : batch?.phase === "analyzing"
+                ? null
+                : getLocalImportSummary(items, t)}
+          </Text>
         </Stack>
-      </Modal>
-      <Modal
+      </ResponsiveSheet>
+      <ResponsiveSheet
         opened={localHomeErrorOpen}
         onClose={() => openLocalHome.reset()}
+        size="sm"
         title={t("library.localNovel.title")}
       >
         <Text c="danger" role="alert">{getLocalImportErrorMessage(openLocalHome.error)}</Text>
-      </Modal>
+      </ResponsiveSheet>
     </>
   );
 });

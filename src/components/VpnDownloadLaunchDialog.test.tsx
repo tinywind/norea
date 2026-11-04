@@ -33,7 +33,8 @@ interface Props {
   disabled?: boolean;
   onClick?: () => unknown;
   onClose?: () => void;
-  closeButtonProps?: { "aria-label"?: string };
+  closeLabel?: string;
+  footer?: ReactNode;
   value?: unknown;
   onChange?: (value: unknown) => void;
 }
@@ -41,7 +42,7 @@ function elements(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Props>;
-  return [element, ...elements(element.props.children)];
+  return [element, ...elements(element.props.children), ...elements(element.props.footer)];
 }
 let snapshot: VpnDownloadRuntimeSnapshot;
 function render() {
@@ -68,7 +69,7 @@ it("dismisses the launch modal without starting work or changing stored choices"
 
 it("labels the modal's close control for keyboard and screen-reader cancellation", () => {
   const modal = render().find(element => element.props.opened)!;
-  expect(modal.props.closeButtonProps?.["aria-label"]).toBe("common.cancel");
+  expect(modal.props.closeLabel).toBe("common.cancel");
 });
 
 it("starts all queued work with accepted defaults and coalesces duplicate submissions", async () => {

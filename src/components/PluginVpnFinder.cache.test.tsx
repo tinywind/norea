@@ -50,7 +50,8 @@ vi.mock("../lib/network", () => ({
 vi.mock("../i18n", () => ({ useTranslation: () => ({ locale: "en", t: (key: string) => key }) }));
 
 import { QueryClient as ActualQueryClient } from "@tanstack/react-query";
-import { Modal, Switch, Table } from "@mantine/core";
+import { Switch, Table } from "@mantine/core";
+import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { PluginVpnFinder } from "./PluginVpnFinder";
 import { TextButton } from "./TextButton";
 
@@ -100,7 +101,7 @@ it("retains the fetched catalog across modal closes and settings remounts until 
   render();
   await vi.waitFor(() => expect(mocks.observer?.getCurrentResult().isSuccess).toBe(true));
   expect(mocks.load).toHaveBeenCalledWith(false, expect.any(AbortSignal));
-  render().find(element => element.type === Modal)!.props.onClose!();
+  render().find(element => element.type === ResponsiveSheet)!.props.onClose!();
   render(false);
   render(true);
   expect(mocks.load).toHaveBeenCalledOnce();
@@ -126,7 +127,7 @@ it("preserves the last fetched catalog when an explicit refresh fails", async ()
   render().find(element => element.type === TextButton &&
     element.props.children === "settings.data.pluginVpn.finder.refresh")!.props.onClick!();
   await vi.waitFor(() => expect(mocks.observer?.getCurrentResult().isError).toBe(true));
-  render().find(element => element.type === Modal)!.props.onClose!();
+  render().find(element => element.type === ResponsiveSheet)!.props.onClose!();
   render(false);
   render(true);
   expect(mocks.load).toHaveBeenCalledTimes(2);

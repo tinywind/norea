@@ -2,7 +2,6 @@ import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 
 const hookState = vi.hoisted(() => ({ index: 0, slots: [] as unknown[] }));
-const backState = vi.hoisted(() => ({ overlays: [] as Array<{ opened: boolean; onClose: () => void }> }));
 vi.hoisted(() => {
   const values = new Map<string, string>();
   const storage = {
@@ -23,11 +22,6 @@ vi.mock("react", async (original) => ({
   },
 }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("../lib/android-back-navigation", () => ({
-  useOverlayBackNavigation: (opened: boolean, onClose: () => void) => {
-    backState.overlays.push({ opened, onClose });
-  },
-}));
 vi.mock("../store/reader", async (original) => {
   const actual = await original<typeof import("../store/reader")>();
   return {
@@ -45,6 +39,9 @@ import { useReaderStore } from "../store/reader";
 
 interface ElementProps {
   children?: ReactNode;
+  color?: string;
+  footer?: ReactNode;
+  onClose?: () => void;
   title?: string;
   className?: string;
   label?: string;
@@ -62,20 +59,18 @@ function elements(node: ReactNode): ReactElement<ElementProps>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<ElementProps>;
-  return [element, ...elements(element.props.children)];
+  return [element, ...elements(element.props.children), ...elements(element.props.footer)];
 }
 
 const readerTarget = { kind: "novel" as const, novelId: 7, sourceId: "source-a", sourceLabel: "Source A", label: "Work" };
 
 function renderNovelPanel() {
   hookState.index = 0;
-  backState.overlays = [];
   return elements(ReaderSettingsPanel({ target: readerTarget }));
 }
 
 function renderGlobalPanel() {
   hookState.index = 0;
-  backState.overlays = [];
   return elements(ReaderSettingsPanel());
 }
 
@@ -84,11 +79,11 @@ function resetModal(tree: ReactElement<ElementProps>[]) {
 }
 
 function resetButton(tree: ReactElement<ElementProps>[]) {
-  return tree.find((element) => element.props.children === "common.reset" && element.props.tone !== "danger")!;
+  return tree.find((element) => element.props.children === "common.reset" && element.props.color !== "danger")!;
 }
 
 function confirmResetButton(tree: ReactElement<ElementProps>[]) {
-  return tree.find((element) => element.props.children === "common.reset" && element.props.tone === "danger")!;
+  return tree.find((element) => element.props.children === "common.reset" && element.props.color === "danger")!;
 }
 
 beforeEach(() => {
@@ -154,16 +149,14 @@ it("states the novel scope and leaves global settings when resetting an enabled 
   expect(useReaderStore.getState().appearance.textSize).toBe(26);
 });
 
-it("closes the reset confirmation on back without resetting settings", () => {
+it("closes the reset confirmation without resetting settings when the sheet is dismissed", () => {
   useReaderStore.getState().setAppearance({ textSize: 26 });
   resetButton(renderGlobalPanel()).props.onClick!();
-  expect(resetModal(renderGlobalPanel()).props.opened).toBe(true);
-  const openOverlays = backState.overlays.filter((overlay) => overlay.opened);
-  expect(openOverlays).toHaveLength(1);
+  const sheet = resetModal(renderGlobalPanel());
+  expect(sheet.props.opened).toBe(true);
 
-  openOverlays[0]!.onClose();
+  sheet.props.onClose!();
 
   expect(resetModal(renderGlobalPanel()).props.opened).toBe(false);
-  expect(backState.overlays.some((overlay) => overlay.opened)).toBe(false);
   expect(useReaderStore.getState().appearance.textSize).toBe(26);
 });

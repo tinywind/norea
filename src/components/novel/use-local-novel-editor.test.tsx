@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { cloneElement, type ReactNode } from "react";
 import { afterEach, expect, it, vi } from "vitest";
 import { usePageBackNavigation } from "../../lib/android-back-navigation";
 import {
@@ -7,6 +7,11 @@ import {
   type BackNavigationHarness,
 } from "../../lib/android-back-navigation.test-support";
 
+vi.mock("@mantine/core", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mantine/core")>(),
+  Drawer: () => null,
+  Modal: () => null,
+}));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
   useMutation: () => ({ isPending: false, error: null, reset: vi.fn(), mutate: vi.fn() }),
@@ -19,6 +24,7 @@ vi.mock("../../lib/local-import", () => ({ clearLocalImportFileCache: vi.fn() })
 vi.mock("../../lib/local-import-library", () => ({ importLocalFileToLibrary: vi.fn() }));
 vi.mock("../LocalCoverPicker", () => ({ LocalCoverPicker: () => null }));
 
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import { useLocalNovelEditor } from "./use-local-novel-editor";
 
 const novel = {
@@ -40,9 +46,12 @@ function Page({ children }: { children: ReactNode }) {
   return children;
 }
 
+/** Mounts only the sheet, which owns back navigation; the probe has no DOM for the file input. */
 function EditorProbe() {
   current = useLocalNovelEditor(novel.id, novel, [], "asc");
-  return null;
+  return collectElements(current.editor)
+    .filter((element) => element.type === ResponsiveSheet)
+    .map((element, index) => cloneElement(element, { key: index }));
 }
 
 const metadataModal = () => collectElements(current.editor)
@@ -61,17 +70,10 @@ it("closes the local metadata editor on back without leaving the novel page", as
   expect(pageBack).not.toHaveBeenCalled();
 });
 
-it.each([[true, true], [false, false]])("fills the screen with the metadata editor on phones (phone: %s)", async (phone, fullScreen) => {
+it("fills the screen with the metadata editor on phones", async () => {
   harness = mountBackNavigationHarness();
-  Object.assign(window, {
-    matchMedia: (query: string) => ({
-      matches: query === "(max-width: 767px)" && phone,
-      addEventListener() {},
-      removeEventListener() {},
-    }),
-  });
   await harness.render(<Page><EditorProbe /></Page>);
-  expect(Boolean(metadataModal().props.fullScreen)).toBe(fullScreen);
+  expect(metadataModal().props).toMatchObject({ fullScreenOnPhone: true, size: "lg" });
 });
 
 it("keeps the author and artist fields on separate rows on phones", async () => {

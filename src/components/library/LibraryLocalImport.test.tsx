@@ -1,4 +1,4 @@
-import { createRef, type ReactNode, type Ref } from "react";
+import { cloneElement, createRef, type ReactNode, type Ref } from "react";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import {
   collectElements,
@@ -22,6 +22,11 @@ const mocks = vi.hoisted(() => ({
   imports: [] as Array<{ file: File; resolve: (novelId: number) => void }>,
   navigate: vi.fn(),
   localHome: { isPending: false, error: null as unknown, reset: () => { mocks.localHome.error = null; }, mutate: vi.fn() },
+}));
+vi.mock("@mantine/core", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mantine/core")>(),
+  Drawer: () => null,
+  Modal: () => null,
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: vi.fn() }),
@@ -53,6 +58,7 @@ vi.mock("./local-import-review", () => ({
 }));
 vi.mock("./LocalImportReviewRow", () => ({ LocalImportReviewRow: () => null }));
 
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import { LibraryLocalImport, type LibraryLocalImportHandle } from "./LibraryLocalImport";
 
 type ImportRender = (props: { active: boolean }, ref: Ref<LibraryLocalImportHandle>) => ReactNode;
@@ -72,12 +78,15 @@ afterEach(async () => {
   mocks.localHome.error = null;
 });
 
+/** Mounts only the sheets, which own back navigation; the probe has no DOM for the file input. */
 function ImportProbe() {
   tree = (LibraryLocalImport as unknown as { render: ImportRender }).render({ active: true }, createRef());
-  return null;
+  return collectElements(tree)
+    .filter((element) => element.type === ResponsiveSheet)
+    .map((element, index) => cloneElement(element, { key: index }));
 }
 
-const elements = () => collectElements(tree);
+const elements = () => collectElements([tree, ...collectElements(tree).map((element) => element.props.footer as ReactNode)]);
 const modal = (title: string) => elements().find((element) => element.props.title === title)!;
 const reviewModal = () => modal("library.localImport.title");
 const reviewedFiles = () =>
@@ -123,14 +132,14 @@ it("blocks closing while files are analyzed and imported", async () => {
   harness = mountBackNavigationHarness();
   await harness.render(<ImportProbe />);
   await chooseFiles("a.txt", "b.txt");
-  expect(reviewModal().props).toMatchObject({ opened: true, closeOnEscape: false, closeOnClickOutside: false, withCloseButton: false });
+  expect(reviewModal().props).toMatchObject({ opened: true, busy: true });
   await harness.run(() => (reviewModal().props.onClose as () => void)());
   harness.pressBack();
   expect(reviewModal().props.opened).toBe(true);
 
   await finishAnalyses();
   await harness.run(() => (button("library.localImport.importReady")!.props.onClick as () => void)());
-  expect(reviewModal().props.closeOnEscape).toBe(false);
+  expect(reviewModal().props.busy).toBe(true);
   harness.pressBack();
   expect(reviewModal().props.opened).toBe(true);
 });

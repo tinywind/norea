@@ -44,6 +44,11 @@ vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown
 vi.mock("../store/reader", () => ({ useReaderStore: (selector: (state: unknown) => unknown) => selector({ lastReadChapterByNovel: {} }) }));
 vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () => ({ sourceDuplicateChapters: [], toggle: { mutate: mocks.toggleMutate }, refreshMetadata: { error: mocks.metadataError }, fullRefreshMetadata: { mutate: mocks.fullRefresh } }) }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.toast, hide: vi.fn() } }));
+vi.mock("@mantine/core", async (importOriginal) => ({
+  ...await importOriginal<typeof import("@mantine/core")>(),
+  Drawer: () => null,
+  Modal: () => null,
+}));
 vi.mock("../components/novel/use-server-novel-sync", () => ({ useServerNovelSync: () => mocks.sync }));
 vi.mock("../components/novel/use-novel-chapter-actions", () => ({ useNovelChapterActions: () => ({ clearDownload: { mutate: mocks.clearDownloadMutate }, clearSelectedDownloads: {}, setSelectedChapterReadState: {}, setRelativeChapterReadState: {}, repairMedia: {} }) }));
 vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => mocks.confirm }));
@@ -407,9 +412,10 @@ it("still queries server availability when the source plugin cannot provide chap
 it("closes the novel reader settings drawer on back before leaving the page", async () => {
   const harness = mountBackNavigationHarness();
   let tree: ReturnType<typeof NovelDetailPage> | undefined;
+  // Only the reader settings sheet mounts: it owns its back handler.
   function PageProbe() {
     tree = NovelDetailPage({ id: 3 });
-    return null;
+    return collectElements(tree).find((element) => element.props.title === "readerSettings.novel.title") ?? null;
   }
   const drawer = () => collectElements(tree).find((element) => element.props.title === "readerSettings.novel.title")!;
   const readerSettingsItem = () => (collectElements(tree).find((element) => Array.isArray(element.props.items))!

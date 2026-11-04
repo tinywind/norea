@@ -8,7 +8,7 @@ import type { ContentDeletionRequest } from "../lib/content-deletion";
 const mocks = vi.hoisted(() => ({ request: null as ContentDeletionRequest | null }));
 vi.mock("@mantine/core", async (importOriginal) => ({
   ...await importOriginal<typeof import("@mantine/core")>(),
-  Modal: ({ children, title }: { children: ReactNode; title: ReactNode }) => <section><h2>{title}</h2>{children}</section>,
+  Drawer: ({ children, title }: { children: ReactNode; title: ReactNode }) => <section><h2>{title}</h2>{children}</section>,
 }));
 vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => ({}) }));
 vi.mock("@tanstack/react-router", () => ({
@@ -19,7 +19,7 @@ vi.mock("../i18n", () => ({
     t: (key: string, values?: Record<string, unknown>) => values?.count === undefined ? key : `${key}:${values.count}`,
   }),
 }));
-vi.mock("../lib/android-back-navigation", () => ({ usePageBackNavigation: vi.fn() }));
+vi.mock("../lib/android-back-navigation", () => ({ useOverlayBackNavigation: vi.fn() }));
 vi.mock("../lib/content-deletion", () => ({ prepareContentDeletion: vi.fn(), runContentDeletion: vi.fn() }));
 vi.mock("../lib/content-sync/management-query-cache", () => ({ removeDeletedServerWorkFromQueries: vi.fn() }));
 vi.mock("../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
@@ -44,7 +44,7 @@ const optionLabels = ($: ReturnType<typeof render>) =>
 
 it("asks to remove a novel from the library with optional download and server deletion", () => {
   const $ = render({ ...unshelve, downloadedCount: 4, serverWork: true });
-  expect($("h2").text()).toBe("contentDeletion.unshelveTitle");
+  expect($("h2 .norea-responsive-sheet-title-text").text()).toBe("contentDeletion.unshelveTitle");
   expect($.text()).toContain("contentDeletion.unregister");
   expect(optionLabels($)).toEqual([
     "contentDeletion.alsoDeleteDownloads:4",
@@ -73,7 +73,7 @@ it("drops the download option when nothing is downloaded", () => {
 
 it("keeps the device and server choices for deleting downloads", () => {
   const $ = render({ kind: "downloads", scope: "chapter", ids: [7, 8], title: "Downloads", serverUrl: "http://server.test" });
-  expect($("h2").text()).toBe("contentDeletion.title");
+  expect($("h2 .norea-responsive-sheet-title-text").text()).toBe("contentDeletion.title");
   expect(optionLabels($)).toEqual(["contentDeletion.serverChapters"]);
   expect($("button").last().text()).toBe("contentDeletion.confirm");
 });

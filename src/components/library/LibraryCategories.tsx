@@ -1,13 +1,13 @@
-import { Button, Modal, Text, UnstyledButton } from "@mantine/core";
+import { Button, Text, UnstyledButton } from "@mantine/core";
 import { useEffect, useRef } from "react";
 import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
 } from "../../db/queries/category";
 import { useTranslation } from "../../i18n";
-import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { EditIcon, PlusIcon, TrashIcon } from "../ui/icons";
 import { OverflowMenu } from "../ui/OverflowMenu";
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import { type TranslateFn } from "./LibraryViewOptions";
 
 export interface LibraryCategoryEntry {
@@ -179,7 +179,6 @@ export function CategoryList({
 }
 
 interface CategoryManagerProps extends Omit<CategoryListProps, "onSelect"> {
-  fullScreen: boolean;
   onClose: () => void;
   onSelect: (id: number | null) => void;
   opened: boolean;
@@ -187,18 +186,16 @@ interface CategoryManagerProps extends Omit<CategoryListProps, "onSelect"> {
 
 /** Manage categories: a full-screen dialog on phones, a modal on wider screens. */
 export function CategoryManager({
-  fullScreen,
   onClose,
   onSelect,
   opened,
   ...listProps
 }: CategoryManagerProps) {
   const { t } = useTranslation();
-  useOverlayBackNavigation(opened, onClose);
 
   return (
-    <Modal
-      fullScreen={fullScreen}
+    <ResponsiveSheet
+      fullScreenOnPhone
       onClose={onClose}
       opened={opened}
       title={t("library.manageCategories")}
@@ -210,6 +207,6 @@ export function CategoryManager({
           onClose();
         }}
       />
-    </Modal>
+    </ResponsiveSheet>
   );
 }

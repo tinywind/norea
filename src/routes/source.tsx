@@ -4,7 +4,6 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   ActionIcon,
   Button,
-  Drawer,
   Group,
   Indicator,
   TextInput,
@@ -42,10 +41,7 @@ import {
 } from "../components/ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
-import {
-  useOverlayBackNavigation,
-  usePageBackNavigation,
-} from "../lib/android-back-navigation";
+import { usePageBackNavigation } from "../lib/android-back-navigation";
 import { describeError } from "../lib/errors";
 import { enqueueOpenNovelFromSourceTask } from "../lib/plugins/open-novel-task";
 import { openPluginSite } from "../lib/plugins/open-plugin-site";
@@ -462,7 +458,6 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     setSearch("");
     setSubmittedSearch("");
   }, []);
-  useOverlayBackNavigation(readerSettingsOpen, () => setReaderSettingsOpen(false));
 
   useEffect(
     () => () => {
@@ -767,16 +762,12 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
         plugin={settingsOpen ? plugin : null}
       />
       {quickAdd.categorySheet}
-      <Drawer
-        classNames={{
-          body: "norea-reader-settings-drawer-body",
-          content: "norea-reader-settings-drawer-content",
-        }}
+      <ResponsiveSheet
+        desktopVariant="side"
+        fullScreenOnPhone
         opened={readerSettingsOpen}
         onClose={() => setReaderSettingsOpen(false)}
         title={t("readerSettings.source.title", { name: plugin.name })}
-        position="right"
-        size="lg"
       >
         <ReaderSettingsPanel
           target={{
@@ -785,7 +776,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
             label: plugin.name,
           }}
         />
-      </Drawer>
+      </ResponsiveSheet>
     </div>
   );
 }

@@ -1,10 +1,9 @@
-import { Modal } from "@mantine/core";
 import { useCallback, useRef } from "react";
 import { useTranslation } from "../../i18n";
-import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import type { Plugin } from "../../lib/plugins/types";
 import { PluginSettingsEditor } from "../PluginSettingsEditor";
 import { useConfirm } from "../ui/ConfirmDialog";
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 interface PluginSettingsDialogProps {
   onClose: () => void;
@@ -38,13 +37,12 @@ export function PluginSettingsDialog({ onClose, onSaved, plugin }: PluginSetting
     dirtyRef.current = false;
     onClose();
   };
-  useOverlayBackNavigation(plugin !== null, () => void requestClose());
 
   return (
-    <Modal
+    <ResponsiveSheet
+      fullScreenOnPhone
       opened={plugin !== null}
       onClose={() => void requestClose()}
-      size="lg"
       title={t("pluginSettings.title", { name: plugin?.name ?? "" })}
     >
       {plugin ? (
@@ -60,6 +58,6 @@ export function PluginSettingsDialog({ onClose, onSaved, plugin }: PluginSetting
           }}
         />
       ) : null}
-    </Modal>
+    </ResponsiveSheet>
   );
 }

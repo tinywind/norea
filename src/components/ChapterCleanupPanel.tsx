@@ -1,4 +1,4 @@
-import { Alert, Checkbox, Group, Modal, MultiSelect, Select, Stack, Text } from "@mantine/core";
+import { Alert, Checkbox, Group, MultiSelect, Select, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listCategories, UNCATEGORIZED_CATEGORY_ID } from "../db/queries/category";
@@ -7,12 +7,12 @@ import {
   approveChapterCleanupTargets, chapterCleanupProtectedCounts, previewChapterCleanup,
   type ChapterCleanupFilters, type ChapterCleanupPreview, type ChapterCleanupServerMode, type ChapterCleanupSkipReason,
 } from "../lib/chapter-cleanup";
-import { useOverlayBackNavigation } from "../lib/android-back-navigation";
 import { listGoalProtectedChapterIds } from "../lib/download-goals/goal-protection";
 import { enqueueChapterCleanup, type ChapterCleanupResult } from "../lib/tasks/chapter-cleanup";
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { useContentSyncStore } from "../store/content-sync";
 import { TextButton } from "./TextButton";
+import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
 import { useStopDownloadGoalsOffer } from "./use-stop-download-goals-offer";
 
 const SERVER_OPTIONS: Record<ChapterCleanupServerMode, TranslationKey> = {
@@ -62,7 +62,6 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
   const [goalKeptIds, setGoalKeptIds] = useState<ReadonlySet<number>>(() => new Set());
   const [approval, setApproval] = useState({ includeUnread: false, includeGoalKept: false });
   const offerToStopDownloadGoals = useStopDownloadGoalsOffer();
-  useOverlayBackNavigation(opened, onClose);
   const [confirming, setConfirming] = useState(false);
   const [inspecting, setInspecting] = useState(false);
   const [checked, setChecked] = useState(0);
@@ -134,7 +133,8 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
     }
   }
   const disabled = inspecting || running;
-  return <Modal opened={opened} onClose={onClose} title={t("chapterCleanup.title")} size="lg" centered>
+  return <ResponsiveSheet fullScreenOnPhone opened={opened} onClose={onClose} title={t("chapterCleanup.title")} size="lg"
+    footer={<SheetActions><TextButton onClick={onClose}>{t("common.done")}</TextButton></SheetActions>}>
     <Stack gap="md">
       <Text size="sm" c="dimmed">{t("chapterCleanup.description")}</Text>
       <Select label={t("chapterCleanup.server.label")} data={Object.entries(SERVER_OPTIONS).map(([value, key]) => ({ value, label: t(key) }))}
@@ -189,7 +189,6 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
         </details> : null}
         <Text size="sm" c="dimmed">{t("chapterCleanup.retryHint")}</Text></Stack> : null}
       {error ? <Alert color="danger" title={t("common.actionFailed")}>{error}</Alert> : null}
-      <Group justify="flex-end"><TextButton onClick={onClose}>{t("common.done")}</TextButton></Group>
     </Stack>
-  </Modal>;
+  </ResponsiveSheet>;
 }

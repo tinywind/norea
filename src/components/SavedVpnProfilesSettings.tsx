@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Alert, Group, Modal, NumberInput, Select, Stack, Text } from "@mantine/core";
+import { Alert, Group, NumberInput, Select, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listVpnGateServerVerdicts, setVpnGateServerVerdict, type VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
 import { formatDateTimeForLocale, useTranslation, type TranslationKey } from "../i18n";
@@ -11,6 +11,7 @@ import { notifyVpnDownloadProfilesChanged, reallowVpnDownloadBatchProfile } from
 import type { VpnDownloadProfileIssueCause } from "../lib/tasks/vpn-download-types";
 import { SettingsFieldRow, SettingsInlineControls, SettingsWideField } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
+import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 
 const VERDICT_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
 const CAUSE_KEYS: Record<VpnDownloadProfileIssueCause, TranslationKey> = {
@@ -114,9 +115,8 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
           {actionError && !opened ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
           {vault.data?.profiles.length === 0 && !vault.isError ? <Text size="sm">{t("settings.data.pluginVpn.saved.empty")}</Text> : null}
           <TextButton disabled={disabled} onClick={() => { setActionError(null); setOpened(true); }}>{t("settings.data.pluginVpn.saved.manage")}</TextButton>
-          <Modal opened={opened} onClose={() => { if (!busy) setOpened(false); }} centered size="lg"
-            title={t("settings.data.pluginVpn.saved.manage")} closeOnClickOutside={!busy} closeOnEscape={!busy}
-            closeButtonProps={{ disabled: busy, "aria-label": t("settings.data.pluginVpn.saved.close") }}>
+          <ResponsiveSheet busy={busy} closeLabel={t("settings.data.pluginVpn.saved.close")} fullScreenOnPhone
+            opened={opened} onClose={() => setOpened(false)} size="lg" title={t("settings.data.pluginVpn.saved.manage")}>
             <Stack gap="md">
               <Text size="sm">{t("settings.data.pluginVpn.saved.managementHelp")}</Text>
               {issues.isPending ? <Text role="status">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
@@ -173,7 +173,7 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
                 </Stack>;
               })}
             </Stack>
-          </Modal>
+          </ResponsiveSheet>
         </Stack>
       </SettingsWideField>
     </SettingsFieldRow>

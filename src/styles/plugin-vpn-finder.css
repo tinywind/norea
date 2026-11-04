@@ -148,10 +148,6 @@
 }
 
 @media (max-width: 991px) {
-  .norea-plugin-vpn-finder-modal-body {
-    padding: 0 var(--norea-space-3) var(--norea-space-3);
-  }
-
   .norea-plugin-vpn-finder-content {
     gap: var(--norea-space-2);
   }
@@ -174,11 +170,5 @@
 @media (min-width: 768px) and (max-width: 991px) {
   .norea-plugin-vpn-finder-cards {
     grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (max-width: 575px) {
-  .norea-plugin-vpn-finder-modal-body {
-    padding-inline: var(--norea-space-2);
   }
 }

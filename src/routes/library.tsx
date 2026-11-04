@@ -590,7 +590,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
 
       <CategoryManager
         {...categoryListProps}
-        fullScreen={!wide}
         onClose={() => setCategoryManagerOpen(false)}
         opened={active && categoryManagerOpen}
       />

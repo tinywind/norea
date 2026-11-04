@@ -36,7 +36,7 @@ vi.mock("../i18n", () => ({
   formatDateTimeForLocale: (_locale: string, value: number) => `date:${value}`,
 }));
 import { SavedVpnProfilesSettings } from "./SavedVpnProfilesSettings";
-import { Modal } from "@mantine/core";
+import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 
 interface Props { children?: ReactNode; "aria-label"?: string; value?: unknown; disabled?: boolean; opened?: boolean; min?: number; max?: number; onChange?: (value: number | string | null) => unknown; onClick?: () => unknown; data?: { value: string; disabled?: boolean }[] }
 function controls(node: ReactNode): ReactElement<Props>[] {
@@ -148,9 +148,9 @@ it.each(["loading", "error", "disabled"])("does not reallow profiles while manag
 
 it("keeps capacity inline and opens one modal combining retained files with O/X-only verdicts", () => {
   let view = render();
-  expect(view.find(element => element.type === Modal)?.props.opened).toBe(false);
+  expect(view.find(element => element.type === ResponsiveSheet)?.props.opened).toBe(false);
   view = openManager();
-  expect(view.find(element => element.type === Modal)?.props.opened).toBe(true);
+  expect(view.find(element => element.type === ResponsiveSheet)?.props.opened).toBe(true);
   const text = copy(view);
   expect(text).toContain('saved.count{"count":1,"limit":20}');
   expect(text).toContain('saved.missingFiles{"count":1}');

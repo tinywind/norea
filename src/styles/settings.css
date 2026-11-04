@@ -537,32 +537,6 @@
   padding: 0;
 }
 
-.norea-reader-settings-drawer-content {
-  --norea-reader-settings-drawer-safe-height: calc(
-    var(--norea-viewport-height) - var(--norea-safe-area-top) -
-      var(--norea-safe-area-bottom)
-  );
-  display: flex;
-  flex-direction: column;
-  height: var(--norea-reader-settings-drawer-safe-height);
-  margin-bottom: var(--norea-safe-area-bottom);
-  margin-left: var(--norea-safe-area-left);
-  margin-right: var(--norea-safe-area-right);
-  margin-top: var(--norea-safe-area-top);
-  max-height: var(--norea-reader-settings-drawer-safe-height);
-  max-width: calc(
-    100% - var(--norea-safe-area-left) - var(--norea-safe-area-right)
-  );
-  overflow: hidden;
-}
-
-.norea-reader-settings-drawer-body {
-  box-sizing: border-box;
-  flex: 1 1 auto;
-  min-height: 0;
-  overflow: auto;
-}
-
 .norea-reader-settings-tabs {
   min-width: 0;
 }

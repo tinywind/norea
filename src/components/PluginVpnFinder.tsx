@@ -3,7 +3,6 @@ import {
   Badge,
   Group,
   Loader,
-  Modal,
   ScrollArea,
   Select,
   SimpleGrid,
@@ -25,6 +24,7 @@ import {
   type PluginVpnServerProtocol,
 } from "../lib/plugin-vpn";
 import { TextButton } from "./TextButton";
+import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 import "../styles/plugin-vpn-finder.css";
 
@@ -316,15 +316,12 @@ export function PluginVpnFinder({
   }
 
   return (
-    <Modal
-      centered
-      closeButtonProps={{
-        "aria-label": t("settings.data.pluginVpn.finder.close"),
-      }}
-      classNames={{ body: "norea-plugin-vpn-finder-modal-body" }}
+    <ResponsiveSheet
+      closeLabel={t("settings.data.pluginVpn.finder.close")}
+      fullScreenOnPhone
       onClose={closeFinder}
       opened={opened}
-      size="68rem"
+      size="xl"
       title={t("settings.data.pluginVpn.finder.title")}
     >
       <Stack className="norea-plugin-vpn-finder-content" gap="sm">
@@ -728,6 +725,6 @@ export function PluginVpnFinder({
           </ScrollArea.Autosize>
         )}
       </Stack>
-    </Modal>
+    </ResponsiveSheet>
   );
 }

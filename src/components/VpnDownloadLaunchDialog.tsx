@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Accordion, Alert, Modal, Stack, Text } from "@mantine/core";
+import { Accordion, Alert, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
@@ -8,8 +8,8 @@ import type { VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-draft
 import type { VpnDownloadLaunchOptions } from "../lib/tasks/vpn-download-types";
 import { startVpnDownloadRun } from "../lib/tasks/vpn-download-runtime";
 import { useVpnDownloadStore } from "../store/vpn-download";
-import { SettingsInlineControls } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
+import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
 import { VpnDownloadSettings } from "./VpnDownloadSettings";
 
 /** Starts a VPN run over the queued and new chapter downloads. Mount it only while it is open. */
@@ -36,8 +36,11 @@ export function VpnDownloadLaunchDialog({ snapshot, onClose }: { snapshot: VpnDo
   }
 
   return (
-    <Modal opened onClose={close} title={t("vpnDownload.launch")}
-      closeOnEscape={!pending} closeOnClickOutside={!pending} closeButtonProps={{ disabled: pending, "aria-label": t("common.cancel"), size: "lg" }} returnFocus>
+    <ResponsiveSheet busy={pending} closeLabel={t("common.cancel")} opened onClose={close} title={t("vpnDownload.launch")}
+      footer={<SheetActions>
+        <TextButton disabled={pending} onClick={close}>{t("common.cancel")}</TextButton>
+        <TextButton tone="accent" data-autofocus disabled={!canStart || pending} loading={pending} onClick={start}>{t("vpnDownload.start")}</TextButton>
+      </SheetActions>}>
       <Stack gap="md">
         <Text size="sm">{t("vpnDownload.launchHint")}</Text>
         <Text size="sm" fw={600}>{t("vpnDownload.workerTarget", { count: options.workerCount })}</Text>
@@ -58,11 +61,7 @@ export function VpnDownloadLaunchDialog({ snapshot, onClose }: { snapshot: VpnDo
           </Accordion.Item>
         </Accordion>
         {error ? <Alert color="danger" role="alert">{error}</Alert> : null}
-        <SettingsInlineControls>
-          <TextButton tone="accent" data-autofocus disabled={!canStart || pending} loading={pending} onClick={start}>{t("vpnDownload.start")}</TextButton>
-          <TextButton disabled={pending} onClick={close}>{t("common.cancel")}</TextButton>
-        </SettingsInlineControls>
       </Stack>
-    </Modal>
+    </ResponsiveSheet>
   );
 }

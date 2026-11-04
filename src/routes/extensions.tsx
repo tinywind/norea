@@ -1,17 +1,14 @@
-import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   Button,
-  Group,
   Loader,
-  Modal,
   PasswordInput,
   Skeleton,
   Stack,
   TextInput,
 } from "@mantine/core";
-import { useMediaQuery } from "@mantine/hooks";
 import { PageFrame, StateView } from "../components/AppFrame";
 import { IconButton } from "../components/IconButton";
 import { PluginIcon } from "../components/browse/PluginIcon";
@@ -55,6 +52,7 @@ import {
 } from "../components/ui/icons";
 import { ListRow } from "../components/ui/ListRow";
 import { OverflowMenu } from "../components/ui/OverflowMenu";
+import { ResponsiveSheet, SheetActions } from "../components/ui/ResponsiveSheet";
 import {
   removeRepository,
   reorderRepositories,
@@ -66,10 +64,7 @@ import {
   useTranslation,
   type AppLocale,
 } from "../i18n";
-import {
-  useOverlayBackNavigation,
-  usePageBackNavigation,
-} from "../lib/android-back-navigation";
+import { usePageBackNavigation } from "../lib/android-back-navigation";
 import { describeError } from "../lib/errors";
 import {
   findPreviousAppHistoryEntry,
@@ -228,9 +223,8 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const currentHref = useRouterState({ select: (state) => state.location.href });
-  const desktop = useMediaQuery("(min-width: 768px)", undefined, {
-    getInitialValueInEffect: false,
-  });
+  const repositoryFormId = useId();
+  const sourceFormId = useId();
   const repos = useRepositories(true);
   const installed = useInstalledPlugins(true);
   const available = useAvailablePlugins(repos.data, true);
@@ -580,9 +574,6 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
     setRepositoryListOpen(false);
     editRepositories.reset();
   };
-  useOverlayBackNavigation(repositoryListOpen && !repositoryDialogOpen, closeRepositoryList);
-  useOverlayBackNavigation(repositoryDialogOpen, closeRepositoryDialog);
-  useOverlayBackNavigation(sourceTemplate !== null, closeSourceForm);
 
   const confirmRemoveRepository = async (target: PluginRepository) => {
     const confirmed = await confirm({
@@ -727,7 +718,6 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
       </PageFrame>
 
       <RepositoriesDialog
-        desktop={desktop}
         error={editRepositories.error}
         onAdd={openRepositoryDialog}
         onClose={closeRepositoryList}
@@ -740,12 +730,30 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
         status={repositoryStatus}
       />
 
-      <Modal
+      <ResponsiveSheet
+        footer={
+          <SheetActions>
+            <Button onClick={closeRepositoryDialog} variant="default">
+              {t("common.cancel")}
+            </Button>
+            <Button
+              disabled={repositoryUrl.trim() === ""}
+              form={repositoryFormId}
+              loading={saveRepository.isPending}
+              type="submit"
+            >
+              {t("extensions.repositories.addAction")}
+            </Button>
+          </SheetActions>
+        }
+        // The add dialog also opens from the repository list.
+        nested
         opened={repositoryDialogOpen}
         onClose={closeRepositoryDialog}
         title={t("extensions.repositories.add")}
       >
         <form
+          id={repositoryFormId}
           onSubmit={(event) => {
             event.preventDefault();
             const url = repositoryUrl.trim();
@@ -767,30 +775,33 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
                 title={t("common.saveFailed")}
               />
             ) : null}
-            <Group gap="xs" justify="flex-end">
-              <Button onClick={closeRepositoryDialog} variant="default">
-                {t("common.cancel")}
-              </Button>
-              <Button
-                disabled={repositoryUrl.trim() === ""}
-                loading={saveRepository.isPending}
-                type="submit"
-              >
-                {t("extensions.repositories.addAction")}
-              </Button>
-            </Group>
           </Stack>
         </form>
-      </Modal>
+      </ResponsiveSheet>
 
-      <Modal
-        fullScreen={!desktop}
+      <ResponsiveSheet
+        footer={
+          <SheetActions>
+            <Button onClick={closeSourceForm} variant="default">
+              {t("common.cancel")}
+            </Button>
+            <Button
+              disabled={!isSourceInstanceFormComplete(sourceForm)}
+              form={sourceFormId}
+              loading={installSource.isPending}
+              type="submit"
+            >
+              {t("browse.addSource")}
+            </Button>
+          </SheetActions>
+        }
+        fullScreenOnPhone
         opened={sourceTemplate !== null}
         onClose={closeSourceForm}
-        size="lg"
         title={t("browse.sourceInstance.title")}
       >
         <form
+          id={sourceFormId}
           onSubmit={(event) => {
             event.preventDefault();
             if (sourceTemplate && isSourceInstanceFormComplete(sourceForm)) {
@@ -828,21 +839,9 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
                 title={t("common.saveFailed")}
               />
             ) : null}
-            <Group gap="xs" justify="flex-end">
-              <Button onClick={closeSourceForm} variant="default">
-                {t("common.cancel")}
-              </Button>
-              <Button
-                disabled={!isSourceInstanceFormComplete(sourceForm)}
-                loading={installSource.isPending}
-                type="submit"
-              >
-                {t("browse.addSource")}
-              </Button>
-            </Group>
           </Stack>
         </form>
-      </Modal>
+      </ResponsiveSheet>
 
       <PluginSettingsDialog onClose={() => setSettingsPlugin(null)} plugin={settingsPlugin} />
     </div>

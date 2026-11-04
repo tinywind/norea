@@ -1,4 +1,4 @@
-import { Button, Drawer, Text, TextInput, VisuallyHidden } from "@mantine/core";
+import { Button, Text, TextInput, VisuallyHidden } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
@@ -30,6 +30,7 @@ import {
 } from "../components/ui/icons";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
+import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
 import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
 import {
   buildMissingChapterDownloadTargets,
@@ -77,7 +78,7 @@ import { isAbortError } from "../lib/abort";
 import { isNetworkUnavailableError } from "../lib/network";
 import { normalizeSourceAccessRequiredError } from "../lib/plugins/source-access";
 import { listServerChapterAvailability, readServerNovelSource } from "../lib/content-sync/novel-source";
-import { useOverlayBackNavigation, usePageBackNavigation } from "../lib/android-back-navigation";
+import { usePageBackNavigation } from "../lib/android-back-navigation";
 import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
@@ -436,7 +437,6 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
   usePageBackNavigation(goBack);
   const closeReaderSettings = () => setReaderSettingsOpen(false);
-  useOverlayBackNavigation(readerSettingsOpen, closeReaderSettings);
 
   function openChapter(chapter: ChapterListRow): void {
     void navigate({ to: "/reader", search: { chapterId: chapter.id } });
@@ -1005,15 +1005,11 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
         />
       ) : null}
 
-      <Drawer
-        classNames={{
-          body: "norea-reader-settings-drawer-body",
-          content: "norea-reader-settings-drawer-content",
-        }}
+      <ResponsiveSheet
+        desktopVariant="side"
+        fullScreenOnPhone
         opened={readerSettingsOpen}
         onClose={closeReaderSettings}
-        position="right"
-        size="lg"
         title={t("readerSettings.novel.title", { name: novel.name })}
       >
         <ReaderSettingsPanel
@@ -1025,7 +1021,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
             label: novel.name,
           }}
         />
-      </Drawer>
+      </ResponsiveSheet>
 
       {localNovelEditor}
     </>

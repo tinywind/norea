@@ -45,6 +45,8 @@ import { getEffectiveReaderAppearanceSettings, useReaderStore } from "../../stor
 
 interface ElementProps {
   children?: ReactNode;
+  color?: string;
+  footer?: ReactNode;
   title?: string;
   className?: string;
   label?: string;
@@ -62,7 +64,7 @@ function elements(node: ReactNode): ReactElement<ElementProps>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<ElementProps>;
-  return [element, ...elements(element.props.children)];
+  return [element, ...elements(element.props.children), ...elements(element.props.footer)];
 }
 
 const readerTarget = { kind: "novel" as const, novelId: 7, sourceId: "source-a", sourceLabel: "Source A", label: "Work" };
@@ -275,11 +277,11 @@ it("opens More settings inside the same surface, with sections and a way back", 
 it("resets the scope the reader applies from the More settings footer", () => {
   useReaderStore.getState().setAppearance({ textSize: 26 });
   useReaderStore.getState().setNovelAppearance(readerTarget.novelId, { textSize: 30 }, useReaderStore.getState().appearance);
-  const reset = openMoreSettings().find((element) => element.props.children === "common.reset" && element.props.tone !== "danger")!;
+  const reset = openMoreSettings().find((element) => element.props.children === "common.reset" && element.props.color !== "danger")!;
   reset.props.onClick!();
   const tree = renderQuick();
   expect(tree.some((element) => element.props.children === "readerSettings.reset.novelMessage")).toBe(true);
-  tree.find((element) => element.props.children === "common.reset" && element.props.tone === "danger")!.props.onClick!();
+  tree.find((element) => element.props.children === "common.reset" && element.props.color === "danger")!.props.onClick!();
 
   expect(useReaderStore.getState().readerSettingsByNovel[readerTarget.novelId]).toBeUndefined();
   expect(useReaderStore.getState().appearance.textSize).toBe(26);

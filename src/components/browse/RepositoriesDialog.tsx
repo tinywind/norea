@@ -1,4 +1,4 @@
-import { Button, Loader, Modal, Switch } from "@mantine/core";
+import { Button, Loader, Switch } from "@mantine/core";
 import { StateView } from "../AppFrame";
 import type { PluginRepository } from "../../db/queries/repository";
 import { useTranslation } from "../../i18n";
@@ -12,6 +12,7 @@ import {
   TrashIcon,
 } from "../ui/icons";
 import { OverflowMenu } from "../ui/OverflowMenu";
+import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 const GITHUB_HOSTS = new Set(["github.com", "raw.githubusercontent.com"]);
 
@@ -40,7 +41,6 @@ export interface RepositoryListStatus {
 }
 
 interface RepositoriesDialogProps {
-  desktop: boolean;
   error: unknown;
   onAdd: () => void;
   onClose: () => void;
@@ -58,7 +58,6 @@ interface RepositoriesDialogProps {
  * The first enabled repository listing a plugin id provides it.
  */
 export function RepositoriesDialog({
-  desktop,
   error,
   onAdd,
   onClose,
@@ -73,8 +72,8 @@ export function RepositoriesDialog({
   const { t } = useTranslation();
 
   return (
-    <Modal
-      fullScreen={!desktop}
+    <ResponsiveSheet
+      fullScreenOnPhone
       onClose={onClose}
       opened={opened}
       size="lg"
@@ -177,6 +176,6 @@ export function RepositoriesDialog({
           </ul>
         )}
       </div>
-    </Modal>
+    </ResponsiveSheet>
   );
 }
