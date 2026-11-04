@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 
@@ -285,4 +286,28 @@ it("resets the scope the reader applies from the More settings footer", () => {
 
   expect(useReaderStore.getState().readerSettingsByNovel[readerTarget.novelId]).toBeUndefined();
   expect(useReaderStore.getState().appearance.textSize).toBe(26);
+});
+
+it("gives the steppers a round hit area and one row style with the settings rows", () => {
+  const stepper = textSizeStepper(renderQuick());
+  const buttons = elements((stepper.type as (props: unknown) => ReactNode)(stepper.props)).filter(
+    (element) => element.props.className === "norea-reader-stepper-button norea-state-layer",
+  );
+  expect(buttons).toHaveLength(2);
+
+  const css = readFileSync(new URL("../../styles/reader.css", import.meta.url), "utf8");
+  const rule = (selector: string) =>
+    new RegExp(`${selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} \\{([^}]*)\\}`).exec(css)?.[1] ?? "";
+  const button = rule(".norea-reader-stepper-button.norea-icon-button");
+  expect(button).toContain("--norea-icon-button-size: var(--norea-control-sm)");
+  expect(button).toContain("border-radius: 50%");
+  expect(button).not.toMatch(/\bborder:/);
+  const row = rule(".norea-reader-quick-row");
+  expect(row).toContain("min-height: 3.25rem");
+  expect(row).toContain("border-bottom: 1px solid var(--norea-color-rule)");
+  expect(rule(".norea-reader-quick-label")).toContain("font-weight: var(--norea-weight-medium)");
+  expect(rule(".norea-reader-quick .norea-settings-group-body")).toContain("background: transparent");
+  expect(rule(".norea-reader-quick .norea-settings-form-row:has(.norea-segmented-toggle)")).toContain(
+    "grid-template-columns: 1fr",
+  );
 });

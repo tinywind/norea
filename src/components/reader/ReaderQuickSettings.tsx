@@ -335,7 +335,7 @@ function SettingStepper({
       <span className="norea-reader-quick-label">{label}</span>
       <div className="norea-reader-stepper">
         <IconButton
-          className="norea-reader-icon-button norea-state-layer"
+          className="norea-reader-stepper-button norea-state-layer"
           disabled={value <= min}
           label={t("readerSettings.stepper.decrease", { label })}
           onClick={() => change(-1)}
@@ -345,7 +345,7 @@ function SettingStepper({
         </IconButton>
         <output className="norea-reader-stepper-value">{valueLabel}</output>
         <IconButton
-          className="norea-reader-icon-button norea-state-layer"
+          className="norea-reader-stepper-button norea-state-layer"
           disabled={value >= max}
           label={t("readerSettings.stepper.increase", { label })}
           onClick={() => change(1)}

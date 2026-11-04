@@ -893,7 +893,7 @@
   display: flex;
   flex: 0 0 auto;
   flex-direction: column;
-  gap: var(--norea-space-2);
+  gap: 0;
   padding: var(--norea-space-2) var(--norea-space-4) var(--norea-space-3);
 }
 
@@ -901,6 +901,7 @@
   display: grid;
   gap: var(--norea-space-2);
   justify-items: start;
+  padding-bottom: var(--norea-space-1);
 }
 
 .norea-reader-scope-trigger {
@@ -969,25 +970,73 @@
     calc(var(--norea-space-2) + var(--norea-safe-area-bottom));
 }
 
+/* Quick rows match the settings form rows below them: one height, label style and divider throughout. */
 .norea-reader-quick-row {
   align-items: center;
+  border-bottom: 1px solid var(--norea-color-rule);
   display: flex;
   gap: var(--norea-space-3);
   justify-content: space-between;
+  min-height: 3.25rem;
   min-width: 0;
+  padding-block: var(--norea-space-2);
 }
 
 .norea-reader-quick-label {
-  color: var(--norea-color-ink-muted);
+  color: var(--norea-color-ink);
   flex: 0 0 auto;
-  font-size: var(--norea-text-sm);
-  font-weight: 700;
+  font-size: var(--norea-text-md);
+  font-weight: var(--norea-weight-medium);
+}
+
+/* In the sheet the settings groups are plain rows in the same column, not an inset card. */
+.norea-reader-quick .norea-settings-group-body {
+  background: transparent;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+}
+
+/* The quick level stacks divided rows edge to edge; only the More settings entry stands apart. */
+.norea-reader-quick-top + .norea-reader-quick-body {
+  gap: 0;
+}
+
+.norea-reader-quick-top + .norea-reader-quick-body > .norea-reader-quick-more {
+  margin-top: var(--norea-space-3);
+}
+
+.norea-reader-quick-top > .norea-reader-quick-row:last-child,
+.norea-reader-quick-top > .norea-settings-form-row:last-child {
+  border-bottom: 0;
+}
+
+/* The sheet is never wider than a phone column, so a segmented control takes its own line under the label and description. */
+.norea-reader-quick .norea-settings-form-row:has(.norea-segmented-toggle) {
+  align-items: stretch;
+  gap: var(--norea-space-2);
+  grid-template-columns: 1fr;
+}
+
+.norea-reader-quick .norea-settings-form-row:has(.norea-segmented-toggle) .norea-settings-form-control {
+  justify-items: stretch;
+  justify-self: stretch;
+  max-width: none;
 }
 
 .norea-reader-stepper {
   align-items: center;
   display: inline-flex;
-  gap: var(--norea-space-1);
+  gap: var(--norea-space-2);
+}
+
+/* Steppers get a round tonal hit area, as the shared icon button stays borderless. */
+.norea-reader-stepper-button.norea-icon-button {
+  --norea-icon-button-size: var(--norea-control-sm);
+  --norea-icon-glyph-size: var(--norea-icon-sm);
+  background: var(--norea-color-surface-raised);
+  border-radius: 50%;
+  color: var(--norea-color-ink);
 }
 
 .norea-reader-stepper-value {
