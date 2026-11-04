@@ -7,6 +7,7 @@ import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
 import { deletedDownloadChapterIds, prepareContentDeletion, runContentDeletion, type ContentDeletionAction, type ContentDeletionRequest, type ContentDeletionResult } from "../lib/content-deletion";
 import { removeDeletedServerWorkFromQueries } from "../lib/content-sync/management-query-cache";
+import { noteDownloadDeletion } from "../lib/download-goals/goal-service";
 import { describeError } from "../lib/errors";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
 import { finishContentDeletion, useContentDeletionStore } from "../store/content-deletion";
@@ -36,7 +37,17 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
   const offerToStopDownloadGoals = useStopDownloadGoalsOffer();
   const fromServer = request.kind === "server-work" || request.kind === "server-chapters";
   const serverUrl = "source" in request ? request.source.serverUrl : request.serverUrl;
-  const close = () => { if (!running.current) finishContentDeletion(id, results.some(result => result.status === "succeeded")); };
+  const close = async () => {
+    if (running.current) return;
+    const deletedChapterIds = request.kind === "downloads" && actions ? deletedDownloadChapterIds(actions, results) : [];
+    if (deletedChapterIds.length) {
+      running.current = true; setBusy(true);
+      try { await offerToStopDownloadGoals(deletedChapterIds); }
+      catch (cause) { console.warn("[content-deletion] could not offer to stop download goals:", cause); }
+      finally { running.current = false; setBusy(false); }
+    }
+    finishContentDeletion(id, results.some(result => result.status === "succeeded"));
+  };
   const execute = async () => {
     if (running.current) return;
     running.current = true; setBusy(true); setError(null);
@@ -66,6 +77,10 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
         notifications.show({ message: t("contentDeletion.done") });
         if (request.kind === "downloads") await offerToStopDownloadGoals(deletedDownloadChapterIds(plan, next));
         finishContentDeletion(id, next.length > 0);
+      } else if (request.kind === "downloads") {
+        // Closing the sheet makes the offer; the exclusions must hold before then.
+        const deletedChapterIds = deletedDownloadChapterIds(plan, next);
+        if (deletedChapterIds.length) await noteDownloadDeletion(deletedChapterIds);
       }
     } catch (cause) { setError(describeError(cause)); }
     finally { running.current = false; setBusy(false); }
@@ -82,10 +97,10 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
     ? t(request.kind === "library" ? "contentDeletion.alsoDeleteFromServer" : "contentDeletion.serverChapters")
     : null;
   // Deletion opens from inside sheets and managers, so it takes the nested layer.
-  return <ResponsiveSheet busy={busy} nested opened onClose={close} subtitle={request.title}
+  return <ResponsiveSheet busy={busy} nested opened onClose={() => { void close(); }} subtitle={request.title}
     title={t(unshelve ? "contentDeletion.unshelveTitle" : "contentDeletion.title")}
     footer={<SheetActions>
-      <TextButton disabled={busy} onClick={close}>{t(results.length ? "common.done" : "common.cancel")}</TextButton>
+      <TextButton disabled={busy} onClick={() => { void close(); }}>{t(results.length ? "common.done" : "common.cancel")}</TextButton>
       <TextButton tone="danger" loading={busy} onClick={() => { void execute(); }}>{t(failed.length ? "contentDeletion.retry" : unshelve && !options.local && !options.server ? "common.remove" : "contentDeletion.confirm")}</TextButton>
     </SheetActions>}>
     <Stack>

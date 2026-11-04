@@ -90,3 +90,21 @@ it("offers to stop download goals for the chapters the deletion removed", async 
   expect(mocks.offer).toHaveBeenCalledExactlyOnceWith([31, 32, 41]);
   expect(mocks.finish).toHaveBeenCalledExactlyOnceWith(1, true);
 });
+
+it("keeps deleted chapters out of goals after a partial failure and offers to stop them on close", async () => {
+  await confirm([{ id: "device:3", status: "succeeded" }, { id: "device:4", status: "failed", error: "busy" }]);
+  expect(mocks.note).toHaveBeenCalledExactlyOnceWith([31, 32]);
+  expect(mocks.offer).not.toHaveBeenCalled();
+  expect(mocks.finish).not.toHaveBeenCalled();
+  await act(async () => { await mocks.sheet!.onClose(); });
+  expect(mocks.offer).toHaveBeenCalledExactlyOnceWith([31, 32]);
+  expect(mocks.finish).toHaveBeenCalledExactlyOnceWith(1, true);
+});
+
+it("makes no goal offer when no deletion succeeded", async () => {
+  await confirm([{ id: "device:3", status: "failed", error: "busy" }, { id: "device:4", status: "failed", error: "busy" }]);
+  await act(async () => { await mocks.sheet!.onClose(); });
+  expect(mocks.note).not.toHaveBeenCalled();
+  expect(mocks.offer).not.toHaveBeenCalled();
+  expect(mocks.finish).toHaveBeenCalledExactlyOnceWith(1, false);
+});
