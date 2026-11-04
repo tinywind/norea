@@ -4,7 +4,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { Button, Loader, Progress, Stack } from "@mantine/core";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { IconButton } from "../components/IconButton";
-import { RefreshIcon, UpdatesIcon } from "../components/ui/icons";
+import { CloseIcon, RefreshIcon, UpdatesIcon } from "../components/ui/icons";
 import {
   groupFailuresBySource,
   UpdateFailures,
@@ -542,13 +542,12 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                       })
                     : t("updates.checkingLibrarySources")}
                 </span>
-                <Button
+                <IconButton
+                  label={t("updates.cancelCheck")}
                   onClick={() => cancelLibraryUpdateCheck()}
-                  size="compact-sm"
-                  variant="subtle"
                 >
-                  {t("common.cancel")}
-                </Button>
+                  <CloseIcon />
+                </IconButton>
               </div>
             ) : null}
             {!check.isPending && lastCheckResult && lastCheckResult.deferredNovels > 0 ? (
@@ -640,7 +639,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                       }}
                       variant="default"
                     >
-                      {t("updates.loadMore")}
+                      {t("common.loadMore")}
                     </Button>
                   </div>
                 ) : null}
