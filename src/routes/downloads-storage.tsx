@@ -14,9 +14,7 @@ import {
   Collapse,
   Group,
   Loader,
-  Paper,
   Skeleton,
-  Stack,
   Text,
 } from "@mantine/core";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
@@ -27,14 +25,16 @@ import { ListRow } from "../components/ui/ListRow";
 import {
   ChevronDownIcon,
   ChevronRightIcon,
-  ChevronUpIcon,
+  CloseIcon,
   DeleteDownloadIcon,
+  DownloadedIcon,
   FilterIcon,
   OpenWorkIcon,
   PlayIcon,
   RefreshIcon,
   RepairIcon,
   SelectIcon,
+  WarningIcon,
 } from "../components/ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
@@ -118,9 +118,9 @@ export function downloadedChapterToRead(
 
 function DownloadCacheLoadingState() {
   return (
-    <Stack className="norea-downloads-loading" gap="xs">
+    <div className="norea-downloads-list norea-downloads-loading">
       {[0, 1, 2].map((item) => (
-        <Paper className="norea-downloads-novel" key={item} withBorder>
+        <div className="norea-downloads-novel" key={item}>
           <div className="norea-downloads-novel-row">
             <Skeleton height={84} radius={3} width={56} />
             <Box className="norea-downloads-novel-main">
@@ -129,9 +129,9 @@ function DownloadCacheLoadingState() {
               <Skeleton height={10} mt={8} radius={3} width="48%" />
             </Box>
           </div>
-        </Paper>
+        </div>
       ))}
-    </Stack>
+    </div>
   );
 }
 
@@ -403,9 +403,6 @@ function DownloadCacheNovelCard({
     onError: (error) => setReadError(error instanceof Error ? error.message : String(error)),
   });
   const size = formatBytes(novel.totalBytes, locale);
-  const libraryLabel = novel.inLibrary
-    ? t("downloads.inLibrary")
-    : t("downloads.outsideLibrary");
   const updatedLabel = t("downloads.lastUpdated", {
     time: formatRelativeTimeForLocale(
       locale,
@@ -443,11 +440,9 @@ function DownloadCacheNovelCard({
   ];
 
   return (
-    <Paper
+    <article
       className="norea-downloads-novel"
-      component="article"
       data-selected={selected ? "true" : undefined}
-      withBorder
     >
       <div
         className="norea-downloads-novel-row"
@@ -489,26 +484,30 @@ function DownloadCacheNovelCard({
           >
             {detailText}
           </Text>
-          <div className="norea-downloads-novel-badge-line">
-            <Badge
-              className="norea-downloads-library-badge"
-              color="ok"
-              title={libraryLabel}
-              variant={novel.inLibrary ? "light" : "default"}
-            >
-              {libraryLabel}
-            </Badge>
-            {novel.mediaRepairNeededChapters > 0 ? (
-              <Badge
-                className="norea-downloads-library-badge"
-                color="warn"
-                title={t("downloads.mediaFallbackCount", { count: novel.mediaRepairNeededChapters })}
-                variant="light"
-              >
-                {t("downloads.mediaFallbackCount", { count: novel.mediaRepairNeededChapters })}
-              </Badge>
-            ) : null}
-          </div>
+          {/* Being in the library is the norm, so only the exceptions get a badge. */}
+          {!novel.inLibrary || novel.mediaRepairNeededChapters > 0 ? (
+            <div className="norea-downloads-novel-badge-line">
+              {novel.inLibrary ? null : (
+                <Badge
+                  className="norea-downloads-library-badge"
+                  title={t("downloads.outsideLibrary")}
+                  variant="default"
+                >
+                  {t("downloads.outsideLibrary")}
+                </Badge>
+              )}
+              {novel.mediaRepairNeededChapters > 0 ? (
+                <Badge
+                  className="norea-downloads-library-badge"
+                  color="warn"
+                  title={t("downloads.mediaFallbackCount", { count: novel.mediaRepairNeededChapters })}
+                  variant="light"
+                >
+                  {t("downloads.mediaFallbackCount", { count: novel.mediaRepairNeededChapters })}
+                </Badge>
+              ) : null}
+            </div>
+          ) : null}
           {readError ? <Text c="danger" size="sm">{readError}</Text> : null}
         </Box>
         {selectionMode ? null : (
@@ -528,16 +527,15 @@ function DownloadCacheNovelCard({
               {readNovel.isPending ? <Loader size={14} /> : <PlayIcon />}
             </IconButton>
             <IconButton
-              active={expanded}
               aria-expanded={expanded}
-              className="norea-downloads-icon-button"
+              className="norea-downloads-icon-button norea-downloads-disclosure"
               disabled={novelDeleting}
               label={toggleLabel}
               onClick={() => setExpanded((current) => !current)}
               size="lg"
               title={toggleLabel}
             >
-              {expanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+              <ChevronDownIcon />
             </IconButton>
             {novelDeleting ? <Loader size={14} /> : (
               <OverflowMenu items={menuItems} label={t("vpnDownload.workOptions", { title: novel.novelName })} />
@@ -552,7 +550,7 @@ function DownloadCacheNovelCard({
           onReadChapter={onReadChapter}
         />
       </Collapse>
-    </Paper>
+    </article>
   );
 }
 
@@ -591,13 +589,14 @@ interface DownloadsStorageViewProps {
   active?: boolean;
   /** Leaves Downloads; the page header's back button. */
   onBack?: () => void;
-  viewSwitcher?: ReactNode;
+  /** The Queue and Storage tabs, drawn in the bar in place of the title. */
+  viewTabs?: ReactNode;
 }
 
 export function DownloadsStorageView({
   active = true,
   onBack,
-  viewSwitcher,
+  viewTabs,
 }: DownloadsStorageViewProps = {}) {
   const { locale, t } = useTranslation();
   const navigate = useNavigate();
@@ -699,27 +698,29 @@ export function DownloadsStorageView({
   ];
 
   // Both header states keep this row, so selecting never moves the list.
-  const subrow = (
+  const subrow = rows.length > 0 ? (
     <div className="norea-downloads-subrow">
-      {viewSwitcher}
-      <div className="norea-task-summary-strip">
-        <span className="norea-task-summary-pill">
-          {t("downloads.summary.novels", { count: totals.novels })}
-        </span>
-        <span className="norea-task-summary-pill">
-          {t("downloads.summary.chapters", { count: totals.chapters })}
-        </span>
-        <span className="norea-task-summary-pill">
-          {t("downloads.summary.size", { size: totalSize })}
-        </span>
-        {totals.repairNeeded > 0 ? (
-          <span className="norea-task-summary-pill" data-tone="warning">
-            {t("downloads.mediaFallback")}
-          </span>
-        ) : null}
-      </div>
+      <span className="norea-app-bar-meta norea-downloads-summary">
+        {[
+          t("downloads.summary.novels", { count: totals.novels }),
+          t("downloads.summary.chapters", { count: totals.chapters }),
+          t("downloads.summary.size", { size: totalSize }),
+        ].join(" · ")}
+      </span>
+      {totals.repairNeeded > 0 ? (
+        <button
+          aria-pressed={mediaFallbackOnly}
+          className="norea-downloads-warning norea-state-layer"
+          onClick={() => setMediaFallbackOnly((current) => !current)}
+          type="button"
+        >
+          <WarningIcon />
+          {t("downloads.mediaFallback")}
+          {mediaFallbackOnly ? <CloseIcon /> : null}
+        </button>
+      ) : null}
     </div>
-  );
+  ) : undefined;
 
   return (
     <PageFrame
@@ -761,7 +762,9 @@ export function DownloadsStorageView({
           below={subrow}
           onBack={onBack}
           title={t("downloads.title")}
-        />
+        >
+          {viewTabs}
+        </PageHeader>
       )}
       size="wide"
     >
@@ -787,18 +790,18 @@ export function DownloadsStorageView({
           />
         ) : rows.length === 0 ? (
           <StateView
-            color="info"
+            icon={DownloadedIcon}
             title={t("downloads.empty.title")}
             message={t("downloads.empty.message")}
           />
         ) : visibleRows.length === 0 ? (
           <StateView
-            color="info"
+            icon={FilterIcon}
             title={t("downloads.emptyFiltered.title")}
             message={t("downloads.emptyFiltered.message")}
           />
         ) : (
-          <Stack gap="xs">
+          <div className="norea-downloads-list">
             {visibleRows.map((novel) => (
               <DownloadCacheNovelCard
                 key={novel.novelId}
@@ -816,7 +819,7 @@ export function DownloadsStorageView({
                 selectionMode={selectionMode}
               />
             ))}
-          </Stack>
+          </div>
         )}
       </div>
     </PageFrame>

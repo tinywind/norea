@@ -8,9 +8,8 @@ const mocks = vi.hoisted(() => ({
   goBackInAppHistory: vi.fn(() => false),
   navigate: vi.fn(),
   onBack: null as null | (() => void),
-  switcher: null as null | {
-    data: { label: string; value: string }[];
-    onChange: (value: string) => void;
+  tabs: null as null | {
+    onChange: (value: string | null) => void;
     value: string;
   },
 }));
@@ -20,22 +19,32 @@ vi.mock("@tanstack/react-router", () => ({
   useRouter: () => ({ state: { location: { href: "/downloads?view=queue" } } }),
 }));
 vi.mock("../lib/navigation-history", () => ({ goBackInAppHistory: mocks.goBackInAppHistory }));
-vi.mock("../components/SegmentedToggle", () => ({
-  SegmentedToggle: (props: NonNullable<typeof mocks.switcher>) => {
-    mocks.switcher = props;
-    return <div data-switcher={props.value} />;
-  },
-}));
+vi.mock("@mantine/core", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@mantine/core")>();
+  const Tabs = Object.assign(
+    (props: NonNullable<typeof mocks.tabs> & { children: ReactNode }) => {
+      mocks.tabs = props;
+      return <div data-tabs={props.value}>{props.children}</div>;
+    },
+    {
+      List: ({ children, className }: { children: ReactNode; className: string }) => (
+        <div className={className}>{children}</div>
+      ),
+      Tab: ({ children, value }: { children: ReactNode; value: string }) => <span data-tab={value}>{children}</span>,
+    },
+  );
+  return { ...actual, Tabs };
+});
 vi.mock("./downloads-queue", () => ({
-  DownloadsQueueView: ({ active, onBack, viewSwitcher }: { active: boolean; onBack: () => void; viewSwitcher: ReactNode }) => {
+  DownloadsQueueView: ({ active, onBack, viewTabs }: { active: boolean; onBack: () => void; viewTabs: ReactNode }) => {
     mocks.onBack = onBack;
-    return <section data-active={String(active)} data-view="queue">{viewSwitcher}</section>;
+    return <section data-active={String(active)} data-view="queue">{viewTabs}</section>;
   },
 }));
 vi.mock("./downloads-storage", () => ({
-  DownloadsStorageView: ({ active, onBack, viewSwitcher }: { active: boolean; onBack: () => void; viewSwitcher: ReactNode }) => {
+  DownloadsStorageView: ({ active, onBack, viewTabs }: { active: boolean; onBack: () => void; viewTabs: ReactNode }) => {
     mocks.onBack = onBack;
-    return <section data-active={String(active)} data-view="storage">{viewSwitcher}</section>;
+    return <section data-active={String(active)} data-view="storage">{viewTabs}</section>;
   },
 }));
 
@@ -55,18 +64,17 @@ describe("Downloads hub", () => {
     mocks.goBackInAppHistory.mockReset().mockReturnValue(false);
     mocks.navigate.mockReset();
     mocks.onBack = null;
-    mocks.switcher = null;
+    mocks.tabs = null;
   });
 
-  it.each(["queue", "storage"] as const)("renders only the %s view with the view switcher", (view) => {
+  it.each(["queue", "storage"] as const)("renders only the %s view with the bar's view tabs", (view) => {
     const markup = render(view);
 
-    expect(markup).toContain(`<section data-active="true" data-view="${view}"><div data-switcher="${view}"></div></section>`);
+    expect(markup).toContain(
+      `<section data-active="true" data-view="${view}"><div data-tabs="${view}"><div class="norea-app-bar-tabs">` +
+        `<span data-tab="queue">Queue</span><span data-tab="storage">Storage</span></div></div></section>`,
+    );
     expect(markup.match(/data-view=/g)).toHaveLength(1);
-    expect(mocks.switcher?.data).toEqual([
-      { value: "queue", label: "Queue" },
-      { value: "storage", label: "Storage" },
-    ]);
   });
 
   it("passes the hidden state through to the selected view", () => {
@@ -76,9 +84,9 @@ describe("Downloads hub", () => {
   it("switches views in place without adding history entries", () => {
     render("queue");
 
-    mocks.switcher!.onChange("storage");
-    mocks.switcher!.onChange("queue");
-    mocks.switcher!.onChange("unknown");
+    mocks.tabs!.onChange("storage");
+    mocks.tabs!.onChange("queue");
+    mocks.tabs!.onChange(null);
 
     expect(mocks.navigate.mock.calls).toEqual([
       [{ to: "/downloads", search: { view: "storage" }, replace: true }],

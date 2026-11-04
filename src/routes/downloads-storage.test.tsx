@@ -64,6 +64,25 @@ describe("Downloads storage", () => {
   });
 });
 
+describe("storage rows and header", () => {
+  it("badges only a novel outside the library and lists novels in one divided block", () => {
+    const $ = render([novel(), novel({ novelId: 2, inLibrary: false, novelName: "Loose" })]);
+    expect($(".norea-downloads-list > .norea-downloads-novel")).toHaveLength(2);
+    expect($(".norea-downloads-novel").first().find(".norea-downloads-novel-badge-line")).toHaveLength(0);
+    expect($(".norea-downloads-novel").last().find(".norea-downloads-library-badge").text()).toBe("Outside library");
+    expect($.text()).not.toContain("In library");
+  });
+
+  it("puts the totals on one muted line and offers missing images as the one warning pill", () => {
+    const $ = render([novel({ mediaRepairNeededChapters: 2 })]);
+    expect($(".norea-downloads-summary").text()).toBe("1 titles · 120 chapters · 340 MB on device");
+    const warning = $("button.norea-downloads-warning");
+    expect(warning.text()).toBe("Missing images");
+    expect(warning.attr("aria-pressed")).toBe("false");
+    expect(render([])(".norea-downloads-summary")).toHaveLength(0);
+  });
+});
+
 describe("automatic removal row", () => {
   it("shows the setting's state on top of a non-empty list", () => {
     expect(render([novel()])(".norea-downloads-auto-cleanup").text()).toBe("Auto-remove read chapters: Off");

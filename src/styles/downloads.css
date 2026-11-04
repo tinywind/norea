@@ -2,9 +2,51 @@
   --norea-page-max-width: 80rem;
 }
 
-.norea-downloads-view-switch {
-  align-self: flex-start;
+/* The Queue and Storage tabs sit in the bar's slot and fill its height. */
+.norea-app-bar .norea-downloads-view-tabs {
+  align-self: stretch;
+  display: flex;
+  min-width: 0;
+}
+
+/* The one pill left in the header: a warning the user can act on, such as jumping to Needs attention. */
+.norea-downloads-warning {
+  align-items: center;
+  background: var(--norea-color-warn-soft);
+  border: 1px solid var(--norea-color-warn);
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-on-warn-soft);
+  cursor: pointer;
+  display: inline-flex;
   flex: 0 0 auto;
+  font: inherit;
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--norea-weight-medium);
+  gap: var(--norea-space-1);
+  height: 1.75rem;
+  padding-inline: var(--norea-space-3);
+  white-space: nowrap;
+}
+
+.norea-downloads-warning svg {
+  color: var(--norea-color-warn);
+  height: var(--norea-icon-sm);
+  width: var(--norea-icon-sm);
+}
+
+.norea-downloads-warning:focus-visible {
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
+  outline-offset: 0.125rem;
+}
+
+/* Expand and collapse: one borderless chevron that turns, never a filled box. */
+.norea-downloads-disclosure svg {
+  transition: transform var(--norea-duration-fast) var(--norea-ease-standard);
+}
+
+.norea-downloads-disclosure[aria-expanded="true"] svg {
+  transform: rotate(180deg);
 }
 
 /* The view switch, counters and lists follow the header at one tight step. */
@@ -31,11 +73,21 @@
   min-width: 0;
 }
 
+/* One surface block with divider rows, as on the queue, instead of a bordered card per novel. */
+.norea-downloads-list {
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
+  display: grid;
+  overflow: hidden;
+}
+
 .norea-downloads-novel {
   background: var(--norea-color-surface);
-  border-color: var(--norea-color-rule);
-  border-radius: var(--norea-radius-sm);
-  overflow: hidden;
+}
+
+.norea-downloads-novel + .norea-downloads-novel {
+  border-top: 1px solid var(--norea-color-rule);
 }
 
 .norea-downloads-novel-row {
@@ -75,8 +127,8 @@
   display: block;
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-md);
-  font-weight: 700;
-  line-height: 1.25;
+  font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
   margin: 0;
   min-width: 0;
   overflow: hidden;
@@ -85,12 +137,18 @@
 }
 
 .norea-downloads-novel-count,
-.norea-downloads-novel-status,
-.norea-downloads-novel-badge-line {
+.norea-downloads-novel-status {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.norea-downloads-novel-badge-line {
+  display: flex;
+  gap: var(--norea-space-1);
+  min-width: 0;
+  overflow: hidden;
 }
 
 .norea-downloads-novel-count {
@@ -98,7 +156,7 @@
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-sm);
   font-variant-numeric: tabular-nums;
-  font-weight: 600;
+  font-weight: var(--norea-weight-medium);
   line-height: 1.35;
 }
 
@@ -114,6 +172,11 @@
   max-width: 100%;
   min-width: 0;
   vertical-align: top;
+}
+
+/* A selected row's tint would swallow an outline badge, so it keeps the surface behind it. */
+.norea-downloads-novel[data-selected] .norea-downloads-library-badge[data-variant="default"] {
+  background: var(--norea-color-surface);
 }
 
 .norea-downloads-library-badge .mantine-Badge-label {
@@ -161,7 +224,7 @@
   color: var(--norea-color-ink);
   display: block;
   font-size: var(--norea-text-sm);
-  font-weight: 650;
+  font-weight: var(--norea-weight-medium);
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -174,18 +237,18 @@
   padding: var(--norea-space-3) var(--norea-space-3) var(--norea-space-3) 5rem;
 }
 
-/* The header's sub-row: view switch first, then counters that scroll in place on phones. */
+/* The header's sub-row: one muted count line, then a warning pill that scrolls in place on phones. */
 .norea-downloads-subrow {
   align-items: center;
   display: flex;
-  gap: var(--norea-space-3);
+  gap: var(--norea-space-2);
   min-width: 0;
   overflow-x: auto;
   scrollbar-width: none;
 }
 
-.norea-downloads-subrow .norea-task-summary-strip {
-  flex-wrap: nowrap;
+.norea-downloads-subrow .norea-app-bar-meta {
+  padding-inline: var(--norea-space-2) 0;
 }
 
 .norea-downloads-description {
@@ -236,5 +299,5 @@
 .norea-list-item.norea-downloads-auto-cleanup {
   background: var(--norea-color-surface);
   border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-sm);
+  border-radius: var(--norea-radius-md);
 }

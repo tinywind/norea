@@ -1,4 +1,4 @@
-import { Alert, Button, Group, Progress, Stack, Text } from "@mantine/core";
+import { Alert, Button, Group, Popover, Progress, Stack, Text } from "@mantine/core";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   memo,
@@ -38,11 +38,13 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
   CloseIcon,
+  DownloadsIcon,
   PauseIcon,
   PlayIcon,
   SortIcon,
   TrashIcon,
   VpnIcon,
+  WarningIcon,
 } from "../components/ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
@@ -98,6 +100,42 @@ const TASK_VIRTUALIZATION_THRESHOLD = 80;
 const ATTENTION_FOCUS_TIMEOUT_MS = 3_000;
 
 const ACTIVE_STATUSES = new Set<TaskStatus>(["queued", "running"]);
+
+/** Raw fetch failures from the scraper WebView or the network stack, which mean the site was not reached. */
+const CONNECTION_ERROR_PATTERN =
+  /browser fetch.*(failed|timed out)|failed to fetch|network ?error|err_(connection|internet|name|timed)/i;
+
+function taskErrorSummaryKey(error: string, kind: TaskRecord["kind"]): TranslationKey {
+  if (CONNECTION_ERROR_PATTERN.test(error)) return "tasks.error.connection";
+  return kind === "chapter.download" ? "tasks.error.download" : "tasks.error.generic";
+}
+
+/** A failure as one plain sentence; the raw error stays one tap away for reports. */
+function TaskErrorLine({ error, kind }: { error: string; kind: TaskRecord["kind"] }) {
+  const { t } = useTranslation();
+  const keepInside = (event: { stopPropagation: () => void }) => event.stopPropagation();
+  return (
+    <div className="norea-task-row-error">
+      <WarningIcon className="norea-task-row-error-icon" />
+      <span className="norea-task-row-error-text">{t(taskErrorSummaryKey(error, kind))}</span>
+      <Popover position="bottom-start" shadow="md">
+        <Popover.Target>
+          <button
+            className="norea-task-row-error-details"
+            onClick={keepInside}
+            onKeyDown={keepInside}
+            type="button"
+          >
+            {t("common.details")}
+          </button>
+        </Popover.Target>
+        <Popover.Dropdown onClick={keepInside} onKeyDown={keepInside}>
+          <Text className="norea-task-row-error-raw" size="sm">{error}</Text>
+        </Popover.Dropdown>
+      </Popover>
+    </div>
+  );
+}
 
 type SourceTaskGroup = {
   sourceId: string;
@@ -510,9 +548,7 @@ const TaskRow = memo(function TaskRow({
           </Text>
         ) : null}
         {currentTask.error ? (
-          <Text className="norea-task-row-error" lineClamp={1}>
-            {currentTask.error}
-          </Text>
+          <TaskErrorLine error={currentTask.error} kind={currentTask.kind} />
         ) : null}
         {currentTask.progress && !(withinWork && currentTask.status === "queued") ? (
           <Progress
@@ -701,20 +737,6 @@ function VirtualTaskRows({
   );
 }
 
-function SummaryPill({
-  children,
-  tone,
-}: {
-  children: string;
-  tone?: "error" | "warning";
-}) {
-  return (
-    <span className="norea-task-summary-pill" data-tone={tone}>
-      {children}
-    </span>
-  );
-}
-
 function TaskSortSheet({ onClose, opened }: { onClose: () => void; opened: boolean }) {
   const { t } = useTranslation();
   const sortTasks = (mode: TaskQueueSortMode) => {
@@ -876,13 +898,13 @@ function NovelWorkGroup({
         </div>
         <div className="norea-task-group-actions">
           <IconButton
-            active={open}
             aria-expanded={open}
+            className="norea-downloads-disclosure"
             label={toggleLabel}
             onClick={onToggleOpen}
             size="lg"
           >
-            {open ? <ChevronUpIcon /> : <ChevronDownIcon />}
+            <ChevronDownIcon />
           </IconButton>
           <OverflowMenu items={items} label={t("vpnDownload.workOptions", { title: group.title })} />
         </div>
@@ -1079,13 +1101,13 @@ function OtherActivity({
         </div>
         <div className="norea-task-group-actions">
           <IconButton
-            active={open}
             aria-expanded={open}
+            className="norea-downloads-disclosure"
             label={toggleLabel}
             onClick={() => setOpenOverride(!open)}
             size="lg"
           >
-            {open ? <ChevronUpIcon /> : <ChevronDownIcon />}
+            <ChevronDownIcon />
           </IconButton>
         </div>
       </header>
@@ -1139,13 +1161,14 @@ interface DownloadsQueueViewProps {
   active?: boolean;
   /** Leaves Downloads; the page header's back button. */
   onBack?: () => void;
-  viewSwitcher?: ReactNode;
+  /** The Queue and Storage tabs, drawn in the bar in place of the title. */
+  viewTabs?: ReactNode;
 }
 
 export function DownloadsQueueView({
   active = true,
   onBack,
-  viewSwitcher,
+  viewTabs,
 }: DownloadsQueueViewProps = {}) {
   const { t } = useTranslation();
   const confirm = useConfirm();
@@ -1318,6 +1341,39 @@ export function DownloadsQueueView({
   overflowItems.push({ icon: CloseIcon, label: t("tasks.cancelAllCurrent"), danger: true,
     disabled: !hasCancellableTasks || queueActionPending, onClick: () => { void cancelAll(); } });
   const hasDownloads = novelWorks.length > 0 || requests.length > 0 || vpnWorks.length > 0;
+  // Counts read as one muted line with zeros left out; only a warning the user can act on stays a pill.
+  const countParts = [
+    taskStats.running > 0 ? t("tasks.summary.running", { count: taskStats.running }) : null,
+    taskStats.queued > 0 ? t("tasks.summary.queued", { count: taskStats.queued }) : null,
+    taskStats.retrying > 0 ? t("tasks.summary.retrying", { count: taskStats.retrying }) : null,
+    taskStats.succeeded > 0 ? t("tasks.summary.done", { count: taskStats.succeeded }) : null,
+  ].filter((part) => part !== null);
+  const warningParts = [
+    snapshot.sourceAccessBlocks.length > 0
+      ? t("tasks.summary.blocked", { count: snapshot.sourceAccessBlocks.length })
+      : null,
+    taskStats.failed > 0 ? t("tasks.summary.failed", { count: taskStats.failed }) : null,
+  ].filter((part) => part !== null);
+  const metaParts = hasAttention ? countParts : [...countParts, ...warningParts];
+  const showWarning = hasAttention && warningParts.length > 0;
+  const summaryRow = vpnWorks.length === 0 && (metaParts.length > 0 || showWarning) ? (
+    <div className="norea-downloads-subrow">
+      {metaParts.length > 0 ? (
+        <span className="norea-app-bar-meta norea-downloads-summary">{metaParts.join(" · ")}</span>
+      ) : null}
+      {showWarning ? (
+        <button
+          aria-label={t("downloads.queue.showAttention", { summary: warningParts.join(" · ") })}
+          className="norea-downloads-warning norea-state-layer"
+          onClick={() => attentionRef.current?.scrollIntoView({ block: "start" })}
+          type="button"
+        >
+          <WarningIcon />
+          {warningParts.join(" · ")}
+        </button>
+      ) : null}
+    </div>
+  ) : undefined;
 
   return (
     <PageFrame
@@ -1345,49 +1401,12 @@ export function DownloadsQueueView({
               <OverflowMenu items={overflowItems} label={t("common.more")} />
             </>
           }
-          below={
-            <div className="norea-downloads-subrow">
-              {viewSwitcher}
-              {vpnWorks.length === 0 ? (
-                <div className="norea-task-summary-strip">
-                  <SummaryPill>
-                    {t("tasks.summary.running", { count: taskStats.running })}
-                  </SummaryPill>
-                  <SummaryPill>
-                    {t("tasks.summary.queued", { count: taskStats.queued })}
-                  </SummaryPill>
-                  {taskStats.retrying > 0 ? (
-                    <SummaryPill>
-                      {t("tasks.summary.retrying", { count: taskStats.retrying })}
-                    </SummaryPill>
-                  ) : null}
-                  <SummaryPill
-                    tone={
-                      snapshot.sourceAccessBlocks.length > 0 ? "warning" : undefined
-                    }
-                  >
-                    {t("tasks.summary.blocked", {
-                      count: snapshot.sourceAccessBlocks.length,
-                    })}
-                  </SummaryPill>
-                  <SummaryPill tone={taskStats.failed > 0 ? "error" : undefined}>
-                    {t("tasks.summary.failed", { count: taskStats.failed })}
-                  </SummaryPill>
-                  <SummaryPill>
-                    {t("tasks.summary.done", { count: taskStats.succeeded })}
-                  </SummaryPill>
-                </div>
-              ) : null}
-            </div>
-          }
+          below={summaryRow}
           onBack={onBack}
-          title={
-            <span className="norea-task-page-title">
-              {t("downloads.title")}
-              {vpnWorks.length === 0 ? <span className="norea-task-title-count">{tasks.length}</span> : null}
-            </span>
-          }
-        />
+          title={t("downloads.title")}
+        >
+          {viewTabs}
+        </PageHeader>
       }
       size="wide"
     >
@@ -1402,7 +1421,7 @@ export function DownloadsQueueView({
 
       {!hasDownloads && otherTasks.length === 0 ? (
         <StateView
-          color="info"
+          icon={DownloadsIcon}
           title={t("tasks.empty.title")}
           message={t("tasks.empty.message")}
         />
@@ -1431,7 +1450,11 @@ export function DownloadsQueueView({
                           onClick={() => cancelChapterDownloadRequest(request.id)}>{t("vpnDownload.cancelDraft")}</TextButton>
                       </div>
                     </div>
-                    {request.error ? <Alert color="danger" role="alert">{request.error}</Alert> : null}
+                    {request.error ? (
+                      <div className="norea-task-request-error" role="alert">
+                        <TaskErrorLine error={request.error} kind="chapter.download" />
+                      </div>
+                    ) : null}
                   </div>
                 ))}
                 {vpnWorks.map((work) => (

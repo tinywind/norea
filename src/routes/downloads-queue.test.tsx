@@ -73,8 +73,8 @@ describe("task work group order", () => {
       workTitles([chapter(1, 1, "running")]);
       const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
       expect($("[data-vpn-work]").text()).toBe("12/20");
-      expect($(".norea-task-title-count").length).toBe(0);
-      expect($(".norea-task-summary-strip").length).toBe(0);
+      expect($(".norea-downloads-summary").length).toBe(0);
+      expect($(".norea-downloads-warning").length).toBe(0);
     } finally {
       state.vpnWorks = [];
     }
@@ -87,16 +87,15 @@ describe("task work group order", () => {
     state.vpn.ownedChapterIds = [];
   });
 
-  it("counts the header total and summary pills from the same tasks as the visible list", () => {
+  it("counts the header summary line from the same tasks as the visible list, leaving zeros out", () => {
     state.vpn.ownedChapterIds = [1];
     workTitles([
       chapter(1, 1, "queued", 0), { ...chapter(2, 2, "running", 1), vpnWorker: { rangeId: "range", slot: 9 as const, generation: 1 } },
       chapter(3, 3, "queued", 2), chapter(4, 4, "failed"), chapter(5, 5, "succeeded"),
     ]);
     const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
-    expect($(".norea-task-title-count").text()).toBe("3");
-    expect($(".norea-task-summary-pill").map((_, element) => $(element).text()).get())
-      .toEqual(["Running 0", "Queued 1", "Blocked 0", "Failed 1", "Done 1"]);
+    expect($(".norea-downloads-summary").text()).toBe("Queued 1 · Done 1 · Failed 1");
+    expect($(".norea-downloads-warning")).toHaveLength(0);
     state.vpn.ownedChapterIds = [];
   });
 
@@ -107,8 +106,7 @@ describe("task work group order", () => {
       sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
     };
     const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
-    expect($(".norea-task-summary-pill").map((_, element) => $(element).text()).get())
-      .toEqual(["Running 0", "Queued 1", "Retrying 1", "Blocked 0", "Failed 0", "Done 0"]);
+    expect($(".norea-downloads-summary").text()).toBe("Queued 1 · Retrying 1");
     expect($.text()).toContain("Retrying in 2m");
   });
 
@@ -134,6 +132,30 @@ describe("task work group order", () => {
     expect(banner.closest("#norea-downloads-attention-title, .norea-downloads-attention").find("h2").text()).toBe("Needs attention");
     expect(banner.find("button").map((_, element) => $(element).text() || $(element).attr("aria-label")).get())
       .toEqual(["Verify", "More options for source.test"]);
+  });
+  it("keeps a warning the user can act on as the one header pill, which jumps to Needs attention", () => {
+    state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceAccessBlocks: [{
+      challenge: { kind: "captcha", url: "https://source.test/chapter/16" },
+      detectedAt: 1, revision: 1, scopeKey: "plugin:source:site:source.test", sourceId: "source",
+      verificationRequested: false,
+    }] };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($(".norea-downloads-summary")).toHaveLength(0);
+    const warning = $("button.norea-downloads-warning");
+    expect(warning.text()).toBe("Blocked 1");
+    expect(warning.attr("aria-label")).toBe("Show what needs attention: Blocked 1");
+  });
+  it("states a failed chapter in plain words and keeps the raw error behind Details", () => {
+    const failed = { ...chapter(4, 3, "failed"), error: "scraper: browser fetch failed: Failed to fetch" };
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [failed],
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    const error = $(".norea-task-row[data-status='failed'] .norea-task-row-error");
+    expect(error.find(".norea-task-row-error-text").text()).toBe("Could not reach the site.");
+    expect(error.find("button.norea-task-row-error-details").text()).toBe("Details");
+    expect($.text()).not.toContain("browser fetch failed");
   });
   it("shows a promoted work above the work whose transfer is still running", () => {
     expect(workTitles([

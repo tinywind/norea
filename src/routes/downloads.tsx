@@ -1,5 +1,5 @@
+import { Tabs } from "@mantine/core";
 import { useNavigate, useRouter } from "@tanstack/react-router";
-import { SegmentedToggle } from "../components/SegmentedToggle";
 import { useTranslation } from "../i18n";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
 import { goBackInAppHistory } from "../lib/navigation-history";
@@ -26,14 +26,10 @@ export function DownloadsPage({ active = true, view }: DownloadsPageProps) {
     leaveDownloads();
     return true;
   });
-  const viewSwitcher = (
-    <SegmentedToggle
-      aria-label={t("downloads.view.label")}
-      className="norea-downloads-view-switch"
-      data={[
-        { value: "queue", label: t("downloads.view.queue") },
-        { value: "storage", label: t("downloads.view.storage") },
-      ]}
+  // The two views fill the bar as underline tabs, as Browse and Library categories do.
+  const viewTabs = (
+    <Tabs
+      className="norea-downloads-view-tabs"
       onChange={(value) => {
         void navigate({
           to: "/downloads",
@@ -42,12 +38,17 @@ export function DownloadsPage({ active = true, view }: DownloadsPageProps) {
         });
       }}
       value={view}
-    />
+    >
+      <Tabs.List aria-label={t("downloads.view.label")} className="norea-app-bar-tabs">
+        <Tabs.Tab value="queue">{t("downloads.view.queue")}</Tabs.Tab>
+        <Tabs.Tab value="storage">{t("downloads.view.storage")}</Tabs.Tab>
+      </Tabs.List>
+    </Tabs>
   );
 
   return view === "storage" ? (
-    <DownloadsStorageView active={active} onBack={leaveDownloads} viewSwitcher={viewSwitcher} />
+    <DownloadsStorageView active={active} onBack={leaveDownloads} viewTabs={viewTabs} />
   ) : (
-    <DownloadsQueueView active={active} onBack={leaveDownloads} viewSwitcher={viewSwitcher} />
+    <DownloadsQueueView active={active} onBack={leaveDownloads} viewTabs={viewTabs} />
   );
 }

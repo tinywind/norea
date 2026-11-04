@@ -27,30 +27,6 @@
   margin-bottom: var(--norea-space-4);
 }
 
-.norea-task-page-title {
-  align-items: center;
-  display: inline-flex;
-  gap: var(--norea-space-2);
-  min-width: 0;
-}
-
-.norea-task-title-count {
-  align-items: center;
-  background: var(--norea-color-surface-raised);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-full);
-  color: var(--norea-color-ink-muted);
-  display: inline-flex;
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-sm);
-  font-variant-numeric: tabular-nums;
-  font-weight: 650;
-  height: 1.5rem;
-  justify-content: center;
-  min-width: 1.5rem;
-  padding: 0 var(--norea-space-2);
-}
-
 .norea-task-sort-menu {
   display: grid;
   gap: var(--norea-space-3);
@@ -66,7 +42,7 @@
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   padding: var(--norea-space-1) var(--norea-space-2);
 }
 
@@ -86,41 +62,6 @@
   .norea-task-sort-section button:hover {
     background: var(--norea-color-surface-raised);
   }
-}
-
-.norea-task-summary-strip {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--norea-space-2);
-  min-width: 0;
-}
-
-.norea-task-summary-pill {
-  align-items: center;
-  background: var(--norea-color-surface-raised);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-full);
-  color: var(--norea-color-ink-muted);
-  display: inline-flex;
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-sm);
-  font-variant-numeric: tabular-nums;
-  font-weight: 600;
-  height: 1.5rem;
-  padding: 0 var(--norea-space-2);
-  white-space: nowrap;
-}
-
-.norea-task-summary-pill[data-tone="error"] {
-  background: var(--norea-color-danger-soft);
-  border-color: var(--norea-color-danger);
-  color: var(--norea-color-on-danger-soft);
-}
-
-.norea-task-summary-pill[data-tone="warning"] {
-  background: var(--norea-color-warn-soft);
-  border-color: var(--norea-color-warn);
-  color: var(--norea-color-on-warn-soft);
 }
 
 .norea-source-access-banners {
@@ -187,13 +128,12 @@
 .norea-task-group-title {
   color: var(--norea-color-ink);
   font-size: var(--norea-text-md);
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   min-width: 0;
 }
 
 .norea-task-group[data-source-group] {
   background: var(--norea-color-surface-raised);
-  border-left: 0.25rem solid transparent;
 }
 
 .norea-task-group[data-source-group] .norea-task-group-header {
@@ -231,7 +171,6 @@
 
 .norea-task-work-group {
   background: var(--norea-color-surface);
-  border-left: 0.1875rem solid var(--norea-color-rule-strong);
   border-top: 1px solid var(--norea-color-rule);
   display: grid;
   min-width: 0;
@@ -253,12 +192,8 @@
     var(--norea-space-2);
 }
 
-.norea-task-work-group:not([data-collapsed]) {
-  border-left-color: var(--norea-color-accent);
-}
-
+/* An open group keeps the closed header's background; only a rule separates its rows. */
 .norea-task-work-group:not([data-collapsed]) .norea-task-work-header {
-  background: var(--norea-color-surface-raised);
   border-bottom-color: var(--norea-color-rule);
 }
 
@@ -282,34 +217,40 @@
   min-width: 0;
 }
 
+/* A status label, not a control: a colored dot and muted text, with no pill around it. */
 .norea-task-work-status {
-  border-radius: var(--norea-radius-full);
+  align-items: center;
   color: var(--norea-color-ink-muted);
+  display: inline-flex;
   flex: 0 0 auto;
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
-  font-weight: 600;
-  line-height: 1.5;
-  padding: 0 var(--norea-space-2);
+  font-weight: var(--norea-weight-medium);
+  gap: var(--norea-space-1);
+  line-height: var(--norea-leading-normal);
   white-space: nowrap;
 }
 
-.norea-task-work-status[data-status="downloading"],
-.norea-task-work-status[data-status="preparing"] {
-  background: var(--norea-color-accent-soft);
-  color: var(--norea-color-on-accent-soft);
+.norea-task-work-status::before {
+  background: var(--norea-color-icon-subtle);
+  border-radius: var(--norea-radius-full);
+  content: "";
+  flex: 0 0 auto;
+  height: 0.5rem;
+  width: 0.5rem;
 }
 
-.norea-task-work-status[data-status="waiting"],
-.norea-task-work-status[data-status="paused"],
-.norea-task-work-status[data-status="done"] {
-  background: var(--norea-color-surface-raised);
-  box-shadow: inset 0 0 0 1px var(--norea-color-rule);
+.norea-task-work-status[data-status="downloading"]::before,
+.norea-task-work-status[data-status="preparing"]::before {
+  background: var(--norea-color-accent);
 }
 
 .norea-task-work-status[data-status="attention"] {
-  background: var(--norea-color-warn-soft);
-  color: var(--norea-color-on-warn-soft);
+  color: var(--norea-color-ink);
+}
+
+.norea-task-work-status[data-status="attention"]::before {
+  background: var(--norea-color-warn);
 }
 
 .norea-downloads-attention,
@@ -324,14 +265,14 @@
   color: var(--norea-color-ink);
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-md);
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   margin: 0;
 }
 
 .norea-task-work-title {
   color: var(--norea-color-ink);
   font-size: var(--norea-text-sm);
-  font-weight: 600;
+  font-weight: var(--norea-weight-medium);
   min-width: 0;
 }
 
@@ -342,7 +283,7 @@
   flex: 0 0 auto;
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
-  font-weight: 600;
+  font-weight: var(--norea-weight-medium);
   padding: 0 var(--norea-space-1);
 }
 
@@ -427,10 +368,6 @@
   border-top: 0;
 }
 
-.norea-task-row[data-status="failed"] {
-  background: var(--norea-color-danger-soft);
-}
-
 .norea-task-row[data-status="running"] {
   background: var(--norea-color-surface-raised);
 }
@@ -451,7 +388,7 @@
 .norea-task-row-title {
   color: var(--norea-color-ink);
   font-size: var(--norea-text-md);
-  font-weight: 650;
+  font-weight: var(--norea-weight-medium);
   min-width: 0;
 }
 
@@ -507,8 +444,55 @@
   color: var(--norea-color-ink-muted);
 }
 
+/* A failure reads as an icon and one plain sentence; the raw error opens from Details. */
 .norea-task-row-error {
+  align-items: center;
+  color: var(--norea-color-ink);
+  display: flex;
+  gap: var(--norea-space-1);
+}
+
+.norea-task-row-error-icon {
   color: var(--norea-color-danger);
+  flex: 0 0 auto;
+  height: 1.2em;
+  width: 1.2em;
+}
+
+.norea-task-row-error-text {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-task-row-error-details {
+  background: none;
+  border: 0;
+  color: var(--norea-color-accent);
+  cursor: pointer;
+  flex: 0 0 auto;
+  font: inherit;
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.norea-task-row-error-details:focus-visible {
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
+  outline-offset: 0.125rem;
+}
+
+.norea-task-row-error-raw {
+  font-family: var(--norea-font-ui);
+  max-width: 20rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.norea-task-request-error {
+  font-size: var(--norea-text-sm);
+  padding: 0 var(--norea-space-3) var(--norea-space-2) var(--norea-space-2);
 }
 
 .norea-task-row-progress {
@@ -539,15 +523,6 @@
   .norea-source-access-banner {
     align-items: stretch;
     grid-template-columns: minmax(0, 1fr);
-  }
-
-  .norea-task-summary-strip {
-    gap: var(--norea-space-1);
-  }
-
-  .norea-task-summary-pill {
-    font-size: var(--norea-text-xs);
-    padding: 0 var(--norea-space-2);
   }
 
   .norea-task-row-title {
