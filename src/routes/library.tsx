@@ -172,6 +172,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     selectAllMutation,
     assignCategoryMutation,
     setDownloadGoalMutation,
+    downloadOnceMutation,
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
   } = useLibrarySelection(libraryFilter, sortOrder, active);
@@ -380,7 +381,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               actions={
                 <>
                   <SelectionAction
-                    disabled={selectedIds.size === 0 || setDownloadGoalMutation.isPending}
+                    disabled={selectedIds.size === 0 || setDownloadGoalMutation.isPending || downloadOnceMutation.isPending}
                     icon={DownloadIcon}
                     label={t("library.selection.download")}
                     onClick={() => setDownloadSheetOpen(true)}
@@ -612,7 +613,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         tab={viewOptionsTab}
       />
       <LibraryDownloadGoalSheet
-        applying={setDownloadGoalMutation.isPending}
+        applying={setDownloadGoalMutation.isPending || downloadOnceMutation.isPending}
         novelIds={selectedNovelIds}
         onApply={(goal) =>
           setDownloadGoalMutation.mutate(
@@ -621,6 +622,12 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
           )
         }
         onClose={() => setDownloadSheetOpen(false)}
+        onDownloadOnce={() =>
+          downloadOnceMutation.mutate(
+            { novelIds: selectedNovelIds },
+            { onSuccess: () => setDownloadSheetOpen(false) },
+          )
+        }
         opened={active && selectionMode && downloadSheetOpen}
       />
       <LibraryCategorySheet

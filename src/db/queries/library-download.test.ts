@@ -8,7 +8,7 @@ import { getDb } from "../client";
 import {
   listExistingChapterIds,
   listLibraryDownloadChapters,
-  listUnqueuedChapterDownloadIds,
+  listUnqueuedChapterDownloads,
 } from "./chapter";
 
 let sqlite: DatabaseSync;
@@ -56,17 +56,17 @@ it("checks a restored queue in bounded queries and retains existing completed ch
 });
 
 it("excludes stored bodies, persisted downloads and leased downloads", async () => {
-  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([5]);
-  expect(await listUnqueuedChapterDownloadIds(2)).toEqual([6]);
-  expect(await listUnqueuedChapterDownloadIds(3)).toEqual([]);
+  expect((await listUnqueuedChapterDownloads(1)).map((chapter) => chapter.id)).toEqual([5]);
+  expect((await listUnqueuedChapterDownloads(2)).map((chapter) => chapter.id)).toEqual([6]);
+  expect((await listUnqueuedChapterDownloads(3)).map((chapter) => chapter.id)).toEqual([]);
 
   sqlite.exec("DELETE FROM chapter_download_queue WHERE chapter_id = 2");
-  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([2, 5]);
+  expect((await listUnqueuedChapterDownloads(1)).map((chapter) => chapter.id)).toEqual([2, 5]);
 
   sqlite.exec("UPDATE chapter SET is_downloaded = 0 WHERE id = 1");
-  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([2, 5]);
+  expect((await listUnqueuedChapterDownloads(1)).map((chapter) => chapter.id)).toEqual([2, 5]);
   sqlite.exec("UPDATE chapter SET content_bytes = 0 WHERE id = 1");
-  expect(await listUnqueuedChapterDownloadIds(1)).toEqual([1, 2, 5]);
+  expect((await listUnqueuedChapterDownloads(1)).map((chapter) => chapter.id)).toEqual([1, 2, 5]);
 });
 
 it("keeps queued and downloaded reading anchors in the batch catalog", async () => {
@@ -83,9 +83,9 @@ it("bounds availability reads and continues past a page of scheduler reservation
   for (let index = 0; index <= MAX_ROUTE_QUERY_ROWS; index += 1) {
     insert.run(1_000 + index, `/chapter/${index}`, index + 2);
   }
-  const firstPage = await listUnqueuedChapterDownloadIds(2);
+  const firstPage = (await listUnqueuedChapterDownloads(2)).map((chapter) => chapter.id);
   expect(firstPage).toHaveLength(MAX_ROUTE_QUERY_ROWS);
-  const secondPage = await listUnqueuedChapterDownloadIds(2, firstPage.at(-1));
+  const secondPage = (await listUnqueuedChapterDownloads(2, firstPage.at(-1))).map((chapter) => chapter.id);
   expect(secondPage).toEqual([1_499, 1_500]);
   expect(new Set([...firstPage, ...secondPage]).size).toBe(MAX_ROUTE_QUERY_ROWS + 2);
 });

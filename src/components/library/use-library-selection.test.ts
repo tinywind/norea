@@ -24,6 +24,9 @@ const mocks = vi.hoisted(() => ({
   invalidate: vi.fn(async () => undefined),
   addCategory: vi.fn(async () => undefined),
   removeCategory: vi.fn(async () => undefined),
+  listUnqueued: vi.fn(),
+  queued: new Set<number>(),
+  submit: vi.fn(() => ({ id: "request", materialized: Promise.resolve(), promise: Promise.resolve() })),
 }));
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
@@ -48,6 +51,9 @@ vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel, listLib
 vi.mock("../../lib/download-goals/goal-service", () => ({ setDownloadGoal: mocks.setGoal }));
 vi.mock("../DownloadGoalWorkLine", () => ({ DOWNLOAD_GOALS_QUERY_KEY: ["download-goals"] }));
 vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: vi.fn() }));
+vi.mock("../../db/queries/chapter", () => ({ listUnqueuedChapterDownloads: mocks.listUnqueued }));
+vi.mock("../../lib/tasks/chapter-download", () => ({ isChapterDownloadQueued: (id: number) => mocks.queued.has(id) }));
+vi.mock("../../lib/tasks/chapter-download-requests", () => ({ submitChapterDownloadRequest: mocks.submit }));
 import { useLibrarySelection } from "./use-library-selection";
 import { notifications } from "@mantine/notifications";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
@@ -59,6 +65,8 @@ beforeEach(() => {
   mocks.selected = new Set([1]);
   mocks.selecting = false;
   mocks.listIds.mockReset().mockResolvedValue([]);
+  mocks.listUnqueued.mockReset().mockResolvedValue([]);
+  mocks.queued = new Set();
   mocks.getNovel.mockReset().mockImplementation(async (id: number) => ({ id, name: `Novel ${id}`, pluginId: "source", path: `/work/${id}`, isLocal: false }));
 });
 
@@ -177,4 +185,51 @@ it("sizes the remove-from-library download option with the exact stored chapter 
   expect(confirmContentDeletion).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "library", ids: [1, 2], downloadedCount: 0 }));
   await remove.mutationFn({ downloadedCount: 12, novelIds: [3] });
   expect(confirmContentDeletion).toHaveBeenLastCalledWith(expect.objectContaining({ ids: [3], downloadedCount: 12 }));
+});
+
+interface DownloadOnceOutcome { queued: number; skippedLocal: number }
+interface DownloadOnceMutation {
+  mutationFn: (input: { novelIds: number[] }) => Promise<DownloadOnceOutcome>;
+  onSuccess: (outcome: DownloadOnceOutcome) => void;
+}
+const chapterRow = (id: number, position: number) =>
+  ({ id, position, path: `/c/${id}`, name: `Chapter ${id}`, chapterNumber: null, contentType: "html" });
+
+it("queues every unqueued chapter of each selected source novel once at user priority", async () => {
+  const fullPage = Array.from({ length: 500 }, (_, index) => chapterRow(index + 100, 600 - index));
+  mocks.getNovel.mockImplementation(async (id: number) =>
+    id === 9 ? null : { id, name: `Novel ${id}`, pluginId: "source", path: `/work/${id}`, isLocal: id === 3 });
+  mocks.listUnqueued.mockImplementation(async (novelId: number, after: number) => {
+    if (novelId === 1) return after === 0 ? fullPage : [chapterRow(700, 1)];
+    return novelId === 2 ? [chapterRow(800, 2), chapterRow(801, 1)] : [];
+  });
+  mocks.queued = new Set([801]);
+  useLibrarySelection({}, "nameAsc");
+  const mutation = mocks.mutations[5] as unknown as DownloadOnceMutation;
+
+  await expect(mutation.mutationFn({ novelIds: [1, 2, 3, 9] })).resolves.toEqual({ queued: 502, skippedLocal: 1 });
+  expect(mocks.listUnqueued.mock.calls).toEqual([[1, 0], [1, 599], [2, 0]]);
+  expect(mocks.submit).toHaveBeenCalledTimes(2);
+  const calls = mocks.submit.mock.calls as unknown as [{ novelIds: number[]; prepare: () => Promise<{ jobs: Array<{ id: number; priority: string }> }> }][];
+  const first = await calls[0]![0].prepare();
+  expect(calls[0]![0].novelIds).toEqual([1]);
+  expect(first.jobs).toHaveLength(501);
+  expect(first.jobs[0]).toMatchObject({ id: 700, priority: "user", novelId: 1 });
+  expect(first.jobs.every((job) => job.priority === "user")).toBe(true);
+  expect((await calls[1]![0].prepare()).jobs.map((job) => job.id)).toEqual([800]);
+});
+
+it("reports the queued chapters, the local works skipped, and when nothing was left to queue", () => {
+  useLibrarySelection({}, "nameAsc");
+  const mutation = mocks.mutations[5] as unknown as DownloadOnceMutation;
+  mutation.onSuccess({ queued: 12, skippedLocal: 0 });
+  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "ok", message: "library.downloadOnce.done" });
+  expect(mocks.t).toHaveBeenCalledWith("library.downloadOnce.done", { count: 12 });
+  expect(mocks.setSelecting).toHaveBeenLastCalledWith(false);
+  mutation.onSuccess({ queued: 4, skippedLocal: 2 });
+  expect(mocks.t).toHaveBeenCalledWith("library.downloadOnce.doneSkippedLocal", { count: 4, skipped: 2 });
+  mutation.onSuccess({ queued: 0, skippedLocal: 1 });
+  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "warn", message: "library.downloadOnce.nothingSkippedLocal" });
+  mutation.onSuccess({ queued: 0, skippedLocal: 0 });
+  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "warn", message: "library.downloadOnce.nothing" });
 });

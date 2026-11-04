@@ -170,20 +170,22 @@ export async function listLibraryDownloadChapters(
   }));
 }
 
-export async function listUnqueuedChapterDownloadIds(
+/** One page, in id order, of a source novel's chapters with no stored body and no persisted download. */
+export async function listUnqueuedChapterDownloads(
   novelId: number,
   afterChapterId = 0,
-): Promise<number[]> {
+): Promise<ChapterListRow[]> {
   const db = await getDb();
-  const rows = await db.select<{ id: number }[]>(
-    `SELECT c.id FROM chapter c JOIN novel n ON n.id = c.novel_id
-     WHERE c.novel_id = $1 AND c.id > $2 AND n.is_local = 0
-       AND c.is_downloaded = 0 AND c.content_bytes <= 0
-       AND NOT EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id = c.id)
-     ORDER BY c.id LIMIT $3`,
+  const rows = await db.select<RawChapterListRow[]>(
+    `SELECT ${CHAPTER_LIST_SELECT_FIELDS} FROM chapter
+     WHERE novel_id = $1 AND id > $2
+       AND EXISTS(SELECT 1 FROM novel n WHERE n.id = chapter.novel_id AND n.is_local = 0)
+       AND is_downloaded = 0 AND content_bytes <= 0
+       AND NOT EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id = chapter.id)
+     ORDER BY id LIMIT $3`,
     [novelId, afterChapterId, MAX_ROUTE_QUERY_ROWS],
   );
-  return rows.map((row) => row.id);
+  return rows.map(normalizeChapterListRow);
 }
 
 export async function getChapterById(

@@ -11,9 +11,10 @@ import {
   type StoredNovelDownloadGoal,
 } from "../../db/queries/novel-download-goal";
 import { useTranslation } from "../../i18n";
-import { DownloadGoalChoices, sameDownloadGoal } from "../DownloadGoalChoices";
+import { DownloadGoalChoices, DownloadGoalSpacer, sameDownloadGoal } from "../DownloadGoalChoices";
 import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
 import { PlusIcon } from "../ui/icons";
+import { ListRow } from "../ui/ListRow";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 function sortedIds(novelIds: readonly number[]): number[] {
@@ -40,15 +41,18 @@ interface LibraryDownloadGoalSheetProps {
   novelIds: readonly number[];
   onApply: (goal: NovelDownloadGoal | null) => void;
   onClose: () => void;
+  /** Queues every chapter not downloaded yet one time, without changing the goal. */
+  onDownloadOnce: () => void;
   opened: boolean;
 }
 
-/** The download goal choices for the selected novels; the goal they share is marked. */
+/** The download goal choices for the selected novels, the goal they share marked, and a one-time download. */
 export function LibraryDownloadGoalSheet({
   applying,
   novelIds,
   onApply,
   onClose,
+  onDownloadOnce,
   opened,
 }: LibraryDownloadGoalSheetProps) {
   const { t } = useTranslation();
@@ -70,7 +74,15 @@ export function LibraryDownloadGoalSheet({
           if (current !== undefined && sameDownloadGoal(goal, current)) return;
           onApply(goal);
         }}
-      />
+      >
+        <ListRow
+          disabled={applying || novelIds.length === 0}
+          leading={<DownloadGoalSpacer />}
+          onClick={onDownloadOnce}
+          subtitle={t("library.downloadOnce.description")}
+          title={t("library.downloadOnce.title")}
+        />
+      </DownloadGoalChoices>
     </ResponsiveSheet>
   );
 }

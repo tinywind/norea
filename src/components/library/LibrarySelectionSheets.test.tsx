@@ -14,6 +14,7 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../DownloadGoalChoices", () => ({
   DownloadGoalChoices: () => null,
+  DownloadGoalSpacer: () => null,
   sameDownloadGoal: (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right),
 }));
 vi.mock("../ui/ResponsiveSheet", () => ({ ResponsiveSheet: () => null }));
@@ -99,17 +100,30 @@ it("marks the goal every selected novel shares and nothing when they differ", ()
 it("applies a goal choice to the selection unless it is the goal they already share", async () => {
   mocks.data = [{ novelId: 1, goal: { kind: "entire" }, updatedAt: 1 }, { novelId: 2, goal: { kind: "entire" }, updatedAt: 1 }];
   const apply = vi.fn();
+  const downloadOnce = vi.fn();
   function GoalProbe() {
-    tree = LibraryDownloadGoalSheet({ applying: false, novelIds: [1, 2], onApply: apply, onClose: vi.fn(), opened: true }) as
+    tree = LibraryDownloadGoalSheet({
+      applying: false, novelIds: [1, 2], onApply: apply, onClose: vi.fn(), onDownloadOnce: downloadOnce, opened: true,
+    }) as
       ReactElement<Record<string, unknown>>;
     return null;
   }
   harness = mountBackNavigationHarness();
   await harness.render(<GoalProbe />);
-  const choices = tree.props.children as ReactElement<{ current: unknown; onChoose: (goal: unknown) => void }>;
+  const choices = tree.props.children as ReactElement<{
+    children: ReactElement<{ onClick: () => void; title: string }>;
+    current: unknown;
+    onChoose: (goal: unknown) => void;
+  }>;
   expect(choices.props.current).toEqual({ kind: "entire" });
   choices.props.onChoose({ kind: "entire" });
   expect(apply).not.toHaveBeenCalled();
   choices.props.onChoose({ kind: "none" });
   expect(apply).toHaveBeenCalledWith({ kind: "none" });
+
+  const once = choices.props.children;
+  expect(once.props.title).toBe("library.downloadOnce.title");
+  once.props.onClick();
+  expect(downloadOnce).toHaveBeenCalledTimes(1);
+  expect(apply).toHaveBeenCalledTimes(1);
 });
