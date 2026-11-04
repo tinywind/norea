@@ -9,17 +9,38 @@
 .norea-plugin-icon {
   align-items: center;
   background: var(--norea-color-surface-raised);
-  border: 1px solid var(--norea-color-rule);
   border-radius: var(--norea-radius-sm);
   color: var(--norea-color-ink-muted);
   display: inline-flex;
   flex: 0 0 auto;
-  font-size: var(--norea-text-md);
-  font-weight: var(--norea-weight-bold);
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-medium);
   height: 2.5rem;
   justify-content: center;
+  line-height: 1;
   overflow: hidden;
+  white-space: nowrap;
   width: 2.5rem;
+}
+
+.norea-plugin-icon[data-monogram="accent"] {
+  background: var(--norea-color-accent-soft);
+  color: var(--norea-color-on-accent-soft);
+}
+
+.norea-plugin-icon[data-monogram="info"] {
+  background: var(--norea-color-info-soft);
+  color: var(--norea-color-on-info-soft);
+}
+
+.norea-plugin-icon[data-monogram="ok"] {
+  background: var(--norea-color-ok-soft);
+  color: var(--norea-color-on-ok-soft);
+}
+
+.norea-plugin-icon[data-monogram="warn"] {
+  background: var(--norea-color-warn-soft);
+  color: var(--norea-color-on-warn-soft);
 }
 
 .norea-plugin-icon img {
