@@ -128,19 +128,19 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
           label={t("settings.about.buildTime.label")}
           description={t("settings.about.buildTime.description")}
         >
-          <ConsoleChip>{buildTime}</ConsoleChip>
+          {buildTime ? <ConsoleChip>{buildTime}</ConsoleChip> : null}
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.about.platform.label")}
           description={t("settings.about.platform.description")}
         >
-          <ConsoleChip>{updates.buildInfo?.platform ?? ""}</ConsoleChip>
+          {updates.buildInfo?.platform ? <ConsoleChip>{updates.buildInfo.platform}</ConsoleChip> : null}
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.about.buildChannel.label")}
           description={t("settings.about.buildChannel.description")}
         >
-          <ConsoleChip>{updates.buildInfo?.buildChannel ?? ""}</ConsoleChip>
+          {updates.buildInfo?.buildChannel ? <ConsoleChip>{updates.buildInfo.buildChannel}</ConsoleChip> : null}
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.about.devUpdate.label")}

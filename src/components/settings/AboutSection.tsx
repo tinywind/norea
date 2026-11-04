@@ -44,7 +44,7 @@ export function AboutSection() {
           label={t("settings.about.version.label")}
           description={t("settings.about.version.description")}
         >
-          <ConsoleChip tone="accent">{buildVersion}</ConsoleChip>
+          {buildVersion ? <ConsoleChip tone="accent">{buildVersion}</ConsoleChip> : null}
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.about.officialUpdate.label")}
