@@ -1,5 +1,5 @@
 import { expect, it } from "vitest";
-import { describeError } from "./errors";
+import { describeError, userFacingErrorKey } from "./errors";
 
 it("retains the message from a serialized native worker rejection", () => {
   expect(describeError({
@@ -26,4 +26,16 @@ it("does not throw while describing a circular rejection", () => {
   const error: { cause?: unknown } = {};
   error.cause = error;
   expect(describeError(error)).toBe("[object Object]");
+});
+
+it.each([
+  ["scraper: browser fetch failed: Failed to fetch", "errors.network"],
+  ["TypeError: NetworkError when attempting to fetch resource.", "errors.network"],
+  ["net::ERR_NAME_NOT_RESOLVED", "errors.network"],
+  ["scraper: browser navigation timed out", "errors.timeout"],
+  ["Cloudflare challenge: Just a moment...", "errors.siteAccess"],
+  ["HTTP 403 Forbidden", "errors.siteAccess"],
+  ["Plugin returned an invalid novel", "errors.generic"],
+])("maps %s to a plain message key", (message, key) => {
+  expect(userFacingErrorKey(new Error(message))).toBe(key);
 });

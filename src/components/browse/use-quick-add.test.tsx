@@ -124,10 +124,13 @@ describe("useQuickAddToLibrary", () => {
   });
 
   it("toasts Couldn't add with a Retry that runs the add again", async () => {
-    mocks.enqueue.mockReturnValueOnce({ promise: Promise.reject(new Error("Site down")) });
+    mocks.enqueue.mockReturnValueOnce({
+      promise: Promise.reject(new Error("scraper: browser fetch failed: Failed to fetch")),
+    });
     await act(async () => quickAdd.add(sourceTarget));
     expect(mocks.show.mock.calls[0]![0]).toEqual(expect.objectContaining({ color: "danger", title: "quickAdd.failed" }));
-    expect(messageText(mocks.show.mock.calls[0]![0].message)).toContain("Site down");
+    expect(messageText(mocks.show.mock.calls[0]![0].message)).toContain("errors.network");
+    expect(messageText(mocks.show.mock.calls[0]![0].message)).not.toContain("Failed to fetch");
 
     await act(async () => toastButton(0, "common.retry").props.onClick());
     expect(mocks.enqueue).toHaveBeenCalledTimes(2);

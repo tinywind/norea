@@ -6,7 +6,7 @@ import { getNovelById, setNovelInLibrary } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { isAbortError } from "../../lib/abort";
 import { openServerNovel, type ServerWorkSummary } from "../../lib/content-sync/browse";
-import { describeError } from "../../lib/errors";
+import { userFacingErrorKey } from "../../lib/errors";
 import { saveNovelCoverFromSource } from "../../lib/novel-cover-storage";
 import { enqueueOpenNovelFromSourceTask } from "../../lib/plugins/open-novel-task";
 import type { NovelItem, Plugin } from "../../lib/plugins/types";
@@ -121,7 +121,7 @@ export function useQuickAddToLibrary(): {
             id: toastId,
             message: (
               <Group gap="xs" justify="space-between" wrap="nowrap">
-                <span>{describeError(error)}</span>
+                <span>{t(userFacingErrorKey(error))}</span>
                 <Button
                   onClick={() => {
                     notifications.hide(toastId);
