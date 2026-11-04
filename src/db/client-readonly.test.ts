@@ -18,6 +18,7 @@ vi.mock("react", async original => ({
   useRef: () => ({ current: null }),
 }));
 vi.mock("@tanstack/react-query", () => ({
+  keepPreviousData: <T>(previous: T) => previous,
   useQueryClient: () => ({}),
   useInfiniteQuery: (options: NonNullable<typeof libraryQueries.page>) => {
     libraryQueries.page = options;

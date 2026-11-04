@@ -5,6 +5,7 @@ import { notifyChapterDownloadsSettled } from "../../lib/tasks/chapter-download-
 const harness = vi.hoisted(() => ({
   effects: [] as Array<() => void | (() => void)>,
   client: undefined as QueryClient | undefined,
+  infiniteOptions: [] as Array<{ placeholderData?: unknown }>,
 }));
 vi.mock("react", async (importOriginal) => ({
   ...await importOriginal<typeof import("react")>(),
@@ -17,9 +18,13 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
   ...await importOriginal<typeof import("@tanstack/react-query")>(),
   useQueryClient: () => harness.client,
   useQuery: () => ({}),
-  useInfiniteQuery: () => ({ data: { pages: [] } }),
+  useInfiniteQuery: (options: { placeholderData?: unknown }) => {
+    harness.infiniteOptions.push(options);
+    return { data: { pages: [] } };
+  },
 }));
 
+import { keepPreviousData } from "@tanstack/react-query";
 import { useLibraryQuery } from "./use-library-query";
 
 const cleanups: Array<() => void> = [];
@@ -78,4 +83,10 @@ it.each([
   const invalidate = vi.spyOn(client, "invalidateQueries");
   notifyChapterDownloadsSettled();
   expect(invalidate).not.toHaveBeenCalled();
+});
+
+it("keeps the current grid while a filter change loads, so cards are not remounted", () => {
+  harness.client = new QueryClient();
+  useLibraryQuery(true, { categoryId: 2 }, "nameAsc");
+  expect(harness.infiniteOptions.at(-1)?.placeholderData).toBe(keepPreviousData);
 });

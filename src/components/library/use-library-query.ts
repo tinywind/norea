@@ -1,4 +1,4 @@
-import { useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useInfiniteQuery, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useMemo, useRef } from "react";
 import {
   getLibraryCategoryCounts,
@@ -79,6 +79,8 @@ export function useLibraryQuery(
         sortOrder,
       }, "committed"),
     getNextPageParam: (lastPage) => lastPage.nextCursor,
+    // A filter change keeps the current grid until the new rows arrive, so shared cards stay mounted.
+    placeholderData: keepPreviousData,
     staleTime: Infinity,
   });
   const libraryRowsLoaded = novels.data !== undefined;
