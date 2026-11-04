@@ -26,10 +26,10 @@ import {
   WarningIcon,
 } from "../ui/icons";
 import {
+  countReadChapters,
   findContinueReadingChapter,
   findFirstChapter,
   formatChapterNumber,
-  getNovelReadingPercent,
   hasReadingHistory,
   novelStatusLabel,
   splitGenres,
@@ -100,10 +100,7 @@ export function NovelWorkspace({
     [chapters, lastReadChapterId],
   );
   const hasHistory = hasReadingHistory(chapters, lastReadChapterId);
-  const readPercent = useMemo(
-    () => getNovelReadingPercent(chapters),
-    [chapters],
-  );
+  const readCount = useMemo(() => countReadChapters(chapters), [chapters]);
   const statusLabel = novelStatusLabel(novel.status, t);
   const byline = [
     novel.author,
@@ -124,9 +121,9 @@ export function NovelWorkspace({
           </h1>
           {byline ? <p className="norea-novel-byline">{byline}</p> : null}
           <p className="norea-novel-meta">{meta}</p>
-          {chapters.length > 0 ? (
+          {readCount > 0 ? (
             <p className="norea-novel-meta">
-              {t("novel.percentRead", { progress: readPercent })}
+              {t("novel.chaptersRead", { read: readCount, total: chapters.length })}
             </p>
           ) : null}
           {offlineState && OfflineIcon ? (

@@ -1,5 +1,6 @@
 import { MantineProvider } from "@mantine/core";
 import { load } from "cheerio";
+import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
@@ -8,7 +9,9 @@ import type { ChapterListRow } from "../../db/queries/chapter";
 vi.mock("../../i18n", () => ({
   useTranslation: () => ({
     t: (key: string, values?: Record<string, unknown>) =>
-      values?.number === undefined ? key : `${key}:${values.number}`,
+      values?.read !== undefined
+        ? `${key}:${values.read}/${values.total}`
+        : values?.number === undefined ? key : `${key}:${values.number}`,
   }),
 }));
 vi.mock("../../lib/plugins/manager", () => ({ pluginManager: { getPlugin: () => ({ id: "source-a" }) } }));
@@ -101,4 +104,30 @@ it("names a goal novel's offline state in the header, as its library card does",
   const $ = render({ offlineState: "attention" });
   expect($(".norea-novel-offline").attr("data-goal-state")).toBe("attention");
   expect($(".norea-novel-offline").text()).toBe("novel.offline.attention");
+});
+
+it("counts read chapters instead of averaging progress over every chapter", () => {
+  const unreadOnly = render({ chapters: [{ ...chapter, progress: 40 }], lastReadChapterId: 1 });
+  expect(unreadOnly.text()).not.toContain("novel.chaptersRead");
+
+  const $ = render({
+    chapters: [
+      { ...chapter, unread: false, progress: 100 },
+      { ...chapter, id: 2, position: 2, progress: 30 },
+      { ...chapter, id: 3, position: 3 },
+    ],
+    lastReadChapterId: 2,
+  });
+  expect($.text()).toContain("novel.chaptersRead:1/3");
+  expect($.text()).not.toContain("percentRead");
+});
+
+it("lays the secondary actions out in equal columns under the Continue button", () => {
+  const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
+  const actions = /\.norea-novel-actions \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(actions).toContain("display: grid");
+  expect(actions).toContain("grid-auto-columns: minmax(0, 1fr)");
+  expect(actions).toContain("grid-auto-flow: column");
+  const meta = /\.norea-novel-meta \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(meta).toContain("line-height: var(--norea-leading-normal)");
 });

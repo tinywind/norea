@@ -1376,6 +1376,7 @@
   "serverLibraryAdd.failed": "작품을 서재에 추가하지 못했습니다",
   "serverLibraryAdd.selectionHint": "표지를 눌러 선택하세요. 이미 서재에 있는 작품은 선택할 수 없습니다.",
   "serverLibraryAdd.inLibraryExcluded": "일치하는 작품 중 {count}개는 이미 서재에 있어 선택하지 않았습니다.",
+  "novel.chaptersRead": "{total}화 중 {read}화 읽음",
   "novel.percentRead": "{progress}% 읽음",
   "novel.noSummary": "이 작품의 줄거리가 없습니다.",
   "novel.missingId": "선택한 작품 없음",

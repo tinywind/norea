@@ -271,15 +271,9 @@ export function getChapterReadingProgress(chapter: ChapterListRow): number {
   return Math.max(0, Math.min(100, Math.round(chapter.progress)));
 }
 
-export function getNovelReadingPercent(
-  chapters: readonly ChapterListRow[],
-): number {
-  if (chapters.length === 0) return 0;
-  const total = chapters.reduce(
-    (sum, chapter) => sum + getChapterReadingProgress(chapter),
-    0,
-  );
-  return Math.round(total / chapters.length);
+/** How many of the chapters are marked read. */
+export function countReadChapters(chapters: readonly ChapterListRow[]): number {
+  return chapters.reduce((count, chapter) => (chapter.unread ? count : count + 1), 0);
 }
 
 export function findFirstChapter(

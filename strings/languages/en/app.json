@@ -1376,6 +1376,7 @@
   "serverLibraryAdd.failed": "Couldn't add the works to the library",
   "serverLibraryAdd.selectionHint": "Tap covers to select. Works already in your library can't be selected.",
   "serverLibraryAdd.inLibraryExcluded": "{count} matching works are already in your library and weren't selected.",
+  "novel.chaptersRead": "{read} of {total} chapters read",
   "novel.percentRead": "{progress}% read",
   "novel.noSummary": "No summary for this novel.",
   "novel.missingId": "No novel selected",
