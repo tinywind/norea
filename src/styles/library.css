@@ -772,6 +772,11 @@
     min-height: var(--norea-control-md);
   }
 
+  :where(.norea-library-view-options, .norea-library-category-sheet)
+    :where(.mantine-Checkbox-body, .mantine-Radio-body, .mantine-Switch-body) {
+    align-items: center;
+  }
+
   .norea-library-view-options :where(.mantine-Tabs-tab, .mantine-SegmentedControl-label) {
     align-items: center;
     display: flex;

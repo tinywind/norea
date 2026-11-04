@@ -195,7 +195,6 @@ export function CategoryManager({
 
   return (
     <ResponsiveSheet
-      fullScreenOnPhone
       onClose={onClose}
       opened={opened}
       title={t("library.manageCategories")}
