@@ -44,6 +44,7 @@ import {
   pluginVpnProfileSucceededAt,
   releasePluginVpnRecoveryProfile,
   replacePluginVpnRecoveryProfile,
+  pluginVpnFinderLoadFailure,
   pluginVpnFinderProfileIp,
   preparePluginVpnProfileChange,
   removePluginVpnProfile,
@@ -1024,5 +1025,27 @@ describe("plugin VPN", () => {
     expect(configure.mock.invocationCallOrder[1]).toBeLessThan(
       invokeMock.mock.invocationCallOrder[2],
     );
+  });
+
+  it("classifies VPN Gate list errors into network or server-list advice", () => {
+    for (const detail of [
+      "could not load the VPN Gate server list: VPN Gate server list request timed out.",
+      "could not load the VPN Gate server list: timeout",
+      "could not load the VPN Gate server list: Unable to resolve host \"www.vpngate.net\": No address associated with hostname",
+      "VPN Gate server query timed out",
+      "Internet connection changed; retry the server list",
+      null,
+    ]) {
+      expect(pluginVpnFinderLoadFailure(detail)).toBe("unreachable");
+    }
+    for (const detail of [
+      "could not load the VPN Gate server list: VPN Gate server list returned HTTP 503.",
+      "VPN Gate server list marker is invalid",
+      "VPN Gate server list must be UTF-8 text",
+      "VPN Gate server list exceeds the 8388608-byte limit",
+      "VPN Gate server list contains no usable OpenVPN profiles",
+    ]) {
+      expect(pluginVpnFinderLoadFailure(detail)).toBe("invalidList");
+    }
   });
 });

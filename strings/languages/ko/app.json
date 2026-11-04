@@ -425,6 +425,8 @@
   "settings.data.pluginVpn.finder.loading": "VPN Gate 서버를 불러오는 중...",
   "settings.data.pluginVpn.finder.stopped": "VPN Gate 서버 검색을 중단했습니다.",
   "settings.data.pluginVpn.finder.loadFailed": "VPN Gate 서버를 불러오지 못했습니다.",
+  "settings.data.pluginVpn.finder.loadFailedUnreachable": "VPN Gate에 연결하지 못했거나 응답이 너무 늦습니다. 인터넷 연결을 확인한 뒤 다시 시도하세요.",
+  "settings.data.pluginVpn.finder.loadFailedInvalidList": "VPN Gate에서 사용할 수 있는 서버 목록을 받지 못했습니다. 잠시 후 다시 시도하세요.",
   "settings.data.pluginVpn.finder.retry": "다시 시도",
   "settings.data.pluginVpn.finder.empty": "조건에 맞는 서버가 없습니다.",
   "settings.data.pluginVpn.finder.metadata.country": "국가",

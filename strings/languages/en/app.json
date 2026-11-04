@@ -425,6 +425,8 @@
   "settings.data.pluginVpn.finder.loading": "Loading VPN Gate servers...",
   "settings.data.pluginVpn.finder.stopped": "VPN Gate server search stopped.",
   "settings.data.pluginVpn.finder.loadFailed": "Could not load VPN Gate servers.",
+  "settings.data.pluginVpn.finder.loadFailedUnreachable": "VPN Gate could not be reached or answered too slowly. Check your internet connection and try again.",
+  "settings.data.pluginVpn.finder.loadFailedInvalidList": "VPN Gate did not send a usable server list. Try again later.",
   "settings.data.pluginVpn.finder.retry": "Retry",
   "settings.data.pluginVpn.finder.empty": "No matching servers found.",
   "settings.data.pluginVpn.finder.metadata.country": "Country",

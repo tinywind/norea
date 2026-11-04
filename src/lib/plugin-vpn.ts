@@ -254,6 +254,19 @@ function loadPluginVpnFinderServersOnline(
   });
 }
 
+export type PluginVpnFinderLoadFailure = "invalidList" | "unreachable";
+
+const INVALID_FINDER_LIST_ERROR = /returned HTTP|invalid|UTF-8|exceeds the|no usable/i;
+
+/** Chooses the user-facing advice for a raw VPN Gate server list error. */
+export function pluginVpnFinderLoadFailure(
+  detail: string | null,
+): PluginVpnFinderLoadFailure {
+  return detail !== null && INVALID_FINDER_LIST_ERROR.test(detail)
+    ? "invalidList"
+    : "unreachable";
+}
+
 export async function applyPluginVpnFinderProfile(
   candidateId: string,
 ): Promise<PluginVpnStatus> {

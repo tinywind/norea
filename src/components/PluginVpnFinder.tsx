@@ -19,6 +19,7 @@ import { useTranslation } from "../i18n";
 import { useNetworkStore } from "../lib/network";
 import {
   loadPluginVpnFinderServers,
+  pluginVpnFinderLoadFailure,
   type PluginVpnFinderServer,
   type PluginVpnPhase,
   type PluginVpnServerProtocol,
@@ -164,6 +165,33 @@ export function pluginVpnFinderErrorMessage(error: unknown): string | null {
   if (typeof error === "string" && error.trim()) return error;
   if (error instanceof Error && error.message.trim()) return error.message;
   return null;
+}
+
+export function PluginVpnFinderLoadFailureNotice({
+  detail,
+}: {
+  detail: string | null;
+}) {
+  const { t } = useTranslation();
+  const advice =
+    pluginVpnFinderLoadFailure(detail) === "invalidList"
+      ? t("settings.data.pluginVpn.finder.loadFailedInvalidList")
+      : t("settings.data.pluginVpn.finder.loadFailedUnreachable");
+  return (
+    <>
+      <Text role="alert" size="sm">
+        {t("settings.data.pluginVpn.finder.loadFailed")} {advice}
+      </Text>
+      {detail ? (
+        <details className="norea-state-details">
+          <summary>{t("common.details")}</summary>
+          <Text c="dimmed" component="div" size="xs">
+            {detail}
+          </Text>
+        </details>
+      ) : null}
+    </>
+  );
 }
 
 export function PluginVpnFinder({
@@ -483,10 +511,9 @@ export function PluginVpnFinder({
         </Group>
 
         {serversQuery.isError && serversQuery.data !== undefined ? (
-          <Text className="norea-plugin-vpn-finder-state" role="alert" size="sm">
-            {t("settings.data.pluginVpn.finder.loadFailed")}
-            {loadErrorMessage ? ` ${loadErrorMessage}` : ""}
-          </Text>
+          <Stack className="norea-plugin-vpn-finder-state" gap="xs">
+            <PluginVpnFinderLoadFailureNotice detail={loadErrorMessage} />
+          </Stack>
         ) : null}
         {!online && servers.length === 0 ? (
           <Text className="norea-plugin-vpn-finder-state" role="status" size="sm">
@@ -514,14 +541,7 @@ export function PluginVpnFinder({
           </Group>
         ) : serversQuery.isError && serversQuery.data === undefined ? (
           <Stack className="norea-plugin-vpn-finder-state" gap="xs">
-            <Text role="alert" size="sm">
-              {t("settings.data.pluginVpn.finder.loadFailed")}
-            </Text>
-            {loadErrorMessage ? (
-              <Text c="dimmed" size="xs">
-                {loadErrorMessage}
-              </Text>
-            ) : null}
+            <PluginVpnFinderLoadFailureNotice detail={loadErrorMessage} />
             <TextButton
               onClick={refreshCatalog}
               size="sm"
