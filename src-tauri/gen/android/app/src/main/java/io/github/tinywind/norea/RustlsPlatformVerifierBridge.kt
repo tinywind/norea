@@ -59,10 +59,12 @@ object RustlsPlatformVerifierBridge {
     requestId: Long,
     url: String,
     connectTimeoutMs: Int,
+    readTimeoutMs: Int,
     requestTimeoutMs: Int,
     maxBytes: Int,
   ): ByteArray {
     require(connectTimeoutMs > 0) { "HTTPS connect timeout must be positive." }
+    require(readTimeoutMs > 0) { "HTTPS read timeout must be positive." }
     require(requestTimeoutMs > 0) { "HTTPS request timeout must be positive." }
     require(maxBytes > 0) { "HTTPS response limit must be positive." }
 
@@ -81,9 +83,12 @@ object RustlsPlatformVerifierBridge {
       connection.requestMethod = "GET"
       connection.instanceFollowRedirects = false
       connection.connectTimeout = connectTimeoutMs
-      connection.readTimeout = requestTimeoutMs
+      connection.readTimeout = readTimeoutMs
       connection.useCaches = false
       connection.setRequestProperty("User-Agent", "Norea")
+      // A pooled keep-alive socket can be silently dead after a network change and would
+      // stall until the read timeout, so every server list request opens a fresh connection.
+      connection.setRequestProperty("Connection", "close")
 
       request.checkActive()
       val status = connection.responseCode

@@ -72,6 +72,7 @@ pub(crate) fn https_get(
     url: &str,
     connect_timeout_ms: i32,
     read_timeout_ms: i32,
+    request_timeout_ms: i32,
     max_bytes: i32,
 ) -> Result<Vec<u8>, String> {
     let bridge = ANDROID_TLS_BRIDGE
@@ -85,12 +86,13 @@ pub(crate) fn https_get(
                 .call_static_method(
                     &bridge.class,
                     jni_str!("httpsGet"),
-                    jni_sig!("(JLjava/lang/String;III)[B"),
+                    jni_sig!("(JLjava/lang/String;IIII)[B"),
                     &[
                         JValue::Long(request_id),
                         JValue::from(&url),
                         JValue::Int(connect_timeout_ms),
                         JValue::Int(read_timeout_ms),
+                        JValue::Int(request_timeout_ms),
                         JValue::Int(max_bytes),
                     ],
                 )?

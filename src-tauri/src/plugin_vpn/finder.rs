@@ -23,8 +23,18 @@ const VPN_GATE_MARKER: &str = "*vpn_servers";
 const VPN_GATE_HEADER: &str = "#HostName,IP,Score,Ping,Speed,CountryLong,CountryShort,NumVpnSessions,Uptime,TotalUsers,TotalTraffic,LogType,Operator,Message,OpenVPN_ConfigData_Base64";
 const VPN_GATE_FOOTER: &str = "*";
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(30);
-const FINDER_QUERY_TIMEOUT: Duration = Duration::from_secs(35);
+// WinHTTP bounds each receive by the remaining request deadline instead of an idle timeout.
+#[cfg(not(target_os = "windows"))]
+const READ_TIMEOUT: Duration = Duration::from_secs(20);
+const REQUEST_TIMEOUT: Duration = Duration::from_secs(40);
+const FETCH_ATTEMPTS: u32 = 2;
+const FETCH_RETRY_DELAY: Duration = Duration::from_secs(1);
+// The query deadline must leave room for every fetch attempt and the delays between them.
+const FINDER_QUERY_TIMEOUT: Duration = Duration::from_secs(
+    REQUEST_TIMEOUT.as_secs() * FETCH_ATTEMPTS as u64
+        + FETCH_RETRY_DELAY.as_secs() * (FETCH_ATTEMPTS as u64 - 1)
+        + 5,
+);
 const FINDER_QUERY_CANCELLED_ERROR: &str = "VPN Gate server query was cancelled";
 const FINDER_QUERY_TIMEOUT_ERROR: &str = "VPN Gate server query timed out";
 const MAX_PENDING_QUERY_CANCELLATIONS: usize = 64;
@@ -103,6 +113,7 @@ impl VpnGateFinder {
             .https_only(true)
             .redirect(reqwest::redirect::Policy::none())
             .connect_timeout(CONNECT_TIMEOUT)
+            .read_timeout(READ_TIMEOUT)
             .timeout(REQUEST_TIMEOUT)
             .build()
             .map_err(|error| format!("could not create the VPN Gate client: {error}"))?;
@@ -205,7 +216,8 @@ impl VpnGateFinder {
             return Ok(servers);
         }
 
-        let response = self.fetch_response().await?;
+        let response =
+            fetch_with_retry(|| self.fetch_response(), FETCH_ATTEMPTS, FETCH_RETRY_DELAY).await?;
         let candidates = parse_usable_api_candidates(&response)?;
         let servers = candidates
             .iter()
@@ -292,6 +304,7 @@ impl VpnGateFinder {
                 request_id,
                 VPN_GATE_API_URL,
                 CONNECT_TIMEOUT.as_millis() as i32,
+                READ_TIMEOUT.as_millis() as i32,
                 REQUEST_TIMEOUT.as_millis() as i32,
                 MAX_RESPONSE_BYTES as i32,
             )
@@ -354,6 +367,36 @@ impl VpnGateFinder {
         }
         Ok(bytes)
     }
+}
+
+async fn fetch_with_retry<F, Fut>(
+    mut fetch: F,
+    attempts: u32,
+    retry_delay: Duration,
+) -> Result<Vec<u8>, String>
+where
+    F: FnMut() -> Fut,
+    Fut: Future<Output = Result<Vec<u8>, String>>,
+{
+    let mut attempt = 1;
+    loop {
+        match fetch().await {
+            Err(error) if attempt < attempts && is_transient_fetch_error(&error) => {
+                log::warn!("VPN Gate server list attempt {attempt} failed; retrying: {error}");
+                attempt += 1;
+                tokio::time::sleep(retry_delay).await;
+            }
+            result => return result,
+        }
+    }
+}
+
+/// Transport failures such as timeouts, resets and DNS errors may succeed on a fresh connection;
+/// HTTP status, size-limit and cancellation outcomes will not.
+fn is_transient_fetch_error(error: &str) -> bool {
+    !["returned HTTP", "-byte limit", "was cancelled", "must use HTTPS"]
+        .iter()
+        .any(|permanent| error.contains(permanent))
 }
 
 async fn await_finder_query<T>(
@@ -932,6 +975,73 @@ mod tests {
         drop(cancellation);
 
         assert_eq!(result.unwrap_err(), FINDER_QUERY_TIMEOUT_ERROR);
+    }
+
+    fn counted_fetch(
+        calls: &std::cell::Cell<u32>,
+        results: &[Result<&'static str, &'static str>],
+    ) -> impl Future<Output = Result<Vec<u8>, String>> {
+        let index = calls.get() as usize;
+        calls.set(calls.get() + 1);
+        let result = results[index]
+            .map(|body| body.as_bytes().to_vec())
+            .map_err(str::to_string);
+        std::future::ready(result)
+    }
+
+    #[tokio::test]
+    async fn retries_a_timed_out_fetch_on_a_fresh_attempt() {
+        let calls = std::cell::Cell::new(0);
+        let results = [Err("VPN Gate server list request timed out."), Ok("servers")];
+
+        let response = fetch_with_retry(|| counted_fetch(&calls, &results), 2, Duration::ZERO)
+            .await
+            .expect("second attempt succeeds");
+
+        assert_eq!(response, b"servers");
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn returns_the_last_transport_error_after_every_attempt_fails() {
+        let calls = std::cell::Cell::new(0);
+        let results = [Err("timeout"), Err("Unable to resolve host \"www.vpngate.net\"")];
+
+        let error = fetch_with_retry(|| counted_fetch(&calls, &results), 2, Duration::ZERO)
+            .await
+            .unwrap_err();
+
+        assert_eq!(error, "Unable to resolve host \"www.vpngate.net\"");
+        assert_eq!(calls.get(), 2);
+    }
+
+    #[tokio::test]
+    async fn does_not_retry_http_status_size_or_cancellation_failures() {
+        for permanent in [
+            "VPN Gate server list returned HTTP 503.",
+            "VPN Gate server list exceeds the 8388608-byte limit.",
+            "VPN Gate server query was cancelled.",
+        ] {
+            let calls = std::cell::Cell::new(0);
+            let results = [Err(permanent), Ok("servers")];
+
+            let error = fetch_with_retry(|| counted_fetch(&calls, &results), 2, Duration::ZERO)
+                .await
+                .unwrap_err();
+
+            assert_eq!(error, permanent);
+            assert_eq!(calls.get(), 1, "{permanent} was retried");
+        }
+    }
+
+    #[test]
+    fn query_deadline_covers_every_fetch_attempt() {
+        #[cfg(not(target_os = "windows"))]
+        assert!(CONNECT_TIMEOUT < READ_TIMEOUT && READ_TIMEOUT < REQUEST_TIMEOUT);
+        assert!(
+            FINDER_QUERY_TIMEOUT
+                > REQUEST_TIMEOUT * FETCH_ATTEMPTS + FETCH_RETRY_DELAY * (FETCH_ATTEMPTS - 1)
+        );
     }
 
     #[test]
