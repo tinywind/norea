@@ -18,6 +18,12 @@ import { OverflowMenu } from "../ui/OverflowMenu";
 export const FINISHED_PROGRESS = 100;
 const SKELETON_ROWS = 6;
 
+/** The number the row shows, or null when the source stored 0, which plugins use for an unknown number. */
+function shownChapterNumber(entry: Pick<RecentlyReadEntry, "chapterNumber" | "position">): string | null {
+  const number = formatChapterNumber(entry);
+  return Number(number) === 0 ? null : number;
+}
+
 function HistoryCover({ entry }: { entry: RecentlyReadEntry }) {
   const plugin =
     entry.novelIsLocal || entry.novelInLibrary
@@ -74,6 +80,12 @@ export function HistoryRow({
     queryFn: () => getAdjacentChapter(entry.novelId, entry.position, 1),
   });
   const readAt = formatRelativeTimeForLocale(locale, entry.readAt);
+  const chapterNumber = shownChapterNumber(entry);
+  const meta = [
+    chapterNumber ? t("history.chapterNumber", { number: chapterNumber }) : entry.chapterName,
+    finished ? t("common.finished") : progress > 0 ? `${progress}%` : null,
+    readAt,
+  ].filter(Boolean).join(" · ");
 
   return (
     <div className="norea-history-row" data-removing={removing ? "true" : undefined}>
@@ -86,9 +98,7 @@ export function HistoryRow({
             <span className="norea-history-row-meta">
               {finished && nextChapter.data
                 ? `${t("history.nextChapter", { number: formatChapterNumber(nextChapter.data) })} · ${readAt}`
-                : `${t("history.chapterNumber", { number: formatChapterNumber(entry) })} · ${
-                    finished ? t("common.finished") : `${progress}%`
-                  } · ${readAt}`}
+                : meta}
             </span>
             <span aria-hidden="true" className="norea-history-progress">
               <span

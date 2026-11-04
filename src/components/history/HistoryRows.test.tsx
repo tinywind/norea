@@ -86,7 +86,14 @@ describe("HistoryRow", () => {
   });
 
   it("names the chapter by its number, not its list position", () => {
-    expect(render({ entry: { ...entry, chapterNumber: "0", position: 1 } }).text()).toContain("Ch. 0 · 45% · 3h ago");
+    expect(render({ entry: { ...entry, chapterNumber: "7", position: 1 } }).text()).toContain("Ch. 7 · 45% · 3h ago");
+  });
+
+  it("names a chapter without a known number by its title and leaves out an unstarted 0%", () => {
+    const unstarted = render({ entry: { ...entry, chapterName: "Prologue", chapterNumber: "0", position: 1, progress: 0 } });
+    expect(unstarted.text()).toContain("Prologue · 3h ago");
+    expect(unstarted.text()).not.toContain("Ch. 0");
+    expect(unstarted.text()).not.toContain("0%");
   });
 
   it("replaces the row actions with a status while the novel is being removed", () => {
