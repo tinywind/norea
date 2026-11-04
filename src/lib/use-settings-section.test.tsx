@@ -5,14 +5,21 @@ import {
   normalizeSettingsSection,
   SETTINGS_SECTION_IDS,
   useSettingsSection,
-  type SettingsSectionId,
 } from "./use-settings-section";
 
-const router = vi.hoisted(() => ({ navigate: vi.fn() }));
-vi.mock("@tanstack/react-router", () => ({ useNavigate: () => router.navigate }));
+const router = vi.hoisted(() => ({
+  goBackInAppHistory: vi.fn((_href: string) => false),
+  href: "/settings?section=about",
+  navigate: vi.fn(),
+}));
+vi.mock("@tanstack/react-router", () => ({
+  useNavigate: () => router.navigate,
+  useRouter: () => ({ state: { location: { href: router.href } } }),
+}));
+vi.mock("./navigation-history", () => ({ goBackInAppHistory: router.goBackInAppHistory }));
 
 let root: Root | undefined;
-let current: readonly [SettingsSectionId | null, (id: SettingsSectionId | null) => void];
+let current: ReturnType<typeof useSettingsSection>;
 
 function mount() {
   const document = {
@@ -30,19 +37,20 @@ function mount() {
   root = createRoot(container as unknown as Element);
 }
 
-function Probe({ section }: { section?: string }) {
-  current = useSettingsSection(section);
+function Probe({ section, stacked }: { section?: string; stacked: boolean }) {
+  current = useSettingsSection(section, stacked);
   return null;
 }
 
-async function render(section?: string) {
-  await act(async () => root!.render(<Probe section={section} />));
+async function render(section?: string, stacked = false) {
+  await act(async () => root!.render(<Probe section={section} stacked={stacked} />));
 }
 
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = undefined;
   vi.clearAllMocks();
+  router.goBackInAppHistory.mockReturnValue(false);
   vi.unstubAllGlobals();
 });
 
@@ -60,6 +68,20 @@ it("writes a selected section to the route so reopening the reader section appli
   expect(current[0]).toBe("reader");
 });
 
+it("adds a history entry for a stacked section and goes back to where it was opened from", async () => {
+  mount();
+  await render(undefined, true);
+  current[1]("about");
+  expect(router.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: "about" }, replace: false });
+
+  router.navigate.mockClear();
+  router.goBackInAppHistory.mockReturnValue(true);
+  await render("about", true);
+  current[2]();
+  expect(router.goBackInAppHistory).toHaveBeenCalledWith("/settings?section=about");
+  expect(router.navigate).not.toHaveBeenCalled();
+});
+
 it("opens the section index for missing or unknown sections", async () => {
   mount();
   await render(undefined);
@@ -69,7 +91,7 @@ it("opens the section index for missing or unknown sections", async () => {
   await render("Reader");
   expect(current[0]).toBe("reader");
 
-  current[1](null);
+  current[2]();
   expect(router.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: undefined }, replace: true });
 });
 

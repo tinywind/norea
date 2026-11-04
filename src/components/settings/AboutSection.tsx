@@ -11,6 +11,8 @@ import { describeError } from "../../lib/errors";
 import { useTranslation } from "../../i18n";
 import { showSettingsToast } from "./settings-toast";
 import {
+  buildIdentityLabel,
+  buildVersionLabel,
   canInstallUpdate,
   updateStatusLabel,
   useAppUpdates,
@@ -21,9 +23,8 @@ const LATEST_RELEASE_URL = "https://github.com/tinywind/norea/releases/latest";
 export function AboutSection() {
   const { t } = useTranslation();
   const updates = useAppUpdates("official");
-  const buildVersion = updates.buildInfo?.buildVersion
-    ? `v${updates.buildInfo.buildVersion}`
-    : "";
+  const buildInfo = updates.buildInfo;
+  const buildIdentity = buildInfo ? buildIdentityLabel(t, buildInfo) : null;
 
   function openLatestRelease(): void {
     void openUrl(LATEST_RELEASE_URL).catch((error: unknown) => {
@@ -44,7 +45,12 @@ export function AboutSection() {
           label={t("settings.about.version.label")}
           description={t("settings.about.version.description")}
         >
-          {buildVersion ? <ConsoleChip tone="accent">{buildVersion}</ConsoleChip> : null}
+          {buildInfo ? (
+            <SettingsInlineControls>
+              <ConsoleChip tone="accent">{buildVersionLabel(buildInfo)}</ConsoleChip>
+              {buildIdentity ? <ConsoleChip>{buildIdentity}</ConsoleChip> : null}
+            </SettingsInlineControls>
+          ) : null}
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.about.officialUpdate.label")}

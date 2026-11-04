@@ -1,5 +1,6 @@
 import { useCallback } from "react";
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
+import { goBackInAppHistory } from "./navigation-history";
 
 /** Settings sections in display order. */
 export const SETTINGS_SECTION_IDS = [
@@ -41,21 +42,40 @@ export function normalizeSettingsSection(
 /**
  * Reads the active settings section from the route search and writes
  * selections back to it, so a later navigation to any section always applies.
- * Selecting null returns to the section index.
+ *
+ * With `stacked`, as on phones where a section replaces the index, opening a
+ * section adds a history entry and closing it goes back to the page it was
+ * opened from: the index, or another page such as More. A section with no
+ * earlier in-app entry closes to the index. Without `stacked`, selections
+ * replace the current entry so switching sections does not grow history.
  */
 export function useSettingsSection(
   section: string | undefined,
-): readonly [SettingsSectionId | null, (id: SettingsSectionId | null) => void] {
+  stacked: boolean,
+): readonly [
+  SettingsSectionId | null,
+  (id: SettingsSectionId) => void,
+  () => void,
+] {
   const navigate = useNavigate();
+  const router = useRouter();
   const selectSection = useCallback(
-    (id: SettingsSectionId | null) => {
+    (id: SettingsSectionId) => {
       void navigate({
         to: "/settings",
-        search: { section: id ?? undefined },
-        replace: true,
+        search: { section: id },
+        replace: !stacked,
       });
     },
-    [navigate],
+    [navigate, stacked],
   );
-  return [normalizeSettingsSection(section), selectSection] as const;
+  const closeSection = useCallback(() => {
+    if (goBackInAppHistory(router.state.location.href)) return;
+    void navigate({
+      to: "/settings",
+      search: { section: undefined },
+      replace: true,
+    });
+  }, [navigate, router]);
+  return [normalizeSettingsSection(section), selectSection, closeSection] as const;
 }

@@ -44,6 +44,7 @@ const invokeMock = vi.mocked(invoke);
 const appFetchMock = vi.mocked(appFetch);
 
 const ANDROID_BUILD_INFO: BuildInfo = {
+  appVersion: "0.1.0",
   buildChannel: null,
   buildTime: null,
   buildVersion: "0.1.0",
@@ -57,6 +58,7 @@ const ANDROID_BUILD_INFO: BuildInfo = {
 };
 
 const WINDOWS_BUILD_INFO: BuildInfo = {
+  appVersion: "1.0.0",
   buildChannel: "dev",
   buildTime: "2026-05-01T00:00:00Z",
   buildVersion: "1.0.0",

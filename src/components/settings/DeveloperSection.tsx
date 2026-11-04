@@ -140,7 +140,11 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
           label={t("settings.about.buildChannel.label")}
           description={t("settings.about.buildChannel.description")}
         >
-          {updates.buildInfo?.buildChannel ? <ConsoleChip>{updates.buildInfo.buildChannel}</ConsoleChip> : null}
+          {updates.buildInfo ? (
+            <ConsoleChip>
+              {updates.buildInfo.buildChannel ?? t("settings.about.version.localBuild")}
+            </ConsoleChip>
+          ) : null}
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.about.devUpdate.label")}
@@ -245,7 +249,7 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
               />
               <SettingsInlineControls>
                 <TextButton
-                  tone="accent"
+                  variant="filled"
                   onClick={() => {
                     setUserAgent(userAgentInput);
                     showSettingsToast(

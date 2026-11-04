@@ -47,6 +47,7 @@ impl UpdateZipLimits {
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuildInfo {
+    app_version: String,
     build_channel: Option<&'static str>,
     build_time: Option<&'static str>,
     build_version: Option<&'static str>,
@@ -69,12 +70,14 @@ pub struct UpdateInstallMetadata {
 }
 
 #[tauri::command]
-pub fn get_build_info() -> BuildInfo {
+pub fn get_build_info(app: AppHandle) -> BuildInfo {
     BuildInfo {
+        app_version: app.package_info().version.to_string(),
         build_channel: empty_to_none(option_env!("NOREA_BUILD_CHANNEL")),
         build_time: empty_to_none(option_env!("NOREA_BUILD_TIME")),
         build_version: empty_to_none(option_env!("NOREA_BUILD_VERSION")),
-        git_sha: empty_to_none(option_env!("NOREA_GIT_SHA")),
+        git_sha: empty_to_none(option_env!("NOREA_GIT_SHA"))
+            .or_else(|| empty_to_none(option_env!("NOREA_LOCAL_GIT_SHA"))),
         github_run_attempt: empty_to_none(option_env!("NOREA_GITHUB_RUN_ATTEMPT")),
         github_run_id: empty_to_none(option_env!("NOREA_GITHUB_RUN_ID")),
         platform: current_platform(),

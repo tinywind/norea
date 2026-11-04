@@ -55,6 +55,22 @@ function updateStatusMessage(t: Translate, candidate: UpdateCandidate): string {
   }
 }
 
+/** The version this build reports: the CI release version, else the app version. */
+export function buildVersionLabel(buildInfo: BuildInfo): string {
+  return `v${buildInfo.buildVersion ?? buildInfo.appVersion}`;
+}
+
+/** Channel and short commit for builds that are not official releases, or null for releases. */
+export function buildIdentityLabel(t: Translate, buildInfo: BuildInfo): string | null {
+  if (buildInfo.buildChannel === "release") return null;
+  const channel = buildInfo.buildChannel === null
+    ? t("settings.about.version.localBuild")
+    : buildInfo.buildChannel === "dev"
+      ? t("settings.about.version.devBuild")
+      : buildInfo.buildChannel;
+  return buildInfo.gitSha ? `${channel} · ${buildInfo.gitSha.slice(0, 7)}` : channel;
+}
+
 export function canInstallUpdate(candidate: UpdateCandidate | null): boolean {
   return Boolean(candidate?.integrity && candidate.status !== "current");
 }

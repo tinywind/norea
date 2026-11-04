@@ -33,9 +33,13 @@ type UpdateManifestChannel = "stable" | "dev";
 export type UpdateStatus = "newer" | "current" | "unknown";
 
 export interface BuildInfo {
+  /** The installed app version from the Tauri config, present in every build. */
+  appVersion: string;
   buildChannel: string | null;
   buildTime: string | null;
+  /** The release version CI stamps on tagged builds; update checks compare it. */
   buildVersion: string | null;
+  /** The CI commit, or the checked-out commit of a local build. */
   gitSha: string | null;
   githubRunAttempt: string | null;
   githubRunId: string | null;

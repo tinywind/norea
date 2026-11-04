@@ -1,3 +1,4 @@
+import type { HistoryState } from "@tanstack/react-router";
 import { isRecord } from "./type-guards";
 
 export interface AppNavigationEntry {
@@ -182,4 +183,33 @@ export function trimAppNavigationHistoryTo(
   const targetIndex = lastTargetEntryIndex(entries, target);
   if (targetIndex < 0) return;
   writeEntries(entries.slice(0, targetIndex + 1));
+}
+
+/**
+ * Goes back to the previous in-app history entry outside `ignoredPathnames`.
+ * Returns false when the app has no such entry, such as after a cold start.
+ */
+export function goBackInAppHistory(
+  currentHref: string,
+  ignoredPathnames: readonly string[] = [],
+): boolean {
+  const target = findPreviousAppHistoryEntry(currentHref, ignoredPathnames);
+  if (!target) return false;
+  trimAppNavigationHistoryTo(target);
+  window.history.go(-target.steps);
+  return true;
+}
+
+const OPENED_FROM_MORE_KEY = "noreaOpenedFromMore";
+
+/**
+ * History state for a page opened from More, so the primary nav keeps More
+ * current. The router types history state without app keys, hence the cast.
+ */
+export const OPENED_FROM_MORE_STATE = {
+  [OPENED_FROM_MORE_KEY]: true,
+} as HistoryState;
+
+export function isOpenedFromMore(state: unknown): boolean {
+  return isRecord(state) && state[OPENED_FROM_MORE_KEY] === true;
 }
