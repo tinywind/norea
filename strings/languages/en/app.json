@@ -911,6 +911,8 @@
   "library.selection.download": "Download",
   "library.downloadGoal.title": "Download goal for {count} novels",
   "library.downloadGoal.done": "Download goal set for {count} novels",
+  "library.downloadGoal.doneSkippedLocal": "Download goal set for {count} novels. Skipped {skipped} local novels, which have no download goal.",
+  "library.downloadGoal.noneApplied": "No download goal set. Skipped {skipped} local novels, which have no download goal.",
   "library.selection.categories": "Categories",
   "library.loading": "Loading library...",
   "library.loadError.title": "Couldn't load your library",

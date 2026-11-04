@@ -5,9 +5,10 @@ interface Mutation {
   mutationFn: (input: string) => Promise<number>;
   onSettled?: () => void;
 }
+interface GoalOutcome { applied: number; skippedLocal: number }
 interface GoalMutation {
-  mutationFn: (input: { goal: NovelDownloadGoal | null; novelIds: number[] }) => Promise<number>;
-  onSuccess: (count: number) => void;
+  mutationFn: (input: { goal: NovelDownloadGoal | null; novelIds: number[] }) => Promise<GoalOutcome>;
+  onSuccess: (outcome: GoalOutcome) => void;
   onSettled: () => void;
 }
 const mocks = vi.hoisted(() => ({
@@ -19,6 +20,7 @@ const mocks = vi.hoisted(() => ({
   listIds: vi.fn(),
   getNovel: vi.fn(),
   setGoal: vi.fn(async () => undefined),
+  t: vi.fn((key: string) => key),
   invalidate: vi.fn(async () => undefined),
   addCategory: vi.fn(async () => undefined),
   removeCategory: vi.fn(async () => undefined),
@@ -40,7 +42,7 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 vi.mock("../../lib/android-back-navigation", () => ({ useOverlayBackNavigation: vi.fn() }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: vi.fn() } }));
-vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: mocks.t }) }));
 vi.mock("../../db/queries/category", () => ({ addNovelsToCategory: mocks.addCategory, removeNovelsFromCategory: mocks.removeCategory }));
 vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel, listLibraryNovelIds: mocks.listIds, setNovelInLibrary: vi.fn() }));
 vi.mock("../../lib/download-goals/goal-service", () => ({ setDownloadGoal: mocks.setGoal }));
@@ -63,7 +65,7 @@ it("sets the chosen download goal for every selected source novel and leaves loc
   mocks.getNovel.mockImplementation(async (id: number) => (id === 9 ? null : { id, isLocal: id === 3 }));
   useLibrarySelection({}, "nameAsc");
   const mutation = mocks.mutations[1] as unknown as GoalMutation;
-  await expect(mutation.mutationFn({ goal: { kind: "entire" }, novelIds: [1, 2, 3, 9] })).resolves.toBe(2);
+  await expect(mutation.mutationFn({ goal: { kind: "entire" }, novelIds: [1, 2, 3, 9] })).resolves.toEqual({ applied: 2, skippedLocal: 1 });
   expect(mocks.setGoal.mock.calls).toEqual([[1, { kind: "entire" }], [2, { kind: "entire" }]]);
 
   await mutation.mutationFn({ goal: null, novelIds: [4] });
@@ -76,10 +78,27 @@ it("sets the chosen download goal for every selected source novel and leaves loc
 it("confirms the goal and leaves selection mode", () => {
   useLibrarySelection({}, "nameAsc");
   const mutation = mocks.mutations[1] as unknown as GoalMutation;
-  mutation.onSuccess(2);
+  mutation.onSuccess({ applied: 2, skippedLocal: 0 });
   expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith(expect.objectContaining({ message: "library.downloadGoal.done" }));
   expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
   expect(mocks.setSelecting).toHaveBeenLastCalledWith(false);
+});
+
+it("says how many local works the goal skipped", () => {
+  useLibrarySelection({}, "nameAsc");
+  const mutation = mocks.mutations[1] as unknown as GoalMutation;
+  mutation.onSuccess({ applied: 2, skippedLocal: 3 });
+  expect(mocks.t).toHaveBeenCalledWith("library.downloadGoal.doneSkippedLocal", { count: 2, skipped: 3 });
+  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "ok", message: "library.downloadGoal.doneSkippedLocal" });
+});
+
+it("explains that nothing changed when only local works were selected", () => {
+  useLibrarySelection({}, "nameAsc");
+  const mutation = mocks.mutations[1] as unknown as GoalMutation;
+  mutation.onSuccess({ applied: 0, skippedLocal: 2 });
+  expect(mocks.t).toHaveBeenCalledWith("library.downloadGoal.noneApplied", { skipped: 2 });
+  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "warn", message: "library.downloadGoal.noneApplied" });
+  expect(mocks.t).not.toHaveBeenCalledWith("library.downloadGoal.done", expect.anything());
 });
 
 it("applies category additions and removals without removing novels from the library", async () => {

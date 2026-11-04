@@ -911,6 +911,8 @@
   "library.selection.download": "다운로드",
   "library.downloadGoal.title": "작품 {count}개의 다운로드 목표",
   "library.downloadGoal.done": "작품 {count}개의 다운로드 목표를 정했습니다",
+  "library.downloadGoal.doneSkippedLocal": "작품 {count}개의 다운로드 목표를 정했습니다. 다운로드 목표가 없는 로컬 작품 {skipped}개는 건너뛰었습니다.",
+  "library.downloadGoal.noneApplied": "다운로드 목표를 정하지 않았습니다. 다운로드 목표가 없는 로컬 작품 {skipped}개는 건너뛰었습니다.",
   "library.selection.categories": "카테고리",
   "library.loading": "서재 불러오는 중...",
   "library.loadError.title": "서재를 불러오지 못했습니다",

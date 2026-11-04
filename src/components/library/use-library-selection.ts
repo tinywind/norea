@@ -88,18 +88,30 @@ export function useLibrarySelection(
 
   const setDownloadGoalMutation = useMutation({
     mutationFn: async ({ goal, novelIds }: SetDownloadGoalInput) => {
-      let count = 0;
+      let applied = 0;
+      let skippedLocal = 0;
       for (const novelId of novelIds) {
         const novel = await getNovelById(novelId);
-        if (!novel || novel.isLocal) continue;
+        if (!novel) continue;
+        if (novel.isLocal) {
+          skippedLocal += 1;
+          continue;
+        }
         await setDownloadGoal(novelId, goal);
-        count += 1;
+        applied += 1;
       }
-      return count;
+      return { applied, skippedLocal };
     },
-    onSuccess: (count) => {
+    onSuccess: ({ applied, skippedLocal }) => {
       exitSelection();
-      notifications.show({ color: "ok", message: t("library.downloadGoal.done", { count }) });
+      notifications.show(applied === 0
+        ? { color: "warn", message: t("library.downloadGoal.noneApplied", { skipped: skippedLocal }) }
+        : {
+            color: "ok",
+            message: skippedLocal > 0
+              ? t("library.downloadGoal.doneSkippedLocal", { count: applied, skipped: skippedLocal })
+              : t("library.downloadGoal.done", { count: applied }),
+          });
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: DOWNLOAD_GOALS_QUERY_KEY });
