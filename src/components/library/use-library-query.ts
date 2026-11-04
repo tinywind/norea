@@ -17,6 +17,7 @@ import { subscribeChapterDownloadsSettled } from "../../lib/tasks/chapter-downlo
 import { type LibrarySortOrder } from "../../store/library";
 const LIBRARY_PAGE_SIZE = Math.min(100, MAX_ROUTE_QUERY_ROWS);
 const LIBRARY_LOAD_MORE_THRESHOLD_PX = 640;
+export const DOWNLOAD_SETTLED_REFRESH_INTERVAL_MS = 1000;
 const EMPTY_LIBRARY_SUMMARY: LibraryNovelSummary = {
   completeNovels: 0,
   downloadedChapters: 0,
@@ -47,8 +48,26 @@ export function useLibraryQuery(
       void queryClient.invalidateQueries({ queryKey: ["novel", "library", "summary"] });
       void queryClient.invalidateQueries({ queryKey: ["novel", "library", { repairNeededOnly: true }] });
     };
+    let lastSettledRefreshAt = Number.NEGATIVE_INFINITY;
+    let settledRefreshTimer: ReturnType<typeof setTimeout> | undefined;
+    const refreshSettled = () => {
+      settledRefreshTimer = undefined;
+      lastSettledRefreshAt = performance.now();
+      refresh();
+    };
+    // Every finished chapter settles, so a batch refreshes these queries at most once a second.
+    const scheduleSettledRefresh = () => {
+      if (settledRefreshTimer !== undefined) return;
+      const waitMs = lastSettledRefreshAt + DOWNLOAD_SETTLED_REFRESH_INTERVAL_MS - performance.now();
+      if (waitMs <= 0) refreshSettled();
+      else settledRefreshTimer = setTimeout(refreshSettled, waitMs);
+    };
     refresh();
-    return subscribeChapterDownloadsSettled(refresh);
+    const unsubscribe = subscribeChapterDownloadsSettled(scheduleSettledRefresh);
+    return () => {
+      unsubscribe();
+      if (settledRefreshTimer !== undefined) clearTimeout(settledRefreshTimer);
+    };
   }, [active, queryClient]);
   const librarySourceFilter = useMemo(
     () => ({

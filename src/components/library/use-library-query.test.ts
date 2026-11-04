@@ -25,7 +25,7 @@ vi.mock("@tanstack/react-query", async (importOriginal) => ({
 }));
 
 import { keepPreviousData } from "@tanstack/react-query";
-import { useLibraryQuery } from "./use-library-query";
+import { DOWNLOAD_SETTLED_REFRESH_INTERVAL_MS, useLibraryQuery } from "./use-library-query";
 
 const cleanups: Array<() => void> = [];
 afterEach(() => {
@@ -89,4 +89,39 @@ it("keeps the current grid while a filter change loads, so cards are not remount
   harness.client = new QueryClient();
   useLibraryQuery(true, { categoryId: 2 }, "nameAsc");
   expect(harness.infiniteOptions.at(-1)?.placeholderData).toBe(keepPreviousData);
+});
+
+it("refreshes library tags at most once a second while 1000 downloads settle, and again after the last", async () => {
+  vi.useFakeTimers();
+  try {
+    const client = new QueryClient();
+    harness.client = client;
+    useLibraryQuery(true, { categoryId: 2, repairNeededOnly: true }, "nameAsc");
+    for (const effect of harness.effects) {
+      const cleanup = effect();
+      if (cleanup) cleanups.push(cleanup);
+    }
+    const summaryRefreshTimes: number[] = [];
+    const invalidate = client.invalidateQueries.bind(client);
+    vi.spyOn(client, "invalidateQueries").mockImplementation((filters, options) => {
+      if (JSON.stringify(filters?.queryKey) === JSON.stringify(["novel", "library", "summary"])) {
+        summaryRefreshTimes.push(performance.now());
+      }
+      return invalidate(filters, options);
+    });
+    const startedAt = performance.now();
+    let lastSettledAt = startedAt;
+    for (let index = 0; index < 1000; index += 1) {
+      notifyChapterDownloadsSettled();
+      lastSettledAt = performance.now();
+      await vi.advanceTimersByTimeAsync(5);
+    }
+    await vi.advanceTimersByTimeAsync(DOWNLOAD_SETTLED_REFRESH_INTERVAL_MS);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(summaryRefreshTimes.length).toBeLessThanOrEqual(Math.ceil(elapsedMs / DOWNLOAD_SETTLED_REFRESH_INTERVAL_MS) + 1);
+    expect(summaryRefreshTimes.at(-1)).toBeGreaterThanOrEqual(lastSettledAt);
+  } finally {
+    vi.useRealTimers();
+  }
 });
