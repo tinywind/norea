@@ -104,7 +104,7 @@ export function ServerChapterManager({ source, name, onClose }: { source: Server
           <Text size="sm" aria-live="polite">{t("novel.selection.selectedCount", { count: selectedIds.length })}</Text>
           <Group gap="xs" wrap="wrap">
             <TextButton size="sm" disabled={unavailable || !rows.length} onClick={() => setSelected(new Set(rows.map(chapter => chapter.id)))}>{t("contentSync.selectPage")}</TextButton>
-            <TextButton size="sm" disabled={busy || !selectedIds.length} onClick={() => setSelected(new Set())}>{t("novel.selection.clearSelected")}</TextButton>
+            <TextButton size="sm" disabled={busy || !selectedIds.length} onClick={() => setSelected(new Set())}>{t("selection.deselectAll")}</TextButton>
             <TextButton size="sm" tone="danger" disabled={unavailable || !selectedIds.length} loading={remove.isPending}
               onClick={() => remove.mutate(rows.filter(chapter => selected.has(chapter.id)))}>{t("contentSync.deleteSelectedServer", { count: selectedIds.length })}</TextButton>
           </Group>

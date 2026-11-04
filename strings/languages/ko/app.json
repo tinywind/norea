@@ -1350,7 +1350,6 @@
   "novel.selection.selectedCount": "챕터 {count}개 선택됨",
   "library.selection.selectAll": "필터링된 작품 전체 선택",
   "novel.selection.downloadPrevious": "선택한 챕터 앞의 누락 챕터 {count}개 다운로드",
-  "novel.selection.clearSelected": "챕터 선택 해제",
   "novel.selection.downloadSelected": "다운로드",
   "novel.selection.deleteDownloads": "다운로드 삭제",
   "novel.selection.markRead": "읽음 표시",

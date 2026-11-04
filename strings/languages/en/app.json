@@ -1349,7 +1349,6 @@
   "novel.downloadQueued.sourceDownload": "Original site download queued",
   "novel.toggleChapterSelection": "Select {name}",
   "novel.selection.selectedCount": "{count} chapters selected",
-  "novel.selection.clearSelected": "Clear chapter selection",
   "novel.selection.downloadSelected": "Download",
   "novel.selection.deleteDownloads": "Delete downloads",
   "novel.selection.markRead": "Mark read",

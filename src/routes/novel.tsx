@@ -887,13 +887,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                       value={defaultChapterSort}
                     />
                     {chapters.length > 0 && !chapterSelectionMode ? (
-                      <Button
-                        leftSection={<SelectIcon size="1.125rem" />}
+                      <IconButton
+                        label={t("novel.select")}
                         onClick={() => setChapterSelectionMode(true)}
-                        variant="subtle"
+                        size="lg"
                       >
-                        {t("novel.select")}
-                      </Button>
+                        <SelectIcon />
+                      </IconButton>
                     ) : null}
                     {jumpOpen && chapters.length > 0 ? (
                       <form

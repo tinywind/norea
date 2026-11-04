@@ -14,7 +14,7 @@ import {
   verticalListSortingStrategy,
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Button, Loader, Skeleton, VisuallyHidden } from "@mantine/core";
+import { Loader, Skeleton, VisuallyHidden } from "@mantine/core";
 import {
   type CSSProperties,
   useEffect,
@@ -43,6 +43,7 @@ import {
   DownloadIcon,
   DragIcon,
   RepairIcon,
+  RetryIcon,
 } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { OverflowMenu } from "../ui/OverflowMenu";
@@ -228,28 +229,28 @@ function ChapterListItem({
     }
     if (chapter.mediaRepairNeeded && canDeleteDownload) {
       return (
-        <Button
-          disabled={deleteBusy}
-          leftSection={<RepairIcon size="1rem" />}
-          loading={repairBusy}
+        <IconButton
+          className="norea-novel-chapter-state-button"
+          disabled={deleteBusy || repairBusy}
+          label={t("novel.repair")}
           onClick={onRepairMedia}
-          size="compact-sm"
-          variant="subtle"
+          size="lg"
         >
-          {t("novel.repair")}
-        </Button>
+          {repairBusy ? <Loader size="xs" /> : <RepairIcon size="1.25rem" />}
+        </IconButton>
       );
     }
     if (failedMessage) {
       return (
-        <Button
-          aria-label={t("novel.retryDownload")}
+        <IconButton
+          className="norea-novel-chapter-state-button"
+          label={t("novel.retryDownload")}
           onClick={onDownload}
-          size="compact-sm"
-          variant="subtle"
+          size="lg"
+          tone="danger"
         >
-          {t("common.retry")}
-        </Button>
+          <RetryIcon size="1.25rem" />
+        </IconButton>
       );
     }
     if (chapter.isDownloaded) {

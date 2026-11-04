@@ -176,17 +176,18 @@ describe("download state", () => {
     ["not downloaded", {}, undefined, ["Download chapter"]],
     ["downloaded", { isDownloaded: true }, undefined, ["Downloaded"]],
     ["failed", {}, { kind: "failed", error: "Timed out" }, ["Retry download"]],
-    ["missing media", { contentBytes: 10, mediaRepairNeeded: true }, undefined, []],
+    ["missing media", { contentBytes: 10, mediaRepairNeeded: true }, undefined, ["Repair"]],
     ["queued", {}, { kind: "queued", phase: "server-lookup" }, []],
   ])("shows one trailing control when %s", (_name, row, status, labels) => {
     const $ = renderRow(row, status);
     expect(siblingButtons($).map((_, button) => $(button).attr("aria-label")).get().filter(Boolean)).toEqual(labels);
   });
 
-  it("repairs missing media in place with a labeled button", () => {
+  it("repairs missing media in place with a named icon button", () => {
     const $ = renderRow({ contentBytes: 10, mediaRepairNeeded: true });
     expect(describedText($)).toContain("Missing images");
-    expect(siblingButtons($).text()).toBe("Repair");
+    expect(siblingButtons($).attr("aria-label")).toBe("Repair");
+    expect(siblingButtons($).text()).toBe("");
   });
 
   it("shows a failure reason inline and keeps the raw error out of the visible text", () => {
@@ -194,7 +195,8 @@ describe("download state", () => {
     const description = $(`#${openButton($).attr("aria-describedby")}`);
     expect(description.text()).toContain("Download failed");
     expect(description.attr("title")).toBe("Timed out");
-    expect(siblingButtons($).text()).toBe("Retry");
+    expect(siblingButtons($).attr("aria-label")).toBe("Retry download");
+    expect(siblingButtons($).text()).toBe("");
   });
 
   it.each<[ChapterDownloadStatus, string, string]>([

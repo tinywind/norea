@@ -350,7 +350,7 @@ it("keeps an incomplete server chapter visible and downloadable without a source
   expect($("button[aria-label='novel.openChapter']").text()).toContain("Saved chapter");
   expect($("button[aria-label='novel.openChapter']").text()).toContain("novel.serverIncomplete");
   expect($("button[aria-label='novel.downloadChapter']")).toHaveLength(1);
-  expect($("button").filter((_, button) => $(button).text() === "novel.repair")).toHaveLength(0);
+  expect($("button[aria-label='novel.repair']")).toHaveLength(0);
   expect(mocks.chapters[0]).toMatchObject({ isDownloaded: false, mediaRepairNeeded: false });
 });
 
@@ -364,7 +364,7 @@ it("preserves a complete local chapter when its server copy is incomplete", () =
   expect($("button[aria-label='novel.downloaded']")).toHaveLength(1);
   expect($.text()).not.toContain("novel.mediaRepairNeeded");
   expect($("button[aria-label='novel.downloadChapter']")).toHaveLength(0);
-  expect($("button").filter((_, button) => $(button).text() === "novel.repair")).toHaveLength(0);
+  expect($("button[aria-label='novel.repair']")).toHaveLength(0);
   expect(mocks.chapters[0]).toMatchObject({ isDownloaded: true, mediaRepairNeeded: false });
 });
 
@@ -502,12 +502,12 @@ async function withPageTree(check: (find: (predicate: (props: Record<string, unk
   }
 }
 
-it("replaces the app bar with a labeled selection bar from the visible Select entry", async () => {
+it("replaces the app bar with a labeled selection bar from the visible Select icon", async () => {
   mocks.novel.isLocal = false;
   mocks.chapters = [{ ...chapter, unread: true }, { ...chapter, id: 2, position: 2, isDownloaded: true, unread: false }];
   await withPageTree(async (find, run) => {
     expect(find((props) => typeof props.onSelectAll === "function")).toBeUndefined();
-    const select = find((props) => props.children === "novel.select")!;
+    const select = find((props) => props.label === "novel.select")!;
     await run(() => (select.props.onClick as () => void)());
     const bar = find((props) => typeof props.onSelectAll === "function")!;
     const labels = collectElements(bar.props.actions as ReturnType<typeof NovelDetailPage>)
@@ -634,7 +634,7 @@ it("shows the selection hint the first time selection opens on this device only"
       setItem: (key: string, value: string) => void stored.set(key, value),
     });
     const bar = () => find((props) => typeof props.onSelectAll === "function");
-    const select = () => find((props) => props.children === "novel.select")!;
+    const select = () => find((props) => props.label === "novel.select")!;
     await run(() => (select().props.onClick as () => void)());
     expect(bar()!.props.hint).toBe("novel.selection.hint");
     await run(() => window.dispatchEvent(new Event("popstate")));
