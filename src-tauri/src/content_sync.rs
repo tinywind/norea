@@ -347,11 +347,6 @@ fn chapter_files(source: &Path) -> Result<Vec<String>, String> {
         }
         paths.push(".chapter-content.partial".to_string());
     }
-    match fs::symlink_metadata(source.join("media")) {
-        Ok(_) => return Err(failure("chapter media must use media.zip")),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(failure(error)),
-    }
     let mut total = 0;
     for path in &paths {
         let size = fs::metadata(source.join(path)).map_err(failure)?.len();
@@ -757,7 +752,7 @@ mod tests {
     }
 
     #[test]
-    fn snapshot_rejects_unpacked_media_without_copying_it() {
+    fn snapshot_skips_media_workspace_and_uploads_published_files_as_incomplete() {
         let root = workspace();
         let source = root.path().join("chapter");
         let stage = root.path().join("stage");
@@ -767,8 +762,13 @@ mod tests {
         fs::write(source.join("media/page.png"), b"image").unwrap();
         fs::write(source.join("manifest.json"), json!({"version":1,"complete":true,"media":{"files":[
             {"fileName":"page.png","path":"media/page.png","status":"stored","bytes":5}]}}).to_string()).unwrap();
-        assert!(snapshot_directory(&source, &stage).is_err());
-        assert!(!stage.join("source").exists());
+        snapshot_directory(&source, &stage).unwrap();
+        let staged = stage.join("source");
+        assert!(!staged.join("media").exists());
+        let manifest = chapter_file_manifest(&staged, metadata()).unwrap();
+        let paths: Vec<_> = manifest["files"].as_array().unwrap().iter().map(|file| file["path"].as_str().unwrap()).collect();
+        assert_eq!(paths, ["content.html", "manifest.json"]);
+        assert!(!inspect_chapter_media(&staged).unwrap());
         assert_eq!(fs::read(source.join("media/page.png")).unwrap(), b"image");
     }
 
@@ -881,7 +881,7 @@ mod tests {
     }
 
     #[test]
-    fn chapter_file_transfer_rejects_wrong_body_and_unpacked_legacy_media() {
+    fn chapter_file_transfer_rejects_wrong_body_and_ignores_media_workspace() {
         let root = workspace();
         fs::write(root.path().join("content.pdf"), b"pdf").unwrap();
         assert!(chapter_file_manifest(root.path(), metadata()).is_err());
@@ -889,7 +889,9 @@ mod tests {
         fs::write(root.path().join("content.html"), b"text").unwrap();
         fs::create_dir(root.path().join("media")).unwrap();
         fs::write(root.path().join("media/page.png"), b"image").unwrap();
-        assert!(chapter_file_manifest(root.path(), metadata()).is_err());
+        let manifest = chapter_file_manifest(root.path(), metadata()).unwrap();
+        assert_eq!(manifest["files"].as_array().unwrap().len(), 1);
+        assert_eq!(manifest["files"][0]["path"], "content.html");
     }
 
     #[test]

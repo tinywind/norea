@@ -75,7 +75,6 @@ internal class AndroidContentSyncStorage(
     for (child in storage.listStorageChildren(source)) {
       check(!Thread.currentThread().isInterrupted) { "Content snapshot cancelled." }
       require(child.name.isNotEmpty() && child.name != "." && child.name != ".." && !child.name.contains('/') && !child.name.contains('\\')) { "Unsafe chapter file." }
-      check(child.name != "media") { "Chapter media must use media.zip." }
       if (child.name in setOf("content.html", "content.pdf", ".chapter-content.partial", "manifest.json", "media.zip")) {
         check(!child.isDirectory) { "Invalid chapter artifact." }
         val document = storage.storageChildDocumentFile(child) ?: error("Chapter file disappeared.")

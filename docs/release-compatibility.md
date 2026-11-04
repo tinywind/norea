@@ -206,6 +206,7 @@ requirements must be decided explicitly before implementation.
   Content-server uploads include stored incomplete chapters and persist their
   actual completeness in the catalog, as do folder scans. Upload snapshots copy
   a partial HTML body as `content.html` without changing the original file.
+  They skip a leftover `media/` download or repair workspace and leave it in place.
   Partial bodies require a valid media manifest so missing assets remain tracked.
   The first sync after enabling incomplete uploads rediscovers stored chapters
   once, preserving the saved deletion exclusions and later incremental cursors.

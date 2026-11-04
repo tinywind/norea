@@ -255,7 +255,10 @@ a private snapshot of stored files and never hold download locks during HTTP.
 Native code sends the original `content.html`
 or `content.pdf`, with `manifest.json` and `media.zip` when present, in one multipart
 request. It streams the saved bytes without creating an extra ZIP, rewriting HTML
-or media references, or extracting and recompressing media.
+or media references, or extracting and recompressing media. A leftover `media/`
+download or repair workspace is not sent; its loose files are not part of the
+stored chapter, so completeness follows `media.zip` and the chapter uploads as
+incomplete when assets are missing there.
 
 Uploads use `POST /api/v1/chapter-files`. The `metadata` part contains the
 `PackageManifest`, with `layout: "chapter-files"`, the body path, and each file's
