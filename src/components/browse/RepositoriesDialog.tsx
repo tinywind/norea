@@ -73,7 +73,6 @@ export function RepositoriesDialog({
 
   return (
     <ResponsiveSheet
-      fullScreenOnPhone
       onClose={onClose}
       opened={opened}
       size="lg"
