@@ -124,6 +124,10 @@ describe("More page", () => {
     expect(switchState()).toBe("true");
   });
 
+  it("heads the page with the app's name", () => {
+    expect(renderMorePage()).toMatch(/<div class="norea-more-identity"><span class="norea-more-identity-name">Norea<\/span><\/div>/);
+  });
+
   it("names the page for screen readers only and shows no bar or back button", () => {
     const markup = renderMorePage();
 

@@ -47,7 +47,7 @@ export function AboutSection() {
         >
           {buildInfo ? (
             <SettingsInlineControls>
-              <ConsoleChip tone="accent">{buildVersionLabel(buildInfo)}</ConsoleChip>
+              <ConsoleChip>{buildVersionLabel(buildInfo)}</ConsoleChip>
               {buildIdentity ? <ConsoleChip>{buildIdentity}</ConsoleChip> : null}
             </SettingsInlineControls>
           ) : null}

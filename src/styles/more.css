@@ -3,6 +3,27 @@
   --norea-page-block: var(--norea-space-3);
 }
 
+/* The app's name and version head the page in place of a bar. */
+.norea-more-identity {
+  align-items: baseline;
+  display: flex;
+  gap: var(--norea-space-2);
+  padding: var(--norea-space-2) var(--norea-space-4) 0;
+}
+
+.norea-more-identity-name {
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-xl);
+  font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
+}
+
+.norea-more-identity-version {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
+}
+
 .norea-more-group {
   background: var(--norea-color-surface);
   border: 1px solid var(--norea-color-rule);

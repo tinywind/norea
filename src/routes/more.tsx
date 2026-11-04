@@ -1,7 +1,9 @@
 import { Switch, VisuallyHidden } from "@mantine/core";
 import { Link } from "@tanstack/react-router";
+import { useEffect, useState } from "react";
 import { PageFrame } from "../components/AppFrame";
 import { usePluginUpdateCount } from "../components/browse/use-plugin-catalog";
+import { buildVersionLabel } from "../components/settings/use-app-updates";
 import {
   AboutIcon,
   ChevronRightIcon,
@@ -12,6 +14,7 @@ import {
 } from "../components/ui/icons";
 import { useTranslation } from "../i18n";
 import { OPENED_FROM_MORE_STATE } from "../lib/navigation-history";
+import { getBuildInfo } from "../lib/update";
 import { useTaskAttentionCount } from "../lib/tasks/hooks";
 import { useLibraryStore } from "../store/library";
 import "../styles/more.css";
@@ -80,17 +83,41 @@ function MoreLinkRow({
   );
 }
 
+/** The installed version for the page's identity line; About reports a failure to read it. */
+function useAppVersionLabel(): string | null {
+  const [label, setLabel] = useState<string | null>(null);
+  useEffect(() => {
+    let cancelled = false;
+    getBuildInfo()
+      .then((info) => {
+        if (!cancelled) setLabel(buildVersionLabel(info));
+      })
+      .catch((error: unknown) => {
+        console.warn("[more] could not read the build info:", error);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+  return label;
+}
+
 export function MorePage() {
   const { t } = useTranslation();
   const incognitoMode = useLibraryStore((state) => state.incognitoMode);
   const setIncognitoMode = useLibraryStore((state) => state.setIncognitoMode);
   const taskAttentionCount = useTaskAttentionCount();
   const pluginUpdateCount = usePluginUpdateCount(true);
+  const versionLabel = useAppVersionLabel();
 
   return (
     <PageFrame className="norea-more-page" size="narrow">
       {/* More carries no page-level controls, so it draws no bar; the nav names the page. */}
       <VisuallyHidden component="h1">{t("more.title")}</VisuallyHidden>
+      <div className="norea-more-identity">
+        <span className="norea-more-identity-name">{t("more.appName")}</span>
+        {versionLabel ? <span className="norea-more-identity-version">{versionLabel}</span> : null}
+      </div>
       <div className="norea-more-group">
         <Switch
           checked={incognitoMode}

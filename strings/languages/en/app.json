@@ -252,6 +252,7 @@
   "nav.taskAttention": "{label}, {count} active or failed tasks",
   "nav.newChapters": "{label}: {count} new chapters",
   "more.title": "More",
+  "more.appName": "Norea",
   "more.pauseHistory": "Pause reading history",
   "more.pauseHistory.description": "Progress and unread status still save, but reading history timestamps are not updated while reading.",
   "more.downloads.description": "Queue, background tasks and stored chapters",

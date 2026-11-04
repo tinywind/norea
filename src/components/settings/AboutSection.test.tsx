@@ -44,6 +44,7 @@ it("shows no version chip before the build details load", () => {
 it("shows the app version and a local build label when no CI metadata is stamped", () => {
   updates.buildInfo = LOCAL_BUILD;
   expect(chips(render())).toEqual(["v0.2.0", "settings.about.version.localBuild"]);
+  expect(render()).not.toContain('data-tone="accent"');
 
   updates.buildInfo = { ...LOCAL_BUILD, gitSha: "abc1234" };
   expect(chips(render())).toEqual(["v0.2.0", "settings.about.version.localBuild · abc1234"]);

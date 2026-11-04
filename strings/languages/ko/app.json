@@ -252,6 +252,7 @@
   "nav.taskAttention": "{label}, 진행 중이거나 실패한 작업 {count}개",
   "nav.newChapters": "{label}: 새 챕터 {count}개",
   "more.title": "더보기",
+  "more.appName": "Norea",
   "more.pauseHistory": "읽기 기록 일시 중지",
   "more.pauseHistory.description": "읽는 동안 읽기 진도와 읽음 상태는 저장하지만 읽은 시각은 기록하지 않습니다.",
   "more.downloads.description": "대기열, 백그라운드 작업, 저장된 챕터",
