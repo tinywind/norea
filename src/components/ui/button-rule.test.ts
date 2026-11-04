@@ -1,5 +1,6 @@
 import { readFileSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
+import en from "../../../strings/languages/en/app.json";
 
 /*
  * D10 button rule (docs/superpowers/plans/2026-11-03-ui-ux-overhaul.md):
@@ -86,6 +87,11 @@ const where = (element: Element) => `${element.file}:${element.line}`;
 const prop = (open: string, name: string) => new RegExp(`\\s${name}[=\\s>/]`).test(open);
 const variantOf = (open: string) => /\svariant=(?:"([^"]+)"|\{([^}]*)\})/.exec(open);
 const labelKeys = (text: string) => [...text.matchAll(/\bt\("([\w.]+)"/g)].map((match) => match[1]!);
+/** The translation keys inside the `{...}` value of one prop of an opening tag. */
+const propKeys = (open: string, name: string) => {
+  const at = open.search(new RegExp(`\\s${name}=\\{`));
+  return at < 0 ? [] : labelKeys(braceBlock(open, open.indexOf("{", at)));
+};
 const iconsIn = (text: string) =>
   [...new Set([...text.matchAll(/\b([A-Z]\w*Icon)\b/g)].map((match) => match[1]!))].filter((name) => APP_ICONS.has(name));
 
@@ -195,15 +201,11 @@ function iconedActions(): Array<{ at: string; keys: string[]; icons: string[] }>
   const jsx = sources.flatMap(({ name, source }) =>
     ["IconButton", "Button", "TextButton", "SelectionAction", "Menu.Item", "button"].flatMap((tag) =>
       elements(name, source, tag).map((element) => {
-        const propKeys = (prop: string) => {
-          const at = element.open.search(new RegExp(`\\s${prop}=\\{`));
-          return at < 0 ? [] : labelKeys(braceBlock(element.open, element.open.indexOf("{", at)));
-        };
         const childKeys = labelKeys(element.children);
-        const labelPropKeys = propKeys("label");
+        const labelPropKeys = propKeys(element.open, "label");
         return {
           at: where(element),
-          keys: childKeys.length > 0 ? childKeys : labelPropKeys.length > 0 ? labelPropKeys : propKeys("title"),
+          keys: childKeys.length > 0 ? childKeys : labelPropKeys.length > 0 ? labelPropKeys : propKeys(element.open, "title"),
           icons: iconsIn(element.open + element.children),
         };
       }),
@@ -287,5 +289,21 @@ describe("D10 same action, same icon", () => {
     }
     const mixed = [...iconsByKey].filter(([, icons]) => icons.size > 1).map(([key, icons]) => `${key}: ${[...icons].join(", ")}`);
     expect(mixed).toEqual([]);
+  });
+});
+
+describe("D10 action labels", () => {
+  it("names one action per button instead of chaining a second one the first implies", () => {
+    const keys = new Set([
+      ...buttons.flatMap((element) => labelKeys(element.children)),
+      ...sources.flatMap(({ name, source }) => elements(name, source, "IconButton")).flatMap((element) => propKeys(element.open, "label")),
+    ]);
+    expect(keys.size).toBeGreaterThan(150);
+    const messages = en as Record<string, string>;
+    expect([...keys].filter((key) => / (?:and|then) /i.test(messages[key] ?? ""))).toEqual([]);
+  });
+
+  it("connects without saying it switches or applies first", () => {
+    expect(Object.values(en).filter((value) => /^(?:switch|apply) and connect$/i.test(value))).toEqual([]);
   });
 });
