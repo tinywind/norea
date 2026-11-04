@@ -804,7 +804,9 @@ Visual commits come before behavior commits within a slice.
   - Inline progress for long checks.
   - Optimistic bookmark and library toggles with rollback on error.
 - [x] **5.4 Long-press cue.** Scale to 0.97 plus a state layer. Use haptics only if an existing bridge supports them; no new plugin.
-- [ ] **5.5 Reduced motion** check on Windows with animations disabled, and on Android with animator scale set to 0.
+- [ ] **5.5 Reduced motion**
+  - [x] Android WebView reports `prefers-reduced-motion: reduce` with all three animation scales at 0. The isolated Y700 instrumentation check restores the previous values in `finally`; all three read back as 0.5.
+  - [ ] Windows with animations disabled. No Windows runtime was available for the continuation.
 
 ## Phase 6 - Copy and localization
 
@@ -844,12 +846,38 @@ Visual commits come before behavior commits within a slice.
 
 As of 2026-11-04 on `0.2`, Phases 0-6 and every Phase 7 slice (RD1-RD23 except the superseded RD16, Systems A, B and C) have landed; see `git log` for the per-item commits. Phase 4 slices have no checkboxes: all eight landed (4.1 reader through 4.8 migrate source).
 
-Known gaps, not verified on a device:
-- 5.5 reduced-motion checks on Windows with animations off and on Android with animator scale 0.
-- `norea://repo/add` on Android: the deep-link manifest block was updated by hand to match the plugin's generator; a targeted `tauri android build` must leave it unchanged, and a tapped link must open the repository confirm.
-- The shared full-screen modal safe-area rule (`src/styles/app.css`) on a phone with a status bar and gesture bar, including the GitHub source form and category manager that had no rule before.
-- "Backup folder unavailable [Choose folder]": the Rust unit test only compiles here (Linux host, no GTK), and losing the Android folder grant was not reproduced on a device.
-- Settings rows name their controls only visually: the Switch or Select inside `SettingsFieldRow` has no programmatic label.
+### QA continuation, 2026-11-04
+
+The continuation starts at `cbec306`, after nine fixes from the interrupted Y700 QA pass. Settings control labels already landed in `59e5084`; they are covered by the existing `SettingsPrimitives` tests.
+
+Verification on Y700 (TB322FC), using its built-in display only:
+
+| Surface | Result |
+|---|---|
+| Shell and themes | Five destinations; navigation hidden in the reader. Fixed black system icons over dark app backgrounds. The active reader now controls icon contrast until it closes; the light app background is restored afterwards. |
+| Library and novel | 121 works retained. Continue reading, chapter-number labels, chapter search, and the download-goal sheet checked without changing goals. |
+| Reader | One existing prologue numbered 0 opened with time recording paused. Chrome, resizable settings sheet and scope menu checked. Returned to page 1 and 0% before restoring time recording. Invalid chapter IDs now retain the back bar; three route regression cases cover missing chapters. An isolated TXT import reached the end-of-work card and returned to its novel. |
+| PDF | Imported the existing content-type fixture into the debug app through the file picker. Zooming exposed a ResizeObserver feedback loop: the expanded page width was multiplied again until the canvas CSS width exceeded 15 million pixels. Rendering now measures the fixed viewport. Two regressions cover expanding pages and viewport resizing in scroll and paged modes. Native checks pass at 125%, 150%, 200%, 250% and 300%, with horizontal panning and Fit restoring the 692px viewport width. |
+| Updates and History | Latest-check time, chapter rows, search results and the corrected chapter-number labels checked. |
+| Browse and extensions | Installed sources, source catalog, global-search surface and repository dialog checked. No production source, plugin or repository added or removed. The separate debug profile used the official plugin repository to open the GitHub source form; no source was submitted. |
+| Downloads | 121 works, 55,885 downloaded chapters and 59 GB listed at the initial check; the final release check listed 55,892 chapters as existing background downloads continued. Cleanup closes with Back; no files deleted and automatic deletion remains off. Hid ordinary-only aggregate counts while VPN work is listed, retaining each work's actual progress. |
+| Settings | Appearance, General, Backup, Network and advanced server list checked. Search empty-result and clear behavior checked; controls retain the existing accessible row labels. No server approved or profile changed. |
+| Backup folder failure | Two isolated `.debug` instrumentation checks pass: a missing SAF grant returns the folder-unavailable error without changing the input archive, and WebView detects reduced motion. In the debug profile, clearing only its previous-success timestamp made the scheduler due. Moving its dedicated storage folder caused a real backup failure and displayed Choose folder. Restoring the folder and selecting it again cleared the error and wrote a new, CRC-valid ZIP. No production folder or grant was changed. |
+| Small-screen safe areas | At a temporary 1080x2340 display-0 override and 150% debug UI scale, the GitHub form scrolled to its Cancel/Add controls above the gesture bar. Category management, its add dialog and the category assignment sheet cleared the system bars. The override was reset to 1904x3040 and debug UI scale restored to 100%. Y700 tablet acceptance uses its original scale; the narrow viewport was a separate responsive check. |
+| Deep links | Release generation preserves the tracked manifest. Cold `norea://repo/add` activation and warm browser-style activation with `CATEGORY_BROWSABLE` open the prefilled repository dialog; both are cancelled. After the external display was disconnected, three raw warm activations also preserved the same process in both the restored singleTask debug app and the release app, with the expected URL displayed. See the Activity-replacement coverage below. |
+| Android Activity replacement | Reproduced the process exit without an external screen by replacing the Activity with `FLAG_ACTIVITY_CLEAR_TASK`. Automatic last-window exit is now prevented on Android; explicit app exit keeps Tauri's existing behavior. A native lifecycle bridge restores the configured main window after Wry cleanup, using a cached JNI pipe handle from a blocking worker so neither UI threads nor lifecycle locks wait on its bounded queue. New Activity VIEW intents also reach the retained plugins. The device regression passes three consecutive replacements, checking frontend readiness, native IPC, the unique incoming deep link and retained local storage. |
+| Runtime logs | Kotlin concurrency checks exposed a directory-creation race: another writer could create the state directory between the first check and `mkdirs()`, incorrectly rejecting the log. Rechecking the directory after `mkdirs()` fails resolves it. A deterministic regression reproduces that interleaving and verifies the saved record. |
+
+Automated verification: `pnpm tsc`; 4,073 Vitest tests across 324 files; 203 Kotlin unit tests; 55 Rust tests executed on Y700 (53 backup-related cases and two lifecycle state checks); three Android instrumentation checks in the separate debug app. The final signed APK contains only the arm64 native library and uses the installed app's existing signing certificate. Device QA was completed before committing or pushing this continuation's fixes.
+
+The final APK was installed with the existing app data retained, and its installed SHA-256 matches the build artifact. A forced Activity replacement in the signed production app preserved PID 455 and displayed the new repository URL correctly. Production UI scale and Android view size are both 100%, the physical display is back at 1904x3040, and all three animation scales remain 0.5. The library still contains 121 works. The debug apps, dedicated fixture directories and WebView debugging forward were removed; the production app was left on Library.
+
+Scope and coverage:
+- Windows native acceptance is explicitly excluded from this continuation at the user's request on 2026-11-04.
+- Revoking the production reader's storage grant was deliberately avoided. The native missing-grant case and an isolated folder-loss/reselection recovery were verified separately.
+- The earlier extended-display raw-intent failure finished and recreated the Activity, causing Tauri's last-window shutdown to terminate the successor. Forced Activity replacement reproduced that failure on the built-in display and supplied the failing regression for the lifecycle fix above. The external monitor was not reconnected or controlled during final verification. The manifest remains `singleTask`; neither the launch-mode probe nor temporary lifecycle logging was retained. The upstream lifecycle mechanism is also documented in [tauri-apps/tauri#15671](https://github.com/tauri-apps/tauri/issues/15671).
+
+Delivery keeps the source fixes, regression tests and this QA record in version control. APKs, logs, temporary evidence and signing files are already excluded by the existing ignore rules. The fixes are separated by purpose before merging remote dependency updates and checking GitHub Actions for the pushed revision.
 
 ## Phase 7 - Feature redesigns (spec §2)
 
