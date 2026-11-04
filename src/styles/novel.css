@@ -335,6 +335,19 @@
   min-width: 0;
 }
 
+.norea-novel-chapter-filters {
+  align-items: center;
+  display: flex;
+  flex: 1 0 100%;
+  gap: var(--norea-space-2);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.norea-novel-chapter-filter {
+  flex: 0 0 auto;
+}
+
 .norea-novel-chapters-title {
   color: var(--norea-color-ink);
   flex: 1 1 auto;

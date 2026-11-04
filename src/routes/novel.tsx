@@ -10,11 +10,13 @@ import {
   BackIcon,
   CategoryIcon,
   ChapterListIcon,
+  CheckIcon,
   CloseIcon,
   DeleteDownloadIcon,
   DownloadIcon,
   DragIcon,
   EditIcon,
+  FilterIcon,
   ImportIcon,
   MarkReadIcon,
   MarkUnreadIcon,
@@ -38,9 +40,13 @@ import {
   chapterNumberValue,
   chaptersKey,
   EMPTY_CHAPTERS,
+  filterChapterList,
   findChapterForJump,
   FINISHED_PROGRESS,
+  hasChapterListFilters,
+  NO_CHAPTER_LIST_FILTERS,
   novelKey,
+  type ChapterListFilters,
   resolveNovelSourceUrl,
   sourceDuplicateChapterCountsById,
 } from "../components/novel/novel-detail-model";
@@ -121,6 +127,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const [jumpQuery, setJumpQuery] = useState("");
   const [jumpMissed, setJumpMissed] = useState(false);
   const [jumpRequest, setJumpRequest] = useState<{ chapterId: number } | null>(null);
+  const [chapterFiltersOpen, setChapterFiltersOpen] = useState(false);
+  const [chapterFilters, setChapterFilters] = useState<ChapterListFilters>(NO_CHAPTER_LIST_FILTERS);
   const chapterSelectionGuardRef = useRef(false);
 
   const novelQuery = useQuery({
@@ -201,6 +209,11 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     downloadChapters,
   } = useNovelChapterActions(id, displayNovel, chapters);
   const statuses = useNovelDownloadStatuses(id, rows, active);
+  const chapterFiltersActive = hasChapterListFilters(chapterFilters);
+  const visibleChapters = useMemo(
+    () => filterChapterList(chapters, chapterFilters, statuses),
+    [chapterFilters, chapters, statuses],
+  );
   const {
     addLocalChapters,
     reorderLocalChapters,
@@ -224,8 +237,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     return { downloaded, unread };
   }, [rows]);
   const selectedChapters = useMemo(
-    () => chapters.filter((chapter) => selectedChapterIds.has(chapter.id)),
-    [chapters, selectedChapterIds],
+    () => visibleChapters.filter((chapter) => selectedChapterIds.has(chapter.id)),
+    [visibleChapters, selectedChapterIds],
   );
   const selectedChapterIdList = useMemo(
     () => selectedChapters.map((chapter) => chapter.id),
@@ -268,7 +281,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
       ? selectionAnchorId
       : null;
   const allChaptersSelected =
-    chapters.length > 0 && selectedChapterCount === chapters.length;
+    visibleChapters.length > 0 && selectedChapterCount === visibleChapters.length;
   const chapterSelectionBusy =
     clearSelectedDownloads.isPending ||
     setSelectedChapterReadState.isPending ||
@@ -284,6 +297,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     setJumpQuery("");
     setJumpMissed(false);
     setJumpRequest(null);
+    setChapterFiltersOpen(false);
+    setChapterFilters(NO_CHAPTER_LIST_FILTERS);
     chapterSelectionGuardRef.current = false;
   }, [id]);
 
@@ -382,7 +397,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     }
     setChapterSelectionMode(true);
     setSelectedChapterIds(
-      new Set([...selectedChapterIds, ...chapterIdsBetween(chapters, rangeAnchorId, chapterId)]),
+      new Set([...selectedChapterIds, ...chapterIdsBetween(visibleChapters, rangeAnchorId, chapterId)]),
     );
   }
 
@@ -396,7 +411,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   }
 
   function jumpToChapter(): void {
-    const match = findChapterForJump(chapters, jumpQuery);
+    const match = findChapterForJump(visibleChapters, jumpQuery);
     setJumpMissed(!match);
     if (match) setJumpRequest({ chapterId: match.id });
   }
@@ -409,7 +424,17 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
   function selectAllChapters(): void {
     setChapterSelectionMode(true);
-    setSelectedChapterIds(new Set(chapters.map((chapter) => chapter.id)));
+    setSelectedChapterIds(new Set(visibleChapters.map((chapter) => chapter.id)));
+  }
+
+  /** Applies the filters and drops selected rows they hide, so actions only touch what is shown. */
+  function changeChapterFilters(next: ChapterListFilters): void {
+    setChapterFilters(next);
+    const shown = new Set(filterChapterList(chapters, next, statuses).map((chapter) => chapter.id));
+    setSelectedChapterIds((current) => {
+      const kept = new Set([...current].filter((chapterId) => shown.has(chapterId)));
+      return kept.size === current.size ? current : kept;
+    });
   }
 
   function clearSelectedChapters(): void {
@@ -637,6 +662,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
         label: t("novel.local.reorderChapters"),
         onClick: () => {
           clearChapterSelectionState();
+          changeChapterFilters(NO_CHAPTER_LIST_FILTERS);
+          setChapterFiltersOpen(false);
           setReorderMode(true);
         },
       },
@@ -803,14 +830,21 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
             <section aria-labelledby={chaptersHeadingId} className="norea-novel-chapters">
               <div
                 className="norea-novel-chapters-header"
-                data-jump-open={jumpOpen && !reorderMode ? "true" : undefined}
+                data-jump-open={(jumpOpen || chapterFiltersOpen) && !reorderMode ? "true" : undefined}
               >
                 <h2 className="norea-novel-chapters-title" id={chaptersHeadingId}>
-                  {t("novel.chapterSummary", {
-                    total: chapters.length,
-                    downloaded: chapterStats.downloaded,
-                    unread: chapterStats.unread,
-                  })}
+                  {chapterFiltersActive
+                    ? t("novel.chapterSummaryFiltered", {
+                        shown: visibleChapters.length,
+                        total: chapters.length,
+                        downloaded: chapterStats.downloaded,
+                        unread: chapterStats.unread,
+                      })
+                    : t("novel.chapterSummary", {
+                        total: chapters.length,
+                        downloaded: chapterStats.downloaded,
+                        unread: chapterStats.unread,
+                      })}
                 </h2>
                 {reorderMode ? (
                   <Button onClick={() => setReorderMode(false)} variant="light">
@@ -827,6 +861,17 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                         size="lg"
                       >
                         <ChapterListIcon />
+                      </IconButton>
+                    ) : null}
+                    {chapters.length > 0 ? (
+                      <IconButton
+                        active={chapterFiltersOpen || chapterFiltersActive}
+                        aria-expanded={chapterFiltersOpen}
+                        label={t("novel.filter.open")}
+                        onClick={() => setChapterFiltersOpen((open) => !open)}
+                        size="lg"
+                      >
+                        <FilterIcon />
                       </IconButton>
                     ) : null}
                     <ChapterSortPicker
@@ -871,6 +916,35 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                           <CloseIcon />
                         </IconButton>
                       </form>
+                    ) : null}
+                    {chapterFiltersOpen && chapters.length > 0 ? (
+                      <div aria-label={t("novel.filter.label")} className="norea-novel-chapter-filters" role="group">
+                        {(["unread", "downloaded", "queued"] as const).map((filter) => (
+                          <Button
+                            aria-pressed={chapterFilters[filter]}
+                            className="norea-novel-chapter-filter"
+                            key={filter}
+                            leftSection={chapterFilters[filter] ? <CheckIcon size="1rem" /> : undefined}
+                            onClick={() => changeChapterFilters({ ...chapterFilters, [filter]: !chapterFilters[filter] })}
+                            radius="xl"
+                            size="compact-sm"
+                            variant={chapterFilters[filter] ? "light" : "default"}
+                          >
+                            {t(`novel.filter.${filter}`)}
+                          </Button>
+                        ))}
+                        {chapterFiltersActive ? (
+                          <Button
+                            className="norea-novel-chapter-filter"
+                            onClick={() => changeChapterFilters(NO_CHAPTER_LIST_FILTERS)}
+                            radius="xl"
+                            size="compact-sm"
+                            variant="subtle"
+                          >
+                            {t("common.clear")}
+                          </Button>
+                        ) : null}
+                      </div>
                     ) : null}
                   </>
                 )}
@@ -944,9 +1018,15 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                         }
                   }
                 />
+              ) : visibleChapters.length === 0 ? (
+                <StateView
+                  action={{ label: t("novel.filter.clear"), onClick: () => changeChapterFilters(NO_CHAPTER_LIST_FILTERS) }}
+                  title={t("novel.filter.noMatch")}
+                  message={t("novel.filter.noMatchMessage")}
+                />
               ) : (
                 <VirtualChapterList
-                  chapters={chapters}
+                  chapters={visibleChapters}
                   canDeleteDownloads={!novel.isLocal}
                   reorderMode={novel.isLocal && reorderMode}
                   deleteBusyChapterId={clearDownload.variables}
@@ -981,7 +1061,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
       </div>
 
       <ChapterRangeSheet
-        chapters={chapters}
+        chapters={visibleChapters}
         initialFrom={anchorChapter ? chapterNumberValue(anchorChapter) : null}
         onClose={() => setRangeSheetOpen(false)}
         onSelect={selectChapterRange}

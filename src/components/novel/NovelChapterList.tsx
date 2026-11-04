@@ -398,7 +398,7 @@ function ChapterListItem({
 }
 
 interface VirtualChapterListProps {
-  chapters: ServerAwareChapterListRow[];
+  chapters: readonly ServerAwareChapterListRow[];
   canDeleteDownloads: boolean;
   deleteBusyChapterId: number | undefined;
   duplicateSourceChapterCounts: ReadonlyMap<number, number>;

@@ -70,6 +70,37 @@ export function chapterNumberValue(
   return /^\d+(?:\.\d+)?$/.test(text) ? Number(text) : null;
 }
 
+/** Chapter list filters; each one on narrows the list, and they combine. */
+export interface ChapterListFilters {
+  downloaded: boolean;
+  queued: boolean;
+  unread: boolean;
+}
+
+export const NO_CHAPTER_LIST_FILTERS: ChapterListFilters = { downloaded: false, queued: false, unread: false };
+
+export function hasChapterListFilters(filters: ChapterListFilters): boolean {
+  return filters.downloaded || filters.queued || filters.unread;
+}
+
+/** The chapters every filter that is on keeps, in the given order; the same array when none is on. */
+export function filterChapterList<T extends ChapterListRow>(
+  chapters: readonly T[],
+  filters: ChapterListFilters,
+  downloadStatuses: ReadonlyMap<number, ChapterDownloadStatus>,
+): readonly T[] {
+  if (!hasChapterListFilters(filters)) return chapters;
+  return chapters.filter((chapter) => {
+    if (filters.unread && !chapter.unread) return false;
+    if (filters.downloaded && !hasStoredChapterContent(chapter)) return false;
+    if (filters.queued) {
+      const kind = downloadStatuses.get(chapter.id)?.kind;
+      if (kind !== "queued" && kind !== "running") return false;
+    }
+    return true;
+  });
+}
+
 /** The ids from `anchorId` to `targetId`, both included, in list order. */
 export function chapterIdsBetween(
   chapters: readonly ChapterListRow[],

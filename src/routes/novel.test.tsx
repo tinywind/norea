@@ -628,6 +628,53 @@ it("jumps to a chapter by number or title and reports a miss inline", async () =
   });
 });
 
+it("filters the chapter list and keeps select all, range selection and jump on the shown rows", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = numberedChapters().map((row) => ({ ...row, unread: row.id % 2 === 0 }));
+  await withPageTree(async (find, run) => {
+    const shownIds = () => (chapterList(find).props.chapters as ChapterListRow[]).map((row) => row.id);
+    const title = () => find((props) => props.className === "norea-novel-chapters-title")!.props.children;
+    expect(title()).toBe("0/6 stored");
+    await run(() => (find((props) => props.label === "novel.filter.open")!.props.onClick as () => void)());
+    const chip = (label: string) => find((props) => props.children === label && "aria-pressed" in props)!;
+    await run(() => (chip("novel.filter.unread").props.onClick as () => void)());
+    expect(chip("novel.filter.unread").props["aria-pressed"]).toBe(true);
+    expect(shownIds()).toEqual([2, 4, 6]);
+    expect(title()).toBe("novel.chapterSummaryFiltered");
+    expect(find((props) => typeof props.onSelect === "function" && "initialFrom" in props)!.props.chapters)
+      .toEqual(chapterList(find).props.chapters);
+
+    await run(() => (chapterList(find).props.onExtendSelection as (id: number) => void)(2));
+    await run(() => (chapterList(find).props.onExtendSelection as (id: number) => void)(6));
+    expect(selectedIds(find)).toEqual([2, 4, 6]);
+    const bar = () => find((props) => typeof props.onSelectAll === "function")!;
+    expect(bar().props.selectAllDisabled).toBe(true);
+    await run(() => (bar().props.onClear as () => void)());
+    await run(() => (bar().props.onSelectAll as () => void)());
+    expect(selectedIds(find)).toEqual([2, 4, 6]);
+    expect(bar().props.label).toBe("novel.selection.selectedCount");
+
+    await run(() => (find((props) => props.label === "novel.jump.open")!.props.onClick as () => void)());
+    const type = (value: string) => (find((props) => props.placeholder === "novel.jump.placeholder")!.props.onChange as
+      (event: { currentTarget: { value: string } }) => void)({ currentTarget: { value } });
+    const submit = () => (find((props) => props.role === "search")!.props.onSubmit as (event: { preventDefault: () => void }) => void)({ preventDefault() {} });
+    await run(() => type("3"));
+    await run(submit);
+    expect(find((props) => props.placeholder === "novel.jump.placeholder")!.props.error).toBe("novel.jump.noMatch");
+    await run(() => type("4"));
+    await run(submit);
+    expect(chapterList(find).props.jumpRequest).toEqual({ chapterId: 4 });
+
+    await run(() => (chip("novel.filter.downloaded").props.onClick as () => void)());
+    expect(find((props) => typeof props.onExtendSelection === "function")).toBeUndefined();
+    expect(find((props) => props.title === "novel.filter.noMatch")).toBeDefined();
+    await run(() => (find((props) => props.className === "norea-novel-chapter-filter" &&
+      props.children === "common.clear")!.props.onClick as () => void)());
+    expect(shownIds()).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(selectedIds(find)).toEqual([]);
+  });
+});
+
 it("deletes one chapter's download at once, without a confirmation", async () => {
   mocks.novel.isLocal = false;
   mocks.chapters = [{ ...chapter, isDownloaded: true }];

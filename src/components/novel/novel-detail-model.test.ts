@@ -3,8 +3,10 @@ import type { ChapterListRow } from "../../db/queries/chapter";
 import {
   chapterIdsBetween,
   chapterIdsInNumberRange,
+  filterChapterList,
   findChapterForJump,
   findContinueReadingChapter,
+  NO_CHAPTER_LIST_FILTERS,
 } from "./novel-detail-model";
 
 function chapter(
@@ -123,5 +125,41 @@ describe("findChapterForJump", () => {
     expect(findChapterForJump(chapters, "storm")?.id).toBe(2);
     expect(findChapterForJump(chapters, "99")).toBeUndefined();
     expect(findChapterForJump(chapters, "  ")).toBeUndefined();
+  });
+});
+
+describe("filterChapterList", () => {
+  const rows = [
+    chapter(1, 1, { unread: false }),
+    { ...chapter(2, 2), isDownloaded: true },
+    { ...chapter(3, 3), contentBytes: 40, mediaRepairNeeded: true },
+    chapter(4, 4),
+    { ...chapter(5, 5, { unread: false }), isDownloaded: true },
+    chapter(6, 6),
+  ];
+  const statuses = new Map([
+    [4, { kind: "queued" as const }],
+    [5, { kind: "running" as const }],
+    [6, { kind: "failed" as const, error: "offline" }],
+  ]);
+  const ids = (filters: Partial<typeof NO_CHAPTER_LIST_FILTERS>) =>
+    filterChapterList(rows, { ...NO_CHAPTER_LIST_FILTERS, ...filters }, statuses).map((row) => row.id);
+
+  it("returns the same rows when no filter is on", () => {
+    expect(filterChapterList(rows, NO_CHAPTER_LIST_FILTERS, statuses)).toBe(rows);
+  });
+
+  it("keeps unread, stored-body and queued or running chapters, and combines the filters", () => {
+    expect(ids({ unread: true })).toEqual([2, 3, 4, 6]);
+    expect(ids({ downloaded: true })).toEqual([2, 3, 5]);
+    expect(ids({ queued: true })).toEqual([4, 5]);
+    expect(ids({ unread: true, downloaded: true })).toEqual([2, 3]);
+    expect(ids({ downloaded: true, queued: true })).toEqual([5]);
+    expect(ids({ unread: true, downloaded: true, queued: true })).toEqual([]);
+  });
+
+  it("keeps the given display order", () => {
+    expect(filterChapterList([...rows].reverse(), { ...NO_CHAPTER_LIST_FILTERS, unread: true }, statuses)
+      .map((row) => row.id)).toEqual([6, 4, 3, 2]);
   });
 });
