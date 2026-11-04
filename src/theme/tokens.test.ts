@@ -14,7 +14,6 @@ const ALLOWED_RADIUS_PARTS = new Set(["0", "50%", "inherit"]);
 const ALLOWED_LETTER_SPACING = new Set(["0", "normal", "var(--norea-tracking-tight)"]);
 const ALLOWED_FONT_WEIGHTS = new Set(["inherit", "normal"]);
 /** Sheets whose owners have not yet moved their literal weights onto the weight tokens. */
-const FONT_WEIGHT_SWEEP_PENDING = new Set(["downloads.css", "tasks.css"]);
 const MAX_LOCAL_Z_INDEX = 10;
 const MOTION_PROPERTIES = new Set([
   "transition",
@@ -145,7 +144,6 @@ function violations(name: string): string[] {
   const source = readFileSync(new URL(name, stylesDir), "utf8");
   return declarations(source).flatMap((declaration) => {
     const reason = violation(declaration);
-    if (reason?.startsWith("literal font-weight") && FONT_WEIGHT_SWEEP_PENDING.has(name)) return [];
     return reason
       ? [`${name}:${declaration.line} ${declaration.property}: ${declaration.value} (${reason})`]
       : [];
