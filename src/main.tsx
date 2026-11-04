@@ -26,6 +26,7 @@ import {
   setRuntimeLogLevel,
 } from "./lib/logging";
 import { showErrorToast } from "./lib/runtime/error-toast";
+import { setAppSystemBarBackground } from "./lib/runtime/system-bars";
 import {
   initializeRuntimeViewport,
   useRuntimeViewport,
@@ -189,6 +190,7 @@ function AppProviders() {
     }
     document.body.style.background = roles.bg;
     document.body.style.color = roles.ink;
+    setAppSystemBarBackground(roles.bg);
   }, [appLocale, roles]);
 
   useEffect(() => {

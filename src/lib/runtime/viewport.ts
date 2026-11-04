@@ -39,6 +39,7 @@ interface AndroidSafeAreaBridge {
 
 interface AndroidWindowBridge {
   getMetrics(): string;
+  setLightSystemBars?(light: boolean): void;
 }
 
 interface RuntimeSafeAreaInsets {

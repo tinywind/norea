@@ -34,6 +34,7 @@ import { hasStoredChapterContent, listChaptersByNovel, setChapterBookmark } from
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
 import { usePageActivity } from "../lib/page-activity";
+import { useReaderSystemBarBackground } from "../lib/runtime/system-bars";
 import { useBodyFlag } from "../lib/use-body-flag";
 import { pluginManager } from "../lib/plugins/manager";
 import { readerChapterQueryOptions, type ReaderChapterRow } from "../lib/reader-chapter";
@@ -87,6 +88,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
 
   const { effectiveReaderGeneral, effectiveReaderAppearance } =
     useReaderSettings(currentSourceId, currentNovelId);
+  useReaderSystemBarBackground(effectiveReaderAppearance.backgroundColor, active);
   const { incognitoMode, persistProgress } = useReaderPersistence(
     chapter,
     openedChapterRef,
