@@ -157,7 +157,16 @@ jobs:
           skipped = sum(int(suite.get('skipped', 0)) for suite in suites)
           assert tests > 0 and skipped == 0, 'Executed, unskipped Android JVM tests required'
           security = [suite for suite in suites if suite.get('name') == 'io.github.tinywind.norea.AndroidLogMessagesTest']
-          assert len(security) == 1 and int(security[0].get('tests', 0)) == 3
+          assert len(security) == 1, 'Android log security regression suite required'
+          required_security_cases = {
+              'fileAndUriValuesCannotCreateAnotherLogLine',
+              'exceptionDetailsStayPresentWithoutUnescapedStackTraceLines',
+              'ordinaryPathsAndUnicodeTextRemainUnchanged',
+              'credentialsAreRemovedBeforeMessagesReachLocalFiles',
+              'oversizedRuntimeMessagesStayWithinTheUtf8Budget',
+          }
+          executed_security_cases = {case.get('name') for case in security[0].findall('testcase')}
+          assert required_security_cases <= executed_security_cases, 'Required Android log security cases did not execute'
           print(f'Android JVM tests: {tests}, executed: {tests - skipped}, skipped: {skipped}, suites: {len(suites)}, failures: 0, errors: 0')
           PY
 
