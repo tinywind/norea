@@ -1,4 +1,6 @@
 mod android_file_open;
+#[cfg(target_os = "android")]
+mod android_lifecycle;
 mod app_logging;
 #[cfg(target_os = "android")]
 mod android_tls;
@@ -307,14 +309,23 @@ pub fn run() {
             app.manage(scraper::ScraperState::default());
             tray::init(app).map_err(|err| format!("tray init: {err}"))?;
             scraper::init_scraper(app.handle()).map_err(|err| format!("scraper init: {err}"))?;
+            #[cfg(target_os = "android")]
+            android_lifecycle::initialize(app.handle())
+                .map_err(|err| format!("Android lifecycle init: {err}"))?;
             Ok(())
         })
         .build(context)
         .expect("error while building tauri application")
         .run(|_app, _event| {
             #[cfg(target_os = "android")]
-            if let tauri::RunEvent::Opened { urls } = _event {
-                android_file_open::enqueue_opened_urls(_app, urls);
+            match _event {
+                tauri::RunEvent::Opened { urls } => android_file_open::enqueue_opened_urls(_app, urls),
+                tauri::RunEvent::ExitRequested { code: None, api, .. } => {
+                    // Activity replacement must not terminate the process hosting its successor.
+                    api.prevent_exit();
+                    android_lifecycle::request_main_window_restore();
+                }
+                _ => {}
             }
         });
 }

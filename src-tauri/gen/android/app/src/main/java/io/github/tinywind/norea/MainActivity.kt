@@ -14,6 +14,7 @@ import androidx.activity.enableEdgeToEdge
 import androidx.core.graphics.Insets
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
+import app.tauri.plugin.PluginManager
 import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
@@ -72,6 +73,9 @@ class MainActivity : TauriActivity() {
     AndroidPowerState.start(applicationContext)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
+    if (intent.action == Intent.ACTION_VIEW || intent.action == "org.chromium.arc.intent.action.VIEW") {
+      PluginManager.onNewIntent(intent)
+    }
     TaskBackgroundExecution.attach(onBackgroundExecutionSuspended)
     AndroidTaskNotificationActions.attach(onTaskNotificationAction)
     AndroidTaskNotificationActions.acceptActivityIntent(this, intent)
@@ -91,6 +95,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onPause() {
+    AndroidActivityLifecycle.publish(id, false)
     activityResumed = false
     androidVpnDownloadWorkers?.onForegroundChanged()
     super.onPause()
@@ -99,6 +104,7 @@ class MainActivity : TauriActivity() {
 
   override fun onResume() {
     super.onResume()
+    AndroidActivityLifecycle.publish(id, true)
     activityResumed = true
     TaskBackgroundExecution.policy.foreground()
     resumeTaskWebViewsForBackgroundWork()
@@ -160,6 +166,7 @@ class MainActivity : TauriActivity() {
   }
 
   override fun onDestroy() {
+    AndroidActivityLifecycle.publishDestruction(id, false)
     TaskBackgroundExecution.detach(onBackgroundExecutionSuspended)
     AndroidTaskNotificationActions.detach(onTaskNotificationAction)
     resetMainBackEvaluation()
@@ -172,6 +179,7 @@ class MainActivity : TauriActivity() {
     mainWebView?.removeJavascriptInterface("__NoreaAndroidVpnWorkers")
     storageBridge.destroy()
     super.onDestroy()
+    AndroidActivityLifecycle.publishDestruction(id, true)
   }
 
   private fun installScraperBackHandler() {
