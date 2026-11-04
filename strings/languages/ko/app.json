@@ -83,7 +83,6 @@
   "vpnDownload.loading": "VPN 다운로드 상태를 불러오는 중…",
   "vpnDownload.interval": "부분 {number}",
   "vpnDownload.start": "VPN 다운로드 시작",
-  "vpnDownload.cancelDraft": "요청 취소",
   "vpnDownload.chapterId": "챕터 ID {id}",
   "vpnDownload.progressLabel": "부분 다운로드 진행률",
   "vpnDownload.userPaused": "직접 일시 중지함",

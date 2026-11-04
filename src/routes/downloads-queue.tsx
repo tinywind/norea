@@ -31,7 +31,6 @@ import { DownloadWorkStatusLabel, type DownloadWorkStatus } from "../components/
 import { VpnDownloadAttention } from "../components/VpnDownloadAttention";
 import { VpnDownloadLaunchDialog } from "../components/VpnDownloadLaunchDialog";
 import { VpnDownloadWorkRow, vpnDownloadWorks } from "../components/VpnDownloadWorks";
-import { TextButton } from "../components/TextButton";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import { goalNovelIdsOf, stopsGoalsLine, useCancelDownloadTask } from "../components/use-cancel-goal-work";
 import {
@@ -1379,9 +1378,9 @@ export function DownloadsQueueView({
         <PageHeader
           actions={
             <>
-              <Button
+              <IconButton
                 disabled={queueActionPending || (!sourceTasks.length && !hasVpnRun && !requests.length)}
-                leftSection={allPaused ? <PlayIcon size="1.125rem" /> : <PauseIcon size="1.125rem" />}
+                label={allPaused ? t("downloads.queue.resume") : t("downloads.queue.pause")}
                 onClick={() => runQueueAction(async () => {
                   if (allPaused) {
                     taskScheduler.resumeSourceQueue();
@@ -1391,10 +1390,10 @@ export function DownloadsQueueView({
                     if (hasVpnRun) await pauseVpnDownloadRun();
                   }
                 })}
-                variant="subtle"
+                size="lg"
               >
-                {allPaused ? t("downloads.queue.resume") : t("downloads.queue.pause")}
-              </Button>
+                {allPaused ? <PlayIcon /> : <PauseIcon />}
+              </IconButton>
               <OverflowMenu items={overflowItems} label={t("common.more")} />
             </>
           }
@@ -1443,8 +1442,10 @@ export function DownloadsQueueView({
                           request.phase === "publishing" ? "tasks.downloadPublishing" : "vpnDownload.phase.preparing")}</Text>
                       </div>
                       <div className="norea-task-group-actions">
-                        <TextButton tone="danger" aria-label={t("tasks.cancelDownloadRequest", { title: request.title })}
-                          onClick={() => cancelChapterDownloadRequest(request.id)}>{t("vpnDownload.cancelDraft")}</TextButton>
+                        <IconButton label={t("tasks.cancelDownloadRequest", { title: request.title })}
+                          onClick={() => cancelChapterDownloadRequest(request.id)} size="lg" tone="danger">
+                          <CloseIcon />
+                        </IconButton>
                       </div>
                     </div>
                     {request.error ? (

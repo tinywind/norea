@@ -116,6 +116,9 @@ describe("task work group order", () => {
     const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
     expect($.text()).toContain("Newly requested work");
     expect($('[data-download-request="request"]').text()).toContain("Preparing downloads");
+    const cancel = $('[data-download-request="request"] button[aria-label="Cancel request: Newly requested work"]');
+    expect(cancel).toHaveLength(1);
+    expect(cancel.text()).toBe("");
     expect($.text()).not.toContain("Nothing in the queue");
     state.requests = [];
   });
@@ -225,14 +228,15 @@ describe("task work group order", () => {
     expect($(".norea-task-work-status").text()).toBe("Paused");
     expect($("#norea-downloads-other-title").text()).toBe("Other activity");
     expect($(".norea-downloads-other .norea-task-row-title").text()).toBe("Install Foo");
-    expect($("button").filter((_, element) => $(element).text() === "Resume downloads")).toHaveLength(1);
+    expect($('button[aria-label="Resume downloads"]')).toHaveLength(1);
   });
 
-  it("labels the pause control and moves rare queue actions into the page overflow", () => {
+  it("draws the pause control as a named icon and moves rare queue actions into the page overflow", () => {
     state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1, records: [chapter(1, 1, "queued", 0)] };
     const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
     const header = $(".norea-app-bar-actions");
-    expect(header.find("button").first().text()).toBe("Pause downloads");
+    expect(header.find("button").first().attr("aria-label")).toBe("Pause downloads");
+    expect(header.find("button").first().text()).toBe("");
     expect(header.find('button[aria-label="More"]')).toHaveLength(1);
     expect($("h1.norea-app-bar-title").text()).toContain("Downloads");
   });

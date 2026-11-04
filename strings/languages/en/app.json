@@ -83,7 +83,6 @@
   "vpnDownload.loading": "Loading VPN download state…",
   "vpnDownload.interval": "Part {number}",
   "vpnDownload.start": "Start VPN downloads",
-  "vpnDownload.cancelDraft": "Cancel request",
   "vpnDownload.chapterId": "Chapter ID {id}",
   "vpnDownload.progressLabel": "Part download progress",
   "vpnDownload.userPaused": "Paused by you",

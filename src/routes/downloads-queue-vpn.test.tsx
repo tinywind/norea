@@ -55,7 +55,7 @@ function elements(node: ReactNode): ReactElement<Props>[] {
 function render() { mocks.index = 0; mocks.refIndex = 0; return elements(DownloadsQueueView()); }
 const pageMenu = () => render().find(element => element.props.label === "common.more" && element.props.items)!.props.items!;
 const menuItem = (label: string) => pageMenu().find(item => item.label === label)!;
-const pauseButton = (label: string) => render().find(element => element.props.children === label)!;
+const pauseButton = (label: string) => render().find(element => element.props.label === label && element.props.onClick)!;
 beforeEach(() => {
   vi.clearAllMocks(); mocks.states = []; mocks.refs = []; mocks.snapshot = undefined;
   confirm.mockResolvedValue(true);
