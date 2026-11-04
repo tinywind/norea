@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChapterListRow } from "../../db/queries/chapter";
 import {
   chapterIdsBetween,
+  chapterNameShowsNumber,
   chapterRowClickAction,
   chapterIdsInNumberRange,
   filterChapterList,
@@ -171,5 +172,24 @@ describe("chapterRowClickAction", () => {
     expect(chapterRowClickAction(true, false)).toBe("toggle");
     expect(chapterRowClickAction(false, true)).toBe("select-range");
     expect(chapterRowClickAction(true, true)).toBe("select-range");
+  });
+});
+
+describe("chapterNameShowsNumber", () => {
+  const named = (name: string, chapterNumber: string | null, position = 7) => ({ chapterNumber, name, position });
+
+  it("finds the number as a whole number in the name", () => {
+    expect(chapterNameShowsNumber(named("주술사는 초월을 원한다 1895화", "1895"))).toBe(true);
+    expect(chapterNameShowsNumber(named("Chapter 0012 - Return", "12"))).toBe(true);
+    expect(chapterNameShowsNumber(named("Episode 7", null))).toBe(true);
+    expect(chapterNameShowsNumber(named("Side story 1.5", "1.5"))).toBe(true);
+  });
+
+  it("does not match a number inside a longer one", () => {
+    expect(chapterNameShowsNumber(named("Chapter 18950", "1895"))).toBe(false);
+    expect(chapterNameShowsNumber(named("Chapter 21", "1"))).toBe(false);
+    expect(chapterNameShowsNumber(named("Chapter 1.5", "5"))).toBe(false);
+    expect(chapterNameShowsNumber(named("Chapter 1.5", "1"))).toBe(false);
+    expect(chapterNameShowsNumber(named("Prologue", "1"))).toBe(false);
   });
 });

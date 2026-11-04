@@ -49,6 +49,7 @@ import { OverflowMenu } from "../ui/OverflowMenu";
 import {
   beforeChapterIdForMove,
   chapterDndId,
+  chapterNameShowsNumber,
   chapterRowClickAction,
   EMPTY_CHAPTER_DND_IDS,
   FINISHED_PROGRESS,
@@ -377,7 +378,9 @@ function ChapterListItem({
             id={metaId}
             title={details || undefined}
           >
-            <span>{t("novel.chapterShort", { number: formatChapterNumber(chapter) })}</span>
+            {chapterNameShowsNumber(chapter) ? null : (
+              <span>{t("novel.chapterShort", { number: formatChapterNumber(chapter) })}</span>
+            )}
             {releaseTime ? <span>{releaseTime}</span> : null}
             {partlyRead ? (
               <VisuallyHidden>{t("novel.percentRead", { progress })}</VisuallyHidden>

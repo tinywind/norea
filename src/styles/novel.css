@@ -484,8 +484,10 @@
   white-space: nowrap;
 }
 
-.norea-novel-chapter-meta > span + span::before {
-  content: "· ";
+/* Every shown part after the first gets one evenly spaced separator; screen-reader-only parts take none. */
+.norea-novel-chapter-meta > span:not(.mantine-VisuallyHidden-root) ~ span:not(.mantine-VisuallyHidden-root)::before {
+  content: "·";
+  margin-inline: var(--norea-space-1);
 }
 
 .norea-novel-chapter-status {

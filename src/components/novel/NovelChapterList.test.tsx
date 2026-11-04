@@ -109,6 +109,22 @@ describe("chapter row structure", () => {
     expect(describedText($)).toBe("Ch. 122026-10-1245% read");
   });
 
+  it("omits the chapter number when the name already shows it", () => {
+    const $ = renderRow({ chapterNumber: "1895", name: "Novel 1895", releaseTime: "2026-10-12" });
+    expect($("[id]").filter((_, element) => $(element).hasClass("norea-novel-chapter-meta")).text()).toBe("2026-10-12");
+  });
+
+  it("separates shown meta parts with one spaced dot and skips screen-reader-only parts", () => {
+    const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
+    const meta = /\.norea-novel-chapter-meta \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(meta).not.toContain("gap:");
+    expect(css).toContain(
+      '.norea-novel-chapter-meta > span:not(.mantine-VisuallyHidden-root) ~ span:not(.mantine-VisuallyHidden-root)::before {\n  content: "·";\n  margin-inline: var(--norea-space-1);',
+    );
+    const $ = renderRow({ progress: 45 });
+    expect($(".norea-novel-chapter-meta .mantine-VisuallyHidden-root")).toHaveLength(1);
+  });
+
   it("fills a partly read row from the left as far as it was read", () => {
     const partial = renderRow({ progress: 45 })(".norea-novel-chapter");
     expect(partial.attr("data-progress")).toBe("partial");

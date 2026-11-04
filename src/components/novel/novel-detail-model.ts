@@ -62,6 +62,15 @@ export function formatChapterNumber(
   return chapter.chapterNumber?.trim() || String(chapter.position);
 }
 
+/** Whether the chapter name already shows its number, such as "Chapter 1895" for chapter 1895. */
+export function chapterNameShowsNumber(
+  chapter: Pick<ChapterListRow, "chapterNumber" | "name" | "position">,
+): boolean {
+  const number = formatChapterNumber(chapter).replace(/^0+(?=\d)/, "");
+  const escaped = number.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  return new RegExp(`(?<![\\d.])0*${escaped}(?!\\.?\\d)`).test(chapter.name);
+}
+
 /** The chapter's shown number as a value, or `null` when it is not numeric. */
 export function chapterNumberValue(
   chapter: Pick<ChapterListRow, "chapterNumber" | "position">,
