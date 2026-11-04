@@ -96,6 +96,12 @@ it("gathers one novel's drafts, waits and plans into one row and leaves finished
   expect(works[0]).toMatchObject({ completed: 1, total: 6, held: false, canPause: true });
 });
 
+it("counts a chapter once when several of a novel's plans list it", () => {
+  const earlier = { ...activePlan(), id: "plan-earlier", ranges: activePlan().ranges.map(range => ({ ...range, id: `earlier-${range.id}`, phase: "cancelled" as const, checkpoint: range.selectedChapterIds.length })) };
+  const works = vpnDownloadWorks(withPlans(earlier, activePlan()));
+  expect(works[0]).toMatchObject({ completed: 4, total: 4 });
+});
+
 it("shows a plain novel row with progress and a VPN label but no range rows or range buttons", () => {
   const view = renderRow(withPlans(activePlan()));
   expect(text(view)).toContain("Work");

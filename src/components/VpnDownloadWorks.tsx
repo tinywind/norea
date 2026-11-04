@@ -72,25 +72,35 @@ const terminal = (range: VpnDownloadRangeState) => range.phase === "completed" |
 
 export function vpnDownloadWorks(snapshot: VpnDownloadRuntimeSnapshot): VpnDownloadWork[] {
   const works = new Map<string, VpnDownloadWork>();
+  // A novel's plans, drafts and waits can list the same chapters, so progress counts each chapter once.
+  const chapters = new Map<string, { all: Set<number>; done: Set<number> }>();
   for (const item of [...snapshot.plans, ...snapshot.drafts, ...snapshot.handover ?? []]) {
     const key = JSON.stringify([item.pluginId, item.novelId]);
     const work = works.get(key) ?? { key, title: item.title, pluginId: item.pluginId, novelId: item.novelId, drafts: [], plans: [], handover: [],
       completed: 0, total: 0, unfinished: [], held: false, canPause: false };
+    const ids = chapters.get(key) ?? { all: new Set<number>(), done: new Set<number>() };
+    const add = (chapterIds: readonly number[]) => { for (const id of chapterIds) ids.all.add(id); };
     if ("ranges" in item) {
       work.plans.push(item);
       for (const range of item.ranges) {
-        work.total += range.selectedChapterIds.length;
-        work.completed += range.checkpoint;
+        add(range.selectedChapterIds);
+        for (const id of range.selectedChapterIds.slice(0, range.checkpoint)) ids.done.add(id);
         if (!terminal(range)) work.unfinished.push({ planId: item.id, range });
       }
     } else if ("chapterIds" in item) {
       work.handover.push(item);
-      work.total += item.chapterIds.length;
+      add(item.chapterIds);
     } else {
       work.drafts.push(item);
-      work.total += item.selectedChapterIds.length;
+      add(item.selectedChapterIds);
     }
     works.set(key, work);
+    chapters.set(key, ids);
+  }
+  for (const [key, work] of works) {
+    const ids = chapters.get(key)!;
+    work.total = ids.all.size;
+    work.completed = ids.done.size;
   }
   return [...works.values()].filter(work => work.unfinished.length || work.drafts.length || work.handover.length).map(work => {
     const held = work.unfinished.some(({ range }) => range.userPaused && range.pauseReason === "work-paused") ||
