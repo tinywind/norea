@@ -1147,7 +1147,7 @@ function PdfReaderContentInner(
       const columns = isTwoPageReader ? 2 : 1;
       const availableWidth = Math.max(
         MIN_RENDER_BOUND_PX,
-        wrapNode.clientWidth - horizontalPadding,
+        viewportNode.clientWidth - horizontalPadding,
       );
       const nextHeight =
         pdfPageFitMode === "width"

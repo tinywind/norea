@@ -161,6 +161,7 @@ describe("PDF progress readiness", () => {
       scrollTo: ({ top }: { top: number }) => { viewport.scrollTop = top; },
       scrollBy: vi.fn(),
     };
+    const pageWrap = { ...viewport };
     const ref = { current: null as ReaderContentHandle | null };
     const onProgressChange = vi.fn();
     const props: ComponentProps<typeof PdfReaderContent> = {
@@ -181,7 +182,7 @@ describe("PDF progress readiness", () => {
         const viewportNode = findNode(tree, (node) => node.className?.startsWith("norea-pdf-reader-viewport") === true)!;
         viewportNode.props.ref!.current = viewport;
         const wrap = findNode(tree, (node) => node.className === "norea-pdf-reader-page-wrap")!;
-        wrap.props.ref!.current = viewport;
+        wrap.props.ref!.current = pageWrap;
         hooks.pendingEffects.splice(0).forEach((effect) => effect());
         frames.splice(0).forEach((frame) => frame());
         if (!hooks.dirty && frames.length === 0) return;
@@ -203,6 +204,7 @@ describe("PDF progress readiness", () => {
     return {
       ref,
       viewport,
+      pageWrap,
       onProgressChange,
       resolveDocument,
       rejectDocument,
@@ -276,6 +278,31 @@ describe("PDF progress readiness", () => {
     reader.render();
     expect(reader.page().renderBounds?.width).toBe(300);
     expect(reader.viewportNode()["data-zoomed"]).toBe(false);
+  });
+
+  it.each([false, true])("keeps zoom relative to the viewport when the page expands (paged: %s)", async (pageReader) => {
+    let resize = () => {};
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resize = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    const reader = mountReader({ pageReader });
+    reader.resolveDocument({ numPages: 1 });
+    await reader.settle();
+    reader.button("reader.pdfZoom.in")!.onClick();
+    reader.render();
+    expect(reader.page().renderBounds?.width).toBe(375);
+
+    reader.pageWrap.clientWidth = 375;
+    resize();
+    reader.render();
+    expect(reader.page().renderBounds?.width).toBe(375);
+
+    reader.viewport.clientWidth = 240;
+    resize();
+    reader.render();
+    expect(reader.page().renderBounds?.width).toBe(300);
   });
 
   it("labels each PDF page with its position", async () => {
