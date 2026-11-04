@@ -209,7 +209,6 @@ export const LibraryCategoryDialogs = forwardRef<
       onExitTransitionEnd={restoreFocus}
       opened={active && categoryEditor !== null}
       returnFocus={false}
-      size="sm"
       title={categoryEditorTitle}
     >
       <form id={formId} onSubmit={handleCategorySubmit}>
