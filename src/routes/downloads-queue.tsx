@@ -1308,7 +1308,7 @@ export function DownloadsQueueView({
         title={
           <span className="norea-task-page-title">
             {t("downloads.title")}
-            <span className="norea-task-title-count">{tasks.length}</span>
+            {vpnWorks.length === 0 ? <span className="norea-task-title-count">{tasks.length}</span> : null}
           </span>
         }
         actions={
@@ -1332,7 +1332,7 @@ export function DownloadsQueueView({
             <OverflowMenu items={overflowItems} label={t("common.more")} />
           </div>
         }
-        meta={
+        meta={vpnWorks.length === 0 ? (
           <div className="norea-task-summary-strip">
             <SummaryPill>
               {t("tasks.summary.running", { count: taskStats.running })}
@@ -1361,7 +1361,7 @@ export function DownloadsQueueView({
               {t("tasks.summary.done", { count: taskStats.succeeded })}
             </SummaryPill>
           </div>
-        }
+        ) : undefined}
       />
       {viewSwitcher}
 

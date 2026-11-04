@@ -6,10 +6,12 @@ import { describe, expect, it, vi } from "vitest";
 import type { TaskRecord, TaskSnapshot } from "../lib/tasks/task-types";
 import type { VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-drafts";
 import type { ChapterDownloadRequestState } from "../lib/tasks/chapter-download-requests";
+import type { VpnDownloadWork } from "../components/VpnDownloadWorks";
 
 const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefined,
   vpn: { drafts: [], plans: [], loading: false, error: null, capabilities: { supported: true, parallelSupported: true, maxWorkers: 10 }, chapterLabels: {}, ownedChapterIds: [] } as VpnDownloadRuntimeSnapshot,
   requests: [] as ChapterDownloadRequestState[],
+  vpnWorks: [] as VpnDownloadWork[],
   fontScalePercent: 100,
   focus: undefined as string | undefined,
   navigate: vi.fn(),
@@ -30,7 +32,10 @@ vi.mock("../components/DownloadGoalAttention", () => ({ DownloadGoalAttention: (
 vi.mock("../components/BackupFolderAttention", () => ({ BackupFolderAttention: () => null, useBackupFolderUnavailable: () => false }));
 vi.mock("../components/DownloadGoalWorkLine", () => ({ DownloadGoalWorkLine: () => null }));
 vi.mock("../components/VpnDownloadLaunchDialog", () => ({ VpnDownloadLaunchDialog: () => null }));
-vi.mock("../components/VpnDownloadWorks", () => ({ VpnDownloadWorkRow: () => null, vpnDownloadWorks: () => [] }));
+vi.mock("../components/VpnDownloadWorks", () => ({
+  VpnDownloadWorkRow: ({ work }: { work: VpnDownloadWork }) => <div data-vpn-work={work.key}>{work.completed}/{work.total}</div>,
+  vpnDownloadWorks: () => state.vpnWorks,
+}));
 vi.mock("../store/appearance", async (importOriginal) => ({
   ...await importOriginal<typeof import("../store/appearance")>(),
   useAppearanceStore: (selector: (appearance: { fontScalePercent: number }) => unknown) => selector({ fontScalePercent: state.fontScalePercent }),
@@ -63,6 +68,19 @@ function workTitles(records: TaskRecord[]): string[] {
 }
 
 describe("task work group order", () => {
+  it("does not present ordinary task counts as the total while VPN works are visible", () => {
+    state.vpnWorks = [{ key: "vpn-work", completed: 12, total: 20 } as VpnDownloadWork];
+    try {
+      workTitles([chapter(1, 1, "running")]);
+      const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+      expect($("[data-vpn-work]").text()).toBe("12/20");
+      expect($(".norea-task-title-count").length).toBe(0);
+      expect($(".norea-task-summary-strip").length).toBe(0);
+    } finally {
+      state.vpnWorks = [];
+    }
+  });
+
   it("omits VPN-owned chapter rows and their authentication banners from the ordinary queue", () => {
     state.vpn.ownedChapterIds = [1];
     const records = [chapter(1, 1, "queued", 0), { ...chapter(2, 2, "running", 1), vpnWorker: { rangeId: "range", slot: 9 as const, generation: 1 } }, chapter(3, 3, "queued", 2)];
