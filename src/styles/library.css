@@ -173,6 +173,7 @@
   align-items: center;
   display: flex;
   min-height: var(--norea-control-sm);
+  width: 100%;
 }
 
 .norea-library-option-list .mantine-Switch-body {
@@ -187,8 +188,10 @@
   margin-bottom: var(--norea-space-1);
 }
 
+/* The count ends on the row's right edge, so counts line up down the list. */
 .norea-library-option-label {
   display: flex;
+  flex: 1 1 auto;
   gap: var(--norea-space-3);
   justify-content: space-between;
 }
