@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { subscribePerformanceObservations } from "../observability";
-import { TaskScheduler } from "./scheduler";
+import { SNAPSHOT_FLUSH_MIN_INTERVAL_MS, TaskScheduler } from "./scheduler";
 
 function queuedDownload(scheduler: TaskScheduler) {
   return scheduler.enqueueSource({
@@ -76,7 +76,9 @@ describe("scheduler snapshot work", () => {
         scheduler.resumeSourceQueue();
         scheduler.resumeTaskGroup("downloads");
       });
-      vi.advanceTimersByTime(100);
+      vi.advanceTimersByTime(SNAPSHOT_FLUSH_MIN_INTERVAL_MS - 1);
+      expect(published).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(1);
       expect(notificationSnapshot).toMatchObject({
         sourceQueuesPaused: false,
         pausedSourceIds: [],
@@ -167,6 +169,74 @@ describe("scheduler snapshot work", () => {
       expect(frames.builds()).toBe(2);
       frames.flush();
       expect(frames.builds()).toBe(2);
+    } finally {
+      frames.unsubscribe();
+    }
+  });
+
+  it("publishes 1000 chapter completions at most four times per second and ends on the exact state", async () => {
+    vi.useFakeTimers();
+    const scheduler = new TaskScheduler({ terminalTaskRetentionMs: 600_000 });
+    const frames = observeFrames();
+    const published: ReturnType<TaskScheduler["getSnapshot"]>[] = [];
+    scheduler.subscribe(() => published.push(scheduler.getSnapshot()));
+    let succeededEvents = 0;
+    scheduler.subscribeEvents((event) => {
+      if (event.task.status === "succeeded") succeededEvents += 1;
+    });
+    try {
+      const startedAt = performance.now();
+      const handles = scheduler.batch(() =>
+        Array.from({ length: 1000 }, () =>
+          scheduler.enqueueSource({
+            kind: "chapter.download",
+            priority: "background",
+            source: { id: "source", name: "Source" },
+            title: "Chapter",
+            run: () => new Promise<void>((resolve) => setTimeout(resolve, 5)),
+          }),
+        ),
+      );
+      const settled = Promise.all(handles.map((handle) => handle.promise));
+      let done = false;
+      void settled.then(() => { done = true; });
+      while (!done) await vi.advanceTimersByTimeAsync(50);
+      await vi.advanceTimersByTimeAsync(SNAPSHOT_FLUSH_MIN_INTERVAL_MS);
+      const elapsedMs = performance.now() - startedAt;
+
+      expect(succeededEvents).toBe(1000);
+      expect(published.length).toBeLessThanOrEqual(
+        Math.ceil(elapsedMs / SNAPSHOT_FLUSH_MIN_INTERVAL_MS) + 1,
+      );
+      expect(published.at(-1)).toBe(scheduler.getSnapshot());
+      expect(published.at(-1)).toMatchObject({ failed: 0, queued: 0, running: 0 });
+    } finally {
+      frames.unsubscribe();
+    }
+  });
+
+  it("publishes a change after an idle interval on the next frame", () => {
+    vi.useFakeTimers();
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
+    const frames = observeFrames();
+    const published = vi.fn();
+    scheduler.subscribe(published);
+    try {
+      queuedDownload(scheduler);
+      frames.flush();
+      expect(published).toHaveBeenCalledTimes(1);
+
+      queuedDownload(scheduler);
+      frames.flush();
+      expect(published).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(SNAPSHOT_FLUSH_MIN_INTERVAL_MS);
+      expect(published).toHaveBeenCalledTimes(2);
+
+      vi.advanceTimersByTime(SNAPSHOT_FLUSH_MIN_INTERVAL_MS);
+      queuedDownload(scheduler);
+      frames.flush();
+      expect(published).toHaveBeenCalledTimes(3);
+      expect(scheduler.getSnapshot().queued).toBe(3);
     } finally {
       frames.unsubscribe();
     }

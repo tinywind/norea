@@ -101,6 +101,9 @@ export interface SourceAccessConfirmation {
 
 const TASK_BULK_EVENT_CHUNK_SIZE = 250;
 const SNAPSHOT_FLUSH_FALLBACK_MS = 100;
+// Each publication rebuilds every materialized record and wakes every snapshot
+// subscriber, so a busy queue publishes at most four times per second.
+export const SNAPSHOT_FLUSH_MIN_INTERVAL_MS = 250;
 
 export function taskWorkQueueKey(subject: TaskSubject | undefined): string | null {
   if (!subject) return null;
@@ -280,6 +283,7 @@ export class TaskScheduler {
   private snapshotFlushScheduled = false;
   private snapshotRafHandle: number | null = null;
   private snapshotTimeoutHandle: ReturnType<typeof setTimeout> | null = null;
+  private lastSnapshotFlushAt = Number.NEGATIVE_INFINITY;
   private readonly sourceLastServedAt = new Map<string, number>();
   private snapshotRecordIndexes = new Map<string, number>();
   private snapshot: TaskSnapshot = {
@@ -2653,6 +2657,7 @@ export class TaskScheduler {
       clearTimeout(this.snapshotTimeoutHandle);
       this.snapshotTimeoutHandle = null;
     }
+    this.lastSnapshotFlushAt = performance.now();
     this.materializeSnapshotIfDirty();
     for (const listener of this.snapshotListeners) listener();
   }
@@ -2660,6 +2665,15 @@ export class TaskScheduler {
   private scheduleSnapshotFlush(): void {
     if (this.snapshotFlushScheduled) return;
     this.snapshotFlushScheduled = true;
+    const throttleMs =
+      this.lastSnapshotFlushAt + SNAPSHOT_FLUSH_MIN_INTERVAL_MS - performance.now();
+    if (throttleMs > 0) {
+      this.snapshotTimeoutHandle = setTimeout(
+        () => this.runScheduledSnapshotFlush(),
+        throttleMs,
+      );
+      return;
+    }
     // Hidden WebViews can stop animation frames while native notifications
     // still need current task state.
     if (typeof requestAnimationFrame === "function") {

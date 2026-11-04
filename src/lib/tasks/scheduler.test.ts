@@ -667,12 +667,13 @@ describe("TaskScheduler", () => {
       }),
     ).toBe(2);
     expect(snapshots).toBe(0);
-    await settle();
-    expect(snapshots).toBe(1);
-    await expect(running.promise).rejects.toThrow("Task was cancelled.");
-    await expect(queuedSameNovel.promise).rejects.toThrow(
+    const runningCancelled = expect(running.promise).rejects.toThrow("Task was cancelled.");
+    const queuedCancelled = expect(queuedSameNovel.promise).rejects.toThrow(
       "Task was cancelled.",
     );
+    await vi.waitFor(() => expect(snapshots).toBe(1));
+    await runningCancelled;
+    await queuedCancelled;
 
     finishRunning();
     await queuedOtherNovel.promise;
@@ -4009,7 +4010,7 @@ describe("TaskScheduler", () => {
 
     finish();
     await task.promise;
-    expect(snapshots).toBeGreaterThan(snapshotsAfterStart);
+    await vi.waitFor(() => expect(snapshots).toBeGreaterThan(snapshotsAfterStart));
   });
 
   it("materializes every active snapshot record", () => {
