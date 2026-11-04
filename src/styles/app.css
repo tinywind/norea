@@ -183,6 +183,20 @@ a {
   }
 }
 
+/*
+ * WCAG 1.4.11: Mantine outlines unchecked boxes and radios with gray-4 / dark-4 and fills the
+ * off switch track with gray-3 / dark-5, under 3:1 on sheets. The strong rule keeps 3:1 on
+ * every surface, and the white thumb stays visible on it.
+ */
+[data-mantine-color-scheme] .mantine-Checkbox-input:not(:checked):not(:disabled):not([data-indeterminate]):not([data-error]),
+[data-mantine-color-scheme] .mantine-Radio-radio:not(:checked):not(:disabled):not([data-error]) {
+  border-color: var(--norea-color-rule-strong);
+}
+
+[data-mantine-color-scheme] .mantine-Switch-input:not(:checked):not(:disabled) + .mantine-Switch-track {
+  --switch-bg: var(--norea-color-rule-strong);
+}
+
 @media (forced-colors: active) {
   :focus-visible,
   .mantine-focus-auto:focus-visible,

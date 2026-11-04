@@ -118,7 +118,7 @@ describe("resolvePaletteRoles contrast gate", () => {
   });
 
   it.each(ALL_CASES)("$label keeps non-text roles at 3:1", ({ roles }) => {
-    for (const surface of [roles.bg, roles.surface, roles.surfaceRaised]) {
+    for (const surface of [roles.bg, roles.surface, roles.surfaceRaised, roles.overlaySurface]) {
       expectContrast(roles.ruleStrong, surface, NON_TEXT_CONTRAST, "rule-strong");
       expectContrast(roles.iconSubtle, surface, NON_TEXT_CONTRAST, "icon-subtle");
     }

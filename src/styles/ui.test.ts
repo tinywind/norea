@@ -176,6 +176,17 @@ describe("focus indicator", () => {
   });
 });
 
+describe("unchecked selection controls", () => {
+  it("outline boxes, radios and off switch tracks with the 3:1 strong rule", () => {
+    expect(ruleFor(appCss, "[data-mantine-color-scheme] .mantine-Checkbox-input:not(:checked):not(:disabled):not([data-indeterminate]):not([data-error])").body)
+      .toMatch(/border-color: var\(--norea-color-rule-strong\);/);
+    expect(ruleFor(appCss, "[data-mantine-color-scheme] .mantine-Radio-radio:not(:checked):not(:disabled):not([data-error])").body)
+      .toMatch(/border-color: var\(--norea-color-rule-strong\);/);
+    expect(ruleFor(appCss, "[data-mantine-color-scheme] .mantine-Switch-input:not(:checked):not(:disabled) + .mantine-Switch-track").body)
+      .toMatch(/--switch-bg: var\(--norea-color-rule-strong\);/);
+  });
+});
+
 describe("coarse pointer touch floor", () => {
   const coarse = mediaBlock(css, "(any-pointer: coarse)");
 
