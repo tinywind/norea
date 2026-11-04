@@ -261,16 +261,26 @@ describe("selection visuals", () => {
     expect(css).toMatch(/\.norea-novel-chapter\[data-selected="true"\] \{[^}]*background: var\(--norea-color-selected\);/);
   });
 
-  it("drops the grey reading fill while selecting so read rows never look selected", () => {
+  it("keeps the grey reading fill while selecting and marks selected rows with a tint and an accent ring", () => {
     for (const row of [{ progress: 45 }, { unread: false }]) {
       const browsing = renderRow(row)(".norea-novel-chapter");
-      expect(browsing.attr("data-progress")).toBeDefined();
       const selectingRow = renderRow(row, undefined, selecting())(".norea-novel-chapter");
-      expect(selectingRow.attr("data-progress")).toBeUndefined();
-      expect(selectingRow.attr("style") ?? "").not.toContain("--norea-chapter-progress");
+      expect(selectingRow.attr("data-progress")).toBe(browsing.attr("data-progress"));
+      expect(selectingRow.attr("style")).toBe(browsing.attr("style"));
     }
     const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
     expect(css).toMatch(/\.norea-novel-chapter\[data-progress\]::before \{[^}]*background: var\(--norea-color-ink\);/);
+    const selected = /\.norea-novel-chapter\[data-selected="true"\] \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(selected).toContain("background: var(--norea-color-selected)");
+    expect(selected).toContain("outline: 1px solid var(--norea-color-accent)");
+  });
+
+  it("pins the chapter list header flush under the page header with an opaque background", () => {
+    const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
+    const header = /\.norea-novel-chapters-header \{([^}]*)\}/.exec(css)?.[1] ?? "";
+    expect(header).toContain("top: var(--norea-app-bar-height)");
+    expect(header).toContain("background: var(--norea-color-bg)");
+    expect(css).not.toContain("3.5rem");
   });
 
   it("marks and announces the range start only while selecting", () => {

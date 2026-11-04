@@ -288,7 +288,8 @@
   gap: var(--norea-space-2);
   min-height: 3rem;
   position: sticky;
-  top: 3.5rem;
+  /* Flush under the one-row page header; its 1px border overlaps, so no row shows through a gap. */
+  top: var(--norea-app-bar-height);
   z-index: 2;
 }
 
@@ -352,11 +353,11 @@
 
   /* The info pane stays in view and scrolls on its own once the summary expands. */
   .norea-novel-info-pane {
-    max-height: calc(var(--norea-app-content-height) - 3.5rem - var(--norea-space-4));
+    max-height: calc(var(--norea-app-content-height) - var(--norea-app-bar-height) - var(--norea-space-4));
     overflow-y: auto;
     overscroll-behavior: contain;
     position: sticky;
-    top: calc(3.5rem + var(--norea-space-3));
+    top: calc(var(--norea-app-bar-height) + var(--norea-space-3));
   }
 
   .norea-novel-identity {
@@ -466,8 +467,11 @@
   color: var(--norea-color-accent);
 }
 
+/* The grey reading fill stays while selecting; a selected row adds the tint under it and an accent ring. */
 .norea-novel-chapter[data-selected="true"] {
   background: var(--norea-color-selected);
+  outline: 1px solid var(--norea-color-accent);
+  outline-offset: -1px;
 }
 
 .norea-novel-chapter[data-highlighted="true"] {

@@ -156,8 +156,7 @@ function ChapterListItem({
   const progress = getChapterReadingProgress(chapter);
   const finished = !chapter.unread || progress >= FINISHED_PROGRESS;
   const partlyRead = !finished && progress > 0;
-  // Selection hides the reading fill so a read row never looks like a selected one.
-  const readFill = selectionMode ? null : finished ? "100%" : partlyRead ? `${progress}%` : null;
+  const readFill = finished ? "100%" : partlyRead ? `${progress}%` : null;
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
