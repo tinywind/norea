@@ -57,7 +57,93 @@ beforeEach(() => {
   mocks.revoke.mockResolvedValue({ verdict: null, savedProfile: null, cleanupError: null });
   mocks.issues = { ...mocks.issues, data: [], isError: false, isPending: false, error: null };
   mocks.status.data = { profile: null };
-  mocks.reallow.mockResolvedValue(undefined); mocks.profilesChanged.mockResolvedValue(undefined);
+  mocks.reallow.mockImplementation(async (batchId: string, ip: string, revision: number) => {
+    const issue = mocks.issues.data.find(issue => issue.batchId === batchId && issue.ip === ip);
+    if (!issue?.excluded || issue.revision !== revision) throw new Error("Stale issue revision");
+    issue.excluded = false;
+    issue.revision++;
+  });
+  mocks.profilesChanged.mockResolvedValue(undefined);
+});
+
+function issue(ip: string, batchId = "batch-1", excluded = true): VpnDownloadProfileIssue {
+  return { batchId, planId: `plan-${batchId}`, rangeId: "range", profileId: "saved", profileHash: "a".repeat(64),
+    ip, generation: 8, cause: "connection-failed", recordedAt: 1000, excluded, revision: 4 };
+}
+
+const reallowButton = (view: ReactElement<Props>[]) => view.find(element => element.props.children === "settings.data.pluginVpn.saved.reallow")!;
+const reallowAllButton = (view: ReactElement<Props>[]) => view.find(element => typeof element.props.children === "string" && element.props.children.startsWith("settings.data.pluginVpn.saved.reallowAll{"))!;
+
+it.each(["works", "fails", null] as const)("can clear a download exclusion without a saved file while preserving the %s verdict", async verdict => {
+  mocks.vault.data!.profiles = [];
+  mocks.verdicts.data = verdict ? [{ ip: "192.0.2.1", verdict, updatedAt: 1 }] : [];
+  mocks.issues.data = [issue("192.0.2.1")];
+  const button = reallowButton(openManager());
+  expect(button.props.disabled).toBe(false);
+  await button.props.onClick!();
+  const text = copy(render());
+  expect(text).toContain("settings.data.pluginVpn.saved.allowed");
+  expect(text).toContain("settings.data.pluginVpn.saved.cause.connection-failed");
+  expect(mocks.revoke).not.toHaveBeenCalled();
+  expect(mocks.issues.data[0]).toMatchObject({ excluded: false, revision: 5 });
+});
+
+it("allows every excluded O profile across downloads, including missing files, while retaining other exclusions and history", async () => {
+  mocks.issues.data = [issue("192.0.2.1"), issue("192.0.2.1", "batch-2"), issue("192.0.2.2"),
+    issue("192.0.2.3"), issue("192.0.2.4"), issue("192.0.2.1", "batch-3", false)];
+  const button = reallowAllButton(openManager());
+  expect(button).toBeDefined();
+  expect(button.props.children).toBe('settings.data.pluginVpn.saved.reallowAll{"count":2}');
+  expect(button.props.disabled).toBe(false);
+  await button.props.onClick!();
+  expect(mocks.issues.data.map(issue => [issue.batchId, issue.ip, issue.excluded, issue.revision])).toEqual([
+    ["batch-1", "192.0.2.1", false, 5], ["batch-2", "192.0.2.1", false, 5], ["batch-1", "192.0.2.2", false, 5],
+    ["batch-1", "192.0.2.3", true, 4], ["batch-1", "192.0.2.4", true, 4], ["batch-3", "192.0.2.1", false, 4],
+  ]);
+  expect(mocks.issues.data.every(issue => issue.cause === "connection-failed" && issue.recordedAt === 1000)).toBe(true);
+  expect(mocks.revoke).not.toHaveBeenCalled();
+  expect(reallowAllButton(render()).props.disabled).toBe(true);
+});
+
+it("continues bulk reallow after a stale record and reports the partial failure", async () => {
+  mocks.issues.data = [issue("192.0.2.1"), issue("192.0.2.2")];
+  mocks.reallow.mockRejectedValueOnce(new Error("Stale issue revision"));
+  const button = reallowAllButton(openManager());
+  expect(button).toBeDefined();
+  await button.props.onClick!();
+  expect(mocks.issues.data.map(issue => issue.excluded)).toEqual([true, false]);
+  expect(copy(render())).toContain('saved.reallowAllFailed{"count":1,"error":"Stale issue revision"}');
+  expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["vpn-download-profile-issues"] });
+});
+
+it("locks reallow actions while a bulk request is pending and rejects duplicate submissions", async () => {
+  mocks.issues.data = [issue("192.0.2.1")];
+  let finish!: () => void;
+  mocks.reallow.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+  const button = reallowAllButton(openManager());
+  expect(button).toBeDefined();
+  const request = button.props.onClick!();
+  expect(reallowAllButton(render()).props.disabled).toBe(true);
+  expect(reallowButton(render()).props.disabled).toBe(true);
+  await button.props.onClick!();
+  expect(mocks.reallow).toHaveBeenCalledTimes(1);
+  finish();
+  await request;
+  expect(reallowAllButton(render()).props.disabled).toBe(false);
+});
+
+it.each(["loading", "error", "disabled"])("does not reallow profiles while management is %s", async state => {
+  mocks.issues.data = [issue("192.0.2.1")];
+  openManager();
+  if (state === "loading") mocks.issues.isPending = true;
+  if (state === "error") mocks.issues.isError = true;
+  const view = render(state === "disabled");
+  for (const button of [reallowButton(view), reallowAllButton(view)]) {
+    expect(button.props.disabled).toBe(true);
+    await button.props.onClick!();
+  }
+  expect(mocks.issues.data[0]).toMatchObject({ excluded: true, revision: 4 });
+  expect(mocks.reallow).not.toHaveBeenCalled();
 });
 
 it("keeps capacity inline and opens one modal combining retained files with O/X-only verdicts", () => {

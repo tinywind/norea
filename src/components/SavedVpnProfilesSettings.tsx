@@ -44,6 +44,8 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
   const profileByIp = new Map(vault.data?.profiles.map(profile => [profile.ip, profile]));
   const ips = [...new Set([...(verdicts.data ?? []).map(row => row.ip), ...profileByIp.keys(), ...(issues.data ?? []).map(issue => issue.ip)])].sort();
   const managementLocked = locked || issues.isPending || issues.isError;
+  const excludedApprovedIssues = (issues.data ?? []).filter(issue => issue.excluded && verdictByIp.get(issue.ip) === "works");
+  const excludedApprovedCount = new Set(excludedApprovedIssues.map(issue => issue.ip)).size;
 
   async function run(action: () => Promise<void>): Promise<void> {
     if (locked || pending.current) return;
@@ -120,6 +122,17 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
               {issues.isPending ? <Text role="status">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
               {issues.isError ? <Alert color="danger" role="alert">{describeError(issues.error)} <TextButton onClick={() => { void issues.refetch(); }}>{t("common.retry")}</TextButton></Alert> : null}
               {actionError ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
+              <TextButton disabled={managementLocked || !excludedApprovedCount} loading={busy} onClick={() => {
+                if (managementLocked || !excludedApprovedCount) return;
+                return run(async () => {
+                  const results = await Promise.allSettled(excludedApprovedIssues.map(issue =>
+                    reallowVpnDownloadBatchProfile(issue.batchId, issue.ip, issue.revision)));
+                  const failures = results.filter(result => result.status === "rejected");
+                  if (failures.length) throw new Error(t("settings.data.pluginVpn.saved.reallowAllFailed", {
+                    count: failures.length, error: [...new Set(failures.map(result => describeError(result.reason)))].join("; "),
+                  }));
+                });
+              }}>{t("settings.data.pluginVpn.saved.reallowAll", { count: excludedApprovedCount })}</TextButton>
               {!managementLocked && !ips.length ? <Text size="sm">{t("settings.data.pluginVpn.saved.noRecords")}</Text> : null}
               {ips.map(ip => {
                 const profile = profileByIp.get(ip);
@@ -150,7 +163,10 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
                     </Group>
                     <Text size="sm" c="dimmed">{formatDateTimeForLocale(locale, issue.recordedAt)}</Text>
                     <Text size="xs" c="dimmed" style={{ overflowWrap: "anywhere" }}>{t("settings.data.pluginVpn.saved.issueOwner", { batch: issue.batchId, range: issue.rangeId, generation: issue.generation })}</Text>
-                    {issue.excluded ? <TextButton disabled={managementLocked || !profile || verdict !== "works"} onClick={() => run(() => reallowVpnDownloadBatchProfile(issue.batchId, ip, issue.revision))}>
+                    {issue.excluded ? <TextButton disabled={managementLocked} onClick={() => {
+                      if (managementLocked) return;
+                      return run(() => reallowVpnDownloadBatchProfile(issue.batchId, ip, issue.revision));
+                    }}>
                       {t("settings.data.pluginVpn.saved.reallow")}
                     </TextButton> : null}
                   </Stack>)}
