@@ -230,3 +230,34 @@ it("reports no deleted chapters while the device deletion has not succeeded", as
   vi.mocked(listDeletionDownloadedChapterIds).mockResolvedValue([92]);
   expect(deletedDownloadChapterIds(plan, await runContentDeletion(plan, first))).toEqual([91, 92]);
 });
+
+it("deletes chosen chapter downloads in ordered chunks and retries only a failed chunk", async () => {
+  const ids = Array.from({ length: 450 }, (_, index) => index + 1);
+  vi.mocked(getChapterById).mockImplementation(async id => ({ ...chapter, id, name: `C${id}`, position: id }) as never);
+  vi.mocked(deleteDownloadCache).mockResolvedValueOnce({ workId: "delete", total: 200, deleted: 200, failed: 0, cancelled: false })
+    .mockRejectedValueOnce(new Error("download cache: failed to delete 3 chapters"));
+  const plan = await prepareContentDeletion({ kind: "downloads", scope: "chapter", ids: [...ids].reverse(), title: "Delete", serverUrl: "" }, options);
+  expect(plan.map(action => [action.side, action.name, action.downloadedChapterIds])).toEqual([
+    ["device", "C1 – C200", ids.slice(0, 200)],
+    ["device", "C201 – C400", ids.slice(200, 400)],
+    ["device", "C401 – C450", ids.slice(400)],
+  ]);
+  const first = await runContentDeletion(plan);
+  expect(vi.mocked(deleteDownloadCache).mock.calls.map(([call]) => call.targetIds)).toEqual([ids.slice(0, 200), ids.slice(200, 400), ids.slice(400)]);
+  expect(deleteDownloadCache).toHaveBeenCalledWith({ scope: "chapter", targetIds: ids.slice(0, 200), title: "Delete" });
+  expect(first.map(result => result.status)).toEqual(["succeeded", "failed", "succeeded"]);
+  expect(first[1]?.error).toContain("failed to delete 3 chapters");
+  expect(deletedDownloadChapterIds(plan, first)).toEqual([...ids.slice(0, 200), ...ids.slice(400)]);
+
+  vi.mocked(deleteDownloadCache).mockClear();
+  const retried = await runContentDeletion(plan, first);
+  expect(vi.mocked(deleteDownloadCache).mock.calls.map(([call]) => call.targetIds)).toEqual([ids.slice(200, 400)]);
+  expect(deletedDownloadChapterIds(plan, retried)).toHaveLength(450);
+});
+
+it("keeps one server deletion per chapter beside the chunked device deletion", async () => {
+  vi.mocked(getChapterById).mockImplementation(async id => ({ ...chapter, id, name: `C${id}`, position: id }) as never);
+  const plan = await prepareContentDeletion({ kind: "downloads", scope: "chapter", ids: [3, 1, 2], title: "Delete", serverUrl: source.serverUrl }, { ...options, server: true });
+  expect(plan.map(action => action.id)).toEqual(["device:chapters:0", "server:1", "server:2", "server:3"]);
+  expect(plan[0]).toMatchObject({ name: "C1 – C3", downloadedChapterIds: [1, 2, 3] });
+});

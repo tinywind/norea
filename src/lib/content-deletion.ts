@@ -1,4 +1,4 @@
-import { getChapterById, listChaptersByNovel, type ChapterListRow } from "../db/queries/chapter";
+import { getChapterById, listChaptersByNovel, type ChapterListRow, type ChapterRow } from "../db/queries/chapter";
 import { deleteLocalNovelRecords, findLocalDeletionNovel, listDeletionDownloadedChapterIds, listStoredDeletionNovelIds } from "../db/queries/content-deletion";
 import { getNovelById, setNovelInLibrary, type NovelDetailRecord } from "../db/queries/novel";
 import { removeDownloadGoals } from "./download-goals/goal-service";
@@ -20,6 +20,8 @@ import { recordDeletedWorkMetadata, type WorkCatalogEntry } from "./content-sync
 import { describeError } from "./errors";
 import { clearNovelCoverDisplayCache } from "./novel-cover-storage";
 import { cancelNovelChapterDownloadWork, deleteDownloadCache } from "./tasks/download-cache-delete";
+
+const DEVICE_CHAPTER_CHUNK_SIZE = 200;
 
 export type ContentDeletionRequest = (
   | {
@@ -170,13 +172,25 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
     actions.push({ id: `server:${chapter.id}`, side: "server", name: `${novel.name} · ${chapter.name}`, waitForSync: true, run: () => deleteMatchingServerChapter(request.serverUrl, novel, chapter) });
   };
   if (request.kind === "downloads" && request.scope === "chapter") {
+    const chapters: ChapterRow[] = [];
     for (const id of new Set(request.ids)) {
       const chapter = await getChapterById(id);
-      if (!chapter) continue;
-      actions.push({ id: `device:${id}`, side: "device", name: chapter.name, waitForSync: true, downloadedChapterIds: [id], run: () => deleteLocalDownloads("chapter", [id], request.title) });
-      if (options.server) {
-        const novel = await getNovelById(chapter.novelId);
+      if (chapter) chapters.push(chapter);
+    }
+    chapters.sort((left, right) => left.novelId - right.novelId || left.position - right.position || left.id - right.id);
+    // One native deletion per chunk instead of per chapter; a failed chunk is retried whole.
+    for (let index = 0; index < chapters.length; index += DEVICE_CHAPTER_CHUNK_SIZE) {
+      const chunk = chapters.slice(index, index + DEVICE_CHAPTER_CHUNK_SIZE);
+      const ids = chunk.map(chapter => chapter.id);
+      const name = chunk.length === 1 ? chunk[0]!.name : `${chunk[0]!.name} – ${chunk.at(-1)!.name}`;
+      actions.push({ id: `device:chapters:${index / DEVICE_CHAPTER_CHUNK_SIZE}`, side: "device", name, waitForSync: true, downloadedChapterIds: ids, run: () => deleteLocalDownloads("chapter", ids, request.title) });
+    }
+    if (options.server) {
+      const novels = new Map<number, NovelDetailRecord>();
+      for (const chapter of chapters) {
+        const novel = novels.get(chapter.novelId) ?? await getNovelById(chapter.novelId);
         if (!novel) throw new Error("Selected chapter's work no longer exists.");
+        novels.set(novel.id, novel);
         addServerChapter(novel, chapter);
       }
     }
