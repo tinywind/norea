@@ -236,7 +236,7 @@ function ReaderScopeMenu({ editor }: { editor: ReaderSettingsEditor }) {
 
   return (
     <div className="norea-reader-scope">
-      <Menu position="bottom-start" returnFocus shadow="md" withinPortal>
+      <Menu position="bottom-start" returnFocus withinPortal>
         <Menu.Target>
           <Button
             className="norea-reader-scope-trigger"

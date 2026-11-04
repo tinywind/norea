@@ -1,5 +1,5 @@
 import { Popover, Switch } from "@mantine/core";
-import { useEffect, useRef, useState, type FocusEvent } from "react";
+import { useEffect, useRef, useState, type CSSProperties, type FocusEvent } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
@@ -151,7 +151,6 @@ export function ReaderTopBar({
         opened={overflowOpen}
         onChange={setOverflowOpen}
         position="bottom-end"
-        shadow="md"
       >
         <Popover.Target>
           <IconButton
@@ -310,8 +309,9 @@ export function ReaderSettingsSheet({
 export function ReaderSettingsSidePanel({
   content,
   onClose,
+  style,
   ...target
-}: ReaderSettingsSurfaceProps) {
+}: ReaderSettingsSurfaceProps & { style?: CSSProperties }) {
   const { t } = useTranslation();
   useOverlayBackNavigation(true, onClose);
 
@@ -319,6 +319,7 @@ export function ReaderSettingsSidePanel({
     <aside
       aria-labelledby="reader-settings-panel-title"
       className="norea-reader-settings-panel"
+      style={style}
     >
       <header className="norea-reader-settings-panel-header">
         <h2

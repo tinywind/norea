@@ -1,4 +1,4 @@
-import { Box, Loader, Text } from "@mantine/core";
+import { Box, Loader, Text, Transition } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
@@ -48,6 +48,7 @@ import { enqueueChapterMediaRepair } from "../lib/tasks/chapter-download";
 import { useLibraryStore } from "../store/library";
 import { useReaderStore } from "../store/reader";
 import { useReaderLayoutStore } from "../store/reader-layout";
+import { OVERLAY_MOTION } from "../theme/motion";
 import "../styles/reader.css";
 
 const FINISHED_PROGRESS = 100;
@@ -604,16 +605,19 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
             />
           ) : null}
         </Box>
-        {readerSettingsOpen && wideReader ? (
-          <ReaderSettingsSidePanel
-            content={readerSettingsContent}
-            novelId={chapterNovelId}
-            novelName={currentNovel?.name}
-            onClose={closeReaderSettingsPanel}
-            sourceId={currentSourceId}
-            sourceName={currentSourceName}
-          />
-        ) : null}
+        <Transition mounted={readerSettingsOpen && wideReader} {...OVERLAY_MOTION.sheetSide}>
+          {(style) => (
+            <ReaderSettingsSidePanel
+              content={readerSettingsContent}
+              novelId={chapterNovelId}
+              novelName={currentNovel?.name}
+              onClose={closeReaderSettingsPanel}
+              sourceId={currentSourceId}
+              sourceName={currentSourceName}
+              style={style}
+            />
+          )}
+        </Transition>
       </Box>
       <ReaderBottomBar
         chapterListExpanded={showChapterPanel || chapterListOpen}
