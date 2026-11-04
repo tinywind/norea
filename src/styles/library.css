@@ -401,9 +401,13 @@
   position: relative;
 }
 
-/* White ring on a translucent dark fill, so the unchecked state reads on light and dark covers alike. */
+/*
+ * White ring on a translucent dark fill, so the unchecked state reads on light and dark covers alike.
+ * It sits in the cover's bottom corner, above the progress line, so the counts keep their full width.
+ */
 .norea-library-check {
   align-items: center;
+  bottom: var(--norea-space-1);
   background: rgb(0 0 0 / 0.25);
   border: 0.125rem solid #fff;
   border-radius: 50%;
@@ -414,7 +418,6 @@
   justify-content: center;
   left: var(--norea-space-1);
   position: absolute;
-  top: var(--norea-space-1);
   width: 1.5rem;
   z-index: 3;
 }
@@ -500,11 +503,6 @@
   right: var(--norea-space-1);
   top: var(--norea-space-1);
   z-index: 2;
-}
-
-/* The counts stay at the top while selecting and only leave the top-left corner to the check. */
-.norea-library-card[aria-pressed] .norea-library-card-cover .norea-library-badges {
-  left: calc(var(--norea-space-1) * 2 + 1.5rem);
 }
 
 .norea-library-badge {

@@ -99,13 +99,12 @@ it("keeps the downloaded and unread counts in one pill that never wraps", () => 
   expect(css).toMatch(/\.norea-library-badge-group \{[^}]*display: inline-flex;/);
 });
 
-it("keeps the counts at the top while selecting and draws the check as a ring that reads on any cover", () => {
+it("leaves the counts untouched while selecting and draws the check as a ring in the bottom corner", () => {
   const css = readFileSync(new URL("../styles/library.css", import.meta.url), "utf8");
-  const selecting = /\.norea-library-card\[aria-pressed\] \.norea-library-card-cover \.norea-library-badges \{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(selecting).toContain("left: calc(var(--norea-space-1) * 2 + 1.5rem)");
-  expect(selecting).not.toContain("bottom");
-  expect(css).toMatch(/\.norea-library-badge-group > \.norea-library-badge\[data-kind="downloaded"\] \{[^}]*flex-shrink: 1;/);
+  expect(css).not.toMatch(/\.norea-library-card\[aria-pressed\] \.norea-library-card-cover \.norea-library-badges/);
   const check = /\.norea-library-check \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(check).toContain("bottom: var(--norea-space-1)");
+  expect(check).not.toMatch(/\btop:/);
   expect(check).toContain("background: rgb(0 0 0 / 0.25)");
   expect(check).toContain("border: 0.125rem solid #fff");
   expect(check).toContain("box-shadow: 0 1px 3px rgb(0 0 0 / 0.35)");
