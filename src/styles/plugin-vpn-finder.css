@@ -17,7 +17,7 @@
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   white-space: nowrap;
 }
 
@@ -38,7 +38,7 @@
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-sm);
   font-variant-numeric: tabular-nums;
-  font-weight: 800;
+  font-weight: var(--norea-weight-medium);
   height: 1.75rem;
   justify-content: center;
   line-height: 1;
@@ -134,7 +134,7 @@
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
 }
 
 .norea-plugin-vpn-finder-metadata :where(dd) {

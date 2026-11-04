@@ -221,7 +221,7 @@
 .norea-plugin-settings-editor .norea-settings-form-label {
   color: var(--norea-color-ink);
   font-size: var(--norea-text-sm);
-  font-weight: 650;
+  font-weight: var(--norea-weight-bold);
   line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;
@@ -403,7 +403,7 @@
 
 .norea-search-preview-title {
   font-size: var(--norea-text-xs);
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   line-height: 1.25;
   overflow: hidden;
   text-overflow: ellipsis;

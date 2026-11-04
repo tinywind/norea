@@ -226,7 +226,7 @@ a {
   display: none;
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-md);
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -277,7 +277,7 @@ a {
 .norea-rail-label {
   display: none;
   font-size: var(--norea-text-xs);
-  font-weight: 600;
+  font-weight: var(--norea-weight-medium);
   line-height: 1;
 }
 
@@ -448,7 +448,7 @@ a {
   display: inline-flex;
   flex-direction: column;
   font-size: var(--norea-text-xs);
-  font-weight: 600;
+  font-weight: var(--norea-weight-medium);
   gap: var(--norea-space-1);
   justify-content: center;
   min-width: 0;
@@ -565,6 +565,7 @@ a {
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-lg);
   font-weight: var(--norea-weight-bold);
+  letter-spacing: var(--norea-tracking-tight);
   line-height: var(--norea-leading-tight);
   margin: 0;
   min-width: 0;
@@ -974,7 +975,7 @@ a {
 
 .norea-list-row-heading {
   color: var(--norea-color-ink);
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   line-height: 1.25;
   min-width: 0;
   overflow-wrap: anywhere;
@@ -1008,7 +1009,7 @@ a {
 .norea-console-panel-title {
   color: var(--norea-color-ink-muted);
   font-size: var(--norea-text-xs);
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   line-height: 1.4;
 }
 
@@ -1032,7 +1033,7 @@ a {
   color: var(--norea-color-ink);
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-md);
-  font-weight: 600;
+  font-weight: var(--norea-weight-bold);
   line-height: 1.2;
 }
 
@@ -1093,7 +1094,7 @@ a {
   box-sizing: border-box;
   display: block;
   font-size: var(--norea-text-sm);
-  font-weight: 750;
+  font-weight: var(--norea-weight-bold);
   letter-spacing: 0;
   line-height: 1.08;
   max-height: 100%;
@@ -1117,7 +1118,7 @@ a {
   color: var(--norea-color-ink-muted);
   display: inline-flex;
   font-size: var(--norea-text-xs);
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   gap: var(--norea-space-1);
   white-space: nowrap;
 }
@@ -1158,7 +1159,7 @@ a {
   color: var(--norea-color-ink-muted);
   display: inline-flex;
   font-size: var(--norea-text-xs);
-  font-weight: 600;
+  font-weight: var(--norea-weight-medium);
   gap: var(--norea-space-1);
   line-height: 1.2;
   padding: var(--norea-space-1) 0.5625rem;

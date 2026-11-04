@@ -10,6 +10,8 @@
   --norea-weight-regular: 400;
   --norea-weight-medium: 500;
   --norea-weight-bold: 650;
+  /* Hangul titles set slightly tight; body text keeps the default tracking. */
+  --norea-tracking-tight: -0.015em;
 
   --norea-space-1: 0.25rem;
   --norea-space-2: 0.5rem;

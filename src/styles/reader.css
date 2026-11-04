@@ -80,7 +80,7 @@
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   margin-inline-start: auto;
   white-space: nowrap;
 }
@@ -175,7 +175,7 @@
   color: var(--norea-color-warn);
   flex: 0 0 auto;
   font-size: var(--norea-text-xs);
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   line-height: var(--norea-leading-tight);
   padding: 0.125rem var(--norea-space-2);
   white-space: nowrap;
@@ -218,7 +218,7 @@
 .norea-reader-panel-kicker {
   color: var(--norea-reader-ink-muted, var(--norea-color-ink-muted));
   font-size: var(--norea-text-xs);
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   margin: 0;
   padding: 0 var(--norea-space-3) var(--norea-space-2);
 }
@@ -259,7 +259,7 @@
   background: var(--norea-reader-chrome-raised, var(--norea-color-surface));
   border-left-color: var(--norea-color-accent);
   color: var(--norea-reader-ink, var(--norea-color-ink));
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
 }
 
 .norea-reader-chapter-number {
@@ -1042,7 +1042,7 @@
 .norea-reader-stepper-value {
   font-size: var(--norea-text-md);
   font-variant-numeric: tabular-nums;
-  font-weight: 700;
+  font-weight: var(--norea-weight-bold);
   min-width: 2.5rem;
   text-align: center;
 }
@@ -1088,7 +1088,7 @@
   cursor: pointer;
   display: flex;
   font: inherit;
-  font-weight: 700;
+  font-weight: var(--norea-weight-medium);
   justify-content: space-between;
   min-height: var(--norea-control-md);
   padding: 0 var(--norea-space-3);

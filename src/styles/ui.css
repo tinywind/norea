@@ -138,6 +138,7 @@
   font-size: var(--norea-text-lg);
   font-weight: var(--norea-weight-bold);
   gap: var(--norea-space-1);
+  letter-spacing: var(--norea-tracking-tight);
   line-height: var(--norea-leading-tight);
   min-width: 0;
 }

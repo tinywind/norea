@@ -11,7 +11,10 @@ const ALLOWED_FONT_SIZES = new Set([
   "var(--norea-root-font-size)",
 ]);
 const ALLOWED_RADIUS_PARTS = new Set(["0", "50%", "inherit"]);
-const ALLOWED_LETTER_SPACING = new Set(["0", "normal"]);
+const ALLOWED_LETTER_SPACING = new Set(["0", "normal", "var(--norea-tracking-tight)"]);
+const ALLOWED_FONT_WEIGHTS = new Set(["inherit", "normal"]);
+/** Sheets whose owners have not yet moved their literal weights onto the weight tokens. */
+const FONT_WEIGHT_SWEEP_PENDING = new Set(["downloads.css", "tasks.css"]);
 const MAX_LOCAL_Z_INDEX = 10;
 const MOTION_PROPERTIES = new Set([
   "transition",
@@ -127,6 +130,11 @@ function violation({ property, value }: Declaration): string | undefined {
   if (property === "letter-spacing" && !ALLOWED_LETTER_SPACING.has(value)) {
     return "letter-spacing on UI text";
   }
+  if (property === "font-weight") {
+    return ALLOWED_FONT_WEIGHTS.has(value) || /^var\(--norea-weight-(regular|medium|bold)\)$/.test(value)
+      ? undefined
+      : "literal font-weight instead of --norea-weight-*";
+  }
   if (property === "font-family" && value.includes("--norea-font-meta")) {
     return "meta font instead of tabular numerals";
   }
@@ -137,6 +145,7 @@ function violations(name: string): string[] {
   const source = readFileSync(new URL(name, stylesDir), "utf8");
   return declarations(source).flatMap((declaration) => {
     const reason = violation(declaration);
+    if (reason?.startsWith("literal font-weight") && FONT_WEIGHT_SWEEP_PENDING.has(name)) return [];
     return reason
       ? [`${name}:${declaration.line} ${declaration.property}: ${declaration.value} (${reason})`]
       : [];
@@ -181,6 +190,9 @@ describe("design token guard rules", () => {
     expect(flagged("letter-spacing", "0.08em")).toBe(true);
     expect(flagged("background", "color-mix(in srgb, red 10%, white)")).toBe(true);
     expect(flagged("font-family", "var(--norea-font-meta)")).toBe(true);
+    expect(flagged("font-weight", "700")).toBe(true);
+    expect(flagged("font-weight", "bold")).toBe(true);
+    expect(flagged("font-weight", "var(--mantine-font-weight-medium)")).toBe(true);
   });
 
   it("keeps the documented exceptions", () => {
@@ -190,6 +202,9 @@ describe("design token guard rules", () => {
     expect(flagged("padding-bottom", "var(--norea-safe-area-bottom)")).toBe(false);
     expect(flagged("transition-duration", "0s")).toBe(false);
     expect(flagged("z-index", "10")).toBe(false);
+    expect(flagged("font-weight", "var(--norea-weight-bold)")).toBe(false);
+    expect(flagged("font-weight", "inherit")).toBe(false);
+    expect(flagged("letter-spacing", "var(--norea-tracking-tight)")).toBe(false);
   });
 });
 
