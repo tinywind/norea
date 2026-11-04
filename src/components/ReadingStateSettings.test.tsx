@@ -3,7 +3,9 @@ import { beforeEach, expect, it, vi } from "vitest";
 const entry = { deviceName: "Phone backup", updatedAt: 1000, size: 2048, sha256: "a".repeat(64) };
 const mocks = vi.hoisted(() => ({
   stateIndex: 0, selected: null as string | null, setState: vi.fn(), upload: vi.fn(), restore: vi.fn(), refetch: vi.fn(),
+  confirm: vi.fn(),
 }));
+vi.mock("./ui/ConfirmDialog", () => ({ useConfirm: () => mocks.confirm }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
   useRef: () => ({ current: false }),
@@ -59,9 +61,18 @@ it("offers all saved device names and requires confirmation before restoring", a
   const elements = controls(ReadingStateSettings({ serverUrl: "http://server" }));
   expect(elements.find(item => item.props.data)?.props.data).toEqual([{ value: entry.deviceName, label: entry.deviceName }]);
   expect(elements.some(item => item.props.children === `deviceBackup.details:${JSON.stringify({ date: "ko@1000", size: "0.00" })}`)).toBe(true);
-  elements.find(item => item.props.children === "deviceBackup.restore" && item.props.onClick)!.props.onClick!();
+  mocks.confirm.mockResolvedValueOnce(false);
+  const restore = elements.find(item => item.props.children === "deviceBackup.restore" && item.props.onClick)!;
+  restore.props.onClick!();
+  await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledWith({
+    title: "deviceBackup.restore",
+    message: `deviceBackup.restoreWarning:${JSON.stringify({ name: entry.deviceName })}`,
+    confirmLabel: "deviceBackup.confirmRestore",
+    danger: true,
+  }));
   expect(mocks.restore).not.toHaveBeenCalled();
-  elements.find(item => item.props.children === "deviceBackup.confirmRestore")!.props.onClick!();
+  mocks.confirm.mockResolvedValueOnce(true);
+  restore.props.onClick!();
   await vi.waitFor(() => expect(mocks.restore).toHaveBeenCalledWith("http://server", entry, expect.any(Function)));
 });
 it("disables uploads and restoration without a configured server", () => {

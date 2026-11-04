@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Modal, Select, Text } from "@mantine/core";
+import { Select, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQuery } from "@tanstack/react-query";
 import { formatDateTimeForLocale, useTranslation } from "../i18n";
@@ -12,6 +12,7 @@ import {
 import { useContentSyncStore } from "../store/content-sync";
 import { SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
+import { useConfirm } from "./ui/ConfirmDialog";
 
 export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
   const { locale, t } = useTranslation();
@@ -30,9 +31,9 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
   const [selected, setSelected] = useState<string | null>(null);
   const [phase, setPhase] = useState<DeviceBackupPhase | null>(null);
   const [mode, setMode] = useState<"upload" | "restore" | null>(null);
-  const [confirmRestore, setConfirmRestore] = useState(false);
   const [error, setError] = useState<{ mode: "upload" | "restore"; message: string } | null>(null);
   const action = useRef(false);
+  const confirm = useConfirm();
   const busy = mode !== null;
   const entry = backups.data?.find(item => item.deviceName === selected);
 
@@ -43,7 +44,7 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
   async function run(nextMode: "upload" | "restore") {
     if (action.current || (nextMode === "restore" && !entry)) return;
     action.current = true;
-    setMode(nextMode); setError(null); setConfirmRestore(false);
+    setMode(nextMode); setError(null);
     try {
       if (nextMode === "upload") {
         const saved = await uploadDeviceBackup(serverUrl, setPhase);
@@ -57,6 +58,16 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
     } finally {
       action.current = false; setMode(null); setPhase(null);
     }
+  }
+  async function confirmAndRestore() {
+    if (!entry) return;
+    const confirmed = await confirm({
+      title: t("deviceBackup.restore"),
+      message: t("deviceBackup.restoreWarning", { name: entry.deviceName }),
+      confirmLabel: t("deviceBackup.confirmRestore"),
+      danger: true,
+    });
+    if (confirmed) await run("restore");
   }
 
   return (
@@ -88,21 +99,12 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
         error={error?.mode === "restore" ? error.message : null}>
         <SettingsInlineControls>
           <TextButton tone="danger" loading={mode === "restore"} disabled={busy || !serverUrl || !entry}
-            onClick={() => setConfirmRestore(true)}>{t("deviceBackup.restore")}</TextButton>
+            onClick={() => { void confirmAndRestore(); }}>{t("deviceBackup.restore")}</TextButton>
           {entry ? <Text size="sm">{t("deviceBackup.details", {
             date: formatDateTimeForLocale(locale, entry.updatedAt), size: (entry.size / 1024 / 1024).toFixed(2),
           })}</Text> : null}
         </SettingsInlineControls>
       </SettingsFieldRow>
-      <Modal opened={confirmRestore} onClose={() => setConfirmRestore(false)} title={t("deviceBackup.restore")} centered>
-        <Text>{t("deviceBackup.restoreWarning", { name: entry?.deviceName ?? "" })}</Text>
-        <SettingsInlineControls>
-          <TextButton onClick={() => setConfirmRestore(false)}>{t("common.cancel")}</TextButton>
-          <TextButton tone="danger" disabled={!entry || busy} onClick={() => { void run("restore"); }}>
-            {t("deviceBackup.confirmRestore")}
-          </TextButton>
-        </SettingsInlineControls>
-      </Modal>
     </SettingsSection>
   );
 }
