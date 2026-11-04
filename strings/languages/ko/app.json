@@ -1132,7 +1132,7 @@
   "history.clearAll.message": "모든 작품의 읽은 시각을 지웁니다. 되돌릴 수 없으며 읽기 진도는 유지됩니다.",
   "history.clearAll.confirm": "모두 지우기",
   "history.removing": "제거 중",
-  "history.filter.placeholder": "작품 - 챕터 - # 검색",
+  "history.filter.placeholder": "작품, 챕터 제목 또는 번호로 검색",
   "history.filter.all": "전체",
   "history.filter.label": "읽기 진도",
   "history.filter.clear": "필터 지우기",

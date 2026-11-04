@@ -1133,7 +1133,7 @@
   "history.clearAll.message": "This clears the read times of every novel. It can't be undone; reading progress stays.",
   "history.clearAll.confirm": "Clear all",
   "history.removing": "removing",
-  "history.filter.placeholder": "Search by novel - chapter - #",
+  "history.filter.placeholder": "Search by novel, chapter or number",
   "history.filter.all": "All",
   "history.filter.label": "Reading progress",
   "history.filter.clear": "Clear filters",
