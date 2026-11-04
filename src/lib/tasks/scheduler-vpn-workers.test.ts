@@ -35,6 +35,46 @@ afterEach(async () => {
 });
 
 describe("dedicated VPN worker scheduling", () => {
+  it("does not scan idle VPN slots while a long ordinary queue drains", async () => {
+    type Predicate = (entry: unknown) => boolean;
+    const pick = vi.spyOn(
+      TaskScheduler.prototype as unknown as { pickSourceTask: (predicate: Predicate) => unknown },
+      "pickSourceTask",
+    );
+    const vpnEntry = (slot: number) => ({
+      record: { kind: "chapter.download", priority: "background", status: "queued" },
+      spec: { vpnWorker: { generation: 1, rangeId: "range", slot } },
+    });
+    const scansVpnSlot = ([predicate]: [Predicate]) =>
+      Array.from({ length: 10 }, (_, slot) => slot).some((slot) => predicate(vpnEntry(slot)));
+    try {
+      let finish!: () => void;
+      const first = scheduler.enqueueSource({ kind: "chapter.download", title: "First", source, priority: "background",
+        run: () => new Promise<void>((resolve) => { finish = resolve; }) });
+      scheduler.batch(() => {
+        for (let index = 0; index < 500; index += 1) {
+          void scheduler.enqueueSource({ kind: "chapter.download", title: `Chapter ${index}`, source, priority: "background", run: hold })
+            .promise.catch(() => undefined);
+        }
+      });
+      await settle();
+      pick.mockClear();
+      finish();
+      await first.promise;
+      await settle();
+
+      expect(pick).toHaveBeenCalled();
+      expect(pick.mock.calls.filter(scansVpnSlot)).toHaveLength(0);
+
+      const vpn = queue("range", 1, async () => undefined);
+      await settle();
+      await vpn.promise;
+      expect(pick.mock.calls.filter(scansVpnSlot).length).toBeGreaterThan(0);
+    } finally {
+      pick.mockRestore();
+    }
+  });
+
   it("keeps an interactive reader download on its enrolled VPN slot instead of the immediate executor", async () => {
     let executor: string | undefined;
     const handle = scheduler.enqueueSource({ kind: "chapter.download", title: "Interactive VPN chapter", source, priority: "interactive",

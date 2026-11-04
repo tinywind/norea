@@ -1834,10 +1834,26 @@ export class TaskScheduler {
     return false;
   }
 
+  /** One cheap pass instead of a full gated queue scan for every idle slot. */
+  private queuedVpnWorkerSlots(): Set<number> {
+    const slots = new Set<number>();
+    for (const queue of this.sourceQueues.values()) {
+      for (const id of queue) {
+        const entry = this.entries.get(id);
+        if (entry?.record.status === "queued" && entry.spec.vpnWorker) {
+          slots.add(entry.spec.vpnWorker.slot);
+        }
+      }
+    }
+    return slots;
+  }
+
   private drainVpnWorkers(): void {
+    const queuedSlots = this.queuedVpnWorkerSlots();
+    if (queuedSlots.size === 0) return;
     for (let slot = 0; slot < MAX_VPN_DOWNLOAD_WORKERS; slot++) {
       if (!isVpnDownloadWorkerSlot(slot)) continue;
-      if (this.vpnWorkerSlotBusy(slot)) continue;
+      if (!queuedSlots.has(slot) || this.vpnWorkerSlotBusy(slot)) continue;
       const next = this.pickSourceTask((entry) => entry.spec.vpnWorker?.slot === slot);
       if (next) this.startSource(next, this.vpnWorkerExecutor(next)!);
     }
