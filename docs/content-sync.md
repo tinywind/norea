@@ -262,7 +262,8 @@ incomplete when assets are missing there.
 The upload deadline is 10 minutes, extended for large chapters to allow at least
 64 KiB/s. A dropped connection, a client timeout, or HTTP 408, 502, 503 or 504
 is retried once; other server responses are final. A failure reports how many
-bytes were sent, the elapsed time and the underlying transport cause.
+bytes were sent, the elapsed time and the underlying transport cause. Settings
+shows a plain summary with the raw failure under Details.
 
 Uploads use `POST /api/v1/chapter-files`. The `metadata` part contains the
 `PackageManifest`, with `layout: "chapter-files"`, the body path, and each file's

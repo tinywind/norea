@@ -32,6 +32,7 @@ it.each([
   ["scraper: browser fetch failed: Failed to fetch", "errors.network"],
   ["TypeError: NetworkError when attempting to fetch resource.", "errors.network"],
   ["net::ERR_NAME_NOT_RESOLVED", "errors.network"],
+  ["content sync: upload stopped after sending 1 of 2 bytes in 120 s (attempt 2 of 2): request or response body error for url (https://server.test/api/v1/chapter-files)", "errors.network"],
   ["scraper: browser navigation timed out", "errors.timeout"],
   ["Cloudflare challenge: Just a moment...", "errors.siteAccess"],
   ["HTTP 403 Forbidden", "errors.siteAccess"],

@@ -37,7 +37,7 @@ interface SettingsFieldRowProps {
   children?: ReactNode;
   description?: string;
   /** Inline error for this row; async outcomes also show a notification. */
-  error?: string | null;
+  error?: ReactNode;
   label?: string;
   layout?: "inline" | "stacked";
   /** Inline status for this row, such as progress or a required restart. */

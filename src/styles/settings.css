@@ -204,6 +204,30 @@
   color: var(--norea-color-danger);
 }
 
+.norea-settings-form-error-details {
+  background: none;
+  border: 0;
+  color: var(--norea-color-accent);
+  cursor: pointer;
+  font: inherit;
+  margin-left: var(--norea-space-1);
+  padding: 0;
+  text-decoration: underline;
+  text-underline-offset: 0.15em;
+}
+
+.norea-settings-form-error-details:focus-visible {
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
+  outline-offset: 0.125rem;
+}
+
+.norea-settings-form-error-raw {
+  font-family: var(--norea-font-ui);
+  max-width: 20rem;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
 .norea-settings-advanced {
   border-bottom: 1px solid var(--norea-color-rule);
 }

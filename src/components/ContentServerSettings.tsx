@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { NumberInput, Select, TextInput } from "@mantine/core";
+import { NumberInput, Popover, Select, Text, TextInput } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { invoke } from "@tauri-apps/api/core";
-import { useTranslation } from "../i18n";
-import { describeError } from "../lib/errors";
+import { useTranslation, type TranslationKey } from "../i18n";
+import { describeError, userFacingErrorKey } from "../lib/errors";
 import { ContentServerError } from "../lib/content-sync/client";
 import {
   syncContentServer,
@@ -14,6 +14,31 @@ import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, Settin
 import { TextButton } from "./TextButton";
 import { ReadingStateSettings } from "./ReadingStateSettings";
 import { showSettingsToast } from "./settings/settings-toast";
+
+function contentSyncErrorKey(error: string): TranslationKey {
+  const key = userFacingErrorKey(error);
+  if (key === "errors.network") return "contentSync.error.network";
+  if (key === "errors.timeout") return "contentSync.error.timeout";
+  return "contentSync.error.generic";
+}
+
+/** A sync failure as one plain sentence; the raw error stays one tap away for reports. */
+function ContentSyncErrorLine({ error }: { error: string }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      {t(contentSyncErrorKey(error))}
+      <Popover position="bottom-start" shadow="md">
+        <Popover.Target>
+          <button className="norea-settings-form-error-details" type="button">{t("common.details")}</button>
+        </Popover.Target>
+        <Popover.Dropdown>
+          <Text className="norea-settings-form-error-raw" size="sm">{error}</Text>
+        </Popover.Dropdown>
+      </Popover>
+    </>
+  );
+}
 
 export function ContentServerSettings() {
   const { t } = useTranslation();
@@ -44,6 +69,8 @@ export function ContentServerSettings() {
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const disabled = busy;
+  const blockedMessage = t("contentSync.blocked");
+  const syncError = actionError || (blocked ? blockedMessage : error);
   const syncStatus = [
     status === "syncing" ? t("contentSync.background") : null,
     progress ? t("contentSync.progress", progress) : null,
@@ -122,7 +149,7 @@ export function ContentServerSettings() {
         </SettingsFieldRow>
       ) : null}
       <SettingsFieldRow label={t("contentSync.manualSync")} description={t("contentSync.rescanDescription")}
-        status={syncStatus} error={actionError || (blocked ? t("contentSync.blocked") : error)}>
+        status={syncStatus} error={syncError && syncError !== blockedMessage ? <ContentSyncErrorLine error={syncError} /> : syncError}>
         <SettingsInlineControls>
           <TextButton variant="filled" loading={status === "syncing"} disabled={!serverUrl || busy} onClick={() => startSync()}>
             {t("contentSync.syncNow")}

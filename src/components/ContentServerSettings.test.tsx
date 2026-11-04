@@ -117,3 +117,32 @@ it("keeps spaces while typing a device name and saves the trimmed name on blur",
   deviceNameField().props.onBlur!();
   expect(mocks.state.setDeviceName).toHaveBeenCalledWith("My Phone");
 });
+
+function syncErrorProp(): unknown {
+  const row = controls(ContentServerSettings()).find(element => (element.props as { error?: unknown }).error);
+  return (row?.props as { error?: unknown } | undefined)?.error;
+}
+
+it("summarizes a raw sync failure in plain language and keeps the raw detail behind Details", () => {
+  const raw = "Work / Chapter 307: content sync: upload stopped after sending 1 of 2 bytes in 120 s (attempt 2 of 2): request or response body error for url (https://server/api/v1/chapter-files)";
+  mocks.state.error = raw;
+  const line = syncErrorProp() as ReactElement<{ error: string }>;
+  expect(line.props.error).toBe(raw);
+  const rendered = (line.type as (props: { error: string }) => ReactElement<ControlProps>)(line.props);
+  const [summary] = rendered.props.children as unknown[];
+  expect(summary).toBe("contentSync.error.network");
+  const elements = controls(rendered);
+  expect(elements.some(element => element.type === "button" && element.props.children === "common.details")).toBe(true);
+  expect(elements.some(element => element.props.children === raw)).toBe(true);
+});
+
+it("uses the general sync summary for server rejections and keeps the blocked message as is", () => {
+  mocks.state.error = "Work / Chapter: content sync: server returned 400: Chapter files are incomplete";
+  const line = syncErrorProp() as ReactElement<{ error: string }>;
+  const rendered = (line.type as (props: { error: string }) => ReactElement<ControlProps>)(line.props);
+  expect((rendered.props.children as unknown[])[0]).toBe("contentSync.error.generic");
+  mocks.stateIndex = 0;
+  mocks.state.error = null;
+  mocks.state.blocked = true;
+  expect(syncErrorProp()).toBe("contentSync.blocked");
+});
