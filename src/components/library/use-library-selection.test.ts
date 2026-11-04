@@ -51,6 +51,7 @@ vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: vi.fn()
 import { useLibrarySelection } from "./use-library-selection";
 import { notifications } from "@mantine/notifications";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
+import { confirmContentDeletion } from "../../store/content-deletion";
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -165,4 +166,15 @@ it("exits selection mode on back only while selection mode is on", () => {
   mocks.selected = new Set([1]);
   useLibrarySelection({}, "nameAsc", false);
   expect(useOverlayBackNavigation).toHaveBeenLastCalledWith(false, expect.any(Function));
+});
+
+it("sizes the remove-from-library download option with the exact stored chapter count", async () => {
+  useLibrarySelection({}, "nameAsc");
+  const remove = mocks.mutations[3] as unknown as {
+    mutationFn: (input: { downloadedCount?: number; novelIds: number[] }) => Promise<boolean>;
+  };
+  await remove.mutationFn({ downloadedCount: 0, novelIds: [1, 2] });
+  expect(confirmContentDeletion).toHaveBeenLastCalledWith(expect.objectContaining({ kind: "library", ids: [1, 2], downloadedCount: 0 }));
+  await remove.mutationFn({ downloadedCount: 12, novelIds: [3] });
+  expect(confirmContentDeletion).toHaveBeenLastCalledWith(expect.objectContaining({ ids: [3], downloadedCount: 12 }));
 });

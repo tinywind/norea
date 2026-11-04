@@ -143,9 +143,10 @@ export function useLibrarySelection(
   });
 
   const removeSelectedFromLibraryMutation = useMutation({
-    mutationFn: (novelIds: readonly number[]) => confirmContentDeletion({
+    mutationFn: ({ downloadedCount, novelIds }: RemoveSelectedFromLibraryInput) => confirmContentDeletion({
       kind: "library",
       ids: novelIds,
+      downloadedCount,
       title: t("library.removeSelectedFromLibraryConfirm", { count: novelIds.length }),
     }),
     onSuccess: changed => {
@@ -214,6 +215,12 @@ interface SetDownloadGoalInput {
 
 interface DeleteSelectedDownloadsInput {
   downloadedChapters: number;
+  novelIds: readonly number[];
+}
+
+interface RemoveSelectedFromLibraryInput {
+  /** Stored chapters of the selection, when known; zero hides the download deletion option. */
+  downloadedCount?: number;
   novelIds: readonly number[];
 }
 

@@ -411,7 +411,10 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                         icon: TrashIcon,
                         label: t("library.removeSelectedFromLibrary"),
                         onClick: () =>
-                          removeSelectedFromLibraryMutation.mutate(selectedNovelIds),
+                          removeSelectedFromLibraryMutation.mutate({
+                            downloadedCount: selectedDownloadedChapterCount,
+                            novelIds: selectedNovelIds,
+                          }),
                       },
                     ]}
                     label={t("common.more")}
