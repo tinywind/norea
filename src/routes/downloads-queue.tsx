@@ -65,6 +65,7 @@ import {
 } from "../lib/tasks/hooks";
 import { vpnDownloadAttention } from "../lib/tasks/vpn-download-notifications";
 import { pauseVpnDownloadRun, resumeVpnDownloadRun, cancelVpnDownloadRun } from "../lib/tasks/vpn-download-runtime";
+import { workProgress } from "../lib/tasks/work-progress";
 import {
   applySourceAccessBrowserOutcome,
   cancelSourceAccessWait,
@@ -405,6 +406,7 @@ const TaskRow = memo(function TaskRow({
   sourcePaused,
   sourceQueuesPaused,
   task,
+  withinWork = false,
 }: {
   blockingSourceTask: boolean;
   onSelect: () => void;
@@ -412,12 +414,19 @@ const TaskRow = memo(function TaskRow({
   sourcePaused: boolean;
   sourceQueuesPaused: boolean;
   task: TaskRecord;
+  /** Inside a novel's group: the group already names the novel, source and waiting state. */
+  withinWork?: boolean;
 }) {
   const { t } = useTranslation();
   const cancelTask = useCancelDownloadTask();
   const currentTask = useLiveTaskRecord(task);
-  const label = progressLabel(currentTask);
+  const label = withinWork && currentTask.status === "queued" ? null : progressLabel(currentTask);
   const chapterHeading = chapterDownloadTaskHeading(currentTask);
+  const chapterNumber = currentTask.subject?.chapterNumber?.trim().replace(/^#/, "");
+  const workChapterTitle = withinWork && currentTask.kind === "chapter.download"
+    ? [chapterNumber ? t("novel.chapterShort", { number: chapterNumber }) : null, currentTask.subject?.chapterName?.trim()]
+      .filter(Boolean).join(" · ")
+    : "";
   const canMove =
     currentTask.status === "queued" &&
     currentTask.queueIndex !== undefined &&
@@ -451,7 +460,11 @@ const TaskRow = memo(function TaskRow({
       />
       <div className="norea-task-row-main">
         <div className="norea-task-row-heading">
-          {chapterHeading ? (
+          {workChapterTitle ? (
+            <Text className="norea-task-row-title" lineClamp={1}>
+              {workChapterTitle}
+            </Text>
+          ) : chapterHeading ? (
             <div
               className="norea-task-row-title norea-task-row-download-title"
               title={chapterHeading.title}
@@ -470,7 +483,7 @@ const TaskRow = memo(function TaskRow({
           )}
           {label ? <span className="norea-task-progress-text">{label}</span> : null}
         </div>
-        {currentTask.source?.name ? (
+        {currentTask.source?.name && !withinWork ? (
           <Text className="norea-task-row-meta" lineClamp={1}>
             {currentTask.source.name}
           </Text>
@@ -487,7 +500,7 @@ const TaskRow = memo(function TaskRow({
           <Text className="norea-task-row-detail" lineClamp={1}>
             {t("network.waiting")}
           </Text>
-        ) : blockingSourceTask ? (
+        ) : blockingSourceTask && !withinWork ? (
           <Text className="norea-task-row-detail" lineClamp={1}>
             {t("tasks.downloadWaiting")}
           </Text>
@@ -501,7 +514,7 @@ const TaskRow = memo(function TaskRow({
             {currentTask.error}
           </Text>
         ) : null}
-        {currentTask.progress ? (
+        {currentTask.progress && !(withinWork && currentTask.status === "queued") ? (
           <Progress
             className="norea-task-row-progress"
             size="xs"
@@ -783,7 +796,7 @@ function NovelWorkGroup({
   const retryWaits = group.tasks.filter(isRetryWaiting).map((task) => task.retryAt!);
   const nextRetryAt = retryWaits.length > 0 ? Math.min(...retryWaits) : null;
   const status = novelWorkStatus(group.tasks, sourceId, snapshot, automaticPaused);
-  const done = group.tasks.filter((task) => task.status === "succeeded").length;
+  const progress = workProgress(group.workKey, group.tasks);
   const toggleLabel = open ? t("tasks.collapse") : t("tasks.expand");
 
   const cancelWork = async () => {
@@ -854,7 +867,7 @@ function NovelWorkGroup({
               {group.title}
             </Text>
             <span className="norea-task-group-count">
-              {t("vpnDownload.workProgress", { completed: done, total: group.tasks.length })}
+              {t("vpnDownload.workProgress", { completed: progress.done, total: progress.total })}
             </span>
             <DownloadWorkStatusLabel status={status} />
           </div>
@@ -878,7 +891,7 @@ function NovelWorkGroup({
         aria-label={t("vpnDownload.workProgressLabel", { title: group.title })}
         className="norea-task-work-progress"
         size="xs"
-        value={group.tasks.length ? (done / group.tasks.length) * 100 : 0}
+        value={progress.total ? (progress.done / progress.total) * 100 : 0}
       />
       {open ? (
         <TaskRows
@@ -892,6 +905,7 @@ function NovelWorkGroup({
               sourcePaused={isSourceQueuePaused(task, snapshot)}
               sourceQueuesPaused={snapshot.sourceQueuesPaused}
               task={task}
+              withinWork
             />
           )}
           tasks={group.tasks}

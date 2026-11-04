@@ -164,6 +164,31 @@ describe("task work group order", () => {
     ]);
   });
 
+  it("lists a group's chapters by chapter only, without repeating the novel, source or waiting line", () => {
+    const failed = { ...chapter(4, 3, "failed"), subject: { chapterId: 4, novelId: 3, novelName: "Novel 3", chapterNumber: "72", chapterName: "Harvest" } };
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [failed],
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    const row = $(".norea-task-work-rows .norea-task-row").first();
+    expect(row.find(".norea-task-row-title").text()).toBe("Ch. 72 · Harvest");
+    expect(row.find(".norea-task-row-meta")).toHaveLength(0);
+    expect(row.text()).not.toContain("Novel 3");
+  });
+
+  it("drops the empty progress bar from a group's waiting chapters", () => {
+    const waiting = { ...chapter(5, 3, "queued", 0), progress: { current: 0, total: 1 } };
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [{ ...chapter(4, 3, "failed") }, waiting],
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    const row = $(".norea-task-work-rows .norea-task-row[data-status='queued']").first();
+    expect(row).toHaveLength(1);
+    expect(row.find(".norea-task-row-progress")).toHaveLength(0);
+  });
+
   it("shows a paused source's novels as paused and keeps non-download work under Other activity", () => {
     const scheduler = new TaskScheduler();
     scheduler.pauseSourceQueue();
@@ -219,3 +244,4 @@ describe("virtual task row geometry", () => {
     }
   });
 });
+
