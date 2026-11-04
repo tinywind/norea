@@ -211,7 +211,7 @@
   "contentSync.periodic": "Periodically",
   "contentSync.onChange": "When changes occur",
   "contentSync.interval": "Sync interval (minutes)",
-  "contentSync.rescan": "Rescan local files and sync",
+  "contentSync.rescan": "Rescan local files",
   "contentSync.rescanDescription": "Sync now sends recorded changes. Rescan checks every local file after you edit downloads outside Norea.",
   "contentSync.syncNow": "Sync now",
   "contentSync.manualSync": "Manual sync",

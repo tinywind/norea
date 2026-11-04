@@ -211,7 +211,7 @@
   "contentSync.periodic": "주기적으로",
   "contentSync.onChange": "변경이 있을 때마다",
   "contentSync.interval": "동기화 간격 (분)",
-  "contentSync.rescan": "로컬 파일 재검사 후 동기화",
+  "contentSync.rescan": "로컬 파일 재검사",
   "contentSync.rescanDescription": "지금 동기화는 기록된 변경만 보냅니다. 앱 밖에서 파일을 수정했다면 재검사로 모든 파일을 확인하세요.",
   "contentSync.syncNow": "지금 동기화",
   "contentSync.manualSync": "수동 동기화",
