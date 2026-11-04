@@ -163,7 +163,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
         </div>
       )}
       {(sources.data?.items.length ?? 0) > 0 ? (
-        <div aria-label={t("contentSync.sourceFilter")} className="norea-browse-chips" role="group">
+        <div aria-label={t("contentSync.sourceFilter")} className="norea-browse-chips norea-browse-chips--scroll" role="group">
           {sourceChip("", t("contentSync.allSources"))}
           {sources.data!.items.map(item => sourceChip(item.id, pluginNames.get(item.id) ?? item.id))}
         </div>
