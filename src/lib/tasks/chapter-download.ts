@@ -215,10 +215,6 @@ const chapterMediaPatchListeners = new Set<
 >();
 export const MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW =
   TASK_BATCH_MATERIALIZATION_WINDOW;
-export const RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW = Math.min(
-  10,
-  MAX_CHAPTER_DOWNLOAD_BATCH_WINDOW,
-);
 const CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS = 250;
 const CHAPTER_DOWNLOAD_QUEUE_REMOVE_CHUNK_SIZE = 500;
 
@@ -1945,64 +1941,81 @@ export function enqueueChapterDownloadBatch({
   const materializedTaskCompletions: Promise<void>[] = [];
   const localWorkScans = new Map<number, Promise<void>>();
 
-  const tasksMaterialized = runBoundedTaskBatch({
-    items: jobs,
-    windowSize,
-    materializeBatch: taskScheduler.batch.bind(taskScheduler),
-    shouldContinue: () =>
-      !chapterDownloadBatchStates.get(batchId)?.cancelRequested,
-    materialize: async (job) => {
-      if (chapterDownloadBatchStates.get(batchId)?.cancelRequested) {
-        settleChapterDownloadBatchJob(batchId, job.id, "cancelled");
-        return;
-      }
-      chapterDownloadBatchStates
-        .get(batchId)
-        ?.materializedChapterIds.add(job.id);
-      if (chapterDownloadBatchStates.get(batchId)?.cancelledChapterIds.has(job.id)) {
-        settleChapterDownloadBatchJob(batchId, job.id, "cancelled");
-        return;
-      }
-      try {
-        const handle = enqueueChapterDownloadForExecutor(
-          {
-            ...job,
+  /** Registers one job with the scheduler and returns its settlement, or null when it was not registered. */
+  const materializeJob = (job: ChapterDownloadJob): Promise<void> | null => {
+    if (chapterDownloadBatchStates.get(batchId)?.cancelRequested) {
+      settleChapterDownloadBatchJob(batchId, job.id, "cancelled");
+      return null;
+    }
+    chapterDownloadBatchStates
+      .get(batchId)
+      ?.materializedChapterIds.add(job.id);
+    if (chapterDownloadBatchStates.get(batchId)?.cancelledChapterIds.has(job.id)) {
+      settleChapterDownloadBatchJob(batchId, job.id, "cancelled");
+      return null;
+    }
+    try {
+      const handle = enqueueChapterDownloadForExecutor(
+        {
+          ...job,
+          batchId,
+          batchTitle: title,
+        },
+        {
+          persistBeforeStart: persistMaterializedJobs,
+          waitForBackendQueue: waitForBatchQueue || persistMaterializedJobs,
+          backendQueueWrite,
+          localWorkScans,
+        },
+      );
+      return handle.promise.then(
+        () => {
+          settleChapterDownloadBatchJob(batchId, job.id, "succeeded");
+        },
+        (error: unknown) => {
+          settleChapterDownloadBatchJob(
             batchId,
-            batchTitle: title,
-          },
-          {
-            persistBeforeStart: persistMaterializedJobs,
-            waitForBackendQueue: waitForBatchQueue || persistMaterializedJobs,
-            backendQueueWrite,
-            localWorkScans,
-          },
-        );
-        const completion = handle.promise.then(
-          () => {
-            settleChapterDownloadBatchJob(batchId, job.id, "succeeded");
-          },
-          (error: unknown) => {
-            settleChapterDownloadBatchJob(
-              batchId,
-              job.id,
-              isAbortError(error) ? "cancelled" : "failed",
-            );
-          },
-        );
+            job.id,
+            isAbortError(error) ? "cancelled" : "failed",
+          );
+        },
+      );
+    } catch (error) {
+      settleChapterDownloadBatchJob(
+        batchId,
+        job.id,
+        isAbortError(error) ? "cancelled" : "failed",
+      );
+      return null;
+    }
+  };
+
+  // A known job list registers every task in one scheduler batch: one drain and one
+  // snapshot publication, so queue views show the whole request at once. Source
+  // concurrency, priority and cooldowns still apply when the scheduler dispatches.
+  const tasksMaterialized = materializeAllTasks && batchJobs
+    ? Promise.resolve(taskScheduler.batch(() => {
+      for (const job of batchJobs) {
+        const completion = materializeJob(job);
+        if (completion) materializedTaskCompletions.push(completion);
+      }
+    }))
+    : runBoundedTaskBatch({
+      items: jobs,
+      windowSize,
+      materializeBatch: taskScheduler.batch.bind(taskScheduler),
+      shouldContinue: () =>
+        !chapterDownloadBatchStates.get(batchId)?.cancelRequested,
+      materialize: async (job) => {
+        const completion = materializeJob(job);
+        if (!completion) return;
         if (materializeAllTasks) {
           materializedTaskCompletions.push(completion);
         } else {
           await completion;
         }
-      } catch (error) {
-        settleChapterDownloadBatchJob(
-          batchId,
-          job.id,
-          isAbortError(error) ? "cancelled" : "failed",
-        );
-      }
-    },
-  });
+      },
+    });
   const materialized = backendQueueWrite
     ? Promise.all([tasksMaterialized, backendQueueWrite]).then(() => undefined)
     : tasksMaterialized;
@@ -2193,7 +2206,6 @@ async function runBackendChapterDownloadExecutor(onRestored: () => void): Promis
                 removeBackendQueuedJobsOnCancel: true,
                 title: "Queued chapter downloads",
                 total: jobs.length,
-                windowSize: RESTORED_CHAPTER_DOWNLOAD_BATCH_WINDOW,
               }),
             };
           } finally {

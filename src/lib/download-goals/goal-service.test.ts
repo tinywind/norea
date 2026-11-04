@@ -152,6 +152,7 @@ it("queues each goal's missing chapters at start, the most recently read novel f
     [11, "deferred", true], [13, "deferred", true],
   ]);
   expect((await jobsOf(1)).map((job) => [job.id, job.priority])).toEqual([[20, "background"]]);
+  await expect(mocks.submitted[0]!.prepare(new AbortController().signal)).resolves.toMatchObject({ materializeAllTasks: true });
   expect(getDownloadGoalPauseSnapshot().pause).toBeNull();
   expect(taskScheduler.setAutomaticWorkPaused).toHaveBeenLastCalledWith(false);
 });

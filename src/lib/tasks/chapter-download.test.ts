@@ -1056,10 +1056,8 @@ describe("enqueueChapterDownloadBatch", () => {
       total: 64,
     });
 
-    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(16);
-    await vi.waitFor(() => {
-      expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(64);
-    });
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(64);
+    expect(schedulerMocks.batch).toHaveBeenCalledOnce();
     expect(new Set(specs.map((spec) => spec.subject?.batchId)).size).toBe(1);
 
     const batchId = specs[0]?.subject?.batchId;
@@ -1077,7 +1075,7 @@ describe("enqueueChapterDownloadBatch", () => {
     });
   });
 
-  it("stops paced array registration after cancellation", async () => {
+  it("cancels every registered array task and its queue rows", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const deferreds: Deferred<void>[] = [];
     schedulerMocks.enqueueSource.mockImplementation(
@@ -1108,7 +1106,7 @@ describe("enqueueChapterDownloadBatch", () => {
       total: 64,
     });
 
-    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(16);
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(64);
     expect(cancelChapterDownloadBatches([handle.id])).toBe(1);
     for (const deferred of deferreds) {
       deferred.reject(new DOMException("Task was cancelled.", "AbortError"));
@@ -1122,7 +1120,7 @@ describe("enqueueChapterDownloadBatch", () => {
     });
     await waitForChapterDownloadQueueMutations();
 
-    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(16);
+    expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(64);
     expect([...backendQueueValues.keys()]).toEqual([]);
   });
 

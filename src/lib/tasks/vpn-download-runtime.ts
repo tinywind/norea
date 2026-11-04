@@ -808,11 +808,14 @@ function stageBatch(request: ChapterDownloadBatchJob, runBatchId: string, persis
   const batch: PendingBatch = { id, total: 0, cancelled: 0, materializing: true, draftIds: new Set(), planIds: new Set(), planResults: new Map(), resolve, reject,
     runBatchId, jobs: requested, cancelRequested: false, persistence: Promise.resolve() };
   const groups = new Map<string, ChapterDownloadJob[]>();
+  const groupChapterIds = new Map<string, Set<number>>();
   for (const input of requested) {
       if (!input.novelId || input.vpnPlanId || input.vpnRangeId) throw new Error("A VPN batch requires ordinary source chapter jobs with a work identity.");
       const groupKey = JSON.stringify([input.pluginId, input.novelId]);
       const group = groups.get(groupKey) ?? [];
-      if (group.some(job => job.id === input.id)) throw new Error("Duplicate chapter in VPN batch.");
+      const chapterIds = groupChapterIds.get(groupKey) ?? new Set<number>();
+      if (chapterIds.has(input.id)) throw new Error("Duplicate chapter in VPN batch.");
+      chapterIds.add(input.id); groupChapterIds.set(groupKey, chapterIds);
       group.push({ ...input }); groups.set(groupKey, group);
       batch.total++;
   }

@@ -224,7 +224,7 @@ function submitGoalWork(
     prepare: async (signal) => {
       // Chapters the content server holds take the server lane; the rest keep their source route.
       const planned = await planServerLaneJobs(novel, jobs, signal);
-      return { jobs: planned, title, total: planned.length };
+      return { jobs: planned, materializeAllTasks: true, title, total: planned.length };
     },
   });
   const requests = preparingRequestsByNovel.get(novel.id) ?? new Set<string>();
