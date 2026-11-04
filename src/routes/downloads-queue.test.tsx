@@ -153,7 +153,7 @@ describe("task work group order", () => {
     };
     const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
     const error = $(".norea-task-row[data-status='failed'] .norea-task-row-error");
-    expect(error.find(".norea-task-row-error-text").text()).toBe("Could not reach the site.");
+    expect(error.find(".norea-task-row-error-text").text()).toBe("Couldn't reach the site. Check your network or the site's status.");
     expect(error.find("button.norea-task-row-error-details").text()).toBe("Details");
     expect($.text()).not.toContain("browser fetch failed");
   });

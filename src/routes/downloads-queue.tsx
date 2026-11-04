@@ -54,7 +54,7 @@ import {
   stopDownloadGoals,
   subscribeDownloadGoalPause,
 } from "../lib/download-goals/goal-service";
-import { describeError } from "../lib/errors";
+import { describeError, userFacingErrorKey } from "../lib/errors";
 import { parseDownloadsSearch } from "../lib/route-search";
 import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
 import { chapterDownloadFailureAttention } from "../lib/tasks/chapter-download-failure-attention";
@@ -101,12 +101,9 @@ const ATTENTION_FOCUS_TIMEOUT_MS = 3_000;
 
 const ACTIVE_STATUSES = new Set<TaskStatus>(["queued", "running"]);
 
-/** Raw fetch failures from the scraper WebView or the network stack, which mean the site was not reached. */
-const CONNECTION_ERROR_PATTERN =
-  /browser fetch.*(failed|timed out)|failed to fetch|network ?error|err_(connection|internet|name|timed)/i;
-
 function taskErrorSummaryKey(error: string, kind: TaskRecord["kind"]): TranslationKey {
-  if (CONNECTION_ERROR_PATTERN.test(error)) return "tasks.error.connection";
+  const key = userFacingErrorKey(error);
+  if (key !== "errors.generic") return key;
   return kind === "chapter.download" ? "tasks.error.download" : "tasks.error.generic";
 }
 

@@ -298,7 +298,6 @@
   "tasks.retryingIn": "{time} 후 다시 시도",
   "tasks.summary.failed": "실패 {count}",
   "tasks.summary.done": "완료 {count}",
-  "tasks.error.connection": "사이트에 연결하지 못했습니다.",
   "tasks.error.download": "챕터를 내려받지 못했습니다.",
   "tasks.error.generic": "작업을 완료하지 못했습니다.",
   "tasks.status.queued": "대기 중",

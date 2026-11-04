@@ -298,7 +298,6 @@
   "tasks.retryingIn": "Retrying in {time}",
   "tasks.summary.failed": "Failed {count}",
   "tasks.summary.done": "Done {count}",
-  "tasks.error.connection": "Could not reach the site.",
   "tasks.error.download": "The chapter did not download.",
   "tasks.error.generic": "The task did not finish.",
   "tasks.status.queued": "Queued",
