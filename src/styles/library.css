@@ -164,8 +164,27 @@
   flex: 0 0 auto;
 }
 
-.norea-library-view-options :where(.mantine-Checkbox-labelWrapper, .mantine-Radio-labelWrapper) {
+.norea-library-view-options :where(.mantine-Checkbox-labelWrapper, .mantine-Radio-labelWrapper, .mantine-Switch-labelWrapper) {
   flex: 1 1 auto;
+}
+
+/* Option lists are touch rows stacked without gaps; the row height is the spacing. */
+.norea-library-option-list :where(.mantine-Checkbox-label, .mantine-Radio-label, .mantine-Switch-label) {
+  align-items: center;
+  display: flex;
+  min-height: var(--norea-control-sm);
+}
+
+.norea-library-option-list .mantine-Switch-body {
+  justify-content: space-between;
+}
+
+/* Group names read as section labels, like the settings group labels, not as headings. */
+.norea-library-view-options .mantine-InputWrapper-label {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-medium);
+  margin-bottom: var(--norea-space-1);
 }
 
 .norea-library-option-label {

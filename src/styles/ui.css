@@ -191,6 +191,15 @@
   );
 }
 
+/* Tabbed sheets keep one height, so switching tabs never resizes the sheet under the finger. */
+.norea-responsive-sheet--drawer.norea-sheet--tabbed {
+  height: calc((var(--norea-viewport-height) - var(--norea-keyboard-inset)) * 0.75);
+}
+
+.norea-responsive-sheet.norea-sheet--tabbed:not(.norea-responsive-sheet--drawer, .norea-responsive-sheet--side, .norea-responsive-sheet--full) {
+  height: min(40rem, calc(var(--norea-viewport-height) - var(--norea-keyboard-inset) - 10dvh));
+}
+
 /* One handle for every bottom sheet: a pill on a full-width touch strip. */
 .norea-responsive-sheet-handle {
   cursor: grab;

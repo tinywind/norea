@@ -464,3 +464,12 @@ describe("one-side stripes", () => {
     expect(stripes("box-shadow: inset 0 0 0 1px var(--norea-color-accent);")).toEqual([]);
   });
 });
+
+describe("tabbed sheets", () => {
+  it("keep one height across tabs as a bottom sheet and as a dialog", () => {
+    expect(ruleFor(css, ".norea-responsive-sheet--drawer.norea-sheet--tabbed").body).toMatch(/height: calc\(/);
+    expect(css).toMatch(/\.norea-responsive-sheet\.norea-sheet--tabbed:not\([^)]*\) \{\s*height: min\(/);
+    const viewOptions = readFileSync(new URL("../components/library/LibraryViewOptions.tsx", stylesDir), "utf8");
+    expect(viewOptions).toContain("norea-sheet--tabbed");
+  });
+});

@@ -150,7 +150,7 @@ export function LibraryViewOptions({
 
   return (
     <ResponsiveSheet
-      className="norea-library-view-options"
+      className="norea-library-view-options norea-sheet--tabbed"
       onClose={onClose}
       opened={opened}
       title={t("library.viewOptions.title")}
@@ -204,7 +204,7 @@ function FilterOptions({
 
   return (
     <Stack gap="lg">
-      <Stack gap="sm">
+      <Stack className="norea-library-option-list" gap={0}>
         {flags.map((flag) => (
           <Checkbox
             checked={flag.active}
@@ -227,7 +227,7 @@ function FilterOptions({
           onChange={(value) => onSourceChange(value === "" ? null : value)}
           value={activeSourceId ?? ""}
         >
-          <Stack gap="sm" mt="xs">
+          <Stack className="norea-library-option-list" gap={0}>
             <Radio label={t("library.sources.all")} value="" />
             {sourcesLoading && sources.length === 0 ? (
               <Text c="dimmed" size="sm">
@@ -283,7 +283,7 @@ function SortOptions() {
         }
         value={field}
       >
-        <Stack gap="sm" mt="xs">
+        <Stack className="norea-library-option-list" gap={0}>
           {LIBRARY_SORT_FIELDS.map((value) => (
             <Radio
               key={value}
@@ -320,7 +320,7 @@ function DisplayOptions() {
         onChange={(value) => setDisplayMode(value as LibraryDisplayMode)}
         value={displayMode}
       >
-        <Stack gap="sm" mt="xs">
+        <Stack className="norea-library-option-list" gap={0}>
           {LIBRARY_DISPLAY_MODES.map((mode) => (
             <Radio
               key={mode}
@@ -360,24 +360,28 @@ function DisplayOptions() {
           </IconButton>
         </div>
       </div>
-      <Stack gap="sm">
+      <Stack className="norea-library-option-list" gap={0}>
         <Switch
           checked={showUnreadBadges}
+          labelPosition="left"
           label={t("librarySettings.unreadBadges")}
           onChange={(event) => setShowUnreadBadges(event.currentTarget.checked)}
         />
         <Switch
           checked={showDownloadBadges}
+          labelPosition="left"
           label={t("librarySettings.downloadedBadges")}
           onChange={(event) => setShowDownloadBadges(event.currentTarget.checked)}
         />
         <Switch
           checked={showNumberBadges}
+          labelPosition="left"
           label={t("librarySettings.numberBadges")}
           onChange={(event) => setShowNumberBadges(event.currentTarget.checked)}
         />
         <Switch
           checked={showContinueReading}
+          labelPosition="left"
           label={t("librarySettings.continueReading")}
           onChange={(event) => setShowContinueReading(event.currentTarget.checked)}
         />
