@@ -42,7 +42,6 @@
   /* Rotation period of busy spinners; reduced motion keeps it because the spin conveys work in progress. */
   --norea-duration-spin: 900ms;
   --norea-ease-standard: cubic-bezier(0.2, 0, 0, 1);
-  --norea-ease-emphasized: cubic-bezier(0.3, 0, 0, 1.15);
   /* Entering overlays settle into place; leaving ones speed away. */
   --norea-ease-decelerate: cubic-bezier(0, 0, 0, 1);
   --norea-ease-accelerate: cubic-bezier(0.3, 0, 1, 1);

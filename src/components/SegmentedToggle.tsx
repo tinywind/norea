@@ -41,6 +41,7 @@ export function SegmentedToggle({
         ),
       }}
       size="xs"
+      withItemsBorders={false}
     />
   );
 }

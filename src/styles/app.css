@@ -307,16 +307,20 @@ a {
   text-overflow: ellipsis;
 }
 
+/* A ring in the nav surface color separates the count from the icon it overlaps. */
 .norea-rail-badge {
   background: var(--norea-color-accent);
-  border-radius: var(--norea-radius-md);
+  border-radius: var(--norea-radius-full);
+  box-shadow: 0 0 0 2px var(--norea-color-surface-raised);
   color: var(--norea-color-on-accent);
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-xs);
   font-variant-numeric: tabular-nums;
-  line-height: 0.75rem;
-  min-width: 0.875rem;
-  padding: 0 var(--norea-space-1);
+  font-weight: var(--norea-weight-medium);
+  height: 1rem;
+  line-height: 1rem;
+  min-width: 1rem;
+  padding: 0 0.3125rem;
   position: absolute;
   right: 0.5rem;
   text-align: center;
@@ -923,23 +927,35 @@ a {
   color: var(--norea-color-warn);
 }
 
+/* A surface track with the strong rule; the selected segment takes the soft accent thumb. */
 .norea-segmented-toggle {
+  --sc-color: var(--norea-color-accent-soft);
+  --sc-label-color: var(--norea-color-on-accent-soft);
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule-strong);
   height: var(--norea-control-sm);
   min-height: var(--norea-control-sm);
   min-width: 0;
+  padding: 0.1875rem;
 }
 
 .norea-segmented-toggle-control,
 .norea-segmented-toggle-indicator {
-  min-height: calc(var(--norea-control-sm) - 0.25rem);
+  min-height: calc(var(--norea-control-sm) - 0.5rem);
 }
 
 .norea-segmented-toggle-label {
   align-items: center;
+  color: var(--norea-color-ink-muted);
   display: flex;
-  height: calc(var(--norea-control-sm) - 0.25rem);
+  font-weight: var(--norea-weight-medium);
+  height: calc(var(--norea-control-sm) - 0.5rem);
   justify-content: center;
-  padding-inline: var(--norea-space-3);
+  padding-inline: var(--norea-space-4);
+}
+
+.norea-segmented-toggle-label[data-active] {
+  color: var(--norea-color-on-accent-soft);
 }
 
 .norea-search-bar {
