@@ -238,6 +238,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   const readerProgress = activeInitialProgressOverride ?? progress;
   const chapterNovelId = chapter?.novelId;
   const readerStateVisible =
+    chapterId <= 0 ||
     readerPreparation.isPending ||
     Boolean(readerPreparation.error) ||
     (chapterId > 0 &&
