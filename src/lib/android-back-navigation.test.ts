@@ -121,6 +121,35 @@ describe("Android back navigation", () => {
     expect(noActionBack).toHaveBeenCalledTimes(1);
   });
 
+  it("closes an open menu or select dropdown before any handler", () => {
+    const dispatched: string[] = [];
+    const dropdown = (visible: boolean, name: string) => ({
+      getClientRects: () => (visible ? [{}] : []),
+      dispatchEvent: (event: { key: string }) => {
+        dispatched.push(`${name}:${event.key}`);
+        return true;
+      },
+    });
+    let open = [dropdown(false, "hidden"), dropdown(true, "menu"), dropdown(true, "listbox")];
+    const querySelectorAll = vi.fn(() => open);
+    vi.stubGlobal("window", {});
+    vi.stubGlobal("document", { querySelectorAll });
+    vi.stubGlobal("KeyboardEvent", class { constructor(_type: string, readonly init: { key: string }) {} get key() { return this.init.key; } });
+    const pageBack = vi.fn(() => true);
+    cleanups.push(startAndroidBackNavigationBridge());
+    cleanups.push(registerPageBackNavigationHandler({ back: pageBack }));
+
+    expect(window.__NoreaAndroidBackNavigation?.handle()).toBe(true);
+    expect(querySelectorAll).toHaveBeenCalledWith('[role="menu"], [role="listbox"]');
+    expect(dispatched).toEqual(["listbox:Escape"]);
+    expect(pageBack).not.toHaveBeenCalled();
+
+    open = [dropdown(false, "hidden")];
+    expect(window.__NoreaAndroidBackNavigation?.handle()).toBe(true);
+    expect(dispatched).toEqual(["listbox:Escape"]);
+    expect(pageBack).toHaveBeenCalledTimes(1);
+  });
+
   it("closes a child overlay before the page handler that registered after the child mounted", async () => {
     mount();
     const pageBack = vi.fn(() => true);

@@ -17,6 +17,24 @@ declare global {
 
 const handlers: PageBackNavigationHandler[] = [];
 
+/** Mantine menus render `role="menu"` and select or combobox options `role="listbox"`. */
+const OPEN_DROPDOWN_SELECTOR = '[role="menu"], [role="listbox"]';
+
+/**
+ * Closes the newest open dropdown the way Escape does. Mantine dropdowns close
+ * on an Escape keydown inside them, so menus and selects need no back handler
+ * of their own and close before the sheet or page that holds them.
+ */
+function closeOpenDropdown(): boolean {
+  if (typeof document === "undefined") return false;
+  const dropdowns = [...document.querySelectorAll<HTMLElement>(OPEN_DROPDOWN_SELECTOR)]
+    .filter((element) => element.getClientRects().length > 0);
+  const dropdown = dropdowns.at(-1);
+  if (!dropdown) return false;
+  dropdown.dispatchEvent(new KeyboardEvent("keydown", { bubbles: true, cancelable: true, key: "Escape" }));
+  return true;
+}
+
 export function registerPageBackNavigationHandler(
   handler: PageBackNavigationHandler,
 ): () => void {
@@ -32,6 +50,7 @@ export function startAndroidBackNavigationBridge(): () => void {
 
   const bridge: AndroidBackNavigationBridge = {
     handle: () => {
+      if (closeOpenDropdown()) return true;
       for (let index = handlers.length - 1; index >= 0; index -= 1) {
         if (handlers[index]?.back()) return true;
       }

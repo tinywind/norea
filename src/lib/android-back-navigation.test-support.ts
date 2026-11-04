@@ -19,6 +19,7 @@ export function mountBackNavigationHarness(): BackNavigationHarness {
   const document = {
     nodeType: 9, activeElement: null, body: null as unknown,
     documentElement: { nodeName: "HTML" }, addEventListener() {}, removeEventListener() {},
+    querySelectorAll: () => [],
   };
   const container = {
     nodeType: 1, nodeName: "DIV", tagName: "DIV", namespaceURI: "http://www.w3.org/1999/xhtml",
