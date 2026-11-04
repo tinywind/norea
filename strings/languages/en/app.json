@@ -1380,6 +1380,8 @@
   "serverLibraryAdd.failedCount": "{count} failed",
   "serverLibraryAdd.failed": "Couldn't add the works to the library",
   "serverLibraryAdd.selectionHint": "Tap covers to select. Works already in your library can't be selected.",
+  "serverLibraryAdd.allShownInLibrary": "Every work shown is already in your library",
+  "serverLibraryAdd.allShownInLibraryHint": "Search or pick another source to find works to add.",
   "serverLibraryAdd.inLibraryExcluded": "{count} matching works are already in your library and weren't selected.",
   "novel.chaptersRead": "{read} of {total} chapters read",
   "novel.percentRead": "{progress}% read",

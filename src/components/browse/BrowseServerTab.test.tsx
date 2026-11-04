@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { ServerWorkPage, ServerWorkSummary } from "../../lib/content-sync/browse";
@@ -92,6 +93,7 @@ interface ControlProps {
   onOpen?: () => void;
   onChange?: (value: string) => void;
   onSubmit?: () => void;
+  title?: ReactNode;
 }
 function controls(node: ReactNode): ReactElement<ControlProps>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
@@ -200,6 +202,26 @@ it("toggles works in selection mode and keeps works in the library unselectable"
   expect(cards.map(card => [card.props["aria-pressed"], card.props.disabled])).toEqual([[true, false], [false, true]]);
   cards[0]!.props.onClick!();
   expect(mocks.selection.toggle).toHaveBeenCalledWith(expect.objectContaining({ id: "first" }));
+});
+
+it("says once that every shown work is already in the library instead of dimming the whole grid", () => {
+  mocks.inLibrary.add("/first");
+  Object.assign(mocks.selection, { selectionMode: true });
+  expect(render().some(element => element.type === StateView && element.props.title === "serverLibraryAdd.allShownInLibrary")).toBe(false);
+
+  mocks.inLibrary.add("/second");
+  const notices = render().filter(element => element.type === StateView);
+  expect(notices.map(notice => notice.props.title)).toEqual(["serverLibraryAdd.allShownInLibrary"]);
+
+  Object.assign(mocks.selection, { selectionMode: false });
+  expect(render().some(element => element.type === StateView)).toBe(false);
+
+  const css = readFileSync(new URL("../../styles/browse.css", import.meta.url), "utf8");
+  expect(css).toMatch(/\.norea-source-card\[data-in-library="true"\]:disabled \{[^}]*opacity: 1;/);
+  expect(css).toMatch(/\.norea-source-select-check \{[^}]*border: 0\.125rem solid #fff;/);
+  const title = /\.norea-source-card-title \{([^}]*)\}/.exec(css)?.[1] ?? "";
+  expect(title).toContain("-webkit-line-clamp: 2");
+  expect(title).toContain("font-weight: var(--norea-weight-medium)");
 });
 
 it("adds the selected works through one bulk request and leaves selection once it starts", () => {

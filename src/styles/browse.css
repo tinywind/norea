@@ -462,8 +462,10 @@
   background: var(--norea-color-selected);
 }
 
+/* A work already in the library cannot be selected; its library mark says so, so the card stays readable. */
 .norea-source-card[data-in-library="true"]:disabled {
   cursor: not-allowed;
+  opacity: 1;
 }
 
 .norea-source-frame {
@@ -554,14 +556,17 @@
   opacity: 0.62;
 }
 
+/* Matches the library card title: two lines in medium weight. */
 .norea-source-card-title {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
   font-size: var(--norea-text-sm);
-  font-weight: 700;
-  line-height: 1.25;
+  font-weight: var(--norea-weight-medium);
+  line-height: var(--norea-leading-normal);
   max-width: 6.5rem;
   overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
+  overflow-wrap: anywhere;
 }
 
 .norea-source-card-meta {

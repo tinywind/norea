@@ -174,6 +174,9 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
       ) : null}
       {device.isLoading || works.isLoading ? <CoverGridSkeleton label={t("common.loading")} /> : null}
       {!error && enabled && !works.isLoading && items.length === 0 ? <StateView title={t("source.noResults")} /> : null}
+      {selecting && items.length > 0 && items.every(work => isInLibrary(work.identity.pluginId, work.identity.novelPath)) ? (
+        <StateView icon={InLibraryIcon} message={t("serverLibraryAdd.allShownInLibraryHint")} title={t("serverLibraryAdd.allShownInLibrary")} />
+      ) : null}
       <div className="norea-source-grid">
         {items.map(work => {
           const inLibrary = isInLibrary(work.identity.pluginId, work.identity.novelPath);
