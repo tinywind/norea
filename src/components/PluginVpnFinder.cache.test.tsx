@@ -53,7 +53,7 @@ import { QueryClient as ActualQueryClient } from "@tanstack/react-query";
 import { Switch, Table } from "@mantine/core";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { PluginVpnFinder } from "./PluginVpnFinder";
-import { TextButton } from "./TextButton";
+import { IconButton } from "./IconButton";
 
 const server: PluginVpnFinderServer = {
   activeSessions: 2, candidateId: "one", countryCode: "JP", countryName: "Japan",
@@ -63,6 +63,7 @@ const server: PluginVpnFinderServer = {
 interface ControlProps {
   children?: ReactNode;
   checked?: boolean;
+  label?: string;
   onClose?: () => void;
   onClick?: () => void;
   onChange?: (event: { currentTarget: { checked: boolean } }) => void;
@@ -113,8 +114,8 @@ it("retains the fetched catalog across modal closes and settings remounts until 
   mocks.state = [];
   render();
   expect(mocks.load).toHaveBeenCalledOnce();
-  const refresh = render().find(element => element.type === TextButton &&
-    element.props.children === "settings.data.pluginVpn.finder.refresh")!;
+  const refresh = render().find(element => element.type === IconButton &&
+    element.props.label === "settings.data.pluginVpn.finder.refresh")!;
   refresh.props.onClick!();
   await vi.waitFor(() => expect(mocks.load).toHaveBeenCalledTimes(2));
   expect(mocks.load).toHaveBeenLastCalledWith(true, expect.any(AbortSignal));
@@ -124,8 +125,8 @@ it("preserves the last fetched catalog when an explicit refresh fails", async ()
   render();
   await vi.waitFor(() => expect(mocks.observer?.getCurrentResult().isSuccess).toBe(true));
   mocks.load.mockRejectedValueOnce(new Error("server unavailable"));
-  render().find(element => element.type === TextButton &&
-    element.props.children === "settings.data.pluginVpn.finder.refresh")!.props.onClick!();
+  render().find(element => element.type === IconButton &&
+    element.props.label === "settings.data.pluginVpn.finder.refresh")!.props.onClick!();
   await vi.waitFor(() => expect(mocks.observer?.getCurrentResult().isError).toBe(true));
   render().find(element => element.type === ResponsiveSheet)!.props.onClose!();
   render(false);

@@ -12,7 +12,9 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { StateView } from "../AppFrame";
 import { ConsolePanel, ConsoleSectionHeader } from "../ConsolePrimitives";
 import { ServerWorkDeleteButton } from "../ServerWorkDeleteButton";
+import { IconButton } from "../IconButton";
 import { TextButton } from "../TextButton";
+import { RefreshIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 /**
@@ -95,7 +97,9 @@ export function ServerChapterManager({ source, name, onClose }: { source: Server
       </ConsolePanel>
       <ConsolePanel className="norea-server-chapters-panel">
         <ConsoleSectionHeader title={t("contentSync.serverChapters")} count={t("contentSync.catalogCount", { count: chapters.data?.total ?? 0 })}
-          actions={<TextButton size="sm" onClick={refresh} disabled={chapters.isFetching || busy}>{t("common.refresh")}</TextButton>} />
+          actions={<IconButton label={t("common.refresh")} loading={chapters.isFetching} onClick={refresh} disabled={busy}>
+            <RefreshIcon />
+          </IconButton>} />
         <div className="norea-server-selection-bar">
           <Text size="sm" aria-live="polite">{t("novel.selection.selectedCount", { count: selectedIds.length })}</Text>
           <Group gap="xs" wrap="wrap">

@@ -24,7 +24,9 @@ import {
   type PluginVpnPhase,
   type PluginVpnServerProtocol,
 } from "../lib/plugin-vpn";
+import { IconButton } from "./IconButton";
 import { TextButton } from "./TextButton";
+import { CloseIcon, RefreshIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 import "../styles/plugin-vpn-finder.css";
@@ -497,17 +499,17 @@ export function PluginVpnFinder({
           <Text c="dimmed" size="xs">
             {t("settings.data.pluginVpn.finder.sourceAttribution")}
           </Text>
-          <TextButton
+          <IconButton
             active={catalogRefreshing}
             disabled={!online}
-            onClick={catalogRefreshing ? cancelCatalogQuery : refreshCatalog}
-            size="sm"
-            variant="default"
-          >
-            {catalogRefreshing
+            label={catalogRefreshing
               ? t("settings.data.pluginVpn.finder.cancelSearch")
               : t("settings.data.pluginVpn.finder.refresh")}
-          </TextButton>
+            onClick={catalogRefreshing ? cancelCatalogQuery : refreshCatalog}
+            size="lg"
+          >
+            {catalogRefreshing ? <CloseIcon /> : <RefreshIcon />}
+          </IconButton>
         </Group>
 
         {serversQuery.isError && serversQuery.data !== undefined ? (

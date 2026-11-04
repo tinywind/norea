@@ -11,7 +11,9 @@ import {
 } from "../lib/content-sync/device-backup";
 import { useContentSyncStore } from "../store/content-sync";
 import { SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
+import { IconButton } from "./IconButton";
 import { TextButton } from "./TextButton";
+import { RefreshIcon } from "./ui/icons";
 import { useConfirm } from "./ui/ConfirmDialog";
 
 export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
@@ -89,9 +91,10 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
             value={selected} onChange={setSelected} searchable clearable disabled={busy || !serverUrl}
             data={(backups.data ?? []).map(item => ({ value: item.deviceName, label: item.deviceName }))}
             nothingFoundMessage={t("deviceBackup.empty")} />
-          <TextButton loading={backups.isFetching} disabled={busy || !serverUrl} onClick={() => { void backups.refetch(); }}>
-            {t("common.refresh")}
-          </TextButton>
+          <IconButton label={t("common.refresh")} loading={backups.isFetching} disabled={busy || !serverUrl}
+            onClick={() => { void backups.refetch(); }} size="lg">
+            <RefreshIcon />
+          </IconButton>
         </div>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("deviceBackup.restore")}
