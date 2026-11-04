@@ -115,31 +115,10 @@ describe("PluginVpnFinder", () => {
     expect(pluginVpnFinderErrorMessage("   ")).toBeNull();
   });
 
-  it("keeps cancellation and server switching available during VPN work", () => {
-    expect(
-      pluginVpnFinderServerAction("jp-fast", "jp-fast", "connecting"),
-    ).toBe("cancel");
-    expect(
-      pluginVpnFinderServerAction("kr-low-ping", "jp-fast", "connecting"),
-    ).toBe("switch");
-    expect(
-      pluginVpnFinderServerAction("kr-low-ping", null, "connected"),
-    ).toBe("switch");
-    expect(
-      pluginVpnFinderServerAction("kr-low-ping", null, "reconnecting"),
-    ).toBe("switch");
-    expect(
-      pluginVpnFinderServerAction("kr-low-ping", "kr-low-ping", "reconnecting"),
-    ).toBe("cancel");
-    expect(
-      pluginVpnFinderServerAction("kr-low-ping", null, "disconnecting"),
-    ).toBe("switch");
-    expect(
-      pluginVpnFinderServerAction("kr-low-ping", null, "error"),
-    ).toBe("switch");
-    expect(
-      pluginVpnFinderServerAction("kr-low-ping", null, "disabled"),
-    ).toBe("connect");
+  it("offers cancel on the pending server and connect on every other one", () => {
+    expect(pluginVpnFinderServerAction("jp-fast", "jp-fast")).toBe("cancel");
+    expect(pluginVpnFinderServerAction("kr-low-ping", "jp-fast")).toBe("connect");
+    expect(pluginVpnFinderServerAction("kr-low-ping", null)).toBe("connect");
   });
 
   it("hides failed verdicts by default and lets the filter include them", () => {

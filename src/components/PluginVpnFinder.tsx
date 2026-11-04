@@ -26,7 +26,7 @@ import {
 } from "../lib/plugin-vpn";
 import { IconButton } from "./IconButton";
 import { TextButton } from "./TextButton";
-import { CloseIcon, RefreshIcon } from "./ui/icons";
+import { CloseIcon, ConnectIcon, RefreshIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 import "../styles/plugin-vpn-finder.css";
@@ -65,22 +65,13 @@ interface PluginVpnFinderProps {
   verdicts: ReadonlyMap<string, VpnGateServerVerdictValue>;
 }
 
-export type PluginVpnFinderServerAction = "cancel" | "connect" | "switch";
+export type PluginVpnFinderServerAction = "cancel" | "connect";
 
 export function pluginVpnFinderServerAction(
   candidateId: string,
   pendingCandidateId: string | null,
-  phase: PluginVpnPhase | undefined,
 ): PluginVpnFinderServerAction {
-  if (pendingCandidateId === candidateId) return "cancel";
-  return pendingCandidateId !== null ||
-    phase === "connecting" ||
-    phase === "connected" ||
-    phase === "reconnecting" ||
-    phase === "disconnecting" ||
-    phase === "error"
-    ? "switch"
-    : "connect";
+  return pendingCandidateId === candidateId ? "cancel" : "connect";
 }
 
 export function pluginVpnFinderServerVerdict(
@@ -274,12 +265,7 @@ export function PluginVpnFinder({
     candidateId: string,
     target: string,
   ): Promise<void> {
-    const action = pluginVpnFinderServerAction(
-      candidateId,
-      pendingCandidateId,
-      connectionPhase,
-    );
-    if (action === "cancel") {
+    if (pluginVpnFinderServerAction(candidateId, pendingCandidateId) === "cancel") {
       await onCancelConnection();
       return;
     }
@@ -328,20 +314,20 @@ export function PluginVpnFinder({
     });
   }
 
-  function actionText(action: PluginVpnFinderServerAction): string {
-    if (action === "cancel") {
-      return t("settings.data.pluginVpn.connection.cancel");
-    }
-    return action === "switch"
-      ? t("settings.data.pluginVpn.finder.switchAndConnect")
-      : t("settings.data.pluginVpn.finder.applyAndConnect");
-  }
-
-  function serverAction(candidateId: string): PluginVpnFinderServerAction {
-    return pluginVpnFinderServerAction(
-      candidateId,
-      pendingCandidateId,
-      connectionPhase,
+  function connectButton(server: PluginVpnFinderServer) {
+    const connecting =
+      pluginVpnFinderServerAction(server.candidateId, pendingCandidateId) === "cancel";
+    return (
+      <IconButton
+        active={connecting}
+        disabled={!connecting && disabled}
+        label={connecting
+          ? t("settings.data.pluginVpn.connection.cancel")
+          : t("settings.data.pluginVpn.connection.connect")}
+        onClick={() => void applyAndConnect(server.candidateId, server.ip)}
+      >
+        {connecting ? <Loader size={14} /> : <ConnectIcon />}
+      </IconButton>
     );
   }
 
@@ -615,21 +601,7 @@ export function PluginVpnFinder({
                           verdict={pluginVpnFinderServerVerdict(server, verdicts)}
                         />
                       </Table.Td>
-                      <Table.Td>
-                        <TextButton
-                          active={serverAction(server.candidateId) === "cancel"}
-                          disabled={
-                            serverAction(server.candidateId) !== "cancel" &&
-                            disabled
-                          }
-                          onClick={() =>
-                            void applyAndConnect(server.candidateId, server.ip)
-                          }
-                          size="sm"
-                        >
-                          {actionText(serverAction(server.candidateId))}
-                        </TextButton>
-                      </Table.Td>
+                      <Table.Td>{connectButton(server)}</Table.Td>
                     </Table.Tr>
                   ))}
                 </Table.Tbody>
@@ -694,19 +666,7 @@ export function PluginVpnFinder({
                           )}
                         />
                       </span>
-                      <TextButton
-                        active={serverAction(server.candidateId) === "cancel"}
-                        disabled={
-                          serverAction(server.candidateId) !== "cancel" &&
-                          disabled
-                        }
-                        onClick={() =>
-                          void applyAndConnect(server.candidateId, server.ip)
-                        }
-                        size="sm"
-                      >
-                        {actionText(serverAction(server.candidateId))}
-                      </TextButton>
+                      {connectButton(server)}
                     </Group>
                   </div>
                   <dl className="norea-plugin-vpn-finder-metadata">

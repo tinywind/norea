@@ -48,6 +48,7 @@ import {
   IconPlayerPause,
   IconPlayerPlay,
   IconPlayerSkipBack,
+  IconPlugConnected,
   IconPlus,
   IconPointFilled,
   IconPuzzle,
@@ -148,6 +149,7 @@ export const ImportIcon = withAppDefaults(IconFileImport);
 export const FolderIcon = withAppDefaults(IconFolder);
 export const CategoryIcon = withAppDefaults(IconCategory);
 export const VpnIcon = withAppDefaults(IconShieldLock);
+export const ConnectIcon = withAppDefaults(IconPlugConnected);
 export const ServerIcon = withAppDefaults(IconServer);
 export const ExtensionsIcon = withAppDefaults(IconPuzzle);
 export const RepositoryIcon = withAppDefaults(IconPackages);

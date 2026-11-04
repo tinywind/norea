@@ -50,7 +50,7 @@ vi.mock("../lib/network", () => ({
 vi.mock("../i18n", () => ({ useTranslation: () => ({ locale: "en", t: (key: string) => key }) }));
 
 import { QueryClient as ActualQueryClient } from "@tanstack/react-query";
-import { Switch, Table } from "@mantine/core";
+import { Loader, Switch, Table } from "@mantine/core";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { PluginVpnFinder } from "./PluginVpnFinder";
 import { IconButton } from "./IconButton";
@@ -74,7 +74,11 @@ function controls(node: ReactNode): ReactElement<ControlProps>[] {
   const element = node as ReactElement<ControlProps>;
   return [element, ...controls(element.props.children)];
 }
-function render(opened = true, verdicts: ReadonlyMap<string, "works" | "fails"> = new Map()) {
+function render(
+  opened = true,
+  verdicts: ReadonlyMap<string, "works" | "fails"> = new Map(),
+  overrides: Partial<Parameters<typeof PluginVpnFinder>[0]> = {},
+) {
   mocks.stateIndex = 0;
   return controls(PluginVpnFinder({
     connectionError: null, connectionPhase: "disabled", connectionTarget: null,
@@ -82,6 +86,7 @@ function render(opened = true, verdicts: ReadonlyMap<string, "works" | "fails"> 
     onCancelConnection: vi.fn(), onClose: mocks.onClose, onVerdictChange: vi.fn(),
     opened, pendingCandidateId: null, verdictControlsDisabled: false,
     verdictDisabledReason: null, verdictSavingIps: new Set(), verdicts,
+    ...overrides,
   }));
 }
 beforeEach(() => {
@@ -146,4 +151,26 @@ it("starts with failed verdicts hidden and reveals them when the user disables t
   filter.props.onChange!({ currentTarget: { checked: false } });
   expect(render(true, verdicts).some(element => element.type === Table.Tbody)).toBe(true);
   expect(mocks.load).toHaveBeenCalledOnce();
+});
+
+it("connects from an icon button on each server and turns the pending one into a cancel", async () => {
+  render();
+  await vi.waitFor(() => expect(mocks.observer?.getCurrentResult().isSuccess).toBe(true));
+  const onApplyAndConnect = vi.fn().mockResolvedValue(undefined);
+  const iconLabels = (view: ReturnType<typeof render>) =>
+    view.filter(element => element.type === IconButton).map(element => element.props.label);
+  const idle = render(true, new Map(), { onApplyAndConnect });
+  expect(iconLabels(idle).filter(label => label === "settings.data.pluginVpn.connection.connect")).toHaveLength(2);
+  idle.find(element => element.type === IconButton &&
+    element.props.label === "settings.data.pluginVpn.connection.connect")!.props.onClick!();
+  await vi.waitFor(() => expect(onApplyAndConnect).toHaveBeenCalledWith("one"));
+
+  const onCancelConnection = vi.fn().mockResolvedValue(undefined);
+  const pending = render(true, new Map(), { connectionPhase: "connecting", onCancelConnection, pendingCandidateId: "one" });
+  expect(iconLabels(pending)).not.toContain("settings.data.pluginVpn.connection.connect");
+  const cancel = pending.find(element => element.type === IconButton &&
+    element.props.label === "settings.data.pluginVpn.connection.cancel")!;
+  expect((cancel.props.children as ReactElement).type).toBe(Loader);
+  cancel.props.onClick!();
+  await vi.waitFor(() => expect(onCancelConnection).toHaveBeenCalledOnce());
 });
