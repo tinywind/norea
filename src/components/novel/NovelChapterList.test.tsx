@@ -108,6 +108,18 @@ describe("chapter row structure", () => {
     expect(describedText($)).toBe("Ch. 122026-10-1245% read");
   });
 
+  it("fills a partly read row from the left as far as it was read", () => {
+    const partial = renderRow({ progress: 45 })(".norea-novel-chapter");
+    expect(partial.attr("data-progress")).toBe("partial");
+    expect(partial.attr("style")).toContain("--norea-chapter-progress:45%");
+
+    for (const progress of [0, 100]) {
+      const row = renderRow({ progress })(".norea-novel-chapter");
+      expect(row.attr("data-progress")).toBeUndefined();
+      expect(row.attr("style") ?? "").not.toContain("--norea-chapter-progress");
+    }
+  });
+
   it("marks the current chapter and dims read titles", () => {
     const $ = renderList({
       chapters: [{ ...chapter, unread: false }, { ...chapter, id: 2, name: "Second chapter", position: 2 }],
@@ -220,6 +232,6 @@ describe("row geometry", () => {
     const rendered = $("button[aria-label^='Open Chapter']").length;
     expect(rendered).toBeGreaterThan(0);
     expect(rendered).toBeLessThan(40);
-    expect($("[style*='height:30000px']")).toHaveLength(1);
+    expect($(`[style*='height:${500 * CHAPTER_ROW_HEIGHT}px']`)).toHaveLength(1);
   });
 });

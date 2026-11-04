@@ -16,6 +16,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 import { Button, Loader, Skeleton, VisuallyHidden } from "@mantine/core";
 import {
+  type CSSProperties,
   useEffect,
   useId,
   useMemo,
@@ -58,7 +59,7 @@ import {
 } from "./novel-detail-model";
 
 /** Row height in px at 100% UI scale; `.norea-novel-chapter` sets the same height in rem. */
-export const CHAPTER_ROW_HEIGHT = 60;
+export const CHAPTER_ROW_HEIGHT = 52;
 
 const CHAPTER_LIST_OVERSCAN = 8;
 
@@ -149,14 +150,18 @@ function ChapterListItem({
     id: chapterDndId(chapter.id),
     disabled: !canDrag,
   });
+  const progress = getChapterReadingProgress(chapter);
+  const partlyRead = progress > 0 && progress < FINISHED_PROGRESS;
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-  };
+    ...(partlyRead
+      ? { "--norea-chapter-progress": `${progress}%` }
+      : undefined),
+  } as CSSProperties;
   const downloadActive = status?.kind === "queued" || status?.kind === "running";
   const failedMessage = status?.kind === "failed" ? status.error : null;
   const longPress = useLongPress(reorderMode ? undefined : onExtendSelection, 450);
-  const progress = getChapterReadingProgress(chapter);
   const releaseTime = chapter.releaseTime
     ? normalizeDateText(chapter.releaseTime)
     : null;
@@ -279,6 +284,7 @@ function ChapterListItem({
       data-current={isCurrent ? "true" : undefined}
       data-dragging={isDragging ? "true" : undefined}
       data-highlighted={highlighted ? "true" : undefined}
+      data-progress={partlyRead ? "partial" : undefined}
       data-selected={isSelected ? "true" : undefined}
       style={style}
     >
@@ -362,7 +368,7 @@ function ChapterListItem({
           >
             <span>{t("novel.chapterShort", { number: formatChapterNumber(chapter) })}</span>
             {releaseTime ? <span>{releaseTime}</span> : null}
-            {progress > 0 && progress < FINISHED_PROGRESS ? (
+            {partlyRead ? (
               <span>{t("novel.percentRead", { progress })}</span>
             ) : null}
             {chapter.serverComplete === false ? (
