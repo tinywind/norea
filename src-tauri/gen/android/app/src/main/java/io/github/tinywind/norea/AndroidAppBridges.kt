@@ -1,9 +1,9 @@
 package io.github.tinywind.norea
 
 import android.app.Activity
-import android.content.Context
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
+import androidx.core.view.WindowCompat
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -121,14 +121,23 @@ internal class AndroidTaskNotificationBridge(
 }
 
 internal class AndroidWindowMetricsBridge(
-  private val context: Context,
+  private val activity: Activity,
   private val webView: WebView,
 ) {
   @JavascriptInterface
   fun getMetrics(): String = windowMetricsJson(webView)
 
+  @JavascriptInterface
+  fun setLightSystemBars(light: Boolean) {
+    webView.post {
+      val controller = WindowCompat.getInsetsController(activity.window, webView)
+      controller.isAppearanceLightStatusBars = light
+      controller.isAppearanceLightNavigationBars = light
+    }
+  }
+
   private fun windowMetricsJson(webView: WebView): String {
-    val metrics = context.resources.displayMetrics
+    val metrics = activity.resources.displayMetrics
     val density = if (metrics.density > 0f) metrics.density else 1f
     val widthPx = if (webView.width > 0) webView.width else metrics.widthPixels
     val heightPx = if (webView.height > 0) webView.height else metrics.heightPixels
