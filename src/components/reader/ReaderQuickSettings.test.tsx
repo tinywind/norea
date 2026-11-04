@@ -234,8 +234,8 @@ it("applies a theme from its swatch", () => {
   expect(useReaderStore.getState().appearance.themeId).toBe("sepia");
 });
 
-it("hides page transition in scroll mode and shows it in paged mode", () => {
-  expect(hasLabel(openMoreSettings(), "readerSettings.pageTransitionDuration")).toBe(false);
+it("offers the turn duration in scroll and paged modes, since tap paging animates in both", () => {
+  expect(hasLabel(openMoreSettings(), "readerSettings.pageTransitionDuration")).toBe(true);
   hookState.slots = [];
   useReaderStore.getState().setGeneral({ pageReader: true });
   expect(hasLabel(openMoreSettings(), "readerSettings.pageTransitionDuration")).toBe(true);

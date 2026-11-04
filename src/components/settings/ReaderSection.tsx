@@ -10,13 +10,12 @@ export function ReaderSection() {
   const editor = useReaderSettingsEditor();
   const fields = buildReaderSettingsFields(editor);
   const { t } = editor;
-  const paged = editor.general.pageReader;
 
   return (
     <Stack gap="md">
       <SettingsSection title={t("readerSettings.reading.title")}>
         {fields.readingMode}
-        {paged ? fields.pageTransition : null}
+        {fields.pageTransition}
         {fields.pdfPageFit}
         {fields.htmlImagePaging}
         {fields.fullPageReader}

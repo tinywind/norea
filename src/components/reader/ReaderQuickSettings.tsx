@@ -107,7 +107,7 @@ export function ReaderQuickSettings({ content, target }: ReaderQuickSettingsProp
               <SettingsSection>
                 {fields.fullPageReader}
                 {fields.keepScreenOn}
-                {paged ? fields.pageTransition : null}
+                {fields.pageTransition}
                 {paged && content.kind === "pdf" ? fields.pdfPageFit : null}
                 {paged && content.kind === "html" && content.hasImages
                   ? fields.htmlImagePaging
@@ -291,7 +291,7 @@ function ReaderScopeMenu({ editor }: { editor: ReaderSettingsEditor }) {
           <Button
             onClick={() => editor.selectEditScope(overridingScope)}
             size="compact-sm"
-            variant="light"
+            variant="subtle"
           >
             {t(
               overridingScope === "novel"

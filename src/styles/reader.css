@@ -1,8 +1,6 @@
 :root {
-  /* On :root so the toast offset in ui.css can clear the reader bars. */
-  --norea-reader-bar-height: calc(
-    var(--norea-control-sm) + var(--norea-space-2) + 1px
-  );
+  /* On :root so the toast offset in ui.css can clear the reader bars. The row matches every page header. */
+  --norea-reader-bar-height: calc(var(--norea-app-bar-height) + 1px);
 }
 
 .norea-reader-shell {
@@ -28,7 +26,7 @@
   color: var(--norea-reader-ink, var(--norea-color-ink));
   flex: 0 0 auto;
   gap: var(--norea-space-1);
-  padding: var(--norea-space-1) var(--norea-space-2);
+  padding: var(--norea-space-1) var(--norea-app-bar-padding-inline);
   z-index: 8;
 }
 
@@ -43,10 +41,9 @@
   align-items: center;
   border-top: 1px solid var(--norea-reader-rule, var(--norea-color-rule));
   display: grid;
-  grid-template-areas:
-    "seek seek seek seek"
-    "previous chapters settings next";
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  /* One row at every width: a separate progress row would cost a whole bar of content. */
+  grid-template-areas: "previous seek next chapters settings";
+  grid-template-columns: auto minmax(0, 1fr) auto auto auto;
   justify-items: center;
 }
 
@@ -86,13 +83,6 @@
   font-weight: 700;
   margin-inline-start: auto;
   white-space: nowrap;
-}
-
-@media (min-width: 768px) {
-  .norea-reader-bottombar {
-    grid-template-areas: "previous seek next chapters settings";
-    grid-template-columns: auto minmax(0, 1fr) auto auto auto;
-  }
 }
 
 .norea-reader-icon-button,
@@ -363,7 +353,7 @@
 
 /* Full-page mode floats the bottom bar over the content; stay above it. */
 .norea-reader-shell[data-full-page="true"] .norea-reader-end-card {
-  bottom: calc(var(--norea-reader-bar-height) * 2 + var(--norea-space-3));
+  bottom: calc(var(--norea-reader-bar-height) + var(--norea-space-3));
 }
 
 .norea-reader-content-stage,
@@ -626,7 +616,7 @@
 }
 
 .norea-reader-shell[data-full-page="true"] .norea-pdf-reader-zoom {
-  bottom: calc(var(--norea-reader-bar-height) * 2 + var(--norea-space-3));
+  bottom: calc(var(--norea-reader-bar-height) + var(--norea-space-3));
 }
 
 .norea-pdf-reader-zoom-level {
@@ -854,6 +844,11 @@
   padding: var(--norea-space-2) var(--norea-space-3);
 }
 
+/* Inside the sheet the header above already spaces this row. */
+.norea-reader-quick-heading {
+  padding-block: 0;
+}
+
 .norea-reader-settings-panel-header {
   border-bottom: 1px solid var(--norea-color-rule);
   justify-content: space-between;
@@ -926,11 +921,25 @@
     calc(var(--norea-space-4) + var(--norea-safe-area-bottom));
 }
 
+/* Rows keep their height and the body scrolls; shrinking would clip a card to a sliver. */
+.norea-reader-quick-body > * {
+  flex-shrink: 0;
+}
+
 .norea-reader-quick-tabs {
   display: flex;
   flex: 1 1 auto;
   flex-direction: column;
   min-height: 0;
+}
+
+.norea-reader-quick-tabs > .norea-reader-settings-tab-list {
+  flex-shrink: 0;
+}
+
+/* The reset footer below already clears the gesture bar. */
+.norea-reader-quick-tabs .norea-reader-quick-body {
+  padding-bottom: var(--norea-space-3);
 }
 
 .norea-reader-quick-footer {

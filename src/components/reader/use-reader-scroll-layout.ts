@@ -18,7 +18,6 @@ import {
   virtualRangeForScroll,
 } from "../reader-virtualization";
 import { readerVirtualSegmentHasMedia } from "./reader-content-media";
-import { MOTION_DURATION_BASE_MS } from "../../theme/motion";
 import {
   animateScrollTop,
   dispatchReaderScrollEvent,
@@ -335,7 +334,7 @@ export function useReaderScrollLayout({
       };
       scrollStepAnimationRef.current?.cancel();
       scrollStepAnimationRef.current = null;
-      const duration = readerScrollAnimationDuration(MOTION_DURATION_BASE_MS);
+      const duration = readerScrollAnimationDuration(pageTransitionDuration);
       if (duration <= 0) {
         node.scrollTo({ top: targetTop, behavior: "auto" });
         holdForwardStep(targetTop);
