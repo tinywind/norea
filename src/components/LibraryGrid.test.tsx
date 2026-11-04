@@ -1,4 +1,5 @@
 import { MantineProvider } from "@mantine/core";
+import { readFileSync } from "node:fs";
 import { load } from "cheerio";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vitest";
@@ -86,6 +87,16 @@ it("tells the unread and downloaded badges apart by icon and hover label", () =>
   expect(downloaded.attr("title")).toBe("library.grid.downloadedBadge");
   expect(unread.find("svg").attr("class")).toContain("tabler-icon-point-filled");
   expect(downloaded.find("svg").attr("class")).toContain("tabler-icon-cloud-check");
+});
+
+it("keeps the downloaded and unread counts in one pill that never wraps", () => {
+  const $ = renderGrid("comfortable");
+  const group = $(".norea-library-badge-group").first();
+  expect(group.children('[data-kind="downloaded"]')).toHaveLength(1);
+  expect(group.children('[data-kind="unread"]')).toHaveLength(1);
+  const css = readFileSync(new URL("../styles/library.css", import.meta.url), "utf8");
+  expect(css).toMatch(/\.norea-library-badges \{[^}]*flex-wrap: nowrap;/);
+  expect(css).toMatch(/\.norea-library-badge-group \{[^}]*display: inline-flex;/);
 });
 
 it("shows a goal novel's offline state on its downloaded badge, even before anything is downloaded", () => {

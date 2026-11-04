@@ -361,18 +361,22 @@ function LibraryBadges({
           {index + 1}
         </span>
       ) : null}
-      {downloaded ? (
-        <span className="norea-library-badge" data-goal-state={goalState} data-kind="downloaded" title={downloadedLabel}>
-          <DownloadedStateIcon size="0.875rem" />
-          <span aria-hidden="true">{novel.chaptersDownloaded}</span>
-          <VisuallyHidden>{downloadedLabel}</VisuallyHidden>
-        </span>
-      ) : null}
-      {unread ? (
-        <span className="norea-library-badge" data-kind="unread" title={unreadLabel}>
-          <UnreadIcon size="0.875rem" />
-          <span aria-hidden="true">{novel.chaptersUnread}</span>
-          <VisuallyHidden>{unreadLabel}</VisuallyHidden>
+      {downloaded || unread ? (
+        <span className="norea-library-badge-group">
+          {downloaded ? (
+            <span className="norea-library-badge" data-goal-state={goalState} data-kind="downloaded" title={downloadedLabel}>
+              <DownloadedStateIcon size="0.875rem" />
+              <span aria-hidden="true">{novel.chaptersDownloaded}</span>
+              <VisuallyHidden>{downloadedLabel}</VisuallyHidden>
+            </span>
+          ) : null}
+          {unread ? (
+            <span className="norea-library-badge" data-kind="unread" title={unreadLabel}>
+              <UnreadIcon size="0.875rem" />
+              <span aria-hidden="true">{novel.chaptersUnread}</span>
+              <VisuallyHidden>{unreadLabel}</VisuallyHidden>
+            </span>
+          ) : null}
         </span>
       ) : null}
     </span>
