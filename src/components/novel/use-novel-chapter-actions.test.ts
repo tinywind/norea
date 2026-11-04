@@ -117,9 +117,10 @@ it("deletes one confirmed chapter's files on this device only, without the delet
   expect(settled).not.toHaveBeenCalled();
   complete([{ id: "device:7", status: "succeeded" }]);
   await pending;
-  expect(settled).toHaveBeenCalled();
+  expect(settled).toHaveBeenCalledWith("Opening");
   expect(mocks.deleteCache).not.toHaveBeenCalled();
-  mutation.onSuccess?.(undefined, 7);
+  mutation.onSuccess?.("Opening", 7);
+  expect(mocks.showNotification).toHaveBeenCalledWith({ autoClose: 3_000, color: "ok", message: "novel.downloadDeleted" });
   expect(mocks.offerToStopGoals).toHaveBeenCalledWith([7]);
 });
 
@@ -187,4 +188,16 @@ it("keeps only the newest read change undoable and skips a change that touched n
   expect(mocks.hideNotification).toHaveBeenCalledWith(first);
   expect(lastToast().id).not.toBe(first);
   expect(((lastToast().message.props.children as ToastElement[])[0]!).props.children).toBe("novel.readState.markedUnread");
+});
+
+it("confirms briefly how many chosen chapters were queued, but not for a single row", () => {
+  vi.mocked(enqueueChapterDownloadBatch).mockReturnValue({ id: "batch", materialized: Promise.resolve(), promise: Promise.resolve({ total: 0, succeeded: 0, failed: 0, cancelled: 0 }) });
+  const rows = [7, 8, 9].map((id) => ({ id, name: `Chapter ${id}`, path: `/chapter/${id}`, chapterNumber: String(id), contentType: "html" }) as ChapterListRow);
+  const actions = useNovelChapterActions(3, { id: 3, pluginId: "source", name: "Book", path: "/book", isLocal: false }, rows);
+  actions.downloadChapter(rows[0]!);
+  expect(mocks.showNotification).not.toHaveBeenCalled();
+  actions.downloadChapters(rows.slice(1));
+  expect(mocks.showNotification).toHaveBeenCalledExactlyOnceWith({ autoClose: 3_000, color: "ok", message: "novel.downloadsQueued" });
+  actions.downloadChapters([]);
+  expect(mocks.showNotification).toHaveBeenCalledTimes(1);
 });

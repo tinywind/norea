@@ -1412,6 +1412,8 @@
   "novel.readState.markedRead": "Marked {count} chapters read",
   "novel.readState.markedUnread": "Marked {count} chapters unread",
   "novel.readState.undoFailed": "Undo read change",
+  "novel.downloadsQueued": "Queued {count} chapters",
+  "novel.downloadDeleted": "Deleted the download of {name}",
   "novel.localSource": "Local files",
   "novel.addedToLibrary": "Added to library",
   "novel.changeCategory": "Change category",

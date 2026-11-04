@@ -20,6 +20,7 @@ import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-r
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { useContentSyncStore } from "../../store/content-sync";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
+import { BRIEF_TOAST_AUTO_CLOSE_MS } from "../ui/AppToasts";
 import { useStopDownloadGoalsOffer } from "../use-stop-download-goals-offer";
 import { chaptersKey } from "./novel-detail-model";
 
@@ -69,8 +70,16 @@ export function useNovelChapterActions(
         .find((result) => result.status === "failed");
       if (failure) throw new Error(failure.error);
       markUpdatesIndexDirty("library-membership");
+      return chapter?.name ?? String(chapterId);
     },
-    onSuccess: (_result, chapterId) => { void offerToStopDownloadGoals([chapterId]); },
+    onSuccess: (name, chapterId) => {
+      notifications.show({
+        autoClose: BRIEF_TOAST_AUTO_CLOSE_MS,
+        color: "ok",
+        message: t("novel.downloadDeleted", { name }),
+      });
+      void offerToStopDownloadGoals([chapterId]);
+    },
     onSettled: invalidateDeletedChapters,
     onError: showDeleteError,
   });
@@ -188,12 +197,22 @@ export function useNovelChapterActions(
   }
 
   function downloadChapter(chapter: ChapterListRow): void {
-    downloadChapters([chapter]);
+    queueChapterDownloads([chapter]);
   }
 
-  /** Downloads chapters the user chose, ahead of automatic goal work. */
+  /** Downloads several chapters the user chose and confirms how many were queued. */
   function downloadChapters(chaptersToDownload: ChapterListRow[]): void {
-    if (!novel || chaptersToDownload.length === 0) return;
+    if (!queueChapterDownloads(chaptersToDownload)) return;
+    notifications.show({
+      autoClose: BRIEF_TOAST_AUTO_CLOSE_MS,
+      color: "ok",
+      message: t("novel.downloadsQueued", { count: chaptersToDownload.length }),
+    });
+  }
+
+  /** Queues chapters the user chose, ahead of automatic goal work; false when there was nothing to queue. */
+  function queueChapterDownloads(chaptersToDownload: ChapterListRow[]): boolean {
+    if (!novel || chaptersToDownload.length === 0) return false;
     const batchNovel = novel;
     const chapterDownloadJobs = chaptersToDownload.map((chapter) => ({
       id: chapter.id,
@@ -216,6 +235,7 @@ export function useNovelChapterActions(
       total: chaptersToDownload.length,
       prepare: async () => ({ jobs: chapterDownloadJobs, materializeAllTasks: true, title, total: chaptersToDownload.length }),
     }).promise.finally(() => queryClient.invalidateQueries({ queryKey: chaptersKey(id), exact: true })).catch(() => undefined);
+    return true;
   }
 
   return {

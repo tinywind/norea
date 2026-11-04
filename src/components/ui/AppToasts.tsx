@@ -7,6 +7,9 @@ export const TOAST_POSITIONS = {
   phone: "bottom-center",
 } as const;
 
+/** For a short confirmation of an action whose result is already visible, such as queued downloads. */
+export const BRIEF_TOAST_AUTO_CLOSE_MS = 3_000;
+
 /**
  * The app's toast stack. `.norea-toasts` in ui.css lifts it above the bottom
  * navigation, the phone selection bar and visible reader bars.
