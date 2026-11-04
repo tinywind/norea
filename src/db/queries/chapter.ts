@@ -744,14 +744,31 @@ export async function updateChapterProgress(
   );
 }
 
+/** A chapter's read flag and progress, as captured before a bulk read-state change. */
+export interface ChapterReadState {
+  id: number;
+  progress: number;
+  unread: boolean;
+}
+
+interface RawChapterReadState {
+  id: number;
+  progress: number;
+  unread: unknown;
+}
+
+function normalizeChapterReadState(row: RawChapterReadState): ChapterReadState {
+  return { id: row.id, progress: row.progress, unread: sqliteBoolean(row.unread) };
+}
+
 export async function setChaptersReadState(
   chapterIds: readonly number[],
   unread: boolean,
-): Promise<BulkChapterMutationResult> {
+): Promise<BulkChapterMutationResult & { previous: ChapterReadState[] }> {
   const uniqueChapterIds = Array.from(new Set(chapterIds)).filter(
     (chapterId) => Number.isInteger(chapterId) && chapterId > 0,
   );
-  if (uniqueChapterIds.length === 0) return { rowsAffected: 0, chunks: 0 };
+  if (uniqueChapterIds.length === 0) return { rowsAffected: 0, chunks: 0, previous: [] };
   assertChapterBulkCount(uniqueChapterIds.length, "Chapter read state update");
 
   const unreadFlag = unread ? 1 : 0;
@@ -759,8 +776,15 @@ export async function setChaptersReadState(
   return runDatabaseTransaction(async (db) => {
     let rowsAffected = 0;
     let chunks = 0;
+    const previous: ChapterReadState[] = [];
 
     for (const chunk of chapterChunks(uniqueChapterIds, CHAPTER_ID_CHUNK_SIZE)) {
+      const rows = await db.select<RawChapterReadState[]>(
+        `SELECT id, unread, progress FROM chapter
+         WHERE id IN (${chapterIdPlaceholders(1, chunk.length)})`,
+        [...chunk],
+      );
+      previous.push(...rows.map(normalizeChapterReadState));
       const result = await db.execute(
         `UPDATE chapter
          SET
@@ -774,6 +798,44 @@ export async function setChaptersReadState(
       chunks += 1;
     }
 
+    return { rowsAffected, chunks, previous };
+  });
+}
+
+/** Puts back each chapter's read flag and progress exactly as captured, in chunks of equal values. */
+export async function restoreChapterReadStates(
+  states: readonly ChapterReadState[],
+): Promise<BulkChapterMutationResult> {
+  const groups = new Map<string, { ids: number[]; progress: number; unread: number }>();
+  for (const state of states) {
+    if (!Number.isInteger(state.id) || state.id <= 0) continue;
+    const unread = state.unread ? 1 : 0;
+    const key = `${unread}:${state.progress}`;
+    const group = groups.get(key) ?? { ids: [], progress: state.progress, unread };
+    group.ids.push(state.id);
+    groups.set(key, group);
+  }
+  if (groups.size === 0) return { rowsAffected: 0, chunks: 0 };
+  assertChapterBulkCount(states.length, "Chapter read state restore");
+
+  return runDatabaseTransaction(async (db) => {
+    let rowsAffected = 0;
+    let chunks = 0;
+    for (const group of groups.values()) {
+      for (const chunk of chapterChunks(group.ids, CHAPTER_ID_CHUNK_SIZE)) {
+        const result = await db.execute(
+          `UPDATE chapter
+           SET
+             progress   = $1,
+             unread     = $2,
+             updated_at = unixepoch()
+           WHERE id IN (${chapterIdPlaceholders(3, chunk.length)})`,
+          [group.progress, group.unread, ...chunk],
+        );
+        rowsAffected += result.rowsAffected;
+        chunks += 1;
+      }
+    }
     return { rowsAffected, chunks };
   });
 }
@@ -784,9 +846,9 @@ export async function setRelativeChaptersReadState(
   anchorChapterId: number,
   direction: RelativeChapterDirection,
   unread: boolean,
-): Promise<ChapterMutationResult> {
+): Promise<ChapterMutationResult & { previous: ChapterReadState[] }> {
   if (!Number.isInteger(anchorChapterId) || anchorChapterId <= 0) {
-    return { rowsAffected: 0 };
+    return { rowsAffected: 0, previous: [] };
   }
 
   const rangePredicate =
@@ -799,30 +861,46 @@ export async function setRelativeChaptersReadState(
               AND candidate.id > reference.id))`;
   const progress = unread ? 0 : FINISHED_PROGRESS;
   const unreadFlag = unread ? 1 : 0;
-  const db = await getDb();
-  const result = await db.execute(
-    `WITH reference AS (
-       SELECT id, novel_id, position
-       FROM chapter
-       WHERE id = $1
-     )
-     UPDATE chapter
-     SET
-       progress   = $2,
-       unread     = $3,
-       updated_at = unixepoch()
-     WHERE id IN (
-       SELECT candidate.id
+  return runDatabaseTransaction(async (db) => {
+    const previous = await db.select<RawChapterReadState[]>(
+      `WITH reference AS (
+         SELECT id, novel_id, position
+         FROM chapter
+         WHERE id = $1
+       )
+       SELECT candidate.id, candidate.unread, candidate.progress
        FROM chapter AS candidate
        CROSS JOIN reference
        WHERE candidate.novel_id = reference.novel_id
          AND candidate.id <> reference.id
          AND ${rangePredicate}
-     )
-       AND (progress <> $2 OR unread <> $3)`,
-    [anchorChapterId, progress, unreadFlag],
-  );
-  return { rowsAffected: result.rowsAffected };
+         AND (candidate.progress <> $2 OR candidate.unread <> $3)`,
+      [anchorChapterId, progress, unreadFlag],
+    );
+    const result = await db.execute(
+      `WITH reference AS (
+         SELECT id, novel_id, position
+         FROM chapter
+         WHERE id = $1
+       )
+       UPDATE chapter
+       SET
+         progress   = $2,
+         unread     = $3,
+         updated_at = unixepoch()
+       WHERE id IN (
+         SELECT candidate.id
+         FROM chapter AS candidate
+         CROSS JOIN reference
+         WHERE candidate.novel_id = reference.novel_id
+           AND candidate.id <> reference.id
+           AND ${rangePredicate}
+       )
+         AND (progress <> $2 OR unread <> $3)`,
+      [anchorChapterId, progress, unreadFlag],
+    );
+    return { rowsAffected: result.rowsAffected, previous: previous.map(normalizeChapterReadState) };
+  });
 }
 
 export async function markChapterOpened(chapterId: number): Promise<void> {

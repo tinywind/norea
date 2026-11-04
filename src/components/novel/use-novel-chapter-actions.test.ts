@@ -14,22 +14,27 @@ const mocks = vi.hoisted(() => ({
   runDeletion: vi.fn(),
   invalidateQueries: vi.fn(),
   showNotification: vi.fn(),
+  hideNotification: vi.fn(),
   offerToStopGoals: vi.fn(),
+  restoreReadStates: vi.fn(async () => ({ rowsAffected: 0, chunks: 0 })),
 }));
 
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => ({ invalidateQueries: mocks.invalidateQueries }),
   useMutation: (options: ChapterActionMutation) => {
     mocks.mutations.push(options);
-    return options;
+    return {
+      ...options,
+      mutate: (input: never) => void options.mutationFn(input).then((result) => options.onSuccess?.(result, input)),
+    };
   },
 }));
 vi.mock("@mantine/notifications", () => ({
-  notifications: { show: mocks.showNotification },
+  notifications: { show: mocks.showNotification, hide: mocks.hideNotification },
 }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../db/queries/chapter", () => ({
-  setChaptersReadState: vi.fn(), setRelativeChaptersReadState: vi.fn(),
+  setChaptersReadState: vi.fn(), setRelativeChaptersReadState: vi.fn(), restoreChapterReadStates: mocks.restoreReadStates,
 }));
 vi.mock("../../lib/reader-query-invalidation", () => ({ invalidateChapterReadStateQueries: vi.fn() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
@@ -148,4 +153,38 @@ it.each([false, true])("reloads only the chapter list after local discovery (bat
   complete();
 
   await vi.waitFor(() => expect(mocks.invalidateQueries).toHaveBeenCalledExactlyOnceWith({ queryKey: ["novel", "detail", 3, "chapters"], exact: true }));
+});
+
+interface ToastElement { props: { children: ToastElement[] | ToastElement | string; onClick?: () => void } }
+interface ShownToast { color: string; id: string; message: ToastElement }
+const lastToast = () => mocks.showNotification.mock.lastCall![0] as ShownToast;
+
+it("offers to undo a bulk read change and restores each chapter's captured state", async () => {
+  useNovelChapterActions(3, null, []);
+  const markSelected = mocks.mutations[2]! as unknown as { onSuccess: (result: unknown, input: unknown) => void };
+  const previous = [{ id: 7, unread: true, progress: 40 }, { id: 8, unread: false, progress: 100 }];
+  markSelected.onSuccess({ rowsAffected: 2, chunks: 1, previous }, { chapterIds: [7, 8], unread: false });
+
+  const toast = lastToast();
+  expect(toast.color).toBe("ok");
+  const [text, undo] = toast.message.props.children as ToastElement[];
+  expect(text!.props.children).toBe("novel.readState.markedRead");
+  expect(undo!.props.children).toBe("common.undo");
+  undo!.props.onClick!();
+  expect(mocks.hideNotification).toHaveBeenCalledWith(toast.id);
+  await vi.waitFor(() => expect(mocks.restoreReadStates).toHaveBeenCalledWith(previous));
+});
+
+it("keeps only the newest read change undoable and skips a change that touched nothing", () => {
+  useNovelChapterActions(3, null, []);
+  const markRelative = mocks.mutations[3]! as unknown as { onSuccess: (result: unknown, input: unknown) => void };
+  markRelative.onSuccess({ rowsAffected: 0, previous: [] }, { anchorChapterId: 4, direction: "before", unread: false });
+  expect(mocks.showNotification).not.toHaveBeenCalled();
+
+  markRelative.onSuccess({ rowsAffected: 1, previous: [{ id: 2, unread: true, progress: 0 }] }, { anchorChapterId: 4, direction: "before", unread: false });
+  const first = lastToast().id;
+  markRelative.onSuccess({ rowsAffected: 1, previous: [{ id: 5, unread: false, progress: 100 }] }, { anchorChapterId: 4, direction: "after", unread: true });
+  expect(mocks.hideNotification).toHaveBeenCalledWith(first);
+  expect(lastToast().id).not.toBe(first);
+  expect(((lastToast().message.props.children as ToastElement[])[0]!).props.children).toBe("novel.readState.markedUnread");
 });

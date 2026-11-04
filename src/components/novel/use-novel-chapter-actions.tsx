@@ -1,8 +1,12 @@
+import { Button } from "@mantine/core";
+import { notifications } from "@mantine/notifications";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
+  restoreChapterReadStates,
   setChaptersReadState,
   setRelativeChaptersReadState,
   type ChapterListRow,
+  type ChapterReadState,
 } from "../../db/queries/chapter";
 import { type NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
@@ -23,6 +27,10 @@ type NovelDownloadSource = Pick<
   NovelDetailRecord,
   "id" | "name" | "path" | "pluginId" | "isLocal"
 >;
+
+/** Only the latest read-state change can be undone; an older Undo would overwrite it. */
+let readStateUndoToastId: string | null = null;
+let readStateUndoSequence = 0;
 
 export function useNovelChapterActions(
   id: number,
@@ -82,6 +90,11 @@ export function useNovelChapterActions(
     onError: showDeleteError,
   });
 
+  const refreshReadState = () => {
+    markUpdatesIndexDirty("read-progress");
+    void invalidateChapterReadStateQueries(queryClient, { novelId: id });
+  };
+
   const setSelectedChapterReadState = useMutation({
     mutationFn: ({
       chapterIds,
@@ -90,9 +103,9 @@ export function useNovelChapterActions(
       chapterIds: readonly number[];
       unread: boolean;
     }) => setChaptersReadState(chapterIds, unread),
-    onSuccess: () => {
-      markUpdatesIndexDirty("read-progress");
-      void invalidateChapterReadStateQueries(queryClient, { novelId: id });
+    onSuccess: ({ previous }, { unread }) => {
+      refreshReadState();
+      offerReadStateUndo(previous, unread);
     },
   });
 
@@ -106,9 +119,9 @@ export function useNovelChapterActions(
       direction: "before" | "after";
       unread: boolean;
     }) => setRelativeChaptersReadState(anchorChapterId, direction, unread),
-    onSuccess: () => {
-      markUpdatesIndexDirty("read-progress");
-      void invalidateChapterReadStateQueries(queryClient, { novelId: id });
+    onSuccess: ({ previous }, { unread }) => {
+      refreshReadState();
+      offerReadStateUndo(previous, unread);
     },
   });
 
@@ -131,6 +144,48 @@ export function useNovelChapterActions(
       void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
     },
   });
+
+  const undoReadState = useMutation({
+    mutationFn: (previous: readonly ChapterReadState[]) => restoreChapterReadStates(previous),
+    onSuccess: refreshReadState,
+    onError: (error) => {
+      showErrorToast(t("novel.readState.undoFailed"), error);
+    },
+  });
+
+  /** Shows how many chapters changed with an Undo that puts back each one's read flag and progress. */
+  function offerReadStateUndo(previous: readonly ChapterReadState[], unread: boolean): void {
+    if (previous.length === 0) return;
+    if (readStateUndoToastId) notifications.hide(readStateUndoToastId);
+    readStateUndoSequence += 1;
+    const toastId = `novel-read-state-undo:${id}:${readStateUndoSequence}`;
+    readStateUndoToastId = toastId;
+    notifications.show({
+      color: "ok",
+      id: toastId,
+      message: (
+        <span className="norea-novel-toast">
+          <span>
+            {t(unread ? "novel.readState.markedUnread" : "novel.readState.markedRead", { count: previous.length })}
+          </span>
+          <Button
+            onClick={() => {
+              notifications.hide(toastId);
+              if (readStateUndoToastId === toastId) readStateUndoToastId = null;
+              undoReadState.mutate(previous);
+            }}
+            size="compact-sm"
+            variant="subtle"
+          >
+            {t("common.undo")}
+          </Button>
+        </span>
+      ),
+      onClose: () => {
+        if (readStateUndoToastId === toastId) readStateUndoToastId = null;
+      },
+    });
+  }
 
   function downloadChapter(chapter: ChapterListRow): void {
     downloadChapters([chapter]);

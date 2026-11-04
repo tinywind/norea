@@ -105,7 +105,7 @@ suppression were updated independently of those presentation choices.
 | [`src/components/novel/NovelCategoryEditor.tsx`](../../src/components/novel/NovelCategoryEditor.tsx#L28) | 28 |
 | [`src/components/novel/ServerChapterManager.tsx`](../../src/components/novel/ServerChapterManager.tsx#L56) | 56 |
 | [`src/components/novel/use-local-novel-editor.tsx`](../../src/components/novel/use-local-novel-editor.tsx#L89) | 89 |
-| [`src/components/novel/use-novel-chapter-actions.ts`](../../src/components/novel/use-novel-chapter-actions.ts#L1) | 1 |
+| [`src/components/novel/use-novel-chapter-actions.tsx`](../../src/components/novel/use-novel-chapter-actions.tsx#L1) | 1 |
 | [`src/components/novel/use-novel-metadata.ts`](../../src/components/novel/use-novel-metadata.ts#L170) | 170 |
 | [`src/lib/deep-link.test.ts`](../../src/lib/deep-link.test.ts#L1) | 1 |
 | [`src/lib/deep-link.ts`](../../src/lib/deep-link.ts#L1) | 1 |
