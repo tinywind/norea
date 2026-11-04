@@ -1,5 +1,5 @@
 import { getChapterById, listChaptersByNovel, type ChapterListRow } from "../db/queries/chapter";
-import { deleteLocalNovelRecords, findLocalDeletionNovel, listStoredDeletionNovelIds } from "../db/queries/content-deletion";
+import { deleteLocalNovelRecords, findLocalDeletionNovel, listDeletionDownloadedChapterIds, listStoredDeletionNovelIds } from "../db/queries/content-deletion";
 import { getNovelById, setNovelInLibrary, type NovelDetailRecord } from "../db/queries/novel";
 import { removeDownloadGoals } from "./download-goals/goal-service";
 import { useContentSyncStore } from "../store/content-sync";
@@ -43,6 +43,8 @@ export interface ContentDeletionAction {
   requires?: string;
   waitForSync?: boolean;
   source?: ServerNovelSource;
+  /** Chapters whose device downloads this action deletes, captured before it deletes them. */
+  downloadedChapterIds?: readonly number[];
   run: () => Promise<WorkCatalogEntry | void>;
 }
 export interface ContentDeletionResult {
@@ -65,6 +67,25 @@ async function deleteLocalDownloads(scope: "chapter" | "novel" | "all", ids: rea
   if (scope !== "all" && !ids.length) return;
   const result = await deleteDownloadCache({ scope, targetIds: ids, title });
   if (result.failed || result.cancelled) throw new Error(`Download deletion did not finish: ${result.deleted}/${result.total} deleted, ${result.failed} failed${result.cancelled ? ", cancelled" : ""}.`);
+}
+
+/** Chapters whose device downloads the succeeded actions deleted. */
+export function deletedDownloadChapterIds(actions: readonly ContentDeletionAction[], results: readonly ContentDeletionResult[]): number[] {
+  const succeeded = new Set(results.filter(result => result.status === "succeeded").map(result => result.id));
+  const ids = new Set<number>();
+  for (const action of actions) if (succeeded.has(action.id)) for (const id of action.downloadedChapterIds ?? []) ids.add(id);
+  return [...ids];
+}
+
+/** Deletes the device downloads of these works, or of every work, after recording which chapters were stored. */
+function deviceDownloadsAction(id: string, name: string, title: string, novelIds?: readonly number[]): ContentDeletionAction {
+  const action: ContentDeletionAction = { id, side: "device", name, waitForSync: true, run: async () => {
+    // A retry keeps the chapters an earlier failed attempt already removed.
+    const stored = await (novelIds ? listDeletionDownloadedChapterIds(novelIds) : listDeletionDownloadedChapterIds());
+    action.downloadedChapterIds = [...new Set([...action.downloadedChapterIds ?? [], ...stored])];
+    await deleteLocalDownloads(novelIds ? "novel" : "all", novelIds ?? [], title);
+  } };
+  return action;
 }
 
 async function deleteMatchingServerChapter(serverUrl: string, novel: NovelDetailRecord, chapter: ChapterListRow): Promise<void> {
@@ -152,7 +173,7 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
     for (const id of new Set(request.ids)) {
       const chapter = await getChapterById(id);
       if (!chapter) continue;
-      actions.push({ id: `device:${id}`, side: "device", name: chapter.name, waitForSync: true, run: () => deleteLocalDownloads("chapter", [id], request.title) });
+      actions.push({ id: `device:${id}`, side: "device", name: chapter.name, waitForSync: true, downloadedChapterIds: [id], run: () => deleteLocalDownloads("chapter", [id], request.title) });
       if (options.server) {
         const novel = await getNovelById(chapter.novelId);
         if (!novel) throw new Error("Selected chapter's work no longer exists.");
@@ -163,12 +184,12 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
   }
   const allDownloads = request.kind === "downloads" && request.scope === "all";
   const ids = allDownloads && options.server ? await listStoredDeletionNovelIds() : request.ids;
-  if (allDownloads) actions.push({ id: "device:all", side: "device", name: request.title, waitForSync: true, run: () => deleteLocalDownloads("all", [], request.title) });
+  if (allDownloads) actions.push(deviceDownloadsAction("device:all", request.title, request.title));
   for (const id of new Set(ids)) {
     const novel = await getNovelById(id);
     if (!novel) continue;
     if (request.kind === "library") actions.push({ id: `library:${id}`, side: "library", name: novel.name, run: async () => { await setNovelInLibrary(id, false); await removeDownloadGoals([id]); } });
-    if (!allDownloads && (request.kind === "downloads" || options.local)) actions.push({ id: `device:${id}`, side: "device", name: novel.name, waitForSync: true, run: () => deleteLocalDownloads("novel", [id], request.title) });
+    if (!allDownloads && (request.kind === "downloads" || options.local)) actions.push(deviceDownloadsAction(`device:${id}`, novel.name, request.title, [id]));
     if (options.server && request.kind === "library") {
       let deleted: WorkCatalogEntry | undefined;
       const action: ContentDeletionAction = { id: `server:${id}`, side: "server", name: novel.name, run: async () => {

@@ -92,7 +92,7 @@ describe("runFinishedChapterCleanup", () => {
     const [approved, , , priority] = mocks.enqueue.mock.calls[0]!;
     expect(approved.targets.map((item: ChapterCleanupTarget) => item.candidate.identity.chapter.id)).toEqual([1]);
     expect(priority).toBe("background");
-    expect(mocks.note).toHaveBeenCalledWith("chapter", [1]);
+    expect(mocks.note).toHaveBeenCalledWith([1]);
     expect(useFinishedChapterCleanupStore.getState().lastRemoval).toMatchObject({ deleted: 1, bytesFreed: 10 });
   });
 

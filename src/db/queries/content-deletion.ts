@@ -9,6 +9,22 @@ export async function listStoredDeletionNovelIds(): Promise<number[]> {
   return rows.map(row => row.id);
 }
 
+/** Stored chapters of source works, optionally only of these works, that a device download deletion removes. */
+export async function listDeletionDownloadedChapterIds(novelIds?: readonly number[]): Promise<number[]> {
+  const db = await getDb();
+  const stored = "SELECT c.id FROM chapter c JOIN novel n ON n.id=c.novel_id WHERE n.is_local=0 AND (c.is_downloaded=1 OR c.content_bytes>0 OR c.media_repair_needed=1)";
+  if (!novelIds) return (await db.select<{ id: number }[]>(`${stored} ORDER BY c.id`)).map(row => row.id);
+  const unique = [...new Set(novelIds)];
+  const ids: number[] = [];
+  for (let index = 0; index < unique.length; index += 500) {
+    const chunk = unique.slice(index, index + 500);
+    const rows = await db.select<{ id: number }[]>(
+      `${stored} AND c.novel_id IN (${chunk.map((_, offset) => `$${offset + 1}`).join(",")})`, chunk);
+    ids.push(...rows.map(row => row.id));
+  }
+  return ids.sort((left, right) => left - right);
+}
+
 export async function findLocalDeletionNovel(identity: NovelMetadataV1["identity"]): Promise<NovelDetailRecord | null> {
   const db = await getDb();
   const rows = await db.select<{ id: number }[]>(

@@ -75,7 +75,7 @@ vi.mock("./budget", async (importOriginal) => ({
   readDownloadBudgetStatus: async () => mocks.budget,
 }));
 
-import { setNovelDownloadGoal } from "../../db/queries/novel-download-goal";
+import { listGoalNovelIdsForDownloadScope, setNovelDownloadGoal } from "../../db/queries/novel-download-goal";
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { useReaderStore } from "../../store/reader";
 import { cancelChapterDownloadTasks, discardQueuedChapterDownloads } from "../tasks/chapter-download";
@@ -227,7 +227,8 @@ it("keeps deleted and cancelled chapters out of later goal work", async () => {
   await settle();
   mocks.submitted = [];
 
-  expect(await noteDownloadDeletion("chapter", [11])).toEqual([5]);
+  expect(await noteDownloadDeletion([11])).toEqual([5]);
+  expect(listGoalNovelIdsForDownloadScope).toHaveBeenCalledWith("chapter", [11], expect.any(Number));
   mocks.downloadListener?.({ job: { id: 13, goal: true }, status: { kind: "cancelled" } });
   reconcileDownloadGoals([1]);
   await settle();
@@ -238,7 +239,7 @@ it("keeps deleted and cancelled chapters out of later goal work", async () => {
 it("keeps chapters the user deleted or cancelled excluded after a restart until a goal is chosen again", async () => {
   startDownloadGoals();
   await settle();
-  await noteDownloadDeletion("chapter", [11]);
+  await noteDownloadDeletion([11]);
   mocks.downloadListener?.({ job: { id: 13, goal: true }, status: { kind: "cancelled" } });
   await settle();
   expect(mocks.excluded).toEqual(new Set([11, 13]));

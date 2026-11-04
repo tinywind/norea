@@ -83,7 +83,7 @@ async function runOnce(): Promise<void> {
   const locale = useAppearanceStore.getState().appLocale;
   const result = await enqueueChapterCleanup(approved, translate(locale, "finishedCleanup.task"), undefined, "background").promise;
   const deleted = result.results.filter((item) => item.status === "deleted").map((item) => item.chapterId);
-  if (deleted.length > 0) await noteDownloadDeletion("chapter", deleted);
+  if (deleted.length > 0) await noteDownloadDeletion(deleted);
   const at = Date.now();
   useFinishedChapterCleanupStore.setState({
     lastRunAt: at,

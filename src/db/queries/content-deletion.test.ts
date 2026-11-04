@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 import { getDb, runDatabaseTransaction } from "../client";
-import { deleteLocalNovelRecords, findLocalDeletionNovel } from "./content-deletion";
+import { deleteLocalNovelRecords, findLocalDeletionNovel, listDeletionDownloadedChapterIds } from "./content-deletion";
 
 let sqlite: DatabaseSync;
 const identity = { id: 12, pluginId: "source", sourceNovelId: "42", path: "/book" };
@@ -62,4 +62,15 @@ it("preserves a work whose identity changed while the confirmation was open", as
   sqlite.exec("UPDATE novel SET source_novel_id='different' WHERE id=12");
   await expect(deleteLocalNovelRecords(identity)).rejects.toThrow("identity changed");
   expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()).toEqual({ count: 2 });
+});
+
+it("lists the stored chapters a device download deletion removes, skipping local works", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,path,name,is_local) VALUES(14,'local','/local','Local',1)");
+  sqlite.exec(`INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,content_bytes,media_repair_needed) VALUES
+    (93,12,'/downloaded','Downloaded',2,1,10,0),(94,12,'/partial','Partial',3,0,5,0),(95,12,'/repair','Repair',4,0,0,1),
+    (96,12,'/missing','Missing',5,0,0,0),(97,13,'/other','Other',2,1,10,0),(98,14,'/local','Local',1,1,10,0)`);
+  expect(await listDeletionDownloadedChapterIds([12])).toEqual([93, 94, 95]);
+  expect(await listDeletionDownloadedChapterIds([12, 13, 14])).toEqual([93, 94, 95, 97]);
+  expect(await listDeletionDownloadedChapterIds()).toEqual([93, 94, 95, 97]);
+  expect(await listDeletionDownloadedChapterIds([])).toEqual([]);
 });

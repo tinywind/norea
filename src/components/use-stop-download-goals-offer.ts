@@ -10,8 +10,8 @@ import { useConfirm } from "./ui/ConfirmDialog";
 export function useStopDownloadGoalsOffer() {
   const { t } = useTranslation();
   const confirm = useConfirm();
-  return useCallback(async (scope: "chapter" | "novel" | "all", ids: readonly number[]): Promise<void> => {
-    const novelIds = await noteDownloadDeletion(scope, ids);
+  return useCallback(async (deletedChapterIds: readonly number[]): Promise<void> => {
+    const novelIds = await noteDownloadDeletion(deletedChapterIds);
     if (novelIds.length === 0) return;
     const stop = await confirm({
       title: novelIds.length === 1

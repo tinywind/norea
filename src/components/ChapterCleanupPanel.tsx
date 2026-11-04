@@ -104,7 +104,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
       setResult(finished);
       for (const key of ["novel", "chapter", "category", "download-cache", "content-server"]) void queryClient.invalidateQueries({ queryKey: [key] });
       const deleted = finished.results.filter(item => item.status === "deleted").map(item => item.chapterId);
-      if (deleted.length) await offerToStopDownloadGoals("chapter", deleted);
+      if (deleted.length) await offerToStopDownloadGoals(deleted);
     } catch { setError(t("chapterCleanup.failed")); }
     finally { taskId.current = null; setRunning(false); setPreview(null); }
   };

@@ -5,7 +5,7 @@ import { useRouter } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
-import { prepareContentDeletion, runContentDeletion, type ContentDeletionAction, type ContentDeletionRequest, type ContentDeletionResult } from "../lib/content-deletion";
+import { deletedDownloadChapterIds, prepareContentDeletion, runContentDeletion, type ContentDeletionAction, type ContentDeletionRequest, type ContentDeletionResult } from "../lib/content-deletion";
 import { removeDeletedServerWorkFromQueries } from "../lib/content-sync/management-query-cache";
 import { describeError } from "../lib/errors";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
@@ -64,7 +64,7 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
       }
       if (next.every(result => result.status === "succeeded")) {
         notifications.show({ message: t("contentDeletion.done") });
-        if (request.kind === "downloads") await offerToStopDownloadGoals(request.scope, request.ids ?? []);
+        if (request.kind === "downloads") await offerToStopDownloadGoals(deletedDownloadChapterIds(plan, next));
         finishContentDeletion(id, next.length > 0);
       }
     } catch (cause) { setError(describeError(cause)); }

@@ -115,7 +115,7 @@ it("deletes one confirmed chapter's files on this device only, without the delet
   expect(settled).toHaveBeenCalled();
   expect(mocks.deleteCache).not.toHaveBeenCalled();
   mutation.onSuccess?.(undefined, 7);
-  expect(mocks.offerToStopGoals).toHaveBeenCalledWith("chapter", [7]);
+  expect(mocks.offerToStopGoals).toHaveBeenCalledWith([7]);
 });
 
 it("reports a failed deletion and refreshes the affected chapter state", async () => {

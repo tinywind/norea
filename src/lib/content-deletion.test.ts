@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../db/queries/novel", () => ({ getNovelById: vi.fn(), setNovelInLibrary: vi.fn() }));
 vi.mock("../db/queries/chapter", () => ({ getChapterById: vi.fn(), listChaptersByNovel: vi.fn() }));
-vi.mock("../db/queries/content-deletion", () => ({ findLocalDeletionNovel: vi.fn(), deleteLocalNovelRecords: vi.fn(), listStoredDeletionNovelIds: vi.fn() }));
+vi.mock("../db/queries/content-deletion", () => ({ findLocalDeletionNovel: vi.fn(), deleteLocalNovelRecords: vi.fn(), listStoredDeletionNovelIds: vi.fn(), listDeletionDownloadedChapterIds: vi.fn(async () => []) }));
 vi.mock("./tasks/download-cache-delete", () => ({ deleteDownloadCache: vi.fn(), cancelNovelChapterDownloadWork: vi.fn() }));
 vi.mock("./content-sync/management", () => ({ findServerWork: vi.fn(), deleteServerWork: vi.fn(), deleteSelectedServerChapters: vi.fn() }));
 vi.mock("./content-sync/sync", () => ({ runContentSyncOperation: vi.fn((run: () => Promise<unknown>) => run()) }));
@@ -18,14 +18,14 @@ vi.mock("./content-sync/storage-operation", () => ({ runWorkContentStorageOperat
 
 import { getNovelById, setNovelInLibrary } from "../db/queries/novel";
 import { getChapterById, listChaptersByNovel } from "../db/queries/chapter";
-import { findLocalDeletionNovel, deleteLocalNovelRecords } from "../db/queries/content-deletion";
+import { findLocalDeletionNovel, deleteLocalNovelRecords, listDeletionDownloadedChapterIds } from "../db/queries/content-deletion";
 import { deleteDownloadCache } from "./tasks/download-cache-delete";
 import { deleteServerWork, deleteSelectedServerChapters, findServerWork } from "./content-sync/management";
 import { setServerChapterDeletionExclusion } from "./content-sync/deletion-exclusions";
 import { recordDeletedWorkMetadata } from "./content-sync/works";
 import { ContentServerError, contentServerRequest } from "./content-sync/client";
 import { removeChapterStorageDirectory } from "./chapter-storage-transfer";
-import { prepareContentDeletion, runContentDeletion, matchDeletionChapter } from "./content-deletion";
+import { deletedDownloadChapterIds, prepareContentDeletion, runContentDeletion, matchDeletionChapter } from "./content-deletion";
 import { runContentSyncOperation } from "./content-sync/sync";
 import { removeDownloadGoals } from "./download-goals/goal-service";
 
@@ -200,4 +200,33 @@ it("does not retain a rejected work identity for a destructive retry", async () 
   expect(contentServerRequest).toHaveBeenCalledTimes(2);
   expect(deleteSelectedServerChapters).not.toHaveBeenCalled();
   expect(deleteDownloadCache).not.toHaveBeenCalled();
+});
+
+it("captures a work's downloaded chapters before deleting them and reports them once deleted", async () => {
+  vi.mocked(listDeletionDownloadedChapterIds).mockResolvedValue([91, 92]);
+  const plan = await prepareContentDeletion({ kind: "downloads", scope: "novel", ids: [12], title: "Delete", serverUrl: "" }, options);
+  const results = await runContentDeletion(plan);
+  expect(listDeletionDownloadedChapterIds).toHaveBeenCalledExactlyOnceWith([12]);
+  expect(vi.mocked(listDeletionDownloadedChapterIds).mock.invocationCallOrder[0])
+    .toBeLessThan(vi.mocked(deleteDownloadCache).mock.invocationCallOrder[0]!);
+  expect(deletedDownloadChapterIds(plan, results)).toEqual([91, 92]);
+});
+
+it("reports every downloaded chapter after deleting all downloads and the chosen chapters", async () => {
+  vi.mocked(listDeletionDownloadedChapterIds).mockResolvedValue([91, 93]);
+  const all = await prepareContentDeletion({ kind: "downloads", scope: "all", title: "All", serverUrl: "" }, options);
+  expect(deletedDownloadChapterIds(all, await runContentDeletion(all))).toEqual([91, 93]);
+  expect(listDeletionDownloadedChapterIds).toHaveBeenCalledExactlyOnceWith();
+  const chapters = await prepareContentDeletion({ kind: "downloads", scope: "chapter", ids: [91], title: "One", serverUrl: "" }, options);
+  expect(deletedDownloadChapterIds(chapters, await runContentDeletion(chapters))).toEqual([91]);
+});
+
+it("reports no deleted chapters while the device deletion has not succeeded", async () => {
+  vi.mocked(listDeletionDownloadedChapterIds).mockResolvedValue([91, 92]);
+  vi.mocked(deleteDownloadCache).mockRejectedValueOnce(new Error("busy"));
+  const plan = await prepareContentDeletion({ kind: "downloads", scope: "novel", ids: [12], title: "Delete", serverUrl: "" }, options);
+  const first = await runContentDeletion(plan);
+  expect(deletedDownloadChapterIds(plan, first)).toEqual([]);
+  vi.mocked(listDeletionDownloadedChapterIds).mockResolvedValue([92]);
+  expect(deletedDownloadChapterIds(plan, await runContentDeletion(plan, first))).toEqual([91, 92]);
 });

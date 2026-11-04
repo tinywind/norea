@@ -296,15 +296,12 @@ async function withdrawGoalWork(novelIds: readonly number[]): Promise<void> {
 }
 
 /**
- * Called after the user deleted downloads. Deleted chapters stay out of goal work until the
+ * Called after the user deleted these chapters' downloads. Deleted chapters stay out of goal work until the
  * novel's goal is set again; returns the novels with a goal in effect so the caller can offer to stop it.
  */
-export async function noteDownloadDeletion(
-  scope: "chapter" | "novel" | "all",
-  ids: readonly number[],
-): Promise<number[]> {
-  if (scope === "chapter") await persistExclusions(ids);
-  return listGoalNovelIdsForDownloadScope(scope, ids, activeSinceSeconds());
+export async function noteDownloadDeletion(chapterIds: readonly number[]): Promise<number[]> {
+  await persistExclusions(chapterIds);
+  return listGoalNovelIdsForDownloadScope("chapter", chapterIds, activeSinceSeconds());
 }
 
 /** "Allow once": lifts the mobile-data and battery budgets until the app restarts. */

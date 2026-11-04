@@ -62,7 +62,7 @@ export function useNovelChapterActions(
       if (failure) throw new Error(failure.error);
       markUpdatesIndexDirty("library-membership");
     },
-    onSuccess: (_result, chapterId) => { void offerToStopDownloadGoals("chapter", [chapterId]); },
+    onSuccess: (_result, chapterId) => { void offerToStopDownloadGoals([chapterId]); },
     onSettled: invalidateDeletedChapters,
     onError: showDeleteError,
   });
