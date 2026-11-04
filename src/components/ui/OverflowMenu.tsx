@@ -12,6 +12,8 @@ export interface OverflowMenuItem {
 }
 
 interface OverflowMenuProps {
+  /** Disables the default icon trigger. */
+  disabled?: boolean;
   items: readonly OverflowMenuItem[];
   /** Accessible name of the default "more" trigger. */
   label: string;
@@ -23,12 +25,12 @@ interface OverflowMenuProps {
  * Occasional and rare actions behind one trigger. Mantine owns arrow-key
  * roving, Escape and returning focus to the trigger.
  */
-export function OverflowMenu({ items, label, trigger }: OverflowMenuProps) {
+export function OverflowMenu({ disabled, items, label, trigger }: OverflowMenuProps) {
   return (
     <Menu position="bottom-end" returnFocus withinPortal>
       <Menu.Target>
         {trigger ?? (
-          <IconButton label={label} size="lg">
+          <IconButton disabled={disabled} label={label} size="lg">
             <OverflowIcon />
           </IconButton>
         )}

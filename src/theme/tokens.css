@@ -27,6 +27,9 @@
 
   --norea-control-sm: 2.25rem;
   --norea-control-md: 2.75rem;
+  /* One header row: a header control plus a 4px margin above and below. */
+  --norea-app-bar-height: calc(var(--norea-control-sm) + var(--norea-space-2));
+  --norea-app-bar-padding-inline: var(--norea-space-2);
   --norea-icon-sm: 1.125rem;
   --norea-icon-md: 1.25rem;
   --norea-icon-lg: 1.5rem;

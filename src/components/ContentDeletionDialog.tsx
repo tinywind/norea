@@ -1,4 +1,4 @@
-import { Alert, Checkbox, Stack, Text } from "@mantine/core";
+import { Alert, Button, Checkbox, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
@@ -11,7 +11,6 @@ import { noteDownloadDeletion } from "../lib/download-goals/goal-service";
 import { describeError } from "../lib/errors";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
 import { finishContentDeletion, useContentDeletionStore } from "../store/content-deletion";
-import { TextButton } from "./TextButton";
 import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
 import { useStopDownloadGoalsOffer } from "./use-stop-download-goals-offer";
 
@@ -100,8 +99,8 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
   return <ResponsiveSheet busy={busy} nested opened onClose={() => { void close(); }} subtitle={request.title}
     title={t(unshelve ? "contentDeletion.unshelveTitle" : "contentDeletion.title")}
     footer={<SheetActions>
-      <TextButton disabled={busy} onClick={() => { void close(); }}>{t(results.length ? "common.done" : "common.cancel")}</TextButton>
-      <TextButton tone="danger" loading={busy} onClick={() => { void execute(); }}>{t(failed.length ? "contentDeletion.retry" : unshelve && !options.local && !options.server ? "common.remove" : "contentDeletion.confirm")}</TextButton>
+      <Button disabled={busy} onClick={() => { void close(); }} variant="default">{t(results.length ? "common.done" : "common.cancel")}</Button>
+      <Button color="danger" loading={busy} onClick={() => { void execute(); }}>{t(failed.length ? "contentDeletion.retry" : unshelve && !options.local && !options.server ? "common.remove" : "contentDeletion.confirm")}</Button>
     </SheetActions>}>
     <Stack>
       <Text size="sm">{request.kind === "server-work" ? t("contentDeletion.workCount", { count: 1 })

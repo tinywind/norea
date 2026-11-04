@@ -77,7 +77,7 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
         error={error?.mode === "upload" ? error.message : ownName.error ? message(ownName.error) : null}>
         <SettingsInlineControls>
           <Text>{ownName.data || t("common.loading")}</Text>
-          <TextButton tone="accent" loading={mode === "upload"} disabled={busy || !serverUrl || !ownName.data}
+          <TextButton variant="filled" loading={mode === "upload"} disabled={busy || !serverUrl || !ownName.data}
             onClick={() => { void run("upload"); }}>{t("deviceBackup.upload")}</TextButton>
         </SettingsInlineControls>
       </SettingsFieldRow>

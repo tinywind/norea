@@ -63,6 +63,7 @@ vi.mock("../db/queries/repository", () => ({ upsertRepository: vi.fn() }));
 vi.mock("../lib/plugins/manager", () => ({ pluginManager: { fetchRepository: vi.fn(), installPlugin: vi.fn() } }));
 vi.mock("../lib/tasks/main-tasks", () => ({ enqueueMainTask: vi.fn() }));
 
+import { PAGE_SLOT_PROPS } from "../lib/android-back-navigation.test-support";
 import { SetupPage } from "./setup";
 
 interface Props {
@@ -79,7 +80,12 @@ interface Props {
 function elements(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!isValidElement<Props>(node)) return [];
-  return [node, ...Children.toArray(node.props.children).flatMap(elements)];
+  const slots = node.props as Record<string, unknown>;
+  return [
+    node,
+    ...PAGE_SLOT_PROPS.flatMap((slot) => Children.toArray(slots[slot] as ReactNode).flatMap(elements)),
+    ...Children.toArray(node.props.children).flatMap(elements),
+  ];
 }
 
 function render() {

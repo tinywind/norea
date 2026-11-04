@@ -81,7 +81,7 @@ export function RepositoriesDialog({
       <div className="norea-extension-section">
         <div className="norea-extension-section-header">
           <p className="norea-extension-section-note">{t("extensions.repositories.priorityNote")}</p>
-          <Button leftSection={<PlusIcon size="1rem" />} onClick={onAdd} size="compact-sm" variant="light">
+          <Button leftSection={<PlusIcon size="1rem" />} onClick={onAdd} size="compact-sm" variant="default">
             {t("extensions.repositories.add")}
           </Button>
         </div>

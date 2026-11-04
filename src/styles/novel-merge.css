@@ -11,36 +11,6 @@
   min-height: 12rem;
 }
 
-.norea-merge-app-bar {
-  align-items: center;
-  background: var(--norea-color-surface);
-  display: flex;
-  flex: 0 0 auto;
-  gap: var(--norea-space-1);
-  min-height: 3.5rem;
-  padding: 0 var(--norea-space-4) 0 var(--norea-space-2);
-}
-
-.norea-merge-app-bar-title {
-  color: var(--norea-color-ink);
-  flex: 1 1 auto;
-  font-size: var(--norea-text-lg);
-  font-weight: var(--norea-weight-bold);
-  line-height: var(--norea-leading-tight);
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.norea-merge-step-count {
-  color: var(--norea-color-ink-muted);
-  flex: 0 0 auto;
-  font-size: var(--norea-text-sm);
-  font-variant-numeric: tabular-nums;
-}
-
 .norea-merge-steps {
   border-bottom: 1px solid var(--norea-color-rule);
   display: flex;
@@ -48,7 +18,7 @@
   gap: var(--norea-space-2);
   list-style: none;
   margin: 0;
-  padding: 0 var(--norea-space-4) var(--norea-space-3);
+  padding: var(--norea-space-3) var(--norea-space-4);
 }
 
 .norea-merge-steps li {
@@ -367,7 +337,6 @@
 
 @media (any-pointer: coarse) {
   .norea-merge-toolbar .mantine-Switch-body {
-    align-items: center;
     min-height: var(--norea-control-md);
   }
 

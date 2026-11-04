@@ -344,7 +344,6 @@ function DisplayOptions() {
             label={t("library.viewOptions.fewerColumns")}
             onClick={() => setNovelsPerRow(novelsPerRow - 1)}
             size="lg"
-            variant="default"
           >
             <MinusIcon size="1.125rem" />
           </IconButton>
@@ -356,7 +355,6 @@ function DisplayOptions() {
             label={t("library.viewOptions.moreColumns")}
             onClick={() => setNovelsPerRow(novelsPerRow + 1)}
             size="lg"
-            variant="default"
           >
             <PlusIcon size="1.125rem" />
           </IconButton>

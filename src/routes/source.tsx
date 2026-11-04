@@ -11,6 +11,7 @@ import {
 import {
   BlockingLoadingOverlay,
   PageFrame,
+  PageHeader,
   StateView,
 } from "../components/AppFrame";
 import { CoverGridSkeleton } from "../components/browse/CoverGridSkeleton";
@@ -31,7 +32,6 @@ import { ReaderSettingsPanel } from "../components/ReaderSettingsPanel";
 import { SourceAccessNotice } from "../components/SourceAccessVerifyButton";
 import { SourceNovelCover } from "../components/SourceNovelCover";
 import {
-  BackIcon,
   CloseIcon,
   FilterIcon,
   ReaderSettingsIcon,
@@ -468,27 +468,33 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
 
   if (!plugin && installed.isLoading) {
     return (
-      <PageFrame size="wide">
-        <CoverGridSkeleton label={t("common.loading")} />
-      </PageFrame>
+      <>
+        <PageHeader onBack={goBack} />
+        <PageFrame size="wide">
+          <CoverGridSkeleton label={t("common.loading")} />
+        </PageFrame>
+      </>
     );
   }
 
   if (!plugin) {
     return (
-      <PageFrame>
-        <StateView
-          action={{ label: t("common.back"), onClick: () => void goBack() }}
-          color={installed.error ? "danger" : "warn"}
-          details={
-            installed.error
-              ? { content: describeError(installed.error), label: t("common.details") }
-              : undefined
-          }
-          title={t("source.pluginNotLoaded")}
-          message={t("source.pluginNotLoadedMessage", { id: pluginId })}
-        />
-      </PageFrame>
+      <>
+        <PageHeader onBack={goBack} />
+        <PageFrame>
+          <StateView
+            action={{ label: t("common.back"), onClick: () => void goBack() }}
+            color={installed.error ? "danger" : "warn"}
+            details={
+              installed.error
+                ? { content: describeError(installed.error), label: t("common.details") }
+                : undefined
+            }
+            title={t("source.pluginNotLoaded")}
+            message={t("source.pluginNotLoadedMessage", { id: pluginId })}
+          />
+        </PageFrame>
+      </>
     );
   }
 
@@ -551,10 +557,49 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
           <SourceAccessNotice active sourceId={plugin.id} sourceName={plugin.name} />
         </BlockingLoadingOverlay>
       ) : null}
-      <header className="norea-browse-app-bar">
-        <IconButton label={t("common.back")} onClick={goBack} size="lg">
-          <BackIcon />
-        </IconButton>
+      <PageHeader
+        actions={
+          <>
+            {searchOpen ? null : (
+              <>
+                <IconButton
+                  label={t("source.searchPlaceholder", { name: plugin.name })}
+                  onClick={() => setSearchOpen(true)}
+                  size="lg"
+                >
+                  <SearchIcon />
+                </IconButton>
+                {hasFilters ? (
+                  <Indicator
+                    disabled={activeFilterCount === 0}
+                    label={activeFilterCount}
+                    offset={6}
+                    size={16}
+                  >
+                    <IconButton
+                      label={
+                        activeFilterCount > 0
+                          ? t("source.filtersActive", { count: activeFilterCount })
+                          : t("source.filters")
+                      }
+                      onClick={() => {
+                        setPendingFilters(activeFilters);
+                        setFilterSheetOpen(true);
+                      }}
+                      size="lg"
+                    >
+                      <FilterIcon />
+                    </IconButton>
+                  </Indicator>
+                ) : null}
+              </>
+            )}
+            <OverflowMenu items={overflowItems} label={t("common.more")} />
+          </>
+        }
+        onBack={goBack}
+        title={plugin.name}
+      >
         {searchOpen ? (
           <form
             className="norea-source-search"
@@ -583,43 +628,8 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
               value={search}
             />
           </form>
-        ) : (
-          <>
-            <h1 className="norea-browse-app-bar-title">{plugin.name}</h1>
-            <IconButton
-              label={t("source.searchPlaceholder", { name: plugin.name })}
-              onClick={() => setSearchOpen(true)}
-              size="lg"
-            >
-              <SearchIcon />
-            </IconButton>
-            {hasFilters ? (
-              <Indicator
-                disabled={activeFilterCount === 0}
-                label={activeFilterCount}
-                offset={6}
-                size={16}
-              >
-                <IconButton
-                  label={
-                    activeFilterCount > 0
-                      ? t("source.filtersActive", { count: activeFilterCount })
-                      : t("source.filters")
-                  }
-                  onClick={() => {
-                    setPendingFilters(activeFilters);
-                    setFilterSheetOpen(true);
-                  }}
-                  size="lg"
-                >
-                  <FilterIcon />
-                </IconButton>
-              </Indicator>
-            ) : null}
-          </>
-        )}
-        <OverflowMenu items={overflowItems} label={t("common.more")} />
-      </header>
+        ) : null}
+      </PageHeader>
 
       {activeFilterLabels.length > 0 ? (
         <div

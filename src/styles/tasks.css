@@ -51,12 +51,6 @@
   padding: 0 var(--norea-space-2);
 }
 
-.norea-task-header-actions {
-  display: inline-flex;
-  gap: var(--norea-space-2);
-  position: relative;
-}
-
 .norea-task-sort-menu {
   display: grid;
   gap: var(--norea-space-3);

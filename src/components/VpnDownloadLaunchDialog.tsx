@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Accordion, Alert, Stack, Text } from "@mantine/core";
+import { Accordion, Alert, Button, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
@@ -38,8 +38,8 @@ export function VpnDownloadLaunchDialog({ snapshot, onClose }: { snapshot: VpnDo
   return (
     <ResponsiveSheet busy={pending} closeLabel={t("common.cancel")} opened onClose={close} title={t("vpnDownload.launch")}
       footer={<SheetActions>
-        <TextButton disabled={pending} onClick={close}>{t("common.cancel")}</TextButton>
-        <TextButton tone="accent" data-autofocus disabled={!canStart || pending} loading={pending} onClick={start}>{t("vpnDownload.start")}</TextButton>
+        <Button disabled={pending} onClick={close} variant="default">{t("common.cancel")}</Button>
+        <Button data-autofocus disabled={!canStart || pending} loading={pending} onClick={start}>{t("vpnDownload.start")}</Button>
       </SheetActions>}>
       <Stack gap="md">
         <Text size="sm">{t("vpnDownload.launchHint")}</Text>

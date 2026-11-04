@@ -6,7 +6,7 @@ type IconButtonTone = "default" | "accent" | "danger" | "success" | "warning";
 
 type IconButtonProps = Omit<
   ActionIconProps,
-  "aria-label" | "children" | "size"
+  "aria-label" | "children" | "size" | "variant"
 > &
   Omit<
     ComponentPropsWithoutRef<"button">,
@@ -19,6 +19,12 @@ type IconButtonProps = Omit<
   tone?: IconButtonTone;
 };
 
+/**
+ * An icon-only action with its accessible name shown as a tooltip. D10: it is
+ * always borderless (Mantine `subtle` plus the shared state layer), in bars,
+ * list rows and cards alike; an action that must read as a button in a
+ * content body takes a labeled `Button` instead.
+ */
 export function IconButton({
   active = false,
   children,
@@ -27,7 +33,6 @@ export function IconButton({
   size = "sm",
   title,
   tone = "default",
-  variant = "subtle",
   ...props
 }: IconButtonProps) {
   const classNames = `norea-icon-button norea-icon-button--${size}${
@@ -43,7 +48,7 @@ export function IconButton({
         data-tone={tone === "default" ? undefined : tone}
         size={size === "sm" ? 28 : 40}
         title={title ?? label}
-        variant={variant}
+        variant="subtle"
         {...props}
       >
         {children}

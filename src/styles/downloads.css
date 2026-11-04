@@ -7,6 +7,11 @@
   flex: 0 0 auto;
 }
 
+/* The view switch, counters and lists follow the header at one tight step. */
+.norea-downloads-hub > .norea-page-frame-stack {
+  gap: var(--norea-space-3);
+}
+
 .norea-downloads-body {
   min-width: 0;
 }
@@ -169,27 +174,28 @@
   padding: var(--norea-space-3) var(--norea-space-3) var(--norea-space-3) 5rem;
 }
 
-/* The shared phone rule hides page titles; the Downloads hub draws no app bar of its own, so its title stays. */
+/* The header's sub-row: view switch first, then counters that scroll in place on phones. */
+.norea-downloads-subrow {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-3);
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.norea-downloads-subrow .norea-task-summary-strip {
+  flex-wrap: nowrap;
+}
+
+.norea-downloads-description {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+}
+
 @media (max-width: 767px) {
-  .norea-downloads-hub .norea-page-header .norea-page-header-copy {
-    display: block;
-  }
-
-  .norea-downloads-hub .norea-page-header {
-    align-items: center;
-  }
-
-  .norea-downloads-page .norea-page-description {
+  .norea-downloads-description {
     display: none;
-  }
-
-  .norea-downloads-page .norea-page-header-copy > .mantine-Group-root {
-    flex-wrap: wrap;
-    margin-top: 0;
-  }
-
-  .norea-downloads-page .norea-page-header > .mantine-Group-root {
-    margin-left: auto;
   }
 
   .norea-downloads-novel-row {

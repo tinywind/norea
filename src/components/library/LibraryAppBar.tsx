@@ -1,9 +1,10 @@
 import { ActionIcon, Button, Loader, TextInput } from "@mantine/core";
-import { useState } from "react";
+import { useState, type ReactNode } from "react";
 import { useTranslation } from "../../i18n";
+import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
+import { PageHeader } from "../AppFrame";
 import { IconButton } from "../IconButton";
 import {
-  BackIcon,
   CloseIcon,
   RefreshIcon,
   SearchIcon,
@@ -12,6 +13,8 @@ import {
 import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
 
 interface LibraryAppBarProps {
+  /** Category tabs for the bar's leading slot; null where a side list shows them. */
+  categoryTabs?: ReactNode;
   /** Shows the inline search field and the labeled actions. */
   wide: boolean;
   onOpenViewOptions: () => void;
@@ -24,6 +27,7 @@ interface LibraryAppBarProps {
 }
 
 export function LibraryAppBar({
+  categoryTabs = null,
   wide,
   onOpenViewOptions,
   onRefresh,
@@ -40,60 +44,73 @@ export function LibraryAppBar({
     setSearchOpen(false);
   };
 
+  useOverlayBackNavigation(!wide && searchOpen, closeSearch);
+
   if (!wide && searchOpen) {
     return (
-      <header className="norea-library-app-bar" data-searching="true">
-        <IconButton label={t("library.search.close")} onClick={closeSearch} size="lg">
-          <BackIcon />
-        </IconButton>
+      <PageHeader
+        backLabel={t("library.search.close")}
+        onBack={closeSearch}
+        title={t("nav.library")}
+      >
         <LibrarySearchField autoFocus onChange={onSearchChange} value={search} />
-      </header>
+      </PageHeader>
     );
   }
 
+  const searchField = wide ? (
+    <LibrarySearchField onChange={onSearchChange} value={search} />
+  ) : null;
+
   return (
-    <header className="norea-library-app-bar">
-      <h1 className="norea-library-app-bar-title">{t("nav.library")}</h1>
-      {wide ? (
-        <LibrarySearchField onChange={onSearchChange} value={search} />
-      ) : (
-        <IconButton
-          label={t("library.search.aria")}
-          onClick={() => setSearchOpen(true)}
-          size="lg"
-        >
-          <SearchIcon />
-        </IconButton>
-      )}
-      {wide ? (
+    <PageHeader
+      actions={
         <>
-          <IconButton
-            disabled={refreshDisabled || refreshing}
-            label={t("library.refresh")}
-            onClick={onRefresh}
-            size="lg"
-          >
-            {refreshing ? <Loader size="sm" /> : <RefreshIcon />}
-          </IconButton>
-          <Button
-            leftSection={<ViewOptionsIcon size="1.125rem" />}
-            onClick={onOpenViewOptions}
-            variant="default"
-          >
-            {t("library.viewOptions.short")}
-          </Button>
+          {wide ? (
+            <>
+              {categoryTabs ? searchField : null}
+              <IconButton
+                disabled={refreshDisabled || refreshing}
+                label={t("library.refresh")}
+                onClick={onRefresh}
+                size="lg"
+              >
+                {refreshing ? <Loader size="sm" /> : <RefreshIcon />}
+              </IconButton>
+              <Button
+                leftSection={<ViewOptionsIcon size="1.125rem" />}
+                onClick={onOpenViewOptions}
+                variant="subtle"
+              >
+                {t("library.viewOptions.short")}
+              </Button>
+            </>
+          ) : (
+            <>
+              <IconButton
+                label={t("library.search.aria")}
+                onClick={() => setSearchOpen(true)}
+                size="lg"
+              >
+                <SearchIcon />
+              </IconButton>
+              <IconButton
+                label={t("library.viewOptions.title")}
+                onClick={onOpenViewOptions}
+                size="lg"
+              >
+                <ViewOptionsIcon />
+              </IconButton>
+            </>
+          )}
+          <OverflowMenu items={overflowItems} label={t("common.more")} />
         </>
-      ) : (
-        <IconButton
-          label={t("library.viewOptions.title")}
-          onClick={onOpenViewOptions}
-          size="lg"
-        >
-          <ViewOptionsIcon />
-        </IconButton>
-      )}
-      <OverflowMenu items={overflowItems} label={t("common.more")} />
-    </header>
+      }
+      title={t("nav.library")}
+      titleHidden
+    >
+      {categoryTabs ?? searchField}
+    </PageHeader>
   );
 }
 

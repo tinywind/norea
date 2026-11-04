@@ -1,7 +1,7 @@
 import { useRef, useState, type ReactNode } from "react";
 import { useMediaQuery } from "@mantine/hooks";
-import { PageFrame } from "../components/AppFrame";
-import { IconButton } from "../components/IconButton";
+import { useNavigate, useRouter } from "@tanstack/react-router";
+import { PageFrame, PageHeader } from "../components/AppFrame";
 import { LibrarySettingsPanel } from "../components/LibrarySettingsPanel";
 import { AboutSection } from "../components/settings/AboutSection";
 import { AppearanceSection } from "../components/settings/AppearanceSection";
@@ -25,9 +25,9 @@ import {
   useSettingsRevealScroll,
 } from "../components/settings/SettingsSearch";
 import type { SettingsSearchResult } from "../components/settings/settings-search-index";
-import { BackIcon } from "../components/ui/icons";
 import { useTranslation } from "../i18n";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
+import { goBackInAppHistory } from "../lib/navigation-history";
 import {
   SETTINGS_SECTION_IDS,
   useSettingsSection,
@@ -87,16 +87,11 @@ function SettingsDetail({
       className="norea-settings-detail"
       aria-labelledby={`settings-${id}-title`}
     >
-      <header className="norea-settings-app-bar">
-        {onBack ? (
-          <IconButton label={t("common.back")} onClick={onBack} size="lg">
-            <BackIcon />
-          </IconButton>
-        ) : null}
-        <h1 className="norea-settings-app-bar-title" id={`settings-${id}-title`}>
-          {t(SETTINGS_SECTION_TITLE_KEYS[id])}
-        </h1>
-      </header>
+      <PageHeader
+        onBack={onBack}
+        title={t(SETTINGS_SECTION_TITLE_KEYS[id])}
+        titleId={`settings-${id}-title`}
+      />
       <div className="norea-settings-detail-body" ref={bodyRef}>
         {children}
       </div>
@@ -110,15 +105,20 @@ interface SettingsPageProps {
 
 export function SettingsPage({ section }: SettingsPageProps = {}) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
+  const router = useRouter();
   const [busyAction, setBusyAction] = useState<string | null>(null);
-  const [selectedSection, selectSection] = useSettingsSection(section);
+  const wide = useMediaQuery("(min-width: 768px)", undefined, {
+    getInitialValueInEffect: false,
+  });
+  const [selectedSection, selectSection, closeSection] = useSettingsSection(
+    section,
+    !wide,
+  );
   const [searchQuery, setSearchQuery] = useState("");
   const selectSearchResult = (result: SettingsSearchResult) =>
     openSettingsSearchResult(result, selectSection);
   const searching = searchQuery.trim() !== "";
-  const wide = useMediaQuery("(min-width: 768px)", undefined, {
-    getInitialValueInEffect: false,
-  });
   const busy: SettingsBusyProps = {
     isBusy: busyAction !== null,
     onBusyChange: setBusyAction,
@@ -128,9 +128,14 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
     title: t(SETTINGS_SECTION_TITLE_KEYS[id]),
   }));
 
+  const leaveSettings = () => {
+    if (goBackInAppHistory(router.state.location.href, ["/settings"])) return;
+    void navigate({ to: "/more", replace: true });
+  };
+
   usePageBackNavigation(() => {
-    if (wide || selectedSection === null) return false;
-    selectSection(null);
+    if (!wide && selectedSection !== null) closeSection();
+    else leaveSettings();
     return true;
   });
 
@@ -140,9 +145,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       <PageFrame className="norea-settings-page" size="full">
         <div className="norea-settings-shell">
           <aside className="norea-settings-nav">
-            <header className="norea-settings-app-bar">
-              <h1 className="norea-settings-app-bar-title">{t("settings.title")}</h1>
-            </header>
+            <PageHeader onBack={leaveSettings} title={t("settings.title")} />
             <div className="norea-settings-nav-scroll">
               <SettingsSearch
                 onQueryChange={setSearchQuery}
@@ -171,11 +174,11 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
       <div className="norea-settings-shell">
         {selectedSection === null ? (
           <section className="norea-settings-detail" aria-labelledby="settings-index-title">
-            <header className="norea-settings-app-bar">
-              <h1 className="norea-settings-app-bar-title" id="settings-index-title">
-                {t("settings.title")}
-              </h1>
-            </header>
+            <PageHeader
+              onBack={leaveSettings}
+              title={t("settings.title")}
+              titleId="settings-index-title"
+            />
             <div className="norea-settings-detail-body">
               <SettingsSearch
                 onQueryChange={setSearchQuery}
@@ -188,7 +191,7 @@ export function SettingsPage({ section }: SettingsPageProps = {}) {
             </div>
           </section>
         ) : (
-          <SettingsDetail id={selectedSection} onBack={() => selectSection(null)}>
+          <SettingsDetail id={selectedSection} onBack={closeSection}>
             <SettingsSectionContent busy={busy} id={selectedSection} />
           </SettingsDetail>
         )}

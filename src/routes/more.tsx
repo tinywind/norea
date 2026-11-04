@@ -1,6 +1,6 @@
-import { Switch } from "@mantine/core";
+import { Switch, VisuallyHidden } from "@mantine/core";
 import { Link } from "@tanstack/react-router";
-import { PageFrame, PageHeader } from "../components/AppFrame";
+import { PageFrame } from "../components/AppFrame";
 import { usePluginUpdateCount } from "../components/browse/use-plugin-catalog";
 import {
   AboutIcon,
@@ -11,6 +11,7 @@ import {
   type AppIcon,
 } from "../components/ui/icons";
 import { useTranslation } from "../i18n";
+import { OPENED_FROM_MORE_STATE } from "../lib/navigation-history";
 import { useTaskAttentionCount } from "../lib/tasks/hooks";
 import { useLibraryStore } from "../store/library";
 import "../styles/more.css";
@@ -48,17 +49,28 @@ function MoreLinkRow({
   return (
     <li>
       {to === "/settings" ? (
-        <Link className={ROW_CLASS_NAME} search={{ section }} to="/settings">
+        <Link
+          className={ROW_CLASS_NAME}
+          search={{ section }}
+          state={OPENED_FROM_MORE_STATE}
+          to="/settings"
+        >
           {content}
         </Link>
       ) : to === "/browse/extensions" ? (
-        <Link className={ROW_CLASS_NAME} search={{}} to="/browse/extensions">
+        <Link
+          className={ROW_CLASS_NAME}
+          search={{}}
+          state={OPENED_FROM_MORE_STATE}
+          to="/browse/extensions"
+        >
           {content}
         </Link>
       ) : (
         <Link
           className={ROW_CLASS_NAME}
           search={{ view: "queue" }}
+          state={OPENED_FROM_MORE_STATE}
           to="/downloads"
         >
           {content}
@@ -77,7 +89,8 @@ export function MorePage() {
 
   return (
     <PageFrame className="norea-more-page" size="narrow">
-      <PageHeader title={t("more.title")} />
+      {/* More carries no page-level controls, so it draws no bar; the nav names the page. */}
+      <VisuallyHidden component="h1">{t("more.title")}</VisuallyHidden>
       <div className="norea-more-group">
         <Switch
           checked={incognitoMode}

@@ -1,4 +1,5 @@
 import {
+  Button,
   Group,
   Loader,
   Stack,
@@ -21,7 +22,6 @@ import { clearLocalImportFileCache } from "../../lib/local-import";
 import { importLocalFileToLibrary } from "../../lib/local-import-library";
 import { LOCAL_NOVEL_NAME, LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { useLibraryStore } from "../../store/library";
-import { TextButton } from "../TextButton";
 import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
 import {
   beginLocalImport,
@@ -221,38 +221,38 @@ export const LibraryLocalImport = forwardRef<
         footer={
           result ? (
             <SheetActions>
-              <TextButton
+              <Button
                 onClick={() => {
                   dismissBatch();
                   openLocalHome.mutate();
                 }}
                 type="button"
-                variant="subtle"
+                variant="default"
               >
                 {t("library.localNovel.create")}
-              </TextButton>
-              <TextButton onClick={dismissBatch} type="button">
+              </Button>
+              <Button onClick={dismissBatch} type="button">
                 {t("common.done")}
-              </TextButton>
+              </Button>
             </SheetActions>
           ) : (
             <SheetActions>
-              <TextButton
+              <Button
                 disabled={busy}
                 onClick={dismissBatch}
                 type="button"
-                variant="subtle"
+                variant="default"
               >
                 {t("common.cancel")}
-              </TextButton>
-              <TextButton
+              </Button>
+              <Button
                 disabled={busy || readyCount === 0}
                 loading={batch?.phase === "importing"}
                 onClick={() => void importReadyFiles()}
                 type="button"
               >
                 {t("library.localImport.importReady", { count: readyCount })}
-              </TextButton>
+              </Button>
             </SheetActions>
           )
         }

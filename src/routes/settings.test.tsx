@@ -5,6 +5,7 @@ import { describe, expect, it, vi } from "vitest";
 
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => vi.fn(),
+  useRouter: () => ({ state: { location: { href: "/settings" } } }),
 }));
 
 import { SettingsPage } from "./settings";

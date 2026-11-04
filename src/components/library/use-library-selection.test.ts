@@ -210,9 +210,10 @@ it("queues every unqueued chapter of each selected source novel once at user pri
   await expect(mutation.mutationFn({ novelIds: [1, 2, 3, 9] })).resolves.toEqual({ queued: 502, skippedLocal: 1 });
   expect(mocks.listUnqueued.mock.calls).toEqual([[1, 0], [1, 599], [2, 0]]);
   expect(mocks.submit).toHaveBeenCalledTimes(2);
-  const calls = mocks.submit.mock.calls as unknown as [{ novelIds: number[]; prepare: () => Promise<{ jobs: Array<{ id: number; priority: string }> }> }][];
+  const calls = mocks.submit.mock.calls as unknown as [{ novelIds: number[]; prepare: () => Promise<{ jobs: Array<{ id: number; priority: string }>; materializeAllTasks?: boolean }> }][];
   const first = await calls[0]![0].prepare();
   expect(calls[0]![0].novelIds).toEqual([1]);
+  expect(first.materializeAllTasks).toBe(true);
   expect(first.jobs).toHaveLength(501);
   expect(first.jobs[0]).toMatchObject({ id: 700, priority: "user", novelId: 1 });
   expect(first.jobs.every((job) => job.priority === "user")).toBe(true);

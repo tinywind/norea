@@ -3,11 +3,10 @@ import { notifications } from "@mantine/notifications";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
-import { PageFrame, StateView } from "../components/AppFrame";
+import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { SourceAccessNotice } from "../components/SourceAccessVerifyButton";
 import { IconButton } from "../components/IconButton";
 import {
-  BackIcon,
   CategoryIcon,
   ChapterListIcon,
   CheckIcon,
@@ -21,7 +20,6 @@ import {
   MarkReadIcon,
   MarkUnreadIcon,
   MigrateIcon,
-  OverflowIcon,
   ReaderSettingsIcon,
   RefreshAllIcon,
   RefreshIcon,
@@ -52,6 +50,7 @@ import {
 } from "../components/novel/novel-detail-model";
 import { ChapterSortPicker } from "../components/novel/NovelActions";
 import { ChapterRangeSheet } from "../components/novel/ChapterRangeSheet";
+import { takeChapterSelectionHint } from "../components/novel/chapter-selection-hint";
 import {
   ChapterRowsSkeleton,
   VirtualChapterList,
@@ -121,7 +120,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const [selectedChapterIds, setSelectedChapterIds] = useState<
     ReadonlySet<number>
   >(() => new Set());
-  const [selectionAnchorId, setSelectionAnchorId] = useState<number | null>(null);
+  const [lastToggledChapterId, setLastToggledChapterId] = useState<number | null>(null);
+  const [chapterSelectionHintShown, setChapterSelectionHintShown] = useState(false);
   const [rangeSheetOpen, setRangeSheetOpen] = useState(false);
   const [jumpOpen, setJumpOpen] = useState(false);
   const [jumpQuery, setJumpQuery] = useState("");
@@ -276,9 +276,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     selectedAnchorIndex < 0
       ? 0
       : Math.max(0, rows.length - selectedAnchorIndex - 1);
-  const rangeAnchorId =
-    selectionAnchorId !== null && selectedChapterIds.has(selectionAnchorId)
-      ? selectionAnchorId
+  const rangeStartChapterId =
+    lastToggledChapterId !== null &&
+    visibleChapters.some((chapter) => chapter.id === lastToggledChapterId)
+      ? lastToggledChapterId
       : null;
   const allChaptersSelected =
     visibleChapters.length > 0 && selectedChapterCount === visibleChapters.length;
@@ -364,6 +365,11 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     return () => window.removeEventListener("popstate", handlePopState);
   }, [chapterSelectionMode, currentHref]);
 
+  useEffect(() => {
+    setChapterSelectionHintShown(chapterSelectionMode && takeChapterSelectionHint());
+    if (!chapterSelectionMode) setLastToggledChapterId(null);
+  }, [chapterSelectionMode]);
+
   function clearChapterSelectionState(): void {
     setSelectedChapterIds(new Set());
     setChapterSelectionMode(false);
@@ -377,6 +383,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     clearChapterSelectionState();
   }
 
+  /** A tap while selecting: selects the row, or deselects it when it is selected. */
   function toggleChapterSelected(chapterId: number): void {
     setChapterSelectionMode(true);
     const next = new Set(selectedChapterIds);
@@ -384,28 +391,32 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
       next.delete(chapterId);
     } else {
       next.add(chapterId);
-      if (rangeAnchorId === null) setSelectionAnchorId(chapterId);
     }
     setSelectedChapterIds(next);
+    setLastToggledChapterId(chapterId);
   }
 
-  /** Selects every row from the anchor (the first selected row) to this one in list order. */
+  /**
+   * A long press, right-click or Shift-click. Outside selection it starts one
+   * with this row selected; inside it selects every row from the last toggled
+   * row to this one. It only ever adds rows, and this row becomes the next
+   * range start.
+   */
   function extendChapterSelection(chapterId: number): void {
-    if (rangeAnchorId === null || rangeAnchorId === chapterId) {
-      toggleChapterSelected(chapterId);
-      return;
-    }
+    const added =
+      chapterSelectionMode && rangeStartChapterId !== null
+        ? chapterIdsBetween(visibleChapters, rangeStartChapterId, chapterId)
+        : [chapterId];
     setChapterSelectionMode(true);
-    setSelectedChapterIds(
-      new Set([...selectedChapterIds, ...chapterIdsBetween(visibleChapters, rangeAnchorId, chapterId)]),
-    );
+    setSelectedChapterIds(new Set([...selectedChapterIds, ...added]));
+    setLastToggledChapterId(chapterId);
   }
 
   function selectChapterRange(chapterIds: number[]): void {
     setRangeSheetOpen(false);
     setChapterSelectionMode(true);
-    if (rangeAnchorId === null && chapterIds[0] !== undefined) {
-      setSelectionAnchorId(chapterIds[0]);
+    if (rangeStartChapterId === null && chapterIds[0] !== undefined) {
+      setLastToggledChapterId(chapterIds[0]);
     }
     setSelectedChapterIds(new Set([...selectedChapterIds, ...chapterIds]));
   }
@@ -437,8 +448,9 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     });
   }
 
-  function clearSelectedChapters(): void {
+  function deselectAllChapters(): void {
     setSelectedChapterIds(new Set());
+    setLastToggledChapterId(null);
   }
 
   function goBack(): boolean {
@@ -505,24 +517,23 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
   if (id <= 0) {
     return (
-      <PageFrame>
-        <StateView
-          color="warn"
-          title={t("novel.missingId")}
-          message={t("novel.missingIdMessage")}
-        />
-      </PageFrame>
+      <>
+        <PageHeader onBack={goBack} />
+        <PageFrame>
+          <StateView
+            color="warn"
+            title={t("novel.missingId")}
+            message={t("novel.missingIdMessage")}
+          />
+        </PageFrame>
+      </>
     );
   }
 
   if (novelQuery.isLoading) {
     return (
       <div aria-busy="true" className="norea-novel-page">
-        <header className="norea-novel-app-bar">
-          <IconButton label={t("common.back")} onClick={goBack} size="lg">
-            <BackIcon />
-          </IconButton>
-        </header>
+        <PageHeader className="norea-novel-app-bar" onBack={goBack} />
         <PageFrame className="norea-novel-frame" size="wide">
           <div className="norea-novel-layout" role="status">
             <VisuallyHidden>{t("novel.loading")}</VisuallyHidden>
@@ -541,30 +552,36 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const loadError = novelQuery.error;
   if (loadError) {
     return (
-      <PageFrame>
-        <StateView
-          color="danger"
-          title={t("novel.loadFailed")}
-          message={
-            loadError instanceof Error
-              ? loadError.message
-              : String(loadError)
-          }
-        />
-      </PageFrame>
+      <>
+        <PageHeader onBack={goBack} />
+        <PageFrame>
+          <StateView
+            color="danger"
+            title={t("novel.loadFailed")}
+            message={
+              loadError instanceof Error
+                ? loadError.message
+                : String(loadError)
+            }
+          />
+        </PageFrame>
+      </>
     );
   }
 
   const novel = displayNovel;
   if (!novel) {
     return (
-      <PageFrame>
-        <StateView
-          color="warn"
-          title={t("novel.notFound")}
-          message={t("novel.notFoundMessage", { id })}
-        />
-      </PageFrame>
+      <>
+        <PageHeader onBack={goBack} />
+        <PageFrame>
+          <StateView
+            color="warn"
+            title={t("novel.notFound")}
+            message={t("novel.notFoundMessage", { id })}
+          />
+        </PageFrame>
+      </>
     );
   }
 
@@ -670,9 +687,9 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     );
   }
 
-  const anchorChapter = rangeAnchorId === null
+  const rangeStartChapter = rangeStartChapterId === null
     ? undefined
-    : chapters.find((chapter) => chapter.id === rangeAnchorId);
+    : chapters.find((chapter) => chapter.id === rangeStartChapterId);
   const selectionMoreItems: OverflowMenuItem[] = [{
     icon: SelectAllIcon,
     label: t("novel.selection.selectRange"),
@@ -750,42 +767,33 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   />
                 )}
                 <OverflowMenu
+                  disabled={
+                    chapterSelectionBusy ||
+                    selectionMoreItems.every((item) => item.disabled)
+                  }
                   items={selectionMoreItems}
                   label={t("common.more")}
-                  trigger={
-                    <SelectionAction
-                      disabled={
-                        chapterSelectionBusy ||
-                        selectionMoreItems.every((item) => item.disabled)
-                      }
-                      icon={OverflowIcon}
-                      label={t("common.more")}
-                    />
-                  }
                 />
               </>
             }
-            clearDisabled={selectedChapterCount === 0}
+            allSelected={allChaptersSelected}
+            hint={chapterSelectionHintShown ? t("novel.selection.hint") : undefined}
             label={t("novel.selection.selectedCount", { count: selectedChapterCount })}
-            onClear={clearSelectedChapters}
+            onDeselectAll={deselectAllChapters}
             onExit={closeChapterSelectionMode}
             onSelectAll={selectAllChapters}
-            selectAllDisabled={allChaptersSelected}
+            selectAllDisabled={visibleChapters.length === 0}
             selectAllPending={false}
           />
         ) : (
-          <header
+          <PageHeader
+            actions={<OverflowMenu items={overflowItems} label={t("novel.moreOptions")} />}
             className="norea-novel-app-bar"
             data-title-visible={titleScrolledAway ? "true" : undefined}
-          >
-            <IconButton label={t("common.back")} onClick={goBack} size="lg">
-              <BackIcon />
-            </IconButton>
-            <span aria-hidden="true" className="norea-novel-app-bar-title">
-              {novel.name}
-            </span>
-            <OverflowMenu items={overflowItems} label={t("novel.moreOptions")} />
-          </header>
+            onBack={goBack}
+            title={<span aria-hidden="true">{novel.name}</span>}
+            titleElement="span"
+          />
         )}
         <PageFrame className="norea-novel-frame" size="wide">
           <div className="norea-novel-layout">
@@ -847,7 +855,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                       })}
                 </h2>
                 {reorderMode ? (
-                  <Button onClick={() => setReorderMode(false)} variant="light">
+                  <Button onClick={() => setReorderMode(false)} variant="subtle">
                     {t("common.done")}
                   </Button>
                 ) : (
@@ -1034,6 +1042,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   deletePending={clearDownload.isPending}
                   jumpRequest={jumpRequest}
                   lastReadChapterId={lastReadChapterId}
+                  rangeStartChapterId={chapterSelectionMode ? rangeStartChapterId : null}
                   repairBusyChapterId={repairMedia.variables?.id}
                   repairPending={repairMedia.isPending}
                   reorderPending={reorderLocalChapters.isPending}
@@ -1062,7 +1071,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
       <ChapterRangeSheet
         chapters={visibleChapters}
-        initialFrom={anchorChapter ? chapterNumberValue(anchorChapter) : null}
+        initialFrom={rangeStartChapter ? chapterNumberValue(rangeStartChapter) : null}
         onClose={() => setRangeSheetOpen(false)}
         onSelect={selectChapterRange}
         opened={rangeSheetOpen}

@@ -45,7 +45,8 @@ it("keeps the phone bar to search, view options and the overflow, and expands se
   expect(searchField()?.props.autoFocus).toBe(true);
   expect(labeled("common.more")).toHaveLength(0);
 
-  await harness.run(() => (labeled("library.search.close")[0]!.props.onClick as () => void)());
+  const header = collectElements(tree).find((element) => element.props.backLabel === "library.search.close");
+  await harness.run(() => (header!.props.onBack as () => void)());
   expect(onSearchChange).toHaveBeenLastCalledWith("");
   expect(labeled("library.search.aria")).toHaveLength(1);
 });

@@ -1,4 +1,9 @@
-import { useId, type KeyboardEvent, type ReactNode } from "react";
+import {
+  useId,
+  type ComponentPropsWithoutRef,
+  type KeyboardEvent,
+  type ReactNode,
+} from "react";
 import {
   Alert,
   Box,
@@ -7,11 +12,11 @@ import {
   Paper,
   Stack,
   Text,
-  Title,
+  VisuallyHidden,
   type AlertProps,
   type PaperProps,
 } from "@mantine/core";
-import { IconButton } from "./IconButton";
+import { BackIconButton } from "./BackIconButton";
 import { TextButton } from "./TextButton";
 import { useSiteBrowserStore } from "../store/site-browser";
 
@@ -70,12 +75,15 @@ type PageFrameSize = "narrow" | "default" | "wide" | "full";
 interface PageFrameProps {
   children: ReactNode;
   className?: string;
+  /** A full-width `PageHeader` drawn above the padded frame. */
+  header?: ReactNode;
   size?: PageFrameSize;
 }
 
 export function PageFrame({
   children,
   className,
+  header,
   size = "default",
 }: PageFrameProps) {
   const sizeClassName =
@@ -85,55 +93,102 @@ export function PageFrame({
   }`;
 
   return (
-    <div className={classNames}>
-      <Stack className="norea-page-frame-stack" gap="lg">
-        {children}
-      </Stack>
-    </div>
+    <>
+      {header}
+      <div className={classNames}>
+        <Stack className="norea-page-frame-stack" gap="lg">
+          {children}
+        </Stack>
+      </div>
+    </>
   );
 }
 
-interface PageHeaderProps {
-  title: ReactNode;
+interface PageHeaderProps
+  extends Omit<ComponentPropsWithoutRef<"header">, "children" | "title"> {
+  /** Trailing controls, primary first and the overflow last. */
   actions?: ReactNode;
-  description?: ReactNode;
-  eyebrow?: ReactNode;
-  meta?: ReactNode;
+  backDisabled?: boolean;
+  /** `close` in a mode that replaces the bar, such as selection. */
+  backIcon?: "back" | "close";
+  /** Accessible name of the back button; defaults to "Back". */
+  backLabel?: string;
+  /** One aligned sub-row for controls that do not fit the bar on phones. */
+  below?: ReactNode;
+  /** Page controls in place of the visible title, such as tabs or a search field. */
+  children?: ReactNode;
+  /** Leading back button. Omit only on primary navigation destinations. */
+  onBack?: () => void;
+  /** Omitted while the page is loading or missing, such as an unknown novel. */
+  title?: ReactNode;
+  /** `span` when the page heading lives elsewhere, as on the novel hero. */
+  titleElement?: "h1" | "h2" | "span";
+  /** Keeps the title for screen readers only, as on primary destinations. */
+  titleHidden?: boolean;
+  titleId?: string;
 }
 
+/**
+ * The one page header.
+ *
+ * Primary navigation destinations (Library, Updates, History, Browse, More)
+ * show no back button and no visible title: the selected bottom nav or rail
+ * item already names the page, so the bar carries the page's own controls
+ * and the title stays for screen readers only. Every page reached by
+ * drilling in passes `onBack`, drawn at the leading edge before its title,
+ * which returns to the previous in-app page and falls back to a parent page
+ * on a cold start; Android back calls the same handler. Actions always group
+ * at the trailing edge.
+ */
 export function PageHeader({
   actions,
-  description,
-  eyebrow,
-  meta,
+  backDisabled,
+  backIcon,
+  backLabel,
+  below,
+  children,
+  className,
+  onBack,
   title,
+  titleElement: TitleElement = "h1",
+  titleHidden = false,
+  titleId,
+  ...props
 }: PageHeaderProps) {
+  const slot = children ?? null;
+  const showTitle = title !== undefined && !titleHidden && slot === null;
+
   return (
     <header
-      className="norea-page-header"
-      data-has-actions={actions ? "true" : "false"}
+      className={`norea-app-bar${className ? ` ${className}` : ""}`}
+      data-has-back={onBack ? "true" : "false"}
+      {...props}
     >
-      <Box className="norea-page-header-copy">
-        {eyebrow ? <Text className="norea-page-kicker">{eyebrow}</Text> : null}
-        <Title className="norea-page-title" order={1}>
-          {title}
-        </Title>
-        {description ? (
-          <Text className="norea-page-description" mt="xs">
-            {description}
-          </Text>
+      <div className="norea-app-bar-row">
+        {onBack ? (
+          <BackIconButton
+            className="norea-app-bar-back"
+            disabled={backDisabled}
+            icon={backIcon}
+            label={backLabel}
+            onClick={onBack}
+          />
         ) : null}
-        {meta ? (
-          <Group gap="xs" mt="sm">
-            {meta}
-          </Group>
+        {title !== undefined && !showTitle ? (
+          <VisuallyHidden component={TitleElement} id={titleId}>
+            {title}
+          </VisuallyHidden>
         ) : null}
-      </Box>
-      {actions ? (
-        <Group gap="xs" justify="flex-end" wrap="wrap">
-          {actions}
-        </Group>
-      ) : null}
+        {showTitle ? (
+          <TitleElement className="norea-app-bar-title" id={titleId}>
+            {title}
+          </TitleElement>
+        ) : (
+          <div className="norea-app-bar-slot">{slot}</div>
+        )}
+        {actions ? <div className="norea-app-bar-actions">{actions}</div> : null}
+      </div>
+      {below ? <div className="norea-app-bar-subrow">{below}</div> : null}
     </header>
   );
 }
@@ -161,13 +216,7 @@ export function PageSection({
 }
 
 interface StateViewProps {
-  action?: {
-    icon?: ReactNode;
-    iconOnly?: boolean;
-    label: string;
-    onClick: () => void;
-    size?: "sm" | "lg";
-  };
+  action?: { label: string; onClick: () => void };
   color?: AlertProps["color"];
   /** Diagnostic text, such as a raw error, collapsed under `label`. */
   details?: { content: ReactNode; label: string };
@@ -193,23 +242,12 @@ export function StateView({
       variant={color ? "light" : "default"}
     >
       {message ? <Text size="sm">{message}</Text> : null}
-      {action?.iconOnly && action.icon ? (
-        <IconButton
-          className="norea-state-action-icon"
-          label={action.label}
-          mt="md"
-          onClick={action.onClick}
-          size={action.size ?? "sm"}
-          type="button"
-        >
-          {action.icon}
-        </IconButton>
-      ) : action || secondaryAction ? (
+      {action || secondaryAction ? (
         <Group gap="xs" mt="md">
           {action ? (
             <TextButton
               size="sm"
-              variant="light"
+              variant="default"
               onClick={action.onClick}
             >
               {action.label}

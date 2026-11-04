@@ -1,4 +1,4 @@
-import { SimpleGrid, Stack, Text, Textarea, TextInput } from "@mantine/core";
+import { Button, SimpleGrid, Stack, Text, Textarea, TextInput } from "@mantine/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   useEffect,
@@ -25,7 +25,6 @@ import { importLocalFileToLibrary } from "../../lib/local-import-library";
 import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { type DefaultChapterSort } from "../../store/library";
 import { LocalCoverPicker } from "../LocalCoverPicker";
-import { TextButton } from "../TextButton";
 import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
 import { chaptersKey, novelKey } from "./novel-detail-model";
 const LOCAL_IMPORT_ACCEPT = ".txt,.html,.htm,.md,.markdown,.epub,.pdf";
@@ -235,15 +234,15 @@ export function useLocalNovelEditor(
         busy={updateLocalMetadata.isPending}
         footer={
           <SheetActions>
-            <TextButton
+            <Button
               disabled={updateLocalMetadata.isPending}
               onClick={closeLocalMetadataEditor}
               type="button"
-              variant="subtle"
+              variant="default"
             >
               {t("common.cancel")}
-            </TextButton>
-            <TextButton
+            </Button>
+            <Button
               disabled={
                 localMetadataForm.name.trim() === "" ||
                 coverPending ||
@@ -254,7 +253,7 @@ export function useLocalNovelEditor(
               type="submit"
             >
               {t("common.save")}
-            </TextButton>
+            </Button>
           </SheetActions>
         }
         fullScreenOnPhone

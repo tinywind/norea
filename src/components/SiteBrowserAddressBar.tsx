@@ -66,7 +66,7 @@ export function SiteBrowserAddressBar({
           type="url"
           value={draft ?? url}
         />
-        <Button disabled={loading} type="submit" variant="default">
+        <Button disabled={loading} type="submit" variant="subtle">
           {t("siteBrowser.go")}
         </Button>
       </Group>

@@ -97,7 +97,7 @@ export function StorageRecoveryBanner() {
       {status !== "scanning" ? (
         <Group className="norea-recovery-banner-actions" gap="xs" wrap="nowrap">
           {status === "error" ? (
-            <Button onClick={() => startWorkMetadataRecovery(true)} size="compact-sm" variant="light">
+            <Button onClick={() => startWorkMetadataRecovery(true)} size="compact-sm" variant="default">
               {t("common.retry")}
             </Button>
           ) : null}

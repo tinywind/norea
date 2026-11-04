@@ -58,9 +58,9 @@ describe("Downloads storage", () => {
     const $ = render([novel()]);
     expect($('button[aria-label="Read Novel"]')).toHaveLength(1);
     expect($('button[aria-label="Novel options"]')).toHaveLength(1);
-    expect($(".norea-page-header button").first().text()).toBe("Clean up");
-    expect($('.norea-page-header button[aria-label="More"]')).toHaveLength(1);
-    expect($(".norea-page-title").text()).toBe("Downloads");
+    expect($(".norea-app-bar-actions button").first().text()).toBe("Clean up");
+    expect($('.norea-app-bar-actions button[aria-label="More"]')).toHaveLength(1);
+    expect($("h1.norea-app-bar-title").text()).toBe("Downloads");
   });
 });
 

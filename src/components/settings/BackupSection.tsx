@@ -226,7 +226,7 @@ export function BackupSection({ isBusy, onBusyChange }: SettingsBusyProps) {
         >
           <SettingsInlineControls>
             <TextButton
-              tone="accent"
+              variant="filled"
               onClick={() => {
                 void handleExport();
               }}

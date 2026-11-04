@@ -41,6 +41,7 @@ import {
 } from "../lib/tasks/task-notification-actions";
 import {
   getAppNavigationHistoryIndex,
+  isOpenedFromMore,
   recordAppNavigationEntry,
 } from "../lib/navigation-history";
 import {
@@ -137,7 +138,12 @@ const MORE_PATHNAMES: ReadonlySet<string> = new Set([
   "/settings",
 ]);
 
-function isNavItemActive(item: NavItem, pathname: string): boolean {
+function isNavItemActive(
+  item: NavItem,
+  pathname: string,
+  openedFromMore: boolean,
+): boolean {
+  if (openedFromMore) return item.to === "/more";
   if (item.to === "/") return pathname === "/";
   if (item.to === "/more") return MORE_PATHNAMES.has(pathname);
   return pathname === item.to || pathname.startsWith(`${item.to}/`);
@@ -268,11 +274,13 @@ function NavLinks({
   activeClassName,
   className,
   labelKey,
+  openedFromMore,
   pathname,
 }: {
   activeClassName: string;
   className: string;
   labelKey: "compactKey" | "labelKey";
+  openedFromMore: boolean;
   pathname: string;
 }) {
   const { t } = useTranslation();
@@ -281,7 +289,7 @@ function NavLinks({
 
   return NAV_ITEMS.map((item) => (
     <AppNavLink
-      active={isNavItemActive(item, pathname)}
+      active={isNavItemActive(item, pathname, openedFromMore)}
       activeClassName={activeClassName}
       badgeCount={item.to === "/more" ? taskAttentionCount : item.to === "/updates" ? newChapterCount : 0}
       className={className}
@@ -302,6 +310,7 @@ export function RootLayout() {
       historyIndex: getAppNavigationHistoryIndex(state.location.state),
       historyKey: readHistoryEntryKey(state.location.state),
       href: state.location.href,
+      openedFromMore: isOpenedFromMore(state.location.state),
       pathname: state.location.pathname,
       search: state.location.search,
     }),
@@ -545,6 +554,7 @@ export function RootLayout() {
             activeClassName="norea-rail-link--active"
             className="norea-rail-link"
             labelKey="labelKey"
+            openedFromMore={location.openedFromMore}
             pathname={pathname}
           />
         </nav>
@@ -629,6 +639,7 @@ export function RootLayout() {
           activeClassName="norea-mobile-nav-link--active"
           className="norea-mobile-nav-link"
           labelKey="compactKey"
+          openedFromMore={location.openedFromMore}
           pathname={pathname}
         />
       </nav>

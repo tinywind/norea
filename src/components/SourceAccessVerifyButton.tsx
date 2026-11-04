@@ -49,7 +49,7 @@ export function SourceAccessVerifyButton({
         });
       }}
       size="compact-sm"
-      variant="light"
+      variant="default"
     >
       {label}
     </Button>

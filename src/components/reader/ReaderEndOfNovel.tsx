@@ -88,7 +88,7 @@ function VerifyAction({ error, novel }: { error: unknown; novel: NovelDetailReco
     <Button
       onClick={() => openPluginSite(plugin, t("tasks.task.openSite", { source: sourceName }))}
       size="compact-sm"
-      variant="light"
+      variant="default"
     >
       {t("updates.failure.verify")}
     </Button>

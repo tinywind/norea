@@ -6,7 +6,7 @@ import {
 } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Button } from "@mantine/core";
-import { PageFrame, StateView } from "../components/AppFrame";
+import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import {
   FINISHED_PROGRESS,
   HistoryRow,
@@ -207,33 +207,36 @@ export function HistoryPage() {
 
   return (
     <div className="norea-history-page">
-      <header className="norea-history-app-bar">
-        <h1 className="norea-history-app-bar-title">{t("history.title")}</h1>
-        <OverflowMenu
-          items={[
-            {
-              danger: true,
-              disabled:
-                (!hasActiveFilter && visibleEntries.length === 0) ||
-                clearHistory.isPending,
-              icon: TrashIcon,
-              label: t("history.clearAll.action"),
-              onClick: () => void confirmClearAll(),
-            },
-          ]}
-          label={t("common.more")}
+      <PageHeader
+        actions={
+          <OverflowMenu
+            items={[
+              {
+                danger: true,
+                disabled:
+                  (!hasActiveFilter && visibleEntries.length === 0) ||
+                  clearHistory.isPending,
+                icon: TrashIcon,
+                label: t("history.clearAll.action"),
+                onClick: () => void confirmClearAll(),
+              },
+            ]}
+            label={t("common.more")}
+          />
+        }
+        title={t("history.title")}
+      >
+        <SearchBar
+          value={searchInput}
+          onChange={setSearchInput}
+          onClear={() => setSearch("")}
+          onSubmit={() => setSearch(searchInput)}
+          placeholder={t("history.filter.placeholder")}
         />
-      </header>
+      </PageHeader>
 
       <PageFrame className="norea-history-frame" size="wide">
         <div className="norea-history-filters">
-          <SearchBar
-            value={searchInput}
-            onChange={setSearchInput}
-            onClear={() => setSearch("")}
-            onSubmit={() => setSearch(searchInput)}
-            placeholder={t("history.filter.placeholder")}
-          />
           <div
             aria-label={t("history.filter.label")}
             className="norea-history-chips"

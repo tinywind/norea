@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { Button, Loader, Text } from "@mantine/core";
-import { IconButton } from "./IconButton";
-import { CloseIcon } from "./ui/icons";
+import { PageHeader } from "./AppFrame";
 import { SiteBrowserAddressBar } from "./SiteBrowserAddressBar";
 import { useTranslation } from "../i18n";
 import {
@@ -566,9 +565,12 @@ export function SiteBrowserOverlay() {
       className="norea-site-browser"
       role="dialog"
     >
-      <header className="norea-site-browser-bar">
-        <h2 className="norea-site-browser-title" id="norea-site-browser-title">
-          {sourceAccessContext ? (
+      <PageHeader
+        backLabel={closeLabel}
+        className="norea-site-browser-bar"
+        onBack={closeBrowser}
+        title={
+          sourceAccessContext ? (
             <>
               <span className="norea-site-browser-title-main">{sourceAccessTitle}</span>
               <span className="norea-site-browser-title-host">{displayedOriginLabel}</span>
@@ -577,12 +579,11 @@ export function SiteBrowserOverlay() {
             <span className="norea-site-browser-title-main">
               {pageHost ?? t("siteBrowser.title")}
             </span>
-          )}
-        </h2>
-        <IconButton label={closeLabel} onClick={closeBrowser} size="lg">
-          <CloseIcon />
-        </IconButton>
-      </header>
+          )
+        }
+        titleElement="h2"
+        titleId="norea-site-browser-title"
+      />
       <SiteBrowserAddressBar
         key={`${browserTaskId}:${openSequence}`}
         url={currentObservation?.url ?? currentUrl ?? ""}

@@ -558,36 +558,93 @@ const chapterList = (find: FindElement) => find((props) => typeof props.onExtend
 const selectedIds = (find: FindElement) =>
   [...(chapterList(find).props.selectedChapterIds as ReadonlySet<number>)].sort((left, right) => left - right);
 
-it("starts a selection at the first long-pressed row and selects every row up to the next one", async () => {
+const rangeStart = (find: FindElement) => chapterList(find).props.rangeStartChapterId;
+
+it("enters selection with a long-pressed row and selects ranges from the last touched row", async () => {
   mocks.novel.isLocal = false;
   mocks.chapters = numberedChapters();
   await withPageTree(async (find, run) => {
     const extend = (id: number) => (chapterList(find).props.onExtendSelection as (id: number) => void)(id);
+    expect(chapterList(find).props.selectionMode).toBe(false);
+    expect(rangeStart(find)).toBeNull();
     await run(() => extend(2));
     expect(chapterList(find).props.selectionMode).toBe(true);
     expect(selectedIds(find)).toEqual([2]);
+    expect(rangeStart(find)).toBe(2);
     await run(() => extend(4));
     expect(selectedIds(find)).toEqual([2, 3, 4]);
+    expect(rangeStart(find)).toBe(4);
     await run(() => extend(1));
     expect(selectedIds(find)).toEqual([1, 2, 3, 4]);
   });
 });
 
-it("toggles the anchor itself and picks the next selected row as the new anchor", async () => {
+it("toggles a row on every tap, never deselects on a long press and keeps selecting with nothing selected", async () => {
   mocks.novel.isLocal = false;
   mocks.chapters = numberedChapters();
   await withPageTree(async (find, run) => {
     const list = () => chapterList(find).props;
-    await run(() => (list().onToggleSelected as (id: number) => void)(2));
-    await run(() => (list().onExtendSelection as (id: number) => void)(2));
+    const tap = (id: number) => run(() => (list().onToggleSelected as (id: number) => void)(id));
+    const longPress = (id: number) => run(() => (list().onExtendSelection as (id: number) => void)(id));
+    await tap(2);
+    expect(selectedIds(find)).toEqual([2]);
+    await longPress(2);
+    expect(selectedIds(find)).toEqual([2]);
+    await tap(2);
     expect(selectedIds(find)).toEqual([]);
-    await run(() => (list().onToggleSelected as (id: number) => void)(5));
-    await run(() => (list().onExtendSelection as (id: number) => void)(6));
+    expect(list().selectionMode).toBe(true);
+    expect(find((props) => typeof props.onSelectAll === "function")).toBeDefined();
+
+    await tap(5);
+    await longPress(6);
     expect(selectedIds(find)).toEqual([5, 6]);
+    await tap(6);
+    expect(selectedIds(find)).toEqual([5]);
+    expect(rangeStart(find)).toBe(6);
+    await longPress(3);
+    expect(selectedIds(find)).toEqual([3, 4, 5, 6]);
   });
 });
 
-it("adds chapters chosen by number to the selection, prefilled from the anchor", async () => {
+it("toggles between select all and deselect all, and deselect all clears the range start", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = numberedChapters();
+  await withPageTree(async (find, run) => {
+    await run(() => (chapterList(find).props.onToggleSelected as (id: number) => void)(3));
+    const bar = () => find((props) => typeof props.onSelectAll === "function")!;
+    expect(bar().props.allSelected).toBe(false);
+    await run(() => (bar().props.onSelectAll as () => void)());
+    expect(selectedIds(find)).toEqual([1, 2, 3, 4, 5, 6]);
+    expect(bar().props.allSelected).toBe(true);
+    await run(() => (bar().props.onDeselectAll as () => void)());
+    expect(selectedIds(find)).toEqual([]);
+    expect(bar().props.allSelected).toBe(false);
+    expect(rangeStart(find)).toBeNull();
+    expect(chapterList(find).props.selectionMode).toBe(true);
+  });
+});
+
+it("shows the selection hint the first time selection opens on this device only", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = numberedChapters();
+  await withPageTree(async (find, run) => {
+    const stored = new Map<string, string>();
+    vi.stubGlobal("localStorage", {
+      getItem: (key: string) => stored.get(key) ?? null,
+      setItem: (key: string, value: string) => void stored.set(key, value),
+    });
+    const bar = () => find((props) => typeof props.onSelectAll === "function");
+    const select = () => find((props) => props.children === "novel.select")!;
+    await run(() => (select().props.onClick as () => void)());
+    expect(bar()!.props.hint).toBe("novel.selection.hint");
+    await run(() => window.dispatchEvent(new Event("popstate")));
+    expect(bar()).toBeUndefined();
+    await run(() => (select().props.onClick as () => void)());
+    expect(bar()!.props.hint).toBeUndefined();
+  });
+});
+
+it("adds chapters chosen by number to the selection, prefilled from the range start", async () => {
   mocks.novel.isLocal = false;
   mocks.chapters = numberedChapters();
   await withPageTree(async (find, run) => {
@@ -648,8 +705,8 @@ it("filters the chapter list and keeps select all, range selection and jump on t
     await run(() => (chapterList(find).props.onExtendSelection as (id: number) => void)(6));
     expect(selectedIds(find)).toEqual([2, 4, 6]);
     const bar = () => find((props) => typeof props.onSelectAll === "function")!;
-    expect(bar().props.selectAllDisabled).toBe(true);
-    await run(() => (bar().props.onClear as () => void)());
+    expect(bar().props.allSelected).toBe(true);
+    await run(() => (bar().props.onDeselectAll as () => void)());
     await run(() => (bar().props.onSelectAll as () => void)());
     expect(selectedIds(find)).toEqual([2, 4, 6]);
     expect(bar().props.label).toBe("novel.selection.selectedCount");

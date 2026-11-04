@@ -56,9 +56,16 @@ export function mountBackNavigationHarness(): BackNavigationHarness {
   };
 }
 
+/** Element slots of `PageFrame` and `PageHeader` that hold page controls besides `children`. */
+export const PAGE_SLOT_PROPS = ["header", "actions", "title", "below"] as const;
+
 /** Flattens a rendered element tree so tests can find elements by props. */
 export function collectElements(node: ReactNode): ReactElement<Record<string, unknown>>[] {
   if (Array.isArray(node)) return node.flatMap(collectElements);
   if (!isValidElement<Record<string, unknown>>(node)) return [];
-  return [node, ...collectElements(node.props.children as ReactNode)];
+  return [
+    node,
+    ...PAGE_SLOT_PROPS.flatMap((slot) => collectElements(node.props[slot] as ReactNode)),
+    ...collectElements(node.props.children as ReactNode),
+  ];
 }

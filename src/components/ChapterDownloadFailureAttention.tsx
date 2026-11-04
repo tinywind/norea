@@ -95,7 +95,7 @@ export function ChapterDownloadFailureAttention() {
                 loading={pending === group.key}
                 onClick={() => act(group.key, () => group.action === "verify" ? verifyGroup(group, message) : retryGroup(group))}
                 size="xs"
-                variant="light"
+                variant="default"
               >
                 {t(ACTION_KEYS[group.action])}
               </Button>

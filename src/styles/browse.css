@@ -1,46 +1,9 @@
-.norea-browse-app-bar {
-  align-items: center;
-  background: var(--norea-color-surface);
-  border-bottom: 1px solid var(--norea-color-rule);
-  display: flex;
-  gap: var(--norea-space-1);
-  min-height: 3.5rem;
-  padding: 0 var(--norea-space-2) 0 var(--norea-space-4);
-  position: sticky;
-  top: 0;
-  z-index: 3;
-}
-
-.norea-browse-app-bar-title {
-  color: var(--norea-color-ink);
-  flex: 1 1 auto;
-  font-size: var(--norea-text-xl);
-  font-weight: var(--norea-weight-bold);
-  line-height: var(--norea-leading-tight);
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .norea-browse-frame {
   --norea-page-block: var(--norea-space-3);
 }
 
-.norea-browse-tabs {
-  display: grid;
-  gap: var(--norea-space-3);
-  min-width: 0;
-}
-
-.norea-browse-tab-list {
-  overflow-x: auto;
-}
-
 .norea-browse-tab-panel {
   min-width: 0;
-  padding-top: var(--norea-space-3);
 }
 
 .norea-plugin-icon {
@@ -128,9 +91,9 @@
 .norea-extension-busy {
   align-items: center;
   display: inline-flex;
-  height: 2.5rem;
+  height: var(--norea-control-sm);
   justify-content: center;
-  width: 2.5rem;
+  width: var(--norea-control-sm);
 }
 
 .norea-source-row-skeleton {
@@ -446,6 +409,38 @@
   top: 0.25rem;
   width: 1.625rem;
   z-index: 2;
+}
+
+/* Server-grid selection: the chapter list's round check, over the cover. */
+.norea-source-select-check {
+  align-items: center;
+  background: var(--norea-color-surface);
+  border: 0.125rem solid var(--norea-color-rule-strong);
+  border-radius: 50%;
+  box-sizing: border-box;
+  color: var(--norea-color-on-accent);
+  display: inline-flex;
+  height: 1.5rem;
+  justify-content: center;
+  left: 0.25rem;
+  pointer-events: none;
+  position: absolute;
+  top: 0.25rem;
+  width: 1.5rem;
+  z-index: 2;
+}
+
+.norea-source-select-check[data-checked="true"] {
+  background: var(--norea-color-accent);
+  border-color: var(--norea-color-accent);
+}
+
+.norea-source-card[data-selected="true"] {
+  background: var(--norea-color-selected);
+}
+
+.norea-source-card[data-in-library="true"]:disabled {
+  cursor: not-allowed;
 }
 
 .norea-source-frame {

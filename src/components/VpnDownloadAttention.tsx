@@ -41,7 +41,7 @@ export function VpnDownloadAttention({ snapshot }: { snapshot: VpnDownloadRuntim
         {error ? <Text c="danger" component="p" size="sm">{error}</Text> : null}
       </div>
       <Group gap="xs" justify="flex-end">
-        <Button disabled={pending} loading={pending} onClick={() => act(action)} size="xs" variant="light">{label}</Button>
+        <Button disabled={pending} loading={pending} onClick={() => act(action)} size="xs" variant="default">{label}</Button>
       </Group>
     </section>
   );

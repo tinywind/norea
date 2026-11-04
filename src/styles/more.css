@@ -1,3 +1,8 @@
+/* More draws no bar, so its first group starts at the same step a page body keeps under one. */
+.norea-more-page {
+  --norea-page-block: var(--norea-space-3);
+}
+
 .norea-more-group {
   background: var(--norea-color-surface);
   border: 1px solid var(--norea-color-rule);
@@ -81,15 +86,4 @@
 .norea-more-row-chevron {
   color: var(--norea-color-icon-subtle);
   flex-shrink: 0;
-}
-
-/* The shared phone rule hides page headers that have no actions; More has no app bar, so its title stays. */
-@media (max-width: 767px) {
-  .norea-more-page .norea-page-header[data-has-actions] {
-    display: flex;
-  }
-
-  .norea-more-page .norea-page-header .norea-page-header-copy {
-    display: block;
-  }
 }

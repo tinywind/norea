@@ -230,7 +230,7 @@ export function useLibrarySelection(
           title,
           novelIds: [novel.id],
           total: jobs.length,
-          prepare: async () => ({ jobs, title, total: jobs.length }),
+          prepare: async () => ({ jobs, materializeAllTasks: true, title, total: jobs.length }),
         }).promise.finally(() => queryClient.invalidateQueries({ queryKey: ["novel", "library"] }))
           .catch(() => undefined);
         queued += jobs.length;

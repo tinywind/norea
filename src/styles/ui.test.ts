@@ -104,7 +104,7 @@ describe("long-press cue", () => {
 
 describe("transitions", () => {
   it("fades the selection bar in and slides the phone action bar up with motion tokens", () => {
-    expect(ruleFor(css, ".norea-selection-bar").body).toMatch(
+    expect(ruleFor(css, ".norea-selection-bar > .norea-app-bar-row").body).toMatch(
       /animation: norea-selection-bar-enter var\(--norea-duration-base\) var\(--norea-ease-standard\);/,
     );
     const phone = mediaBlock(css, "(max-width: 767px)");
@@ -276,9 +276,7 @@ describe("toast placement", () => {
       /--norea-toast-bottom-offset: var\(--norea-safe-area-bottom\);/,
     );
     const readerBars = /body\[data-norea-reader-bars\] \{\s*--norea-toast-bottom-offset: calc\(\s*var\(--norea-safe-area-bottom\) \+ (2 \* )?var\(--norea-reader-bar-height\)\s*\);/g;
-    const phone = css.replace(mediaBlock(css, "(min-width: 768px)"), "");
-    expect([...phone.matchAll(readerBars)].map((match) => match[1])).toEqual(["2 * "]);
-    expect([...mediaBlock(css, "(min-width: 768px)").matchAll(readerBars)].map((match) => match[1])).toEqual([undefined]);
+    expect([...css.matchAll(readerBars)].map((match) => match[1])).toEqual([undefined]);
     const reader = readFileSync(new URL("./reader.css", stylesDir), "utf8");
     expect(ruleFor(reader, ":root").body).toMatch(/--norea-reader-bar-height:/);
   });
@@ -302,5 +300,60 @@ describe("full-screen dialogs", () => {
       const source = readFileSync(new URL(name, stylesDir), "utf8");
       expect(source, name).not.toMatch(/\[data-full-screen\]/);
     }
+  });
+});
+
+describe("list alignment rule", () => {
+  const inlineInputBodies = [".mantine-Checkbox-body", ".mantine-Radio-body", ".mantine-Switch-body"];
+
+  it("centers list row leading and trailing elements on the whole text block", () => {
+    expect(ruleFor(css, ".norea-list-item").body).toMatch(/align-items: center;/);
+    expect(ruleFor(css, ".norea-list-item-leading").body).toMatch(/align-items: center;[^}]*display: flex;/);
+    expect(ruleFor(css, ".norea-list-item-trailing").body).toMatch(/align-items: center;[^}]*display: flex;/);
+  });
+
+  it("centers checkbox, radio and switch controls on their label block on every pointer", () => {
+    const outsideMedia = css.replace(mediaBlock(css, "(any-pointer: coarse)"), "");
+    for (const selector of inlineInputBodies) {
+      expect(ruleFor(outsideMedia, selector).body, selector).toMatch(/align-items: center;/);
+    }
+  });
+
+  it("leaves no stylesheet pinning a list leading element or an input control to the first line", () => {
+    const pinned = /align-(?:items|self): (?:flex-start|start|baseline|first baseline)/;
+    const sheets = readdirSync(stylesDir).filter((name) => name.endsWith(".css"));
+    for (const name of sheets) {
+      const source = readFileSync(new URL(name, stylesDir), "utf8");
+      const offenders = rules(source).filter(
+        (rule) =>
+          rule.selectors.some((selector) =>
+            [...inlineInputBodies, ".norea-list-item-leading", ".mantine-Menu-itemSection"].some((target) =>
+              selector.includes(target),
+            ),
+          ) && pinned.test(rule.body),
+      );
+      expect(offenders, name).toEqual([]);
+    }
+  });
+
+  it("lays a library row cover out as a flex item so it never rides a text baseline", () => {
+    const library = readFileSync(new URL("./library.css", stylesDir), "utf8");
+    expect(ruleFor(library, ".norea-library-row-cover").body).toMatch(/display: flex;/);
+  });
+});
+
+describe("reader settings sheet", () => {
+  const reader = readFileSync(new URL("./reader.css", stylesDir), "utf8");
+
+  it("scrolls its body instead of shrinking setting rows or the tab strip", () => {
+    expect(ruleFor(reader, ".norea-reader-quick-body > *").body).toMatch(/flex-shrink:\s*0/);
+    expect(ruleFor(reader, ".norea-reader-quick-tabs > .norea-reader-settings-tab-list").body)
+      .toMatch(/flex-shrink:\s*0/);
+    expect(ruleFor(reader, ".norea-reader-quick-body").body).toMatch(/overflow-y:\s*auto/);
+  });
+
+  it("does not add a second gesture-bar inset above the reset footer", () => {
+    expect(ruleFor(reader, ".norea-reader-quick-tabs .norea-reader-quick-body").body)
+      .not.toMatch(/safe-area-bottom/);
   });
 });

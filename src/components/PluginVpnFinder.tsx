@@ -604,11 +604,6 @@ export function PluginVpnFinder({
                             void applyAndConnect(server.candidateId, server.ip)
                           }
                           size="sm"
-                          variant={
-                            serverAction(server.candidateId) === "cancel"
-                              ? "default"
-                              : "filled"
-                          }
                         >
                           {actionText(serverAction(server.candidateId))}
                         </TextButton>
@@ -687,11 +682,6 @@ export function PluginVpnFinder({
                           void applyAndConnect(server.candidateId, server.ip)
                         }
                         size="sm"
-                        variant={
-                          serverAction(server.candidateId) === "cancel"
-                            ? "default"
-                            : "filled"
-                        }
                       >
                         {actionText(serverAction(server.candidateId))}
                       </TextButton>

@@ -222,9 +222,10 @@ export function createNoreaMantineTheme(
         color: color.lightColor,
         border: `${BORDER_WIDTH} solid ${color.lightColor}`,
       },
+      // Borderless controls show only the shared state layer on hover and press.
       subtle: {
         background: "transparent",
-        hover: color.lightHover,
+        hover: "transparent",
         color: color.lightColor,
         border: transparentBorder,
       },
@@ -317,7 +318,11 @@ export function createNoreaMantineTheme(
     components: {
       Alert: { defaultProps: { radius: "sm" } },
       // Every Mantine control paints the shared hover and pressed state layer from ui.css.
-      ActionIcon: { classNames: { root: STATE_LAYER_CLASS } },
+      // D10 button emphasis: `filled` is the one primary action of a screen, region or dialog;
+      // `default` is the outline secondary action; `subtle` is borderless, for every control in
+      // a bar or a list row and for text links; `light` marks only a selected chip or a pressed
+      // toggle. Icon-only buttons are always borderless, so ActionIcon defaults to `subtle`.
+      ActionIcon: { classNames: { root: STATE_LAYER_CLASS }, defaultProps: { variant: "subtle" } },
       Button: { classNames: { root: STATE_LAYER_CLASS }, defaultProps: { radius: "sm" } },
       CloseButton: { classNames: { root: STATE_LAYER_CLASS } },
       Paper: { defaultProps: { radius: "sm" } },

@@ -205,12 +205,13 @@ export function PluginSettingsEditor({
       <SettingsFieldRow>
         <SettingsInlineControls>
           {onCancel ? (
-            <TextButton onClick={onCancel} variant="subtle">
+            <TextButton onClick={onCancel}>
               {t("common.cancel")}
             </TextButton>
           ) : null}
           <TextButton
             disabled={!dirty}
+            variant="filled"
             onClick={() => {
               for (const [key, value] of Object.entries(values)) {
                 if (value === "") {

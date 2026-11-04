@@ -161,6 +161,18 @@ a {
   --input-bd-focus: var(--norea-color-focus);
 }
 
+/*
+ * One control height for default-size inputs, buttons and large icon buttons, so a field and
+ * the button beside it line up: 36px with a mouse, the 44px touch floor on coarse pointers.
+ */
+[data-mantine-color-scheme] .mantine-Input-wrapper {
+  --input-height-sm: var(--norea-control-sm);
+}
+
+[data-mantine-color-scheme] .mantine-Button-root {
+  --button-height-sm: var(--norea-control-sm);
+}
+
 @media (forced-colors: active) {
   :focus-visible,
   .mantine-focus-auto:focus-visible,
@@ -512,39 +524,188 @@ a {
   --norea-page-max-width: none;
 }
 
-.norea-page-header {
-  align-items: flex-start;
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--norea-space-4);
-  justify-content: space-between;
+/*
+ * PageHeader (AppFrame.tsx) is the one page header. Every page bar, the
+ * selection bar and the reader bar share one row height (a header control
+ * plus a 4px margin above and below), one inline padding and one title
+ * ramp. Controls in the bar are borderless: icon buttons and text actions
+ * show only the state layer, never a boxed outline.
+ */
+.norea-app-bar {
+  background: var(--norea-color-surface);
+  border-bottom: 1px solid var(--norea-color-rule);
+  color: var(--norea-color-ink);
+  flex: 0 0 auto;
+  position: sticky;
+  top: 0;
+  z-index: 3;
 }
 
-.norea-page-header-copy {
-  flex: 1 1 17.5rem;
+.norea-app-bar-row {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-1);
+  min-height: var(--norea-app-bar-height);
+  padding: 0 var(--norea-app-bar-padding-inline);
+}
+
+.norea-app-bar-title {
+  color: var(--norea-color-ink);
+  flex: 1 1 auto;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-lg);
+  font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
+  margin: 0;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* Without a back button the title lines up with the page gutter. */
+.norea-app-bar[data-has-back="false"] .norea-app-bar-title {
+  padding-left: var(--norea-space-2);
+}
+
+/* Page controls in place of a visible title: tabs scroll inside it, fields fill it. */
+.norea-app-bar-slot {
+  align-items: center;
+  align-self: stretch;
+  display: flex;
+  flex: 1 1 auto;
   min-width: 0;
 }
 
-.norea-page-kicker {
+/*
+ * Tabs in the bar (Browse, Library categories) fill its height so the active
+ * underline sits on the bar's bottom rule; a long set scrolls in place.
+ */
+.norea-app-bar .norea-app-bar-tabs {
+  align-self: stretch;
+  display: flex;
+  flex-wrap: nowrap;
+  min-width: 0;
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.norea-app-bar .norea-app-bar-tabs::before {
+  display: none;
+}
+
+.norea-app-bar .norea-app-bar-tabs .mantine-Tabs-tab {
+  flex: 0 0 auto;
+  font-size: var(--norea-text-md);
+  height: auto;
+  padding-inline: var(--norea-space-3);
+}
+
+.norea-app-bar-subrow {
+  display: grid;
+  gap: var(--norea-space-2);
+  min-width: 0;
+  padding: 0 var(--norea-app-bar-padding-inline) var(--norea-space-2);
+}
+
+.norea-app-bar-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 1 auto;
+  gap: var(--norea-space-1);
+  justify-content: flex-end;
+  min-width: 0;
+}
+
+/* Muted trailing text, such as a step count. */
+.norea-app-bar-meta {
   color: var(--norea-color-ink-muted);
+  flex: 0 0 auto;
   font-size: var(--norea-text-sm);
-  font-weight: 700;
-  letter-spacing: 0;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--norea-weight-medium);
+  padding-inline: var(--norea-space-2);
+  white-space: nowrap;
 }
 
-.norea-page-title {
+.norea-app-bar .norea-icon-button,
+.norea-app-bar .mantine-Button-root {
+  background: transparent;
+  border-color: transparent;
   color: var(--norea-color-ink);
-  font-family: var(--norea-font-ui);
-  font-size: clamp(var(--norea-text-xl), 1.8vw, var(--norea-text-2xl));
-  font-weight: 600;
-  letter-spacing: 0;
-  line-height: 1.12;
-  margin: 0;
+  overflow: visible;
+  position: relative;
 }
 
-.norea-page-description {
-  color: var(--norea-color-ink-muted);
-  max-width: 42.5rem;
+.norea-app-bar .norea-icon-button {
+  --norea-icon-button-size: var(--norea-control-sm);
+  --norea-icon-glyph-size: var(--norea-icon-md);
+}
+
+.norea-app-bar .mantine-Button-root {
+  font-size: var(--norea-text-md);
+  font-weight: var(--norea-weight-medium);
+  height: var(--norea-control-sm);
+  padding-inline: var(--norea-space-3);
+}
+
+.norea-app-bar .mantine-Button-section svg {
+  height: var(--norea-icon-md);
+  width: var(--norea-icon-md);
+}
+
+/* The `.norea-state-layer` treatment from ui.css, applied to every control in the bar. */
+.norea-app-bar .norea-icon-button::after,
+.norea-app-bar .mantine-Button-root::after {
+  background: currentColor;
+  border-radius: inherit;
+  content: "";
+  inset: 0;
+  opacity: 0;
+  pointer-events: none;
+  position: absolute;
+  transition: opacity var(--norea-duration-fast) var(--norea-ease-standard);
+}
+
+@media (hover: hover) {
+  .norea-app-bar .norea-icon-button:hover:not(:disabled),
+  .norea-app-bar .mantine-Button-root:hover:not(:disabled) {
+    background: transparent;
+    border-color: transparent;
+  }
+
+  .norea-app-bar .norea-icon-button:hover:not(:disabled)::after,
+  .norea-app-bar .mantine-Button-root:hover:not(:disabled)::after {
+    opacity: 0.08;
+  }
+}
+
+.norea-app-bar .norea-icon-button:focus-visible::after,
+.norea-app-bar .mantine-Button-root:focus-visible::after {
+  opacity: 0.08;
+}
+
+.norea-app-bar .norea-icon-button:active:not(:disabled)::after,
+.norea-app-bar .mantine-Button-root:active:not(:disabled)::after {
+  opacity: 0.12;
+}
+
+.norea-app-bar .norea-icon-button[data-active="true"],
+.norea-app-bar .norea-icon-button[data-tone="accent"] {
+  background: var(--norea-color-accent-soft);
+  border-color: transparent;
+  color: var(--norea-color-accent);
+}
+
+.norea-app-bar .norea-icon-button:disabled,
+.norea-app-bar .mantine-Button-root:disabled {
+  background: transparent;
+  opacity: var(--norea-disabled-opacity);
+}
+
+/* The page body starts a small, fixed step under the bar. */
+.norea-app-bar ~ .norea-page-frame {
+  padding-top: var(--norea-space-3);
 }
 
 .norea-surface {
@@ -585,12 +746,19 @@ a {
   justify-content: center;
 }
 
+/*
+ * D10 button emphasis (docs/superpowers/plans/2026-11-03-ui-ux-overhaul.md).
+ * IconButton is always borderless: it shows only the shared state layer, and
+ * `active` or the accent tone add a soft fill, never a box. TextButton takes
+ * its look from its Mantine variant: `default` is the outline secondary
+ * action, `filled` the region's one primary action and `subtle` a text link.
+ */
 .norea-icon-button {
   --norea-icon-button-size: 1.75rem;
   --norea-icon-glyph-size: 0.9375rem;
   align-items: center;
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule-strong);
+  background: transparent;
+  border: 1px solid transparent;
   border-radius: var(--norea-radius-sm);
   color: var(--norea-color-ink-muted);
   display: inline-flex;
@@ -609,27 +777,23 @@ a {
 }
 
 .norea-icon-button--lg {
-  --norea-icon-button-size: 2.5rem;
+  --norea-icon-button-size: var(--norea-control-sm);
   --norea-icon-glyph-size: 1.125rem;
 }
 
 @media (hover: hover) {
-  .norea-icon-button:hover:not(:disabled) {
-    background: var(--norea-color-surface-raised);
-    border-color: var(--norea-color-rule-strong);
-    color: var(--norea-color-accent);
+  .norea-icon-button:hover:not(:disabled):not([data-active="true"]):not([data-tone]) {
+    color: var(--norea-color-ink);
   }
 }
 
 .norea-icon-button[data-active="true"],
 .norea-icon-button[data-tone="accent"] {
   background: var(--norea-color-accent-soft);
-  border-color: var(--norea-color-accent);
   color: var(--norea-color-accent);
 }
 
 .norea-icon-button[data-tone="danger"] {
-  border-color: var(--norea-color-danger);
   color: var(--norea-color-danger);
 }
 
@@ -652,12 +816,9 @@ a {
 }
 
 .norea-text-button {
-  --norea-text-button-height: 2.5rem;
+  --norea-text-button-height: var(--norea-control-sm);
   --norea-text-button-padding-inline: 0.875rem;
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule-strong);
   border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink-muted);
   font-family: var(--norea-font-ui);
   font-size: var(--norea-text-sm);
   font-variant-numeric: tabular-nums;
@@ -676,59 +837,65 @@ a {
 }
 
 .norea-text-button--lg {
-  --norea-text-button-height: 2.5rem;
+  --norea-text-button-height: var(--norea-control-sm);
   --norea-text-button-padding-inline: 0.875rem;
 }
 
+.norea-text-button[data-variant="default"] {
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule-strong);
+  color: var(--norea-color-ink-muted);
+}
+
 @media (hover: hover) {
-  .norea-text-button:hover:not(:disabled) {
+  .norea-text-button[data-variant="default"]:hover:not(:disabled) {
     background: var(--norea-color-surface-raised);
     border-color: var(--norea-color-rule-strong);
     color: var(--norea-color-ink);
   }
 }
 
-.norea-text-button[data-active="true"],
-.norea-text-button[data-tone="accent"] {
+.norea-text-button[data-variant="default"][data-active="true"],
+.norea-text-button[data-variant="default"][data-tone="accent"] {
   background: var(--norea-color-accent-soft);
   border-color: var(--norea-color-accent);
   color: var(--norea-color-accent);
 }
 
-.norea-text-button[data-tone="danger"],
-.norea-text-button[data-tone="error"] {
+.norea-text-button[data-variant="default"][data-tone="danger"],
+.norea-text-button[data-variant="default"][data-tone="error"] {
   border-color: var(--norea-color-danger);
   color: var(--norea-color-danger);
 }
 
-.norea-text-button[data-active="true"][data-tone="danger"],
-.norea-text-button[data-active="true"][data-tone="error"] {
+.norea-text-button[data-variant="default"][data-active="true"][data-tone="danger"],
+.norea-text-button[data-variant="default"][data-active="true"][data-tone="error"] {
   background: var(--norea-color-danger-soft);
 }
 
-.norea-text-button[data-tone="success"] {
+.norea-text-button[data-variant="default"][data-tone="success"] {
   color: var(--norea-color-ok);
 }
 
-.norea-text-button[data-tone="warning"] {
+.norea-text-button[data-variant="default"][data-tone="warning"] {
   color: var(--norea-color-warn);
 }
 
 .norea-segmented-toggle {
-  height: 2.5rem;
-  min-height: 2.5rem;
+  height: var(--norea-control-sm);
+  min-height: var(--norea-control-sm);
   min-width: 0;
 }
 
 .norea-segmented-toggle-control,
 .norea-segmented-toggle-indicator {
-  min-height: 2rem;
+  min-height: calc(var(--norea-control-sm) - 0.25rem);
 }
 
 .norea-segmented-toggle-label {
   align-items: center;
   display: flex;
-  height: 2rem;
+  height: calc(var(--norea-control-sm) - 0.25rem);
   justify-content: center;
   padding-inline: var(--norea-space-3);
 }
@@ -743,8 +910,8 @@ a {
 }
 
 .norea-search-field-input {
-  height: 2.5rem;
-  min-height: 2.5rem;
+  height: var(--norea-control-sm);
+  min-height: var(--norea-control-sm);
 }
 
 .norea-search-submit-button {
@@ -1003,11 +1170,6 @@ button.norea-console-chip:disabled {
 @media (max-width: 767px) {
   .norea-page-frame {
     padding-top: var(--norea-space-4);
-  }
-
-  .norea-page-header-copy,
-  .norea-page-header[data-has-actions="false"] {
-    display: none;
   }
 
   .norea-list-row > .mantine-Group-root {

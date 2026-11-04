@@ -225,11 +225,11 @@ describe("createNoreaMantineTheme variant colors", () => {
     for (const color of NOREA_THEME_COLORS) {
       for (const variant of VARIANTS) {
         const result = merged.variantColorResolver({ color, theme: merged, variant });
+        const surfaces = [roles.bg, roles.surface, roles.surfaceRaised];
         const restBackgrounds =
-          result.background === "transparent"
-            ? [roles.bg, roles.surface, roles.surfaceRaised]
-            : [result.background];
-        for (const background of [...restBackgrounds, result.hover]) {
+          result.background === "transparent" ? surfaces : [result.background];
+        const hoverBackgrounds = result.hover === "transparent" ? surfaces : [result.hover];
+        for (const background of [...restBackgrounds, ...hoverBackgrounds]) {
           expect(
             contrast(result.color, background),
             `${color} ${variant}: ${result.color} on ${background}`,
@@ -258,6 +258,18 @@ describe("createNoreaMantineTheme variant colors", () => {
       variant: "filled",
     });
     expect(result.background).toBe("var(--mantine-color-red-filled)");
+  });
+});
+
+describe("createNoreaMantineTheme button emphasis (D10)", () => {
+  it("draws borderless controls with only the state layer and defaults icon-only buttons to borderless", () => {
+    const [first] = CASES;
+    for (const color of NOREA_THEME_COLORS) {
+      const subtle = first!.merged.variantColorResolver({ color, theme: first!.merged, variant: "subtle" });
+      expect(subtle, color).toMatchObject({ background: "transparent", hover: "transparent" });
+      expect(subtle.border, color).toMatch(/transparent$/);
+    }
+    expect(first!.merged.components.ActionIcon?.defaultProps).toMatchObject({ variant: "subtle" });
   });
 });
 

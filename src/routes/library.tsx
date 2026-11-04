@@ -51,7 +51,6 @@ import {
   DownloadIcon,
   FolderIcon,
   ImportIcon,
-  OverflowIcon,
   RefreshIcon,
   SelectIcon,
   SettingsIcon,
@@ -372,6 +371,14 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     },
   ];
 
+  const categoryTabs = desktop ? null : (
+    <CategoryTabs
+      activeId={selectedCategoryId}
+      entries={categoryEntries}
+      onSelect={setSelectedCategoryId}
+    />
+  );
+
   return (
     <>
       <PageFrame className="norea-library-page" size="full">
@@ -418,20 +425,14 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                           }),
                       },
                     ]}
+                    disabled={selectedIds.size === 0}
                     label={t("common.more")}
-                    trigger={
-                      <SelectionAction
-                        disabled={selectedIds.size === 0}
-                        icon={OverflowIcon}
-                        label={t("common.more")}
-                      />
-                    }
                   />
                 </>
               }
-              clearDisabled={selectedIds.size === 0}
+              allSelected={selectedIds.size > 0 && selectedIds.size >= summary.totalNovels}
               label={t("library.selectedCount", { count: selectedIds.size })}
-              onClear={clearSelection}
+              onDeselectAll={clearSelection}
               onExit={exitSelection}
               onSelectAll={() => selectAllMutation.mutate()}
               selectAllDisabled={
@@ -444,6 +445,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             />
           ) : (
           <LibraryAppBar
+            categoryTabs={categoryTabs}
             onOpenViewOptions={() => openViewOptions()}
             onRefresh={() => metadataRefreshMutation.mutate()}
             onSearchChange={setSearch}
@@ -467,13 +469,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
             className="norea-library-main"
             aria-label={t("library.mainLabel")}
           >
-            {desktop ? null : (
-              <CategoryTabs
-                activeId={selectedCategoryId}
-                entries={categoryEntries}
-                onSelect={setSelectedCategoryId}
-              />
-            )}
             <LibraryQuickFilters
               counts={tagSummary}
               onClear={() => {
@@ -535,7 +530,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                         onClick={() => {
                           void novels.fetchNextPage();
                         }}
-                        variant="light"
+                        variant="default"
                       >
                         {t("common.loadMore")}
                       </Button>

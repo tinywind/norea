@@ -1,9 +1,9 @@
-import { Children, isValidElement, useEffect, useState, type ReactElement, type ReactNode } from "react";
+import { Children, cloneElement, isValidElement, useEffect, useState, type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import * as sourceAccessCoordinator from "../lib/tasks/source-access-coordinator";
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { useSiteBrowserStore } from "../store/site-browser";
-import { BlockingLoadingOverlay } from "./AppFrame";
+import { BlockingLoadingOverlay, PageHeader } from "./AppFrame";
 import { SiteBrowserOverlay } from "./SiteBrowserOverlay";
 import { SiteBrowserAddressBar } from "./SiteBrowserAddressBar";
 
@@ -38,9 +38,12 @@ vi.mock("../store/site-browser", async (importOriginal) => {
 });
 
 interface ControlProps {
+  backDisabled?: boolean;
+  backLabel?: string;
   children?: ReactNode;
   disabled?: boolean;
   label?: string;
+  onBack?: () => unknown;
   onClick?: () => unknown;
 }
 
@@ -49,6 +52,14 @@ function findControl(
   label: string,
 ): ReactElement<ControlProps> | undefined {
   if (!isValidElement<ControlProps>(node)) return undefined;
+  // The page header draws its leading back button from these props.
+  if (node.props.onBack && node.props.backLabel === label) {
+    return cloneElement(node, {
+      disabled: node.props.backDisabled,
+      label,
+      onClick: node.props.onBack,
+    });
+  }
   if (
     node.props.onClick &&
     (node.props.label === label || node.props.children === label)
@@ -196,7 +207,7 @@ function textOf(node: ReactNode): string {
   return Children.toArray(node.props.children).map(textOf).join(" ");
 }
 
-function findByType(node: ReactNode, type: string): ReactElement<{ children?: ReactNode }> | undefined {
+function findByType(node: ReactNode, type: unknown): ReactElement<{ children?: ReactNode }> | undefined {
   if (!isValidElement<{ children?: ReactNode }>(node)) return undefined;
   if (node.type === type) return node;
   for (const child of Children.toArray(node.props.children)) {
@@ -204,6 +215,12 @@ function findByType(node: ReactNode, type: string): ReactElement<{ children?: Re
     if (match) return match;
   }
   return undefined;
+}
+
+function headerTitle(node: ReactNode): ReactNode {
+  const header = findByType(node, PageHeader);
+  expect(header?.props).toMatchObject({ titleElement: "h2", titleId: "norea-site-browser-title" });
+  return (header?.props as { title?: ReactNode } | undefined)?.title;
 }
 
 describe("site browser chrome", () => {
@@ -215,14 +232,14 @@ describe("site browser chrome", () => {
     openBrowser("ready");
     useSiteBrowserStore.setState({ context: { mode: "browse" } });
     const view = SiteBrowserOverlay();
-    expect(textOf(findByType(view, "h2"))).toBe("source.test");
+    expect(textOf(headerTitle(view))).toBe("source.test");
     expect(findControl(view, "siteBrowser.close")).toBeDefined();
     expect(findControl(view, "sourceAccess.verifyAndResume")).toBeUndefined();
   });
 
   it("offers Verify and resume, Keep paused and the skip action for an access check", () => {
     const view = openBrowser("ready");
-    expect(textOf(findByType(view, "h2"))).toContain("sourceAccess.captchaTitle");
+    expect(textOf(headerTitle(view))).toContain("sourceAccess.captchaTitle");
     for (const label of [
       "sourceAccess.verifyAndResume",
       "sourceAccess.keepPaused",

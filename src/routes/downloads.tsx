@@ -1,6 +1,8 @@
-import { useNavigate } from "@tanstack/react-router";
+import { useNavigate, useRouter } from "@tanstack/react-router";
 import { SegmentedToggle } from "../components/SegmentedToggle";
 import { useTranslation } from "../i18n";
+import { usePageBackNavigation } from "../lib/android-back-navigation";
+import { goBackInAppHistory } from "../lib/navigation-history";
 import { parseDownloadsSearch, type DownloadsView } from "../lib/route-search";
 import { DownloadsQueueView } from "./downloads-queue";
 import { DownloadsStorageView } from "./downloads-storage";
@@ -14,6 +16,16 @@ interface DownloadsPageProps {
 export function DownloadsPage({ active = true, view }: DownloadsPageProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
+  const router = useRouter();
+  // Downloads lives under More, so a cold start leaves to More.
+  const leaveDownloads = () => {
+    if (goBackInAppHistory(router.state.location.href, ["/downloads"])) return;
+    void navigate({ to: "/more", replace: true });
+  };
+  usePageBackNavigation(() => {
+    leaveDownloads();
+    return true;
+  });
   const viewSwitcher = (
     <SegmentedToggle
       aria-label={t("downloads.view.label")}
@@ -34,8 +46,8 @@ export function DownloadsPage({ active = true, view }: DownloadsPageProps) {
   );
 
   return view === "storage" ? (
-    <DownloadsStorageView active={active} viewSwitcher={viewSwitcher} />
+    <DownloadsStorageView active={active} onBack={leaveDownloads} viewSwitcher={viewSwitcher} />
   ) : (
-    <DownloadsQueueView active={active} viewSwitcher={viewSwitcher} />
+    <DownloadsQueueView active={active} onBack={leaveDownloads} viewSwitcher={viewSwitcher} />
   );
 }

@@ -1,16 +1,22 @@
 import { Button, Loader } from "@mantine/core";
-import type { ReactNode } from "react";
+import { useId, type ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import { useBodyFlag } from "../../lib/use-body-flag";
-import { IconButton } from "../IconButton";
-import { CloseIcon, type AppIcon } from "./icons";
+import { PageHeader } from "../AppFrame";
+import { type AppIcon } from "./icons";
 
 interface SelectionBarProps {
   /** Labeled actions: a bottom bar below 768px, inline in the bar above. */
   actions: ReactNode;
-  clearDisabled: boolean;
+  /** Every selectable item is selected, so the toggle offers to deselect them all. */
+  allSelected: boolean;
+  /** The page header's sub-row, kept so selecting does not move the content. */
+  below?: ReactNode;
+  /** A one-line usage hint shown on its own line under the bar. */
+  hint?: string;
   label: string;
-  onClear: () => void;
+  onDeselectAll: () => void;
+  /** Leaves selection mode; selecting nothing keeps the bar open. */
   onExit: () => void;
   onSelectAll: () => void;
   selectAllDisabled: boolean;
@@ -18,43 +24,70 @@ interface SelectionBarProps {
 }
 
 /**
- * Replaces a page's app bar while items are selected. On phones its actions
- * sit in a bottom bar in place of the navigation.
+ * The page header in its selection state: it takes the app bar's place at the
+ * same height and padding, with close where back sits and the count where the
+ * title sits, so entering or leaving selection never moves the content. On
+ * phones its actions sit in a bottom bar in place of the navigation.
  */
 export function SelectionBar({
   actions,
-  clearDisabled,
+  allSelected,
+  below,
+  hint,
   label,
-  onClear,
+  onDeselectAll,
   onExit,
   onSelectAll,
   selectAllDisabled,
   selectAllPending,
 }: SelectionBarProps) {
   const { t } = useTranslation();
+  const hintId = useId();
   useBodyFlag("selection-bar", true);
 
   return (
-    <div aria-label={label} className="norea-selection-bar" role="toolbar">
-      <IconButton label={t("selection.exit")} onClick={onExit} size="lg">
-        <CloseIcon />
-      </IconButton>
-      <span aria-live="polite" className="norea-selection-bar-count">
-        {label}
-      </span>
-      <Button
-        disabled={selectAllDisabled}
-        leftSection={selectAllPending ? <Loader size="xs" /> : undefined}
-        onClick={onSelectAll}
-        variant="subtle"
-      >
-        {t("selection.selectAll")}
-      </Button>
-      <Button disabled={clearDisabled} onClick={onClear} variant="subtle">
-        {t("common.clear")}
-      </Button>
-      <div className="norea-selection-bar-actions">{actions}</div>
-    </div>
+    <PageHeader
+      actions={
+        <>
+          {allSelected ? (
+            <Button onClick={onDeselectAll} variant="subtle">
+              {t("selection.deselectAll")}
+            </Button>
+          ) : (
+            <Button
+              disabled={selectAllDisabled}
+              leftSection={selectAllPending ? <Loader size="xs" /> : undefined}
+              onClick={onSelectAll}
+              variant="subtle"
+            >
+              {t("selection.selectAll")}
+            </Button>
+          )}
+          <div className="norea-selection-bar-actions">{actions}</div>
+        </>
+      }
+      aria-describedby={hint ? hintId : undefined}
+      aria-label={label}
+      backIcon="close"
+      backLabel={t("selection.exit")}
+      below={below}
+      className="norea-selection-bar"
+      onBack={onExit}
+      role="toolbar"
+      title={
+        <>
+          <span aria-live="polite" className="norea-selection-bar-count">
+            {label}
+          </span>
+          {hint ? (
+            <span className="norea-selection-bar-hint" id={hintId} role="status">
+              {hint}
+            </span>
+          ) : null}
+        </>
+      }
+      titleElement="span"
+    />
   );
 }
 

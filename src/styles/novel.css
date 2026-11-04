@@ -62,40 +62,17 @@
   font-variant-numeric: tabular-nums;
 }
 
-.norea-novel-app-bar {
-  align-items: center;
-  background: var(--norea-color-surface);
-  border-bottom: 1px solid var(--norea-color-rule);
-  display: flex;
-  gap: var(--norea-space-1);
-  min-height: 3.5rem;
-  padding: 0 var(--norea-space-2);
-  position: sticky;
-  top: 0;
-  z-index: 3;
+/* The bar carries the title from the start, so its row is never empty; two lines at the top, one once scrolled. */
+.norea-novel-app-bar .norea-app-bar-title {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  overflow-wrap: anywhere;
+  white-space: normal;
 }
 
-.norea-novel-page > .norea-selection-bar {
-  position: sticky;
-  top: 0;
-  z-index: 3;
-}
-
-.norea-novel-app-bar-title {
-  color: var(--norea-color-ink);
-  flex: 1 1 auto;
-  font-size: var(--norea-text-lg);
-  font-weight: var(--norea-weight-bold);
-  min-width: 0;
-  opacity: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  transition: opacity var(--norea-duration-fast) var(--norea-ease-standard);
-  white-space: nowrap;
-}
-
-.norea-novel-app-bar[data-title-visible="true"] .norea-novel-app-bar-title {
-  opacity: 1;
+.norea-novel-app-bar[data-title-visible="true"] .norea-app-bar-title {
+  -webkit-line-clamp: 1;
 }
 
 .norea-novel-frame {
@@ -106,7 +83,7 @@
 .norea-novel-layout {
   display: flex;
   flex-direction: column;
-  gap: var(--norea-space-4);
+  gap: var(--norea-space-3);
   min-width: 0;
 }
 
@@ -142,21 +119,18 @@
   flex-direction: column;
   gap: var(--norea-space-1);
   min-width: 0;
+  position: relative;
 }
 
+/* The page heading for assistive technology; the app bar shows the title on screen. */
 .norea-novel-title {
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 3;
-  color: var(--norea-color-ink);
-  display: -webkit-box;
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-xl);
-  font-weight: var(--norea-weight-bold);
-  line-height: 1.3;
-  margin: 0 0 var(--norea-space-1);
+  block-size: 1px;
+  clip-path: inset(50%);
+  inline-size: 1px;
+  margin: 0;
   overflow: hidden;
-  overflow-wrap: anywhere;
-  padding-bottom: 0.0625rem;
+  position: absolute;
+  white-space: nowrap;
 }
 
 .norea-novel-byline,
@@ -367,9 +341,6 @@
     grid-template-columns: 8.5rem minmax(0, 1fr);
   }
 
-  .norea-novel-title {
-    font-size: var(--norea-text-2xl);
-  }
 }
 
 @media (min-width: 992px) {
@@ -437,11 +408,11 @@
   width: 100%;
 }
 
-.norea-novel-chapter[data-progress="partial"] {
+.norea-novel-chapter[data-progress] {
   position: relative;
 }
 
-.norea-novel-chapter[data-progress="partial"]::before {
+.norea-novel-chapter[data-progress]::before {
   background: var(--norea-color-ink);
   content: "";
   inset: 0 auto 0 0;
@@ -534,20 +505,28 @@
   color: var(--norea-color-warn);
 }
 
+/* Round check: an empty ring when unselected, a filled accent disc with a check when selected. */
 .norea-novel-chapter-check {
   align-items: center;
   border: 0.125rem solid var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-sm);
+  border-radius: 50%;
+  box-sizing: border-box;
   color: var(--norea-color-on-accent);
   display: inline-flex;
-  height: 1.25rem;
+  height: 1.5rem;
   justify-content: center;
-  width: 1.25rem;
+  width: 1.5rem;
 }
 
 .norea-novel-chapter-check[data-checked="true"] {
   background: var(--norea-color-accent);
   border-color: var(--norea-color-accent);
+}
+
+/* The last toggled row, where a long press starts its range. */
+.norea-novel-chapter-check[data-range-start="true"] {
+  outline: 0.125rem dashed var(--norea-color-accent);
+  outline-offset: 0.1875rem;
 }
 
 .norea-novel-chapter-trailing,
@@ -567,6 +546,11 @@
   width: var(--norea-control-md);
 }
 
+/* Row trailing buttons fill the same 44px slot as the download progress, borderless with the state layer. */
+.norea-icon-button.norea-novel-chapter-state-button {
+  --norea-icon-button-size: var(--norea-control-md);
+}
+
 .norea-novel-chapter-state-button[data-state="downloaded"] {
   color: var(--norea-color-ok);
 }
@@ -578,7 +562,6 @@
 
 .norea-novel-chapter-sort-button[data-active="true"] {
   background: var(--norea-color-accent-soft);
-  border-color: var(--norea-color-accent);
   color: var(--norea-color-ink);
 }
 

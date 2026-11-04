@@ -1,4 +1,4 @@
-import { Alert, Checkbox, Group, MultiSelect, Select, Stack, Text } from "@mantine/core";
+import { Alert, Button, Checkbox, Group, MultiSelect, Select, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listCategories, UNCATEGORIZED_CATEGORY_ID } from "../db/queries/category";
@@ -134,7 +134,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
   }
   const disabled = inspecting || running;
   return <ResponsiveSheet fullScreenOnPhone opened={opened} onClose={onClose} title={t("chapterCleanup.title")} size="lg"
-    footer={<SheetActions><TextButton onClick={onClose}>{t("common.done")}</TextButton></SheetActions>}>
+    footer={<SheetActions><Button onClick={onClose}>{t("common.done")}</Button></SheetActions>}>
     <Stack gap="md">
       <Text size="sm" c="dimmed">{t("chapterCleanup.description")}</Text>
       <Select label={t("chapterCleanup.server.label")} data={Object.entries(SERVER_OPTIONS).map(([value, key]) => ({ value, label: t(key) }))}
@@ -173,7 +173,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
         </details> : null}
         {!running && !confirming ? <TextButton tone="danger" disabled={!approved.targets.length} onClick={() => setConfirming(true)}>{t("chapterCleanup.review")}</TextButton> : null}
         {confirming ? <Alert color="warn" title={t("chapterCleanup.confirmTitle")}><Stack gap="sm"><Text size="sm">{t("chapterCleanup.confirmText", { count: approved.targets.length })}</Text><Group>
-          <TextButton onClick={() => setConfirming(false)}>{t("common.cancel")}</TextButton><TextButton tone="danger" onClick={() => { void execute(); }}>{t("chapterCleanup.delete")}</TextButton>
+          <TextButton onClick={() => setConfirming(false)}>{t("common.cancel")}</TextButton><TextButton tone="danger" variant="filled" onClick={() => { void execute(); }}>{t("chapterCleanup.delete")}</TextButton>
         </Group></Stack></Alert> : null}
       </Stack> : null}
       {running ? <Stack gap="xs"><Text role="status" size="sm">{t("chapterCleanup.progress", { done: result ? result.deleted + result.skipped + result.failed : 0, total: approved?.targets.length ?? result?.total ?? 0 })}</Text>

@@ -1,6 +1,6 @@
 import { useNavigate } from "@tanstack/react-router";
 import { Badge, Button, Tabs } from "@mantine/core";
-import { PageFrame } from "../components/AppFrame";
+import { PageFrame, PageHeader } from "../components/AppFrame";
 import { BrowseSearchTab } from "../components/browse/BrowseSearchTab";
 import { BrowseServerTab } from "../components/browse/BrowseServerTab";
 import { BrowseSourcesTab } from "../components/browse/BrowseSourcesTab";
@@ -35,80 +35,80 @@ export function BrowsePage({
   const updateCount = usePluginUpdateCount(active);
 
   return (
-    <div className="norea-browse-page">
-      <header className="norea-browse-app-bar">
-        <h1 className="norea-browse-app-bar-title">{t("browse.title")}</h1>
-        <Button
-          aria-label={
-            updateCount > 0
-              ? t("browse.extensionsWithUpdates", { count: updateCount })
-              : t("extensions.title")
-          }
-          leftSection={<ExtensionsIcon size="1.125rem" />}
-          onClick={() => {
-            void navigate({ to: "/browse/extensions", search: {} });
-          }}
-          rightSection={
-            updateCount > 0 ? (
-              <Badge aria-hidden="true" circle size="sm">
-                {updateCount > 99 ? "99+" : updateCount}
-              </Badge>
-            ) : undefined
-          }
-          variant="default"
-        >
-          {t("extensions.title")}
-        </Button>
-      </header>
+    <Tabs
+      className="norea-browse-page"
+      value={tab}
+      onChange={(value) => {
+        const nextTab: BrowseTab =
+          value === "server" ? "server" : value === "sources" ? "sources" : "search";
+        void navigate({
+          to: "/browse",
+          search: { q, tab: nextTab },
+          replace: true,
+        });
+      }}
+    >
+      <PageHeader
+        actions={
+          <Button
+            aria-label={
+              updateCount > 0
+                ? t("browse.extensionsWithUpdates", { count: updateCount })
+                : t("extensions.title")
+            }
+            leftSection={<ExtensionsIcon size="1.125rem" />}
+            onClick={() => {
+              void navigate({ to: "/browse/extensions", search: {} });
+            }}
+            rightSection={
+              updateCount > 0 ? (
+                <Badge aria-hidden="true" circle size="sm">
+                  {updateCount > 99 ? "99+" : updateCount}
+                </Badge>
+              ) : undefined
+            }
+            variant="subtle"
+          >
+            {t("extensions.title")}
+          </Button>
+        }
+        title={t("browse.title")}
+      >
+        <Tabs.List className="norea-app-bar-tabs">
+          <Tabs.Tab value="search">{t("browse.tab.search")}</Tabs.Tab>
+          <Tabs.Tab value="sources">{t("browse.tab.sources")}</Tabs.Tab>
+          {showServerTab ? (
+            <Tabs.Tab value="server">{t("browse.tab.server")}</Tabs.Tab>
+          ) : null}
+        </Tabs.List>
+      </PageHeader>
 
       <PageFrame size="wide" className="norea-browse-frame">
-        <Tabs
-          value={tab}
-          onChange={(value) => {
-            const nextTab: BrowseTab =
-              value === "server" ? "server" : value === "sources" ? "sources" : "search";
-            void navigate({
-              to: "/browse",
-              search: { q, tab: nextTab },
-              replace: true,
-            });
-          }}
-          className="norea-browse-tabs"
-        >
-          <Tabs.List grow className="norea-browse-tab-list">
-            <Tabs.Tab value="search">{t("browse.tab.search")}</Tabs.Tab>
-            <Tabs.Tab value="sources">{t("browse.tab.sources")}</Tabs.Tab>
-            {showServerTab ? (
-              <Tabs.Tab value="server">{t("browse.tab.server")}</Tabs.Tab>
-            ) : null}
-          </Tabs.List>
-
-          <Tabs.Panel value="search" className="norea-browse-tab-panel">
-            {active && tab === "search" ? (
-              <BrowseSearchTab
-                installedPlugins={installedPlugins}
-                query={q}
-                onSearch={(nextQuery) => {
-                  void navigate({
-                    to: "/browse",
-                    search: { q: nextQuery, tab: "search" },
-                  });
-                }}
-              />
-            ) : null}
-          </Tabs.Panel>
-
-          <Tabs.Panel value="sources" className="norea-browse-tab-panel">
-            {tab === "sources" ? <BrowseSourcesTab active={active} /> : null}
-          </Tabs.Panel>
-
-          {showServerTab ? (
-            <Tabs.Panel value="server" className="norea-browse-tab-panel">
-              {active && tab === "server" ? <BrowseServerTab active /> : null}
-            </Tabs.Panel>
+        <Tabs.Panel value="search" className="norea-browse-tab-panel">
+          {active && tab === "search" ? (
+            <BrowseSearchTab
+              installedPlugins={installedPlugins}
+              query={q}
+              onSearch={(nextQuery) => {
+                void navigate({
+                  to: "/browse",
+                  search: { q: nextQuery, tab: "search" },
+                });
+              }}
+            />
           ) : null}
-        </Tabs>
+        </Tabs.Panel>
+
+        <Tabs.Panel value="sources" className="norea-browse-tab-panel">
+          {tab === "sources" ? <BrowseSourcesTab active={active} /> : null}
+        </Tabs.Panel>
+
+        {showServerTab ? (
+          <Tabs.Panel value="server" className="norea-browse-tab-panel">
+            {active && tab === "server" ? <BrowseServerTab active /> : null}
+          </Tabs.Panel>
+        ) : null}
       </PageFrame>
-    </div>
+    </Tabs>
   );
 }

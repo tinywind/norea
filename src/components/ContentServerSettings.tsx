@@ -79,7 +79,7 @@ export function ContentServerSettings() {
             disabled={disabled}
             onChange={(event) => setUrlDraft(event.currentTarget.value)}
           />
-          <TextButton tone="accent" disabled={disabled || urlDraft === serverUrl} onClick={() => {
+          <TextButton variant="filled" disabled={disabled || urlDraft === serverUrl} onClick={() => {
             void run(async () => {
               setServerUrl(urlDraft.trim());
               showSettingsToast("ok", t("settings.toast.saved"));
@@ -124,7 +124,7 @@ export function ContentServerSettings() {
       <SettingsFieldRow label={t("contentSync.manualSync")} description={t("contentSync.rescanDescription")}
         status={syncStatus} error={actionError || (blocked ? t("contentSync.blocked") : error)}>
         <SettingsInlineControls>
-          <TextButton tone="accent" loading={status === "syncing"} disabled={!serverUrl || busy} onClick={() => startSync()}>
+          <TextButton variant="filled" loading={status === "syncing"} disabled={!serverUrl || busy} onClick={() => startSync()}>
             {t("contentSync.syncNow")}
           </TextButton>
           <TextButton disabled={disabled || status === "syncing" || !serverUrl} onClick={() => startSync(true)}>

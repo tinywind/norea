@@ -2,19 +2,6 @@
   --norea-page-block: var(--norea-space-4);
 }
 
-.norea-setup-header {
-  align-items: center;
-  display: flex;
-  justify-content: space-between;
-  min-height: var(--norea-control-md);
-}
-
-.norea-setup-step {
-  color: var(--norea-color-ink-muted);
-  font-size: var(--norea-text-sm);
-  font-weight: var(--norea-weight-medium);
-}
-
 .norea-setup-body {
   display: grid;
   gap: var(--norea-space-4);

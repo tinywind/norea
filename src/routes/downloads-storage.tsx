@@ -34,9 +34,7 @@ import {
   PlayIcon,
   RefreshIcon,
   RepairIcon,
-  RetryIcon,
   SelectIcon,
-  TrashIcon,
 } from "../components/ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
@@ -150,13 +148,7 @@ function DownloadCacheErrorState({
       color="danger"
       title={t("downloads.loadFailed")}
       message={error instanceof Error ? error.message : String(error)}
-      action={{
-        icon: <RetryIcon />,
-        iconOnly: true,
-        label: t("common.retry"),
-        onClick: onRetry,
-        size: "lg",
-      }}
+      action={{ label: t("common.retry"), onClick: onRetry }}
     />
   );
 }
@@ -595,11 +587,14 @@ function FinishedChapterCleanupRow({ onOpenSetting }: { onOpenSetting: () => voi
 
 interface DownloadsStorageViewProps {
   active?: boolean;
+  /** Leaves Downloads; the page header's back button. */
+  onBack?: () => void;
   viewSwitcher?: ReactNode;
 }
 
 export function DownloadsStorageView({
   active = true,
+  onBack,
   viewSwitcher,
 }: DownloadsStorageViewProps = {}) {
   const { locale, t } = useTranslation();
@@ -697,13 +692,37 @@ export function DownloadsStorageView({
     },
     { icon: RefreshIcon, label: t("downloads.refresh"), disabled: query.isFetching,
       onClick: () => { void query.refetch(); } },
-    { icon: TrashIcon, label: t("downloads.deleteAll"), danger: true,
+    { icon: DeleteDownloadIcon, label: t("downloads.deleteAll"), danger: true,
       disabled: rows.length === 0 || deleteAll.isPending, onClick: () => deleteAll.mutate() },
   ];
 
+  // Both header states keep this row, so selecting never moves the list.
+  const subrow = (
+    <div className="norea-downloads-subrow">
+      {viewSwitcher}
+      <div className="norea-task-summary-strip">
+        <span className="norea-task-summary-pill">
+          {t("downloads.summary.novels", { count: totals.novels })}
+        </span>
+        <span className="norea-task-summary-pill">
+          {t("downloads.summary.chapters", { count: totals.chapters })}
+        </span>
+        <span className="norea-task-summary-pill">
+          {t("downloads.summary.size", { size: totalSize })}
+        </span>
+        {totals.repairNeeded > 0 ? (
+          <span className="norea-task-summary-pill" data-tone="warning">
+            {t("downloads.mediaFallback")}
+          </span>
+        ) : null}
+      </div>
+    </div>
+  );
+
   return (
-    <PageFrame className="norea-downloads-page norea-downloads-hub" size="wide">
-      {active && selectionMode ? (
+    <PageFrame
+      className="norea-downloads-page norea-downloads-hub"
+      header={active && selectionMode ? (
         <SelectionBar
           actions={
             <SelectionAction
@@ -713,52 +732,39 @@ export function DownloadsStorageView({
               onClick={() => deleteSelected.mutate(selectedRows)}
             />
           }
-          clearDisabled={selectedRows.length === 0}
+          allSelected={visibleRows.length > 0 && selectedRows.length === visibleRows.length}
           label={t("library.selectedCount", { count: selectedRows.length })}
-          onClear={() => setSelectedIds(new Set())}
+          onDeselectAll={() => setSelectedIds(new Set())}
           onExit={exitSelection}
           onSelectAll={() => setSelectedIds(new Set(visibleRows.map((novel) => novel.novelId)))}
-          selectAllDisabled={selectedRows.length === visibleRows.length}
+          selectAllDisabled={visibleRows.length === 0}
           selectAllPending={false}
         />
       ) : (
         <PageHeader
-          title={t("downloads.title")}
-          description={t("downloads.description")}
-          meta={
-            <>
-              <Badge variant="light">
-                {t("downloads.summary.novels", { count: totals.novels })}
-              </Badge>
-              <Badge variant="light">
-                {t("downloads.summary.chapters", { count: totals.chapters })}
-              </Badge>
-              <Badge variant="light">
-                {t("downloads.summary.size", { size: totalSize })}
-              </Badge>
-              {totals.repairNeeded > 0 ? (
-                <Badge color="warn" variant="light">
-                  {t("downloads.mediaFallback")}
-                </Badge>
-              ) : null}
-            </>
-          }
           actions={
             <>
               <Button
                 disabled={rows.length === 0}
                 leftSection={<DeleteDownloadIcon size="1.125rem" />}
                 onClick={() => setCleanupOpened(true)}
-                variant="default"
+                variant="subtle"
               >
                 {t("downloads.cleanUp")}
               </Button>
               <OverflowMenu items={headerItems} label={t("common.more")} />
             </>
           }
+          below={subrow}
+          onBack={onBack}
+          title={t("downloads.title")}
         />
       )}
-      {viewSwitcher}
+      size="wide"
+    >
+      {active && selectionMode ? null : (
+        <Text className="norea-downloads-description">{t("downloads.description")}</Text>
+      )}
       <ChapterCleanupPanel opened={active && cleanupOpened} onClose={() => setCleanupOpened(false)} />
       {rows.length > 0 ? (
         <FinishedChapterCleanupRow

@@ -106,6 +106,18 @@
   scrollbar-width: none;
 }
 
+/* In the app bar the tabs fill its height and its bottom rule replaces their own. */
+.norea-app-bar .norea-library-category-tabs {
+  align-self: stretch;
+  border-bottom: 0;
+  min-width: 0;
+  padding: 0;
+}
+
+.norea-app-bar .norea-library-category-tab {
+  min-height: 0;
+}
+
 .norea-library-category-tab {
   align-items: center;
   border-bottom: 0.125rem solid transparent;
@@ -131,34 +143,6 @@
   flex-direction: column;
   min-height: 0;
   min-width: 0;
-}
-
-.norea-library-app-bar {
-  align-items: center;
-  background: var(--norea-color-surface);
-  border-bottom: 1px solid var(--norea-color-rule);
-  display: flex;
-  flex: 0 0 auto;
-  gap: var(--norea-space-1);
-  min-height: 3rem;
-  padding: 0 var(--norea-space-2) 0 var(--norea-space-3);
-}
-
-.norea-library-app-bar[data-searching="true"] {
-  padding-left: var(--norea-space-1);
-}
-
-.norea-library-app-bar-title {
-  color: var(--norea-color-ink);
-  flex: 1 1 auto;
-  font-size: var(--norea-text-xl);
-  font-weight: var(--norea-weight-bold);
-  line-height: var(--norea-leading-tight);
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 .norea-library-search {
@@ -223,16 +207,6 @@
 @media (min-width: 768px) {
   .norea-library-grid {
     --norea-library-grid-reference: min(100%, 48rem);
-  }
-
-  .norea-library-app-bar {
-    gap: var(--norea-space-2);
-    padding-right: var(--norea-space-3);
-  }
-
-  .norea-library-app-bar-title {
-    flex: 0 1 auto;
-    margin-right: auto;
   }
 
   .norea-library-search {
@@ -449,7 +423,7 @@
 }
 
 .norea-library-row-cover {
-  display: block;
+  display: flex;
   position: relative;
 }
 
@@ -490,8 +464,24 @@
 
 .norea-library-badges {
   display: flex;
-  flex-wrap: wrap;
+  flex-wrap: nowrap;
   gap: var(--norea-space-1);
+  min-width: 0;
+}
+
+/* Downloaded and unread counts share one pill on one line, so four-digit counts never wrap. */
+.norea-library-badge-group {
+  border-radius: var(--norea-radius-sm);
+  display: inline-flex;
+  flex: 0 1 auto;
+  margin-left: auto;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.norea-library-badge-group > .norea-library-badge {
+  border-radius: 0;
+  flex: 0 0 auto;
 }
 
 .norea-library-card-cover .norea-library-badges {
@@ -502,8 +492,10 @@
   z-index: 2;
 }
 
+/* The selection check takes the top-left corner, so the counts move to the bottom edge with the full cover width. */
 .norea-library-card[aria-pressed] .norea-library-card-cover .norea-library-badges {
-  left: calc(var(--norea-space-2) + 1.5rem);
+  bottom: var(--norea-space-1);
+  top: auto;
 }
 
 .norea-library-badge {
@@ -532,10 +524,6 @@
 
 .norea-library-badge[data-kind="downloaded"][data-goal-state="attention"] {
   color: var(--norea-color-warn);
-}
-
-.norea-library-card-cover .norea-library-badge[data-kind="unread"] {
-  margin-left: auto;
 }
 
 .norea-library-card-text {
@@ -770,11 +758,6 @@
     align-items: center;
     display: flex;
     min-height: var(--norea-control-md);
-  }
-
-  :where(.norea-library-view-options, .norea-library-category-sheet)
-    :where(.mantine-Checkbox-body, .mantine-Radio-body, .mantine-Switch-body) {
-    align-items: center;
   }
 
   .norea-library-view-options :where(.mantine-Tabs-tab, .mantine-SegmentedControl-label) {

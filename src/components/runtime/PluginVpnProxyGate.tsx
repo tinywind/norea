@@ -96,8 +96,8 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
             <Stack gap="xs" align="flex-start">
               <Text size="sm">{translate(locale, "settings.data.pluginVpn.toast.recoveryStoppedBody")}</Text>
               <Button
-                size="xs"
-                variant="light"
+                size="compact-sm"
+                variant="subtle"
                 onClick={() => {
                   notifications.hide(PLUGIN_VPN_RECOVERY_STOPPED_NOTIFICATION_ID);
                   // This gate renders outside RouterProvider, and the route tree is loaded after it.

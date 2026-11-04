@@ -10,6 +10,7 @@ const location = vi.hoisted(() => ({
   historyIndex: 1,
   historyKey: "reader-entry",
   href: "/reader?chapterId=11",
+  openedFromMore: false,
   pathname: "/reader",
   search: { chapterId: 11 } as Record<string, unknown>,
 }));
@@ -197,8 +198,8 @@ describe("system file opening from an active reader", () => {
 describe("primary navigation", () => {
   const readerLocation = { ...location };
 
-  function renderNavigation(pathname: string): string {
-    Object.assign(location, { href: pathname, pathname, search: {} });
+  function renderNavigation(pathname: string, openedFromMore = false): string {
+    Object.assign(location, { href: pathname, openedFromMore, pathname, search: {} });
     return renderToStaticMarkup(
       <MantineProvider>
         <QueryClientProvider client={new QueryClient()}>
@@ -279,6 +280,18 @@ describe("primary navigation", () => {
       expect(active).toEqual(["/more"]);
     },
   );
+
+  it("marks More as current on Extensions opened from More and Browse otherwise", () => {
+    const activeOn = (openedFromMore: boolean) => {
+      const markup = renderNavigation("/browse/extensions", openedFromMore);
+      return ["norea-mobile-nav-link", "norea-rail-link"].map((className) =>
+        navLinks(markup, className).filter((link) => link.active).map((link) => link.href),
+      );
+    };
+
+    expect(activeOn(true)).toEqual([["/more"], ["/more"]]);
+    expect(activeOn(false)).toEqual([["/browse"], ["/browse"]]);
+  });
 
   it("marks only Library as current on the library page", () => {
     const active = navLinks(renderNavigation("/"), "norea-rail-link")

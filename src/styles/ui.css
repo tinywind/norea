@@ -165,8 +165,10 @@
   max-height: calc((var(--norea-viewport-height) - var(--norea-keyboard-inset)) * 0.9);
 }
 
+/* The top padding clears the handle strip; the bottom stays tight to the body. */
 .norea-responsive-sheet--drawer .norea-responsive-sheet-header {
-  padding-top: var(--norea-space-5);
+  padding-bottom: var(--norea-space-1);
+  padding-top: var(--norea-space-4);
 }
 
 .norea-responsive-sheet--drawer .norea-responsive-sheet-body {
@@ -246,6 +248,20 @@
   justify-content: flex-end;
 }
 
+/*
+ * List alignment rule: a row's leading and trailing elements center on the row's
+ * whole text block, title and description together, on one line or several.
+ * ListRow, menu items, settings rows and More rows lay out this way. Mantine's
+ * checkbox, radio and switch pin their control to the label's first line, which
+ * drifts from the text once a label grows to a touch-row height or carries a
+ * description, so their body follows the same rule.
+ */
+.mantine-Checkbox-body,
+.mantine-Radio-body,
+.mantine-Switch-body {
+  align-items: center;
+}
+
 .norea-list-item {
   align-items: center;
   background: none;
@@ -293,26 +309,33 @@
   min-width: 0;
 }
 
-.norea-selection-bar {
-  align-items: center;
+/*
+ * SelectionBar is PageHeader in its selection state: the bar keeps the app
+ * bar's height, padding and control style, and only its row cross-fades in.
+ */
+.norea-selection-bar > .norea-app-bar-row {
   animation: norea-selection-bar-enter var(--norea-duration-base) var(--norea-ease-standard);
-  background: var(--norea-color-surface-raised);
-  border-bottom: 1px solid var(--norea-color-rule);
-  display: flex;
-  flex: 0 0 auto;
-  gap: var(--norea-space-1);
-  min-height: 3.5rem;
-  padding: 0 var(--norea-space-2);
 }
 
-.norea-selection-bar-count {
-  flex: 1 1 auto;
-  font-size: var(--norea-text-md);
-  font-weight: var(--norea-weight-bold);
+/* The count takes the title's place; a hint sits under it inside the same row height. */
+.norea-selection-bar .norea-app-bar-title {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.norea-selection-bar-count,
+.norea-selection-bar-hint {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
+}
+
+.norea-selection-bar-hint {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+  font-weight: var(--norea-weight-medium);
 }
 
 .norea-selection-bar-actions {
@@ -355,30 +378,57 @@
     visibility: hidden;
   }
 
+  /*
+   * The action bar is the bottom navigation's twin: same height, surface,
+   * rule and padding, with the bottom safe area added once.
+   */
   .norea-selection-bar-actions {
     animation: norea-selection-actions-enter var(--norea-duration-base) var(--norea-ease-standard);
     background: var(--norea-color-surface-raised);
     border-top: 1px solid var(--norea-color-rule);
     bottom: 0;
+    box-sizing: border-box;
+    display: grid;
     gap: 0;
+    grid-auto-columns: minmax(0, 1fr);
+    grid-auto-flow: column;
     height: var(--norea-mobile-nav-height);
     left: 0;
-    padding: 0 var(--norea-safe-area-right) var(--norea-safe-area-bottom) var(--norea-safe-area-left);
+    padding: var(--norea-space-1) calc(0.625rem + var(--norea-safe-area-right))
+      calc(var(--norea-space-1) + var(--norea-safe-area-bottom))
+      calc(0.625rem + var(--norea-safe-area-left));
     position: fixed;
     right: 0;
     z-index: var(--norea-z-nav);
   }
 
-  .norea-selection-action {
-    flex: 1 1 0;
+  .norea-app-bar .norea-selection-bar-actions .norea-selection-action {
     font-size: var(--norea-text-xs);
     height: 100%;
+    min-width: 0;
     padding-inline: var(--norea-space-1);
   }
 
   .norea-selection-action .mantine-Button-inner {
     flex-direction: column;
     gap: 0.125rem;
+  }
+
+  .norea-selection-action .mantine-Button-label {
+    line-height: var(--norea-leading-tight);
+  }
+
+  /*
+   * The overflow is an icon-only button in the trailing cell. Bottom padding
+   * of one label line plus the icon gap lifts its glyph onto the same line
+   * as the labeled items' icons.
+   */
+  .norea-app-bar .norea-selection-bar-actions .norea-icon-button {
+    align-self: stretch;
+    height: 100%;
+    justify-self: stretch;
+    padding-bottom: calc(var(--norea-text-xs) * var(--norea-leading-tight) + 0.125rem);
+    width: auto;
   }
 
   .norea-selection-action .mantine-Button-section {
@@ -400,19 +450,11 @@ body[data-norea-reader-active] {
   --norea-toast-bottom-offset: var(--norea-safe-area-bottom);
 }
 
-/* Phone reader bottom bar: the seek row above the button row. */
+/* The reader bottom bar is one row at every width. */
 body[data-norea-reader-bars] {
   --norea-toast-bottom-offset: calc(
-    var(--norea-safe-area-bottom) + 2 * var(--norea-reader-bar-height)
+    var(--norea-safe-area-bottom) + var(--norea-reader-bar-height)
   );
-}
-
-@media (min-width: 768px) {
-  body[data-norea-reader-bars] {
-    --norea-toast-bottom-offset: calc(
-      var(--norea-safe-area-bottom) + var(--norea-reader-bar-height)
-    );
-  }
 }
 
 .norea-toasts[data-position^="bottom"] {

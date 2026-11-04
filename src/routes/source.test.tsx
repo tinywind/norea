@@ -42,7 +42,7 @@ vi.mock("../lib/tasks/scheduler", async (original) => ({
 }));
 
 const { canLoadSourceListing, SourcePage } = await import("./source");
-const { BlockingLoadingOverlay, StateView } = await import("../components/AppFrame");
+const { BlockingLoadingOverlay, PageHeader, StateView } = await import("../components/AppFrame");
 const { CoverGridSkeleton } = await import("../components/browse/CoverGridSkeleton");
 const { PluginFilters } = await import("../components/PluginFilters");
 const { ResponsiveSheet } = await import("../components/ui/ResponsiveSheet");
@@ -99,7 +99,9 @@ const labelled = (elements: ReactElement<Record<string, unknown>>[], label: stri
 describe("SourcePage", () => {
   it("shows the source name in the app bar and keeps rare actions in the overflow", async () => {
     const elements = await mountPage();
-    expect(elements.find((element) => element.type === "h1")!.props.children).toBe("Demo Source");
+    const header = elements.find((element) => element.type === PageHeader)!;
+    expect(header.props.title).toBe("Demo Source");
+    expect(header.props.onBack).toEqual(expect.any(Function));
     const menu = elements.find((element) => Array.isArray(element.props.items))!;
     expect((menu.props.items as { label: string }[]).map((item) => item.label)).toEqual([
       "common.openSite",

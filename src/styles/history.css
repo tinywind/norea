@@ -1,29 +1,3 @@
-.norea-history-app-bar {
-  align-items: center;
-  background: var(--norea-color-surface);
-  border-bottom: 1px solid var(--norea-color-rule);
-  display: flex;
-  gap: var(--norea-space-1);
-  min-height: 3.5rem;
-  padding: 0 var(--norea-space-2) 0 var(--norea-space-4);
-  position: sticky;
-  top: 0;
-  z-index: 3;
-}
-
-.norea-history-app-bar-title {
-  color: var(--norea-color-ink);
-  flex: 1 1 auto;
-  font-size: var(--norea-text-xl);
-  font-weight: var(--norea-weight-bold);
-  line-height: var(--norea-leading-tight);
-  margin: 0;
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .norea-history-frame {
   --norea-page-block: var(--norea-space-4);
 }
@@ -123,9 +97,9 @@
 .norea-history-row-busy {
   align-items: center;
   display: inline-flex;
-  height: 2.5rem;
+  height: var(--norea-control-sm);
   justify-content: center;
-  width: 2.5rem;
+  width: var(--norea-control-sm);
 }
 
 .norea-history-row-skeleton {

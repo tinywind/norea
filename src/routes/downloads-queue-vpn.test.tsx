@@ -41,6 +41,7 @@ vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) 
 const confirm = vi.hoisted(() => vi.fn());
 vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => confirm }));
 import { taskScheduler } from "../lib/tasks/scheduler";
+import { PAGE_SLOT_PROPS } from "../lib/android-back-navigation.test-support";
 import { DownloadsQueueView } from "./downloads-queue";
 
 interface Props { work?: { title?: string; group?: { title: string }; sourceTasks?: { id: string }[] }; children?: ReactNode; actions?: ReactNode; label?: string; disabled?: boolean; onClick?: () => unknown; items?: { label: string; onClick: () => void; disabled?: boolean }[] }
@@ -48,7 +49,8 @@ function elements(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Props>;
-  return [element, ...elements(element.props.children), ...elements(element.props.actions)];
+  const slots = element.props as Record<string, unknown>;
+  return [element, ...PAGE_SLOT_PROPS.flatMap(slot => elements(slots[slot] as ReactNode)), ...elements(element.props.children)];
 }
 function render() { mocks.index = 0; mocks.refIndex = 0; return elements(DownloadsQueueView()); }
 const pageMenu = () => render().find(element => element.props.label === "common.more" && element.props.items)!.props.items!;

@@ -3,8 +3,7 @@ import { Group, Loader, Text } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { notifications } from "@mantine/notifications";
-import { PageFrame, StateView } from "../components/AppFrame";
-import { IconButton } from "../components/IconButton";
+import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import {
   MergeChooseStep,
   mergeTargetKey,
@@ -14,7 +13,6 @@ import { MergeConfirmStep } from "../components/novel-merge/MergeConfirmStep";
 import { MergeMapStep } from "../components/novel-merge/MergeMapStep";
 import { summarizeNovelMergeDecisions } from "../components/novel-merge/merge-map-rows";
 import { useConfirm } from "../components/ui/ConfirmDialog";
-import { BackIcon } from "../components/ui/icons";
 import { listChaptersByNovel } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation, type TranslationKey } from "../i18n";
@@ -532,77 +530,95 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
 
   if (sourceNovelId <= 0) {
     return (
-      <PageFrame className="norea-novel-merge-page" size="wide">
-        <StateView
-          color="warn"
-          title={t("novelMerge.missingSource")}
-          message={t("novelMerge.missingSourceDescription")}
-        />
-      </PageFrame>
+      <div className="norea-novel-merge-page">
+        <PageHeader onBack={backToSourceNovel} />
+        <PageFrame size="wide">
+          <StateView
+            color="warn"
+            title={t("novelMerge.missingSource")}
+            message={t("novelMerge.missingSourceDescription")}
+          />
+        </PageFrame>
+      </div>
     );
   }
 
   if (sourceNovelQuery.isPending || sourceChaptersQuery.isPending) {
     return (
-      <PageFrame className="norea-novel-merge-page" size="wide">
-        <Group justify="center" gap="sm" className="norea-novel-merge-loading">
-          <Loader size="sm" />
-          <Text>{t("novelMerge.loadingSource")}</Text>
-        </Group>
-      </PageFrame>
+      <div className="norea-novel-merge-page">
+        <PageHeader onBack={backToSourceNovel} />
+        <PageFrame size="wide">
+          <Group justify="center" gap="sm" className="norea-novel-merge-loading">
+            <Loader size="sm" />
+            <Text>{t("novelMerge.loadingSource")}</Text>
+          </Group>
+        </PageFrame>
+      </div>
     );
   }
 
   if (sourceNovelQuery.isError || sourceChaptersQuery.isError) {
     const error = sourceNovelQuery.error ?? sourceChaptersQuery.error;
     return (
-      <PageFrame className="norea-novel-merge-page" size="wide">
-        <StateView
-          color="danger"
-          title={t("novelMerge.loadSourceFailed")}
-          message={describeError(error)}
-          action={{ label: t("common.back"), onClick: backToSourceNovel }}
-        />
-      </PageFrame>
+      <div className="norea-novel-merge-page">
+        <PageHeader onBack={backToSourceNovel} />
+        <PageFrame size="wide">
+          <StateView
+            color="danger"
+            title={t("novelMerge.loadSourceFailed")}
+            message={describeError(error)}
+            action={{ label: t("common.back"), onClick: backToSourceNovel }}
+          />
+        </PageFrame>
+      </div>
     );
   }
 
   if (!sourceNovel) {
     return (
-      <PageFrame className="norea-novel-merge-page" size="wide">
-        <StateView
-          color="warn"
-          title={t("novelMerge.sourceNotFound")}
-          message={t("novel.notFoundMessage", { id: sourceNovelId })}
-          action={{ label: t("common.back"), onClick: backToSourceNovel }}
-        />
-      </PageFrame>
+      <div className="norea-novel-merge-page">
+        <PageHeader onBack={backToSourceNovel} />
+        <PageFrame size="wide">
+          <StateView
+            color="warn"
+            title={t("novelMerge.sourceNotFound")}
+            message={t("novel.notFoundMessage", { id: sourceNovelId })}
+            action={{ label: t("common.back"), onClick: backToSourceNovel }}
+          />
+        </PageFrame>
+      </div>
     );
   }
 
   if (sourceNovel.isLocal) {
     return (
-      <PageFrame className="norea-novel-merge-page" size="wide">
-        <StateView
-          color="warn"
-          title={t("novelMerge.localSourceBlocked")}
-          message={t("novelMerge.localSourceBlockedDescription")}
-          action={{ label: t("common.back"), onClick: backToSourceNovel }}
-        />
-      </PageFrame>
+      <div className="norea-novel-merge-page">
+        <PageHeader onBack={backToSourceNovel} />
+        <PageFrame size="wide">
+          <StateView
+            color="warn"
+            title={t("novelMerge.localSourceBlocked")}
+            message={t("novelMerge.localSourceBlockedDescription")}
+            action={{ label: t("common.back"), onClick: backToSourceNovel }}
+          />
+        </PageFrame>
+      </div>
     );
   }
 
   if (!sourceNovel.inLibrary) {
     return (
-      <PageFrame className="norea-novel-merge-page" size="wide">
-        <StateView
-          color="warn"
-          title={t("novelMerge.librarySourceRequired")}
-          message={t("novelMerge.librarySourceRequiredDescription")}
-          action={{ label: t("common.back"), onClick: backToSourceNovel }}
-        />
-      </PageFrame>
+      <div className="norea-novel-merge-page">
+        <PageHeader onBack={backToSourceNovel} />
+        <PageFrame size="wide">
+          <StateView
+            color="warn"
+            title={t("novelMerge.librarySourceRequired")}
+            message={t("novelMerge.librarySourceRequiredDescription")}
+            action={{ label: t("common.back"), onClick: backToSourceNovel }}
+          />
+        </PageFrame>
+      </div>
     );
   }
 
@@ -618,25 +634,19 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
 
   return (
     <div className="norea-novel-merge-page" data-step={step}>
-      <header className="norea-merge-app-bar">
-        <IconButton
-          disabled={mergeNovel.isPending}
-          label={t("common.back")}
-          onClick={() => goBack()}
-          size="lg"
-        >
-          <BackIcon />
-        </IconButton>
-        <h1 className="norea-merge-app-bar-title">
-          {t("novelMerge.title", { name: sourceNovel.name })}
-        </h1>
-        <span className="norea-merge-step-count">
-          {t("novelMerge.step.count", {
-            current: stepIndex + 1,
-            total: MERGE_STEPS.length,
-          })}
-        </span>
-      </header>
+      <PageHeader
+        actions={
+          <span className="norea-app-bar-meta">
+            {t("novelMerge.step.count", {
+              current: stepIndex + 1,
+              total: MERGE_STEPS.length,
+            })}
+          </span>
+        }
+        backDisabled={mergeNovel.isPending}
+        onBack={() => goBack()}
+        title={t("novelMerge.title", { name: sourceNovel.name })}
+      />
       <ol aria-label={t("novelMerge.step.label")} className="norea-merge-steps">
         {MERGE_STEPS.map((entry, index) => (
           <li

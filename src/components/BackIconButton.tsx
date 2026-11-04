@@ -1,15 +1,22 @@
 import { type MouseEventHandler } from "react";
 import { useTranslation } from "../i18n";
 import { IconButton } from "./IconButton";
+import { BackIcon, CloseIcon } from "./ui/icons";
 
 interface BackIconButtonProps {
   className?: string;
+  disabled?: boolean;
+  /** `close` leaves a mode, such as selection, rather than the page. */
+  icon?: "back" | "close";
   label?: string;
   onClick: MouseEventHandler<HTMLButtonElement>;
 }
 
+/** The single leading affordance: page headers, the reader bar and sub-panels share it. */
 export function BackIconButton({
   className,
+  disabled,
+  icon = "back",
   label,
   onClick,
 }: BackIconButtonProps) {
@@ -23,21 +30,13 @@ export function BackIconButton({
           ? `norea-back-icon-button ${className}`
           : "norea-back-icon-button"
       }
+      disabled={disabled}
       label={resolvedLabel}
       onClick={onClick}
       size="sm"
       type="button"
     >
-      <BackIcon />
+      {icon === "close" ? <CloseIcon /> : <BackIcon />}
     </IconButton>
-  );
-}
-
-function BackIcon() {
-  return (
-    <svg aria-hidden="true" viewBox="0 0 24 24">
-      <path d="M15 18l-6-6 6-6" />
-      <path d="M9 12h11" />
-    </svg>
   );
 }

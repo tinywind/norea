@@ -1,6 +1,5 @@
 import { MantineProvider } from "@mantine/core";
 import { load } from "cheerio";
-import { readFileSync } from "node:fs";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it, vi } from "vitest";
 import type { TaskRecord, TaskSnapshot } from "../lib/tasks/task-types";
@@ -185,13 +184,10 @@ describe("task work group order", () => {
   it("labels the pause control and moves rare queue actions into the page overflow", () => {
     state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1, records: [chapter(1, 1, "queued", 0)] };
     const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
-    const header = $(".norea-task-header-actions");
+    const header = $(".norea-app-bar-actions");
     expect(header.find("button").first().text()).toBe("Pause downloads");
     expect(header.find('button[aria-label="More"]')).toHaveLength(1);
-    expect($(".norea-page-title").text()).toContain("Downloads");
-    const css = readFileSync(new URL("../styles/downloads.css", import.meta.url), "utf8");
-    expect(css.slice(css.indexOf("@media (max-width: 767px)")))
-      .toMatch(/\.norea-downloads-hub \.norea-page-header \.norea-page-header-copy \{\s*display: block;/);
+    expect($("h1.norea-app-bar-title").text()).toContain("Downloads");
   });
 
   it("omits Needs attention when nothing needs the user", () => {

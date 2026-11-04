@@ -43,7 +43,7 @@ export function DownloadGoalAttention() {
         <Text component="h3" fw={700} size="sm">{t(MESSAGE_KEYS[pause])}</Text>
       </div>
       <Group gap="xs" justify="flex-end">
-        <Button onClick={act} size="xs" variant="light">{t(ACTION_KEYS[pause])}</Button>
+        <Button onClick={act} size="xs" variant="default">{t(ACTION_KEYS[pause])}</Button>
       </Group>
     </section>
   );

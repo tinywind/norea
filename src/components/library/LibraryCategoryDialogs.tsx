@@ -1,4 +1,4 @@
-import { Stack, Text, TextInput } from "@mantine/core";
+import { Button, Stack, Text, TextInput } from "@mantine/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   forwardRef,
@@ -17,7 +17,6 @@ import {
 } from "../../db/queries/category";
 import { useTranslation } from "../../i18n";
 import { useLibraryStore } from "../../store/library";
-import { TextButton } from "../TextButton";
 import { useConfirm } from "../ui/ConfirmDialog";
 import { getFocusReturnTarget } from "../ui/OverflowMenu";
 import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
@@ -185,22 +184,22 @@ export const LibraryCategoryDialogs = forwardRef<
       busy={categorySaving}
       footer={
         <SheetActions>
-          <TextButton
+          <Button
             disabled={categorySaving}
             type="button"
-            variant="subtle"
+            variant="default"
             onClick={closeCategoryEditor}
           >
             {t("common.cancel")}
-          </TextButton>
-          <TextButton
+          </Button>
+          <Button
             disabled={categoryName.trim() === ""}
             form={formId}
             loading={categorySaving}
             type="submit"
           >
             {t("common.save")}
-          </TextButton>
+          </Button>
         </SheetActions>
       }
       // Category dialogs open from the Manage categories dialog too, so they sit above it.

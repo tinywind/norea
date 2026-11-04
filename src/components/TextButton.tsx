@@ -21,10 +21,24 @@ type TextButtonProps = Omit<ButtonProps, "children" | "size"> &
   tone?: TextButtonTone;
 };
 
+const TONE_COLORS: Record<TextButtonTone, string | undefined> = {
+  accent: undefined,
+  danger: "danger",
+  default: undefined,
+  error: "danger",
+  success: "ok",
+  warning: "warn",
+};
+
 function joinClassNames(...values: Array<string | undefined>): string {
   return values.filter(Boolean).join(" ");
 }
 
+/**
+ * A compact labeled action for settings and console rows. D10: the default
+ * `default` variant is the outline secondary action, `filled` the region's one
+ * primary action (`tone="danger"` makes it destructive) and `subtle` a text link.
+ */
 export function TextButton({
   active = false,
   children,
@@ -43,6 +57,7 @@ export function TextButton({
         `norea-text-button--${size}`,
         className,
       )}
+      color={variant === "default" ? undefined : TONE_COLORS[tone]}
       data-active={active ? "true" : undefined}
       data-tone={tone === "default" ? undefined : tone}
       size="xs"

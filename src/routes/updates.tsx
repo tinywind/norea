@@ -2,10 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { Button, Loader, Progress, Stack } from "@mantine/core";
-import { PageFrame, StateView } from "../components/AppFrame";
+import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { IconButton } from "../components/IconButton";
-import { TextButton } from "../components/TextButton";
-import { BackIcon, RefreshIcon } from "../components/ui/icons";
+import { RefreshIcon } from "../components/ui/icons";
 import {
   groupFailuresBySource,
   UpdateFailures,
@@ -500,9 +499,9 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
     check.error && !isAbortError(check.error) ? check.error : null;
   const earlierUnreadLink = (
     <div className="norea-updates-load-more">
-      <TextButton onClick={() => setView("backlog")} size="sm">
+      <Button onClick={() => setView("backlog")} size="compact-sm" variant="subtle">
         {t("updates.backlog.open")}
-      </TextButton>
+      </Button>
     </div>
   );
   const progressValue =
@@ -512,16 +511,8 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
 
   return (
     <div className="norea-updates-page">
-      <header className="norea-updates-app-bar">
-        <div className="norea-updates-app-bar-row">
-          {view === "backlog" ? (
-            <IconButton label={t("common.back")} onClick={() => setView("new")} size="lg">
-              <BackIcon />
-            </IconButton>
-          ) : null}
-          <h1 className="norea-updates-app-bar-title">
-            {view === "backlog" ? t("updates.backlog.title") : t("updates.title")}
-          </h1>
+      <PageHeader
+        actions={
           <IconButton
             disabled={check.isPending}
             label={t("updates.check")}
@@ -530,45 +521,54 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
           >
             {check.isPending ? <Loader size="sm" /> : <RefreshIcon />}
           </IconButton>
-        </div>
-        {check.isPending ? (
-          <div className="norea-updates-progress" role="status">
-            <Progress
-              animated={!checkProgress?.total}
-              aria-hidden="true"
-              className="norea-updates-progress-bar"
-              size="xs"
-              striped={!checkProgress?.total}
-              value={progressValue}
-            />
-            <span className="norea-updates-progress-text">
-              {checkProgress && checkProgress.total > 0
-                ? t("updates.checkingProgress", {
-                    current: checkProgress.current,
-                    total: checkProgress.total,
-                  })
-                : t("updates.checkingLibrarySources")}
-            </span>
-            <Button
-              onClick={() => cancelLibraryUpdateCheck()}
-              size="compact-sm"
-              variant="subtle"
-            >
-              {t("common.cancel")}
-            </Button>
-          </div>
+        }
+        below={
+          <>
+            {check.isPending ? (
+              <div className="norea-updates-progress" role="status">
+                <Progress
+                  animated={!checkProgress?.total}
+                  aria-hidden="true"
+                  className="norea-updates-progress-bar"
+                  size="xs"
+                  striped={!checkProgress?.total}
+                  value={progressValue}
+                />
+                <span className="norea-updates-progress-text">
+                  {checkProgress && checkProgress.total > 0
+                    ? t("updates.checkingProgress", {
+                        current: checkProgress.current,
+                        total: checkProgress.total,
+                      })
+                    : t("updates.checkingLibrarySources")}
+                </span>
+                <Button
+                  onClick={() => cancelLibraryUpdateCheck()}
+                  size="compact-sm"
+                  variant="subtle"
+                >
+                  {t("common.cancel")}
+                </Button>
+              </div>
+            ) : null}
+            {!check.isPending && lastCheckResult && lastCheckResult.deferredNovels > 0 ? (
+              <p className="norea-updates-note" role="status">
+                {t("updates.deferredBySourceLimit", { count: lastCheckResult.deferredNovels })}
+              </p>
+            ) : null}
+          </>
+        }
+        onBack={view === "backlog" ? () => setView("new") : undefined}
+        title={view === "backlog" ? t("updates.backlog.title") : t("updates.title")}
+      >
+        {view === "new" ? (
+          <span className="norea-updates-status">
+            {!check.isPending && lastCheckedAt.data
+              ? t("updates.lastChecked", { time: formatRelativeTimeForLocale(locale, lastCheckedAt.data) })
+              : null}
+          </span>
         ) : null}
-        {!check.isPending && view === "new" && lastCheckedAt.data ? (
-          <p className="norea-updates-note">
-            {t("updates.lastChecked", { time: formatRelativeTimeForLocale(locale, lastCheckedAt.data) })}
-          </p>
-        ) : null}
-        {!check.isPending && lastCheckResult && lastCheckResult.deferredNovels > 0 ? (
-          <p className="norea-updates-note" role="status">
-            {t("updates.deferredBySourceLimit", { count: lastCheckResult.deferredNovels })}
-          </p>
-        ) : null}
-      </header>
+      </PageHeader>
 
       {check.isPending ? null : (
         <UpdateFailures
@@ -638,7 +638,7 @@ export function UpdatesPage({ active = true }: UpdatesPageProps) {
                       onClick={() => {
                         if (nextUpdateCursor) loadMorePage(nextUpdateCursor);
                       }}
-                      variant="light"
+                      variant="default"
                     >
                       {t("updates.loadMore")}
                     </Button>

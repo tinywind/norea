@@ -7,7 +7,7 @@ import {
   SourceAccessVerifyButton,
   useSourceAccessBlocks,
 } from "../SourceAccessVerifyButton";
-import { ChevronRightIcon, RetryIcon, WarningIcon } from "../ui/icons";
+import { ChevronRightIcon, WarningIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 export interface FailedUpdateSource {
@@ -115,16 +115,15 @@ export function UpdateFailures({
               <Button
                 onClick={() => openNovel(single.failures[0]!.novelId)}
                 size="compact-sm"
-                variant="light"
+                variant="default"
               >
                 {t("updates.openNovelAction")}
               </Button>
             ) : (
               <Button
-                leftSection={<RetryIcon size="1rem" />}
                 onClick={() => onRetry(novelIdsOf([single]))}
                 size="compact-sm"
-                variant="light"
+                variant="default"
               >
                 {t("common.retry")}
               </Button>
@@ -157,7 +156,6 @@ export function UpdateFailures({
         footer={
           <Button
             fullWidth
-            leftSection={<RetryIcon size="1rem" />}
             onClick={() => {
               setSheetOpen(false);
               onRetry(novelIdsOf(sources));
@@ -196,13 +194,12 @@ export function UpdateFailures({
                     />
                   ) : source.pluginMissing ? null : (
                     <Button
-                      leftSection={<RetryIcon size="1rem" />}
                       onClick={() => {
                         setSheetOpen(false);
                         onRetry(novelIdsOf([source]));
                       }}
                       size="compact-sm"
-                      variant="light"
+                      variant="default"
                     >
                       {t("common.retry")}
                     </Button>

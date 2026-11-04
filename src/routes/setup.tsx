@@ -2,7 +2,7 @@ import { Button, Checkbox, Group, Stack, Text, TextInput, Title } from "@mantine
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
-import { PageFrame, StateView } from "../components/AppFrame";
+import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { CheckIcon } from "../components/ui/icons";
 import { addPluginRepository } from "../components/browse/use-plugin-catalog";
 import { formatPluginLanguageForLocale, useTranslation } from "../i18n";
@@ -126,185 +126,199 @@ export function SetupPage() {
     setStep("sources");
   };
 
+  const previousStep: SetupStep | null =
+    step === "languages" ? "repository" : step === "sources" ? "languages" : null;
+
   usePageBackNavigation(() => {
     if (installSelected.isPending) return true;
-    if (step === "languages") setStep("repository");
-    else if (step === "sources") setStep("languages");
-    else return false;
+    if (previousStep === null) return false;
+    setStep(previousStep);
     return true;
   });
 
   const stepNumber = step === "done" ? null : STEP_NUMBERS[step];
 
   return (
-    <PageFrame className="norea-setup-page" size="narrow">
-      <header className="norea-setup-header">
-        <span className="norea-setup-step">
-          {stepNumber === null ? "" : t("setup.step", { current: stepNumber, total: 3 })}
-        </span>
-        {step === "done" ? null : (
-          <Button disabled={installSelected.isPending} onClick={skip} variant="subtle">
-            {t("setup.skip")}
-          </Button>
-        )}
-      </header>
-
-      {step === "repository" ? (
-        <form
-          className="norea-setup-body"
-          onSubmit={(event) => {
-            event.preventDefault();
-            const trimmed = url.trim();
-            if (trimmed) addRepository.mutate(trimmed);
-          }}
-        >
-          <Title className="norea-setup-title" order={1}>{t("setup.repository.title")}</Title>
-          <Text className="norea-setup-copy">{t("setup.repository.description")}</Text>
-          <TextInput
-            autoFocus
-            label={t("browse.repositoryUrl")}
-            onChange={(event) => setUrl(event.currentTarget.value)}
-            placeholder={t("browse.repositoryUrlPlaceholder")}
-            type="url"
-            value={url}
-          />
-          {addRepository.error ? (
-            <StateView
-              color="danger"
-              details={{ content: describeError(addRepository.error), label: t("common.details") }}
-              title={t("setup.repository.failed")}
-            />
-          ) : null}
-          <Group justify="flex-end">
-            <Button disabled={url.trim() === ""} loading={addRepository.isPending} type="submit">
-              {t("setup.repository.add")}
-            </Button>
-          </Group>
-        </form>
-      ) : null}
-
-      {step === "languages" ? (
-        <div className="norea-setup-body">
-          <Title className="norea-setup-title" order={1}>{t("setup.languages.title")}</Title>
-          <Text className="norea-setup-copy">{t("setup.languages.description")}</Text>
-          {availableLanguages.length === 0 ? (
-            <StateView title={t("setup.sources.empty")} />
-          ) : (
-            <div aria-label={t("setup.languages.title")} className="norea-browse-chips" role="group">
-              {availableLanguages.map((lang) => {
-                const active = languages.includes(lang);
-                return (
-                  <Button
-                    aria-pressed={active}
-                    key={lang}
-                    leftSection={active ? <CheckIcon size="1rem" /> : undefined}
-                    onClick={() =>
-                      setLanguages((current) =>
-                        active ? current.filter((entry) => entry !== lang) : [...current, lang],
-                      )
-                    }
-                    radius="xl"
-                    size="compact-md"
-                    variant={active ? "light" : "default"}
-                  >
-                    {formatPluginLanguageForLocale(locale, lang)}
-                  </Button>
-                );
-              })}
-            </div>
-          )}
-          <Group justify="space-between">
-            <Button onClick={() => setStep("repository")} variant="default">
-              {t("common.back")}
-            </Button>
-            <Button disabled={languages.length === 0} onClick={goToSources}>
-              {t("setup.continue")}
-            </Button>
-          </Group>
-        </div>
-      ) : null}
-
-      {step === "sources" ? (
-        <div className="norea-setup-body">
-          <Title className="norea-setup-title" order={1}>{t("setup.sources.title")}</Title>
-          {suggestions.length === 0 ? (
-            <StateView title={t("setup.sources.empty")} />
-          ) : (
+    <>
+      <PageHeader
+        actions={
+          step === "done" ? null : (
             <>
-              <Text className="norea-setup-copy">
-                {t("setup.sources.description", { count: suggestions.length })}
-              </Text>
-              <Group gap="xs">
-                <Button
-                  disabled={installSelected.isPending}
-                  onClick={() => setSelectedIds(new Set(suggestions.map((item) => item.id)))}
-                  size="compact-sm"
-                  variant="subtle"
-                >
-                  {t("setup.sources.selectAll")}
-                </Button>
-                <Button
-                  disabled={installSelected.isPending}
-                  onClick={() => setSelectedIds(new Set())}
-                  size="compact-sm"
-                  variant="subtle"
-                >
-                  {t("common.clear")}
-                </Button>
-              </Group>
-              <Stack className="norea-setup-sources" gap="xs">
-                {suggestions.map((item) => (
-                  <Checkbox
-                    checked={selectedIds.has(item.id)}
-                    description={formatPluginLanguageForLocale(locale, item.lang)}
-                    disabled={installSelected.isPending}
-                    key={item.id}
-                    label={item.name}
-                    onChange={(event) => {
-                      const checked = event.currentTarget.checked;
-                      setSelectedIds((current) => {
-                        const next = new Set(current);
-                        if (checked) next.add(item.id);
-                        else next.delete(item.id);
-                        return next;
-                      });
-                    }}
-                  />
-                ))}
-              </Stack>
+              {stepNumber === null ? null : (
+                <span className="norea-app-bar-meta">
+                  {t("setup.step", { current: stepNumber, total: 3 })}
+                </span>
+              )}
+              <Button disabled={installSelected.isPending} onClick={skip} variant="subtle">
+                {t("setup.skip")}
+              </Button>
             </>
-          )}
-          <Group className="norea-setup-footer" justify="space-between">
-            <Button disabled={installSelected.isPending} onClick={() => setStep("languages")} variant="default">
-              {t("common.back")}
-            </Button>
-            <Button
-              disabled={selected.length === 0}
-              loading={installSelected.isPending}
-              onClick={() => installSelected.mutate(selected)}
-            >
-              {progress
-                ? t("setup.sources.installing", progress)
-                : t("setup.sources.install", { count: selected.length })}
-            </Button>
-          </Group>
-        </div>
-      ) : null}
+          )
+        }
+        backDisabled={installSelected.isPending}
+        onBack={previousStep === null ? undefined : () => setStep(previousStep)}
+        title={t("setup.entry")}
+        titleElement="span"
+      />
+      <PageFrame className="norea-setup-page" size="narrow">
 
-      {step === "done" && outcome ? (
-        <div className="norea-setup-body">
-          <Title className="norea-setup-title" order={1}>{t("setup.done.title")}</Title>
-          <Text className="norea-setup-copy">{t("setup.done.message", { count: outcome.installed })}</Text>
-          {outcome.failed.length > 0 ? (
-            <Text className="norea-setup-error" role="alert">
-              {t("setup.done.failed", { names: outcome.failed.join(", ") })}
-            </Text>
-          ) : null}
-          <Group justify="flex-end">
-            <Button onClick={finish}>{t("setup.done.action")}</Button>
-          </Group>
-        </div>
-      ) : null}
-    </PageFrame>
+        {step === "repository" ? (
+          <form
+            className="norea-setup-body"
+            onSubmit={(event) => {
+              event.preventDefault();
+              const trimmed = url.trim();
+              if (trimmed) addRepository.mutate(trimmed);
+            }}
+          >
+            <Title className="norea-setup-title" order={1}>{t("setup.repository.title")}</Title>
+            <Text className="norea-setup-copy">{t("setup.repository.description")}</Text>
+            <TextInput
+              autoFocus
+              label={t("browse.repositoryUrl")}
+              onChange={(event) => setUrl(event.currentTarget.value)}
+              placeholder={t("browse.repositoryUrlPlaceholder")}
+              type="url"
+              value={url}
+            />
+            {addRepository.error ? (
+              <StateView
+                color="danger"
+                details={{ content: describeError(addRepository.error), label: t("common.details") }}
+                title={t("setup.repository.failed")}
+              />
+            ) : null}
+            <Group justify="flex-end">
+              <Button disabled={url.trim() === ""} loading={addRepository.isPending} type="submit">
+                {t("setup.repository.add")}
+              </Button>
+            </Group>
+          </form>
+        ) : null}
+
+        {step === "languages" ? (
+          <div className="norea-setup-body">
+            <Title className="norea-setup-title" order={1}>{t("setup.languages.title")}</Title>
+            <Text className="norea-setup-copy">{t("setup.languages.description")}</Text>
+            {availableLanguages.length === 0 ? (
+              <StateView title={t("setup.sources.empty")} />
+            ) : (
+              <div aria-label={t("setup.languages.title")} className="norea-browse-chips" role="group">
+                {availableLanguages.map((lang) => {
+                  const active = languages.includes(lang);
+                  return (
+                    <Button
+                      aria-pressed={active}
+                      key={lang}
+                      leftSection={active ? <CheckIcon size="1rem" /> : undefined}
+                      onClick={() =>
+                        setLanguages((current) =>
+                          active ? current.filter((entry) => entry !== lang) : [...current, lang],
+                        )
+                      }
+                      radius="xl"
+                      size="compact-md"
+                      variant={active ? "light" : "default"}
+                    >
+                      {formatPluginLanguageForLocale(locale, lang)}
+                    </Button>
+                  );
+                })}
+              </div>
+            )}
+            <Group justify="space-between">
+              <Button onClick={() => setStep("repository")} variant="default">
+                {t("common.back")}
+              </Button>
+              <Button disabled={languages.length === 0} onClick={goToSources}>
+                {t("setup.continue")}
+              </Button>
+            </Group>
+          </div>
+        ) : null}
+
+        {step === "sources" ? (
+          <div className="norea-setup-body">
+            <Title className="norea-setup-title" order={1}>{t("setup.sources.title")}</Title>
+            {suggestions.length === 0 ? (
+              <StateView title={t("setup.sources.empty")} />
+            ) : (
+              <>
+                <Text className="norea-setup-copy">
+                  {t("setup.sources.description", { count: suggestions.length })}
+                </Text>
+                <Group gap="xs">
+                  <Button
+                    disabled={installSelected.isPending}
+                    onClick={() => setSelectedIds(new Set(suggestions.map((item) => item.id)))}
+                    size="compact-sm"
+                    variant="subtle"
+                  >
+                    {t("setup.sources.selectAll")}
+                  </Button>
+                  <Button
+                    disabled={installSelected.isPending}
+                    onClick={() => setSelectedIds(new Set())}
+                    size="compact-sm"
+                    variant="subtle"
+                  >
+                    {t("common.clear")}
+                  </Button>
+                </Group>
+                <Stack className="norea-setup-sources" gap="xs">
+                  {suggestions.map((item) => (
+                    <Checkbox
+                      checked={selectedIds.has(item.id)}
+                      description={formatPluginLanguageForLocale(locale, item.lang)}
+                      disabled={installSelected.isPending}
+                      key={item.id}
+                      label={item.name}
+                      onChange={(event) => {
+                        const checked = event.currentTarget.checked;
+                        setSelectedIds((current) => {
+                          const next = new Set(current);
+                          if (checked) next.add(item.id);
+                          else next.delete(item.id);
+                          return next;
+                        });
+                      }}
+                    />
+                  ))}
+                </Stack>
+              </>
+            )}
+            <Group className="norea-setup-footer" justify="space-between">
+              <Button disabled={installSelected.isPending} onClick={() => setStep("languages")} variant="default">
+                {t("common.back")}
+              </Button>
+              <Button
+                disabled={selected.length === 0}
+                loading={installSelected.isPending}
+                onClick={() => installSelected.mutate(selected)}
+              >
+                {progress
+                  ? t("setup.sources.installing", progress)
+                  : t("setup.sources.install", { count: selected.length })}
+              </Button>
+            </Group>
+          </div>
+        ) : null}
+
+        {step === "done" && outcome ? (
+          <div className="norea-setup-body">
+            <Title className="norea-setup-title" order={1}>{t("setup.done.title")}</Title>
+            <Text className="norea-setup-copy">{t("setup.done.message", { count: outcome.installed })}</Text>
+            {outcome.failed.length > 0 ? (
+              <Text className="norea-setup-error" role="alert">
+                {t("setup.done.failed", { names: outcome.failed.join(", ") })}
+              </Text>
+            ) : null}
+            <Group justify="flex-end">
+              <Button onClick={finish}>{t("setup.done.action")}</Button>
+            </Group>
+          </div>
+        ) : null}
+      </PageFrame>
+    </>
   );
 }

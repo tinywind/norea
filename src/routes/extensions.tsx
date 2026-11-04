@@ -9,8 +9,7 @@ import {
   Stack,
   TextInput,
 } from "@mantine/core";
-import { PageFrame, StateView } from "../components/AppFrame";
-import { IconButton } from "../components/IconButton";
+import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { PluginIcon } from "../components/browse/PluginIcon";
 import { PluginSettingsDialog } from "../components/browse/PluginSettingsDialog";
 import {
@@ -41,7 +40,6 @@ import {
 import { showSettingsToast } from "../components/settings/settings-toast";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import {
-  BackIcon,
   CheckIcon,
   ChevronRightIcon,
   GithubIcon,
@@ -67,8 +65,8 @@ import {
 import { usePageBackNavigation } from "../lib/android-back-navigation";
 import { describeError } from "../lib/errors";
 import {
-  findPreviousAppHistoryEntry,
-  trimAppNavigationHistoryTo,
+  goBackInAppHistory,
+  isOpenedFromMore,
 } from "../lib/navigation-history";
 import { pluginManager } from "../lib/plugins/manager";
 import type { Plugin, PluginItem } from "../lib/plugins/types";
@@ -223,6 +221,9 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
   const queryClient = useQueryClient();
   const navigate = useNavigate();
   const currentHref = useRouterState({ select: (state) => state.location.href });
+  const openedFromMore = useRouterState({
+    select: (state) => isOpenedFromMore(state.location.state),
+  });
   const repositoryFormId = useId();
   const sourceFormId = useId();
   const repos = useRepositories(true);
@@ -336,15 +337,14 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
   }, [focusPluginId, focusedPluginLoaded]);
 
   const goBack = useCallback((): boolean => {
-    const target = findPreviousAppHistoryEntry(currentHref, ["/browse/extensions"]);
-    if (target) {
-      trimAppNavigationHistoryTo(target);
-      window.history.go(-target.steps);
-      return true;
+    if (goBackInAppHistory(currentHref, ["/browse/extensions"])) return true;
+    if (openedFromMore) {
+      void navigate({ to: "/more", replace: true });
+    } else {
+      void navigate({ to: "/browse", search: { q: "", tab: "sources" }, replace: true });
     }
-    void navigate({ to: "/browse", search: { q: "", tab: "sources" }, replace: true });
     return true;
-  }, [currentHref, navigate]);
+  }, [currentHref, navigate, openedFromMore]);
   usePageBackNavigation(goBack);
 
   const reloadRepositories = () => {
@@ -597,43 +597,45 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
 
   return (
     <div className="norea-extensions-page">
-      <header className="norea-browse-app-bar">
-        <IconButton label={t("common.back")} onClick={goBack} size="lg">
-          <BackIcon />
-        </IconButton>
-        <h1 className="norea-browse-app-bar-title">{t("extensions.title")}</h1>
-        <OverflowMenu
-          items={[
-            {
-              disabled: installFromFile.isPending,
-              icon: ImportIcon,
-              label: t("extensions.installFromFile"),
-              onClick: () => fileInputRef.current?.click(),
-            },
-            {
-              disabled: githubSourceTemplate === null,
-              icon: GithubIcon,
-              label: t("browse.sourceInstance.title"),
-              onClick: () => {
-                if (githubSourceTemplate) openSourceForm(githubSourceTemplate);
-              },
-            },
-          ]}
-          label={t("common.more")}
-        />
-        <input
-          accept=".js,text/javascript,application/javascript"
-          hidden
-          onChange={(event) => {
-            const file = event.currentTarget.files?.[0] ?? null;
-            event.currentTarget.value = "";
-            if (file) installFromFile.mutate(file);
-          }}
-          ref={fileInputRef}
-          tabIndex={-1}
-          type="file"
-        />
-      </header>
+      <PageHeader
+        actions={
+          <>
+            <OverflowMenu
+              items={[
+                {
+                  disabled: installFromFile.isPending,
+                  icon: ImportIcon,
+                  label: t("extensions.installFromFile"),
+                  onClick: () => fileInputRef.current?.click(),
+                },
+                {
+                  disabled: githubSourceTemplate === null,
+                  icon: GithubIcon,
+                  label: t("browse.sourceInstance.title"),
+                  onClick: () => {
+                    if (githubSourceTemplate) openSourceForm(githubSourceTemplate);
+                  },
+                },
+              ]}
+              label={t("common.more")}
+            />
+            <input
+              accept=".js,text/javascript,application/javascript"
+              hidden
+              onChange={(event) => {
+                const file = event.currentTarget.files?.[0] ?? null;
+                event.currentTarget.value = "";
+                if (file) installFromFile.mutate(file);
+              }}
+              ref={fileInputRef}
+              tabIndex={-1}
+              type="file"
+            />
+          </>
+        }
+        onBack={goBack}
+        title={t("extensions.title")}
+      />
 
       <PageFrame className="norea-extensions-frame" size="wide">
         {installFromFile.isPending ? (
@@ -922,7 +924,7 @@ export function UpdatesSection({
             disabled={updates.every(({ plugin }) => updatingPluginIds.has(plugin.id))}
             onClick={onUpdateAll}
             size="compact-sm"
-            variant="light"
+            variant="default"
           >
             {t("extensions.updateAll")}
           </Button>
@@ -950,7 +952,7 @@ export function UpdatesSection({
                   loading={updatingPluginIds.has(plugin.id)}
                   onClick={() => onUpdate(pluginUpdate)}
                   size="compact-sm"
-                  variant="light"
+                  variant="default"
                 >
                   {failedUpdates.has(plugin.id) ? t("common.retry") : t("extensions.update")}
                 </Button>
@@ -1084,7 +1086,7 @@ export function InstalledSection({
                           <Button
                             aria-label={`${t("extensions.publisher.choose")}: ${plugin.name}`}
                             size="compact-sm"
-                            variant="light"
+                            variant="default"
                           >
                             {t("extensions.publisher.choose")}
                           </Button>
@@ -1280,7 +1282,7 @@ export function AvailableSection({
                     loading={installingPluginIds.has(item.id)}
                     onClick={() => onInstall(entry)}
                     size="compact-sm"
-                    variant="light"
+                    variant="default"
                   >
                     {label}
                   </Button>

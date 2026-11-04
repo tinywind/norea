@@ -39,7 +39,7 @@ export function NovelCheckPausedNotice({ active, checkNow, novelId }: NovelCheck
           onSettled: () => { void queryClient.invalidateQueries({ queryKey: freshnessKey }); },
         })}
         size="compact-sm"
-        variant="light"
+        variant="default"
       >
         {t("updates.checkNow")}
       </Button>

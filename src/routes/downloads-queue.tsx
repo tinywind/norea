@@ -962,7 +962,7 @@ function SourceAccessBanner({
             });
           }}
           size="xs"
-          variant="light"
+          variant="default"
         >
           {verifying ? t("sourceAccess.verifying") : t("updates.failure.verify")}
         </Button>
@@ -1123,11 +1123,14 @@ function useAttentionFocus(active: boolean, hasAttention: boolean, sectionRef: R
 
 interface DownloadsQueueViewProps {
   active?: boolean;
+  /** Leaves Downloads; the page header's back button. */
+  onBack?: () => void;
   viewSwitcher?: ReactNode;
 }
 
 export function DownloadsQueueView({
   active = true,
+  onBack,
   viewSwitcher,
 }: DownloadsQueueViewProps = {}) {
   const { t } = useTranslation();
@@ -1303,67 +1306,77 @@ export function DownloadsQueueView({
   const hasDownloads = novelWorks.length > 0 || requests.length > 0 || vpnWorks.length > 0;
 
   return (
-    <PageFrame className="norea-tasks-page norea-downloads-hub" size="wide">
-      <PageHeader
-        title={
-          <span className="norea-task-page-title">
-            {t("downloads.title")}
-            {vpnWorks.length === 0 ? <span className="norea-task-title-count">{tasks.length}</span> : null}
-          </span>
-        }
-        actions={
-          <div className="norea-task-header-actions">
-            <Button
-              disabled={queueActionPending || (!sourceTasks.length && !hasVpnRun && !requests.length)}
-              leftSection={allPaused ? <PlayIcon size="1.125rem" /> : <PauseIcon size="1.125rem" />}
-              onClick={() => runQueueAction(async () => {
-                if (allPaused) {
-                  taskScheduler.resumeSourceQueue();
-                  if (hasVpnRun) await resumeVpnDownloadRun();
-                } else {
-                  taskScheduler.pauseSourceQueue();
-                  if (hasVpnRun) await pauseVpnDownloadRun();
-                }
-              })}
-              variant={allPaused ? "light" : "default"}
-            >
-              {allPaused ? t("downloads.queue.resume") : t("downloads.queue.pause")}
-            </Button>
-            <OverflowMenu items={overflowItems} label={t("common.more")} />
-          </div>
-        }
-        meta={vpnWorks.length === 0 ? (
-          <div className="norea-task-summary-strip">
-            <SummaryPill>
-              {t("tasks.summary.running", { count: taskStats.running })}
-            </SummaryPill>
-            <SummaryPill>
-              {t("tasks.summary.queued", { count: taskStats.queued })}
-            </SummaryPill>
-            {taskStats.retrying > 0 ? (
-              <SummaryPill>
-                {t("tasks.summary.retrying", { count: taskStats.retrying })}
-              </SummaryPill>
-            ) : null}
-            <SummaryPill
-              tone={
-                snapshot.sourceAccessBlocks.length > 0 ? "warning" : undefined
-              }
-            >
-              {t("tasks.summary.blocked", {
-                count: snapshot.sourceAccessBlocks.length,
-              })}
-            </SummaryPill>
-            <SummaryPill tone={taskStats.failed > 0 ? "error" : undefined}>
-              {t("tasks.summary.failed", { count: taskStats.failed })}
-            </SummaryPill>
-            <SummaryPill>
-              {t("tasks.summary.done", { count: taskStats.succeeded })}
-            </SummaryPill>
-          </div>
-        ) : undefined}
-      />
-      {viewSwitcher}
+    <PageFrame
+      className="norea-tasks-page norea-downloads-hub"
+      header={
+        <PageHeader
+          actions={
+            <>
+              <Button
+                disabled={queueActionPending || (!sourceTasks.length && !hasVpnRun && !requests.length)}
+                leftSection={allPaused ? <PlayIcon size="1.125rem" /> : <PauseIcon size="1.125rem" />}
+                onClick={() => runQueueAction(async () => {
+                  if (allPaused) {
+                    taskScheduler.resumeSourceQueue();
+                    if (hasVpnRun) await resumeVpnDownloadRun();
+                  } else {
+                    taskScheduler.pauseSourceQueue();
+                    if (hasVpnRun) await pauseVpnDownloadRun();
+                  }
+                })}
+                variant="subtle"
+              >
+                {allPaused ? t("downloads.queue.resume") : t("downloads.queue.pause")}
+              </Button>
+              <OverflowMenu items={overflowItems} label={t("common.more")} />
+            </>
+          }
+          below={
+            <div className="norea-downloads-subrow">
+              {viewSwitcher}
+              {vpnWorks.length === 0 ? (
+                <div className="norea-task-summary-strip">
+                  <SummaryPill>
+                    {t("tasks.summary.running", { count: taskStats.running })}
+                  </SummaryPill>
+                  <SummaryPill>
+                    {t("tasks.summary.queued", { count: taskStats.queued })}
+                  </SummaryPill>
+                  {taskStats.retrying > 0 ? (
+                    <SummaryPill>
+                      {t("tasks.summary.retrying", { count: taskStats.retrying })}
+                    </SummaryPill>
+                  ) : null}
+                  <SummaryPill
+                    tone={
+                      snapshot.sourceAccessBlocks.length > 0 ? "warning" : undefined
+                    }
+                  >
+                    {t("tasks.summary.blocked", {
+                      count: snapshot.sourceAccessBlocks.length,
+                    })}
+                  </SummaryPill>
+                  <SummaryPill tone={taskStats.failed > 0 ? "error" : undefined}>
+                    {t("tasks.summary.failed", { count: taskStats.failed })}
+                  </SummaryPill>
+                  <SummaryPill>
+                    {t("tasks.summary.done", { count: taskStats.succeeded })}
+                  </SummaryPill>
+                </div>
+              ) : null}
+            </div>
+          }
+          onBack={onBack}
+          title={
+            <span className="norea-task-page-title">
+              {t("downloads.title")}
+              {vpnWorks.length === 0 ? <span className="norea-task-title-count">{tasks.length}</span> : null}
+            </span>
+          }
+        />
+      }
+      size="wide"
+    >
 
       {queueError ? <Alert color="danger" role="alert">{queueError}</Alert> : null}
 

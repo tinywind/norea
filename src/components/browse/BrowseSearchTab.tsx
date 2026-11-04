@@ -27,7 +27,6 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   PinIcon,
-  RetryIcon,
   SourceIcon,
   UnpinIcon,
   WarningIcon,
@@ -281,7 +280,7 @@ function SearchScopeChips({
             <Button
               onClick={() => onSelectedPluginIdsChange(installedPlugins.map((plugin) => plugin.id))}
               size="compact-sm"
-              variant="light"
+              variant="subtle"
             >
               {t("globalSearch.scope.selectAll")}
             </Button>
@@ -478,7 +477,7 @@ export function SearchFailures({
     }
     if (!isCloudflareError(error)) return null;
     return (
-      <Button onClick={() => onOpenSite(plugin)} size="compact-sm" variant="light">
+      <Button onClick={() => onOpenSite(plugin)} size="compact-sm" variant="default">
         {t("updates.failure.verify")}
       </Button>
     );
@@ -486,10 +485,9 @@ export function SearchFailures({
   const retryButton = (plugin: Plugin) => (
     <Button
       aria-label={t("globalSearch.retrySource", { name: plugin.name })}
-      leftSection={<RetryIcon size="1rem" />}
       onClick={() => onRetry(plugin.id)}
       size="compact-sm"
-      variant="light"
+      variant="default"
     >
       {t("common.retry")}
     </Button>
@@ -543,7 +541,6 @@ export function SearchFailures({
         footer={
           <Button
             fullWidth
-            leftSection={<RetryIcon size="1rem" />}
             onClick={() => {
               setSheetOpen(false);
               onRetryAll();

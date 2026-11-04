@@ -45,7 +45,7 @@ export function BackupFolderAttention() {
         <Text component="h3" fw={700} size="sm">{t("settings.backup.auto.folderUnavailable")}</Text>
       </div>
       <Group gap="xs" justify="flex-end">
-        <Button loading={busy} onClick={() => void chooseFolder()} size="xs" variant="light">
+        <Button loading={busy} onClick={() => void chooseFolder()} size="xs" variant="default">
           {t("settings.backup.auto.chooseFolder")}
         </Button>
       </Group>

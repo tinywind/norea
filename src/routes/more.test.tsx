@@ -1,5 +1,4 @@
 import { MantineProvider } from "@mantine/core";
-import { readFileSync } from "node:fs";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -15,10 +14,12 @@ vi.mock("@tanstack/react-router", () => ({
   Link: ({
     children,
     search,
+    state,
     to,
   }: {
     children?: ReactNode;
     search?: Record<string, string | undefined>;
+    state?: unknown;
     to: string;
   }) => {
     const query = new URLSearchParams(
@@ -26,7 +27,11 @@ vi.mock("@tanstack/react-router", () => ({
         (entry): entry is [string, string] => entry[1] !== undefined,
       ),
     ).toString();
-    return <a href={query ? `${to}?${query}` : to}>{children}</a>;
+    return (
+      <a data-state={JSON.stringify(state)} href={query ? `${to}?${query}` : to}>
+        {children}
+      </a>
+    );
   },
 }));
 vi.mock("../lib/tasks/hooks", () => ({
@@ -39,6 +44,7 @@ vi.mock("../store/library", () => ({
   useLibraryStore: <T,>(select: (state: typeof library) => T) => select(library),
 }));
 
+import { isOpenedFromMore } from "../lib/navigation-history";
 import { MorePage } from "./more";
 
 function renderMorePage(): string {
@@ -50,7 +56,7 @@ function renderMorePage(): string {
 }
 
 function linkHrefs(markup: string): string[] {
-  return [...markup.matchAll(/<a href="([^"]*)">/g)].map(([, href]) => href);
+  return [...markup.matchAll(/<a [^>]*href="([^"]*)">/g)].map(([, href]) => href);
 }
 
 describe("More page", () => {
@@ -73,6 +79,15 @@ describe("More page", () => {
     expect(markup).not.toContain("Download cache");
     expect(markup).toContain("Settings");
     expect(markup).toContain("About");
+  });
+
+  it("marks every destination as opened from More so the primary nav keeps More current", () => {
+    const states = [...renderMorePage().matchAll(/<a data-state="([^"]*)"/g)].map(([, state]) =>
+      JSON.parse(state.replaceAll("&quot;", '"')) as unknown,
+    );
+
+    expect(states).toHaveLength(4);
+    for (const state of states) expect(isOpenedFromMore(state)).toBe(true);
   });
 
   it("badges Downloads with active and failed tasks", () => {
@@ -109,12 +124,11 @@ describe("More page", () => {
     expect(switchState()).toBe("true");
   });
 
-  it("keeps the page title visible on phones", () => {
-    const css = readFileSync(new URL("../styles/more.css", import.meta.url), "utf8");
-    const phone = css.slice(css.indexOf("@media (max-width: 767px)"));
+  it("names the page for screen readers only and shows no bar or back button", () => {
+    const markup = renderMorePage();
 
-    expect(renderMorePage()).toContain('class="norea-page-title');
-    expect(phone).toMatch(/\.norea-more-page \.norea-page-header\[data-has-actions\] \{\s*display: flex;/);
-    expect(phone).toMatch(/\.norea-more-page \.norea-page-header \.norea-page-header-copy \{\s*display: block;/);
+    expect(markup).toMatch(/<h1 class="[^"]*mantine-VisuallyHidden-root[^"]*">More<\/h1>/);
+    expect(markup).not.toContain("norea-app-bar");
+    expect(markup).not.toContain('aria-label="Back"');
   });
 });
