@@ -71,9 +71,10 @@ export function LibraryDownloadGoalSheet({
         disabled={applying || novelIds.length === 0}
         entireDescription={t("downloadGoals.kind.entire.many")}
         onChoose={(goal) => {
-          if (current !== undefined && sameDownloadGoal(goal, current)) return;
-          onApply(goal);
+          if (current !== undefined && sameDownloadGoal(goal, current)) onClose();
+          else onApply(goal);
         }}
+        pending={applying}
       >
         <ListRow
           disabled={applying || novelIds.length === 0}

@@ -1,4 +1,4 @@
-import { Stack } from "@mantine/core";
+import { Loader, Stack } from "@mantine/core";
 import { useState, type ReactNode } from "react";
 import type { NovelDownloadGoal } from "../db/queries/novel-download-goal";
 import { useTranslation } from "../i18n";
@@ -17,7 +17,9 @@ interface DownloadGoalChoicesProps {
   /** The own goal every novel shares, null when all follow the default, undefined when they differ. */
   current: NovelDownloadGoal | null | undefined;
   disabled: boolean;
-  /** Null returns the novels to the default keep-ahead. */
+  /** A choice is being written; the row tapped last shows it is in progress. */
+  pending: boolean;
+  /** Null returns the novels to the default keep-ahead. Picking a keep-ahead count chooses it too. */
   onChoose: (goal: NovelDownloadGoal | null) => void;
   allRemainingDescription: string;
   entireDescription: string;
@@ -37,22 +39,32 @@ export function DownloadGoalChoices({
   disabled,
   entireDescription,
   onChoose,
+  pending,
 }: DownloadGoalChoicesProps) {
   const { t } = useTranslation();
   const defaultKeepAhead = useDownloadGoalSettingsStore((state) => state.defaultKeepAhead);
   const [keepAheadCount, setKeepAheadCount] = useState<number>(KEEP_AHEAD_GOAL_CHOICES[0]);
+  const [tappedKey, setTappedKey] = useState<string | null>(null);
   const shownKeepAheadCount = current?.kind === "keep_ahead" ? current.count : keepAheadCount;
+  const choose = (key: string, choice: NovelDownloadGoal | null) => {
+    setTappedKey(key);
+    onChoose(choice);
+  };
 
   const choiceRow = (key: string, choice: NovelDownloadGoal | null, title: string, subtitle: string) => {
     const selected = current !== undefined &&
       (sameDownloadGoal(choice, current) || (choice?.kind === "keep_ahead" && current?.kind === "keep_ahead"));
+    const busy = pending && tappedKey === key;
     return (
       <ListRow
+        aria-busy={busy || undefined}
         aria-pressed={selected}
         disabled={disabled}
         key={key}
-        leading={selected ? <CheckIcon size="1.125rem" /> : <DownloadGoalSpacer />}
-        onClick={() => onChoose(choice)}
+        leading={busy ? (
+          <Loader aria-hidden="true" className="norea-download-goal-pending" size="xs" />
+        ) : selected ? <CheckIcon size="1.125rem" /> : <DownloadGoalSpacer />}
+        onClick={() => choose(key, choice)}
         selected={selected}
         subtitle={subtitle}
         title={title}
@@ -76,7 +88,7 @@ export function DownloadGoalChoices({
         onChange={(value) => {
           const count = Number(value);
           setKeepAheadCount(count);
-          if (current?.kind === "keep_ahead") onChoose({ kind: "keep_ahead", count });
+          choose("keep", { kind: "keep_ahead", count });
         }}
         value={String(shownKeepAheadCount)}
       />

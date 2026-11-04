@@ -97,13 +97,14 @@ it("marks the goal every selected novel shares and nothing when they differ", ()
   expect(sharedDownloadGoal([1, 4], goals)).toBeUndefined();
 });
 
-it("applies a goal choice to the selection unless it is the goal they already share", async () => {
+it("applies a goal choice to the selection, or just closes on the goal they already share", async () => {
   mocks.data = [{ novelId: 1, goal: { kind: "entire" }, updatedAt: 1 }, { novelId: 2, goal: { kind: "entire" }, updatedAt: 1 }];
   const apply = vi.fn();
+  const close = vi.fn();
   const downloadOnce = vi.fn();
   function GoalProbe() {
     tree = LibraryDownloadGoalSheet({
-      applying: false, novelIds: [1, 2], onApply: apply, onClose: vi.fn(), onDownloadOnce: downloadOnce, opened: true,
+      applying: false, novelIds: [1, 2], onApply: apply, onClose: close, onDownloadOnce: downloadOnce, opened: true,
     }) as
       ReactElement<Record<string, unknown>>;
     return null;
@@ -118,6 +119,7 @@ it("applies a goal choice to the selection unless it is the goal they already sh
   expect(choices.props.current).toEqual({ kind: "entire" });
   choices.props.onChoose({ kind: "entire" });
   expect(apply).not.toHaveBeenCalled();
+  expect(close).toHaveBeenCalledTimes(1);
   choices.props.onChoose({ kind: "none" });
   expect(apply).toHaveBeenCalledWith({ kind: "none" });
 
