@@ -101,6 +101,19 @@ export function filterChapterList<T extends ChapterListRow>(
   });
 }
 
+/**
+ * What a click on a chapter row does. Each state gives a tap one meaning:
+ * outside selection it opens the chapter, inside it toggles the row.
+ * Shift-click selects like a long press.
+ */
+export function chapterRowClickAction(
+  selectionMode: boolean,
+  shiftKey: boolean,
+): "open" | "toggle" | "select-range" {
+  if (shiftKey) return "select-range";
+  return selectionMode ? "toggle" : "open";
+}
+
 /** The ids from `anchorId` to `targetId`, both included, in list order. */
 export function chapterIdsBetween(
   chapters: readonly ChapterListRow[],

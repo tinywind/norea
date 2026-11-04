@@ -43,13 +43,13 @@ import {
   DownloadIcon,
   DragIcon,
   RepairIcon,
-  RetryIcon,
 } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { OverflowMenu } from "../ui/OverflowMenu";
 import {
   beforeChapterIdForMove,
   chapterDndId,
+  chapterRowClickAction,
   EMPTY_CHAPTER_DND_IDS,
   FINISHED_PROGRESS,
   formatChapterNumber,
@@ -95,6 +95,7 @@ interface ChapterListItemProps {
   duplicateSourceChapterCount: number;
   highlighted: boolean;
   isCurrent: boolean;
+  isRangeStart: boolean;
   isSelected: boolean;
   reorderMode: boolean;
   selectionMode: boolean;
@@ -120,6 +121,7 @@ function ChapterListItem({
   duplicateSourceChapterCount,
   highlighted,
   isCurrent,
+  isRangeStart,
   isSelected,
   reorderMode,
   selectionMode,
@@ -151,13 +153,14 @@ function ChapterListItem({
     disabled: !canDrag,
   });
   const progress = getChapterReadingProgress(chapter);
-  const partlyRead = progress > 0 && progress < FINISHED_PROGRESS;
+  const finished = !chapter.unread || progress >= FINISHED_PROGRESS;
+  const partlyRead = !finished && progress > 0;
+  // Selection hides the reading fill so a read row never looks like a selected one.
+  const readFill = selectionMode ? null : finished ? "100%" : partlyRead ? `${progress}%` : null;
   const style = {
     transform: CSS.Transform.toString(transform),
     transition,
-    ...(partlyRead
-      ? { "--norea-chapter-progress": `${progress}%` }
-      : undefined),
+    ...(readFill ? { "--norea-chapter-progress": readFill } : undefined),
   } as CSSProperties;
   const downloadActive = status?.kind === "queued" || status?.kind === "running";
   const failedMessage = status?.kind === "failed" ? status.error : null;
@@ -210,6 +213,19 @@ function ChapterListItem({
         </span>
       );
     }
+    // While selecting, a tap anywhere on the row toggles it, so the row offers no other buttons.
+    if (selectionMode) {
+      return chapter.isDownloaded ? (
+        <span
+          aria-label={t("novel.downloaded")}
+          className="norea-novel-chapter-progress-slot norea-novel-chapter-state-button"
+          data-state="downloaded"
+          role="img"
+        >
+          <DownloadedIcon size="1.25rem" />
+        </span>
+      ) : null;
+    }
     if (chapter.mediaRepairNeeded && canDeleteDownload) {
       return (
         <Button
@@ -228,7 +244,6 @@ function ChapterListItem({
       return (
         <Button
           aria-label={t("novel.retryDownload")}
-          leftSection={<RetryIcon size="1rem" />}
           onClick={onDownload}
           size="compact-sm"
           variant="subtle"
@@ -284,7 +299,7 @@ function ChapterListItem({
       data-current={isCurrent ? "true" : undefined}
       data-dragging={isDragging ? "true" : undefined}
       data-highlighted={highlighted ? "true" : undefined}
-      data-progress={partlyRead ? "partial" : undefined}
+      data-progress={readFill === null ? undefined : finished ? "read" : "partial"}
       data-selected={isSelected ? "true" : undefined}
       style={style}
     >
@@ -335,6 +350,7 @@ function ChapterListItem({
               aria-hidden="true"
               className="norea-novel-chapter-check"
               data-checked={isSelected ? "true" : undefined}
+              data-range-start={isRangeStart ? "true" : undefined}
             >
               {isSelected ? <CheckIcon size="1rem" /> : null}
             </span>
@@ -344,19 +360,14 @@ function ChapterListItem({
         onClick={(event) => {
           if (longPress.consumeFired()) return;
           if (reorderMode) return;
-          if (event.shiftKey) {
-            onExtendSelection();
-            return;
-          }
-          if (selectionMode) {
-            onToggleSelected();
-            return;
-          }
-          onOpen();
+          const action = chapterRowClickAction(selectionMode, event.shiftKey);
+          if (action === "select-range") onExtendSelection();
+          else if (action === "toggle") onToggleSelected();
+          else onOpen();
         }}
         onContextMenu={(event) => {
           event.preventDefault();
-          if (!reorderMode && !longPress.fired()) onToggleSelected();
+          if (!reorderMode && !longPress.fired()) onExtendSelection();
         }}
         {...longPress.handlers}
         selected={isSelected}
@@ -389,6 +400,9 @@ function ChapterListItem({
               </>
             ) : null}
             {isCurrent ? <VisuallyHidden>{t("novel.currentChapter")}</VisuallyHidden> : null}
+            {selectionMode && isRangeStart ? (
+              <VisuallyHidden>{t("novel.selection.rangeStart")}</VisuallyHidden>
+            ) : null}
           </>
         }
       />
@@ -406,6 +420,8 @@ interface VirtualChapterListProps {
   /** Scrolls the row into view and highlights it briefly; each new object is a new jump. */
   jumpRequest: { chapterId: number } | null;
   lastReadChapterId: number | undefined;
+  /** The last toggled row, where a long press starts its range; marked while selecting. */
+  rangeStartChapterId: number | null;
   repairBusyChapterId: number | undefined;
   repairPending: boolean;
   /** Shows drag handles and move buttons in place of the row actions. */
@@ -418,7 +434,10 @@ interface VirtualChapterListProps {
   statuses: ReadonlyMap<number, ChapterDownloadStatus>;
   onDeleteDownload: (chapterId: number) => void;
   onDownload: (chapter: ChapterListRow) => void;
-  /** Long-press or Shift-click: selects the rows from the selection anchor to this one. */
+  /**
+   * Long press, right-click or Shift-click: starts a selection with this row,
+   * or, while selecting, selects the rows from the range start to this one.
+   */
   onExtendSelection: (chapterId: number) => void;
   onOpen: (chapter: ChapterListRow) => void;
   onRepairMedia: (chapter: ChapterListRow) => void;
@@ -434,6 +453,7 @@ export function VirtualChapterList({
   deletePending,
   jumpRequest,
   lastReadChapterId,
+  rangeStartChapterId,
   repairBusyChapterId,
   repairPending,
   reorderMode,
@@ -586,6 +606,7 @@ export function VirtualChapterList({
                 }
                 highlighted={chapter.id === highlightedChapterId}
                 isCurrent={chapter.id === lastReadChapterId}
+                isRangeStart={chapter.id === rangeStartChapterId}
                 isSelected={selectedChapterIds.has(chapter.id)}
                 reorderMode={reorderMode}
                 selectionMode={selectionMode}

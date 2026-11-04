@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { ChapterListRow } from "../../db/queries/chapter";
 import {
   chapterIdsBetween,
+  chapterRowClickAction,
   chapterIdsInNumberRange,
   filterChapterList,
   findChapterForJump,
@@ -161,5 +162,14 @@ describe("filterChapterList", () => {
   it("keeps the given display order", () => {
     expect(filterChapterList([...rows].reverse(), { ...NO_CHAPTER_LIST_FILTERS, unread: true }, statuses)
       .map((row) => row.id)).toEqual([6, 4, 3, 2]);
+  });
+});
+
+describe("chapterRowClickAction", () => {
+  it("gives a tap one meaning per state and lets Shift-click select a range", () => {
+    expect(chapterRowClickAction(false, false)).toBe("open");
+    expect(chapterRowClickAction(true, false)).toBe("toggle");
+    expect(chapterRowClickAction(false, true)).toBe("select-range");
+    expect(chapterRowClickAction(true, true)).toBe("select-range");
   });
 });

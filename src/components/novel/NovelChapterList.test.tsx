@@ -44,6 +44,7 @@ function renderList(overrides: Partial<ListProps> = {}) {
     deletePending: false,
     jumpRequest: null,
     lastReadChapterId: undefined,
+    rangeStartChapterId: null,
     repairBusyChapterId: undefined,
     repairPending: false,
     reorderMode: false,
@@ -113,11 +114,18 @@ describe("chapter row structure", () => {
     expect(partial.attr("data-progress")).toBe("partial");
     expect(partial.attr("style")).toContain("--norea-chapter-progress:45%");
 
-    for (const progress of [0, 100]) {
-      const row = renderRow({ progress })(".norea-novel-chapter");
-      expect(row.attr("data-progress")).toBeUndefined();
-      expect(row.attr("style") ?? "").not.toContain("--norea-chapter-progress");
-    }
+    const unread = renderRow({ progress: 0 })(".norea-novel-chapter");
+    expect(unread.attr("data-progress")).toBeUndefined();
+    expect(unread.attr("style") ?? "").not.toContain("--norea-chapter-progress");
+  });
+
+  it.each([
+    ["marked read", { unread: false, progress: 0 }],
+    ["read to the end", { unread: true, progress: 100 }],
+  ])("fills a finished row completely when %s", (_label, row) => {
+    const finished = renderRow(row)(".norea-novel-chapter");
+    expect(finished.attr("data-progress")).toBe("read");
+    expect(finished.attr("style")).toContain("--norea-chapter-progress:100%");
   });
 
   it("marks the current chapter and dims read titles", () => {
@@ -216,6 +224,56 @@ describe("server chapter completeness", () => {
     const description = $(`#${openButton($).attr("aria-describedby")}`);
     expect(description.text()).not.toContain("server");
     expect(description.attr("title")).toBe("Full copy on server");
+  });
+});
+
+describe("selection visuals", () => {
+  const selecting = (overrides: Partial<ListProps> = {}) => ({ selectionMode: true, ...overrides });
+
+  it("leads each row with a round check that fills only when the row is selected", () => {
+    const unselected = renderRow({}, undefined, selecting());
+    expect(unselected(".norea-novel-chapter-check").attr("data-checked")).toBeUndefined();
+    expect(unselected(".norea-novel-chapter-check svg")).toHaveLength(0);
+    const selected = renderRow({}, undefined, selecting({ selectedChapterIds: new Set([1]) }));
+    expect(selected(".norea-novel-chapter-check").attr("data-checked")).toBe("true");
+    expect(selected(".norea-novel-chapter-check svg")).toHaveLength(1);
+    expect(selected(".norea-novel-chapter").attr("data-selected")).toBe("true");
+
+    const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.norea-novel-chapter-check \{[^}]*border-radius: 50%;/);
+    expect(css).toMatch(/\.norea-novel-chapter-check\[data-checked="true"\] \{[^}]*background: var\(--norea-color-accent\);/);
+    expect(css).toMatch(/\.norea-novel-chapter\[data-selected="true"\] \{[^}]*background: var\(--norea-color-selected\);/);
+  });
+
+  it("drops the grey reading fill while selecting so read rows never look selected", () => {
+    for (const row of [{ progress: 45 }, { unread: false }]) {
+      const browsing = renderRow(row)(".norea-novel-chapter");
+      expect(browsing.attr("data-progress")).toBeDefined();
+      const selectingRow = renderRow(row, undefined, selecting())(".norea-novel-chapter");
+      expect(selectingRow.attr("data-progress")).toBeUndefined();
+      expect(selectingRow.attr("style") ?? "").not.toContain("--norea-chapter-progress");
+    }
+    const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.norea-novel-chapter\[data-progress\]::before \{[^}]*background: var\(--norea-color-ink\);/);
+  });
+
+  it("marks and announces the range start only while selecting", () => {
+    const marked = renderRow({}, undefined, selecting({ rangeStartChapterId: 1 }));
+    expect(marked(".norea-novel-chapter-check").attr("data-range-start")).toBe("true");
+    expect(marked("button[aria-pressed]").text()).toContain("Range start");
+    const other = renderRow({}, undefined, selecting({ rangeStartChapterId: 2 }));
+    expect(other(".norea-novel-chapter-check").attr("data-range-start")).toBeUndefined();
+    expect(other("button[aria-pressed]").text()).not.toContain("Range start");
+  });
+
+  it("leaves the selecting row without other buttons, keeping the downloaded state visible", () => {
+    for (const row of [{ isDownloaded: true }, { isDownloaded: false }]) {
+      const $ = renderRow(row, undefined, selecting());
+      expect($("button")).toHaveLength(1);
+      expect($("button").attr("aria-pressed")).toBe("false");
+    }
+    const downloaded = renderRow({ isDownloaded: true }, undefined, selecting());
+    expect(downloaded("[role=img][aria-label='Downloaded']")).toHaveLength(1);
   });
 });
 
