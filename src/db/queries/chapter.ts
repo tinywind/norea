@@ -809,6 +809,50 @@ export async function setChaptersReadState(
   });
 }
 
+/** Marks every chapter of the given novels read or unread and captures the chapters it changed. */
+export async function setNovelsReadState(
+  novelIds: readonly number[],
+  unread: boolean,
+): Promise<BulkChapterMutationResult & { previous: ChapterReadState[] }> {
+  const uniqueNovelIds = Array.from(new Set(novelIds)).filter(
+    (novelId) => Number.isInteger(novelId) && novelId > 0,
+  );
+  if (uniqueNovelIds.length === 0) return { rowsAffected: 0, chunks: 0, previous: [] };
+
+  const progress = unread ? 0 : FINISHED_PROGRESS;
+  const unreadFlag = unread ? 1 : 0;
+  return runDatabaseTransaction(async (db) => {
+    let rowsAffected = 0;
+    let chunks = 0;
+    const previous: ChapterReadState[] = [];
+
+    for (const chunk of chapterChunks(uniqueNovelIds, CHAPTER_ID_CHUNK_SIZE)) {
+      const novelPlaceholders = chapterIdPlaceholders(3, chunk.length);
+      const rows = await db.select<RawChapterReadState[]>(
+        `SELECT id, unread, progress FROM chapter
+         WHERE novel_id IN (${novelPlaceholders})
+           AND (progress <> $1 OR unread <> $2)`,
+        [progress, unreadFlag, ...chunk],
+      );
+      previous.push(...rows.map(normalizeChapterReadState));
+      const result = await db.execute(
+        `UPDATE chapter
+         SET
+           progress   = $1,
+           unread     = $2,
+           updated_at = unixepoch()
+         WHERE novel_id IN (${novelPlaceholders})
+           AND (progress <> $1 OR unread <> $2)`,
+        [progress, unreadFlag, ...chunk],
+      );
+      rowsAffected += result.rowsAffected;
+      chunks += 1;
+    }
+
+    return { rowsAffected, chunks, previous };
+  });
+}
+
 /** Puts back each chapter's read flag and progress exactly as captured, in chunks of equal values. */
 export async function restoreChapterReadStates(
   states: readonly ChapterReadState[],

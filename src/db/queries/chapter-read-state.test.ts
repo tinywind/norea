@@ -7,6 +7,7 @@ import { getDb, runDatabaseTransaction } from "../client";
 import {
   restoreChapterReadStates,
   setChaptersReadState,
+  setNovelsReadState,
   setRelativeChaptersReadState,
   updateChapterProgress,
 } from "./chapter";
@@ -106,4 +107,21 @@ it("still lets an explicit unread mark clear a finished chapter", async () => {
   expect(readStates()[0]).toEqual({ id: 1, unread: true, progress: 0 });
   await updateChapterProgress(1, 30);
   expect(readStates()[0]).toEqual({ id: 1, unread: true, progress: 30 });
+});
+
+it("marks whole novels, captures only the chapters it changed, and restores them", async () => {
+  const before = readStates();
+  const change = await setNovelsReadState([1, 2], false);
+  expect(change.rowsAffected).toBe(4);
+  expect(change.previous.map((row) => row.id).sort()).toEqual([2, 3, 4, 6]);
+  expect(readStates().every((row) => !row.unread && row.progress === 100)).toBe(true);
+
+  await restoreChapterReadStates(change.previous);
+  expect(readStates()).toEqual(before);
+
+  const unmark = await setNovelsReadState([2], true);
+  expect(unmark.rowsAffected).toBe(0);
+  const unmarkFirst = await setNovelsReadState([1], true);
+  expect(unmarkFirst.previous.map((row) => row.id).sort()).toEqual([1, 3, 5]);
+  expect(readStates().find((row) => row.id === 6)).toEqual({ id: 6, unread: true, progress: 0 });
 });

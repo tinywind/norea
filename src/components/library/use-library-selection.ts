@@ -2,7 +2,13 @@ import { notifications } from "@mantine/notifications";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { addNovelsToCategory, removeNovelsFromCategory } from "../../db/queries/category";
-import { listUnqueuedChapterDownloads, type ChapterListRow } from "../../db/queries/chapter";
+import {
+  listUnqueuedChapterDownloads,
+  restoreChapterReadStates,
+  setNovelsReadState,
+  type ChapterListRow,
+  type ChapterReadState,
+} from "../../db/queries/chapter";
 import {
   getNovelById,
   listLibraryNovelIds,
@@ -15,10 +21,13 @@ import { setDownloadGoal } from "../../lib/download-goals/goal-service";
 import { showErrorToast } from "../../lib/runtime/error-toast";
 import { isChapterDownloadQueued, type ChapterDownloadJob } from "../../lib/tasks/chapter-download";
 import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-requests";
-import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
+import { MAX_CHAPTER_BULK_INPUT_ROWS, MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
+import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invalidation";
+import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { type LibrarySortOrder } from "../../store/library";
 import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
+import { showReadStateUndoToast } from "../read-state-undo-toast";
 
 export function useLibrarySelection(
   libraryFilter: LibraryNovelRefreshFilter,
@@ -260,6 +269,45 @@ export function useLibrarySelection(
     },
   });
 
+  const refreshReadState = (novelIds: readonly number[]) => {
+    markUpdatesIndexDirty("read-progress");
+    for (const novelId of novelIds) void invalidateChapterReadStateQueries(queryClient, { novelId });
+  };
+
+  const undoNovelsReadStateMutation = useMutation({
+    mutationFn: ({ previous }: { novelIds: readonly number[]; previous: readonly ChapterReadState[] }) =>
+      restoreChapterReadStates(previous),
+    onSuccess: (_result, { novelIds }) => refreshReadState(novelIds),
+    onError: (error) => {
+      showErrorToast(t("novel.readState.undoFailed"), error);
+    },
+  });
+
+  const setNovelsReadStateMutation = useMutation({
+    mutationFn: ({ novelIds, unread }: SetNovelsReadStateInput) => setNovelsReadState(novelIds, unread),
+    onSuccess: ({ previous }, { novelIds, unread }) => {
+      exitSelection();
+      refreshReadState(novelIds);
+      const message = t(unread ? "library.readState.markedUnread" : "library.readState.markedRead", {
+        chapters: previous.length,
+        count: novelIds.length,
+      });
+      // Restoring is bounded by the bulk chapter limit, so a larger change is reported without Undo.
+      if (previous.length === 0 || previous.length > MAX_CHAPTER_BULK_INPUT_ROWS) {
+        notifications.show({ color: "ok", message });
+        return;
+      }
+      showReadStateUndoToast({
+        message,
+        onUndo: () => undoNovelsReadStateMutation.mutate({ novelIds, previous }),
+        undoLabel: t("common.undo"),
+      });
+    },
+    onError: (error, { unread }) => {
+      showErrorToast(t(unread ? "library.selection.markUnread" : "library.selection.markRead"), error);
+    },
+  });
+
   return {
     selectedIds,
     selectionMode,
@@ -273,6 +321,7 @@ export function useLibrarySelection(
     downloadOnceMutation,
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
+    setNovelsReadStateMutation,
   };
 }
 
@@ -286,6 +335,11 @@ async function listChaptersToDownloadOnce(novelId: number): Promise<ChapterListR
     afterChapterId = page.at(-1)!.id;
   }
   return chapters.sort((left, right) => left.position - right.position || left.id - right.id);
+}
+
+interface SetNovelsReadStateInput {
+  novelIds: readonly number[];
+  unread: boolean;
 }
 
 interface DownloadOnceInput {

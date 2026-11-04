@@ -48,6 +48,8 @@ import { countLibraryStoredChapters, type LibraryNovelRefreshFilter } from "../d
 import {
   CategoryIcon,
   DeleteDownloadIcon,
+  MarkReadIcon,
+  MarkUnreadIcon,
   DownloadIcon,
   FolderIcon,
   ImportIcon,
@@ -174,6 +176,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     downloadOnceMutation,
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
+    setNovelsReadStateMutation,
   } = useLibrarySelection(libraryFilter, sortOrder, active);
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
   const [downloadSheetOpen, setDownloadSheetOpen] = useState(false);
@@ -401,6 +404,18 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   />
                   <OverflowMenu
                     items={[
+                      {
+                        disabled: selectedIds.size === 0 || setNovelsReadStateMutation.isPending,
+                        icon: MarkReadIcon,
+                        label: t("library.selection.markRead"),
+                        onClick: () => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: false }),
+                      },
+                      {
+                        disabled: selectedIds.size === 0 || setNovelsReadStateMutation.isPending,
+                        icon: MarkUnreadIcon,
+                        label: t("library.selection.markUnread"),
+                        onClick: () => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: true }),
+                      },
                       {
                         disabled:
                           !selectedDownloadedChapterCount ||

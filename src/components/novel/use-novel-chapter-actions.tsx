@@ -1,4 +1,3 @@
-import { Button } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
@@ -20,6 +19,7 @@ import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-r
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { useContentSyncStore } from "../../store/content-sync";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
+import { showReadStateUndoToast } from "../read-state-undo-toast";
 import { BRIEF_TOAST_AUTO_CLOSE_MS } from "../ui/AppToasts";
 import { useStopDownloadGoalsOffer } from "../use-stop-download-goals-offer";
 import { chaptersKey } from "./novel-detail-model";
@@ -28,10 +28,6 @@ type NovelDownloadSource = Pick<
   NovelDetailRecord,
   "id" | "name" | "path" | "pluginId" | "isLocal"
 >;
-
-/** Only the latest read-state change can be undone; an older Undo would overwrite it. */
-let readStateUndoToastId: string | null = null;
-let readStateUndoSequence = 0;
 
 export function useNovelChapterActions(
   id: number,
@@ -165,34 +161,10 @@ export function useNovelChapterActions(
   /** Shows how many chapters changed with an Undo that puts back each one's read flag and progress. */
   function offerReadStateUndo(previous: readonly ChapterReadState[], unread: boolean): void {
     if (previous.length === 0) return;
-    if (readStateUndoToastId) notifications.hide(readStateUndoToastId);
-    readStateUndoSequence += 1;
-    const toastId = `novel-read-state-undo:${id}:${readStateUndoSequence}`;
-    readStateUndoToastId = toastId;
-    notifications.show({
-      color: "ok",
-      id: toastId,
-      message: (
-        <span className="norea-novel-toast">
-          <span>
-            {t(unread ? "novel.readState.markedUnread" : "novel.readState.markedRead", { count: previous.length })}
-          </span>
-          <Button
-            onClick={() => {
-              notifications.hide(toastId);
-              if (readStateUndoToastId === toastId) readStateUndoToastId = null;
-              undoReadState.mutate(previous);
-            }}
-            size="compact-sm"
-            variant="subtle"
-          >
-            {t("common.undo")}
-          </Button>
-        </span>
-      ),
-      onClose: () => {
-        if (readStateUndoToastId === toastId) readStateUndoToastId = null;
-      },
+    showReadStateUndoToast({
+      message: t(unread ? "novel.readState.markedUnread" : "novel.readState.markedRead", { count: previous.length }),
+      onUndo: () => undoReadState.mutate(previous),
+      undoLabel: t("common.undo"),
     });
   }
 

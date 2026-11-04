@@ -27,6 +27,10 @@ const mocks = vi.hoisted(() => ({
   listUnqueued: vi.fn(),
   queued: new Set<number>(),
   submit: vi.fn(() => ({ id: "request", materialized: Promise.resolve(), promise: Promise.resolve() })),
+  setNovelsRead: vi.fn(),
+  restoreRead: vi.fn(async () => ({ rowsAffected: 0, chunks: 0 })),
+  undoToast: vi.fn(),
+  invalidateReadState: vi.fn(async (_client: unknown, _scope: { novelId: number }) => undefined),
 }));
 vi.mock("react", () => ({
   useCallback: (callback: unknown) => callback,
@@ -51,7 +55,14 @@ vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel, listLib
 vi.mock("../../lib/download-goals/goal-service", () => ({ setDownloadGoal: mocks.setGoal }));
 vi.mock("../DownloadGoalWorkLine", () => ({ DOWNLOAD_GOALS_QUERY_KEY: ["download-goals"] }));
 vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: vi.fn() }));
-vi.mock("../../db/queries/chapter", () => ({ listUnqueuedChapterDownloads: mocks.listUnqueued }));
+vi.mock("../../db/queries/chapter", () => ({
+  listUnqueuedChapterDownloads: mocks.listUnqueued,
+  restoreChapterReadStates: mocks.restoreRead,
+  setNovelsReadState: mocks.setNovelsRead,
+}));
+vi.mock("../read-state-undo-toast", () => ({ showReadStateUndoToast: mocks.undoToast }));
+vi.mock("../../lib/reader-query-invalidation", () => ({ invalidateChapterReadStateQueries: mocks.invalidateReadState }));
+vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({ isChapterDownloadQueued: (id: number) => mocks.queued.has(id) }));
 vi.mock("../../lib/tasks/chapter-download-requests", () => ({ submitChapterDownloadRequest: mocks.submit }));
 import { useLibrarySelection } from "./use-library-selection";
@@ -233,4 +244,30 @@ it("reports the queued chapters, the local works skipped, and when nothing was l
   expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "warn", message: "library.downloadOnce.nothingSkippedLocal" });
   mutation.onSuccess({ queued: 0, skippedLocal: 0 });
   expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "warn", message: "library.downloadOnce.nothing" });
+});
+
+it("marks whole novels read, refreshes each one, and offers Undo for the chapters it changed", async () => {
+  useLibrarySelection({}, "nameAsc");
+  const undo = mocks.mutations[6] as unknown as { mutate: (input: unknown) => void };
+  undo.mutate = vi.fn();
+  const mark = mocks.mutations[7] as unknown as {
+    mutationFn: (input: { novelIds: number[]; unread: boolean }) => Promise<unknown>;
+    onSuccess: (result: { previous: Array<{ id: number }> }, input: { novelIds: number[]; unread: boolean }) => void;
+  };
+  const previous = [{ id: 11, unread: true, progress: 0 }];
+  mocks.setNovelsRead.mockResolvedValue({ rowsAffected: 1, chunks: 1, previous });
+  await mark.mutationFn({ novelIds: [1, 2], unread: false });
+  expect(mocks.setNovelsRead).toHaveBeenCalledWith([1, 2], false);
+
+  mark.onSuccess({ previous }, { novelIds: [1, 2], unread: false });
+  expect(mocks.setSelecting).toHaveBeenLastCalledWith(false);
+  expect(mocks.invalidateReadState.mock.calls.map(([, scope]) => scope)).toEqual([{ novelId: 1 }, { novelId: 2 }]);
+  expect(mocks.t).toHaveBeenCalledWith("library.readState.markedRead", { chapters: 1, count: 2 });
+  const toast = mocks.undoToast.mock.calls[0]![0] as { onUndo: () => void };
+  toast.onUndo();
+  expect(undo.mutate).toHaveBeenCalledWith({ novelIds: [1, 2], previous });
+
+  mark.onSuccess({ previous: [] }, { novelIds: [3], unread: true });
+  expect(mocks.undoToast).toHaveBeenCalledTimes(1);
+  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "ok", message: "library.readState.markedUnread" });
 });
