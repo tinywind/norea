@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { translate } from "../../i18n";
+import { formatStorageFolder } from "./DownloadsSection";
 import { buildSettingsSummaries, type SettingsSummaryState } from "./settings-summaries";
 
 const base: SettingsSummaryState = {
@@ -23,6 +24,11 @@ function summaries(overrides: Partial<SettingsSummaryState> = {}) {
 }
 
 describe("settings section summaries", () => {
+  it("names an Android folder grant by its folder instead of the encoded tree URI", () => {
+    expect(summaries({ storageRoot: "content://com.android.externalstorage.documents/tree/primary%3ANorea" }).downloads)
+      .toBe("Norea");
+  });
+
   it("states the current value of each section in one line", () => {
     expect(summaries()).toEqual({
       appearance: "Lavender · Dark",
@@ -55,5 +61,19 @@ describe("settings section summaries", () => {
     expect(summaries({ autoUpdateExtensions: true }).browse).toBe("Extensions update automatically");
     expect(summaries({ autoBackupSchedule: "weekly" }).backup).toBe("Weekly backup · 192.168.0.10:8080");
     expect(summaries({ autoBackupSchedule: "daily", contentServerUrl: "" }).backup).toBe("Daily backup · No content server");
+  });
+});
+
+describe("storage folder label", () => {
+  it("shows an Android document tree as its volume and path", () => {
+    const uri = "content://com.android.externalstorage.documents/tree/primary%3ABooks%2FNorea";
+    expect(formatStorageFolder(uri, "Internal storage")).toBe("Internal storage/Books/Norea");
+    expect(formatStorageFolder("content://com.android.externalstorage.documents/tree/1A2B-3C4D%3ANorea", "Internal storage"))
+      .toBe("1A2B-3C4D/Norea");
+  });
+
+  it("keeps desktop paths and unknown URIs as they are", () => {
+    expect(formatStorageFolder("C:\\Users\\reader\\Norea", "Internal storage")).toBe("C:\\Users\\reader\\Norea");
+    expect(formatStorageFolder("content://other/document/x", "Internal storage")).toBe("content://other/document/x");
   });
 });

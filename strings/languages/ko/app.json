@@ -556,6 +556,7 @@
   "settings.data.mediaStorage.folder.description": "다운로드한 챕터, 이미지, 압축 파일을 이 폴더에 보관합니다.",
   "settings.data.mediaStorage.folder.androidDefaultDescription": "다운로드한 챕터와 이미지를 이 폴더에 보관합니다.",
   "settings.data.mediaStorage.folder.empty": "선택된 폴더 없음",
+  "settings.data.mediaStorage.folder.internal": "내부 저장소",
   "settings.data.mediaStorage.change.label": "저장 폴더 변경",
   "settings.data.mediaStorage.change.description": "다운로드를 보관할 폴더를 고릅니다. 폴더에 있는 챕터는 다시 사용합니다.",
   "settings.data.mediaStorage.change.androidDefaultDescription": "이 기기에서 다운로드를 보관할 폴더를 고릅니다. 폴더에 있는 챕터는 다시 사용합니다.",

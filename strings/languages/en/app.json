@@ -556,6 +556,7 @@
   "settings.data.mediaStorage.folder.description": "Downloaded chapters, images and archives are kept in this folder.",
   "settings.data.mediaStorage.folder.androidDefaultDescription": "Downloaded chapters and images are kept in this folder.",
   "settings.data.mediaStorage.folder.empty": "No folder selected",
+  "settings.data.mediaStorage.folder.internal": "Internal storage",
   "settings.data.mediaStorage.change.label": "Change storage folder",
   "settings.data.mediaStorage.change.description": "Choose a folder for downloads. Chapters already in it are reused.",
   "settings.data.mediaStorage.change.androidDefaultDescription": "Choose a folder on this device for downloads. Chapters already in it are reused.",

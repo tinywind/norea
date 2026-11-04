@@ -33,6 +33,29 @@ export const CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY = [
   "chapter-media-storage-root",
 ] as const;
 
+const ANDROID_TREE_DOCUMENT = /^content:\/\/[^/]+\/tree\/([^/]+)/;
+
+/**
+ * A storage folder as people read it. An Android folder grant is a document
+ * tree URI such as `content://…/tree/primary%3ANorea`; it shows as the
+ * volume and path, with the built-in volume named "Internal storage".
+ */
+export function formatStorageFolder(root: string, internalStorageLabel: string): string {
+  const treeId = ANDROID_TREE_DOCUMENT.exec(root)?.[1];
+  if (!treeId) return root;
+  let documentId: string;
+  try {
+    documentId = decodeURIComponent(treeId);
+  } catch {
+    return root;
+  }
+  const separator = documentId.indexOf(":");
+  const volume = separator < 0 ? documentId : documentId.slice(0, separator);
+  const path = separator < 0 ? "" : documentId.slice(separator + 1);
+  const volumeLabel = volume === "primary" ? internalStorageLabel : volume;
+  return path ? `${volumeLabel}/${path}` : volumeLabel;
+}
+
 export function reconcileChapterStorage(queryClient: QueryClient): void {
   restartChapterContentStorageMirrorSweep({
     onComplete: () => {
@@ -115,7 +138,9 @@ function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
       >
         <SettingsWideField>
           <Text className="norea-settings-path-value">
-            {mediaStorageRoot ?? t("settings.data.mediaStorage.folder.empty")}
+            {mediaStorageRoot
+              ? formatStorageFolder(mediaStorageRoot, t("settings.data.mediaStorage.folder.internal"))
+              : t("settings.data.mediaStorage.folder.empty")}
           </Text>
         </SettingsWideField>
       </SettingsFieldRow>

@@ -16,7 +16,7 @@ import { useLoggingStore } from "../../store/logging";
 import { usePluginVpnStore } from "../../store/plugin-vpn";
 import { useReaderStore } from "../../store/reader";
 import { getAppTheme, type AppThemeId } from "../../theme/md3";
-import { CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY } from "./DownloadsSection";
+import { CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY, formatStorageFolder } from "./DownloadsSection";
 import { logLevelLabelKey } from "./DeveloperSection";
 
 type Translate = (
@@ -88,7 +88,7 @@ export function buildSettingsSummaries(
       state.storageRoot === undefined
         ? t("common.loading")
         : state.storageRoot
-          ? lastPathSegment(state.storageRoot)
+          ? lastPathSegment(formatStorageFolder(state.storageRoot, t("settings.data.mediaStorage.folder.internal")))
           : t("settings.data.mediaStorage.folder.empty"),
     backup: [
       ...(state.autoBackupSchedule === "off"
