@@ -1486,7 +1486,7 @@ function TapZonePresetCard({
       onClick={() => onApply(preset.id)}
       type="button"
     >
-      <Text className="norea-reader-tap-preset-name" fw={700} size="sm">
+      <Text className="norea-reader-tap-preset-name" fw="var(--norea-weight-bold)" size="sm">
         {t(TAP_PRESET_LABEL_KEYS[preset.id])}
       </Text>
       <TapZonePreview preset={preset} />
@@ -1505,7 +1505,7 @@ function TapZonePreview({ preset }: { preset: ReaderTapPreset }) {
           key={`${preset.id}-${index}`}
           size="xs"
           ta="center"
-          fw={600}
+          fw="var(--norea-weight-bold)"
           style={{
             border: "1px solid var(--mantine-color-default-border)",
             borderRadius: "0.25rem",

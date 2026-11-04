@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
-import { Button, SegmentedControl, Switch, Text, TextInput } from "@mantine/core";
+import { Button, Switch, Text, TextInput } from "@mantine/core";
+import { SegmentedToggle } from "../SegmentedToggle";
 import { useMediaQuery } from "@mantine/hooks";
 import type { ChapterListRow } from "../../db/queries/chapter";
 import type { NovelMergeChapterDecision } from "../../db/queries/novel-merge";
@@ -373,14 +374,13 @@ export function MergeMapStep({
             <Text c="dimmed" component="span" size="xs">
               {t("novelMerge.conflict.keep")}
             </Text>
-            <SegmentedControl
+            <SegmentedToggle
               aria-label={t("novelMerge.conflict.keepFor", { target: targetLabel })}
               data={options}
               fullWidth
               onChange={(value) =>
                 onCopyChoiceChange(row.conflict.targetChapterPath, Number(value))
               }
-              size="xs"
               value={resolved ? String(choice) : ""}
             />
           </div>
@@ -488,7 +488,7 @@ export function MergeMapStep({
           >
             {activeSource ? (
               <>
-                <Text className="norea-merge-pane-title" fw={700} size="sm">
+                <Text className="norea-merge-pane-title" fw="var(--norea-weight-bold)" size="sm">
                   {t("novelMerge.map.targetFor", {
                     name: sourceChapterLabel(t, activeSource),
                   })}

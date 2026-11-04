@@ -92,7 +92,7 @@ export function TestedVpnServers({ disabled = false }: { disabled?: boolean }) {
         <ul className="norea-tested-vpn-servers">
           {servers.data.map((server) => (
             <li className="norea-tested-vpn-server" key={server.id}>
-              <Text fw={600} size="sm">{server.ip}</Text>
+              <Text fw="var(--norea-weight-bold)" size="sm">{server.ip}</Text>
               <Text c="dimmed" size="sm">
                 {t("settings.data.pluginVpn.tested.details", {
                   date: formatDateTimeForLocale(locale, server.testedAt * 1000),

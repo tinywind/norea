@@ -49,13 +49,13 @@ export function MergeConfirmStep({
               <Text c="dimmed" size="xs">
                 {t("novelMerge.confirm.from", { source: sourcePluginName })}
               </Text>
-              <Text fw={700}>{sourceName}</Text>
+              <Text fw="var(--norea-weight-bold)">{sourceName}</Text>
             </div>
             <div>
               <Text c="dimmed" size="xs">
                 {t("novelMerge.confirm.to", { source: targetPluginName })}
               </Text>
-              <Text fw={700}>{targetName}</Text>
+              <Text fw="var(--norea-weight-bold)">{targetName}</Text>
             </div>
           </div>
           <dl className="norea-merge-confirm-counts">

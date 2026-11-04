@@ -37,7 +37,7 @@ export function VpnDownloadAttention({ snapshot }: { snapshot: VpnDownloadRuntim
   return (
     <section className="norea-source-access-banner" role="alert" data-vpn-attention={item.kind}>
       <div className="norea-source-access-copy">
-        <Text component="h3" fw={700} size="sm">{message}</Text>
+        <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{message}</Text>
         {error ? <Text c="danger" component="p" size="sm">{error}</Text> : null}
       </div>
       <Group gap="xs" justify="flex-end">

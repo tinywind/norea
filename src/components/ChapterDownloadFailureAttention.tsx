@@ -83,7 +83,7 @@ export function ChapterDownloadFailureAttention() {
         return (
           <section className="norea-source-access-banner" data-download-failures={group.failureClass} key={group.key} role="alert">
             <div className="norea-source-access-copy">
-              <Text component="h3" fw={700} size="sm">{message}</Text>
+              <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{message}</Text>
               <Text c="dimmed" component="p" lineClamp={2} size="xs">
                 {t("downloads.failures.latest", { message: group.latestSummary })}
               </Text>

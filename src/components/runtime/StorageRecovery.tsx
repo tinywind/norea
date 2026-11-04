@@ -70,7 +70,7 @@ export function StorageRecoveryBanner() {
         {status === "scanning" ? <Loader size="xs" /> : status === "error" ? <WarningIcon size="1.125rem" /> : <CheckIcon size="1.125rem" />}
       </span>
       <div className="norea-recovery-banner-text">
-        <Text fw={600} size="sm">{title}</Text>
+        <Text fw="var(--norea-weight-bold)" size="sm">{title}</Text>
         {progress ? (
           <Text c="dimmed" size="xs">
             {t("storageRecovery.counts", {

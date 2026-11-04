@@ -500,7 +500,7 @@ export function SearchFailures({
         <section className="norea-search-failure-notice" role="status">
           <WarningIcon className="norea-search-failure-icon" size="1.25rem" />
           <div className="norea-search-failure-copy">
-            <Text fw={700} size="sm">
+            <Text fw="var(--norea-weight-bold)" size="sm">
               {t("globalSearch.failure.oneSource", { name: single.plugin.name })}
             </Text>
             <Text c="dimmed" size="sm">
@@ -555,7 +555,7 @@ export function SearchFailures({
               key={failure.plugin.id}
             >
               <div className="norea-search-failure-source-header">
-                <Text component="h3" fw={700} id={`norea-search-failed-${failure.plugin.id}`} size="sm">
+                <Text component="h3" fw="var(--norea-weight-bold)" id={`norea-search-failed-${failure.plugin.id}`} size="sm">
                   {failure.plugin.name}
                 </Text>
                 <Group gap="xs">

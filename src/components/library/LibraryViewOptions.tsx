@@ -1,12 +1,12 @@
 import {
   Checkbox,
   Radio,
-  SegmentedControl,
   Stack,
   Switch,
   Tabs,
   Text,
 } from "@mantine/core";
+import { SegmentedToggle } from "../SegmentedToggle";
 import {
   LOCAL_PLUGIN_ID,
   type LibraryNovelSummary,
@@ -264,7 +264,7 @@ function SortOptions() {
 
   return (
     <Stack gap="lg">
-      <SegmentedControl
+      <SegmentedToggle
         aria-label={t("library.viewOptions.direction")}
         data={(["asc", "desc"] as const).map((value) => ({
           value,

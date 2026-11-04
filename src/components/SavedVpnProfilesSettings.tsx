@@ -142,7 +142,7 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
                 return <Stack key={ip} gap="xs" role="group" aria-label={ip} pb="sm" style={{ borderBottom: "1px solid var(--mantine-color-default-border)" }}>
                   <Group justify="space-between" align="flex-start" wrap="wrap">
                     <Stack gap={0} style={{ minWidth: 0, flex: "1 1 auto" }}>
-                      <Text size="sm" fw={600} style={{ overflowWrap: "anywhere" }}>{ip}</Text>
+                      <Text size="sm" fw="var(--norea-weight-bold)" style={{ overflowWrap: "anywhere" }}>{ip}</Text>
                       {profile ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.details", { protocol: profile.protocol.toUpperCase(), date: formatDateTimeForLocale(locale, profile.approvedAt * 1000) })}</Text>
                         : <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.fileUnavailable")}</Text>}
                     </Stack>

@@ -40,7 +40,7 @@ export function DownloadGoalAttention() {
   return (
     <section className="norea-source-access-banner" data-download-goal-pause={pause} role="status">
       <div className="norea-source-access-copy">
-        <Text component="h3" fw={700} size="sm">{t(MESSAGE_KEYS[pause])}</Text>
+        <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{t(MESSAGE_KEYS[pause])}</Text>
       </div>
       <Group gap="xs" justify="flex-end">
         <Button onClick={act} size="xs" variant="default">{t(ACTION_KEYS[pause])}</Button>

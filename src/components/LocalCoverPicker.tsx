@@ -67,7 +67,7 @@ export function LocalCoverPicker({
 
   return (
     <Stack gap={4}>
-      <Text fw={500} size="sm">
+      <Text fw="var(--norea-weight-medium)" size="sm">
         {t("library.localNovel.cover")}
       </Text>
       <Group align="center" gap="sm">

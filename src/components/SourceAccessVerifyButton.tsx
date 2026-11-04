@@ -84,7 +84,7 @@ export function SourceAccessNotice({
     <section className="norea-source-access-notice" role="status">
       <WarningIcon className="norea-source-access-notice-icon" size="1.25rem" />
       <div className="norea-source-access-notice-copy">
-        <Text fw={700} size="sm">
+        <Text fw="var(--norea-weight-bold)" size="sm">
           {t("sourceAccess.notice.title", { source: sourceName })}
         </Text>
         <Text c="dimmed" size="sm">

@@ -121,7 +121,7 @@ export function useServerLibraryAdd(server: string): {
     >
       <Stack gap="md">
         <Text c="dimmed" size="sm">{t("serverLibraryAdd.confirmMessage")}</Text>
-        <Text fw={600} size="sm">{t("serverLibraryAdd.categories")}</Text>
+        <Text fw="var(--norea-weight-bold)" size="sm">{t("serverLibraryAdd.categories")}</Text>
         {categoriesQuery.isPending ? <Loader size="sm" /> : null}
         {categoriesQuery.error ? <Text c="danger" role="alert" size="sm">{t("categories.loadFailed")}</Text> : null}
         {categories.map(category => (

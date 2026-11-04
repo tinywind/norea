@@ -965,7 +965,7 @@ function SourceAccessBanner({
   return (
     <section className="norea-source-access-banner" data-source-access={block.scopeKey} role="alert">
       <div className="norea-source-access-copy">
-        <Text component="h3" fw={700} size="sm">
+        <Text component="h3" fw="var(--norea-weight-bold)" size="sm">
           {title} · {hostname}
         </Text>
         <Text c="dimmed" component="p" size="sm">

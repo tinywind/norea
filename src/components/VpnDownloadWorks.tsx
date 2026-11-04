@@ -245,7 +245,7 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
         return (
           <Stack key={range.id} gap="xs" className="norea-vpn-download-range" data-vpn-range={range.id} component="section" aria-label={`${plan.title}: ${interval}`}>
             <Group justify="space-between" gap="sm">
-              <Text size="sm" fw={500} className="norea-vpn-download-heading">{interval}</Text>
+              <Text size="sm" fw="var(--norea-weight-medium)" className="norea-vpn-download-heading">{interval}</Text>
               <Text size="sm" className="norea-vpn-download-progress">{t("vpnDownload.workProgress", { completed: range.checkpoint, total: range.selectedChapterIds.length })}</Text>
             </Group>
             <Progress aria-label={t("vpnDownload.progressLabel")} value={range.selectedChapterIds.length ? range.checkpoint / range.selectedChapterIds.length * 100 : 100} size="xs" />

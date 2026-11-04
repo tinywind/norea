@@ -136,7 +136,7 @@ export function NovelCard({
               "linear-gradient(180deg, transparent, rgba(0, 0, 0, 0.78))",
           }}
         >
-          <Text size="sm" fw={600} lineClamp={2} c="white" title={name}>
+          <Text size="sm" fw="var(--norea-weight-bold)" lineClamp={2} c="white" title={name}>
             {name}
           </Text>
         </Box>
@@ -146,7 +146,7 @@ export function NovelCard({
 
   const title =
     displayMode === "comfortable" ? (
-      <Text size="sm" fw={500} lineClamp={2} mt="xs" title={name}>
+      <Text size="sm" fw="var(--norea-weight-medium)" lineClamp={2} mt="xs" title={name}>
         {name}
       </Text>
     ) : null;
@@ -173,7 +173,7 @@ export function NovelCard({
         <Group gap="sm" align="center" wrap="nowrap">
           {coverImage}
           <Stack gap={2} style={{ minWidth: 0, flex: 1 }}>
-            <Text size="sm" fw={600} lineClamp={2} title={name}>
+            <Text size="sm" fw="var(--norea-weight-bold)" lineClamp={2} title={name}>
               {name}
             </Text>
             <Text size="xs" c="dimmed">

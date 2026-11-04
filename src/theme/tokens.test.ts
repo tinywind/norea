@@ -160,6 +160,28 @@ describe("design token guard", () => {
       expect(violations(name)).toEqual([]);
     });
   }
+
+  it("keeps component font weights on the weight tokens", () => {
+    const srcDir = new URL("../", import.meta.url);
+    const literals = readdirSync(srcDir, { recursive: true, encoding: "utf8" })
+      .map((name) => name.replaceAll("\\", "/"))
+      .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx"))
+      .flatMap((name) =>
+        readFileSync(new URL(name, srcDir), "utf8")
+          .split("\n")
+          .flatMap((line, index) => (/\bfw=\{?["']?\d/.test(line) ? [`${name}:${index + 1}`] : [])),
+      );
+    expect(literals).toEqual([]);
+  });
+
+  it("draws every segmented control through SegmentedToggle", () => {
+    const srcDir = new URL("../", import.meta.url);
+    const raw = readdirSync(srcDir, { recursive: true, encoding: "utf8" })
+      .map((name) => name.replaceAll("\\", "/"))
+      .filter((name) => name.endsWith(".tsx") && !name.endsWith(".test.tsx") && !name.endsWith("SegmentedToggle.tsx"))
+      .filter((name) => readFileSync(new URL(name, srcDir), "utf8").includes("<SegmentedControl"));
+    expect(raw).toEqual([]);
+  });
 });
 
 describe("design token guard rules", () => {

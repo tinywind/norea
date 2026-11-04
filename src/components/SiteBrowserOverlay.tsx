@@ -598,7 +598,7 @@ export function SiteBrowserOverlay() {
         {phase === "error" ? (
           <div className="norea-site-browser-cover norea-site-browser-error" role="alert">
             <div className="norea-site-browser-error-copy">
-              <Text fw={600}>{t("siteBrowser.navigationFailed")}</Text>
+              <Text fw="var(--norea-weight-bold)">{t("siteBrowser.navigationFailed")}</Text>
               <Text c="dimmed" size="sm">
                 {t("siteBrowser.navigationFailedDescription")}
               </Text>

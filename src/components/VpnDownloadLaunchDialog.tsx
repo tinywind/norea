@@ -43,7 +43,7 @@ export function VpnDownloadLaunchDialog({ snapshot, onClose }: { snapshot: VpnDo
       </SheetActions>}>
       <Stack gap="md">
         <Text size="sm">{t("vpnDownload.launchHint")}</Text>
-        <Text size="sm" fw={600}>{t("vpnDownload.workerTarget", { count: options.workerCount })}</Text>
+        <Text size="sm" fw="var(--norea-weight-bold)">{t("vpnDownload.workerTarget", { count: options.workerCount })}</Text>
         <Text size="sm">{t("vpnDownload.policySummary", { captcha: t(`vpnDownload.policy.${options.captchaPolicy}`), cloudflare: t(`vpnDownload.policy.${options.cloudflarePolicy}`) })}</Text>
         {snapshot.loading || vault.isPending ? <Text size="sm" role="status">{t("vpnDownload.loading")}</Text> : null}
         {!snapshot.capabilities.supported ? <Alert color="warn">{t("vpnDownload.unsupported")}</Alert> : null}

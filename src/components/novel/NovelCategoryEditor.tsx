@@ -162,7 +162,7 @@ export function NovelCategoryEditor({
         title={t("categories.editWork")}
       >
         <Stack gap="md">
-          <Text fw={600}>{novelName}</Text>
+          <Text fw="var(--norea-weight-bold)">{novelName}</Text>
           <Text c="dimmed" size="sm">{t("categories.editWorkDescription")}</Text>
           {errorMessage ? (
             <Alert color="danger" role="alert">

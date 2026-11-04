@@ -1,4 +1,5 @@
-import { Group, SegmentedControl, Select, Stack } from "@mantine/core";
+import { Group, Select, Stack } from "@mantine/core";
+import { SegmentedToggle } from "./SegmentedToggle";
 import { useQuery } from "@tanstack/react-query";
 import { listCategories, UNCATEGORIZED_CATEGORY_ID } from "../db/queries/category";
 import { SettingsFieldRow, SettingsSection } from "./SettingsPrimitives";
@@ -89,7 +90,7 @@ export function LibrarySettingsPanel() {
                 }
               }}
             />
-            <SegmentedControl
+            <SegmentedToggle
               aria-label={t("library.viewOptions.direction")}
               data={(["asc", "desc"] as const).map((value) => ({
                 value,

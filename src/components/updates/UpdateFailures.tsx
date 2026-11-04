@@ -98,7 +98,7 @@ export function UpdateFailures({
         <section className="norea-updates-failure-notice" role="status">
           <WarningIcon className="norea-updates-failure-icon" size="1.25rem" />
           <div className="norea-updates-failure-copy">
-            <Text fw={700} size="sm">
+            <Text fw="var(--norea-weight-bold)" size="sm">
               {t("updates.failure.oneSource", { name: single.name })}
             </Text>
             <Text c="dimmed" size="sm">
@@ -179,7 +179,7 @@ export function UpdateFailures({
                 <div className="norea-updates-failure-source-header">
                   <Text
                     component="h3"
-                    fw={700}
+                    fw="var(--norea-weight-bold)"
                     id={`norea-updates-failed-${source.pluginId}`}
                     size="sm"
                   >

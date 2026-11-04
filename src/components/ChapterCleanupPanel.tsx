@@ -156,7 +156,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
         {inspecting ? <TextButton onClick={clearPreview}>{t("common.cancel")}</TextButton> : null}</Group> : null}
       {inspecting ? <Text size="sm" role="status">{t("chapterCleanup.checking", { count: checked })}</Text> : null}
       {preview && approved ? <Stack gap="xs">
-        <Text fw={600}>{t("chapterCleanup.summary", { works: approved.workCount, chapters: approved.targets.length, size: formatBytes(approved.payloadBytes, locale) })}</Text>
+        <Text fw="var(--norea-weight-bold)">{t("chapterCleanup.summary", { works: approved.workCount, chapters: approved.targets.length, size: formatBytes(approved.payloadBytes, locale) })}</Text>
         {protectedCounts.unread > 0 ? <Checkbox checked={approval.includeUnread} disabled={running || confirming}
           label={t("chapterCleanup.includeUnread", { count: protectedCounts.unread })}
           onChange={event => { const checked = event.currentTarget.checked; setApproval(current => ({ ...current, includeUnread: checked })); }} /> : null}
@@ -178,7 +178,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
       </Stack> : null}
       {running ? <Stack gap="xs"><Text role="status" size="sm">{t("chapterCleanup.progress", { done: result ? result.deleted + result.skipped + result.failed : 0, total: approved?.targets.length ?? result?.total ?? 0 })}</Text>
         <TextButton onClick={() => { if (taskId.current) taskScheduler.cancel(taskId.current); }}>{t("chapterCleanup.cancelTask")}</TextButton></Stack> : null}
-      {result && !running ? <Stack gap="xs"><Text fw={600}>{t("chapterCleanup.result", { deleted: result.deleted, skipped: result.skipped, failed: result.failed, cancelled: result.cancelled, size: formatBytes(result.bytesFreed, locale) })}</Text>
+      {result && !running ? <Stack gap="xs"><Text fw="var(--norea-weight-bold)">{t("chapterCleanup.result", { deleted: result.deleted, skipped: result.skipped, failed: result.failed, cancelled: result.cancelled, size: formatBytes(result.bytesFreed, locale) })}</Text>
         {[...resultReasons.entries()].slice(0, 10).map(([reason, count]) => <Text size="sm" key={reason}>
           {reason === "other" ? t("chapterCleanup.skip.other") : t(SKIP_LABELS[reason as ChapterCleanupSkipReason])}: {count}
         </Text>)}

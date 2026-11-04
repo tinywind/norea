@@ -646,7 +646,7 @@ export function PluginVpnFinder({
                       <Text
                         className="norea-plugin-vpn-finder-card-country"
                         component="span"
-                        fw={700}
+                        fw="var(--norea-weight-bold)"
                         size="sm"
                       >
                         {countryFlag(server.countryCode)} {server.countryName}

@@ -42,7 +42,7 @@ export function BackupFolderAttention() {
   return (
     <section className="norea-source-access-banner" data-backup-folder-unavailable="true" role="status">
       <div className="norea-source-access-copy">
-        <Text component="h3" fw={700} size="sm">{t("settings.backup.auto.folderUnavailable")}</Text>
+        <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{t("settings.backup.auto.folderUnavailable")}</Text>
       </div>
       <Group gap="xs" justify="flex-end">
         <Button loading={busy} onClick={() => void chooseFolder()} size="xs" variant="default">

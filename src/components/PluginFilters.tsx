@@ -138,7 +138,7 @@ export function PluginFilters({
             const v = (current?.value ?? emptyFilterValue(def)) as string[];
             return (
               <Stack gap={4} key={key}>
-                <Text size="sm" fw={500}>
+                <Text size="sm" fw="var(--norea-weight-medium)">
                   {def.label}
                 </Text>
                 <Checkbox.Group
@@ -193,7 +193,7 @@ export function PluginFilters({
 
             return (
               <Stack gap={4} key={key}>
-                <Text fw={500} id={labelId} size="sm">
+                <Text fw="var(--norea-weight-medium)" id={labelId} size="sm">
                   {def.label}
                 </Text>
                 <Text c="dimmed" size="xs">
