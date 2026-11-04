@@ -15,6 +15,7 @@ import {
   ReaderTopBar,
 } from "../components/reader/ReaderChrome";
 import { getReaderChromeThemeStyle } from "../components/reader/reader-chrome-theme";
+import { chapterScrollAnchorForProgress } from "../components/reader/reader-scroll-anchor";
 import {
   ReaderEndOfNovel,
   useNovelEndCheck,
@@ -25,6 +26,7 @@ import { useReaderChapterNavigation } from "../components/reader/use-reader-chap
 import { useReaderChrome } from "../components/reader/use-reader-chrome";
 import { useReaderKeyboard } from "../components/reader/use-reader-keyboard";
 import { useReaderPersistence } from "../components/reader/use-reader-persistence";
+import { type ReaderSavedScrollAnchor } from "../components/reader/use-reader-progress";
 import { useReaderSettings } from "../components/reader/use-reader-settings";
 import {
   ReaderContent,
@@ -116,6 +118,9 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   });
   const fullPageReader = effectiveReaderGeneral.fullPageReader;
   const setNovelPageIndex = useReaderStore((state) => state.setNovelPageIndex);
+  const setChapterScrollAnchor = useReaderStore(
+    (state) => state.setChapterScrollAnchor,
+  );
 
   const chapterListQuery = useQuery({
     queryKey: chapterListQueryKey(currentNovelId),
@@ -237,6 +242,19 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       ? initialProgressOverride.progress
       : null;
   const readerProgress = activeInitialProgressOverride ?? progress;
+  // Read once per chapter state instead of subscribing: the reader rewrites the anchor while scrolling.
+  const readerScrollAnchor = useMemo(
+    () =>
+      chapter &&
+      readerProgressPersistenceReady &&
+      activeInitialProgressOverride === null
+        ? chapterScrollAnchorForProgress(
+            useReaderStore.getState().chapterScrollAnchors[chapter.id],
+            chapter.progress,
+          )
+        : null,
+    [activeInitialProgressOverride, chapter, readerProgressPersistenceReady],
+  );
   const chapterNovelId = chapter?.novelId;
   const readerStateVisible =
     chapterId <= 0 ||
@@ -379,6 +397,28 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       currentNovelId,
       readerProgressPersistenceReady,
       persistProgress,
+    ],
+  );
+  const handleScrollAnchorChange = useCallback(
+    (anchor: ReaderSavedScrollAnchor | null) => {
+      const targetChapterId = chapter?.id;
+      if (
+        !readerProgressPersistenceReady ||
+        !targetChapterId ||
+        currentNovelId <= 0
+      ) {
+        return;
+      }
+      setChapterScrollAnchor(
+        targetChapterId,
+        anchor ? { ...anchor, novelId: currentNovelId } : null,
+      );
+    },
+    [
+      chapter?.id,
+      currentNovelId,
+      readerProgressPersistenceReady,
+      setChapterScrollAnchor,
     ],
   );
   const handlePageIndexChange = useCallback(
@@ -537,10 +577,14 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       html={content}
       preparedDocument={readerPreparation.document}
       initialProgress={readerProgress}
+      initialScrollAnchor={readerScrollAnchor}
       localMediaContext={readerLocalMediaContext}
       onToggleChrome={handleReaderMenuTap}
       onProgressChange={
         readerProgressPersistenceReady ? handleProgressChange : undefined
+      }
+      onScrollAnchorChange={
+        readerProgressPersistenceReady ? handleScrollAnchorChange : undefined
       }
       onPageIndexChange={handlePageIndexChange}
       onBoundaryPage={handleBoundaryPage}

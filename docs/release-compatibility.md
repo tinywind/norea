@@ -156,6 +156,18 @@ requirements must be decided explicitly before implementation.
   `legacyReadAheadMigrated` flag in `download-goal-settings` records that this
   ran, so later changes to either setting are never overwritten. A restored
   backup without the flag repeats the step at the next start.
+- Scroll-mode reading positions are an additive `chapterScrollAnchors` map in
+  the `reader-settings` entry, keyed by chapter id and capped at the 100 most
+  recently saved chapters. Each entry names the content block at the viewport
+  top (and the image inside it, when there is one), how far into it the reader
+  was, the document's block count, and the progress saved with it. The reader
+  reopens at the anchor only when the block count matches and the chapter's
+  stored progress still equals that saved progress or is 100; otherwise it
+  restores `chapter.progress`, which stays the read percentage for lists and
+  history. Malformed entries are dropped when settings load, and an entry that
+  no longer matches its chapter after a restore is ignored. Both backup kinds
+  carry the map with the other reader settings; work deletion removes a work's
+  entries and novel merges remap them.
 - Automatically tested VPN Gate servers live in `plugin-vpn/automatic-profiles/`
   beside the approved `saved-profiles/` vault, with their own index and private
   files. They never write or change an O/X verdict; an entry leaves the pool when

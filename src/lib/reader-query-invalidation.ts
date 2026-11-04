@@ -136,6 +136,8 @@ export function invalidateChapterReadStateQueries(
     invalidate(queryClient, novelChaptersQueryKey(novelId), true),
     invalidate(queryClient, ["chapter", "detail"]),
     invalidate(queryClient, novelLibraryQueryKey),
+    invalidate(queryClient, chapterHistoryQueryKey),
+    invalidate(queryClient, chapterUpdatesQueryKey),
   ]).then(() => undefined);
 }
 

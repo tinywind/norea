@@ -45,6 +45,7 @@ import {
   getEffectiveReaderAppearanceSettings,
   getEffectiveReaderGeneralSettings,
   READER_APPEARANCE_DEFAULTS,
+  READER_CHAPTER_SCROLL_ANCHOR_LIMIT,
   READER_GENERAL_DEFAULTS,
   READER_PRESET_THEMES,
   READER_TAP_PRESETS,
@@ -510,6 +511,99 @@ describe("useReaderStore", () => {
 
     expect(useReaderStore.getState().lastReadChapterByNovel).toEqual({});
     expect(useReaderStore.getState().novelPageIndexByNovel).toEqual({});
+  });
+
+  it("saves, forgets and caps chapter scroll anchors", () => {
+    const anchor = {
+      novelId: 1,
+      progress: 40,
+      segmentCount: 10,
+      segmentIndex: 4,
+      mediaOrdinal: 0,
+      offset: 0.5,
+    };
+    useReaderStore.setState({ chapterScrollAnchors: {} });
+    for (let chapterId = 1; chapterId <= READER_CHAPTER_SCROLL_ANCHOR_LIMIT + 1; chapterId += 1) {
+      vi.spyOn(Date, "now").mockReturnValueOnce(chapterId);
+      useReaderStore.getState().setChapterScrollAnchor(chapterId, anchor);
+    }
+
+    const anchors = useReaderStore.getState().chapterScrollAnchors;
+    expect(Object.keys(anchors)).toHaveLength(READER_CHAPTER_SCROLL_ANCHOR_LIMIT);
+    expect(anchors[1]).toBeUndefined();
+    expect(anchors[2]).toEqual({ ...anchor, savedAt: 2 });
+
+    const before = useReaderStore.getState();
+    useReaderStore.getState().setChapterScrollAnchor(1, null);
+    expect(useReaderStore.getState()).toBe(before);
+    useReaderStore.getState().setChapterScrollAnchor(2, null);
+    expect(useReaderStore.getState().chapterScrollAnchors[2]).toBeUndefined();
+  });
+
+  it("keeps valid chapter scroll anchors through rehydration and drops malformed ones", async () => {
+    const valid = {
+      novelId: 1,
+      progress: 40,
+      savedAt: 5,
+      segmentCount: 10,
+      segmentIndex: 4,
+      offset: 0.5,
+    };
+    localStorageHarness.values.set(
+      "reader-settings",
+      JSON.stringify({
+        state: {
+          chapterScrollAnchors: {
+            11: valid,
+            12: { ...valid, segmentIndex: 10 },
+            13: { ...valid, offset: 2 },
+            nope: valid,
+          },
+        },
+        version: 0,
+      }),
+    );
+
+    await useReaderStore.persist.rehydrate();
+
+    expect(useReaderStore.getState().chapterScrollAnchors).toEqual({ 11: valid });
+  });
+
+  it("moves chapter scroll anchors with novel merges and drops them with the work", () => {
+    const anchor = {
+      progress: 40,
+      savedAt: 5,
+      segmentCount: 10,
+      segmentIndex: 4,
+      offset: 0.5,
+    };
+    useReaderStore.setState({
+      chapterScrollAnchors: {
+        11: { ...anchor, novelId: 1 },
+        12: { ...anchor, novelId: 1 },
+        21: { ...anchor, novelId: 2, segmentIndex: 1 },
+        31: { ...anchor, novelId: 3 },
+      },
+    });
+
+    useReaderStore.getState().mergeNovelReaderState({
+      sourceNovelId: 1,
+      targetNovelId: 2,
+      chapterIdMap: { 11: 21, 12: 22 },
+    });
+
+    expect(useReaderStore.getState().chapterScrollAnchors).toEqual({
+      21: { ...anchor, novelId: 2, segmentIndex: 1 },
+      22: { ...anchor, novelId: 2 },
+      31: { ...anchor, novelId: 3 },
+    });
+
+    useReaderStore.getState().removeNovelReaderState(2);
+    expect(useReaderStore.getState().chapterScrollAnchors).toEqual({
+      31: { ...anchor, novelId: 3 },
+    });
+    useReaderStore.getState().resetReadingProgress();
+    expect(useReaderStore.getState().chapterScrollAnchors).toEqual({});
   });
 
   it("resetReaderSettings returns general + appearance to defaults", () => {

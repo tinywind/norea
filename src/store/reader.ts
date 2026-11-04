@@ -194,11 +194,33 @@ export interface MergeNovelReaderStateInput {
   preferredLastReadChapterId?: number | null;
 }
 
+/** Scroll-mode reading position inside one chapter: the content block at the top of the viewport. */
+export interface ReaderScrollAnchor {
+  /** `data-norea-reader-segment-index` of the top-visible content block. */
+  segmentIndex: number;
+  /** Position of the top-visible image or video among the media of that block. */
+  mediaOrdinal?: number;
+  /** Fraction of the anchored element's height above the viewport top, 0 to 1. */
+  offset: number;
+  /** Segment count of the document the anchor was taken from. */
+  segmentCount: number;
+}
+
+export interface ReaderChapterScrollAnchor extends ReaderScrollAnchor {
+  novelId: number;
+  /** Chapter progress the reader saved together with this anchor. */
+  progress: number;
+  savedAt: number;
+}
+
+export const READER_CHAPTER_SCROLL_ANCHOR_LIMIT = 100;
+
 interface ReaderState {
   general: ReaderGeneralSettings;
   appearance: ReaderAppearanceSettings;
   lastReadChapterByNovel: Record<number, number>;
   novelPageIndexByNovel: Record<number, number>;
+  chapterScrollAnchors: Record<number, ReaderChapterScrollAnchor>;
   readerSettingsByNovel: Record<number, ReaderNovelSettingsOverride>;
   readerSettingsBySource: Record<string, ReaderSourceSettingsOverride>;
   setGeneral: (settings: Partial<ReaderGeneralSettings>) => void;
@@ -250,6 +272,11 @@ interface ReaderState {
   applyTapZonePreset: (presetId: ReaderTapPresetId) => void;
   setLastReadChapter: (novelId: number, chapterId: number) => void;
   setNovelPageIndex: (novelId: number, pageIndex: number) => void;
+  /** Saves or, with `null`, forgets the scroll anchor of one chapter. */
+  setChapterScrollAnchor: (
+    chapterId: number,
+    anchor: Omit<ReaderChapterScrollAnchor, "savedAt"> | null,
+  ) => void;
   mergeNovelReaderState: (input: MergeNovelReaderStateInput) => void;
   removeNovelReaderState: (novelId: number) => void;
   resetReadingProgress: () => void;
@@ -878,6 +905,62 @@ function normalizeReaderSettingsOverrideEntry(
   return nextOverride;
 }
 
+function limitChapterScrollAnchors(
+  anchors: Record<number, ReaderChapterScrollAnchor>,
+): Record<number, ReaderChapterScrollAnchor> {
+  const entries = Object.entries(anchors);
+  if (entries.length <= READER_CHAPTER_SCROLL_ANCHOR_LIMIT) return anchors;
+  return Object.fromEntries(
+    entries
+      .sort(([, left], [, right]) => right.savedAt - left.savedAt)
+      .slice(0, READER_CHAPTER_SCROLL_ANCHOR_LIMIT),
+  );
+}
+
+function isNonNegativeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+
+function normalizeChapterScrollAnchors(
+  value: unknown,
+): Record<number, ReaderChapterScrollAnchor> {
+  if (!isRecord(value)) return {};
+  const anchors: Record<number, ReaderChapterScrollAnchor> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    const chapterId = Number(key);
+    if (!Number.isInteger(chapterId) || chapterId <= 0 || !isRecord(entry)) {
+      continue;
+    }
+    const { mediaOrdinal, novelId, offset, progress, savedAt, segmentCount, segmentIndex } =
+      entry;
+    if (
+      !isNonNegativeInteger(novelId) ||
+      !isNonNegativeInteger(segmentIndex) ||
+      !isNonNegativeInteger(segmentCount) ||
+      segmentIndex >= segmentCount ||
+      typeof offset !== "number" ||
+      !(offset >= 0 && offset <= 1) ||
+      typeof progress !== "number" ||
+      !(progress >= 0 && progress <= 100) ||
+      typeof savedAt !== "number" ||
+      !Number.isFinite(savedAt) ||
+      (mediaOrdinal !== undefined && !isNonNegativeInteger(mediaOrdinal))
+    ) {
+      continue;
+    }
+    anchors[chapterId] = {
+      novelId,
+      progress,
+      savedAt,
+      segmentCount,
+      segmentIndex,
+      offset,
+      ...(mediaOrdinal === undefined ? {} : { mediaOrdinal }),
+    };
+  }
+  return limitChapterScrollAnchors(anchors);
+}
+
 function normalizeReaderSettingsByNovel(
   value: unknown,
 ): Record<number, ReaderNovelSettingsOverride> {
@@ -969,6 +1052,7 @@ export const useReaderStore = create<ReaderState>()(
       appearance: READER_APPEARANCE_DEFAULTS,
       lastReadChapterByNovel: {},
       novelPageIndexByNovel: {},
+      chapterScrollAnchors: {},
       readerSettingsByNovel: {},
       readerSettingsBySource: {},
       setGeneral: (settings) =>
@@ -1290,6 +1374,21 @@ export const useReaderStore = create<ReaderState>()(
             [novelId]: Math.max(1, Math.round(pageIndex)),
           },
         })),
+      setChapterScrollAnchor: (chapterId, anchor) =>
+        set((state) => {
+          if (!anchor) {
+            if (!(chapterId in state.chapterScrollAnchors)) return state;
+            const { [chapterId]: _removed, ...chapterScrollAnchors } =
+              state.chapterScrollAnchors;
+            return { chapterScrollAnchors };
+          }
+          return {
+            chapterScrollAnchors: limitChapterScrollAnchors({
+              ...state.chapterScrollAnchors,
+              [chapterId]: { ...anchor, savedAt: Date.now() },
+            }),
+          };
+        }),
       mergeNovelReaderState: ({
         chapterIdMap,
         preferredLastReadChapterId,
@@ -1311,6 +1410,22 @@ export const useReaderStore = create<ReaderState>()(
             [sourceNovelId]: sourceReaderSettings,
             ...readerSettingsByNovel
           } = state.readerSettingsByNovel;
+          const chapterScrollAnchors: Record<number, ReaderChapterScrollAnchor> =
+            {};
+          for (const [chapterId, anchor] of Object.entries(
+            state.chapterScrollAnchors,
+          )) {
+            if (anchor.novelId !== sourceNovelId) {
+              chapterScrollAnchors[Number(chapterId)] = anchor;
+              continue;
+            }
+            const targetChapterId = chapterIdMap[Number(chapterId)];
+            if (targetChapterId === undefined) continue;
+            chapterScrollAnchors[targetChapterId] ??= {
+              ...anchor,
+              novelId: targetNovelId,
+            };
+          }
 
           const mappedSourceLastReadChapterId = sourceLastReadChapterId
             ? chapterIdMap[sourceLastReadChapterId]
@@ -1337,6 +1452,7 @@ export const useReaderStore = create<ReaderState>()(
           }
 
           return {
+            chapterScrollAnchors,
             lastReadChapterByNovel,
             novelPageIndexByNovel,
             readerSettingsByNovel,
@@ -1347,10 +1463,21 @@ export const useReaderStore = create<ReaderState>()(
           const { [novelId]: _chapter, ...lastReadChapterByNovel } = state.lastReadChapterByNovel;
           const { [novelId]: _page, ...novelPageIndexByNovel } = state.novelPageIndexByNovel;
           const { [novelId]: _settings, ...readerSettingsByNovel } = state.readerSettingsByNovel;
-          return { lastReadChapterByNovel, novelPageIndexByNovel, readerSettingsByNovel };
+          const chapterScrollAnchors = Object.fromEntries(
+            Object.entries(state.chapterScrollAnchors).filter(
+              ([, anchor]) => anchor.novelId !== novelId,
+            ),
+          );
+          return {
+            chapterScrollAnchors,
+            lastReadChapterByNovel,
+            novelPageIndexByNovel,
+            readerSettingsByNovel,
+          };
         }),
       resetReadingProgress: () =>
         set({
+          chapterScrollAnchors: {},
           lastReadChapterByNovel: {},
           novelPageIndexByNovel: {},
         }),
@@ -1430,6 +1557,9 @@ export const useReaderStore = create<ReaderState>()(
           ...persisted,
           general,
           appearance,
+          chapterScrollAnchors: normalizeChapterScrollAnchors(
+            persisted.chapterScrollAnchors,
+          ),
           readerSettingsByNovel: normalizeReaderSettingsByNovel(
             persisted.readerSettingsByNovel,
           ),
@@ -1443,6 +1573,7 @@ export const useReaderStore = create<ReaderState>()(
         appearance: state.appearance,
         lastReadChapterByNovel: state.lastReadChapterByNovel,
         novelPageIndexByNovel: state.novelPageIndexByNovel,
+        chapterScrollAnchors: state.chapterScrollAnchors,
         readerSettingsByNovel: state.readerSettingsByNovel,
         readerSettingsBySource: state.readerSettingsBySource,
       }),

@@ -703,6 +703,13 @@ export async function upsertChapter(
   return { rowsAffected: result.rowsAffected };
 }
 
+/**
+ * Reader position saves never lower a finished chapter: reopening it lands near the end and
+ * lazily loaded images then shift that position, which would otherwise overwrite "read" with
+ * a partial value. Explicit read-state changes go through setChaptersReadState instead.
+ */
+const KEEP_FINISHED_PROGRESS_SQL = "CASE WHEN progress >= 100 THEN progress ELSE $2 END";
+
 export async function updateChapterProgress(
   chapterId: number,
   progress: number,
@@ -715,7 +722,7 @@ export async function updateChapterProgress(
     await db.execute(
       `UPDATE chapter
        SET
-         progress   = $2,
+         progress   = ${KEEP_FINISHED_PROGRESS_SQL},
          unread     = CASE WHEN $2 >= 100 THEN 0 ELSE unread END,
          read_at    = CASE WHEN $2 > 0 THEN unixepoch() ELSE read_at END,
          updated_at = unixepoch()
@@ -736,7 +743,7 @@ export async function updateChapterProgress(
   await db.execute(
     `UPDATE chapter
      SET
-       progress   = $2,
+       progress   = ${KEEP_FINISHED_PROGRESS_SQL},
        unread     = CASE WHEN $2 >= 100 THEN 0 ELSE unread END,
        updated_at = unixepoch()
      WHERE id = $1`,

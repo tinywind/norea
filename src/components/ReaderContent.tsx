@@ -19,6 +19,7 @@ import {
   useReaderStore,
   type ReaderAppearanceSettings,
   type ReaderGeneralSettings,
+  type ReaderScrollAnchor,
 } from "../store/reader";
 import { ReaderSeekbars } from "./ReaderSeekbars";
 import {
@@ -36,7 +37,10 @@ import { useReaderAutoScroll } from "./reader/use-reader-auto-scroll";
 import { useReaderContentMedia } from "./reader/use-reader-content-media";
 import { useReaderContentStyle } from "./reader/use-reader-content-style";
 import { useReaderGestures } from "./reader/use-reader-gestures";
-import { useReaderProgress } from "./reader/use-reader-progress";
+import {
+  useReaderProgress,
+  type ReaderSavedScrollAnchor,
+} from "./reader/use-reader-progress";
 import { useReaderScrollLayout } from "./reader/use-reader-scroll-layout";
 import { useReaderWakeLock } from "./reader/use-reader-wake-lock";
 
@@ -56,9 +60,11 @@ interface ReaderContentProps {
   html: string;
   preparedDocument?: PreparedReaderDocument;
   initialProgress?: number;
+  initialScrollAnchor?: ReaderScrollAnchor | null;
   interactionBlocked?: boolean;
   localMediaContext?: ChapterMediaStorageContext;
   onProgressChange?: (progress: number) => void;
+  onScrollAnchorChange?: (anchor: ReaderSavedScrollAnchor | null) => void;
   onPageIndexChange?: (pageIndex: number) => void;
   onMediaError?: (source: string | null) => void;
   onSeekbarActivity?: () => void;
@@ -81,9 +87,11 @@ function ReaderContentInner(
     chromeVisible = true,
     contentKey,
     initialProgress = 0,
+    initialScrollAnchor = null,
     interactionBlocked = false,
     localMediaContext,
     onProgressChange,
+    onScrollAnchorChange,
     onPageIndexChange,
     onMediaError,
     onSeekbarActivity,
@@ -224,16 +232,20 @@ function ReaderContentInner(
   } = useReaderProgress({
     contentKey,
     initialProgress,
+    initialScrollAnchor,
     isPagedReader,
     layoutRestoreKey,
     virtualDocument,
+    segmentOffsets,
     completedForNavigationRef,
     pageScrollAnimatingRef,
+    contentRef,
     getActiveScrollNode,
     enforceScrollStepFloor,
     syncScrollVirtualRange,
     cancelPagedScrollAnimation,
     onProgressChange,
+    onScrollAnchorChange,
     onPageIndexChange,
   });
   const positionLabel = isPagedReader

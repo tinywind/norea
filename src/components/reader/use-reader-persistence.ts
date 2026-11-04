@@ -69,7 +69,7 @@ export function useReaderPersistence(
     }) => {
       const applyProgress = <T extends ChapterListRow>(chapter: T): T => ({
         ...chapter,
-        progress,
+        progress: chapter.progress >= FINISHED_PROGRESS ? chapter.progress : progress,
         unread: progress >= FINISHED_PROGRESS ? false : chapter.unread,
         readAt:
           !recordHistory || progress <= 0

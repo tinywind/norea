@@ -90,6 +90,8 @@ describe("reader query invalidation", () => {
       novelChaptersQueryKey(7),
       ["chapter", "detail"],
       novelLibraryQueryKey,
+      chapterHistoryQueryKey,
+      chapterUpdatesQueryKey,
     ]);
   });
 

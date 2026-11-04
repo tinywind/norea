@@ -8,6 +8,7 @@ import {
   restoreChapterReadStates,
   setChaptersReadState,
   setRelativeChaptersReadState,
+  updateChapterProgress,
 } from "./chapter";
 
 let sqlite: DatabaseSync;
@@ -87,4 +88,22 @@ it("restores many chapters with different progress in bounded statements", async
 it("restores nothing for an empty capture", async () => {
   await expect(restoreChapterReadStates([])).resolves.toEqual({ rowsAffected: 0, chunks: 0 });
   expect(runDatabaseTransaction).not.toHaveBeenCalled();
+});
+
+it.each([true, false])(
+  "keeps a finished chapter finished when the reader saves a lower position (history %s)",
+  async (recordHistory) => {
+    await updateChapterProgress(1, 49, { recordHistory });
+    await updateChapterProgress(3, 70, { recordHistory });
+    const rows = readStates();
+    expect(rows[0]).toEqual({ id: 1, unread: false, progress: 100 });
+    expect(rows[2]).toEqual({ id: 3, unread: true, progress: 70 });
+  },
+);
+
+it("still lets an explicit unread mark clear a finished chapter", async () => {
+  await setChaptersReadState([1], true);
+  expect(readStates()[0]).toEqual({ id: 1, unread: true, progress: 0 });
+  await updateChapterProgress(1, 30);
+  expect(readStates()[0]).toEqual({ id: 1, unread: true, progress: 30 });
 });
