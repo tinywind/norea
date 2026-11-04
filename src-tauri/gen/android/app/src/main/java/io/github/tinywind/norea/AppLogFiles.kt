@@ -40,7 +40,7 @@ internal class AppLogFiles(
   fun write(category: AppLogCategory, bytes: ByteArray): AppLogWriteResult {
     if (bytes.size > APP_LOG_FILE_BYTES) return AppLogWriteResult.Unavailable("Log exceeds the file limit")
     return try {
-      check(stateDirectory.isDirectory || stateDirectory.mkdirs()) { "Log state directory is unavailable" }
+      check(stateDirectory.isDirectory || stateDirectory.mkdirs() || stateDirectory.isDirectory) { "Log state directory is unavailable" }
       val root = stateDirectory.canonicalFile
       val state = File(root, "${category.value}.state")
       check(state.canonicalFile == state.absoluteFile) { "Linked log state is not allowed" }

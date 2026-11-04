@@ -66,6 +66,20 @@ class AppLogFilesTest {
   }
 
   @Test
+  fun stateDirectoryCreatedByAnotherWriterRemainsUsable() {
+    val root = temporary.newFolder("logs")
+    val state = object : File(temporary.root, "state") {
+      override fun mkdirs(): Boolean {
+        check(super.mkdirs())
+        return false
+      }
+    }
+    val result = store(root, state).write(AppLogCategory.RUNTIME, "line\n".toByteArray())
+    assertTrue(result.toString(), result is AppLogWriteResult.Saved)
+    assertEquals("line\n", files(root, "runtime").single().readText())
+  }
+
+  @Test
   fun concurrentStoresDoNotLoseRecordsOrReuseSequences() {
     val root = temporary.newFolder("logs")
     val pool = Executors.newFixedThreadPool(6)
