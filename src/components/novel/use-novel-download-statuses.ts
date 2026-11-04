@@ -6,6 +6,9 @@ import {
   type ChapterDownloadStatus,
 } from "../../lib/tasks/chapter-download";
 
+// Big batches change several chapters per frame; each flush re-renders the whole novel page.
+export const STATUS_FLUSH_MIN_INTERVAL_MS = 250;
+
 function sameStatus(current: ChapterDownloadStatus | undefined, next: ChapterDownloadStatus) {
   return current?.kind === next.kind &&
     ((current.kind !== "queued" && current.kind !== "running") ||
@@ -25,10 +28,14 @@ export function useNovelDownloadStatuses(
   useEffect(() => {
     if (!active) return;
     let animationFrame: number | null = null;
+    let flushTimer: ReturnType<typeof setTimeout> | undefined;
+    let lastFlushAt = Number.NEGATIVE_INFINITY;
     let pendingStatuses = new Map<number, ChapterDownloadStatus | null>();
 
     const flushStatuses = () => {
       animationFrame = null;
+      flushTimer = undefined;
+      lastFlushAt = performance.now();
       if (pendingStatuses.size === 0) return;
       const updates = pendingStatuses;
       pendingStatuses = new Map();
@@ -58,12 +65,16 @@ export function useNovelDownloadStatuses(
         event.job.id,
         event.status.kind === "cancelled" ? null : event.status,
       );
-      animationFrame ??= requestAnimationFrame(flushStatuses);
+      if (animationFrame !== null || flushTimer !== undefined) return;
+      const waitMs = lastFlushAt + STATUS_FLUSH_MIN_INTERVAL_MS - performance.now();
+      if (waitMs > 0) flushTimer = setTimeout(flushStatuses, waitMs);
+      else animationFrame = requestAnimationFrame(flushStatuses);
     });
 
     return () => {
       unsubscribe();
       if (animationFrame !== null) cancelAnimationFrame(animationFrame);
+      clearTimeout(flushTimer);
     };
   }, [id, active]);
 

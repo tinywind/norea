@@ -12,6 +12,7 @@ const state = vi.hoisted(() => ({
   frame: undefined as FrameRequestCallback | undefined,
   cleanup: undefined as (() => void) | undefined,
   current: new Map<number, ChapterDownloadStatus>(),
+  updates: 0,
 }));
 
 vi.mock("react", () => ({
@@ -19,6 +20,7 @@ vi.mock("react", () => ({
   useState: () => [
     state.statuses,
     (update: (previous: typeof state.statuses) => typeof state.statuses) => {
+      state.updates += 1;
       state.statuses = update(state.statuses);
     },
   ],
@@ -32,13 +34,15 @@ vi.mock("../../lib/tasks/chapter-download", () => ({
   },
 }));
 
-import { useNovelDownloadStatuses } from "./use-novel-download-statuses";
+import { STATUS_FLUSH_MIN_INTERVAL_MS, useNovelDownloadStatuses } from "./use-novel-download-statuses";
 
 beforeEach(() => {
+  vi.useFakeTimers();
   state.effects.length = 0;
   state.statuses = new Map();
   state.current = new Map();
   state.frame = undefined;
+  state.updates = 0;
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
     state.frame = callback;
     return 1;
@@ -51,12 +55,19 @@ beforeEach(() => {
 afterEach(() => {
   state.cleanup?.();
   vi.unstubAllGlobals();
+  vi.useRealTimers();
 });
 
-function emitStatus(status: ChapterDownloadStatus) {
+function runFrame() {
+  const frame = state.frame;
+  state.frame = undefined;
+  frame?.(0);
+}
+
+function sendStatus(status: ChapterDownloadStatus, id = 1) {
   state.listener!({
     job: {
-      id: 1,
+      id,
       novelId: 42,
       pluginId: "source",
       chapterPath: "/chapter/1",
@@ -75,9 +86,12 @@ function emitStatus(status: ChapterDownloadStatus) {
       canRetry: false,
     },
   });
-  const frame = state.frame;
-  state.frame = undefined;
-  frame?.(0);
+}
+
+function emitStatus(status: ChapterDownloadStatus) {
+  sendStatus(status);
+  runFrame();
+  vi.advanceTimersByTime(STATUS_FLUSH_MIN_INTERVAL_MS);
 }
 
 describe("novel download status updates", () => {
@@ -129,5 +143,30 @@ describe("novel download status updates", () => {
 
     emitStatus({ kind: "cancelled" });
     expect(state.statuses.has(1)).toBe(false);
+  });
+
+  it("applies 1000 status events at most four times a second and keeps the last status of each chapter", () => {
+    const startedAt = performance.now();
+    for (let index = 0; index < 1000; index += 1) {
+      const chapterId = (index % 100) + 1;
+      sendStatus(index >= 900 ? { kind: "done" } : { kind: "running" }, chapterId);
+      runFrame();
+      vi.advanceTimersByTime(5);
+    }
+    vi.advanceTimersByTime(STATUS_FLUSH_MIN_INTERVAL_MS);
+    const elapsedMs = performance.now() - startedAt;
+
+    expect(state.updates).toBeLessThanOrEqual(Math.ceil(elapsedMs / STATUS_FLUSH_MIN_INTERVAL_MS) + 1);
+    expect(state.statuses.size).toBe(100);
+    expect([...state.statuses.values()].every((status) => status.kind === "done")).toBe(true);
+  });
+
+  it("shows a status after an idle interval on the next frame", () => {
+    emitStatus({ kind: "running" });
+    vi.advanceTimersByTime(STATUS_FLUSH_MIN_INTERVAL_MS);
+    sendStatus({ kind: "queued" }, 2);
+    runFrame();
+
+    expect(state.statuses.get(2)).toEqual({ kind: "queued" });
   });
 });
