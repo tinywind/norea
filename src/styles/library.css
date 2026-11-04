@@ -140,8 +140,8 @@
   display: flex;
   flex: 0 0 auto;
   gap: var(--norea-space-1);
-  min-height: 3.5rem;
-  padding: 0 var(--norea-space-2) 0 var(--norea-space-4);
+  min-height: 3rem;
+  padding: 0 var(--norea-space-2) 0 var(--norea-space-3);
 }
 
 .norea-library-app-bar[data-searching="true"] {
@@ -172,7 +172,7 @@
   flex: 0 0 auto;
   gap: var(--norea-space-2);
   overflow-x: auto;
-  padding: var(--norea-space-2) var(--norea-space-3);
+  padding: var(--norea-space-1) var(--norea-space-2);
   scrollbar-width: none;
 }
 
@@ -343,7 +343,7 @@
 }
 
 .norea-library-grid {
-  --norea-library-grid-gap: var(--norea-space-3);
+  --norea-library-grid-gap: var(--norea-space-2);
   --norea-library-grid-reference: 100%;
   display: grid;
   gap: var(--norea-library-grid-gap);
@@ -366,12 +366,12 @@
   );
   list-style: none;
   margin: 0;
-  padding: var(--norea-space-3);
+  padding: var(--norea-space-2);
 }
 
 .norea-library-grid[data-mode="cover-only"],
 .norea-library-grid[data-mode="compact"] {
-  --norea-library-grid-gap: var(--norea-space-2);
+  --norea-library-grid-gap: var(--norea-space-1);
 }
 
 .norea-library-grid-item {
@@ -393,7 +393,7 @@
   display: flex;
   flex-direction: column;
   font: inherit;
-  gap: var(--norea-space-2);
+  gap: var(--norea-space-1);
   padding: var(--norea-space-1);
   text-align: left;
   user-select: none;
@@ -632,7 +632,7 @@
 }
 
 .norea-continue-shelf {
-  padding: var(--norea-space-2) var(--norea-space-3) 0;
+  padding: var(--norea-space-1) var(--norea-space-2) 0;
 }
 
 .norea-continue-shelf-heading {
@@ -662,12 +662,12 @@
   list-style: none;
   margin: 0;
   overflow-x: auto;
-  padding: var(--norea-space-1) 0 var(--norea-space-2);
+  padding: 0 0 var(--norea-space-1);
   scrollbar-width: thin;
 }
 
 .norea-continue-shelf-list > li {
-  flex: 0 0 5.5rem;
+  flex: 0 0 5rem;
   min-width: 0;
 }
 

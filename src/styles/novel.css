@@ -99,27 +99,28 @@
 }
 
 .norea-novel-frame {
-  --norea-page-block: var(--norea-space-4);
+  --norea-page-block: var(--norea-space-3);
+  --norea-page-gutter: clamp(0.75rem, 2vw, 1.5rem);
 }
 
 .norea-novel-layout {
   display: flex;
   flex-direction: column;
-  gap: var(--norea-space-5);
+  gap: var(--norea-space-4);
   min-width: 0;
 }
 
 .norea-novel-hero {
   display: flex;
   flex-direction: column;
-  gap: var(--norea-space-4);
+  gap: var(--norea-space-3);
   min-width: 0;
 }
 
 .norea-novel-identity {
   align-items: start;
   display: grid;
-  gap: var(--norea-space-4);
+  gap: var(--norea-space-3);
   grid-template-columns: 6.5rem minmax(0, 1fr);
 }
 
@@ -311,7 +312,7 @@
   border-bottom: 1px solid var(--norea-color-rule);
   display: flex;
   gap: var(--norea-space-2);
-  min-height: 3.5rem;
+  min-height: 3rem;
   position: sticky;
   top: 3.5rem;
   z-index: 2;
@@ -362,17 +363,17 @@
   .norea-novel-layout {
     align-items: start;
     display: grid;
-    gap: var(--norea-space-6);
-    grid-template-columns: 22rem minmax(0, 1fr);
+    gap: var(--norea-space-5);
+    grid-template-columns: 20rem minmax(0, 1fr);
   }
 
   /* The info pane stays in view and scrolls on its own once the summary expands. */
   .norea-novel-info-pane {
-    max-height: calc(var(--norea-app-content-height) - 3.5rem - var(--norea-space-5));
+    max-height: calc(var(--norea-app-content-height) - 3.5rem - var(--norea-space-4));
     overflow-y: auto;
     overscroll-behavior: contain;
     position: sticky;
-    top: calc(3.5rem + var(--norea-space-4));
+    top: calc(3.5rem + var(--norea-space-3));
   }
 
   .norea-novel-identity {
@@ -405,7 +406,7 @@
   border-bottom: 1px solid var(--norea-color-rule);
   box-sizing: border-box;
   display: flex;
-  height: 3.75rem;
+  height: 3.25rem;
   min-width: 0;
 }
 
@@ -423,6 +424,20 @@
   width: 100%;
 }
 
+.norea-novel-chapter[data-progress="partial"] {
+  position: relative;
+}
+
+.norea-novel-chapter[data-progress="partial"]::before {
+  background: var(--norea-color-ink);
+  content: "";
+  inset: 0 auto 0 0;
+  opacity: 0.08;
+  pointer-events: none;
+  position: absolute;
+  width: var(--norea-chapter-progress);
+}
+
 .norea-novel-chapter[data-dragging="true"] {
   opacity: 0.55;
 }
@@ -433,7 +448,7 @@
   flex: 1 1 auto;
   min-height: 0;
   min-width: 0;
-  padding-block: var(--norea-space-1);
+  padding-block: 0.125rem;
 }
 
 .norea-novel-chapter .norea-list-item-title {
