@@ -70,6 +70,8 @@ export function dismissesSheetDrag(dragDownPx: number, sheetHeightPx: number): b
 interface SheetHandleProps {
   disabled: boolean;
   onDismiss: () => void;
+  /** Whether the sheet is still open, read after a dismissing drag in case the owner kept it open. */
+  openedRef: { readonly current: boolean };
   /** Present for a resizable sheet: the handle drags its height and answers arrow keys. */
   resize?: { fraction: number; onResize: (fraction: number) => void };
 }
@@ -87,7 +89,7 @@ interface SheetDrag {
  * a resizable sheet changes its height; dragging any other sheet down moves
  * it with the finger and dismisses it past a quarter of its height.
  */
-function SheetHandle({ disabled, onDismiss, resize }: SheetHandleProps) {
+function SheetHandle({ disabled, onDismiss, openedRef, resize }: SheetHandleProps) {
   const { t } = useTranslation();
   const dragRef = useRef<SheetDrag | null>(null);
 
@@ -112,9 +114,16 @@ function SheetHandle({ disabled, onDismiss, resize }: SheetHandleProps) {
       else resize.onResize(settled);
       return;
     }
-    const dismissed = settle && dismissesSheetDrag(drag.current, drag.sheet?.offsetHeight ?? 0);
-    if (dismissed) onDismiss();
-    else if (drag.sheet) drag.sheet.style.translate = "";
+    const { sheet } = drag;
+    if (!settle || !dismissesSheetDrag(drag.current, sheet?.offsetHeight ?? 0)) {
+      if (sheet) sheet.style.translate = "";
+      return;
+    }
+    onDismiss();
+    // A sheet that closes leaves from where the finger let go; one whose owner keeps it open snaps back.
+    requestAnimationFrame(() => {
+      if (sheet && openedRef.current) sheet.style.translate = "";
+    });
   };
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -277,6 +286,8 @@ export function ResponsiveSheet({
     getInitialValueInEffect: false,
   });
   const [fraction, setFraction] = useState(SHEET_DEFAULT_FRACTION);
+  const openedRef = useRef(opened);
+  openedRef.current = opened;
   const scrollSentinel = useScrollDivider();
   const close = () => {
     if (!busy) onClose();
@@ -364,6 +375,7 @@ export function ResponsiveSheet({
             <SheetHandle
               disabled={busy}
               onDismiss={dismiss}
+              openedRef={openedRef}
               resize={resizableSheet ? { fraction, onResize: setFraction } : undefined}
             />
             {heading}
