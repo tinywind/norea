@@ -384,6 +384,12 @@ a {
   );
 }
 
+/* Dialogs and drawers carry the overlay outline, visible in dark schemes only; dropdowns get it from the theme. */
+.mantine-Modal-content:not([data-full-screen]),
+.mantine-Drawer-content {
+  border: 1px solid var(--norea-color-overlay-border);
+}
+
 .norea-mobile-nav {
   background: var(--norea-color-surface-raised);
   border-top: 1px solid var(--norea-color-rule);
@@ -546,7 +552,7 @@ a {
 
 .norea-blocking-loading-overlay {
   align-items: center;
-  background: rgba(15, 23, 42, 0.36);
+  background: var(--norea-scrim);
   bottom: 0;
   display: flex;
   justify-content: center;

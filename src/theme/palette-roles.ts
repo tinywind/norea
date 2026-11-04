@@ -48,6 +48,17 @@ export interface PaletteRoles {
   inverseSurface: string;
   onInverseSurface: string;
   shadowFloating: string;
+  /** Sheets, dialogs, menus and popovers: `surface` lifted toward `ink`, always set apart from `bg`. */
+  overlaySurface: string;
+  /** Overlay outline: the rule color in dark schemes, invisible in light ones. */
+  overlayBorder: string;
+  scrim: string;
+  /** Menus and popovers. */
+  shadow1: string;
+  /** Dialogs and side drawers. */
+  shadow2: string;
+  /** Bottom sheets: an upward shadow. */
+  shadowSheet: string;
 }
 
 export const TEXT_CONTRAST = 4.5;
@@ -69,6 +80,36 @@ const SHADOW_FLOATING = {
   light: "0 0.5rem 1.25rem rgba(15, 23, 42, 0.14)",
   dark: "0 0.5rem 1.5rem rgba(0, 0, 0, 0.42)",
 } as const;
+
+const OVERLAY_ELEVATION = {
+  light: {
+    scrim: "rgba(15, 23, 42, 0.4)",
+    shadow1: "0 0.25rem 0.75rem rgba(15, 23, 42, 0.14)",
+    shadow2: "0 0.75rem 2rem rgba(15, 23, 42, 0.2)",
+    shadowSheet: "0 -0.5rem 1.5rem rgba(15, 23, 42, 0.14)",
+  },
+  dark: {
+    scrim: "rgba(0, 0, 0, 0.56)",
+    shadow1: "0 0.25rem 0.75rem rgba(0, 0, 0, 0.44)",
+    shadow2: "0 0.75rem 2rem rgba(0, 0, 0, 0.56)",
+    shadowSheet: "0 -0.5rem 1.5rem rgba(0, 0, 0, 0.48)",
+  },
+} as const;
+
+/** How far the overlay surface starts from `surface` toward `ink`. */
+const OVERLAY_LIFT = { light: 0.03, dark: 0.08 } as const;
+const OVERLAY_LIFT_STEP = 0.01;
+/** The smallest luminance contrast an overlay keeps against the page background. */
+export const OVERLAY_SEPARATION = 1.05;
+
+/** Lifts `surface` toward `ink` until it reaches `OVERLAY_SEPARATION` against `bg`. */
+function liftOverlaySurface(surface: Rgb, ink: Rgb, bg: Rgb, scheme: ColorScheme): Rgb {
+  for (let lift = OVERLAY_LIFT[scheme]; lift <= 1; lift += OVERLAY_LIFT_STEP) {
+    const candidate = mixRgb(surface, ink, lift);
+    if (contrastRatio(candidate, bg) >= OVERLAY_SEPARATION) return candidate;
+  }
+  return ink;
+}
 
 function solveFixedHue(
   hue: number,
@@ -115,7 +156,13 @@ export function resolvePaletteRoles(
   const bg = requireColor(palette.background);
   const surface = requireColor(palette.surface);
   const surfaceRaised = requireColor(palette.surfaceVariant);
-  const surfaces = [bg, surface, surfaceRaised];
+  const overlaySurface = liftOverlaySurface(
+    surface,
+    requireColor(palette.onBackground),
+    bg,
+    scheme,
+  );
+  const surfaces = [bg, surface, surfaceRaised, overlaySurface];
   const extreme = scheme === "light" ? BLACK : WHITE;
 
   const ink = ensureContrast(
@@ -193,6 +240,11 @@ export function resolvePaletteRoles(
       ),
     ),
     shadowFloating: SHADOW_FLOATING[scheme],
+    overlaySurface: formatRgb(overlaySurface),
+    overlayBorder: formatRgb(
+      scheme === "dark" ? requireColor(palette.outlineVariant) : overlaySurface,
+    ),
+    ...OVERLAY_ELEVATION[scheme],
   };
 }
 
@@ -216,6 +268,14 @@ export function paletteRoleCssVariables(
     "--norea-color-selected": roles.selected,
     "--norea-color-focus": roles.focus,
     "--norea-shadow-floating": roles.shadowFloating,
+    "--norea-color-overlay-surface": roles.overlaySurface,
+    "--norea-color-overlay-border": roles.overlayBorder,
+    "--norea-color-inverse-surface": roles.inverseSurface,
+    "--norea-color-on-inverse-surface": roles.onInverseSurface,
+    "--norea-scrim": roles.scrim,
+    "--norea-shadow-1": roles.shadow1,
+    "--norea-shadow-2": roles.shadow2,
+    "--norea-shadow-sheet": roles.shadowSheet,
   };
   for (const name of STATUS_ROLE_NAMES) {
     variables[`--norea-color-${name}`] = roles[name].color;

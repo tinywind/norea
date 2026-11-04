@@ -87,8 +87,31 @@
   }
 }
 
+/* Menus and popovers scale from the edge that faces their trigger. */
+.mantine-Popover-dropdown[data-position^="bottom"],
+.mantine-Menu-dropdown[data-position^="bottom"] {
+  transform-origin: top;
+}
+
+.mantine-Popover-dropdown[data-position^="top"],
+.mantine-Menu-dropdown[data-position^="top"] {
+  transform-origin: bottom;
+}
+
+.mantine-Popover-dropdown[data-position^="left"],
+.mantine-Menu-dropdown[data-position^="left"] {
+  transform-origin: right;
+}
+
+.mantine-Popover-dropdown[data-position^="right"],
+.mantine-Menu-dropdown[data-position^="right"] {
+  transform-origin: left;
+}
+
 .norea-responsive-sheet--drawer {
-  border-radius: var(--norea-radius-lg) var(--norea-radius-lg) 0 0;
+  border-bottom: 0;
+  border-radius: var(--norea-radius-xl) var(--norea-radius-xl) 0 0;
+  box-shadow: var(--norea-shadow-sheet);
   height: auto;
   margin: 0 var(--norea-safe-area-right) 0 var(--norea-safe-area-left);
   max-height: calc(var(--norea-viewport-height) * 0.9);
@@ -142,6 +165,10 @@
   top: var(--norea-space-2);
   transform: translateX(-50%);
   width: 2rem;
+}
+
+.norea-responsive-sheet--side {
+  border-radius: var(--norea-radius-xl) 0 0 var(--norea-radius-xl);
 }
 
 .norea-responsive-sheet--side .norea-responsive-sheet-body {

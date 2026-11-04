@@ -21,7 +21,7 @@ import { TextButton } from "../TextButton";
 import { getFocusReturnTarget } from "../ui/OverflowMenu";
 
 // Category dialogs open from the Manage categories dialog too, so they sit above it.
-const CATEGORY_DIALOG_Z_INDEX = "calc(var(--norea-z-overlay) + 1)";
+const CATEGORY_DIALOG_Z_INDEX = "var(--norea-z-overlay-nested)";
 type CategoryEditorState =
   | { mode: "create" }
   | { category: LibraryCategory; mode: "rename" };

@@ -19,7 +19,11 @@ import {
   requireColor,
   type Rgb,
 } from "./color";
-import { MOTION_DURATION_BASE_MS } from "./motion";
+import {
+  MOTION_DURATION_BASE_MS,
+  MOTION_DURATION_SLOW_MS,
+  OVERLAY_MOTION,
+} from "./motion";
 import {
   STATUS_ROLE_NAMES,
   TEXT_CONTRAST,
@@ -168,13 +172,18 @@ export function createNoreaMantineTheme(
   const defaultBorder = `${BORDER_WIDTH} solid ${roles.ruleStrong}`;
   const transparentBorder = `${BORDER_WIDTH} solid transparent`;
   // Mantine paints light-scheme dropdowns white; Combobox-based inputs render through Popover, while Menu, ColorInput and HoverCard resolve their own theme entry.
-  const overlayTransition = {
-    duration: MOTION_DURATION_BASE_MS,
-    timingFunction: "var(--norea-ease-standard)",
-  };
   const overlayDropdownStyles = {
-    backgroundColor: roles.surface,
-    "--popover-border-color": roles.rule,
+    backgroundColor: roles.overlaySurface,
+    "--popover-border-color": roles.overlayBorder,
+  };
+  // Modal and Drawer paint their content, sticky header and full-screen inner from --mantine-color-body.
+  const overlayRootStyles = { "--mantine-color-body": roles.overlaySurface };
+  const scrimStyles = { "--overlay-bg": "var(--norea-scrim)" };
+  const popoverDefaults = {
+    radius: "md",
+    shadow: "var(--norea-shadow-1)",
+    transitionProps: OVERLAY_MOTION.popover,
+    zIndex: "var(--norea-z-popover)",
   };
 
   const variantColorResolver: VariantColorsResolver = (input) => {
@@ -308,20 +317,29 @@ export function createNoreaMantineTheme(
       CloseButton: { classNames: { root: STATE_LAYER_CLASS } },
       Paper: { defaultProps: { radius: "sm" } },
       TextInput: { defaultProps: { radius: "sm" } },
-      // Sheets, dialogs and their scrim enter and exit at the base motion token.
+      // Dialogs fade and scale; drawers keep Mantine's slide from their own edge at the slow token.
       Modal: {
         defaultProps: {
           closeButtonProps: { "aria-label": closeLabel },
-          transitionProps: { ...overlayTransition, transition: "fade-down" },
+          radius: "lg",
+          shadow: "var(--norea-shadow-2)",
+          transitionProps: OVERLAY_MOTION.dialog,
           zIndex: "var(--norea-z-overlay)",
         },
+        styles: { root: overlayRootStyles, overlay: scrimStyles },
       },
       Drawer: {
         defaultProps: {
           closeButtonProps: { "aria-label": closeLabel },
-          transitionProps: overlayTransition,
+          shadow: "var(--norea-shadow-2)",
+          transitionProps: {
+            duration: MOTION_DURATION_SLOW_MS,
+            exitDuration: MOTION_DURATION_BASE_MS,
+            timingFunction: "var(--norea-ease-decelerate)",
+          },
           zIndex: "var(--norea-z-overlay)",
         },
+        styles: { root: overlayRootStyles, overlay: scrimStyles },
       },
       Collapse: {
         defaultProps: {
@@ -329,20 +347,20 @@ export function createNoreaMantineTheme(
           transitionTimingFunction: "var(--norea-ease-standard)",
         },
       },
-      // Portaled dropdowns and tooltips open from inside modals and drawers, so they sit one layer above them.
+      // Portaled dropdowns and tooltips open from inside modals and drawers, so they sit above every overlay layer.
       Popover: {
-        defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" },
+        defaultProps: popoverDefaults,
         styles: { dropdown: overlayDropdownStyles },
       },
       Menu: {
         classNames: { item: STATE_LAYER_CLASS },
-        defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" },
+        defaultProps: popoverDefaults,
         styles: { dropdown: overlayDropdownStyles },
       },
       ColorInput: { styles: { dropdown: overlayDropdownStyles } },
       HoverCard: { styles: { dropdown: overlayDropdownStyles } },
       Tooltip: {
-        defaultProps: { zIndex: "calc(var(--norea-z-overlay) + 1)" },
+        defaultProps: { zIndex: "var(--norea-z-popover)" },
         styles: {
           tooltip: {
             "--tooltip-bg": roles.inverseSurface,

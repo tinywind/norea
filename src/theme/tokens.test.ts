@@ -192,3 +192,51 @@ describe("design token guard rules", () => {
     expect(flagged("z-index", "10")).toBe(false);
   });
 });
+
+describe("overlay tokens", () => {
+  const tokens = readFileSync(new URL("./tokens.css", import.meta.url), "utf8");
+  const rootTokens = tokens.slice(0, tokens.indexOf("@media"));
+  const srcDir = new URL("../", import.meta.url);
+  const consumers = readdirSync(srcDir, { recursive: true, encoding: "utf8" })
+    .filter((name) => /\.(css|tsx?)$/.test(name) && !/\.test\.tsx?$/.test(name) && !name.endsWith("tokens.css"))
+    .map((name) => readFileSync(new URL(name, srcDir), "utf8"))
+    .join("\n");
+
+  function zIndex(name: string): number {
+    const match = new RegExp(`--norea-z-${name}:\\s*(\\d+);`).exec(rootTokens);
+    expect(match, name).not.toBeNull();
+    return Number(match![1]);
+  }
+
+  it("keeps the layer ladder in order", () => {
+    const ladder = [
+      "sticky",
+      "nav",
+      "overlay",
+      "overlay-nested",
+      "popover",
+      "confirm",
+      "toast",
+      "site-browser",
+      "blocking",
+    ].map(zIndex);
+    expect(ladder).toEqual([...ladder].sort((a, b) => a - b));
+    expect(new Set(ladder).size).toBe(ladder.length);
+  });
+
+  it("gives every overlay token a consumer", () => {
+    for (const token of [
+      "--norea-scrim",
+      "--norea-shadow-1",
+      "--norea-shadow-2",
+      "--norea-shadow-sheet",
+      "--norea-ease-decelerate",
+      "--norea-ease-accelerate",
+      "--norea-radius-xl",
+      "--norea-color-overlay-border",
+      "--norea-z-popover",
+    ]) {
+      expect(consumers, token).toContain(`var(${token})`);
+    }
+  });
+});

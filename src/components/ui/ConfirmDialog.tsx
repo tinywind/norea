@@ -92,7 +92,7 @@ export function ConfirmDialog() {
       onClose={() => settle(false)}
       title={shown?.title}
       // Confirmations open from inside sheets, drawers and their dropdowns, so they sit above all of them.
-      zIndex="calc(var(--norea-z-overlay) + 2)"
+      zIndex="var(--norea-z-confirm)"
     >
       {shown ? (
         <Stack gap="md">

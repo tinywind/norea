@@ -24,7 +24,12 @@ import {
   type NoreaMantineTheme,
 } from "./mantine-theme";
 import { APP_THEMES, resolveMd3Palette } from "./md3";
-import { MOTION_DURATION_BASE_MS } from "./motion";
+import {
+  MOTION_DURATION_BASE_MS,
+  MOTION_DURATION_FAST_MS,
+  MOTION_DURATION_SLOW_MS,
+  OVERLAY_MOTION,
+} from "./motion";
 import {
   TEXT_CONTRAST,
   resolvePaletteRoles,
@@ -169,14 +174,46 @@ describe("createNoreaMantineTheme overlay surfaces", () => {
 
     for (const name of ["Popover", "Select", "Menu"]) {
       const [style] = inlineStyleOf(html, `mantine-${name}-dropdown`);
-      expect(style, name).toContain(`background-color:${roles.surface}`);
-      expect(style, name).toContain(`--popover-border-color:${roles.rule}`);
+      expect(style, name).toContain(`background-color:${roles.overlaySurface}`);
+      expect(style, name).toContain(`--popover-border-color:${roles.overlayBorder}`);
     }
     const [tooltip] = inlineStyleOf(html, "mantine-Tooltip-tooltip");
     expect(tooltip).toContain(`--tooltip-bg:${roles.inverseSurface}`);
     expect(tooltip).toContain(`--tooltip-color:${roles.onInverseSurface}`);
     const [notification] = inlineStyleOf(html, "mantine-Notification-root");
     expect(notification).toContain(`background-color:${roles.surface}`);
+  });
+});
+
+describe("createNoreaMantineTheme overlay elevation", () => {
+  const [first] = CASES;
+
+  it("paints modal and drawer surfaces from the overlay role over the themed scrim", () => {
+    const { components } = first!.merged;
+    for (const name of ["Modal", "Drawer"]) {
+      expect(components[name]?.styles, name).toEqual({
+        root: { "--mantine-color-body": first!.roles.overlaySurface },
+        overlay: { "--overlay-bg": "var(--norea-scrim)" },
+      });
+      expect(components[name]?.defaultProps, name).toMatchObject({
+        shadow: "var(--norea-shadow-2)",
+        zIndex: "var(--norea-z-overlay)",
+      });
+    }
+    expect(components.Modal?.defaultProps?.radius).toBe("lg");
+  });
+
+  it("lifts menus, popovers and tooltips onto the popover layer with the menu shadow", () => {
+    const { components } = first!.merged;
+    for (const name of ["Popover", "Menu"]) {
+      expect(components[name]?.defaultProps, name).toMatchObject({
+        radius: "md",
+        shadow: "var(--norea-shadow-1)",
+        zIndex: "var(--norea-z-popover)",
+      });
+    }
+    expect(components.Tooltip?.defaultProps?.zIndex).toBe("var(--norea-z-popover)");
+    expect(components.Notifications?.defaultProps?.zIndex).toBe("var(--norea-z-toast)");
   });
 });
 
@@ -251,18 +288,31 @@ describe("createNoreaMantineTheme state layers", () => {
 });
 
 describe("createNoreaMantineTheme motion", () => {
-  it("honors reduced motion and moves overlays, collapses and toasts at the base motion token", () => {
+  it("honors reduced motion and moves overlays, collapses and toasts on the motion tokens", () => {
     const [first] = CASES;
     const { components, respectReducedMotion } = first!.merged;
     expect(respectReducedMotion).toBe(true);
-    for (const name of ["Modal", "Drawer"]) {
-      expect(components[name]?.defaultProps?.transitionProps, name).toMatchObject({
-        duration: MOTION_DURATION_BASE_MS,
-        timingFunction: "var(--norea-ease-standard)",
-      });
-    }
+    expect(components.Modal?.defaultProps?.transitionProps).toEqual(OVERLAY_MOTION.dialog);
+    expect(OVERLAY_MOTION.dialog).toMatchObject({
+      duration: MOTION_DURATION_BASE_MS,
+      exitDuration: MOTION_DURATION_FAST_MS,
+      timingFunction: "var(--norea-ease-decelerate)",
+    });
+    expect(OVERLAY_MOTION.dialog.transition.out).toMatchObject({
+      opacity: 0,
+      transform: "scale(0.96)",
+      transitionTimingFunction: "var(--norea-ease-accelerate)",
+    });
     // The drawer keeps Mantine's slide from its own edge.
-    expect(components.Drawer?.defaultProps?.transitionProps).not.toHaveProperty("transition");
+    expect(components.Drawer?.defaultProps?.transitionProps).toEqual({
+      duration: MOTION_DURATION_SLOW_MS,
+      exitDuration: MOTION_DURATION_BASE_MS,
+      timingFunction: "var(--norea-ease-decelerate)",
+    });
+    for (const name of ["Popover", "Menu"]) {
+      expect(components[name]?.defaultProps?.transitionProps, name).toEqual(OVERLAY_MOTION.popover);
+    }
+    expect(OVERLAY_MOTION.popover.duration).toBe(MOTION_DURATION_FAST_MS);
     expect(components.Collapse?.defaultProps).toMatchObject({
       transitionDuration: MOTION_DURATION_BASE_MS,
       transitionTimingFunction: "var(--norea-ease-standard)",

@@ -25,7 +25,7 @@ interface OverflowMenuProps {
  */
 export function OverflowMenu({ items, label, trigger }: OverflowMenuProps) {
   return (
-    <Menu position="bottom-end" returnFocus shadow="md" withinPortal>
+    <Menu position="bottom-end" returnFocus withinPortal>
       <Menu.Target>
         {trigger ?? (
           <IconButton label={label} size="lg">

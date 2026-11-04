@@ -3,6 +3,7 @@ import { contrastRatio, requireColor } from "./color";
 import { APP_THEMES, resolveMd3Palette, type AppThemeId } from "./md3";
 import {
   NON_TEXT_CONTRAST,
+  OVERLAY_SEPARATION,
   STATUS_ROLE_NAMES,
   TEXT_CONTRAST,
   paletteRoleCssVariables,
@@ -73,7 +74,7 @@ describe("resolvePaletteRoles contrast gate", () => {
   });
 
   it.each(ALL_CASES)("$label keeps ink and ink-muted readable on every surface", ({ roles }) => {
-    for (const surface of [roles.bg, roles.surface, roles.surfaceRaised]) {
+    for (const surface of [roles.bg, roles.surface, roles.surfaceRaised, roles.overlaySurface]) {
       expectContrast(roles.ink, surface, TEXT_CONTRAST, "ink");
       expectContrast(roles.inkMuted, surface, TEXT_CONTRAST, "ink-muted");
     }
@@ -97,7 +98,7 @@ describe("resolvePaletteRoles contrast gate", () => {
 
   it.each(ALL_CASES)("$label keeps status colors readable as text and on soft fills", ({ roles }) => {
     for (const name of STATUS_ROLE_NAMES) {
-      for (const surface of [roles.bg, roles.surface, roles.surfaceRaised]) {
+      for (const surface of [roles.bg, roles.surface, roles.surfaceRaised, roles.overlaySurface]) {
         expectContrast(roles[name].color, surface, TEXT_CONTRAST, name);
       }
       expectContrast(
@@ -121,9 +122,44 @@ describe("resolvePaletteRoles contrast gate", () => {
 
   it.each(ALL_CASES)("$label emits only rgb() or hex colors", ({ roles }) => {
     for (const [name, value] of Object.entries(paletteRoleCssVariables(roles))) {
-      if (name.includes("shadow")) continue;
+      if (name.includes("shadow") || name === "--norea-scrim") continue;
       expect(value, name).toMatch(/^(rgb\(\d+, \d+, \d+\)|#[\da-f]{6})$/i);
     }
+  });
+});
+
+describe("resolvePaletteRoles overlay surface", () => {
+  it.each(ALL_CASES)("$label sets overlays apart from the page background", ({ roles }) => {
+    expect(roles.overlaySurface).not.toBe(roles.bg);
+    expect(
+      contrast(roles.overlaySurface, roles.bg),
+      `${roles.overlaySurface} on ${roles.bg}`,
+    ).toBeGreaterThanOrEqual(OVERLAY_SEPARATION);
+  });
+
+  it.each(ALL_CASES)("$label lifts the overlay from the surface toward ink", ({ roles }) => {
+    const [surface, overlay, ink] = [roles.surface, roles.overlaySurface, roles.ink].map(requireColor);
+    const distanceToInk = (color: typeof surface) =>
+      Math.abs(color!.r - ink!.r) + Math.abs(color!.g - ink!.g) + Math.abs(color!.b - ink!.b);
+    expect(distanceToInk(overlay)).toBeLessThan(distanceToInk(surface));
+  });
+
+  it("outlines overlays with the rule color only in dark schemes", () => {
+    const light = resolveCase("default", "light", {});
+    const dark = resolveCase("default", "dark", {});
+    expect(light.overlayBorder).toBe(light.overlaySurface);
+    expect(dark.overlayBorder).toBe(dark.rule);
+  });
+
+  it("darkens the scrim and overlay shadows in dark schemes", () => {
+    const light = resolveCase("default", "light", {});
+    const dark = resolveCase("default", "dark", {});
+    expect(light.scrim).toBe("rgba(15, 23, 42, 0.4)");
+    expect(dark.scrim).toBe("rgba(0, 0, 0, 0.56)");
+    for (const name of ["shadow1", "shadow2", "shadowSheet"] as const) {
+      expect(light[name], name).not.toBe(dark[name]);
+    }
+    expect(light.shadowSheet).toMatch(/^0 -/);
   });
 });
 
@@ -159,5 +195,9 @@ describe("paletteRoleCssVariables", () => {
     expect(variables["--norea-color-surface-raised"]).toBe(roles.surfaceRaised);
     expect(variables["--norea-color-danger"]).toBe(roles.danger.color);
     expect(variables["--norea-color-on-warn-soft"]).toBe(roles.warn.onSoft);
+    expect(variables["--norea-color-overlay-surface"]).toBe(roles.overlaySurface);
+    expect(variables["--norea-color-inverse-surface"]).toBe(roles.inverseSurface);
+    expect(variables["--norea-scrim"]).toBe(roles.scrim);
+    expect(variables["--norea-shadow-2"]).toBe(roles.shadow2);
   });
 });

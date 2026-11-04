@@ -22,6 +22,7 @@
   --norea-radius-sm: 0.375rem;
   --norea-radius-md: 0.625rem;
   --norea-radius-lg: 1rem;
+  --norea-radius-xl: 1.5rem;
   --norea-radius-full: 999rem;
 
   --norea-control-sm: 2.25rem;
@@ -37,17 +38,38 @@
   --norea-duration-spin: 900ms;
   --norea-ease-standard: cubic-bezier(0.2, 0, 0, 1);
   --norea-ease-emphasized: cubic-bezier(0.3, 0, 0, 1.15);
+  /* Entering overlays settle into place; leaving ones speed away. */
+  --norea-ease-decelerate: cubic-bezier(0, 0, 0, 1);
+  --norea-ease-accelerate: cubic-bezier(0.3, 0, 1, 1);
 
   --norea-z-sticky: 10;
   --norea-z-nav: 200;
   --norea-z-overlay: 300;
+  /* A sheet or dialog opened from inside another one. */
+  --norea-z-overlay-nested: 310;
+  /* Menus, popovers, tooltips and select dropdowns, which also open from inside overlays. */
+  --norea-z-popover: 320;
+  --norea-z-confirm: 330;
   --norea-z-toast: 400;
   --norea-z-site-browser: 1000;
   --norea-z-blocking: 1100;
 
+  /* Dialog widths: confirm, form, manager, finder. */
+  --norea-dialog-sm: 24rem;
+  --norea-dialog-md: 32rem;
+  --norea-dialog-lg: 45rem;
+  --norea-dialog-xl: 68rem;
+  --norea-side-sheet-width: 24rem;
+  --norea-bottom-sheet-max-width: 40rem;
+
   --norea-focus-width: 0.125rem;
-  --norea-scrim: rgba(0, 0, 0, 0.42);
   --norea-disabled-opacity: 0.45;
+}
+
+@media (min-width: 1408px) {
+  :root {
+    --norea-side-sheet-width: 28rem;
+  }
 }
 
 @media (any-pointer: coarse) {
