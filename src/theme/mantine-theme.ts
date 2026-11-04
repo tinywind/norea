@@ -292,7 +292,7 @@ export function createNoreaMantineTheme(
       sm: "var(--norea-radius-sm)",
       md: "var(--norea-radius-md)",
       lg: "var(--norea-radius-lg)",
-      xl: "var(--norea-radius-lg)",
+      xl: "var(--norea-radius-xl)",
     },
     spacing: {
       xs: "var(--norea-space-2)",
@@ -320,8 +320,8 @@ export function createNoreaMantineTheme(
       // Every Mantine control paints the shared hover and pressed state layer from ui.css.
       // D10 button emphasis: `filled` is the one primary action of a screen, region or dialog;
       // `default` is the outline secondary action; `subtle` is borderless, for every control in
-      // a bar or a list row and for text links; `light` marks only a selected chip or a pressed
-      // toggle. Icon-only buttons are always borderless, so ActionIcon defaults to `subtle`.
+      // a bar or a list row and for text links; `light` marks only a pressed toggle, and chips
+      // are ChipButtons. Icon-only buttons are always borderless, so ActionIcon defaults to `subtle`.
       ActionIcon: { classNames: { root: STATE_LAYER_CLASS }, defaultProps: { variant: "subtle" } },
       Button: { classNames: { root: STATE_LAYER_CLASS }, defaultProps: { radius: "md" } },
       CloseButton: { classNames: { root: STATE_LAYER_CLASS } },

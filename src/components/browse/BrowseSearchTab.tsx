@@ -11,6 +11,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { BlockingLoadingOverlay, StateView } from "../AppFrame";
+import { ChipButton } from "../ChipButton";
 import { IconButton } from "../IconButton";
 import { SearchBar } from "../SearchBar";
 import {
@@ -229,21 +230,16 @@ function SearchScopeChips({
 }: SearchScopeChipsProps) {
   const { t } = useTranslation();
   const [sheetOpen, setSheetOpen] = useState(false);
-  const chip = (mode: ScopeMode, label: string, onClick: () => void) => {
-    const active = scopeMode === mode;
-    return (
-      <Button
-        aria-pressed={active}
-        leftSection={active ? <CheckIcon size="1rem" /> : undefined}
-        onClick={onClick}
-        radius="xl"
-        size="compact-sm"
-        variant={active ? "light" : "default"}
-      >
-        {label}
-      </Button>
-    );
-  };
+  const chip = (mode: ScopeMode, label: string, onClick: () => void) => (
+    <ChipButton
+      aria-haspopup={mode === "selected" ? "dialog" : undefined}
+      onClick={onClick}
+      selected={scopeMode === mode}
+      trailingIcon={mode === "selected" ? <ChevronRightIcon /> : undefined}
+    >
+      {label}
+    </ChipButton>
+  );
 
   return (
     <>
@@ -524,16 +520,14 @@ export function SearchFailures({
         </section>
       ) : (
         <div className="norea-search-failure-chip-bar">
-          <Button
-            color="danger"
+          <ChipButton
+            aria-haspopup="dialog"
             onClick={() => setSheetOpen(true)}
-            radius="xl"
-            rightSection={<ChevronRightIcon size="1rem" />}
-            size="compact-sm"
-            variant="light"
+            tone="danger"
+            trailingIcon={<ChevronRightIcon />}
           >
             {t("globalSearch.failure.chip", { count: failures.length })}
-          </Button>
+          </ChipButton>
         </div>
       )}
 

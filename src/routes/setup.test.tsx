@@ -67,7 +67,7 @@ import { PAGE_SLOT_PROPS } from "../lib/android-back-navigation.test-support";
 import { SetupPage } from "./setup";
 
 interface Props {
-  "aria-pressed"?: boolean;
+  selected?: boolean;
   checked?: boolean;
   children?: ReactNode;
   disabled?: boolean;
@@ -122,8 +122,8 @@ describe("first-run setup", () => {
 
     mocks.mutations[0]!.options.onSuccess!([item("b", "en"), item("a", "en"), item("k", "ko")]);
     tree = render();
-    const chips = tree.filter((element) => element.props["aria-pressed"] !== undefined);
-    expect(chips.map((chip) => [text(chip), chip.props["aria-pressed"]])).toEqual([["en", true], ["ko", false]]);
+    const chips = tree.filter((element) => element.props.selected !== undefined);
+    expect(chips.map((chip) => [text(chip), chip.props.selected])).toEqual([["en", true], ["ko", false]]);
 
     button(tree, "setup.continue")!.props.onClick!();
     tree = render();

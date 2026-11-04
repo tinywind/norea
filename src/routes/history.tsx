@@ -12,10 +12,11 @@ import {
   HistoryRow,
   HistoryRowsSkeleton,
 } from "../components/history/HistoryRows";
+import { ChipButton } from "../components/ChipButton";
 import { NearEndSentinel } from "../components/NearEndSentinel";
 import { SearchBar } from "../components/SearchBar";
 import { useConfirm } from "../components/ui/ConfirmDialog";
-import { CheckIcon, TrashIcon } from "../components/ui/icons";
+import { TrashIcon } from "../components/ui/icons";
 import { OverflowMenu } from "../components/ui/OverflowMenu";
 import {
   clearNovelHistory,
@@ -242,22 +243,15 @@ export function HistoryPage() {
             className="norea-history-chips"
             role="group"
           >
-            {PROGRESS_FILTERS.map((filter) => {
-              const active = progressFilter === filter.value;
-              return (
-                <Button
-                  aria-pressed={active}
-                  key={filter.value}
-                  leftSection={active ? <CheckIcon size="1rem" /> : undefined}
-                  onClick={() => setProgressFilter(filter.value)}
-                  radius="xl"
-                  size="compact-sm"
-                  variant={active ? "light" : "default"}
-                >
-                  {t(filter.label)}
-                </Button>
-              );
-            })}
+            {PROGRESS_FILTERS.map((filter) => (
+              <ChipButton
+                key={filter.value}
+                onClick={() => setProgressFilter(filter.value)}
+                selected={progressFilter === filter.value}
+              >
+                {t(filter.label)}
+              </ChipButton>
+            ))}
           </div>
         </div>
 

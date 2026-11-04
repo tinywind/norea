@@ -7,6 +7,7 @@ import {
   SourceAccessVerifyButton,
   useSourceAccessBlocks,
 } from "../SourceAccessVerifyButton";
+import { ChipButton } from "../ChipButton";
 import { ChevronRightIcon, WarningIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
@@ -139,16 +140,14 @@ export function UpdateFailures({
         </section>
       ) : (
         <div className="norea-updates-failure-chip-bar">
-          <Button
-            color="danger"
+          <ChipButton
+            aria-haspopup="dialog"
             onClick={() => setSheetOpen(true)}
-            radius="xl"
-            rightSection={<ChevronRightIcon size="1rem" />}
-            size="compact-sm"
-            variant="light"
+            tone="danger"
+            trailingIcon={<ChevronRightIcon />}
           >
             {t("updates.failure.chip", { count: sources.length })}
-          </Button>
+          </ChipButton>
         </div>
       )}
 

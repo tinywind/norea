@@ -69,8 +69,8 @@
   }
 
   /*
-   * Controls in fixed-height bars and input sections keep their visual size;
-   * a transparent ::before grows the hit area instead.
+   * Controls in fixed-height bars and input sections, and chips, keep their visual
+   * size; a transparent ::before grows the hit area instead.
    */
   html:root .mantine-Input-section .mantine-ActionIcon-root,
   html:root .mantine-Input-section .mantine-CloseButton-root {
@@ -80,14 +80,16 @@
 
   html:root .mantine-Input-section .mantine-ActionIcon-root,
   html:root .mantine-Input-section .mantine-CloseButton-root,
-  html:root .norea-mobile-nav-link {
+  html:root .norea-mobile-nav-link,
+  html:root .norea-chip {
     overflow: visible;
     position: relative;
   }
 
   html:root .mantine-Input-section .mantine-ActionIcon-root::before,
   html:root .mantine-Input-section .mantine-CloseButton-root::before,
-  html:root .norea-mobile-nav-link::before {
+  html:root .norea-mobile-nav-link::before,
+  html:root .norea-chip::before {
     content: "";
     height: max(100%, var(--norea-control-md));
     left: 50%;

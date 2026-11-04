@@ -2,8 +2,8 @@ import { Button, Checkbox, Group, Stack, Text, TextInput, Title } from "@mantine
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
+import { ChipButton } from "../components/ChipButton";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
-import { CheckIcon } from "../components/ui/icons";
 import { addPluginRepository } from "../components/browse/use-plugin-catalog";
 import { formatPluginLanguageForLocale, useTranslation } from "../i18n";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
@@ -207,21 +207,17 @@ export function SetupPage() {
                 {availableLanguages.map((lang) => {
                   const active = languages.includes(lang);
                   return (
-                    <Button
-                      aria-pressed={active}
+                    <ChipButton
                       key={lang}
-                      leftSection={active ? <CheckIcon size="1rem" /> : undefined}
                       onClick={() =>
                         setLanguages((current) =>
                           active ? current.filter((entry) => entry !== lang) : [...current, lang],
                         )
                       }
-                      radius="xl"
-                      size="compact-md"
-                      variant={active ? "light" : "default"}
+                      selected={active}
                     >
                       {formatPluginLanguageForLocale(locale, lang)}
-                    </Button>
+                    </ChipButton>
                   );
                 })}
               </div>

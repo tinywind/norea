@@ -54,8 +54,8 @@ beforeEach(() => {
 it.each([en, ko])("offers Unread and Downloaded as pressable chips without Clear when nothing is filtered", async (strings) => {
   locale.strings = strings;
   const chip = await render();
-  expect(chip(strings["library.filter.unread"])[0]!.props["aria-pressed"]).toBe(false);
-  expect(chip(strings["library.filter.downloaded"])[0]!.props["aria-pressed"]).toBe(false);
+  expect(chip(strings["library.filter.unread"])[0]!.props.selected).toBe(false);
+  expect(chip(strings["library.filter.downloaded"])[0]!.props.selected).toBe(false);
   expect(chip(strings["library.filter.more"])).toHaveLength(1);
   expect(chip(strings["common.clear"])).toHaveLength(0);
 });
@@ -65,7 +65,7 @@ it.each([en, ko])("counts every active filter, including the source, and offers 
   useLibraryStore.getState().setUnreadOnlyMode(true);
   useLibraryStore.getState().setLocalOnlyMode(true);
   const chip = await render(true);
-  expect(chip(strings["library.filter.unread"])[0]!.props["aria-pressed"]).toBe(true);
+  expect(chip(strings["library.filter.unread"])[0]!.props.selected).toBe(true);
   expect(chip(strings["library.filter.moreActive"].replace("{count}", "3"))).toHaveLength(1);
   expect(chip(strings["common.clear"])).toHaveLength(1);
 });

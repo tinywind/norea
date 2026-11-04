@@ -5,11 +5,11 @@ import { useNavigate, useRouterState } from "@tanstack/react-router";
 import { useEffect, useId, useMemo, useRef, useState } from "react";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { SourceAccessNotice } from "../components/SourceAccessVerifyButton";
+import { ChipButton } from "../components/ChipButton";
 import { IconButton } from "../components/IconButton";
 import {
   CategoryIcon,
   ChapterListIcon,
-  CheckIcon,
   CloseIcon,
   DeleteDownloadIcon,
   DownloadIcon,
@@ -928,29 +928,22 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     {chapterFiltersOpen && chapters.length > 0 ? (
                       <div aria-label={t("novel.filter.label")} className="norea-novel-chapter-filters" role="group">
                         {(["unread", "downloaded", "queued"] as const).map((filter) => (
-                          <Button
-                            aria-pressed={chapterFilters[filter]}
+                          <ChipButton
                             className="norea-novel-chapter-filter"
                             key={filter}
-                            leftSection={chapterFilters[filter] ? <CheckIcon size="1rem" /> : undefined}
                             onClick={() => changeChapterFilters({ ...chapterFilters, [filter]: !chapterFilters[filter] })}
-                            radius="xl"
-                            size="compact-sm"
-                            variant={chapterFilters[filter] ? "light" : "default"}
+                            selected={chapterFilters[filter]}
                           >
                             {t(`novel.filter.${filter}`)}
-                          </Button>
+                          </ChipButton>
                         ))}
                         {chapterFiltersActive ? (
-                          <Button
+                          <ChipButton
                             className="norea-novel-chapter-filter"
                             onClick={() => changeChapterFilters(NO_CHAPTER_LIST_FILTERS)}
-                            radius="xl"
-                            size="compact-sm"
-                            variant="subtle"
                           >
                             {t("common.clear")}
-                          </Button>
+                          </ChipButton>
                         ) : null}
                       </div>
                     ) : null}

@@ -52,7 +52,7 @@
 .norea-browse-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--norea-space-2);
+  gap: 0.375rem var(--norea-space-2);
 }
 
 .norea-browse-sources,
@@ -479,7 +479,7 @@
 .norea-filter-chips {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--norea-space-2);
+  gap: 0.375rem var(--norea-space-2);
 }
 
 .norea-source-applied-filters {

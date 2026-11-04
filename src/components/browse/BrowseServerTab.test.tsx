@@ -67,7 +67,7 @@ vi.mock("./use-quick-add", () => ({
 import { BrowseServerTab } from "./BrowseServerTab";
 import { QuickAddCard } from "./QuickAddCard";
 import { SearchBar } from "../SearchBar";
-import { Button } from "@mantine/core";
+import { ChipButton } from "../ChipButton";
 import { StateView } from "../AppFrame";
 import { useContentServerBrowseStore } from "../../store/content-server-browse";
 import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
@@ -75,6 +75,7 @@ import { SelectionAction, SelectionBar } from "../ui/SelectionBar";
 
 interface ControlProps {
   "aria-pressed"?: boolean;
+  selected?: boolean;
   "aria-label"?: string;
   action?: { onClick: () => void };
   actions?: ReactNode;
@@ -115,13 +116,13 @@ beforeEach(() => {
 });
 
 const chip = (elements: ReactElement<ControlProps>[], label: string) =>
-  elements.find(element => element.type === Button && element.props.children === label)!;
+  elements.find(element => element.type === ChipButton && element.props.children === label)!;
 
 it("names source chips after installed plugins and falls back to the id", () => {
   const elements = render();
   expect(chip(elements, "Source A")).toBeDefined();
   expect(chip(elements, "source-b")).toBeDefined();
-  expect(chip(elements, "contentSync.allSources").props["aria-pressed"]).toBe(true);
+  expect(chip(elements, "contentSync.allSources").props.selected).toBe(true);
 });
 
 it("opens a work from its card and offers no server deletion on the grid", () => {
@@ -156,7 +157,7 @@ it("retains the search and source when returning from a work", () => {
   mocks.effects.forEach(effect => effect());
   const returned = render();
   expect(returned.find(element => element.type === SearchBar)!.props.value).toBe("  saved search  ");
-  expect(chip(returned, "Source A").props["aria-pressed"]).toBe(true);
+  expect(chip(returned, "Source A").props.selected).toBe(true);
   expect(mocks.browseQueryKeys.at(-1)).toEqual(["content-server", "http://server", "browse", "saved search", "source-a"]);
 });
 

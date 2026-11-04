@@ -693,9 +693,9 @@ it("filters the chapter list and keeps select all, range selection and jump on t
     const title = () => find((props) => props.className === "norea-novel-chapters-title")!.props.children;
     expect(title()).toBe("0/6 stored");
     await run(() => (find((props) => props.label === "novel.filter.open")!.props.onClick as () => void)());
-    const chip = (label: string) => find((props) => props.children === label && "aria-pressed" in props)!;
+    const chip = (label: string) => find((props) => props.children === label && "selected" in props)!;
     await run(() => (chip("novel.filter.unread").props.onClick as () => void)());
-    expect(chip("novel.filter.unread").props["aria-pressed"]).toBe(true);
+    expect(chip("novel.filter.unread").props.selected).toBe(true);
     expect(shownIds()).toEqual([2, 4, 6]);
     expect(title()).toBe("novel.chapterSummaryFiltered");
     expect(find((props) => typeof props.onSelect === "function" && "initialFrom" in props)!.props.chapters)

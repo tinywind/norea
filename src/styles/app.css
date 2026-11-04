@@ -604,11 +604,21 @@ a {
   display: none;
 }
 
+/* Matches the library category tabs: muted labels, the active one bold over a 2px accent rule. */
 .norea-app-bar .norea-app-bar-tabs .mantine-Tabs-tab {
+  border-bottom-width: 0.125rem;
+  color: var(--norea-color-ink-muted);
   flex: 0 0 auto;
   font-size: var(--norea-text-md);
+  font-weight: var(--norea-weight-regular);
   height: auto;
   padding-inline: var(--norea-space-3);
+}
+
+.norea-app-bar .norea-app-bar-tabs .mantine-Tabs-tab[data-active] {
+  border-bottom-color: var(--norea-color-accent);
+  color: var(--norea-color-ink);
+  font-weight: var(--norea-weight-bold);
 }
 
 .norea-app-bar-subrow {
@@ -1182,6 +1192,70 @@ button.norea-console-chip:disabled {
   background: var(--norea-color-accent-soft);
   border-color: var(--norea-color-accent);
   color: var(--norea-color-accent);
+}
+
+/*
+ * ChipButton: one 2rem pill for every filter, scope and chip-shaped action. The side that
+ * holds an icon pads less, so the glyph and label sit optically centered.
+ */
+.norea-chip {
+  align-items: center;
+  appearance: none;
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule-strong);
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-ink);
+  cursor: pointer;
+  display: inline-flex;
+  flex: 0 0 auto;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-medium);
+  gap: var(--norea-space-1);
+  height: 2rem;
+  line-height: var(--norea-leading-tight);
+  max-width: 100%;
+  padding-block: 0;
+  padding-inline: var(--norea-space-3);
+  white-space: nowrap;
+}
+
+.norea-chip[data-leading="true"] {
+  padding-inline-start: var(--norea-space-2);
+}
+
+.norea-chip[data-trailing="true"] {
+  padding-inline-end: var(--norea-space-2);
+}
+
+.norea-chip svg {
+  flex: 0 0 auto;
+  height: var(--norea-icon-sm);
+  width: var(--norea-icon-sm);
+}
+
+.norea-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.norea-chip[aria-pressed="true"],
+.norea-chip[data-tone="accent"] {
+  background: var(--norea-color-accent-soft);
+  border-color: transparent;
+  color: var(--norea-color-on-accent-soft);
+}
+
+.norea-chip[data-tone="danger"] {
+  background: var(--norea-color-danger-soft);
+  border-color: transparent;
+  color: var(--norea-color-on-danger-soft);
+}
+
+.norea-chip:disabled {
+  cursor: not-allowed;
+  opacity: var(--norea-disabled-opacity);
 }
 
 @media (max-width: 767px) {

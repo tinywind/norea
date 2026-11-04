@@ -1,7 +1,7 @@
-import { Button } from "@mantine/core";
 import type { LibraryNovelSummary } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
-import { CheckIcon, FilterIcon } from "../ui/icons";
+import { ChipButton } from "../ChipButton";
+import { FilterIcon } from "../ui/icons";
 import { useLibraryFilterFlags } from "./LibraryViewOptions";
 
 interface LibraryQuickFiltersProps {
@@ -35,41 +35,29 @@ export function LibraryQuickFilters({
       {flags
         .filter((flag) => flag.id === "unread" || flag.id === "downloaded")
         .map((flag) => (
-          <Button
-            aria-pressed={flag.active}
+          <ChipButton
             className="norea-library-chip"
             key={flag.id}
-            leftSection={flag.active ? <CheckIcon size="1rem" /> : undefined}
             onClick={() => flag.set(!flag.active)}
-            radius="xl"
-            size="compact-sm"
-            variant={flag.active ? "light" : "default"}
+            selected={flag.active}
           >
             {t(flag.labelKey)}
-          </Button>
+          </ChipButton>
         ))}
-      <Button
+      <ChipButton
         className="norea-library-chip"
-        leftSection={<FilterIcon size="1rem" />}
+        icon={<FilterIcon />}
         onClick={onOpenFilters}
-        radius="xl"
-        size="compact-sm"
-        variant={activeCount > 0 ? "light" : "default"}
+        tone={activeCount > 0 ? "accent" : undefined}
       >
         {activeCount > 0
           ? t("library.filter.moreActive", { count: activeCount })
           : t("library.filter.more")}
-      </Button>
+      </ChipButton>
       {activeCount > 0 ? (
-        <Button
-          className="norea-library-chip"
-          onClick={onClear}
-          radius="xl"
-          size="compact-sm"
-          variant="subtle"
-        >
+        <ChipButton className="norea-library-chip" onClick={onClear}>
           {t("common.clear")}
-        </Button>
+        </ChipButton>
       ) : null}
     </div>
   );

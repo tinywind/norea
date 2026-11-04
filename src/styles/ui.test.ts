@@ -206,6 +206,7 @@ describe("coarse pointer touch floor", () => {
     for (const control of [
       ".mantine-Input-section .mantine-ActionIcon-root",
       ".norea-mobile-nav-link",
+      ".norea-chip",
     ]) {
       const { body } = ruleFor(coarse, `html:root ${control}::before`);
       expect(body, control).toMatch(/content: "";/);
@@ -217,6 +218,16 @@ describe("coarse pointer touch floor", () => {
     expect(
       ruleFor(coarse, "html:root .mantine-Input-section .mantine-ActionIcon-root").body,
     ).toMatch(/min-height: 0;/);
+  });
+
+  it("keeps chips at their 2rem pill instead of stretching them to the floor", () => {
+    expect(coarse).not.toMatch(/\.norea-chip[^{]*\{[^}]*min-height/);
+    const { body } = ruleFor(appCss, ".norea-chip");
+    expect(body).toMatch(/height: 2rem;/);
+    expect(body).toMatch(/border-radius: var\(--norea-radius-full\);/);
+    expect(body).toMatch(/font-weight: var\(--norea-weight-medium\);/);
+    expect(body).toMatch(/border: 1px solid var\(--norea-color-rule-strong\);/);
+    expect(ruleFor(appCss, '.norea-chip[aria-pressed="true"]').body).toMatch(/background: var\(--norea-color-accent-soft\);/);
   });
 
   it("lets reader bar buttons take the full touch floor instead of a hit-area overlay", () => {

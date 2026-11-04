@@ -1,5 +1,4 @@
 import {
-  Button,
   Checkbox,
   Select,
   Stack,
@@ -8,6 +7,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import { CheckIcon, MinusIcon } from "./ui/icons";
+import { ChipButton } from "./ChipButton";
 import { useTranslation } from "../i18n";
 import { FilterTypes, type Filters } from "../lib/plugins/filterTypes";
 
@@ -207,28 +207,19 @@ export function PluginFilters({
                         ? "-"
                         : "";
                     return (
-                      <Button
+                      <ChipButton
                         aria-label={t("pluginFilters.optionState", {
                           option: o.label,
                           state: stateLabels[state],
                         })}
-                        color={state === "-" ? "danger" : undefined}
                         data-state={state === "+" ? "include" : state === "-" ? "exclude" : "off"}
+                        icon={state === "+" ? <CheckIcon /> : state === "-" ? <MinusIcon /> : undefined}
                         key={o.value}
-                        leftSection={
-                          state === "+" ? (
-                            <CheckIcon size="1rem" />
-                          ) : state === "-" ? (
-                            <MinusIcon size="1rem" />
-                          ) : undefined
-                        }
                         onClick={() => setOption(o.value, nextExcludableState(state))}
-                        radius="xl"
-                        size="compact-sm"
-                        variant={state === "" ? "default" : "light"}
+                        tone={state === "+" ? "accent" : state === "-" ? "danger" : undefined}
                       >
                         {o.label}
-                      </Button>
+                      </ChipButton>
                     );
                   })}
                 </div>

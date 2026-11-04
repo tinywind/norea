@@ -10,6 +10,7 @@ import {
 } from "../../db/queries/category";
 import { useTranslation } from "../../i18n";
 import { describeError } from "../../lib/errors";
+import { ChipButton } from "../ChipButton";
 import { PlusIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
@@ -117,28 +118,16 @@ export function NovelCategoryEditor({
           {assignedCategories.length > 0 ? (
             assignedCategories.map((category) => (
               <li key={category.id}>
-                <button
-                  aria-haspopup="dialog"
-                  className="norea-novel-category-chip norea-state-layer"
-                  onClick={onOpenSheet}
-                  type="button"
-                >
+                <ChipButton aria-haspopup="dialog" onClick={onOpenSheet} tone="accent">
                   {category.name}
-                </button>
+                </ChipButton>
               </li>
             ))
           ) : (
             <li>
-              <button
-                aria-haspopup="dialog"
-                className="norea-novel-category-chip norea-state-layer"
-                data-empty="true"
-                onClick={onOpenSheet}
-                type="button"
-              >
-                <PlusIcon size="1rem" />
+              <ChipButton aria-haspopup="dialog" icon={<PlusIcon />} onClick={onOpenSheet}>
                 {t("categories.addToWork")}
-              </button>
+              </ChipButton>
             </li>
           )}
         </ul>

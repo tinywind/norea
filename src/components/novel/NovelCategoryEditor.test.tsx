@@ -38,6 +38,7 @@ vi.mock("../../db/queries/category", () => ({
 }));
 vi.mock("../ui/ResponsiveSheet", () => ({ ResponsiveSheet: () => null }));
 
+import { ChipButton } from "../ChipButton";
 import { NovelCategoryEditor } from "./NovelCategoryEditor";
 
 let harness: BackNavigationHarness | undefined;
@@ -72,11 +73,8 @@ const sheetElements = () => [
   ...collectElements(sheet().props.children as ReactNode),
   ...collectElements(sheet().props.footer as ReactNode),
 ];
-const chips = () => elements().filter((element) => element.type === "button");
-const text = (element: { props: Record<string, unknown> }) =>
-  collectElements(element.props.children as ReactNode).length === 0
-    ? String(element.props.children)
-    : (element.props.children as ReactNode[]).filter((child) => typeof child === "string").join("");
+const chips = () => elements().filter((element) => element.type === ChipButton);
+const text = (element: { props: Record<string, unknown> }) => String(element.props.children);
 
 it("shows assigned categories as chips that open the category sheet", async () => {
   await render(false);

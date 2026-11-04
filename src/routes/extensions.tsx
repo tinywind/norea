@@ -9,6 +9,7 @@ import {
   Stack,
   TextInput,
 } from "@mantine/core";
+import { ChipButton } from "../components/ChipButton";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { PluginIcon } from "../components/browse/PluginIcon";
 import { PluginSettingsDialog } from "../components/browse/PluginSettingsDialog";
@@ -40,7 +41,6 @@ import {
 import { showSettingsToast } from "../components/settings/settings-toast";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import {
-  CheckIcon,
   ChevronRightIcon,
   GithubIcon,
   ImportIcon,
@@ -1205,32 +1205,14 @@ export function AvailableSection({
             className="norea-browse-chips"
             role="group"
           >
-            <Button
-              aria-pressed={selectedLanguages.length === 0}
-              leftSection={selectedLanguages.length === 0 ? <CheckIcon size="1rem" /> : undefined}
-              onClick={() => onLanguagesChange([])}
-              radius="xl"
-              size="compact-sm"
-              variant={selectedLanguages.length === 0 ? "light" : "default"}
-            >
+            <ChipButton onClick={() => onLanguagesChange([])} selected={selectedLanguages.length === 0}>
               {t("common.all")}
-            </Button>
-            {languages.map((lang) => {
-              const active = selectedLanguages.includes(lang);
-              return (
-                <Button
-                  aria-pressed={active}
-                  key={lang}
-                  leftSection={active ? <CheckIcon size="1rem" /> : undefined}
-                  onClick={() => toggleLanguage(lang)}
-                  radius="xl"
-                  size="compact-sm"
-                  variant={active ? "light" : "default"}
-                >
-                  {languageLabel(locale, lang)}
-                </Button>
-              );
-            })}
+            </ChipButton>
+            {languages.map((lang) => (
+              <ChipButton key={lang} onClick={() => toggleLanguage(lang)} selected={selectedLanguages.includes(lang)}>
+                {languageLabel(locale, lang)}
+              </ChipButton>
+            ))}
           </div>
         </div>
       ) : null}

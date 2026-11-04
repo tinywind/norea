@@ -14,6 +14,7 @@ import {
   PageHeader,
   StateView,
 } from "../components/AppFrame";
+import { ChipButton } from "../components/ChipButton";
 import { CoverGridSkeleton } from "../components/browse/CoverGridSkeleton";
 import { PluginSettingsDialog } from "../components/browse/PluginSettingsDialog";
 import { QuickAddCard } from "../components/browse/QuickAddCard";
@@ -638,18 +639,16 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
           role="group"
         >
           {activeFilterLabels.map((filter) => (
-            <Button
+            <ChipButton
               aria-label={t("source.removeFilter", { filter: filter.label })}
               className="norea-source-applied-filter"
               key={filter.key}
               onClick={() => removeFilter(filter.key)}
-              radius="xl"
-              rightSection={<CloseIcon size="0.875rem" />}
-              size="compact-sm"
-              variant="light"
+              tone="accent"
+              trailingIcon={<CloseIcon />}
             >
               {filter.label}
-            </Button>
+            </ChipButton>
           ))}
         </div>
       ) : null}

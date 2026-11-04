@@ -4,8 +4,8 @@ import { describe, expect, it } from "vitest";
 /*
  * D10 button rule (docs/superpowers/plans/2026-11-03-ui-ux-overhaul.md):
  * filled = the one primary action, `default` = outline secondary action,
- * `subtle` = borderless bar/row control or text link, `light` = selected chip
- * or pressed toggle only. Icon-only buttons are borderless and named; sheet
+ * `subtle` = borderless bar/row control or text link, `light` = pressed toggle
+ * only; chips are ChipButtons. Icon-only buttons are borderless and named; sheet
  * footers hold label-only actions; the same action keeps the same icon.
  */
 
@@ -150,12 +150,23 @@ describe("D10 icon-only buttons", () => {
 });
 
 describe("D10 emphasis", () => {
-  it("reserves the light variant for selected chips and pressed toggles", () => {
+  it("reserves the light variant for pressed toggles", () => {
     const offenders = buttons
       .filter((element) => variantOf(element.open)?.[0].includes("light"))
-      .filter((element) => !prop(element.open, "aria-pressed") && !/\sradius="xl"/.test(element.open))
+      .filter((element) => !prop(element.open, "aria-pressed"))
       .map(where);
     expect(offenders).toEqual([]);
+  });
+
+  it("draws every chip with ChipButton instead of a rounded Button", () => {
+    const chips = sources.flatMap(({ name, source }) => elements(name, source, "ChipButton"));
+    expect(chips.length).toBeGreaterThan(15);
+    expect(buttons.filter((element) => /\sradius=/.test(element.open)).map(where)).toEqual([]);
+    const rawChips = sources
+      .filter(({ name }) => name !== "components/ChipButton.tsx")
+      .filter(({ source }) => /className="[^"]*norea-chip\b/.test(source))
+      .map(({ name }) => name);
+    expect(rawChips).toEqual([]);
   });
 
   it("gives sheet footers label-only actions: an outline cancel and at most one filled primary", () => {

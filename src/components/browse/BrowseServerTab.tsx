@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Button, Loader } from "@mantine/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
+import { ChipButton } from "../ChipButton";
 import { useTranslation } from "../../i18n";
 import { listServerWorks, openServerNovel, type ServerSourceSummary, type ServerWorkSummary } from "../../lib/content-sync/browse";
 import { contentServerRequest } from "../../lib/content-sync/client";
@@ -94,15 +95,11 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
     );
   }
 
-  const sourceChip = (value: string, label: string) => {
-    const selected = source === value;
-    return (
-      <Button aria-pressed={selected} key={value || "all"} leftSection={selected ? <CheckIcon size="1rem" /> : undefined}
-        onClick={() => setFilters(server, { source: value })} radius="xl" size="compact-sm" variant={selected ? "light" : "default"}>
-        {label}
-      </Button>
-    );
-  };
+  const sourceChip = (value: string, label: string) => (
+    <ChipButton key={value || "all"} onClick={() => setFilters(server, { source: value })} selected={source === value}>
+      {label}
+    </ChipButton>
+  );
 
   const selecting = selection.selectionMode;
   useEffect(() => {
