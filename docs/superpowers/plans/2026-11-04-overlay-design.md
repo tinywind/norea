@@ -1,6 +1,7 @@
 # Overlay design plan
 
-Status: plan only. Nothing here is implemented yet.
+Status: implemented on `0.2` (phases 1-5). The current-state table and
+problem list below describe the code before the work.
 
 Scope: every layered surface that appears over a page and goes away again:
 bottom sheets, side drawers, centered dialogs, full-screen sheets, confirms,
@@ -128,13 +129,14 @@ menus, popovers, toasts and the reader's Aa sheet and side panel.
 Each phase ends with `pnpm tsc`, `pnpm test` and a Y700 check (display 0) of
 one sheet, dialog, menu and toast in light and dark mode.
 
-## Open decisions
+## Decisions (approved 2026-11-04)
 
-1. Toast surface: inverse (snackbar) or the lifted overlay surface?
-2. Scrim blur on desktop? It is expensive on Android WebView.
-3. Long forms on phones: full screen or a 90% sheet?
-4. Tablet portrait (768-991px): bottom sheet or centered dialog?
-5. Should toasts appear above the site browser overlay?
-6. Header divider: always, or only once the body scrolls?
-7. Drag to dismiss on sheets that contain forms?
-8. Phone footer: equal-width buttons, or a full-width primary?
+1. Toast surface: the inverse (snackbar) surface, with a status accent bar.
+2. No scrim blur.
+3. Long forms and managers on phones: full screen.
+4. Tablet portrait (768-991px): a centered dialog. The existing 768px and
+   1200px cutoffs stay; no new breakpoints.
+5. Toasts stay below the site browser overlay.
+6. Header divider: only once the body scrolls.
+7. Drag to dismiss on every bottom sheet, disabled while `busy`.
+8. Phone footer: equal-width buttons, stacked when there are more than two.
