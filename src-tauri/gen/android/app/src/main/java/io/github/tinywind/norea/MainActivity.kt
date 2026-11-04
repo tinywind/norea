@@ -152,7 +152,12 @@ class MainActivity : TauriActivity() {
       val types = WindowInsetsCompat.Type.systemBars() or
         WindowInsetsCompat.Type.displayCutout()
       val insets = windowInsets.getInsets(types)
-      safeAreaInsetsJson = insetsJson(insets)
+      // Edge-to-edge windows do not resize for the keyboard, so the page needs its height.
+      val keyboard = maxOf(
+        0,
+        windowInsets.getInsets(WindowInsetsCompat.Type.ime()).bottom - insets.bottom,
+      )
+      safeAreaInsetsJson = insetsJson(insets, keyboard)
       val script =
         "window.__noreaApplyAndroidSafeAreaInsets && window.__noreaApplyAndroidSafeAreaInsets($safeAreaInsetsJson);"
       webView.evaluateJavascript(
@@ -334,12 +339,13 @@ class MainActivity : TauriActivity() {
   companion object {
     private const val REQUEST_POST_NOTIFICATIONS = 1002
 
-    private fun insetsJson(insets: Insets): String {
+    private fun insetsJson(insets: Insets, keyboard: Int = 0): String {
       return JSONObject()
         .put("top", insets.top)
         .put("right", insets.right)
         .put("bottom", insets.bottom)
         .put("left", insets.left)
+        .put("keyboard", keyboard)
         .toString()
     }
   }

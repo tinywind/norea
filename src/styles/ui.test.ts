@@ -323,6 +323,15 @@ describe("full-screen dialogs", () => {
     );
   });
 
+  it("center other dialogs in the area above the keyboard", () => {
+    const inner = ruleFor(appCss, ".mantine-Modal-root:not([data-full-screen]) .mantine-Modal-inner").body;
+    expect(inner).toMatch(
+      /padding-block-end: calc\(\s*max\(5dvh, var\(--norea-safe-area-bottom\)\) \+ var\(--norea-keyboard-inset\)\s*\);/,
+    );
+    const content = ruleFor(appCss, ".mantine-Modal-root:not([data-full-screen]) .mantine-Modal-content").body;
+    expect(content).toMatch(/- var\(--norea-keyboard-inset\)\s*\);/);
+  });
+
   it("leaves no per-dialog safe-area padding behind", () => {
     const sheets = readdirSync(stylesDir).filter((name) => name.endsWith(".css") && name !== "app.css");
     for (const name of sheets) {

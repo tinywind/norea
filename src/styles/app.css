@@ -382,8 +382,11 @@ a {
   overflow: hidden;
 }
 
+/* Centered dialogs sit in the area the keyboard leaves visible. */
 .mantine-Modal-root:not([data-full-screen]) .mantine-Modal-inner {
-  padding-block-end: max(5dvh, var(--norea-safe-area-bottom));
+  padding-block-end: calc(
+    max(5dvh, var(--norea-safe-area-bottom)) + var(--norea-keyboard-inset)
+  );
   padding-block-start: max(5dvh, var(--norea-safe-area-top));
   padding-inline-end: max(5vw, var(--norea-safe-area-right));
   padding-inline-start: max(5vw, var(--norea-safe-area-left));
@@ -407,7 +410,7 @@ a {
 .mantine-Modal-root:not([data-full-screen]) .mantine-Modal-content {
   max-height: calc(
     var(--norea-viewport-height) - max(5dvh, var(--norea-safe-area-top)) -
-      max(5dvh, var(--norea-safe-area-bottom))
+      max(5dvh, var(--norea-safe-area-bottom)) - var(--norea-keyboard-inset)
   );
 }
 

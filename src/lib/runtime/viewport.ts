@@ -45,6 +45,7 @@ interface AndroidWindowBridge {
 
 interface RuntimeSafeAreaInsets {
   bottom?: unknown;
+  keyboard?: unknown;
   left?: unknown;
   right?: unknown;
   top?: unknown;
@@ -73,6 +74,7 @@ interface AndroidLayoutConfig {
 }
 
 let androidNativePxPerCssPx = 1;
+let nativeKeyboardInset = "0px";
 
 function positiveNumber(value: unknown): number | null {
   const numeric = typeof value === "number" ? value : Number(value);
@@ -234,6 +236,8 @@ function applyNativeSafeAreaInsets(insets: RuntimeSafeAreaInsets): void {
     NATIVE_SAFE_AREA_LEFT_PROPERTY,
     safeInsetPx(insets.left),
   );
+  nativeKeyboardInset = safeInsetPx(insets.keyboard, true);
+  applyKeyboardInset();
 }
 
 function readAndroidSafeAreaInsets(): RuntimeSafeAreaInsets | null {
@@ -255,6 +259,7 @@ function clearNativeSafeAreaInsets(): void {
   root.style.removeProperty(NATIVE_SAFE_AREA_RIGHT_PROPERTY);
   root.style.removeProperty(NATIVE_SAFE_AREA_BOTTOM_PROPERTY);
   root.style.removeProperty(NATIVE_SAFE_AREA_LEFT_PROPERTY);
+  nativeKeyboardInset = "0px";
 }
 
 function applyRuntimeSafeAreaInsets(): void {
@@ -312,10 +317,15 @@ export function keyboardInsetPx(
   return Math.max(0, Math.round(layoutHeight - viewport.height - viewport.offsetTop));
 }
 
+/**
+ * The larger of the visual-viewport estimate and the native IME inset. Android
+ * edge-to-edge windows keep the WebView full height under the keyboard, so only
+ * the native inset reports it there.
+ */
 function applyKeyboardInset(): void {
   document.documentElement.style.setProperty(
     KEYBOARD_INSET_PROPERTY,
-    `${keyboardInsetPx(window.innerHeight, window.visualViewport)}px`,
+    `max(${keyboardInsetPx(window.innerHeight, window.visualViewport)}px, ${nativeKeyboardInset})`,
   );
 }
 
