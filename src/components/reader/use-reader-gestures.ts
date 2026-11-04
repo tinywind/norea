@@ -12,6 +12,7 @@ import {
   isInteractiveTarget,
   logReaderInput,
 } from "./reader-content-metrics";
+import { isReaderMediaEventTarget } from "./reader-content-media";
 import { getReaderLinkElement, openReaderLink } from "./reader-links";
 const WHEEL_PAGE_COOLDOWN_MS = 220;
 const WHEEL_PAGE_DELTA_THRESHOLD = 20;
@@ -62,7 +63,9 @@ export function useReaderGestures({
     selectionAtPointerDownRef.current = hasReaderTextSelection();
   };
   const handleClick = (event: MouseEvent<HTMLDivElement>) => {
-    const link = getReaderLinkElement(event.target);
+    const link = isReaderMediaEventTarget(event.target)
+      ? null
+      : getReaderLinkElement(event.target);
     if (link) {
       event.preventDefault();
       if (!interactionBlocked) openReaderLink(link);

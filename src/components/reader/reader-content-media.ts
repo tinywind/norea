@@ -23,6 +23,7 @@ interface ReaderMediaPatchTargetIndex {
 
 const READER_MEDIA_EVENT_SELECTOR =
   "img,picture,svg,video,audio,canvas,iframe,figure";
+const READER_INTERACTIVE_MEDIA_SELECTOR = "video,audio,iframe";
 
 export const READER_MEDIA_PATCH_ATTRIBUTES = [
   "src",
@@ -171,10 +172,24 @@ export function isReaderMediaEventTarget(target: EventTarget | null): boolean {
   return !!link?.querySelector(READER_MEDIA_EVENT_SELECTOR);
 }
 
+/** True when the target is media with its own controls, which keep their taps. */
+export function isReaderInteractiveMediaTarget(
+  target: EventTarget | null,
+): boolean {
+  return !!getReaderEventElement(target)?.closest(
+    READER_INTERACTIVE_MEDIA_SELECTOR,
+  );
+}
+
+/**
+ * Keeps media from opening its wrapping link or native viewer. Still images
+ * pass on to the reader tap handler, so image-only chapters such as webtoons
+ * keep tap zones and the chrome toggle; media with controls keeps its taps.
+ */
 export function stopReaderMediaClick(event: MouseEvent<HTMLDivElement>): void {
   if (!isReaderMediaEventTarget(event.target)) return;
   event.preventDefault();
-  event.stopPropagation();
+  if (isReaderInteractiveMediaTarget(event.target)) event.stopPropagation();
 }
 
 function mediaPatchValueKind(value: string): string {

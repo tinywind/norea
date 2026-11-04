@@ -222,7 +222,7 @@ describe("reader tap contract", () => {
     ["an anchor without a destination", () => new FakeElement("span", new FakeElement("a"))],
     ["a button", () => new FakeElement("button")],
     ["a slider", () => new FakeElement("span", new FakeElement("div", null, "slider"))],
-    ["media", () => new FakeElement("img")],
+    ["media with its own controls", () => new FakeElement("video")],
   ])("leaves a tap on %s to that element", (_label, target) => {
     const { handlers, scrollByPage, onToggleChrome } = mountGestures();
     tap(handlers, ZONE_POINTS.middleRight, target());
@@ -318,7 +318,7 @@ describe("reader tap contract", () => {
 });
 
 describe("reader media interception contract", () => {
-  it("stops media clicks before they reach the tap handler", () => {
+  it("passes still-image clicks on to the tap handler without their default", () => {
     const event = {
       target: new FakeElement("img", new FakeElement("figure")),
       preventDefault: vi.fn(),
@@ -326,7 +326,35 @@ describe("reader media interception contract", () => {
     };
     stopReaderMediaClick(event as unknown as Parameters<typeof stopReaderMediaClick>[0]);
     expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(event.stopPropagation).not.toHaveBeenCalled();
+  });
+
+  it("keeps clicks on media with its own controls", () => {
+    const event = {
+      target: new FakeElement("video"),
+      preventDefault: vi.fn(),
+      stopPropagation: vi.fn(),
+    };
+    stopReaderMediaClick(event as unknown as Parameters<typeof stopReaderMediaClick>[0]);
     expect(event.stopPropagation).toHaveBeenCalledOnce();
+  });
+
+  it("toggles chrome and pages when a webtoon image is tapped", () => {
+    const { handlers, scrollByPage, onToggleChrome } = mountGestures({
+      general: { tapToScroll: true },
+    });
+    tap(handlers, ZONE_POINTS.middleCenter, new FakeElement("img"));
+    expect(onToggleChrome).toHaveBeenCalledOnce();
+    tap(handlers, ZONE_POINTS.bottomCenter, new FakeElement("canvas"));
+    expect(scrollByPage).toHaveBeenCalled();
+  });
+
+  it("does not open the link that wraps a tapped image", () => {
+    const { handlers, onToggleChrome } = mountGestures();
+    const anchor = new FakeElement("a", null, null, "https://example.com/next");
+    tap(handlers, ZONE_POINTS.middleCenter, new FakeElement("img", anchor));
+    expect(openReaderLink).not.toHaveBeenCalled();
+    expect(onToggleChrome).toHaveBeenCalledOnce();
   });
 
   it("lets text clicks through", () => {

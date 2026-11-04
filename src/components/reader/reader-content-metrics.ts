@@ -1,7 +1,10 @@
 import { type WheelEvent } from "react";
 import { type ReaderTapZone } from "../../store/reader";
 import { prefersReducedMotion } from "../../theme/motion";
-import { isReaderMediaEventTarget } from "./reader-content-media";
+import {
+  isReaderInteractiveMediaTarget,
+  isReaderMediaEventTarget,
+} from "./reader-content-media";
 export interface PageInfo {
   current: number;
   total: number;
@@ -99,12 +102,17 @@ export function animateScrollTop(
   };
 }
 
+const READER_CONTROL_SELECTOR =
+  "button,input,select,textarea,[role='button'],[role='slider']";
+
 export function isInteractiveTarget(target: EventTarget | null): boolean {
-  if (isReaderMediaEventTarget(target)) return true;
+  if (isReaderInteractiveMediaTarget(target)) return true;
   if (!(target instanceof HTMLElement)) return false;
-  return !!target.closest(
-    "button,a,input,select,textarea,[role='button'],[role='slider']",
-  );
+  // A link around a still image is not a control: the tap still pages or toggles chrome.
+  if (isReaderMediaEventTarget(target)) {
+    return !!target.closest(READER_CONTROL_SELECTOR);
+  }
+  return !!target.closest(`${READER_CONTROL_SELECTOR},a`);
 }
 
 /** True while the user holds a non-empty text selection in the document. */
