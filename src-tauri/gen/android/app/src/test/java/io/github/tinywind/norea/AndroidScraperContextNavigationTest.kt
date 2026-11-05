@@ -14,9 +14,26 @@ class AndroidScraperContextNavigationTest {
   fun syntheticDocumentsCompleteWithoutAPageStartedCallback() {
     val document = "https://cdn.example/#norea-context-current"
     val navigation = AndroidScraperContextNavigation("https://cdn.example/", request, document)
-    assertEquals(AndroidScraperContextAction.Ready(null), navigation.onDocumentReady(document, true, true))
+    assertEquals(AndroidScraperContextAction.Ready(null, document), navigation.onDocumentReady(document, true, true))
     assertTrue(navigation.finished)
     assertEquals(AndroidScraperContextAction.Wait, navigation.onDocumentReady(document, true, true))
+  }
+
+  @Test
+  fun readyNamesTheSyntheticDocumentThatReplacedThePreviousMirror() {
+    // Without a page-start event the bridge still holds the previous mirror's URL;
+    // the ready action must name the document that queued fetches now share.
+    val previousMirror = "https://mirror-a.example/#norea-context-previous"
+    val document = "https://mirror-b.example/#norea-context-current"
+    val navigation = AndroidScraperContextNavigation(
+      "https://mirror-b.example",
+      "https://mirror-b.example/0002.woff2",
+      document,
+    )
+    assertEquals(AndroidScraperContextAction.Wait, navigation.onDocumentReady(previousMirror, false, true))
+    val ready = navigation.onDocumentReady(document, true, true) as AndroidScraperContextAction.Ready
+    assertEquals(document, ready.documentUrl)
+    assertEquals(null, ready.fetchUrl)
   }
 
   @Test
@@ -28,7 +45,7 @@ class AndroidScraperContextNavigationTest {
       assertEquals(AndroidScraperContextAction.Wait, navigation.onDocumentReady(oldDocument, true, true))
       assertFalse(navigation.finished)
     }
-    assertEquals(AndroidScraperContextAction.Ready(null), navigation.onDocumentReady(document, true, true))
+    assertEquals(AndroidScraperContextAction.Ready(null, document), navigation.onDocumentReady(document, true, true))
   }
 
   @Test
@@ -51,7 +68,7 @@ class AndroidScraperContextNavigationTest {
   fun preservesTheOriginalRequestWhenTheContextStaysOnItsOrigin() {
     val navigation = AndroidScraperContextNavigation(context, request)
     navigation.onStarted()
-    assertEquals(AndroidScraperContextAction.Ready(null), navigation.onDocumentReady(context, true, true))
+    assertEquals(AndroidScraperContextAction.Ready(null, context), navigation.onDocumentReady(context, true, true))
     assertTrue(navigation.finished)
   }
 
@@ -60,7 +77,7 @@ class AndroidScraperContextNavigationTest {
     val navigation = AndroidScraperContextNavigation(context, context)
     navigation.onStarted()
     assertEquals(
-      AndroidScraperContextAction.Ready("https://new.example/"),
+      AndroidScraperContextAction.Ready("https://new.example/", "https://new.example/"),
       navigation.onDocumentReady("https://new.example/", false, true),
     )
     assertTrue(navigation.finished)
@@ -82,7 +99,7 @@ class AndroidScraperContextNavigationTest {
     assertFalse(navigation.finished)
     navigation.onStarted()
     assertEquals(
-      AndroidScraperContextAction.Ready(finalRequest),
+      AndroidScraperContextAction.Ready(finalRequest, finalRequest),
       navigation.onDocumentReady(finalRequest, false, true),
     )
     assertTrue(navigation.finished)
@@ -102,7 +119,7 @@ class AndroidScraperContextNavigationTest {
     navigation.onStarted()
     navigation.onDocumentReady("https://new.example/", false, true)
     navigation.onStarted()
-    assertEquals(AndroidScraperContextAction.Ready(null), navigation.onDocumentReady(request, true, true))
+    assertEquals(AndroidScraperContextAction.Ready(null, request), navigation.onDocumentReady(request, true, true))
   }
 
   @Test

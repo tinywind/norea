@@ -1623,6 +1623,9 @@ class AndroidScraperBridge(
           webView.loadUrl(action.url)
         }
         is AndroidScraperContextAction.Ready -> {
+          // A synthetic document can become ready without a page-start event, and the
+          // concurrent fetches released below are matched against this document.
+          state.currentUrl = action.documentUrl
           state.contextReady = true
           state.pendingDocumentReady = null
           clearTimeout(state)

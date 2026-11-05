@@ -3,7 +3,7 @@ package io.github.tinywind.norea
 internal sealed interface AndroidScraperContextAction {
   data object Wait : AndroidScraperContextAction
   data class Navigate(val url: String) : AndroidScraperContextAction
-  data class Ready(val fetchUrl: String?) : AndroidScraperContextAction
+  data class Ready(val fetchUrl: String?, val documentUrl: String) : AndroidScraperContextAction
 }
 
 internal class AndroidScraperContextNavigation(
@@ -35,12 +35,12 @@ internal class AndroidScraperContextNavigation(
         return AndroidScraperContextAction.Wait
       }
       finished = true
-      return AndroidScraperContextAction.Ready(null)
+      return AndroidScraperContextAction.Ready(null, documentUrl)
     }
     if (!navigationStarted) return AndroidScraperContextAction.Wait
     if (sameOriginAsContext) {
       finished = true
-      return AndroidScraperContextAction.Ready(null)
+      return AndroidScraperContextAction.Ready(null, documentUrl)
     }
     if (!httpDocument) return AndroidScraperContextAction.Wait
 
@@ -54,7 +54,7 @@ internal class AndroidScraperContextNavigation(
     }
     if (fallbackAttempted || requestUrl == contextUrl) {
       finished = true
-      return AndroidScraperContextAction.Ready(documentUrl)
+      return AndroidScraperContextAction.Ready(documentUrl, documentUrl)
     }
     return AndroidScraperContextAction.Wait
   }
