@@ -365,6 +365,7 @@
 .norea-settings-inline-controls {
   align-items: center;
   display: flex;
+  flex-wrap: wrap;
   gap: var(--norea-space-2);
   justify-content: flex-end;
   min-width: 0;
@@ -376,7 +377,12 @@
   min-width: 0;
 }
 
-.norea-settings-inline-controls > :where(.norea-icon-button, .mantine-ActionIcon-root),
+/* Buttons never shrink below their label; a group that does not fit wraps to a second line. */
+.norea-settings-inline-controls > :where(.mantine-Button-root, .norea-text-button) {
+  min-width: max-content;
+}
+
+.norea-settings-inline-controls > :where(.norea-icon-button, .mantine-ActionIcon-root, .norea-console-chip),
 .norea-settings-inline-controls > :where(.mantine-Button-root, .norea-text-button):only-child {
   flex: 0 0 auto;
 }
