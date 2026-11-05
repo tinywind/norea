@@ -6,7 +6,6 @@
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_DATA_SYNC" />
-    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
 
@@ -85,17 +84,6 @@
             android:name=".TaskForegroundService"
             android:exported="false"
             android:foregroundServiceType="dataSync" />
-
-        <!-- specialUse has no daily runtime quota; downloads need the dataSync quota. -->
-        <service
-            android:name=".PluginVpnForegroundService"
-            android:exported="false"
-            android:foregroundServiceType="specialUse"
-            android:stopWithTask="true">
-            <property
-                android:name="android.app.PROPERTY_SPECIAL_USE_FGS_SUBTYPE"
-                android:value="Keeps the in-app VPN tunnel used for plugin traffic connected while the app is in the background." />
-        </service>
 
         <service android:name=".AndroidVpnDownloadWorker0Service"
             android:exported="false" android:process=":vpn_download_0" />
