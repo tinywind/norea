@@ -867,6 +867,11 @@ html[data-norea-keyboard="open"] .norea-mobile-nav {
   color: var(--norea-color-warn);
 }
 
+.norea-icon-button:disabled {
+  background: transparent;
+  opacity: var(--norea-disabled-opacity);
+}
+
 .norea-icon-button svg {
   fill: none;
   height: var(--norea-icon-glyph-size);
