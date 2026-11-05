@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { MantineProvider, Select, Switch } from "@mantine/core";
 import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
@@ -37,25 +38,17 @@ describe("settings groups", () => {
 });
 
 describe("settings rows", () => {
-  it("keeps a short description inline", () => {
-    const markup = render(
-      <SettingsFieldRow description="Use a pure black background." label="AMOLED black">
-        <span />
-      </SettingsFieldRow>,
-    );
-    expect(markup).not.toContain("norea-settings-form-info");
-    expect(markup).not.toMatch(/norea-settings-form-description[^>]*hidden/);
-  });
-
-  it("moves a long description behind a collapsed info toggle", () => {
-    const markup = render(
-      <SettingsFieldRow description={LONG_DESCRIPTION} label="Storage folder">
-        <span />
-      </SettingsFieldRow>,
-    );
-    expect(markup).toMatch(/aria-label="About Storage folder"[^>]*aria-expanded="false"/);
-    expect(markup).toMatch(/norea-settings-form-description[^>]*hidden=""/);
-    expect(markup).toContain(LONG_DESCRIPTION);
+  it("puts every row description behind an info button and keeps it for screen readers", () => {
+    for (const description of ["Use a pure black background.", LONG_DESCRIPTION]) {
+      const markup = render(
+        <SettingsFieldRow description={description} label="Storage folder">
+          <span />
+        </SettingsFieldRow>,
+      );
+      expect(markup).toMatch(/aria-label="About Storage folder"[^>]*aria-expanded="false"/);
+      expect(markup).not.toContain("norea-settings-form-description");
+      expect(markup).toContain(description);
+    }
   });
 
   it("shows row status and errors inline", () => {
@@ -134,5 +127,13 @@ describe("advanced settings group", () => {
     );
     expect(markup).toMatch(/aria-expanded="true"[^>]*class="norea-settings-advanced-toggle/);
     expect(markup).toContain(">Credentials<");
+  });
+});
+
+describe("settings row layout", () => {
+  it("splits inline rows in half and fills the control half", () => {
+    const css = readFileSync(new URL("../styles/settings.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.norea-settings-form-row \{[^}]*grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\);/);
+    expect(css).toMatch(/\.norea-settings-form-control \{[^}]*justify-items: stretch;[^}]*width: 100%;/);
   });
 });

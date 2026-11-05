@@ -140,7 +140,8 @@
   border-bottom: 1px solid var(--norea-color-rule);
   display: grid;
   gap: var(--norea-space-3);
-  grid-template-columns: minmax(0, 1fr) minmax(10rem, max-content);
+  /* Name on the left half, control on the right half, in every inline row. */
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
   min-height: 3.25rem;
   padding: var(--norea-space-2) 0;
 }
@@ -319,13 +320,39 @@
   white-space: nowrap;
 }
 
-/* Every control in the column, field or button, ends on the row's right edge. */
+/*
+ * The control column is the row's right half. Fields, pickers, sliders and segments fill it;
+ * a lone switch or button keeps its own size at the column's right edge.
+ */
 .norea-settings-form-control {
   display: grid;
-  justify-items: end;
-  justify-self: end;
-  max-width: min(100%, 27.5rem);
+  justify-items: stretch;
   min-width: 0;
+  width: 100%;
+}
+
+.norea-settings-form-control:has(
+    > :where(.mantine-Switch-root, .mantine-Button-root, .norea-text-button, .norea-icon-button, .mantine-ActionIcon-root):only-child
+  ) {
+  justify-items: end;
+}
+
+.norea-settings-form-control > :where(.norea-segmented-toggle) {
+  display: flex;
+  width: 100%;
+}
+
+.norea-settings-form-control > .norea-segmented-toggle :where(.mantine-SegmentedControl-control) {
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+/* A long choice wraps inside its segment instead of being cut off. */
+.norea-settings-form-control > .norea-segmented-toggle :where(.mantine-SegmentedControl-label) {
+  line-height: var(--norea-leading-tight);
+  overflow: visible;
+  text-overflow: clip;
+  white-space: normal;
 }
 
 .norea-settings-form-row[data-layout="stacked"] .norea-settings-form-control {
@@ -334,19 +361,42 @@
   max-width: none;
 }
 
+/* Several controls split the right half: buttons share it evenly, a field takes what buttons leave. */
 .norea-settings-inline-controls {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
   gap: var(--norea-space-2);
   justify-content: flex-end;
-  max-width: 100%;
+  min-width: 0;
+  width: 100%;
+}
+
+.norea-settings-inline-controls > * {
+  flex: 1 1 0;
   min-width: 0;
 }
 
+.norea-settings-inline-controls > :where(.norea-icon-button, .mantine-ActionIcon-root),
+.norea-settings-inline-controls > :where(.mantine-Button-root, .norea-text-button):only-child {
+  flex: 0 0 auto;
+}
+
 /* Buttons beside a field share one width, so fields in consecutive rows line up. */
-.norea-settings-inline-controls > :where(.mantine-Button-root) {
+.norea-settings-inline-controls:has(> .mantine-InputWrapper-root) > :where(.mantine-Button-root, .norea-text-button) {
+  flex: 0 0 auto;
   min-width: 6.5rem;
+}
+
+.norea-settings-inline-controls > :where(.mantine-Text-root) {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-settings-form-tooltip {
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-sm);
+  line-height: var(--norea-leading-normal);
 }
 
 .norea-settings-wide-field {
@@ -355,8 +405,8 @@
 }
 
 .norea-settings-form-control :where(.mantine-InputWrapper-root) {
-  max-width: 100%;
-  width: 16rem;
+  min-width: 0;
+  width: 100%;
 }
 
 .norea-settings-wide-field :where(.mantine-InputWrapper-root),
@@ -386,8 +436,9 @@
   align-items: center;
   display: grid;
   gap: var(--norea-space-3);
-  grid-template-columns: 3rem minmax(10rem, 16.25rem);
+  grid-template-columns: 3rem minmax(0, 1fr);
   min-width: 0;
+  width: 100%;
 }
 
 .norea-settings-slider-value {

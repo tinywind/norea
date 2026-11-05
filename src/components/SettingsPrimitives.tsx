@@ -3,11 +3,13 @@ import {
   Collapse,
   NumberInput,
   PasswordInput,
+  Popover,
   Select,
   Slider,
   Switch,
   Text,
   TextInput,
+  VisuallyHidden,
 } from "@mantine/core";
 import {
   cloneElement,
@@ -22,9 +24,6 @@ import { useTranslation } from "../i18n";
 import { settingsRowSelector, useSettingsRevealStore } from "./settings/settings-reveal";
 import { IconButton } from "./IconButton";
 import { ChevronDownIcon, InfoIcon } from "./ui/icons";
-
-/** Longer descriptions move behind the row's info toggle to keep one short line. */
-const INLINE_DESCRIPTION_MAX_LENGTH = 90;
 
 interface SettingsSectionProps {
   children: ReactNode;
@@ -112,9 +111,7 @@ export function SettingsFieldRow({
   const labelId = useId();
   const [descriptionOpen, setDescriptionOpen] = useState(false);
   const hasCopy = Boolean(label || description || error || status);
-  const collapsibleDescription = Boolean(
-    label && description && description.length > INLINE_DESCRIPTION_MAX_LENGTH,
-  );
+  const infoDescription = Boolean(label && description);
 
   return (
     <div
@@ -130,26 +127,35 @@ export function SettingsFieldRow({
               <Text className="norea-settings-form-label" id={labelId}>
                 {label}
               </Text>
-              {collapsibleDescription ? (
-                <IconButton
-                  active={descriptionOpen}
-                  aria-controls={descriptionId}
-                  aria-expanded={descriptionOpen}
-                  className="norea-settings-form-info"
-                  label={t("settings.row.moreInfo", { label })}
-                  onClick={() => setDescriptionOpen((open) => !open)}
+              {infoDescription ? (
+                <Popover
+                  onChange={setDescriptionOpen}
+                  opened={descriptionOpen}
+                  position="bottom-start"
+                  width="min(20rem, calc(100vw - 2rem))"
+                  withArrow
                 >
-                  <InfoIcon />
-                </IconButton>
+                  <Popover.Target>
+                    <IconButton
+                      active={descriptionOpen}
+                      aria-describedby={descriptionId}
+                      aria-expanded={descriptionOpen}
+                      className="norea-settings-form-info"
+                      label={t("settings.row.moreInfo", { label })}
+                      onClick={() => setDescriptionOpen((open) => !open)}
+                    >
+                      <InfoIcon />
+                    </IconButton>
+                  </Popover.Target>
+                  <Popover.Dropdown className="norea-settings-form-tooltip">{description}</Popover.Dropdown>
+                </Popover>
               ) : null}
             </div>
           ) : null}
-          {description ? (
-            <Text
-              className="norea-settings-form-description"
-              hidden={collapsibleDescription && !descriptionOpen}
-              id={descriptionId}
-            >
+          {infoDescription ? (
+            <VisuallyHidden id={descriptionId}>{description}</VisuallyHidden>
+          ) : description ? (
+            <Text className="norea-settings-form-description" id={descriptionId}>
               {description}
             </Text>
           ) : null}
