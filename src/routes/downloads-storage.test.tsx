@@ -54,11 +54,11 @@ describe("Downloads storage", () => {
     expect(css).not.toMatch(/\.norea-downloads-page \{[^}]*overflow: hidden/);
   });
 
-  it("gives each novel a Read action and keeps clean up labeled in the header", () => {
+  it("gives each novel a Read action and names clean up in the header", () => {
     const $ = render([novel()]);
     expect($('button[aria-label="Read Novel"]')).toHaveLength(1);
     expect($('button[aria-label="Novel options"]')).toHaveLength(1);
-    expect($(".norea-app-bar-actions button").first().text()).toBe("Clean up");
+    expect($(".norea-app-bar-actions button").first().attr("aria-label")).toBe("Clear downloaded chapters");
     expect($('.norea-app-bar-actions button[aria-label="More"]')).toHaveLength(1);
     expect($("h1.norea-app-bar-title").text()).toBe("Downloads");
   });

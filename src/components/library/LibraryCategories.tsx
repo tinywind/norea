@@ -1,10 +1,11 @@
-import { Button, Text, UnstyledButton } from "@mantine/core";
+import { Text, UnstyledButton } from "@mantine/core";
 import { useEffect, useRef } from "react";
 import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
 } from "../../db/queries/category";
 import { useTranslation } from "../../i18n";
+import { IconButton } from "../IconButton";
 import { EditIcon, PlusIcon, TrashIcon } from "../ui/icons";
 import { OverflowMenu } from "../ui/OverflowMenu";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
@@ -165,15 +166,14 @@ export function CategoryList({
           {t("categories.loadFailed")}
         </Text>
       ) : null}
-      <Button
+      <IconButton
         className="norea-library-category-add"
-        justify="flex-start"
-        leftSection={<PlusIcon size="1.125rem" />}
+        label={t("categories.add")}
         onClick={onCreate}
-        variant="subtle"
+        size="lg"
       >
-        {t("categories.addShort")}
-      </Button>
+        <PlusIcon />
+      </IconButton>
     </div>
   );
 }

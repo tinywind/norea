@@ -30,7 +30,7 @@ function renderBar(props: Partial<ComponentProps<typeof SelectionBar>> = {}) {
 }
 
 const buttonLabels = ($: ReturnType<typeof renderBar>) =>
-  $("[role=toolbar] button").map((_, button) => $(button).text()).get();
+  $("[role=toolbar] button").map((_, button) => $(button).attr("aria-label") ?? $(button).text()).get();
 
 it("labels the toolbar with the count and offers done, one select-all toggle and the actions", () => {
   const $ = renderBar();

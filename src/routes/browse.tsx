@@ -1,10 +1,11 @@
 import { useState } from "react";
 import { useNavigate } from "@tanstack/react-router";
-import { Badge, Button, Tabs } from "@mantine/core";
+import { Indicator, Tabs } from "@mantine/core";
 import { PageFrame, PageHeader } from "../components/AppFrame";
 import { BrowseSearchTab } from "../components/browse/BrowseSearchTab";
 import { BrowseServerTab } from "../components/browse/BrowseServerTab";
 import { BrowseSourcesTab } from "../components/browse/BrowseSourcesTab";
+import { IconButton } from "../components/IconButton";
 import {
   useInstalledPlugins,
   usePluginUpdateCount,
@@ -41,27 +42,26 @@ export function BrowsePage({
   const header = (
     <PageHeader
       actions={
-        <Button
-          aria-label={
-            updateCount > 0
-              ? t("browse.extensionsWithUpdates", { count: updateCount })
-              : t("extensions.title")
-          }
-          leftSection={<ExtensionsIcon size="1.125rem" />}
-          onClick={() => {
-            void navigate({ to: "/browse/extensions", search: {} });
-          }}
-          rightSection={
-            updateCount > 0 ? (
-              <Badge aria-hidden="true" circle size="sm">
-                {updateCount > 99 ? "99+" : updateCount}
-              </Badge>
-            ) : undefined
-          }
-          variant="subtle"
+        <Indicator
+          disabled={updateCount === 0}
+          label={updateCount > 99 ? "99+" : updateCount}
+          offset={6}
+          size={16}
         >
-          {t("extensions.title")}
-        </Button>
+          <IconButton
+            label={
+              updateCount > 0
+                ? t("browse.extensionsWithUpdates", { count: updateCount })
+                : t("extensions.title")
+            }
+            onClick={() => {
+              void navigate({ to: "/browse/extensions", search: {} });
+            }}
+            size="lg"
+          >
+            <ExtensionsIcon />
+          </IconButton>
+        </Indicator>
       }
       title={t("browse.title")}
     >

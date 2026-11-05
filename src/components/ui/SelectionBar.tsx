@@ -1,9 +1,10 @@
-import { Button, Loader } from "@mantine/core";
+import { Button } from "@mantine/core";
 import { useId, type ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import { useBodyFlag } from "../../lib/use-body-flag";
 import { PageHeader } from "../AppFrame";
-import { type AppIcon } from "./icons";
+import { IconButton } from "../IconButton";
+import { DeselectIcon, SelectAllIcon, type AppIcon } from "./icons";
 
 interface SelectionBarProps {
   /** Labeled actions: a bottom bar below 768px, inline in the bar above. */
@@ -50,18 +51,19 @@ export function SelectionBar({
       actions={
         <>
           {allSelected ? (
-            <Button onClick={onDeselectAll} variant="subtle">
-              {t("selection.deselectAll")}
-            </Button>
+            <IconButton label={t("selection.deselectAll")} onClick={onDeselectAll} size="lg">
+              <DeselectIcon />
+            </IconButton>
           ) : (
-            <Button
+            <IconButton
               disabled={selectAllDisabled}
-              leftSection={selectAllPending ? <Loader size="xs" /> : undefined}
+              label={t("selection.selectAll")}
+              loading={selectAllPending}
               onClick={onSelectAll}
-              variant="subtle"
+              size="lg"
             >
-              {t("selection.selectAll")}
-            </Button>
+              <SelectAllIcon />
+            </IconButton>
           )}
           <div className="norea-selection-bar-actions">{actions}</div>
         </>

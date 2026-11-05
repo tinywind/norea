@@ -13,6 +13,7 @@ import {
 import { useTranslation } from "../../i18n";
 import { DownloadGoalChoices, DownloadGoalSpacer, sameDownloadGoal } from "../DownloadGoalChoices";
 import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
+import { IconButton } from "../IconButton";
 import { PlusIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
@@ -214,14 +215,9 @@ export function LibraryCategorySheet({
             />
           ))
         )}
-        <Button
-          justify="flex-start"
-          leftSection={<PlusIcon size="1.125rem" />}
-          onClick={onCreateCategory}
-          variant="subtle"
-        >
-          {t("categories.addShort")}
-        </Button>
+        <IconButton label={t("categories.add")} onClick={onCreateCategory} size="lg">
+          <PlusIcon />
+        </IconButton>
       </Stack>
     </ResponsiveSheet>
   );

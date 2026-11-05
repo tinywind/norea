@@ -51,10 +51,10 @@ it("keeps the phone bar to search, view options and the overflow, and expands se
   expect(labeled("library.search.aria")).toHaveLength(1);
 });
 
-it("shows the inline search field, Refresh and a labeled View button on wide screens", async () => {
+it("shows the inline search field, Refresh and the view options icon on wide screens", async () => {
   harness = mountBackNavigationHarness();
   await harness.render(<AppBarProbe wide />);
   expect(searchField()).toBeDefined();
   expect(labeled("library.refresh")).toHaveLength(1);
-  expect(collectElements(tree).some((element) => element.props.children === "library.viewOptions.short")).toBe(true);
+  expect(labeled("library.viewOptions.title")).toHaveLength(1);
 });

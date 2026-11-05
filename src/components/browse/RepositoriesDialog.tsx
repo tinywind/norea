@@ -1,5 +1,6 @@
-import { Button, Loader, Switch } from "@mantine/core";
+import { Loader, Switch } from "@mantine/core";
 import { StateView } from "../AppFrame";
+import { IconButton } from "../IconButton";
 import type { PluginRepository } from "../../db/queries/repository";
 import { useTranslation } from "../../i18n";
 import { describeError } from "../../lib/errors";
@@ -81,9 +82,9 @@ export function RepositoriesDialog({
       <div className="norea-extension-section">
         <div className="norea-extension-section-header">
           <p className="norea-extension-section-note">{t("extensions.repositories.priorityNote")}</p>
-          <Button leftSection={<PlusIcon size="1rem" />} onClick={onAdd} size="compact-sm" variant="default">
-            {t("extensions.repositories.add")}
-          </Button>
+          <IconButton label={t("extensions.repositories.add")} onClick={onAdd} size="lg">
+            <PlusIcon />
+          </IconButton>
         </div>
         {error ? (
           <StateView

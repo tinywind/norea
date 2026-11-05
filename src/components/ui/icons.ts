@@ -25,6 +25,7 @@ import {
   IconCompass,
   IconCookie,
   IconCookieOff,
+  IconDeselect,
   IconDeviceFloppy,
   IconDots,
   IconDotsVertical,
@@ -120,6 +121,7 @@ export const CloseIcon = withAppDefaults(IconX);
 export const BackIcon = withAppDefaults(IconArrowLeft);
 export const CheckIcon = withAppDefaults(IconCheck);
 export const SelectAllIcon = withAppDefaults(IconSelectAll);
+export const DeselectIcon = withAppDefaults(IconDeselect);
 export const MarkReadIcon = withAppDefaults(IconChecks);
 export const MarkUnreadIcon = withAppDefaults(IconEyeOff);
 export const UnreadIcon = withAppDefaults(IconPointFilled);

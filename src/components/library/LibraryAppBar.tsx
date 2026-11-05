@@ -1,4 +1,4 @@
-import { ActionIcon, Button, Loader, TextInput } from "@mantine/core";
+import { ActionIcon, Loader, TextInput } from "@mantine/core";
 import { useState, type ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
@@ -15,7 +15,7 @@ import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
 interface LibraryAppBarProps {
   /** Category tabs for the bar's leading slot; null where a side list shows them. */
   categoryTabs?: ReactNode;
-  /** Shows the inline search field and the labeled actions. */
+  /** Shows the inline search field and the refresh action. */
   wide: boolean;
   onOpenViewOptions: () => void;
   onRefresh: () => void;
@@ -77,32 +77,23 @@ export function LibraryAppBar({
               >
                 {refreshing ? <Loader size="sm" /> : <RefreshIcon />}
               </IconButton>
-              <Button
-                leftSection={<ViewOptionsIcon size="1.125rem" />}
-                onClick={onOpenViewOptions}
-                variant="subtle"
-              >
-                {t("library.viewOptions.short")}
-              </Button>
             </>
           ) : (
-            <>
-              <IconButton
-                label={t("library.search.aria")}
-                onClick={() => setSearchOpen(true)}
-                size="lg"
-              >
-                <SearchIcon />
-              </IconButton>
-              <IconButton
-                label={t("library.viewOptions.title")}
-                onClick={onOpenViewOptions}
-                size="lg"
-              >
-                <ViewOptionsIcon />
-              </IconButton>
-            </>
+            <IconButton
+              label={t("library.search.aria")}
+              onClick={() => setSearchOpen(true)}
+              size="lg"
+            >
+              <SearchIcon />
+            </IconButton>
           )}
+          <IconButton
+            label={t("library.viewOptions.title")}
+            onClick={onOpenViewOptions}
+            size="lg"
+          >
+            <ViewOptionsIcon />
+          </IconButton>
           <OverflowMenu items={overflowItems} label={t("common.more")} />
         </>
       }

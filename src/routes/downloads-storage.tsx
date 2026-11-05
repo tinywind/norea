@@ -9,7 +9,6 @@ import { useNavigate } from "@tanstack/react-router";
 import {
   Badge,
   Box,
-  Button,
   Checkbox,
   Collapse,
   Group,
@@ -748,14 +747,14 @@ export function DownloadsStorageView({
         <PageHeader
           actions={
             <>
-              <Button
+              <IconButton
                 disabled={rows.length === 0}
-                leftSection={<DeleteDownloadIcon size="1.125rem" />}
+                label={t("chapterCleanup.title")}
                 onClick={() => setCleanupOpened(true)}
-                variant="subtle"
+                size="lg"
               >
-                {t("downloads.cleanUp")}
-              </Button>
+                <DeleteDownloadIcon />
+              </IconButton>
               <OverflowMenu items={headerItems} label={t("common.more")} />
             </>
           }

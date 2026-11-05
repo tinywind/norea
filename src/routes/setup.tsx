@@ -3,8 +3,10 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useEffect, useMemo, useState } from "react";
 import { ChipButton } from "../components/ChipButton";
+import { IconButton } from "../components/IconButton";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { addPluginRepository } from "../components/browse/use-plugin-catalog";
+import { DeselectIcon, SelectAllIcon } from "../components/ui/icons";
 import { formatPluginLanguageForLocale, useTranslation } from "../i18n";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
 import { describeError } from "../lib/errors";
@@ -244,22 +246,22 @@ export function SetupPage() {
                   {t("setup.sources.description", { count: suggestions.length })}
                 </Text>
                 <Group gap="xs">
-                  <Button
+                  <IconButton
                     disabled={installSelected.isPending}
+                    label={t("setup.sources.selectAll")}
                     onClick={() => setSelectedIds(new Set(suggestions.map((item) => item.id)))}
-                    size="compact-sm"
-                    variant="subtle"
+                    size="lg"
                   >
-                    {t("setup.sources.selectAll")}
-                  </Button>
-                  <Button
+                    <SelectAllIcon />
+                  </IconButton>
+                  <IconButton
                     disabled={installSelected.isPending}
+                    label={t("setup.sources.clear")}
                     onClick={() => setSelectedIds(new Set())}
-                    size="compact-sm"
-                    variant="subtle"
+                    size="lg"
                   >
-                    {t("common.clear")}
-                  </Button>
+                    <DeselectIcon />
+                  </IconButton>
                 </Group>
                 <Stack className="norea-setup-sources" gap="xs">
                   {suggestions.map((item) => (
