@@ -4,7 +4,8 @@ import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { describe, expect, it } from "vitest";
 import { TextButton } from "./TextButton";
-import { SettingsAdvancedGroup, SettingsFieldRow, SettingsSection } from "./SettingsPrimitives";
+import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
+import { IconButton } from "./IconButton";
 
 function render(node: ReactNode): string {
   return renderToStaticMarkup(<MantineProvider>{node}</MantineProvider>);
@@ -135,5 +136,24 @@ describe("settings row layout", () => {
     const css = readFileSync(new URL("../styles/settings.css", import.meta.url), "utf8");
     expect(css).toMatch(/\.norea-settings-form-row \{[^}]*grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\);/);
     expect(css).toMatch(/\.norea-settings-form-control \{[^}]*justify-items: stretch;[^}]*width: 100%;/);
+  });
+});
+
+describe("inline controls", () => {
+  it("marks a group of icon buttons as compact so phones keep it on the label's line", () => {
+    const icons = render(
+      <SettingsInlineControls>
+        <IconButton label="Export">{null}</IconButton>
+        <IconButton label="Import">{null}</IconButton>
+      </SettingsInlineControls>,
+    );
+    expect(icons).toContain('data-compact="true"');
+    const mixed = render(
+      <SettingsInlineControls>
+        <IconButton label="Export">{null}</IconButton>
+        <TextButton>Import</TextButton>
+      </SettingsInlineControls>,
+    );
+    expect(mixed).not.toContain("data-compact");
   });
 });

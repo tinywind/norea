@@ -12,6 +12,7 @@ import {
   VisuallyHidden,
 } from "@mantine/core";
 import {
+  Children,
   cloneElement,
   isValidElement,
   useEffect,
@@ -283,7 +284,14 @@ export function SettingsPercentSlider({
 export function SettingsInlineControls({
   children,
 }: SettingsInlineControlsProps) {
-  return <div className="norea-settings-inline-controls">{children}</div>;
+  const items = Children.toArray(children);
+  const iconsOnly = items.length > 0 &&
+    items.every((child) => isValidElement(child) && child.type === IconButton);
+  return (
+    <div className="norea-settings-inline-controls" data-compact={iconsOnly ? "true" : undefined}>
+      {children}
+    </div>
+  );
 }
 
 export function SettingsWideField({ children }: { children: ReactNode }) {

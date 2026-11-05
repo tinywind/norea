@@ -711,11 +711,6 @@ html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-tex
     width: auto;
   }
 
-  .norea-settings-inline-controls {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
   .norea-settings-slider-control {
     grid-template-columns: 1fr;
   }
@@ -729,17 +724,27 @@ html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-tex
     width: 100%;
   }
 
-  .norea-settings-form-row:has(> .norea-settings-form-control > .mantine-Switch-root) {
+  /*
+   * Compact controls stay on the label's line on phones: a switch, a chip, one icon button,
+   * or a group of icon buttons. Fields, pickers and labelled buttons move below the label.
+   */
+  .norea-settings-form-row:has(
+      > .norea-settings-form-control > :where(.mantine-Switch-root, .norea-console-chip, .norea-icon-button, .mantine-ActionIcon-root):only-child
+    ),
+  .norea-settings-form-row:has(> .norea-settings-form-control > .norea-settings-inline-controls[data-compact]) {
     align-items: center;
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .norea-settings-form-control:has(> .mantine-Switch-root) {
+  .norea-settings-form-control:has(> :where(.mantine-Switch-root, .norea-console-chip, .norea-icon-button, .mantine-ActionIcon-root):only-child),
+  .norea-settings-form-control:has(> .norea-settings-inline-controls[data-compact]) {
     justify-items: end;
     justify-self: end;
+    width: auto;
   }
 
-  .norea-settings-form-control > .mantine-Switch-root {
+  .norea-settings-form-control > .mantine-Switch-root,
+  .norea-settings-form-control > .norea-settings-inline-controls[data-compact] {
     width: auto;
   }
 }
