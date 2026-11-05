@@ -441,8 +441,9 @@ export const repositoryIndexCacheTable = sqliteTable(
   },
 );
 
-// VpnGateServerVerdict: the user's latest result for a public VPN server,
-// shared by every listing that resolves to the same canonical IPv4 address.
+// VpnGateServerVerdict: the user's latest result for a VPN server, keyed in `ip`
+// by its remote host: a canonical IPv4 address, or the lowercase domain of an
+// imported profile. Every listing with the same host shares it.
 export const vpnGateServerVerdictTable = sqliteTable(
   "vpn_gate_server_verdict",
   {

@@ -8,6 +8,7 @@ import io.github.tinywind.norea.AppLog as Log
 import android.webkit.MimeTypeMap
 import org.json.JSONObject
 import java.io.File
+import java.io.InputStream
 
 private const val TAG = "NoreaStorage"
 private const val MAX_ANDROID_TEMP_BYTES = 2L * 1024L * BYTES_PER_MIB
@@ -94,6 +95,18 @@ internal class AndroidContentUriFiles(
       .put("fileName", contentUriFileName(contentUri, mimeType, metadata.fileName))
       .put("mimeType", mimeType)
       .put("path", tempFile.absolutePath)
+  }
+
+  /** Copies a stream into a bridge temp file that `deleteTempFile` removes. */
+  fun copyToStorageTempFile(input: InputStream, limit: Long): File {
+    val tempFile = createStorageTempFile()
+    try {
+      tempFile.outputStream().use { output -> storage.copyToWithLimit(input, output, limit) }
+    } catch (error: Throwable) {
+      tempFile.delete()
+      throw error
+    }
+    return tempFile
   }
 
   fun deleteTempFile(path: String): JSONObject = run {

@@ -286,13 +286,23 @@ function isCanonicalIpv4(value: string): boolean {
   );
 }
 
+const VPN_SERVER_DOMAIN_LABEL = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/;
+
+/** Mirrors `validate_host` in saved_profiles_stored.rs: a canonical IPv4 address or a lowercase domain. */
+function isVpnServerHost(value: string): boolean {
+  if (value.length === 0 || value.length > 253) return false;
+  const labels = value.split(".");
+  if (labels.every((label) => /^\d+$/.test(label))) return isCanonicalIpv4(value);
+  return labels.every((label) => VPN_SERVER_DOMAIN_LABEL.test(label));
+}
+
 function isVpnGateServerVerdict(
   value: unknown,
 ): value is BackupVpnGateServerVerdict {
   if (!isObject(value)) return false;
   return (
     typeof value.ip === "string" &&
-    isCanonicalIpv4(value.ip) &&
+    isVpnServerHost(value.ip) &&
     (value.verdict === "works" || value.verdict === "fails") &&
     typeof value.updatedAt === "number"
   );

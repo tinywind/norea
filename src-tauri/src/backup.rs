@@ -13,7 +13,6 @@
 use std::collections::HashSet;
 use std::fs::{self, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, Write};
-use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -337,15 +336,9 @@ async fn restore_vpn_gate_server_verdicts(
     verdicts: &[BackupRestoreVpnGateServerVerdict],
 ) -> Result<(), String> {
     for verdict in verdicts {
-        let Ok(address) = verdict.ip.parse::<Ipv4Addr>() else {
+        if crate::plugin_vpn::saved_profiles::stored::validate_host(&verdict.ip).is_err() {
             return Err(format!(
-                "backup_restore_snapshot: VPN Gate server verdict IP '{}' must be a canonical IPv4 address",
-                verdict.ip
-            ));
-        };
-        if address.to_string() != verdict.ip {
-            return Err(format!(
-                "backup_restore_snapshot: VPN Gate server verdict IP '{}' must be a canonical IPv4 address",
+                "backup_restore_snapshot: VPN server verdict host '{}' must be a canonical IPv4 address or a lowercase domain name",
                 verdict.ip
             ));
         }
@@ -1182,6 +1175,28 @@ mod tests {
             .expect_err("reject non-canonical IPv4 address");
 
         assert!(error.contains("canonical IPv4 address"));
+    }
+
+    #[tokio::test]
+    async fn restore_vpn_gate_verdicts_accepts_an_imported_profile_domain_host() {
+        let pool = vpn_gate_verdict_pool().await;
+        let restored = vec![BackupRestoreVpnGateServerVerdict {
+            ip: "vpn.example.com".to_string(),
+            verdict: BackupRestoreVpnGateServerVerdictValue::Works,
+            updated_at: 1_700_000_000,
+        }];
+        let mut tx = pool.begin().await.expect("begin");
+
+        restore_vpn_gate_server_verdicts(&mut tx, &restored)
+            .await
+            .expect("restore domain verdict");
+        tx.commit().await.expect("commit");
+
+        let host: String = sqlx::query_scalar("SELECT ip FROM vpn_gate_server_verdict")
+            .fetch_one(&pool)
+            .await
+            .expect("select verdict");
+        assert_eq!(host, "vpn.example.com");
     }
 
     async fn restore_pool() -> sqlx::SqlitePool {

@@ -14,7 +14,7 @@ vi.mock("../i18n", async original => {
 });
 vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ queryKey }: { queryKey: readonly string[] }) => ({
-    data: queryKey[0] === "vpn-download-profile-issues" || queryKey[1] === "automatic-profiles" ? [] : queryKey[0] === "plugin-vpn" && queryKey.length === 1 ? { profile: null }
+    data: queryKey[0] === "vpn-download-profile-issues" || queryKey[1] === "automatic-profiles" || queryKey[2] === "manual" ? [] : queryKey[0] === "plugin-vpn" && queryKey.length === 1 ? { profile: null }
       : queryKey[0] === "vpn-gate-server-verdicts"
       ? [1, 2, 3].map(id => ({ ip: `192.0.2.${id}`, verdict: "works", updatedAt: 1 }))
       : { limit: 20, cleanupError: null, profiles: [1, 2].map(id => ({ id: `profile-${id}`, ip: `192.0.2.${id}`, protocol: "udp", hash: "a".repeat(64), approvedAt: 1, approvalSequence: id })) },
@@ -24,6 +24,7 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 vi.mock("../lib/plugin-vpn-profiles", () => ({
   SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY: ["plugin-vpn", "saved-profiles"], listSavedPluginVpnProfiles: vi.fn(), setSavedPluginVpnProfileLimit: vi.fn(),
+  MANUAL_PLUGIN_VPN_PROFILES_QUERY_KEY: ["plugin-vpn", "saved-profiles", "manual"], listManualPluginVpnProfiles: vi.fn(),
 }));
 vi.mock("../db/queries/vpn-gate-server-verdict", () => ({ listVpnGateServerVerdicts: vi.fn(), setVpnGateServerVerdict: vi.fn() }));
 vi.mock("../store/vpn-download", () => ({ useVpnDownloadStore: (select: (state: unknown) => unknown) => select({

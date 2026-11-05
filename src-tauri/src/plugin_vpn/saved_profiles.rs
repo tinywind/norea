@@ -21,6 +21,8 @@ use super::{
 pub(crate) mod backup;
 #[path = "saved_profiles_automatic.rs"]
 pub(crate) mod automatic;
+#[path = "saved_profiles_stored.rs"]
+pub(crate) mod stored;
 
 const INDEX_FILE: &str = "index.json";
 const MAX_INDEX_BYTES: usize = 128 * 1024;
@@ -132,6 +134,7 @@ pub(crate) struct SavedProfileVault {
     directory: PathBuf,
     index: VaultIndex,
     automatic: automatic::AutomaticProfilePool,
+    stored: stored::StoredProfiles,
     leases: HashMap<String, SavedVpnProfileLease>,
     publication_failed: bool,
 }
@@ -162,6 +165,7 @@ impl SavedProfileVault {
         }
         let mut vault = Self {
             automatic: automatic::AutomaticProfilePool::open(automatic_directory(&directory)),
+            stored: stored::StoredProfiles::open(&directory),
             directory,
             index: VaultIndex { active, ..VaultIndex::default() },
             leases: HashMap::new(),
@@ -277,6 +281,7 @@ impl SavedProfileVault {
         }
         Ok(Self {
             automatic: automatic::AutomaticProfilePool::open(automatic_directory(&directory)),
+            stored: stored::StoredProfiles::open(&directory),
             directory,
             index,
             leases: HashMap::new(),

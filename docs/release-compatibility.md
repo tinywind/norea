@@ -181,6 +181,35 @@ requirements must be decided explicitly before implementation.
   it publishes each pool entry without a recent failure into `saved-profiles/`
   with an O row and the same bytes and hash, so running worker leases continue,
   and the entries then leave the pool. It adds no new file or table format.
+- Saved VPN profiles are also kept as `vpn-profiles/<host>.ovpn` in the storage
+  folder, so they survive uninstalling the app. The host is the profile's first
+  `remote`: a canonical IPv4 address or a lowercase domain. A host has one file,
+  and a newer profile for the same host overwrites it. Profiles imported with
+  Import or Replace profile are saved there too and added to Preferred; their
+  private copies and index live in `plugin-vpn/stored-profiles/`. The private
+  `saved-profiles/` vault and that store stay the working copies. The store's
+  `index.json` also records which files this device published for the current
+  storage root. A sync at startup, after a storage folder change and after each
+  saved-profile change publishes missing or changed copies, recording one only
+  when its read-back SHA-256 matches. It deletes the recorded copies of profiles
+  removed from Preferred, set to Not used or evicted by the capacity, and
+  imports unrecorded folder files: VPN Gate Finder files through the normal
+  approval checks while the vault has room, other valid profiles as imported
+  profiles. Unrecorded files of Not used hosts, files whose name differs from
+  their host and other files are left untouched. A Preferred host whose working copy is gone
+  (an unusable vault or a restore) is imported again from its recorded copy
+  instead of deleted. Existing vault profiles are copied on the first sync and
+  the vault is never removed. On Android, profiles stay private until a storage
+  folder is selected; the desktop default storage root receives them until
+  another folder is chosen. A new storage folder receives every profile, and
+  the old folder keeps its copies. An unreachable folder leaves the record
+  unchanged for the next sync. There is no schema change:
+  `vpn_gate_server_verdict.ip` also holds imported profiles' domain hosts, and
+  portable backups accept them, while an earlier build rejects an archive with
+  a domain host. Device snapshots neither include nor replace
+  `stored-profiles/`, and a restore leaves the folder copies of hosts it keeps
+  Preferred for the next sync to import. Folder files can be read by other apps
+  with storage access, and imported profiles may embed private keys.
 
 - Work metadata version 1 stores a `chapters` map from source chapter numbers
   to titles. Source metadata fetches merge this catalog; downloads, download deletions,

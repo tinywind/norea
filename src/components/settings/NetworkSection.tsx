@@ -39,7 +39,6 @@ import {
   getPluginVpnStatus,
   importPluginVpnProfile,
   PLUGIN_VPN_QUERY_KEY,
-  pluginVpnFinderProfileIp,
   removePluginVpnProfile,
   switchPluginVpnFinderServer,
   switchPluginVpnSavedProfile,
@@ -47,9 +46,11 @@ import {
   type PluginVpnFinderSwitchLifecycle,
   type PluginVpnCredentials,
   type PluginVpnPhase,
+  type PluginVpnProfile,
   type PluginVpnStatus,
 } from "../../lib/plugin-vpn";
 import {
+  captureSavedPluginVpnProfile,
   SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY,
   type SavedVpnProfileCaptureSource,
 } from "../../lib/plugin-vpn-profiles";
@@ -135,7 +136,7 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
     },
   });
   const status = vpnQuery.data;
-  const currentFinderIp = pluginVpnFinderProfileIp(status?.profile);
+  const currentProfileHost = status?.profile?.remoteHost ?? null;
   const verdicts = new Map(
     (verdictQuery.data ?? []).map((row) => [row.ip, row.verdict]),
   );
@@ -267,6 +268,7 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
           t("settings.data.pluginVpn.title"),
           t("settings.data.pluginVpn.toast.imported"),
         );
+        if (nextStatus.profile) await saveImportedProfile(nextStatus.profile);
       }
     } catch (error) {
       showSettingsToast(
@@ -277,6 +279,28 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
     } finally {
       await vpnQuery.refetch();
       setVpnOperation(null);
+    }
+  }
+
+  /** Keeps an imported profile in the saved list and the storage folder, added to Preferred. */
+  async function saveImportedProfile(profile: PluginVpnProfile): Promise<void> {
+    try {
+      const result = await captureSavedPluginVpnProfile(profile.remoteHost, {
+        kind: "active",
+        expectedHash: profile.hash,
+      });
+      if (result.cleanupError) throw new Error(result.cleanupError);
+    } catch (error) {
+      showSettingsToast(
+        "danger",
+        t("settings.data.pluginVpn.title"),
+        t("settings.data.pluginVpn.toast.importSaveFailed", {
+          error: describeError(error),
+        }),
+      );
+    } finally {
+      void queryClient.invalidateQueries({ queryKey: SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY });
+      void queryClient.invalidateQueries({ queryKey: VPN_GATE_SERVER_VERDICTS_QUERY_KEY });
     }
   }
 
@@ -504,86 +528,82 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
           </SettingsFieldRow>
           <SettingsFieldRow
             label={t("settings.data.pluginVpn.profile.label")}
-            description={t("settings.data.pluginVpn.profile.description")}
+            description={currentProfileHost
+              ? `${t("settings.data.pluginVpn.profile.description")} ${t("settings.data.pluginVpn.finder.verdict.description")}`
+              : t("settings.data.pluginVpn.profile.description")}
+            layout="stacked"
           >
             <SettingsInlineControls>
-              <Text className="norea-settings-path-value norea-settings-profile-host">
-                {status?.profile?.remoteHost ??
-                  t("settings.data.pluginVpn.profile.empty")}
-              </Text>
-              <IconButton
-                disabled={profileControlsDisabled}
-                label={status?.profile
-                  ? t("settings.data.pluginVpn.profile.replace")
-                  : t("settings.data.pluginVpn.profile.import")}
-                loading={vpnOperation?.kind === "import"}
-                onClick={() => {
-                  void importProfile();
-                }}
-                size="lg"
-              >
-                <ImportIcon />
-              </IconButton>
-              <IconButton
-                disabled={finderDisabled}
-                label={t("settings.data.pluginVpn.finder.open")}
-                onClick={() => setFinderOpen(true)}
-                size="lg"
-              >
-                <SearchIcon />
-              </IconButton>
-              {status?.profile ? (
+              <div className="norea-settings-path-value norea-settings-profile-host">
+                <span className="norea-settings-profile-host-text">
+                  {status?.profile?.remoteHost ??
+                    t("settings.data.pluginVpn.profile.empty")}
+                </span>
+                {currentProfileHost ? (
+                  <VpnGateServerVerdictControl
+                    size="sm"
+                    disabled={
+                      verdictControlsDisabled ||
+                      verdictSavingIps.has(currentProfileHost)
+                    }
+                    disabledReason={
+                      verdictSavingIps.has(currentProfileHost)
+                        ? t("settings.data.pluginVpn.finder.verdict.saving")
+                        : verdictDisabledReason
+                    }
+                    ip={currentProfileHost}
+                    onChange={(verdict) =>
+                      updateServerVerdict(
+                        currentProfileHost,
+                        verdict,
+                        status?.profile
+                          ? { kind: "active", expectedHash: status.profile.hash }
+                          : undefined,
+                      )
+                    }
+                    verdict={verdicts.get(currentProfileHost) ?? null}
+                  />
+                ) : null}
+              </div>
+              <div className="norea-settings-profile-actions">
                 <IconButton
                   disabled={profileControlsDisabled}
-                  label={t("settings.data.pluginVpn.profile.remove")}
-                  loading={vpnOperation?.kind === "remove"}
+                  label={status?.profile
+                    ? t("settings.data.pluginVpn.profile.replace")
+                    : t("settings.data.pluginVpn.profile.import")}
+                  loading={vpnOperation?.kind === "import"}
                   onClick={() => {
-                    void removeProfile();
+                    void importProfile();
                   }}
                   size="lg"
-                  tone="danger"
                 >
-                  <TrashIcon />
+                  <ImportIcon />
                 </IconButton>
-              ) : null}
+                <IconButton
+                  disabled={finderDisabled}
+                  label={t("settings.data.pluginVpn.finder.open")}
+                  onClick={() => setFinderOpen(true)}
+                  size="lg"
+                >
+                  <SearchIcon />
+                </IconButton>
+                {status?.profile ? (
+                  <IconButton
+                    disabled={profileControlsDisabled}
+                    label={t("settings.data.pluginVpn.profile.remove")}
+                    loading={vpnOperation?.kind === "remove"}
+                    onClick={() => {
+                      void removeProfile();
+                    }}
+                    size="lg"
+                    tone="danger"
+                  >
+                    <TrashIcon />
+                  </IconButton>
+                ) : null}
+              </div>
             </SettingsInlineControls>
           </SettingsFieldRow>
-          {currentFinderIp ? (
-            <SettingsFieldRow
-              label={t("settings.data.pluginVpn.finder.verdict.currentLabel")}
-              description={t(
-                "settings.data.pluginVpn.finder.verdict.description",
-              )}
-            >
-              <SettingsInlineControls compact>
-                <Text className="norea-settings-inline-value" size="sm">
-                  {currentFinderIp}
-                </Text>
-                <VpnGateServerVerdictControl
-                  disabled={
-                    verdictControlsDisabled ||
-                    verdictSavingIps.has(currentFinderIp)
-                  }
-                  disabledReason={
-                    verdictSavingIps.has(currentFinderIp)
-                      ? t("settings.data.pluginVpn.finder.verdict.saving")
-                      : verdictDisabledReason
-                  }
-                  ip={currentFinderIp}
-                  onChange={(verdict) =>
-                    updateServerVerdict(
-                      currentFinderIp,
-                      verdict,
-                      status?.profile
-                        ? { kind: "active", expectedHash: status.profile.hash }
-                        : undefined,
-                    )
-                  }
-                  verdict={verdicts.get(currentFinderIp) ?? null}
-                />
-              </SettingsInlineControls>
-            </SettingsFieldRow>
-          ) : null}
           {status?.profile && !status.profile.isVpnGateFinder ? (
             <SettingsAdvancedGroup
               forceOpen={status.profile.requiresUsernamePassword}

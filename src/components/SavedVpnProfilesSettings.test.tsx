@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   vault: { data: undefined as SavedVpnProfileVault | undefined, isPending: false, isError: false, error: null as Error | null, refetch: vi.fn() },
   verdicts: { data: [] as { ip: string; verdict: "works" | "fails"; updatedAt: number }[], isPending: false, isError: false, error: null as Error | null, refetch: vi.fn() },
   issues: { data: [] as VpnDownloadProfileIssue[], isPending: false, isError: false, error: null as Error | null, refetch: vi.fn() },
+  manual: { data: [] as { host: string; hash: string; savedAt: number }[], isPending: false, isError: false, error: null as Error | null, refetch: vi.fn() },
   status: { data: { profile: null } as { profile: null | { hash: string; remoteHost: string; isVpnGateFinder: boolean } } },
   reallow: vi.fn(), profilesChanged: vi.fn(),
   limit: vi.fn(), revoke: vi.fn(), invalidate: vi.fn(), setData: vi.fn(),
@@ -23,10 +24,12 @@ vi.mock("react", async original => ({
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ queryKey }: { queryKey: readonly string[] }) => queryKey[0] === "vpn-gate-server-verdicts" ? mocks.verdicts
-    : queryKey[0] === "vpn-download-profile-issues" ? mocks.issues : queryKey.length === 1 && queryKey[0] === "plugin-vpn" ? mocks.status : mocks.vault,
+    : queryKey[0] === "vpn-download-profile-issues" ? mocks.issues : queryKey.length === 1 && queryKey[0] === "plugin-vpn" ? mocks.status
+    : queryKey[2] === "manual" ? mocks.manual : mocks.vault,
   useQueryClient: () => ({ invalidateQueries: mocks.invalidate, setQueryData: mocks.setData }),
 }));
-vi.mock("../lib/plugin-vpn-profiles", () => ({ SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY: ["plugin-vpn", "saved-profiles"], listSavedPluginVpnProfiles: vi.fn(), setSavedPluginVpnProfileLimit: mocks.limit }));
+vi.mock("../lib/plugin-vpn-profiles", () => ({ SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY: ["plugin-vpn", "saved-profiles"], MANUAL_PLUGIN_VPN_PROFILES_QUERY_KEY: ["plugin-vpn", "saved-profiles", "manual"],
+  listSavedPluginVpnProfiles: vi.fn(), listManualPluginVpnProfiles: vi.fn(), setSavedPluginVpnProfileLimit: mocks.limit }));
 vi.mock("../db/queries/vpn-gate-server-verdict", () => ({ listVpnGateServerVerdicts: vi.fn(), setVpnGateServerVerdict: mocks.revoke }));
 vi.mock("../db/queries/vpn-download-profile-issues", () => ({ VPN_DOWNLOAD_PROFILE_ISSUES_QUERY_KEY: ["vpn-download-profile-issues"], listVpnDownloadProfileIssues: vi.fn() }));
 vi.mock("../lib/plugin-vpn", () => ({ PLUGIN_VPN_QUERY_KEY: ["plugin-vpn"], getPluginVpnStatus: vi.fn() }));
@@ -60,6 +63,7 @@ beforeEach(() => {
   mocks.limit.mockResolvedValue({ limit: 10, profiles: mocks.vault.data!.profiles, cleanupError: null });
   mocks.revoke.mockResolvedValue({ verdict: null, savedProfile: null, cleanupError: null });
   mocks.issues = { ...mocks.issues, data: [], isError: false, isPending: false, error: null };
+  mocks.manual = { ...mocks.manual, data: [], isError: false, isPending: false, error: null };
   mocks.status.data = { profile: null };
   mocks.reallow.mockImplementation(async (batchId: string, ip: string, revision: number) => {
     const issue = mocks.issues.data.find(issue => issue.batchId === batchId && issue.ip === ip);
@@ -291,4 +295,23 @@ it("connects straight to a saved profile from its row and shows the one that is 
   const busy = controls(SavedVpnProfilesSettings({ connectingProfileId: "saved", onConnect }))
     .find(element => element.type === IconButton && String(element.props.label).startsWith("settings.data.pluginVpn.saved.connect"));
   expect(busy?.props.disabled).toBe(true);
+});
+
+it("lists an imported profile by its host with the same list toggles and Preferred from the active file", async () => {
+  mocks.manual.data = [{ host: "vpn.example.com", hash: "d".repeat(64), savedAt: 5 }];
+  mocks.verdicts.data = [...mocks.verdicts.data, { ip: "vpn.example.com", verdict: "works", updatedAt: 1 }];
+  mocks.status.data.profile = { hash: "d".repeat(64), remoteHost: "vpn.example.com", isVpnGateFinder: false };
+  const view = openManager();
+  const text = copy(view);
+  expect(text).toContain('saved.manualDetails{"date":"date:5000"}');
+  expect(text).toContain('saved.manualCount{"count":1}');
+  expect(text).toContain('saved.missingFiles{"count":1}');
+  const control = verdictControl(view, "vpn.example.com");
+  expect(control.props.verdict).toBe("works");
+  expect(control.props.preferDisabledReason).toBeNull();
+  await control.props.onChange!("fails");
+  expect(mocks.revoke).toHaveBeenCalledWith("vpn.example.com", "fails");
+  mocks.verdicts.data = mocks.verdicts.data.filter(row => row.ip !== "vpn.example.com");
+  await verdictControl(render(), "vpn.example.com").props.onChange!("works");
+  expect(mocks.revoke).toHaveBeenCalledWith("vpn.example.com", "works", { kind: "active", expectedHash: "d".repeat(64) });
 });

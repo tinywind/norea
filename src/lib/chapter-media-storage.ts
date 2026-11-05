@@ -8,6 +8,8 @@ async function recoverStorageMetadata(): Promise<void> {
   const { startWorkMetadataRecovery } = await import("../db/client");
   startWorkMetadataRecovery(true);
   invalidateAllNovelCoverSources();
+  const { syncStoredPluginVpnProfiles } = await import("./plugin-vpn-profiles");
+  void syncStoredPluginVpnProfiles();
 }
 
 export async function getChapterMediaStorageRoot(): Promise<string | null> {

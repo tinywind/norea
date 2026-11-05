@@ -9,6 +9,7 @@ import {
 export type VpnGateServerVerdictValue = "works" | "fails";
 
 export interface VpnGateServerVerdict {
+  /** The server's remote host: a VPN Gate IPv4 address or an imported profile's host. */
   ip: string;
   verdict: VpnGateServerVerdictValue;
   updatedAt: number;

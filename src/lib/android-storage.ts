@@ -137,6 +137,11 @@ interface AndroidStorageBridge {
     rootUri: string,
     relativeDir: string,
   ) => void;
+  syncVpnProfiles: (
+    requestId: string,
+    rootUri: string,
+    inputJson: string,
+  ) => void;
   rollbackRestore: (rootUri: string, token: string) => string;
   rollbackChapterStorageTransfer: (
     requestId: string,
@@ -1071,6 +1076,34 @@ export async function publishAndroidAutoBackup(
     }
     throw error;
   }
+}
+
+export interface AndroidVpnProfileSyncInput {
+  /** Private copies staged in the app cache by the Rust host. */
+  publish: { fileName: string; inputPath: string }[];
+  delete: string[];
+  /** Folder files the host already tracks; every other profile file is copied out for import. */
+  known: string[];
+}
+
+export interface AndroidVpnProfileSyncResult {
+  reachable: boolean;
+  published: { fileName: string; sha256: string }[];
+  deleted: string[];
+  /** Bridge temp files the caller removes with `deleteAndroidContentUriTempFile`. */
+  inbound: { fileName: string; path: string }[];
+  errors: string[];
+}
+
+/** Applies a planned saved-VPN-profile sync to `vpn-profiles/` of the storage folder. */
+export async function syncAndroidVpnProfileFiles(
+  input: AndroidVpnProfileSyncInput,
+): Promise<AndroidVpnProfileSyncResult> {
+  const root = await androidStorageRoot();
+  const { reachable, published, deleted, inbound, errors } = await runAndroidStorageOperation<
+    AndroidStorageResponse & AndroidVpnProfileSyncResult
+  >((requestId) => androidStorageBridge().syncVpnProfiles(requestId, root, JSON.stringify(input)));
+  return { reachable, published, deleted, inbound, errors };
 }
 
 export async function renameAndroidStoragePath(

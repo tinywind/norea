@@ -405,6 +405,11 @@ html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-tex
   flex-wrap: nowrap;
 }
 
+/* With list toggles the host box needs room for a full address; narrow rows move the actions below it. */
+.norea-settings-inline-controls:has(> .norea-settings-profile-host > .norea-vpn-gate-verdict-control) {
+  flex-wrap: wrap;
+}
+
 /* The profile host reads as a value box that takes the space its icon actions leave. */
 .norea-settings-inline-controls > .norea-settings-profile-host {
   flex: 1 1 0;
@@ -415,14 +420,40 @@ html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-tex
   white-space: nowrap;
 }
 
+/* The connected server's list toggles sit inside its value box, like a star in an address bar. */
+.norea-settings-inline-controls > .norea-settings-profile-host:has(> .norea-vpn-gate-verdict-control) {
+  align-items: center;
+  display: flex;
+  flex-basis: 15rem;
+  gap: var(--norea-space-1);
+  min-height: var(--norea-control-sm);
+  padding-block: 0;
+  padding-inline-end: var(--norea-space-1);
+}
+
+.norea-settings-inline-controls > .norea-settings-profile-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--norea-space-2);
+  margin-inline-start: auto;
+}
+
+.norea-settings-profile-host-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .norea-settings-inline-controls > :where(.mantine-Text-root) {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-/* A short value and a small custom control keep their own width at the row's right edge. */
-.norea-settings-inline-controls > :where(.norea-settings-inline-value, .norea-vpn-gate-verdict-control) {
+/* A short value keeps its own width at the row's right edge. */
+.norea-settings-inline-controls > :where(.norea-settings-inline-value) {
   flex: 0 1 auto;
 }
 

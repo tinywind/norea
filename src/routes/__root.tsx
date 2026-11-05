@@ -19,6 +19,7 @@ import { ContentDeletionDialog } from "../components/ContentDeletionDialog";
 import { useWindowFileDropImport } from "../components/library/use-window-file-drop-import";
 import { useFirstRunSetupRedirect } from "../components/runtime/use-first-run-setup-redirect";
 import { useAutomaticBackup } from "../lib/backup/use-automatic-backup";
+import { syncStoredPluginVpnProfiles } from "../lib/plugin-vpn-profiles";
 import { ConfirmDialog } from "../components/ui/ConfirmDialog";
 import {
   BrowseIcon,
@@ -522,6 +523,9 @@ export function RootLayout() {
   useWindowFileDropImport(!isAndroidRuntime());
   useFirstRunSetupRedirect(pathname);
   useAutomaticBackup();
+  useEffect(() => {
+    void syncStoredPluginVpnProfiles();
+  }, []);
   const setupActive = pathname === "/setup";
 
   return (

@@ -387,6 +387,25 @@ describe("parseBackupManifest error cases", () => {
     );
   });
 
+  it("keeps a verdict for an imported profile's domain host", () => {
+    const manifest = {
+      ...VALID_MANIFEST,
+      vpnGateServerVerdicts: [{ ip: "vpn.example.com", verdict: "works", updatedAt: 1_700_000_000 }],
+    };
+
+    expect(parseBackupManifest(JSON.stringify(manifest)).vpnGateServerVerdicts).toEqual(manifest.vpnGateServerVerdicts);
+  });
+
+  it.each(["VPN.example.com", "-vpn.example.com", "vpn..example.com", "2001:db8::1"])(
+    "throws on a VPN server verdict host %s",
+    (ip) => {
+      const broken = { ...VALID_MANIFEST, vpnGateServerVerdicts: [{ ip, verdict: "works", updatedAt: 1 }] };
+      expect(() => parseBackupManifest(JSON.stringify(broken))).toThrow(
+        /vpnGateServerVerdicts contains a malformed entry/,
+      );
+    },
+  );
+
   it.each([
     { novelId: 1, kind: "keep_ahead", count: null, updatedAt: 1 },
     { novelId: 1, kind: "keep_ahead", count: 0, updatedAt: 1 },

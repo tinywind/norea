@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { runExclusiveDatabaseOperation } from "../db/client";
 import type { PluginVpnServerProtocol } from "./plugin-vpn";
-import type { SavedVpnProfile } from "./plugin-vpn-profiles";
+import { syncStoredPluginVpnProfiles, type SavedVpnProfile } from "./plugin-vpn-profiles";
 
 export const AUTOMATIC_PLUGIN_VPN_PROFILES_QUERY_KEY = ["plugin-vpn", "automatic-profiles"] as const;
 
@@ -34,9 +34,11 @@ export function recordAutomaticPluginVpnProfileResult(profile: Pick<AutomaticVpn
  * failure as an O-approved profile and returns the newly approved ones. It
  * is the user's explicit verdict; the app never approves servers by itself.
  */
-export function approveWorkingAutomaticPluginVpnProfiles(): Promise<SavedVpnProfile[]> {
-  return runExclusiveDatabaseOperation<SavedVpnProfile[]>(
+export async function approveWorkingAutomaticPluginVpnProfiles(): Promise<SavedVpnProfile[]> {
+  const approved = await runExclusiveDatabaseOperation<SavedVpnProfile[]>(
     () => invoke("plugin_vpn_approve_working_automatic_profiles"),
     { publishMetadata: false },
   );
+  void syncStoredPluginVpnProfiles();
+  return approved;
 }

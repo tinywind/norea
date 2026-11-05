@@ -45,7 +45,6 @@ import {
   releasePluginVpnRecoveryProfile,
   replacePluginVpnRecoveryProfile,
   pluginVpnFinderLoadFailure,
-  pluginVpnFinderProfileIp,
   preparePluginVpnProfileChange,
   removePluginVpnProfile,
   restorePluginVpnConnection,
@@ -929,18 +928,6 @@ describe("plugin VPN", () => {
     };
 
     expect(canStartPluginVpnConnection(restoredFinder, credentials)).toBe(true);
-  });
-
-  it("exposes a stored server IP only for Finder profiles", () => {
-    expect(pluginVpnFinderProfileIp(STATUS.profile)).toBeNull();
-    expect(
-      pluginVpnFinderProfileIp({
-        ...STATUS.profile!,
-        isVpnGateFinder: true,
-        remoteHost: "198.51.100.20",
-      }),
-    ).toBe("198.51.100.20");
-    expect(pluginVpnFinderProfileIp(null)).toBeNull();
   });
 
   it("allows credential-free profiles only while they are ready to connect", () => {

@@ -15,6 +15,7 @@ use tauri_plugin_sql::{DbInstances, DbPool};
 
 use super::finder::{VpnGateFinder, VpnGateServer};
 use super::saved_profiles::automatic::AutomaticVpnProfile;
+use super::saved_profiles::stored::{self, ManualVpnProfile, StoredFolderOutcome, StoredSyncPlan, StoredSyncPublished, StoredSyncReport};
 use super::saved_profiles::{
     ForegroundVpnProfile, SavedProfileVault, SavedVpnProfile, SavedVpnProfileCaptureSource, SavedVpnProfileLease,
     SavedVpnProfileSelection, SavedVpnProfileVaultSnapshot, VpnGateServerVerdictMutation,
@@ -685,8 +686,13 @@ pub(crate) async fn plugin_vpn_capture_saved_profile(
         SavedVpnProfileCaptureSource::Finder { candidate_id } => state.shared.finder.profile_bytes(&candidate_id)?,
         SavedVpnProfileCaptureSource::Active { expected_hash } => {
             let current = state.status().profile.ok_or_else(|| "active VPN profile is unavailable".to_string())?;
-            if current.hash != expected_hash || current.remote_host != ip || !current.is_vpn_gate_finder {
+            if current.hash != expected_hash || current.remote_host != ip {
                 return Err("active VPN profile changed before approval".to_string());
+            }
+            if !current.is_vpn_gate_finder {
+                let bytes = stored::read_active_manual_capture(&state.profile_path()?, &ip, &expected_hash)?;
+                let pool = saved_profile_database(&app).await?;
+                return state.saved_profiles()?.lock().await.save_manual_profile(&pool, &bytes).await;
             }
             read_active_capture(&state.profile_path()?, &ip, &expected_hash)?
         }
@@ -695,6 +701,7 @@ pub(crate) async fn plugin_vpn_capture_saved_profile(
     state.saved_profiles()?.lock().await.capture(&pool, &ip, &bytes).await
 }
 
+/// `ip` is the server's remote host: a VPN Gate IP or the host of a manually imported profile.
 #[tauri::command]
 pub(crate) async fn plugin_vpn_revoke_saved_profile(
     ip: String, verdict: Option<VpnGateServerVerdictValue>, app: AppHandle, state: State<'_, PluginVpnState>,
@@ -702,7 +709,98 @@ pub(crate) async fn plugin_vpn_revoke_saved_profile(
     ensure_supported()?;
     let _operation = state.shared.operation.lock().await;
     let pool = saved_profile_database(&app).await?;
-    state.saved_profiles()?.lock().await.revoke(&pool, &ip, verdict).await
+    state.saved_profiles()?.lock().await.revoke_host(&pool, &ip, verdict).await
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_list_manual_profiles(
+    state: State<'_, PluginVpnState>,
+) -> Result<Vec<ManualVpnProfile>, String> {
+    ensure_supported()?;
+    let _operation = state.shared.operation.lock().await;
+    Ok(state.saved_profiles()?.lock().await.manual_profiles())
+}
+
+/// Desktop sync of saved profiles with `vpn-profiles/` in the storage folder.
+#[tauri::command]
+pub(crate) async fn plugin_vpn_sync_stored_profiles(
+    app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<StoredSyncReport, String> {
+    ensure_supported()?;
+    let root = crate::chapter_media::media_root(&app)?;
+    if root.to_string_lossy().starts_with("content://") {
+        return Err("content URI storage folders sync through the Android storage bridge".to_string());
+    }
+    let pool = saved_profile_database(&app).await?;
+    let _operation = state.shared.operation.lock().await;
+    let mut vault = state.saved_profiles()?.lock().await;
+    let plan = vault.plan_stored_sync(&pool, &root.to_string_lossy(), None).await?;
+    let files = plan.desktop_files(&vault);
+    let outcome = stored::sync_directory_folder(&root, &plan, &files);
+    vault.finish_stored_sync(&pool, &plan.token, outcome).await
+}
+
+/// Android sync, step 1: stages the files to publish in the app cache for the storage bridge.
+/// Returns None until a storage folder is selected.
+#[tauri::command]
+pub(crate) async fn plugin_vpn_plan_stored_profile_sync(
+    app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<Option<StoredSyncPlan>, String> {
+    ensure_supported()?;
+    let root = crate::chapter_media::media_root(&app)?.to_string_lossy().into_owned();
+    if !root.starts_with("content://") {
+        return Ok(None);
+    }
+    let staging = app.path().app_cache_dir()
+        .map_err(|error| format!("could not resolve the app cache directory: {error}"))?
+        .join("vpn-profile-sync");
+    let pool = saved_profile_database(&app).await?;
+    let _operation = state.shared.operation.lock().await;
+    let mut vault = state.saved_profiles()?.lock().await;
+    stored::clear_staging(&staging);
+    vault.plan_stored_sync(&pool, &root, Some(staging.as_path())).await.map(Some)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct StoredSyncInbound {
+    file_name: String,
+    path: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub(crate) struct StoredSyncFolderResult {
+    reachable: bool,
+    published: Vec<StoredSyncPublished>,
+    deleted: Vec<String>,
+    inbound: Vec<StoredSyncInbound>,
+    errors: Vec<String>,
+}
+
+/// Android sync, step 2: records what the storage bridge did and imports the files it copied
+/// out of the folder into the bridge's temporary files.
+#[tauri::command]
+pub(crate) async fn plugin_vpn_finish_stored_profile_sync(
+    token: String, result: StoredSyncFolderResult, app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<StoredSyncReport, String> {
+    ensure_supported()?;
+    let mut outcome = StoredFolderOutcome {
+        reachable: result.reachable,
+        published: result.published,
+        deleted: result.deleted,
+        inbound: Vec::new(),
+        errors: result.errors,
+    };
+    for file in result.inbound {
+        match read_profile_source(Path::new(&file.path)) {
+            Ok(bytes) => outcome.inbound.push((file.file_name, bytes)),
+            Err(error) => outcome.errors.push(format!("{}: {error}", file.file_name)),
+        }
+    }
+    let pool = saved_profile_database(&app).await?;
+    let _operation = state.shared.operation.lock().await;
+    state.saved_profiles()?.lock().await.finish_stored_sync(&pool, &token, outcome).await
 }
 
 #[tauri::command]

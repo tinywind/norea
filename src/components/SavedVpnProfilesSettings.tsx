@@ -5,7 +5,7 @@ import { listVpnGateServerVerdicts, setVpnGateServerVerdict, type VpnGateServerV
 import { formatDateTimeForLocale, useTranslation, type TranslationKey } from "../i18n";
 import { listVpnDownloadProfileIssues, VPN_DOWNLOAD_PROFILE_ISSUES_QUERY_KEY } from "../db/queries/vpn-download-profile-issues";
 import { describeError } from "../lib/errors";
-import { listSavedPluginVpnProfiles, SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY, setSavedPluginVpnProfileLimit } from "../lib/plugin-vpn-profiles";
+import { listManualPluginVpnProfiles, listSavedPluginVpnProfiles, MANUAL_PLUGIN_VPN_PROFILES_QUERY_KEY, SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY, setSavedPluginVpnProfileLimit } from "../lib/plugin-vpn-profiles";
 import { getPluginVpnStatus, PLUGIN_VPN_QUERY_KEY } from "../lib/plugin-vpn";
 import { notifyVpnDownloadProfilesChanged, reallowVpnDownloadBatchProfile } from "../lib/tasks/vpn-download-runtime";
 import type { VpnDownloadProfileIssueCause } from "../lib/tasks/vpn-download-types";
@@ -36,6 +36,7 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
   const { locale, t } = useTranslation();
   const client = useQueryClient();
   const vault = useQuery({ queryKey: SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY, queryFn: listSavedPluginVpnProfiles, meta: { errorPresentation: "inline" } });
+  const manual = useQuery({ queryKey: MANUAL_PLUGIN_VPN_PROFILES_QUERY_KEY, queryFn: listManualPluginVpnProfiles, meta: { errorPresentation: "inline" } });
   const verdicts = useQuery({ queryKey: VERDICT_QUERY_KEY, queryFn: listVpnGateServerVerdicts, meta: { errorPresentation: "inline" } });
   const [limitDraft, setLimitDraft] = useState<number | string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -49,11 +50,12 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
   const limit = limitDraft ?? vault.data?.limit ?? "";
   const validLimit = typeof limit === "number" && Number.isInteger(limit) && limit >= 1 && limit <= 100;
   const locked = disabled || busy || vault.isPending || verdicts.isPending || vault.isError || verdicts.isError;
-  const savedIps = new Set(vault.data?.profiles.map(profile => profile.ip));
+  const manualByHost = new Map(manual.data?.map(profile => [profile.host, profile]));
+  const savedIps = new Set([...(vault.data?.profiles.map(profile => profile.ip) ?? []), ...manualByHost.keys()]);
   const missingCount = verdicts.data?.filter(row => row.verdict === "works" && !savedIps.has(row.ip)).length;
   const verdictByIp = new Map(verdicts.data?.map(row => [row.ip, row.verdict]));
   const profileByIp = new Map(vault.data?.profiles.map(profile => [profile.ip, profile]));
-  const ips = [...new Set([...(verdicts.data ?? []).map(row => row.ip), ...profileByIp.keys(), ...(issues.data ?? []).map(issue => issue.ip)])].sort();
+  const ips = [...new Set([...(verdicts.data ?? []).map(row => row.ip), ...profileByIp.keys(), ...manualByHost.keys(), ...(issues.data ?? []).map(issue => issue.ip)])].sort();
   const managementLocked = locked || issues.isPending || issues.isError;
   const excludedApprovedIssues = (issues.data ?? []).filter(issue => issue.excluded && verdictByIp.get(issue.ip) === "works");
   const excludedApprovedCount = new Set(excludedApprovedIssues.map(issue => issue.ip)).size;
@@ -82,7 +84,7 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
   async function changeVerdict(ip: string, verdict: VpnGateServerVerdictValue | null): Promise<void> {
     if (managementLocked || verdict === (verdictByIp.get(ip) ?? null)) return;
     const active = status.data?.profile;
-    const source = active?.isVpnGateFinder && active.remoteHost === ip ? { kind: "active" as const, expectedHash: active.hash } : undefined;
+    const source = active?.remoteHost === ip ? { kind: "active" as const, expectedHash: active.hash } : undefined;
     if (verdict === "works" && !source) return;
     await run(async () => {
       const result = source && verdict === "works" ? await setVpnGateServerVerdict(ip, verdict, source) : await setVpnGateServerVerdict(ip, verdict);
@@ -90,12 +92,13 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
     });
   }
 
-  const loadError = vault.isError || verdicts.isError ? describeError(vault.error ?? verdicts.error) : null;
+  const loadError = vault.isError || verdicts.isError || manual.isError ? describeError(vault.error ?? verdicts.error ?? manual.error) : null;
   const cleanupError = vault.data?.cleanupError ? t("settings.data.pluginVpn.saved.cleanupError", { error: vault.data.cleanupError }) : null;
   const vaultStatus = vault.isPending || verdicts.isPending ? t("settings.data.pluginVpn.saved.loading") : [
     vault.data ? t("settings.data.pluginVpn.saved.count", { count: vault.data.profiles.length, limit: vault.data.limit }) : null,
+    manualByHost.size ? t("settings.data.pluginVpn.saved.manualCount", { count: manualByHost.size }) : null,
     vault.data && !verdicts.isError && missingCount !== undefined ? t("settings.data.pluginVpn.saved.missingFiles", { count: missingCount }) : null,
-    vault.data?.profiles.length === 0 && !vault.isError ? t("settings.data.pluginVpn.saved.empty") : null,
+    vault.data?.profiles.length === 0 && !manualByHost.size && !vault.isError ? t("settings.data.pluginVpn.saved.empty") : null,
   ].filter(line => line !== null).join("\n");
   const limitError = limitDraft !== null && !validLimit ? t("settings.data.pluginVpn.saved.invalidLimit") : null;
 
@@ -105,7 +108,7 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
         status={vaultStatus || null} error={[loadError, cleanupError].filter(Boolean).join("\n") || undefined}>
         <SettingsInlineControls>
           {loadError ? (
-            <IconButton label={t("common.retry")} size="lg" onClick={() => { void Promise.all([vault.refetch(), verdicts.refetch()]); }}>
+            <IconButton label={t("common.retry")} size="lg" onClick={() => { void Promise.all([vault.refetch(), verdicts.refetch(), manual.refetch()]); }}>
               <RetryIcon />
             </IconButton>
           ) : null}
@@ -156,14 +159,15 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
           {!managementLocked && !ips.length ? <Text size="sm">{t("settings.data.pluginVpn.saved.noRecords")}</Text> : null}
           {ips.map(ip => {
             const profile = profileByIp.get(ip);
+            const manualProfile = manualByHost.get(ip);
             const verdict = verdictByIp.get(ip) ?? null;
-            const active = status.data?.profile;
-            const canApprove = active?.isVpnGateFinder === true && active.remoteHost === ip;
+            const canApprove = status.data?.profile?.remoteHost === ip;
             return <Stack key={ip} gap="xs" role="group" aria-label={ip} pb="sm" style={{ borderBottom: "1px solid var(--mantine-color-default-border)" }}>
               <Group justify="space-between" align="flex-start" wrap="wrap">
                 <Stack gap={0} style={{ minWidth: 0, flex: "1 1 auto" }}>
                   <Text size="sm" fw="var(--norea-weight-bold)" style={{ overflowWrap: "anywhere" }}>{ip}</Text>
                   {profile ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.details", { protocol: profile.protocol.toUpperCase(), date: formatDateTimeForLocale(locale, profile.approvedAt * 1000) })}</Text>
+                    : manualProfile ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.manualDetails", { date: formatDateTimeForLocale(locale, manualProfile.savedAt * 1000) })}</Text>
                     : <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.fileUnavailable")}</Text>}
                 </Stack>
                 <Group gap="xs" wrap="nowrap">

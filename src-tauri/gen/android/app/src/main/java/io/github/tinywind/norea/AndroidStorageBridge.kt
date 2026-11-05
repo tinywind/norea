@@ -21,6 +21,7 @@ internal class AndroidStorageBridge(
 ) {
   private val contentFiles = AndroidContentUriFiles(context, storage)
   private val autoBackups = AndroidAutoBackups(context, storage, contentFiles)
+  private val vpnProfiles = AndroidVpnProfileFiles(context, storage, contentFiles)
   private val contentResolver = context.contentResolver
   private val zipFiles = AndroidStorageZipFiles(contentResolver, storage)
   private val mediaStore = AndroidChapterMediaStore(contentResolver, storage)
@@ -152,6 +153,11 @@ internal class AndroidStorageBridge(
   @JavascriptInterface
   fun publishAutoBackup(requestId: String, rootUri: String, inputPath: String, fileName: String, keep: Int) {
     submitStorageOperation(requestId) { autoBackups.publish(rootUri, inputPath, fileName, keep) }
+  }
+
+  @JavascriptInterface
+  fun syncVpnProfiles(requestId: String, rootUri: String, inputJson: String) {
+    submitStorageOperation(requestId) { vpnProfiles.sync(rootUri, JSONObject(inputJson)) }
   }
 
   @JavascriptInterface
