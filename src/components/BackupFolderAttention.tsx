@@ -1,5 +1,7 @@
 import { useState, useSyncExternalStore } from "react";
-import { Button, Group, Text } from "@mantine/core";
+import { Group, Text } from "@mantine/core";
+import { IconButton } from "./IconButton";
+import { FolderIcon } from "./ui/icons";
 import { useQueryClient } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
 import { runAutomaticBackupIfDue } from "../lib/backup/auto-backup";
@@ -45,9 +47,9 @@ export function BackupFolderAttention() {
         <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{t("settings.backup.auto.folderUnavailable")}</Text>
       </div>
       <Group gap="xs" justify="flex-end">
-        <Button loading={busy} onClick={() => void chooseFolder()} size="xs" variant="default">
-          {t("settings.backup.auto.chooseFolder")}
-        </Button>
+        <IconButton label={t("settings.backup.auto.chooseFolder")} loading={busy} onClick={() => void chooseFolder()} size="lg">
+          <FolderIcon />
+        </IconButton>
       </Group>
     </section>
   );

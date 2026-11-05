@@ -40,10 +40,10 @@ it("shows grouped failures with one action and waiting retries as a status line"
   expect($('[data-download-failures="retrying"]').attr("role")).toBe("status");
   expect($('[data-download-failures="retrying"]').text()).toBe("1 chapters will retry automatically.");
   expect($('[data-download-failures="content"]').text()).toContain("Foo: 2 chapters failed (couldn't read the page).");
-  expect($('[data-download-failures="content"] button').text()).toBe("Retry all");
+  expect($('[data-download-failures="content"] button').attr("aria-label")).toBe("Retry all");
   expect($('[data-download-failures="challenge"]').text()).toContain("Foo: 1 chapters need verification at cdn.example.");
-  expect($('[data-download-failures="challenge"] button').text()).toBe("Verify");
-  expect($('[data-download-failures="media-incomplete"] button').text()).toBe("Repair all");
+  expect($('[data-download-failures="challenge"] button').attr("aria-label")).toBe("Verify");
+  expect($('[data-download-failures="media-incomplete"] button').attr("aria-label")).toBe("Repair all");
   expect($('[data-download-failures="transient"]')).toHaveLength(0);
   expect($('[data-download-failures="retrying"]').closest("[role=alert]")).toHaveLength(0);
 });

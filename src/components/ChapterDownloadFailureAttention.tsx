@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
-import { Button, Group, Text } from "@mantine/core";
+import { Group, Text } from "@mantine/core";
+import { IconButton } from "./IconButton";
+import { RepairIcon, RetryIcon, VerifyIcon } from "./ui/icons";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
 import { pluginManager } from "../lib/plugins/manager";
@@ -90,15 +92,15 @@ export function ChapterDownloadFailureAttention() {
               {error?.key === group.key ? <Text c="danger" component="p" size="sm">{error.message}</Text> : null}
             </div>
             <Group gap="xs" justify="flex-end">
-              <Button
+              <IconButton
                 disabled={pending !== null}
+                label={t(ACTION_KEYS[group.action])}
                 loading={pending === group.key}
                 onClick={() => act(group.key, () => group.action === "verify" ? verifyGroup(group, message) : retryGroup(group))}
-                size="xs"
-                variant="default"
+                size="lg"
               >
-                {t(ACTION_KEYS[group.action])}
-              </Button>
+                {group.action === "verify" ? <VerifyIcon /> : group.action === "repair" ? <RepairIcon /> : <RetryIcon />}
+              </IconButton>
             </Group>
           </section>
         );

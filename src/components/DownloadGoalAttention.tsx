@@ -1,5 +1,7 @@
 import { useSyncExternalStore } from "react";
-import { Button, Group, Text } from "@mantine/core";
+import { Group, Text } from "@mantine/core";
+import { IconButton } from "./IconButton";
+import { FolderIcon, PlayIcon } from "./ui/icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation, type TranslationKey } from "../i18n";
 import type { DownloadGoalPause } from "../lib/download-goals/budget";
@@ -43,7 +45,9 @@ export function DownloadGoalAttention() {
         <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{t(MESSAGE_KEYS[pause])}</Text>
       </div>
       <Group gap="xs" justify="flex-end">
-        <Button onClick={act} size="xs" variant="default">{t(ACTION_KEYS[pause])}</Button>
+        <IconButton label={t(ACTION_KEYS[pause])} onClick={act} size="lg">
+          {pause === "storage" ? <FolderIcon /> : <PlayIcon />}
+        </IconButton>
       </Group>
     </section>
   );

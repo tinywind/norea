@@ -1,5 +1,7 @@
 import { useRef, useState } from "react";
-import { Button, Group, Text } from "@mantine/core";
+import { Group, Text } from "@mantine/core";
+import { IconButton } from "./IconButton";
+import { PlayIcon, RetryIcon, SearchIcon, VerifyIcon } from "./ui/icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
@@ -41,7 +43,10 @@ export function VpnDownloadAttention({ snapshot }: { snapshot: VpnDownloadRuntim
         {error ? <Text c="danger" component="p" size="sm">{error}</Text> : null}
       </div>
       <Group gap="xs" justify="flex-end">
-        <Button disabled={pending} loading={pending} onClick={() => act(action)} size="xs" variant="default">{label}</Button>
+        <IconButton disabled={pending} label={label} loading={pending} onClick={() => act(action)} size="lg">
+          {item.kind === "interrupted" ? <PlayIcon /> : item.kind === "verification" ? <VerifyIcon />
+            : item.kind === "exhausted" ? <SearchIcon /> : <RetryIcon />}
+        </IconButton>
       </Group>
     </section>
   );
