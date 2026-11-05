@@ -29,7 +29,7 @@ vi.mock("../lib/content-sync/device-backup", () => ({
   restoreDeviceBackup: mocks.restore, DeviceBackupError: class extends Error {},
 }));
 import { ReadingStateSettings } from "./ReadingStateSettings";
-interface Props { children?: ReactNode; onClick?: () => void; disabled?: boolean; data?: unknown; }
+interface Props { children?: ReactNode; label?: string; onClick?: () => void; disabled?: boolean; data?: unknown; }
 function controls(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -45,7 +45,7 @@ it("shows the device name and a backup action without any secret-key field", asy
   const elements = controls(ReadingStateSettings({ serverUrl: "http://server" }));
   expect(elements.some(item => item.props.children === "This tablet")).toBe(true);
   expect(elements.some(item => item.props.children === "readingSync.key")).toBe(false);
-  const upload = elements.find(item => item.props.children === "deviceBackup.upload")!;
+  const upload = elements.find(item => item.props.label === "deviceBackup.upload")!;
   expect(upload.props.disabled).toBe(false);
   upload.props.onClick!();
   await vi.waitFor(() => expect(mocks.upload).toHaveBeenCalledWith("http://server", expect.any(Function)));
@@ -53,7 +53,7 @@ it("shows the device name and a backup action without any secret-key field", asy
 });
 it("requires selecting a saved device before overwrite restoration", () => {
   const elements = controls(ReadingStateSettings({ serverUrl: "http://server" }));
-  const restore = elements.find(item => item.props.children === "deviceBackup.restore" && item.props.onClick)!;
+  const restore = elements.find(item => item.props.label === "deviceBackup.restore" && item.props.onClick)!;
   expect(restore.props.disabled).toBe(true);
 });
 it("offers all saved device names and requires confirmation before restoring", async () => {
@@ -62,7 +62,7 @@ it("offers all saved device names and requires confirmation before restoring", a
   expect(elements.find(item => item.props.data)?.props.data).toEqual([{ value: entry.deviceName, label: entry.deviceName }]);
   expect(elements.some(item => item.props.children === `deviceBackup.details:${JSON.stringify({ date: "ko@1000", size: "0.00" })}`)).toBe(true);
   mocks.confirm.mockResolvedValueOnce(false);
-  const restore = elements.find(item => item.props.children === "deviceBackup.restore" && item.props.onClick)!;
+  const restore = elements.find(item => item.props.label === "deviceBackup.restore" && item.props.onClick)!;
   restore.props.onClick!();
   await vi.waitFor(() => expect(mocks.confirm).toHaveBeenCalledWith({
     title: "deviceBackup.restore",
@@ -78,6 +78,6 @@ it("offers all saved device names and requires confirmation before restoring", a
 it("disables uploads and restoration without a configured server", () => {
   const elements = controls(ReadingStateSettings({ serverUrl: "" }));
   for (const label of ["deviceBackup.upload", "deviceBackup.restore"]) {
-    expect(elements.find(item => item.props.children === label && item.props.onClick)!.props.disabled).toBe(true);
+    expect(elements.find(item => item.props.label === label && item.props.onClick)!.props.disabled).toBe(true);
   }
 });

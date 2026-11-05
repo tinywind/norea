@@ -93,7 +93,7 @@ it("keeps connection editing and server browsing available during background syn
   const elements = controls(ContentServerSettings());
   expect(elements.find(element => element.props["aria-label"] === "contentSync.serverUrl")!.props.disabled).toBe(false);
   expect(elements.find(element => element.props["aria-label"] === "contentSync.deviceName")!.props.disabled).toBe(false);
-  elements.find(element => element.props.children === "contentSync.browse")!.props.onClick!();
+  elements.find(element => element.props.label === "contentSync.browse")!.props.onClick!();
   expect(mocks.navigate).toHaveBeenCalledWith({ to: "/browse", search: { q: "", tab: "server" } });
 });
 

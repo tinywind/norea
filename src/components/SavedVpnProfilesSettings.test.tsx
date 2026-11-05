@@ -47,7 +47,7 @@ function controls(node: ReactNode): ReactElement<Props>[] {
 }
 function render(disabled = false) { mocks.index = 0; mocks.refIndex = 0; return controls(SavedVpnProfilesSettings({ disabled })); }
 const copy = (view: ReactElement<Props>[]) => view.map(element => typeof element.props.children === "string" ? element.props.children : "").join(" ");
-function openManager() { render().find(element => element.props.children === "settings.data.pluginVpn.saved.manage")!.props.onClick!(); return render(); }
+function openManager() { render().find(element => element.props.label === "settings.data.pluginVpn.saved.manage")!.props.onClick!(); return render(); }
 const verdictControl = (view: ReactElement<Props>[], ip = "192.0.2.1") => view.find(element => element.props["aria-label"] === `settings.data.pluginVpn.saved.verdictLabel{"ip":"${ip}"}`)!;
 beforeEach(() => {
   vi.clearAllMocks(); mocks.states = []; mocks.refs = [];
@@ -71,8 +71,8 @@ function issue(ip: string, batchId = "batch-1", excluded = true): VpnDownloadPro
     ip, generation: 8, cause: "connection-failed", recordedAt: 1000, excluded, revision: 4 };
 }
 
-const reallowButton = (view: ReactElement<Props>[]) => view.find(element => element.props.children === "settings.data.pluginVpn.saved.reallow")!;
-const reallowAllButton = (view: ReactElement<Props>[]) => view.find(element => typeof element.props.children === "string" && element.props.children.startsWith("settings.data.pluginVpn.saved.reallowAll{"))!;
+const reallowButton = (view: ReactElement<Props>[]) => view.find(element => element.props.label === "settings.data.pluginVpn.saved.reallow")!;
+const reallowAllButton = (view: ReactElement<Props>[]) => view.find(element => typeof element.props.label === "string" && element.props.label.startsWith("settings.data.pluginVpn.saved.reallowAll{"))!;
 
 it.each(["works", "fails", null] as const)("can clear a download exclusion without a saved file while preserving the %s verdict", async verdict => {
   mocks.vault.data!.profiles = [];
@@ -93,7 +93,7 @@ it("allows every excluded O profile across downloads, including missing files, w
     issue("192.0.2.3"), issue("192.0.2.4"), issue("192.0.2.1", "batch-3", false)];
   const button = reallowAllButton(openManager());
   expect(button).toBeDefined();
-  expect(button.props.children).toBe('settings.data.pluginVpn.saved.reallowAll{"count":2}');
+  expect(button.props.label).toBe('settings.data.pluginVpn.saved.reallowAll{"count":2}');
   expect(button.props.disabled).toBe(false);
   await button.props.onClick!();
   expect(mocks.issues.data.map(issue => [issue.batchId, issue.ip, issue.excluded, issue.revision])).toEqual([
@@ -228,7 +228,7 @@ it("shows problem-only rows and separates a recorded batch exclusion from the us
   expect(text).toContain("batch-1");
   expect(text).toContain("date:1000");
   expect(verdictControl(view).props.value).toBe("works");
-  await view.find(element => element.props.children === "settings.data.pluginVpn.saved.reallow")!.props.onClick!();
+  await view.find(element => element.props.label === "settings.data.pluginVpn.saved.reallow")!.props.onClick!();
   expect(mocks.reallow).toHaveBeenCalledWith("batch-1", "192.0.2.1", 4);
   expect(mocks.revoke).not.toHaveBeenCalled();
 });
@@ -245,7 +245,7 @@ it("keeps a stale reallow error visible and refreshes the issue rather than clai
   mocks.issues.data = [{ batchId: "batch", planId: "plan", rangeId: "range", generation: 8, profileId: "saved",
     profileHash: "a".repeat(64), ip: "192.0.2.1", cause: "cloudflare", recordedAt: 1000, excluded: true, revision: 4 }];
   mocks.reallow.mockRejectedValue(new Error("Stale issue revision"));
-  await openManager().find(element => element.props.children === "settings.data.pluginVpn.saved.reallow")!.props.onClick!();
+  await openManager().find(element => element.props.label === "settings.data.pluginVpn.saved.reallow")!.props.onClick!();
   expect(copy(render())).toContain("Stale issue revision");
   expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["vpn-download-profile-issues"] });
 });

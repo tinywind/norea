@@ -650,7 +650,7 @@
   "settings.about.logLevel.off": "끔",
   "settings.about.latestRelease.label": "최신 릴리스",
   "settings.about.latestRelease.description": "시스템 브라우저에서 GitHub Releases를 엽니다.",
-  "settings.about.githubReleases": "GitHub Releases",
+  "settings.about.githubReleases": "GitHub Releases 열기",
   "readerSettings.reading.title": "읽기",
   "readerSettings.scope.title": "적용 범위",
   "readerSettings.scope.applyTo": "변경 적용 대상",

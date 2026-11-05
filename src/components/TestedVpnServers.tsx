@@ -12,7 +12,8 @@ import {
 import { SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY } from "../lib/plugin-vpn-profiles";
 import { notifyVpnDownloadProfilesChanged } from "../lib/tasks/vpn-download-runtime";
 import { showSettingsToast } from "./settings/settings-toast";
-import { TextButton } from "./TextButton";
+import { IconButton } from "./IconButton";
+import { MarkReadIcon, RetryIcon } from "./ui/icons";
 
 const VPN_GATE_SERVER_VERDICTS_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
 
@@ -63,7 +64,9 @@ export function TestedVpnServers({ disabled = false }: { disabled?: boolean }) {
     return (
       <Alert color="danger" role="alert">
         <Text size="sm">{describeError(servers.error)}</Text>
-        <TextButton onClick={() => void servers.refetch()}>{t("common.retry")}</TextButton>
+        <IconButton label={t("common.retry")} size="lg" onClick={() => void servers.refetch()}>
+          <RetryIcon />
+        </IconButton>
       </Alert>
     );
   }
@@ -77,13 +80,15 @@ export function TestedVpnServers({ disabled = false }: { disabled?: boolean }) {
             working: working.length,
           })}
         </Text>
-        <TextButton
+        <IconButton
+          label={t("settings.data.pluginVpn.tested.approveAll", { count: working.length })}
+          size="lg"
           disabled={disabled || working.length === 0}
           loading={approve.isPending}
           onClick={() => approve.mutate()}
         >
-          {t("settings.data.pluginVpn.tested.approveAll", { count: working.length })}
-        </TextButton>
+          <MarkReadIcon />
+        </IconButton>
       </Group>
       {approveError ? <Alert color="danger" role="alert">{approveError}</Alert> : null}
       {servers.data.length === 0 ? (

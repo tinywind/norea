@@ -8,9 +8,8 @@ import {
   SettingsWideField,
 } from "../SettingsPrimitives";
 import { IconButton } from "../IconButton";
-import { TextButton } from "../TextButton";
 import { useConfirm } from "../ui/ConfirmDialog";
-import { DownloadIcon, RefreshIcon, ResetIcon, SaveIcon } from "../ui/icons";
+import { DownloadIcon, RefreshIcon, ResetIcon, SaveIcon, TrashIcon } from "../ui/icons";
 import { describeError } from "../../lib/errors";
 import { enqueueMainTask } from "../../lib/tasks/main-tasks";
 import { clearWebViewCache } from "../../lib/webview-cache";
@@ -201,16 +200,18 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
           label={t("settings.data.webViewCache.label")}
           description={t("settings.data.webViewCache.description")}
         >
-          <TextButton
+          <IconButton
+            label={t("settings.data.webViewCache.button")}
+            size="lg"
+            tone="danger"
             disabled={isBusy}
             loading={isBusy}
-            variant="default"
             onClick={() => {
               void handleClearWebViewCache();
             }}
           >
-            {t("settings.data.webViewCache.button")}
-          </TextButton>
+            <TrashIcon />
+          </IconButton>
         </SettingsFieldRow>
       </SettingsSection>
 

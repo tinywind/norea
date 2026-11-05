@@ -21,6 +21,7 @@ import {
   IconChevronUp,
   IconCloudCheck,
   IconCloudDownload,
+  IconCloudUpload,
   IconCompass,
   IconCookie,
   IconCookieOff,
@@ -31,7 +32,9 @@ import {
   IconDownloadOff,
   IconExternalLink,
   IconEyeOff,
+  IconFileExport,
   IconFileImport,
+  IconFileSearch,
   IconFilter,
   IconFolder,
   IconGripVertical,
@@ -50,6 +53,7 @@ import {
   IconPlayerPlay,
   IconPlayerSkipBack,
   IconPlugConnected,
+  IconPlugConnectedX,
   IconPlus,
   IconPointFilled,
   IconPuzzle,
@@ -108,6 +112,10 @@ export const ViewOptionsIcon = withAppDefaults(IconAdjustmentsHorizontal);
 export const SelectIcon = withAppDefaults(IconCheckbox);
 export const RefreshIcon = withAppDefaults(IconRefresh);
 export const RefreshAllIcon = withAppDefaults(IconRefreshDot);
+export const SyncIcon = withAppDefaults(IconRefreshDot);
+export const RescanIcon = withAppDefaults(IconFileSearch);
+export const UploadIcon = withAppDefaults(IconCloudUpload);
+export const RestoreIcon = withAppDefaults(IconCloudDownload);
 export const CloseIcon = withAppDefaults(IconX);
 export const BackIcon = withAppDefaults(IconArrowLeft);
 export const CheckIcon = withAppDefaults(IconCheck);
@@ -150,10 +158,12 @@ export const ChevronLeftIcon = withAppDefaults(IconChevronLeft);
 export const ChapterListIcon = withAppDefaults(IconListNumbers);
 export const DragIcon = withAppDefaults(IconGripVertical);
 export const ImportIcon = withAppDefaults(IconFileImport);
+export const ExportIcon = withAppDefaults(IconFileExport);
 export const FolderIcon = withAppDefaults(IconFolder);
 export const CategoryIcon = withAppDefaults(IconCategory);
 export const VpnIcon = withAppDefaults(IconShieldLock);
 export const ConnectIcon = withAppDefaults(IconPlugConnected);
+export const DisconnectIcon = withAppDefaults(IconPlugConnectedX);
 export const ServerIcon = withAppDefaults(IconServer);
 export const ExtensionsIcon = withAppDefaults(IconPuzzle);
 export const RepositoryIcon = withAppDefaults(IconPackages);

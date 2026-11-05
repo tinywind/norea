@@ -11,8 +11,7 @@ import { notifyVpnDownloadProfilesChanged, reallowVpnDownloadBatchProfile } from
 import type { VpnDownloadProfileIssueCause } from "../lib/tasks/vpn-download-types";
 import { SettingsFieldRow, SettingsInlineControls, SettingsWideField } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
-import { TextButton } from "./TextButton";
-import { SaveIcon } from "./ui/icons";
+import { RestartIcon, RetryIcon, SaveIcon, SettingsIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 
 const VERDICT_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
@@ -107,7 +106,9 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
           {vault.isError || verdicts.isError ? (
             <Alert color="danger" role="alert">
               <Text size="sm">{describeError(vault.error ?? verdicts.error)}</Text>
-              <TextButton onClick={() => { void Promise.all([vault.refetch(), verdicts.refetch()]); }}>{t("common.retry")}</TextButton>
+              <IconButton label={t("common.retry")} size="lg" onClick={() => { void Promise.all([vault.refetch(), verdicts.refetch()]); }}>
+                <RetryIcon />
+              </IconButton>
             </Alert>
           ) : null}
           {vault.data ? <Text size="sm" role="status">{t("settings.data.pluginVpn.saved.count", { count: vault.data.profiles.length, limit: vault.data.limit })}</Text> : null}
@@ -117,15 +118,19 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
           {vault.data?.cleanupError ? <Alert color="danger" role="alert">{t("settings.data.pluginVpn.saved.cleanupError", { error: vault.data.cleanupError })}</Alert> : null}
           {actionError && !opened ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
           {vault.data?.profiles.length === 0 && !vault.isError ? <Text size="sm">{t("settings.data.pluginVpn.saved.empty")}</Text> : null}
-          <TextButton disabled={disabled} onClick={() => { setActionError(null); setOpened(true); }}>{t("settings.data.pluginVpn.saved.manage")}</TextButton>
+          <IconButton label={t("settings.data.pluginVpn.saved.manage")} size="lg" disabled={disabled}
+            onClick={() => { setActionError(null); setOpened(true); }}>
+            <SettingsIcon />
+          </IconButton>
           <ResponsiveSheet busy={busy} closeLabel={t("settings.data.pluginVpn.saved.close")} fullScreenOnPhone
             opened={opened} onClose={() => setOpened(false)} size="lg" title={t("settings.data.pluginVpn.saved.manage")}>
             <Stack gap="md">
               <Text size="sm">{t("settings.data.pluginVpn.saved.managementHelp")}</Text>
               {issues.isPending ? <Text role="status">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
-              {issues.isError ? <Alert color="danger" role="alert">{describeError(issues.error)} <TextButton onClick={() => { void issues.refetch(); }}>{t("common.retry")}</TextButton></Alert> : null}
+              {issues.isError ? <Alert color="danger" role="alert">{describeError(issues.error)} <IconButton label={t("common.retry")} size="lg" onClick={() => { void issues.refetch(); }}><RetryIcon /></IconButton></Alert> : null}
               {actionError ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
-              <TextButton disabled={managementLocked || !excludedApprovedCount} loading={busy} onClick={() => {
+              <IconButton label={t("settings.data.pluginVpn.saved.reallowAll", { count: excludedApprovedCount })} size="lg"
+                disabled={managementLocked || !excludedApprovedCount} loading={busy} onClick={() => {
                 if (managementLocked || !excludedApprovedCount) return;
                 return run(async () => {
                   const results = await Promise.allSettled(excludedApprovedIssues.map(issue =>
@@ -135,7 +140,7 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
                     count: failures.length, error: [...new Set(failures.map(result => describeError(result.reason)))].join("; "),
                   }));
                 });
-              }}>{t("settings.data.pluginVpn.saved.reallowAll", { count: excludedApprovedCount })}</TextButton>
+              }}><RestartIcon /></IconButton>
               {!managementLocked && !ips.length ? <Text size="sm">{t("settings.data.pluginVpn.saved.noRecords")}</Text> : null}
               {ips.map(ip => {
                 const profile = profileByIp.get(ip);
@@ -166,12 +171,12 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
                     </Group>
                     <Text size="sm" c="dimmed">{formatDateTimeForLocale(locale, issue.recordedAt)}</Text>
                     <Text size="xs" c="dimmed" style={{ overflowWrap: "anywhere" }}>{t("settings.data.pluginVpn.saved.issueOwner", { batch: issue.batchId, range: issue.rangeId, generation: issue.generation })}</Text>
-                    {issue.excluded ? <TextButton disabled={managementLocked} onClick={() => {
+                    {issue.excluded ? <IconButton label={t("settings.data.pluginVpn.saved.reallow")} size="lg" disabled={managementLocked} onClick={() => {
                       if (managementLocked) return;
                       return run(() => reallowVpnDownloadBatchProfile(issue.batchId, ip, issue.revision));
                     }}>
-                      {t("settings.data.pluginVpn.saved.reallow")}
-                    </TextButton> : null}
+                      <RestartIcon />
+                    </IconButton> : null}
                   </Stack>)}
                 </Stack>;
               })}

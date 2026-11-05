@@ -12,8 +12,7 @@ import {
 import { useContentSyncStore } from "../store/content-sync";
 import { SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
-import { TextButton } from "./TextButton";
-import { RefreshIcon } from "./ui/icons";
+import { RefreshIcon, RestoreIcon, UploadIcon } from "./ui/icons";
 import { useConfirm } from "./ui/ConfirmDialog";
 
 export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
@@ -79,8 +78,10 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
         error={error?.mode === "upload" ? error.message : ownName.error ? message(ownName.error) : null}>
         <SettingsInlineControls>
           <Text>{ownName.data || t("common.loading")}</Text>
-          <TextButton variant="filled" loading={mode === "upload"} disabled={busy || !serverUrl || !ownName.data}
-            onClick={() => { void run("upload"); }}>{t("deviceBackup.upload")}</TextButton>
+          <IconButton label={t("deviceBackup.upload")} size="lg" loading={mode === "upload"} disabled={busy || !serverUrl || !ownName.data}
+            onClick={() => { void run("upload"); }}>
+            <UploadIcon />
+          </IconButton>
         </SettingsInlineControls>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("deviceBackup.savedDevices")} description={t("deviceBackup.restoreDescription")}
@@ -101,8 +102,10 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
         status={mode === "restore" && phase ? t(`deviceBackup.${phase}`) : null}
         error={error?.mode === "restore" ? error.message : null}>
         <SettingsInlineControls>
-          <TextButton tone="danger" loading={mode === "restore"} disabled={busy || !serverUrl || !entry}
-            onClick={() => { void confirmAndRestore(); }}>{t("deviceBackup.restore")}</TextButton>
+          <IconButton label={t("deviceBackup.restore")} size="lg" tone="danger" loading={mode === "restore"} disabled={busy || !serverUrl || !entry}
+            onClick={() => { void confirmAndRestore(); }}>
+            <RestoreIcon />
+          </IconButton>
           {entry ? <Text size="sm">{t("deviceBackup.details", {
             date: formatDateTimeForLocale(locale, entry.updatedAt), size: (entry.size / 1024 / 1024).toFixed(2),
           })}</Text> : null}

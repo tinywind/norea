@@ -10,7 +10,8 @@ import {
   SettingsSection,
   SettingsWideField,
 } from "../SettingsPrimitives";
-import { TextButton } from "../TextButton";
+import { IconButton } from "../IconButton";
+import { DeleteDownloadIcon, FolderIcon } from "../ui/icons";
 import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
@@ -152,17 +153,19 @@ function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
             : t("settings.data.mediaStorage.change.description")
         }
       >
-        <TextButton
+        <IconButton
+          label={isAndroidRuntime()
+            ? t("storageSetup.selectExternalFolder")
+            : t("storageSetup.selectFolder")}
+          size="lg"
           loading={mediaStorageBusy}
           disabled={mediaStorageBusy || isBusy}
           onClick={() => {
             void chooseMediaStorageRoot();
           }}
         >
-          {isAndroidRuntime()
-            ? t("storageSetup.selectExternalFolder")
-            : t("storageSetup.selectFolder")}
-        </TextButton>
+          <FolderIcon />
+        </IconButton>
       </SettingsFieldRow>
     </SettingsSection>
   );
@@ -271,15 +274,16 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
           label={t("settings.data.downloadedContent.label")}
           description={t("settings.data.downloadedContent.description")}
         >
-          <TextButton
+          <IconButton
+            label={t("settings.data.downloadedContent.button")}
+            size="lg"
+            tone="danger"
             disabled={isBusy}
             loading={isBusy}
-            variant="default"
-            tone="danger"
             onClick={() => setCleanupOpened(true)}
           >
-            {t("settings.data.downloadedContent.button")}
-          </TextButton>
+            <DeleteDownloadIcon />
+          </IconButton>
         </SettingsFieldRow>
         <SettingsAdvancedGroup>
           <SettingsFieldRow

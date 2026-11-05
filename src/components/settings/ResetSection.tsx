@@ -6,9 +6,8 @@ import {
   SettingsSection,
 } from "../SettingsPrimitives";
 import { IconButton } from "../IconButton";
-import { TextButton } from "../TextButton";
 import { useConfirm } from "../ui/ConfirmDialog";
-import { ResetIcon } from "../ui/icons";
+import { ResetIcon, TrashIcon } from "../ui/icons";
 import {
   clearReadingProgress,
   clearUpdatesTab,
@@ -152,27 +151,29 @@ export function ResetSection({ isBusy, onBusyChange }: SettingsBusyProps) {
           label={t("settings.data.libraryMembership.label")}
           description={t("settings.data.libraryMembership.description")}
         >
-          <TextButton
+          <IconButton
+            label={t("settings.data.libraryMembership.button")}
+            size="lg"
+            tone="danger"
             disabled={isBusy}
             loading={isBusy}
-            variant="default"
-            tone="danger"
             onClick={() => {
               void clearLibrary();
             }}
           >
-            {t("settings.data.libraryMembership.button")}
-          </TextButton>
+            <TrashIcon />
+          </IconButton>
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.data.readingProgress.label")}
           description={t("settings.data.readingProgress.description")}
         >
-          <TextButton
+          <IconButton
+            label={t("settings.data.readingProgress.button")}
+            size="lg"
+            tone="danger"
             disabled={isBusy}
             loading={isBusy}
-            variant="default"
-            tone="danger"
             onClick={() => {
               void runMaintenance(
                 "maintenance.clearReadingProgress",
@@ -191,17 +192,19 @@ export function ResetSection({ isBusy, onBusyChange }: SettingsBusyProps) {
               );
             }}
           >
-            {t("settings.data.readingProgress.button")}
-          </TextButton>
+            <TrashIcon />
+          </IconButton>
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.data.updatesQueue.label")}
           description={t("settings.data.updatesQueue.description")}
         >
-          <TextButton
+          <IconButton
+            label={t("settings.data.updatesQueue.button")}
+            size="lg"
+            tone="danger"
             disabled={isBusy}
             loading={isBusy}
-            variant="default"
             onClick={() => {
               void runMaintenance(
                 "maintenance.clearUpdates",
@@ -216,8 +219,8 @@ export function ResetSection({ isBusy, onBusyChange }: SettingsBusyProps) {
               );
             }}
           >
-            {t("settings.data.updatesQueue.button")}
-          </TextButton>
+            <TrashIcon />
+          </IconButton>
         </SettingsFieldRow>
       </SettingsSection>
 

@@ -13,9 +13,16 @@ import {
   SettingsWideField,
 } from "../SettingsPrimitives";
 import { IconButton } from "../IconButton";
-import { TextButton } from "../TextButton";
 import { useConfirm } from "../ui/ConfirmDialog";
-import { ImportIcon, SearchIcon, TrashIcon } from "../ui/icons";
+import {
+  CloseIcon,
+  ConnectIcon,
+  DisconnectIcon,
+  ImportIcon,
+  RetryIcon,
+  SearchIcon,
+  TrashIcon,
+} from "../ui/icons";
 import { VpnGateServerVerdictControl } from "../VpnGateServerVerdictControl";
 import {
   listVpnGateServerVerdicts,
@@ -401,6 +408,10 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
 
   // One status, one action: stop while a connection is up or in progress, otherwise connect.
   const stopAction = showConnectionStop && !(disconnected && vpnOperation === null);
+  const stopDisabled =
+    profileOperationActive ||
+    vpnOperation?.kind === "disconnect" ||
+    (!vpnEnabled && !connectionRequestActive && !statusAvailable);
 
   return (
     <SettingsSection title={t("settings.data.pluginVpn.title")}>
@@ -422,15 +433,16 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
                     : t("settings.data.pluginVpn.status.loading")}
               </ConsoleChip>
               {vpnQuery.isError ? (
-                <TextButton
+                <IconButton
+                  label={t("common.retry")}
+                  size="lg"
                   loading={vpnQuery.isFetching}
-                  variant="default"
                   onClick={() => {
                     void vpnQuery.refetch();
                   }}
                 >
-                  {t("common.retry")}
-                </TextButton>
+                  <RetryIcon />
+                </IconButton>
               ) : null}
             </SettingsInlineControls>
           </SettingsFieldRow>
@@ -440,33 +452,41 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
           >
             <SettingsInlineControls>
               {!stopAction ? (
-                <TextButton
+                <IconButton
+                  label={t("settings.data.pluginVpn.connection.connect")}
+                  size="lg"
                   disabled={!canConnect}
                   onClick={() => {
                     void connect();
                   }}
                 >
-                  {t("settings.data.pluginVpn.connection.connect")}
-                </TextButton>
-              ) : null}
-              {stopAction ? (
-                <TextButton
-                  disabled={
-                    profileOperationActive ||
-                    vpnOperation?.kind === "disconnect" ||
-                    (!vpnEnabled && !connectionRequestActive && !statusAvailable)
-                  }
+                  <ConnectIcon />
+                </IconButton>
+              ) : cancelConnection ? (
+                <IconButton
+                  label={t("settings.data.pluginVpn.connection.cancel")}
+                  size="lg"
+                  disabled={stopDisabled}
                   loading={vpnOperation?.kind === "disconnect"}
-                  variant="default"
                   onClick={() => {
                     void disconnect();
                   }}
                 >
-                  {cancelConnection
-                    ? t("settings.data.pluginVpn.connection.cancel")
-                    : t("settings.data.pluginVpn.connection.disconnect")}
-                </TextButton>
-              ) : null}
+                  <CloseIcon />
+                </IconButton>
+              ) : (
+                <IconButton
+                  label={t("settings.data.pluginVpn.connection.disconnect")}
+                  size="lg"
+                  disabled={stopDisabled}
+                  loading={vpnOperation?.kind === "disconnect"}
+                  onClick={() => {
+                    void disconnect();
+                  }}
+                >
+                  <DisconnectIcon />
+                </IconButton>
+              )}
             </SettingsInlineControls>
           </SettingsFieldRow>
           <SettingsFieldRow

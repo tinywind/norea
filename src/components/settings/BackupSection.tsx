@@ -8,8 +8,9 @@ import {
   SettingsInlineControls,
   SettingsSection,
 } from "../SettingsPrimitives";
-import { TextButton } from "../TextButton";
+import { IconButton } from "../IconButton";
 import { useConfirm } from "../ui/ConfirmDialog";
+import { ExportIcon, ImportIcon } from "../ui/icons";
 import { exportBackupToFile, importBackupFromFile } from "../../lib/backup/io";
 import { describeError } from "../../lib/errors";
 import { pluginManager } from "../../lib/plugins/manager";
@@ -225,26 +226,28 @@ export function BackupSection({ isBusy, onBusyChange }: SettingsBusyProps) {
           description={t("settings.data.backupFile.description")}
         >
           <SettingsInlineControls>
-            <TextButton
-              variant="filled"
+            <IconButton
+              label={t("settings.data.exportBackup")}
+              size="lg"
               onClick={() => {
                 void handleExport();
               }}
               loading={isBusy}
               disabled={isBusy}
             >
-              {t("settings.data.exportBackup")}
-            </TextButton>
-            <TextButton
+              <ExportIcon />
+            </IconButton>
+            <IconButton
+              label={t("settings.data.importBackup")}
+              size="lg"
               onClick={() => {
                 void handleImport();
               }}
               loading={isBusy}
               disabled={isBusy}
-              variant="default"
             >
-              {t("settings.data.importBackup")}
-            </TextButton>
+              <ImportIcon />
+            </IconButton>
           </SettingsInlineControls>
         </SettingsFieldRow>
       </SettingsSection>

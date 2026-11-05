@@ -12,8 +12,7 @@ import {
 import { useContentSyncStore } from "../store/content-sync";
 import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
-import { TextButton } from "./TextButton";
-import { ResetIcon, SaveIcon } from "./ui/icons";
+import { BrowseIcon, RescanIcon, ResetIcon, SaveIcon, SyncIcon } from "./ui/icons";
 import { ReadingStateSettings } from "./ReadingStateSettings";
 import { showSettingsToast } from "./settings/settings-toast";
 
@@ -153,18 +152,21 @@ export function ContentServerSettings() {
       <SettingsFieldRow label={t("contentSync.manualSync")} description={t("contentSync.rescanDescription")}
         status={syncStatus} error={syncError && syncError !== blockedMessage ? <ContentSyncErrorLine error={syncError} /> : syncError}>
         <SettingsInlineControls>
-          <TextButton variant="filled" loading={status === "syncing"} disabled={!serverUrl || busy} onClick={() => startSync()}>
-            {t("contentSync.syncNow")}
-          </TextButton>
-          <TextButton disabled={disabled || status === "syncing" || !serverUrl} onClick={() => startSync(true)}>
-            {t("contentSync.rescan")}
-          </TextButton>
+          <IconButton label={t("contentSync.syncNow")} size="lg" loading={status === "syncing"} disabled={!serverUrl || busy}
+            onClick={() => startSync()}>
+            <SyncIcon />
+          </IconButton>
+          <IconButton label={t("contentSync.rescan")} size="lg" disabled={disabled || status === "syncing" || !serverUrl}
+            onClick={() => startSync(true)}>
+            <RescanIcon />
+          </IconButton>
         </SettingsInlineControls>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("contentSync.catalog")} description={t("contentSync.browseHint")}>
-        <TextButton onClick={() => { void navigate({ to: "/browse", search: { q: "", tab: "server" } }); }}>
-          {t("contentSync.browse")}
-        </TextButton>
+        <IconButton label={t("contentSync.browse")} size="lg"
+          onClick={() => { void navigate({ to: "/browse", search: { q: "", tab: "server" } }); }}>
+          <BrowseIcon />
+        </IconButton>
       </SettingsFieldRow>
       <SettingsAdvancedGroup>
         <SettingsFieldRow label={t("contentSync.lookupTimeout")} description={t("contentSync.lookupTimeoutDescription")}>

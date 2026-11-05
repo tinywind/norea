@@ -650,7 +650,7 @@
   "settings.about.logLevel.off": "Off",
   "settings.about.latestRelease.label": "Latest release",
   "settings.about.latestRelease.description": "Open GitHub Releases in the system browser.",
-  "settings.about.githubReleases": "GitHub Releases",
+  "settings.about.githubReleases": "Open GitHub Releases",
   "readerSettings.reading.title": "Reading",
   "readerSettings.scope.title": "Scope",
   "readerSettings.scope.applyTo": "Apply changes to",

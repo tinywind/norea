@@ -7,8 +7,7 @@ import {
   SettingsSection,
 } from "../SettingsPrimitives";
 import { IconButton } from "../IconButton";
-import { TextButton } from "../TextButton";
-import { DownloadIcon, RefreshIcon } from "../ui/icons";
+import { DownloadIcon, GithubIcon, RefreshIcon } from "../ui/icons";
 import { describeError } from "../../lib/errors";
 import { useTranslation } from "../../i18n";
 import { showSettingsToast } from "./settings-toast";
@@ -90,9 +89,13 @@ export function AboutSection() {
           label={t("settings.about.latestRelease.label")}
           description={t("settings.about.latestRelease.description")}
         >
-          <TextButton variant="default" onClick={openLatestRelease}>
-            {t("settings.about.githubReleases")}
-          </TextButton>
+          <IconButton
+            label={t("settings.about.githubReleases")}
+            size="lg"
+            onClick={openLatestRelease}
+          >
+            <GithubIcon />
+          </IconButton>
         </SettingsFieldRow>
       </SettingsSection>
     </Stack>

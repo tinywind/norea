@@ -72,16 +72,17 @@ describe("TestedVpnServers", () => {
   });
 
   it("offers Approve all working as one action counting only working servers", () => {
-    const button = render()("button:contains('Approve all working')");
+    const button = render()("button[aria-label^='Approve all working']");
 
-    expect(button.text()).toBe("Approve all working (1)");
+    expect(button).toHaveLength(1);
+    expect(button.attr("aria-label")).toBe("Approve all working (1)");
     expect(button.attr("disabled")).toBeUndefined();
   });
 
   it("disables Approve all working when nothing works or settings are busy", () => {
-    expect(render(true)("button:contains('Approve all working')").attr("disabled")).toBeDefined();
+    expect(render(true)("button[aria-label^='Approve all working']").attr("disabled")).toBeDefined();
     mocks.servers = [server("192.0.2.2", 1)];
-    expect(render()("button:contains('Approve all working')").attr("disabled")).toBeDefined();
+    expect(render()("button[aria-label^='Approve all working']").attr("disabled")).toBeDefined();
     mocks.servers = [];
     expect(render()("body").text()).toContain("No tested servers yet");
   });
