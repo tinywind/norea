@@ -12,7 +12,7 @@ import {
   ChapterListIcon,
   CheckIcon,
   CloseIcon,
-  DeleteDownloadIcon,
+  TrashIcon,
   DownloadIcon,
   DragIcon,
   EditIcon,
@@ -762,7 +762,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 {novel.isLocal ? null : (
                   <SelectionAction
                     disabled={selectedDownloadedChapterIds.length === 0 || chapterSelectionBusy}
-                    icon={DeleteDownloadIcon}
+                    icon={TrashIcon}
                     label={t("novel.selection.deleteDownloads")}
                     onClick={() => clearSelectedDownloads.mutate(selectedDownloadedChapterIds)}
                   />

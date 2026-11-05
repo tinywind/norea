@@ -38,7 +38,7 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronUpIcon,
-  DeleteDownloadIcon,
+  TrashIcon,
   DownloadedIcon,
   DownloadIcon,
   DragIcon,
@@ -260,7 +260,7 @@ function ChapterListItem({
           items={[{
             danger: true,
             disabled: deleteBusy,
-            icon: DeleteDownloadIcon,
+            icon: TrashIcon,
             label: t("novel.deleteDownload"),
             onClick: onDeleteDownload,
           }]}

@@ -11,7 +11,7 @@ import {
   SettingsWideField,
 } from "../SettingsPrimitives";
 import { IconButton } from "../IconButton";
-import { DeleteDownloadIcon, FolderIcon } from "../ui/icons";
+import { TrashIcon, FolderIcon } from "../ui/icons";
 import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
@@ -282,7 +282,7 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
             loading={isBusy}
             onClick={() => setCleanupOpened(true)}
           >
-            <DeleteDownloadIcon />
+            <TrashIcon />
           </IconButton>
         </SettingsFieldRow>
         <SettingsAdvancedGroup>

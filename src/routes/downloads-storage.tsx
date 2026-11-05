@@ -25,7 +25,7 @@ import {
   ChevronDownIcon,
   ChevronRightIcon,
   CloseIcon,
-  DeleteDownloadIcon,
+  TrashIcon,
   DownloadedIcon,
   FilterIcon,
   OpenWorkIcon,
@@ -232,7 +232,7 @@ function DownloadCacheChapterRow({
           title={t("downloads.deleteChapter", { name: chapter.name })}
           tone="danger"
         >
-          {deleting ? <Loader size={14} /> : <DeleteDownloadIcon />}
+          {deleting ? <Loader size={14} /> : <TrashIcon />}
         </IconButton>
       </Group>
     </div>
@@ -430,7 +430,7 @@ function DownloadCacheNovelCard({
   const menuItems: OverflowMenuItem[] = [
     { icon: OpenWorkIcon, label: t("downloads.openNovel"), disabled: novelDeleting, onClick: onOpenNovel },
     {
-      icon: DeleteDownloadIcon,
+      icon: TrashIcon,
       label: t("downloads.deleteNovel", { name: novel.novelName }),
       danger: true,
       disabled: novelDeleting,
@@ -692,7 +692,7 @@ export function DownloadsStorageView({
     },
     { icon: RefreshIcon, label: t("downloads.refresh"), disabled: query.isFetching,
       onClick: () => { void query.refetch(); } },
-    { icon: DeleteDownloadIcon, label: t("downloads.deleteAll"), danger: true,
+    { icon: TrashIcon, label: t("downloads.deleteAll"), danger: true,
       disabled: rows.length === 0 || deleteAll.isPending, onClick: () => deleteAll.mutate() },
   ];
 
@@ -729,7 +729,7 @@ export function DownloadsStorageView({
           actions={
             <SelectionAction
               disabled={selectedRows.length === 0 || deleteSelected.isPending}
-              icon={DeleteDownloadIcon}
+              icon={TrashIcon}
               label={t("downloads.deleteSelected")}
               onClick={() => deleteSelected.mutate(selectedRows)}
             />
@@ -753,7 +753,7 @@ export function DownloadsStorageView({
                 onClick={() => setCleanupOpened(true)}
                 size="lg"
               >
-                <DeleteDownloadIcon />
+                <TrashIcon />
               </IconButton>
               <OverflowMenu items={headerItems} label={t("common.more")} />
             </>

@@ -47,7 +47,7 @@ import {
 import { countLibraryStoredChapters, type LibraryNovelRefreshFilter } from "../db/queries/novel";
 import {
   CategoryIcon,
-  DeleteDownloadIcon,
+  TrashIcon,
   MarkReadIcon,
   MarkUnreadIcon,
   DownloadIcon,
@@ -56,7 +56,6 @@ import {
   RefreshIcon,
   SelectIcon,
   SettingsIcon,
-  TrashIcon,
 } from "../components/ui/icons";
 import {
   OverflowMenu,
@@ -420,7 +419,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                         disabled:
                           !selectedDownloadedChapterCount ||
                           deleteSelectedDownloadsMutation.isPending,
-                        icon: DeleteDownloadIcon,
+                        icon: TrashIcon,
                         label: t("library.deleteSelectedDownloads"),
                         onClick: () =>
                           deleteSelectedDownloadsMutation.mutate({
