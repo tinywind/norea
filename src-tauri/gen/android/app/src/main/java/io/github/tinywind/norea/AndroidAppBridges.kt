@@ -1,11 +1,18 @@
 package io.github.tinywind.norea
 
 import android.app.Activity
+import android.content.ActivityNotFoundException
+import android.content.Intent
+import android.net.Uri
+import android.os.PowerManager
+import android.provider.Settings
 import android.webkit.JavascriptInterface
 import android.webkit.WebView
 import androidx.core.view.WindowCompat
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.CompletableFuture
+import java.util.concurrent.TimeUnit
 
 internal fun bridgeAuthorityFields(payload: JSONObject): BridgeAuthorityFields {
   val wrapper = payload.optJSONObject("_bridge") ?: payload.optJSONObject("bridge")
@@ -60,6 +67,40 @@ internal class AndroidVpnProxyBridge(private val bridgeSession: BridgeSession) {
           .toString()
       },
     )
+}
+
+/**
+ * Battery optimization exemption for background downloads. Some vendors, such as
+ * Lenovo ZUI, release a foreground service's wake lock once the screen turns off
+ * unless the app is exempt.
+ */
+internal class AndroidBatteryOptimizationBridge(private val activity: Activity) {
+  @JavascriptInterface
+  fun isIgnoring(): Boolean =
+    activity.getSystemService(PowerManager::class.java)
+      ?.isIgnoringBatteryOptimizations(activity.packageName) == true
+
+  /** Opens the exemption prompt, or the optimization list when the prompt is unavailable. */
+  @JavascriptInterface
+  fun request(): Boolean {
+    val opened = CompletableFuture<Boolean>()
+    activity.runOnUiThread {
+      val prompt = Intent(
+        Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+        Uri.parse("package:${activity.packageName}"),
+      )
+      val list = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
+      opened.complete(listOf(prompt, list).any { intent ->
+        try {
+          activity.startActivity(intent)
+          true
+        } catch (_: ActivityNotFoundException) {
+          false
+        }
+      })
+    }
+    return runCatching { opened.get(2, TimeUnit.SECONDS) }.getOrDefault(false)
+  }
 }
 
 internal class AndroidTaskNotificationBridge(

@@ -48,6 +48,7 @@ import {
 } from "../components/ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
+import { BatteryOptimizationSetting } from "../components/BatteryOptimizationSetting";
 import { useTranslation, type TranslationKey } from "../i18n";
 import {
   getDownloadGoalPauseSnapshot,
@@ -1409,6 +1410,7 @@ export function DownloadsQueueView({
     >
 
       {queueError ? <Alert color="danger" role="alert">{queueError}</Alert> : null}
+      <BatteryOptimizationSetting />
 
       {hasAttention ? (
         <NeedsAttentionSection active={active} blocks={ordinaryBlocks} sectionRef={attentionRef} snapshot={snapshot} vpn={vpn} />

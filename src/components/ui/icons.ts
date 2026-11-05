@@ -7,6 +7,7 @@ import {
   IconArrowsExchange,
   IconArrowsSort,
   IconBan,
+  IconBatteryCharging,
   IconBell,
   IconBook,
   IconBookmark,
@@ -155,6 +156,7 @@ export const UnpinIcon = withAppDefaults(IconPinnedOff);
 export const SourceIcon = withAppDefaults(IconWorldWww);
 export const MigrateIcon = withAppDefaults(IconArrowsExchange);
 export const ExcludeIcon = withAppDefaults(IconBan);
+export const BatteryIcon = withAppDefaults(IconBatteryCharging);
 export const PreferIcon = withAppDefaults(IconStar);
 export const UnlinkIcon = withAppDefaults(IconUnlink);
 export const EditIcon = withAppDefaults(IconPencil);
