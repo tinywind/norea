@@ -876,6 +876,7 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
             >
               <NumberInput
                 aria-label={t("readerSettings.autoScrollInterval")}
+                className="norea-settings-compact-field"
                 value={general.autoScrollInterval}
                 min={16}
                 max={500}
@@ -893,6 +894,7 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
             >
               <NumberInput
                 aria-label={t("readerSettings.autoScrollOffset")}
+                className="norea-settings-compact-field"
                 value={general.autoScrollOffset}
                 min={0.25}
                 max={12}

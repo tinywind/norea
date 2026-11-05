@@ -23,7 +23,7 @@ export function VpnDownloadSettings({ capabilities, value, onChange, disabled = 
   return (
     <Stack gap="sm">
       <SettingsFieldRow label={t("vpnDownload.workerCount")} description={t("vpnDownload.workerCountHint")}>
-        <NumberInput aria-label={t("vpnDownload.workerCount")} value={value.workerCount} min={1} max={maxWorkers}
+        <NumberInput aria-label={t("vpnDownload.workerCount")} className="norea-settings-compact-field" value={value.workerCount} min={1} max={maxWorkers}
           allowDecimal={false} allowNegative={false} disabled={unavailable}
           onChange={count => {
             if (!unavailable && typeof count === "number" && Number.isInteger(count) && count >= 1 && count <= maxWorkers) onChange({ ...value, workerCount: count });

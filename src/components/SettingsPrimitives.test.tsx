@@ -137,6 +137,12 @@ describe("settings row layout", () => {
     expect(css).toMatch(/\.norea-settings-form-row \{[^}]*grid-template-columns: minmax\(0, 1fr\) minmax\(0, 1fr\);/);
     expect(css).toMatch(/\.norea-settings-form-control \{[^}]*justify-items: stretch;[^}]*width: 100%;/);
   });
+
+  it("keeps compact number fields small at the control half's right edge", () => {
+    const css = readFileSync(new URL("../styles/settings.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.norea-settings-form-control \.norea-settings-compact-field \{[^}]*justify-self: end;[^}]*width: 8rem;/);
+    expect(css).toMatch(/\.norea-settings-inline-controls > \.norea-settings-compact-field \{[^}]*flex: 0 0 auto;/);
+  });
 });
 
 describe("inline controls", () => {

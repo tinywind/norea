@@ -221,6 +221,7 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
           description={t("browseSettings.sourceRequestTimeout.description")}
         >
           <NumberInput
+            className="norea-settings-compact-field"
             value={sourceRequestTimeoutSeconds}
             min={5}
             max={120}

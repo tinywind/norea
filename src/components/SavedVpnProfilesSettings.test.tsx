@@ -37,8 +37,9 @@ vi.mock("../i18n", () => ({
 }));
 import { SavedVpnProfilesSettings } from "./SavedVpnProfilesSettings";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
+import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
 
-interface Props { children?: ReactNode; label?: string; "aria-label"?: string; value?: unknown; disabled?: boolean; opened?: boolean; min?: number; max?: number; onChange?: (value: number | string | null) => unknown; onClick?: () => unknown; data?: { value: string; disabled?: boolean }[] }
+interface Props { children?: ReactNode; error?: ReactNode; status?: string | null; className?: string; label?: string; "aria-label"?: string; value?: unknown; disabled?: boolean; opened?: boolean; min?: number; max?: number; onChange?: (value: number | string | null) => unknown; onClick?: () => unknown; data?: { value: string; disabled?: boolean }[] }
 function controls(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -46,7 +47,8 @@ function controls(node: ReactNode): ReactElement<Props>[] {
   return [element, ...controls(element.props.children)];
 }
 function render(disabled = false) { mocks.index = 0; mocks.refIndex = 0; return controls(SavedVpnProfilesSettings({ disabled })); }
-const copy = (view: ReactElement<Props>[]) => view.map(element => typeof element.props.children === "string" ? element.props.children : "").join(" ");
+const copy = (view: ReactElement<Props>[]) => view.flatMap(element =>
+  [element.props.children, element.props.status, element.props.error].filter(text => typeof text === "string")).join(" ");
 function openManager() { render().find(element => element.props.label === "settings.data.pluginVpn.saved.manage")!.props.onClick!(); return render(); }
 const verdictControl = (view: ReactElement<Props>[], ip = "192.0.2.1") => view.find(element => element.props["aria-label"] === `settings.data.pluginVpn.saved.verdictLabel{"ip":"${ip}"}`)!;
 beforeEach(() => {
@@ -258,4 +260,16 @@ it("keeps loading and query failures distinct from a real empty vault", () => {
   expect(copy(render())).not.toContain("settings.data.pluginVpn.saved.empty");
   mocks.vault.isError = false; mocks.vault.error = null; mocks.vault.data = { limit: 20, profiles: [], cleanupError: null };
   expect(copy(render())).toContain("settings.data.pluginVpn.saved.empty");
+});
+
+it("puts the counts and manage action on a labelled row and the capacity in a compact field beside its save icon", () => {
+  const rows = render().filter(element => element.type === SettingsFieldRow) as ReactElement<Props>[];
+  expect(rows.map(row => row.props.label)).toEqual(["settings.data.pluginVpn.saved.title", "settings.data.pluginVpn.saved.limit"]);
+  expect(rows[0]!.props.status).toBe('settings.data.pluginVpn.saved.count{"count":1,"limit":20}\nsettings.data.pluginVpn.saved.missingFiles{"count":1}');
+  expect(controls(rows[0]!.props.children).map(element => element.props.label)).toContain("settings.data.pluginVpn.saved.manage");
+  const capacity = controls(rows[1]!.props.children);
+  expect(capacity[0]!.type).toBe(SettingsInlineControls);
+  expect((capacity[0]!.props as { compact?: boolean }).compact).toBe(true);
+  expect(capacity[1]!.props.className).toBe("norea-settings-compact-field");
+  expect(capacity.find(element => element.props.label === "settings.data.pluginVpn.saved.saveLimit")).toBeDefined();
 });

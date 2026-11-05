@@ -144,7 +144,7 @@ export function ContentServerSettings() {
       </SettingsFieldRow>
       {syncMode === "periodic" ? (
         <SettingsFieldRow label={t("contentSync.interval")}>
-          <NumberInput aria-label={t("contentSync.interval")} value={syncIntervalMinutes}
+          <NumberInput aria-label={t("contentSync.interval")} className="norea-settings-compact-field" value={syncIntervalMinutes}
             min={1} max={1440} allowDecimal={false} allowNegative={false}
             onChange={(value) => { if (typeof value === "number") setSyncIntervalMinutes(value); }} />
         </SettingsFieldRow>
@@ -170,7 +170,7 @@ export function ContentServerSettings() {
       </SettingsFieldRow>
       <SettingsAdvancedGroup>
         <SettingsFieldRow label={t("contentSync.lookupTimeout")} description={t("contentSync.lookupTimeoutDescription")}>
-          <NumberInput aria-label={t("contentSync.lookupTimeout")} value={lookupTimeoutSeconds}
+          <NumberInput aria-label={t("contentSync.lookupTimeout")} className="norea-settings-compact-field" value={lookupTimeoutSeconds}
             min={1} max={120} allowDecimal={false} allowNegative={false}
             onChange={(value) => { if (typeof value === "number") setLookupTimeoutSeconds(value); }} />
         </SettingsFieldRow>

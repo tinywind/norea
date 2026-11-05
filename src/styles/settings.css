@@ -442,6 +442,19 @@ html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-tex
   width: 100%;
 }
 
+/*
+ * A number, count, port, timeout or limit takes a small field at the control half's right edge.
+ * URL, User-Agent, path and name fields keep the full half.
+ */
+.norea-settings-form-control .norea-settings-compact-field {
+  justify-self: end;
+  width: 8rem;
+}
+
+.norea-settings-inline-controls > .norea-settings-compact-field {
+  flex: 0 0 auto;
+}
+
 .norea-settings-wide-field :where(.mantine-InputWrapper-root),
 .norea-settings-wide-field :where(.mantine-Textarea-root) {
   width: 100%;
@@ -731,17 +744,18 @@ html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-tex
 
   /*
    * Compact controls stay on the label's line on phones: a switch, a chip, one icon button,
-   * or a group of icon buttons. Fields, pickers and labelled buttons move below the label.
+   * a compact field, or a compact inline group. Other fields, pickers and labelled buttons
+   * move below the label.
    */
   .norea-settings-form-row:has(
-      > .norea-settings-form-control > :where(.mantine-Switch-root, .norea-console-chip, .norea-icon-button, .mantine-ActionIcon-root):only-child
+      > .norea-settings-form-control > :where(.mantine-Switch-root, .norea-console-chip, .norea-icon-button, .mantine-ActionIcon-root, .norea-settings-compact-field):only-child
     ),
   .norea-settings-form-row:has(> .norea-settings-form-control > .norea-settings-inline-controls[data-compact]) {
     align-items: center;
     grid-template-columns: minmax(0, 1fr) auto;
   }
 
-  .norea-settings-form-control:has(> :where(.mantine-Switch-root, .norea-console-chip, .norea-icon-button, .mantine-ActionIcon-root):only-child),
+  .norea-settings-form-control:has(> :where(.mantine-Switch-root, .norea-console-chip, .norea-icon-button, .mantine-ActionIcon-root, .norea-settings-compact-field):only-child),
   .norea-settings-form-control:has(> .norea-settings-inline-controls[data-compact]) {
     justify-items: end;
     justify-self: end;

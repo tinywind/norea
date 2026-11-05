@@ -109,6 +109,7 @@ function AutomaticBackupSettings() {
         >
           <Select
             allowDeselect={false}
+            className="norea-settings-compact-field"
             data={[...new Set([...AUTO_BACKUP_KEEP_OPTIONS, autoBackup.keep])]
               .sort((a, b) => a - b)
               .map((count) => ({ value: String(count), label: String(count) }))}

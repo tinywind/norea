@@ -9,7 +9,7 @@ import { listSavedPluginVpnProfiles, SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY, setSav
 import { getPluginVpnStatus, PLUGIN_VPN_QUERY_KEY } from "../lib/plugin-vpn";
 import { notifyVpnDownloadProfilesChanged, reallowVpnDownloadBatchProfile } from "../lib/tasks/vpn-download-runtime";
 import type { VpnDownloadProfileIssueCause } from "../lib/tasks/vpn-download-types";
-import { SettingsFieldRow, SettingsInlineControls, SettingsWideField } from "./SettingsPrimitives";
+import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
 import { RestartIcon, RetryIcon, SaveIcon, SettingsIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
@@ -81,109 +81,110 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
     });
   }
 
+  const loadError = vault.isError || verdicts.isError ? describeError(vault.error ?? verdicts.error) : null;
+  const cleanupError = vault.data?.cleanupError ? t("settings.data.pluginVpn.saved.cleanupError", { error: vault.data.cleanupError }) : null;
+  const vaultStatus = vault.isPending || verdicts.isPending ? t("settings.data.pluginVpn.saved.loading") : [
+    vault.data ? t("settings.data.pluginVpn.saved.count", { count: vault.data.profiles.length, limit: vault.data.limit }) : null,
+    vault.data && !verdicts.isError && missingCount !== undefined ? t("settings.data.pluginVpn.saved.missingFiles", { count: missingCount }) : null,
+    vault.data?.profiles.length === 0 && !vault.isError ? t("settings.data.pluginVpn.saved.empty") : null,
+  ].filter(line => line !== null).join("\n");
+  const limitError = limitDraft !== null && !validLimit ? t("settings.data.pluginVpn.saved.invalidLimit") : null;
+
   return (
-    <SettingsFieldRow label={t("settings.data.pluginVpn.saved.title")} description={t("settings.data.pluginVpn.saved.description")} layout="stacked">
-      <SettingsWideField>
-        <Stack gap="sm">
-          <SettingsInlineControls>
-            <NumberInput aria-label={t("settings.data.pluginVpn.saved.limit")} label={t("settings.data.pluginVpn.saved.limit")}
-              value={limit} min={1} max={100} allowDecimal={false} allowNegative={false} disabled={locked}
-              error={limitDraft !== null && !validLimit ? t("settings.data.pluginVpn.saved.invalidLimit") : undefined}
-              onChange={setLimitDraft} />
-            <IconButton label={t("settings.data.pluginVpn.saved.saveLimit")} size="lg"
-              disabled={locked || !validLimit || limit === vault.data?.limit} loading={busy}
-              onClick={() => {
-                if (!validLimit || limit === vault.data?.limit) return;
-                return run(async () => {
-                  const next = await setSavedPluginVpnProfileLimit(limit);
-                  client.setQueryData(SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY, next);
-                  setLimitDraft(null);
-                  if (next.cleanupError) setActionError(t("settings.data.pluginVpn.saved.cleanupError", { error: next.cleanupError }));
-                });
-              }}><SaveIcon /></IconButton>
-          </SettingsInlineControls>
-          {vault.isPending || verdicts.isPending ? <Text role="status" size="sm">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
-          {vault.isError || verdicts.isError ? (
-            <Alert color="danger" role="alert">
-              <Text size="sm">{describeError(vault.error ?? verdicts.error)}</Text>
-              <IconButton label={t("common.retry")} size="lg" onClick={() => { void Promise.all([vault.refetch(), verdicts.refetch()]); }}>
-                <RetryIcon />
-              </IconButton>
-            </Alert>
+    <>
+      <SettingsFieldRow label={t("settings.data.pluginVpn.saved.title")} description={t("settings.data.pluginVpn.saved.description")}
+        status={vaultStatus || null} error={[loadError, cleanupError].filter(Boolean).join("\n") || undefined}>
+        <SettingsInlineControls>
+          {loadError ? (
+            <IconButton label={t("common.retry")} size="lg" onClick={() => { void Promise.all([vault.refetch(), verdicts.refetch()]); }}>
+              <RetryIcon />
+            </IconButton>
           ) : null}
-          {vault.data ? <Text size="sm" role="status">{t("settings.data.pluginVpn.saved.count", { count: vault.data.profiles.length, limit: vault.data.limit })}</Text> : null}
-          {vault.data && !verdicts.isPending && !verdicts.isError && missingCount !== undefined ? (
-            <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.missingFiles", { count: missingCount })}</Text>
-          ) : null}
-          {vault.data?.cleanupError ? <Alert color="danger" role="alert">{t("settings.data.pluginVpn.saved.cleanupError", { error: vault.data.cleanupError })}</Alert> : null}
-          {actionError && !opened ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
-          {vault.data?.profiles.length === 0 && !vault.isError ? <Text size="sm">{t("settings.data.pluginVpn.saved.empty")}</Text> : null}
           <IconButton label={t("settings.data.pluginVpn.saved.manage")} size="lg" disabled={disabled}
             onClick={() => { setActionError(null); setOpened(true); }}>
             <SettingsIcon />
           </IconButton>
-          <ResponsiveSheet busy={busy} closeLabel={t("settings.data.pluginVpn.saved.close")} fullScreenOnPhone
-            opened={opened} onClose={() => setOpened(false)} size="lg" title={t("settings.data.pluginVpn.saved.manage")}>
-            <Stack gap="md">
-              <Text size="sm">{t("settings.data.pluginVpn.saved.managementHelp")}</Text>
-              {issues.isPending ? <Text role="status">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
-              {issues.isError ? <Alert color="danger" role="alert">{describeError(issues.error)} <IconButton label={t("common.retry")} size="lg" onClick={() => { void issues.refetch(); }}><RetryIcon /></IconButton></Alert> : null}
-              {actionError ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
-              <IconButton label={t("settings.data.pluginVpn.saved.reallowAll", { count: excludedApprovedCount })} size="lg"
-                disabled={managementLocked || !excludedApprovedCount} loading={busy} onClick={() => {
-                if (managementLocked || !excludedApprovedCount) return;
-                return run(async () => {
-                  const results = await Promise.allSettled(excludedApprovedIssues.map(issue =>
-                    reallowVpnDownloadBatchProfile(issue.batchId, issue.ip, issue.revision)));
-                  const failures = results.filter(result => result.status === "rejected");
-                  if (failures.length) throw new Error(t("settings.data.pluginVpn.saved.reallowAllFailed", {
-                    count: failures.length, error: [...new Set(failures.map(result => describeError(result.reason)))].join("; "),
-                  }));
-                });
-              }}><RestartIcon /></IconButton>
-              {!managementLocked && !ips.length ? <Text size="sm">{t("settings.data.pluginVpn.saved.noRecords")}</Text> : null}
-              {ips.map(ip => {
-                const profile = profileByIp.get(ip);
-                const verdict = verdictByIp.get(ip) ?? null;
-                const active = status.data?.profile;
-                const canApprove = active?.isVpnGateFinder === true && active.remoteHost === ip;
-                return <Stack key={ip} gap="xs" role="group" aria-label={ip} pb="sm" style={{ borderBottom: "1px solid var(--mantine-color-default-border)" }}>
-                  <Group justify="space-between" align="flex-start" wrap="wrap">
-                    <Stack gap={0} style={{ minWidth: 0, flex: "1 1 auto" }}>
-                      <Text size="sm" fw="var(--norea-weight-bold)" style={{ overflowWrap: "anywhere" }}>{ip}</Text>
-                      {profile ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.details", { protocol: profile.protocol.toUpperCase(), date: formatDateTimeForLocale(locale, profile.approvedAt * 1000) })}</Text>
-                        : <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.fileUnavailable")}</Text>}
-                    </Stack>
-                    <Select aria-label={t("settings.data.pluginVpn.saved.verdictLabel", { ip })} value={verdict ?? "unmarked"} allowDeselect={false}
-                      disabled={managementLocked} data={[
-                        { value: "works", label: t("settings.data.pluginVpn.finder.verdict.works"), disabled: verdict !== "works" && !canApprove },
-                        { value: "fails", label: t("settings.data.pluginVpn.finder.verdict.fails") },
-                        { value: "unmarked", label: t("settings.data.pluginVpn.finder.verdict.unmarked") },
-                      ]} onChange={value => {
-                        if (value === "works" || value === "fails" || value === "unmarked") return changeVerdict(ip, value === "unmarked" ? null : value);
-                      }} />
-                  </Group>
-                  {verdict !== "works" && !canApprove ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.approvalUnavailable")}</Text> : null}
-                  {(issues.data ?? []).filter(issue => issue.ip === ip).map(issue => <Stack key={issue.batchId} gap={4}>
-                    <Group justify="space-between" wrap="wrap">
-                      <Text size="sm">{t(CAUSE_KEYS[issue.cause])}</Text>
-                      <Text size="sm">{t(issue.excluded ? "settings.data.pluginVpn.saved.excluded" : "settings.data.pluginVpn.saved.allowed")}</Text>
-                    </Group>
-                    <Text size="sm" c="dimmed">{formatDateTimeForLocale(locale, issue.recordedAt)}</Text>
-                    <Text size="xs" c="dimmed" style={{ overflowWrap: "anywhere" }}>{t("settings.data.pluginVpn.saved.issueOwner", { batch: issue.batchId, range: issue.rangeId, generation: issue.generation })}</Text>
-                    {issue.excluded ? <IconButton label={t("settings.data.pluginVpn.saved.reallow")} size="lg" disabled={managementLocked} onClick={() => {
-                      if (managementLocked) return;
-                      return run(() => reallowVpnDownloadBatchProfile(issue.batchId, ip, issue.revision));
-                    }}>
-                      <RestartIcon />
-                    </IconButton> : null}
-                  </Stack>)}
-                </Stack>;
-              })}
-            </Stack>
-          </ResponsiveSheet>
+        </SettingsInlineControls>
+      </SettingsFieldRow>
+      <SettingsFieldRow label={t("settings.data.pluginVpn.saved.limit")}
+        error={[limitError, actionError && !opened ? actionError : null].filter(Boolean).join("\n") || undefined}>
+        <SettingsInlineControls compact>
+          <NumberInput aria-label={t("settings.data.pluginVpn.saved.limit")} className="norea-settings-compact-field"
+            value={limit} min={1} max={100} allowDecimal={false} allowNegative={false} disabled={locked}
+            error={limitError !== null} onChange={setLimitDraft} />
+          <IconButton label={t("settings.data.pluginVpn.saved.saveLimit")} size="lg"
+            disabled={locked || !validLimit || limit === vault.data?.limit} loading={busy}
+            onClick={() => {
+              if (!validLimit || limit === vault.data?.limit) return;
+              return run(async () => {
+                const next = await setSavedPluginVpnProfileLimit(limit);
+                client.setQueryData(SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY, next);
+                setLimitDraft(null);
+                if (next.cleanupError) setActionError(t("settings.data.pluginVpn.saved.cleanupError", { error: next.cleanupError }));
+              });
+            }}><SaveIcon /></IconButton>
+        </SettingsInlineControls>
+      </SettingsFieldRow>
+      <ResponsiveSheet busy={busy} closeLabel={t("settings.data.pluginVpn.saved.close")} fullScreenOnPhone
+        opened={opened} onClose={() => setOpened(false)} size="lg" title={t("settings.data.pluginVpn.saved.manage")}>
+        <Stack gap="md">
+          <Text size="sm">{t("settings.data.pluginVpn.saved.managementHelp")}</Text>
+          {issues.isPending ? <Text role="status">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
+          {issues.isError ? <Alert color="danger" role="alert">{describeError(issues.error)} <IconButton label={t("common.retry")} size="lg" onClick={() => { void issues.refetch(); }}><RetryIcon /></IconButton></Alert> : null}
+          {actionError ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
+          <IconButton label={t("settings.data.pluginVpn.saved.reallowAll", { count: excludedApprovedCount })} size="lg"
+            disabled={managementLocked || !excludedApprovedCount} loading={busy} onClick={() => {
+            if (managementLocked || !excludedApprovedCount) return;
+            return run(async () => {
+              const results = await Promise.allSettled(excludedApprovedIssues.map(issue =>
+                reallowVpnDownloadBatchProfile(issue.batchId, issue.ip, issue.revision)));
+              const failures = results.filter(result => result.status === "rejected");
+              if (failures.length) throw new Error(t("settings.data.pluginVpn.saved.reallowAllFailed", {
+                count: failures.length, error: [...new Set(failures.map(result => describeError(result.reason)))].join("; "),
+              }));
+            });
+          }}><RestartIcon /></IconButton>
+          {!managementLocked && !ips.length ? <Text size="sm">{t("settings.data.pluginVpn.saved.noRecords")}</Text> : null}
+          {ips.map(ip => {
+            const profile = profileByIp.get(ip);
+            const verdict = verdictByIp.get(ip) ?? null;
+            const active = status.data?.profile;
+            const canApprove = active?.isVpnGateFinder === true && active.remoteHost === ip;
+            return <Stack key={ip} gap="xs" role="group" aria-label={ip} pb="sm" style={{ borderBottom: "1px solid var(--mantine-color-default-border)" }}>
+              <Group justify="space-between" align="flex-start" wrap="wrap">
+                <Stack gap={0} style={{ minWidth: 0, flex: "1 1 auto" }}>
+                  <Text size="sm" fw="var(--norea-weight-bold)" style={{ overflowWrap: "anywhere" }}>{ip}</Text>
+                  {profile ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.details", { protocol: profile.protocol.toUpperCase(), date: formatDateTimeForLocale(locale, profile.approvedAt * 1000) })}</Text>
+                    : <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.fileUnavailable")}</Text>}
+                </Stack>
+                <Select aria-label={t("settings.data.pluginVpn.saved.verdictLabel", { ip })} value={verdict ?? "unmarked"} allowDeselect={false}
+                  disabled={managementLocked} data={[
+                    { value: "works", label: t("settings.data.pluginVpn.finder.verdict.works"), disabled: verdict !== "works" && !canApprove },
+                    { value: "fails", label: t("settings.data.pluginVpn.finder.verdict.fails") },
+                    { value: "unmarked", label: t("settings.data.pluginVpn.finder.verdict.unmarked") },
+                  ]} onChange={value => {
+                    if (value === "works" || value === "fails" || value === "unmarked") return changeVerdict(ip, value === "unmarked" ? null : value);
+                  }} />
+              </Group>
+              {verdict !== "works" && !canApprove ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.approvalUnavailable")}</Text> : null}
+              {(issues.data ?? []).filter(issue => issue.ip === ip).map(issue => <Stack key={issue.batchId} gap={4}>
+                <Group justify="space-between" wrap="wrap">
+                  <Text size="sm">{t(CAUSE_KEYS[issue.cause])}</Text>
+                  <Text size="sm">{t(issue.excluded ? "settings.data.pluginVpn.saved.excluded" : "settings.data.pluginVpn.saved.allowed")}</Text>
+                </Group>
+                <Text size="sm" c="dimmed">{formatDateTimeForLocale(locale, issue.recordedAt)}</Text>
+                <Text size="xs" c="dimmed" style={{ overflowWrap: "anywhere" }}>{t("settings.data.pluginVpn.saved.issueOwner", { batch: issue.batchId, range: issue.rangeId, generation: issue.generation })}</Text>
+                {issue.excluded ? <IconButton label={t("settings.data.pluginVpn.saved.reallow")} size="lg" disabled={managementLocked} onClick={() => {
+                  if (managementLocked) return;
+                  return run(() => reallowVpnDownloadBatchProfile(issue.batchId, ip, issue.revision));
+                }}>
+                  <RestartIcon />
+                </IconButton> : null}
+              </Stack>)}
+            </Stack>;
+          })}
         </Stack>
-      </SettingsWideField>
-    </SettingsFieldRow>
+      </ResponsiveSheet>
+    </>
   );
 }
