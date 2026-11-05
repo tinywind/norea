@@ -38,7 +38,7 @@ vi.mock("../i18n", () => ({
 import { SavedVpnProfilesSettings } from "./SavedVpnProfilesSettings";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 
-interface Props { children?: ReactNode; "aria-label"?: string; value?: unknown; disabled?: boolean; opened?: boolean; min?: number; max?: number; onChange?: (value: number | string | null) => unknown; onClick?: () => unknown; data?: { value: string; disabled?: boolean }[] }
+interface Props { children?: ReactNode; label?: string; "aria-label"?: string; value?: unknown; disabled?: boolean; opened?: boolean; min?: number; max?: number; onChange?: (value: number | string | null) => unknown; onClick?: () => unknown; data?: { value: string; disabled?: boolean }[] }
 function controls(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -166,7 +166,7 @@ it("saves a valid capacity and invalidates saved-profile and verdict data", asyn
   expect([input.props.min, input.props.max]).toEqual([1, 100]);
   input.props.onChange!(10);
   view = render();
-  await view.find(element => element.props.children === "common.save")!.props.onClick!();
+  await view.find(element => element.props.label === "settings.data.pluginVpn.saved.saveLimit")!.props.onClick!();
   expect(mocks.limit).toHaveBeenCalledWith(10);
   expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["plugin-vpn", "saved-profiles"] });
   expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["vpn-gate-server-verdicts"] });
@@ -174,7 +174,7 @@ it("saves a valid capacity and invalidates saved-profile and verdict data", asyn
 
 it.each(["", 0, 101, 1.5])("does not save invalid profile capacity %s", async value => {
   render().find(element => element.props["aria-label"] === "settings.data.pluginVpn.saved.limit")!.props.onChange!(value);
-  const save = render().find(element => element.props.children === "common.save")!;
+  const save = render().find(element => element.props.label === "settings.data.pluginVpn.saved.saveLimit")!;
   expect(save.props.disabled).toBe(true);
   await save.props.onClick!();
   expect(mocks.limit).not.toHaveBeenCalled();
@@ -198,7 +198,7 @@ it("does not infer approval from retained metadata when its actual verdict is ab
 it("shows native limit failures and retains the editable capacity without a false success", async () => {
   mocks.limit.mockRejectedValue(new Error("Capacity publication failed"));
   render().find(element => element.props["aria-label"] === "settings.data.pluginVpn.saved.limit")!.props.onChange!(10);
-  await render().find(element => element.props.children === "common.save")!.props.onClick!();
+  await render().find(element => element.props.label === "settings.data.pluginVpn.saved.saveLimit")!.props.onClick!();
   const view = render();
   expect(copy(view)).toContain("Capacity publication failed");
   expect(view.find(element => element.props["aria-label"] === "settings.data.pluginVpn.saved.limit")!.props.value).toBe(10);

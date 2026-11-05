@@ -77,9 +77,9 @@ describe("Extensions available plugins", () => {
       />,
     );
 
-    expect($('button[aria-label="Install: Plugin a"]').attr("data-loading")).toBeDefined();
-    expect($('button[aria-label="Install: Plugin b"]').attr("data-loading")).toBeUndefined();
-    expect($('button[aria-label="Install: Plugin b"]').text()).toBe("Install");
+    expect($('button[aria-label="Install Plugin a"]').attr("data-loading")).toBeDefined();
+    expect($('button[aria-label="Install Plugin b"]').attr("data-loading")).toBeUndefined();
+    expect($('button[aria-label="Install Plugin b"] .tabler-icon-download')).toHaveLength(1);
   });
 
   it("labels a multi-source plugin with Add source instead of Install", () => {
@@ -91,7 +91,7 @@ describe("Extensions available plugins", () => {
       />,
     );
 
-    expect($('button[aria-label="Add source: Plugin gh"]').text()).toBe("Add source");
+    expect($('button[aria-label="Add Plugin gh source"] .tabler-icon-plus')).toHaveLength(1);
   });
 
   it("offers to clear the filters when they hide every installable plugin", () => {
@@ -397,7 +397,8 @@ describe("Extensions updates", () => {
     );
 
     expect($("body").text()).toContain("2.0.0 → 2.1.0 · Update failed");
-    expect($('button[aria-label="Update Plugin b"]').text()).toBe("Retry");
+    expect($('button[aria-label="Update Plugin a"] .tabler-icon-download')).toHaveLength(1);
+    expect($('button[aria-label="Update Plugin b"] .tabler-icon-reload')).toHaveLength(1);
     expect($("body").text()).toContain("Couldn't update 1 extensions");
     expect($("body").text()).toContain("Plugin b: offline");
   });

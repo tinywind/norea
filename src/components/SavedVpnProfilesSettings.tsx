@@ -10,7 +10,9 @@ import { getPluginVpnStatus, PLUGIN_VPN_QUERY_KEY } from "../lib/plugin-vpn";
 import { notifyVpnDownloadProfilesChanged, reallowVpnDownloadBatchProfile } from "../lib/tasks/vpn-download-runtime";
 import type { VpnDownloadProfileIssueCause } from "../lib/tasks/vpn-download-types";
 import { SettingsFieldRow, SettingsInlineControls, SettingsWideField } from "./SettingsPrimitives";
+import { IconButton } from "./IconButton";
 import { TextButton } from "./TextButton";
+import { SaveIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 
 const VERDICT_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
@@ -89,7 +91,8 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
               value={limit} min={1} max={100} allowDecimal={false} allowNegative={false} disabled={locked}
               error={limitDraft !== null && !validLimit ? t("settings.data.pluginVpn.saved.invalidLimit") : undefined}
               onChange={setLimitDraft} />
-            <TextButton disabled={locked || !validLimit || limit === vault.data?.limit} loading={busy}
+            <IconButton label={t("settings.data.pluginVpn.saved.saveLimit")} size="lg"
+              disabled={locked || !validLimit || limit === vault.data?.limit} loading={busy}
               onClick={() => {
                 if (!validLimit || limit === vault.data?.limit) return;
                 return run(async () => {
@@ -98,7 +101,7 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
                   setLimitDraft(null);
                   if (next.cleanupError) setActionError(t("settings.data.pluginVpn.saved.cleanupError", { error: next.cleanupError }));
                 });
-              }}>{t("common.save")}</TextButton>
+              }}><SaveIcon /></IconButton>
           </SettingsInlineControls>
           {vault.isPending || verdicts.isPending ? <Text role="status" size="sm">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
           {vault.isError || verdicts.isError ? (

@@ -11,7 +11,9 @@ import {
 } from "../lib/content-sync/sync";
 import { useContentSyncStore } from "../store/content-sync";
 import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
+import { IconButton } from "./IconButton";
 import { TextButton } from "./TextButton";
+import { ResetIcon, SaveIcon } from "./ui/icons";
 import { ReadingStateSettings } from "./ReadingStateSettings";
 import { showSettingsToast } from "./settings/settings-toast";
 
@@ -106,12 +108,12 @@ export function ContentServerSettings() {
             disabled={disabled}
             onChange={(event) => setUrlDraft(event.currentTarget.value)}
           />
-          <TextButton variant="filled" disabled={disabled || urlDraft === serverUrl} onClick={() => {
+          <IconButton label={t("contentSync.saveServerUrl")} size="lg" disabled={disabled || urlDraft === serverUrl} onClick={() => {
             void run(async () => {
               setServerUrl(urlDraft.trim());
               showSettingsToast("ok", t("settings.toast.saved"));
             });
-          }}>{t("common.save")}</TextButton>
+          }}><SaveIcon /></IconButton>
         </div>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("contentSync.deviceName")}>
@@ -123,13 +125,13 @@ export function ContentServerSettings() {
               setDeviceName(deviceNameDraft.trim());
               setDeviceNameDraft(null);
             }} />
-          <TextButton aria-label={t("contentSync.resetDeviceName")} disabled={disabled} onClick={() => {
+          <IconButton label={t("contentSync.resetDeviceName")} size="lg" disabled={disabled} onClick={() => {
             void run(async () => {
               await defaultDeviceName.refetch({ throwOnError: true });
               setDeviceNameDraft(null);
               setDeviceName("");
             });
-          }}>{t("common.reset")}</TextButton>
+          }}><ResetIcon /></IconButton>
         </div>
       </SettingsFieldRow>
       <SettingsFieldRow label={t("contentSync.mode")} description={t("contentSync.modeDescription")}>

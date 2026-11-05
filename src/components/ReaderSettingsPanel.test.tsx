@@ -79,7 +79,7 @@ function resetModal(tree: ReactElement<ElementProps>[]) {
 }
 
 function resetButton(tree: ReactElement<ElementProps>[]) {
-  return tree.find((element) => element.props.children === "common.reset" && element.props.color !== "danger")!;
+  return tree.find((element) => element.props.label === "readerSettings.reset.action")!;
 }
 
 function confirmResetButton(tree: ReactElement<ElementProps>[]) {

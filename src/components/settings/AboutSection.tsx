@@ -6,7 +6,9 @@ import {
   SettingsInlineControls,
   SettingsSection,
 } from "../SettingsPrimitives";
+import { IconButton } from "../IconButton";
 import { TextButton } from "../TextButton";
+import { DownloadIcon, RefreshIcon } from "../ui/icons";
 import { describeError } from "../../lib/errors";
 import { useTranslation } from "../../i18n";
 import { showSettingsToast } from "./settings-toast";
@@ -60,25 +62,28 @@ export function AboutSection() {
             {updates.candidate ? (
               <ConsoleChip>{updateStatusLabel(t, updates.candidate)}</ConsoleChip>
             ) : null}
-            <TextButton
+            <IconButton
+              label={t("settings.about.update.check")}
+              size="lg"
               loading={updates.checking}
               disabled={!updates.buildInfo || updates.busy}
               onClick={() => {
                 void updates.checkUpdate();
               }}
             >
-              {t("settings.about.update.check")}
-            </TextButton>
-            <TextButton
-              variant="default"
+              <RefreshIcon />
+            </IconButton>
+            <IconButton
+              label={t("settings.about.update.install")}
+              size="lg"
               loading={updates.installing}
               disabled={!canInstallUpdate(updates.candidate) || updates.busy}
               onClick={() => {
                 void updates.installCandidate();
               }}
             >
-              {t("settings.about.update.install")}
-            </TextButton>
+              <DownloadIcon />
+            </IconButton>
           </SettingsInlineControls>
         </SettingsFieldRow>
         <SettingsFieldRow

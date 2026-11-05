@@ -24,6 +24,7 @@ import {
   IconCompass,
   IconCookie,
   IconCookieOff,
+  IconDeviceFloppy,
   IconDots,
   IconDotsVertical,
   IconDownload,
@@ -55,6 +56,7 @@ import {
   IconRefresh,
   IconRefreshDot,
   IconReload,
+  IconRotate,
   IconRotateClockwise,
   IconSearch,
   IconSelectAll,
@@ -127,6 +129,8 @@ export const PlayIcon = withAppDefaults(IconPlayerPlay);
 export const FromStartIcon = withAppDefaults(IconPlayerSkipBack);
 export const PauseIcon = withAppDefaults(IconPlayerPause);
 export const RestartIcon = withAppDefaults(IconRotateClockwise);
+export const ResetIcon = withAppDefaults(IconRotate);
+export const SaveIcon = withAppDefaults(IconDeviceFloppy);
 export const RetryIcon = withAppDefaults(IconReload);
 export const RepairIcon = withAppDefaults(IconTool);
 export const ReaderSettingsIcon = withAppDefaults(IconTypography);

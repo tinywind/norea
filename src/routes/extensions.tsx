@@ -10,6 +10,7 @@ import {
   TextInput,
 } from "@mantine/core";
 import { ChipButton } from "../components/ChipButton";
+import { IconButton } from "../components/IconButton";
 import { PageFrame, PageHeader, StateView } from "../components/AppFrame";
 import { PluginIcon } from "../components/browse/PluginIcon";
 import { PluginSettingsDialog } from "../components/browse/PluginSettingsDialog";
@@ -42,9 +43,12 @@ import { showSettingsToast } from "../components/settings/settings-toast";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import {
   ChevronRightIcon,
+  DownloadIcon,
   GithubIcon,
   ImportIcon,
+  PlusIcon,
   RepositoryIcon,
+  RetryIcon,
   SettingsIcon,
   TrashIcon,
 } from "../components/ui/icons";
@@ -947,15 +951,14 @@ export function UpdatesSection({
               }
               title={plugin.name}
               trailing={
-                <Button
-                  aria-label={t("extensions.updateAction", { name: plugin.name })}
+                <IconButton
+                  label={t("extensions.updateAction", { name: plugin.name })}
                   loading={updatingPluginIds.has(plugin.id)}
                   onClick={() => onUpdate(pluginUpdate)}
-                  size="compact-sm"
-                  variant="default"
+                  size="lg"
                 >
-                  {failedUpdates.has(plugin.id) ? t("common.retry") : t("extensions.update")}
-                </Button>
+                  {failedUpdates.has(plugin.id) ? <RetryIcon /> : <DownloadIcon />}
+                </IconButton>
               }
             />
           );
@@ -1247,7 +1250,9 @@ export function AvailableSection({
         <ul className="norea-extension-list">
           {entries.map((entry) => {
             const { item, repoUrl } = entry;
-            const label = isMultiSourcePlugin(item) ? t("browse.addSource") : t("common.install");
+            const label = isMultiSourcePlugin(item)
+              ? t("extensions.addSourceAction", { name: item.name })
+              : t("extensions.installAction", { name: item.name });
             const repository = labelOf(repoUrl);
             const meta = isMultiSourcePlugin(item)
               ? languageLabel(locale, item.lang)
@@ -1259,15 +1264,14 @@ export function AvailableSection({
                 subtitle={repository ? `${meta} · ${repository}` : meta}
                 title={item.name}
                 trailing={
-                  <Button
-                    aria-label={`${label}: ${item.name}`}
+                  <IconButton
+                    label={label}
                     loading={installingPluginIds.has(item.id)}
                     onClick={() => onInstall(entry)}
-                    size="compact-sm"
-                    variant="default"
+                    size="lg"
                   >
-                    {label}
-                  </Button>
+                    {isMultiSourcePlugin(item) ? <PlusIcon /> : <DownloadIcon />}
+                  </IconButton>
                 }
               />
             );

@@ -258,6 +258,8 @@ const ACTION_ICONS: Record<string, string> = {
   "novel.selection.markRead": "MarkReadIcon",
   "novel.selection.markUnread": "MarkUnreadIcon",
   "quickAdd.add": "AddToLibraryIcon",
+  "settings.about.update.check": "RefreshIcon",
+  "settings.about.update.install": "DownloadIcon",
   "settings.data.pluginVpn.connection.connect": "ConnectIcon",
   "source.filters": "FilterIcon",
   "source.sourceSettings": "SettingsIcon",

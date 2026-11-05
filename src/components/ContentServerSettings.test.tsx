@@ -27,7 +27,7 @@ vi.mock("../lib/content-sync/sync", () => ({ syncContentServer: mocks.sync }));
 
 import { ContentServerSettings } from "./ContentServerSettings";
 
-interface ControlProps { children?: ReactNode; onClick?: () => void; onChange?: (value: number | string) => void; onBlur?: () => void; value?: unknown; disabled?: boolean; "aria-label"?: string }
+interface ControlProps { children?: ReactNode; onClick?: () => void; onChange?: (value: number | string) => void; onBlur?: () => void; value?: unknown; disabled?: boolean; label?: string; "aria-label"?: string }
 function controls(node: ReactNode): ReactElement<ControlProps>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -65,7 +65,7 @@ it("shows the system name without a configured server and keeps custom names whi
 });
 
 it("resets a custom name to the current system default without synchronizing", async () => {
-  const reset = controls(ContentServerSettings()).find(element => element.props["aria-label"] === "contentSync.resetDeviceName");
+  const reset = controls(ContentServerSettings()).find(element => element.props.label === "contentSync.resetDeviceName");
   expect(reset).toBeDefined();
   reset!.props.onClick!();
   await Promise.resolve();
@@ -83,7 +83,7 @@ it("exposes the three-second server lookup deadline while background sync is run
 
 it("saves a connection without refreshing unrelated plugin and library queries", async () => {
   const elements = controls(ContentServerSettings());
-  elements.find(element => element.props.children === "common.save")!.props.onClick!();
+  elements.find(element => element.props.label === "contentSync.saveServerUrl")!.props.onClick!();
   await Promise.resolve();
   expect(mocks.save).toHaveBeenCalledWith("http://new-server");
   expect(mocks.invalidate).not.toHaveBeenCalled();

@@ -14,6 +14,7 @@ import {
   Textarea,
   UnstyledButton,
 } from "@mantine/core";
+import { IconButton } from "./IconButton";
 import { SegmentedToggle } from "./SegmentedToggle";
 import {
   SettingsFieldRow,
@@ -23,7 +24,7 @@ import {
 } from "./SettingsPrimitives";
 import { TextButton } from "./TextButton";
 import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
-import { WarningIcon } from "./ui/icons";
+import { ResetIcon, SaveIcon, WarningIcon } from "./ui/icons";
 import { useTranslation, type TranslationKey } from "../i18n";
 import {
   READER_PAGE_TRANSITION_DURATION_MAX_MS,
@@ -1041,12 +1042,20 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
         description={t("readerSettings.actions.description")}
       >
         <SettingsInlineControls>
-          <TextButton variant="default" onClick={editor.handleSaveCustomTheme}>
-            {t("readerSettings.saveCustomTheme")}
-          </TextButton>
-          <TextButton variant="default" onClick={editor.openResetConfirmation}>
-            {t("common.reset")}
-          </TextButton>
+          <IconButton
+            label={t("readerSettings.saveCustomTheme")}
+            size="lg"
+            onClick={editor.handleSaveCustomTheme}
+          >
+            <SaveIcon />
+          </IconButton>
+          <IconButton
+            label={t("readerSettings.reset.action")}
+            size="lg"
+            onClick={editor.openResetConfirmation}
+          >
+            <ResetIcon />
+          </IconButton>
         </SettingsInlineControls>
       </SettingsFieldRow>
     ),

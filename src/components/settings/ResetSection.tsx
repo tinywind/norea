@@ -5,8 +5,10 @@ import {
   SettingsInlineControls,
   SettingsSection,
 } from "../SettingsPrimitives";
+import { IconButton } from "../IconButton";
 import { TextButton } from "../TextButton";
 import { useConfirm } from "../ui/ConfirmDialog";
+import { ResetIcon } from "../ui/icons";
 import {
   clearReadingProgress,
   clearUpdatesTab,
@@ -224,15 +226,16 @@ export function ResetSection({ isBusy, onBusyChange }: SettingsBusyProps) {
           label={t("settings.app.reset.label")}
           description={t("settings.app.reset.description")}
         >
-          <TextButton
-            variant="default"
+          <IconButton
+            label={t("settings.app.reset.action")}
+            size="lg"
             tone="danger"
             onClick={() => {
               void confirmResetAppearance();
             }}
           >
-            {t("common.reset")}
-          </TextButton>
+            <ResetIcon />
+          </IconButton>
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.reset.reader.label")}
@@ -246,15 +249,16 @@ export function ResetSection({ isBusy, onBusyChange }: SettingsBusyProps) {
                 setKeepScopedReaderSettings(event.currentTarget.checked)
               }
             />
-            <TextButton
-              variant="default"
+            <IconButton
+              label={t("settings.reset.reader.action")}
+              size="lg"
               tone="danger"
               onClick={() => {
                 void confirmResetReader();
               }}
             >
-              {t("common.reset")}
-            </TextButton>
+              <ResetIcon />
+            </IconButton>
           </SettingsInlineControls>
         </SettingsFieldRow>
       </SettingsSection>
