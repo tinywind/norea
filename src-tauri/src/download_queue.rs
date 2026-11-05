@@ -200,21 +200,26 @@ pub async fn chapter_download_queue_remove(
     remove_queue_jobs(&pool, &chapter_ids).await
 }
 
+/// Bound IDs per statement; SQLite builds can cap bound variables as low as 999.
+const QUEUE_ID_CHUNK: usize = 500;
+
 async fn remove_queue_jobs(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(), String> {
-    let mut query =
-        QueryBuilder::<Sqlite>::new("DELETE FROM chapter_download_queue WHERE chapter_id IN (");
-    let mut separated = query.separated(", ");
-    for chapter_id in chapter_ids {
-        separated.push_bind(chapter_id);
+    for chunk in chapter_ids.chunks(QUEUE_ID_CHUNK) {
+        let mut query =
+            QueryBuilder::<Sqlite>::new("DELETE FROM chapter_download_queue WHERE chapter_id IN (");
+        let mut separated = query.separated(", ");
+        for chapter_id in chunk {
+            separated.push_bind(chapter_id);
+        }
+        separated.push_unseparated(")");
+        query.push(" AND json_extract(job_json, '$.vpnPlanId') IS NULL AND json_extract(job_json, '$.vpnRangeId') IS NULL AND json_extract(job_json, '$.vpnBatchId') IS NULL");
+        query
+            .build()
+            .execute(pool)
+            .await
+            .map_err(|err| format!("download queue: remove jobs: {err}"))?;
     }
-    separated.push_unseparated(")");
-    query.push(" AND json_extract(job_json, '$.vpnPlanId') IS NULL AND json_extract(job_json, '$.vpnRangeId') IS NULL AND json_extract(job_json, '$.vpnBatchId') IS NULL");
-    query
-        .build()
-        .execute(pool)
-        .await
-        .map(|_| ())
-        .map_err(|err| format!("download queue: remove jobs: {err}"))
+    Ok(())
 }
 
 #[tauri::command]
@@ -284,16 +289,16 @@ async fn lease_queue_jobs(
         jobs.push(job);
     }
 
-    if !chapter_ids.is_empty() {
-        let leased_at_ms = now_ms();
+    let leased_at_ms = i64::try_from(now_ms()).unwrap_or(i64::MAX);
+    for chunk in chapter_ids.chunks(QUEUE_ID_CHUNK) {
         let mut query =
             QueryBuilder::<Sqlite>::new("UPDATE chapter_download_queue SET leased_at_ms = ");
         query
-            .push_bind(i64::try_from(leased_at_ms).unwrap_or(i64::MAX))
+            .push_bind(leased_at_ms)
             .push(", attempt_count = attempt_count + 1 WHERE chapter_id IN (");
         let mut separated = query.separated(", ");
-        for chapter_id in chapter_ids {
-            separated.push_bind(chapter_id);
+        for chapter_id in chunk {
+            separated.push_bind(*chapter_id);
         }
         separated.push_unseparated(")");
         query
@@ -394,6 +399,23 @@ mod tests {
             .fetch_one(&pool).await.unwrap(), payload);
         insert_queue_job(&pool, &job(6, None, None), 3, 4).await.unwrap();
         assert!(insert_queue_job(&pool, &pending_job(6, "another-batch"), 5, 6).await.is_err());
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn leases_and_removes_queues_larger_than_the_sql_variable_limit() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        ensure_queue_schema(&pool).await.unwrap();
+        let ids: Vec<i64> = (1..=2_500).collect();
+        for id in &ids {
+            insert_queue_job(&pool, &job(*id, None, None), *id, *id).await.unwrap();
+        }
+        assert_eq!(lease_queue_jobs(&pool, None).await.unwrap().len(), 2_500);
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chapter_download_queue WHERE attempt_count = 1")
+            .fetch_one(&pool).await.unwrap(), 2_500);
+        remove_queue_jobs(&pool, &ids).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chapter_download_queue")
+            .fetch_one(&pool).await.unwrap(), 0);
         pool.close().await;
     }
 
