@@ -1,4 +1,4 @@
-import { Group, Select, Stack } from "@mantine/core";
+import { Select, Stack } from "@mantine/core";
 import { SegmentedToggle } from "./SegmentedToggle";
 import { useQuery } from "@tanstack/react-query";
 import { listCategories, UNCATEGORIZED_CATEGORY_ID } from "../db/queries/category";
@@ -71,7 +71,7 @@ export function LibrarySettingsPanel() {
           label={t("librarySettings.sort")}
           description={t("librarySettings.sort.description")}
         >
-          <Group gap="xs" wrap="wrap">
+          <Stack gap="xs">
             <Select
               aria-label={t("library.viewOptions.sortBy")}
               data={LIBRARY_SORT_FIELDS.map((value) => ({
@@ -92,6 +92,7 @@ export function LibrarySettingsPanel() {
             />
             <SegmentedToggle
               aria-label={t("library.viewOptions.direction")}
+              fullWidth
               data={(["asc", "desc"] as const).map((value) => ({
                 value,
                 label: t(LIBRARY_SORT_DIRECTION_LABEL_KEYS[value]),
@@ -106,7 +107,7 @@ export function LibrarySettingsPanel() {
                 )
               }
             />
-          </Group>
+          </Stack>
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("librarySettings.defaultChapterSort")}

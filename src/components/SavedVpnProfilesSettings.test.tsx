@@ -270,6 +270,5 @@ it("puts the counts and manage action on a labelled row and the capacity in a co
   const capacity = controls(rows[1]!.props.children);
   expect(capacity[0]!.type).toBe(SettingsInlineControls);
   expect((capacity[0]!.props as { compact?: boolean }).compact).toBe(true);
-  expect(capacity[1]!.props.className).toBe("norea-settings-compact-field");
   expect(capacity.find(element => element.props.label === "settings.data.pluginVpn.saved.saveLimit")).toBeDefined();
 });

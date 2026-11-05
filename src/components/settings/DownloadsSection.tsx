@@ -291,7 +291,6 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
             description={t("browseSettings.sourceWorkConcurrency.description")}
           >
             <NumberInput
-              className="norea-settings-compact-field"
               value={sourceWorkConcurrency}
               min={1}
               max={10}
@@ -309,7 +308,6 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
             description={t("browseSettings.chapterDownloadCooldown.description")}
           >
             <NumberInput
-              className="norea-settings-compact-field"
               value={chapterDownloadCooldownSeconds}
               min={0}
               max={60}

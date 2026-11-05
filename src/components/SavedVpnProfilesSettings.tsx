@@ -109,7 +109,7 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
       <SettingsFieldRow label={t("settings.data.pluginVpn.saved.limit")}
         error={[limitError, actionError && !opened ? actionError : null].filter(Boolean).join("\n") || undefined}>
         <SettingsInlineControls compact>
-          <NumberInput aria-label={t("settings.data.pluginVpn.saved.limit")} className="norea-settings-compact-field"
+          <NumberInput aria-label={t("settings.data.pluginVpn.saved.limit")}
             value={limit} min={1} max={100} allowDecimal={false} allowNegative={false} disabled={locked}
             error={limitError !== null} onChange={setLimitDraft} />
           <IconButton label={t("settings.data.pluginVpn.saved.saveLimit")} size="lg"

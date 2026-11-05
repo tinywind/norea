@@ -326,7 +326,6 @@ export function createNoreaMantineTheme(
       Button: { classNames: { root: STATE_LAYER_CLASS }, defaultProps: { radius: "md" } },
       CloseButton: { classNames: { root: STATE_LAYER_CLASS } },
       Paper: { defaultProps: { radius: "sm" } },
-      TextInput: { defaultProps: { radius: "sm" } },
       // Dialogs fade and scale; drawers keep Mantine's slide from their own edge at the slow token.
       Modal: {
         defaultProps: {

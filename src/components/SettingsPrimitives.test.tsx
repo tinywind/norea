@@ -140,8 +140,8 @@ describe("settings row layout", () => {
 
   it("keeps compact number fields small at the control half's right edge", () => {
     const css = readFileSync(new URL("../styles/settings.css", import.meta.url), "utf8");
-    expect(css).toMatch(/\.norea-settings-form-control \.norea-settings-compact-field \{[^}]*justify-self: end;[^}]*width: 8rem;/);
-    expect(css).toMatch(/\.norea-settings-inline-controls > \.norea-settings-compact-field \{[^}]*flex: 0 0 auto;/);
+    // One control width: every field fills the control half; no per-kind narrow fields.
+    expect(css).not.toContain("compact-field");
   });
 });
 

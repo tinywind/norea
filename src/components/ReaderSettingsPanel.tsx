@@ -811,18 +811,20 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
         label={t("readerSettings.htmlImagePagingMode")}
         description={t("readerSettings.htmlImagePagingMode.description")}
       >
-        <SegmentedToggle
+        <Select
+          allowDeselect={false}
           data={HTML_IMAGE_PAGING_OPTIONS.map((option) => ({
             value: option.value,
             label: t(option.labelKey),
           }))}
           value={general.htmlImagePagingMode}
-          onChange={(htmlImagePagingMode) =>
+          onChange={(htmlImagePagingMode) => {
+            if (!htmlImagePagingMode) return;
             setActiveGeneral({
               htmlImagePagingMode:
                 htmlImagePagingMode as ReaderHtmlImagePagingMode,
-            })
-          }
+            });
+          }}
         />
       </SettingsFieldRow>
     ),
@@ -876,7 +878,6 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
             >
               <NumberInput
                 aria-label={t("readerSettings.autoScrollInterval")}
-                className="norea-settings-compact-field"
                 value={general.autoScrollInterval}
                 min={16}
                 max={500}
@@ -894,7 +895,6 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
             >
               <NumberInput
                 aria-label={t("readerSettings.autoScrollOffset")}
-                className="norea-settings-compact-field"
                 value={general.autoScrollOffset}
                 min={0.25}
                 max={12}

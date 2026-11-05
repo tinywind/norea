@@ -344,3 +344,12 @@ describe("createNoreaMantineTheme overlay labels", () => {
     }
   });
 });
+
+describe("form field shape", () => {
+  it("gives every text, number, password, select and color field the same corner radius", () => {
+    const { merged } = CASES[0]!;
+    const fields = ["TextInput", "NumberInput", "PasswordInput", "Select", "ColorInput", "Textarea", "Autocomplete", "MultiSelect"];
+    const radii = fields.map((name) => (merged.components[name]?.defaultProps as { radius?: unknown } | undefined)?.radius ?? merged.defaultRadius);
+    expect(new Set(radii)).toEqual(new Set([merged.defaultRadius]));
+  });
+});
