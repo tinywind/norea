@@ -17,9 +17,14 @@ const VPN_PROXY_CONFIGURE_CAPABILITY = "vpn.proxy.configure";
 
 export const PLUGIN_VPN_QUERY_KEY = ["plugin-vpn"] as const;
 export const PLUGIN_VPN_PROFILE_RELEASED_EVENT = "norea-plugin-vpn-profile-released";
+export const PLUGIN_VPN_CONNECTION_SETTLED_EVENT = "norea-plugin-vpn-connection-settled";
 
 function notifyProfileRelease(): void {
   if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new Event(PLUGIN_VPN_PROFILE_RELEASED_EVENT));
+}
+
+function notifyConnectionSettled(): void {
+  if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") window.dispatchEvent(new Event(PLUGIN_VPN_CONNECTION_SETTLED_EVENT));
 }
 
 export type PluginVpnPhase =
@@ -173,6 +178,7 @@ function trackPluginVpnConnection(
   const settled = () => {
     if (connectionAttempt === attempt) connectionAttempt = null;
     if (recoveryAttempt === attempt) recoveryAttempt = null;
+    notifyConnectionSettled();
   };
   void attempt.then(settled, settled);
   return attempt;

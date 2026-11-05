@@ -51,6 +51,9 @@ vi.mock("../../lib/plugin-vpn", () => ({
 vi.mock("../../lib/plugin-vpn-lifecycle", () => ({
   startPluginVpnLifecycle: () => () => undefined,
 }));
+vi.mock("../../lib/plugin-vpn-keep-alive", () => ({
+  startAndroidPluginVpnKeepAlive: () => () => undefined,
+}));
 vi.mock("../../lib/runtime/error-toast", () => ({ showErrorToast: vi.fn() }));
 vi.mock("../../lib/chapter-media-storage", () => ({
   getChapterMediaStorageRoot: mocks.storageRoot,

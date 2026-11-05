@@ -11,6 +11,7 @@ import {
   startPluginVpnStatusListener,
   type PluginVpnStatusEvent,
 } from "../../lib/plugin-vpn";
+import { startAndroidPluginVpnKeepAlive } from "../../lib/plugin-vpn-keep-alive";
 import { startPluginVpnLifecycle } from "../../lib/plugin-vpn-lifecycle";
 import { showErrorToast } from "../../lib/runtime/error-toast";
 import { isAndroidRuntime, isTauriRuntime } from "../../lib/tauri-runtime";
@@ -111,6 +112,7 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
         });
       },
     });
+    const stopKeepAlive = startAndroidPluginVpnKeepAlive();
     void startPluginVpnStatusListener(onStatusEvent)
       .then((cleanup) => {
         if (active) {
@@ -126,6 +128,7 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
     return () => {
       active = false;
       stopRecovery();
+      stopKeepAlive();
       unlisten?.();
     };
   }, [queryClient]);
