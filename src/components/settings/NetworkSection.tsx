@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Group, PasswordInput, Stack, Text, TextInput } from "@mantine/core";
+import { Group, PasswordInput, Text, TextInput } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ConsoleChip } from "../ConsolePrimitives";
 import { PluginVpnFinder } from "../PluginVpnFinder";
@@ -12,8 +12,10 @@ import {
   SettingsSection,
   SettingsWideField,
 } from "../SettingsPrimitives";
+import { IconButton } from "../IconButton";
 import { TextButton } from "../TextButton";
 import { useConfirm } from "../ui/ConfirmDialog";
+import { ImportIcon, SearchIcon, TrashIcon } from "../ui/icons";
 import { VpnGateServerVerdictControl } from "../VpnGateServerVerdictControl";
 import {
   listVpnGateServerVerdicts,
@@ -397,6 +399,9 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
     }
   }
 
+  // One status, one action: stop while a connection is up or in progress, otherwise connect.
+  const stopAction = showConnectionStop && !(disconnected && vpnOperation === null);
+
   return (
     <SettingsSection title={t("settings.data.pluginVpn.title")}>
       {!vpnQuery.isError && status?.supported === false ? (
@@ -434,7 +439,7 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
             description={t("settings.data.pluginVpn.connection.description")}
           >
             <SettingsInlineControls>
-              {!showConnectionStop || (disconnected && vpnOperation === null) ? (
+              {!stopAction ? (
                 <TextButton
                   disabled={!canConnect}
                   onClick={() => {
@@ -444,7 +449,7 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
                   {t("settings.data.pluginVpn.connection.connect")}
                 </TextButton>
               ) : null}
-              {showConnectionStop ? (
+              {stopAction ? (
                 <TextButton
                   disabled={
                     profileOperationActive ||
@@ -468,46 +473,47 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
             label={t("settings.data.pluginVpn.profile.label")}
             description={t("settings.data.pluginVpn.profile.description")}
           >
-            <SettingsWideField>
-              <Stack gap="xs">
-                <Text className="norea-settings-path-value">
-                  {status?.profile?.remoteHost ??
-                    t("settings.data.pluginVpn.profile.empty")}
-                </Text>
-                <SettingsInlineControls>
-                  <TextButton
-                    disabled={profileControlsDisabled}
-                    loading={vpnOperation?.kind === "import"}
-                    onClick={() => {
-                      void importProfile();
-                    }}
-                  >
-                    {status?.profile
-                      ? t("settings.data.pluginVpn.profile.replace")
-                      : t("settings.data.pluginVpn.profile.import")}
-                  </TextButton>
-                  <TextButton
-                    disabled={finderDisabled}
-                    onClick={() => setFinderOpen(true)}
-                    variant="default"
-                  >
-                    {t("settings.data.pluginVpn.finder.open")}
-                  </TextButton>
-                  {status?.profile ? (
-                    <TextButton
-                      disabled={profileControlsDisabled}
-                      loading={vpnOperation?.kind === "remove"}
-                      variant="default"
-                      onClick={() => {
-                        void removeProfile();
-                      }}
-                    >
-                      {t("settings.data.pluginVpn.profile.remove")}
-                    </TextButton>
-                  ) : null}
-                </SettingsInlineControls>
-              </Stack>
-            </SettingsWideField>
+            <SettingsInlineControls>
+              <Text className="norea-settings-path-value norea-settings-profile-host">
+                {status?.profile?.remoteHost ??
+                  t("settings.data.pluginVpn.profile.empty")}
+              </Text>
+              <IconButton
+                disabled={profileControlsDisabled}
+                label={status?.profile
+                  ? t("settings.data.pluginVpn.profile.replace")
+                  : t("settings.data.pluginVpn.profile.import")}
+                loading={vpnOperation?.kind === "import"}
+                onClick={() => {
+                  void importProfile();
+                }}
+                size="lg"
+              >
+                <ImportIcon />
+              </IconButton>
+              <IconButton
+                disabled={finderDisabled}
+                label={t("settings.data.pluginVpn.finder.open")}
+                onClick={() => setFinderOpen(true)}
+                size="lg"
+              >
+                <SearchIcon />
+              </IconButton>
+              {status?.profile ? (
+                <IconButton
+                  disabled={profileControlsDisabled}
+                  label={t("settings.data.pluginVpn.profile.remove")}
+                  loading={vpnOperation?.kind === "remove"}
+                  onClick={() => {
+                    void removeProfile();
+                  }}
+                  size="lg"
+                  tone="danger"
+                >
+                  <TrashIcon />
+                </IconButton>
+              ) : null}
+            </SettingsInlineControls>
           </SettingsFieldRow>
           {status?.profile && !status.profile.isVpnGateFinder ? (
             <SettingsAdvancedGroup

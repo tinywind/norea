@@ -337,6 +337,10 @@
   justify-items: end;
 }
 
+.norea-settings-form-control > :where(.norea-console-chip) {
+  justify-self: end;
+}
+
 .norea-settings-form-control > :where(.norea-segmented-toggle) {
   display: flex;
   width: 100%;
@@ -377,8 +381,11 @@
   min-width: 0;
 }
 
-/* Buttons never shrink below their label; a group that does not fit wraps to a second line. */
-.norea-settings-inline-controls > :where(.mantine-Button-root, .norea-text-button) {
+/*
+ * Buttons never shrink below their label; a group that does not fit wraps to a second line.
+ * The html:root prefix outranks the touch floor's own min-width.
+ */
+html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-text-button) {
   min-width: max-content;
 }
 
@@ -391,6 +398,12 @@
 .norea-settings-inline-controls:has(> .mantine-InputWrapper-root) > :where(.mantine-Button-root, .norea-text-button) {
   flex: 0 0 auto;
   min-width: 6.5rem;
+}
+
+/* The profile host reads as a value box that takes the space its icon actions leave. */
+.norea-settings-inline-controls > .norea-settings-profile-host {
+  flex: 1 1 auto;
+  padding-block: var(--norea-space-2);
 }
 
 .norea-settings-inline-controls > :where(.mantine-Text-root) {
