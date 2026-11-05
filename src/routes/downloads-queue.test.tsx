@@ -134,7 +134,7 @@ describe("task work group order", () => {
     expect(banner.text()).toContain("CAPTCHA");
     expect(banner.closest("#norea-downloads-attention-title, .norea-downloads-attention").find("h2").text()).toBe("Needs attention");
     expect(banner.find("button").map((_, element) => $(element).text() || $(element).attr("aria-label")).get())
-      .toEqual(["Verify", "More options for source.test"]);
+      .toEqual(["Verify source.test", "More options for source.test"]);
   });
   it("keeps a warning the user can act on as the one header pill, which jumps to Needs attention", () => {
     state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceAccessBlocks: [{

@@ -376,26 +376,26 @@ export function PluginVpnFinder({
                       })}
               </Text>
             </Group>
-            <TextButton
+            <IconButton
+              label={t("settings.data.pluginVpn.connection.cancel")}
               onClick={() => void onCancelConnection()}
-              size="sm"
-              variant="default"
+              size="lg"
             >
-              {t("settings.data.pluginVpn.connection.cancel")}
-            </TextButton>
+              <CloseIcon />
+            </IconButton>
           </Stack>
         ) : connectionPhase === "waitingForNetwork" ? (
           <Stack className="norea-plugin-vpn-finder-state" gap="xs">
             <Text role="status" size="sm">
               {t("settings.data.pluginVpn.status.waitingForNetwork")}
             </Text>
-            <TextButton
+            <IconButton
+              label={t("settings.data.pluginVpn.connection.cancel")}
               onClick={() => void onCancelConnection()}
-              size="sm"
-              variant="default"
+              size="lg"
             >
-              {t("settings.data.pluginVpn.connection.cancel")}
-            </TextButton>
+              <CloseIcon />
+            </IconButton>
           </Stack>
         ) : connectionPhase === "connected" ? (
           <Text

@@ -3,6 +3,7 @@ import {
   IconAdjustmentsHorizontal,
   IconAlertTriangle,
   IconArrowLeft,
+  IconArrowRight,
   IconArrowsExchange,
   IconArrowsSort,
   IconBell,
@@ -67,6 +68,7 @@ import {
   IconSelectAll,
   IconServer,
   IconSettings,
+  IconShieldCheck,
   IconShieldLock,
   IconTool,
   IconTrash,
@@ -119,6 +121,7 @@ export const UploadIcon = withAppDefaults(IconCloudUpload);
 export const RestoreIcon = withAppDefaults(IconCloudDownload);
 export const CloseIcon = withAppDefaults(IconX);
 export const BackIcon = withAppDefaults(IconArrowLeft);
+export const GoIcon = withAppDefaults(IconArrowRight);
 export const CheckIcon = withAppDefaults(IconCheck);
 export const SelectAllIcon = withAppDefaults(IconSelectAll);
 export const DeselectIcon = withAppDefaults(IconDeselect);
@@ -164,6 +167,7 @@ export const ExportIcon = withAppDefaults(IconFileExport);
 export const FolderIcon = withAppDefaults(IconFolder);
 export const CategoryIcon = withAppDefaults(IconCategory);
 export const VpnIcon = withAppDefaults(IconShieldLock);
+export const VerifyIcon = withAppDefaults(IconShieldCheck);
 export const ConnectIcon = withAppDefaults(IconPlugConnected);
 export const DisconnectIcon = withAppDefaults(IconPlugConnectedX);
 export const ServerIcon = withAppDefaults(IconServer);

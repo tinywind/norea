@@ -146,7 +146,7 @@ describe("SearchFailures", () => {
     expect(plain("body").text()).toContain("Couldn't search Source a");
 
     const challenged = renderFailures([{ error: "Cloudflare verification is required.", plugin: plugin("a") }]);
-    expect(buttonLabels(challenged)).toEqual(["Retry Source a", "Verify"]);
+    expect(buttonLabels(challenged)).toEqual(["Retry Source a", "Verify Source a"]);
   });
 
   it("collapses two or more failures into a chip", () => {

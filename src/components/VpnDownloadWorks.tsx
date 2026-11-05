@@ -13,10 +13,10 @@ import {
 } from "../lib/tasks/vpn-download-runtime";
 import type { VpnDownloadPlan, VpnDownloadRangeState } from "../lib/tasks/vpn-download-types";
 import { DownloadWorkStatusLabel, type DownloadWorkStatus } from "./DownloadWorkStatusLabel";
+import { IconButton } from "./IconButton";
 import { SettingsInlineControls } from "./SettingsPrimitives";
-import { TextButton } from "./TextButton";
 import { useConfirm } from "./ui/ConfirmDialog";
-import { CloseIcon, InfoIcon, PauseIcon, PlayIcon } from "./ui/icons";
+import { CloseIcon, InfoIcon, PauseIcon, PlayIcon, RetryIcon, VerifyIcon } from "./ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "./ui/OverflowMenu";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 
@@ -224,8 +224,9 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
           <Text size="sm" role="status">{t(phaseKey)}</Text>
           {draft.error ? <Alert color="danger" role="alert">{draft.error}</Alert> : null}
           {draft.phase === "failed" ? <SettingsInlineControls>
-            <TextButton disabled={pendingKeys.has(key) || !runEnabled || draft.userPaused} loading={pendingKeys.has(key)}
-              onClick={() => { if (runEnabled && !draft.userPaused) return run(key, () => actions.retryDraft(draft.id)); }}>{t("common.retry")}</TextButton>
+            <IconButton disabled={pendingKeys.has(key) || !runEnabled || draft.userPaused} label={t("vpnDownload.retryPreparing", { title: draft.title })}
+              loading={pendingKeys.has(key)} size="lg"
+              onClick={() => { if (runEnabled && !draft.userPaused) return run(key, () => actions.retryDraft(draft.id)); }}><RetryIcon /></IconButton>
           </SettingsInlineControls> : null}
           {errors[key] ? <Alert color="danger" role="alert">{errors[key]}</Alert> : null}
         </Stack>;
@@ -254,10 +255,10 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
               {t("vpnDownload.server", { ip: profile.ip, protocol: profile.protocol.toUpperCase() })}
             </Text> : null}
             {verify || resume ? <SettingsInlineControls>
-              {verify ? <TextButton aria-label={actionLabel(t("vpnDownload.openVerification"))} disabled={!canAct}
-                onClick={() => { if (canAct) return run(key, () => actions.openVerification(plan.id, range.id)); }}>{t("vpnDownload.openVerification")}</TextButton> : null}
-              {resume ? <TextButton aria-label={actionLabel(t("vpnDownload.resume"))} disabled={!canAct || work.held}
-                onClick={() => { if (canAct && !work.held) return run(key, () => actions.resumeRange(plan.id, range.id)); }}>{t("vpnDownload.resume")}</TextButton> : null}
+              {verify ? <IconButton label={actionLabel(t("vpnDownload.openVerification"))} disabled={!canAct} size="lg"
+                onClick={() => { if (canAct) return run(key, () => actions.openVerification(plan.id, range.id)); }}><VerifyIcon /></IconButton> : null}
+              {resume ? <IconButton label={actionLabel(t("vpnDownload.resume"))} disabled={!canAct || work.held} size="lg"
+                onClick={() => { if (canAct && !work.held) return run(key, () => actions.resumeRange(plan.id, range.id)); }}><PlayIcon /></IconButton> : null}
             </SettingsInlineControls> : null}
             {errors[key] ? <Alert color="danger" role="alert">{errors[key]}</Alert> : null}
           </Stack>

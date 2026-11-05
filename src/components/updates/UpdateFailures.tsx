@@ -8,7 +8,8 @@ import {
   useSourceAccessBlocks,
 } from "../SourceAccessVerifyButton";
 import { ChipButton } from "../ChipButton";
-import { ChevronRightIcon, WarningIcon } from "../ui/icons";
+import { IconButton } from "../IconButton";
+import { ChevronRightIcon, InfoIcon, OpenWorkIcon, RetryIcon, WarningIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 export interface FailedUpdateSource {
@@ -113,29 +114,31 @@ export function UpdateFailures({
                 sourceName={single.name}
               />
             ) : single.pluginMissing && single.failures.length === 1 ? (
-              <Button
+              <IconButton
+                label={t("updates.failure.openNovel", { name: single.failures[0]!.novelName })}
                 onClick={() => openNovel(single.failures[0]!.novelId)}
-                size="compact-sm"
-                variant="default"
+                size="lg"
               >
-                {t("updates.openNovelAction")}
-              </Button>
+                <OpenWorkIcon />
+              </IconButton>
             ) : (
-              <Button
+              <IconButton
+                label={t("updates.failure.retrySource", { name: single.name })}
                 onClick={() => onRetry(novelIdsOf([single]))}
-                size="compact-sm"
-                variant="default"
+                size="lg"
               >
-                {t("common.retry")}
-              </Button>
+                <RetryIcon />
+              </IconButton>
             )}
-            <Button
+            <IconButton
+              aria-expanded={sheetOpen}
+              aria-haspopup="dialog"
+              label={t("updates.failure.details", { name: single.name })}
               onClick={() => setSheetOpen(true)}
-              size="compact-sm"
-              variant="subtle"
+              size="lg"
             >
-              {t("common.details")}
-            </Button>
+              <InfoIcon />
+            </IconButton>
           </div>
         </section>
       ) : (
@@ -192,16 +195,16 @@ export function UpdateFailures({
                       sourceName={source.name}
                     />
                   ) : source.pluginMissing ? null : (
-                    <Button
+                    <IconButton
+                      label={t("updates.failure.retrySource", { name: source.name })}
                       onClick={() => {
                         setSheetOpen(false);
                         onRetry(novelIdsOf([source]));
                       }}
-                      size="compact-sm"
-                      variant="default"
+                      size="lg"
                     >
-                      {t("common.retry")}
-                    </Button>
+                      <RetryIcon />
+                    </IconButton>
                   )}
                 </div>
                 <Text c="dimmed" size="sm">

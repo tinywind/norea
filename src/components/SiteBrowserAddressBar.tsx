@@ -1,6 +1,8 @@
 import { useState, type FormEvent } from "react";
-import { Button, Group, TextInput } from "@mantine/core";
+import { Group, TextInput } from "@mantine/core";
 import { useTranslation } from "../i18n";
+import { IconButton } from "./IconButton";
+import { GoIcon } from "./ui/icons";
 
 interface SiteBrowserAddressBarProps {
   url: string;
@@ -66,9 +68,9 @@ export function SiteBrowserAddressBar({
           type="url"
           value={draft ?? url}
         />
-        <Button disabled={loading} type="submit" variant="subtle">
-          {t("siteBrowser.go")}
-        </Button>
+        <IconButton disabled={loading} label={t("siteBrowser.goToAddress")} size="lg" type="submit">
+          <GoIcon />
+        </IconButton>
       </Group>
     </form>
   );

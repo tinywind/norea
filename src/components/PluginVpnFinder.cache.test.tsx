@@ -170,9 +170,10 @@ it("connects from an icon button on each server and turns the pending one into a
   const pending = render(true, new Map(), { connectionPhase: "connecting", onCancelConnection, pendingCandidateId: "one" });
   expect(iconLabels(pending)).not.toContain("settings.data.pluginVpn.connection.connect");
   const cancel = pending.find(element => element.type === IconButton &&
-    element.props.label === "settings.data.pluginVpn.connection.cancel")!;
-  expect((cancel.props.children as ReactElement).type).toBe(Loader);
-  cancel.props.onClick!();
+    element.props.label === "settings.data.pluginVpn.connection.cancel" &&
+    (element.props.children as ReactElement).type === Loader);
+  expect(cancel).toBeDefined();
+  cancel!.props.onClick!();
   await vi.waitFor(() => expect(onCancelConnection).toHaveBeenCalledOnce());
 });
 

@@ -27,9 +27,13 @@ import {
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
+  DeselectIcon,
   PinIcon,
+  RetryIcon,
+  SelectAllIcon,
   SourceIcon,
   UnpinIcon,
+  VerifyIcon,
   WarningIcon,
 } from "../ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
@@ -273,21 +277,21 @@ function SearchScopeChips({
       >
         <div className="norea-search-scope-sheet">
           <Group gap="xs">
-            <Button
+            <IconButton
+              label={t("globalSearch.scope.selectAll")}
               onClick={() => onSelectedPluginIdsChange(installedPlugins.map((plugin) => plugin.id))}
-              size="compact-sm"
-              variant="subtle"
+              size="lg"
             >
-              {t("globalSearch.scope.selectAll")}
-            </Button>
-            <Button
+              <SelectAllIcon />
+            </IconButton>
+            <IconButton
               disabled={selectedPluginIds.length === 0}
+              label={t("globalSearch.scope.clear")}
               onClick={() => onSelectedPluginIdsChange([])}
-              size="compact-sm"
-              variant="subtle"
+              size="lg"
             >
-              {t("common.clear")}
-            </Button>
+              <DeselectIcon />
+            </IconButton>
           </Group>
           <Checkbox.Group
             label={t("globalSearch.scope.sources")}
@@ -473,20 +477,23 @@ export function SearchFailures({
     }
     if (!isCloudflareError(error)) return null;
     return (
-      <Button onClick={() => onOpenSite(plugin)} size="compact-sm" variant="default">
-        {t("updates.failure.verify")}
-      </Button>
+      <IconButton
+        label={t("globalSearch.verifySource", { name: plugin.name })}
+        onClick={() => onOpenSite(plugin)}
+        size="lg"
+      >
+        <VerifyIcon />
+      </IconButton>
     );
   };
   const retryButton = (plugin: Plugin) => (
-    <Button
-      aria-label={t("globalSearch.retrySource", { name: plugin.name })}
+    <IconButton
+      label={t("globalSearch.retrySource", { name: plugin.name })}
       onClick={() => onRetry(plugin.id)}
-      size="compact-sm"
-      variant="default"
+      size="lg"
     >
-      {t("common.retry")}
-    </Button>
+      <RetryIcon />
+    </IconButton>
   );
   const reason = ({ error, plugin }: FailedSearchSource) =>
     blockFor(plugin.id) || isCloudflareError(error)

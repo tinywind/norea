@@ -58,7 +58,7 @@ function render(failures: UpdateCheckFailure[]) {
 }
 
 const buttonLabels = ($: ReturnType<typeof load>) =>
-  $("button").toArray().map((button) => $(button).text());
+  $("button").toArray().map((button) => $(button).attr("aria-label") ?? $(button).text());
 
 beforeEach(() => {
   mocks.blocks = [];
@@ -80,7 +80,13 @@ describe("UpdateFailures", () => {
   it("shows one failed source in place with Retry and Details", () => {
     const $ = render([failure(1, "a"), failure(2, "a")]);
     expect($('[role="status"]').text()).toContain('updates.failure.oneSource{"name":"Source a"}');
-    expect(buttonLabels($)).toEqual(["common.retry", "common.details"]);
+    expect(buttonLabels($)).toEqual([
+      'updates.failure.retrySource{"name":"Source a"}',
+      'updates.failure.details{"name":"Source a"}',
+    ]);
+    const details = $('button[aria-haspopup="dialog"]');
+    expect(details.attr("aria-label")).toBe('updates.failure.details{"name":"Source a"}');
+    expect(details.attr("aria-expanded")).toBe("false");
   });
 
   it("offers Verify when the failed source is waiting on a challenge", () => {
@@ -91,13 +97,16 @@ describe("UpdateFailures", () => {
       verificationRequested: false,
     }];
     const $ = render([failure(1, "a")]);
-    expect(buttonLabels($)).toEqual(["updates.failure.verify", "common.details"]);
+    expect(buttonLabels($)).toEqual(["updates.failure.verify", 'updates.failure.details{"name":"Source a"}']);
     expect($.text()).toContain("updates.failure.verification");
   });
 
   it("opens the novel directly when its one failure is a missing plugin", () => {
     const $ = render([failure(1, "a", { kind: "plugin-missing", pluginId: "a" })]);
-    expect(buttonLabels($)).toEqual(["updates.openNovelAction", "common.details"]);
+    expect(buttonLabels($)).toEqual([
+      'updates.failure.openNovel{"name":"Novel 1"}',
+      'updates.failure.details{"name":"Source a"}',
+    ]);
   });
 
   it("collapses more than one failed source into a chip", () => {

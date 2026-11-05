@@ -1,4 +1,4 @@
-import { Alert, Button, Group, Popover, Progress, Stack, Text } from "@mantine/core";
+import { Alert, Group, Popover, Progress, Stack, Text } from "@mantine/core";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   memo,
@@ -42,6 +42,7 @@ import {
   PlayIcon,
   SortIcon,
   TrashIcon,
+  VerifyIcon,
   VpnIcon,
   WarningIcon,
 } from "../components/ui/icons";
@@ -984,8 +985,9 @@ function SourceAccessBanner({
         ) : null}
       </div>
       <Group gap="xs" justify="flex-end" wrap="nowrap">
-        <Button
+        <IconButton
           disabled={verifyDisabled}
+          label={t("downloads.queue.verifySource", { source: sourceLabel })}
           loading={verifying}
           onClick={() => {
             void openSourceAccessBrowser(block, {
@@ -993,11 +995,10 @@ function SourceAccessBanner({
               title,
             });
           }}
-          size="xs"
-          variant="default"
+          size="lg"
         >
-          {verifying ? t("sourceAccess.verifying") : t("updates.failure.verify")}
-        </Button>
+          <VerifyIcon />
+        </IconButton>
         <OverflowMenu
           items={[
             { label: t("sourceAccess.verifyAndResume"), disabled: verifyDisabled,

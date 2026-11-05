@@ -74,7 +74,7 @@ function childText(node: ReactNode): string {
   return Array.isArray(node) ? node.map(childText).join(" ") : "";
 }
 const text = (view: ReactElement<Props>[]) => view.map(element => childText(element.props.children)).join(" ");
-const button = (view: ReactElement<Props>[], key: string) => view.find(element => element.props.children === key)!;
+const iconButton = (view: ReactElement<Props>[], key: string) => view.find(element => element.props.label?.includes(key))!;
 const menu = (view: ReactElement<Props>[]) => view.find(element => element.type === OverflowMenu)!.props.items!;
 const item = (view: ReactElement<Props>[], key: string) => menu(view).find(entry => entry.label === key);
 const row = (view: ReactElement<Props>[], id: string) => controls(view.find(element => element.props["data-vpn-range"] === id));
@@ -186,10 +186,12 @@ it("offers range actions only for a manual verification or a range the user paus
     { ...activePlan().ranges[1]!, id: "lane-e", phase: "paused", pauseReason: "user-paused", userPaused: true },
   );
   const view = renderDetails(value);
-  expect(row(view, "lane-a").filter(element => element.props.onClick).map(element => element.props.children)).toEqual(["vpnDownload.openVerification"]);
+  expect(row(view, "lane-a").filter(element => element.props.onClick).map(element => element.props.label)).toEqual([
+    expect.stringContaining('"action":"vpnDownload.openVerification"'),
+  ]);
   for (const id of ["lane-b", "lane-c", "lane-d"]) expect(row(view, id).some(element => element.props.onClick)).toBe(false);
-  await button(row(view, "lane-a"), "vpnDownload.openVerification").props.onClick!();
-  await button(row(renderDetails(value), "lane-e"), "vpnDownload.resume").props.onClick!();
+  await iconButton(row(view, "lane-a"), "vpnDownload.openVerification").props.onClick!();
+  await iconButton(row(renderDetails(value), "lane-e"), "vpnDownload.resume").props.onClick!();
   expect(actions.openVerification).toHaveBeenCalledWith("plan", "lane-a");
   expect(actions.resumeRange).toHaveBeenCalledWith("plan", "lane-e");
 });
@@ -197,7 +199,7 @@ it("offers range actions only for a manual verification or a range the user paus
 it("keeps a range action failure local to its range", async () => {
   const value = withPlans(activePlan());
   actions.openVerification.mockRejectedValueOnce(new Error("Worker verification failed"));
-  await button(row(renderDetails(value), "lane-a"), "vpnDownload.openVerification").props.onClick!();
+  await iconButton(row(renderDetails(value), "lane-a"), "vpnDownload.openVerification").props.onClick!();
   expect(text(row(renderDetails(value), "lane-a"))).toContain("Worker verification failed");
   expect(text(row(renderDetails(value), "lane-b"))).not.toContain("Worker verification failed");
 });
@@ -205,10 +207,10 @@ it("keeps a range action failure local to its range", async () => {
 it("offers a direct retry for failed preparation in Details but not while the run is paused", async () => {
   const value = snapshot(); value.drafts[0]!.phase = "failed"; value.drafts[0]!.error = "Catalog unavailable";
   expect(text(renderDetails(value))).toContain("Catalog unavailable");
-  await button(renderDetails(value), "common.retry").props.onClick!();
+  await iconButton(renderDetails(value), 'vpnDownload.retryPreparing{"title":"Work"}').props.onClick!();
   expect(actions.retryDraft).toHaveBeenCalledExactlyOnceWith("draft");
   value.run = { ...value.run!, status: "paused" };
-  const retry = button(renderDetails(value), "common.retry");
+  const retry = iconButton(renderDetails(value), 'vpnDownload.retryPreparing{"title":"Work"}');
   expect(retry.props.disabled).toBe(true);
   await retry.props.onClick!();
   expect(actions.retryDraft).toHaveBeenCalledOnce();
