@@ -150,6 +150,7 @@ import { SourceAccessRequiredError } from "../plugins/source-access";
 import type { ChapterResource } from "../plugins/types";
 import type { PluginVpnDownloadWorkerStatus } from "../plugin-vpn-download-workers";
 import type { ScraperExecutorId } from "./scraper-queue";
+import type { VpnDownloadWorkerRef } from "./vpn-download-types";
 import { isTauriRuntime } from "../tauri-runtime";
 import { watchChapterDownloadActivity } from "./chapter-download-activity";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
@@ -535,19 +536,25 @@ describe("VPN range chapter acquisition", () => {
     expect(completed).toBe(1);
   });
 
-  it("checks the work's stored chapters once per worker lease", async () => {
-    const lease = { ...worker };
-    const context = { executor: "vpn:0:8" as const, setDetail: vi.fn(), setProgress: vi.fn(),
-      signal: new AbortController().signal, taskId: "task-1" };
-    enqueueVpnDownloadChapter(job, lease, async () => undefined);
-    await capturedSpec!.run(context);
-    enqueueVpnDownloadChapter({ ...job, id: 8, chapterPath: "/chapter/8" }, lease, async () => undefined);
-    await capturedSpec!.run({ ...context, taskId: "task-2" });
+  it("checks the work's stored chapters once per plan across rotated leases and sibling ranges", async () => {
+    const scanned = { ...job, vpnPlanId: "plan-scanned" };
+    const run = async (value: ChapterDownloadJob, lease: VpnDownloadWorkerRef) => {
+      tauriMocks.invoke.mockResolvedValueOnce({ ...connected, worker: lease });
+      enqueueVpnDownloadChapter(value, lease, async () => undefined);
+      await capturedSpec!.run({ executor: `vpn:${lease.slot}:${lease.generation}` as ScraperExecutorId, setDetail: vi.fn(),
+        setProgress: vi.fn(), signal: new AbortController().signal, taskId: `task-${value.id}` });
+    };
+    await run(scanned, worker);
+    await run({ ...scanned, id: 8, chapterPath: "/chapter/8" }, worker);
+    await run({ ...scanned, id: 9, chapterPath: "/chapter/9" }, { ...worker, slot: 1, generation: 9 });
+    await run({ ...scanned, id: 10, chapterPath: "/chapter/10", vpnRangeId: "range-b" }, { rangeId: "range-b", slot: 0, generation: 10 });
     expect(refreshStoredNovelChapterDownloads).toHaveBeenCalledExactlyOnceWith(11);
 
-    enqueueVpnDownloadChapter({ ...job, id: 9, chapterPath: "/chapter/9" }, { ...worker }, async () => undefined);
-    await capturedSpec!.run({ ...context, taskId: "task-3" });
-    expect(refreshStoredNovelChapterDownloads).toHaveBeenCalledTimes(2);
+    const chapter = (await getChapterById(7))!;
+    vi.mocked(getChapterById).mockResolvedValueOnce({ ...chapter, novelId: 13 }).mockResolvedValueOnce({ ...chapter, novelId: 13 });
+    await run({ ...scanned, id: 12, chapterPath: "/chapter/12", novelId: 13 }, { ...worker, generation: 11 });
+    await run({ ...scanned, id: 14, chapterPath: "/chapter/14", vpnPlanId: "plan-next" }, { ...worker, generation: 12 });
+    expect(vi.mocked(refreshStoredNovelChapterDownloads).mock.calls).toEqual([[11], [13], [11]]);
   });
 
   it.each([

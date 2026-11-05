@@ -1681,8 +1681,9 @@ export function enqueueChapterDownload(
   return enqueueChapterDownloadForExecutor(job);
 }
 
-// A lease downloads its range chapter by chapter, so like a batch it checks the work's stored chapters once.
-const vpnLeaseLocalWorkScans = new WeakMap<VpnDownloadWorkerRef, Map<number, Promise<void>>>();
+// A plan downloads one work like a batch does, so it checks the work's stored chapters once however often its
+// ranges rotate worker leases; chapters it downloads later update their own rows.
+const vpnPlanLocalWorkScans = new Map<string, Map<number, Promise<void>>>();
 
 export function enqueueVpnDownloadChapter(
   job: ChapterDownloadJob,
@@ -1692,10 +1693,10 @@ export function enqueueVpnDownloadChapter(
   if (!job.vpnPlanId || job.vpnRangeId !== worker.rangeId) {
     throw new Error("VPN download chapter range ownership does not match its worker.");
   }
-  let localWorkScans = vpnLeaseLocalWorkScans.get(worker);
+  let localWorkScans = vpnPlanLocalWorkScans.get(job.vpnPlanId);
   if (!localWorkScans) {
     localWorkScans = new Map();
-    vpnLeaseLocalWorkScans.set(worker, localWorkScans);
+    vpnPlanLocalWorkScans.set(job.vpnPlanId, localWorkScans);
   }
   return enqueueChapterDownloadForExecutor(job, {
     persistBeforeStart: false,
