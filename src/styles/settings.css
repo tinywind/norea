@@ -400,10 +400,19 @@ html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-tex
   min-width: 6.5rem;
 }
 
+/* A row with a field or value keeps one line: the field shrinks and its actions stay beside it. */
+.norea-settings-inline-controls:has(> :where(.mantine-InputWrapper-root, .norea-settings-profile-host, .mantine-Select-root)) {
+  flex-wrap: nowrap;
+}
+
 /* The profile host reads as a value box that takes the space its icon actions leave. */
 .norea-settings-inline-controls > .norea-settings-profile-host {
-  flex: 1 1 auto;
+  flex: 1 1 0;
+  min-width: 0;
+  overflow: hidden;
   padding-block: var(--norea-space-2);
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .norea-settings-inline-controls > :where(.mantine-Text-root) {
@@ -694,6 +703,12 @@ html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-tex
   .norea-settings-form-control > *,
   .norea-settings-inline-controls {
     width: 100%;
+  }
+
+  /* Icon buttons, switches and chips keep their own size at the right edge on phones too. */
+  .norea-settings-form-control > :where(.norea-icon-button, .mantine-ActionIcon-root, .mantine-Switch-root, .norea-console-chip) {
+    justify-self: end;
+    width: auto;
   }
 
   .norea-settings-inline-controls {
