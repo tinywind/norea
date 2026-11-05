@@ -49,9 +49,24 @@ vi.mock("../lib/network", () => ({
   useNetworkStore: (select: (state: { connectivity: string }) => unknown) => select({ connectivity: "online" }),
 }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ locale: "en", t: (key: string) => key }) }));
+vi.mock("../store/plugin-vpn-finder", async original => {
+  const actual = await original<typeof import("../store/plugin-vpn-finder")>();
+  const store = actual.usePluginVpnFinderStore;
+  return {
+    ...actual,
+    usePluginVpnFinderStore: Object.assign(
+      <T,>(select: (state: ReturnType<typeof store.getState>) => T) => select(store.getState()),
+      store,
+    ),
+  };
+});
 
 import { QueryClient as ActualQueryClient } from "@tanstack/react-query";
-import { Loader, Switch, Table } from "@mantine/core";
+import { Loader, Select, Switch, Table, TextInput } from "@mantine/core";
+import {
+  DEFAULT_PLUGIN_VPN_FINDER_FILTERS,
+  usePluginVpnFinderStore,
+} from "../store/plugin-vpn-finder";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { PluginVpnFinder } from "./PluginVpnFinder";
 import { IconButton } from "./IconButton";
@@ -67,7 +82,8 @@ interface ControlProps {
   label?: string;
   onClose?: () => void;
   onClick?: () => void;
-  onChange?: (event: { currentTarget: { checked: boolean } }) => void;
+  onChange?: (event: { currentTarget: { checked: boolean; value: string } }) => void;
+  value?: unknown;
 }
 function controls(node: ReactNode): ReactElement<ControlProps>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
@@ -93,6 +109,7 @@ function render(
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.state = [];
+  usePluginVpnFinderStore.setState({ filters: DEFAULT_PLUGIN_VPN_FINDER_FILTERS });
   mocks.client = new ActualQueryClient({ defaultOptions: { queries: { retry: false } } });
   mocks.load.mockResolvedValue([server]);
 });
@@ -149,7 +166,7 @@ it("starts with failed verdicts hidden and reveals them when the user disables t
   expect(hidden.some(element => element.type === Table.Tbody)).toBe(false);
   const filter = hidden.find(element => element.type === Switch)!;
   expect(filter.props.checked).toBe(true);
-  filter.props.onChange!({ currentTarget: { checked: false } });
+  filter.props.onChange!({ currentTarget: { checked: false, value: "" } });
   expect(render(true, verdicts).some(element => element.type === Table.Tbody)).toBe(true);
   expect(mocks.load).toHaveBeenCalledOnce();
 });
@@ -192,4 +209,38 @@ it("closes once a connection started here is up, and stays open on an existing c
   expect(mocks.onClose).not.toHaveBeenCalled();
   render(true, new Map(), { connectionPhase: "connected", onApplyAndConnect });
   expect(mocks.onClose).toHaveBeenCalledOnce();
+});
+
+it("keeps search conditions after the finder closes and the settings page remounts", async () => {
+  const korea: PluginVpnFinderServer = { ...server, candidateId: "two", countryCode: "KR", countryName: "Korea", ip: "203.0.113.2" };
+  mocks.load.mockResolvedValue([server, korea]);
+  render();
+  await vi.waitFor(() => expect(mocks.observer?.getCurrentResult().isSuccess).toBe(true));
+  const view = render();
+  view.find(element => element.type === TextInput)!.props.onChange!({ currentTarget: { checked: false, value: "ko" } });
+  const selects = view.filter(element => element.type === Select) as unknown as ReactElement<{ onChange: (value: string | null) => void }>[];
+  selects[0]!.props.onChange("KR");
+  selects[1]!.props.onChange("udp");
+  selects[2]!.props.onChange("ping");
+  view.find(element => element.type === Switch)!.props.onChange!({ currentTarget: { checked: false, value: "" } });
+  render().find(element => element.type === ResponsiveSheet)!.props.onClose!();
+  render(false);
+
+  mocks.state = [];
+  const reopened = render();
+  expect(reopened.find(element => element.type === TextInput)!.props.value).toBe("ko");
+  expect(reopened.filter(element => element.type === Select).map(element => element.props.value))
+    .toEqual(["KR", "udp", "ping"]);
+  expect(reopened.find(element => element.type === Switch)!.props.checked).toBe(false);
+  expect(reopened.filter(element => element.type === Table.Tr)).toHaveLength(2);
+});
+
+it("lists every country when a remembered country is missing from the current servers", async () => {
+  usePluginVpnFinderStore.getState().setFilters({ countryCode: "DE" });
+  render();
+  await vi.waitFor(() => expect(mocks.observer?.getCurrentResult().isSuccess).toBe(true));
+  const view = render();
+  expect(view.find(element => element.type === Select)!.props.value).toBeNull();
+  expect(view.filter(element => element.type === Table.Tr)).toHaveLength(2);
+  expect(usePluginVpnFinderStore.getState().filters.countryCode).toBe("DE");
 });

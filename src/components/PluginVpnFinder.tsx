@@ -18,6 +18,11 @@ import type { SavedVpnProfileCaptureSource } from "../lib/plugin-vpn-profiles";
 import { useTranslation } from "../i18n";
 import { useNetworkStore } from "../lib/network";
 import {
+  usePluginVpnFinderStore,
+  type PluginVpnFinderFilters,
+  type PluginVpnFinderSort,
+} from "../store/plugin-vpn-finder";
+import {
   loadPluginVpnFinderServers,
   pluginVpnFinderLoadFailure,
   type PluginVpnFinderServer,
@@ -32,16 +37,6 @@ import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 import "../styles/plugin-vpn-finder.css";
 
 const PLUGIN_VPN_FINDER_QUERY_KEY = ["plugin-vpn", "finder"] as const;
-
-type PluginVpnFinderSort = "ping" | "score" | "speed";
-
-interface PluginVpnFinderFilters {
-  countryCode: string;
-  hideFailed?: boolean;
-  protocol: "" | PluginVpnServerProtocol;
-  search: string;
-  sort: PluginVpnFinderSort;
-}
 
 interface PluginVpnFinderProps {
   connectionError: string | null;
@@ -98,7 +93,7 @@ function comparePing(
 
 export function filterAndSortPluginVpnServers(
   servers: PluginVpnFinderServer[],
-  filters: PluginVpnFinderFilters,
+  filters: Omit<PluginVpnFinderFilters, "hideFailed"> & { hideFailed?: boolean },
   verdicts: ReadonlyMap<string, VpnGateServerVerdictValue> = new Map(),
 ): PluginVpnFinderServer[] {
   const search = filters.search.trim().toLocaleLowerCase();
@@ -135,6 +130,16 @@ export function filterAndSortPluginVpnServers(
       }
       return order || left.candidateId.localeCompare(right.candidateId);
     });
+}
+
+/** A remembered country that the current server list no longer offers falls back to every country. */
+export function pluginVpnFinderAvailableCountry(
+  countryCode: string,
+  countries: readonly { value: string }[],
+): string {
+  return countries.some((country) => country.value === countryCode)
+    ? countryCode
+    : "";
 }
 
 function countryFlag(countryCode: string): string {
@@ -207,16 +212,13 @@ export function PluginVpnFinder({
   const { locale, t } = useTranslation();
   const online = useNetworkStore((state) => state.connectivity === "online");
   const queryClient = useQueryClient();
-  const [countryCode, setCountryCode] = useState("");
+  const filters = usePluginVpnFinderStore((state) => state.filters);
+  const setFilters = usePluginVpnFinderStore((state) => state.setFilters);
   const [catalogStopped, setCatalogStopped] = useState(false);
-  const [hideFailed, setHideFailed] = useState(true);
   const forceRefresh = useRef(false);
   const [selectedConnectionTarget, setSelectedConnectionTarget] = useState<
     string | null
   >(null);
-  const [protocol, setProtocol] = useState<"" | PluginVpnServerProtocol>("");
-  const [search, setSearch] = useState("");
-  const [sort, setSort] = useState<PluginVpnFinderSort>("score");
   const serversQuery = useQuery({
     meta: { errorPresentation: "inline" },
     enabled: opened && !catalogStopped && online &&
@@ -246,16 +248,11 @@ export function PluginVpnFinder({
         })),
     [servers],
   );
+  const countryCode = pluginVpnFinderAvailableCountry(filters.countryCode, countries);
   const visibleServers = useMemo(
     () =>
-      filterAndSortPluginVpnServers(servers, {
-        countryCode,
-        hideFailed,
-        protocol,
-        search,
-        sort,
-      }, verdicts),
-    [countryCode, hideFailed, protocol, search, servers, sort, verdicts],
+      filterAndSortPluginVpnServers(servers, { ...filters, countryCode }, verdicts),
+    [countryCode, filters, servers, verdicts],
   );
   const connectionServer =
     (pendingCandidateId === null ? connectionTarget : selectedConnectionTarget) ??
@@ -434,15 +431,15 @@ export function PluginVpnFinder({
         <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
           <TextInput
             label={t("settings.data.pluginVpn.finder.search.label")}
-            onChange={(event) => setSearch(event.currentTarget.value)}
+            onChange={(event) => setFilters({ search: event.currentTarget.value })}
             placeholder={t("settings.data.pluginVpn.finder.search.placeholder")}
-            value={search}
+            value={filters.search}
           />
           <Select
             clearable
             data={countries}
             label={t("settings.data.pluginVpn.finder.country.label")}
-            onChange={(value) => setCountryCode(value ?? "")}
+            onChange={(value) => setFilters({ countryCode: value ?? "" })}
             placeholder={t("settings.data.pluginVpn.finder.country.all")}
             searchable
             value={countryCode || null}
@@ -464,9 +461,9 @@ export function PluginVpnFinder({
             ]}
             label={t("settings.data.pluginVpn.finder.protocol.label")}
             onChange={(value) =>
-              setProtocol((value ?? "") as "" | PluginVpnServerProtocol)
+              setFilters({ protocol: (value ?? "") as "" | PluginVpnServerProtocol })
             }
-            value={protocol}
+            value={filters.protocol}
           />
           <Select
             data={[
@@ -485,15 +482,15 @@ export function PluginVpnFinder({
             ]}
             label={t("settings.data.pluginVpn.finder.sort.label")}
             onChange={(value) =>
-              setSort((value ?? "score") as PluginVpnFinderSort)
+              setFilters({ sort: (value ?? "score") as PluginVpnFinderSort })
             }
-            value={sort}
+            value={filters.sort}
           />
         </SimpleGrid>
         <Switch
-          checked={hideFailed}
+          checked={filters.hideFailed}
           label={t("settings.data.pluginVpn.finder.verdict.hideFailed")}
-          onChange={(event) => setHideFailed(event.currentTarget.checked)}
+          onChange={(event) => setFilters({ hideFailed: event.currentTarget.checked })}
         />
         <Group justify="space-between">
           <Text c="dimmed" size="xs">
