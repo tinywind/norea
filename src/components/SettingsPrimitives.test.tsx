@@ -155,5 +155,12 @@ describe("inline controls", () => {
       </SettingsInlineControls>,
     );
     expect(mixed).not.toContain("data-compact");
+    const value = render(
+      <SettingsInlineControls compact>
+        <span className="norea-settings-inline-value">192.0.2.1</span>
+        <IconButton label="Mark">{null}</IconButton>
+      </SettingsInlineControls>,
+    );
+    expect(value).toContain('data-compact="true"');
   });
 });

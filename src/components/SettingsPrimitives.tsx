@@ -70,6 +70,8 @@ function labelRowControl(children: ReactNode, labelId: string): ReactNode {
 
 interface SettingsInlineControlsProps {
   children: ReactNode;
+  /** Keeps a short value or small field with its actions on the label's line on phones. */
+  compact?: boolean;
 }
 
 export function SettingsSection({
@@ -283,12 +285,13 @@ export function SettingsPercentSlider({
 
 export function SettingsInlineControls({
   children,
+  compact = false,
 }: SettingsInlineControlsProps) {
   const items = Children.toArray(children);
   const iconsOnly = items.length > 0 &&
     items.every((child) => isValidElement(child) && child.type === IconButton);
   return (
-    <div className="norea-settings-inline-controls" data-compact={iconsOnly ? "true" : undefined}>
+    <div className="norea-settings-inline-controls" data-compact={compact || iconsOnly ? "true" : undefined}>
       {children}
     </div>
   );

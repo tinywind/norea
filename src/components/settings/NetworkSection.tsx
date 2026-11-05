@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Group, PasswordInput, Text, TextInput } from "@mantine/core";
+import { PasswordInput, Text, TextInput } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ConsoleChip } from "../ConsolePrimitives";
 import { PluginVpnFinder } from "../PluginVpnFinder";
@@ -535,6 +535,42 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
               ) : null}
             </SettingsInlineControls>
           </SettingsFieldRow>
+          {currentFinderIp ? (
+            <SettingsFieldRow
+              label={t("settings.data.pluginVpn.finder.verdict.label")}
+              description={t(
+                "settings.data.pluginVpn.finder.verdict.description",
+              )}
+            >
+              <SettingsInlineControls compact>
+                <Text className="norea-settings-inline-value" size="sm">
+                  {currentFinderIp}
+                </Text>
+                <VpnGateServerVerdictControl
+                  disabled={
+                    verdictControlsDisabled ||
+                    verdictSavingIps.has(currentFinderIp)
+                  }
+                  disabledReason={
+                    verdictSavingIps.has(currentFinderIp)
+                      ? t("settings.data.pluginVpn.finder.verdict.saving")
+                      : verdictDisabledReason
+                  }
+                  ip={currentFinderIp}
+                  onChange={(verdict) =>
+                    updateServerVerdict(
+                      currentFinderIp,
+                      verdict,
+                      status?.profile
+                        ? { kind: "active", expectedHash: status.profile.hash }
+                        : undefined,
+                    )
+                  }
+                  verdict={verdicts.get(currentFinderIp) ?? null}
+                />
+              </SettingsInlineControls>
+            </SettingsFieldRow>
+          ) : null}
           {status?.profile && !status.profile.isVpnGateFinder ? (
             <SettingsAdvancedGroup
               forceOpen={status.profile.requiresUsernamePassword}
@@ -606,40 +642,6 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
             </SettingsAdvancedGroup>
           ) : null}
           <SettingsAdvancedGroup forceOpen={verdictQuery.isError}>
-            {currentFinderIp ? (
-              <SettingsFieldRow
-                label={t("settings.data.pluginVpn.finder.verdict.label")}
-                description={t(
-                  "settings.data.pluginVpn.finder.verdict.description",
-                )}
-              >
-                <Group gap="sm" wrap="nowrap">
-                  <Text size="sm">{currentFinderIp}</Text>
-                  <VpnGateServerVerdictControl
-                    disabled={
-                      verdictControlsDisabled ||
-                      verdictSavingIps.has(currentFinderIp)
-                    }
-                    disabledReason={
-                      verdictSavingIps.has(currentFinderIp)
-                        ? t("settings.data.pluginVpn.finder.verdict.saving")
-                        : verdictDisabledReason
-                    }
-                    ip={currentFinderIp}
-                    onChange={(verdict) =>
-                      updateServerVerdict(
-                        currentFinderIp,
-                        verdict,
-                        status?.profile
-                          ? { kind: "active", expectedHash: status.profile.hash }
-                          : undefined,
-                      )
-                    }
-                    verdict={verdicts.get(currentFinderIp) ?? null}
-                  />
-                </Group>
-              </SettingsFieldRow>
-            ) : null}
             <SavedVpnProfilesSettings disabled={isBusy || vpnOperation !== null} />
             <SettingsFieldRow
               description={t("settings.data.pluginVpn.tested.description")}

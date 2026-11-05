@@ -42,4 +42,20 @@ describe("network settings", () => {
     expect(markup).toMatch(/aria-expanded="false"[^>]*class="norea-settings-advanced-toggle[^>]*><span[^>]*>Advanced</);
     expect(markup).not.toContain("norea-storage-setup-error");
   });
+
+  it("judges a connected VPN Gate server in a row right after the profile, outside Advanced", () => {
+    const markup = render({
+      error: null, phase: "connected", proxyPort: 1080, supported: true,
+      profile: { hash: "abc", isVpnGateFinder: true, remoteHost: "192.0.2.10", requiresUsernamePassword: false },
+    });
+    const profileRow = markup.indexOf('data-settings-label="OpenVPN profile"');
+    const verdictRow = markup.indexOf('data-settings-label="My result"');
+    const advanced = markup.indexOf('class="norea-settings-advanced"');
+    expect(profileRow).toBeGreaterThan(-1);
+    expect(verdictRow).toBeGreaterThan(profileRow);
+    expect(advanced).toBeGreaterThan(verdictRow);
+    expect(markup.slice(verdictRow, advanced)).toMatch(
+      /class="norea-settings-inline-controls" data-compact="true"><p[^>]*class="[^"]*norea-settings-inline-value[^"]*"[^>]*>192\.0\.2\.10<\/p><button[^>]*class="[^"]*norea-vpn-gate-verdict-control/,
+    );
+  });
 });

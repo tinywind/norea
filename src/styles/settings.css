@@ -421,6 +421,11 @@ html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-tex
   white-space: nowrap;
 }
 
+/* A short value and a small custom control keep their own width at the row's right edge. */
+.norea-settings-inline-controls > :where(.norea-settings-inline-value, .norea-vpn-gate-verdict-control) {
+  flex: 0 1 auto;
+}
+
 .norea-settings-form-tooltip {
   color: var(--norea-color-ink);
   font-size: var(--norea-text-sm);
