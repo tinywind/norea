@@ -37,6 +37,7 @@ import {
   tagCollectedMediaTargets,
 } from "./html";
 import { emptyChapterMediaManifest } from "./manifest";
+import { createChapterMediaManifestWriter } from "./manifest-writer";
 import {
   collectStoredManifestMediaSources,
 } from "./recovery";
@@ -317,13 +318,15 @@ export async function cacheHtmlChapterMedia({
       }),
     );
   }
+  const manifestWriter = createChapterMediaManifestWriter(
+    () => [...mediaFilesBySourceUrl.values()],
+    (files) =>
+      withChapterDownloadWrite(chapterId, signal, () =>
+        writeChapterMediaManifest({ context: storageContext, files }),
+      ),
+  );
   if (downloadUrls.length > 0) {
-    await withChapterDownloadWrite(chapterId, signal, () =>
-      writeChapterMediaManifest({
-        context: storageContext,
-        files: [...mediaFilesBySourceUrl.values()],
-      }),
-    );
+    await manifestWriter.flush();
   }
 
   const materializeMedia = async (
@@ -480,12 +483,7 @@ export async function cacheHtmlChapterMedia({
             status: "stored",
             updatedAt: Date.now(),
           });
-          await withChapterDownloadWrite(chapterId, signal, () =>
-            writeChapterMediaManifest({
-              context: storageContext,
-              files: [...mediaFilesBySourceUrl.values()],
-            }),
-          );
+          await manifestWriter.progress();
           storedMediaCount += 1;
           const changedElements = applyResolvedMediaSource({
             baseUrl,
@@ -558,23 +556,28 @@ export async function cacheHtmlChapterMedia({
     session.reportProgress();
   };
 
-  await runBoundedTaskBatch({
-    items: downloadUrls,
-    materialize: materializeMedia,
-    shouldContinue: () =>
-      !session.failed && signal?.aborted !== true && shouldYield?.() !== true,
-    windowSize: CHAPTER_MEDIA_STORE_WINDOW,
-  });
-  session.throwIfStopped();
+  try {
+    await runBoundedTaskBatch({
+      items: downloadUrls,
+      materialize: materializeMedia,
+      shouldContinue: () =>
+        !session.failed && signal?.aborted !== true && shouldYield?.() !== true,
+      windowSize: CHAPTER_MEDIA_STORE_WINDOW,
+    });
+    session.throwIfStopped();
+  } catch (error) {
+    // Keep stored media listed for the next attempt; a cancelled download cannot write.
+    await manifestWriter.flush().catch((flushError: unknown) => {
+      if (!isMediaAbortError(flushError)) {
+        console.warn("[chapter-media] media manifest write failed", { error: flushError });
+      }
+    });
+    throw error;
+  }
 
   let mediaBytes: number;
   try {
-    await withChapterDownloadWrite(chapterId, signal, () =>
-      writeChapterMediaManifest({
-        context: storageContext,
-        files: [...mediaFilesBySourceUrl.values()],
-      }),
-    );
+    await manifestWriter.flush();
     mediaBytes = await withChapterDownloadWrite(chapterId, signal, () =>
       archiveChapterMediaCache({
         chapterId,

@@ -389,6 +389,81 @@ describe("cacheHtmlChapterMedia", () => {
     expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
   });
 
+  it("writes the coalesced manifest with stored media when the download yields", async () => {
+    let shouldYield = false;
+    pluginMediaFetchMock.mockImplementation(async () => {
+      shouldYield = true;
+      return new Response(new Uint8Array([1]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+      });
+    });
+    mockChapterMediaInvoke(async (command, args) => {
+      if (command === "chapter_media_store_handle") {
+        const input = args as { fileName: string };
+        return `norea-media://reader-asset/${input.fileName}`;
+      }
+      return null;
+    });
+
+    await expect(
+      cacheHtmlChapterMedia({
+        baseUrl: "https://source.test/chapter/",
+        chapterId: 42,
+        html: `<img src="page-1.png"><img src="page-2.png">`,
+        shouldYield: () => shouldYield,
+      }),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    const manifestWrites = invokeMock.mock.calls
+      .filter(([command]) => command === "chapter_media_write_manifest")
+      .map(([, args]) => (args as { files: { fileName: string; status: string }[] }).files);
+    expect(manifestWrites).toHaveLength(2);
+    expect(manifestWrites[1]).toEqual(expect.arrayContaining([
+      expect.objectContaining({ fileName: "0001-page-1.png", status: "stored" }),
+      expect.objectContaining({ fileName: "0002-page-2.png", status: "remote" }),
+    ]));
+    expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+  });
+
+  it("coalesces progress manifest writes and lists media only after it is stored", async () => {
+    const storedNames: string[] = [];
+    const manifestWrites: { storedBefore: string[]; files: { fileName: string; status: string }[] }[] = [];
+    pluginMediaFetchMock.mockImplementation(async () => new Response(new Uint8Array([1]), {
+      headers: { "content-type": "image/png" },
+      status: 200,
+    }));
+    mockChapterMediaInvoke(async (command, args) => {
+      if (command === "chapter_media_write_manifest") {
+        manifestWrites.push({ storedBefore: [...storedNames], files: (args as { files: typeof manifestWrites[number]["files"] }).files });
+        return null;
+      }
+      if (command === "chapter_media_store_handle") {
+        const input = args as { fileName: string };
+        storedNames.push(input.fileName);
+        return `norea-media://reader-asset/${input.fileName}`;
+      }
+      if (command === "chapter_media_archive_cache") return 3;
+      return null;
+    });
+
+    const result = await cacheHtmlChapterMedia({
+      baseUrl: "https://source.test/chapter/",
+      chapterId: 42,
+      html: `<img src="page-1.png"><img src="page-2.png"><img src="page-3.png">`,
+    });
+
+    expect(result.storedMediaCount).toBe(3);
+    expect(manifestWrites).toHaveLength(2);
+    expect(manifestWrites[0]!.files.every((file) => file.status === "remote")).toBe(true);
+    expect(manifestWrites[1]!.files.every((file) => file.status === "stored")).toBe(true);
+    for (const write of manifestWrites) {
+      for (const file of write.files.filter((entry) => entry.status === "stored")) {
+        expect(write.storedBefore).toContain(file.fileName);
+      }
+    }
+  });
+
   it("rewrites remote images through the media cache and skips local sources", async () => {
     pluginMediaFetchMock.mockImplementation(async (url) => {
       const contentType = String(url).endsWith(".webp")
@@ -1665,7 +1740,8 @@ describe("cacheHtmlChapterMedia", () => {
     mockChapterMediaInvoke(async (command, args) => {
       if (command === "chapter_media_write_manifest") {
         manifestWriteCount += 1;
-        if (manifestWriteCount === 3) throw manifestError;
+        // The initial write precedes the download; the progress write is coalesced into the final one.
+        if (manifestWriteCount === 2) throw manifestError;
         return null;
       }
       if (command === "chapter_media_archive_cache") return 3;
@@ -1690,7 +1766,7 @@ describe("cacheHtmlChapterMedia", () => {
         name: "ChapterMediaFinalizationError",
       });
 
-      expect(manifestWriteCount).toBe(3);
+      expect(manifestWriteCount).toBe(2);
       expect(invokeMock).not.toHaveBeenCalledWith(
         "chapter_media_archive_cache",
         expect.anything(),
