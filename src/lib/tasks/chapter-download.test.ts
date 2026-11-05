@@ -535,6 +535,21 @@ describe("VPN range chapter acquisition", () => {
     expect(completed).toBe(1);
   });
 
+  it("checks the work's stored chapters once per worker lease", async () => {
+    const lease = { ...worker };
+    const context = { executor: "vpn:0:8" as const, setDetail: vi.fn(), setProgress: vi.fn(),
+      signal: new AbortController().signal, taskId: "task-1" };
+    enqueueVpnDownloadChapter(job, lease, async () => undefined);
+    await capturedSpec!.run(context);
+    enqueueVpnDownloadChapter({ ...job, id: 8, chapterPath: "/chapter/8" }, lease, async () => undefined);
+    await capturedSpec!.run({ ...context, taskId: "task-2" });
+    expect(refreshStoredNovelChapterDownloads).toHaveBeenCalledExactlyOnceWith(11);
+
+    enqueueVpnDownloadChapter({ ...job, id: 9, chapterPath: "/chapter/9" }, { ...worker }, async () => undefined);
+    await capturedSpec!.run({ ...context, taskId: "task-3" });
+    expect(refreshStoredNovelChapterDownloads).toHaveBeenCalledTimes(2);
+  });
+
   it.each([
     { reason: "unsupported runtime", status: { ...connected, supported: false } },
     { reason: "disconnected tunnel", status: { ...connected, phase: "disabled" } },
