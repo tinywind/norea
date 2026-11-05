@@ -26,6 +26,7 @@ vi.mock("react", async original => ({
     return mocks.state[index];
   },
   useMemo: (compute: () => unknown) => compute(),
+  useEffect: (effect: () => void) => effect(),
 }));
 vi.mock("@tanstack/react-query", async original => {
   const actual = await original<typeof import("@tanstack/react-query")>();
@@ -173,4 +174,21 @@ it("connects from an icon button on each server and turns the pending one into a
   expect((cancel.props.children as ReactElement).type).toBe(Loader);
   cancel.props.onClick!();
   await vi.waitFor(() => expect(onCancelConnection).toHaveBeenCalledOnce());
+});
+
+it("closes once a connection started here is up, and stays open on an existing connection", async () => {
+  render();
+  await vi.waitFor(() => expect(mocks.observer?.getCurrentResult().isSuccess).toBe(true));
+  const onApplyAndConnect = vi.fn().mockResolvedValue(undefined);
+  const connected = render(true, new Map(), { connectionPhase: "connected", onApplyAndConnect });
+  expect(mocks.onClose).not.toHaveBeenCalled();
+  connected.find(element => element.type === IconButton &&
+    element.props.label === "settings.data.pluginVpn.connection.connect")!.props.onClick!();
+  await vi.waitFor(() => expect(onApplyAndConnect).toHaveBeenCalledWith("one"));
+  render(true, new Map(), { connectionPhase: "connected", onApplyAndConnect });
+  expect(mocks.onClose).not.toHaveBeenCalled();
+  render(true, new Map(), { connectionPhase: "connecting", onApplyAndConnect, pendingCandidateId: "one" });
+  expect(mocks.onClose).not.toHaveBeenCalled();
+  render(true, new Map(), { connectionPhase: "connected", onApplyAndConnect });
+  expect(mocks.onClose).toHaveBeenCalledOnce();
 });

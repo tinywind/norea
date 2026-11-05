@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Badge,
   Group,
@@ -261,16 +261,30 @@ export function PluginVpnFinder({
     (pendingCandidateId === null ? connectionTarget : selectedConnectionTarget) ??
     t("settings.data.pluginVpn.finder.status.selectedServer");
 
+  const connectRequest = useRef<"idle" | "requested" | "started">("idle");
+
+  // A connection started here closes the finder once it is up; the settings row shows the result.
+  useEffect(() => {
+    const starting = pendingCandidateId !== null ||
+      connectionPhase === "connecting" || connectionPhase === "reconnecting";
+    if (connectRequest.current === "requested" && starting) connectRequest.current = "started";
+    if (connectRequest.current !== "started" || starting) return;
+    connectRequest.current = "idle";
+    if (connectionPhase === "connected") closeFinder();
+  });
+
   async function applyAndConnect(
     candidateId: string,
     target: string,
   ): Promise<void> {
     if (pluginVpnFinderServerAction(candidateId, pendingCandidateId) === "cancel") {
+      connectRequest.current = "idle";
       await onCancelConnection();
       return;
     }
     if (!disabled) {
       setSelectedConnectionTarget(target);
+      connectRequest.current = "requested";
       await onApplyAndConnect(candidateId);
     }
   }
