@@ -1,4 +1,4 @@
-import { Stack, Text } from "@mantine/core";
+import { Stack } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState, useSyncExternalStore } from "react";
@@ -22,12 +22,12 @@ import { useTaskSnapshot } from "../../lib/tasks/hooks";
 import { useBrowseStore } from "../../store/browse";
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { type DefaultChapterSort } from "../../store/library";
-import { DownloadGoalChoices, DownloadGoalSpacer, sameDownloadGoal } from "../DownloadGoalChoices";
+import { DownloadGoalChoices, DownloadGoalSection, sameDownloadGoal } from "../DownloadGoalChoices";
 import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
 import { StateView } from "../AppFrame";
 import { BRIEF_TOAST_AUTO_CLOSE_MS } from "../ui/AppToasts";
 import { IconButton } from "../IconButton";
-import { SortIcon } from "../ui/icons";
+import { ChevronRightIcon, SelectIcon, SortIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
@@ -39,12 +39,15 @@ interface NovelDownloadGoalSheetProps {
   lastReadChapterId: number | undefined;
   novel: NovelDetailRecord;
   onClose: () => void;
-  /** "Selected chapters once": hands over to chapter selection. */
+  /** The one-time "Choose chapters" action: hands over to chapter selection. */
   onSelectChapters: () => void;
   opened: boolean;
 }
 
-/** The novel's download goal choices with a status line for the goal in effect. */
+/**
+ * The novel's download sheet: the current download state, the automatic
+ * download goal as one choice, and one-time download actions apart from it.
+ */
 export function NovelDownloadGoalSheet({ onClose, opened, ...props }: NovelDownloadGoalSheetProps) {
   const { t } = useTranslation();
   return (
@@ -183,34 +186,40 @@ function NovelDownloadGoalChoices({
   const remaining = goalTargetChapters({ kind: "all_remaining" }, chapters, lastReadChapterId).length;
 
   return (
-    <Stack gap="xs">
-      <Text c="dimmed" data-download-goal-status={progress.kind} role="status" size="sm">{status}</Text>
-      {error ? (
-        <StateView
-          color="danger"
-          details={{ content: describeError(error), label: t("common.details") }}
-          title={t("downloadGoals.chosen.failed")}
+    <Stack gap="md">
+      <div className="norea-download-goal-status">
+        <p className="norea-download-goal-status-line" data-download-goal-status={progress.kind} role="status">{status}</p>
+        {isDefault ? (
+          <p className="norea-download-goal-status-note">{t("downloadGoals.status.defaultApplies", { count: defaultKeepAhead })}</p>
+        ) : null}
+      </div>
+      <DownloadGoalSection title={t("downloadGoals.section.goal")}>
+        {error ? (
+          <StateView
+            color="danger"
+            details={{ content: describeError(error), label: t("common.details") }}
+            title={t("downloadGoals.chosen.failed")}
+          />
+        ) : null}
+        <DownloadGoalChoices
+          allRemainingDescription={t("downloadGoals.kind.allRemaining.description", { count: remaining })}
+          current={ownGoal}
+          disabled={saving}
+          entireDescription={t("downloadGoals.kind.entire.description", { count: chapters.length })}
+          onChoose={(next) => void choose(next, ownGoal)}
+          pending={saving}
         />
-      ) : null}
-      <DownloadGoalChoices
-        allRemainingDescription={t("downloadGoals.kind.allRemaining.description", { count: remaining })}
-        current={ownGoal}
-        disabled={saving}
-        entireDescription={t("downloadGoals.kind.entire.description", { count: chapters.length })}
-        onChoose={(next) => void choose(next, ownGoal)}
-        pending={saving}
-      >
+      </DownloadGoalSection>
+      <DownloadGoalSection title={t("downloadGoals.section.once")}>
         <ListRow
           disabled={chapters.length === 0}
-          leading={<DownloadGoalSpacer />}
+          leading={<SelectIcon size="1.25rem" />}
           onClick={() => { onClose(); onSelectChapters(); }}
-          subtitle={t("downloadGoals.kind.selected.description")}
-          title={t("downloadGoals.kind.selected")}
+          subtitle={t("downloadGoals.once.selected.description")}
+          title={t("downloadGoals.once.selected")}
+          trailing={<ChevronRightIcon size="1.125rem" />}
         />
-      </DownloadGoalChoices>
-      {isDefault ? (
-        <Text c="dimmed" size="xs">{t("downloadGoals.status.defaultApplies", { count: defaultKeepAhead })}</Text>
-      ) : null}
+      </DownloadGoalSection>
     </Stack>
   );
 }

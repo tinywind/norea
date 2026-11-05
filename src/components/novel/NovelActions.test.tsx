@@ -68,7 +68,7 @@ it("shows progress, an estimate and the route while the goal downloads", () => {
 
   expect($("[role='status']").text()).toBe(
     'downloadGoals.status.downloading({"done":2,"total":4}) · downloadGoals.eta.minutes({"count":25}) · downloadGoals.route.server');
-  expect($("button[aria-pressed='true']").text()).toContain("downloadGoals.kind.entire");
+  expect($("[role='radio'][aria-checked='true']").text()).toContain("downloadGoals.kind.entire");
 });
 
 it("says the novel is set and lists missing images once the goal is met", () => {
@@ -76,22 +76,22 @@ it("says the novel is set and lists missing images once the goal is met", () => 
   const $ = render(chapters, { kind: "keep_ahead", count: 5 });
   expect($("[role='status']").text()).toBe(
     'downloadGoals.status.satisfied({"count":2}) · downloadGoals.status.missingImages({"count":1})');
-  expect($("button[aria-pressed='true']").text()).toContain('downloadGoals.kind.keepAhead.description({"count":5})');
+  expect($("[role='radio'][aria-checked='true']").text()).toContain('downloadGoals.kind.keepAhead.description({"count":5})');
 });
 
 it("explains the default for an active library novel without its own goal and reports paused work", () => {
   mocks.pause = "metered";
   const $ = render([chapter(1), chapter(2)], null);
   expect($("[role='status']").text()).toBe("downloadGoals.status.paused");
-  expect($("button[aria-pressed='true']").text()).toContain("downloadGoals.kind.default");
-  expect($("button[aria-pressed='true']").text()).toContain('downloadGoals.kind.default.keepAhead({"count":3})');
+  expect($("[role='radio'][aria-checked='true']").text()).toContain("downloadGoals.kind.default");
+  expect($("[role='radio'][aria-checked='true']").text()).toContain('downloadGoals.kind.default.keepAhead({"count":3})');
   expect($.text()).toContain('downloadGoals.status.defaultApplies({"count":3})');
 });
 
 it("keeps an active library novel set to None out of the default keep-ahead", () => {
   const $ = render([chapter(1, { isDownloaded: true, contentBytes: 1 }), chapter(2)], { kind: "none" });
   expect($("[role='status']").text()).toBe('downloadGoals.status.onDevice({"count":1})');
-  const selected = $("button[aria-pressed='true']");
+  const selected = $("[role='radio'][aria-checked='true']");
   expect(selected).toHaveLength(1);
   expect(selected.text()).toContain("downloadGoals.kind.none.description");
   expect($.text()).not.toContain("downloadGoals.status.defaultApplies");
@@ -100,4 +100,19 @@ it("keeps an active library novel set to None out of the default keep-ahead", ()
 it("reports an uninstalled source for a goal", () => {
   mocks.plugin = false;
   expect(render([chapter(1)], { kind: "entire" })("[role='status']").text()).toBe("downloadGoals.status.sourceUnavailable");
+});
+
+it("keeps the one-time chapter choice out of the automatic goal's single choice", () => {
+  const $ = render([chapter(1), chapter(2)], { kind: "entire" });
+  const sections = $(".norea-download-goal-section");
+  expect(sections.map((_, section) => $(section).children("h3").text()).get())
+    .toEqual(["downloadGoals.section.goal", "downloadGoals.section.once"]);
+  const goal = sections.eq(0).find("[role='radiogroup']");
+  expect(goal.attr("aria-label")).toBe("downloadGoals.section.goal");
+  expect(goal.find("[role='radio']")).toHaveLength(5);
+  const once = sections.eq(1).find("button");
+  expect(once).toHaveLength(1);
+  expect(once.attr("role")).toBeUndefined();
+  expect(once.text()).toContain("downloadGoals.once.selected");
+  expect($("[role='radiogroup']").text()).not.toContain("downloadGoals.once.selected");
 });

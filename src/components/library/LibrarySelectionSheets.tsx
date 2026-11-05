@@ -11,10 +11,10 @@ import {
   type StoredNovelDownloadGoal,
 } from "../../db/queries/novel-download-goal";
 import { useTranslation } from "../../i18n";
-import { DownloadGoalChoices, DownloadGoalSpacer, sameDownloadGoal } from "../DownloadGoalChoices";
+import { DownloadGoalChoices, DownloadGoalSection, sameDownloadGoal } from "../DownloadGoalChoices";
 import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
 import { IconButton } from "../IconButton";
-import { PlusIcon } from "../ui/icons";
+import { DownloadIcon, PlusIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
@@ -47,7 +47,7 @@ interface LibraryDownloadGoalSheetProps {
   opened: boolean;
 }
 
-/** The download goal choices for the selected novels, the goal they share marked, and a one-time download. */
+/** The automatic download goal for the selected novels, the goal they share checked, and a one-time download apart from it. */
 export function LibraryDownloadGoalSheet({
   applying,
   novelIds,
@@ -66,25 +66,30 @@ export function LibraryDownloadGoalSheet({
       opened={opened}
       title={t("library.downloadGoal.title", { count: novelIds.length })}
     >
-      <DownloadGoalChoices
-        allRemainingDescription={t("downloadGoals.kind.allRemaining.many")}
-        current={current}
-        disabled={applying || novelIds.length === 0}
-        entireDescription={t("downloadGoals.kind.entire.many")}
-        onChoose={(goal) => {
-          if (current !== undefined && sameDownloadGoal(goal, current)) onClose();
-          else onApply(goal);
-        }}
-        pending={applying}
-      >
-        <ListRow
-          disabled={applying || novelIds.length === 0}
-          leading={<DownloadGoalSpacer />}
-          onClick={onDownloadOnce}
-          subtitle={t("library.downloadOnce.description")}
-          title={t("library.downloadOnce.title")}
-        />
-      </DownloadGoalChoices>
+      <Stack gap="md">
+        <DownloadGoalSection title={t("downloadGoals.section.goal")}>
+          <DownloadGoalChoices
+            allRemainingDescription={t("downloadGoals.kind.allRemaining.many")}
+            current={current}
+            disabled={applying || novelIds.length === 0}
+            entireDescription={t("downloadGoals.kind.entire.many")}
+            onChoose={(goal) => {
+              if (current !== undefined && sameDownloadGoal(goal, current)) onClose();
+              else onApply(goal);
+            }}
+            pending={applying}
+          />
+        </DownloadGoalSection>
+        <DownloadGoalSection title={t("downloadGoals.section.once")}>
+          <ListRow
+            disabled={applying || novelIds.length === 0}
+            leading={<DownloadIcon size="1.25rem" />}
+            onClick={onDownloadOnce}
+            subtitle={t("library.downloadOnce.description")}
+            title={t("library.downloadOnce.title")}
+          />
+        </DownloadGoalSection>
+      </Stack>
     </ResponsiveSheet>
   );
 }

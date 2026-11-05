@@ -1,10 +1,9 @@
 import { Loader, Stack } from "@mantine/core";
-import { useState, type ReactNode } from "react";
+import { useId, useState, type ReactNode } from "react";
 import type { NovelDownloadGoal } from "../db/queries/novel-download-goal";
 import { useTranslation } from "../i18n";
 import { useDownloadGoalSettingsStore } from "../store/download-goals";
 import { SegmentedToggle } from "./SegmentedToggle";
-import { CheckIcon } from "./ui/icons";
 import { ListRow } from "./ui/ListRow";
 import "../styles/download-goals.css";
 
@@ -12,6 +11,22 @@ export const KEEP_AHEAD_GOAL_CHOICES = [3, 5, 10, 30] as const;
 
 export const sameDownloadGoal = (left: NovelDownloadGoal | null, right: NovelDownloadGoal | null) =>
   JSON.stringify(left) === JSON.stringify(right);
+
+interface DownloadGoalSectionProps {
+  children: ReactNode;
+  title: string;
+}
+
+/** A titled part of a download sheet: the automatic goal, or the one-time actions. */
+export function DownloadGoalSection({ children, title }: DownloadGoalSectionProps) {
+  const titleId = useId();
+  return (
+    <section aria-labelledby={titleId} className="norea-download-goal-section">
+      <h3 className="norea-download-goal-section-title" id={titleId}>{title}</h3>
+      {children}
+    </section>
+  );
+}
 
 interface DownloadGoalChoicesProps {
   /** The own goal every novel shares, null when all follow the default, undefined when they differ. */
@@ -23,18 +38,11 @@ interface DownloadGoalChoicesProps {
   onChoose: (goal: NovelDownloadGoal | null) => void;
   allRemainingDescription: string;
   entireDescription: string;
-  /** Rows after the goal choices, such as a one-time selection. */
-  children?: ReactNode;
 }
 
-export function DownloadGoalSpacer() {
-  return <span aria-hidden="true" className="norea-download-goal-spacer" />;
-}
-
-/** Use default, None, Keep N ahead, All remaining and Entire novel, with the shared goal marked. */
+/** Use default, None, Keep N ahead, All remaining and Entire novel as one choice, with the shared goal checked. */
 export function DownloadGoalChoices({
   allRemainingDescription,
-  children,
   current,
   disabled,
   entireDescription,
@@ -58,13 +66,16 @@ export function DownloadGoalChoices({
     return (
       <ListRow
         aria-busy={busy || undefined}
-        aria-pressed={selected}
+        aria-checked={selected}
         disabled={disabled}
         key={key}
         leading={busy ? (
           <Loader aria-hidden="true" className="norea-download-goal-pending" size="xs" />
-        ) : selected ? <CheckIcon size="1.125rem" /> : <DownloadGoalSpacer />}
+        ) : (
+          <span aria-hidden="true" className="norea-download-goal-radio" data-checked={selected || undefined} />
+        )}
         onClick={() => choose(key, choice)}
+        role="radio"
         selected={selected}
         subtitle={subtitle}
         title={title}
@@ -73,7 +84,7 @@ export function DownloadGoalChoices({
   };
 
   return (
-    <Stack gap={0}>
+    <Stack aria-label={t("downloadGoals.section.goal")} gap={0} role="radiogroup">
       {choiceRow("default", null, t("downloadGoals.kind.default"), defaultKeepAhead > 0
         ? t("downloadGoals.kind.default.keepAhead", { count: defaultKeepAhead })
         : t("downloadGoals.kind.default.off"))}
@@ -94,7 +105,6 @@ export function DownloadGoalChoices({
       />
       {choiceRow("remaining", { kind: "all_remaining" }, t("downloadGoals.kind.allRemaining"), allRemainingDescription)}
       {choiceRow("entire", { kind: "entire" }, t("downloadGoals.kind.entire"), entireDescription)}
-      {children}
     </Stack>
   );
 }

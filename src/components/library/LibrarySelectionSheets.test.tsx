@@ -14,11 +14,12 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../DownloadGoalChoices", () => ({
   DownloadGoalChoices: () => null,
-  DownloadGoalSpacer: () => null,
+  DownloadGoalSection: () => null,
   sameDownloadGoal: (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right),
 }));
 vi.mock("../ui/ResponsiveSheet", () => ({ ResponsiveSheet: () => null }));
 
+import { DownloadGoalSection } from "../DownloadGoalChoices";
 import {
   LibraryCategorySheet,
   LibraryDownloadGoalSheet,
@@ -111,8 +112,10 @@ it("applies a goal choice to the selection, or just closes on the goal they alre
   }
   harness = mountBackNavigationHarness();
   await harness.render(<GoalProbe />);
-  const choices = tree.props.children as ReactElement<{
-    children: ReactElement<{ onClick: () => void; title: string }>;
+  const sections = elements().filter((element) => element.type === DownloadGoalSection);
+  expect(sections.map((section) => section.props.title)).toEqual(["downloadGoals.section.goal", "downloadGoals.section.once"]);
+  const [goalSection, onceSection] = sections as [ReactElement<{ children: ReactNode }>, ReactElement<{ children: ReactNode }>];
+  const choices = goalSection.props.children as ReactElement<{
     current: unknown;
     onChoose: (goal: unknown) => void;
   }>;
@@ -123,7 +126,7 @@ it("applies a goal choice to the selection, or just closes on the goal they alre
   choices.props.onChoose({ kind: "none" });
   expect(apply).toHaveBeenCalledWith({ kind: "none" });
 
-  const once = choices.props.children;
+  const once = onceSection.props.children as ReactElement<{ onClick: () => void; title: string }>;
   expect(once.props.title).toBe("library.downloadOnce.title");
   once.props.onClick();
   expect(downloadOnce).toHaveBeenCalledTimes(1);
