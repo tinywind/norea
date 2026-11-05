@@ -66,6 +66,8 @@ interface WorkerLease {
   connected: boolean;
   closing?: Promise<void>;
   cleanupError?: unknown;
+  /** The chapter this lease already retried once after a scraper timeout. */
+  timeoutRetryChapterId?: number;
 }
 
 type ChapterResult = { ok: true } | { ok: false; error: unknown };
@@ -101,6 +103,8 @@ interface RangeRuntime {
   discoveredEpoch?: number;
   /** Wakes a chapter retry backoff early when the range halts. */
   retryWait?: AbortController;
+  /** When the range last gave up a failed lease, so waiting ranges reach the freed slot before it reconnects. */
+  yieldedAt?: number;
 }
 
 const MAX_PROFILE_TESTS = 3;
@@ -118,8 +122,10 @@ const consumeReallow = (range: VpnDownloadRangeState, profileId: string, issue: 
     [profileId]: Math.max(range.consumedReallowRevisions?.[profileId] ?? 0, issue.revision),
   };
 };
-const isRetryableScraperFailure = (error: unknown): boolean => error instanceof Error &&
-  /^(?:webview_(?:fetch|extract): (?:timeout|timed out)\b|Android scraper (?:fetch|extract) timed out$|scraper: navigation failed \(-11\): net::ERR_TUNNEL_CONNECTION_FAILED at https?:\/\/)/i.test(error.message);
+const isScraperTimeout = (error: unknown): boolean => error instanceof Error &&
+  /^(?:webview_(?:fetch|extract): (?:timeout|timed out)\b|Android scraper (?:fetch|extract) timed out$)/i.test(error.message);
+const isRetryableScraperFailure = (error: unknown): boolean => isScraperTimeout(error) || error instanceof Error &&
+  /^scraper: navigation failed \(-11\): net::ERR_TUNNEL_CONNECTION_FAILED at https?:\/\//i.test(error.message);
 
 function freezePlan(input: VpnDownloadPlan): VpnDownloadPlan {
   const plan = clone(input);
@@ -162,6 +168,7 @@ export class VpnDownloadCoordinator {
   private readonly connectedProfiles = new Map<string, number>();
   private successSequence = 0;
   private readonly failedProfiles = new Map<string, number>();
+  private yieldSequence = 0;
 
   constructor(private readonly runtime: VpnDownloadRuntime) {
     this.online = runtime.isOnline();
@@ -587,10 +594,11 @@ export class VpnDownloadCoordinator {
     });
   }
 
-  /** Stable priority: plan creation order, then range order inside the plan. */
+  /** Plan creation order, then range order inside the plan; ranges that gave up a failed lease follow, oldest yield first. */
   private dispatchOrder(): RangeRuntime[] {
     const plans = [...this.plans.values()].sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
-    return plans.flatMap(plan => plan.ranges.map(state => this.ranges.get(key(plan.id, state.id))).filter((range): range is RangeRuntime => range !== undefined));
+    return plans.flatMap(plan => plan.ranges.map(state => this.ranges.get(key(plan.id, state.id))).filter((range): range is RangeRuntime => range !== undefined))
+      .sort((left, right) => (left.yieldedAt ?? 0) - (right.yieldedAt ?? 0));
   }
 
   private occupiedSlots(): number {
@@ -821,9 +829,15 @@ export class VpnDownloadCoordinator {
           await this.excludeProfile(range, lease, "tunnel-lost");
           await this.updateRange(range, next => { addAttempt(next, lease.profile.id); next.attemptProfileId = null; next.phase = "paused"; }, epoch);
           await this.closeLease(lease);
-          continue;
+          range.yieldedAt = ++this.yieldSequence;
+          return;
         }
         else if (isRetryableScraperFailure(outcome.error)) {
+          if (isScraperTimeout(outcome.error) && lease.timeoutRetryChapterId !== chapterId) {
+            // A slow page may load on a second try; a new profile costs a VPN reconnect and a new WebView renderer.
+            lease.timeoutRetryChapterId = chapterId;
+            continue;
+          }
           const issue = this.profileIssues.get(plan.batchId)?.get(lease.profile.ip);
           await this.updateRange(range, next => {
             if (terminal(next) || next.generation !== lease.ref.generation || next.checkpoint !== state.checkpoint) return;
@@ -837,7 +851,8 @@ export class VpnDownloadCoordinator {
             await this.fail(range, epoch, "download-failed", outcome.error);
             return;
           }
-          continue;
+          range.yieldedAt = ++this.yieldSequence;
+          return;
         }
         else {
           const failure = await this.recordChapterFailure(job, outcome.error);
