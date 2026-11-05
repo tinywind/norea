@@ -5,7 +5,8 @@ import { taskScheduler } from "../lib/tasks/scheduler";
 import { openSourceAccessBrowser } from "../lib/tasks/source-access-coordinator";
 import type { SourceAccessBlock } from "../lib/tasks/source-access-gate";
 import { useSiteBrowserStore } from "../store/site-browser";
-import { WarningIcon } from "./ui/icons";
+import { IconButton } from "./IconButton";
+import { VerifyIcon, WarningIcon } from "./ui/icons";
 
 /** Looks up the open source-access challenge of a source, if any. */
 export function useSourceAccessBlocks(
@@ -17,6 +18,8 @@ export function useSourceAccessBlocks(
 
 interface SourceAccessVerifyButtonProps {
   block: SourceAccessBlock;
+  /** Draws an icon button named by `label`, for rows whose label already names the source. */
+  iconOnly?: boolean;
   label: string;
   sourceName: string;
 }
@@ -24,30 +27,40 @@ interface SourceAccessVerifyButtonProps {
 /** Opens the source-access browser for a blocked source's challenge. */
 export function SourceAccessVerifyButton({
   block,
+  iconOnly = false,
   label,
   sourceName,
 }: SourceAccessVerifyButtonProps) {
   const { t } = useTranslation();
   const browserVisible = useSiteBrowserStore((state) => state.visible);
   const verifying = block.verificationRequested || block.verificationTaskId !== undefined;
+  const disabled =
+    browserVisible ||
+    verifying ||
+    !taskScheduler.canBeginSourceAccessVerification(block.scopeKey);
+  const verify = () => {
+    void openSourceAccessBrowser(block, {
+      sourceName,
+      title:
+        block.challenge.kind === "captcha"
+          ? t("sourceAccess.captchaTitle")
+          : t("sourceAccess.cloudflareTitle"),
+    });
+  };
+
+  if (iconOnly) {
+    return (
+      <IconButton disabled={disabled} label={label} loading={verifying} onClick={verify} size="lg">
+        <VerifyIcon />
+      </IconButton>
+    );
+  }
 
   return (
     <Button
-      disabled={
-        browserVisible ||
-        verifying ||
-        !taskScheduler.canBeginSourceAccessVerification(block.scopeKey)
-      }
+      disabled={disabled}
       loading={verifying}
-      onClick={() => {
-        void openSourceAccessBrowser(block, {
-          sourceName,
-          title:
-            block.challenge.kind === "captcha"
-              ? t("sourceAccess.captchaTitle")
-              : t("sourceAccess.cloudflareTitle"),
-        });
-      }}
+      onClick={verify}
       size="compact-sm"
       variant="default"
     >

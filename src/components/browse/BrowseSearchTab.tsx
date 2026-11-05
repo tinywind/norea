@@ -470,7 +470,8 @@ export function SearchFailures({
       return (
         <SourceAccessVerifyButton
           block={block}
-          label={t("updates.failure.verify")}
+          iconOnly
+          label={t("globalSearch.verifySource", { name: plugin.name })}
           sourceName={plugin.name}
         />
       );

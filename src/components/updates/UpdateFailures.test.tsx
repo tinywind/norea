@@ -97,7 +97,7 @@ describe("UpdateFailures", () => {
       verificationRequested: false,
     }];
     const $ = render([failure(1, "a")]);
-    expect(buttonLabels($)).toEqual(["updates.failure.verify", 'updates.failure.details{"name":"Source a"}']);
+    expect(buttonLabels($)).toEqual(['globalSearch.verifySource{"name":"Source a"}', 'updates.failure.details{"name":"Source a"}']);
     expect($.text()).toContain("updates.failure.verification");
   });
 

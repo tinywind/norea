@@ -110,7 +110,8 @@ export function UpdateFailures({
             {singleBlock ? (
               <SourceAccessVerifyButton
                 block={singleBlock}
-                label={t("updates.failure.verify")}
+                iconOnly
+                label={t("globalSearch.verifySource", { name: single.name })}
                 sourceName={single.name}
               />
             ) : single.pluginMissing && single.failures.length === 1 ? (
@@ -191,7 +192,8 @@ export function UpdateFailures({
                   {block ? (
                     <SourceAccessVerifyButton
                       block={block}
-                      label={t("updates.failure.verify")}
+                      iconOnly
+                      label={t("globalSearch.verifySource", { name: source.name })}
                       sourceName={source.name}
                     />
                   ) : source.pluginMissing ? null : (
