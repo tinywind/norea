@@ -39,8 +39,9 @@ import { SavedVpnProfilesSettings } from "./SavedVpnProfilesSettings";
 import { IconButton } from "./IconButton";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
+import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 
-interface Props { children?: ReactNode; error?: ReactNode; status?: string | null; className?: string; label?: string; "aria-label"?: string; value?: unknown; disabled?: boolean; opened?: boolean; min?: number; max?: number; onChange?: (value: number | string | null) => unknown; onClick?: () => unknown; data?: { value: string; disabled?: boolean }[] }
+interface Props { children?: ReactNode; error?: ReactNode; status?: string | null; className?: string; label?: string; "aria-label"?: string; value?: unknown; disabled?: boolean; opened?: boolean; min?: number; max?: number; onChange?: (value: number | string | null) => unknown; onClick?: () => unknown; data?: { value: string; disabled?: boolean }[]; ip?: string; verdict?: string | null; preferDisabledReason?: string | null }
 function controls(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -51,7 +52,7 @@ function render(disabled = false) { mocks.index = 0; mocks.refIndex = 0; return 
 const copy = (view: ReactElement<Props>[]) => view.flatMap(element =>
   [element.props.children, element.props.status, element.props.error].filter(text => typeof text === "string")).join(" ");
 function openManager() { render().find(element => element.props.label === "settings.data.pluginVpn.saved.manage")!.props.onClick!(); return render(); }
-const verdictControl = (view: ReactElement<Props>[], ip = "192.0.2.1") => view.find(element => element.props["aria-label"] === `settings.data.pluginVpn.saved.verdictLabel{"ip":"${ip}"}`)!;
+const verdictControl = (view: ReactElement<Props>[], ip = "192.0.2.1") => view.find(element => element.type === VpnGateServerVerdictControl && element.props.ip === ip)!;
 beforeEach(() => {
   vi.clearAllMocks(); mocks.states = []; mocks.refs = [];
   mocks.vault = { ...mocks.vault, data: { limit: 20, cleanupError: null, profiles: [{ id: "saved", ip: "192.0.2.1", protocol: "udp", hash: "a".repeat(64), approvedAt: 1234, approvalSequence: 1 }] }, isPending: false, isError: false, error: null };
@@ -149,7 +150,7 @@ it.each(["loading", "error", "disabled"])("does not reallow profiles while manag
   expect(mocks.reallow).not.toHaveBeenCalled();
 });
 
-it("keeps capacity inline and opens one modal combining retained files with O/X-only verdicts", () => {
+it("keeps capacity inline and opens one modal combining retained files with list-only entries", () => {
   let view = render();
   expect(view.find(element => element.type === ResponsiveSheet)?.props.opened).toBe(false);
   view = openManager();
@@ -160,7 +161,7 @@ it("keeps capacity inline and opens one modal combining retained files with O/X-
   expect(text).toContain("192.0.2.1");
   expect(text).toContain("date:1234000");
   expect(text).toContain("192.0.2.3");
-  expect(verdictControl(view, "192.0.2.3").props.value).toBe("fails");
+  expect(verdictControl(view, "192.0.2.3").props.verdict).toBe("fails");
 });
 
 it("saves a valid capacity and invalidates saved-profile and verdict data", async () => {
@@ -194,8 +195,8 @@ it("revokes through the verdict service and never creates O without exact native
 it("does not infer approval from retained metadata when its actual verdict is absent", () => {
   mocks.verdicts.data = [];
   const control = verdictControl(openManager());
-  expect(control.props.value).toBe("unmarked");
-  expect(control.props.data?.find(option => option.value === "works")?.disabled).toBe(true);
+  expect(control.props.verdict).toBeNull();
+  expect(control.props.preferDisabledReason).toBe("settings.data.pluginVpn.saved.approvalUnavailable");
 });
 
 it("shows native limit failures and retains the editable capacity without a false success", async () => {
@@ -230,7 +231,7 @@ it("shows problem-only rows and separates a recorded batch exclusion from the us
   expect(text).toContain("saved.cause.captcha");
   expect(text).toContain("batch-1");
   expect(text).toContain("date:1000");
-  expect(verdictControl(view).props.value).toBe("works");
+  expect(verdictControl(view).props.verdict).toBe("works");
   await view.find(element => element.props.label === "settings.data.pluginVpn.saved.reallow")!.props.onClick!();
   expect(mocks.reallow).toHaveBeenCalledWith("batch-1", "192.0.2.1", 4);
   expect(mocks.revoke).not.toHaveBeenCalled();
@@ -239,7 +240,7 @@ it("shows problem-only rows and separates a recorded batch exclusion from the us
 it("can mark a historical X as O only from the exact active native file", async () => {
   mocks.status.data.profile = { hash: "c".repeat(64), remoteHost: "192.0.2.3", isVpnGateFinder: true };
   const control = verdictControl(openManager(), "192.0.2.3");
-  expect(control.props.data?.find(option => option.value === "works")?.disabled).not.toBe(true);
+  expect(control.props.preferDisabledReason).toBeNull();
   await control.props.onChange!("works");
   expect(mocks.revoke).toHaveBeenCalledWith("192.0.2.3", "works", { kind: "active", expectedHash: "c".repeat(64) });
 });

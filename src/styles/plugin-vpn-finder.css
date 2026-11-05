@@ -53,42 +53,24 @@
   white-space: nowrap;
 }
 
+/* Preferred and Not used are two separate toggles; a pressed one fills in its state color. */
 .norea-vpn-gate-verdict-control {
   align-items: center;
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule-strong);
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-ink-muted);
   display: inline-flex;
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-sm);
-  font-variant-numeric: tabular-nums;
-  font-weight: var(--norea-weight-medium);
-  height: 1.75rem;
-  justify-content: center;
-  line-height: 1;
-  min-width: 1.75rem;
+  flex-shrink: 0;
+  gap: var(--norea-space-1);
 }
 
-@media (hover: hover) {
-  .norea-vpn-gate-verdict-control:not(:disabled):hover {
-    background: var(--norea-color-accent-soft);
-  }
+.norea-vpn-gate-verdict-toggle[data-active="true"] svg {
+  fill: currentColor;
 }
 
-.norea-vpn-gate-verdict-control[data-verdict="works"] {
-  border-color: var(--norea-color-ok);
-  color: var(--norea-color-ok);
+.norea-vpn-gate-verdict-toggle[data-active="true"][data-tone="danger"] {
+  background: var(--norea-color-danger-soft);
 }
 
-.norea-vpn-gate-verdict-control[data-verdict="fails"] {
-  border-color: var(--norea-color-danger);
-  color: var(--norea-color-danger);
-}
-
-.norea-vpn-gate-verdict-control:disabled {
-  cursor: not-allowed;
-  opacity: 0.55;
+.norea-vpn-gate-verdict-toggle[data-active="true"][data-tone="danger"] svg {
+  fill: none;
 }
 
 .norea-plugin-vpn-finder-cards {
@@ -128,13 +110,6 @@
 
 .norea-plugin-vpn-finder-card-ip {
   flex: 0 0 auto;
-  white-space: nowrap;
-}
-
-.norea-plugin-vpn-finder-card-verdict {
-  align-items: center;
-  display: inline-flex;
-  gap: var(--norea-space-1);
   white-space: nowrap;
 }
 

@@ -66,7 +66,7 @@ it.each(["en", "ko"] as const)("renders real Mantine controls and resolved %s co
   expect(row.find("input, select").length).toBe(0);
   expect($.text()).toContain(locale === "en" ? "Preparing downloads" : koMessages["vpnDownload.phase.preparing"]);
   expect($.text()).toContain(locale === "en" ? "Saved profiles: 2 / 20" : koMessages["settings.data.pluginVpn.saved.count"].replace("{count}", "2").replace("{limit}", "20"));
-  expect($.text()).toContain(locale === "en" ? "O-marked servers without a saved file: 1" : koMessages["settings.data.pluginVpn.saved.missingFiles"].replace("{count}", "1"));
+  expect($.text()).toContain(locale === "en" ? "Preferred servers without a saved file: 1" : koMessages["settings.data.pluginVpn.saved.missingFiles"].replace("{count}", "1"));
   expect($.text()).not.toContain("vpnDownload.");
   expect($.text()).not.toContain("settings.data.pluginVpn.saved.");
 });

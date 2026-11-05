@@ -1,36 +1,25 @@
-import { UnstyledButton } from "@mantine/core";
 import type { VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
-import { useTranslation, type TranslationKey } from "../i18n";
+import { useTranslation } from "../i18n";
+import { IconButton } from "./IconButton";
+import { ExcludeIcon, PreferIcon } from "./ui/icons";
 
 interface VpnGateServerVerdictControlProps {
   disabled?: boolean;
   disabledReason?: string | null;
   ip: string;
   onChange: (verdict: VpnGateServerVerdictValue | null) => void | Promise<void>;
+  /** Blocks only "Add to Preferred", for a server whose profile cannot be saved yet. */
+  preferDisabledReason?: string | null;
+  size?: "sm" | "lg";
   verdict: VpnGateServerVerdictValue | null;
 }
 
-const VERDICT_LABEL_KEYS: Record<
-  VpnGateServerVerdictValue | "unmarked",
-  TranslationKey
-> = {
-  fails: "settings.data.pluginVpn.finder.verdict.fails",
-  unmarked: "settings.data.pluginVpn.finder.verdict.unmarked",
-  works: "settings.data.pluginVpn.finder.verdict.works",
-};
-
-export function nextVpnGateServerVerdict(
+/** Pressing a list toggle sets that entry, and pressing it again clears it. */
+export function toggledVpnGateServerVerdict(
   verdict: VpnGateServerVerdictValue | null,
+  pressed: VpnGateServerVerdictValue,
 ): VpnGateServerVerdictValue | null {
-  if (verdict === null) return "works";
-  return verdict === "works" ? "fails" : null;
-}
-
-export function vpnGateServerVerdictSymbol(
-  verdict: VpnGateServerVerdictValue | null,
-): "" | "O" | "X" {
-  if (verdict === null) return "";
-  return verdict === "works" ? "O" : "X";
+  return verdict === pressed ? null : pressed;
 }
 
 export function VpnGateServerVerdictControl({
@@ -38,32 +27,61 @@ export function VpnGateServerVerdictControl({
   disabledReason,
   ip,
   onChange,
+  preferDisabledReason,
+  size = "lg",
   verdict,
 }: VpnGateServerVerdictControlProps) {
   const { t } = useTranslation();
-  const nextVerdict = nextVpnGateServerVerdict(verdict);
-  const currentLabel = t(VERDICT_LABEL_KEYS[verdict ?? "unmarked"]);
-  const nextLabel = t(VERDICT_LABEL_KEYS[nextVerdict ?? "unmarked"]);
-  const label = t("settings.data.pluginVpn.finder.verdict.controlLabel", {
-    current: currentLabel,
-    ip,
-    next: nextLabel,
-  });
-  const accessibleLabel = disabledReason ? `${label} ${disabledReason}` : label;
+  const preferred = verdict === "works";
+  const blocked = verdict === "fails";
+  const preferBlocked = !preferred && Boolean(preferDisabledReason);
+  const describe = (label: string, reason?: string | null) =>
+    reason ? `${label}. ${reason}` : label;
 
   return (
-    <UnstyledButton
-      aria-label={accessibleLabel}
+    <span
+      aria-label={t("settings.data.pluginVpn.finder.verdict.group", { ip })}
       className="norea-vpn-gate-verdict-control"
       data-verdict={verdict ?? "unmarked"}
-      disabled={disabled}
-      onClick={() => {
-        void onChange(nextVerdict);
-      }}
-      title={accessibleLabel}
-      type="button"
+      role="group"
     >
-      <span aria-hidden="true">{vpnGateServerVerdictSymbol(verdict)}</span>
-    </UnstyledButton>
+      <IconButton
+        active={preferred}
+        aria-pressed={preferred}
+        className="norea-vpn-gate-verdict-toggle"
+        disabled={disabled || preferBlocked}
+        label={describe(
+          t(preferred
+            ? "settings.data.pluginVpn.finder.verdict.unprefer"
+            : "settings.data.pluginVpn.finder.verdict.prefer"),
+          disabled ? disabledReason : preferBlocked ? preferDisabledReason : null,
+        )}
+        onClick={() => {
+          void onChange(toggledVpnGateServerVerdict(verdict, "works"));
+        }}
+        size={size}
+      >
+        <PreferIcon />
+      </IconButton>
+      <IconButton
+        active={blocked}
+        aria-pressed={blocked}
+        className="norea-vpn-gate-verdict-toggle"
+        disabled={disabled}
+        label={describe(
+          t(blocked
+            ? "settings.data.pluginVpn.finder.verdict.unblock"
+            : "settings.data.pluginVpn.finder.verdict.block"),
+          disabled ? disabledReason : null,
+        )}
+        onClick={() => {
+          void onChange(toggledVpnGateServerVerdict(verdict, "fails"));
+        }}
+        size={size}
+        tone={blocked ? "danger" : "default"}
+      >
+        <ExcludeIcon />
+      </IconButton>
+    </span>
   );
 }

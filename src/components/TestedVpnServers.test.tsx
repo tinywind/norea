@@ -71,23 +71,23 @@ describe("TestedVpnServers", () => {
     expect(isWorkingTestedServer(server("x", 1))).toBe(false);
   });
 
-  it("offers Approve all working as one action counting only working servers", () => {
-    const button = render()("button[aria-label^='Approve all working']");
+  it("offers Add all working to Preferred as one action counting only working servers", () => {
+    const button = render()("button[aria-label^='Add all working to Preferred']");
 
     expect(button).toHaveLength(1);
-    expect(button.attr("aria-label")).toBe("Approve all working (1)");
+    expect(button.attr("aria-label")).toBe("Add all working to Preferred (1)");
     expect(button.attr("disabled")).toBeUndefined();
   });
 
-  it("disables Approve all working when nothing works or settings are busy", () => {
-    expect(render(true)("button[aria-label^='Approve all working']").attr("disabled")).toBeDefined();
+  it("disables Add all working to Preferred when nothing works or settings are busy", () => {
+    expect(render(true)("button[aria-label^='Add all working to Preferred']").attr("disabled")).toBeDefined();
     mocks.servers = [server("192.0.2.2", 1)];
-    expect(render()("button[aria-label^='Approve all working']").attr("disabled")).toBeDefined();
+    expect(render()("button[aria-label^='Add all working to Preferred']").attr("disabled")).toBeDefined();
     mocks.servers = [];
     expect(render()("body").text()).toContain("No tested servers yet");
   });
 
-  it("approves, tells the VPN downloads about the new O files and refreshes every pool view", async () => {
+  it("approves, tells the VPN downloads about the new preferred files and refreshes every pool view", async () => {
     render();
     const approved = [{ id: "a", ip: "192.0.2.1" }];
     mocks.approve.mockResolvedValue(approved);
@@ -97,7 +97,7 @@ describe("TestedVpnServers", () => {
     await mocks.mutation!.onSettled();
 
     expect(mocks.profilesChanged).toHaveBeenCalledOnce();
-    expect(mocks.toast).toHaveBeenCalledWith("ok", "Approved 1 servers as O");
+    expect(mocks.toast).toHaveBeenCalledWith("ok", "Added 1 servers to Preferred");
     expect(mocks.invalidate.mock.calls.map(([{ queryKey }]) => queryKey[1] ?? queryKey[0])).toEqual([
       "automatic-profiles",
       "saved-profiles",

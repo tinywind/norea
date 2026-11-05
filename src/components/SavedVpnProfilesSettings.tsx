@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Alert, Group, Loader, NumberInput, Select, Stack, Text } from "@mantine/core";
+import { Alert, Group, Loader, NumberInput, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listVpnGateServerVerdicts, setVpnGateServerVerdict, type VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
 import { formatDateTimeForLocale, useTranslation, type TranslationKey } from "../i18n";
@@ -13,6 +13,7 @@ import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
 import { ConnectIcon, RestartIcon, RetryIcon, SaveIcon, SettingsIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
+import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 
 const VERDICT_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
 const CAUSE_KEYS: Record<VpnDownloadProfileIssueCause, TranslationKey> = {
@@ -165,27 +166,23 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
                   {profile ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.details", { protocol: profile.protocol.toUpperCase(), date: formatDateTimeForLocale(locale, profile.approvedAt * 1000) })}</Text>
                     : <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.fileUnavailable")}</Text>}
                 </Stack>
-                <Select aria-label={t("settings.data.pluginVpn.saved.verdictLabel", { ip })} value={verdict ?? "unmarked"} allowDeselect={false}
-                  disabled={managementLocked} data={[
-                    { value: "works", label: t("settings.data.pluginVpn.finder.verdict.works"), disabled: verdict !== "works" && !canApprove },
-                    { value: "fails", label: t("settings.data.pluginVpn.finder.verdict.fails") },
-                    { value: "unmarked", label: t("settings.data.pluginVpn.finder.verdict.unmarked") },
-                  ]} onChange={value => {
-                    if (value === "works" || value === "fails" || value === "unmarked") return changeVerdict(ip, value === "unmarked" ? null : value);
-                  }} />
-                {profile && onConnect ? (
-                  <IconButton
-                    active={connectingProfileId === profile.id}
-                    disabled={disabled || connectingProfileId !== null}
-                    label={t("settings.data.pluginVpn.saved.connect", { ip })}
-                    onClick={() => onConnect({ id: profile.id, hash: profile.hash })}
-                    size="lg"
-                  >
-                    {connectingProfileId === profile.id ? <Loader size={14} /> : <ConnectIcon />}
-                  </IconButton>
-                ) : null}
+                <Group gap="xs" wrap="nowrap">
+                  <VpnGateServerVerdictControl ip={ip} verdict={verdict} disabled={managementLocked}
+                    preferDisabledReason={canApprove ? null : t("settings.data.pluginVpn.saved.approvalUnavailable")}
+                    onChange={next => changeVerdict(ip, next)} />
+                  {profile && onConnect ? (
+                    <IconButton
+                      active={connectingProfileId === profile.id}
+                      disabled={disabled || connectingProfileId !== null}
+                      label={t("settings.data.pluginVpn.saved.connect", { ip })}
+                      onClick={() => onConnect({ id: profile.id, hash: profile.hash })}
+                      size="lg"
+                    >
+                      {connectingProfileId === profile.id ? <Loader size={14} /> : <ConnectIcon />}
+                    </IconButton>
+                  ) : null}
+                </Group>
               </Group>
-              {verdict !== "works" && !canApprove ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.approvalUnavailable")}</Text> : null}
               {(issues.data ?? []).filter(issue => issue.ip === ip).map(issue => <Stack key={issue.batchId} gap={4}>
                 <Group justify="space-between" wrap="wrap">
                   <Text size="sm">{t(CAUSE_KEYS[issue.cause])}</Text>

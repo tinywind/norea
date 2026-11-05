@@ -276,7 +276,7 @@ const ACTION_ICONS: Record<string, string> = {
   "settings.data.pluginVpn.saved.manage": "SettingsIcon",
   "settings.data.pluginVpn.saved.reallow": "RestartIcon",
   "settings.data.pluginVpn.saved.reallowAll": "RestartIcon",
-  "settings.data.pluginVpn.tested.approveAll": "MarkReadIcon",
+  "settings.data.pluginVpn.tested.approveAll": "PreferIcon",
   "settings.data.readingProgress.button": "TrashIcon",
   "settings.data.updatesQueue.button": "TrashIcon",
   "settings.data.webViewCache.button": "TrashIcon",

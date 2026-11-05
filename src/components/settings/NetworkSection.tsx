@@ -550,7 +550,7 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
           </SettingsFieldRow>
           {currentFinderIp ? (
             <SettingsFieldRow
-              label={t("settings.data.pluginVpn.finder.verdict.label")}
+              label={t("settings.data.pluginVpn.finder.verdict.currentLabel")}
               description={t(
                 "settings.data.pluginVpn.finder.verdict.description",
               )}

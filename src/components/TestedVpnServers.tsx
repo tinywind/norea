@@ -13,7 +13,7 @@ import { SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY } from "../lib/plugin-vpn-profiles"
 import { notifyVpnDownloadProfilesChanged } from "../lib/tasks/vpn-download-runtime";
 import { showSettingsToast } from "./settings/settings-toast";
 import { IconButton } from "./IconButton";
-import { MarkReadIcon, RetryIcon } from "./ui/icons";
+import { PreferIcon, RetryIcon } from "./ui/icons";
 
 const VPN_GATE_SERVER_VERDICTS_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
 
@@ -87,7 +87,7 @@ export function TestedVpnServers({ disabled = false }: { disabled?: boolean }) {
           loading={approve.isPending}
           onClick={() => approve.mutate()}
         >
-          <MarkReadIcon />
+          <PreferIcon />
         </IconButton>
       </Group>
       {approveError ? <Alert color="danger" role="alert">{approveError}</Alert> : null}

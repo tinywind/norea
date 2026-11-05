@@ -598,6 +598,7 @@ export function PluginVpnFinder({
                       </Table.Td>
                       <Table.Td>
                         <VpnGateServerVerdictControl
+                          size="sm"
                           disabled={
                             verdictControlsDisabled ||
                             verdictSavingIps.has(server.ip)
@@ -655,34 +656,30 @@ export function PluginVpnFinder({
                           ? t("settings.data.pluginVpn.finder.protocol.tcp")
                           : t("settings.data.pluginVpn.finder.protocol.udp")}
                       </Badge>
-                      <span className="norea-plugin-vpn-finder-card-verdict">
-                        <Text c="dimmed" component="span" size="xs">
-                          {t("settings.data.pluginVpn.finder.verdict.label")}
-                        </Text>
-                        <VpnGateServerVerdictControl
-                          disabled={
-                            verdictControlsDisabled ||
-                            verdictSavingIps.has(server.ip)
-                          }
-                          disabledReason={
-                            verdictSavingIps.has(server.ip)
-                              ? t("settings.data.pluginVpn.finder.verdict.saving")
-                              : verdictDisabledReason
-                          }
-                          ip={server.ip}
-                          onChange={(verdict) =>
-                            onVerdictChange(
-                              server.ip,
-                              verdict,
-                              pluginVpnFinderVerdictCaptureSource(server),
-                            )
-                          }
-                          verdict={pluginVpnFinderServerVerdict(
-                            server,
-                            verdicts,
-                          )}
-                        />
-                      </span>
+                      <VpnGateServerVerdictControl
+                        size="sm"
+                        disabled={
+                          verdictControlsDisabled ||
+                          verdictSavingIps.has(server.ip)
+                        }
+                        disabledReason={
+                          verdictSavingIps.has(server.ip)
+                            ? t("settings.data.pluginVpn.finder.verdict.saving")
+                            : verdictDisabledReason
+                        }
+                        ip={server.ip}
+                        onChange={(verdict) =>
+                          onVerdictChange(
+                            server.ip,
+                            verdict,
+                            pluginVpnFinderVerdictCaptureSource(server),
+                          )
+                        }
+                        verdict={pluginVpnFinderServerVerdict(
+                          server,
+                          verdicts,
+                        )}
+                      />
                       {connectButton(server)}
                     </Group>
                   </div>
