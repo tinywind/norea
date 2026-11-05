@@ -6,7 +6,6 @@ import { showErrorToast } from "../../lib/runtime/error-toast";
 
 interface ServerWorkSelectionOptions {
   active: boolean;
-  isInLibrary: (pluginId: string, novelPath: string) => boolean;
   query: string;
   server: string;
   source: string;
@@ -19,18 +18,18 @@ export interface ServerWorkSelectAllProgress {
 }
 
 /**
- * Server-grid selection. Works already in the library cannot be selected.
+ * Server-grid selection, including works already in the library.
  * Select all gathers every work matching the current search and source,
  * including pages the grid has not loaded; changing the filters or server
  * clears the selection and discards a gather in flight.
  */
-export function useServerWorkSelection({ active, isInLibrary, query, server, source, token }: ServerWorkSelectionOptions) {
+export function useServerWorkSelection({ active, query, server, source, token }: ServerWorkSelectionOptions) {
   const { t } = useTranslation();
   const [selected, setSelected] = useState<ReadonlyMap<string, ServerWorkSummary>>(() => new Map());
   const [selecting, setSelecting] = useState(false);
   const [gathering, setGathering] = useState<ServerWorkSelectAllProgress | null>(null);
-  /** From the last select all: how many matching works could be selected and how many were in the library. */
-  const [selectAllCounts, setSelectAllCounts] = useState<{ selectable: number; inLibrary: number } | null>(null);
+  /** How many matching works the last select all found. */
+  const [selectAllCount, setSelectAllCount] = useState<number | null>(null);
   const requestRef = useRef<AbortController | null>(null);
   const selectionMode = selecting || selected.size > 0;
 
@@ -43,39 +42,33 @@ export function useServerWorkSelection({ active, isInLibrary, query, server, sou
   const exit = useCallback(() => {
     cancelGather();
     setSelected(new Map());
-    setSelectAllCounts(null);
+    setSelectAllCount(null);
     setSelecting(false);
   }, [cancelGather]);
 
   useEffect(() => {
     cancelGather();
     setSelected(new Map());
-    setSelectAllCounts(null);
+    setSelectAllCount(null);
   }, [cancelGather, query, server, source]);
 
   useEffect(() => () => requestRef.current?.abort(), []);
 
   useOverlayBackNavigation(active && selectionMode, exit);
 
-  const isSelectable = useCallback(
-    (work: ServerWorkSummary) => !isInLibrary(work.identity.pluginId, work.identity.novelPath),
-    [isInLibrary],
-  );
-
   const enter = useCallback((work?: ServerWorkSummary) => {
     setSelecting(true);
-    if (work && isSelectable(work)) setSelected(current => new Map(current).set(work.id, work));
-  }, [isSelectable]);
+    if (work) setSelected(current => new Map(current).set(work.id, work));
+  }, []);
 
   const toggle = useCallback((work: ServerWorkSummary) => {
-    if (!isSelectable(work)) return;
     setSelected((current) => {
       const next = new Map(current);
       if (next.has(work.id)) next.delete(work.id);
       else next.set(work.id, work);
       return next;
     });
-  }, [isSelectable]);
+  }, []);
 
   const deselectAll = useCallback(() => {
     cancelGather();
@@ -92,9 +85,9 @@ export function useServerWorkSelection({ active, isInLibrary, query, server, sou
     }, controller.signal)
       .then((works) => {
         if (controller.signal.aborted) return;
-        const selectable = works.filter(isSelectable);
-        setSelected(new Map(selectable.map(work => [work.id, work])));
-        setSelectAllCounts({ inLibrary: works.length - selectable.length, selectable: selectable.length });
+        const all = new Map(works.map(work => [work.id, work]));
+        setSelected(all);
+        setSelectAllCount(all.size);
       })
       .catch((error: unknown) => {
         if (!controller.signal.aborted) showErrorToast(t("selection.selectAll"), error);
@@ -104,17 +97,14 @@ export function useServerWorkSelection({ active, isInLibrary, query, server, sou
         requestRef.current = null;
         setGathering(null);
       });
-  }, [isSelectable, query, server, source, t, token]);
+  }, [query, server, source, t, token]);
 
   return {
-    allSelected: selectAllCounts !== null && selected.size > 0 && selected.size >= selectAllCounts.selectable,
+    allSelected: selectAllCount !== null && selected.size > 0 && selected.size >= selectAllCount,
     deselectAll,
     enter,
     exit,
     gathering,
-    /** Matching works already in the library, from the last select all. */
-    inLibraryCount: selectAllCounts?.inLibrary ?? 0,
-    isSelectable,
     selected,
     selectAll,
     selectionMode,

@@ -5,6 +5,7 @@ import { useState, type ReactNode } from "react";
 import { listCategories } from "../../db/queries/category";
 import { useTranslation } from "../../i18n";
 import { isAbortError } from "../../lib/abort";
+import type { ServerWorkSummary } from "../../lib/content-sync/browse";
 import { describeError } from "../../lib/errors";
 import type { TaskHandle } from "../../lib/tasks/scheduler";
 import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
@@ -16,6 +17,7 @@ import {
   type ServerLibraryAddRequest,
   type ServerLibraryAddResult,
 } from "./server-library-add";
+import { downloadServerWorksOnce } from "./server-download-all";
 
 type Translate = ReturnType<typeof useTranslation>["t"];
 
@@ -74,6 +76,8 @@ export function startServerLibraryAdd(
 
 export interface ServerLibraryAddPrompt {
   count: number;
+  /** Works whose chapters not downloaded yet are queued once the add settles; may include works already in the library. */
+  downloadChaptersOf?: readonly ServerWorkSummary[];
   /** Runs once the task has been queued, for example to leave selection mode. */
   onStarted?: () => void;
   works: ServerLibraryAddRequest["works"];
@@ -81,7 +85,9 @@ export interface ServerLibraryAddPrompt {
 
 /**
  * The confirm sheet for a bulk server add: the work count and an optional
- * set of manual categories for the added works. Render `sheet` once in the page.
+ * set of manual categories for the added works. A prompt with
+ * `downloadChaptersOf` also queues those works' chapters after the add.
+ * Render `sheet` once in the page.
  */
 export function useServerLibraryAdd(server: string): {
   request: (prompt: ServerLibraryAddPrompt) => void;
@@ -101,7 +107,8 @@ export function useServerLibraryAdd(server: string): {
   const close = () => setPrompt(null);
   const confirm = () => {
     if (!prompt) return;
-    startServerLibraryAdd({ categoryIds, count: prompt.count, server, works: prompt.works }, t, queryClient);
+    const handle = startServerLibraryAdd({ categoryIds, count: prompt.count, server, works: prompt.works }, t, queryClient);
+    if (prompt.downloadChaptersOf) void downloadServerWorksOnce(prompt.downloadChaptersOf, handle.promise, t, queryClient);
     notifications.show({ message: t("serverLibraryAdd.started", { count: prompt.count }) });
     prompt.onStarted?.();
     setPrompt(null);
@@ -120,7 +127,9 @@ export function useServerLibraryAdd(server: string): {
       title={t("serverLibraryAdd.confirmTitle", { count: prompt?.count ?? 0 })}
     >
       <Stack gap="md">
-        <Text c="dimmed" size="sm">{t("serverLibraryAdd.confirmMessage")}</Text>
+        <Text c="dimmed" size="sm">
+          {t(prompt?.downloadChaptersOf ? "serverLibraryAdd.downloadAllConfirmMessage" : "serverLibraryAdd.confirmMessage")}
+        </Text>
         <Text fw="var(--norea-weight-bold)" size="sm">{t("serverLibraryAdd.categories")}</Text>
         {categoriesQuery.isPending ? <Loader size="sm" /> : null}
         {categoriesQuery.error ? <Text c="danger" role="alert" size="sm">{t("categories.loadFailed")}</Text> : null}

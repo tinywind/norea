@@ -3,10 +3,8 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { addNovelsToCategory, removeNovelsFromCategory } from "../../db/queries/category";
 import {
-  listUnqueuedChapterDownloads,
   restoreChapterReadStates,
   setNovelsReadState,
-  type ChapterListRow,
   type ChapterReadState,
 } from "../../db/queries/chapter";
 import {
@@ -19,15 +17,14 @@ import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { setDownloadGoal } from "../../lib/download-goals/goal-service";
 import { showErrorToast } from "../../lib/runtime/error-toast";
-import { isChapterDownloadQueued, type ChapterDownloadJob } from "../../lib/tasks/chapter-download";
-import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-requests";
-import { MAX_CHAPTER_BULK_INPUT_ROWS, MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
+import { MAX_CHAPTER_BULK_INPUT_ROWS } from "../../lib/performance-budgets";
 import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invalidation";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { type LibrarySortOrder } from "../../store/library";
 import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
 import { showReadStateUndoToast } from "../read-state-undo-toast";
+import { downloadOnceNotice, queueChapterDownloadsOnce } from "./download-once";
 
 export function useLibrarySelection(
   libraryFilter: LibraryNovelRefreshFilter,
@@ -207,62 +204,10 @@ export function useLibrarySelection(
   });
 
   const downloadOnceMutation = useMutation({
-    mutationFn: async ({ novelIds }: DownloadOnceInput) => {
-      let queued = 0;
-      let skippedLocal = 0;
-      for (const novelId of novelIds) {
-        const novel = await getNovelById(novelId);
-        if (!novel) continue;
-        if (novel.isLocal) {
-          skippedLocal += 1;
-          continue;
-        }
-        const chapters = (await listChaptersToDownloadOnce(novel.id))
-          .filter((chapter) => !isChapterDownloadQueued(chapter.id));
-        if (chapters.length === 0) continue;
-        const jobs: ChapterDownloadJob[] = chapters.map((chapter) => ({
-          id: chapter.id,
-          pluginId: novel.pluginId,
-          chapterPath: chapter.path,
-          chapterName: chapter.name,
-          chapterNumber: chapter.chapterNumber ?? undefined,
-          contentType: chapter.contentType,
-          novelId: novel.id,
-          novelName: novel.name,
-          novelPath: novel.path,
-          priority: "user",
-          title: t("tasks.task.downloadChapter", { name: chapter.name }),
-        }));
-        const title = t("tasks.task.downloadChapterBatch", { count: jobs.length });
-        void submitChapterDownloadRequest({
-          key: JSON.stringify(["download-once", novel.id, jobs.map((job) => job.id)]),
-          title,
-          novelIds: [novel.id],
-          total: jobs.length,
-          prepare: async () => ({ jobs, materializeAllTasks: true, title, total: jobs.length }),
-        }).promise.finally(() => queryClient.invalidateQueries({ queryKey: ["novel", "library"] }))
-          .catch(() => undefined);
-        queued += jobs.length;
-      }
-      return { queued, skippedLocal };
-    },
-    onSuccess: ({ queued, skippedLocal }) => {
+    mutationFn: ({ novelIds }: DownloadOnceInput) => queueChapterDownloadsOnce(novelIds, t, queryClient),
+    onSuccess: (outcome) => {
       exitSelection();
-      if (queued === 0) {
-        notifications.show({
-          color: "warn",
-          message: skippedLocal > 0
-            ? t("library.downloadOnce.nothingSkippedLocal", { skipped: skippedLocal })
-            : t("library.downloadOnce.nothing"),
-        });
-        return;
-      }
-      notifications.show({
-        color: "ok",
-        message: skippedLocal > 0
-          ? t("library.downloadOnce.doneSkippedLocal", { count: queued, skipped: skippedLocal })
-          : t("library.downloadOnce.done", { count: queued }),
-      });
+      notifications.show(downloadOnceNotice(t, outcome));
     },
     onError: (error) => {
       showErrorToast(t("library.downloadOnce.title"), error);
@@ -323,18 +268,6 @@ export function useLibrarySelection(
     removeSelectedFromLibraryMutation,
     setNovelsReadStateMutation,
   };
-}
-
-/** Every chapter of a source novel with no stored body and no persisted download, in reading order. */
-async function listChaptersToDownloadOnce(novelId: number): Promise<ChapterListRow[]> {
-  const chapters: ChapterListRow[] = [];
-  for (let afterChapterId = 0; ;) {
-    const page = await listUnqueuedChapterDownloads(novelId, afterChapterId);
-    chapters.push(...page);
-    if (page.length < MAX_ROUTE_QUERY_ROWS) break;
-    afterChapterId = page.at(-1)!.id;
-  }
-  return chapters.sort((left, right) => left.position - right.position || left.id - right.id);
 }
 
 interface SetNovelsReadStateInput {

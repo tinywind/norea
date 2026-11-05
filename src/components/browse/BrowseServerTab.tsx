@@ -16,13 +16,14 @@ import { StateView } from "../AppFrame";
 import { ContentServerCover } from "../ContentServerCover";
 import { IconButton } from "../IconButton";
 import { SearchBar } from "../SearchBar";
-import { AddToLibraryIcon, CheckIcon, InLibraryIcon, RefreshIcon, SelectIcon } from "../ui/icons";
+import { AddToLibraryIcon, CheckIcon, DownloadIcon, InLibraryIcon, RefreshIcon, SelectIcon } from "../ui/icons";
 import { OverflowMenu } from "../ui/OverflowMenu";
 import { SelectionAction, SelectionBar } from "../ui/SelectionBar";
 import { CoverGridSkeleton } from "./CoverGridSkeleton";
 import { QuickAddCard } from "./QuickAddCard";
 import { useQuickAddToLibrary, type QuickAddTarget } from "./use-quick-add";
 import { useInstalledPlugins } from "./use-plugin-catalog";
+import { downloadServerWorksOnce } from "./server-download-all";
 import { useServerLibraryAdd } from "./use-server-library-add";
 import { useServerWorkSelection } from "./use-server-work-selection";
 
@@ -65,7 +66,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
     getNextPageParam: (last, _pages, offset) => last.hasMore ? offset + last.items.length : undefined,
     enabled, staleTime: 30_000,
   });
-  const selection = useServerWorkSelection({ active, isInLibrary, query, server, source, token: device.data });
+  const selection = useServerWorkSelection({ active, query, server, source, token: device.data });
   const bulkAdd = useServerLibraryAdd(server);
   const open = useMutation({
     meta: { errorPresentation: "inline" },
@@ -109,23 +110,36 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
 
   const selectionHint = selection.gathering
     ? t("serverLibraryAdd.gathering", { loaded: selection.gathering.loaded, total: selection.gathering.total })
-    : selection.inLibraryCount > 0
-      ? t("serverLibraryAdd.inLibraryExcluded", { count: selection.inLibraryCount })
-      : t("serverLibraryAdd.selectionHint");
+    : t("serverLibraryAdd.selectionHint");
+
+  const selectedWorks = [...selection.selected.values()];
+  const newWorks = selectedWorks.filter(work => !isInLibrary(work.identity.pluginId, work.identity.novelPath));
+  const downloadAll = () => {
+    if (newWorks.length > 0) {
+      bulkAdd.request({ count: newWorks.length, downloadChaptersOf: selectedWorks, onStarted: selection.exit, works: newWorks });
+      return;
+    }
+    selection.exit();
+    void downloadServerWorksOnce(selectedWorks, null, t, queryClient);
+  };
 
   const selectionBar = selection.selectionMode ? (
         <SelectionBar
           actions={
-            <SelectionAction
-              disabled={selection.selected.size === 0 || !!selection.gathering}
-              icon={AddToLibraryIcon}
-              label={t("quickAdd.add")}
-              onClick={() => bulkAdd.request({
-                count: selection.selected.size,
-                onStarted: selection.exit,
-                works: [...selection.selected.values()],
-              })}
-            />
+            <>
+              <SelectionAction
+                disabled={newWorks.length === 0 || !!selection.gathering}
+                icon={AddToLibraryIcon}
+                label={t("quickAdd.add")}
+                onClick={() => bulkAdd.request({ count: newWorks.length, onStarted: selection.exit, works: newWorks })}
+              />
+              <SelectionAction
+                disabled={selectedWorks.length === 0 || !!selection.gathering}
+                icon={DownloadIcon}
+                label={t("serverLibraryAdd.downloadAll")}
+                onClick={downloadAll}
+              />
+            </>
           }
           allSelected={selection.allSelected}
           hint={selectionHint}
@@ -174,9 +188,6 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
       ) : null}
       {device.isLoading || works.isLoading ? <CoverGridSkeleton label={t("common.loading")} /> : null}
       {!error && enabled && !works.isLoading && items.length === 0 ? <StateView title={t("source.noResults")} /> : null}
-      {selecting && items.length > 0 && items.every(work => isInLibrary(work.identity.pluginId, work.identity.novelPath)) ? (
-        <StateView icon={InLibraryIcon} message={t("serverLibraryAdd.allShownInLibraryHint")} title={t("serverLibraryAdd.allShownInLibrary")} />
-      ) : null}
       <div className="norea-source-grid">
         {items.map(work => {
           const inLibrary = isInLibrary(work.identity.pluginId, work.identity.novelPath);
@@ -187,7 +198,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
               <span className="norea-source-cover-frame">
                 <ContentServerCover server={server} token={device.data!} work={work} />
                 {inLibrary ? <span className="norea-source-library-mark" role="img" aria-label={t("novel.inLibrary")}><InLibraryIcon size="1rem" /></span> : null}
-                {selection.selectionMode && !inLibrary ? (
+                {selection.selectionMode ? (
                   <span aria-hidden="true" className="norea-source-select-check" data-checked={selected ? "true" : undefined}>
                     {selected ? <CheckIcon size="1rem" /> : null}
                   </span>
@@ -200,8 +211,8 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
           return selection.selectionMode ? (
             <div className="norea-quick-add-card" key={`${server}:${work.id}`}>
               <button aria-label={t("library.selection.selectNamed", { name: work.novel.name })} aria-pressed={selected}
-                className="norea-source-card norea-state-layer" data-in-library={inLibrary ? "true" : undefined}
-                data-selected={selected ? "true" : undefined} disabled={inLibrary} onClick={() => selection.toggle(work)} type="button">
+                className="norea-source-card norea-state-layer"
+                data-selected={selected ? "true" : undefined} onClick={() => selection.toggle(work)} type="button">
                 {content}
               </button>
             </div>

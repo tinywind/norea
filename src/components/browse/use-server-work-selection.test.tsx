@@ -6,7 +6,6 @@ import type { ServerWorkSummary } from "../../lib/content-sync/browse";
 const mocks = vi.hoisted(() => ({
   backNavigation: vi.fn(),
   errorToast: vi.fn(),
-  inLibrary: new Set<string>(),
   listAll: vi.fn(),
 }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
@@ -17,21 +16,19 @@ vi.mock("../../lib/runtime/error-toast", () => ({ showErrorToast: mocks.errorToa
 import { useServerWorkSelection } from "./use-server-work-selection";
 
 const work = (id: string) => ({ id, novel: { name: id }, identity: { pluginId: "source", novelPath: `/${id}` } }) as ServerWorkSummary;
-const isInLibrary = (_pluginId: string, path: string) => mocks.inLibrary.has(path);
 
 let root: Root;
 let selection: ReturnType<typeof useServerWorkSelection>;
 let filters = { query: "", source: "" };
 
 function Probe() {
-  selection = useServerWorkSelection({ active: true, isInLibrary, server: "http://server", token: "device", ...filters });
+  selection = useServerWorkSelection({ active: true, server: "http://server", token: "device", ...filters });
   return null;
 }
 const render = () => act(async () => root.render(<Probe />));
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  mocks.inLibrary.clear();
   filters = { query: "", source: "" };
   const document = { nodeType: 9, activeElement: null, body: null as unknown, documentElement: { nodeName: "HTML" }, addEventListener() {}, removeEventListener() {} };
   const container = {
@@ -52,15 +49,14 @@ afterEach(async () => {
   vi.unstubAllGlobals();
 });
 
-it("enters selection, toggles works and never selects a work already in the library", async () => {
-  mocks.inLibrary.add("/b");
+it("enters selection and toggles any work, including one already in the library", async () => {
   await act(async () => selection.enter(work("a")));
   expect(selection.selectionMode).toBe(true);
   expect([...selection.selected.keys()]).toEqual(["a"]);
   await act(async () => selection.toggle(work("b")));
   await act(async () => selection.toggle(work("c")));
   await act(async () => selection.toggle(work("a")));
-  expect([...selection.selected.keys()]).toEqual(["c"]);
+  expect([...selection.selected.keys()]).toEqual(["b", "c"]);
   expect(mocks.backNavigation).toHaveBeenLastCalledWith(true, selection.exit);
 
   await act(async () => selection.exit());
@@ -68,8 +64,7 @@ it("enters selection, toggles works and never selects a work already in the libr
   expect(selection.selected.size).toBe(0);
 });
 
-it("selects every matching work across unloaded pages, leaving out works in the library", async () => {
-  mocks.inLibrary.add("/b");
+it("selects every matching work across unloaded pages, works in the library included", async () => {
   let finish!: (works: ServerWorkSummary[]) => void;
   mocks.listAll.mockImplementation((_server, _token, _query, _source, onPage: (loaded: number, total: number) => void) => {
     onPage(100, 250);
@@ -84,8 +79,7 @@ it("selects every matching work across unloaded pages, leaving out works in the 
 
   await act(async () => finish([work("a"), work("b"), work("c")]));
   expect(selection.gathering).toBeNull();
-  expect([...selection.selected.keys()]).toEqual(["a", "c"]);
-  expect(selection.inLibraryCount).toBe(1);
+  expect([...selection.selected.keys()]).toEqual(["a", "b", "c"]);
   expect(selection.allSelected).toBe(true);
 
   await act(async () => selection.toggle(work("a")));

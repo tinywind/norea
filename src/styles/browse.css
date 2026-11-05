@@ -479,12 +479,6 @@
   background: var(--norea-color-selected);
 }
 
-/* A work already in the library cannot be selected; its library mark says so, so the card stays readable. */
-.norea-source-card[data-in-library="true"]:disabled {
-  cursor: not-allowed;
-  opacity: 1;
-}
-
 .norea-source-frame {
   --norea-page-block: var(--norea-space-3);
   display: grid;
