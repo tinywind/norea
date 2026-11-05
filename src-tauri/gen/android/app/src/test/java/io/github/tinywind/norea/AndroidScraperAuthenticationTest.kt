@@ -66,6 +66,23 @@ class AndroidScraperAuthenticationTest {
   }
 
   @Test
+  fun neverTransfersAWorkerWhileOneOfItsFetchContextsIsBusy() {
+    val worker = AndroidScraperState("pool:0").apply { sourceId = "source" }
+    val mirror = AndroidScraperState("pool:0@https://mirror.test").apply {
+      sourceId = "source"
+      fetchContextOwner = worker
+      busy = true
+    }
+    worker.fetchContexts.open("https://mirror.test", mirror)
+    val queues = mutableMapOf("immediate" to AndroidScraperState("immediate"), "pool:0" to worker)
+
+    assertFalse(promoteScraperWorkerBrowser(queues, "source"))
+    mirror.busy = false
+    assertTrue(promoteScraperWorkerBrowser(queues, "source"))
+    assertSame(mirror, worker.fetchContexts.all.single())
+  }
+
+  @Test
   fun neverReturnsABrowserWhileVerificationIsRunning() {
     val worker = AndroidScraperState("pool:0").apply {
       sourceId = "novel-source"
