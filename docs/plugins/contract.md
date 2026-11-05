@@ -412,15 +412,6 @@ its last origin rather than `about:blank`, so consecutive requests to one site
 skip the context navigation. Plugins must not depend on the context page's
 late-loading scripts having run before a fetch.
 
-On Android, a request whose origin differs from its context page, such as
-chapter media on mirror hosts, runs in an empty document on the request origin.
-Unless the primary WebView already holds that origin, the executor runs it in a
-per-origin context WebView in the same source profile, so a slow mirror does
-not hold requests for another mirror. Each executor keeps up to three context
-WebViews and closes the least recently used idle one when a new origin needs
-it. Requests that load the plugin context page, and page extraction, keep using
-the primary WebView.
-
 Browser sessions created by versions that used one shared scraper profile are
 not copied into source-owned profiles because the host cannot infer which
 source owns shared cookies or DOM storage. Users may need to sign in once per

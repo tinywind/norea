@@ -63,35 +63,6 @@ class AndroidScraperQueueTest {
   }
 
   @Test
-  fun routedSelectionTakesTheBestRoutedActionWithItsAssignment() {
-    val queue = AndroidScraperQueue()
-    queue.enqueue(action("primary", priority = 0))
-    queue.enqueue(action("mirror-late", priority = 2))
-    queue.enqueue(action("mirror-first", priority = 1))
-    val route = { candidate: AndroidScraperQueuedAction ->
-      if (candidate.id.startsWith("mirror")) "context:${candidate.id}" else null
-    }
-
-    val takeRoutedId = { queue.takeRouted(route)?.let { (taken, assignment) -> taken.id to assignment } }
-    assertEquals("mirror-first" to "context:mirror-first", takeRoutedId())
-    assertEquals("mirror-late" to "context:mirror-late", takeRoutedId())
-    assertNull(takeRoutedId())
-    assertEquals("primary", queue.takeNext(false)?.id)
-  }
-
-  @Test
-  fun peekingSelectsLikeTakingWithoutRemoving() {
-    val queue = AndroidScraperQueue()
-    queue.enqueue(action("fetch", priority = 0))
-    queue.enqueue(action("navigation", priority = 1, browserAction = true))
-
-    assertEquals("fetch", queue.peekNext(false)?.id)
-    assertEquals("navigation", queue.peekNext(true)?.id)
-    assertEquals(2, queue.size)
-    assertEquals("fetch", queue.takeNext(false)?.id)
-  }
-
-  @Test
   fun cancellationRemovesOnlyMatchingQueuedRequests() {
     val queue = AndroidScraperQueue()
     queue.enqueue(action("cancel"))

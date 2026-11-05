@@ -189,7 +189,7 @@ class AndroidScraperBridge(
       singleLineLogMessage("[${state.key}] ${redactUrlsForLog(message)} busy=${state.busy} queue=${state.queue.size} " +
         "browserVisible=$browserVisible currentUrl=${urlForLog(state.currentUrl)} " +
         "knownQueues=${queues.keys.joinToString(",")} " +
-        "webViews=${allStates().count { it.webView != null }} " +
+        "webViews=${queues.values.count { it.webView != null }} " +
         "targetUrl=${urlForLog(url)}$cookies"),
     )
   }
@@ -234,7 +234,10 @@ class AndroidScraperBridge(
   fun cancelBackground(payload: String) {
     parseCommand(payload, BridgeCapabilities.SCRAPER_CANCEL) { json ->
       val message = json.optString("message", "scraper: background work cancelled")
-      cancelExecutorWork(queueState(executorFromPayload(json)), message)
+      val state = queueState(executorFromPayload(json))
+      cancelQueuedWhere(state, message) { true }
+      cancelConcurrentFetches(state, message)
+      if (state.busy) cancelActive(state, message)
     }
   }
 
@@ -429,7 +432,7 @@ class AndroidScraperBridge(
     parserExecutor.shutdownNow()
     cacheCleanupExecutor.shutdownNow()
     val cleanup = Runnable {
-      allStates().forEach { state ->
+      queues.values.forEach { state ->
         clearTimeout(state)
         state.webView?.let { webView ->
           destroyScraperWebView(state, webView, "bridge shutdown")
@@ -444,7 +447,6 @@ class AndroidScraperBridge(
         state.blankNavigationInProgress = false
         state.busy = false
       }
-      queues.values.forEach { state -> state.fetchContexts.clear() }
     }
     if (Looper.myLooper() == Looper.getMainLooper()) {
       cleanup.run()
@@ -456,7 +458,7 @@ class AndroidScraperBridge(
   fun resumeBackgroundWorkWebViews() {
     val resume = Runnable {
       backgroundWorkActive = true
-      allStates().forEach { state ->
+      queues.values.forEach { state ->
         state.webView?.let { webView ->
           webView.resumeTimers()
           webView.onResume()
@@ -477,7 +479,7 @@ class AndroidScraperBridge(
   fun releaseBackgroundWorkWebViews() {
     val release = Runnable {
       backgroundWorkActive = false
-      allStates().forEach { state ->
+      queues.values.forEach { state ->
         state.webView?.let { webView ->
           syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = false)
         }
@@ -505,7 +507,10 @@ class AndroidScraperBridge(
   internal fun releaseWorkerBrowser() {
     requireMainThread()
     hideScraper(emitHiddenEvent = false)
-    cancelExecutorWork(queueState(IMMEDIATE_EXECUTOR), "scraper: manual browser closed")
+    val state = queueState(IMMEDIATE_EXECUTOR)
+    cancelQueuedWhere(state, "scraper: manual browser closed") { true }
+    cancelConcurrentFetches(state, "scraper: manual browser closed")
+    if (state.busy) cancelActive(state, "scraper: manual browser closed")
     restoreScraperAuthentication(queues)
   }
 
@@ -516,7 +521,7 @@ class AndroidScraperBridge(
 
   internal fun suspendWorkerWork(manualOpen: Boolean) {
     requireMainThread()
-    allStates().forEach { state ->
+    queues.values.forEach { state ->
       cancelQueuedWhere(state, "scraper: background execution stopped") { !manualOpen || !it.browserAction }
       cancelConcurrentFetches(state, "scraper: background execution stopped")
       if (state.activeAction?.let { !manualOpen || !it.browserAction } == true) cancelActive(state, "scraper: background execution stopped")
@@ -656,9 +661,6 @@ class AndroidScraperBridge(
     return queues.getOrPut(key) { AndroidScraperState(key) }
   }
 
-  private fun allStates(): List<AndroidScraperState> =
-    queues.values.flatMap { state -> listOf(state) + state.fetchContexts.all }
-
   private fun requestQueueState(key: String, sourceId: String): AndroidScraperState {
     val foreground = queueState(IMMEDIATE_EXECUTOR)
     queueState(key)
@@ -693,7 +695,6 @@ class AndroidScraperBridge(
   private fun runNext(state: AndroidScraperState) {
     requireMainThread()
     if (closed) return
-    dispatchFetchContexts(state)
     if (
       !canStartQueuedAction(
         state.busy,
@@ -707,11 +708,9 @@ class AndroidScraperBridge(
       startConcurrentFetches(state)
       return
     }
-    val browserExclusive = state.key == IMMEDIATE_EXECUTOR && browserVisible
-    val next = state.queue.peekNext(browserExclusive) ?: return
-    // Fetch context documents use the current source profile, so they settle before it switches.
-    if (next.sourceId != state.sourceId && state.fetchContexts.all.any { it.hasPendingWork }) return
-    val action = state.queue.takeNext(browserExclusive) ?: return
+    val action = state.queue.takeNext(
+      browserExclusive = state.key == IMMEDIATE_EXECUTOR && browserVisible,
+    ) ?: return
     state.busy = true
     state.activeAction = action
     logState(
@@ -744,90 +743,6 @@ class AndroidScraperBridge(
       sendError(action.id, "scraper: ${error.message ?: error.toString()}")
       runNextAfterPendingBlank(state)
     }
-    // The started action may have moved the primary document to another origin.
-    dispatchFetchContexts(state)
-  }
-
-  // A fetch that only needs an empty document on another origin runs in that
-  // origin's own context document, so a slow mirror never holds another one.
-  private fun dispatchFetchContexts(state: AndroidScraperState) {
-    if (closed || state.fetchContextOwner != null) return
-    if (state.key == IMMEDIATE_EXECUTOR && browserVisible) return
-    while (true) {
-      val (action, route) = state.queue.takeRouted { candidate ->
-        fetchContextRoute(state, candidate) as? AndroidScraperFetchRoute.Context<AndroidScraperState>
-      } ?: return
-      val context = try {
-        // An executor that has not run anything yet takes the profile of its first context fetch.
-        if (state.sourceId == null) activateSource(state, action.sourceId)
-        when (route) {
-          is AndroidScraperFetchRoute.Reuse -> route.context.also(state.fetchContexts::touch)
-          is AndroidScraperFetchRoute.Open -> openFetchContext(state, route)
-        }
-      } catch (error: Throwable) {
-        sendError(action.id, "scraper: ${error.message ?: error.toString()}")
-        continue
-      }
-      enqueue(context, action)
-    }
-  }
-
-  private fun fetchContextRoute(
-    state: AndroidScraperState,
-    action: AndroidScraperQueuedAction,
-  ): AndroidScraperFetchRoute<AndroidScraperState> {
-    val payload = action.fetchPayload ?: return AndroidScraperFetchRoute.Primary
-    if (state.sourceId != null && action.sourceId != state.sourceId) return AndroidScraperFetchRoute.Primary
-    return state.fetchContexts.route(
-      origin = syntheticFetchContextOrigin(payload),
-      primaryOrigin = primaryFetchOrigin(state),
-      primaryIdle = state.concurrentFetches.isEmpty() &&
-        canStartQueuedAction(state.busy, state.blankBeforeNextAction, state.blankNavigationInProgress),
-      busy = { it.hasPendingWork },
-    )
-  }
-
-  private fun fetchContextOrigin(payload: JSONObject): String? =
-    fetchContextUrl(payload.optString("url"), payloadContextUrl(payload))?.let { originUrl(Uri.parse(it)) }
-
-  // Matches runFetch: only a context that differs from the plugin's context page is synthetic.
-  private fun syntheticFetchContextOrigin(payload: JSONObject): String? {
-    val contextUrl = payloadContextUrl(payload)
-    val fetchContextUrl = fetchContextUrl(payload.optString("url"), contextUrl)
-    if (fetchContextUrl == null || fetchContextUrl == contextUrl) return null
-    return originUrl(Uri.parse(fetchContextUrl))
-  }
-
-  private fun payloadContextUrl(payload: JSONObject): String? =
-    payload.optString("contextUrl").takeIf { it.isNotBlank() }
-
-  private fun primaryFetchOrigin(state: AndroidScraperState): String? =
-    state.activeAction?.fetchPayload?.let(::fetchContextOrigin)
-      ?: state.currentUrl?.let { originUrl(Uri.parse(it)) }
-
-  private fun openFetchContext(
-    owner: AndroidScraperState,
-    route: AndroidScraperFetchRoute.Open<AndroidScraperState>,
-  ): AndroidScraperState {
-    route.evicted?.let { evicted ->
-      owner.fetchContexts.remove(evicted)
-      closeFetchContext(evicted, "fetch context eviction")
-    }
-    val context = AndroidScraperState("${owner.key}@${route.origin}").apply {
-      sourceId = owner.sourceId
-      fetchContextOwner = owner
-    }
-    owner.fetchContexts.open(route.origin, context)
-    logState(owner, "open fetch context ${context.key}")
-    return context
-  }
-
-  private fun closeFetchContext(context: AndroidScraperState, reason: String) {
-    val message = "scraper: webview closed during $reason"
-    logState(context, "close fetch context reason=$reason")
-    cancelQueuedWhere(context, message) { true }
-    if (context.busy) cancelActive(context, message)
-    context.webView?.let { webView -> destroyScraperWebView(context, webView, reason) }
   }
 
   private fun canStartConcurrentFetch(
@@ -916,7 +831,6 @@ class AndroidScraperBridge(
     } else {
       startConcurrentFetches(state)
     }
-    state.fetchContextOwner?.let(::runNext)
   }
 
   private fun cancelConcurrentFetches(state: AndroidScraperState, message: String) {
@@ -949,10 +863,8 @@ class AndroidScraperBridge(
       logState(state, "switch source profile sourceId=$sourceId")
       destroyScraperWebView(state, existing, "source profile switch")
     }
-    val fetchContexts = state.fetchContexts.clear()
     state.sourceId = sourceId
     state.pendingChallengeUrl = null
-    fetchContexts.forEach { context -> closeFetchContext(context, "source profile switch") }
   }
 
   private fun payloadUserAgent(payload: JSONObject): String? {
@@ -1826,16 +1738,8 @@ class AndroidScraperBridge(
     }
   }
 
-  private fun cancelExecutorWork(state: AndroidScraperState, message: String) {
-    for (target in listOf(state) + state.fetchContexts.all) {
-      cancelQueuedWhere(target, message) { true }
-      cancelConcurrentFetches(target, message)
-      if (target.busy) cancelActive(target, message)
-    }
-  }
-
   private fun cancelById(id: String, message: String) {
-    for (state in allStates()) {
+    for (state in queues.values) {
       val cancelled = state.queue.removeWhere { it.id == id }
       if (cancelled.isNotEmpty()) {
         cancelled.forEach { action -> sendError(action.id, message) }
@@ -1941,7 +1845,6 @@ class AndroidScraperBridge(
     sendResult(id, envelope)
     state.busy = false
     runNextAfterPendingBlank(state)
-    state.fetchContextOwner?.let(::runNext)
   }
 
   private fun sendResult(id: String, envelope: JSONObject) {

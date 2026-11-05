@@ -75,28 +75,18 @@ internal class AndroidScraperQueue {
   fun takeNext(browserExclusive: Boolean): AndroidScraperQueuedAction? =
     takeMatching { !browserExclusive || it.browserAction }
 
-  fun peekNext(browserExclusive: Boolean): AndroidScraperQueuedAction? =
-    select { action -> action.takeIf { !browserExclusive || it.browserAction } }
-      ?.let { (index, _) -> actions[index] }
-
-  fun takeMatching(eligible: (AndroidScraperQueuedAction) -> Boolean): AndroidScraperQueuedAction? =
-    takeRouted { action -> action.takeIf(eligible) }?.first
-
-  /** Takes the next action that [route] assigns somewhere, with that assignment. */
-  fun <R : Any> takeRouted(route: (AndroidScraperQueuedAction) -> R?): Pair<AndroidScraperQueuedAction, R>? =
-    select(route)?.let { (index, assignment) -> actions.removeAt(index) to assignment }
-
-  private fun <R : Any> select(route: (AndroidScraperQueuedAction) -> R?): Pair<Int, R>? {
-    var selected: Pair<Int, R>? = null
+  fun takeMatching(eligible: (AndroidScraperQueuedAction) -> Boolean): AndroidScraperQueuedAction? {
+    var selectedIndex: Int? = null
     for (index in actions.indices) {
       val candidate = actions[index]
-      val assignment = route(candidate) ?: continue
+      if (!eligible(candidate)) continue
+      val selected = selectedIndex?.let(actions::get)
       // The list preserves enqueue order, so equal priorities remain FIFO.
-      if (selected == null || candidate.priority < actions[selected.first].priority) {
-        selected = index to assignment
+      if (selected == null || candidate.priority < selected.priority) {
+        selectedIndex = index
       }
     }
-    return selected
+    return selectedIndex?.let(actions::removeAt)
   }
 
   fun removeWhere(predicate: (AndroidScraperQueuedAction) -> Boolean): List<AndroidScraperQueuedAction> {

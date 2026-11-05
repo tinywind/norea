@@ -33,17 +33,10 @@ internal class AndroidScraperState(var key: String) {
   var authenticationReturnQueue: String? = null
   var userAgent: String? = null
   var webView: WebView? = null
-  /** Context documents for fetches to origins other than this executor's primary document. */
-  val fetchContexts = AndroidScraperFetchContexts<AndroidScraperState>(ANDROID_SCRAPER_FETCH_CONTEXT_LIMIT)
-  /** Executor that owns this fetch context; null for an executor's primary state. */
-  var fetchContextOwner: AndroidScraperState? = null
 }
 
-internal val AndroidScraperState.hasPendingWork: Boolean
-  get() = busy || activeAction != null || !queue.isEmpty() || concurrentFetches.isNotEmpty()
-
 private fun AndroidScraperState.canTransfer(): Boolean =
-  !hasPendingWork && fetchContexts.all.none { it.hasPendingWork } &&
+  !busy && activeAction == null && queue.isEmpty() && concurrentFetches.isEmpty() &&
     !blankBeforeNextAction && !blankNavigationInProgress && pendingSurfaceLayoutListener == null
 
 private fun swapIdleScraperStates(
