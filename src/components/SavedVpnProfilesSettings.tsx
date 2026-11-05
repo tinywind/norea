@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Alert, Group, NumberInput, Select, Stack, Text } from "@mantine/core";
+import { Alert, Group, Loader, NumberInput, Select, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listVpnGateServerVerdicts, setVpnGateServerVerdict, type VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
 import { formatDateTimeForLocale, useTranslation, type TranslationKey } from "../i18n";
@@ -11,7 +11,7 @@ import { notifyVpnDownloadProfilesChanged, reallowVpnDownloadBatchProfile } from
 import type { VpnDownloadProfileIssueCause } from "../lib/tasks/vpn-download-types";
 import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
-import { RestartIcon, RetryIcon, SaveIcon, SettingsIcon } from "./ui/icons";
+import { ConnectIcon, RestartIcon, RetryIcon, SaveIcon, SettingsIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 
 const VERDICT_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
@@ -23,7 +23,15 @@ const CAUSE_KEYS: Record<VpnDownloadProfileIssueCause, TranslationKey> = {
   "tunnel-lost": "settings.data.pluginVpn.saved.cause.tunnel-lost",
 };
 
-export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: boolean } = {}) {
+interface SavedVpnProfilesSettingsProps {
+  /** The saved profile whose connection is starting, shown as busy on its row. */
+  connectingProfileId?: string | null;
+  disabled?: boolean;
+  /** Connects the browsing VPN with a saved profile; the row hides its button without it. */
+  onConnect?: (profile: { id: string; hash: string }) => void;
+}
+
+export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled = false, onConnect }: SavedVpnProfilesSettingsProps = {}) {
   const { locale, t } = useTranslation();
   const client = useQueryClient();
   const vault = useQuery({ queryKey: SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY, queryFn: listSavedPluginVpnProfiles, meta: { errorPresentation: "inline" } });
@@ -165,6 +173,17 @@ export function SavedVpnProfilesSettings({ disabled = false }: { disabled?: bool
                   ]} onChange={value => {
                     if (value === "works" || value === "fails" || value === "unmarked") return changeVerdict(ip, value === "unmarked" ? null : value);
                   }} />
+                {profile && onConnect ? (
+                  <IconButton
+                    active={connectingProfileId === profile.id}
+                    disabled={disabled || connectingProfileId !== null}
+                    label={t("settings.data.pluginVpn.saved.connect", { ip })}
+                    onClick={() => onConnect({ id: profile.id, hash: profile.hash })}
+                    size="lg"
+                  >
+                    {connectingProfileId === profile.id ? <Loader size={14} /> : <ConnectIcon />}
+                  </IconButton>
+                ) : null}
               </Group>
               {verdict !== "works" && !canApprove ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.approvalUnavailable")}</Text> : null}
               {(issues.data ?? []).filter(issue => issue.ip === ip).map(issue => <Stack key={issue.batchId} gap={4}>

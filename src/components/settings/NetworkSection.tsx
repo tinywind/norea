@@ -42,7 +42,9 @@ import {
   pluginVpnFinderProfileIp,
   removePluginVpnProfile,
   switchPluginVpnFinderServer,
+  switchPluginVpnSavedProfile,
   PluginVpnConnectionNotEstablishedError,
+  type PluginVpnFinderSwitchLifecycle,
   type PluginVpnCredentials,
   type PluginVpnPhase,
   type PluginVpnStatus,
@@ -82,7 +84,7 @@ type PluginVpnOperation =
   | { kind: "disconnect" }
   | {
       candidateId: string;
-      kind: "finder";
+      kind: "finder" | "saved";
       phase: "connecting" | "disconnecting";
     }
   | { kind: "import" }
@@ -120,7 +122,8 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
       const localConnectionActive =
         vpnOperation?.kind === "connect" ||
         vpnOperation?.kind === "disconnect" ||
-        vpnOperation?.kind === "finder";
+        vpnOperation?.kind === "finder" ||
+        vpnOperation?.kind === "saved";
       return vpnEnabled ||
         localConnectionActive ||
         phase === "connecting" ||
@@ -141,7 +144,7 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
       ? "connecting"
       : vpnOperation?.kind === "disconnect"
         ? "disconnecting"
-        : vpnOperation?.kind === "finder"
+        : vpnOperation?.kind === "finder" || vpnOperation?.kind === "saved"
           ? vpnOperation.phase
           : undefined;
   const displayPhase = vpnEnabled && !online ? "waitingForNetwork" : localPhase ?? (
@@ -177,7 +180,7 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
     vpnOperation === null &&
     canStartPluginVpnConnection(status, credentials);
   const connectionRequestActive =
-    vpnOperation?.kind === "connect" || vpnOperation?.kind === "finder";
+    vpnOperation?.kind === "connect" || vpnOperation?.kind === "finder" || vpnOperation?.kind === "saved";
   const showConnectionStop =
     vpnEnabled ||
     connectionRequestActive ||
@@ -306,19 +309,29 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
     }
   }
 
-  async function applyAndConnectFinderServer(
+  function applyAndConnectFinderServer(candidateId: string): Promise<void> {
+    return switchAndConnect(candidateId, "finder", (lifecycle) => switchPluginVpnFinderServer(candidateId, lifecycle));
+  }
+
+  function connectSavedProfile(profile: { id: string; hash: string }): Promise<void> {
+    return switchAndConnect(profile.id, "saved", (lifecycle) => switchPluginVpnSavedProfile(profile, lifecycle));
+  }
+
+  async function switchAndConnect(
     candidateId: string,
+    kind: "finder" | "saved",
+    switchProfile: (lifecycle: PluginVpnFinderSwitchLifecycle) => Promise<PluginVpnStatus | null>,
   ): Promise<void> {
     if (finderDisabled) return;
     const request = ++connectionRequest.current;
     setCredentials(emptyPluginVpnCredentials());
-    setVpnOperation({ candidateId, kind: "finder", phase: "disconnecting" });
+    setVpnOperation({ candidateId, kind, phase: "disconnecting" });
     try {
-      const nextStatus = await switchPluginVpnFinderServer(candidateId, {
+      const nextStatus = await switchProfile({
         isCurrent: () => isCurrentConnectionRequest(request),
         onConnecting: () => {
           if (isCurrentConnectionRequest(request)) {
-            setVpnOperation({ candidateId, kind: "finder", phase: "connecting" });
+            setVpnOperation({ candidateId, kind, phase: "connecting" });
           }
         },
       });
@@ -642,7 +655,11 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
             </SettingsAdvancedGroup>
           ) : null}
           <SettingsAdvancedGroup forceOpen={verdictQuery.isError}>
-            <SavedVpnProfilesSettings disabled={isBusy || vpnOperation !== null} />
+            <SavedVpnProfilesSettings
+              connectingProfileId={vpnOperation?.kind === "saved" ? vpnOperation.candidateId : null}
+              disabled={isBusy || vpnOperation !== null}
+              onConnect={(profile) => { void connectSavedProfile(profile); }}
+            />
             <SettingsFieldRow
               description={t("settings.data.pluginVpn.tested.description")}
               label={t("settings.data.pluginVpn.tested.label")}

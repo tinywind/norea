@@ -276,8 +276,29 @@ export async function applyPluginVpnFinderProfile(
   });
 }
 
-export async function switchPluginVpnFinderServer(
+export function switchPluginVpnFinderServer(
   candidateId: string,
+  lifecycle: PluginVpnFinderSwitchLifecycle,
+): Promise<PluginVpnStatus | null> {
+  return switchPluginVpnProfile(
+    () => invoke<PluginVpnStatus>("plugin_vpn_apply_finder_profile", { candidateId }),
+    lifecycle,
+  );
+}
+
+/** Connects the browsing VPN with a profile saved in the VPN Gate vault, replacing the current one. */
+export function switchPluginVpnSavedProfile(
+  profile: { id: string; hash: string },
+  lifecycle: PluginVpnFinderSwitchLifecycle,
+): Promise<PluginVpnStatus | null> {
+  return switchPluginVpnProfile(
+    () => invoke<PluginVpnStatus>("plugin_vpn_apply_saved_profile", { id: profile.id, expectedHash: profile.hash }),
+    lifecycle,
+  );
+}
+
+async function switchPluginVpnProfile(
+  applyProfile: () => Promise<PluginVpnStatus>,
   lifecycle: PluginVpnFinderSwitchLifecycle,
 ): Promise<PluginVpnStatus | null> {
   if (!lifecycle.isCurrent()) return null;
@@ -289,7 +310,7 @@ export async function switchPluginVpnFinderServer(
     if (!lifecycle.isCurrent()) return null;
     try {
       // Keep On and blocked routing without letting recovery reconnect the old profile.
-      await invoke<PluginVpnStatus>("plugin_vpn_apply_finder_profile", { candidateId });
+      await applyProfile();
     } catch (error) {
       if (lifecycle.isCurrent()) await cancelFailedPluginVpnConnection();
       throw error;

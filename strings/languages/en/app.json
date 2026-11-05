@@ -10,6 +10,7 @@
   "settings.data.pluginVpn.tested.working": "Working",
   "settings.data.pluginVpn.tested.failing": "{count} recent connection failures",
   "settings.data.pluginVpn.saved.manage": "Manage VPN profiles",
+  "settings.data.pluginVpn.saved.connect": "Connect to {ip}",
   "settings.data.pluginVpn.saved.close": "Close VPN profile manager",
   "settings.data.pluginVpn.saved.managementHelp": "O/X is your device-wide verdict. X or clearing O removes the saved file. A download problem excludes an IP only for that download and keeps its file for review. Allow again clears that exclusion even without a saved file. It keeps your verdict and the recorded reason. Downloads still require an available, eligible profile.",
   "settings.data.pluginVpn.saved.noRecords": "No saved profiles, verdicts or download problems.",

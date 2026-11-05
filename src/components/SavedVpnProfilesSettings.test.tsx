@@ -36,6 +36,7 @@ vi.mock("../i18n", () => ({
   formatDateTimeForLocale: (_locale: string, value: number) => `date:${value}`,
 }));
 import { SavedVpnProfilesSettings } from "./SavedVpnProfilesSettings";
+import { IconButton } from "./IconButton";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
 
@@ -271,4 +272,22 @@ it("puts the counts and manage action on a labelled row and the capacity in a co
   expect(capacity[0]!.type).toBe(SettingsInlineControls);
   expect((capacity[0]!.props as { compact?: boolean }).compact).toBe(true);
   expect(capacity.find(element => element.props.label === "settings.data.pluginVpn.saved.saveLimit")).toBeDefined();
+});
+
+it("connects straight to a saved profile from its row and shows the one that is connecting", () => {
+  const onConnect = vi.fn();
+  mocks.index = 0; mocks.refIndex = 0;
+  controls(SavedVpnProfilesSettings({ onConnect }));
+  const opener = controls(SavedVpnProfilesSettings({ onConnect })).find(element => element.props.label === "settings.data.pluginVpn.saved.manage");
+  opener?.props.onClick?.();
+  mocks.index = 0; mocks.refIndex = 0;
+  const view = controls(SavedVpnProfilesSettings({ onConnect }));
+  const connect = view.filter(element => element.type === IconButton && String(element.props.label).startsWith("settings.data.pluginVpn.saved.connect"));
+  expect(connect).toHaveLength(1);
+  connect[0]!.props.onClick?.();
+  expect(onConnect).toHaveBeenCalledWith({ id: "saved", hash: "a".repeat(64) });
+  mocks.index = 0; mocks.refIndex = 0;
+  const busy = controls(SavedVpnProfilesSettings({ connectingProfileId: "saved", onConnect }))
+    .find(element => element.type === IconButton && String(element.props.label).startsWith("settings.data.pluginVpn.saved.connect"));
+  expect(busy?.props.disabled).toBe(true);
 });
