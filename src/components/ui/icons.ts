@@ -6,6 +6,7 @@ import {
   IconArrowRight,
   IconArrowsExchange,
   IconArrowsSort,
+  IconBan,
   IconBell,
   IconBook,
   IconBookmark,
@@ -49,6 +50,7 @@ import {
   IconMinus,
   IconPackages,
   IconPencil,
+  IconPhoto,
   IconPin,
   IconPinnedOff,
   IconPlayerPause,
@@ -73,6 +75,7 @@ import {
   IconTool,
   IconTrash,
   IconTypography,
+  IconUnlink,
   IconWorldWww,
   IconX,
   type IconProps,
@@ -135,6 +138,7 @@ export const TrashIcon = withAppDefaults(IconTrash);
 export const BookmarkIcon = withAppDefaults(IconBookmark);
 export const BookmarkedIcon = withAppDefaults(IconBookmarkFilled);
 export const ExternalLinkIcon = withAppDefaults(IconExternalLink);
+export const ImageIcon = withAppDefaults(IconPhoto);
 export const OverflowIcon = withAppDefaults(IconDotsVertical);
 export const PlusIcon = withAppDefaults(IconPlus);
 export const MinusIcon = withAppDefaults(IconMinus);
@@ -151,6 +155,8 @@ export const PinIcon = withAppDefaults(IconPin);
 export const UnpinIcon = withAppDefaults(IconPinnedOff);
 export const SourceIcon = withAppDefaults(IconWorldWww);
 export const MigrateIcon = withAppDefaults(IconArrowsExchange);
+export const ExcludeIcon = withAppDefaults(IconBan);
+export const UnlinkIcon = withAppDefaults(IconUnlink);
 export const EditIcon = withAppDefaults(IconPencil);
 export const InfoIcon = withAppDefaults(IconInfoCircle);
 export const WarningIcon = withAppDefaults(IconAlertTriangle);

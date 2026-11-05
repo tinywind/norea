@@ -278,7 +278,7 @@ it("opens More settings inside the same surface, with sections and a way back", 
 it("resets the scope the reader applies from the More settings footer", () => {
   useReaderStore.getState().setAppearance({ textSize: 26 });
   useReaderStore.getState().setNovelAppearance(readerTarget.novelId, { textSize: 30 }, useReaderStore.getState().appearance);
-  const reset = openMoreSettings().find((element) => element.props.children === "common.reset" && element.props.color !== "danger")!;
+  const reset = openMoreSettings().find((element) => element.props.label === "readerSettings.reset.action")!;
   reset.props.onClick!();
   const tree = renderQuick();
   expect(tree.some((element) => element.props.children === "readerSettings.reset.novelMessage")).toBe(true);

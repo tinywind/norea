@@ -9,7 +9,8 @@ import {
 } from "../lib/local-cover";
 import { useTranslation } from "../i18n";
 import { ConsoleCover } from "./ConsolePrimitives";
-import { TextButton } from "./TextButton";
+import { IconButton } from "./IconButton";
+import { ImageIcon, TrashIcon } from "./ui/icons";
 
 interface LocalCoverPickerProps {
   alt: string;
@@ -82,26 +83,30 @@ export function LocalCoverPicker({
             type="file"
           />
           <Group gap="xs">
-            <TextButton
+            <IconButton
               disabled={disabled}
+              label={t("library.localNovel.coverChoose")}
               onClick={() => inputRef.current?.click()}
+              size="lg"
               type="button"
             >
-              {t("library.localNovel.coverChoose")}
-            </TextButton>
-            <TextButton
+              <ImageIcon />
+            </IconButton>
+            <IconButton
               disabled={disabled || (!coverSource && !pending)}
+              label={t("library.localNovel.coverClear")}
               onClick={() => {
                 requestRef.current += 1;
                 setConverting(false);
                 setError(null);
                 onChange("");
               }}
+              size="lg"
+              tone="danger"
               type="button"
-              variant="subtle"
             >
-              {t("library.localNovel.coverClear")}
-            </TextButton>
+              <TrashIcon />
+            </IconButton>
           </Group>
           {pending ? (
             <Group gap="xs" role="status">

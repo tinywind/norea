@@ -3,6 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   Button,
+  Indicator,
   Loader,
   PasswordInput,
   Skeleton,
@@ -924,14 +925,16 @@ export function UpdatesSection({
     <ExtensionSection
       actions={
         updates.length > 1 ? (
-          <Button
-            disabled={updates.every(({ plugin }) => updatingPluginIds.has(plugin.id))}
-            onClick={onUpdateAll}
-            size="compact-sm"
-            variant="default"
-          >
-            {t("extensions.updateAll")}
-          </Button>
+          <Indicator label={updates.length} offset={6} size={16}>
+            <IconButton
+              disabled={updates.every(({ plugin }) => updatingPluginIds.has(plugin.id))}
+              label={t("extensions.updateAll", { count: updates.length })}
+              onClick={onUpdateAll}
+              size="lg"
+            >
+              <DownloadIcon />
+            </IconButton>
+          </Indicator>
         ) : undefined
       }
       id="norea-extensions-updates"
@@ -1086,13 +1089,12 @@ export function InstalledSection({
                         }))}
                         label={t("extensions.publisher.choose")}
                         trigger={
-                          <Button
-                            aria-label={`${t("extensions.publisher.choose")}: ${plugin.name}`}
-                            size="compact-sm"
-                            variant="default"
+                          <IconButton
+                            label={`${t("extensions.publisher.choose")}: ${plugin.name}`}
+                            size="lg"
                           >
-                            {t("extensions.publisher.choose")}
-                          </Button>
+                            <RepositoryIcon />
+                          </IconButton>
                         }
                       />
                     ) : null}

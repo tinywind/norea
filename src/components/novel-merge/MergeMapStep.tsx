@@ -11,7 +11,8 @@ import type {
   NovelMergeCopyConflict,
 } from "../../lib/novel-merge-matching";
 import type { ChapterItem } from "../../lib/plugins/types";
-import { CheckIcon, ChevronDownIcon, ChevronRightIcon, MinusIcon, SearchIcon, WarningIcon } from "../ui/icons";
+import { IconButton } from "../IconButton";
+import { CheckIcon, ChevronDownIcon, ChevronRightIcon, ExcludeIcon, MinusIcon, SearchIcon, UnlinkIcon, WarningIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import {
@@ -113,18 +114,19 @@ function MergeTargetPicker({
   return (
     <div className="norea-merge-picker">
       <div className="norea-merge-picker-actions">
-        <Button
+        <IconButton
+          active={decision?.kind === "exclude"}
           aria-pressed={decision?.kind === "exclude"}
-          color="warn"
+          label={t("novelMerge.map.exclude")}
           onClick={onExclude}
-          size="xs"
-          variant={decision?.kind === "exclude" ? "light" : "default"}
+          size="lg"
+          tone="warning"
         >
-          {t("novelMerge.map.exclude")}
-        </Button>
-        <Button disabled={!decision} onClick={onClear} size="xs" variant="default">
-          {t("novelMerge.map.clearMapping")}
-        </Button>
+          <ExcludeIcon />
+        </IconButton>
+        <IconButton disabled={!decision} label={t("novelMerge.map.clearMapping")} onClick={onClear} size="lg">
+          <UnlinkIcon />
+        </IconButton>
       </div>
       {targetChapters.length === 0 ? (
         <Text c="dimmed" size="sm">

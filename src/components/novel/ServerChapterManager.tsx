@@ -1,4 +1,4 @@
-import { Alert, Badge, Group, Loader, Pagination, Stack, Text } from "@mantine/core";
+import { Alert, Badge, Group, Indicator, Loader, Pagination, Stack, Text } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { NovelDetailRecord } from "../../db/queries/novel";
@@ -13,8 +13,7 @@ import { StateView } from "../AppFrame";
 import { ConsolePanel, ConsoleSectionHeader } from "../ConsolePrimitives";
 import { ServerWorkDeleteButton } from "../ServerWorkDeleteButton";
 import { IconButton } from "../IconButton";
-import { TextButton } from "../TextButton";
-import { RefreshIcon } from "../ui/icons";
+import { BackIcon, DeselectIcon, RefreshIcon, SelectAllIcon, TrashIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 /**
@@ -83,7 +82,7 @@ export function ServerChapterManager({ source, name, onClose }: { source: Server
   return <ResponsiveSheet busy={busy} fullScreenOnPhone opened onClose={close} size="lg" title={t("contentSync.manageChapters")}>
     <Stack className="norea-server-management" gap="md">
       <ConsoleSectionHeader title={name} eyebrow={t("contentSync.manageChapters")}
-        actions={<TextButton onClick={close} disabled={busy}>{t("contentSync.backToWork")}</TextButton>} />
+        actions={<IconButton label={t("contentSync.backToWork")} onClick={close} disabled={busy} size="lg"><BackIcon /></IconButton>} />
       <ConsolePanel p="md">
         <Stack gap="xs">
           <Group gap="sm"><Badge variant="light">{t("contentSync.serverDataOnly")}</Badge>
@@ -103,10 +102,19 @@ export function ServerChapterManager({ source, name, onClose }: { source: Server
         <div className="norea-server-selection-bar">
           <Text size="sm" aria-live="polite">{t("novel.selection.selectedCount", { count: selectedIds.length })}</Text>
           <Group gap="xs" wrap="wrap">
-            <TextButton size="sm" disabled={unavailable || !rows.length} onClick={() => setSelected(new Set(rows.map(chapter => chapter.id)))}>{t("contentSync.selectPage")}</TextButton>
-            <TextButton size="sm" disabled={busy || !selectedIds.length} onClick={() => setSelected(new Set())}>{t("selection.deselectAll")}</TextButton>
-            <TextButton size="sm" tone="danger" disabled={unavailable || !selectedIds.length} loading={remove.isPending}
-              onClick={() => remove.mutate(rows.filter(chapter => selected.has(chapter.id)))}>{t("contentSync.deleteSelectedServer", { count: selectedIds.length })}</TextButton>
+            <IconButton label={t("contentSync.selectPage")} size="lg" disabled={unavailable || !rows.length} onClick={() => setSelected(new Set(rows.map(chapter => chapter.id)))}>
+              <SelectAllIcon />
+            </IconButton>
+            <IconButton label={t("contentSync.deselectChapters")} size="lg" disabled={busy || !selectedIds.length} onClick={() => setSelected(new Set())}>
+              <DeselectIcon />
+            </IconButton>
+            <Indicator disabled={!selectedIds.length} label={selectedIds.length} offset={6} size={16}>
+              <IconButton label={t("contentSync.deleteSelectedServer", { count: selectedIds.length })} size="lg" tone="danger"
+                disabled={unavailable || !selectedIds.length} loading={remove.isPending}
+                onClick={() => remove.mutate(rows.filter(chapter => selected.has(chapter.id)))}>
+                <TrashIcon />
+              </IconButton>
+            </Indicator>
           </Group>
         </div>
         {error ? <Alert color="danger" title={t("common.actionFailed")}>{describeError(error)}</Alert> : null}

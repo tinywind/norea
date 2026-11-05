@@ -2,7 +2,8 @@ import { useMutation } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
 import type { ServerNovelSource } from "../lib/content-sync/novel-source";
 import { confirmContentDeletion } from "../store/content-deletion";
-import { TextButton } from "./TextButton";
+import { IconButton } from "./IconButton";
+import { TrashIcon } from "./ui/icons";
 
 interface ServerWorkDeleteButtonProps {
   source: ServerNovelSource;
@@ -22,8 +23,8 @@ export function ServerWorkDeleteButton({ source, name, disabled, onOpenChange, o
     },
     onSuccess: changed => { if (changed) onDeleted?.(); },
   });
-  return <TextButton size="sm" tone="danger" disabled={disabled || remove.isPending}
-    aria-label={`${t("contentSync.deleteWorkServer")}: ${name}`} onClick={() => remove.mutate()}>
-    {t("contentSync.deleteWorkServer")}
-  </TextButton>;
+  return <IconButton size="lg" tone="danger" disabled={disabled || remove.isPending}
+    label={`${t("contentSync.deleteWorkServer")}: ${name}`} onClick={() => remove.mutate()}>
+    <TrashIcon />
+  </IconButton>;
 }

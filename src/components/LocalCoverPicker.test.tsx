@@ -111,7 +111,7 @@ it("ignores a conversion that finishes after Clear", async () => {
   await mount();
 
   await choose("a.png");
-  const clear = elements().find((element) => element.props.children === "library.localNovel.coverClear")!;
+  const clear = elements().find((element) => element.props.label === "library.localNovel.coverClear")!;
   await harness!.run(() => (clear.props.onClick as () => void)());
   await harness!.run(() => conversion.resolve("data:a"));
 

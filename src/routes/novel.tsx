@@ -10,6 +10,7 @@ import { IconButton } from "../components/IconButton";
 import {
   CategoryIcon,
   ChapterListIcon,
+  CheckIcon,
   CloseIcon,
   DeleteDownloadIcon,
   DownloadIcon,
@@ -855,9 +856,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                       })}
                 </h2>
                 {reorderMode ? (
-                  <Button onClick={() => setReorderMode(false)} variant="subtle">
-                    {t("common.done")}
-                  </Button>
+                  <IconButton
+                    label={t("novel.local.finishReorder")}
+                    onClick={() => setReorderMode(false)}
+                    size="lg"
+                  >
+                    <CheckIcon />
+                  </IconButton>
                 ) : (
                   <>
                     {chapters.length > 0 ? (

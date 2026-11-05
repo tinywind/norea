@@ -22,7 +22,6 @@ import {
   SettingsSection,
   SettingsWideField,
 } from "./SettingsPrimitives";
-import { TextButton } from "./TextButton";
 import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
 import { ResetIcon, SaveIcon, WarningIcon } from "./ui/icons";
 import { useTranslation, type TranslationKey } from "../i18n";
@@ -1061,15 +1060,23 @@ export function buildReaderSettingsFields(editor: ReaderSettingsEditor) {
     ),
     saveTheme: (
       <SettingsFieldRow>
-        <TextButton variant="default" onClick={editor.handleSaveCustomTheme}>
-          {t("readerSettings.saveCustomTheme")}
-        </TextButton>
+        <IconButton
+          label={t("readerSettings.saveCustomTheme")}
+          size="lg"
+          onClick={editor.handleSaveCustomTheme}
+        >
+          <SaveIcon />
+        </IconButton>
       </SettingsFieldRow>
     ),
     reset: (
-      <TextButton variant="default" onClick={editor.openResetConfirmation}>
-        {t("common.reset")}
-      </TextButton>
+      <IconButton
+        label={t("readerSettings.reset.action")}
+        size="lg"
+        onClick={editor.openResetConfirmation}
+      >
+        <ResetIcon />
+      </IconButton>
     ),
     controls: (
       <>

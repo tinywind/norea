@@ -365,7 +365,8 @@ describe("Extensions updates", () => {
     expect($('button[aria-label="Update Plugin a"]').attr("data-loading")).toBeDefined();
     expect($('button[aria-label="Update Plugin b"]').attr("data-loading")).toBeUndefined();
     expect($("body").text()).toContain("2.0.0 → 2.1.0");
-    expect($("button:contains('Update all')")).toHaveLength(1);
+    expect($('button[aria-label="Update all 2 plugins"]')).toHaveLength(1);
+    expect($(".mantine-Indicator-indicator").text()).toBe("2");
   });
 
   it("leaves a single update to its row button", () => {
@@ -379,7 +380,7 @@ describe("Extensions updates", () => {
       />,
     );
 
-    expect($("body").text()).not.toContain("Update all");
+    expect($('button[aria-label^="Update all"]')).toHaveLength(0);
   });
 
   it("reports a failed update on its row and keeps it retryable", () => {
