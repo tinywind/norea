@@ -62,6 +62,15 @@ internal class AndroidVpnProxyBridge(private val bridgeSession: BridgeSession) {
     )
 }
 
+internal class AndroidPluginVpnKeepAliveBridge(private val activity: Activity) {
+  @JavascriptInterface
+  fun update(payload: String) {
+    val json = runCatching { JSONObject(payload) }.getOrNull() ?: return
+    val request = pluginVpnKeepAliveRequestFromFields(json::opt)
+    activity.runOnUiThread { PluginVpnForegroundService.update(activity.applicationContext, request) }
+  }
+}
+
 internal class AndroidTaskNotificationBridge(
   private val activity: Activity,
   private val requestNotificationPermission: () -> Unit,
