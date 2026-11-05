@@ -258,6 +258,48 @@ export function PluginVpnFinder({
     (pendingCandidateId === null ? connectionTarget : selectedConnectionTarget) ??
     t("settings.data.pluginVpn.finder.status.selectedServer");
 
+  const connectionStarting = connectionPhase !== "waitingForNetwork" &&
+    (pendingCandidateId !== null ||
+      connectionPhase === "connecting" ||
+      connectionPhase === "reconnecting");
+  const connectionNotice: {
+    busy: boolean;
+    cancellable: boolean;
+    message: string;
+  } | null = connectionStarting
+    ? {
+        busy: true,
+        cancellable: true,
+        message: connectionPhase === "disconnecting"
+          ? t("settings.data.pluginVpn.finder.status.switching", {
+              server: connectionServer,
+            })
+          : connectionPhase === "reconnecting"
+            ? t("settings.data.pluginVpn.status.reconnecting")
+            : t("settings.data.pluginVpn.finder.status.connecting", {
+                server: connectionServer,
+              }),
+      }
+    : connectionPhase === "waitingForNetwork"
+      ? {
+          busy: false,
+          cancellable: true,
+          message: t("settings.data.pluginVpn.status.waitingForNetwork"),
+        }
+      : connectionPhase === "connected"
+        ? {
+            busy: false,
+            cancellable: false,
+            message: t("settings.data.pluginVpn.finder.status.connected"),
+          }
+        : connectionPhase === "disconnecting"
+          ? {
+              busy: true,
+              cancellable: false,
+              message: t("settings.data.pluginVpn.status.disconnecting"),
+            }
+          : null;
+
   const connectRequest = useRef<"idle" | "requested" | "started">("idle");
 
   // A connection started here closes the finder once it is up; the settings row shows the result.
@@ -355,65 +397,29 @@ export function PluginVpnFinder({
         <Text size="sm">
           {t("settings.data.pluginVpn.finder.description")}
         </Text>
-        {connectionPhase !== "waitingForNetwork" && (pendingCandidateId !== null ||
-        connectionPhase === "connecting" ||
-        connectionPhase === "reconnecting") ? (
-          <Stack className="norea-plugin-vpn-finder-state" gap="xs">
-            <Group aria-live="polite" gap="xs" role="status">
-              <Loader size="sm" />
-              <Text size="sm">
-                {connectionPhase === "disconnecting"
-                  ? t("settings.data.pluginVpn.finder.status.switching", {
-                      server: connectionServer,
-                    })
-                  : connectionPhase === "reconnecting"
-                    ? t("settings.data.pluginVpn.status.reconnecting")
-                    : t("settings.data.pluginVpn.finder.status.connecting", {
-                        server: connectionServer,
-                      })}
-              </Text>
-            </Group>
-            <IconButton
-              label={t("settings.data.pluginVpn.connection.cancel")}
-              onClick={() => void onCancelConnection()}
-              size="lg"
-            >
-              <CloseIcon />
-            </IconButton>
-          </Stack>
-        ) : connectionPhase === "waitingForNetwork" ? (
-          <Stack className="norea-plugin-vpn-finder-state" gap="xs">
-            <Text role="status" size="sm">
-              {t("settings.data.pluginVpn.status.waitingForNetwork")}
-            </Text>
-            <IconButton
-              label={t("settings.data.pluginVpn.connection.cancel")}
-              onClick={() => void onCancelConnection()}
-              size="lg"
-            >
-              <CloseIcon />
-            </IconButton>
-          </Stack>
-        ) : connectionPhase === "connected" ? (
-          <Text
-            aria-live="polite"
-            className="norea-plugin-vpn-finder-state"
-            role="status"
-            size="sm"
+        {connectionNotice ? (
+          <div
+            className="norea-plugin-vpn-finder-connection"
+            data-phase={connectionPhase}
           >
-            {t("settings.data.pluginVpn.finder.status.connected")}
-          </Text>
-        ) : connectionPhase === "disconnecting" ? (
-          <Group
-            aria-live="polite"
-            className="norea-plugin-vpn-finder-state"
-            role="status"
-          >
-            <Loader size="sm" />
-            <Text size="sm">
-              {t("settings.data.pluginVpn.status.disconnecting")}
+            {connectionNotice.busy ? <Loader size="xs" /> : null}
+            <Text
+              aria-live="polite"
+              className="norea-plugin-vpn-finder-connection-text"
+              role="status"
+              size="sm"
+            >
+              {connectionNotice.message}
             </Text>
-          </Group>
+            {connectionNotice.cancellable ? (
+              <IconButton
+                label={t("settings.data.pluginVpn.connection.cancel")}
+                onClick={() => void onCancelConnection()}
+              >
+                <CloseIcon />
+              </IconButton>
+            ) : null}
+          </div>
         ) : connectionPhase === "error" ? (
           <Text className="norea-plugin-vpn-finder-state" role="alert" size="sm">
             {connectionError ?? t("settings.data.pluginVpn.status.error")}

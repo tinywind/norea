@@ -244,3 +244,18 @@ it("lists every country when a remembered country is missing from the current se
   expect(view.filter(element => element.type === Table.Tr)).toHaveLength(2);
   expect(usePluginVpnFinderStore.getState().filters.countryCode).toBe("DE");
 });
+
+it("shows each connection state on one line with its cancel action at the end", () => {
+  const notice = (overrides: Partial<Parameters<typeof PluginVpnFinder>[0]>) => {
+    const line = render(true, new Map(), overrides).find(element =>
+      (element.props as { className?: string }).className === "norea-plugin-vpn-finder-connection");
+    return line ? controls(line.props.children).map(element => element.type) : null;
+  };
+  expect(notice({ connectionPhase: "connecting", pendingCandidateId: "one" })).toEqual([Loader, expect.anything(), IconButton, expect.anything()]);
+  expect(notice({ connectionPhase: "reconnecting" })?.slice(0, 1)).toEqual([Loader]);
+  expect(notice({ connectionPhase: "waitingForNetwork" })).toContain(IconButton);
+  expect(notice({ connectionPhase: "waitingForNetwork" })).not.toContain(Loader);
+  expect(notice({ connectionPhase: "connected" })).not.toContain(IconButton);
+  expect(notice({ connectionPhase: "disconnecting" })).toEqual([Loader, expect.anything()]);
+  expect(notice({ connectionPhase: "disabled" })).toBeNull();
+});

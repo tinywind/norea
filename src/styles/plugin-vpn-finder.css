@@ -7,6 +7,31 @@
   padding: var(--norea-space-3);
 }
 
+/* One compact line for the connection: progress, message, and its cancel action at the end. */
+.norea-plugin-vpn-finder-connection {
+  align-items: center;
+  background: var(--norea-color-accent-soft);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-on-accent-soft);
+  display: flex;
+  gap: var(--norea-space-2);
+  min-height: 2.25rem;
+  min-width: 0;
+  padding: var(--norea-space-1) var(--norea-space-3);
+}
+
+.norea-plugin-vpn-finder-connection-text {
+  color: inherit;
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.norea-plugin-vpn-finder-connection > .norea-icon-button {
+  flex: 0 0 auto;
+  margin-inline-end: calc(-1 * var(--norea-space-2));
+}
+
 .norea-plugin-vpn-finder-table {
   min-width: 54rem;
 }
