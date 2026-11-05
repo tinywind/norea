@@ -16,6 +16,7 @@ import java.io.File
 import java.io.IOException
 import java.io.InputStream
 import java.io.OutputStream
+import java.util.concurrent.ConcurrentHashMap
 import java.util.zip.ZipEntry
 import java.util.zip.ZipInputStream
 import java.util.zip.ZipFile
@@ -63,6 +64,34 @@ internal fun createRawAndroidStorageFile(parent: File, name: String): File? {
   }
 }
 
+private val storageAccessDeniedErrno = Regex("\\b(?:EACCES|EPERM) \\(")
+
+internal fun isAndroidStorageAccessDenied(error: Throwable): Boolean =
+  generateSequence(error) { it.cause }.take(8).any { cause ->
+    cause is SecurityException ||
+      cause.message?.let(storageAccessDeniedErrno::containsMatchIn) == true
+  }
+
+/**
+ * Remembers storage roots whose direct file reads the platform denies, such as
+ * files left by an earlier install's UID, so later reads use the document
+ * provider without retrying direct I/O. Missing files never mark a root.
+ */
+internal class AndroidStorageDirectReadPolicy(
+  private val onFirstDenial: (rootUri: String, error: Throwable) -> Unit,
+) {
+  private val deniedRoots = ConcurrentHashMap.newKeySet<String>()
+
+  fun allows(rootUri: String): Boolean = rootUri !in deniedRoots
+
+  /** Returns whether [error] denied direct access; only the first denial per root is reported. */
+  fun recordFailure(rootUri: String, error: Throwable): Boolean {
+    if (!isAndroidStorageAccessDenied(error)) return false
+    if (deniedRoots.add(rootUri)) onFirstDenial(rootUri, error)
+    return true
+  }
+}
+
 internal class AndroidStorageDocuments(private val context: Context) {
   data class StorageChildDocument(
     val name: String,
@@ -76,6 +105,10 @@ internal class AndroidStorageDocuments(private val context: Context) {
 
   private val contentResolver: ContentResolver
     get() = context.contentResolver
+
+  private val directReads = AndroidStorageDirectReadPolicy { rootUri, error ->
+    Log.w(TAG, "Android storage denies direct file reads; using the document provider until restart. root=$rootUri error=$error")
+  }
 
   fun storageRoot(rootUri: String): DocumentFile {
     val root = Uri.parse(rootUri)
@@ -250,9 +283,12 @@ internal class AndroidStorageDocuments(private val context: Context) {
   ): InputStream? =
     runCatching {
       externalStorageFile(rootUri, relativePath)
-        ?.takeIf { it.isFile }
+        ?.takeIf { directReads.allows(rootUri) && it.isFile }
         ?.inputStream()
-    }.getOrNull()
+    }.getOrElse { error ->
+      directReads.recordFailure(rootUri, error)
+      null
+    }
       ?: runCatching { contentResolver.openInputStream(document.uri) }.getOrNull()
 
   fun openStorageInputStream(rootUri: String, relativePath: String): InputStream? {
@@ -262,12 +298,14 @@ internal class AndroidStorageDocuments(private val context: Context) {
       Log.w(TAG, singleLineLogMessage("Android storage direct path failed. path=$relativePath root=$rootUri ${error.stackTraceToString()}"))
       null
     }
-    val direct = directFile?.takeIf { it.isFile }?.let { file ->
+    val direct = directFile?.takeIf { directReads.allows(rootUri) && it.isFile }?.let { file ->
       runCatching { file.inputStream() }.getOrElse { error ->
-        Log.w(
-          TAG,
-          singleLineLogMessage("Android storage direct read failed. path=$relativePath file=${file.absolutePath} ${error.stackTraceToString()}"),
-        )
+        if (!directReads.recordFailure(rootUri, error)) {
+          Log.w(
+            TAG,
+            singleLineLogMessage("Android storage direct read failed. path=$relativePath file=${file.absolutePath} ${error.stackTraceToString()}"),
+          )
+        }
         null
       }
     }
@@ -282,19 +320,24 @@ internal class AndroidStorageDocuments(private val context: Context) {
       )
       null
     }
+    var documentReadFailure: Throwable? = null
     val documentStream = documentUri?.let { uri ->
       runCatching { contentResolver.openInputStream(uri) }.getOrElse { error ->
-        Log.w(
-          TAG,
-          singleLineLogMessage("Android storage document read failed. path=$relativePath uri=$uri ${error.stackTraceToString()}"),
-        )
+        documentReadFailure = error
         null
       }
     }
     if (documentStream != null) return documentStream
 
+    // Missing files fail the document read too; callers treat them as not found, so only existing files are reported.
     val document = storageDocumentAt(rootUri, relativePath) ?: return null
     if (!document.isFile) return null
+    documentReadFailure?.let { error ->
+      Log.w(
+        TAG,
+        singleLineLogMessage("Android storage document read failed. path=$relativePath uri=$documentUri ${error.stackTraceToString()}"),
+      )
+    }
     return runCatching { contentResolver.openInputStream(document.uri) }.getOrElse { error ->
       Log.w(
         TAG,
@@ -310,13 +353,15 @@ internal class AndroidStorageDocuments(private val context: Context) {
     document: DocumentFile,
     inspect: (ZipFile, File) -> T,
   ): T {
-    val direct = externalStorageFile(rootUri, relativePath)?.takeIf { it.isFile }
+    val direct = externalStorageFile(rootUri, relativePath)?.takeIf { directReads.allows(rootUri) && it.isFile }
     val directArchive = direct?.let { file ->
       try {
         ZipFile(file)
       } catch (error: Exception) {
         if (error !is IOException && error !is SecurityException) throw error
-        Log.w(TAG, "Android chapter media direct read failed. path=$relativePath file=${file.absolutePath}", error)
+        if (!directReads.recordFailure(rootUri, error)) {
+          Log.w(TAG, "Android chapter media direct read failed. path=$relativePath file=${file.absolutePath}", error)
+        }
         null
       }
     }
@@ -356,7 +401,12 @@ internal class AndroidStorageDocuments(private val context: Context) {
       !document.isFile -> "Android storage path is not a file: $relativePath"
       else -> "Cannot open storage file for reading: $relativePath"
     }
-    Log.w(TAG, singleLineLogMessage("$message root=$rootUri"))
+    // Readers map "not found" to a null result, so a missing file is an ordinary answer.
+    if (document == null) {
+      Log.d(TAG, singleLineLogMessage("$message root=$rootUri"))
+    } else {
+      Log.w(TAG, singleLineLogMessage("$message root=$rootUri"))
+    }
     return message
   }
 
