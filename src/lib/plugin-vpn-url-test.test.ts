@@ -122,11 +122,20 @@ describe("plugin VPN URL test presentation", () => {
     expect(pluginVpnUrlTestPresentation({ kind: "ok", status: 200, elapsedMs: 1234 }, "en")).toEqual({
       key: "settings.data.pluginVpn.urlTest.result.ok", values: { status: 200, ms: "1,234" }, tone: "ok", detail: null,
     });
+    expect(pluginVpnUrlTestPresentation({ kind: "ok", status: null, elapsedMs: 980 }, "en")).toEqual({
+      key: "settings.data.pluginVpn.urlTest.result.okWithoutStatus", values: { ms: "980" }, tone: "ok", detail: null,
+    });
     expect(pluginVpnUrlTestPresentation({ kind: "cloudflareChallenge", status: 403, elapsedMs: 1 }, "en").tone).toBe("warn");
     expect(pluginVpnUrlTestPresentation({ kind: "connectionFailed", reason: "TLS handshake failed" }, "en")).toMatchObject({
       key: "settings.data.pluginVpn.urlTest.result.connectionFailed", tone: "danger", detail: "TLS handshake failed",
     });
     expect(pluginVpnUrlTestPresentation({ kind: "timedOut", stage: "request" }, "en").key).toBe("settings.data.pluginVpn.urlTest.result.requestTimedOut");
     expect(pluginVpnUrlTestPresentation({ kind: "inUse" }, "en").key).toBe("settings.data.pluginVpn.urlTest.result.inUse");
+    expect(pluginVpnUrlTestPresentation({ kind: "browserUnavailable" }, "en")).toEqual({
+      key: "settings.data.pluginVpn.urlTest.result.browserUnavailable",
+      tone: "warn",
+      detail: null,
+      detailKey: "settings.data.pluginVpn.urlTest.result.browserUnavailableHelp",
+    });
   });
 });

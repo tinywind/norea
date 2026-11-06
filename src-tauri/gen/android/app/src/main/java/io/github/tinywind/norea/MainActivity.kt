@@ -71,6 +71,7 @@ class MainActivity : TauriActivity() {
     RustlsPlatformVerifierBridge.init(applicationContext)
     AndroidNetworkState.start(applicationContext)
     AndroidPowerState.start(applicationContext)
+    AndroidVpnUrlTestBridge.start(applicationContext)
     enableEdgeToEdge()
     super.onCreate(savedInstanceState)
     if (intent.action == Intent.ACTION_VIEW || intent.action == "org.chromium.arc.intent.action.VIEW") {

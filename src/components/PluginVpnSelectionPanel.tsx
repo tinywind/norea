@@ -136,13 +136,17 @@ export interface PluginVpnUrlTestPresentation {
   tone: UrlTestTone;
   /** The failure reason shown under the badge. */
   detail: string | null;
+  /** Translated guidance shown under the badge instead of `detail`. */
+  detailKey?: TranslationKey;
 }
 
 /** How one finished test reads in a row: a short badge label, its tone and an optional reason. */
 export function pluginVpnUrlTestPresentation(outcome: PluginVpnUrlTestOutcome, locale: string): PluginVpnUrlTestPresentation {
   switch (outcome.kind) {
     case "ok":
-      return { key: "settings.data.pluginVpn.urlTest.result.ok", values: { status: outcome.status, ms: outcome.elapsedMs.toLocaleString(locale) }, tone: "ok", detail: null };
+      return outcome.status === null
+        ? { key: "settings.data.pluginVpn.urlTest.result.okWithoutStatus", values: { ms: outcome.elapsedMs.toLocaleString(locale) }, tone: "ok", detail: null }
+        : { key: "settings.data.pluginVpn.urlTest.result.ok", values: { status: outcome.status, ms: outcome.elapsedMs.toLocaleString(locale) }, tone: "ok", detail: null };
     case "httpError":
       return { key: "settings.data.pluginVpn.urlTest.result.httpError", values: { status: outcome.status, ms: outcome.elapsedMs.toLocaleString(locale) }, tone: "warn", detail: null };
     case "cloudflareChallenge":
@@ -161,6 +165,13 @@ export function pluginVpnUrlTestPresentation(outcome: PluginVpnUrlTestOutcome, l
       return { key: "settings.data.pluginVpn.urlTest.result.credentialsRequired", tone: "warn", detail: null };
     case "inUse":
       return { key: "settings.data.pluginVpn.urlTest.result.inUse", tone: "warn", detail: null };
+    case "browserUnavailable":
+      return {
+        key: "settings.data.pluginVpn.urlTest.result.browserUnavailable",
+        tone: "warn",
+        detail: null,
+        detailKey: "settings.data.pluginVpn.urlTest.result.browserUnavailableHelp",
+      };
     case "error":
       return { key: "settings.data.pluginVpn.urlTest.result.error", tone: "danger", detail: outcome.message };
   }
@@ -195,9 +206,9 @@ export function PluginVpnUrlTestStatus({ host }: { host: string }) {
       <Badge color={BADGE_COLORS[presentation.tone]} size="sm" variant="light">
         {label}
       </Badge>
-      {presentation.detail ? (
+      {presentation.detailKey || presentation.detail ? (
         <Text className="norea-plugin-vpn-url-result-detail" component="span" size="xs">
-          {presentation.detail}
+          {presentation.detailKey ? t(presentation.detailKey) : presentation.detail}
         </Text>
       ) : null}
     </div>

@@ -10,7 +10,8 @@ export type PluginVpnUrlTestProfile =
   | { kind: "manual"; host: string; expectedHash: string };
 
 export type PluginVpnUrlTestResult =
-  | { kind: "ok"; status: number; elapsedMs: number }
+  /** `status` is null when the test browser does not report the page's status. */
+  | { kind: "ok"; status: number | null; elapsedMs: number }
   | { kind: "httpError"; status: number; elapsedMs: number }
   | { kind: "cloudflareChallenge"; status: number; elapsedMs: number }
   | { kind: "connectionFailed"; reason: string }
@@ -18,6 +19,8 @@ export type PluginVpnUrlTestResult =
   | { kind: "timedOut"; stage: "connect" | "request" }
   | { kind: "credentialsRequired" }
   | { kind: "inUse" }
+  /** Android did not start the test browser, as some builds do while Norea is in the background. */
+  | { kind: "browserUnavailable" }
   | { kind: "cancelled" };
 
 /** A test result, or why the test could not start, such as a profile that is gone. */
@@ -61,9 +64,10 @@ function testPluginVpnProfileUrl(
 }
 
 /**
- * Tests each target in turn: one separate test tunnel and one GET per host,
- * never two at once and never retried. Duplicate hosts are tested once. A
- * run already in progress makes this a no-op that returns false.
+ * Tests each target in turn: one separate test tunnel and one page load in
+ * the isolated test browser per host, never two at once and never retried.
+ * Duplicate hosts are tested once. A run already in progress makes this a
+ * no-op that returns false.
  */
 export async function runPluginVpnUrlTests(
   targets: readonly PluginVpnUrlTestTarget[],

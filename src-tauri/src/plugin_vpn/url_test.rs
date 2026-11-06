@@ -1,10 +1,16 @@
-//! User-started URL tests for VPN profiles. Each test opens its own OpenVPN tunnel, sends one
-//! GET to the URL the user typed through a private local proxy, and closes the tunnel. Tests run
-//! one at a time and never touch the plugin VPN or download worker connections.
+//! User-started URL tests for VPN profiles. Each test opens its own OpenVPN tunnel, loads the URL
+//! the user typed once in an isolated Android WebView process routed through a private local
+//! proxy, and closes the tunnel. Tests run one at a time and never touch the plugin VPN or
+//! download worker connections.
+
+#[cfg(target_os = "android")]
+mod android;
 
 use std::sync::Mutex;
 #[cfg(target_os = "android")]
-use std::time::{Duration, Instant};
+use std::sync::atomic::{AtomicI64, Ordering};
+#[cfg(target_os = "android")]
+use std::time::Duration;
 
 use serde::{Deserialize, Serialize};
 
@@ -14,19 +20,11 @@ const MAX_USER_AGENT_LENGTH: usize = 512;
 #[cfg(target_os = "android")]
 const CONNECT_TIMEOUT: Duration = Duration::from_secs(20);
 #[cfg(target_os = "android")]
-const REQUEST_TIMEOUT: Duration = Duration::from_secs(20);
+const PAGE_TIMEOUT: Duration = Duration::from_secs(25);
 #[cfg(target_os = "android")]
 const CLOSE_TIMEOUT: Duration = Duration::from_secs(10);
-#[cfg(any(target_os = "android", test))]
-const MAX_BODY_PREFIX_BYTES: usize = 16 * 1024;
-#[cfg(any(target_os = "android", test))]
-const CLOUDFLARE_CHALLENGE_MARKERS: &[&str] = &[
-    "/cdn-cgi/challenge-platform/",
-    "challenges.cloudflare.com",
-    "cf_chl_opt",
-    "cf-chl-",
-    "<title>just a moment...</title>",
-];
+#[cfg(target_os = "android")]
+static PAGE_SEQUENCE: AtomicI64 = AtomicI64::new(1);
 
 /// The profile one URL test connects with.
 #[derive(Deserialize)]
@@ -41,25 +39,29 @@ pub(crate) enum VpnUrlTestProfile {
 #[serde(rename_all = "camelCase")]
 pub(crate) enum VpnUrlTestStage {
     Connect,
+    /// The page load in the test browser.
     Request,
 }
 
 #[derive(Debug, PartialEq, Eq, Serialize)]
 #[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
 pub(crate) enum VpnUrlTestResult {
-    /// A 2xx or 3xx response; redirects are reported, not followed.
-    Ok { status: u16, elapsed_ms: u64 },
+    /// The page finished loading; `status` is the main document's status when the WebView reports it.
+    Ok { status: Option<u16>, elapsed_ms: u64 },
     HttpError { status: u16, elapsed_ms: u64 },
     CloudflareChallenge { status: u16, elapsed_ms: u64 },
     /// The test tunnel did not come up or was lost.
     ConnectionFailed { reason: String },
-    /// The tunnel was up, but the request failed (DNS, TCP, or TLS).
+    /// The tunnel was up, but the page did not load (DNS, TCP, TLS, or another network error).
     RequestFailed { reason: String },
     TimedOut { stage: VpnUrlTestStage },
     /// An imported profile that needs a username and password, which tests do not ask for.
     CredentialsRequired,
     /// The plugin VPN or a download worker uses this server, so a second session is not opened.
     InUse,
+    /// Android did not start the test browser process, as some builds do while Norea is not in
+    /// the foreground.
+    BrowserUnavailable,
     Cancelled,
 }
 
@@ -92,7 +94,7 @@ pub(crate) fn validate_run_id(run_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The User-Agent sent with the test request; empty sends none.
+/// The User-Agent of the test browser; empty keeps the WebView default.
 pub(crate) fn validate_user_agent(user_agent: &str) -> Result<(), String> {
     if user_agent.len() > MAX_USER_AGENT_LENGTH
         || user_agent.bytes().any(|byte| byte.is_ascii_control() || !byte.is_ascii())
@@ -102,56 +104,106 @@ pub(crate) fn validate_user_agent(user_agent: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Classifies one response from its status, its `server` and `cf-mitigated` headers, and the
-/// start of its body, which is read only when the headers alone cannot rule out a challenge.
+/// What the test browser saw when it loaded the page once, as `AndroidVpnUrlTestService` reports it.
 #[cfg(any(target_os = "android", test))]
-fn classify_response(
-    status: u16,
+#[derive(Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", rename_all_fields = "camelCase")]
+enum PageObservation {
+    /// The main document finished loading. `status` comes from the main-frame HTTP error or, for
+    /// other responses, the document's navigation timing; the headers only from an HTTP error.
+    Loaded {
+        url: String,
+        status: Option<u16>,
+        server: Option<String>,
+        cf_mitigated: Option<String>,
+        challenge_markers: bool,
+        elapsed_ms: u64,
+    },
+    NetworkError { url: String, description: String },
+    TimedOut,
+    BrowserUnavailable,
+    Cancelled,
+    /// The test browser could not run the test.
+    Failed { reason: String },
+}
+
+/// Judges one page load. A proxy connection the tunnel could not open shows up in the page as a
+/// bare 502 or tunnel error, so the recorded reason for that host replaces it.
+#[cfg(any(target_os = "android", test))]
+fn judge_page(observation: &str, failures: &ConnectFailures) -> Result<VpnUrlTestResult, String> {
+    let observation: PageObservation = serde_json::from_str(observation)
+        .map_err(|error| format!("the VPN URL test browser sent an invalid result: {error}"))?;
+    Ok(match observation {
+        PageObservation::Loaded { url, status, server, cf_mitigated, challenge_markers, elapsed_ms } => {
+            let result = classify_page(status, server.as_deref(), cf_mitigated.as_deref(), challenge_markers, elapsed_ms);
+            match failures.for_url(&url) {
+                Some(reason) if matches!(result, VpnUrlTestResult::HttpError { status: 502, .. }) => VpnUrlTestResult::RequestFailed { reason },
+                _ => result,
+            }
+        }
+        PageObservation::NetworkError { url, description } => {
+            VpnUrlTestResult::RequestFailed { reason: failures.for_url(&url).unwrap_or(description) }
+        }
+        PageObservation::TimedOut => VpnUrlTestResult::TimedOut { stage: VpnUrlTestStage::Request },
+        PageObservation::BrowserUnavailable => VpnUrlTestResult::BrowserUnavailable,
+        PageObservation::Cancelled => VpnUrlTestResult::Cancelled,
+        PageObservation::Failed { reason } => return Err(reason),
+    })
+}
+
+#[cfg(any(target_os = "android", test))]
+fn classify_page(
+    status: Option<u16>,
     server: Option<&str>,
     cf_mitigated: Option<&str>,
-    body_prefix: &[u8],
+    challenge_markers: bool,
     elapsed_ms: u64,
 ) -> VpnUrlTestResult {
-    if is_cloudflare_challenge(status, server, cf_mitigated, body_prefix) {
-        VpnUrlTestResult::CloudflareChallenge { status, elapsed_ms }
-    } else if (200..400).contains(&status) {
-        VpnUrlTestResult::Ok { status, elapsed_ms }
-    } else {
-        VpnUrlTestResult::HttpError { status, elapsed_ms }
+    match status {
+        Some(status) if is_cloudflare_challenge(status, server, cf_mitigated, challenge_markers) => {
+            VpnUrlTestResult::CloudflareChallenge { status, elapsed_ms }
+        }
+        Some(status) if status >= 400 => VpnUrlTestResult::HttpError { status, elapsed_ms },
+        status => VpnUrlTestResult::Ok { status, elapsed_ms },
     }
 }
 
 #[cfg(any(target_os = "android", test))]
-fn is_cloudflare_challenge(status: u16, server: Option<&str>, cf_mitigated: Option<&str>, body_prefix: &[u8]) -> bool {
-    if cf_mitigated.is_some_and(|value| value.trim().eq_ignore_ascii_case("challenge")) {
-        return true;
-    }
-    if !needs_challenge_body(status, server) {
-        return false;
-    }
-    let body = String::from_utf8_lossy(&body_prefix[..body_prefix.len().min(MAX_BODY_PREFIX_BYTES)]).to_ascii_lowercase();
-    CLOUDFLARE_CHALLENGE_MARKERS.iter().any(|marker| body.contains(marker))
+fn is_cloudflare_challenge(status: u16, server: Option<&str>, cf_mitigated: Option<&str>, challenge_markers: bool) -> bool {
+    cf_mitigated.is_some_and(|value| value.trim().eq_ignore_ascii_case("challenge"))
+        || (challenge_markers && is_cloudflare_error(status, server))
 }
 
-/// Cloudflare serves its challenge page as 403, 429, or 503 from `server: cloudflare`.
+/// Cloudflare serves its challenge page as 403, 429, or 503 from `server: cloudflare`; ordinary
+/// pages can carry challenge-platform scripts too, so markers count only on these responses.
 #[cfg(any(target_os = "android", test))]
-fn needs_challenge_body(status: u16, server: Option<&str>) -> bool {
+fn is_cloudflare_error(status: u16, server: Option<&str>) -> bool {
     matches!(status, 403 | 429 | 503) && server.is_some_and(|value| value.trim().eq_ignore_ascii_case("cloudflare"))
 }
 
+/// Why the tunnel could not open a proxy connection, per target host and port.
 #[cfg(any(target_os = "android", test))]
-fn describe_error_chain(error: &(dyn std::error::Error + 'static)) -> String {
-    let mut message = error.to_string();
-    let mut source = error.source();
-    while let Some(cause) = source {
-        let cause_message = cause.to_string();
-        if !message.contains(&cause_message) {
-            message.push_str(": ");
-            message.push_str(&cause_message);
+#[derive(Default)]
+struct ConnectFailures(Mutex<Vec<(String, u16, String)>>);
+
+#[cfg(any(target_os = "android", test))]
+impl ConnectFailures {
+    fn record(&self, host: &str, port: u16, reason: &str) {
+        let mut failures = self.0.lock().expect("VPN URL test connector lock");
+        match failures.iter().position(|(known, known_port, _)| known.eq_ignore_ascii_case(host) && *known_port == port) {
+            Some(index) => failures[index].2 = reason.to_string(),
+            None => failures.push((host.to_string(), port, reason.to_string())),
         }
-        source = cause.source();
     }
-    message
+
+    fn for_url(&self, url: &str) -> Option<String> {
+        let url = reqwest::Url::parse(url).ok()?;
+        let host = url.host_str()?.trim_start_matches('[').trim_end_matches(']');
+        let port = url.port_or_known_default()?;
+        self.0.lock().expect("VPN URL test connector lock").iter()
+            .find(|(known, known_port, _)| known.eq_ignore_ascii_case(host) && *known_port == port)
+            .map(|(_, _, reason)| reason.clone())
+    }
 }
 
 #[derive(Default)]
@@ -227,7 +279,8 @@ pub(super) struct UrlTestRequest {
     pub(super) user_agent: String,
 }
 
-/// Connects a separate tunnel, sends one GET through it, and closes the tunnel on every path.
+/// Connects a separate tunnel, loads the page once through it in the isolated test browser, which
+/// keeps its process for the rest of the run, and closes the tunnel on every path.
 #[cfg(target_os = "android")]
 pub(super) async fn run_test(guard: &mut UrlTestGuard<'_>, request: UrlTestRequest) -> Result<VpnUrlTestResult, String> {
     if guard.resources.proxy.is_none() {
@@ -271,72 +324,44 @@ pub(super) async fn run_test(guard: &mut UrlTestGuard<'_>, request: UrlTestReque
     };
 
     let super::engine::EngineConnection { connector, control, lifecycle: _lifecycle, mut completion } = connection;
-    let recorder = std::sync::Arc::new(RecordingConnector { inner: connector, error: Mutex::new(None) });
+    let recorder = std::sync::Arc::new(RecordingConnector { inner: connector, failures: ConnectFailures::default() });
     proxy.tunnel(recorder.clone());
+    let page = PAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    let (url, port, user_agent) = (request.url.to_string(), proxy.address().port(), request.user_agent);
+    let page_timeout_ms = PAGE_TIMEOUT.as_millis() as i32;
+    let mut load = tauri::async_runtime::spawn_blocking(move || android::load_page(page, &url, port, &user_agent, page_timeout_ms));
+    let mut page_running = true;
     let mut completed = false;
     let result = tokio::select! {
-        result = tokio::time::timeout(REQUEST_TIMEOUT, send_request(proxy.address().port(), &request.url, &request.user_agent)) => match result {
-            Ok(result) => match recorder.error.lock().expect("VPN URL test connector lock").take() {
-                Some(error) if !matches!(result, VpnUrlTestResult::Ok { .. } | VpnUrlTestResult::CloudflareChallenge { .. }) =>
-                    VpnUrlTestResult::RequestFailed { reason: error },
-                _ => result,
-            },
-            Err(_) => VpnUrlTestResult::TimedOut { stage: VpnUrlTestStage::Request },
-        },
+        observation = &mut load => {
+            page_running = false;
+            observation
+                .map_err(|error| format!("the VPN URL test page task failed: {error}"))
+                .and_then(|observation| observation)
+                .and_then(|observation| judge_page(&observation, &recorder.failures))
+        }
         result = &mut completion => {
             completed = true;
-            VpnUrlTestResult::ConnectionFailed { reason: result.err().unwrap_or_else(|| "OpenVPN disconnected".to_string()) }
+            Ok(VpnUrlTestResult::ConnectionFailed { reason: result.err().unwrap_or_else(|| "OpenVPN disconnected".to_string()) })
         }
-        () = wait_for_cancellation(cancellation) => VpnUrlTestResult::Cancelled,
+        () = wait_for_cancellation(cancellation) => Ok(VpnUrlTestResult::Cancelled),
     };
+    if page_running {
+        if let Err(error) = android::cancel_page(page) {
+            log::warn!("could not stop the VPN URL test page: {error}");
+        }
+        let _ = load.await;
+    }
     proxy.block("The VPN URL test tunnel is closed");
     close_tunnel(&control, (!completed).then_some(completion)).await;
-    Ok(result)
+    result
 }
 
-#[cfg(target_os = "android")]
-async fn send_request(port: u16, url: &reqwest::Url, user_agent: &str) -> VpnUrlTestResult {
-    let client = match reqwest::Proxy::all(format!("http://127.0.0.1:{port}")).and_then(|proxy| {
-        let builder = reqwest::Client::builder()
-            .proxy(proxy)
-            .redirect(reqwest::redirect::Policy::none())
-            .connect_timeout(REQUEST_TIMEOUT)
-            .timeout(REQUEST_TIMEOUT)
-            .retry(reqwest::retry::never());
-        (if user_agent.is_empty() { builder } else { builder.user_agent(user_agent) }).build()
-    }) {
-        Ok(client) => client,
-        Err(error) => return VpnUrlTestResult::RequestFailed { reason: format!("could not prepare the test request: {}", describe_error_chain(&error)) },
-    };
-    let started = Instant::now();
-    let mut response = match client.get(url.clone()).send().await {
-        Ok(response) => response,
-        Err(error) if error.is_timeout() => return VpnUrlTestResult::TimedOut { stage: VpnUrlTestStage::Request },
-        Err(error) => return VpnUrlTestResult::RequestFailed { reason: describe_error_chain(&error) },
-    };
-    let elapsed_ms = started.elapsed().as_millis().min(u64::MAX as u128) as u64;
-    let status = response.status().as_u16();
-    let header = |name: &str| response.headers().get(name).and_then(|value| value.to_str().ok()).map(str::to_string);
-    let server = header("server");
-    let cf_mitigated = header("cf-mitigated");
-    let mut body_prefix = Vec::new();
-    if cf_mitigated.is_none() && needs_challenge_body(status, server.as_deref()) {
-        while body_prefix.len() < MAX_BODY_PREFIX_BYTES {
-            match response.chunk().await {
-                Ok(Some(chunk)) => body_prefix.extend_from_slice(&chunk[..chunk.len().min(MAX_BODY_PREFIX_BYTES - body_prefix.len())]),
-                Ok(None) | Err(_) => break,
-            }
-        }
-    }
-    classify_response(status, server.as_deref(), cf_mitigated.as_deref(), &body_prefix, elapsed_ms)
-}
-
-/// Remembers why the tunnel could not open the upstream connection, which the local proxy
-/// reports only as a bare 502.
+/// Remembers why the tunnel could not open each upstream connection.
 #[cfg(target_os = "android")]
 struct RecordingConnector {
     inner: std::sync::Arc<dyn super::proxy::ProxyConnector>,
-    error: Mutex<Option<String>>,
+    failures: ConnectFailures,
 }
 
 #[cfg(target_os = "android")]
@@ -345,7 +370,7 @@ impl super::proxy::ProxyConnector for RecordingConnector {
         Box::pin(async move {
             let result = self.inner.connect(target).await;
             if let Err(error) = &result {
-                *self.error.lock().expect("VPN URL test connector lock") = Some(error.clone());
+                self.failures.record(&target.host, target.port, error);
             }
             result
         })
@@ -403,42 +428,91 @@ mod tests {
 
     #[test]
     fn reports_a_cloudflare_challenge_from_the_mitigation_header() {
-        assert_eq!(classify_response(403, Some("cloudflare"), Some("challenge"), b"", 120),
+        assert_eq!(classify_page(Some(403), Some("cloudflare"), Some("challenge"), false, 120),
             VpnUrlTestResult::CloudflareChallenge { status: 403, elapsed_ms: 120 });
-        assert_eq!(classify_response(200, None, Some(" Challenge "), b"", 5),
+        assert_eq!(classify_page(Some(200), None, Some(" Challenge "), false, 5),
             VpnUrlTestResult::CloudflareChallenge { status: 200, elapsed_ms: 5 });
     }
 
     #[test]
-    fn reports_a_cloudflare_challenge_page_only_from_cloudflare_error_responses() {
-        let page = b"<!DOCTYPE html><html><head><title>Just a moment...</title></head><script src=\"/cdn-cgi/challenge-platform/h/b/orchestrate\"></script>";
-        assert_eq!(classify_response(503, Some("cloudflare"), None, page, 40),
+    fn reports_challenge_page_markers_only_on_cloudflare_error_responses() {
+        assert_eq!(classify_page(Some(503), Some("cloudflare"), None, true, 40),
             VpnUrlTestResult::CloudflareChallenge { status: 503, elapsed_ms: 40 });
-        assert_eq!(classify_response(403, Some("nginx"), None, page, 40),
+        assert_eq!(classify_page(Some(403), Some("nginx"), None, true, 40),
             VpnUrlTestResult::HttpError { status: 403, elapsed_ms: 40 });
-        assert_eq!(classify_response(403, Some("cloudflare"), None, b"<h1>Access denied</h1>", 40),
+        assert_eq!(classify_page(Some(403), Some("cloudflare"), None, false, 40),
             VpnUrlTestResult::HttpError { status: 403, elapsed_ms: 40 });
-        assert_eq!(classify_response(200, Some("cloudflare"), None, page, 40),
-            VpnUrlTestResult::Ok { status: 200, elapsed_ms: 40 });
-        assert!(!needs_challenge_body(200, Some("cloudflare")));
-        assert!(!needs_challenge_body(503, None));
+        assert_eq!(classify_page(Some(200), Some("cloudflare"), None, true, 40),
+            VpnUrlTestResult::Ok { status: Some(200), elapsed_ms: 40 });
+        assert_eq!(classify_page(None, None, None, true, 40), VpnUrlTestResult::Ok { status: None, elapsed_ms: 40 });
+        assert!(!is_cloudflare_error(200, Some("cloudflare")));
+        assert!(!is_cloudflare_error(503, None));
     }
 
     #[test]
-    fn maps_success_redirect_and_error_statuses() {
-        assert_eq!(classify_response(204, None, None, b"", 1), VpnUrlTestResult::Ok { status: 204, elapsed_ms: 1 });
-        assert_eq!(classify_response(301, None, None, b"", 1), VpnUrlTestResult::Ok { status: 301, elapsed_ms: 1 });
-        assert_eq!(classify_response(404, None, None, b"", 1), VpnUrlTestResult::HttpError { status: 404, elapsed_ms: 1 });
-        assert_eq!(classify_response(500, Some("cloudflare"), None, b"", 1), VpnUrlTestResult::HttpError { status: 500, elapsed_ms: 1 });
+    fn maps_document_statuses_and_keeps_an_unknown_success_status_unknown() {
+        assert_eq!(classify_page(Some(204), None, None, false, 1), VpnUrlTestResult::Ok { status: Some(204), elapsed_ms: 1 });
+        assert_eq!(classify_page(None, None, None, false, 1), VpnUrlTestResult::Ok { status: None, elapsed_ms: 1 });
+        assert_eq!(classify_page(Some(404), None, None, false, 1), VpnUrlTestResult::HttpError { status: 404, elapsed_ms: 1 });
+        assert_eq!(classify_page(Some(500), Some("cloudflare"), None, false, 1), VpnUrlTestResult::HttpError { status: 500, elapsed_ms: 1 });
+    }
+
+    #[test]
+    fn judges_page_observations_from_the_test_browser() {
+        let failures = ConnectFailures::default();
+        assert_eq!(judge_page(r#"{"kind":"loaded","url":"https://example.com/","status":200,"challengeMarkers":false,"elapsedMs":812}"#, &failures),
+            Ok(VpnUrlTestResult::Ok { status: Some(200), elapsed_ms: 812 }));
+        assert_eq!(judge_page(r#"{"kind":"loaded","url":"https://example.com/","challengeMarkers":false,"elapsedMs":9}"#, &failures),
+            Ok(VpnUrlTestResult::Ok { status: None, elapsed_ms: 9 }));
+        assert_eq!(judge_page(r#"{"kind":"loaded","url":"https://example.com/","status":403,"server":"cloudflare","challengeMarkers":true,"elapsedMs":300}"#, &failures),
+            Ok(VpnUrlTestResult::CloudflareChallenge { status: 403, elapsed_ms: 300 }));
+        assert_eq!(judge_page(r#"{"kind":"networkError","url":"https://example.com/","description":"net::ERR_CONNECTION_RESET"}"#, &failures),
+            Ok(VpnUrlTestResult::RequestFailed { reason: "net::ERR_CONNECTION_RESET".into() }));
+        assert_eq!(judge_page(r#"{"kind":"timedOut"}"#, &failures), Ok(VpnUrlTestResult::TimedOut { stage: VpnUrlTestStage::Request }));
+        assert_eq!(judge_page(r#"{"kind":"cancelled"}"#, &failures), Ok(VpnUrlTestResult::Cancelled));
+        assert_eq!(judge_page(r#"{"kind":"browserUnavailable"}"#, &failures), Ok(VpnUrlTestResult::BrowserUnavailable));
+        assert_eq!(judge_page(r#"{"kind":"failed","reason":"VPN URL tests require WebView multi-profile support."}"#, &failures),
+            Err("VPN URL tests require WebView multi-profile support.".into()));
+        assert!(judge_page("null", &failures).is_err());
+    }
+
+    #[test]
+    fn replaces_proxy_errors_with_why_the_tunnel_could_not_reach_the_host() {
+        let failures = ConnectFailures::default();
+        failures.record("Example.com", 443, "DNS lookup through the tunnel failed");
+        failures.record("plain.example", 80, "connection refused");
+        assert_eq!(judge_page(r#"{"kind":"networkError","url":"https://example.com/a","description":"net::ERR_TUNNEL_CONNECTION_FAILED"}"#, &failures),
+            Ok(VpnUrlTestResult::RequestFailed { reason: "DNS lookup through the tunnel failed".into() }));
+        assert_eq!(judge_page(r#"{"kind":"loaded","url":"http://plain.example/","status":502,"challengeMarkers":false,"elapsedMs":20}"#, &failures),
+            Ok(VpnUrlTestResult::RequestFailed { reason: "connection refused".into() }));
+        assert_eq!(judge_page(r#"{"kind":"loaded","url":"http://plain.example/","status":404,"challengeMarkers":false,"elapsedMs":20}"#, &failures),
+            Ok(VpnUrlTestResult::HttpError { status: 404, elapsed_ms: 20 }), "a real response is not replaced");
+        assert_eq!(judge_page(r#"{"kind":"loaded","url":"http://other.example/","status":502,"challengeMarkers":false,"elapsedMs":20}"#, &failures),
+            Ok(VpnUrlTestResult::HttpError { status: 502, elapsed_ms: 20 }), "another host's failure does not count");
+    }
+
+    #[test]
+    fn matches_connect_failures_by_host_and_effective_port() {
+        let failures = ConnectFailures::default();
+        failures.record("2001:db8::1", 443, "unreachable");
+        failures.record("example.com", 8080, "refused");
+        failures.record("example.com", 8080, "reset");
+        assert_eq!(failures.for_url("https://[2001:db8::1]/").as_deref(), Some("unreachable"));
+        assert_eq!(failures.for_url("http://EXAMPLE.com:8080/path").as_deref(), Some("reset"));
+        assert_eq!(failures.for_url("http://example.com/"), None);
+        assert_eq!(failures.for_url("not a url"), None);
     }
 
     #[test]
     fn serializes_results_for_the_frontend() {
-        assert_eq!(serde_json::to_value(VpnUrlTestResult::Ok { status: 200, elapsed_ms: 31 }).unwrap(),
+        assert_eq!(serde_json::to_value(VpnUrlTestResult::Ok { status: Some(200), elapsed_ms: 31 }).unwrap(),
             serde_json::json!({ "kind": "ok", "status": 200, "elapsedMs": 31 }));
+        assert_eq!(serde_json::to_value(VpnUrlTestResult::Ok { status: None, elapsed_ms: 31 }).unwrap(),
+            serde_json::json!({ "kind": "ok", "status": null, "elapsedMs": 31 }));
         assert_eq!(serde_json::to_value(VpnUrlTestResult::TimedOut { stage: VpnUrlTestStage::Connect }).unwrap(),
             serde_json::json!({ "kind": "timedOut", "stage": "connect" }));
         assert_eq!(serde_json::to_value(VpnUrlTestResult::CredentialsRequired).unwrap(), serde_json::json!({ "kind": "credentialsRequired" }));
+        assert_eq!(serde_json::to_value(VpnUrlTestResult::BrowserUnavailable).unwrap(), serde_json::json!({ "kind": "browserUnavailable" }));
         let profile: VpnUrlTestProfile = serde_json::from_value(serde_json::json!({ "kind": "saved", "id": "a", "expectedHash": "b" })).unwrap();
         assert!(matches!(profile, VpnUrlTestProfile::Saved { id, expected_hash } if id == "a" && expected_hash == "b"));
     }
@@ -453,19 +527,5 @@ mod tests {
         drop(guard);
         assert!(tester.begin("run-1").unwrap().is_none());
         assert!(tester.begin("run-2").unwrap().is_some());
-    }
-
-    #[test]
-    fn joins_error_sources_without_repeating_them() {
-        #[derive(Debug)]
-        struct Outer(std::io::Error);
-        impl std::fmt::Display for Outer {
-            fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result { formatter.write_str("error sending request") }
-        }
-        impl std::error::Error for Outer {
-            fn source(&self) -> Option<&(dyn std::error::Error + 'static)> { Some(&self.0) }
-        }
-        let error = Outer(std::io::Error::other("dns error: no record"));
-        assert_eq!(describe_error_chain(&error), "error sending request: dns error: no record");
     }
 }

@@ -679,7 +679,8 @@ async fn test_candidate_tunnel(_bytes: &[u8]) -> Result<(), String> {
     Err("Automatic VPN servers are supported only on Android".to_string())
 }
 
-/// Tests one profile against the URL the user typed: a separate tunnel, one GET, then teardown.
+/// Tests one profile against the URL the user typed: a separate tunnel, one page load in the
+/// isolated Android test browser, then teardown.
 /// Only one test runs at a time; a second call while one runs fails instead of waiting.
 #[tauri::command]
 pub(crate) async fn plugin_vpn_test_profile_url(

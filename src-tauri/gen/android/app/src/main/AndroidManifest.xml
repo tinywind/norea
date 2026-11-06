@@ -106,6 +106,8 @@
             android:exported="false" android:process=":vpn_download_8" />
         <service android:name=".AndroidVpnDownloadWorker9Service"
             android:exported="false" android:process=":vpn_download_9" />
+        <service android:name=".AndroidVpnUrlTestService"
+            android:exported="false" android:process=":vpn_url_test" />
         <activity android:name=".AndroidVpnDownloadWorker0Activity"
             android:exported="false" android:process=":vpn_download_0"
             android:configChanges="orientation|keyboardHidden|keyboard|screenSize|smallestScreenSize|screenLayout|uiMode"
