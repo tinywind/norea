@@ -11,13 +11,12 @@ import {
 import { isAndroidRuntime } from "../lib/tauri-runtime";
 import { usePluginVpnUrlTestStore } from "../store/plugin-vpn-url-test";
 import { IconButton } from "./IconButton";
-import { TextButton } from "./TextButton";
-import { CloseIcon, DeselectIcon, SelectAllIcon } from "./ui/icons";
+import { CloseIcon, DeselectIcon, PlayIcon, SelectAllIcon, StopIcon } from "./ui/icons";
 import "../styles/plugin-vpn-finder.css";
 
 interface PluginVpnSelectionPanelProps {
-  /** Labeled bulk actions, as `SelectionAction`s. */
-  actions: ReactNode;
+  /** Labeled bulk actions, as `SelectionAction`s; a sheet whose selection only feeds the URL test has none. */
+  actions?: ReactNode;
   allSelected: boolean;
   count: number;
   onDeselectAll: () => void;
@@ -32,7 +31,7 @@ interface PluginVpnSelectionPanelProps {
 
 /**
  * Selection mode inside a VPN sheet: done, the count and select all on one
- * line, the bulk actions under it, then the URL test for the selected rows.
+ * line, any bulk actions under it, then the URL test for the selected rows.
  */
 export function PluginVpnSelectionPanel({
   actions,
@@ -67,7 +66,7 @@ export function PluginVpnSelectionPanel({
           </IconButton>
         )}
       </div>
-      <div className="norea-plugin-vpn-selection-actions">{actions}</div>
+      {actions ? <div className="norea-plugin-vpn-selection-actions">{actions}</div> : null}
       {isAndroidRuntime() ? <PluginVpnUrlTestForm targets={testTargets} untestableCount={untestableCount} /> : null}
     </section>
   );
@@ -85,32 +84,35 @@ function PluginVpnUrlTestForm({ targets, untestableCount }: { targets: readonly 
 
   return (
     <div className="norea-plugin-vpn-url-test">
-      <TextInput
-        autoCapitalize="off"
-        autoCorrect="off"
-        description={t("settings.data.pluginVpn.urlTest.help")}
-        disabled={run !== null}
-        error={showInvalid ? t("settings.data.pluginVpn.urlTest.invalidUrl") : undefined}
-        inputMode="url"
-        label={t("settings.data.pluginVpn.urlTest.url")}
-        onChange={(event) => setUrl(event.currentTarget.value)}
-        placeholder="https://"
-        spellCheck={false}
-        type="url"
-        value={url}
-      />
       <div className="norea-plugin-vpn-url-test-run">
+        <TextInput
+          aria-label={t("settings.data.pluginVpn.urlTest.url")}
+          autoCapitalize="off"
+          autoCorrect="off"
+          className="norea-plugin-vpn-url-test-input"
+          disabled={run !== null}
+          error={showInvalid}
+          inputMode="url"
+          onChange={(event) => setUrl(event.currentTarget.value)}
+          placeholder={t("settings.data.pluginVpn.urlTest.url")}
+          spellCheck={false}
+          title={t("settings.data.pluginVpn.urlTest.help")}
+          type="url"
+          value={url}
+        />
         {run ? (
-          <TextButton disabled={run.cancelling} onClick={() => void cancelPluginVpnUrlTests()}>
-            {t("settings.data.pluginVpn.urlTest.cancel")}
-          </TextButton>
+          <IconButton disabled={run.cancelling} label={t("settings.data.pluginVpn.urlTest.cancel")} onClick={() => void cancelPluginVpnUrlTests()} size="lg">
+            <StopIcon />
+          </IconButton>
         ) : (
-          <TextButton
+          <IconButton
             disabled={!validUrl || targets.length === 0}
+            label={t("settings.data.pluginVpn.urlTest.start", { count: targets.length })}
             onClick={() => void runPluginVpnUrlTests(targets, url)}
+            size="lg"
           >
-            {t("settings.data.pluginVpn.urlTest.start", { count: targets.length })}
-          </TextButton>
+            <PlayIcon />
+          </IconButton>
         )}
         {run ? (
           <Text aria-live="polite" className="norea-plugin-vpn-url-test-progress" component="span" role="status" size="sm">
@@ -119,6 +121,9 @@ function PluginVpnUrlTestForm({ targets, untestableCount }: { targets: readonly 
           </Text>
         ) : null}
       </div>
+      {showInvalid ? (
+        <Text c="danger" size="xs">{t("settings.data.pluginVpn.urlTest.invalidUrl")}</Text>
+      ) : null}
       {untestableCount > 0 ? (
         <Text c="dimmed" size="xs">
           {t("settings.data.pluginVpn.urlTest.untestable", { count: untestableCount })}

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Alert, Checkbox, Group, Loader, NumberInput, Stack, Text } from "@mantine/core";
+import { Alert, Button, Checkbox, Group, Loader, NumberInput, Select, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listVpnGateServerVerdicts, setVpnGateServerVerdict, type VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
 import { formatDateTimeForLocale, useTranslation, type TranslationKey } from "../i18n";
@@ -15,10 +15,8 @@ import { ChipButton } from "./ChipButton";
 import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
 import { PluginVpnSelectionPanel, PluginVpnUrlTestStatus } from "./PluginVpnSelectionPanel";
-import { showSettingsToast } from "./settings/settings-toast";
-import { ConnectIcon, ExcludeIcon, PreferIcon, RestartIcon, RetryIcon, SaveIcon, SelectIcon, SettingsIcon } from "./ui/icons";
+import { ConnectIcon, ExcludeIcon, RestartIcon, SortAscendingIcon, SortDescendingIcon, RetryIcon, SaveIcon, SelectIcon, SettingsIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
-import { SelectionAction } from "./ui/SelectionBar";
 import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 
 const VERDICT_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
@@ -32,6 +30,9 @@ const CAUSE_KEYS: Record<VpnDownloadProfileIssueCause, TranslationKey> = {
   "site-forbidden": "settings.data.pluginVpn.saved.cause.site-forbidden",
 };
 const RECENT_ISSUES_PER_PROFILE = 3;
+
+type SavedProfileSort = "name" | "added";
+const compareHosts = (left: string, right: string) => left.localeCompare(right, undefined, { numeric: true });
 const CONNECTION_FAILURE_CAUSES: ReadonlySet<VpnDownloadProfileIssueCause> = new Set(["connection-failed", "authentication-required", "tunnel-lost", "page-unresponsive"]);
 const CONNECTION_FAILURE_TESTS: ReadonlySet<PluginVpnUrlTestOutcome["kind"]> = new Set(["connectionFailed", "requestFailed", "timedOut"]);
 
@@ -56,6 +57,8 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIps, setSelectedIps] = useState<ReadonlySet<string>>(new Set());
   const [failuresOnly, setFailuresOnly] = useState(false);
+  const [sortBy, setSortBy] = useState<SavedProfileSort>("name");
+  const [sortDescending, setSortDescending] = useState(false);
   const [blockedOpened, setBlockedOpened] = useState(false);
   const urlTestResults = usePluginVpnUrlTestStore(state => state.results);
   const issues = useQuery({ queryKey: VPN_DOWNLOAD_PROFILE_ISSUES_QUERY_KEY, queryFn: () => listVpnDownloadProfileIssues(), enabled: opened,
@@ -74,7 +77,11 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
     (issues.data ?? []).some(issue => issue.ip === ip && CONNECTION_FAILURE_CAUSES.has(issue.cause)) ||
     CONNECTION_FAILURE_TESTS.has(urlTestResults[ip]?.outcome.kind ?? "ok");
   // Only profiles with a saved file are managed here; a server marked Not used keeps no file.
-  const savedProfileIps = [...savedIps].sort();
+  const addedAt = (ip: string) => profileByIp.get(ip)?.approvedAt ?? manualByHost.get(ip)?.savedAt ?? 0;
+  const savedProfileIps = [...savedIps].sort((left, right) => {
+    const order = sortBy === "added" ? addedAt(left) - addedAt(right) || compareHosts(left, right) : compareHosts(left, right);
+    return sortDescending ? -order : order;
+  });
   const ips = savedProfileIps.filter(ip => !failuresOnly || hasConnectionFailure(ip));
   const blockedServers = (verdicts.data ?? []).filter(row => row.verdict === "fails" && !savedIps.has(row.ip));
   const managementLocked = locked || issues.isPending || issues.isError;
@@ -87,8 +94,6 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
     const manualProfile = manualByHost.get(ip);
     return manualProfile ? [{ host: ip, profile: { kind: "manual", host: ip, expectedHash: manualProfile.hash } }] : [];
   });
-  const preferTargets = selected.filter(ip => verdictByIp.get(ip) !== "works");
-  const blockTargets = selected.filter(ip => verdictByIp.get(ip) !== "fails");
 
   function exitSelection(): void {
     setSelectionMode(false);
@@ -140,47 +145,6 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
     await run(async () => {
       const result = await setVpnGateServerVerdict(ip, null);
       if (result.cleanupError) setActionError(t("settings.data.pluginVpn.saved.cleanupError", { error: result.cleanupError }));
-    });
-  }
-
-  /** Preferred needs an exact profile, which only the connected server can provide here. */
-  async function preferSelected(): Promise<void> {
-    if (managementLocked || !preferTargets.length) return;
-    const active = status.data?.profile;
-    const source = active ? { kind: "active" as const, expectedHash: active.hash } : null;
-    const capturable = source ? preferTargets.filter(ip => ip === active?.remoteHost) : [];
-    const skipped = preferTargets.length - capturable.length;
-    await run(async () => {
-      const cleanupErrors: string[] = [];
-      if (source) {
-        for (const ip of capturable) {
-          const result = await setVpnGateServerVerdict(ip, "works", source);
-          if (result.cleanupError) cleanupErrors.push(result.cleanupError);
-        }
-      }
-      if (capturable.length) showSettingsToast("ok", t("settings.data.pluginVpn.selection.preferred", { count: capturable.length }));
-      if (skipped) showSettingsToast("info", t("settings.data.pluginVpn.selection.preferSkipped", { count: skipped }));
-      if (cleanupErrors.length) setActionError(t("settings.data.pluginVpn.saved.cleanupError", { error: cleanupErrors.join("; ") }));
-    });
-  }
-
-  async function blockSelected(): Promise<void> {
-    if (managementLocked || !blockTargets.length) return;
-    await run(async () => {
-      const failures: string[] = [];
-      const cleanupErrors: string[] = [];
-      for (const ip of blockTargets) {
-        try {
-          const result = await setVpnGateServerVerdict(ip, "fails");
-          if (result.cleanupError) cleanupErrors.push(result.cleanupError);
-        } catch (error) {
-          failures.push(`${ip}: ${describeError(error)}`);
-        }
-      }
-      const blocked = blockTargets.length - failures.length;
-      if (blocked) showSettingsToast("ok", t("settings.data.pluginVpn.selection.blocked", { count: blocked }));
-      if (failures.length) throw new Error(t("settings.data.pluginVpn.selection.blockFailed", { count: failures.length, error: failures.join("; ") }));
-      if (cleanupErrors.length) setActionError(t("settings.data.pluginVpn.saved.cleanupError", { error: cleanupErrors.join("; ") }));
     });
   }
 
@@ -262,19 +226,25 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
               <SelectIcon />
             </IconButton>
           </Group>
-          <Group gap="xs" role="group" aria-label={t("settings.data.pluginVpn.saved.filter.label")}>
-            <ChipButton disabled={!savedProfileIps.length} selected={failuresOnly} onClick={() => setFailuresOnly(!failuresOnly)}>
-              {t("settings.data.pluginVpn.saved.filter.failures")}
-            </ChipButton>
+          <Group justify="space-between" gap="xs" wrap="nowrap">
+            <Group gap="xs" role="group" aria-label={t("settings.data.pluginVpn.saved.filter.label")}>
+              <ChipButton disabled={!savedProfileIps.length} selected={failuresOnly} onClick={() => setFailuresOnly(!failuresOnly)}>
+                {t("settings.data.pluginVpn.saved.filter.failures")}
+              </ChipButton>
+            </Group>
+            <Group gap={4} wrap="nowrap">
+              <Select aria-label={t("settings.data.pluginVpn.saved.sort.label")} allowDeselect={false} w="9rem"
+                data={[{ value: "name", label: t("settings.data.pluginVpn.saved.sort.name") },
+                  { value: "added", label: t("settings.data.pluginVpn.saved.sort.added") }]}
+                onChange={value => setSortBy(value === "added" ? "added" : "name")} value={sortBy} />
+              <IconButton label={t(sortDescending ? "settings.data.pluginVpn.saved.sort.descending" : "settings.data.pluginVpn.saved.sort.ascending")}
+                onClick={() => setSortDescending(!sortDescending)} size="lg">
+                {sortDescending ? <SortDescendingIcon /> : <SortAscendingIcon />}
+              </IconButton>
+            </Group>
           </Group>
           {selectionMode ? (
             <PluginVpnSelectionPanel
-              actions={<>
-                <SelectionAction disabled={managementLocked || !preferTargets.length} icon={PreferIcon}
-                  label={t("settings.data.pluginVpn.finder.verdict.prefer")} onClick={() => preferSelected()} />
-                <SelectionAction disabled={managementLocked || !blockTargets.length} icon={ExcludeIcon}
-                  label={t("settings.data.pluginVpn.finder.verdict.block")} onClick={() => blockSelected()} />
-              </>}
               allSelected={ips.length > 0 && selected.length === ips.length}
               count={selected.length}
               onDeselectAll={() => setSelectedIps(new Set())}
@@ -307,6 +277,10 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
                   <VpnGateServerVerdictControl blockable={false} ip={ip} verdict={verdict} disabled={managementLocked}
                     preferDisabledReason={canApprove ? null : t("settings.data.pluginVpn.saved.approvalUnavailable")}
                     onChange={next => changeVerdict(ip, next)} />
+                  <Button aria-label={t("settings.data.pluginVpn.saved.block", { ip })} color="danger" disabled={managementLocked}
+                    leftSection={<ExcludeIcon />} onClick={() => changeVerdict(ip, "fails")} size="xs" variant="subtle">
+                    {t("settings.data.pluginVpn.finder.verdict.block")}
+                  </Button>
                   {profile && onConnect ? (
                     <IconButton
                       active={connectingProfileId === profile.id}

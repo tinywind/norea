@@ -12,7 +12,7 @@ const mocks = vi.hoisted(() => ({
   status: { data: { profile: null } as { profile: null | { hash: string; remoteHost: string; isVpnGateFinder: boolean } } },
   urlTestResults: {} as Record<string, { url: string; outcome: { kind: string } }>,
   reallow: vi.fn(), profilesChanged: vi.fn(),
-  limit: vi.fn(), revoke: vi.fn(), invalidate: vi.fn(), setData: vi.fn(), toast: vi.fn(),
+  limit: vi.fn(), revoke: vi.fn(), invalidate: vi.fn(), setData: vi.fn(),
 }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
@@ -39,13 +39,11 @@ vi.mock("../i18n", () => ({
   useTranslation: () => ({ locale: "en", t: (key: string, values?: Record<string, unknown>) => `${key}${values ? JSON.stringify(values) : ""}` }),
   formatDateTimeForLocale: (_locale: string, value: number) => `date:${value}`,
 }));
-vi.mock("./settings/settings-toast", () => ({ showSettingsToast: mocks.toast }));
 vi.mock("../store/plugin-vpn-url-test", () => ({
   usePluginVpnUrlTestStore: (select: (state: { results: Record<string, unknown> }) => unknown) => select({ results: mocks.urlTestResults }),
 }));
 import { SavedVpnProfilesSettings } from "./SavedVpnProfilesSettings";
 import { PluginVpnSelectionPanel } from "./PluginVpnSelectionPanel";
-import { SelectionAction } from "./ui/SelectionBar";
 import { IconButton } from "./IconButton";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
@@ -295,6 +293,32 @@ it("shows only the three most recent problems of a profile with the page causes"
   expect(text.indexOf("saved.cause.site-forbidden")).toBeLessThan(text.indexOf("saved.cause.page-unresponsive"));
 });
 
+it("sorts saved profiles by name or date added in either direction", () => {
+  mocks.vault.data!.profiles = [
+    { id: "late", ip: "10.0.0.2", protocol: "udp", hash: "a".repeat(64), approvedAt: 300, approvalSequence: 2 },
+    { id: "early", ip: "9.0.0.1", protocol: "udp", hash: "b".repeat(64), approvedAt: 100, approvalSequence: 1 },
+  ];
+  mocks.manual.data = [{ host: "vpn.example.net", hash: "c".repeat(64), savedAt: 200 }];
+  const rowIps = (view: ReactElement<Props>[]) => view.filter(element => element.type === VpnGateServerVerdictControl).map(element => element.props.ip);
+  const control = (view: ReactElement<Props>[], label: string) => view.find(element => element.props["aria-label"] === label || element.props.label === label)!;
+  let view = openManager();
+  expect(rowIps(view)).toEqual(["9.0.0.1", "10.0.0.2", "vpn.example.net"]);
+  control(view, "settings.data.pluginVpn.saved.sort.label").props.onChange!("added");
+  view = render();
+  expect(rowIps(view)).toEqual(["9.0.0.1", "vpn.example.net", "10.0.0.2"]);
+  control(view, "settings.data.pluginVpn.saved.sort.ascending").props.onClick!();
+  view = render();
+  expect(rowIps(view)).toEqual(["10.0.0.2", "vpn.example.net", "9.0.0.1"]);
+  expect(control(view, "settings.data.pluginVpn.saved.sort.descending")).toBeDefined();
+});
+
+it("marks a saved profile as Not used straight from its row", async () => {
+  const block = openManager().find(element => element.props["aria-label"] === 'settings.data.pluginVpn.saved.block{"ip":"192.0.2.1"}')!;
+  expect(block.props.disabled).toBe(false);
+  await block.props.onClick!();
+  expect(mocks.revoke).toHaveBeenCalledExactlyOnceWith("192.0.2.1", "fails");
+});
+
 it("keeps loading and query failures distinct from a real empty vault", () => {
   mocks.vault.data = undefined; mocks.vault.isPending = true;
   expect(copy(render())).toContain("settings.data.pluginVpn.saved.loading");
@@ -360,39 +384,17 @@ function selectAll(): ReactElement<Props>[] {
   panel.props.onSelectAll();
   return render();
 }
-type PanelProps = { actions: ReactElement<{ children: ReactElement<{ label: string; disabled?: boolean; onClick: () => Promise<void> }>[] }>;
-  count: number; testTargets: unknown[]; untestableCount: number };
+type PanelProps = { actions?: unknown; count: number; testTargets: unknown[]; untestableCount: number };
 const selectionPanel = (view: ReactElement<Props>[]) => view.find(element => element.type === PluginVpnSelectionPanel) as unknown as ReactElement<PanelProps>;
-const bulkAction = (view: ReactElement<Props>[], label: string) =>
-  selectionPanel(view).props.actions.props.children.find(action => action.type === SelectionAction && action.props.label === label)!;
 
 it("tests saved and imported profiles of the selection", () => {
   mocks.manual.data = [{ host: "vpn.example.net", hash: "c".repeat(64), savedAt: 5 }];
   const panel = selectionPanel(selectAll());
+  expect(panel.props.actions).toBeUndefined();
   expect(panel.props.count).toBe(2);
   expect(panel.props.testTargets).toEqual([
     { host: "192.0.2.1", profile: { kind: "saved", id: "saved", expectedHash: "a".repeat(64) } },
     { host: "vpn.example.net", profile: { kind: "manual", host: "vpn.example.net", expectedHash: "c".repeat(64) } },
   ]);
   expect(panel.props.untestableCount).toBe(0);
-});
-
-it("adds only the connected server to Preferred in bulk and reports the skipped rows", async () => {
-  mocks.verdicts.data = [];
-  mocks.manual.data = [{ host: "vpn.example.net", hash: "c".repeat(64), savedAt: 5 }];
-  mocks.status.data = { profile: { hash: "d".repeat(64), remoteHost: "192.0.2.1", isVpnGateFinder: true } };
-  await bulkAction(selectAll(), "settings.data.pluginVpn.finder.verdict.prefer").props.onClick();
-  expect(mocks.revoke).toHaveBeenCalledTimes(1);
-  expect(mocks.revoke).toHaveBeenCalledWith("192.0.2.1", "works", { kind: "active", expectedHash: "d".repeat(64) });
-  expect(mocks.toast).toHaveBeenCalledWith("ok", 'settings.data.pluginVpn.selection.preferred{"count":1}');
-  expect(mocks.toast).toHaveBeenCalledWith("info", 'settings.data.pluginVpn.selection.preferSkipped{"count":1}');
-});
-
-it("marks every selected row as Not used one at a time and reports failures", async () => {
-  mocks.manual.data = [{ host: "vpn.example.net", hash: "c".repeat(64), savedAt: 5 }];
-  mocks.revoke.mockRejectedValueOnce(new Error("busy"));
-  await bulkAction(selectAll(), "settings.data.pluginVpn.finder.verdict.block").props.onClick();
-  expect(mocks.revoke.mock.calls).toEqual([["192.0.2.1", "fails"], ["vpn.example.net", "fails"]]);
-  expect(mocks.toast).toHaveBeenCalledWith("ok", 'settings.data.pluginVpn.selection.blocked{"count":1}');
-  expect(copy(render())).toContain('selection.blockFailed{"count":1,"error":"192.0.2.1: busy"}');
 });

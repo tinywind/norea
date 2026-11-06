@@ -192,18 +192,26 @@
   padding-top: var(--norea-space-3);
 }
 
+/* The address, the start or stop icon and the progress on one line. */
 .norea-plugin-vpn-url-test-run {
   align-items: center;
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--norea-space-2) var(--norea-space-3);
+  gap: var(--norea-space-2);
+  min-width: 0;
+}
+
+.norea-plugin-vpn-url-test-input {
+  flex: 1 1 auto;
+  min-width: 0;
 }
 
 .norea-plugin-vpn-url-test-progress {
   align-items: center;
   display: inline-flex;
+  flex: none;
   font-variant-numeric: tabular-nums;
-  gap: var(--norea-space-2);
+  gap: var(--norea-space-1);
+  white-space: nowrap;
 }
 
 /* One test result: a short badge, and the failure reason under it when there is one. */
@@ -243,10 +251,6 @@
     grid-auto-columns: minmax(0, 1fr);
     grid-auto-flow: column;
     margin-inline: calc(-1 * var(--norea-space-2));
-  }
-
-  .norea-plugin-vpn-url-test-run > .mantine-Button-root {
-    flex: 1 1 100%;
   }
 }
 
