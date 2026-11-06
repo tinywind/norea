@@ -96,7 +96,8 @@ interface ChapterListItemProps {
   canMoveUp: boolean;
   duplicateSourceChapterCount: number;
   highlighted: boolean;
-  isCurrent: boolean;
+  /** The chapter Continue opens next, marked so read and unread chapters meet visibly. */
+  isNext: boolean;
   isRangeStart: boolean;
   isSelected: boolean;
   reorderMode: boolean;
@@ -122,7 +123,7 @@ function ChapterListItem({
   canMoveUp,
   duplicateSourceChapterCount,
   highlighted,
-  isCurrent,
+  isNext,
   isRangeStart,
   isSelected,
   reorderMode,
@@ -297,7 +298,7 @@ function ChapterListItem({
     <div
       ref={setNodeRef}
       className="norea-novel-chapter"
-      data-current={isCurrent ? "true" : undefined}
+      data-next={isNext ? "true" : undefined}
       data-dragging={isDragging ? "true" : undefined}
       data-highlighted={highlighted ? "true" : undefined}
       data-progress={readFill === null ? undefined : finished ? "read" : "partial"}
@@ -336,7 +337,7 @@ function ChapterListItem({
       ) : null}
       <ListRow
         aria-busy={downloadActive || undefined}
-        aria-current={isCurrent ? "true" : undefined}
+        aria-current={isNext ? "step" : undefined}
         aria-describedby={metaId}
         aria-label={
           selectionMode
@@ -402,7 +403,7 @@ function ChapterListItem({
                 <VisuallyHidden>{t("novel.bookmarked")}</VisuallyHidden>
               </>
             ) : null}
-            {isCurrent ? <VisuallyHidden>{t("novel.currentChapter")}</VisuallyHidden> : null}
+            {isNext ? <span className="norea-novel-chapter-next">{t("novel.upNext")}</span> : null}
             {selectionMode && isRangeStart ? (
               <VisuallyHidden>{t("novel.selection.rangeStart")}</VisuallyHidden>
             ) : null}
@@ -422,7 +423,7 @@ interface VirtualChapterListProps {
   deletePending: boolean;
   /** Scrolls the row into view and highlights it briefly; each new object is a new jump. */
   jumpRequest: { chapterId: number } | null;
-  lastReadChapterId: number | undefined;
+  continueChapterId: number | undefined;
   /** The last toggled row, where a long press starts its range; marked while selecting. */
   rangeStartChapterId: number | null;
   repairBusyChapterId: number | undefined;
@@ -455,7 +456,7 @@ export function VirtualChapterList({
   duplicateSourceChapterCounts,
   deletePending,
   jumpRequest,
-  lastReadChapterId,
+  continueChapterId,
   rangeStartChapterId,
   repairBusyChapterId,
   repairPending,
@@ -608,7 +609,7 @@ export function VirtualChapterList({
                   duplicateSourceChapterCounts.get(chapter.id) ?? 0
                 }
                 highlighted={chapter.id === highlightedChapterId}
-                isCurrent={chapter.id === lastReadChapterId}
+                isNext={chapter.id === continueChapterId}
                 isRangeStart={chapter.id === rangeStartChapterId}
                 isSelected={selectedChapterIds.has(chapter.id)}
                 reorderMode={reorderMode}

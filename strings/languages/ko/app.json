@@ -1518,7 +1518,7 @@
   "novel.serverIncomplete": "서버에 일부 사본",
   "novel.serverComplete": "서버에 전체 사본",
   "novel.deleteDownload": "다운로드 삭제",
-  "novel.currentChapter": "현재 챕터",
+  "novel.upNext": "이어 읽기",
   "novelMerge.title": "“{name}” 옮기기",
   "novelMerge.missingSource": "원본 작품 없음",
   "novelMerge.missingSourceDescription": "작품 메뉴에서 이 화면을 여세요.",

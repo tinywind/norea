@@ -1,4 +1,4 @@
-import { Button, Skeleton } from "@mantine/core";
+import { Button, Loader, Skeleton } from "@mantine/core";
 import {
   useEffect,
   useId,
@@ -41,6 +41,8 @@ interface NovelWorkspaceProps {
   /** Category chips, shown under the title while the novel is in the library. */
   categoryChips?: ReactNode;
   chapters: ChapterListRow[];
+  /** Shown over the cover while the source is checked for new chapters. */
+  checkingNewChapters?: boolean;
   downloadStatuses: ReadonlyMap<number, ChapterDownloadStatus>;
   lastReadChapterId: number | undefined;
   libraryBusy: boolean;
@@ -71,6 +73,7 @@ export function NovelWorkspace({
   allowSourceAccess,
   categoryChips,
   chapters,
+  checkingNewChapters = false,
   downloadStatuses,
   lastReadChapterId,
   libraryBusy,
@@ -114,6 +117,12 @@ export function NovelWorkspace({
       <div className="norea-novel-identity">
         <div className="norea-novel-cover">
           <ConsoleCover alt={novel.name} height="auto" src={coverSource} width="100%" />
+          {checkingNewChapters ? (
+            <p className="norea-novel-cover-status" role="status">
+              <Loader aria-hidden="true" color="currentColor" size={14} />
+              {t("novel.checkingNewChapters")}
+            </p>
+          ) : null}
         </div>
         <div className="norea-novel-identity-text">
           <h1 className="norea-novel-title" id={titleId} ref={titleRef} title={novel.name}>

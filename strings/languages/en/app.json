@@ -1518,7 +1518,7 @@
   "novel.serverIncomplete": "Partial copy on server",
   "novel.serverComplete": "Full copy on server",
   "novel.deleteDownload": "Delete download",
-  "novel.currentChapter": "Current chapter",
+  "novel.upNext": "Up next",
   "novelMerge.title": "Migrate “{name}”",
   "novelMerge.missingSource": "Missing source novel",
   "novelMerge.missingSourceDescription": "Open this screen from a novel's menu.",

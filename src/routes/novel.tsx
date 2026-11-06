@@ -41,8 +41,10 @@ import {
   EMPTY_CHAPTERS,
   filterChapterList,
   findChapterForJump,
+  findContinueReadingChapter,
   FINISHED_PROGRESS,
   hasChapterListFilters,
+  hasReadingHistory,
   NO_CHAPTER_LIST_FILTERS,
   novelKey,
   type ChapterListFilters,
@@ -193,6 +195,12 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const chapters = useMemo(
     () => (defaultChapterSort === "desc" ? [...rows].reverse() : rows),
     [defaultChapterSort, rows],
+  );
+  const continueChapterId = useMemo(
+    () => hasReadingHistory(rows, lastReadChapterId)
+      ? findContinueReadingChapter(rows, lastReadChapterId)?.id
+      : undefined,
+    [lastReadChapterId, rows],
   );
   const {
     sourceDuplicateChapters,
@@ -814,6 +822,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   />
                 ) : null}
                 chapters={chapters}
+                checkingNewChapters={serverSync.checking}
                 downloadStatuses={statuses}
                 lastReadChapterId={lastReadChapterId}
                 libraryBusy={toggle.isPending}
@@ -970,12 +979,6 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 </Text>
               ) : null}
 
-              {serverSync.checking ? (
-                <Text c="dimmed" role="status" size="sm">
-                  {t("novel.checkingNewChapters")}
-                </Text>
-              ) : null}
-
               <NovelCheckPausedNotice
                 active={active && novel.inLibrary && hasSourcePlugin && !serverSync.checking}
                 checkNow={refreshMetadata}
@@ -1039,7 +1042,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   duplicateSourceChapterCounts={sourceDuplicateChapterCounts}
                   deletePending={clearDownload.isPending}
                   jumpRequest={jumpRequest}
-                  lastReadChapterId={lastReadChapterId}
+                  continueChapterId={continueChapterId}
                   rangeStartChapterId={chapterSelectionMode ? rangeStartChapterId : null}
                   repairBusyChapterId={repairMedia.variables?.id}
                   repairPending={repairMedia.isPending}

@@ -104,6 +104,26 @@
 .norea-novel-cover {
   border-radius: var(--norea-radius-sm);
   overflow: hidden;
+  position: relative;
+}
+
+/* A new-chapter check rides on the cover's lower edge instead of pushing the chapter list down. */
+.norea-novel-cover-status {
+  align-items: center;
+  background: linear-gradient(to top, rgb(0 0 0 / 0.78), rgb(0 0 0 / 0.5) 60%, rgb(0 0 0 / 0));
+  color: rgb(255 255 255);
+  display: flex;
+  flex-direction: column;
+  font-size: var(--norea-text-xs);
+  gap: var(--norea-space-1);
+  inset: auto 0 0;
+  justify-content: center;
+  line-height: 1.3;
+  margin: 0;
+  padding: var(--norea-space-6) var(--norea-space-2) var(--norea-space-2);
+  position: absolute;
+  text-align: center;
+  text-wrap: balance;
 }
 
 .norea-novel-cover .norea-console-cover {
@@ -387,7 +407,7 @@
 
 .norea-novel-chapter {
   align-items: center;
-  border-bottom: 1px solid var(--norea-color-rule);
+  border-bottom: 1px solid var(--norea-color-rule-strong);
   box-sizing: border-box;
   display: flex;
   height: 3.25rem;
@@ -412,11 +432,13 @@
   position: relative;
 }
 
-.norea-novel-chapter[data-progress]::before {
-  background: var(--norea-color-ink);
+/* Only a chapter in progress shows how far it got; finished chapters read as done through their dimmed text. */
+.norea-novel-chapter[data-progress="partial"]::before {
+  background: var(--norea-color-accent);
+  bottom: -1px;
   content: "";
-  inset: 0 auto 0 0;
-  opacity: 0.08;
+  height: 2px;
+  left: 0;
   pointer-events: none;
   position: absolute;
   width: var(--norea-chapter-progress);
@@ -458,16 +480,28 @@
   flex: 0 0 auto;
 }
 
-/* The current chapter carries an accent edge so it differs from hover and selection. */
-.norea-novel-chapter[data-current="true"] {
-  box-shadow: inset 0.1875rem 0 0 var(--norea-color-accent);
+/* The chapter Continue opens is tinted and labelled, so the read run visibly ends there. */
+.norea-novel-chapter[data-next="true"] {
+  background: var(--norea-color-accent-soft);
 }
 
-.norea-novel-chapter[data-current="true"] .norea-novel-chapter-title {
-  color: var(--norea-color-accent);
+.norea-novel-chapter[data-next="true"] .norea-novel-chapter-title {
+  color: var(--norea-color-on-accent-soft);
+  font-weight: var(--norea-weight-bold);
 }
 
-/* The grey reading fill stays while selecting; a selected row adds the tint under it and an accent ring. */
+.norea-novel-chapter-next {
+  background: var(--norea-color-accent);
+  border-radius: var(--norea-radius-full);
+  color: var(--norea-color-on-accent);
+  flex: 0 0 auto;
+  font-size: var(--norea-text-xs);
+  font-weight: var(--norea-weight-bold);
+  line-height: 1;
+  padding: 0.25rem var(--norea-space-2);
+}
+
+/* Reading progress stays while selecting; a selected row adds a tint and an accent ring. */
 .norea-novel-chapter[data-selected="true"] {
   background: var(--norea-color-selected);
   outline: 1px solid var(--norea-color-accent);
@@ -477,6 +511,26 @@
 .norea-novel-chapter[data-highlighted="true"] {
   background: var(--norea-color-accent-soft);
   transition: background-color var(--norea-duration-slow) var(--norea-ease-standard);
+}
+
+/* Wider lists put the date and state on the title's line, at the right, instead of leaving the middle empty. */
+@media (min-width: 576px) {
+  .norea-novel-chapter .norea-list-item-text {
+    align-items: center;
+    display: flex;
+    gap: var(--norea-space-4);
+  }
+
+  .norea-novel-chapter .norea-list-item-title {
+    flex: 1 1 auto;
+    min-width: 0;
+  }
+
+  .norea-novel-chapter .norea-list-item-subtitle {
+    flex: 0 1 auto;
+    justify-content: flex-end;
+    max-width: 50%;
+  }
 }
 
 .norea-novel-chapter-meta {

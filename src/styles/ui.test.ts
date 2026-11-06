@@ -406,7 +406,6 @@ describe("one-side stripes", () => {
   const CURRENT_LOCATION_INDICATORS = new Set([
     "app.css .norea-rail-link",
     "app.css .norea-rail-link--active",
-    "novel.css .norea-novel-chapter[data-current=\"true\"]",
     "reader.css .norea-reader-chapter-row",
     "reader.css .norea-reader-chapter-row[data-current=\"true\"]",
     "settings.css .norea-settings-index-row[data-selected=\"true\"]",

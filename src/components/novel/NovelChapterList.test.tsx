@@ -43,7 +43,7 @@ function renderList(overrides: Partial<ListProps> = {}) {
     duplicateSourceChapterCounts: new Map(),
     deletePending: false,
     jumpRequest: null,
-    lastReadChapterId: undefined,
+    continueChapterId: undefined,
     rangeStartChapterId: null,
     repairBusyChapterId: undefined,
     repairPending: false,
@@ -138,18 +138,20 @@ describe("chapter row structure", () => {
   it.each([
     ["marked read", { unread: false, progress: 0 }],
     ["read to the end", { unread: true, progress: 100 }],
-  ])("fills a finished row completely when %s", (_label, row) => {
+  ])("marks a finished row read when %s", (_label, row) => {
     const finished = renderRow(row)(".norea-novel-chapter");
     expect(finished.attr("data-progress")).toBe("read");
     expect(finished.attr("style")).toContain("--norea-chapter-progress:100%");
   });
 
-  it("marks the current chapter and dims read titles", () => {
+  it("marks the chapter Continue opens with a visible Up next label and dims read titles", () => {
     const $ = renderList({
       chapters: [{ ...chapter, unread: false }, { ...chapter, id: 2, name: "Second chapter", position: 2 }],
-      lastReadChapterId: 2,
+      continueChapterId: 2,
     });
-    expect($("button[aria-current='true']").attr("aria-label")).toBe("Open Second chapter");
+    const next = $("button[aria-current='step']");
+    expect(next.attr("aria-label")).toBe("Open Second chapter");
+    expect(next.find(".norea-novel-chapter-next").text()).toBe("Up next");
     expect(openButton($).find("[data-read='true']").text()).toBe("First chapter");
   });
 
@@ -263,7 +265,7 @@ describe("selection visuals", () => {
     expect(css).toMatch(/\.norea-novel-chapter\[data-selected="true"\] \{[^}]*background: var\(--norea-color-selected\);/);
   });
 
-  it("keeps the grey reading fill while selecting and marks selected rows with a tint and an accent ring", () => {
+  it("keeps the reading progress while selecting and marks selected rows with a tint and an accent ring", () => {
     for (const row of [{ progress: 45 }, { unread: false }]) {
       const browsing = renderRow(row)(".norea-novel-chapter");
       const selectingRow = renderRow(row, undefined, selecting())(".norea-novel-chapter");
@@ -271,7 +273,8 @@ describe("selection visuals", () => {
       expect(selectingRow.attr("style")).toBe(browsing.attr("style"));
     }
     const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
-    expect(css).toMatch(/\.norea-novel-chapter\[data-progress\]::before \{[^}]*background: var\(--norea-color-ink\);/);
+    expect(css).toMatch(/\.norea-novel-chapter\[data-progress="partial"\]::before \{[^}]*background: var\(--norea-color-accent\);/);
+    expect(css).not.toMatch(/\.norea-novel-chapter\[data-progress(="read")?\]::before/);
     const selected = /\.norea-novel-chapter\[data-selected="true"\] \{([^}]*)\}/.exec(css)?.[1] ?? "";
     expect(selected).toContain("background: var(--norea-color-selected)");
     expect(selected).toContain("outline: 1px solid var(--norea-color-accent)");
