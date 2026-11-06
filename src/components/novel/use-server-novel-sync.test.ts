@@ -30,7 +30,7 @@ beforeEach(() => {
   mocks.source.mockReset().mockResolvedValue(true);
 });
 
-it("keeps rendering independent of pending work refresh and cancels on exit", async () => {
+it("keeps rendering independent of pending work refresh, cancels the server lookup on exit and lets the source check finish", async () => {
   let complete!: (value: boolean) => void;
   mocks.server.mockImplementation(() => new Promise(resolve => { complete = resolve; }));
   mocks.source.mockImplementation(() => new Promise(() => undefined));
@@ -41,7 +41,10 @@ it("keeps rendering independent of pending work refresh and cancels on exit", as
   expect(mocks.invalidateQueries).not.toHaveBeenCalled();
   cleanup(); complete(true);
   await vi.waitFor(() => expect(signal.aborted).toBe(true));
-  expect(mocks.source).toHaveBeenCalledWith(42, "tasks.task.checkUpdates", signal, { onStart: expect.any(Function) });
+  expect(mocks.source).toHaveBeenCalledWith(42, "tasks.task.checkUpdates", expect.any(AbortSignal), { onStart: expect.any(Function) });
+  const sourceSignal = mocks.source.mock.calls[0]![2] as AbortSignal;
+  expect(sourceSignal).not.toBe(signal);
+  expect(sourceSignal.aborted).toBe(false);
   expect(mocks.invalidateQueries).not.toHaveBeenCalled();
 });
 

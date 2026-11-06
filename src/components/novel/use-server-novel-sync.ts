@@ -8,7 +8,8 @@ import { chaptersKey, novelKey } from "./novel-detail-model";
 
 /**
  * On open, looks the work up on the content server and, when its last check is older than
- * 6 hours, checks its source for new chapters in the background.
+ * 6 hours, checks its source for new chapters in the background. The source check outlives the
+ * page: cancelling it on exit recorded no outcome, so every later visit started it again.
  */
 export function useServerNovelSync(id: number, active: boolean, name: string) {
   const queryClient = useQueryClient();
@@ -41,7 +42,7 @@ export function useServerNovelSync(id: number, active: boolean, name: string) {
     })();
     void (async () => {
       try {
-        sourceRefreshed = await checkNovelIfStale(id, title.current, controller.signal, {
+        sourceRefreshed = await checkNovelIfStale(id, title.current, new AbortController().signal, {
           onStart: () => { if (!controller.signal.aborted) setChecking(true); },
         });
         if (sourceRefreshed) await invalidate();
