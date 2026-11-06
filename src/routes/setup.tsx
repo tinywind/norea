@@ -121,7 +121,7 @@ export function SetupPage() {
   };
   const finish = () => {
     setSetupState("done");
-    void navigate({ to: "/browse", search: { q: "", tab: "sources" }, replace: true });
+    void navigate({ to: "/browse", search: { q: "", tab: "search" }, replace: true });
   };
   const goToSources = () => {
     setSelectedIds(new Set(suggestedSetupSources(items, languages).map((item) => item.id)));

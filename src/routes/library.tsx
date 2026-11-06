@@ -590,7 +590,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     secondaryAction={{
                       label: t("library.empty.browse"),
                       onClick: () => {
-                        void navigate({ to: "/browse", search: { q: "", tab: "sources" } });
+                        void navigate({ to: "/browse", search: { q: "", tab: "search" } });
                       },
                     }}
                     title={t("library.empty.title")}

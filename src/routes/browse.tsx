@@ -15,7 +15,8 @@ import { useTranslation } from "../i18n";
 import { useContentSyncStore } from "../store/content-sync";
 import "../styles/browse.css";
 
-export type BrowseTab = "search" | "sources" | "server";
+/** "search" is the sources list with the global search under it. */
+export type BrowseTab = "search" | "server";
 
 interface BrowsePageProps {
   active?: boolean;
@@ -65,13 +66,12 @@ export function BrowsePage({
       }
       title={t("browse.title")}
     >
-      <Tabs.List className="norea-app-bar-tabs">
-        <Tabs.Tab value="search">{t("browse.tab.search")}</Tabs.Tab>
-        <Tabs.Tab value="sources">{t("browse.tab.sources")}</Tabs.Tab>
-        {showServerTab ? (
+      {showServerTab ? (
+        <Tabs.List className="norea-app-bar-tabs">
+          <Tabs.Tab value="search">{t("browse.tab.sources")}</Tabs.Tab>
           <Tabs.Tab value="server">{t("browse.tab.server")}</Tabs.Tab>
-        ) : null}
-      </Tabs.List>
+        </Tabs.List>
+      ) : null}
     </PageHeader>
   );
 
@@ -80,8 +80,7 @@ export function BrowsePage({
       className="norea-browse-page"
       value={tab}
       onChange={(value) => {
-        const nextTab: BrowseTab =
-          value === "server" ? "server" : value === "sources" ? "sources" : "search";
+        const nextTab: BrowseTab = value === "server" ? "server" : "search";
         void navigate({
           to: "/browse",
           search: { q, tab: nextTab },
@@ -97,22 +96,23 @@ export function BrowsePage({
 
       <PageFrame size="wide" className="norea-browse-frame">
         <Tabs.Panel value="search" className="norea-browse-tab-panel">
-          {active && tab === "search" ? (
-            <BrowseSearchTab
-              installedPlugins={installedPlugins}
-              query={q}
-              onSearch={(nextQuery) => {
-                void navigate({
-                  to: "/browse",
-                  search: { q: nextQuery, tab: "search" },
-                });
-              }}
-            />
+          {tab === "search" ? (
+            <div className="norea-browse-sources-search">
+              <BrowseSourcesTab active={active} />
+              {active ? (
+                <BrowseSearchTab
+                  installedPlugins={installedPlugins}
+                  query={q}
+                  onSearch={(nextQuery) => {
+                    void navigate({
+                      to: "/browse",
+                      search: { q: nextQuery, tab: "search" },
+                    });
+                  }}
+                />
+              ) : null}
+            </div>
           ) : null}
-        </Tabs.Panel>
-
-        <Tabs.Panel value="sources" className="norea-browse-tab-panel">
-          {tab === "sources" ? <BrowseSourcesTab active={active} /> : null}
         </Tabs.Panel>
 
         {showServerTab ? (

@@ -145,7 +145,7 @@ describe("first-run setup", () => {
     expect(button(tree, "setup.skip")).toBeUndefined();
     button(tree, "setup.done.action")!.props.onClick!();
     expect(mocks.setSetupState).toHaveBeenCalledWith("done");
-    expect(mocks.navigate).toHaveBeenCalledWith({ replace: true, search: { q: "", tab: "sources" }, to: "/browse" });
+    expect(mocks.navigate).toHaveBeenCalledWith({ replace: true, search: { q: "", tab: "search" }, to: "/browse" });
   });
 
   it("records a skip from any step so setup never returns", () => {

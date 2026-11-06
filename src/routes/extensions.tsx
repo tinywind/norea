@@ -346,7 +346,7 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
     if (openedFromMore) {
       void navigate({ to: "/more", replace: true });
     } else {
-      void navigate({ to: "/browse", search: { q: "", tab: "sources" }, replace: true });
+      void navigate({ to: "/browse", search: { q: "", tab: "search" }, replace: true });
     }
     return true;
   }, [currentHref, navigate, openedFromMore]);

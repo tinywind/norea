@@ -190,7 +190,7 @@ function getSearchString(
 }
 
 function getBrowseTab(search: Record<string, unknown>): BrowseTab {
-  return search.tab === "server" ? "server" : search.tab === "sources" ? "sources" : "search";
+  return search.tab === "server" ? "server" : "search";
 }
 
 function asSearchRecord(search: unknown): Record<string, unknown> {

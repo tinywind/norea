@@ -678,3 +678,10 @@
   margin: 0;
   min-width: 0;
 }
+
+/* The sources list with the global search under it, on one browse tab. */
+.norea-browse-sources-search {
+  display: grid;
+  gap: var(--norea-space-5);
+  min-width: 0;
+}

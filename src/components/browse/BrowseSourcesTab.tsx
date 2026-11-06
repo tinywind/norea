@@ -18,6 +18,7 @@ import { isTauriRuntime } from "../../lib/tauri-runtime";
 import { useBrowseStore } from "../../store/browse";
 import { StateView } from "../AppFrame";
 import { ReaderSettingsPanel } from "../ReaderSettingsPanel";
+import { IconButton } from "../IconButton";
 import { useConfirm } from "../ui/ConfirmDialog";
 import {
   ChevronDownIcon,
@@ -106,10 +107,12 @@ interface SourceRowProps {
   locale: AppLocale;
   menuItems: readonly OverflowMenuItem[];
   onOpen: () => void;
+  onTogglePinned: () => void;
+  pinned: boolean;
   plugin: Plugin;
 }
 
-function SourceRow({ clearingCookies, locale, menuItems, onOpen, plugin }: SourceRowProps) {
+function SourceRow({ clearingCookies, locale, menuItems, onOpen, onTogglePinned, pinned, plugin }: SourceRowProps) {
   const { t } = useTranslation();
 
   return (
@@ -122,6 +125,9 @@ function SourceRow({ clearingCookies, locale, menuItems, onOpen, plugin }: Sourc
         title={plugin.name}
       />
       <span className="norea-source-row-trailing">
+        <IconButton label={pinned ? t("browse.unpin") : t("browse.pin")} onClick={onTogglePinned} size="lg">
+          {pinned ? <UnpinIcon /> : <PinIcon />}
+        </IconButton>
         {clearingCookies ? (
           <span
             aria-label={t("browse.sources.clearingCookies", { name: plugin.name })}
@@ -141,6 +147,7 @@ function SourceRow({ clearingCookies, locale, menuItems, onOpen, plugin }: Sourc
   );
 }
 
+/** The sources list above the global search: pinned sources, then the others in one accordion. */
 export function BrowseSourcesTab({ active }: { active: boolean }) {
   const { locale, t } = useTranslation();
   const navigate = useNavigate();
@@ -155,6 +162,8 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
   const [collapsedLanguages, setCollapsedLanguages] = useState<ReadonlySet<string>>(
     () => new Set(),
   );
+  // Until toggled, the other sources are open only when nothing is pinned.
+  const [othersExpanded, setOthersExpanded] = useState<boolean | null>(null);
   const [settingsPlugin, setSettingsPlugin] = useState<Plugin | null>(null);
   // The plugin stays set after closing so the sheet keeps its content through the exit transition.
   const [readerSettings, setReaderSettings] = useState<{ opened: boolean; plugin: Plugin } | null>(
@@ -222,13 +231,7 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
   };
 
   const menuItemsFor = (plugin: Plugin): OverflowMenuItem[] => {
-    const pinnedPlugin = pinnedPluginIds.includes(plugin.id);
     return [
-      {
-        icon: pinnedPlugin ? UnpinIcon : PinIcon,
-        label: pinnedPlugin ? t("browse.unpin") : t("browse.pin"),
-        onClick: () => togglePinnedPlugin(plugin.id),
-      },
       ...(hasPluginInputs(plugin)
         ? [{ icon: SettingsIcon, label: t("common.settings"), onClick: () => setSettingsPlugin(plugin) }]
         : []),
@@ -269,6 +272,8 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
           locale={locale}
           menuItems={menuItemsFor(plugin)}
           onOpen={() => openSource(plugin)}
+          onTogglePinned={() => togglePinnedPlugin(plugin.id)}
+          pinned={pinnedPluginIds.includes(plugin.id)}
           plugin={plugin}
         />
       ))}
@@ -286,17 +291,13 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
       />
     );
   }
-  if (plugins.length === 0) {
-    return (
-      <StateView
-        action={{ label: t("browse.sources.openExtensions"), onClick: () => openExtensions() }}
-        message={t("browse.sources.empty.message")}
-        title={t("browse.sources.empty.title")}
-      />
-    );
-  }
+  // The global search under the list explains how to install the first source.
+  if (plugins.length === 0) return null;
 
   const nothingVisible = pinned.length === 0 && groups.length === 0;
+  const pinnedCount = plugins.filter((plugin) => pinnedPluginIds.includes(plugin.id)).length;
+  const othersCount = plugins.length - pinnedCount;
+  const othersOpen = othersExpanded ?? pinnedCount === 0;
   const languageHidden =
     pluginLanguageFilter.length > 0 &&
     plugins.some((plugin) => !pluginLanguageFilter.includes(plugin.lang));
@@ -339,46 +340,67 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
         </section>
       ) : null}
 
-      {groups.map(({ lang, plugins: groupPlugins }) => {
-        const collapsed = collapsedLanguages.has(lang);
-        const panelId = `norea-sources-lang-${lang}`;
-        return (
-          <section className="norea-source-group" key={lang}>
-            <h2 className="norea-source-group-title">
-              <button
-                aria-controls={panelId}
-                aria-expanded={!collapsed}
-                className="norea-source-group-toggle norea-state-layer"
-                onClick={() =>
-                  setCollapsedLanguages((current) => {
-                    const next = new Set(current);
-                    if (next.has(lang)) next.delete(lang);
-                    else next.add(lang);
-                    return next;
-                  })
-                }
-                type="button"
-              >
-                <span>{formatPluginLanguageForLocale(locale, lang)}</span>
-                <span className="norea-source-group-count">{groupPlugins.length}</span>
-                {collapsed ? <ChevronRightIcon size="1.125rem" /> : <ChevronDownIcon size="1.125rem" />}
-              </button>
-            </h2>
-            <Collapse expanded={!collapsed} id={panelId} keepMountedMode="display-none">
-              {renderRows(groupPlugins)}
-            </Collapse>
-          </section>
-        );
-      })}
+      {othersCount > 0 ? (
+        <section className="norea-source-group">
+          <h2 className="norea-source-group-title">
+            <button
+              aria-controls="norea-sources-others"
+              aria-expanded={othersOpen}
+              className="norea-source-group-toggle norea-state-layer"
+              onClick={() => setOthersExpanded(!othersOpen)}
+              type="button"
+            >
+              <span>{t("browse.sources.others")}</span>
+              <span className="norea-source-group-count">{othersCount}</span>
+              {othersOpen ? <ChevronDownIcon size="1.125rem" /> : <ChevronRightIcon size="1.125rem" />}
+            </button>
+          </h2>
+          <Collapse expanded={othersOpen} id="norea-sources-others" keepMountedMode="display-none">
+            <div className="norea-browse-sources">
+              {groups.map(({ lang, plugins: groupPlugins }) => {
+                const collapsed = collapsedLanguages.has(lang);
+                const panelId = `norea-sources-lang-${lang}`;
+                return (
+                  <section className="norea-source-group" key={lang}>
+                    <h3 className="norea-source-group-title">
+                      <button
+                        aria-controls={panelId}
+                        aria-expanded={!collapsed}
+                        className="norea-source-group-toggle norea-state-layer"
+                        onClick={() =>
+                          setCollapsedLanguages((current) => {
+                            const next = new Set(current);
+                            if (next.has(lang)) next.delete(lang);
+                            else next.add(lang);
+                            return next;
+                          })
+                        }
+                        type="button"
+                      >
+                        <span>{formatPluginLanguageForLocale(locale, lang)}</span>
+                        <span className="norea-source-group-count">{groupPlugins.length}</span>
+                        {collapsed ? <ChevronRightIcon size="1.125rem" /> : <ChevronDownIcon size="1.125rem" />}
+                      </button>
+                    </h3>
+                    <Collapse expanded={!collapsed} id={panelId} keepMountedMode="display-none">
+                      {renderRows(groupPlugins)}
+                    </Collapse>
+                  </section>
+                );
+              })}
 
-      {languageHidden && !nothingVisible ? (
-        <Button
-          className="norea-source-show-all"
-          onClick={() => setPluginLanguageFilter([])}
-          variant="subtle"
-        >
-          {t("browse.sources.showAllLanguages")}
-        </Button>
+              {languageHidden && !nothingVisible ? (
+                <Button
+                  className="norea-source-show-all"
+                  onClick={() => setPluginLanguageFilter([])}
+                  variant="subtle"
+                >
+                  {t("browse.sources.showAllLanguages")}
+                </Button>
+              ) : null}
+            </div>
+          </Collapse>
+        </section>
       ) : null}
 
       <PluginSettingsDialog onClose={() => setSettingsPlugin(null)} plugin={settingsPlugin} />
