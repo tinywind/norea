@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Alert, Button, Checkbox, Group, Loader, NumberInput, Select, Stack, Text } from "@mantine/core";
+import { Alert, Checkbox, Group, Loader, NumberInput, Radio, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listVpnGateServerVerdicts, setVpnGateServerVerdict, type VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
 import { formatDateTimeForLocale, useTranslation, type TranslationKey } from "../i18n";
@@ -15,9 +15,11 @@ import { ChipButton } from "./ChipButton";
 import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
 import { PluginVpnSelectionPanel, PluginVpnUrlTestStatus } from "./PluginVpnSelectionPanel";
-import { ConnectIcon, ExcludeIcon, RestartIcon, SortAscendingIcon, SortDescendingIcon, RetryIcon, SaveIcon, SelectIcon, SettingsIcon } from "./ui/icons";
+import { SegmentedToggle } from "./SegmentedToggle";
+import { ConnectIcon, ExcludeIcon, RestartIcon, RetryIcon, SaveIcon, SelectIcon, SettingsIcon, SortIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
+import "../styles/library.css";
 
 const VERDICT_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
 const CAUSE_KEYS: Record<VpnDownloadProfileIssueCause, TranslationKey> = {
@@ -59,6 +61,7 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
   const [failuresOnly, setFailuresOnly] = useState(false);
   const [sortBy, setSortBy] = useState<SavedProfileSort>("name");
   const [sortDescending, setSortDescending] = useState(false);
+  const [sortOpened, setSortOpened] = useState(false);
   const [blockedOpened, setBlockedOpened] = useState(false);
   const urlTestResults = usePluginVpnUrlTestStore(state => state.results);
   const issues = useQuery({ queryKey: VPN_DOWNLOAD_PROFILE_ISSUES_QUERY_KEY, queryFn: () => listVpnDownloadProfileIssues(), enabled: opened,
@@ -233,13 +236,8 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
               </ChipButton>
             </Group>
             <Group gap={4} wrap="nowrap">
-              <Select aria-label={t("settings.data.pluginVpn.saved.sort.label")} allowDeselect={false} w="9rem"
-                data={[{ value: "name", label: t("settings.data.pluginVpn.saved.sort.name") },
-                  { value: "added", label: t("settings.data.pluginVpn.saved.sort.added") }]}
-                onChange={value => setSortBy(value === "added" ? "added" : "name")} value={sortBy} />
-              <IconButton label={t(sortDescending ? "settings.data.pluginVpn.saved.sort.descending" : "settings.data.pluginVpn.saved.sort.ascending")}
-                onClick={() => setSortDescending(!sortDescending)} size="lg">
-                {sortDescending ? <SortDescendingIcon /> : <SortAscendingIcon />}
+              <IconButton disabled={!savedProfileIps.length} label={t("library.viewOptions.sort")} onClick={() => setSortOpened(true)} size="lg">
+                <SortIcon />
               </IconButton>
             </Group>
           </Group>
@@ -274,13 +272,9 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
                   <PluginVpnUrlTestStatus host={ip} />
                 </Stack>
                 <Group gap="xs" wrap="nowrap">
-                  <VpnGateServerVerdictControl blockable={false} ip={ip} verdict={verdict} disabled={managementLocked}
+                  <VpnGateServerVerdictControl ip={ip} verdict={verdict} disabled={managementLocked}
                     preferDisabledReason={canApprove ? null : t("settings.data.pluginVpn.saved.approvalUnavailable")}
                     onChange={next => changeVerdict(ip, next)} />
-                  <Button aria-label={t("settings.data.pluginVpn.saved.block", { ip })} color="danger" disabled={managementLocked}
-                    leftSection={<ExcludeIcon />} onClick={() => changeVerdict(ip, "fails")} size="xs" variant="subtle">
-                    {t("settings.data.pluginVpn.finder.verdict.block")}
-                  </Button>
                   {profile && onConnect ? (
                     <IconButton
                       active={connectingProfileId === profile.id}
@@ -311,6 +305,23 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
               </Stack>)}
             </Stack>;
           })}
+        </Stack>
+      </ResponsiveSheet>
+      <ResponsiveSheet onClose={() => setSortOpened(false)} opened={opened && sortOpened} title={t("library.viewOptions.sort")}>
+        <Stack gap="lg">
+          <SegmentedToggle
+            aria-label={t("library.viewOptions.direction")}
+            data={[{ value: "asc", label: t("librarySettings.sortDirection.asc") }, { value: "desc", label: t("librarySettings.sortDirection.desc") }]}
+            fullWidth
+            onChange={value => setSortDescending(value === "desc")}
+            value={sortDescending ? "desc" : "asc"}
+          />
+          <Radio.Group label={t("library.viewOptions.sortBy")} onChange={value => setSortBy(value === "added" ? "added" : "name")} value={sortBy}>
+            <Stack className="norea-library-option-list" gap={0}>
+              <Radio label={t("settings.data.pluginVpn.saved.sort.name")} value="name" />
+              <Radio label={t("settings.data.pluginVpn.saved.sort.added")} value="added" />
+            </Stack>
+          </Radio.Group>
         </Stack>
       </ResponsiveSheet>
       <ResponsiveSheet busy={busy} closeLabel={t("settings.data.pluginVpn.blocked.close")} fullScreenOnPhone

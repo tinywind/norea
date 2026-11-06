@@ -49,7 +49,7 @@ import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
 import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 
-interface Props { children?: ReactNode; error?: ReactNode; status?: string | null; className?: string; label?: string; "aria-label"?: string; value?: unknown; disabled?: boolean; opened?: boolean; min?: number; max?: number; onChange?: (value: number | string | null) => unknown; onClick?: () => unknown; data?: { value: string; disabled?: boolean }[]; ip?: string; verdict?: string | null; preferDisabledReason?: string | null }
+interface Props { children?: ReactNode; title?: ReactNode; error?: ReactNode; status?: string | null; className?: string; label?: string; "aria-label"?: string; value?: unknown; disabled?: boolean; opened?: boolean; min?: number; max?: number; onChange?: (value: number | string | null) => unknown; onClick?: () => unknown; data?: { value: string; disabled?: boolean }[]; ip?: string; verdict?: string | null; preferDisabledReason?: string | null }
 function controls(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(controls);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -261,7 +261,7 @@ it("hides problem-only rows and separates a recorded batch exclusion from the us
 it("lists Not used servers in their own modal that can only remove the mark", async () => {
   render().find(element => element.props.label === "settings.data.pluginVpn.blocked.manage")!.props.onClick!();
   const view = render();
-  expect(view.filter(element => element.type === ResponsiveSheet).map(element => element.props.opened)).toEqual([false, true]);
+  expect(view.filter(element => element.type === ResponsiveSheet).map(element => element.props.opened)).toEqual([false, false, true]);
   expect(view.some(element => element.type === VpnGateServerVerdictControl && element.props.ip === "192.0.2.3")).toBe(false);
   expect(copy(view)).toContain('blocked.since{"date":"date:1000"}');
   await view.find(element => element.props.label === 'settings.data.pluginVpn.blocked.unblock{"ip":"192.0.2.3"}')!.props.onClick!();
@@ -303,20 +303,16 @@ it("sorts saved profiles by name or date added in either direction", () => {
   const control = (view: ReactElement<Props>[], label: string) => view.find(element => element.props["aria-label"] === label || element.props.label === label)!;
   let view = openManager();
   expect(rowIps(view)).toEqual(["9.0.0.1", "10.0.0.2", "vpn.example.net"]);
-  control(view, "settings.data.pluginVpn.saved.sort.label").props.onChange!("added");
+  control(view, "library.viewOptions.sort").props.onClick!();
+  view = render();
+  const sheet = view.find(element => element.type === ResponsiveSheet && element.props.title === "library.viewOptions.sort")!;
+  expect(sheet.props.opened).toBe(true);
+  view.find(element => element.props.label === "library.viewOptions.sortBy")!.props.onChange!("added");
   view = render();
   expect(rowIps(view)).toEqual(["9.0.0.1", "vpn.example.net", "10.0.0.2"]);
-  control(view, "settings.data.pluginVpn.saved.sort.ascending").props.onClick!();
+  control(view, "library.viewOptions.direction").props.onChange!("desc");
   view = render();
   expect(rowIps(view)).toEqual(["10.0.0.2", "vpn.example.net", "9.0.0.1"]);
-  expect(control(view, "settings.data.pluginVpn.saved.sort.descending")).toBeDefined();
-});
-
-it("marks a saved profile as Not used straight from its row", async () => {
-  const block = openManager().find(element => element.props["aria-label"] === 'settings.data.pluginVpn.saved.block{"ip":"192.0.2.1"}')!;
-  expect(block.props.disabled).toBe(false);
-  await block.props.onClick!();
-  expect(mocks.revoke).toHaveBeenCalledExactlyOnceWith("192.0.2.1", "fails");
 });
 
 it("keeps loading and query failures distinct from a real empty vault", () => {

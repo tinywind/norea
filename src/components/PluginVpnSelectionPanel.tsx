@@ -11,7 +11,7 @@ import {
 import { isAndroidRuntime } from "../lib/tauri-runtime";
 import { usePluginVpnUrlTestStore } from "../store/plugin-vpn-url-test";
 import { IconButton } from "./IconButton";
-import { CloseIcon, DeselectIcon, PlayIcon, SelectAllIcon, StopIcon } from "./ui/icons";
+import { CloseIcon, DeselectIcon, PlayIcon, SelectAllIcon } from "./ui/icons";
 import "../styles/plugin-vpn-finder.css";
 
 interface PluginVpnSelectionPanelProps {
@@ -102,7 +102,7 @@ function PluginVpnUrlTestForm({ targets, untestableCount }: { targets: readonly 
         />
         {run ? (
           <IconButton disabled={run.cancelling} label={t("settings.data.pluginVpn.urlTest.cancel")} onClick={() => void cancelPluginVpnUrlTests()} size="lg">
-            <StopIcon />
+            <CloseIcon />
           </IconButton>
         ) : (
           <IconButton

@@ -55,7 +55,6 @@ import {
   IconPinnedOff,
   IconPlayerPause,
   IconPlayerPlay,
-  IconPlayerStop,
   IconPlayerSkipBack,
   IconPlugConnected,
   IconPlugConnectedX,
@@ -71,8 +70,6 @@ import {
   IconSelectAll,
   IconServer,
   IconSettings,
-  IconSortAscending,
-  IconSortDescending,
   IconShieldCheck,
   IconShieldLock,
   IconStar,
@@ -118,8 +115,6 @@ export const AboutIcon = withAppDefaults(IconInfoSquareRounded);
 export const SearchIcon = withAppDefaults(IconSearch);
 export const FilterIcon = withAppDefaults(IconFilter);
 export const SortIcon = withAppDefaults(IconArrowsSort);
-export const SortAscendingIcon = withAppDefaults(IconSortAscending);
-export const SortDescendingIcon = withAppDefaults(IconSortDescending);
 export const ViewOptionsIcon = withAppDefaults(IconAdjustmentsHorizontal);
 export const SelectIcon = withAppDefaults(IconCheckbox);
 export const RefreshIcon = withAppDefaults(IconRefresh);
@@ -148,7 +143,6 @@ export const OverflowIcon = withAppDefaults(IconDotsVertical);
 export const PlusIcon = withAppDefaults(IconPlus);
 export const MinusIcon = withAppDefaults(IconMinus);
 export const PlayIcon = withAppDefaults(IconPlayerPlay);
-export const StopIcon = withAppDefaults(IconPlayerStop);
 export const FromStartIcon = withAppDefaults(IconPlayerSkipBack);
 export const PauseIcon = withAppDefaults(IconPlayerPause);
 export const RestartIcon = withAppDefaults(IconRotateClockwise);
