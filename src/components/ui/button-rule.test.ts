@@ -272,7 +272,6 @@ const ACTION_ICONS: Record<string, string> = {
   "settings.data.importBackup": "ImportIcon",
   "settings.data.libraryMembership.button": "TrashIcon",
   "settings.data.pluginVpn.connection.connect": "ConnectIcon",
-  "settings.data.pluginVpn.connection.disconnect": "DisconnectIcon",
   "settings.data.pluginVpn.saved.manage": "SettingsIcon",
   "settings.data.pluginVpn.saved.reallow": "RestartIcon",
   "settings.data.pluginVpn.saved.reallowAll": "RestartIcon",

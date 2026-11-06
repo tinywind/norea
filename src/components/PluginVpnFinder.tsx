@@ -554,9 +554,16 @@ export function PluginVpnFinder({
           onChange={(event) => setFilters({ hideFailed: event.currentTarget.checked })}
         />
         <Group justify="space-between" wrap="nowrap">
-          <Text c="dimmed" size="xs">
-            {t("settings.data.pluginVpn.finder.sourceAttribution")}
-          </Text>
+          {catalogRefreshing ? (
+            <Group gap="xs" role="status" wrap="nowrap">
+              <Loader size={14} />
+              <Text size="sm">{t("settings.data.pluginVpn.finder.loading")}</Text>
+            </Group>
+          ) : (
+            <Text c="dimmed" size="xs">
+              {t("settings.data.pluginVpn.finder.sourceAttribution")}
+            </Text>
+          )}
           <Group gap="xs" wrap="nowrap">
             <IconButton
               active={selectionMode}

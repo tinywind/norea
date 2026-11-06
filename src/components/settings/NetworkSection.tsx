@@ -1,7 +1,6 @@
 import { useRef, useState } from "react";
-import { PasswordInput, Text, TextInput } from "@mantine/core";
+import { PasswordInput, Switch, Text, TextInput } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { ConsoleChip } from "../ConsolePrimitives";
 import { PluginVpnFinder, pluginVpnFinderVerdictCaptureSource } from "../PluginVpnFinder";
 import { SavedVpnProfilesSettings } from "../SavedVpnProfilesSettings";
 import { TestedVpnServers } from "../TestedVpnServers";
@@ -15,9 +14,6 @@ import {
 import { IconButton } from "../IconButton";
 import { useConfirm } from "../ui/ConfirmDialog";
 import {
-  CloseIcon,
-  ConnectIcon,
-  DisconnectIcon,
   ImportIcon,
   RetryIcon,
   SearchIcon,
@@ -188,10 +184,6 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
     connectionRequestActive ||
     vpnOperation?.kind === "disconnect" ||
     (status !== undefined && status.phase !== "disabled");
-  const cancelConnection =
-    connectionRequestActive ||
-    status?.phase === "connecting" ||
-    status?.phase === "reconnecting";
   const visibleStatusError =
     vpnEnabled && online && vpnOperation === null ? status?.error ?? null : null;
 
@@ -496,74 +488,37 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
       ) : (
         <>
           <SettingsFieldRow
-            label={t("settings.data.pluginVpn.status.label")}
-            description={t("settings.data.pluginVpn.status.description")}
-            error={vpnQuery.isError ? t("common.loadFailed") : visibleStatusError}
-          >
-            <SettingsInlineControls>
-              <ConsoleChip tone={displayPhase === "connected" ? "accent" : undefined}>
-                {vpnQuery.isError
-                  ? t("common.loadFailed")
-                  : displayPhase
-                    ? t(PLUGIN_VPN_PHASE_KEYS[displayPhase])
-                    : t("settings.data.pluginVpn.status.loading")}
-              </ConsoleChip>
-              {vpnQuery.isError ? (
-                <IconButton
-                  label={t("common.retry")}
-                  size="lg"
-                  loading={vpnQuery.isFetching}
-                  onClick={() => {
-                    void vpnQuery.refetch();
-                  }}
-                >
-                  <RetryIcon />
-                </IconButton>
-              ) : null}
-            </SettingsInlineControls>
-          </SettingsFieldRow>
-          <SettingsFieldRow
             label={t("settings.data.pluginVpn.connection.label")}
             description={t("settings.data.pluginVpn.connection.description")}
+            status={vpnQuery.isError
+              ? null
+              : displayPhase
+                ? t(PLUGIN_VPN_PHASE_KEYS[displayPhase])
+                : t("settings.data.pluginVpn.status.loading")}
+            error={vpnQuery.isError ? t("common.loadFailed") : visibleStatusError}
           >
-            <SettingsInlineControls>
-              {!stopAction ? (
-                <IconButton
-                  label={t("settings.data.pluginVpn.connection.connect")}
-                  size="lg"
-                  disabled={!canConnect}
-                  onClick={() => {
-                    void connect();
-                  }}
-                >
-                  <ConnectIcon />
-                </IconButton>
-              ) : cancelConnection ? (
-                <IconButton
-                  label={t("settings.data.pluginVpn.connection.cancel")}
-                  size="lg"
-                  disabled={stopDisabled}
-                  loading={vpnOperation?.kind === "disconnect"}
-                  onClick={() => {
-                    void disconnect();
-                  }}
-                >
-                  <CloseIcon />
-                </IconButton>
-              ) : (
-                <IconButton
-                  label={t("settings.data.pluginVpn.connection.disconnect")}
-                  size="lg"
-                  disabled={stopDisabled}
-                  loading={vpnOperation?.kind === "disconnect"}
-                  onClick={() => {
-                    void disconnect();
-                  }}
-                >
-                  <DisconnectIcon />
-                </IconButton>
-              )}
-            </SettingsInlineControls>
+            {vpnQuery.isError ? (
+              <IconButton
+                label={t("common.retry")}
+                size="lg"
+                loading={vpnQuery.isFetching}
+                onClick={() => {
+                  void vpnQuery.refetch();
+                }}
+              >
+                <RetryIcon />
+              </IconButton>
+            ) : (
+              <Switch
+                aria-label={t("settings.data.pluginVpn.connection.label")}
+                checked={stopAction && vpnOperation?.kind !== "disconnect"}
+                disabled={stopAction ? stopDisabled : !canConnect}
+                onChange={(event) => {
+                  if (event.currentTarget.checked) void connect();
+                  else void disconnect();
+                }}
+              />
+            )}
           </SettingsFieldRow>
           <SettingsFieldRow
             label={t("settings.data.pluginVpn.profile.label")}
