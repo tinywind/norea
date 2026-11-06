@@ -76,7 +76,7 @@ class Runtime implements VpnDownloadRuntime {
   readonly discoveries: boolean[] = [];
   readonly tested: string[] = [];
   readonly results: [string, boolean][] = [];
-  test: ((candidate: VpnDownloadProfileCandidate) => Promise<boolean>) | null = null;
+  test: ((candidate: VpnDownloadProfileCandidate, signal: AbortSignal) => Promise<boolean>) | null = null;
   readonly chapterFailures: { chapterId: number; error: unknown }[] = [];
   chapterFailure: (attempts: number, error: unknown) => VpnDownloadChapterFailure = () => ({ failureClass: "content", nextRetryAt: null });
 
@@ -91,9 +91,9 @@ class Runtime implements VpnDownloadRuntime {
     this.candidates = [];
     return copy(found);
   }
-  async testProfileCandidate(candidate: VpnDownloadProfileCandidate): Promise<boolean> {
+  async testProfileCandidate(candidate: VpnDownloadProfileCandidate, signal: AbortSignal): Promise<boolean> {
     this.tested.push(candidate.candidateId);
-    return this.test ? this.test(candidate) : false;
+    return this.test ? this.test(candidate, signal) : false;
   }
   recordProfileResult(value: VpnDownloadProfile, connected: boolean): void { this.results.push([value.id, connected]); }
 
@@ -276,6 +276,110 @@ function current(coordinator: VpnDownloadCoordinator, rangeId: string): VpnDownl
 }
 
 describe("VPN download coordinator", () => {
+  it("aborts discovery and keeps Stop pending until its native probe has settled", async () => {
+    const runtime = new Runtime();
+    runtime.profiles = [];
+    runtime.candidates = [{ candidateId: "probe", ip: "192.0.2.20", score: 1 }];
+    const cleanup = deferred<boolean>();
+    let signal: AbortSignal | undefined;
+    runtime.test = async (_candidate, cancellation) => { signal = cancellation; return cleanup.promise; };
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    await coordinator.start(plan(), jobsFor(plan()));
+    await until(() => expect(runtime.tested).toEqual(["probe"]));
+    let stopped = false;
+    const stop = coordinator.stopAutomatic().then(() => { stopped = true; });
+    await until(() => expect(signal?.aborted).toBe(true));
+    expect(stopped).toBe(false);
+    cleanup.resolve(false);
+    await stop;
+    expect(stopped).toBe(true);
+    expect(runtime.native.size).toBe(0);
+  });
+  it.each(["pause-range", "pause-work", "cancel-range", "cancel-plan"] as const)("stops discovery after %s removes its last demand and waits for cleanup", async action => {
+    const runtime = new Runtime();
+    runtime.profiles = [];
+    runtime.candidates = [{ candidateId: "probe", ip: "192.0.2.20", score: 1 }];
+    const cleanup = deferred<boolean>();
+    let signal: AbortSignal | undefined;
+    runtime.test = async (_candidate, cancellation) => { signal = cancellation; return cleanup.promise; };
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan();
+    await coordinator.start(value, jobsFor(value));
+    await until(() => expect(runtime.tested).toEqual(["probe"]));
+    let stopped = false;
+    const stop = (action === "pause-range" ? coordinator.pauseRange(value.id, "a") :
+      action === "pause-work" ? coordinator.pauseWork(value.pluginId, value.novelId) :
+      action === "cancel-range" ? coordinator.cancelRange(value.id, "a") : coordinator.cancelPlan(value.id))
+      .then(() => { stopped = true; });
+    try {
+      await until(() => expect(signal?.aborted).toBe(true));
+      expect(stopped).toBe(false);
+    } finally {
+      cleanup.resolve(false);
+      await stop;
+    }
+    expect(stopped).toBe(true);
+  });
+
+  it("keeps shared discovery running while another unpaused range still needs profiles", async () => {
+    const runtime = new Runtime();
+    runtime.profiles = [];
+    runtime.candidates = [{ candidateId: "probe", ip: "192.0.2.20", score: 1 }];
+    const cleanup = deferred<boolean>();
+    let signal: AbortSignal | undefined;
+    runtime.test = async (_candidate, cancellation) => { signal = cancellation; return cleanup.promise; };
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan([range("a", "a", [1]), range("b", "b", [2])]);
+    await coordinator.start(value, jobsFor(value));
+    await until(() => expect(runtime.tested).toEqual(["probe"]));
+
+    await coordinator.pauseRange(value.id, "a");
+    expect(signal?.aborted).toBe(false);
+
+    const stop = coordinator.stopAutomatic();
+    cleanup.resolve(false);
+    await stop;
+  });
+
+  it("preserves probe cleanup failures and waits for sibling probes before rejecting Stop", async () => {
+    const runtime = new Runtime();
+    runtime.profiles = [];
+    runtime.candidates = ["first", "second"].map((candidateId, index) => ({ candidateId, ip: `192.0.2.${20 + index}`, score: 1 }));
+    const first = deferred<boolean>();
+    const second = deferred<boolean>();
+    runtime.test = async candidate => candidate.candidateId === "first" ? first.promise : second.promise;
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    await coordinator.start(plan(), jobsFor(plan()));
+    await until(() => expect(runtime.tested).toEqual(["first", "second"]));
+    let settled = false;
+    const stop = coordinator.stopAutomatic();
+    void stop.then(() => { settled = true; }, () => { settled = true; });
+    const rejection = expect(stop).rejects.toThrow("probe cleanup could not be confirmed");
+    first.reject(new Error("probe cleanup could not be confirmed"));
+    await new Promise(resolve => setTimeout(resolve, 5));
+    expect(settled).toBe(false);
+    second.resolve(false);
+    await rejection;
+  });
+
+  it("treats a settled AbortError as successful cleanup when pausing the last range", async () => {
+    const runtime = new Runtime();
+    runtime.profiles = [];
+    runtime.candidates = [{ candidateId: "probe", ip: "192.0.2.20", score: 1 }];
+    let cleaned = false;
+    runtime.test = (_candidate, signal) => new Promise((_resolve, reject) => {
+      signal.addEventListener("abort", () => {
+        cleaned = true;
+        reject(new DOMException("cancelled", "AbortError"));
+      }, { once: true });
+    });
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    await coordinator.start(plan(), jobsFor(plan()));
+    await until(() => expect(runtime.tested).toEqual(["probe"]));
+    await expect(coordinator.pauseRange("plan", "a")).resolves.toBeUndefined();
+    expect(cleaned).toBe(true);
+  });
+
   it("persists an accepted timeout behind a sibling write even when Pause changes its epoch", async () => {
     const runtime = new Runtime();
     const coordinator = new VpnDownloadCoordinator(runtime);

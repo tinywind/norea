@@ -351,10 +351,31 @@ describe("automatic VPN run admission", () => {
     try {
       await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(1));
       expect(boundary.finder).toHaveBeenCalledWith(true);
-      expect(boundary.testCandidate.mock.calls).toEqual([["candidate-7"]]);
+      expect(boundary.testCandidate).toHaveBeenCalledExactlyOnceWith("candidate-7", expect.any(AbortSignal));
       expect(boundary.connect).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ id: tested.id, hash: tested.hash }));
       expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges[0]).toMatchObject({ profileId: tested.id, phase: "running" });
     } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
+  it("rejects Pause when a cancelled automatic probe cannot confirm native cleanup", async () => {
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [], cleanupError: null });
+    boundary.finder.mockResolvedValue([{ candidateId: "cancelled-probe", ip: "203.0.113.7", score: 9 }]);
+    let rejectProbe!: (error: Error) => void;
+    boundary.testCandidate.mockImplementation(() => new Promise<boolean>((_resolve, reject) => { rejectProbe = reject; }));
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Discover a server" })!;
+    await batch.materialized;
+    await vi.waitFor(() => expect(boundary.testCandidate).toHaveBeenCalledOnce());
+    try {
+      const pause = runtime.pauseVpnDownloadRun();
+      const rejection = expect(pause).rejects.toThrow("native probe cleanup failed");
+      await vi.waitFor(() => expect((boundary.testCandidate.mock.calls[0]![1] as AbortSignal).aborted).toBe(true));
+      rejectProbe(new Error("native probe cleanup failed"));
+      await rejection;
+    } finally {
+      await runtime.cancelVpnDownloadRun();
+    }
   });
 
   it("uses only approved profiles and never discovers servers when tested servers are turned off", async () => {

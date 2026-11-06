@@ -10,6 +10,7 @@ import { androidBridgeAuthority } from "./android-bridge";
 import { isAndroidRuntime } from "./tauri-runtime";
 import { usePluginVpnStore } from "../store/plugin-vpn";
 import { isNetworkOnline, withNetworkRequest } from "./network";
+import { cancelAutomaticPluginVpnCandidateTests } from "./plugin-vpn-automatic";
 
 const MAX_OPENVPN_PROFILE_BYTES = 1024 * 1024;
 const PLUGIN_VPN_STATUS_EVENT = "plugin-vpn-status";
@@ -508,7 +509,8 @@ export function disconnectPluginVpn(
       window.dispatchEvent(new Event("norea-plugin-vpn-explicit-off"));
     }
   }
-  return invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock }).then(status => {
+  const probesStopped = preserveBlock ? Promise.resolve() : cancelAutomaticPluginVpnCandidateTests();
+  return Promise.all([invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock }), probesStopped]).then(([status]) => {
     if (!profileReplacementPending) notifyProfileRelease();
     return status;
   });

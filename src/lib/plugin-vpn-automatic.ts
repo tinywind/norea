@@ -20,9 +20,62 @@ export function listAutomaticPluginVpnProfiles(): Promise<AutomaticVpnProfile[]>
   return invoke("plugin_vpn_list_automatic_profiles");
 }
 
-/** Test-connects a cached Finder candidate; true when it joined the automatic pool. */
-export function testAutomaticPluginVpnCandidate(candidateId: string): Promise<boolean> {
-  return invoke("plugin_vpn_test_automatic_candidate", { candidateId });
+const automaticCandidateTests = new Map<AbortController, Promise<boolean>>();
+
+function candidateTestAbortError(): DOMException {
+  return new DOMException("Automatic VPN candidate test was cancelled.", "AbortError");
+}
+
+/** Test-connects one cached candidate and waits for native cleanup when cancelled. */
+export function testAutomaticPluginVpnCandidate(candidateId: string, signal?: AbortSignal): Promise<boolean> {
+  if (signal?.aborted) return Promise.reject(candidateTestAbortError());
+  const controller = new AbortController();
+  const abort = () => controller.abort();
+  signal?.addEventListener("abort", abort, { once: true });
+  const result = runAutomaticCandidateTest(candidateId, controller.signal).finally(() => {
+    signal?.removeEventListener("abort", abort);
+    automaticCandidateTests.delete(controller);
+  });
+  automaticCandidateTests.set(controller, result);
+  return result;
+}
+
+/** Cancels all active automatic probes and waits until each native tunnel has stopped. */
+export async function cancelAutomaticPluginVpnCandidateTests(): Promise<void> {
+  const active = [...automaticCandidateTests];
+  for (const [controller] of active) controller.abort();
+  const results = await Promise.allSettled(active.map(([, result]) => result));
+  for (const result of results) {
+    if (result.status === "rejected" && !(result.reason instanceof DOMException && result.reason.name === "AbortError")) {
+      throw result.reason;
+    }
+  }
+}
+
+async function runAutomaticCandidateTest(candidateId: string, signal: AbortSignal): Promise<boolean> {
+  const probeId = crypto.randomUUID();
+  await invoke("plugin_vpn_prepare_automatic_candidate_test", { probeId });
+  let cancellation: Promise<void> | undefined;
+  const cancel = () => {
+    cancellation ??= invoke<void>("plugin_vpn_cancel_automatic_candidate_test", { probeId });
+    void cancellation.catch(() => {});
+  };
+  signal.addEventListener("abort", cancel, { once: true });
+  try {
+    if (signal.aborted) {
+      cancel();
+      throw candidateTestAbortError();
+    }
+    const result = await invoke<boolean>("plugin_vpn_test_automatic_candidate", { candidateId, probeId });
+    if (signal.aborted) throw candidateTestAbortError();
+    return result;
+  } catch (error) {
+    if (signal.aborted) throw candidateTestAbortError();
+    throw error;
+  } finally {
+    signal.removeEventListener("abort", cancel);
+    await cancellation;
+  }
 }
 
 export function recordAutomaticPluginVpnProfileResult(profile: Pick<AutomaticVpnProfile, "id" | "hash">, connected: boolean): Promise<void> {

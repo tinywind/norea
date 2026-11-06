@@ -1,3 +1,4 @@
+import { isAbortError } from "../abort";
 import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { sourceAccessScopeKey, type SourceAccessChallenge } from "../plugins/source-access";
 import type { ChapterDownloadJob } from "./chapter-download";
@@ -43,7 +44,7 @@ export interface VpnDownloadRuntime {
   /** Untested servers to try; empty when automatic servers are off or the list refresh is throttled. */
   findProfileCandidates(options: { poolEmpty: boolean }): Promise<readonly VpnDownloadProfileCandidate[]>;
   /** Test-connects one candidate; true when it passed and joined the automatic pool. The runtime reports its own errors. */
-  testProfileCandidate(candidate: VpnDownloadProfileCandidate): Promise<boolean>;
+  testProfileCandidate(candidate: VpnDownloadProfileCandidate, signal: AbortSignal): Promise<boolean>;
   /** Records a worker tunnel outcome so repeatedly failing automatic servers retire. */
   recordProfileResult(profile: VpnDownloadProfile, connected: boolean): void;
   disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void>;
@@ -161,6 +162,7 @@ export class VpnDownloadCoordinator {
   private workerLimit = 2;
   private readonly probes = new Set<number>();
   private discovery?: Promise<void>;
+  private discoveryAbort?: AbortController;
   private readonly connectedProfiles = new Map<string, number>();
   private successSequence = 0;
   private readonly failedProfiles = new Map<string, number>();
@@ -360,6 +362,7 @@ export class VpnDownloadCoordinator {
 
   async stopAutomatic(): Promise<void> {
     this.automaticStopEpoch++;
+    this.discoveryAbort?.abort();
     const pending: Promise<void>[] = [];
     for (const range of this.ranges.values()) {
       if (terminal(this.state(range))) continue;
@@ -367,7 +370,9 @@ export class VpnDownloadCoordinator {
       const state = this.state(range);
       pending.push(this.halt(range, state.userPaused ? state.pauseReason ?? "user-paused" : "automatic-off", state.userPaused, true, false));
     }
-    await Promise.all(pending);
+    const settled = await Promise.allSettled([...pending, this.discovery]);
+    const failed = settled.find(result => result.status === "rejected");
+    if (failed?.status === "rejected") throw failed.reason;
   }
 
   async stopForRestore(): Promise<void> {
@@ -659,8 +664,11 @@ export class VpnDownloadCoordinator {
   private requestDiscovery(): Promise<void> {
     if (this.discovery) return this.discovery;
     const covered = [...this.ranges.values()].filter(range => range.awaitingDiscovery);
-    const discovery = this.runDiscovery(covered.length > 0).finally(() => {
+    const abort = new AbortController();
+    this.discoveryAbort = abort;
+    const discovery = this.runDiscovery(covered.length > 0, abort.signal).finally(() => {
       this.discovery = undefined;
+      if (this.discoveryAbort === abort) this.discoveryAbort = undefined;
       for (const range of covered) {
         if (!range.awaitingDiscovery) continue;
         range.awaitingDiscovery = false;
@@ -671,26 +679,33 @@ export class VpnDownloadCoordinator {
       this.schedule();
     });
     this.discovery = discovery;
+    void discovery.catch(() => undefined);
     return discovery;
   }
 
-  private async runDiscovery(poolEmpty: boolean): Promise<void> {
+  private async runDiscovery(poolEmpty: boolean, signal: AbortSignal): Promise<void> {
     const candidates = [...await this.runtime.findProfileCandidates({ poolEmpty })];
     const active = new Set<Promise<void>>();
+    const failures: unknown[] = [];
     while (candidates.length || active.size) {
-      while (candidates.length && active.size < MAX_PROFILE_TESTS && this.freeSlots() > 0 && this.freeSlotIndex() >= 0 && this.profileDemand()) {
+      while (!signal.aborted && candidates.length && active.size < MAX_PROFILE_TESTS && this.freeSlots() > 0 && this.freeSlotIndex() >= 0 && this.profileDemand()) {
         const slot = this.freeSlotIndex();
         const candidate = candidates.shift()!;
         this.probes.add(slot);
-        const test: Promise<void> = this.runtime.testProfileCandidate(clone(candidate))
-          .then(async passed => { if (passed) await this.profilesChanged(); })
-          .catch(() => undefined)
+        const test: Promise<void> = this.runtime.testProfileCandidate(clone(candidate), signal)
+          .then(async passed => { if (passed && !signal.aborted) await this.profilesChanged(); })
+          .catch(error => {
+            if (signal.aborted && isAbortError(error)) return;
+            failures.push(error);
+            this.discoveryAbort?.abort();
+          })
           .finally(() => { this.probes.delete(slot); active.delete(test); this.schedule(); });
         active.add(test);
       }
       if (!active.size) break;
       await Promise.race(active);
     }
+    if (failures.length) throw failures[0];
   }
 
   private loadProfileIssues(batchId: string): Promise<void> {
@@ -1031,7 +1046,13 @@ export class VpnDownloadCoordinator {
       if (disconnect && lease) await this.closeLease(lease);
     })();
     range.transition = operation;
-    return operation;
+    const discovery = this.profileDemand() ? undefined : this.discovery;
+    if (!discovery) return operation;
+    this.discoveryAbort?.abort();
+    return Promise.allSettled([operation, discovery]).then(settled => {
+      const failed = settled.find(result => result.status === "rejected");
+      if (failed?.status === "rejected") throw failed.reason;
+    });
   }
 
   private closeLease(lease: WorkerLease): Promise<void> {

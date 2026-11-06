@@ -15,6 +15,7 @@ import { usePluginVpnStore } from "../../store/plugin-vpn";
 import { useVpnDownloadStore } from "../../store/vpn-download";
 import { androidCloseVpnDownloadWorker, androidConfigureVpnDownloadWorker, androidShowVpnDownloadWorker } from "../android-scraper";
 import { describeError } from "../errors";
+import { isAbortError } from "../abort";
 import { isNetworkOnline, useNetworkStore } from "../network";
 import { getPluginVpnStatus, isPluginVpnRecoveryStopped, loadPluginVpnFinderServers, PLUGIN_VPN_PROFILE_RELEASED_EVENT } from "../plugin-vpn";
 import { listAutomaticPluginVpnProfiles, recordAutomaticPluginVpnProfileResult, testAutomaticPluginVpnCandidate } from "../plugin-vpn-automatic";
@@ -172,10 +173,17 @@ async function findProfileCandidates({ poolEmpty }: { poolEmpty: boolean }): Pro
   } catch (error) { report(error); return []; }
 }
 
-async function testProfileCandidate(candidate: VpnDownloadProfileCandidate): Promise<boolean> {
+async function testProfileCandidate(candidate: VpnDownloadProfileCandidate, signal: AbortSignal): Promise<boolean> {
   testedCandidates.add(candidate.candidateId);
-  try { return await testAutomaticPluginVpnCandidate(candidate.candidateId); }
-  catch (error) { report(error); return false; }
+  try { return await testAutomaticPluginVpnCandidate(candidate.candidateId, signal); }
+  catch (error) {
+    if (signal.aborted) {
+      if (!isAbortError(error)) throw error;
+      return false;
+    }
+    report(error);
+    return false;
+  }
 }
 
 async function disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void> {
