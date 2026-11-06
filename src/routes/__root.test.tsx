@@ -229,13 +229,13 @@ describe("primary navigation", () => {
     taskAttention.count = 0;
   });
 
-  it("offers Library, Updates, History, Browse and More in both navs", () => {
+  it("offers Library, Browse, Updates, History and More in both navs", () => {
     const markup = renderNavigation("/");
     const expected = [
       { href: "/", label: "Library" },
+      { href: "/browse", label: "Browse" },
       { href: "/updates", label: "Updates" },
       { href: "/history", label: "History" },
-      { href: "/browse", label: "Browse" },
       { href: "/more", label: "More" },
     ];
     const destinations = (linkClassName: string) =>

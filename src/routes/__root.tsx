@@ -107,6 +107,12 @@ type NavItem = {
 const NAV_ITEMS: readonly NavItem[] = [
   { to: "/", labelKey: "nav.library", compactKey: "nav.library", icon: LibraryIcon },
   {
+    to: "/browse",
+    labelKey: "nav.browse",
+    compactKey: "nav.browse",
+    icon: BrowseIcon,
+  },
+  {
     to: "/updates",
     labelKey: "nav.updates",
     compactKey: "nav.updates",
@@ -117,12 +123,6 @@ const NAV_ITEMS: readonly NavItem[] = [
     labelKey: "nav.history",
     compactKey: "nav.history",
     icon: HistoryIcon,
-  },
-  {
-    to: "/browse",
-    labelKey: "nav.browse",
-    compactKey: "nav.browse",
-    icon: BrowseIcon,
   },
   {
     to: "/more",
