@@ -9,7 +9,9 @@ import { listManualPluginVpnProfiles, listSavedPluginVpnProfiles, MANUAL_PLUGIN_
 import { getPluginVpnStatus, PLUGIN_VPN_QUERY_KEY } from "../lib/plugin-vpn";
 import { notifyVpnDownloadProfilesChanged, reallowVpnDownloadBatchProfile } from "../lib/tasks/vpn-download-runtime";
 import type { VpnDownloadProfileIssueCause } from "../lib/tasks/vpn-download-types";
-import type { PluginVpnUrlTestTarget } from "../lib/plugin-vpn-url-test";
+import type { PluginVpnUrlTestOutcome, PluginVpnUrlTestTarget } from "../lib/plugin-vpn-url-test";
+import { usePluginVpnUrlTestStore } from "../store/plugin-vpn-url-test";
+import { ChipButton } from "./ChipButton";
 import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
 import { PluginVpnSelectionPanel, PluginVpnUrlTestStatus } from "./PluginVpnSelectionPanel";
@@ -27,6 +29,8 @@ const CAUSE_KEYS: Record<VpnDownloadProfileIssueCause, TranslationKey> = {
   "authentication-required": "settings.data.pluginVpn.saved.cause.authentication-required",
   "tunnel-lost": "settings.data.pluginVpn.saved.cause.tunnel-lost",
 };
+const CONNECTION_FAILURE_CAUSES: ReadonlySet<VpnDownloadProfileIssueCause> = new Set(["connection-failed", "authentication-required", "tunnel-lost"]);
+const CONNECTION_FAILURE_TESTS: ReadonlySet<PluginVpnUrlTestOutcome["kind"]> = new Set(["connectionFailed", "requestFailed", "timedOut"]);
 
 interface SavedVpnProfilesSettingsProps {
   /** The saved profile whose connection is starting, shown as busy on its row. */
@@ -48,6 +52,9 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
   const [opened, setOpened] = useState(false);
   const [selectionMode, setSelectionMode] = useState(false);
   const [selectedIps, setSelectedIps] = useState<ReadonlySet<string>>(new Set());
+  const [failuresOnly, setFailuresOnly] = useState(false);
+  const [blockedOpened, setBlockedOpened] = useState(false);
+  const urlTestResults = usePluginVpnUrlTestStore(state => state.results);
   const issues = useQuery({ queryKey: VPN_DOWNLOAD_PROFILE_ISSUES_QUERY_KEY, queryFn: () => listVpnDownloadProfileIssues(), enabled: opened,
     refetchInterval: opened ? 1000 : false, meta: { errorPresentation: "inline" } });
   const status = useQuery({ queryKey: PLUGIN_VPN_QUERY_KEY, queryFn: getPluginVpnStatus, enabled: opened, refetchInterval: opened ? 1000 : false,
@@ -58,12 +65,17 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
   const locked = disabled || busy || vault.isPending || verdicts.isPending || vault.isError || verdicts.isError;
   const manualByHost = new Map(manual.data?.map(profile => [profile.host, profile]));
   const savedIps = new Set([...(vault.data?.profiles.map(profile => profile.ip) ?? []), ...manualByHost.keys()]);
-  const missingCount = verdicts.data?.filter(row => row.verdict === "works" && !savedIps.has(row.ip)).length;
   const verdictByIp = new Map(verdicts.data?.map(row => [row.ip, row.verdict]));
   const profileByIp = new Map(vault.data?.profiles.map(profile => [profile.ip, profile]));
-  const ips = [...new Set([...(verdicts.data ?? []).map(row => row.ip), ...profileByIp.keys(), ...manualByHost.keys(), ...(issues.data ?? []).map(issue => issue.ip)])].sort();
+  const hasConnectionFailure = (ip: string) =>
+    (issues.data ?? []).some(issue => issue.ip === ip && CONNECTION_FAILURE_CAUSES.has(issue.cause)) ||
+    CONNECTION_FAILURE_TESTS.has(urlTestResults[ip]?.outcome.kind ?? "ok");
+  // Only profiles with a saved file are managed here; a server marked Not used keeps no file.
+  const savedProfileIps = [...savedIps].sort();
+  const ips = savedProfileIps.filter(ip => !failuresOnly || hasConnectionFailure(ip));
+  const blockedServers = (verdicts.data ?? []).filter(row => row.verdict === "fails" && !savedIps.has(row.ip));
   const managementLocked = locked || issues.isPending || issues.isError;
-  const excludedApprovedIssues = (issues.data ?? []).filter(issue => issue.excluded && verdictByIp.get(issue.ip) === "works");
+  const excludedApprovedIssues = (issues.data ?? []).filter(issue => issue.excluded && savedIps.has(issue.ip));
   const excludedApprovedCount = new Set(excludedApprovedIssues.map(issue => issue.ip)).size;
   const selected = ips.filter(ip => selectedIps.has(ip));
   const testTargets = selected.flatMap((ip): PluginVpnUrlTestTarget[] => {
@@ -121,6 +133,13 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
     });
   }
 
+  async function unblock(ip: string): Promise<void> {
+    await run(async () => {
+      const result = await setVpnGateServerVerdict(ip, null);
+      if (result.cleanupError) setActionError(t("settings.data.pluginVpn.saved.cleanupError", { error: result.cleanupError }));
+    });
+  }
+
   /** Preferred needs an exact profile, which only the connected server can provide here. */
   async function preferSelected(): Promise<void> {
     if (managementLocked || !preferTargets.length) return;
@@ -167,7 +186,6 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
   const vaultStatus = vault.isPending || verdicts.isPending ? t("settings.data.pluginVpn.saved.loading") : [
     vault.data ? t("settings.data.pluginVpn.saved.count", { count: vault.data.profiles.length, limit: vault.data.limit }) : null,
     manualByHost.size ? t("settings.data.pluginVpn.saved.manualCount", { count: manualByHost.size }) : null,
-    vault.data && !verdicts.isError && missingCount !== undefined ? t("settings.data.pluginVpn.saved.missingFiles", { count: missingCount }) : null,
     vault.data?.profiles.length === 0 && !manualByHost.size && !vault.isError ? t("settings.data.pluginVpn.saved.empty") : null,
   ].filter(line => line !== null).join("\n");
   const limitError = limitDraft !== null && !validLimit ? t("settings.data.pluginVpn.saved.invalidLimit") : null;
@@ -188,8 +206,17 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
           </IconButton>
         </SettingsInlineControls>
       </SettingsFieldRow>
+      <SettingsFieldRow label={t("settings.data.pluginVpn.blocked.title")} description={t("settings.data.pluginVpn.blocked.description")}
+        status={verdicts.data ? t("settings.data.pluginVpn.blocked.count", { count: blockedServers.length }) : null}>
+        <SettingsInlineControls>
+          <IconButton label={t("settings.data.pluginVpn.blocked.manage")} size="lg" disabled={disabled || !verdicts.data}
+            onClick={() => { setActionError(null); setBlockedOpened(true); }}>
+            <ExcludeIcon />
+          </IconButton>
+        </SettingsInlineControls>
+      </SettingsFieldRow>
       <SettingsFieldRow label={t("settings.data.pluginVpn.saved.limit")}
-        error={[limitError, actionError && !opened ? actionError : null].filter(Boolean).join("\n") || undefined}>
+        error={[limitError, actionError && !opened && !blockedOpened ? actionError : null].filter(Boolean).join("\n") || undefined}>
         <SettingsInlineControls compact>
           <NumberInput aria-label={t("settings.data.pluginVpn.saved.limit")}
             value={limit} min={1} max={100} allowDecimal={false} allowNegative={false} disabled={locked}
@@ -232,6 +259,11 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
               <SelectIcon />
             </IconButton>
           </Group>
+          <Group gap="xs" role="group" aria-label={t("settings.data.pluginVpn.saved.filter.label")}>
+            <ChipButton disabled={!savedProfileIps.length} selected={failuresOnly} onClick={() => setFailuresOnly(!failuresOnly)}>
+              {t("settings.data.pluginVpn.saved.filter.failures")}
+            </ChipButton>
+          </Group>
           {selectionMode ? (
             <PluginVpnSelectionPanel
               actions={<>
@@ -250,7 +282,8 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
               untestableCount={selected.length - testTargets.length}
             />
           ) : null}
-          {!managementLocked && !ips.length ? <Text size="sm">{t("settings.data.pluginVpn.saved.noRecords")}</Text> : null}
+          {!managementLocked && !savedProfileIps.length ? <Text size="sm">{t("settings.data.pluginVpn.saved.noRecords")}</Text> : null}
+          {!managementLocked && savedProfileIps.length > 0 && !ips.length ? <Text size="sm">{t("settings.data.pluginVpn.saved.noFilterMatches")}</Text> : null}
           {ips.map(ip => {
             const profile = profileByIp.get(ip);
             const manualProfile = manualByHost.get(ip);
@@ -264,7 +297,7 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
                   <Text size="sm" fw="var(--norea-weight-bold)" style={{ overflowWrap: "anywhere" }}>{ip}</Text>
                   {profile ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.details", { protocol: profile.protocol.toUpperCase(), date: formatDateTimeForLocale(locale, profile.approvedAt * 1000) })}</Text>
                     : manualProfile ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.manualDetails", { date: formatDateTimeForLocale(locale, manualProfile.savedAt * 1000) })}</Text>
-                    : <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.fileUnavailable")}</Text>}
+                    : null}
                   <PluginVpnUrlTestStatus host={ip} />
                 </Stack>
                 <Group gap="xs" wrap="nowrap">
@@ -300,6 +333,26 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
               </Stack>)}
             </Stack>;
           })}
+        </Stack>
+      </ResponsiveSheet>
+      <ResponsiveSheet busy={busy} closeLabel={t("settings.data.pluginVpn.blocked.close")} fullScreenOnPhone
+        opened={blockedOpened} onClose={() => setBlockedOpened(false)} size="lg" title={t("settings.data.pluginVpn.blocked.title")}>
+        <Stack gap="md">
+          <Text size="sm">{t("settings.data.pluginVpn.blocked.description")}</Text>
+          {actionError ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
+          {!blockedServers.length ? <Text size="sm">{t("settings.data.pluginVpn.blocked.empty")}</Text> : null}
+          {blockedServers.map(row => (
+            <Group key={row.ip} justify="space-between" wrap="nowrap" pb="sm" style={{ borderBottom: "1px solid var(--mantine-color-default-border)" }}>
+              <Stack gap={0} style={{ minWidth: 0, flex: "1 1 auto" }}>
+                <Text size="sm" fw="var(--norea-weight-bold)" style={{ overflowWrap: "anywhere" }}>{row.ip}</Text>
+                <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.blocked.since", { date: formatDateTimeForLocale(locale, row.updatedAt * 1000) })}</Text>
+              </Stack>
+              <IconButton label={t("settings.data.pluginVpn.blocked.unblock", { ip: row.ip })} size="lg" disabled={locked} loading={busy}
+                onClick={() => unblock(row.ip)}>
+                <RestartIcon />
+              </IconButton>
+            </Group>
+          ))}
         </Stack>
       </ResponsiveSheet>
     </>
