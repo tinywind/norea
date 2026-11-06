@@ -30,8 +30,8 @@ interface PluginVpnSelectionPanelProps {
 }
 
 /**
- * Selection mode inside a VPN sheet: done, the count and select all on one
- * line, any bulk actions under it, then the URL test for the selected rows.
+ * Selection mode inside a VPN sheet: done, the count, select all and the URL
+ * test for the selected rows on one line, then any bulk actions under it.
  */
 export function PluginVpnSelectionPanel({
   actions,
@@ -65,9 +65,9 @@ export function PluginVpnSelectionPanel({
             <SelectAllIcon />
           </IconButton>
         )}
+        {isAndroidRuntime() ? <PluginVpnUrlTestForm targets={testTargets} untestableCount={untestableCount} /> : null}
       </div>
       {actions ? <div className="norea-plugin-vpn-selection-actions">{actions}</div> : null}
-      {isAndroidRuntime() ? <PluginVpnUrlTestForm targets={testTargets} untestableCount={untestableCount} /> : null}
     </section>
   );
 }

@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   manual: { data: [] as { host: string; hash: string; savedAt: number }[], isPending: false, isError: false, error: null as Error | null, refetch: vi.fn() },
   status: { data: { profile: null } as { profile: null | { hash: string; remoteHost: string; isVpnGateFinder: boolean } } },
   urlTestResults: {} as Record<string, { url: string; outcome: { kind: string } }>,
+  confirm: vi.fn(async () => true),
   reallow: vi.fn(), profilesChanged: vi.fn(),
   limit: vi.fn(), revoke: vi.fn(), invalidate: vi.fn(), setData: vi.fn(),
 }));
@@ -39,6 +40,7 @@ vi.mock("../i18n", () => ({
   useTranslation: () => ({ locale: "en", t: (key: string, values?: Record<string, unknown>) => `${key}${values ? JSON.stringify(values) : ""}` }),
   formatDateTimeForLocale: (_locale: string, value: number) => `date:${value}`,
 }));
+vi.mock("./ui/ConfirmDialog", () => ({ useConfirm: () => mocks.confirm }));
 vi.mock("../store/plugin-vpn-url-test", () => ({
   usePluginVpnUrlTestStore: (select: (state: { results: Record<string, unknown> }) => unknown) => select({ results: mocks.urlTestResults }),
 }));
@@ -204,12 +206,33 @@ it.each(["", 0, 101, 1.5])("does not save invalid profile capacity %s", async va
   expect(mocks.limit).not.toHaveBeenCalled();
 });
 
-it("revokes through the verdict service and never creates O without exact native bytes", async () => {
-  const control = verdictControl(openManager());
-  await control.props.onChange!("fails");
-  expect(mocks.revoke).toHaveBeenCalledWith("192.0.2.1", "fails");
-  await control.props.onChange!("works");
-  expect(mocks.revoke).toHaveBeenCalledTimes(1);
+const applyButton = (view: ReactElement<Props>[]) =>
+  view.find(element => String(element.props.label).startsWith("settings.data.pluginVpn.saved.applyChanges"))!;
+
+it("stages a removal until Apply, keeps the row and never creates O without exact native bytes", async () => {
+  await verdictControl(openManager()).props.onChange!("fails");
+  let view = render();
+  expect(mocks.revoke).not.toHaveBeenCalled();
+  expect(verdictControl(view).props.verdict).toBe("fails");
+  expect(copy(view)).toContain("settings.data.pluginVpn.saved.stagedChange");
+  await verdictControl(view).props.onChange!("works");
+  view = render();
+  expect(applyButton(view).props.disabled).toBe(true);
+  await verdictControl(view).props.onChange!("fails");
+  await applyButton(render()).props.onClick!();
+  expect(mocks.revoke).toHaveBeenCalledExactlyOnceWith("192.0.2.1", "fails");
+  mocks.vault.data!.profiles = [];
+  expect(verdictControl(render())).toBeDefined();
+});
+
+it("asks before discarding staged changes and keeps editing when told to", async () => {
+  await verdictControl(openManager()).props.onChange!("fails");
+  mocks.confirm.mockResolvedValueOnce(false);
+  const sheet = () => render().find(element => element.type === ResponsiveSheet && element.props.opened)!;
+  await (sheet().props as { onClose: () => Promise<void> }).onClose();
+  expect(mocks.confirm).toHaveBeenCalledTimes(1);
+  expect(sheet()).toBeDefined();
+  expect(mocks.revoke).not.toHaveBeenCalled();
 });
 
 it("does not infer approval from retained metadata when its actual verdict is absent", () => {
@@ -232,7 +255,8 @@ it("shows native limit failures and retains the editable capacity without a fals
 it("disables conflicting edits during revocation and exposes cleanup failures", async () => {
   let finish!: (value: unknown) => void;
   mocks.revoke.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
-  const request = verdictControl(openManager()).props.onChange!("fails");
+  await verdictControl(openManager()).props.onChange!("fails");
+  const request = applyButton(render()).props.onClick!();
   expect(render().find(element => element.props["aria-label"] === "settings.data.pluginVpn.saved.limit")!.props.disabled).toBe(true);
   finish({ cleanupError: "Could not remove saved profile", verdict: null, savedProfile: null });
   await request;
@@ -368,6 +392,7 @@ it("lists an imported profile by its host with the same list toggles and Preferr
   expect(control.props.verdict).toBe("works");
   expect(control.props.preferDisabledReason).toBeNull();
   await control.props.onChange!("fails");
+  await applyButton(render()).props.onClick!();
   expect(mocks.revoke).toHaveBeenCalledWith("vpn.example.com", "fails");
   mocks.verdicts.data = mocks.verdicts.data.filter(row => row.ip !== "vpn.example.com");
   await verdictControl(render(), "vpn.example.com").props.onChange!("works");
