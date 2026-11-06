@@ -10,6 +10,7 @@ import { androidBridgeAuthority } from "./android-bridge";
 import { isAndroidRuntime } from "./tauri-runtime";
 import { usePluginVpnStore } from "../store/plugin-vpn";
 import { isNetworkOnline, withNetworkRequest } from "./network";
+import { resetPluginVpnBrowserSession } from "./plugin-vpn-browser-session";
 import { cancelAutomaticPluginVpnCandidateTests } from "./plugin-vpn-automatic";
 
 const MAX_OPENVPN_PROFILE_BYTES = 1024 * 1024;
@@ -176,6 +177,7 @@ function trackPluginVpnConnection(
 export async function preparePluginVpnProfileChange(): Promise<void> {
   clearPluginVpnIntent();
   await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: false });
+  await resetPluginVpnBrowserSession();
   notifyProfileRelease();
 }
 
@@ -461,6 +463,8 @@ async function establishPluginVpnConnection(
 ): Promise<PluginVpnStatus | null> {
   await ensureAndroidPluginVpnProxy();
   if (!isCurrent()) return null;
+  await resetPluginVpnBrowserSession();
+  if (!isCurrent()) return null;
   if (!isNetworkOnline()) {
     await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: true });
     if (!isCurrent() || !isNetworkOnline()) return null;
@@ -510,7 +514,8 @@ export function disconnectPluginVpn(
     }
   }
   const probesStopped = preserveBlock ? Promise.resolve() : cancelAutomaticPluginVpnCandidateTests();
-  return Promise.all([invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock }), probesStopped]).then(([status]) => {
+  return Promise.all([invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock }), probesStopped]).then(async ([status]) => {
+    if (!preserveBlock) await resetPluginVpnBrowserSession();
     if (!profileReplacementPending) notifyProfileRelease();
     return status;
   });

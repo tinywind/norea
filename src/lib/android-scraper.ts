@@ -15,6 +15,7 @@ interface AndroidScraperBridge {
   cancelBackground?(payload: string): void;
   clearCache(payload: string): void;
   clearCookies(payload: string): void;
+  resetVpnSession(payload: string): void;
   currentOrigin(payload: string): void;
   currentUrl(payload: string): void;
   fetch(payload: string): void;
@@ -55,7 +56,7 @@ declare global {
 
 let nextRequestId = 1;
 const vpnWorkerSources = new Map<string, string>();
-type AndroidScraperMethod = "clearCache" | "clearCookies" | "currentOrigin" | "currentUrl" | "extract" | "fetch" | "navigate";
+type AndroidScraperMethod = "clearCache" | "clearCookies" | "resetVpnSession" | "currentOrigin" | "currentUrl" | "extract" | "fetch" | "navigate";
 type AndroidWorkerMethod = AndroidScraperMethod | "configureWorker" | "ensureWorker" | "closeWorker" | "showWorker" | "cancel" | "cancelBackground";
 
 function vpnWorkerQueue(worker: VpnDownloadWorkerRef): ScraperExecutorId {
@@ -246,6 +247,10 @@ export async function androidEnsureVpnDownloadWorker(
   configuration: { sourceId: string; profileId: string; proxyPort: number },
 ): Promise<void> {
   await callNative("ensureWorker", { ...configuration, slot: worker.slot, generation: worker.generation, queue: vpnWorkerQueue(worker) }, 20_000);
+}
+
+export async function androidScraperResetVpnSession(): Promise<void> {
+  await callNative("resetVpnSession", {}, 30_000);
 }
 
 export async function androidShowVpnDownloadWorker(worker: VpnDownloadWorkerRef, sourceId: string): Promise<void> {

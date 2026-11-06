@@ -1,4 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { resetPluginVpnBrowserSession } from "./plugin-vpn-browser-session";
+import { cancelAutomaticPluginVpnCandidateTests } from "./plugin-vpn-automatic";
+vi.mock("./plugin-vpn-browser-session", () => ({ resetPluginVpnBrowserSession: vi.fn(async () => undefined) }));
+vi.mock("./plugin-vpn-automatic", () => ({ cancelAutomaticPluginVpnCandidateTests: vi.fn(async () => undefined) }));
 
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
@@ -113,6 +117,16 @@ const SESSION_CREDENTIALS: PluginVpnCredentials = {
 };
 
 describe("plugin VPN", () => {
+  it("keeps connection publication behind selective browser cleanup", async () => {
+    let release!: () => void;
+    vi.mocked(resetPluginVpnBrowserSession).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    invokeMock.mockResolvedValue(CONNECTED_STATUS);
+    const connecting = connectPluginVpn(EMPTY_CREDENTIALS);
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(invokeMock.mock.calls.some(([command]) => command === "plugin_vpn_connect")).toBe(false);
+    release();
+    await expect(connecting).resolves.toEqual(CONNECTED_STATUS);
+  });
   beforeEach(async () => {
     useNetworkStore.setState({ connectivity: "online", revision: 1 });
     invokeMock.mockResolvedValue(STATUS);
@@ -133,6 +147,19 @@ describe("plugin VPN", () => {
     expect(events).toEqual([]);
     finish(STATUS); await releasing;
     expect(events).toEqual(["released"]);
+  });
+
+  it("waits for automatic probe cleanup before completing an explicit disconnect", async () => {
+    let release!: () => void;
+    vi.mocked(cancelAutomaticPluginVpnCandidateTests).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
+    let settled = false;
+    const disconnecting = disconnectPluginVpn().then(() => { settled = true; });
+    await new Promise(resolve => setTimeout(resolve, 0));
+    expect(settled).toBe(false);
+    expect(resetPluginVpnBrowserSession).not.toHaveBeenCalled();
+    release();
+    await disconnecting;
+    expect(resetPluginVpnBrowserSession).toHaveBeenCalledOnce();
   });
 
   it("restores a saved On setting using the stored profile", async () => {
