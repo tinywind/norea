@@ -21,7 +21,7 @@ interface PluginVpnUrlTestState {
   url: string;
   run: PluginVpnUrlTestRun | null;
   progress: Readonly<Record<string, PluginVpnUrlTestProgress>>;
-  /** The latest finished result per host, for this app session. */
+  /** The latest finished result per host, kept on this device until the host is tested again. */
   results: Readonly<Record<string, PluginVpnUrlTestRecord>>;
   setUrl: (url: string) => void;
 }
@@ -41,7 +41,7 @@ export const usePluginVpnUrlTestStore = create<PluginVpnUrlTestState>()(
     }),
     {
       name: "plugin-vpn-url-test",
-      partialize: (state) => ({ url: state.url }),
+      partialize: (state) => ({ url: state.url, results: state.results }),
       version: 1,
     },
   ),

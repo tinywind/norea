@@ -153,6 +153,10 @@ requirements must be decided explicitly before implementation.
   the IP for that download batch like the other causes. Every existing row is
   copied unchanged, and full device snapshots include the table under the
   exact-schema policy.
+- The `plugin-vpn-url-test` localStorage entry keeps the last typed test URL and
+  the latest URL test result per server host until that host is tested again.
+  Results are device-local, are not in either backup kind, and a missing entry
+  reads as no results.
 - The reader option "Download next chapter in advance" is retired; download
   goals replace it (RD4). Stored `autoDownloadNextChapter` values stay in the
   `reader-settings` entry and are read once at startup. Off for all novels, it
