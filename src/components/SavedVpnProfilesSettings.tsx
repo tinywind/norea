@@ -301,7 +301,7 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
                   <PluginVpnUrlTestStatus host={ip} />
                 </Stack>
                 <Group gap="xs" wrap="nowrap">
-                  <VpnGateServerVerdictControl ip={ip} verdict={verdict} disabled={managementLocked}
+                  <VpnGateServerVerdictControl blockable={false} ip={ip} verdict={verdict} disabled={managementLocked}
                     preferDisabledReason={canApprove ? null : t("settings.data.pluginVpn.saved.approvalUnavailable")}
                     onChange={next => changeVerdict(ip, next)} />
                   {profile && onConnect ? (

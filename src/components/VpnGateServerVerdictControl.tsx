@@ -4,6 +4,8 @@ import { IconButton } from "./IconButton";
 import { ExcludeIcon, PreferIcon } from "./ui/icons";
 
 interface VpnGateServerVerdictControlProps {
+  /** Shows the Not used toggle; lists whose rows are all Preferred offer Not used elsewhere. */
+  blockable?: boolean;
   disabled?: boolean;
   disabledReason?: string | null;
   ip: string;
@@ -23,6 +25,7 @@ export function toggledVpnGateServerVerdict(
 }
 
 export function VpnGateServerVerdictControl({
+  blockable = true,
   disabled = false,
   disabledReason,
   ip,
@@ -63,7 +66,7 @@ export function VpnGateServerVerdictControl({
       >
         <PreferIcon />
       </IconButton>
-      <IconButton
+      {blockable ? <IconButton
         active={blocked}
         aria-pressed={blocked}
         className="norea-vpn-gate-verdict-toggle"
@@ -81,7 +84,7 @@ export function VpnGateServerVerdictControl({
         tone={blocked ? "danger" : "default"}
       >
         <ExcludeIcon />
-      </IconButton>
+      </IconButton> : null}
     </span>
   );
 }
