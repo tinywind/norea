@@ -56,7 +56,7 @@ declare global {
 let nextRequestId = 1;
 const vpnWorkerSources = new Map<string, string>();
 type AndroidScraperMethod = "clearCache" | "clearCookies" | "currentOrigin" | "currentUrl" | "extract" | "fetch" | "navigate";
-type AndroidWorkerMethod = AndroidScraperMethod | "configureWorker" | "closeWorker" | "showWorker" | "cancel" | "cancelBackground";
+type AndroidWorkerMethod = AndroidScraperMethod | "configureWorker" | "ensureWorker" | "closeWorker" | "showWorker" | "cancel" | "cancelBackground";
 
 function vpnWorkerQueue(worker: VpnDownloadWorkerRef): ScraperExecutorId {
   if (!isVpnDownloadWorkerSlot(worker.slot) || !Number.isSafeInteger(worker.generation) || worker.generation <= 0) {
@@ -132,7 +132,7 @@ function bridge(): AndroidScraperBridge {
 }
 
 function callNative<T>(
-  method: AndroidScraperMethod | "configureWorker" | "closeWorker" | "showWorker",
+  method: AndroidScraperMethod | "configureWorker" | "ensureWorker" | "closeWorker" | "showWorker",
   payload: Record<string, unknown>,
   timeoutMs: number,
   signal?: AbortSignal,
@@ -184,7 +184,7 @@ function callNative<T>(
     }
 
     try {
-      if (method === "configureWorker" || method === "closeWorker" || method === "showWorker" ||
+      if (method === "configureWorker" || method === "ensureWorker" || method === "closeWorker" || method === "showWorker" ||
           (typeof payload.queue === "string" && payload.queue.startsWith("vpn:"))) {
         sendWorkerCommand(method, { id, ...payload });
       } else {
@@ -239,6 +239,13 @@ export async function androidCloseVpnDownloadWorker(worker: VpnDownloadWorkerRef
   } finally {
     vpnWorkerSources.delete(queue);
   }
+}
+
+export async function androidEnsureVpnDownloadWorker(
+  worker: VpnDownloadWorkerRef,
+  configuration: { sourceId: string; profileId: string; proxyPort: number },
+): Promise<void> {
+  await callNative("ensureWorker", { ...configuration, slot: worker.slot, generation: worker.generation, queue: vpnWorkerQueue(worker) }, 20_000);
 }
 
 export async function androidShowVpnDownloadWorker(worker: VpnDownloadWorkerRef, sourceId: string): Promise<void> {

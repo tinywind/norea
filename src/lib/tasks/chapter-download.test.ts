@@ -1,5 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { taskScheduler, type SourceTaskSpec } from "./scheduler";
+vi.mock("../android-scraper", () => ({ androidEnsureVpnDownloadWorker: vi.fn(async () => undefined) }));
 
 const schedulerMocks = vi.hoisted(() => ({
   batch: vi.fn((run: () => void) => run()),

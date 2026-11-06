@@ -36,6 +36,7 @@ internal class AndroidVpnDownloadWorkers(
   private val bootstrapTick = Runnable { drainDeferredSources() }
   private val workers = arrayOfNulls<Worker>(MAX_VPN_DOWNLOAD_WORKERS)
   private val lastGenerations = LongArray(MAX_VPN_DOWNLOAD_WORKERS)
+  private val lastConfigurations = arrayOfNulls<AndroidVpnWorkerConfiguration>(MAX_VPN_DOWNLOAD_WORKERS)
   private var executionActive = false
   @Volatile private var closed = false
 
@@ -104,12 +105,16 @@ internal class AndroidVpnDownloadWorkers(
   private fun dispatch(ticket: Long, id: String, json: JSONObject) {
     check(Build.VERSION.SDK_INT >= 28) { "VPN browser workers require Android 9 or newer." }
     val method = json.opt("method") as? String ?: throw IllegalArgumentException("VPN worker method is missing.")
-    if (method == "configureWorker") {
-      configure(ticket, id, json)
+    if (method == "configureWorker" || method == "ensureWorker") {
+      configure(ticket, id, json, method == "ensureWorker")
       return
     }
     if (method !in setOf("closeWorker", "showWorker")) androidVpnWorkerCapability(method)
     val queue = parseAndroidVpnWorkerQueue(json.getString("queue"))
+    if (method == "closeWorker" && lastConfigurations[queue.slot]?.generation == queue.generation) {
+      require(json.opt("sourceId") == lastConfigurations[queue.slot]?.sourceId) { "VPN worker source does not match its configuration." }
+      lastConfigurations[queue.slot] = null
+    }
     if (method == "closeWorker" && androidVpnWorkerCloseAlreadySettled(queue.generation, workers[queue.slot]?.configuration?.generation)) {
       resolve(id, workerSuccess(true))
       return
@@ -169,19 +174,34 @@ internal class AndroidVpnDownloadWorkers(
     send(worker, ticket, json.toString())
   }
 
-  private fun configure(ticket: Long, id: String, json: JSONObject) {
+  private fun configure(ticket: Long, id: String, json: JSONObject, restoring: Boolean = false) {
     val configuration = androidVpnWorkerConfiguration(
       json.opt("slot"), json.opt("generation"),
       json.opt("sourceId") as? String ?: "", json.opt("profileId") as? String ?: "", json.opt("proxyPort"),
     )
     json.put("_appOrigin", androidVpnWorkerAppOrigin(webView.url))
-    require(configuration.generation > lastGenerations[configuration.slot]) { "VPN worker generation is stale." }
-    val previous = workers[configuration.slot]
+    var previous = workers[configuration.slot]
+    if (restoring) {
+      require(lastConfigurations[configuration.slot] == configuration) { "VPN worker recovery route is stale." }
+      if (previous?.remote?.binder?.isBinderAlive == false) {
+        failWorker(previous, "VPN worker process disconnected.")
+        previous = null
+      }
+      if (previous?.ready == true && previous.configuration == configuration) {
+        resolve(id, workerSuccess(true))
+        return
+      }
+      check(previous == null) { "VPN worker configuration is still pending." }
+      json.put("method", "configureWorker")
+    } else {
+      require(configuration.generation > lastGenerations[configuration.slot]) { "VPN worker generation is stale." }
+    }
     check(previous?.manualOpen != true) { "VPN worker manual browser must close before replacing its IP." }
     require(pending.values.none { it.id == id && it.worker !== previous }) { "VPN worker request id is duplicated." }
     val worker = previous ?: Worker(configuration).also { workers[configuration.slot] = it }
     cancelPending(worker, "VPN worker reconfigured.")
     lastGenerations[configuration.slot] = configuration.generation
+    lastConfigurations[configuration.slot] = configuration
     worker.configuration = configuration
     worker.executionBootstrap = AndroidVpnWorkerExecutionBootstrap()
     worker.manualState.beginGeneration(configuration.generation)

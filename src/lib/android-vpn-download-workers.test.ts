@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
   androidCloseVpnDownloadWorker,
   androidConfigureVpnDownloadWorker,
+  androidEnsureVpnDownloadWorker,
   androidShowVpnDownloadWorker,
   androidWebviewExtract,
   androidWebviewFetch,
@@ -45,6 +46,10 @@ beforeEach(() => {
 afterEach(() => vi.unstubAllGlobals());
 
 describe("Android VPN worker bridge routing", () => {
+  it("checks the exact configured route before a budgeted retry can recreate a dead browser", async () => {
+    await androidEnsureVpnDownloadWorker(worker, { sourceId: "source", profileId: "profile-a", proxyPort: 12345 });
+    expect(requests[0]).toMatchObject({ method: "ensureWorker", slot: 0, generation: 11, sourceId: "source", profileId: "profile-a", proxyPort: 12345 });
+  });
   it.each([2, 9] as const)("keeps slot %s configuration, bodies, assets and cleanup on the same isolated route", async slot => {
     const owner = { ...worker, slot };
     const queue = `vpn:${slot}:11` as const;

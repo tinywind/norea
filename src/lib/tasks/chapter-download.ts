@@ -21,6 +21,7 @@ import type { ChapterDownloadPhase } from "./task-types";
 import type { VpnDownloadWorkerRef } from "./vpn-download-types";
 import { vpnDownloadExecutor } from "./vpn-worker-context";
 import { validatePluginVpnDownloadWorker } from "../plugin-vpn-download-workers";
+import { androidEnsureVpnDownloadWorker } from "../android-scraper";
 import { useBrowseStore } from "../../store/browse";
 import {
   CHAPTER_BINARY_RESOURCE_MEDIA_TYPES,
@@ -1193,6 +1194,9 @@ function enqueueChapterDownloadForExecutor(
               status.worker.rangeId !== worker.rangeId || status.worker.slot !== worker.slot || status.worker.generation !== worker.generation) {
             throw new Error(status.error ?? "VPN worker lease is no longer connected to its enrolled route.");
           }
+          await abortableStep(signal, androidEnsureVpnDownloadWorker(worker, {
+            sourceId: job.pluginId, profileId: status.profile.id, proxyPort: status.proxyPort,
+          }));
         }
         if (waitForBackendQueue) {
           await abortableStep(
