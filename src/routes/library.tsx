@@ -54,6 +54,7 @@ import {
   FolderIcon,
   ImportIcon,
   RefreshIcon,
+  RefreshAllIcon,
   SelectIcon,
   SettingsIcon,
 } from "../components/ui/icons";
@@ -176,6 +177,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
     setNovelsReadStateMutation,
+    refreshAllMetadataMutation,
   } = useLibrarySelection(libraryFilter, sortOrder, active);
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
   const [downloadSheetOpen, setDownloadSheetOpen] = useState(false);
@@ -403,6 +405,12 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                   />
                   <OverflowMenu
                     items={[
+                      {
+                        disabled: selectedIds.size === 0 || refreshAllMetadataMutation.isPending,
+                        icon: RefreshAllIcon,
+                        label: t("novel.refreshAllDetails"),
+                        onClick: () => refreshAllMetadataMutation.mutate({ novelIds: selectedNovelIds }),
+                      },
                       {
                         disabled: selectedIds.size === 0 || setNovelsReadStateMutation.isPending,
                         icon: MarkReadIcon,

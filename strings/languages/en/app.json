@@ -977,6 +977,8 @@
   "library.downloadGoal.done": "Download goal set for {count} novels",
   "library.downloadGoal.doneSkippedLocal": "Download goal set for {count} novels. Skipped {skipped} local novels, which have no download goal.",
   "library.downloadGoal.noneApplied": "No download goal set. Skipped {skipped} local novels, which have no download goal.",
+  "library.refreshAll.done": "Refreshed {count} novels. Skipped {skipped} local novels.",
+  "library.refreshAll.partial": "Refreshed {count} novels; {failed} failed. Skipped {skipped} local novels.",
   "library.downloadOnce.title": "Download once now",
   "library.downloadOnce.description": "Every chapter not downloaded yet, one time, without changing the goal",
   "library.downloadOnce.done": "Queued {count} chapters",

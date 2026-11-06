@@ -17,6 +17,9 @@ import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { setDownloadGoal } from "../../lib/download-goals/goal-service";
 import { showErrorToast } from "../../lib/runtime/error-toast";
+import { readServerNovelSource } from "../../lib/content-sync/novel-source";
+import { pluginManager } from "../../lib/plugins/manager";
+import { enqueueFullNovelRefresh } from "../../lib/tasks/novel-full-refresh";
 import { MAX_CHAPTER_BULK_INPUT_ROWS } from "../../lib/performance-budgets";
 import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invalidation";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
@@ -24,6 +27,7 @@ import { confirmContentDeletion } from "../../store/content-deletion";
 import { type LibrarySortOrder } from "../../store/library";
 import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
 import { showReadStateUndoToast } from "../read-state-undo-toast";
+import { chaptersKey, novelKey } from "../novel/novel-detail-model";
 import { downloadOnceNotice, queueChapterDownloadsOnce } from "./download-once";
 
 export function useLibrarySelection(
@@ -253,7 +257,55 @@ export function useLibrarySelection(
     },
   });
 
+  const refreshAllMetadataMutation = useMutation({
+    mutationFn: async ({ novelIds }: { novelIds: readonly number[] }) => {
+      let refreshed = 0;
+      let skippedLocal = 0;
+      const failedIds: number[] = [];
+      for (const novelId of new Set(novelIds)) {
+        try {
+          const novel = await getNovelById(novelId);
+          if (!novel) continue;
+          if (novel.isLocal) { skippedLocal++; continue; }
+          const title = t("tasks.task.refreshNovelMetadataFull", { name: novel.name });
+          if (await readServerNovelSource(novelId)) {
+            const { refreshServerNovelFromSource, syncServerNovelOnOpen } = await import("../../lib/content-sync/work-refresh");
+            if (!await refreshServerNovelFromSource(novelId, title, undefined, { priority: "user", refreshCover: true })) {
+              await syncServerNovelOnOpen(novelId);
+            }
+          } else {
+            const plugin = pluginManager.getPlugin(novel.pluginId);
+            if (!plugin) throw new Error(t("source.pluginNotLoaded"));
+            await enqueueFullNovelRefresh(plugin, novel, title).promise;
+          }
+          refreshed++;
+        } catch {
+          failedIds.push(novelId);
+        } finally {
+          void queryClient.invalidateQueries({ queryKey: novelKey(novelId) });
+          void queryClient.invalidateQueries({ queryKey: chaptersKey(novelId) });
+        }
+      }
+      return { refreshed, skippedLocal, failedIds };
+    },
+    onSuccess: ({ refreshed, skippedLocal, failedIds }) => {
+      if (failedIds.length) setSelectedIds(new Set(failedIds));
+      else exitSelection();
+      notifications.show({
+        color: failedIds.length || refreshed === 0 ? "warn" : "ok",
+        message: t(failedIds.length ? "library.refreshAll.partial" : "library.refreshAll.done", {
+          count: refreshed, failed: failedIds.length, skipped: skippedLocal,
+        }),
+      });
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
+      void queryClient.invalidateQueries({ queryKey: ["content-server", "novel-chapters"] });
+    },
+  });
+
   return {
+    refreshAllMetadataMutation,
     selectedIds,
     selectionMode,
     toggleSelected,

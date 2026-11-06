@@ -29,6 +29,11 @@ const mocks = vi.hoisted(() => ({
   submit: vi.fn(() => ({ id: "request", materialized: Promise.resolve(), promise: Promise.resolve() })),
   setNovelsRead: vi.fn(),
   restoreRead: vi.fn(async () => ({ rowsAffected: 0, chunks: 0 })),
+  refreshFull: vi.fn(),
+  serverSource: vi.fn(async () => null),
+  refreshServerSource: vi.fn(async () => true),
+  syncServer: vi.fn(async () => true),
+  plugin: vi.fn(() => ({ id: "source" })),
   undoToast: vi.fn(),
   invalidateReadState: vi.fn(async (_client: unknown, _scope: { novelId: number }) => undefined),
 }));
@@ -65,6 +70,10 @@ vi.mock("../../lib/reader-query-invalidation", () => ({ invalidateChapterReadSta
 vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({ isChapterDownloadQueued: (id: number) => mocks.queued.has(id) }));
 vi.mock("../../lib/tasks/chapter-download-requests", () => ({ submitChapterDownloadRequest: mocks.submit }));
+vi.mock("../../lib/tasks/novel-full-refresh", () => ({ enqueueFullNovelRefresh: mocks.refreshFull }));
+vi.mock("../../lib/content-sync/novel-source", () => ({ readServerNovelSource: mocks.serverSource }));
+vi.mock("../../lib/content-sync/work-refresh", () => ({ refreshServerNovelFromSource: mocks.refreshServerSource, syncServerNovelOnOpen: mocks.syncServer }));
+vi.mock("../../lib/plugins/manager", () => ({ pluginManager: { getPlugin: mocks.plugin } }));
 import { useLibrarySelection } from "./use-library-selection";
 import { notifications } from "@mantine/notifications";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
@@ -78,7 +87,45 @@ beforeEach(() => {
   mocks.listIds.mockReset().mockResolvedValue([]);
   mocks.listUnqueued.mockReset().mockResolvedValue([]);
   mocks.queued = new Set();
+  mocks.refreshFull.mockReset().mockReturnValue({ promise: Promise.resolve({ duplicateChapters: [] }) });
+  mocks.serverSource.mockReset().mockResolvedValue(null);
+  mocks.plugin.mockReturnValue({ id: "source" });
   mocks.getNovel.mockReset().mockImplementation(async (id: number) => ({ id, name: `Novel ${id}`, pluginId: "source", path: `/work/${id}`, isLocal: false }));
+});
+
+it("refreshes selected source novels in order, skips local works, and retains only failures", async () => {
+  let finishFirst!: () => void;
+  mocks.refreshFull.mockImplementation((_plugin, novel) => ({ promise: novel.id === 1
+    ? new Promise<void>(resolve => { finishFirst = resolve; })
+    : novel.id === 3 ? Promise.reject(new Error("Source unavailable")) : Promise.resolve() }));
+  mocks.getNovel.mockImplementation(async (id: number) => ({ id, name: `Novel ${id}`, pluginId: "source", path: `/work/${id}`, isLocal: id === 2 }));
+  const selection = useLibrarySelection({}, "nameAsc");
+  const mutation = selection.refreshAllMetadataMutation as unknown as {
+    mutationFn: (input: { novelIds: number[] }) => Promise<{ refreshed: number; skippedLocal: number; failedIds: number[] }>;
+    onSuccess: (outcome: { refreshed: number; skippedLocal: number; failedIds: number[] }) => void;
+  };
+  const pending = mutation.mutationFn({ novelIds: [1, 2, 3, 4, 1] });
+  await vi.waitFor(() => expect(mocks.refreshFull).toHaveBeenCalledOnce());
+  expect(mocks.refreshFull.mock.calls[0]![1]).toMatchObject({ id: 1 });
+  finishFirst();
+  const outcome = await pending;
+  expect(outcome).toEqual({ refreshed: 2, skippedLocal: 1, failedIds: [3] });
+  expect(mocks.refreshFull.mock.calls.map(([, novel]) => novel.id)).toEqual([1, 3, 4]);
+  mutation.onSuccess(outcome);
+  expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set([3]));
+  expect(mocks.setSelecting).not.toHaveBeenCalledWith(false);
+});
+
+it("leaves selection mode after the selected metadata refresh succeeds", async () => {
+  const selection = useLibrarySelection({}, "nameAsc");
+  const mutation = selection.refreshAllMetadataMutation as unknown as {
+    mutationFn: (input: { novelIds: number[] }) => Promise<{ refreshed: number; skippedLocal: number; failedIds: number[] }>;
+    onSuccess: (outcome: { refreshed: number; skippedLocal: number; failedIds: number[] }) => void;
+  };
+  const outcome = await mutation.mutationFn({ novelIds: [1] });
+  mutation.onSuccess(outcome);
+  expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
+  expect(mocks.setSelecting).toHaveBeenLastCalledWith(false);
 });
 
 it("sets the chosen download goal for every selected source novel and leaves local works alone", async () => {
