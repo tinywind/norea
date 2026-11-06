@@ -50,14 +50,19 @@ internal object AndroidVpnUrlTestProcess {
 
 /**
  * Loads URL test pages one at a time in the private `:vpn_url_test` process, through the test
- * tunnel's local proxy. Every load gets a new WebView profile and a new WebView, destroyed when the
- * load ends. The process serves a whole run and exits when the main process unbinds it.
+ * tunnel's local proxy. A run uses one new WebView profile whose cookies, storage and cache are
+ * cleared before every load, and every load gets a new WebView, destroyed when the load ends. An
+ * idle WebView in that profile keeps its renderer process alive between loads: some Android builds
+ * refuse to start a renderer for an app that is not in the foreground. The process serves a whole
+ * run and exits when the main process unbinds it.
  */
 class AndroidVpnUrlTestService : Service() {
   private val handler = Handler(Looper.getMainLooper())
   private val proxyExecutor = Executors.newSingleThreadExecutor()
   private val messenger = Messenger(Handler(Looper.getMainLooper()) { message -> receive(message); true })
   private val createdProfiles = mutableListOf<String>()
+  private var runProfile: String? = null
+  private var rendererKeeper: WebView? = null
   private var page: AndroidVpnUrlTestPage? = null
   private var loading = false
   private var earlierProfilesDeleted = false
@@ -75,6 +80,8 @@ class AndroidVpnUrlTestService : Service() {
     destroyed = true
     page?.close()
     page = null
+    rendererKeeper?.destroy()
+    rendererKeeper = null
     proxyExecutor.shutdownNow()
     handler.removeCallbacksAndMessages(null)
     deleteCreatedProfiles()
@@ -130,11 +137,34 @@ class AndroidVpnUrlTestService : Service() {
   }
 
   private fun load(request: AndroidVpnUrlTestRequest, done: (JSONObject) -> Unit) {
-    runCatching { AndroidVpnUrlTestPage(this, request, createEmptyProfile(), done).also { page = it }.start() }
-      .onFailure { error ->
-        page?.close()
-        done(androidVpnUrlTestFailure(error.message ?: "VPN URL test browser could not load the page."))
-      }
+    val fail = { error: Throwable ->
+      page?.close()
+      done(androidVpnUrlTestFailure(error.message ?: "VPN URL test browser could not load the page."))
+    }
+    val profileName = runCatching { runProfile ?: createEmptyProfile().also(::startRun) }.getOrElse { error -> fail(error); return }
+    clearProfile(profileName) { cleared ->
+      if (destroyed) return@clearProfile
+      cleared.mapCatching { AndroidVpnUrlTestPage(this, request, profileName, done).also { page = it }.start() }
+        .onFailure(fail)
+    }
+  }
+
+  private fun startRun(profileName: String) {
+    runProfile = profileName
+    rendererKeeper = WebView(this).also { view ->
+      WebViewCompat.setProfile(view, profileName)
+      view.loadUrl("about:blank")
+    }
+  }
+
+  /** Removes what earlier loads of the run left in the profile, so each tunnel starts empty. */
+  private fun clearProfile(profileName: String, then: (Result<Unit>) -> Unit) {
+    val profile = runCatching { checkNotNull(ProfileStore.getInstance().getProfile(profileName)) { "VPN URL test profile is missing." } }
+      .getOrElse { error -> then(Result.failure(error)); return }
+    profile.webStorage.deleteAllData()
+    profile.cookieManager.removeAllCookies {
+      then(runCatching { check(!profile.cookieManager.hasCookies()) { "VPN URL test profile cookies could not be cleared." } })
+    }
   }
 
   private fun prepareProfiles() {
@@ -244,6 +274,8 @@ private class AndroidVpnUrlTestPage(
     view.layout(0, 0, view.measuredWidth, view.measuredHeight)
     startedAt = SystemClock.elapsedRealtime()
     handler.postDelayed(timeout, test.timeoutMs)
+    // The run's profile is reused, so no cached response of an earlier tunnel may answer this load.
+    view.clearCache(true)
     view.loadUrl(test.url)
   }
 
