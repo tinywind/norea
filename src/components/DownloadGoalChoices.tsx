@@ -1,6 +1,6 @@
 import { Loader, Stack } from "@mantine/core";
 import { useId, useState, type ReactNode } from "react";
-import type { NovelDownloadGoal } from "../db/queries/novel-download-goal";
+import type { NovelDownloadGoal, StoredNovelDownloadGoal } from "../db/queries/novel-download-goal";
 import { useTranslation } from "../i18n";
 import { useDownloadGoalSettingsStore } from "../store/download-goals";
 import { SegmentedToggle } from "./SegmentedToggle";
@@ -11,6 +11,21 @@ export const KEEP_AHEAD_GOAL_CHOICES = [3, 5, 10, 30] as const;
 
 export const sameDownloadGoal = (left: NovelDownloadGoal | null, right: NovelDownloadGoal | null) =>
   JSON.stringify(left) === JSON.stringify(right);
+
+/** The own goal every novel shares, null when none has one, undefined when they differ. */
+export function sharedDownloadGoal(
+  novelIds: readonly number[],
+  goals: readonly StoredNovelDownloadGoal[],
+): NovelDownloadGoal | null | undefined {
+  const byNovel = new Map(goals.map((row) => [row.novelId, row.goal]));
+  let shared: NovelDownloadGoal | null | undefined;
+  for (const [index, novelId] of novelIds.entries()) {
+    const goal = byNovel.get(novelId) ?? null;
+    if (index === 0) shared = goal;
+    else if (!sameDownloadGoal(goal, shared ?? null)) return undefined;
+  }
+  return shared;
+}
 
 interface DownloadGoalSectionProps {
   children: ReactNode;

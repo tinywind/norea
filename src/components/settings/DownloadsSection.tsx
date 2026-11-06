@@ -28,6 +28,7 @@ import {
   useDownloadGoalSettingsStore,
 } from "../../store/download-goals";
 import { showSettingsToast } from "./settings-toast";
+import { NovelDownloadGoalSettings } from "./NovelDownloadGoalSettings";
 
 export const CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY = [
   "settings",
@@ -323,6 +324,7 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
           </SettingsFieldRow>
         </SettingsAdvancedGroup>
       </SettingsSection>
+      <NovelDownloadGoalSettings isBusy={isBusy} />
       <ChapterCleanupPanel
         opened={cleanupOpened}
         onClose={() => setCleanupOpened(false)}

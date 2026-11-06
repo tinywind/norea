@@ -12,19 +12,11 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: () => ({ data: mocks.data, isError: false, isFetching: false, isLoading: false }),
 }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("../DownloadGoalChoices", () => ({
-  DownloadGoalChoices: () => null,
-  DownloadGoalSection: () => null,
-  sameDownloadGoal: (left: unknown, right: unknown) => JSON.stringify(left) === JSON.stringify(right),
-}));
 vi.mock("../ui/ResponsiveSheet", () => ({ ResponsiveSheet: () => null }));
 
-import { DownloadGoalSection } from "../DownloadGoalChoices";
 import {
   LibraryCategorySheet,
-  LibraryDownloadGoalSheet,
   nextCategoryMembership,
-  sharedDownloadGoal,
 } from "./LibrarySelectionSheets";
 
 let harness: BackNavigationHarness | undefined;
@@ -84,51 +76,4 @@ it("shows all, some or none per category and applies only the explicit changes",
 
   await harness.run(() => (apply().props.onClick as () => void)());
   expect(onApply).toHaveBeenCalledWith({ add: [5, 6], remove: [4] });
-});
-
-it("marks the goal every selected novel shares and nothing when they differ", () => {
-  const goals = [
-    { novelId: 1, goal: { kind: "entire" as const }, updatedAt: 1 },
-    { novelId: 2, goal: { kind: "entire" as const }, updatedAt: 2 },
-    { novelId: 3, goal: { kind: "none" as const }, updatedAt: 3 },
-  ];
-  expect(sharedDownloadGoal([1, 2], goals)).toEqual({ kind: "entire" });
-  expect(sharedDownloadGoal([1, 3], goals)).toBeUndefined();
-  expect(sharedDownloadGoal([4, 5], goals)).toBeNull();
-  expect(sharedDownloadGoal([1, 4], goals)).toBeUndefined();
-});
-
-it("applies a goal choice to the selection, or just closes on the goal they already share", async () => {
-  mocks.data = [{ novelId: 1, goal: { kind: "entire" }, updatedAt: 1 }, { novelId: 2, goal: { kind: "entire" }, updatedAt: 1 }];
-  const apply = vi.fn();
-  const close = vi.fn();
-  const downloadOnce = vi.fn();
-  function GoalProbe() {
-    tree = LibraryDownloadGoalSheet({
-      applying: false, novelIds: [1, 2], onApply: apply, onClose: close, onDownloadOnce: downloadOnce, opened: true,
-    }) as
-      ReactElement<Record<string, unknown>>;
-    return null;
-  }
-  harness = mountBackNavigationHarness();
-  await harness.render(<GoalProbe />);
-  const sections = elements().filter((element) => element.type === DownloadGoalSection);
-  expect(sections.map((section) => section.props.title)).toEqual(["downloadGoals.section.goal", "downloadGoals.section.once"]);
-  const [goalSection, onceSection] = sections as [ReactElement<{ children: ReactNode }>, ReactElement<{ children: ReactNode }>];
-  const choices = goalSection.props.children as ReactElement<{
-    current: unknown;
-    onChoose: (goal: unknown) => void;
-  }>;
-  expect(choices.props.current).toEqual({ kind: "entire" });
-  choices.props.onChoose({ kind: "entire" });
-  expect(apply).not.toHaveBeenCalled();
-  expect(close).toHaveBeenCalledTimes(1);
-  choices.props.onChoose({ kind: "none" });
-  expect(apply).toHaveBeenCalledWith({ kind: "none" });
-
-  const once = onceSection.props.children as ReactElement<{ onClick: () => void; title: string }>;
-  expect(once.props.title).toBe("library.downloadOnce.title");
-  once.props.onClick();
-  expect(downloadOnce).toHaveBeenCalledTimes(1);
-  expect(apply).toHaveBeenCalledTimes(1);
 });

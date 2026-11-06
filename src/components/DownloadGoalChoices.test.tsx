@@ -15,7 +15,7 @@ vi.mock("../store/download-goals", () => ({
   useDownloadGoalSettingsStore: (select: (state: { defaultKeepAhead: number }) => unknown) => select({ defaultKeepAhead: 3 }),
 }));
 
-import { DownloadGoalChoices } from "./DownloadGoalChoices";
+import { DownloadGoalChoices, sharedDownloadGoal } from "./DownloadGoalChoices";
 import { SegmentedToggle } from "./SegmentedToggle";
 import { ListRow } from "./ui/ListRow";
 
@@ -48,6 +48,18 @@ const row = (tree: ReactElement<Props>[], title: string) =>
 beforeEach(() => {
   hooks.slots = [];
   onChoose.mockClear();
+});
+
+it("marks the goal every selected novel shares and nothing when they differ", () => {
+  const goals = [
+    { novelId: 1, goal: { kind: "entire" as const }, updatedAt: 1 },
+    { novelId: 2, goal: { kind: "entire" as const }, updatedAt: 2 },
+    { novelId: 3, goal: { kind: "none" as const }, updatedAt: 3 },
+  ];
+  expect(sharedDownloadGoal([1, 2], goals)).toEqual({ kind: "entire" });
+  expect(sharedDownloadGoal([1, 3], goals)).toBeUndefined();
+  expect(sharedDownloadGoal([4, 5], goals)).toBeNull();
+  expect(sharedDownloadGoal([1, 4], goals)).toBeUndefined();
 });
 
 it("chooses keep-ahead with the count picked, even when another goal is active", () => {

@@ -1,15 +1,8 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import type { NovelDownloadGoal } from "../../db/queries/novel-download-goal";
 
 interface Mutation {
   mutationFn: (input: string) => Promise<number>;
   onSettled?: () => void;
-}
-interface GoalOutcome { applied: number; skippedLocal: number }
-interface GoalMutation {
-  mutationFn: (input: { goal: NovelDownloadGoal | null; novelIds: number[] }) => Promise<GoalOutcome>;
-  onSuccess: (outcome: GoalOutcome) => void;
-  onSettled: () => void;
 }
 const mocks = vi.hoisted(() => ({
   mutations: [] as Mutation[],
@@ -19,7 +12,6 @@ const mocks = vi.hoisted(() => ({
   setSelecting: vi.fn(),
   listIds: vi.fn(),
   getNovel: vi.fn(),
-  setGoal: vi.fn(async () => undefined),
   t: vi.fn((key: string) => key),
   invalidate: vi.fn(async () => undefined),
   addCategory: vi.fn(async () => undefined),
@@ -57,8 +49,6 @@ vi.mock("@mantine/notifications", () => ({ notifications: { show: vi.fn() } }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: mocks.t }) }));
 vi.mock("../../db/queries/category", () => ({ addNovelsToCategory: mocks.addCategory, removeNovelsFromCategory: mocks.removeCategory }));
 vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel, listLibraryNovelIds: mocks.listIds, setNovelInLibrary: vi.fn() }));
-vi.mock("../../lib/download-goals/goal-service", () => ({ setDownloadGoal: mocks.setGoal }));
-vi.mock("../DownloadGoalWorkLine", () => ({ DOWNLOAD_GOALS_QUERY_KEY: ["download-goals"] }));
 vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: vi.fn() }));
 vi.mock("../../db/queries/chapter", () => ({
   listUnqueuedChapterDownloads: mocks.listUnqueued,
@@ -128,46 +118,6 @@ it("leaves selection mode after the selected metadata refresh succeeds", async (
   expect(mocks.setSelecting).toHaveBeenLastCalledWith(false);
 });
 
-it("sets the chosen download goal for every selected source novel and leaves local works alone", async () => {
-  mocks.getNovel.mockImplementation(async (id: number) => (id === 9 ? null : { id, isLocal: id === 3 }));
-  useLibrarySelection({}, "nameAsc");
-  const mutation = mocks.mutations[1] as unknown as GoalMutation;
-  await expect(mutation.mutationFn({ goal: { kind: "entire" }, novelIds: [1, 2, 3, 9] })).resolves.toEqual({ applied: 2, skippedLocal: 1 });
-  expect(mocks.setGoal.mock.calls).toEqual([[1, { kind: "entire" }], [2, { kind: "entire" }]]);
-
-  await mutation.mutationFn({ goal: null, novelIds: [4] });
-  expect(mocks.setGoal).toHaveBeenLastCalledWith(4, null);
-  mutation.onSettled();
-  expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["download-goals"] });
-  expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["download-goal"] });
-});
-
-it("confirms the goal and leaves selection mode", () => {
-  useLibrarySelection({}, "nameAsc");
-  const mutation = mocks.mutations[1] as unknown as GoalMutation;
-  mutation.onSuccess({ applied: 2, skippedLocal: 0 });
-  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith(expect.objectContaining({ message: "library.downloadGoal.done" }));
-  expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
-  expect(mocks.setSelecting).toHaveBeenLastCalledWith(false);
-});
-
-it("says how many local works the goal skipped", () => {
-  useLibrarySelection({}, "nameAsc");
-  const mutation = mocks.mutations[1] as unknown as GoalMutation;
-  mutation.onSuccess({ applied: 2, skippedLocal: 3 });
-  expect(mocks.t).toHaveBeenCalledWith("library.downloadGoal.doneSkippedLocal", { count: 2, skipped: 3 });
-  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "ok", message: "library.downloadGoal.doneSkippedLocal" });
-});
-
-it("explains that nothing changed when only local works were selected", () => {
-  useLibrarySelection({}, "nameAsc");
-  const mutation = mocks.mutations[1] as unknown as GoalMutation;
-  mutation.onSuccess({ applied: 0, skippedLocal: 2 });
-  expect(mocks.t).toHaveBeenCalledWith("library.downloadGoal.noneApplied", { skipped: 2 });
-  expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "warn", message: "library.downloadGoal.noneApplied" });
-  expect(mocks.t).not.toHaveBeenCalledWith("library.downloadGoal.done", expect.anything());
-});
-
 it("applies category additions and removals without removing novels from the library", async () => {
   const selection = useLibrarySelection({}, "nameAsc");
   type Input = { add: number[]; novelIds: number[]; remove: number[] };
@@ -192,7 +142,7 @@ it("selects every matching work beyond the visible library page", async () => {
   const ids = Array.from({ length: 250 }, (_, index) => index + 10);
   mocks.listIds.mockResolvedValue(ids);
   useLibrarySelection(filter, "nameAsc");
-  await expect(mocks.mutations[4]!.mutationFn("")).resolves.toBe(250);
+  await expect(mocks.mutations[3]!.mutationFn("")).resolves.toBe(250);
   expect(mocks.listIds).toHaveBeenCalledWith(filter);
   expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set(ids));
 });
@@ -201,7 +151,7 @@ it("does not restore a selection cleared while the full list was loading", async
   let resolve!: (ids: number[]) => void;
   mocks.listIds.mockReturnValue(new Promise<number[]>(done => { resolve = done; }));
   const selection = useLibrarySelection({}, "nameAsc");
-  const pending = mocks.mutations[4]!.mutationFn("");
+  const pending = mocks.mutations[3]!.mutationFn("");
   selection.clearSelection();
   resolve([1, 2, 3]);
   await pending;
@@ -211,7 +161,7 @@ it("does not restore a selection cleared while the full list was loading", async
 
 it("clears a stale selection when the filtered result is empty", async () => {
   useLibrarySelection({ search: "missing" }, "nameAsc");
-  await mocks.mutations[4]!.mutationFn("");
+  await mocks.mutations[3]!.mutationFn("");
   expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
 });
 
@@ -236,7 +186,7 @@ it("exits selection mode on back only while selection mode is on", () => {
 
 it("sizes the remove-from-library download option with the exact stored chapter count", async () => {
   useLibrarySelection({}, "nameAsc");
-  const remove = mocks.mutations[3] as unknown as {
+  const remove = mocks.mutations[2] as unknown as {
     mutationFn: (input: { downloadedCount?: number; novelIds: number[] }) => Promise<boolean>;
   };
   await remove.mutationFn({ downloadedCount: 0, novelIds: [1, 2] });
@@ -263,7 +213,7 @@ it("queues every unqueued chapter of each selected source novel once at user pri
   });
   mocks.queued = new Set([801]);
   useLibrarySelection({}, "nameAsc");
-  const mutation = mocks.mutations[5] as unknown as DownloadOnceMutation;
+  const mutation = mocks.mutations[4] as unknown as DownloadOnceMutation;
 
   await expect(mutation.mutationFn({ novelIds: [1, 2, 3, 9] })).resolves.toEqual({ queued: 502, skippedLocal: 1 });
   expect(mocks.listUnqueued.mock.calls).toEqual([[1, 0], [1, 599], [2, 0]]);
@@ -280,7 +230,7 @@ it("queues every unqueued chapter of each selected source novel once at user pri
 
 it("reports the queued chapters, the local works skipped, and when nothing was left to queue", () => {
   useLibrarySelection({}, "nameAsc");
-  const mutation = mocks.mutations[5] as unknown as DownloadOnceMutation;
+  const mutation = mocks.mutations[4] as unknown as DownloadOnceMutation;
   mutation.onSuccess({ queued: 12, skippedLocal: 0 });
   expect(vi.mocked(notifications.show)).toHaveBeenLastCalledWith({ color: "ok", message: "library.downloadOnce.done" });
   expect(mocks.t).toHaveBeenCalledWith("library.downloadOnce.done", { count: 12 });
@@ -295,9 +245,9 @@ it("reports the queued chapters, the local works skipped, and when nothing was l
 
 it("marks whole novels read, refreshes each one, and offers Undo for the chapters it changed", async () => {
   useLibrarySelection({}, "nameAsc");
-  const undo = mocks.mutations[6] as unknown as { mutate: (input: unknown) => void };
+  const undo = mocks.mutations[5] as unknown as { mutate: (input: unknown) => void };
   undo.mutate = vi.fn();
-  const mark = mocks.mutations[7] as unknown as {
+  const mark = mocks.mutations[6] as unknown as {
     mutationFn: (input: { novelIds: number[]; unread: boolean }) => Promise<unknown>;
     onSuccess: (result: { previous: Array<{ id: number }> }, input: { novelIds: number[]; unread: boolean }) => void;
   };

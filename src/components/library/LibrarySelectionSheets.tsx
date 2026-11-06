@@ -5,93 +5,13 @@ import {
   countNovelsByCategory,
   type LibraryCategory,
 } from "../../db/queries/category";
-import {
-  listNovelDownloadGoals,
-  type NovelDownloadGoal,
-  type StoredNovelDownloadGoal,
-} from "../../db/queries/novel-download-goal";
 import { useTranslation } from "../../i18n";
-import { DownloadGoalChoices, DownloadGoalSection, sameDownloadGoal } from "../DownloadGoalChoices";
-import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
 import { IconButton } from "../IconButton";
-import { DownloadIcon, PlusIcon } from "../ui/icons";
-import { ListRow } from "../ui/ListRow";
+import { PlusIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 function sortedIds(novelIds: readonly number[]): number[] {
   return [...novelIds].sort((left, right) => left - right);
-}
-
-/** The own goal every novel shares, null when none has one, undefined when they differ. */
-export function sharedDownloadGoal(
-  novelIds: readonly number[],
-  goals: readonly StoredNovelDownloadGoal[],
-): NovelDownloadGoal | null | undefined {
-  const byNovel = new Map(goals.map((row) => [row.novelId, row.goal]));
-  let shared: NovelDownloadGoal | null | undefined;
-  for (const [index, novelId] of novelIds.entries()) {
-    const goal = byNovel.get(novelId) ?? null;
-    if (index === 0) shared = goal;
-    else if (!sameDownloadGoal(goal, shared ?? null)) return undefined;
-  }
-  return shared;
-}
-
-interface LibraryDownloadGoalSheetProps {
-  applying: boolean;
-  novelIds: readonly number[];
-  onApply: (goal: NovelDownloadGoal | null) => void;
-  onClose: () => void;
-  /** Queues every chapter not downloaded yet one time, without changing the goal. */
-  onDownloadOnce: () => void;
-  opened: boolean;
-}
-
-/** The automatic download goal for the selected novels, the goal they share checked, and a one-time download apart from it. */
-export function LibraryDownloadGoalSheet({
-  applying,
-  novelIds,
-  onApply,
-  onClose,
-  onDownloadOnce,
-  opened,
-}: LibraryDownloadGoalSheetProps) {
-  const { t } = useTranslation();
-  const goals = useQuery({ enabled: opened, queryKey: DOWNLOAD_GOALS_QUERY_KEY, queryFn: listNovelDownloadGoals });
-  const current = goals.data ? sharedDownloadGoal(novelIds, goals.data) : undefined;
-
-  return (
-    <ResponsiveSheet
-      onClose={onClose}
-      opened={opened}
-      title={t("library.downloadGoal.title", { count: novelIds.length })}
-    >
-      <Stack gap="md">
-        <DownloadGoalSection title={t("downloadGoals.section.goal")}>
-          <DownloadGoalChoices
-            allRemainingDescription={t("downloadGoals.kind.allRemaining.many")}
-            current={current}
-            disabled={applying || novelIds.length === 0}
-            entireDescription={t("downloadGoals.kind.entire.many")}
-            onChoose={(goal) => {
-              if (current !== undefined && sameDownloadGoal(goal, current)) onClose();
-              else onApply(goal);
-            }}
-            pending={applying}
-          />
-        </DownloadGoalSection>
-        <DownloadGoalSection title={t("downloadGoals.section.once")}>
-          <ListRow
-            disabled={applying || novelIds.length === 0}
-            leading={<DownloadIcon size="1.25rem" />}
-            onClick={onDownloadOnce}
-            subtitle={t("library.downloadOnce.description")}
-            title={t("library.downloadOnce.title")}
-          />
-        </DownloadGoalSection>
-      </Stack>
-    </ResponsiveSheet>
-  );
 }
 
 export type CategoryMembership = "all" | "some" | "none";

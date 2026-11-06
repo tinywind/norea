@@ -12,10 +12,8 @@ import {
   listLibraryNovelIds,
   type LibraryNovelRefreshFilter,
 } from "../../db/queries/novel";
-import type { NovelDownloadGoal } from "../../db/queries/novel-download-goal";
 import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
-import { setDownloadGoal } from "../../lib/download-goals/goal-service";
 import { showErrorToast } from "../../lib/runtime/error-toast";
 import { readServerNovelSource } from "../../lib/content-sync/novel-source";
 import { pluginManager } from "../../lib/plugins/manager";
@@ -25,7 +23,6 @@ import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invali
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import { confirmContentDeletion } from "../../store/content-deletion";
 import { type LibrarySortOrder } from "../../store/library";
-import { DOWNLOAD_GOALS_QUERY_KEY } from "../DownloadGoalWorkLine";
 import { showReadStateUndoToast } from "../read-state-undo-toast";
 import { chaptersKey, novelKey } from "../novel/novel-detail-model";
 import { downloadOnceNotice, queueChapterDownloadsOnce } from "./download-once";
@@ -97,42 +94,6 @@ export function useLibrarySelection(
     },
     onError: (error) => {
       showErrorToast(t("library.editSelectedCategories"), error);
-    },
-  });
-
-  const setDownloadGoalMutation = useMutation({
-    mutationFn: async ({ goal, novelIds }: SetDownloadGoalInput) => {
-      let applied = 0;
-      let skippedLocal = 0;
-      for (const novelId of novelIds) {
-        const novel = await getNovelById(novelId);
-        if (!novel) continue;
-        if (novel.isLocal) {
-          skippedLocal += 1;
-          continue;
-        }
-        await setDownloadGoal(novelId, goal);
-        applied += 1;
-      }
-      return { applied, skippedLocal };
-    },
-    onSuccess: ({ applied, skippedLocal }) => {
-      exitSelection();
-      notifications.show(applied === 0
-        ? { color: "warn", message: t("library.downloadGoal.noneApplied", { skipped: skippedLocal }) }
-        : {
-            color: "ok",
-            message: skippedLocal > 0
-              ? t("library.downloadGoal.doneSkippedLocal", { count: applied, skipped: skippedLocal })
-              : t("library.downloadGoal.done", { count: applied }),
-          });
-    },
-    onSettled: () => {
-      void queryClient.invalidateQueries({ queryKey: DOWNLOAD_GOALS_QUERY_KEY });
-      void queryClient.invalidateQueries({ queryKey: ["download-goal"] });
-    },
-    onError: (error) => {
-      showErrorToast(t("library.selection.download"), error);
     },
   });
 
@@ -314,7 +275,6 @@ export function useLibrarySelection(
     exitSelection,
     selectAllMutation,
     assignCategoryMutation,
-    setDownloadGoalMutation,
     downloadOnceMutation,
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
@@ -328,11 +288,6 @@ interface SetNovelsReadStateInput {
 }
 
 interface DownloadOnceInput {
-  novelIds: readonly number[];
-}
-
-interface SetDownloadGoalInput {
-  goal: NovelDownloadGoal | null;
   novelIds: readonly number[];
 }
 

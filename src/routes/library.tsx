@@ -13,7 +13,6 @@ import {
 } from "../components/library/LibraryCategories";
 import {
   LibraryCategorySheet,
-  LibraryDownloadGoalSheet,
 } from "../components/library/LibrarySelectionSheets";
 import { LibraryAppBar } from "../components/library/LibraryAppBar";
 import {
@@ -172,7 +171,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     exitSelection,
     selectAllMutation,
     assignCategoryMutation,
-    setDownloadGoalMutation,
     downloadOnceMutation,
     deleteSelectedDownloadsMutation,
     removeSelectedFromLibraryMutation,
@@ -180,7 +178,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     refreshAllMetadataMutation,
   } = useLibrarySelection(libraryFilter, sortOrder, active);
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
-  const [downloadSheetOpen, setDownloadSheetOpen] = useState(false);
   const offlineStates = useDownloadGoalOfflineStates(active && showDownloadBadges);
   const [categorySheetOpen, setCategorySheetOpen] = useState(false);
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
@@ -392,10 +389,10 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
               actions={
                 <>
                   <SelectionAction
-                    disabled={selectedIds.size === 0 || setDownloadGoalMutation.isPending || downloadOnceMutation.isPending}
+                    disabled={selectedIds.size === 0 || downloadOnceMutation.isPending}
                     icon={DownloadIcon}
                     label={t("library.selection.download")}
-                    onClick={() => setDownloadSheetOpen(true)}
+                    onClick={() => downloadOnceMutation.mutate({ novelIds: selectedNovelIds })}
                   />
                   <SelectionAction
                     disabled={selectedIds.size === 0}
@@ -628,24 +625,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         sources={sourceRows}
         sourcesLoading={sourceFilters.isLoading}
         tab={viewOptionsTab}
-      />
-      <LibraryDownloadGoalSheet
-        applying={setDownloadGoalMutation.isPending || downloadOnceMutation.isPending}
-        novelIds={selectedNovelIds}
-        onApply={(goal) =>
-          setDownloadGoalMutation.mutate(
-            { goal, novelIds: selectedNovelIds },
-            { onSuccess: () => setDownloadSheetOpen(false) },
-          )
-        }
-        onClose={() => setDownloadSheetOpen(false)}
-        onDownloadOnce={() =>
-          downloadOnceMutation.mutate(
-            { novelIds: selectedNovelIds },
-            { onSuccess: () => setDownloadSheetOpen(false) },
-          )
-        }
-        opened={active && selectionMode && downloadSheetOpen}
       />
       <LibraryCategorySheet
         applying={assignCategoryMutation.isPending}
