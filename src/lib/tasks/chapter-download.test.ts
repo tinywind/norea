@@ -167,6 +167,7 @@ import {
   enqueueChapterDownload,
   failedChapterDownloadJob,
   enqueueVpnDownloadChapter,
+  releaseVpnDownloadPlanLocalWorkScans,
   enqueueChapterMediaRepair,
   discardQueuedChapterDownloads,
   getActiveChapterDownloadBatchProgress,
@@ -555,6 +556,56 @@ describe("VPN range chapter acquisition", () => {
     await run({ ...scanned, id: 12, chapterPath: "/chapter/12", novelId: 13 }, { ...worker, generation: 11 });
     await run({ ...scanned, id: 14, chapterPath: "/chapter/14", vpnPlanId: "plan-next" }, { ...worker, generation: 12 });
     expect(vi.mocked(refreshStoredNovelChapterDownloads).mock.calls).toEqual([[11], [13], [11]]);
+  });
+
+  it("releases a terminal plan's scan cache without clearing another plan", async () => {
+    const run = async (planId: string, id: number) => {
+      enqueueVpnDownloadChapter({ ...job, id, vpnPlanId: planId }, worker, async () => undefined);
+      await capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(),
+        signal: new AbortController().signal, taskId: `task-${id}` });
+    };
+    await run("plan-release", 20);
+    await run("plan-retained", 21);
+
+    releaseVpnDownloadPlanLocalWorkScans("plan-release");
+    releaseVpnDownloadPlanLocalWorkScans("plan-release");
+    await run("plan-release", 22);
+    await run("plan-retained", 23);
+
+    expect(vi.mocked(refreshStoredNovelChapterDownloads).mock.calls).toEqual([[11], [11], [11]]);
+    releaseVpnDownloadPlanLocalWorkScans("plan-release");
+    releaseVpnDownloadPlanLocalWorkScans("plan-retained");
+  });
+
+  it("keeps a released plan's pending scan separate from later plan work", async () => {
+    const previous = createDeferred<void>();
+    const current = createDeferred<void>();
+    vi.mocked(refreshStoredNovelChapterDownloads)
+      .mockReturnValueOnce(previous.promise).mockReturnValueOnce(current.promise);
+    const run = (id: number) => {
+      enqueueVpnDownloadChapter({ ...job, id, vpnPlanId: "plan-pending-release" }, worker, async () => undefined);
+      return capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(),
+        signal: new AbortController().signal, taskId: `task-${id}` });
+    };
+    const first = run(24);
+    const failed = expect(first).rejects.toThrow("Previous scan failed");
+    await vi.waitFor(() => expect(refreshStoredNovelChapterDownloads).toHaveBeenCalledOnce());
+    try {
+      releaseVpnDownloadPlanLocalWorkScans("plan-pending-release");
+      const second = run(25);
+      await vi.waitFor(() => expect(refreshStoredNovelChapterDownloads).toHaveBeenCalledTimes(2));
+      previous.reject(new Error("Previous scan failed"));
+      await failed;
+      current.resolve();
+      await second;
+      await run(26);
+      expect(refreshStoredNovelChapterDownloads).toHaveBeenCalledTimes(2);
+    } finally {
+      previous.reject(new Error("Previous scan failed"));
+      current.resolve();
+      await failed;
+      releaseVpnDownloadPlanLocalWorkScans("plan-pending-release");
+    }
   });
 
   it.each([

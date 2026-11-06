@@ -25,6 +25,7 @@ export interface PluginRuntimeHandle {
   readonly item: PluginItem;
   readonly sourceHash: string;
   getRuntime(executor: ScraperExecutorId): Plugin;
+  releaseRuntime(executor: ScraperExecutorId): void;
   loadedExecutors(): ScraperExecutorId[];
 }
 
@@ -70,6 +71,9 @@ export function createPluginRuntimeHandle({
       });
       runtimes.set(executor, runtime);
       return runtime;
+    },
+    releaseRuntime(executor) {
+      runtimes.delete(executor);
     },
     loadedExecutors() {
       return [...runtimes.keys()];

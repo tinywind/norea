@@ -44,6 +44,7 @@ vi.mock("./vpn-download-ranges", async importOriginal => ({
 }));
 vi.mock("../../db/queries/chapter", () => ({ listChaptersByNovel: boundary.catalog }));
 vi.mock("../../db/queries/chapter-download-failure", () => ({ getChapterDownloadFailure: vi.fn(async () => undefined) }));
+vi.mock("../plugins/manager", () => ({ pluginManager: { releaseExecutorRuntimes: vi.fn() } }));
 vi.mock("../../db/queries/chapter-download-queue", () => ({
   listPendingVpnDownloadJobs: async () => [...boundary.pendingJobs.values()].map(job => ({ job: structuredClone(job), jobJson: JSON.stringify(job), updatedAtMs: 1 })),
   enqueuePendingVpnDownloadJobs: boundary.persistPending,
@@ -125,6 +126,7 @@ vi.mock("../android-scraper", () => ({
 }));
 vi.mock("../tauri-runtime", () => ({ isAndroidRuntime: () => true, isTauriRuntime: () => true }));
 vi.mock("./chapter-download", () => ({
+  releaseVpnDownloadPlanLocalWorkScans: vi.fn(),
   enqueueChapterDownloadBatch: boundary.requestEnqueue,
   cancelChapterDownloadBatches: vi.fn(),
   enqueueVpnDownloadChapter: boundary.enqueue,
@@ -855,6 +857,7 @@ describe("automatic VPN run admission", () => {
   });
 
   it("counts a held browser cleanup in the run snapshot instead of reporting a free worker", async () => {
+    const { pluginManager } = await import("../plugins/manager");
     const runtime = await import("./vpn-download-runtime");
     await runtime.startVpnDownloadRun(options);
     const batch = interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Closing worker" })!;
@@ -865,8 +868,12 @@ describe("automatic VPN run admission", () => {
     boundary.close.mockImplementationOnce(async () => { await held; });
     const pausing = runtime.pauseVpnDownloadRun();
     await vi.waitFor(() => expect(boundary.close).toHaveBeenCalledOnce());
-    try { expect(runtime.getVpnDownloadRuntimeSnapshot().run).toMatchObject({ closingWorkers: 1, activeWorkers: 0 }); }
+    try {
+      expect(runtime.getVpnDownloadRuntimeSnapshot().run).toMatchObject({ closingWorkers: 1, activeWorkers: 0 });
+      expect(pluginManager.releaseExecutorRuntimes).not.toHaveBeenCalled();
+    }
     finally { finish(); await pausing; await runtime.cancelVpnDownloadRun(); }
+    expect(pluginManager.releaseExecutorRuntimes).toHaveBeenCalledOnce();
   });
 
   it("finishes an in-progress ownership commit before cancelling its run and cannot enroll the late result", async () => {

@@ -556,6 +556,11 @@ export class PluginManager {
     return this.runtimeHandles.get(id)?.getRuntime(executor) ?? base;
   }
 
+  /** Releases cached runtimes after the executor's tasks and browser have been cleaned up. */
+  releaseExecutorRuntimes(executor: ScraperExecutorId): void {
+    for (const handle of this.runtimeHandles.values()) handle.releaseRuntime(executor);
+  }
+
   async uninstallPlugin(id: string): Promise<boolean> {
     if (!this.installed.has(id)) return false;
     try {

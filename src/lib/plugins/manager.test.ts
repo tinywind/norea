@@ -502,6 +502,39 @@ describe("PluginManager.loadInstalledFromDb", () => {
     );
   });
 
+  it("releases a disposed VPN executor without replacing other cached runtimes", async () => {
+    const manager = new PluginManager();
+    mockedListInstalledPlugins.mockResolvedValueOnce([
+      installedRow(COUNTING_PLUGIN_SOURCE),
+      { ...installedRow(COUNTING_PLUGIN_SOURCE), id: "other" },
+    ]);
+    await manager.loadInstalledFromDb();
+
+    const immediate = manager.getPluginForExecutor("demo", "immediate");
+    await immediate.popularNovels(1);
+    const pool = manager.getPluginForExecutor("demo", "pool:0");
+    const disposed = manager.getPluginForExecutor("demo", "vpn:0:8");
+    const active = manager.getPluginForExecutor("demo", "vpn:1:9");
+    manager.getPluginForExecutor("other", "vpn:0:8");
+    const otherActive = manager.getPluginForExecutor("other", "vpn:1:9");
+
+    manager.releaseExecutorRuntimes("vpn:0:8");
+
+    expect(manager.getInstalledPluginMetadata("demo")?.loadedExecutors).toEqual([
+      "immediate", "pool:0", "vpn:1:9",
+    ]);
+    expect(manager.getInstalledPluginMetadata("other")?.loadedExecutors).toEqual(["vpn:1:9"]);
+    expect(manager.getPluginForExecutor("demo", "immediate")).toBe(immediate);
+    expect(manager.getPluginForExecutor("demo", "pool:0")).toBe(pool);
+    expect(manager.getPluginForExecutor("demo", "vpn:1:9")).toBe(active);
+    expect(manager.getPluginForExecutor("other", "vpn:1:9")).toBe(otherActive);
+    expect(lazyLoadCount()).toBe(6);
+
+    manager.releaseExecutorRuntimes("vpn:0:8");
+    expect(manager.getPluginForExecutor("demo", "vpn:0:8")).not.toBe(disposed);
+    expect(lazyLoadCount()).toBe(7);
+  });
+
   it("surfaces broken installed source on use instead of startup", async () => {
     const manager = new PluginManager();
     mockedListInstalledPlugins.mockResolvedValueOnce([

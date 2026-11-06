@@ -1685,6 +1685,11 @@ export function enqueueChapterDownload(
 // ranges rotate worker leases; chapters it downloads later update their own rows.
 const vpnPlanLocalWorkScans = new Map<string, Map<number, Promise<void>>>();
 
+/** Releases a terminal plan's cached scans while existing tasks retain their own scan references. */
+export function releaseVpnDownloadPlanLocalWorkScans(planId: string): void {
+  vpnPlanLocalWorkScans.delete(planId);
+}
+
 export function enqueueVpnDownloadChapter(
   job: ChapterDownloadJob,
   worker: VpnDownloadWorkerRef,

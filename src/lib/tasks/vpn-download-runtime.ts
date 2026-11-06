@@ -17,6 +17,8 @@ import { androidCloseVpnDownloadWorker, androidConfigureVpnDownloadWorker, andro
 import { describeError } from "../errors";
 import { isAbortError } from "../abort";
 import { getChapterDownloadFailure } from "../../db/queries/chapter-download-failure";
+import { pluginManager } from "../plugins/manager";
+import { releaseVpnDownloadPlanLocalWorkScans } from "./chapter-download";
 import { isNetworkOnline, useNetworkStore } from "../network";
 import { getPluginVpnStatus, isPluginVpnRecoveryStopped, loadPluginVpnFinderServers, PLUGIN_VPN_PROFILE_RELEASED_EVENT } from "../plugin-vpn";
 import { listAutomaticPluginVpnProfiles, recordAutomaticPluginVpnProfileResult, testAutomaticPluginVpnCandidate } from "../plugin-vpn-automatic";
@@ -196,6 +198,7 @@ async function disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void> {
     disconnectPluginVpnDownloadWorker(worker),
   ]).then(() => {
     session.unregister?.();
+    pluginManager.releaseExecutorRuntimes(executor);
     if (sessions.get(executor) === session) sessions.delete(executor);
     syncBatches();
     retryPendingDrafts();
@@ -216,7 +219,7 @@ const adapter: VpnDownloadRuntime = {
   updatePlan: updateVpnDownloadPlan,
   settleChapter: settleVpnDownloadChapter,
   cancelRange: cancelStoredRange,
-  cancelPlan: cancelVpnDownloadPlan,
+  cancelPlan: async id => { await cancelVpnDownloadPlan(id); releaseVpnDownloadPlanLocalWorkScans(id); },
   listProfiles: availableProfiles,
   loadProfileIssues: listVpnDownloadProfileIssues,
   recordProfileIssue: recordVpnDownloadProfileIssue,
@@ -290,6 +293,10 @@ const coordinator = new VpnDownloadCoordinator(adapter);
 
 function syncBatches(): void {
   const plans = coordinator.getPlans();
+  for (const plan of plans) {
+    if (plan.ranges.every(range => range.phase === "completed" || range.phase === "cancelled") &&
+        ![...sessions.values()].some(session => session.planId === plan.id)) releaseVpnDownloadPlanLocalWorkScans(plan.id);
+  }
   publish();
   for (const batch of batches.values()) {
     const owned = new Map(plans.filter(plan => batch.planIds.has(plan.id)).map(plan => [plan.id, plan]));
