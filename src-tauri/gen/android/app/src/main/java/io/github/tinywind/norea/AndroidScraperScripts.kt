@@ -22,11 +22,12 @@ internal class AndroidScraperScripts(resources: Resources) {
     mapOf("__NOREA_APP_ORIGIN_JSON__" to appOriginJson(appUrl)),
   )
 
-  fun fetch(id: String, nonce: String, request: JSONObject): String =
+  fun fetch(id: String, nonce: String, request: JSONObject, bypassCache: Boolean = false): String =
     fillScriptTemplate(
       fetchTemplate,
       mapOf(
         "__NOREA_REQUEST_JSON__" to request.toString(),
+        "__NOREA_BYPASS_CACHE__" to bypassCache.toString(),
         "__NOREA_REQUEST_ID_JSON__" to JSONObject.quote(id),
         "__NOREA_REQUEST_NONCE_JSON__" to JSONObject.quote(nonce),
       ),

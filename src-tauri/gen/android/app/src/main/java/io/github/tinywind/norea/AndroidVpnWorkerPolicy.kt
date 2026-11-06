@@ -13,6 +13,81 @@ internal fun androidVpnWorkerCapabilities(apiLevel: Int, multiProfile: Boolean, 
   return mapOf("supported" to supported, "parallelSupported" to supported, "maxWorkers" to if (supported) MAX_VPN_DOWNLOAD_WORKERS else 0)
 }
 
+internal fun androidScraperCookieExpiration(cookieInfo: String): String? {
+  val parts = cookieInfo.split(";").map { it.trim() }.filter { it.isNotEmpty() }
+  val name = parts.firstOrNull()?.substringBefore("=")?.trim()?.takeIf { it.isNotEmpty() } ?: return null
+  val identityAttributes = parts.drop(1).filter { attribute ->
+    attribute.substringBefore("=").trim().lowercase() in setOf("domain", "path", "secure", "partitioned")
+  }
+  return buildList {
+    add("$name=")
+    add("Expires=Thu, 01 Jan 1970 00:00:00 GMT")
+    add("Max-Age=0")
+    addAll(identityAttributes)
+  }.joinToString("; ")
+}
+
+internal fun androidScraperVpnCookieExpiration(cookieInfo: String): String? {
+  val name = cookieInfo.substringBefore(";").substringBefore("=").trim()
+  if (name !in setOf("cf_clearance", "__cf_bm", "_cfuvid", "__cfwaitingroom") &&
+    !name.startsWith("cf_chl_") && !name.startsWith("__cf_chl_")) return null
+  return androidScraperCookieExpiration(cookieInfo)
+}
+
+/** Defers each source origin's first request until its previous route's challenge cookies are expired. */
+internal class AndroidScraperVpnSession(resetInitially: Boolean = false) {
+  private class Pending(val callbacks: MutableList<(Result<Boolean>) -> Unit>)
+  private var epoch = if (resetInitially) 1L else 0L
+  private val cleaned = mutableSetOf<Pair<String, String>>()
+  private val refreshedUrls = mutableSetOf<Pair<String, String>>()
+  private val pending = mutableMapOf<Pair<String, String>, Pending>()
+
+  fun reset() {
+    epoch += 1
+    cleaned.clear()
+    refreshedUrls.clear()
+    val abandoned = pending.values.toList()
+    pending.clear()
+    val failure = Result.failure<Boolean>(IllegalStateException("VPN session changed during cookie cleanup."))
+    abandoned.forEach { entry -> entry.callbacks.forEach { it(failure) } }
+  }
+
+  fun isReady(sourceId: String, url: String): Boolean =
+    epoch == 0L || (sourceId to androidVpnWorkerAppOrigin(url)) in cleaned
+
+  fun needsFreshResponse(sourceId: String, url: String): Boolean =
+    epoch != 0L && (sourceId to url.substringBefore("#")) !in refreshedUrls
+
+  fun recordFreshResponse(sourceId: String, url: String) {
+    if (epoch != 0L) refreshedUrls.add(sourceId to url.substringBefore("#"))
+  }
+
+  fun prepare(
+    sourceId: String,
+    url: String,
+    cleanup: ((Result<Unit>) -> Unit) -> Unit,
+    ready: (Result<Boolean>) -> Unit,
+  ) {
+    val key = sourceId to androidVpnWorkerAppOrigin(url)
+    if (epoch == 0L || key in cleaned) {
+      ready(Result.success(false))
+      return
+    }
+    pending[key]?.let { it.callbacks.add(ready); return }
+    val entry = Pending(mutableListOf(ready))
+    pending[key] = entry
+    val complete: (Result<Unit>) -> Unit = { result ->
+      if (pending[key] === entry) {
+        pending.remove(key)
+        if (result.isSuccess) cleaned.add(key)
+        val prepared = result.map { true }
+        entry.callbacks.forEach { it(prepared) }
+      }
+    }
+    runCatching { cleanup(complete) }.onFailure { complete(Result.failure(it)) }
+  }
+}
+
 internal data class AndroidVpnWorkerQueue(val slot: Int, val generation: Long)
 
 internal fun androidVpnWorkerCloseAlreadySettled(generation: Long, currentGeneration: Long?): Boolean =

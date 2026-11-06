@@ -274,6 +274,7 @@ pub fn run() {
             plugin_vpn::state::plugin_vpn_import_profile,
             plugin_vpn::state::plugin_vpn_remove_profile,
             plugin_vpn::state::plugin_vpn_status,
+            scraper::scraper_reset_vpn_session,
             plugin_vpn::download_workers::plugin_vpn_download_worker_connect,
             plugin_vpn::download_workers::plugin_vpn_download_worker_disconnect,
             plugin_vpn::download_workers::plugin_vpn_download_worker_status,

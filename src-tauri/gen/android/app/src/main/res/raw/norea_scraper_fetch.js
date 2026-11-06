@@ -25,6 +25,7 @@
         method: init.method || "GET",
         headers,
         credentials: "include",
+        cache: __NOREA_BYPASS_CACHE__ ? "reload" : "default",
         redirect: "follow",
         signal: controller.signal
       };

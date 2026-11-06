@@ -71,6 +71,14 @@ pub async fn scraper_clear_cache(
 }
 
 #[tauri::command]
+pub async fn scraper_reset_vpn_session(
+    _app: AppHandle,
+    _state: tauri::State<'_, ScraperState>,
+) -> Result<(), String> {
+    Err("scraper_reset_vpn_session is handled by the Android native scraper bridge".to_string())
+}
+
+#[tauri::command]
 pub async fn scraper_clear_cookies(
     _app: AppHandle,
     _state: tauri::State<'_, ScraperState>,

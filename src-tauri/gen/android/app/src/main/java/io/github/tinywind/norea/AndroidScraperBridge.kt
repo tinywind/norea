@@ -109,6 +109,11 @@ class AndroidScraperBridge(
     File(mainWebView.context.cacheDir, LEGACY_CHAPTER_PAGE_CACHE_DIRECTORY)
   private val scripts = AndroidScraperScripts(mainWebView.resources)
   private val queues = mutableMapOf(IMMEDIATE_EXECUTOR to AndroidScraperState(IMMEDIATE_EXECUTOR))
+  private val vpnSession = AndroidScraperVpnSession(resetInitially = profileNamespace != null)
+  private val vpnFreshFetches = mutableMapOf<String, Pair<String, String>>()
+  private val vpnFreshNavigations = mutableMapOf<WebView, Pair<String, String>>()
+  private val vpnCookieTimeouts = mutableSetOf<Runnable>()
+  private var vpnResetId: String? = null
   @Volatile
   private var closed = false
   private var browserVisible = false
@@ -136,26 +141,6 @@ class AndroidScraperBridge(
     val names = header.split(";")
       .mapNotNull { cookie -> cookie.substringBefore("=").trim().takeIf { it.isNotEmpty() } }
     return "count=${names.size} names=${names.joinToString(",")}"
-  }
-
-  private fun expiredCookieHeader(cookieInfo: String): String? {
-    val parts = cookieInfo.split(";").map { it.trim() }.filter { it.isNotEmpty() }
-    val name = parts.firstOrNull()?.substringBefore("=")?.trim()
-      ?.takeIf { it.isNotEmpty() }
-      ?: return null
-    val identityAttributes = parts.drop(1).filter { attribute ->
-      val attributeName = attribute.substringBefore("=").trim().lowercase()
-      attributeName == "domain" ||
-        attributeName == "path" ||
-        attributeName == "secure" ||
-        attributeName == "partitioned"
-    }
-    return buildList {
-      add("$name=")
-      add("Expires=Thu, 01 Jan 1970 00:00:00 GMT")
-      add("Max-Age=0")
-      addAll(identityAttributes)
-    }.joinToString("; ")
   }
 
   private fun jsonKeysForLog(json: JSONObject?): String {
@@ -270,6 +255,88 @@ class AndroidScraperBridge(
   }
 
   @JavascriptInterface
+  fun resetVpnSession(payload: String) {
+    parseCommand(payload, BridgeCapabilities.SCRAPER_CLEAR_COOKIES) { json ->
+      val id = json.getString("id")
+      vpnResetId?.let { sendError(it, "scraper: VPN session reset superseded") }
+      vpnResetId = id
+      runCatching {
+        val wasVisible = browserVisible
+        browserVisible = false
+        val states = queues.values.toList()
+        states.forEach { state ->
+          cancelQueuedWhere(state, "scraper: VPN session changed") { true }
+          clearTimeout(state)
+          clearBackgroundScraperLayoutWait(state)
+          clearExtractScript(state)
+          state.busy = true
+          state.blankBeforeNextAction = false
+          state.activeAction?.id?.let { sendError(it, "scraper: VPN session changed") }
+          state.activeAction = null
+          state.activeFetchId = null
+          state.activeExtractId = null
+          state.activeResultNonce = null
+          cancelConcurrentFetches(state, "scraper: VPN session changed")
+          state.fetchInFlight = false
+          state.contextReady = false
+          state.currentUrl = null
+          state.pendingDocumentReady = null
+          state.pendingChallengeUrl = null
+          state.authenticationReturnQueue = null
+          state.retainExtractDocument = false
+          state.busy = false
+          state.blankNavigationInProgress = state.webView != null
+          state.webView?.let { webView ->
+            webView.webViewClient = WebViewClient()
+            webView.stopLoading()
+            hideScraperSurface(state)
+          }
+        }
+        vpnFreshFetches.clear()
+        vpnFreshNavigations.clear()
+        vpnCookieTimeouts.forEach(mainHandler::removeCallbacks)
+        vpnCookieTimeouts.clear()
+        vpnSession.reset()
+        if (wasVisible) emitSiteBrowserHidden()
+        var remaining = states.count { it.webView != null }
+        if (remaining == 0) {
+          vpnResetId = null
+          sendSuccess(id, true)
+        }
+        states.forEach { state ->
+          val webView = state.webView ?: return@forEach
+          val timeout = Runnable {
+            if (vpnResetId == id) {
+              vpnResetId = null
+              sendError(id, "scraper: VPN session blank navigation timed out")
+            }
+          }
+          state.activeTimeout = timeout
+          mainHandler.postDelayed(timeout, 10_000L)
+          webView.webViewClient = object : WebViewClient() {
+            override fun onPageFinished(view: WebView, url: String) {
+              if (state.webView !== view || url != BLANK_PAGE_URL || vpnResetId != id) return
+              clearTimeout(state)
+              state.blankNavigationInProgress = false
+              view.webViewClient = makeClient(state, null)
+              remaining -= 1
+              if (remaining == 0) {
+                vpnResetId = null
+                sendSuccess(id, true)
+              }
+              runNext(state)
+            }
+          }
+          webView.loadUrl(BLANK_PAGE_URL)
+        }
+      }.onFailure {
+        if (vpnResetId == id) vpnResetId = null
+        sendError(id, "scraper: VPN session reset failed: ${it.message}")
+      }
+    }
+  }
+
+  @JavascriptInterface
   fun clearCookies(payload: String) {
     parseCommand(payload, BridgeCapabilities.SCRAPER_CLEAR_COOKIES) { json ->
       val id = json.getString("id")
@@ -354,7 +421,7 @@ class AndroidScraperBridge(
           sourceId = sourceId,
           priority = payloadPriority(json),
           browserAction = false,
-          run = { runFetch(it, json) },
+          run = { state -> runAfterVpnSessionCleanup(state, json, ::runFetch) },
           fetchPayload = json,
         ),
       )
@@ -374,7 +441,7 @@ class AndroidScraperBridge(
           sourceId = sourceId,
           priority = payloadPriority(json),
           browserAction = false,
-          run = { runExtract(it, json) },
+          run = { state -> runAfterVpnSessionCleanup(state, json, ::runExtract) },
         ),
       )
     }
@@ -397,7 +464,7 @@ class AndroidScraperBridge(
           sourceId = sourceId,
           priority = PRIORITY_INTERACTIVE,
           browserAction = true,
-          run = { runNavigate(it, json) },
+          run = { state -> runAfterVpnSessionCleanup(state, json, ::runNavigate) },
         ),
       )
     }
@@ -432,6 +499,11 @@ class AndroidScraperBridge(
     parserExecutor.shutdownNow()
     cacheCleanupExecutor.shutdownNow()
     val cleanup = Runnable {
+      vpnCookieTimeouts.forEach(mainHandler::removeCallbacks)
+      vpnCookieTimeouts.clear()
+      vpnFreshFetches.clear()
+      vpnFreshNavigations.clear()
+      vpnSession.reset()
       queues.values.forEach { state ->
         clearTimeout(state)
         state.webView?.let { webView ->
@@ -721,6 +793,7 @@ class AndroidScraperBridge(
       activateSource(state, action.sourceId)
       action.run(state)
     } catch (error: Throwable) {
+      vpnFreshFetches.remove(action.id)
       clearTimeout(state)
       clearBackgroundScraperLayoutWait(state)
       state.webView?.let { webView ->
@@ -754,6 +827,8 @@ class AndroidScraperBridge(
     if (payloadUserAgent(payload) != state.userAgent) return false
     val url = payload.optString("url")
     val contextUrl = payload.optString("contextUrl").takeIf { it.isNotBlank() }
+    if (isHttpUrl(url) && !vpnSession.isReady(action.sourceId, url)) return false
+    if (contextUrl != null && isHttpUrl(contextUrl) && !vpnSession.isReady(action.sourceId, contextUrl)) return false
     val fetchContextUrl = fetchContextUrl(url, contextUrl) ?: return true
     return sameOrigin(state.currentUrl, fetchContextUrl)
   }
@@ -818,11 +893,12 @@ class AndroidScraperBridge(
     val request = JSONObject()
       .put("url", url)
       .put("init", init)
-    webView.evaluateJavascript(scripts.fetch(id, nonce, request), null)
+    runFetchScript(state, webView, id, nonce, request)
   }
 
   private fun finishConcurrentFetch(state: AndroidScraperState, id: String, envelope: JSONObject) {
     val entry = state.concurrentFetches.remove(id) ?: return
+    vpnFreshFetches.remove(id)
     mainHandler.removeCallbacks(entry.timeout)
     logState(state, "finish concurrent id=$id envelope=${envelopeForLog(envelope)}")
     sendResult(id, envelope)
@@ -897,6 +973,7 @@ class AndroidScraperBridge(
     webView: WebView,
     reason: String,
   ) {
+    vpnFreshNavigations.remove(webView)
     webView.webViewClient = WebViewClient()
     state.pendingSurfaceLayoutListener?.let(webView::removeOnLayoutChangeListener)
     state.pendingSurfaceLayoutListener = null
@@ -1322,6 +1399,7 @@ class AndroidScraperBridge(
       state.currentUrl = url
       state.contextReady = isHttpUrl(url)
       profileCookieManager(view).flush()
+      recordVpnNavigationResponse(view, url)
       logState(state, "pageFinished url=$url", url)
       onFinished?.invoke(url)
     }
@@ -1340,6 +1418,126 @@ class AndroidScraperBridge(
     }
   }
 
+  private fun runAfterVpnSessionCleanup(
+    state: AndroidScraperState,
+    payload: JSONObject,
+    run: (AndroidScraperState, JSONObject) -> Unit,
+  ) {
+    val id = payload.getString("id")
+    val sourceId = checkNotNull(state.sourceId)
+    val webView = scraper(state, payloadUserAgent(payload))
+    val urls = listOf(payload.getString("url"), payload.optString("contextUrl"))
+      .filter(::isHttpUrl).distinctBy(::androidVpnWorkerAppOrigin)
+
+    fun prepare(index: Int) {
+      if (closed || state.activeAction?.id != id || state.webView !== webView) return
+      if (index == urls.size) {
+        runCatching { run(state, payload) }.onFailure {
+          finishError(state, id, "scraper: ${it.message ?: it.toString()}")
+        }
+        return
+      }
+      val url = urls[index]
+      vpnSession.prepare(
+        sourceId,
+        url,
+        cleanup = { done -> expireVpnChallengeCookies(webView, url, done) },
+        ready = { result ->
+          if (!closed && state.activeAction?.id == id && state.webView === webView) {
+            result.fold(
+              onSuccess = { prepare(index + 1) },
+              onFailure = { finishError(state, id, "scraper: ${it.message ?: it.toString()}") },
+            )
+          }
+        },
+      )
+    }
+    prepare(0)
+  }
+
+  private fun expireVpnChallengeCookies(
+    webView: WebView,
+    url: String,
+    done: (Result<Unit>) -> Unit,
+  ) {
+    if (!WebViewFeature.isFeatureSupported(WebViewFeature.GET_COOKIE_INFO)) {
+      done(Result.failure(UnsupportedOperationException("VPN session reset requires cookie info support.")))
+      return
+    }
+    val cookieManager = profileCookieManager(webView)
+    val headers = runCatching {
+      CookieManagerCompat.getCookieInfo(cookieManager, url).mapNotNull(::androidScraperVpnCookieExpiration)
+    }.getOrElse { done(Result.failure(it)); return }
+    if (headers.isEmpty()) {
+      done(Result.success(Unit))
+      return
+    }
+
+    var settled = false
+    lateinit var timeout: Runnable
+    val complete: (Result<Unit>) -> Unit = { result ->
+      if (!settled) {
+        settled = true
+        mainHandler.removeCallbacks(timeout)
+        vpnCookieTimeouts.remove(timeout)
+        done(result)
+      }
+    }
+    timeout = Runnable { complete(Result.failure(IllegalStateException("VPN challenge cookie cleanup timed out."))) }
+    vpnCookieTimeouts.add(timeout)
+    mainHandler.postDelayed(timeout, 10_000L)
+    var remaining = headers.size
+    var rejected = false
+    runCatching {
+      headers.forEach { header ->
+        cookieManager.setCookie(url, header) { accepted ->
+          if (!accepted) rejected = true
+          remaining -= 1
+          if (remaining == 0) {
+            runCatching {
+              cookieManager.flush()
+              check(!rejected) { "VPN challenge cookie expiration was rejected." }
+            }.fold(
+              onSuccess = { complete(Result.success(Unit)) },
+              onFailure = { complete(Result.failure(it)) },
+            )
+          }
+        }
+      }
+    }.onFailure { complete(Result.failure(it)) }
+  }
+
+  private fun runFetchScript(state: AndroidScraperState, webView: WebView, id: String, nonce: String, request: JSONObject) {
+    val sourceId = checkNotNull(state.sourceId)
+    val url = request.getString("url")
+    val fresh = vpnSession.needsFreshResponse(sourceId, url)
+    if (fresh) vpnFreshFetches[id] = sourceId to url
+    webView.evaluateJavascript(scripts.fetch(id, nonce, request, fresh), null)
+  }
+
+  private fun loadScraperUrl(state: AndroidScraperState, webView: WebView, url: String) {
+    val sourceId = checkNotNull(state.sourceId)
+    if (isHttpUrl(url) && vpnSession.needsFreshResponse(sourceId, url)) {
+      vpnFreshNavigations[webView] = sourceId to url
+      webView.loadUrl(url, mapOf("Cache-Control" to "no-cache", "Pragma" to "no-cache"))
+    } else {
+      webView.loadUrl(url)
+    }
+  }
+
+  private fun recordVpnFetchResponse(id: String, result: JSONObject) {
+    val (sourceId, url) = vpnFreshFetches.remove(id) ?: return
+    vpnSession.recordFreshResponse(sourceId, url)
+    result.optString("finalUrl").takeIf(::isHttpUrl)?.let { vpnSession.recordFreshResponse(sourceId, it) }
+  }
+
+  private fun recordVpnNavigationResponse(webView: WebView, url: String) {
+    if (!isHttpUrl(url) || webView.url != url) return
+    val (sourceId, requestedUrl) = vpnFreshNavigations.remove(webView) ?: return
+    vpnSession.recordFreshResponse(sourceId, requestedUrl)
+    vpnSession.recordFreshResponse(sourceId, url)
+  }
+
   private fun runClearCookies(state: AndroidScraperState, payload: JSONObject) {
     val id = payload.getString("id")
     val url = payload.getString("url")
@@ -1355,7 +1553,7 @@ class AndroidScraperBridge(
     val cookieManager = profileCookieManager(scraper(state, payloadUserAgent(payload)))
     val expiredHeaders = runCatching {
       CookieManagerCompat.getCookieInfo(cookieManager, url)
-        .mapNotNull(::expiredCookieHeader)
+        .mapNotNull(::androidScraperCookieExpiration)
     }.getOrElse { error ->
       finishError(state, id, "scraper: read cookies: ${error.message ?: error.toString()}")
       return
@@ -1427,7 +1625,7 @@ class AndroidScraperBridge(
       val request = JSONObject()
         .put("url", fetchUrl)
         .put("init", init)
-      webView.evaluateJavascript(scripts.fetch(id, resultNonce, request), null)
+      runFetchScript(state, webView, id, resultNonce, request)
       state.fetchInFlight = true
       startConcurrentFetches(state)
     }
@@ -1476,7 +1674,8 @@ class AndroidScraperBridge(
       if (state.activeExtractId == id && state.activeAction?.id == id) {
         runCatching {
           val reuseDocument = useDocumentStartScript && navigationScript.isNotBlank() &&
-            state.contextReady && sameOrigin(state.currentUrl, url)
+            state.contextReady && sameOrigin(state.currentUrl, url) &&
+            !vpnSession.needsFreshResponse(checkNotNull(state.sourceId), url)
           logState(
             state,
             "runExtract navigate id=$id reuseDocument=$reuseDocument surface=${webView.width}x${webView.height}",
@@ -1488,10 +1687,10 @@ class AndroidScraperBridge(
             )
             webView.evaluateJavascript("($navigationScript)(function () { $prepareCapture })") { followed ->
               if (state.activeExtractId == id && followed == "true") logState(state, "followed chapter link id=$id", targetUrl)
-              if (state.activeExtractId == id && followed != "true") webView.loadUrl(targetUrl)
+              if (state.activeExtractId == id && followed != "true") loadScraperUrl(state, webView, targetUrl)
             }
           } else {
-            webView.loadUrl(targetUrl)
+            loadScraperUrl(state, webView, targetUrl)
           }
         }
           .onFailure { error ->
@@ -1555,7 +1754,7 @@ class AndroidScraperBridge(
       state,
       webView,
       onReady = {
-        if (state.activeAction?.id == id) webView.loadUrl(url)
+        if (state.activeAction?.id == id) loadScraperUrl(state, webView, url)
       },
       layoutParams = visibleLayoutParams().apply {
         leftMargin = -10000
@@ -1620,7 +1819,7 @@ class AndroidScraperBridge(
             "prepareContext fallback id=$id contextUrl=$contextUrl finishedUrl=$documentUrl fallbackUrl=${action.url} event=$event",
             action.url,
           )
-          webView.loadUrl(action.url)
+          loadScraperUrl(state, webView, action.url)
         }
         is AndroidScraperContextAction.Ready -> {
           // A synthetic document can become ready without a page-start event, and the
@@ -1648,7 +1847,7 @@ class AndroidScraperBridge(
     if (syntheticDocumentUrl != null) {
       webView.loadDataWithBaseURL(syntheticDocumentUrl, PARKED_PAGE_HTML, "text/html", "utf-8", syntheticDocumentUrl)
     } else {
-      webView.loadUrl(contextUrl)
+      loadScraperUrl(state, webView, contextUrl)
     }
   }
 
@@ -1817,6 +2016,7 @@ class AndroidScraperBridge(
   }
 
   private fun finish(state: AndroidScraperState, id: String, envelope: JSONObject) {
+    vpnFreshFetches.remove(id)
     clearTimeout(state)
     clearBackgroundScraperLayoutWait(state)
     state.pendingDocumentReady = null
@@ -1917,6 +2117,7 @@ class AndroidScraperBridge(
         failFetchResult(state, id, result.optString("error", "unknown browser fetch error"))
         return
       }
+      recordVpnFetchResponse(id, result)
       result.remove("success")
       finishConcurrentFetch(
         state,
@@ -1935,6 +2136,7 @@ class AndroidScraperBridge(
       finishError(state, id, result.optString("error", "unknown browser fetch error"))
       return
     }
+    recordVpnFetchResponse(id, result)
     result.remove("success")
     finishSuccess(state, id, result)
   }
@@ -1954,7 +2156,10 @@ class AndroidScraperBridge(
     val activeId = state.activeExtractId ?: return
     if (id != null && id != activeId) return
     if (!isExpectedResultNonce(state, activeId, nonce.orEmpty())) return
-    state.webView?.let { profileCookieManager(it).flush() }
+    state.webView?.let { webView ->
+      profileCookieManager(webView).flush()
+      webView.url?.let { recordVpnNavigationResponse(webView, it) }
+    }
     logState(state, "onExtractResult id=$activeId payloadLength=${payload.length}")
     clearTimeout(state)
     val result = runCatching { JSONObject(payload) }.getOrNull()
@@ -2010,7 +2215,7 @@ class AndroidScraperBridge(
     private const val IMMEDIATE_EXECUTOR = "immediate"
     private const val LEGACY_CHAPTER_PAGE_CACHE_DIRECTORY = "scraper-chapter-pages"
     private const val MAX_SOURCE_ID_BYTES = 512
-    private const val PARKED_PAGE_HTML = "<!doctype html><title></title>"
+    private const val PARKED_PAGE_HTML = "<!doctype html><head><link rel='icon' href='data:,'></head><body></body>"
     private const val PRIORITY_INTERACTIVE = 0
     private const val PRIORITY_USER = 1
     private const val PRIORITY_NORMAL = 2

@@ -26,9 +26,9 @@ use webview2_com::Microsoft::Web::WebView2::Win32::{
     COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
 };
 #[cfg(target_os = "windows")]
-use webview2_com::{ClearBrowsingDataCompletedHandler, GetCookiesCompletedHandler};
+use webview2_com::{take_pwstr, ClearBrowsingDataCompletedHandler, GetCookiesCompletedHandler};
 #[cfg(target_os = "windows")]
-use windows::core::{Interface, HSTRING, PCWSTR};
+use windows::core::{Interface, HSTRING, PCWSTR, PWSTR};
 
 use super::scripts::{
     build_webview_fetch_cancel_script, build_webview_fetch_cleanup_script,
@@ -99,6 +99,9 @@ pub struct ScraperState {
     /// cancellation advanced it while queued or in flight.
     cancel_generations: Mutex<HashMap<String, Arc<AtomicU64>>>,
     captured_resources: Arc<crate::webview_resource_capture::CapturedResourceStore>,
+    vpn_generation: AtomicU64,
+    #[cfg(target_os = "windows")]
+    vpn_profile_generations: Mutex<HashMap<String, Arc<AsyncMutex<u64>>>>,
     #[cfg(target_os = "windows")]
     resource_capture_handlers: Mutex<HashSet<String>>,
 }
@@ -497,7 +500,20 @@ fn scraper_initialization_script(app_url: Option<&Url>) -> String {
     SCRAPER_INIT_SCRIPT.replace("__NOREA_APP_ORIGIN_JSON__", &app_origin_json)
 }
 
-fn scraper_handle_for_key(
+async fn scraper_handle_for_key(
+    app: &AppHandle,
+    state: &ScraperState,
+    key: &str,
+    source_id: &str,
+    user_agent: Option<&str>,
+) -> Result<ScraperWebview, String> {
+    let scraper = create_scraper_handle_for_key(app, state, key, source_id, user_agent)?;
+    #[cfg(target_os = "windows")]
+    reset_windows_vpn_profile_if_needed(&scraper, state, source_id).await?;
+    Ok(scraper)
+}
+
+fn create_scraper_handle_for_key(
     app: &AppHandle,
     state: &ScraperState,
     key: &str,
@@ -930,7 +946,8 @@ pub async fn scraper_set_bounds(
         IMMEDIATE_EXECUTOR,
         &source_id,
         user_agent.as_deref(),
-    )?;
+    )
+    .await?;
     #[cfg(target_os = "windows")]
     {
         ensure_resource_capture_handler(&scraper, &state, IMMEDIATE_EXECUTOR, &source_id).await?;
@@ -1397,6 +1414,132 @@ pub async fn scraper_clear_cache(
     Err("scraper_clear_cache is only available on Windows".to_string())
 }
 
+#[cfg(any(target_os = "windows", test))]
+fn is_vpn_challenge_cookie(name: &str) -> bool {
+    matches!(name, "cf_clearance" | "__cf_bm" | "__cfwaitingroom" | "_cfuvid")
+        || name.starts_with("cf_chl_")
+        || name.starts_with("__cf_chl_")
+}
+
+#[cfg(any(target_os = "windows", test))]
+fn invalidate_vpn_session(state: &ScraperState) -> Vec<String> {
+    state.vpn_generation.fetch_add(1, Ordering::AcqRel);
+    for generation in state
+        .cancel_generations
+        .lock()
+        .expect("scraper cancel generations mutex")
+        .values()
+    {
+        generation.fetch_add(1, Ordering::AcqRel);
+    }
+    state.captured_resources.clear_all();
+    state
+        .pending_navigations
+        .lock()
+        .expect("scraper pending navigations mutex")
+        .clear();
+    state
+        .pending_completions
+        .lock()
+        .expect("scraper pending completions mutex")
+        .clear();
+    *state
+        .last_navigated
+        .lock()
+        .expect("scraper last_navigated mutex") = None;
+    state
+        .webviews
+        .lock()
+        .expect("scraper webviews mutex")
+        .keys()
+        .cloned()
+        .collect()
+}
+
+#[cfg(target_os = "windows")]
+async fn reset_windows_vpn_profile_if_needed(
+    scraper: &ScraperWebview,
+    state: &ScraperState,
+    source_id: &str,
+) -> Result<(), String> {
+    let profile = state
+        .vpn_profile_generations
+        .lock()
+        .expect("scraper VPN profile generations mutex")
+        .entry(source_id.to_string())
+        .or_insert_with(|| Arc::new(AsyncMutex::new(0)))
+        .clone();
+    let mut applied = profile.lock().await;
+    let generation = state.vpn_generation.load(Ordering::Acquire);
+    if *applied == generation {
+        return Ok(());
+    }
+    clear_windows_cookies(scraper, None, true).await?;
+    clear_windows_disk_cache(scraper).await?;
+    *applied = generation;
+    Ok(())
+}
+
+/// Discard the previous VPN route page and challenge state while preserving source logins.
+#[cfg(target_os = "windows")]
+#[tauri::command]
+pub async fn scraper_reset_vpn_session(
+    app: AppHandle,
+    state: tauri::State<'_, ScraperState>,
+) -> Result<(), String> {
+    let executors = invalidate_vpn_session(&state);
+    for executor in executors {
+        if let Some(scraper) = state
+            .webviews
+            .lock()
+            .expect("scraper webviews mutex")
+            .get(&executor)
+            .and_then(|entry| app.get_webview(&entry.label))
+        {
+            stop_scraper_loading(&scraper);
+        }
+        let lock = scraper_executor_lock(&state, &executor);
+        let _guard = timeout(SCRAPER_CACHE_CLEAR_TIMEOUT, lock.lock())
+            .await
+            .map_err(|_| format!("scraper_reset_vpn_session: executor {executor} did not stop"))?;
+        let entry = state
+            .webviews
+            .lock()
+            .expect("scraper webviews mutex")
+            .get(&executor)
+            .cloned();
+        if let Some(scraper) = entry.and_then(|entry| app.get_webview(&entry.label)) {
+            hide_scraper_webview(&scraper)?;
+            let request_id = FETCH_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+            let completion = register_navigation(&state, &executor, request_id, SCRAPER_BLANK_URL);
+            let _navigation_guard = NavigationGuard {
+                state: state.inner(),
+                executor: executor.clone(),
+                request_id,
+            };
+            let blank = Url::parse(SCRAPER_BLANK_URL).map_err(|error| error.to_string())?;
+            scraper
+                .navigate(blank)
+                .map_err(|error| format!("scraper_reset_vpn_session: navigate blank: {error}"))?;
+            wait_for_hidden_blank_page(completion).await?;
+        }
+        let mut visible = state.visible_key.lock().expect("scraper visible_key mutex");
+        if visible.as_deref() == Some(executor.as_str()) {
+            *visible = None;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(not(target_os = "windows"))]
+#[tauri::command]
+pub async fn scraper_reset_vpn_session(
+    _app: AppHandle,
+    _state: tauri::State<'_, ScraperState>,
+) -> Result<(), String> {
+    Err("scraper_reset_vpn_session is only available on Windows".to_string())
+}
+
 /// Delete cookies available to one plugin URL from its isolated scraper profile.
 #[cfg(any(target_os = "windows", test))]
 async fn await_cookie_clear_completion(
@@ -1410,14 +1553,15 @@ async fn await_cookie_clear_completion(
 }
 
 #[cfg(target_os = "windows")]
-async fn clear_windows_cookies_for_url(
+async fn clear_windows_cookies(
     webview: &ScraperWebview,
-    url: &Url,
+    url: Option<&Url>,
+    challenge_only: bool,
 ) -> Result<usize, String> {
     let (sender, receiver) = oneshot::channel::<Result<usize, String>>();
     let sender = Arc::new(Mutex::new(Some(sender)));
     let sender_for_start = Arc::clone(&sender);
-    let uri = HSTRING::from(url.as_str());
+    let uri = HSTRING::from(url.map(Url::as_str).unwrap_or(""));
 
     webview
         .with_webview(move |platform_webview| {
@@ -1440,6 +1584,7 @@ async fn clear_windows_cookies_for_url(
                                     .to_string()
                             })?;
                             let mut count = 0;
+                            let mut removed = 0;
                             unsafe {
                                 cookies.Count(&mut count).map_err(|error| {
                                     format!(
@@ -1453,6 +1598,15 @@ async fn clear_windows_cookies_for_url(
                                                 "scraper_clear_cookies: read WebView2 cookie: {error}"
                                             )
                                         })?;
+                                    if challenge_only {
+                                        let mut name = PWSTR::null();
+                                        cookie.Name(&mut name).map_err(|error| {
+                                            format!("scraper_reset_vpn_session: read cookie name: {error}")
+                                        })?;
+                                        if !is_vpn_challenge_cookie(&take_pwstr(name)) {
+                                            continue;
+                                        }
+                                    }
                                     callback_cookie_manager
                                         .DeleteCookie(&cookie)
                                         .map_err(|error| {
@@ -1460,9 +1614,10 @@ async fn clear_windows_cookies_for_url(
                                                 "scraper_clear_cookies: delete WebView2 cookie: {error}"
                                             )
                                         })?;
+                                    removed += 1;
                                 }
                             }
-                            Ok(count as usize)
+                            Ok(removed)
                         })();
                         if let Ok(mut sender) = sender_for_callback.lock() {
                             if let Some(sender) = sender.take() {
@@ -1519,11 +1674,12 @@ pub async fn scraper_clear_cookies(
         .map_err(|_| "scraper_clear_cookies: scraper executor lock timed out".to_string())?;
 
     let user_agent = normalize_user_agent(user_agent);
-    let scraper = scraper_handle_for_key(&app, &state, &queue, &source_id, user_agent.as_deref())?;
+    let scraper =
+        scraper_handle_for_key(&app, &state, &queue, &source_id, user_agent.as_deref()).await?;
 
     #[cfg(target_os = "windows")]
     {
-        clear_windows_cookies_for_url(&scraper, &parsed).await
+        clear_windows_cookies(&scraper, Some(&parsed), false).await
     }
 
     #[cfg(not(target_os = "windows"))]
@@ -1587,7 +1743,8 @@ pub async fn scraper_navigate(
         IMMEDIATE_EXECUTOR,
         &source_id,
         user_agent.as_deref(),
-    )?;
+    )
+    .await?;
     #[cfg(target_os = "windows")]
     {
         ensure_resource_capture_handler(&scraper, &state, IMMEDIATE_EXECUTOR, &source_id).await?;
@@ -2524,7 +2681,8 @@ pub async fn webview_fetch(
     log::trace!(
         "[scraper:fetch] request queue={queue} request_url={url_for_log} configured_context={context_for_log:?} fetch_contexts={fetch_contexts_for_log:?} timeout_ms={timeout_ms:?} user_agent={user_agent:?} init={init_log}"
     );
-    let scraper = scraper_handle_for_key(&app, &state, &queue, &source_id, user_agent.as_deref())?;
+    let scraper =
+        scraper_handle_for_key(&app, &state, &queue, &source_id, user_agent.as_deref()).await?;
     log_scraper_cookies(
         &scraper,
         &queue,
@@ -2812,7 +2970,8 @@ pub async fn webview_extract(
     let queue_lock = scraper_executor_lock(&state, &queue);
     let _queue_guard = queue_lock.lock().await;
     ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
-    let scraper = scraper_handle_for_key(&app, &state, &queue, &source_id, user_agent.as_deref())?;
+    let scraper =
+        scraper_handle_for_key(&app, &state, &queue, &source_id, user_agent.as_deref()).await?;
     let capture_resources = capture_resources.unwrap_or(false) && cfg!(target_os = "windows");
     #[cfg(target_os = "windows")]
     ensure_resource_capture_handler(&scraper, &state, &queue, &source_id).await?;
@@ -2892,6 +3051,7 @@ pub async fn webview_extract(
             ).await?;
             if let Some(kind) = document_browser_challenge(&scraper).await {
                 clear_webview_extract_result(&scraper, None);
+                ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
                 return Ok(browser_challenge_envelope(&kind, &browser_challenge_url(&scraper, &url)));
             }
             let _ = wait_for_scraper_bridge_ready(
@@ -2931,6 +3091,7 @@ pub async fn webview_extract(
                 if let Some(id) = capture_id.take() { state.captured_resources.finish(&queue, id); }
                 clear_webview_extract_result(&scraper, None);
                 log::debug!("[scraper:extract] {kind} requires manual action queue={queue} url={url_for_log}");
+                ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
                 return Ok(browser_challenge_envelope(&kind, &browser_challenge_url(&scraper, &url)));
             }
             let mut extract_result = take_webview_extract_result(&scraper, &request_id)
@@ -2980,6 +3141,7 @@ pub async fn webview_extract(
                     cookie_targets.push(("current", current));
                 }
                 log_scraper_cookies(&scraper, &queue, "after_webview_extract", cookie_targets);
+                ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
                 return Ok(decoded);
             }
         }
@@ -3003,6 +3165,7 @@ pub async fn webview_extract(
         log::debug!(
             "[scraper:extract] browser challenge requires manual action queue={queue} url={challenge_url_for_log}"
         );
+        ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
         return Ok(browser_challenge_envelope(&kind, &challenge_url));
     }
     log::error!(
@@ -3145,6 +3308,59 @@ mod tests {
         assert!(source_profile_directories(&root.path().join("missing"))
             .unwrap()
             .is_empty());
+    }
+
+    #[test]
+    fn vpn_session_reset_removes_only_cloudflare_challenge_cookies() {
+        for name in [
+            "cf_clearance",
+            "__cf_bm",
+            "__cfwaitingroom",
+            "_cfuvid",
+            "cf_chl_rc_i",
+            "cf_chl_prog",
+            "__cf_chl_rt_tk",
+        ] {
+            assert!(is_vpn_challenge_cookie(name), "{name}");
+        }
+        for name in [
+            "session",
+            "sessionid",
+            "auth_token",
+            "remember_me",
+            "XSRF-TOKEN",
+            "__cflb",
+            "my_cf_clearance",
+            "CF_CLEARANCE",
+        ] {
+            assert!(!is_vpn_challenge_cookie(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn vpn_session_reset_invalidates_live_and_queued_executor_results() {
+        let state = ScraperState::default();
+        register_test_executor(&state, IMMEDIATE_EXECUTOR, "source-a", None);
+        register_test_executor(&state, "pool:0", "source-b", None);
+        let live = scraper_executor_cancel_generation(&state, IMMEDIATE_EXECUTOR);
+        let queued = scraper_executor_cancel_generation(&state, "search:0");
+        let resource_url = "https://source.test/blocked-page";
+        capture_test_resource(&state, IMMEDIATE_EXECUTOR, resource_url, b"old-route");
+        let navigation = register_navigation(&state, IMMEDIATE_EXECUTOR, 5, resource_url);
+        let completion = register_completion(&state, "old-fetch");
+
+        let mut executors = invalidate_vpn_session(&state);
+        executors.sort();
+        assert_eq!(executors, vec![IMMEDIATE_EXECUTOR, "pool:0"]);
+        assert_eq!(state.vpn_generation.load(Ordering::Acquire), 1);
+        assert!(ensure_executor_generation(&live, 0, "fetch", IMMEDIATE_EXECUTOR).is_err());
+        assert!(ensure_executor_generation(&queued, 0, "fetch", "search:0").is_err());
+        assert!(state
+            .captured_resources
+            .take(IMMEDIATE_EXECUTOR, resource_url)
+            .is_none());
+        assert!(navigation.blocking_recv().is_err());
+        assert!(completion.blocking_recv().is_err());
     }
 
     #[test]
