@@ -49,6 +49,17 @@ vi.mock("../lib/network", () => ({
   useNetworkStore: (select: (state: { connectivity: string }) => unknown) => select({ connectivity: "online" }),
 }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ locale: "en", t: (key: string) => key }) }));
+vi.mock("../store/plugin-vpn-url-test", async original => {
+  const actual = await original<typeof import("../store/plugin-vpn-url-test")>();
+  const store = actual.usePluginVpnUrlTestStore;
+  return {
+    ...actual,
+    usePluginVpnUrlTestStore: Object.assign(
+      <T,>(select: (state: ReturnType<typeof store.getState>) => T) => select(store.getState()),
+      store,
+    ),
+  };
+});
 vi.mock("../store/plugin-vpn-finder", async original => {
   const actual = await original<typeof import("../store/plugin-vpn-finder")>();
   const store = actual.usePluginVpnFinderStore;
@@ -70,6 +81,7 @@ import {
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
 import { PluginVpnFinder } from "./PluginVpnFinder";
 import { IconButton } from "./IconButton";
+import { PluginVpnSelectionPanel } from "./PluginVpnSelectionPanel";
 
 const server: PluginVpnFinderServer = {
   activeSessions: 2, candidateId: "one", countryCode: "JP", countryName: "Japan",
@@ -99,7 +111,7 @@ function render(
   mocks.stateIndex = 0;
   return controls(PluginVpnFinder({
     connectionError: null, connectionPhase: "disabled", connectionTarget: null,
-    disabled: false, disabledReason: null, onApplyAndConnect: vi.fn(),
+    disabled: false, disabledReason: null, onAddToPreferred: vi.fn(), onApplyAndConnect: vi.fn(),
     onCancelConnection: vi.fn(), onClose: mocks.onClose, onVerdictChange: vi.fn(),
     opened, pendingCandidateId: null, verdictControlsDisabled: false,
     verdictDisabledReason: null, verdictSavingIps: new Set(), verdicts,
@@ -258,4 +270,29 @@ it("shows each connection state on one line with its cancel action at the end", 
   expect(notice({ connectionPhase: "connected" })).not.toContain(IconButton);
   expect(notice({ connectionPhase: "disconnecting" })).toEqual([Loader, expect.anything()]);
   expect(notice({ connectionPhase: "disabled" })).toBeNull();
+});
+
+it("adds the selected servers that are not Preferred yet in one bulk action and tests them by candidate", async () => {
+  const other: PluginVpnFinderServer = { ...server, candidateId: "two", ip: "203.0.113.2", score: 5 };
+  mocks.load.mockResolvedValue([server, other]);
+  render();
+  await vi.waitFor(() => expect(mocks.observer?.getCurrentResult().isSuccess).toBe(true));
+  const verdicts = new Map([[other.ip, "works" as const]]);
+  const onAddToPreferred = vi.fn().mockResolvedValue(undefined);
+  render(true, verdicts, { onAddToPreferred }).find(element => element.type === IconButton &&
+    element.props.label === "library.selection.start")!.props.onClick!();
+  type Panel = { onSelectAll: () => void; testTargets: unknown[];
+    actions: ReactElement<{ disabled: boolean; label: string; onClick: () => void }> };
+  const panel = (view: ReturnType<typeof render>) =>
+    view.find(element => element.type === PluginVpnSelectionPanel) as unknown as ReactElement<Panel>;
+  panel(render(true, verdicts, { onAddToPreferred })).props.onSelectAll();
+  const selecting = panel(render(true, verdicts, { onAddToPreferred }));
+  expect(selecting.props.testTargets).toEqual([
+    { host: server.ip, profile: { kind: "finder", candidateId: "one" } },
+    { host: other.ip, profile: { kind: "finder", candidateId: "two" } },
+  ]);
+  expect(selecting.props.actions.props.label).toBe("settings.data.pluginVpn.finder.verdict.prefer");
+  expect(selecting.props.actions.props.disabled).toBe(false);
+  selecting.props.actions.props.onClick();
+  await vi.waitFor(() => expect(onAddToPreferred).toHaveBeenCalledWith([server]));
 });

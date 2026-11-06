@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Alert, Group, Loader, NumberInput, Stack, Text } from "@mantine/core";
+import { Alert, Checkbox, Group, Loader, NumberInput, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listVpnGateServerVerdicts, setVpnGateServerVerdict, type VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
 import { formatDateTimeForLocale, useTranslation, type TranslationKey } from "../i18n";
@@ -9,10 +9,14 @@ import { listManualPluginVpnProfiles, listSavedPluginVpnProfiles, MANUAL_PLUGIN_
 import { getPluginVpnStatus, PLUGIN_VPN_QUERY_KEY } from "../lib/plugin-vpn";
 import { notifyVpnDownloadProfilesChanged, reallowVpnDownloadBatchProfile } from "../lib/tasks/vpn-download-runtime";
 import type { VpnDownloadProfileIssueCause } from "../lib/tasks/vpn-download-types";
+import type { PluginVpnUrlTestTarget } from "../lib/plugin-vpn-url-test";
 import { SettingsFieldRow, SettingsInlineControls } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
-import { ConnectIcon, RestartIcon, RetryIcon, SaveIcon, SettingsIcon } from "./ui/icons";
+import { PluginVpnSelectionPanel, PluginVpnUrlTestStatus } from "./PluginVpnSelectionPanel";
+import { showSettingsToast } from "./settings/settings-toast";
+import { ConnectIcon, ExcludeIcon, PreferIcon, RestartIcon, RetryIcon, SaveIcon, SelectIcon, SettingsIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
+import { SelectionAction } from "./ui/SelectionBar";
 import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 
 const VERDICT_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
@@ -42,6 +46,8 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
   const [busy, setBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [opened, setOpened] = useState(false);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIps, setSelectedIps] = useState<ReadonlySet<string>>(new Set());
   const issues = useQuery({ queryKey: VPN_DOWNLOAD_PROFILE_ISSUES_QUERY_KEY, queryFn: () => listVpnDownloadProfileIssues(), enabled: opened,
     refetchInterval: opened ? 1000 : false, meta: { errorPresentation: "inline" } });
   const status = useQuery({ queryKey: PLUGIN_VPN_QUERY_KEY, queryFn: getPluginVpnStatus, enabled: opened, refetchInterval: opened ? 1000 : false,
@@ -59,6 +65,29 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
   const managementLocked = locked || issues.isPending || issues.isError;
   const excludedApprovedIssues = (issues.data ?? []).filter(issue => issue.excluded && verdictByIp.get(issue.ip) === "works");
   const excludedApprovedCount = new Set(excludedApprovedIssues.map(issue => issue.ip)).size;
+  const selected = ips.filter(ip => selectedIps.has(ip));
+  const testTargets = selected.flatMap((ip): PluginVpnUrlTestTarget[] => {
+    const profile = profileByIp.get(ip);
+    if (profile) return [{ host: ip, profile: { kind: "saved", id: profile.id, expectedHash: profile.hash } }];
+    const manualProfile = manualByHost.get(ip);
+    return manualProfile ? [{ host: ip, profile: { kind: "manual", host: ip, expectedHash: manualProfile.hash } }] : [];
+  });
+  const preferTargets = selected.filter(ip => verdictByIp.get(ip) !== "works");
+  const blockTargets = selected.filter(ip => verdictByIp.get(ip) !== "fails");
+
+  function exitSelection(): void {
+    setSelectionMode(false);
+    setSelectedIps(new Set());
+  }
+
+  function toggleSelected(ip: string): void {
+    setSelectedIps(current => {
+      const next = new Set(current);
+      if (next.has(ip)) next.delete(ip);
+      else next.add(ip);
+      return next;
+    });
+  }
 
   async function run(action: () => Promise<void>): Promise<void> {
     if (locked || pending.current) return;
@@ -89,6 +118,47 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
     await run(async () => {
       const result = source && verdict === "works" ? await setVpnGateServerVerdict(ip, verdict, source) : await setVpnGateServerVerdict(ip, verdict);
       if (result.cleanupError) setActionError(t("settings.data.pluginVpn.saved.cleanupError", { error: result.cleanupError }));
+    });
+  }
+
+  /** Preferred needs an exact profile, which only the connected server can provide here. */
+  async function preferSelected(): Promise<void> {
+    if (managementLocked || !preferTargets.length) return;
+    const active = status.data?.profile;
+    const source = active ? { kind: "active" as const, expectedHash: active.hash } : null;
+    const capturable = source ? preferTargets.filter(ip => ip === active?.remoteHost) : [];
+    const skipped = preferTargets.length - capturable.length;
+    await run(async () => {
+      const cleanupErrors: string[] = [];
+      if (source) {
+        for (const ip of capturable) {
+          const result = await setVpnGateServerVerdict(ip, "works", source);
+          if (result.cleanupError) cleanupErrors.push(result.cleanupError);
+        }
+      }
+      if (capturable.length) showSettingsToast("ok", t("settings.data.pluginVpn.selection.preferred", { count: capturable.length }));
+      if (skipped) showSettingsToast("info", t("settings.data.pluginVpn.selection.preferSkipped", { count: skipped }));
+      if (cleanupErrors.length) setActionError(t("settings.data.pluginVpn.saved.cleanupError", { error: cleanupErrors.join("; ") }));
+    });
+  }
+
+  async function blockSelected(): Promise<void> {
+    if (managementLocked || !blockTargets.length) return;
+    await run(async () => {
+      const failures: string[] = [];
+      const cleanupErrors: string[] = [];
+      for (const ip of blockTargets) {
+        try {
+          const result = await setVpnGateServerVerdict(ip, "fails");
+          if (result.cleanupError) cleanupErrors.push(result.cleanupError);
+        } catch (error) {
+          failures.push(`${ip}: ${describeError(error)}`);
+        }
+      }
+      const blocked = blockTargets.length - failures.length;
+      if (blocked) showSettingsToast("ok", t("settings.data.pluginVpn.selection.blocked", { count: blocked }));
+      if (failures.length) throw new Error(t("settings.data.pluginVpn.selection.blockFailed", { count: failures.length, error: failures.join("; ") }));
+      if (cleanupErrors.length) setActionError(t("settings.data.pluginVpn.saved.cleanupError", { error: cleanupErrors.join("; ") }));
     });
   }
 
@@ -138,24 +208,48 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
         </SettingsInlineControls>
       </SettingsFieldRow>
       <ResponsiveSheet busy={busy} closeLabel={t("settings.data.pluginVpn.saved.close")} fullScreenOnPhone
-        opened={opened} onClose={() => setOpened(false)} size="lg" title={t("settings.data.pluginVpn.saved.manage")}>
+        opened={opened} onClose={() => { exitSelection(); setOpened(false); }} size="lg" title={t("settings.data.pluginVpn.saved.manage")}>
         <Stack gap="md">
           <Text size="sm">{t("settings.data.pluginVpn.saved.managementHelp")}</Text>
           {issues.isPending ? <Text role="status">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
           {issues.isError ? <Alert color="danger" role="alert">{describeError(issues.error)} <IconButton label={t("common.retry")} size="lg" onClick={() => { void issues.refetch(); }}><RetryIcon /></IconButton></Alert> : null}
           {actionError ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
-          <IconButton label={t("settings.data.pluginVpn.saved.reallowAll", { count: excludedApprovedCount })} size="lg"
-            disabled={managementLocked || !excludedApprovedCount} loading={busy} onClick={() => {
-            if (managementLocked || !excludedApprovedCount) return;
-            return run(async () => {
-              const results = await Promise.allSettled(excludedApprovedIssues.map(issue =>
-                reallowVpnDownloadBatchProfile(issue.batchId, issue.ip, issue.revision)));
-              const failures = results.filter(result => result.status === "rejected");
-              if (failures.length) throw new Error(t("settings.data.pluginVpn.saved.reallowAllFailed", {
-                count: failures.length, error: [...new Set(failures.map(result => describeError(result.reason)))].join("; "),
-              }));
-            });
-          }}><RestartIcon /></IconButton>
+          <Group justify="space-between" wrap="nowrap">
+            <IconButton label={t("settings.data.pluginVpn.saved.reallowAll", { count: excludedApprovedCount })} size="lg"
+              disabled={managementLocked || !excludedApprovedCount} loading={busy} onClick={() => {
+              if (managementLocked || !excludedApprovedCount) return;
+              return run(async () => {
+                const results = await Promise.allSettled(excludedApprovedIssues.map(issue =>
+                  reallowVpnDownloadBatchProfile(issue.batchId, issue.ip, issue.revision)));
+                const failures = results.filter(result => result.status === "rejected");
+                if (failures.length) throw new Error(t("settings.data.pluginVpn.saved.reallowAllFailed", {
+                  count: failures.length, error: [...new Set(failures.map(result => describeError(result.reason)))].join("; "),
+                }));
+              });
+            }}><RestartIcon /></IconButton>
+            <IconButton active={selectionMode} disabled={!ips.length} label={t("library.selection.start")} size="lg"
+              onClick={() => (selectionMode ? exitSelection() : setSelectionMode(true))}>
+              <SelectIcon />
+            </IconButton>
+          </Group>
+          {selectionMode ? (
+            <PluginVpnSelectionPanel
+              actions={<>
+                <SelectionAction disabled={managementLocked || !preferTargets.length} icon={PreferIcon}
+                  label={t("settings.data.pluginVpn.finder.verdict.prefer")} onClick={() => preferSelected()} />
+                <SelectionAction disabled={managementLocked || !blockTargets.length} icon={ExcludeIcon}
+                  label={t("settings.data.pluginVpn.finder.verdict.block")} onClick={() => blockSelected()} />
+              </>}
+              allSelected={ips.length > 0 && selected.length === ips.length}
+              count={selected.length}
+              onDeselectAll={() => setSelectedIps(new Set())}
+              onExit={exitSelection}
+              onSelectAll={() => setSelectedIps(new Set(ips))}
+              selectAllDisabled={!ips.length}
+              testTargets={testTargets}
+              untestableCount={selected.length - testTargets.length}
+            />
+          ) : null}
           {!managementLocked && !ips.length ? <Text size="sm">{t("settings.data.pluginVpn.saved.noRecords")}</Text> : null}
           {ips.map(ip => {
             const profile = profileByIp.get(ip);
@@ -164,11 +258,14 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
             const canApprove = status.data?.profile?.remoteHost === ip;
             return <Stack key={ip} gap="xs" role="group" aria-label={ip} pb="sm" style={{ borderBottom: "1px solid var(--mantine-color-default-border)" }}>
               <Group justify="space-between" align="flex-start" wrap="wrap">
+                {selectionMode ? <Checkbox aria-label={t("settings.data.pluginVpn.selection.select", { ip })} checked={selectedIps.has(ip)}
+                  onChange={() => toggleSelected(ip)} radius="xl" size="md" /> : null}
                 <Stack gap={0} style={{ minWidth: 0, flex: "1 1 auto" }}>
                   <Text size="sm" fw="var(--norea-weight-bold)" style={{ overflowWrap: "anywhere" }}>{ip}</Text>
                   {profile ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.details", { protocol: profile.protocol.toUpperCase(), date: formatDateTimeForLocale(locale, profile.approvedAt * 1000) })}</Text>
                     : manualProfile ? <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.manualDetails", { date: formatDateTimeForLocale(locale, manualProfile.savedAt * 1000) })}</Text>
                     : <Text size="sm" c="dimmed">{t("settings.data.pluginVpn.saved.fileUnavailable")}</Text>}
+                  <PluginVpnUrlTestStatus host={ip} />
                 </Stack>
                 <Group gap="xs" wrap="nowrap">
                   <VpnGateServerVerdictControl ip={ip} verdict={verdict} disabled={managementLocked}

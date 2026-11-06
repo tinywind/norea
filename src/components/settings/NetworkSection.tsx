@@ -2,7 +2,7 @@ import { useRef, useState } from "react";
 import { PasswordInput, Text, TextInput } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { ConsoleChip } from "../ConsolePrimitives";
-import { PluginVpnFinder } from "../PluginVpnFinder";
+import { PluginVpnFinder, pluginVpnFinderVerdictCaptureSource } from "../PluginVpnFinder";
 import { SavedVpnProfilesSettings } from "../SavedVpnProfilesSettings";
 import { TestedVpnServers } from "../TestedVpnServers";
 import {
@@ -43,6 +43,7 @@ import {
   switchPluginVpnFinderServer,
   switchPluginVpnSavedProfile,
   PluginVpnConnectionNotEstablishedError,
+  type PluginVpnFinderServer,
   type PluginVpnFinderSwitchLifecycle,
   type PluginVpnCredentials,
   type PluginVpnPhase,
@@ -212,11 +213,26 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
     verdict: VpnGateServerVerdictValue | null,
     source?: SavedVpnProfileCaptureSource,
   ): Promise<void> {
+    const error = await saveServerVerdict(ip, verdict, source);
+    if (error === null) return;
+    showSettingsToast(
+      "danger",
+      t("settings.data.pluginVpn.title"),
+      t("settings.data.pluginVpn.finder.verdict.saveFailed", { error }),
+    );
+  }
+
+  /** Saves one verdict; resolves to the failure message, or null when it was saved or skipped. */
+  async function saveServerVerdict(
+    ip: string,
+    verdict: VpnGateServerVerdictValue | null,
+    source?: SavedVpnProfileCaptureSource,
+  ): Promise<string | null> {
     if (
       verdictControlsDisabled ||
       verdictSavingIpsRef.current.has(ip)
     ) {
-      return;
+      return null;
     }
 
     updateVerdictSavingState(ip, true);
@@ -230,19 +246,42 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
           return next.sort((left, right) => left.ip.localeCompare(right.ip));
         },
       );
-      if (result.cleanupError) throw new Error(result.cleanupError);
+      return result.cleanupError;
     } catch (error) {
-      showSettingsToast(
-        "danger",
-        t("settings.data.pluginVpn.title"),
-        t("settings.data.pluginVpn.finder.verdict.saveFailed", {
-          error: describeError(error),
-        }),
-      );
+      return describeError(error);
     } finally {
       void queryClient.invalidateQueries({ queryKey: SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: VPN_GATE_SERVER_VERDICTS_QUERY_KEY });
       updateVerdictSavingState(ip, false);
+    }
+  }
+
+  /** Finder bulk action: captures each server's exact profile in turn, as its Preferred toggle does. */
+  async function addFinderServersToPreferred(
+    servers: readonly PluginVpnFinderServer[],
+  ): Promise<void> {
+    const failures: string[] = [];
+    for (const server of servers) {
+      const error = await saveServerVerdict(
+        server.ip,
+        "works",
+        pluginVpnFinderVerdictCaptureSource(server),
+      );
+      if (error !== null) failures.push(`${server.ip}: ${error}`);
+    }
+    const saved = servers.length - failures.length;
+    if (saved > 0) {
+      showSettingsToast("ok", t("settings.data.pluginVpn.selection.preferred", { count: saved }));
+    }
+    if (failures.length > 0) {
+      showSettingsToast(
+        "danger",
+        t("settings.data.pluginVpn.title"),
+        t("settings.data.pluginVpn.selection.preferFailed", {
+          count: failures.length,
+          error: failures.join("; "),
+        }),
+      );
     }
   }
 
@@ -696,6 +735,7 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
             connectionTarget={status?.profile?.remoteHost ?? null}
             disabled={finderDisabled}
             disabledReason={finderDisabledReason}
+            onAddToPreferred={addFinderServersToPreferred}
             onApplyAndConnect={applyAndConnectFinderServer}
             onCancelConnection={disconnect}
             onClose={() => setFinderOpen(false)}

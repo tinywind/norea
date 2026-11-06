@@ -298,6 +298,14 @@ impl SavedProfileVault {
         })
     }
 
+    /// Reads an imported profile by host for a URL test; it must still have the hash the list showed.
+    pub(crate) fn read_manual_profile(&self, host: &str, expected_hash: &str) -> Result<Vec<u8>, String> {
+        validate_host(host)?;
+        let profile = self.stored.manual(host).filter(|profile| profile.hash == expected_hash)
+            .ok_or_else(|| format!("saved imported VPN profile for {host} is no longer available"))?;
+        self.stored.read_manual(profile)
+    }
+
     /// Clears or sets "Not used" for any stored host. VPN Gate IPs also leave the approved vault.
     pub(crate) async fn revoke_host(
         &mut self,

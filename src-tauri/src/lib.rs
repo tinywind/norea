@@ -262,6 +262,8 @@ pub fn run() {
             plugin_vpn::state::plugin_vpn_approve_working_automatic_profiles,
             plugin_vpn::state::plugin_vpn_record_automatic_profile_result,
             plugin_vpn::state::plugin_vpn_test_automatic_candidate,
+            plugin_vpn::state::plugin_vpn_test_profile_url,
+            plugin_vpn::state::plugin_vpn_cancel_url_test,
             plugin_vpn::state::plugin_vpn_cancel_finder_query,
             plugin_vpn::state::plugin_vpn_connect,
             plugin_vpn::state::plugin_vpn_disconnect,

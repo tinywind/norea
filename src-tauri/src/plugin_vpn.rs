@@ -12,6 +12,7 @@ pub(crate) mod state;
 mod tls_client_hello;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod tunnel_config;
+pub(crate) mod url_test;
 
 pub(crate) use state::PluginVpnState;
 

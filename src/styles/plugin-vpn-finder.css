@@ -147,6 +147,109 @@
   white-space: nowrap;
 }
 
+/*
+ * Selection inside a VPN sheet: done, the count and select all on one line,
+ * the bulk actions under it, then the URL test for the selected rows.
+ */
+.norea-plugin-vpn-selection {
+  background: var(--norea-color-surface-raised);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-md);
+  display: grid;
+  gap: var(--norea-space-2);
+  padding: var(--norea-space-1) var(--norea-space-3) var(--norea-space-3);
+}
+
+.norea-plugin-vpn-selection-bar {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-2);
+  margin-inline: calc(-1 * var(--norea-space-2));
+  min-width: 0;
+}
+
+.norea-plugin-vpn-selection-count {
+  flex: 1 1 auto;
+  font-variant-numeric: tabular-nums;
+  font-weight: var(--norea-weight-bold);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-plugin-vpn-selection-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-1);
+  margin-inline-start: calc(-1 * var(--norea-space-2));
+}
+
+.norea-plugin-vpn-url-test {
+  border-top: 1px solid var(--norea-color-rule);
+  display: grid;
+  gap: var(--norea-space-2);
+  padding-top: var(--norea-space-3);
+}
+
+.norea-plugin-vpn-url-test-run {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-2) var(--norea-space-3);
+}
+
+.norea-plugin-vpn-url-test-progress {
+  align-items: center;
+  display: inline-flex;
+  font-variant-numeric: tabular-nums;
+  gap: var(--norea-space-2);
+}
+
+/* One test result: a short badge, and the failure reason under it when there is one. */
+.norea-plugin-vpn-url-result {
+  display: grid;
+  gap: 0.125rem;
+  justify-items: start;
+  min-width: 0;
+}
+
+.norea-plugin-vpn-url-result .mantine-Badge-root {
+  font-variant-numeric: tabular-nums;
+  max-width: 100%;
+  text-transform: none;
+}
+
+.norea-plugin-vpn-url-result-detail {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  color: var(--norea-color-ink-muted);
+  display: -webkit-box;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.norea-plugin-vpn-finder-table :where(td).norea-plugin-vpn-url-result-cell {
+  max-width: 16rem;
+  min-width: 9rem;
+  white-space: normal;
+}
+
+@media (max-width: 767px) {
+  /* Like the phone selection bar: equal cells with the icon over the label. */
+  .norea-plugin-vpn-selection-actions {
+    display: grid;
+    gap: 0;
+    grid-auto-columns: minmax(0, 1fr);
+    grid-auto-flow: column;
+    margin-inline: calc(-1 * var(--norea-space-2));
+  }
+
+  .norea-plugin-vpn-url-test-run > .mantine-Button-root {
+    flex: 1 1 100%;
+  }
+}
+
 @media (max-width: 991px) {
   .norea-plugin-vpn-finder-content {
     gap: var(--norea-space-2);

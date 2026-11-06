@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
   Badge,
+  Checkbox,
   Group,
   Loader,
   ScrollArea,
@@ -29,10 +30,13 @@ import {
   type PluginVpnPhase,
   type PluginVpnServerProtocol,
 } from "../lib/plugin-vpn";
+import { usePluginVpnUrlTestStore } from "../store/plugin-vpn-url-test";
 import { IconButton } from "./IconButton";
+import { PluginVpnSelectionPanel, PluginVpnUrlTestStatus } from "./PluginVpnSelectionPanel";
 import { TextButton } from "./TextButton";
-import { CloseIcon, ConnectIcon, RefreshIcon } from "./ui/icons";
+import { CloseIcon, ConnectIcon, PreferIcon, RefreshIcon, SelectIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
+import { SelectionAction } from "./ui/SelectionBar";
 import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 import "../styles/plugin-vpn-finder.css";
 
@@ -44,6 +48,8 @@ interface PluginVpnFinderProps {
   connectionTarget: string | null;
   disabled: boolean;
   disabledReason: string | null;
+  /** Adds each server to Preferred in turn, as its own Preferred toggle does, and reports the outcome. */
+  onAddToPreferred: (servers: readonly PluginVpnFinderServer[]) => Promise<void>;
   onApplyAndConnect: (candidateId: string) => Promise<void>;
   onCancelConnection: () => Promise<void>;
   onClose: () => void;
@@ -198,6 +204,7 @@ export function PluginVpnFinder({
   connectionTarget,
   disabled,
   disabledReason,
+  onAddToPreferred,
   onApplyAndConnect,
   onCancelConnection,
   onClose,
@@ -219,6 +226,11 @@ export function PluginVpnFinder({
   const [selectedConnectionTarget, setSelectedConnectionTarget] = useState<
     string | null
   >(null);
+  const [selectionMode, setSelectionMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState<ReadonlySet<string>>(new Set());
+  const [addingToPreferred, setAddingToPreferred] = useState(false);
+  const testResults = usePluginVpnUrlTestStore((state) => state.results);
+  const testProgress = usePluginVpnUrlTestStore((state) => state.progress);
   const serversQuery = useQuery({
     meta: { errorPresentation: "inline" },
     enabled: opened && !catalogStopped && online &&
@@ -254,6 +266,12 @@ export function PluginVpnFinder({
       filterAndSortPluginVpnServers(servers, { ...filters, countryCode }, verdicts),
     [countryCode, filters, servers, verdicts],
   );
+  const selectedServers = visibleServers.filter((server) => selectedIds.has(server.candidateId));
+  const preferableServers = selectedServers.filter(
+    (server) => pluginVpnFinderServerVerdict(server, verdicts) !== "works",
+  );
+  const showTestColumn = selectionMode ||
+    visibleServers.some((server) => server.ip in testResults || server.ip in testProgress);
   const connectionServer =
     (pendingCandidateId === null ? connectionTarget : selectedConnectionTarget) ??
     t("settings.data.pluginVpn.finder.status.selectedServer");
@@ -343,7 +361,44 @@ export function PluginVpnFinder({
     void serversQuery.refetch({ cancelRefetch: true });
   }
 
+  function exitSelection(): void {
+    setSelectionMode(false);
+    setSelectedIds(new Set());
+  }
+
+  function toggleSelected(candidateId: string): void {
+    setSelectedIds((current) => {
+      const next = new Set(current);
+      if (next.has(candidateId)) next.delete(candidateId);
+      else next.add(candidateId);
+      return next;
+    });
+  }
+
+  async function addSelectedToPreferred(): Promise<void> {
+    if (addingToPreferred || verdictControlsDisabled || preferableServers.length === 0) return;
+    setAddingToPreferred(true);
+    try {
+      await onAddToPreferred(preferableServers);
+    } finally {
+      setAddingToPreferred(false);
+    }
+  }
+
+  function selectCheckbox(server: PluginVpnFinderServer) {
+    return (
+      <Checkbox
+        aria-label={t("settings.data.pluginVpn.selection.select", { ip: server.ip })}
+        checked={selectedIds.has(server.candidateId)}
+        onChange={() => toggleSelected(server.candidateId)}
+        radius="xl"
+        size="md"
+      />
+    );
+  }
+
   function closeFinder(): void {
+    exitSelection();
     void queryClient
       .cancelQueries({
         exact: true,
@@ -498,22 +553,55 @@ export function PluginVpnFinder({
           label={t("settings.data.pluginVpn.finder.verdict.hideFailed")}
           onChange={(event) => setFilters({ hideFailed: event.currentTarget.checked })}
         />
-        <Group justify="space-between">
+        <Group justify="space-between" wrap="nowrap">
           <Text c="dimmed" size="xs">
             {t("settings.data.pluginVpn.finder.sourceAttribution")}
           </Text>
-          <IconButton
-            active={catalogRefreshing}
-            disabled={!online}
-            label={catalogRefreshing
-              ? t("settings.data.pluginVpn.finder.cancelSearch")
-              : t("settings.data.pluginVpn.finder.refresh")}
-            onClick={catalogRefreshing ? cancelCatalogQuery : refreshCatalog}
-            size="lg"
-          >
-            {catalogRefreshing ? <CloseIcon /> : <RefreshIcon />}
-          </IconButton>
+          <Group gap="xs" wrap="nowrap">
+            <IconButton
+              active={selectionMode}
+              disabled={visibleServers.length === 0}
+              label={t("library.selection.start")}
+              onClick={() => (selectionMode ? exitSelection() : setSelectionMode(true))}
+              size="lg"
+            >
+              <SelectIcon />
+            </IconButton>
+            <IconButton
+              active={catalogRefreshing}
+              disabled={!online}
+              label={catalogRefreshing
+                ? t("settings.data.pluginVpn.finder.cancelSearch")
+                : t("settings.data.pluginVpn.finder.refresh")}
+              onClick={catalogRefreshing ? cancelCatalogQuery : refreshCatalog}
+              size="lg"
+            >
+              {catalogRefreshing ? <CloseIcon /> : <RefreshIcon />}
+            </IconButton>
+          </Group>
         </Group>
+        {selectionMode ? (
+          <PluginVpnSelectionPanel
+            actions={
+              <SelectionAction
+                disabled={addingToPreferred || verdictControlsDisabled || preferableServers.length === 0}
+                icon={PreferIcon}
+                label={t("settings.data.pluginVpn.finder.verdict.prefer")}
+                onClick={() => void addSelectedToPreferred()}
+              />
+            }
+            allSelected={visibleServers.length > 0 && selectedServers.length === visibleServers.length}
+            count={selectedServers.length}
+            onDeselectAll={() => setSelectedIds(new Set())}
+            onExit={exitSelection}
+            onSelectAll={() => setSelectedIds(new Set(visibleServers.map((server) => server.candidateId)))}
+            selectAllDisabled={visibleServers.length === 0}
+            testTargets={selectedServers.map((server) => ({
+              host: server.ip,
+              profile: { kind: "finder", candidateId: server.candidateId },
+            }))}
+          />
+        ) : null}
 
         {serversQuery.isError && serversQuery.data !== undefined ? (
           <Stack className="norea-plugin-vpn-finder-state" gap="xs">
@@ -565,6 +653,7 @@ export function PluginVpnFinder({
               <Table highlightOnHover stickyHeader verticalSpacing="xs">
                 <Table.Thead>
                   <Table.Tr>
+                    {selectionMode ? <Table.Th aria-label={t("library.selection.start")} /> : null}
                     <Table.Th>{t("settings.data.pluginVpn.finder.metadata.country")}</Table.Th>
                     <Table.Th>{t("settings.data.pluginVpn.finder.metadata.ip")}</Table.Th>
                     <Table.Th>{t("settings.data.pluginVpn.finder.metadata.score")}</Table.Th>
@@ -574,12 +663,14 @@ export function PluginVpnFinder({
                     <Table.Th>{t("settings.data.pluginVpn.finder.metadata.logPolicy")}</Table.Th>
                     <Table.Th>{t("settings.data.pluginVpn.finder.protocol.label")}</Table.Th>
                     <Table.Th>{t("settings.data.pluginVpn.finder.verdict.label")}</Table.Th>
+                    {showTestColumn ? <Table.Th>{t("settings.data.pluginVpn.urlTest.column")}</Table.Th> : null}
                     <Table.Th>{t("settings.data.pluginVpn.finder.metadata.action")}</Table.Th>
                   </Table.Tr>
                 </Table.Thead>
                 <Table.Tbody>
                   {visibleServers.map((server) => (
                     <Table.Tr key={server.candidateId}>
+                      {selectionMode ? <Table.Td>{selectCheckbox(server)}</Table.Td> : null}
                       <Table.Td>
                         {countryFlag(server.countryCode)} {server.countryName}
                       </Table.Td>
@@ -619,6 +710,11 @@ export function PluginVpnFinder({
                           verdict={pluginVpnFinderServerVerdict(server, verdicts)}
                         />
                       </Table.Td>
+                      {showTestColumn ? (
+                        <Table.Td className="norea-plugin-vpn-url-result-cell">
+                          <PluginVpnUrlTestStatus host={server.ip} />
+                        </Table.Td>
+                      ) : null}
                       <Table.Td>{connectButton(server)}</Table.Td>
                     </Table.Tr>
                   ))}
@@ -632,6 +728,7 @@ export function PluginVpnFinder({
                   key={server.candidateId}
                 >
                   <div className="norea-plugin-vpn-finder-card-header">
+                    {selectionMode ? selectCheckbox(server) : null}
                     <div className="norea-plugin-vpn-finder-card-identity">
                       <Text
                         className="norea-plugin-vpn-finder-card-country"
@@ -705,6 +802,7 @@ export function PluginVpnFinder({
                       <dd>{server.logType}</dd>
                     </div>
                   </dl>
+                  <PluginVpnUrlTestStatus host={server.ip} />
                 </section>
               ))}
             </div>

@@ -537,7 +537,7 @@ impl SavedProfileVault {
         Ok(self.snapshot_with_error(self.cleanup_orphans()))
     }
 
-    async fn read_retained(
+    pub(crate) async fn read_retained(
         &mut self,
         pool: &SqlitePool,
         id: &str,

@@ -23,6 +23,7 @@ use super::saved_profiles::{
 };
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 use super::proxy::{LocalProxy, ProxyConnector};
+use super::url_test::{VpnUrlTestProfile, VpnUrlTestResult};
 use super::{
     MAX_PROFILE_BYTES, ValidatedProfile, is_vpn_gate_finder_profile,
     reject_reserved_vpn_gate_profile_marker, validate_profile,
@@ -67,6 +68,7 @@ struct PluginVpnShared {
     // Lock order: `foreground` before `operation`.
     foreground: tokio::sync::Mutex<()>,
     state: Mutex<PluginVpnRuntime>,
+    url_tester: super::url_test::VpnUrlTester,
 }
 
 struct PluginVpnRuntime {
@@ -194,6 +196,7 @@ impl PluginVpnState {
                 recovered_saved_profiles: OnceLock::new(),
                 operation: tokio::sync::Mutex::new(()),
                 foreground: tokio::sync::Mutex::new(()),
+                url_tester: super::url_test::VpnUrlTester::new(),
                 state: Mutex::new(PluginVpnRuntime {
                     generation: 0,
                     network_revision: 0,
@@ -674,6 +677,75 @@ async fn test_candidate_tunnel(bytes: &[u8]) -> Result<(), String> {
 #[cfg(not(target_os = "android"))]
 async fn test_candidate_tunnel(_bytes: &[u8]) -> Result<(), String> {
     Err("Automatic VPN servers are supported only on Android".to_string())
+}
+
+/// Tests one profile against the URL the user typed: a separate tunnel, one GET, then teardown.
+/// Only one test runs at a time; a second call while one runs fails instead of waiting.
+#[tauri::command]
+pub(crate) async fn plugin_vpn_test_profile_url(
+    run_id: String, profile: VpnUrlTestProfile, url: String, user_agent: String, app: AppHandle, state: State<'_, PluginVpnState>,
+) -> Result<VpnUrlTestResult, String> {
+    if !cfg!(target_os = "android") { return Err("VPN URL tests are supported only on Android".to_string()); }
+    super::url_test::validate_run_id(&run_id)?;
+    super::url_test::validate_user_agent(&user_agent)?;
+    let url = super::url_test::parse_test_url(&url)?;
+    let Some(mut guard) = state.shared.url_tester.begin(&run_id)? else { return Ok(VpnUrlTestResult::Cancelled) };
+    crate::network::require_online()?;
+    let (bytes, vpn_gate) = match &profile {
+        VpnUrlTestProfile::Finder { candidate_id } => (state.shared.finder.candidate_profile(candidate_id)?.2, true),
+        VpnUrlTestProfile::Saved { id, expected_hash } => {
+            let pool = saved_profile_database(&app).await?;
+            let _operation = state.shared.operation.lock().await;
+            (state.saved_profiles()?.lock().await.read_retained(&pool, id, expected_hash).await?.1, true)
+        }
+        VpnUrlTestProfile::Manual { host, expected_hash } => {
+            let _operation = state.shared.operation.lock().await;
+            (state.saved_profiles()?.lock().await.read_manual_profile(host, expected_hash)?, false)
+        }
+    };
+    let validated = validate_profile(&bytes)?;
+    if !vpn_gate && validated.requires_username_password { return Ok(VpnUrlTestResult::CredentialsRequired); }
+    if url_test_server_in_use(state.inner(), &validated).await? { return Ok(VpnUrlTestResult::InUse); }
+    let profile = String::from_utf8(bytes).map_err(|_| "OpenVPN profile must be UTF-8 text".to_string())?;
+    #[cfg(target_os = "android")]
+    {
+        let public = if vpn_gate { VPN_GATE_PUBLIC_CREDENTIAL } else { "" };
+        let credentials = super::engine::EngineCredentials {
+            username: public.into(), password: public.into(), private_key_password: String::new(), challenge_response: String::new(),
+        };
+        super::url_test::run_test(&mut guard, super::url_test::UrlTestRequest { profile, credentials, url, user_agent }).await
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (&mut guard, profile, url, user_agent);
+        Err("VPN URL tests are supported only on Android".to_string())
+    }
+}
+
+/// The plugin VPN or a download worker already holds a session on one of the profile's servers.
+async fn url_test_server_in_use(state: &PluginVpnState, profile: &ValidatedProfile) -> Result<bool, String> {
+    let foreground_hosts = {
+        let runtime = state.shared.state.lock().expect("plugin VPN state lock");
+        match (&runtime.profile, runtime.phase) {
+            (_, PluginVpnPhase::Disabled | PluginVpnPhase::Error) | (None, _) => Vec::new(),
+            (Some(active), _) => active.remote_hosts.iter().chain([&active.remote_host]).cloned().collect(),
+        }
+    };
+    if profile.remote_hosts.iter().chain([&profile.remote_host]).any(|host| foreground_hosts.contains(host)) {
+        return Ok(true);
+    }
+    let _operation = state.shared.operation.lock().await;
+    let vault = state.saved_profiles()?.lock().await;
+    Ok(profile.remote_hosts.iter().chain([&profile.remote_host])
+        .any(|host| vault.ensure_foreground_available(host, &profile.hash).is_err()))
+}
+
+/// Cancels the running test of `run_id` and every later test of that run.
+#[tauri::command]
+pub(crate) fn plugin_vpn_cancel_url_test(run_id: String, state: State<'_, PluginVpnState>) -> Result<(), String> {
+    super::url_test::validate_run_id(&run_id)?;
+    state.shared.url_tester.cancel(&run_id);
+    Ok(())
 }
 
 #[tauri::command]
