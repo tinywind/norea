@@ -6,7 +6,7 @@ internal const val VPN_URL_TEST_LOAD = 1
 internal const val VPN_URL_TEST_RESULT = 2
 internal const val ANDROID_VPN_URL_TEST_PROCESS = ":vpn_url_test"
 internal const val ANDROID_VPN_URL_TEST_DATA_DIRECTORY_SUFFIX = "norea_vpn_url_test"
-internal const val ANDROID_VPN_URL_TEST_MAX_PAGE_TIMEOUT_MS = 120_000
+internal const val ANDROID_VPN_URL_TEST_MAX_PAGE_TIMEOUT_MS = 60_000
 private const val ANDROID_VPN_URL_TEST_PROFILE_PREFIX = "norea-vpn-url-test-"
 
 /**
