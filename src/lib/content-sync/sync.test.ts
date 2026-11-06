@@ -18,7 +18,7 @@ vi.mock("../chapter-content/storage-platform", async (importOriginal) => ({
   ...await importOriginal<typeof import("../chapter-content/storage-platform")>(),
   inspectChapterPayloadInventory: vi.fn(),
 }));
-vi.mock("./works", () => ({ recordDeletedWorkMetadata: vi.fn(async (server, entry) => recordServerWorkDeletionExclusion(server, entry.metadata.identity)), syncWorkMetadata: vi.fn(), getWorkSyncCursor: vi.fn(async () => 0), contentWorkId: vi.fn(async () => "work-id") }));
+vi.mock("./works", () => ({ WorkMetadataChangedOutsideCacheError: class extends Error { constructor(readonly works: readonly string[]) { super(`changed outside the cache: ${works.join(", ")}`); } }, recordDeletedWorkMetadata: vi.fn(async (server, entry) => recordServerWorkDeletionExclusion(server, entry.metadata.identity)), syncWorkMetadata: vi.fn(), getWorkSyncCursor: vi.fn(async () => 0), contentWorkId: vi.fn(async () => "work-id") }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => "Test device") }));
 import { fetch as appFetch } from "@tauri-apps/plugin-http";
@@ -50,7 +50,7 @@ beforeEach(() => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([]);
   vi.mocked(listContentSyncWorkChapters).mockReset().mockResolvedValue([]);
   vi.mocked(canUploadContentChapter).mockReset().mockResolvedValue(true);
-  vi.mocked(syncWorkMetadata).mockResolvedValue(new Set());
+  vi.mocked(syncWorkMetadata).mockResolvedValue({ deletedWorks: new Set(), changedOutsideCache: [] });
   vi.mocked(uploadContentChapter).mockReset();
   native.download.mockReset();
   native.install.mockReset();
@@ -80,6 +80,19 @@ it("uploads the plugin novel ID in the manifest and numeric directory without de
       pluginId: "p", novelId: "literal-42", novelPath: "/source-route?book=42", chapterPath: "/chapter/side-story",
     } }),
   }));
+});
+
+it("still uploads chapters when some work metadata changed outside the cache, then fails naming those works", async () => {
+  vi.mocked(syncWorkMetadata).mockResolvedValue({ deletedWorks: new Set(), changedOutsideCache: ["화산귀환"] });
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{
+    chapterId: 811, novelId: 91, pluginId: "p", sourceNovelId: "42", novelPath: "/book/42",
+    chapterPath: "/chapter/1", novelName: "Another work", chapterName: "One",
+    chapterNumber: "1", position: 1, page: "1", contentType: "html", isDownloaded: true, mediaRepairNeeded: false,
+  }] as never);
+  await expect(syncContentServer(true, true)).rejects.toThrow("화산귀환");
+  expect(uploadContentChapter).toHaveBeenCalledOnce();
+  expect(useContentSyncStore.getState()).toMatchObject({ status: "error" });
+  expect(useContentSyncStore.getState().error).toContain("화산귀환");
 });
 
 it("reconciles an upload rejected before the concurrent DELETE response arrives", async () => {
@@ -258,7 +271,7 @@ it("keeps the conflict policy captured at sync start when settings change during
     ? Promise.resolve(Response.json({ id: "existing", complete: true, deleted: false, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "c" }, chapter: {} } })) : original(url, init));
   vi.mocked(syncWorkMetadata).mockImplementationOnce(async () => {
     useContentSyncStore.getState().setUploadConflictPolicy("replace-server");
-    return new Set();
+    return { deletedWorks: new Set(), changedOutsideCache: [] };
   });
   await syncContentServer();
   expect(uploadContentChapter).not.toHaveBeenCalled();
@@ -345,7 +358,7 @@ it("allows a local content change to upload a chapter previously deleted on the 
 
 it("skips every local chapter belonging to a deleted server work", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "not-yet-uploaded", isDownloaded: true, mediaRepairNeeded: false }] as never);
-  vi.mocked(syncWorkMetadata).mockResolvedValue(new Set(["work-id"]));
+  vi.mocked(syncWorkMetadata).mockResolvedValue({ deletedWorks: new Set(["work-id"]), changedOutsideCache: [] });
   await syncContentServer();
   expect(fingerprintContentChapter).not.toHaveBeenCalled();
   expect(uploadContentChapter).not.toHaveBeenCalled();
@@ -444,7 +457,7 @@ it("does not restore a whole work while processing its deleted chapter signals",
   const key = "norea-content-catalog:http://localhost:7788";
   memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
-  vi.mocked(syncWorkMetadata).mockResolvedValue(new Set(["work-id"]));
+  vi.mocked(syncWorkMetadata).mockResolvedValue({ deletedWorks: new Set(["work-id"]), changedOutsideCache: [] });
   await syncContentServer();
   expect(native.stage).not.toHaveBeenCalled();
   expect(uploadContentChapter).not.toHaveBeenCalled();
@@ -780,7 +793,7 @@ it("keeps selected downloads usable while the background work catalog is still t
   const changed = vi.fn();
   window.addEventListener("norea-content-state-changed", changed);
   let release!: () => void;
-  vi.mocked(syncWorkMetadata).mockImplementationOnce(() => new Promise<ReadonlySet<string>>(resolve => { release = () => resolve(new Set()); }));
+  vi.mocked(syncWorkMetadata).mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({ deletedWorks: new Set(), changedOutsideCache: [] }); }));
   const background = syncContentServer(false);
   await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 91, novelId: 90, pluginId: "source", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter", novelName: "A work", chapterName: "Opening", position: 1, page: "1" }] as never);
@@ -826,7 +839,7 @@ it("runs a fresh metadata pass when another request arrives during chapter uploa
 
 it("coalesces waiting sync requests while preserving upload and rescan options", async () => {
   let release!: () => void;
-  vi.mocked(syncWorkMetadata).mockImplementationOnce(() => new Promise(resolve => { release = () => resolve(new Set()); }));
+  vi.mocked(syncWorkMetadata).mockImplementationOnce(() => new Promise(resolve => { release = () => resolve({ deletedWorks: new Set(), changedOutsideCache: [] }); }));
   const active = syncContentServer(false);
   await vi.waitFor(() => expect(release).toEqual(expect.any(Function)));
   const waiting = syncContentServer(false);
@@ -942,8 +955,8 @@ it("serializes deletion between an ongoing sync and a sync requested during dele
   vi.mocked(syncWorkMetadata).mockImplementationOnce(async () => {
     order.push("first-sync");
     await new Promise<void>(resolve => { releaseSync = resolve; });
-    return new Set();
-  }).mockImplementationOnce(async () => { order.push("next-sync"); return new Set(); });
+    return { deletedWorks: new Set(), changedOutsideCache: [] };
+  }).mockImplementationOnce(async () => { order.push("next-sync"); return { deletedWorks: new Set(), changedOutsideCache: [] }; });
   const first = syncContentServer();
   await vi.waitFor(() => expect(order).toEqual(["first-sync"]));
   const deletion = runContentSyncOperation(async () => {

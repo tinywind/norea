@@ -122,13 +122,14 @@ it("uploads metadata and cover without any downloaded chapter and skips unchange
   expect(local[0]?.metadata.chapters).toEqual(chapters);
 });
 
-it("does not upload an old file over the last indexed metadata", async () => {
+it("does not upload an old file over the last indexed metadata and names it instead of failing the sync", async () => {
   local = [{ directory: "contents/example/book", metadata: metadata("Latest title") }];
   const files = await readWorkMetadataSyncFiles();
   vi.mocked(readWorkMetadataSyncFiles).mockResolvedValue(files);
   vi.mocked(readWorkMetadataSyncFile).mockResolvedValue(files[0]!);
   local[0]!.metadata = metadata("Older title");
-  await expect(syncWorkMetadata("http://server", "device", true)).rejects.toThrow("changed outside");
+  const result = await syncWorkMetadata("http://server", "device", true);
+  expect(result.changedOutsideCache).toEqual(["Older title"]);
   expect(remote).toBeUndefined();
 });
 
@@ -188,7 +189,7 @@ it("records an app-initiated work deletion without advancing past unseen changes
   expect(saved.cursor).toBe(cursor);
   expect(await canPullWorkMetadata("http://server", (await readWorkMetadataSyncFiles())[0], await workMetadataFingerprint(metadata(), new Uint8Array([1, 2, 3])))).toBe(false);
   remote = undefined;
-  expect(await syncWorkMetadata("http://server", "device", true)).toEqual(new Set([id]));
+  expect((await syncWorkMetadata("http://server", "device", true)).deletedWorks).toEqual(new Set([id]));
   expect(puts).toBe(1);
   expect(local).toEqual(originalLocal);
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
@@ -201,8 +202,8 @@ it("keeps explicitly deleted work excluded after reloading sync caches and resca
   memory.delete("norea-content-works:http://server/");
   memory.delete("norea-content-works:http://server");
 
-  expect(await syncWorkMetadata("http://server", "device", true, undefined, true)).toEqual(new Set([id]));
-  expect(await syncWorkMetadata("http://server", "device", true, undefined, true)).toEqual(new Set([id]));
+  expect((await syncWorkMetadata("http://server", "device", true, undefined, true)).deletedWorks).toEqual(new Set([id]));
+  expect((await syncWorkMetadata("http://server", "device", true, undefined, true)).deletedWorks).toEqual(new Set([id]));
   expect(puts).toBe(0);
   expect(remote).toBeUndefined();
   expect(local).toHaveLength(1);
@@ -221,7 +222,7 @@ it("excludes an explicitly deleted work by plugin-owned ID across source-path al
   remote = original;
   sequence = 2;
 
-  const excluded = await syncWorkMetadata("http://server", "device", true, undefined, true);
+  const { deletedWorks: excluded } = await syncWorkMetadata("http://server", "device", true, undefined, true);
 
   expect(excluded).toEqual(new Set([id, aliasId]));
   expect(puts).toBe(0);
@@ -235,7 +236,7 @@ it("does not reinstall a fully removed explicit deletion when a server record re
   remote = metadata();
   sequence = 2;
 
-  expect(await syncWorkMetadata("http://server", "device", false, undefined, true)).toEqual(new Set([id]));
+  expect((await syncWorkMetadata("http://server", "device", false, undefined, true)).deletedWorks).toEqual(new Set([id]));
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
   expect(local).toEqual([]);
 });
@@ -253,7 +254,7 @@ it("records an explicit exclusion without rewriting the active synchronization c
   expect(failed).toBe(false);
   vi.mocked(writeContentSyncCache).mockImplementation(save);
 
-  expect(await syncWorkMetadata("http://server", "device", true, undefined, true)).toEqual(new Set([id]));
+  expect((await syncWorkMetadata("http://server", "device", true, undefined, true)).deletedWorks).toEqual(new Set([id]));
   expect(puts).toBe(0);
 });
 
@@ -271,8 +272,8 @@ it("advances past an in-flight work record whose cover and work were deleted", a
     if (url.pathname.endsWith("/works")) return Response.json({ items: [{ id, sequence: 1, metadata: metadata(), hasCover: true }], cursor: 1, hasMore: false });
     return new Response(null, { status: 404 });
   });
-  const deleted = await syncWorkMetadata("http://server", "device", true);
-  expect(deleted.has(id)).toBe(true);
+  const { deletedWorks } = await syncWorkMetadata("http://server", "device", true);
+  expect(deletedWorks.has(id)).toBe(true);
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
   expect(JSON.parse([...memory.values()][0])).toMatchObject({ cursor: 1, deleted: { [id]: true } });
 });

@@ -16,7 +16,7 @@ import { currentChapterDownloadRevision, withChapterDownloadWrite } from "../cha
 import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity";
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
-import { contentWorkId, getWorkSyncCursor, syncWorkMetadata } from "./works";
+import { contentWorkId, getWorkSyncCursor, syncWorkMetadata, WorkMetadataChangedOutsideCacheError } from "./works";
 import { readServerChapterDeletionExclusions, serverChapterDeletionKey, serverWorkDeletionKey, setServerChapterDeletionExclusion, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 
 interface CatalogCache {
@@ -293,17 +293,18 @@ async function performSync(uploadContent = true, rescan = false): Promise<void> 
     const cache = await catalogCache(serverUrl);
     assertDevice(serverUrl, token);
     if (await compactUploadedFingerprints(cache)) await saveCatalog(serverUrl, cache);
-    const deletedWorks = await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token), rescan);
+    const { deletedWorks, changedOutsideCache } = await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token), rescan);
     await pullCatalog(serverUrl, token, cache);
     if (uploadContent) {
-      await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks ?? new Set(), uploadConflictPolicy);
+      await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks, uploadConflictPolicy);
       await pullCatalog(serverUrl, token, cache);
       if (Object.keys(cache.tombstones).length) {
         // Handle deletions consumed after the first upload phase without another catalog loop.
-        await uploadLocalContent(serverUrl, token, cache, false, deletedWorks ?? new Set(), uploadConflictPolicy);
+        await uploadLocalContent(serverUrl, token, cache, false, deletedWorks, uploadConflictPolicy);
       }
     }
     assertDevice(serverUrl, token);
+    if (changedOutsideCache.length) throw new WorkMetadataChangedOutsideCacheError(changedOutsideCache);
     useContentSyncStore.setState({ status: "idle" });
   } catch (error) {
     if (useContentSyncStore.getState().serverUrl === serverUrl) {

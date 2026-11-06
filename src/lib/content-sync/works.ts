@@ -101,11 +101,26 @@ async function coverRequest(server: string, id: string, token: string, body?: Ui
   return bytes;
 }
 
-export async function syncWorkMetadata(server: string, token: string, upload: boolean, assertCurrent: () => void = () => undefined, rescan = false): Promise<ReadonlySet<string>> {
+export interface WorkMetadataSyncResult {
+  /** Content work IDs the server deleted. */
+  deletedWorks: ReadonlySet<string>;
+  /** Names of works whose metadata file changed without the cache and therefore was not uploaded. */
+  changedOutsideCache: readonly string[];
+}
+
+/** Thrown after an otherwise finished sync when some works' metadata could not be uploaded safely. */
+export class WorkMetadataChangedOutsideCacheError extends Error {
+  constructor(readonly works: readonly string[]) {
+    super(`work metadata: ${works.length} work(s) changed outside the cache were not uploaded (${works.join(", ")}); refresh them from the source, then sync again`);
+    this.name = "WorkMetadataChangedOutsideCacheError";
+  }
+}
+
+export async function syncWorkMetadata(server: string, token: string, upload: boolean, assertCurrent: () => void = () => undefined, rescan = false): Promise<WorkMetadataSyncResult> {
   return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, excluded => performWorkMetadataSync(server, token, upload, assertCurrent, rescan, excluded)));
 }
 
-async function performWorkMetadataSync(server: string, token: string, upload: boolean, assertCurrent: () => void, rescan: boolean, explicitDeletions: ReadonlySet<string>): Promise<ReadonlySet<string>> {
+async function performWorkMetadataSync(server: string, token: string, upload: boolean, assertCurrent: () => void, rescan: boolean, explicitDeletions: ReadonlySet<string>): Promise<WorkMetadataSyncResult> {
   assertCurrent();
   let installed = false;
   const cache = await readCache(server);
@@ -212,8 +227,10 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
     dirty ||= cache.cursor !== cursor;
     cache.cursor = cursor;
     await checkpoint();
-    if (!upload) return new Set(Object.keys(cache.deleted));
+    if (!upload) return { deletedWorks: new Set(Object.keys(cache.deleted)), changedOutsideCache: [] };
     let uploaded = 0;
+    // A file that changed without the cache is never uploaded over the server copy, but it no longer blocks the other works.
+    const changedOutsideCache: string[] = [];
     for (const [identity, file] of byIdentity) {
       const version = workMetadataFileVersion(file)!;
       const id = await contentWorkId({ pluginId: file.pluginId, novelPath: file.path });
@@ -228,7 +245,8 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       const currentFile = await readWorkMetadataSyncFile(metadata.identity);
       if (workMetadataFileVersion(currentFile) !== version) continue;
       if (await storedNovelMetadataFingerprint(metadata) !== file.fingerprint) {
-        throw new Error("work metadata: file changed outside the cache; refresh from the source before uploading");
+        changedOutsideCache.push(metadata.novel.name || metadata.identity.novelPath);
+        continue;
       }
       assertCurrent();
       await waitForServerWorkDeletion(server, id);
@@ -254,7 +272,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       if (++uploaded % 25 === 0) await checkpoint();
     }
     await checkpoint();
-    return new Set(Object.keys(cache.deleted));
+    return { deletedWorks: new Set(Object.keys(cache.deleted)), changedOutsideCache };
   } finally {
     await checkpoint();
     if (installed && typeof window !== "undefined") window.dispatchEvent(new Event("norea-content-state-changed"));
