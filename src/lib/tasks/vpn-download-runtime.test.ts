@@ -43,6 +43,7 @@ vi.mock("./vpn-download-ranges", async importOriginal => ({
   vpnDownloadChunkCount: (count: number) => Math.max(1, Math.ceil(count / 2)),
 }));
 vi.mock("../../db/queries/chapter", () => ({ listChaptersByNovel: boundary.catalog }));
+vi.mock("../../db/queries/chapter-download-failure", () => ({ getChapterDownloadFailure: vi.fn(async () => undefined) }));
 vi.mock("../../db/queries/chapter-download-queue", () => ({
   listPendingVpnDownloadJobs: async () => [...boundary.pendingJobs.values()].map(job => ({ job: structuredClone(job), jobJson: JSON.stringify(job), updatedAtMs: 1 })),
   enqueuePendingVpnDownloadJobs: boundary.persistPending,

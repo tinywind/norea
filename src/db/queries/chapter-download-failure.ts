@@ -66,6 +66,13 @@ export async function clearChapterDownloadFailures(chapterIds: readonly number[]
   return removed;
 }
 
+export async function getChapterDownloadFailure(chapterId: number): Promise<StoredChapterDownloadFailure | undefined> {
+  const db = await getDb();
+  const [row] = await db.select<StoredChapterDownloadFailure[]>(
+    `SELECT ${columns} FROM chapter_download_failure WHERE chapter_id=$1`, [chapterId]);
+  return row;
+}
+
 export async function listChapterDownloadFailures(): Promise<StoredChapterDownloadFailure[]> {
   const db = await getDb();
   return db.select<StoredChapterDownloadFailure[]>(

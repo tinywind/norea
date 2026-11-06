@@ -78,11 +78,18 @@ class Runtime implements VpnDownloadRuntime {
   readonly results: [string, boolean][] = [];
   test: ((candidate: VpnDownloadProfileCandidate, signal: AbortSignal) => Promise<boolean>) | null = null;
   readonly chapterFailures: { chapterId: number; error: unknown }[] = [];
+  readonly storedChapterFailures = new Map<number, VpnDownloadChapterFailure>();
   chapterFailure: (attempts: number, error: unknown) => VpnDownloadChapterFailure = () => ({ failureClass: "content", nextRetryAt: null });
 
   async recordChapterFailure(job: ChapterDownloadJob, error: unknown): Promise<VpnDownloadChapterFailure> {
     this.chapterFailures.push({ chapterId: job.id, error });
-    return this.chapterFailure(this.chapterFailures.filter(item => item.chapterId === job.id).length, error);
+    const failure = this.chapterFailure(this.chapterFailures.filter(item => item.chapterId === job.id).length, error);
+    this.storedChapterFailures.set(job.id, copy(failure));
+    return failure;
+  }
+
+  async loadChapterFailure(job: ChapterDownloadJob): Promise<VpnDownloadChapterFailure | undefined> {
+    return copy(this.storedChapterFailures.get(job.id));
   }
 
   async findProfileCandidates(options: { poolEmpty: boolean }): Promise<readonly VpnDownloadProfileCandidate[]> {
@@ -496,6 +503,10 @@ describe("VPN download coordinator", () => {
     ["webview_extract: timeout after 35000ms", "page-unresponsive"],
     ["webview_fetch: timeout after 30000ms", "page-unresponsive"],
     ["Android scraper extract timed out", "page-unresponsive"],
+    ["scraper: browser fetch to https://source.test/chapter/9 timed out after 30000ms", "page-unresponsive"],
+    ["scraper: browser navigation to https://source.test/chapter/9 timed out after 30000ms", "page-unresponsive"],
+    ["scraper: timed out preparing fetch context https://source.test/", "page-unresponsive"],
+    ["scraper: timed out preparing extract context https://source.test/chapter/9", "page-unresponsive"],
     ["scraper: navigation failed (-11): net::ERR_TUNNEL_CONNECTION_FAILED at https://source.test", "page-unresponsive"],
     ["HTTP 403 Forbidden on https://source.test/chapter/9", "site-forbidden"],
   ])("retries the same unfinished chapter on another route after %s and excludes the IP for the batch", async (message, cause) => {
@@ -954,6 +965,66 @@ describe("VPN download coordinator", () => {
       await new Promise(resolve => setTimeout(resolve, 20));
       expect(runtime.tasks.size).toBe(1);
       expect(current(coordinator, "a")).toMatchObject({ phase: "paused", userPaused: true, pauseReason: "user-paused", checkpoint: 0 });
+    } finally { await coordinator.cancelPlan(value.id); }
+  });
+
+  it("keeps the remaining chapter backoff when a paused range resumes", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const runtime = new Runtime(); const coordinator = new VpnDownloadCoordinator(runtime); const value = plan();
+    runtime.chapterFailure = () => ({ failureClass: "transient", nextRetryAt: 61_000 });
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await vi.advanceTimersByTimeAsync(0);
+      const [, first] = runtime.task("a"); first.result.reject(new Error("Failed to fetch")); first.cleanup.resolve(undefined);
+      await vi.advanceTimersByTimeAsync(0);
+      expect(runtime.chapterFailures).toHaveLength(1);
+      await coordinator.pauseRange("plan", "a");
+      await vi.advanceTimersByTimeAsync(10_000);
+      await coordinator.resumeRange("plan", "a");
+      await vi.advanceTimersByTimeAsync(49_999);
+      expect(runtime.tasks.size).toBe(1);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runtime.task("a", 1)[1].job.id).toBe(9);
+    } finally { await coordinator.cancelPlan(value.id); vi.useRealTimers(); }
+  });
+
+  it("waits for the persisted chapter deadline before restoring an interrupted download", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_000);
+    const runtime = new Runtime(); const value = plan();
+    value.ranges[0]!.phase = "running";
+    runtime.seed(value);
+    runtime.storedChapterFailures.set(9, { failureClass: "transient", nextRetryAt: 61_000 });
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    try {
+      await coordinator.restore();
+      await coordinator.resumeRange("plan", "a");
+      await vi.advanceTimersByTimeAsync(59_999);
+      expect(runtime.tasks.size).toBe(0);
+      expect(runtime.native.size).toBe(0);
+      await vi.advanceTimersByTimeAsync(1);
+      expect(runtime.task("a")[1].job.id).toBe(9);
+    } finally { await coordinator.cancelPlan(value.id); vi.useRealTimers(); }
+  });
+
+  it.each(["running", "paused"] as const)("keeps an exhausted chapter held after restoring phase %s until an explicit retry clears its failure", async phase => {
+    const runtime = new Runtime(); const value = plan();
+    Object.assign(value.ranges[0]!, { phase, pauseReason: phase === "paused" ? "chapter-failed" : null });
+    runtime.seed(value);
+    runtime.storedChapterFailures.set(9, { failureClass: "transient", nextRetryAt: null });
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    try {
+      await coordinator.restore();
+      if (phase === "paused") expect(current(coordinator, "a").pauseReason).toBe("chapter-failed");
+      await coordinator.resumeRange("plan", "a");
+      await until(() => expect(current(coordinator, "a").pauseReason).toBe("chapter-failed"));
+      expect(runtime.tasks.size).toBe(0);
+      expect(runtime.native.size).toBe(0);
+      expect(runtime.chapterFailures).toEqual([]);
+      runtime.storedChapterFailures.delete(9);
+      await coordinator.resumeRange("plan", "a");
+      await until(() => expect(runtime.task("a")[1].job.id).toBe(9));
     } finally { await coordinator.cancelPlan(value.id); }
   });
 

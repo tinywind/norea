@@ -16,6 +16,7 @@ import { useVpnDownloadStore } from "../../store/vpn-download";
 import { androidCloseVpnDownloadWorker, androidConfigureVpnDownloadWorker, androidShowVpnDownloadWorker } from "../android-scraper";
 import { describeError } from "../errors";
 import { isAbortError } from "../abort";
+import { getChapterDownloadFailure } from "../../db/queries/chapter-download-failure";
 import { isNetworkOnline, useNetworkStore } from "../network";
 import { getPluginVpnStatus, isPluginVpnRecoveryStopped, loadPluginVpnFinderServers, PLUGIN_VPN_PROFILE_RELEASED_EVENT } from "../plugin-vpn";
 import { listAutomaticPluginVpnProfiles, recordAutomaticPluginVpnProfileResult, testAutomaticPluginVpnCandidate } from "../plugin-vpn-automatic";
@@ -266,6 +267,10 @@ const adapter: VpnDownloadRuntime = {
   recordChapterFailure: async (job, error) => {
     const stored = await recordFailedChapterDownloadAttempt(job, error);
     return { failureClass: stored?.failureClass ?? "transient", nextRetryAt: stored?.nextRetryAt ?? null };
+  },
+  loadChapterFailure: async job => {
+    const failure = await getChapterDownloadFailure(job.id);
+    return failure && { failureClass: failure.failureClass, nextRetryAt: failure.nextRetryAt };
   },
   cancelTask: id => {
     for (const block of taskScheduler.getSnapshot().sourceAccessBlocks) {

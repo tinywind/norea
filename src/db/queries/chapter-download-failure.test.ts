@@ -6,6 +6,7 @@ vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() })
 import { getDb, runDatabaseTransaction } from "../client";
 import {
   clearChapterDownloadFailures,
+  getChapterDownloadFailure,
   listChapterDownloadFailures,
   recordChapterDownloadFailure,
   type ChapterDownloadFailureInput,
@@ -55,6 +56,14 @@ it("counts attempts from the persisted row and stops scheduling after the budget
   expect(await listChapterDownloadFailures()).toEqual([expect.objectContaining({
     chapterId: 1, pluginId: "source", failureClass: "transient", attempts: 4, nextRetryAt: null, updatedAt: 1_003,
   })]);
+});
+
+it("reads only the requested chapter with its persisted retry admission", async () => {
+  await recordChapterDownloadFailure(failure(1, { retryDelayMs: () => null }));
+  await recordChapterDownloadFailure(failure(2, { now: 2_000, retryDelayMs: () => 500 }));
+  expect(await getChapterDownloadFailure(2)).toMatchObject({ chapterId: 2, attempts: 1, nextRetryAt: 2_500 });
+  expect(await getChapterDownloadFailure(1)).toMatchObject({ chapterId: 1, attempts: 1, nextRetryAt: null });
+  expect(await getChapterDownloadFailure(99)).toBeUndefined();
 });
 
 it("keeps the latest class, summary and challenge host", async () => {

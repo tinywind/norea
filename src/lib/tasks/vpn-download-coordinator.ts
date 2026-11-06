@@ -50,6 +50,8 @@ export interface VpnDownloadRuntime {
   disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void>;
   showWorker(worker: VpnDownloadWorkerRef, url: string): Promise<void>;
   enqueueChapter(job: ChapterDownloadJob, worker: VpnDownloadWorkerRef, planId: string): TaskHandle<unknown>;
+  /** Reads the persisted chapter retry deadline and remaining admission decision before dispatch. */
+  loadChapterFailure(job: ChapterDownloadJob): Promise<VpnDownloadChapterFailure | undefined>;
   /** Persists a failed chapter attempt with its class and returns when to try it again, if ever. */
   recordChapterFailure(job: ChapterDownloadJob, error: unknown): Promise<VpnDownloadChapterFailure>;
   cancelTask(taskId: string): void | Promise<void>;
@@ -122,7 +124,7 @@ const consumeReallow = (range: VpnDownloadRangeState, profileId: string, issue: 
   };
 };
 const isRetryableScraperFailure = (error: unknown): boolean => error instanceof Error &&
-  /^(?:webview_(?:fetch|extract): (?:timeout|timed out)\b|Android scraper (?:fetch|extract) timed out$|scraper: navigation failed \(-11\): net::ERR_TUNNEL_CONNECTION_FAILED at https?:\/\/)/i.test(error.message);
+  /^(?:webview_(?:fetch|extract): (?:timeout|timed out)\b|Android scraper (?:fetch|extract) timed out$|scraper: browser (?:fetch|navigation) to https?:\/\/\S+ timed out after \d+ms$|scraper: timed out preparing (?:fetch|extract) context https?:\/\/\S+$|scraper: navigation failed \(-11\): net::ERR_TUNNEL_CONNECTION_FAILED at https?:\/\/)/i.test(error.message);
 
 function freezePlan(input: VpnDownloadPlan): VpnDownloadPlan {
   const plan = clone(input);
@@ -208,7 +210,7 @@ export class VpnDownloadCoordinator {
             continue;
           }
           // User pauses and run holds (run Pause, VPN off, device-restore suspension) survive the restart unchanged.
-          if (range.phase === "paused" && (range.userPaused || range.pauseReason === "automatic-off")) continue;
+          if (range.phase === "paused" && (range.userPaused || range.pauseReason === "automatic-off" || range.pauseReason === "chapter-failed")) continue;
           changed ||= range.phase !== "paused" || range.pauseReason !== "interrupted";
           range.phase = "paused";
           range.pauseReason = "interrupted";
@@ -790,6 +792,20 @@ export class VpnDownloadCoordinator {
       range.jobs = new Map(jobs.map(job => [job.id, clone(job)]));
     }
     while (this.canWork(range, epoch)) {
+      const pendingId = this.state(range).selectedChapterIds[this.state(range).checkpoint];
+      const pendingJob = pendingId === undefined ? undefined : range.jobs.get(pendingId);
+      if (pendingJob) {
+        const failure = await this.runtime.loadChapterFailure(clone(pendingJob));
+        if (!this.canWork(range, epoch)) return;
+        if (failure?.nextRetryAt === null) {
+          await this.fail(range, epoch, "chapter-failed");
+          return;
+        }
+        if (failure && failure.nextRetryAt > Date.now()) {
+          await this.waitForChapterRetry(range, failure.nextRetryAt);
+          continue;
+        }
+      }
       const lease = range.worker?.connected ? range.worker : await this.connectRange(range, epoch);
       if (!lease || !this.owns(range, epoch, lease)) return;
       await this.updateRange(range, next => { next.phase = "running"; next.pauseReason = null; }, epoch);
