@@ -424,7 +424,7 @@ mod tests {
         ensure_queue_schema(&pool).await.unwrap();
         let ids: Vec<i64> = (1..=2_500).collect();
         for id in &ids {
-            insert_queue_job(&pool, &job(*id, None, None), *id, *id).await.unwrap();
+            insert_queue_job(&pool, &job(*id, None, None), *id as u64, *id as u64).await.unwrap();
         }
         assert_eq!(lease_queue_jobs(&pool, None).await.unwrap().len(), 2_500);
         assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chapter_download_queue WHERE attempt_count = 1")
