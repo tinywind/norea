@@ -228,6 +228,38 @@ it("queues every unqueued chapter of each selected source novel once at user pri
   expect((await calls[1]![0].prepare()).jobs.map((job) => job.id)).toEqual([800]);
 });
 
+it("keeps selection until the one-time download queue accepts its chapters", async () => {
+  mocks.listUnqueued.mockResolvedValue([chapterRow(11, 1)]);
+  let accept!: () => void;
+  const materialized = new Promise<void>(resolve => { accept = resolve; });
+  mocks.submit.mockReturnValueOnce({ id: "waiting", materialized, promise: Promise.resolve() });
+  const mutation = useLibrarySelection({}, "nameAsc").downloadOnceMutation as unknown as DownloadOnceMutation;
+  let completed = false;
+  const pending = mutation.mutationFn({ novelIds: [1] }).then(outcome => { completed = true; mutation.onSuccess(outcome); });
+  try {
+    await vi.waitFor(() => expect(mocks.submit).toHaveBeenCalledOnce());
+    expect(completed).toBe(false);
+    expect(mocks.setSelected).not.toHaveBeenCalled();
+    expect(mocks.setSelecting).not.toHaveBeenCalled();
+    accept();
+    await pending;
+    expect(mocks.setSelected).toHaveBeenLastCalledWith(new Set());
+    expect(mocks.setSelecting).toHaveBeenLastCalledWith(false);
+  } finally { accept(); await pending; }
+});
+
+it("keeps selected novels available to retry when download queue publication fails", async () => {
+  mocks.listUnqueued.mockResolvedValue([chapterRow(11, 1)]);
+  const failure = new Error("Queue publication failed");
+  const materialized = Promise.reject(failure);
+  void materialized.catch(() => undefined);
+  mocks.submit.mockReturnValueOnce({ id: "failed", materialized, promise: Promise.resolve() });
+  const mutation = useLibrarySelection({}, "nameAsc").downloadOnceMutation as unknown as DownloadOnceMutation;
+  await expect(mutation.mutationFn({ novelIds: [1] })).rejects.toBe(failure);
+  expect(mocks.setSelected).not.toHaveBeenCalled();
+  expect(mocks.setSelecting).not.toHaveBeenCalled();
+});
+
 it("reports the queued chapters, the local works skipped, and when nothing was left to queue", () => {
   useLibrarySelection({}, "nameAsc");
   const mutation = mocks.mutations[4] as unknown as DownloadOnceMutation;

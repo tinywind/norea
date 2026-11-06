@@ -49,14 +49,16 @@ export async function queueChapterDownloadsOnce(
       title: t("tasks.task.downloadChapter", { name: chapter.name }),
     }));
     const title = t("tasks.task.downloadChapterBatch", { count: jobs.length });
-    void submitChapterDownloadRequest({
+    const request = submitChapterDownloadRequest({
       key: JSON.stringify(["download-once", novel.id, jobs.map((job) => job.id)]),
       title,
       novelIds: [novel.id],
       total: jobs.length,
       prepare: async () => ({ jobs, materializeAllTasks: true, title, total: jobs.length }),
-    }).promise.finally(() => queryClient.invalidateQueries({ queryKey: ["novel", "library"] }))
+    });
+    void request.promise.finally(() => queryClient.invalidateQueries({ queryKey: ["novel", "library"] }))
       .catch(() => undefined);
+    await request.materialized;
     queued += jobs.length;
   }
   return { queued, skippedLocal };
