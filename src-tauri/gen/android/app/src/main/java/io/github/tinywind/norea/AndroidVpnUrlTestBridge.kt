@@ -129,7 +129,8 @@ object AndroidVpnUrlTestBridge {
   private fun awaitPreviousProcessExit(): Boolean {
     val binder = previousProcess ?: return true
     val deadline = SystemClock.elapsedRealtime() + ANDROID_VPN_URL_TEST_EXIT_TIMEOUT_MS
-    while (binder.isBinderAlive) {
+    // isBinderAlive only changes on a death notice, and unbinding drops the framework's, so ping instead.
+    while (binder.pingBinder()) {
       if (SystemClock.elapsedRealtime() >= deadline) return false
       Thread.sleep(50)
     }
