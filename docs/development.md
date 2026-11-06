@@ -103,6 +103,11 @@ Build only the target needed for the current device or emulator. Use
 `--target x86_64` for x86_64 emulators or WSA. Use aggregate package scripts
 only when intentionally producing every release APK they cover.
 
+Set `NOREA_TRACING_BUILD=true` for a tracing APK: the same signed release made
+debuggable, so `adb shell run-as` and WebView DevTools inspection work on a
+device. It installs over a release build with `adb install -r` and keeps app
+data.
+
 Local Android builds need Java, Android SDK packages, and Rust Android targets
 available in the same shell. SDKMAN is the preferred local JDK path. Install
 the Android command line tools under `$ANDROID_HOME/cmdline-tools/latest` before
@@ -142,7 +147,7 @@ artifact names and release-upload behavior used by maintainers.
 | Workflow | Artifact names |
 | --- | --- |
 | Windows Release Bundles | `norea-windows-x64-nsis`, `norea-windows-x64-msi`, `norea-windows-arm64-nsis`, `norea-windows-arm64-msi`, plus matching checksum artifacts |
-| Android Release APKs | `norea-arm64.apk`, `norea-x86_64.apk`, and `norea-android-checksums` |
+| Android Release APKs | `norea-arm64.apk`, `norea-x86_64.apk`, the tracing `norea-arm64-tracing.apk` and `norea-x86_64-tracing.apk`, and `norea-android-checksums` |
 
 Pushes to `0.2` create workflow artifacts retained for 30 days and refresh the
 `dev-0.2` prerelease. Version tags matching `v*` upload collected bundles to the

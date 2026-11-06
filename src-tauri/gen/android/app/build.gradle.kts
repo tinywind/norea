@@ -25,6 +25,8 @@ val releaseKeyAlias = envOrNull("ANDROID_RELEASE_KEY_ALIAS") ?: "androiddebugkey
 val releaseStorePassword = envOrNull("ANDROID_RELEASE_STORE_PASSWORD") ?: "android"
 val releaseKeyPassword = envOrNull("ANDROID_RELEASE_KEY_PASSWORD") ?: "android"
 val buildChannel = envOrNull("NOREA_BUILD_CHANNEL") ?: "release"
+// A tracing build is the signed release made debuggable (run-as, inspectable WebViews) for diagnosing devices.
+val tracingBuild = envOrNull("NOREA_TRACING_BUILD") == "true"
 
 data class RustlsPlatformVerifierAndroidDependency(
     val version: String,
@@ -134,6 +136,7 @@ android {
                 )
             }
             signingConfig = signingConfigs.getByName("releaseApk")
+            isDebuggable = tracingBuild
             isJniDebuggable = false
             isMinifyEnabled = true
             proguardFiles(

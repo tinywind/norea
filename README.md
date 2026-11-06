@@ -120,6 +120,7 @@ refreshed:
 | Windows ARM64 | `norea-windows-arm64-nsis` or `norea-windows-arm64-msi` |
 | Android phone or tablet | `norea-arm64.apk` |
 | Android emulator or WSA | `norea-x86_64.apk` |
+| Android device diagnostics | `norea-arm64-tracing.apk` or `norea-x86_64-tracing.apk` (debuggable, installs over the release) |
 
 Workflow artifacts are kept for 30 days. If an artifact is expired, use a newer
 successful run or the dev-0.2 prerelease.
