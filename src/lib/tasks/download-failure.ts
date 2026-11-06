@@ -74,6 +74,11 @@ function httpStatus(message: string): number | undefined {
   return status >= 400 && status <= 599 ? status : undefined;
 }
 
+/** A plain HTTP 403 from the source: the site refused the route, unlike a challenge it asks to clear. */
+export function isSourceForbiddenFailure(error: unknown): boolean {
+  return !normalizeSourceAccessRequiredError(error) && httpStatus(describeError(error)) === 403;
+}
+
 /**
  * Sorts a terminal chapter download error into the class that decides whether the
  * app retries it by itself. Unknown errors count as transient because the retry

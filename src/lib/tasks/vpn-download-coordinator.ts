@@ -1,7 +1,7 @@
 import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { sourceAccessScopeKey, type SourceAccessChallenge } from "../plugins/source-access";
 import type { ChapterDownloadJob } from "./chapter-download";
-import type { DownloadFailureClass } from "./download-failure";
+import { isSourceForbiddenFailure, type DownloadFailureClass } from "./download-failure";
 import type { SourceAccessBlock } from "./source-access-gate";
 import { isTaskUserCancelledError } from "./task-errors";
 import type { TaskHandle } from "./task-types";
@@ -828,8 +828,10 @@ export class VpnDownloadCoordinator {
           range.yieldedAt = ++this.yieldSequence;
           return;
         }
-        else if (isRetryableScraperFailure(outcome.error)) {
+        else if (isRetryableScraperFailure(outcome.error) || isSourceForbiddenFailure(outcome.error)) {
           const issue = this.profileIssues.get(plan.batchId)?.get(lease.profile.ip);
+          // The route reached the tunnel but not the page, so the batch moves on to its other profiles.
+          await this.excludeProfile(range, lease, isSourceForbiddenFailure(outcome.error) ? "site-forbidden" : "page-unresponsive");
           await this.updateRange(range, next => {
             if (terminal(next) || next.generation !== lease.ref.generation || next.checkpoint !== state.checkpoint) return;
             addAttempt(next, lease.profile.id);

@@ -76,6 +76,12 @@ pub fn schema_migrations() -> Vec<Migration> {
             sql: include_str!("migrations/0008_plugin_repositories.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 9,
+            description: "record VPN download page timeouts and site refusals as profile problems",
+            sql: include_str!("migrations/0009_vpn_profile_issue_page_causes.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 
@@ -184,6 +190,34 @@ mod tests {
         let pool = bootstrap(&path, &migrations).await.unwrap();
         assert_eq!(sqlx::query_as::<_, (String, i64, i64)>("SELECT cause,excluded,revision FROM vpn_download_profile_issue")
             .fetch_one(&pool).await.unwrap(), ("captcha".into(),1,1));
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn registered_v8_upgrade_keeps_vpn_profile_issues_and_accepts_page_causes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
+            SqlxMigration::new(migration.version, migration.description.into(),
+                MigrationType::ReversibleUp, migration.sql.into(), false)
+        }).collect();
+        let pool = bootstrap(&path, &migrations[..8]).await.unwrap();
+        sqlx::query("INSERT INTO vpn_download_profile_issue VALUES('batch','192.0.2.1','profile','hash','plan','range',4,'tunnel-lost',100,0,3)")
+            .execute(&pool).await.unwrap();
+        pool.close().await;
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        assert_eq!(sqlx::query_as::<_, (String, String, String, String, String, String, i64, String, i64, i64, i64)>(
+            "SELECT * FROM vpn_download_profile_issue").fetch_one(&pool).await.unwrap(),
+            ("batch".into(), "192.0.2.1".into(), "profile".into(), "hash".into(), "plan".into(), "range".into(), 4, "tunnel-lost".into(), 100, 0, 3));
+        for (ip, cause) in [("192.0.2.2", "page-unresponsive"), ("192.0.2.3", "site-forbidden")] {
+            sqlx::query("INSERT INTO vpn_download_profile_issue VALUES('batch',?1,'profile','hash','plan','range',4,?2,200,1,1)")
+                .bind(ip).bind(cause).execute(&pool).await.unwrap();
+        }
+        assert!(sqlx::query("INSERT INTO vpn_download_profile_issue VALUES('batch','192.0.2.4','profile','hash','plan','range',4,'unknown',200,1,1)")
+            .execute(&pool).await.is_err());
+        pool.close().await;
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT count(*) FROM vpn_download_profile_issue").fetch_one(&pool).await.unwrap(), 3);
         pool.close().await;
     }
 
@@ -393,7 +427,7 @@ mod tests {
             assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vpn_download_plan")
                 .fetch_one(&pool).await.unwrap(), 0);
             assert_eq!(sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version")
-                .fetch_all(&pool).await.unwrap(), vec![1,2,3,4,5,6,7,8]);
+                .fetch_all(&pool).await.unwrap(), vec![1,2,3,4,5,6,7,8,9]);
             pool.close().await;
         }
     }

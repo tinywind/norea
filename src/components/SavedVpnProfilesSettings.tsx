@@ -28,8 +28,11 @@ const CAUSE_KEYS: Record<VpnDownloadProfileIssueCause, TranslationKey> = {
   "connection-failed": "settings.data.pluginVpn.saved.cause.connection-failed",
   "authentication-required": "settings.data.pluginVpn.saved.cause.authentication-required",
   "tunnel-lost": "settings.data.pluginVpn.saved.cause.tunnel-lost",
+  "page-unresponsive": "settings.data.pluginVpn.saved.cause.page-unresponsive",
+  "site-forbidden": "settings.data.pluginVpn.saved.cause.site-forbidden",
 };
-const CONNECTION_FAILURE_CAUSES: ReadonlySet<VpnDownloadProfileIssueCause> = new Set(["connection-failed", "authentication-required", "tunnel-lost"]);
+const RECENT_ISSUES_PER_PROFILE = 3;
+const CONNECTION_FAILURE_CAUSES: ReadonlySet<VpnDownloadProfileIssueCause> = new Set(["connection-failed", "authentication-required", "tunnel-lost", "page-unresponsive"]);
 const CONNECTION_FAILURE_TESTS: ReadonlySet<PluginVpnUrlTestOutcome["kind"]> = new Set(["connectionFailed", "requestFailed", "timedOut"]);
 
 interface SavedVpnProfilesSettingsProps {
@@ -317,7 +320,8 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
                   ) : null}
                 </Group>
               </Group>
-              {(issues.data ?? []).filter(issue => issue.ip === ip).map(issue => <Stack key={issue.batchId} gap={4}>
+              {(issues.data ?? []).filter(issue => issue.ip === ip).sort((left, right) => right.recordedAt - left.recordedAt)
+                .slice(0, RECENT_ISSUES_PER_PROFILE).map(issue => <Stack key={issue.batchId} gap={4}>
                 <Group justify="space-between" wrap="wrap">
                   <Text size="sm">{t(CAUSE_KEYS[issue.cause])}</Text>
                   <Text size="sm">{t(issue.excluded ? "settings.data.pluginVpn.saved.excluded" : "settings.data.pluginVpn.saved.allowed")}</Text>

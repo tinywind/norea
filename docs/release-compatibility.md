@@ -147,6 +147,12 @@ requirements must be decided explicitly before implementation.
   Automatic extension updates are an additive `autoUpdateExtensions` flag in the
   `browse-plugin-settings` entry, which both backup kinds carry; a missing or
   non-boolean value reads as off.
+- Database migration 9 rebuilds `vpn_download_profile_issue` to accept two more
+  causes: `page-unresponsive` (a chapter page timed out or its tunnel connection
+  failed) and `site-forbidden` (the source answered a plain 403). Both exclude
+  the IP for that download batch like the other causes. Every existing row is
+  copied unchanged, and full device snapshots include the table under the
+  exact-schema policy.
 - The reader option "Download next chapter in advance" is retired; download
   goals replace it (RD4). Stored `autoDownloadNextChapter` values stay in the
   `reader-settings` entry and are read once at startup. Off for all novels, it

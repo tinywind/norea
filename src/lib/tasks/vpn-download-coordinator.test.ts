@@ -332,11 +332,11 @@ describe("VPN download coordinator", () => {
       await until(() => expect(current(restored, "a").pauseReason === "profiles-exhausted" || runtime.tasks.size > 2).toBe(true));
       expect(runtime.tasks.size).toBe(2);
       expect(current(restored, "a")).toMatchObject({ checkpoint: 0, attemptedProfileIds: ["a"] });
-      expect(runtime.issues).toMatchObject([{ excluded: false, revision: 2 }]);
+      expect(runtime.issues).toMatchObject([{ cause: "page-unresponsive", excluded: true, revision: 3 }]);
     } finally { await coordinator.stopAutomatic(); await restored.stopAutomatic(); }
   });
 
-  it("moves simultaneous timeouts to free profiles, including one a paused range used last", async () => {
+  it("moves simultaneous timeouts off both IPs for the batch, onto the free profile a paused range used last", async () => {
     const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b"), profile("c")];
     const coordinator = new VpnDownloadCoordinator(runtime);
     const held = range("c", "c", [3]); held.userPaused = true;
@@ -349,16 +349,16 @@ describe("VPN download coordinator", () => {
         task.result.reject(new Error("webview_extract: timeout after 35000ms"));
         task.cleanup.resolve(undefined);
       }
-      await until(() => expect(runtime.tasks.size).toBe(4));
+      await until(() => expect(runtime.tasks.size).toBe(3));
       const [a, b] = [current(coordinator, "a"), current(coordinator, "b")];
-      expect(a).toMatchObject({ checkpoint: 0, selectedChapterIds: [1], attemptedProfileIds: ["a", a.profileId] });
-      expect(b).toMatchObject({ checkpoint: 0, selectedChapterIds: [2], attemptedProfileIds: ["b", b.profileId] });
-      expect([a.profileId === "a", b.profileId === "b", a.profileId === b.profileId]).toEqual([false, false, false]);
+      const [moved, waiting] = a.profileId === "c" ? [a, b] : [b, a];
+      expect(moved).toMatchObject({ profileId: "c", checkpoint: 0 });
+      expect(waiting).toMatchObject({ phase: "paused", checkpoint: 0 });
+      expect(["a", "b"]).not.toContain(waiting.attemptProfileId);
       expect(current(coordinator, "c")).toMatchObject({ profileId: "c", userPaused: true, phase: "paused", generation: 0 });
-      expect(runtime.issues).toEqual([]);
-      expect(runtime.notices).toEqual([]);
-      runtime.succeed("a", 1); runtime.succeed("b", 1);
-      await until(() => expect([current(coordinator, "a").checkpoint, current(coordinator, "b").checkpoint]).toEqual([1, 1]));
+      expect(runtime.issues.map(issue => [issue.profileId, issue.cause, issue.excluded]).sort()).toEqual([
+        ["a", "page-unresponsive", true], ["b", "page-unresponsive", true],
+      ]);
     } finally { await coordinator.stopAutomatic(); }
   });
 
@@ -389,11 +389,12 @@ describe("VPN download coordinator", () => {
   });
 
   it.each([
-    "webview_extract: timeout after 35000ms",
-    "webview_fetch: timeout after 30000ms",
-    "Android scraper extract timed out",
-    "scraper: navigation failed (-11): net::ERR_TUNNEL_CONNECTION_FAILED at https://source.test",
-  ])("retries the same unfinished chapter on another route after %s without excluding the IP", async message => {
+    ["webview_extract: timeout after 35000ms", "page-unresponsive"],
+    ["webview_fetch: timeout after 30000ms", "page-unresponsive"],
+    ["Android scraper extract timed out", "page-unresponsive"],
+    ["scraper: navigation failed (-11): net::ERR_TUNNEL_CONNECTION_FAILED at https://source.test", "page-unresponsive"],
+    ["HTTP 403 Forbidden on https://source.test/chapter/9", "site-forbidden"],
+  ])("retries the same unfinished chapter on another route after %s and excludes the IP for the batch", async (message, cause) => {
     const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b")];
     const coordinator = new VpnDownloadCoordinator(runtime);
     const value = plan();
@@ -412,7 +413,7 @@ describe("VPN download coordinator", () => {
       expect(current(coordinator, "a")).toMatchObject({
         profileId: "b", checkpoint: 0, selectedChapterIds: [9, 2, 7],
       });
-      expect(runtime.issues).toEqual([]);
+      expect(runtime.issues).toMatchObject([{ profileId: "a", cause, excluded: true }]);
       expect(runtime.events.indexOf(`cleanup:9:${original.worker.generation}`))
         .toBeLessThan(runtime.events.findIndex(event => event.startsWith("connect:a:b:")));
       runtime.succeed("a", 1);
@@ -422,7 +423,7 @@ describe("VPN download coordinator", () => {
     } finally { await coordinator.stopAutomatic(); }
   });
 
-  it("bounds repeated scraper timeouts to one profile pass without poisoning other work", async () => {
+  it("bounds repeated scraper timeouts to one profile pass and keeps the IPs for other downloads", async () => {
     const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b")];
     const coordinator = new VpnDownloadCoordinator(runtime);
     const value = plan();
@@ -437,7 +438,9 @@ describe("VPN download coordinator", () => {
       await until(() => expect(current(coordinator, "a").pauseReason).toBe("profiles-exhausted"));
       await coordinator.profilesChanged();
       expect(runtime.tasks.size).toBe(2);
-      expect(runtime.issues).toEqual([]);
+      expect(runtime.issues.map(issue => [issue.batchId, issue.profileId, issue.cause, issue.excluded])).toEqual([
+        ["batch-plan", "a", "page-unresponsive", true], ["batch-plan", "b", "page-unresponsive", true],
+      ]);
       expect(current(coordinator, "a")).toMatchObject({ checkpoint: 0, attemptedProfileIds: ["a", "b"] });
       const next = plan([range("next", "a", [20])], "next-work");
       await coordinator.start(next, jobsFor(next));
@@ -464,7 +467,7 @@ describe("VPN download coordinator", () => {
       await until(() => expect(current(coordinator, "a").pauseReason).toBe("profiles-exhausted"));
       await coordinator.profilesChanged();
       expect(runtime.tasks.size).toBe(2);
-      expect(runtime.issues).toMatchObject([{ excluded: false, revision: 2 }]);
+      expect(runtime.issues).toMatchObject([{ cause: "page-unresponsive", excluded: true, revision: 3 }]);
     } finally { await coordinator.stopAutomatic(); }
   });
 

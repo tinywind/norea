@@ -280,6 +280,21 @@ it("keeps a stale reallow error visible and refreshes the issue rather than clai
   expect(mocks.invalidate).toHaveBeenCalledWith({ queryKey: ["vpn-download-profile-issues"] });
 });
 
+it("shows only the three most recent problems of a profile with the page causes", () => {
+  mocks.issues.data = [
+    { ...issue("192.0.2.1", "batch-1"), recordedAt: 1000, cause: "captcha" },
+    { ...issue("192.0.2.1", "batch-2"), recordedAt: 4000, cause: "site-forbidden" },
+    { ...issue("192.0.2.1", "batch-3"), recordedAt: 2000, cause: "connection-failed" },
+    { ...issue("192.0.2.1", "batch-4"), recordedAt: 3000, cause: "page-unresponsive" },
+  ];
+  const text = copy(openManager());
+  expect(text).toContain("saved.cause.site-forbidden");
+  expect(text).toContain("saved.cause.page-unresponsive");
+  expect(text).toContain("saved.cause.connection-failed");
+  expect(text).not.toContain("saved.cause.captcha");
+  expect(text.indexOf("saved.cause.site-forbidden")).toBeLessThan(text.indexOf("saved.cause.page-unresponsive"));
+});
+
 it("keeps loading and query failures distinct from a real empty vault", () => {
   mocks.vault.data = undefined; mocks.vault.isPending = true;
   expect(copy(render())).toContain("settings.data.pluginVpn.saved.loading");

@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ChapterMediaFinalizationError, ChapterMediaHttpRetryError, ChapterMediaIncompleteError } from "../chapter-media/errors";
 import { cloudflareAccessError } from "../http/response";
 import { SourceAccessRequiredError } from "../plugins/source-access";
-import { automaticRetryDelayMs, classifyDownloadFailure } from "./download-failure";
+import { automaticRetryDelayMs, classifyDownloadFailure, isSourceForbiddenFailure } from "./download-failure";
 
 const cdnChallenge = cloudflareAccessError(
   { status: 403, statusText: "Forbidden", headers: { "cf-mitigated": "challenge" }, finalUrl: "https://cdn.example.net/a.jpg", body: "" },
@@ -84,6 +84,17 @@ describe("classifyDownloadFailure", () => {
     expect(summary).toContain("https://source.example.com");
     expect(summary).not.toContain("token");
     expect(summary.length).toBeLessThanOrEqual(300);
+  });
+});
+
+describe("isSourceForbiddenFailure", () => {
+  it("recognizes a plain 403 but not a challenge or another status", () => {
+    expect(isSourceForbiddenFailure(new Error("HTTP 403 Forbidden on https://source.example.com/chapter/1"))).toBe(true);
+    expect(isSourceForbiddenFailure(new SourceAccessRequiredError("Cloudflare verification is required.", {
+      kind: "cloudflare", url: "https://source.example.com/chapter/1",
+    }))).toBe(false);
+    expect(isSourceForbiddenFailure(new Error("HTTP 404 Not Found on https://source.example.com/chapter/1"))).toBe(false);
+    expect(isSourceForbiddenFailure(new Error("webview_extract: timeout after 35000ms"))).toBe(false);
   });
 });
 

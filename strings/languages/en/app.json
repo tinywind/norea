@@ -28,6 +28,8 @@
   "settings.data.pluginVpn.saved.cause.connection-failed": "VPN connection failed",
   "settings.data.pluginVpn.saved.cause.authentication-required": "VPN credentials required",
   "settings.data.pluginVpn.saved.cause.tunnel-lost": "VPN connection lost",
+  "settings.data.pluginVpn.saved.cause.page-unresponsive": "Page did not respond",
+  "settings.data.pluginVpn.saved.cause.site-forbidden": "Site refused access (403)",
   "settings.data.pluginVpn.saved.description": "Keeps Preferred profile files in the storage folder so a reinstall restores them. Lowering the limit drops the oldest.",
   "settings.data.pluginVpn.saved.limit": "Saved profile capacity",
   "settings.data.pluginVpn.saved.saveLimit": "Save profile capacity",
