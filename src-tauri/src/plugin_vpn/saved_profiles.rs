@@ -602,14 +602,18 @@ impl SavedProfileVault {
             self.leases.values().any(|lease| lease.profile.ip == ip))
     }
 
-    pub(crate) async fn add_automatic(
+    pub(super) async fn add_automatic(
         &mut self, pool: &SqlitePool, ip: &str, bytes: &[u8], score: u64, tested_at: i64,
-    ) -> Result<automatic::AutomaticVpnProfile, String> {
+        test: &super::automatic_candidate_tests::AutomaticCandidateTest<'_>,
+    ) -> Result<Option<automatic::AutomaticVpnProfile>, String> {
         self.require_healthy()?;
         self.reconcile(pool).await?;
-        let (profile, removed) = self.automatic.add(ip, bytes, score, tested_at, self.index.limit, &marked_ips(pool).await?)?;
-        for ip in removed { self.invalidate_ip(&ip); }
-        Ok(profile)
+        let marked = marked_ips(pool).await?;
+        test.publish(|| {
+            let (profile, removed) = self.automatic.add(ip, bytes, score, tested_at, self.index.limit, &marked)?;
+            for ip in removed { self.invalidate_ip(&ip); }
+            Ok(profile)
+        })
     }
 
     /// Approves, as O, every tested server without a recent worker tunnel failure ("Approve all
@@ -1047,12 +1051,45 @@ mod tests {
         (directory, pool, vault)
     }
 
+    async fn add_automatic(
+        vault: &mut SavedProfileVault, pool: &SqlitePool, ip: &str, bytes: &[u8], score: u64, tested_at: i64,
+    ) -> Result<automatic::AutomaticVpnProfile, String> {
+        let tests = super::super::automatic_candidate_tests::AutomaticCandidateTests::default();
+        tests.prepare("test-probe")?;
+        let test = tests.start("test-probe")?;
+        let added = vault.add_automatic(pool, ip, bytes, score, tested_at, &test).await;
+        test.finish(Ok(added.is_ok()))?;
+        added?.ok_or_else(|| "the test probe was cancelled".to_string())
+    }
+
+    #[tokio::test]
+    async fn cancelled_automatic_test_does_not_publish_after_waiting_for_the_database() {
+        let (directory, pool, mut vault) = fixture().await;
+        let tests = super::super::automatic_candidate_tests::AutomaticCandidateTests::default();
+        tests.prepare("cancelled-probe").unwrap();
+        let test = tests.start("cancelled-probe").unwrap();
+        let bytes = profile("8.8.8.8", "tcp");
+        let connection = pool.acquire().await.unwrap();
+        let mut publication = Box::pin(vault.add_automatic(&pool, "8.8.8.8", &bytes, 7, 1, &test));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut publication).await.is_err());
+        let mut cancellation = Box::pin(tests.cancel("cancelled-probe"));
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(10), &mut cancellation).await.is_err());
+
+        drop(connection);
+        assert!(publication.await.unwrap().is_none());
+        assert!(!test.finish(Ok(true)).unwrap());
+        cancellation.await.unwrap();
+
+        assert!(vault.automatic_profiles(&pool).await.unwrap().is_empty());
+        assert!(!directory.path().join("automatic-profiles/8.8.8.8.ovpn").exists());
+    }
+
     #[tokio::test]
     async fn automatic_servers_lease_to_workers_apart_from_o_files_and_leave_on_any_verdict() {
         let (directory, pool, mut vault) = fixture().await;
         let verdicts = || async { sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vpn_gate_server_verdict").fetch_one(&pool).await.unwrap() };
-        let added = vault.add_automatic(&pool, "8.8.8.8", &profile("8.8.8.8", "tcp"), 7, 1).await.unwrap();
-        vault.add_automatic(&pool, "8.8.4.4", &profile("8.8.4.4", "udp"), 3, 1).await.unwrap();
+        let added = add_automatic(&mut vault, &pool, "8.8.8.8", &profile("8.8.8.8", "tcp"), 7, 1).await.unwrap();
+        add_automatic(&mut vault, &pool, "8.8.4.4", &profile("8.8.4.4", "udp"), 3, 1).await.unwrap();
         assert_eq!(verdicts().await, 0);
         assert!(vault.snapshot(&pool).await.unwrap().profiles.is_empty());
         assert!(directory.path().join("automatic-profiles/8.8.8.8.ovpn").exists());
@@ -1066,7 +1103,7 @@ mod tests {
         assert!(vault.read_lease(&pool, "download:0:1:range").await.is_err());
         vault.capture(&pool, "8.8.4.4", &profile("8.8.4.4", "udp")).await.unwrap();
         assert!(vault.automatic_profiles(&pool).await.unwrap().is_empty());
-        assert!(vault.add_automatic(&pool, "8.8.8.8", &profile("8.8.8.8", "tcp"), 7, 2).await.is_err());
+        assert!(add_automatic(&mut vault, &pool, "8.8.8.8", &profile("8.8.8.8", "tcp"), 7, 2).await.is_err());
         let rows: Vec<(String, String)> = sqlx::query_as("SELECT ip, verdict FROM vpn_gate_server_verdict ORDER BY ip").fetch_all(&pool).await.unwrap();
         assert_eq!(rows, vec![("8.8.4.4".to_string(), "works".to_string()), ("8.8.8.8".to_string(), "fails".to_string())]);
     }
@@ -1074,9 +1111,9 @@ mod tests {
     #[tokio::test]
     async fn approves_working_tested_servers_as_o_without_interrupting_their_leases() {
         let (directory, pool, mut vault) = fixture().await;
-        let best = vault.add_automatic(&pool, "8.8.8.8", &profile("8.8.8.8", "tcp"), 9, 1).await.unwrap();
-        let other = vault.add_automatic(&pool, "1.1.1.1", &profile("1.1.1.1", "udp"), 5, 1).await.unwrap();
-        let failing = vault.add_automatic(&pool, "8.8.4.4", &profile("8.8.4.4", "tcp"), 7, 1).await.unwrap();
+        let best = add_automatic(&mut vault, &pool, "8.8.8.8", &profile("8.8.8.8", "tcp"), 9, 1).await.unwrap();
+        let other = add_automatic(&mut vault, &pool, "1.1.1.1", &profile("1.1.1.1", "udp"), 5, 1).await.unwrap();
+        let failing = add_automatic(&mut vault, &pool, "8.8.4.4", &profile("8.8.4.4", "tcp"), 7, 1).await.unwrap();
         vault.record_automatic_result(&failing.id, &failing.hash, false).unwrap();
         vault.reserve(&pool, "download:0:1:range", &best.id, &best.hash, None).await.unwrap();
 
@@ -1099,7 +1136,7 @@ mod tests {
         let (_directory, pool, mut vault) = fixture().await;
         vault.set_limit(&pool, 2).await.unwrap();
         for (ip, score) in [("8.8.8.8", 9), ("8.8.4.4", 5), ("1.1.1.1", 7)] {
-            vault.add_automatic(&pool, ip, &profile(ip, "tcp"), score, 1).await.unwrap();
+            add_automatic(&mut vault, &pool, ip, &profile(ip, "tcp"), score, 1).await.unwrap();
         }
         let kept = vault.automatic_profiles(&pool).await.unwrap();
         assert_eq!(kept.iter().map(|profile| profile.ip.as_str()).collect::<Vec<_>>(), vec!["8.8.8.8", "1.1.1.1"]);

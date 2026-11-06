@@ -69,6 +69,7 @@ struct PluginVpnShared {
     foreground: tokio::sync::Mutex<()>,
     state: Mutex<PluginVpnRuntime>,
     url_tester: super::url_test::VpnUrlTester,
+    automatic_candidate_tests: super::automatic_candidate_tests::AutomaticCandidateTests,
 }
 
 struct PluginVpnRuntime {
@@ -197,6 +198,7 @@ impl PluginVpnState {
                 operation: tokio::sync::Mutex::new(()),
                 foreground: tokio::sync::Mutex::new(()),
                 url_tester: super::url_test::VpnUrlTester::new(),
+                automatic_candidate_tests: super::automatic_candidate_tests::AutomaticCandidateTests::default(),
                 state: Mutex::new(PluginVpnRuntime {
                     generation: 0,
                     network_revision: 0,
@@ -629,53 +631,87 @@ pub(crate) async fn plugin_vpn_record_automatic_profile_result(
     state.saved_profiles()?.lock().await.record_automatic_result(&id, &expected_hash, connected)
 }
 
+#[tauri::command]
+pub(crate) fn plugin_vpn_prepare_automatic_candidate_test(
+    probe_id: String, state: State<'_, PluginVpnState>,
+) -> Result<(), String> {
+    if !cfg!(target_os = "android") { return Err("Automatic VPN servers are supported only on Android".to_string()); }
+    state.shared.automatic_candidate_tests.prepare(&probe_id)
+}
+
+#[tauri::command]
+pub(crate) async fn plugin_vpn_cancel_automatic_candidate_test(
+    probe_id: String, state: State<'_, PluginVpnState>,
+) -> Result<(), String> {
+    state.shared.automatic_candidate_tests.cancel(&probe_id).await
+}
+
 /// Test-connects one cached Finder candidate and adds it to the automatic pool when the tunnel
 /// carries a TCP connection. Returns false for a failed test or a candidate that must not be tested.
 #[tauri::command]
 pub(crate) async fn plugin_vpn_test_automatic_candidate(
-    candidate_id: String, app: AppHandle, state: State<'_, PluginVpnState>,
+    candidate_id: String, probe_id: String, app: AppHandle, state: State<'_, PluginVpnState>,
 ) -> Result<bool, String> {
-    if !cfg!(target_os = "android") { return Err("Automatic VPN servers are supported only on Android".to_string()); }
-    let (ip, score, bytes) = state.shared.finder.candidate_profile(&candidate_id)?;
-    let pool = saved_profile_database(&app).await?;
-    {
+    let test = state.shared.automatic_candidate_tests.start(&probe_id)?;
+    let result = async {
+        if !cfg!(target_os = "android") { return Err("Automatic VPN servers are supported only on Android".to_string()); }
+        if test.is_cancelled() { return Ok(false); }
+        let (ip, score, bytes) = state.shared.finder.candidate_profile(&candidate_id)?;
+        let pool = saved_profile_database(&app).await?;
+        {
+            let _operation = state.shared.operation.lock().await;
+            if state.saved_profiles()?.lock().await.automatic_candidate_known(&pool, &ip).await? { return Ok(false); }
+        }
+        if test.is_cancelled() { return Ok(false); }
+        if let Err(error) = test_candidate_tunnel(&bytes, test.cancellation()).await {
+            log::info!("automatic VPN server test failed for {ip}: {error}");
+            return Ok(false);
+        }
+        let tested_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| format!("system clock is before the Unix epoch: {error}"))?.as_secs() as i64;
         let _operation = state.shared.operation.lock().await;
-        if state.saved_profiles()?.lock().await.automatic_candidate_known(&pool, &ip).await? { return Ok(false); }
-    }
-    if let Err(error) = test_candidate_tunnel(&bytes).await {
-        log::info!("automatic VPN server test failed for {ip}: {error}");
-        return Ok(false);
-    }
-    let tested_at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-        .map_err(|error| format!("system clock is before the Unix epoch: {error}"))?.as_secs() as i64;
-    let _operation = state.shared.operation.lock().await;
-    state.saved_profiles()?.lock().await.add_automatic(&pool, &ip, &bytes, score, tested_at).await?;
-    Ok(true)
+        let added = state.saved_profiles()?.lock().await.add_automatic(&pool, &ip, &bytes, score, tested_at, &test).await?;
+        Ok(added.is_some())
+    }.await;
+    test.finish(result)
 }
 
 #[cfg(target_os = "android")]
-async fn test_candidate_tunnel(bytes: &[u8]) -> Result<(), String> {
+async fn test_candidate_tunnel(bytes: &[u8], mut cancellation: tokio::sync::watch::Receiver<bool>) -> Result<(), String> {
     const REACHABILITY_TIMEOUT: Duration = Duration::from_secs(15);
     let profile = String::from_utf8(bytes.to_vec()).map_err(|_| "VPN Gate profile must be UTF-8".to_string())?;
-    let (_cancel, cancellation) = tokio::sync::watch::channel(false);
     let credentials = super::engine::EngineCredentials {
         username: VPN_GATE_PUBLIC_CREDENTIAL.into(), password: VPN_GATE_PUBLIC_CREDENTIAL.into(),
         private_key_password: String::new(), challenge_response: String::new(),
     };
-    let connection = super::engine::connect(profile, credentials, cancellation).await?;
+    let connection = super::engine::connect(profile, credentials, cancellation.clone()).await?;
+    let super::engine::EngineConnection { connector, control, lifecycle: _lifecycle, mut completion } = connection;
     let target = super::proxy::ProxyTarget { host: "www.vpngate.net".into(), port: 443 };
-    let reachable = tokio::time::timeout(REACHABILITY_TIMEOUT, connection.connector.connect(&target)).await;
-    if !matches!(tokio::time::timeout(DISCONNECT_TIMEOUT, connection.control.stop()).await, Ok(Ok(()))) { connection.control.cancel(); }
-    let _ = tokio::time::timeout(DISCONNECT_TIMEOUT, connection.completion).await;
-    match reachable {
-        Ok(Ok(_stream)) => Ok(()),
-        Ok(Err(error)) => Err(format!("the tunnel did not carry a TCP connection: {error}")),
-        Err(_) => Err("the tunnel did not carry a TCP connection in time".to_string()),
+    let mut completed = false;
+    let reachable = tokio::select! {
+        biased;
+        () = super::automatic_candidate_tests::wait_for_cancellation(&mut cancellation) =>
+            Err("automatic VPN candidate test was cancelled".to_string()),
+        _ = &mut completion => {
+            completed = true;
+            Err("automatic VPN candidate tunnel ended before the TCP probe completed".to_string())
+        },
+        reachable = tokio::time::timeout(REACHABILITY_TIMEOUT, connector.connect(&target)) => match reachable {
+            Ok(Ok(_stream)) => Ok(()),
+            Ok(Err(error)) => Err(format!("the tunnel did not carry a TCP connection: {error}")),
+            Err(_) => Err("the tunnel did not carry a TCP connection in time".to_string()),
+        },
+    };
+    if !completed {
+        control.cancel();
+        let _ = completion.await;
     }
+    if *cancellation.borrow() { return Err("automatic VPN candidate test was cancelled".to_string()); }
+    reachable
 }
 
 #[cfg(not(target_os = "android"))]
-async fn test_candidate_tunnel(_bytes: &[u8]) -> Result<(), String> {
+async fn test_candidate_tunnel(_bytes: &[u8], _cancellation: tokio::sync::watch::Receiver<bool>) -> Result<(), String> {
     Err("Automatic VPN servers are supported only on Android".to_string())
 }
 

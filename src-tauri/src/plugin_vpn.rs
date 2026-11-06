@@ -1,6 +1,7 @@
 #[cfg(any(target_os = "android", target_os = "windows"))]
 mod engine;
 mod finder;
+mod automatic_candidate_tests;
 pub(crate) mod download_workers;
 pub(crate) mod saved_profiles;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
