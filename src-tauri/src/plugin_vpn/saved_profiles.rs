@@ -456,8 +456,9 @@ impl SavedProfileVault {
         };
         self.index.sequence = sequence;
         self.index.profiles.push(profile.clone());
-        self.evict_oldest();
+        let evicted = self.evict_oldest();
         self.persist()?;
+        clear_preferences(pool, &evicted).await?;
         let cleanup_error = self.cleanup_orphans();
         Ok(VpnGateServerVerdictMutation {
             verdict: Some(VpnGateServerVerdict {
@@ -510,15 +511,19 @@ impl SavedProfileVault {
         })
     }
 
-    fn evict_oldest(&mut self) {
+    /// Drops the oldest approvals beyond the capacity and returns their IPs.
+    fn evict_oldest(&mut self) -> Vec<String> {
         self.index
             .profiles
             .sort_by_key(|profile| std::cmp::Reverse(profile.approval_sequence));
+        let mut evicted = Vec::new();
         while self.index.profiles.len() > self.index.limit {
             if let Some(profile) = self.index.profiles.pop() {
                 self.invalidate_ip(&profile.ip);
+                evicted.push(profile.ip);
             }
         }
+        evicted
     }
 
     pub(crate) async fn set_limit(
@@ -531,8 +536,9 @@ impl SavedProfileVault {
         }
         self.reconcile(pool).await?;
         self.index.limit = limit;
-        self.evict_oldest();
+        let evicted = self.evict_oldest();
         self.persist()?;
+        clear_preferences(pool, &evicted).await?;
         for ip in self.automatic.set_limit(limit)? { self.invalidate_ip(&ip); }
         Ok(self.snapshot_with_error(self.cleanup_orphans()))
     }
@@ -641,8 +647,9 @@ impl SavedProfileVault {
             for lease in self.leases.values_mut().filter(|lease| lease.profile.ip == profile.ip && lease.profile.hash == profile.hash) {
                 lease.profile = profile.clone();
             }
-            self.evict_oldest();
+            let evicted = self.evict_oldest();
             self.persist()?;
+            clear_preferences(pool, &evicted).await?;
             approved.push(profile);
         }
         let approved_ips: HashSet<&str> = approved.iter().map(|profile| profile.ip.as_str()).collect();
@@ -780,6 +787,18 @@ impl SavedProfileVault {
         self.leases.remove(owner);
         Ok(())
     }
+}
+
+/// Removes Preferred from hosts whose profile file is gone for good: nothing could reconnect them.
+pub(crate) async fn clear_preferences(pool: &SqlitePool, hosts: &[String]) -> Result<(), String> {
+    for host in hosts {
+        sqlx::query("DELETE FROM vpn_gate_server_verdict WHERE ip = ? AND verdict = 'works'")
+            .bind(host)
+            .execute(pool)
+            .await
+            .map_err(|error| format!("could not clear the VPN profile preference of {host}: {error}"))?;
+    }
+    Ok(())
 }
 
 async fn marked_ips(pool: &SqlitePool) -> Result<HashSet<String>, String> {
@@ -1177,12 +1196,12 @@ mod tests {
             ["1.1.1.1", "8.8.8.8"]
         );
         assert!(!vault.directory.join("8.8.4.4.ovpn").exists());
-        let verdict: String =
+        let verdict: Option<String> =
             sqlx::query_scalar("SELECT verdict FROM vpn_gate_server_verdict WHERE ip='8.8.4.4'")
-                .fetch_one(&pool)
+                .fetch_optional(&pool)
                 .await
                 .unwrap();
-        assert_eq!(verdict, "works");
+        assert_eq!(verdict, None);
     }
 
     #[tokio::test]

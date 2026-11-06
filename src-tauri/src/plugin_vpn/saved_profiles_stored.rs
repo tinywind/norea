@@ -19,7 +19,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 
 use super::{
-    profile_hash, publish_private_file, read_private_file, remove_private_file, validate_ip,
+    clear_preferences, profile_hash, publish_private_file, read_private_file, remove_private_file, validate_ip,
     validate_profile, validate_saved_profile, SavedProfileVault, VpnGateServerVerdict,
     VpnGateServerVerdictMutation, VpnGateServerVerdictValue, MAX_INDEX_BYTES, MAX_PROFILE_BYTES,
 };
@@ -482,9 +482,19 @@ impl SavedProfileVault {
                 Err(error) => report.errors.push(format!("{name}: {error}")),
             }
         }
+        // After a reachable sync, a Preferred host with neither a working copy nor a folder copy
+        // can never be connected again, so it leaves Preferred.
+        let unrecoverable: Vec<String> = host_verdicts(pool).await?.into_iter()
+            .filter(|(host, verdict)| verdict == "works"
+                && !self.index.profiles.iter().any(|profile| &profile.ip == host)
+                && self.stored.manual(host).is_none()
+                && !published.iter().any(|file| &file.host == host))
+            .map(|(host, _)| host)
+            .collect();
         self.stored.index.root = Some(pending.root);
         self.stored.index.published = published;
         self.stored.persist()?;
+        clear_preferences(pool, &unrecoverable).await?;
         Ok(report)
     }
 
@@ -735,8 +745,22 @@ mod tests {
         vault.capture(&pool, "8.8.8.8", &finder("8.8.8.8")).await.unwrap();
         sync(&mut vault, &pool, &root).await;
         vault.capture(&pool, "8.8.4.4", &finder("8.8.4.4")).await.unwrap();
+        assert_eq!(verdict(&pool, "8.8.8.8").await, None);
         sync(&mut vault, &pool, &root).await;
         assert_eq!(folder_names(&root), ["8.8.4.4.ovpn"]);
+    }
+
+    #[tokio::test]
+    async fn a_preferred_host_without_any_copy_leaves_preferred_after_a_reachable_sync() {
+        let (_directory, pool, mut vault, root) = fixture().await;
+        sqlx::query("INSERT INTO vpn_gate_server_verdict (ip, verdict) VALUES ('9.9.9.9', 'works'), ('1.1.1.1', 'fails')").execute(&pool).await.unwrap();
+
+        sync(&mut vault, &pool, &root.join("missing")).await;
+        assert_eq!(verdict(&pool, "9.9.9.9").await.as_deref(), Some("works"));
+
+        sync(&mut vault, &pool, &root).await;
+        assert_eq!(verdict(&pool, "9.9.9.9").await, None);
+        assert_eq!(verdict(&pool, "1.1.1.1").await.as_deref(), Some("fails"));
     }
 
     #[tokio::test]

@@ -198,7 +198,10 @@ requirements must be decided explicitly before implementation.
   profiles. Unrecorded files of Not used hosts, files whose name differs from
   their host and other files are left untouched. A Preferred host whose working copy is gone
   (an unusable vault or a restore) is imported again from its recorded copy
-  instead of deleted. Existing vault profiles are copied on the first sync and
+  instead of deleted. Capacity eviction also removes the evicted host from
+  Preferred, and after a sync that reached the folder, a Preferred host with
+  neither a working copy nor a recorded folder copy leaves Preferred, since no
+  file remains to connect with. Not used rows are kept without a file. Existing vault profiles are copied on the first sync and
   the vault is never removed. On Android, profiles stay private until a storage
   folder is selected; the desktop default storage root receives them until
   another folder is chosen. A new storage folder receives every profile, and
