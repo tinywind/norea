@@ -329,7 +329,7 @@
   left: var(--norea-space-3);
   margin-inline: auto;
   max-width: 28rem;
-  padding: var(--norea-space-4);
+  padding: var(--norea-space-5);
   position: absolute;
   right: var(--norea-space-3);
   z-index: 6;
@@ -338,11 +338,14 @@
 .norea-reader-end-title {
   font-size: var(--norea-text-lg);
   font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
   margin: 0;
 }
 
 .norea-reader-end-message {
+  color: var(--norea-reader-ink-muted, var(--norea-color-ink-muted));
   font-size: var(--norea-text-sm);
+  line-height: var(--norea-leading-normal);
   margin: 0;
 }
 
@@ -354,6 +357,20 @@
   display: flex;
   flex-wrap: wrap;
   gap: var(--norea-space-2);
+  margin-top: var(--norea-space-2);
+}
+
+.norea-reader-end-actions .mantine-Button-root {
+  flex: 1 1 10rem;
+  height: auto;
+  min-height: var(--norea-control-md);
+  min-width: 0;
+  padding: var(--norea-space-2) var(--norea-space-3);
+}
+
+.norea-reader-end-actions .mantine-Button-label {
+  line-height: var(--norea-leading-tight);
+  white-space: normal;
 }
 
 /* The card takes the reader theme's colors, so outline actions do too instead of the app's light surface. */
