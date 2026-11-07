@@ -38,7 +38,7 @@ it("shows grouped failures with one action and waiting retries as a status line"
   ];
   const $ = render();
   expect($('[data-download-failures="retrying"]').attr("role")).toBe("status");
-  expect($('[data-download-failures="retrying"]').text()).toBe("1 chapters will retry automatically.");
+  expect($('[data-download-failures="retrying"]').text()).toBe("1 chapters are waiting to retry.");
   expect($('[data-download-failures="content"]').text()).toContain("Foo: 2 chapters failed (couldn't read the page).");
   expect($('[data-download-failures="content"] button').attr("aria-label")).toBe("Retry all");
   expect($('[data-download-failures="challenge"]').text()).toContain("Foo: 1 chapters need verification at cdn.example.");

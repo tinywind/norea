@@ -1227,7 +1227,7 @@
   "history.empty.openLibrary": "Open Library",
   "history.loadError": "Could not load history",
   "downloads.title": "Downloads",
-  "downloads.failures.retrying": "{count} chapters will retry automatically.",
+  "downloads.failures.retrying": "{count} chapters are waiting to retry.",
   "downloadGoals.task.title": "Download goal: {name}",
   "downloadGoals.paused.metered": "Automatic downloads paused: on mobile data",
   "downloadGoals.paused.battery": "Automatic downloads paused: battery saver is on",

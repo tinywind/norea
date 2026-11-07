@@ -1226,7 +1226,7 @@
   "history.empty.openLibrary": "서재 열기",
   "history.loadError": "기록을 불러올 수 없음",
   "downloads.title": "다운로드",
-  "downloads.failures.retrying": "챕터 {count}개가 자동으로 다시 시도됩니다.",
+  "downloads.failures.retrying": "챕터 {count}개가 재시도 대기 중입니다.",
   "downloadGoals.task.title": "다운로드 목표: {name}",
   "downloadGoals.paused.metered": "자동 다운로드 일시 중지: 모바일 데이터 사용 중",
   "downloadGoals.paused.battery": "자동 다운로드 일시 중지: 절전 모드 켜짐",
