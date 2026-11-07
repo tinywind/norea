@@ -8,6 +8,7 @@ import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.widget.FrameLayout
+import androidx.lifecycle.Lifecycle
 import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
@@ -265,6 +266,21 @@ class AndroidVpnSessionDeviceTest {
             host.destroy()
             (surface.parent as? ViewGroup)?.removeView(surface)
           }
+          // AndroidX's finish invoker launches an auxiliary activity in the test package.
+          // Finish our display-0 activity first so close only releases the lifecycle observer.
+          activityScenario.onActivity { it.finish() }
+          val finishDeadline = SystemClock.uptimeMillis() + 10_000
+          instrumentation.waitForIdleSync()
+          while (activityScenario.state != Lifecycle.State.DESTROYED &&
+            SystemClock.uptimeMillis() < finishDeadline) {
+            Thread.sleep(10)
+            instrumentation.waitForIdleSync()
+          }
+          assertEquals(
+            "The owned fixture activity did not finish on display 0",
+            Lifecycle.State.DESTROYED,
+            activityScenario.state,
+          )
           activityScenario.close()
         }
       }
