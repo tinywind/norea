@@ -370,7 +370,7 @@ impl super::proxy::ProxyConnector for RecordingConnector {
         Box::pin(async move {
             let result = self.inner.connect(target).await;
             if let Err(error) = &result {
-                self.failures.record(&target.host, target.port, error);
+                self.failures.record(&target.host, target.port, &error.message);
             }
             result
         })

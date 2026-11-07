@@ -13,7 +13,9 @@ use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
 use tauri_plugin_sql::{DbInstances, DbPool};
 
+use super::download_workers::{DownloadVpnWorkerRef, DownloadVpnWorkers};
 use super::finder::{VpnGateFinder, VpnGateServer};
+use super::transport::{PluginVpnTransportCursor, PluginVpnTransportFailure};
 use super::saved_profiles::automatic::AutomaticVpnProfile;
 use super::saved_profiles::stored::{self, ManualVpnProfile, StoredFolderOutcome, StoredSyncPlan, StoredSyncPublished, StoredSyncReport};
 use super::saved_profiles::{
@@ -317,6 +319,20 @@ impl PluginVpnState {
         format!("http://127.0.0.1:{}", self.proxy_port())
     }
 
+    fn transport_cursor(&self) -> Option<PluginVpnTransportCursor> {
+        #[cfg(any(target_os = "android", target_os = "windows", test))]
+        { self.shared.proxy.transport_cursor() }
+        #[cfg(not(any(target_os = "android", target_os = "windows", test)))]
+        { None }
+    }
+
+    fn transport_failure(&self, cursor: PluginVpnTransportCursor, url: &str) -> Option<PluginVpnTransportFailure> {
+        #[cfg(any(target_os = "android", target_os = "windows", test))]
+        { self.shared.proxy.transport_failure(cursor, url) }
+        #[cfg(not(any(target_os = "android", target_os = "windows", test)))]
+        { let _ = (cursor, url); None }
+    }
+
     fn profile_path(&self) -> Result<PathBuf, String> {
         self.shared
             .profile_path
@@ -544,6 +560,32 @@ fn emit_status_event(app: &AppHandle, status: PluginVpnStatus, kind: PluginVpnSt
 #[tauri::command]
 pub(crate) fn plugin_vpn_status(state: State<'_, PluginVpnState>) -> PluginVpnStatus {
     state.status()
+}
+
+#[tauri::command]
+pub(crate) fn plugin_vpn_transport_cursor(
+    worker: Option<DownloadVpnWorkerRef>,
+    state: State<'_, PluginVpnState>,
+    workers: State<'_, DownloadVpnWorkers>,
+) -> Option<PluginVpnTransportCursor> {
+    match worker {
+        Some(worker) => workers.transport_cursor(&worker),
+        None => state.transport_cursor(),
+    }
+}
+
+#[tauri::command]
+pub(crate) fn plugin_vpn_transport_failure(
+    worker: Option<DownloadVpnWorkerRef>,
+    cursor: PluginVpnTransportCursor,
+    url: String,
+    state: State<'_, PluginVpnState>,
+    workers: State<'_, DownloadVpnWorkers>,
+) -> Option<PluginVpnTransportFailure> {
+    match worker {
+        Some(worker) => workers.transport_failure(&worker, cursor, &url),
+        None => state.transport_failure(cursor, &url),
+    }
 }
 
 #[tauri::command]
@@ -2120,7 +2162,7 @@ pub(crate) mod tests {
 
     impl ProxyConnector for RejectingConnector {
         fn connect<'a>(&'a self, _: &'a ProxyTarget) -> ConnectFuture<'a> {
-            Box::pin(async { Err("not used by this test".to_string()) })
+            Box::pin(async { Err("not used by this test".into()) })
         }
     }
 

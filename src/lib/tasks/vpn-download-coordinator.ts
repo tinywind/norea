@@ -1,5 +1,6 @@
 import { isAbortError } from "../abort";
 import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
+import { PluginVpnTransportError } from "../plugin-vpn-transport";
 import { sourceAccessScopeKey, type SourceAccessChallenge } from "../plugins/source-access";
 import type { ChapterDownloadJob } from "./chapter-download";
 import { classifyDownloadFailure, isSourceForbiddenFailure, type DownloadFailureClass } from "./download-failure";
@@ -123,8 +124,11 @@ const consumeReallow = (range: VpnDownloadRangeState, profileId: string, issue: 
     [profileId]: Math.max(range.consumedReallowRevisions?.[profileId] ?? 0, issue.revision),
   };
 };
-const isRetryableScraperFailure = (error: unknown): boolean => error instanceof Error &&
-  /^(?:webview_(?:fetch|extract): (?:timeout|timed out)\b|Android scraper (?:fetch|extract) timed out$|scraper: browser (?:fetch|navigation) to https?:\/\/\S+ timed out after \d+ms$|scraper: timed out preparing (?:fetch|extract) context https?:\/\/\S+$|scraper: navigation failed \(-11\): net::ERR_TUNNEL_CONNECTION_FAILED at https?:\/\/)/i.test(error.message);
+const isRetryableScraperFailure = (error: unknown): boolean => {
+  const cause = error instanceof PluginVpnTransportError ? error.cause : error;
+  return cause instanceof Error &&
+    /^(?:webview_(?:fetch|extract): (?:timeout|timed out)\b|Android scraper (?:fetch|extract) timed out$|scraper: browser (?:fetch|navigation) to https?:\/\/\S+ timed out after \d+ms$|scraper: timed out preparing (?:fetch|extract) context https?:\/\/\S+$|scraper: navigation failed \(-11\): net::ERR_TUNNEL_CONNECTION_FAILED at https?:\/\/)/i.test(cause.message);
+};
 
 /** A source refusal excludes its range from automatic and run-level resumption. */
 export function isVpnDownloadForbiddenHeld(range: VpnDownloadRangeState): boolean {

@@ -1,9 +1,11 @@
 use std::{
+    collections::VecDeque,
     future::Future,
     io,
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     pin::Pin,
-    sync::{Arc, Mutex, RwLock},
+    sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex, RwLock},
+    time::{Duration, Instant},
 };
 
 use tokio::{
@@ -11,6 +13,12 @@ use tokio::{
     net::{TcpListener, TcpStream},
     sync::{watch, Semaphore},
 };
+
+use super::transport::{PluginVpnTransportCursor, PluginVpnTransportFailure, ProxyConnectError};
+
+const MAX_TRANSPORT_FAILURES: usize = 64;
+const TRANSPORT_FAILURE_MAX_AGE: Duration = Duration::from_secs(120);
+static NEXT_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(1);
 
 const MAX_REQUEST_HEAD_BYTES: usize = 32 * 1024;
 const MAX_CHUNK_LINE_BYTES: usize = 8 * 1024;
@@ -50,7 +58,7 @@ impl<T> ProxyIo for T where T: AsyncRead + AsyncWrite + Unpin + Send {}
 
 pub(super) type ProxyStream = Box<dyn ProxyIo>;
 pub(super) type ConnectFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<ProxyStream, String>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<ProxyStream, ProxyConnectError>> + Send + 'a>>;
 
 pub(super) trait ProxyConnector: Send + Sync {
     fn connect<'a>(&'a self, target: &'a ProxyTarget) -> ConnectFuture<'a>;
@@ -63,7 +71,7 @@ impl ProxyConnector for DirectConnector {
         Box::pin(async move {
             let stream = TcpStream::connect((target.host.as_str(), target.port))
                 .await
-                .map_err(|error| format!("direct connection failed: {error}"))?;
+                .map_err(|error| ProxyConnectError::tcp(format!("direct connection failed: {error}")))?;
             Ok(Box::new(stream) as ProxyStream)
         })
     }
@@ -76,8 +84,26 @@ enum ProxyRoute {
     Tunnel(Arc<dyn ProxyConnector>),
 }
 
+struct RecordedTransportFailure {
+    failure: PluginVpnTransportFailure,
+    recorded_at: Instant,
+}
+
+struct ProxyRouteState {
+    route: ProxyRoute,
+    generation: u64,
+    next_request_id: u64,
+    failures: VecDeque<RecordedTransportFailure>,
+}
+
+struct AcceptedConnection {
+    route: ProxyRoute,
+    generation: u64,
+    request_id: u64,
+}
+
 pub(super) struct ProxyRouter {
-    route: RwLock<ProxyRoute>,
+    route: RwLock<ProxyRouteState>,
     generation: watch::Sender<u64>,
 }
 
@@ -85,37 +111,125 @@ impl ProxyRouter {
     fn new() -> Self {
         let (generation, _) = watch::channel(0);
         Self {
-            route: RwLock::new(ProxyRoute::Direct),
+            route: RwLock::new(ProxyRouteState {
+                route: ProxyRoute::Direct,
+                generation: 0,
+                next_request_id: 1,
+                failures: VecDeque::new(),
+            }),
             generation,
         }
     }
 
-    fn subscribe(&self) -> watch::Receiver<u64> {
-        self.generation.subscribe()
-    }
-
     fn set_route(&self, route: ProxyRoute) {
-        *self.route.write().expect("plugin VPN proxy route lock") = route;
-        self.generation.send_modify(|generation| {
-            *generation = generation.wrapping_add(1);
-        });
+        let mut state = self.route.write().expect("plugin VPN proxy route lock");
+        state.route = route;
+        // Global generations also prevent a cursor from matching another proxy.
+        state.generation = NEXT_ROUTE_GENERATION.fetch_add(1, Ordering::Relaxed);
+        state.failures.clear();
+        self.generation.send_replace(state.generation);
     }
 
-    async fn connect(&self, target: &ProxyTarget) -> Result<ProxyStream, String> {
-        let connector = match self
-            .route
-            .read()
-            .expect("plugin VPN proxy route lock")
-            .clone()
-        {
-            ProxyRoute::Direct => Arc::new(DirectConnector) as Arc<dyn ProxyConnector>,
-            ProxyRoute::Blocked(reason) => return Err(reason),
-            ProxyRoute::Tunnel(connector) => connector,
+    fn accept(&self) -> (AcceptedConnection, watch::Receiver<u64>) {
+        let mut state = self.route.write().expect("plugin VPN proxy route lock");
+        let accepted = AcceptedConnection {
+            route: state.route.clone(),
+            generation: state.generation,
+            request_id: state.next_request_id,
         };
-        tokio::time::timeout(CONNECT_TIMEOUT, connector.connect(target))
-            .await
-            .map_err(|_| "proxy connection timed out".to_string())?
+        state.next_request_id = state.next_request_id.wrapping_add(1).max(1);
+        // Subscribe under the same lock as the snapshot, before spawning. A
+        // delayed request must not silently start on a replacement VPN route.
+        (accepted, self.generation.subscribe())
     }
+
+    fn transport_cursor(&self) -> Option<PluginVpnTransportCursor> {
+        let state = self.route.read().expect("plugin VPN proxy route lock");
+        matches!(state.route, ProxyRoute::Tunnel(_)).then_some(PluginVpnTransportCursor {
+            route_generation: state.generation,
+            next_request_id: state.next_request_id,
+        })
+    }
+
+    fn transport_failure(
+        &self,
+        cursor: PluginVpnTransportCursor,
+        url: &str,
+    ) -> Option<PluginVpnTransportFailure> {
+        let url = reqwest::Url::parse(url).ok()?;
+        if !matches!(url.scheme(), "http" | "https") {
+            return None;
+        }
+        let host = normalized_host(url.host_str()?.trim_start_matches('[').trim_end_matches(']'));
+        let port = url.port_or_known_default()?;
+        let state = self.route.read().expect("plugin VPN proxy route lock");
+        if !matches!(state.route, ProxyRoute::Tunnel(_)) || state.generation != cursor.route_generation {
+            return None;
+        }
+        state.failures.iter().rev().find(|entry| {
+            let failure = &entry.failure;
+            failure.request_id >= cursor.next_request_id
+                && failure.route_generation == cursor.route_generation
+                && failure.host == host
+                && failure.port == port
+                && entry.recorded_at.elapsed() <= TRANSPORT_FAILURE_MAX_AGE
+        }).map(|entry| entry.failure.clone())
+    }
+
+    fn record_failure(&self, accepted: &AcceptedConnection, target: &ProxyTarget, error: &ProxyConnectError) {
+        if !matches!(accepted.route, ProxyRoute::Tunnel(_)) {
+            return;
+        }
+        let failure = PluginVpnTransportFailure {
+            route_generation: accepted.generation,
+            request_id: accepted.request_id,
+            host: normalized_host(&target.host),
+            port: target.port,
+            kind: error.kind,
+            message: error.message.clone(),
+        };
+        {
+            let mut state = self.route.write().expect("plugin VPN proxy route lock");
+            if state.generation != accepted.generation {
+                return;
+            }
+            while state.failures.front().is_some_and(|entry| entry.recorded_at.elapsed() > TRANSPORT_FAILURE_MAX_AGE)
+                || state.failures.len() >= MAX_TRANSPORT_FAILURES
+            {
+                state.failures.pop_front();
+            }
+            state.failures.push_back(RecordedTransportFailure {
+                failure: failure.clone(),
+                recorded_at: Instant::now(),
+            });
+        }
+        log::warn!(
+            "plugin VPN transport failed route={} request={} target={}:{} kind={:?}: {}",
+            failure.route_generation, failure.request_id, failure.host, failure.port, failure.kind, failure.message,
+        );
+    }
+
+    async fn connect(&self, accepted: &AcceptedConnection, target: &ProxyTarget) -> Result<ProxyStream, ProxyConnectError> {
+        let connector = match &accepted.route {
+            ProxyRoute::Direct => Arc::new(DirectConnector) as Arc<dyn ProxyConnector>,
+            ProxyRoute::Blocked(reason) => return Err(ProxyConnectError::tunnel(reason.clone())),
+            ProxyRoute::Tunnel(connector) => connector.clone(),
+        };
+        let result = tokio::time::timeout(CONNECT_TIMEOUT, connector.connect(target))
+            .await
+            .unwrap_or_else(|_| Err(ProxyConnectError::proxy("proxy connection timed out")));
+        if let Err(error) = &result {
+            // Store before writing 502: WebView may report its own timeout first.
+            self.record_failure(accepted, target, error);
+        }
+        result
+    }
+}
+
+fn normalized_host(host: &str) -> String {
+    host.parse::<std::net::IpAddr>()
+        .map(|address| address.to_string())
+        .unwrap_or_else(|_| host.trim_end_matches('.').to_ascii_lowercase())
 }
 
 pub(super) struct LocalProxy {
@@ -168,6 +282,14 @@ impl LocalProxy {
         self.router.set_route(ProxyRoute::Tunnel(connector));
     }
 
+    pub(super) fn transport_cursor(&self) -> Option<PluginVpnTransportCursor> {
+        self.router.transport_cursor()
+    }
+
+    pub(super) fn transport_failure(&self, cursor: PluginVpnTransportCursor, url: &str) -> Option<PluginVpnTransportFailure> {
+        self.router.transport_failure(cursor, url)
+    }
+
     fn take_listener(&self) -> Result<StdTcpListener, String> {
         self.listener
             .lock()
@@ -190,27 +312,28 @@ async fn serve(listener: StdTcpListener, router: Arc<ProxyRouter>) -> io::Result
             drop(stream);
             continue;
         };
+        let (accepted, mut route_changes) = router.accept();
         let router = router.clone();
         tokio::spawn(async move {
             let _permit = permit;
-            let mut route_changes = router.subscribe();
             let mut network = crate::network::subscribe();
             // Tests exercise local proxy routing without an OS network monitor.
             if !cfg!(test) && crate::network::require_online().is_err() { return; }
             tokio::select! {
-                result = handle_connection(stream, router) => {
+                biased;
+                _ = route_changes.changed() => {}
+                _ = network.changed(), if !cfg!(test) => {}
+                result = handle_connection(stream, router, accepted) => {
                     if let Err(error) = result {
                         log::debug!("plugin VPN proxy connection ended: {error}");
                     }
                 }
-                _ = route_changes.changed() => {}
-                _ = network.changed(), if !cfg!(test) => {}
             }
         });
     }
 }
 
-async fn handle_connection(mut client: TcpStream, router: Arc<ProxyRouter>) -> io::Result<()> {
+async fn handle_connection(mut client: TcpStream, router: Arc<ProxyRouter>, accepted: AcceptedConnection) -> io::Result<()> {
     let (request_head, trailing) =
         match read_request_head_with_timeout(&mut client, REQUEST_HEAD_TIMEOUT).await {
             Ok(request) => request,
@@ -229,7 +352,7 @@ async fn handle_connection(mut client: TcpStream, router: Arc<ProxyRouter>) -> i
     let target = match &request {
         ProxyRequest::Connect { target } | ProxyRequest::Forward { target, .. } => target,
     };
-    let mut upstream = match router.connect(target).await {
+    let mut upstream = match router.connect(&accepted, target).await {
         Ok(stream) => stream,
         Err(error) => {
             write_status(&mut client, 502, "Bad Gateway").await?;
@@ -634,7 +757,7 @@ mod tests {
             Box::pin(async move {
                 stream
                     .map(|stream| Box::new(stream) as ProxyStream)
-                    .ok_or_else(|| "test connector already used".to_string())
+                    .ok_or_else(|| ProxyConnectError::tunnel("test connector already used"))
             })
         }
     }
@@ -926,6 +1049,129 @@ mod tests {
 
             assert!(response.starts_with(b"HTTP/1.1 502"));
             assert!(!String::from_utf8_lossy(&response).contains("VPN is connecting"));
+            proxy_task.abort();
+        });
+    }
+
+
+    struct FailingConnector(ProxyConnectError);
+
+    impl ProxyConnector for FailingConnector {
+        fn connect<'a>(&'a self, _: &'a ProxyTarget) -> ConnectFuture<'a> {
+            let error = self.0.clone();
+            Box::pin(async move { Err(error) })
+        }
+    }
+
+    fn dns_failure_router() -> ProxyRouter {
+        let router = ProxyRouter::new();
+        router.set_route(ProxyRoute::Tunnel(Arc::new(FailingConnector(
+            ProxyConnectError::dns("VPN DNS lookup failed or returned no usable address"),
+        ))));
+        router
+    }
+
+    fn record_dns_failure(router: &ProxyRouter, accepted: &AcceptedConnection, host: &str, port: u16) {
+        router.record_failure(accepted, &ProxyTarget { host: host.into(), port },
+            &ProxyConnectError::dns("VPN DNS lookup failed or returned no usable address"));
+    }
+
+    #[test]
+    fn transport_failure_matches_only_the_current_attempt_host_and_port() {
+        let router = dns_failure_router();
+        let (previous, _) = router.accept();
+        let cursor = router.transport_cursor().expect("tunnel cursor");
+        // An older connection can finish after the new browser operation began.
+        record_dns_failure(&router, &previous, "source.example", 443);
+        assert!(router.transport_failure(cursor, "https://source.example/chapter").is_none());
+        let (other_host, _) = router.accept();
+        record_dns_failure(&router, &other_host, "ads.example", 443);
+        let (other_port, _) = router.accept();
+        record_dns_failure(&router, &other_port, "source.example", 8443);
+        assert!(router.transport_failure(cursor, "https://source.example/chapter").is_none());
+        let (current, _) = router.accept();
+        record_dns_failure(&router, &current, "SOURCE.EXAMPLE", 443);
+        let failure = router.transport_failure(cursor, "https://source.example/private?token=secret")
+            .expect("current target failure");
+        assert_eq!(failure.request_id, current.request_id);
+        assert_eq!(failure.route_generation, cursor.route_generation);
+        assert_eq!(failure.kind, super::super::transport::PluginVpnTransportFailureKind::Dns);
+        let json = serde_json::to_value(&failure).expect("failure wire format");
+        assert_eq!(json["host"], "source.example");
+        assert_eq!(json["kind"], "dns");
+        assert_eq!(json["routeGeneration"], cursor.route_generation);
+        assert_eq!(json["requestId"], current.request_id);
+        assert!(!json.to_string().contains("private"));
+        assert!(!json.to_string().contains("secret"));
+        assert!(router.transport_failure(cursor, "file:///source.example").is_none());
+    }
+
+    #[test]
+    fn transport_failures_cannot_cross_proxy_or_route_generations() {
+        let router = dns_failure_router();
+        let cursor = router.transport_cursor().expect("tunnel cursor");
+        let (old_request, mut old_route) = router.accept();
+        record_dns_failure(&router, &old_request, "source.example", 443);
+        let other = dns_failure_router();
+        let (other_request, _) = other.accept();
+        record_dns_failure(&other, &other_request, "source.example", 443);
+        assert!(other.transport_failure(cursor, "https://source.example").is_none());
+
+        router.set_route(ProxyRoute::Tunnel(Arc::new(FailingConnector(ProxyConnectError::tcp("unreachable")))));
+        assert!(old_route.has_changed().expect("route watch"));
+        old_route.borrow_and_update();
+        let new_cursor = router.transport_cursor().expect("replacement route");
+        record_dns_failure(&router, &old_request, "source.example", 443);
+        assert!(router.transport_failure(cursor, "https://source.example").is_none());
+        assert!(router.transport_failure(new_cursor, "https://source.example").is_none());
+        let (current, _) = router.accept();
+        record_dns_failure(&router, &current, "source.example", 443);
+        assert!(router.transport_failure(new_cursor, "https://source.example").is_some());
+
+        router.set_route(ProxyRoute::Blocked("reconnecting".into()));
+        assert!(router.transport_cursor().is_none());
+        assert!(router.transport_failure(new_cursor, "https://source.example").is_none());
+        router.set_route(ProxyRoute::Direct);
+        assert!(router.transport_cursor().is_none());
+    }
+
+    #[test]
+    fn transport_failure_history_is_bounded_and_expires() {
+        let router = dns_failure_router();
+        let cursor = router.transport_cursor().expect("tunnel cursor");
+        for index in 0..=MAX_TRANSPORT_FAILURES {
+            let (request, _) = router.accept();
+            record_dns_failure(&router, &request, &format!("source-{index}.example"), 443);
+        }
+        assert_eq!(router.route.read().expect("route").failures.len(), MAX_TRANSPORT_FAILURES);
+        assert!(router.transport_failure(cursor, "https://source-0.example").is_none());
+        assert!(router.transport_failure(cursor, "https://source-1.example").is_some());
+        for entry in &mut router.route.write().expect("route").failures {
+            entry.recorded_at = Instant::now() - TRANSPORT_FAILURE_MAX_AGE - Duration::from_secs(1);
+        }
+        assert!(router.transport_failure(cursor, "https://source-1.example").is_none());
+    }
+
+    #[test]
+    fn failed_connect_preserves_dns_diagnostic_when_webview_receives_bad_gateway() {
+        test_runtime().block_on(async {
+            let proxy = LocalProxy::bind().expect("local proxy");
+            proxy.tunnel(Arc::new(FailingConnector(ProxyConnectError::dns(
+                "VPN DNS lookup failed or returned no usable address",
+            ))));
+            let cursor = proxy.transport_cursor().expect("tunnel cursor");
+            let proxy_task = tokio::spawn(serve(proxy.take_listener().expect("listener"), proxy.router()));
+            let mut client = TcpStream::connect(proxy.address()).await.expect("local client");
+            client.write_all(b"CONNECT source.example:443 HTTP/1.1\r\n\r\n").await.expect("CONNECT");
+            let mut response = Vec::new();
+            tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response))
+                .await.expect("response deadline").expect("response");
+            assert!(response.starts_with(b"HTTP/1.1 502 Bad Gateway"));
+            assert!(!String::from_utf8_lossy(&response).contains("DNS"));
+            let failure = proxy.transport_failure(cursor, "https://source.example").expect("DNS diagnostic");
+            assert_eq!(failure.kind, super::super::transport::PluginVpnTransportFailureKind::Dns);
+            assert_eq!(failure.message, "VPN DNS lookup failed or returned no usable address");
+            assert_eq!(proxy.transport_cursor().expect("route retained").route_generation, cursor.route_generation);
             proxy_task.abort();
         });
     }

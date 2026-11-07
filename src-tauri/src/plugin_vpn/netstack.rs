@@ -24,6 +24,7 @@ use tokio::{
 
 use super::{
     proxy::{ConnectFuture, ProxyConnector, ProxyStream, ProxyTarget},
+    transport::ProxyConnectError,
     tunnel_config::TunnelConfiguration,
 };
 
@@ -120,7 +121,7 @@ enum Command {
     Dial {
         host: String,
         port: u16,
-        reply: oneshot::Sender<Result<DuplexStream, String>>,
+        reply: oneshot::Sender<Result<DuplexStream, ProxyConnectError>>,
     },
     Write {
         id: u64,
@@ -151,7 +152,7 @@ struct Netstack {
 
 struct Resolution {
     port: u16,
-    reply: oneshot::Sender<Result<DuplexStream, String>>,
+    reply: oneshot::Sender<Result<DuplexStream, ProxyConnectError>>,
     queries: Vec<dns::QueryHandle>,
     addresses: Vec<IpAddr>,
     grace_deadline: Option<StdInstant>,
@@ -160,7 +161,7 @@ struct Resolution {
 
 struct Connection {
     socket: SocketHandle,
-    reply: Option<oneshot::Sender<Result<DuplexStream, String>>>,
+    reply: Option<oneshot::Sender<Result<DuplexStream, ProxyConnectError>>>,
     inbound: Option<mpsc::Sender<Vec<u8>>>,
     pending_writes: VecDeque<PendingWrite>,
     remote_port: u16,
@@ -327,7 +328,7 @@ impl Netstack {
         &mut self,
         host: String,
         port: u16,
-        reply: oneshot::Sender<Result<DuplexStream, String>>,
+        reply: oneshot::Sender<Result<DuplexStream, ProxyConnectError>>,
     ) -> Result<(), String> {
         if let Ok(address) = host.parse::<IpAddr>() {
             return self.start_tcp_candidates(
@@ -359,8 +360,8 @@ impl Netstack {
             }
         }
         if queries.is_empty() {
-            let error =
-                query_error.unwrap_or_else(|| "VPN has no usable address family".to_string());
+            let error = query_error.map(ProxyConnectError::dns)
+                .unwrap_or_else(|| ProxyConnectError::tunnel("VPN has no usable address family"));
             let _ = reply.send(Err(error));
             return Ok(());
         }
@@ -396,6 +397,8 @@ impl Netstack {
                         }
                     }
                     Err(dns::GetQueryResultError::Pending) => active.push(query),
+                    // smoltcp reports both negative answers and exhausted DNS
+                    // server timeouts as Failed. Do not invent an NXDOMAIN cause.
                     Err(dns::GetQueryResultError::Failed) => {}
                 }
             }
@@ -417,12 +420,12 @@ impl Netstack {
             } else if active.is_empty() {
                 let _ = resolution
                     .reply
-                    .send(Err("VPN DNS lookup returned no address".to_string()));
+                    .send(Err(ProxyConnectError::dns("VPN DNS lookup failed or returned no usable address")));
             } else if now >= resolution.deadline {
                 self.cancel_queries(&active);
                 let _ = resolution
                     .reply
-                    .send(Err("VPN DNS lookup timed out".to_string()));
+                    .send(Err(ProxyConnectError::dns("VPN DNS lookup timed out")));
             } else {
                 if !resolution.addresses.is_empty() && resolution.grace_deadline.is_none() {
                     resolution.grace_deadline =
@@ -447,7 +450,7 @@ impl Netstack {
         &mut self,
         mut addresses: VecDeque<IpAddr>,
         port: u16,
-        reply: oneshot::Sender<Result<DuplexStream, String>>,
+        reply: oneshot::Sender<Result<DuplexStream, ProxyConnectError>>,
         overall_deadline: StdInstant,
         mut last_error: Option<String>,
     ) -> Result<(), String> {
@@ -455,11 +458,11 @@ impl Netstack {
             return Ok(());
         }
         if port == 0 {
-            let _ = reply.send(Err("invalid VPN connection target".to_string()));
+            let _ = reply.send(Err(ProxyConnectError::tcp("invalid VPN connection target")));
             return Ok(());
         }
         if StdInstant::now() >= overall_deadline {
-            let _ = reply.send(Err("VPN TCP connection timed out".to_string()));
+            let _ = reply.send(Err(ProxyConnectError::tcp("VPN TCP connection timed out")));
             return Ok(());
         }
 
@@ -479,7 +482,7 @@ impl Netstack {
             let local_port = match self.allocate_port() {
                 Ok(port) => port,
                 Err(error) => {
-                    let _ = reply.send(Err(error));
+                    let _ = reply.send(Err(ProxyConnectError::tcp(error)));
                     return Ok(());
                 }
             };
@@ -519,9 +522,9 @@ impl Netstack {
             return Ok(());
         }
 
-        let _ = reply.send(Err(last_error.unwrap_or_else(|| {
-            "VPN DNS lookup returned no usable address".to_string()
-        })));
+        let error = last_error.map(ProxyConnectError::tcp)
+            .unwrap_or_else(|| ProxyConnectError::dns("VPN DNS lookup returned no usable address"));
+        let _ = reply.send(Err(error));
         Ok(())
     }
 
@@ -674,7 +677,7 @@ impl Netstack {
             .abort();
         self.sockets.remove(connection.socket);
         if let Some(reply) = connection.reply.take() {
-            let _ = reply.send(Err(reason.to_string()));
+            let _ = reply.send(Err(ProxyConnectError::tcp(reason)));
         }
         for write in connection.pending_writes {
             let _ = write.reply.send(Err(reason.to_string()));
@@ -886,6 +889,55 @@ mod tests {
         }
     }
 
+
+    fn dns_test_stack() -> Netstack {
+        let (commands, receiver) = mpsc::channel(4);
+        let (_, inbound) = mpsc::channel(4);
+        Netstack::new(
+            TunnelConfiguration {
+                ipv4: Some(Ipv4Addr::new(10, 8, 0, 2)),
+                gateway_ipv4: Some(Ipv4Addr::new(10, 8, 0, 1)),
+                ipv6: None,
+                gateway_ipv6: None,
+                dns_servers: vec![IpAddr::V4(Ipv4Addr::new(10, 8, 0, 53))],
+                mtu: 1500,
+            },
+            Arc::new(DiscardSink),
+            commands,
+            receiver,
+            inbound,
+        ).expect("test stack")
+    }
+
+    #[test]
+    fn exhausted_dns_socket_retains_dns_failure_without_claiming_nxdomain() {
+        let mut stack = dns_test_stack();
+        let (reply, mut response) = oneshot::channel();
+        stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+        // Exercise smoltcp's real per-server deadline with a discarded packet
+        // sink. Advancing its clock requires no network and no wall-clock wait.
+        stack.interface.poll(Instant::from_millis(0), &mut stack.device, &mut stack.sockets);
+        stack.interface.poll(Instant::from_millis(10_001), &mut stack.device, &mut stack.sockets);
+        stack.process_resolutions().expect("per-request failure is not a tunnel failure");
+        let error = response.try_recv().expect("DNS result").err().expect("failed lookup");
+        assert_eq!(error.kind, super::super::transport::PluginVpnTransportFailureKind::Dns);
+        assert_eq!(error.message, "VPN DNS lookup failed or returned no usable address");
+        assert!(stack.connections.is_empty());
+    }
+
+    #[test]
+    fn application_dns_deadline_stays_distinct_from_no_usable_answer() {
+        let mut stack = dns_test_stack();
+        let (reply, mut response) = oneshot::channel();
+        stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+        stack.resolutions[0].deadline = StdInstant::now();
+        stack.process_resolutions().expect("per-request timeout is not a tunnel failure");
+        let error = response.try_recv().expect("DNS result").err().expect("expired lookup");
+        assert_eq!(error.kind, super::super::transport::PluginVpnTransportFailureKind::Dns);
+        assert_eq!(error.message, "VPN DNS lookup timed out");
+        assert!(stack.connections.is_empty());
+    }
+
     #[test]
     fn rejects_local_only_tunnel_addresses() {
         assert!(is_disallowed_tunnel_address(IpAddr::V4(
@@ -1004,7 +1056,8 @@ mod tests {
                 Err(error) => error,
             };
 
-            assert!(error.contains("address family"));
+            assert_eq!(error.kind, super::super::transport::PluginVpnTransportFailureKind::Tcp);
+            assert!(error.message.contains("address family"));
             network.stop();
         });
     }

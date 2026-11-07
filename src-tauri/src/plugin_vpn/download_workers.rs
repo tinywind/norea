@@ -3,6 +3,8 @@ use serde::{Deserialize, Serialize};
 use tauri::{AppHandle, Manager, State};
 use super::{proxy::{LocalProxy, ProxyConnector}, saved_profiles::{SavedVpnProfile, SavedVpnProfileLease}, state::{PluginVpnPhase, PluginVpnState}};
 
+use super::transport::{PluginVpnTransportCursor, PluginVpnTransportFailure};
+
 const MAX_SAFE_GENERATION: u64 = 9_007_199_254_740_991;
 const MAX_DOWNLOAD_WORKERS: usize = 10;
 const STOP_TIMEOUT: Duration = Duration::from_secs(10);
@@ -244,6 +246,35 @@ impl DownloadVpnWorkers {
         if slot.is_none() { *slot = Some(DownloadWorkerSlot::bind()?); }
         Ok(slot.as_ref().expect("initialized VPN worker slot").clone())
     }
+    fn existing_worker_slot(&self, worker: &DownloadVpnWorkerRef) -> Option<Arc<DownloadWorkerSlot>> {
+        worker.validate().ok()?;
+        // Diagnostics must never allocate a worker, bind a proxy, or start work.
+        self.slots.lock().expect("VPN worker slots lock")[worker.slot as usize].clone()
+    }
+
+    pub(super) fn transport_cursor(&self, worker: &DownloadVpnWorkerRef) -> Option<PluginVpnTransportCursor> {
+        let slot = self.existing_worker_slot(worker)?;
+        let runtime = slot.runtime.lock().expect("VPN worker lock");
+        if !runtime.requested || runtime.current.as_ref() != Some(worker) {
+            return None;
+        }
+        slot.proxy.transport_cursor()
+    }
+
+    pub(super) fn transport_failure(
+        &self,
+        worker: &DownloadVpnWorkerRef,
+        cursor: PluginVpnTransportCursor,
+        url: &str,
+    ) -> Option<PluginVpnTransportFailure> {
+        let slot = self.existing_worker_slot(worker)?;
+        let runtime = slot.runtime.lock().expect("VPN worker lock");
+        if !runtime.requested || runtime.current.as_ref() != Some(worker) {
+            return None;
+        }
+        slot.proxy.transport_failure(cursor, url)
+    }
+
     fn invalidate_all(&self) -> Vec<(Arc<DownloadWorkerSlot>, DownloadVpnWorkerRef)> {
         self.initialized_slots().iter().filter_map(|slot| {
             let worker = slot.runtime.lock().expect("VPN worker lock").current.clone()?;
@@ -634,6 +665,24 @@ mod tests {
         let mut response = Vec::new();
         tokio::time::timeout(Duration::from_secs(2), client.read_to_end(&mut response)).await.unwrap().unwrap();
         String::from_utf8(response).unwrap()
+    }
+
+
+    #[tokio::test]
+    async fn transport_diagnostics_require_current_worker_identity_without_allocating_slots() {
+        let workers = DownloadVpnWorkers::bind().unwrap();
+        assert!(workers.transport_cursor(&worker("unused", 9, 1)).is_none());
+        assert_eq!(workers.initialized_slots().len(), 1);
+        let current = worker("range-a", 0, 1);
+        let slot = workers.worker_slot(&current).unwrap();
+        slot.request_connect(&current, 0).unwrap();
+        slot.proxy.tunnel(Arc::new(TestEngineConnector("current")));
+        let cursor = workers.transport_cursor(&current).expect("current worker cursor");
+        assert!(workers.transport_cursor(&worker("range-b", 0, 1)).is_none());
+        assert!(workers.transport_cursor(&worker("range-a", 0, 2)).is_none());
+        slot.request_connect(&worker("range-b", 0, 2), 0).unwrap();
+        assert!(workers.transport_cursor(&current).is_none());
+        assert!(workers.transport_failure(&current, cursor, "https://source.example").is_none());
     }
 
     #[tokio::test]

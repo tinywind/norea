@@ -4,6 +4,7 @@ import type { ScraperExecutorId } from "./tasks/scraper-queue";
 import { androidBridgeAuthority } from "./android-bridge";
 import type { VpnDownloadWorkerRef } from "./tasks/vpn-download-types";
 import { isVpnDownloadWorkerSlot } from "./tasks/vpn-download-types";
+import { withPluginVpnTransportDiagnostics } from "./plugin-vpn-transport";
 
 interface AndroidVpnDownloadWorkerBridge {
   capabilities: () => string;
@@ -55,7 +56,7 @@ declare global {
 }
 
 let nextRequestId = 1;
-const vpnWorkerSources = new Map<string, string>();
+const vpnWorkers = new Map<string, { sourceId: string; worker: VpnDownloadWorkerRef }>();
 type AndroidScraperMethod = "clearCache" | "clearCookies" | "resetVpnSession" | "currentOrigin" | "currentUrl" | "extract" | "fetch" | "navigate";
 type AndroidWorkerMethod = AndroidScraperMethod | "configureWorker" | "ensureWorker" | "closeWorker" | "showWorker" | "cancel" | "cancelBackground";
 
@@ -199,13 +200,26 @@ function callNative<T>(
   });
 }
 
+function callNetworkNative<T>(
+  method: "fetch" | "extract" | "navigate",
+  payload: Record<string, unknown> & { url: string },
+  timeoutMs: number,
+  signal?: AbortSignal,
+): Promise<T> {
+  const run = () => callNative<T>(method, payload, timeoutMs, signal);
+  const queue = typeof payload.queue === "string" ? payload.queue : "immediate";
+  const worker = vpnWorkers.get(queue)?.worker ?? null;
+  if (queue.startsWith("vpn:") && !worker) return run();
+  return withPluginVpnTransportDiagnostics(payload.url, worker, run, signal);
+}
+
 export function cancelAndroidScraperExecutor(
   message: string,
   executor: ScraperExecutorId,
 ): boolean {
   if (!isAndroidRuntime() || typeof window === "undefined") return false;
   if (executor.startsWith("vpn:")) {
-    const sourceId = vpnWorkerSources.get(executor);
+    const sourceId = vpnWorkers.get(executor)?.sourceId;
     if (!sourceId) return false;
     try {
       sendWorkerCommand("cancelBackground", { id: `android-scraper-${nextRequestId++}`, queue: executor, sourceId, message });
@@ -230,7 +244,7 @@ export async function androidConfigureVpnDownloadWorker(
   }
   if (!configuration.profileId.trim()) throw new Error("Android VPN worker profile identity is invalid.");
   await callNative("configureWorker", { ...configuration, slot: worker.slot, generation: worker.generation, queue }, 15_000);
-  vpnWorkerSources.set(queue, configuration.sourceId);
+  vpnWorkers.set(queue, { sourceId: configuration.sourceId, worker: { ...worker } });
 }
 
 export async function androidCloseVpnDownloadWorker(worker: VpnDownloadWorkerRef, sourceId: string): Promise<void> {
@@ -238,7 +252,7 @@ export async function androidCloseVpnDownloadWorker(worker: VpnDownloadWorkerRef
   try {
     await callNative("closeWorker", { queue, sourceId }, 15_000);
   } finally {
-    vpnWorkerSources.delete(queue);
+    vpnWorkers.delete(queue);
   }
 }
 
@@ -246,7 +260,9 @@ export async function androidEnsureVpnDownloadWorker(
   worker: VpnDownloadWorkerRef,
   configuration: { sourceId: string; profileId: string; proxyPort: number },
 ): Promise<void> {
-  await callNative("ensureWorker", { ...configuration, slot: worker.slot, generation: worker.generation, queue: vpnWorkerQueue(worker) }, 20_000);
+  const queue = vpnWorkerQueue(worker);
+  await callNative("ensureWorker", { ...configuration, slot: worker.slot, generation: worker.generation, queue }, 20_000);
+  vpnWorkers.set(queue, { sourceId: configuration.sourceId, worker: { ...worker } });
 }
 
 export async function androidScraperResetVpnSession(): Promise<void> {
@@ -294,7 +310,7 @@ export function androidWebviewFetch(
   signal?: AbortSignal,
   priority?: string,
 ): Promise<AndroidFetchResultWire> {
-  return callNative<AndroidFetchResultWire>(
+  return callNetworkNative<AndroidFetchResultWire>(
     "fetch",
     {
       url,
@@ -321,7 +337,7 @@ export function androidWebviewExtract(
   signal?: AbortSignal,
   chapterNavigationScript?: string,
 ): Promise<string> {
-  return callNative<string>(
+  return callNetworkNative<string>(
     "extract",
     {
       url,
@@ -373,7 +389,7 @@ export function androidScraperNavigate(
   } = {},
 ): Promise<boolean> {
   const timeoutMs = options.timeoutMs ?? 30_000;
-  return callNative<boolean>(
+  return callNetworkNative<boolean>(
     "navigate",
     {
       url,

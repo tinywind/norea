@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { SavedVpnProfile } from "../plugin-vpn-profiles";
 import { SourceAccessRequiredError, sourceAccessScopeKey } from "../plugins/source-access";
 import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
+import { PluginVpnTransportError } from "../plugin-vpn-transport";
 import type { ChapterDownloadJob } from "./chapter-download";
 import type { SourceAccessBlock } from "./source-access-gate";
 import type { TaskHandle } from "./task-types";
@@ -1809,19 +1810,28 @@ describe("VPN download coordinator", () => {
     } finally { await coordinator.stopAutomatic(); }
   });
 
-  it("stops on the first scraper timeout without trying the spare profile", async () => {
+  it.each([false, true])("stops on the first scraper timeout without trying the spare profile (transport diagnostic: %s)", async diagnostic => {
     const runtime = new Runtime();
     const coordinator = new VpnDownloadCoordinator(runtime); coordinator.setWorkerLimit(1);
     const value = plan([range("only", "a", [1, 2])]);
+    const original = new Error("Android scraper extract timed out");
+    const error = diagnostic ? new PluginVpnTransportError({
+      routeGeneration: 7, requestId: 42, host: "source.test", port: 443,
+      kind: "dns", message: "VPN DNS lookup returned no address",
+    }, original) : original;
     try {
       await coordinator.start(value, jobsFor(value));
       await until(() => expect(runtime.task("only", 0)).toBeDefined());
       const [, task] = runtime.task("only", 0);
-      task.result.reject(new Error("webview_extract: timeout after 35000ms")); task.cleanup.resolve(undefined);
+      task.result.reject(error); task.cleanup.resolve(undefined);
       await until(() => expect(current(coordinator, "only").pauseReason).toBe("chapter-failed"));
       const connections = runtime.events.filter(event => event.startsWith("connect:"));
       expect(connections).toHaveLength(1);
-      expect(current(coordinator, "only").profileId).toBe("a");
+      expect(runtime.tasks.size).toBe(1);
+      expect(current(coordinator, "only")).toMatchObject({ profileId: "a", checkpoint: 0, attemptedProfileIds: ["a"], attemptProfileId: null });
+      expect(runtime.issues).toMatchObject([{ profileId: "a", cause: "page-unresponsive", excluded: true }]);
+      expect(runtime.chapterFailures[0]?.error).toBe(error);
+      expect(runtime.notices.find(notice => notice.reason === "chapter-failed")?.error).toBe(error);
     } finally { await coordinator.stopAutomatic(); }
   });
 

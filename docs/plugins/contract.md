@@ -538,7 +538,11 @@ network using a plain DNS server supplied by the tunnel. The OpenVPN profile's
 remote server hostname is bootstrap control traffic and is resolved by the
 device before the tunnel is available. Profiles without a usable in-tunnel DNS
 server are rejected. Profiles that require DNS over HTTPS, DNS over TLS, or
-DNSSEC validation are not supported.
+DNSSEC validation are not supported. The connected VPN phase confirms that the
+tunnel was established. A destination can still fail DNS resolution or connection
+through that tunnel. These failures retain their scoped diagnostic cause while
+the tunnel may remain connected; they do not mark the device's shared network
+state offline or clear a download failure hold.
 
 An imported profile must be one UTF-8 `.ovpn` file no larger than 1 MiB and
 must contain a remote endpoint. Certificates, private keys, and other referenced

@@ -118,6 +118,11 @@ not a guarantee of the task foreground service.
   independent HTTP request to the API. Close and reopen the finder after cancelling.
 - Fail one endpoint while the OS still reports internet. Keep that failure scoped
   to the endpoint; it must not set the shared network state to Offline.
+- Use a controlled destination DNS failure through a connected tunnel. Confirm
+  the failed request reports the DNS cause and the affected download holds. The
+  native VPN phase may remain connected; that phase alone does not establish
+  reachability of every destination. Check another destination independently and
+  confirm the first destination's diagnostic is not attached to its requests.
 
 ## Cleanup
 
