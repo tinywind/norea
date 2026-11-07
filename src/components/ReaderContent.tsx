@@ -4,6 +4,7 @@ import {
   memo,
   useEffect,
   useImperativeHandle,
+  useId,
   useLayoutEffect,
   useMemo,
   useRef,
@@ -11,6 +12,7 @@ import {
   type Ref,
 } from "react";
 import { useTranslation } from "../i18n";
+import { usePageActivity } from "../lib/page-activity";
 import {
   type ChapterMediaElementPatch,
   type ChapterMediaStorageContext,
@@ -37,6 +39,7 @@ import { useReaderAutoScroll } from "./reader/use-reader-auto-scroll";
 import { useReaderContentMedia } from "./reader/use-reader-content-media";
 import { useReaderContentStyle } from "./reader/use-reader-content-style";
 import { useReaderGestures } from "./reader/use-reader-gestures";
+import { useReaderLayoutRevision } from "./reader/use-reader-layout-revision";
 import {
   useReaderProgress,
   type ReaderSavedScrollAnchor,
@@ -59,6 +62,8 @@ interface ReaderContentProps {
   generalSettings?: ReaderGeneralSettings;
   html: string;
   preparedDocument?: PreparedReaderDocument;
+  /** Keeps the actual next-chapter layout mounted without reading or interaction effects. */
+  preparing?: boolean;
   initialProgress?: number;
   initialScrollAnchor?: ReaderScrollAnchor | null;
   interactionBlocked?: boolean;
@@ -83,6 +88,7 @@ function ReaderContentInner(
   const {
     html,
     preparedDocument,
+    preparing = false,
     chromeDismissible = false,
     chromeVisible = true,
     contentKey,
@@ -108,7 +114,10 @@ function ReaderContentInner(
   const general = generalSettings ?? storedGeneral;
   const appearance = appearanceSettings ?? storedAppearance;
   const { t } = useTranslation();
-  useReaderWakeLock(general.keepScreenOn);
+  const readerScope = useId();
+  const pageActive = usePageActivity();
+  const interactive = pageActive && !preparing;
+  useReaderWakeLock(interactive && general.keepScreenOn);
   const viewportRef = useRef<HTMLDivElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
   const completedForNavigationRef = useRef(false);
@@ -119,6 +128,7 @@ function ReaderContentInner(
   );
   const renderedHtml = readerDocument.html;
   const virtualDocument = readerDocument.virtualDocument;
+  const layoutRevision = useReaderLayoutRevision(contentRef, renderedHtml);
   const displayStaticHtml = useMemo(
     () => stripLocalMediaFontFaces(virtualDocument.staticHtml),
     [virtualDocument.staticHtml],
@@ -146,11 +156,11 @@ function ReaderContentInner(
     pageTransitionDuration: general.pageTransitionDuration,
     virtualDocument,
     completedForNavigationRef,
-    onBoundaryPage,
+    onBoundaryPage: interactive ? onBoundaryPage : undefined,
   });
   useReaderAutoScroll(
     viewportRef,
-    general.autoScroll && !isPagedReader,
+    interactive && general.autoScroll && !isPagedReader,
     general.autoScrollInterval,
     general.autoScrollOffset,
   );
@@ -178,7 +188,7 @@ function ReaderContentInner(
     activeVirtualRangeStart,
     activeVirtualRangeEnd,
     isPagedReader,
-    onMediaError,
+    onMediaError: interactive ? onMediaError : undefined,
   });
   const availablePageColumnsPerSpread = Math.max(
     1,
@@ -195,10 +205,14 @@ function ReaderContentInner(
     () =>
       [
         contentKey ?? "",
+        appearance.customCss,
         appearance.fontFamily,
         appearance.lineHeight,
         appearance.padding,
         appearance.textSize,
+        appearance.textAlign,
+        general.removeExtraParagraphSpacing,
+        layoutRevision,
         general.bionicReading,
         general.pageReader,
         general.htmlImagePagingMode,
@@ -207,10 +221,14 @@ function ReaderContentInner(
         pageColumnsPerSpread,
       ].join("|"),
     [
+      appearance.customCss,
       appearance.fontFamily,
       appearance.lineHeight,
       appearance.padding,
       appearance.textSize,
+      appearance.textAlign,
+      general.removeExtraParagraphSpacing,
+      layoutRevision,
       contentKey,
       general.bionicReading,
       general.pageReader,
@@ -233,6 +251,7 @@ function ReaderContentInner(
     contentKey,
     initialProgress,
     initialScrollAnchor,
+    preparing,
     isPagedReader,
     layoutRestoreKey,
     virtualDocument,
@@ -244,9 +263,9 @@ function ReaderContentInner(
     enforceScrollStepFloor,
     syncScrollVirtualRange,
     cancelPagedScrollAnimation,
-    onProgressChange,
-    onScrollAnchorChange,
-    onPageIndexChange,
+    onProgressChange: interactive ? onProgressChange : undefined,
+    onScrollAnchorChange: interactive ? onScrollAnchorChange : undefined,
+    onPageIndexChange: interactive ? onPageIndexChange : undefined,
   });
   const positionLabel = isPagedReader
     ? t("reader.pageLabel", {
@@ -281,7 +300,7 @@ function ReaderContentInner(
 
   useEffect(() => {
     const content = contentRef.current;
-    if (!content || appearance.customJs.trim() === "") return;
+    if (!interactive || !content || appearance.customJs.trim() === "") return;
     try {
       const run = new Function("container", appearance.customJs);
       run(content);
@@ -293,6 +312,7 @@ function ReaderContentInner(
     activeVirtualRangeEnd,
     activeVirtualRangeStart,
     appearance.customJs,
+    interactive,
     isPagedReader,
     renderedHtml,
   ]);
@@ -305,7 +325,7 @@ function ReaderContentInner(
     handleTouchEnd,
   } = useReaderGestures({
     chromeDismissible,
-    interactionBlocked,
+    interactionBlocked: interactionBlocked || !interactive,
     isPagedReader,
     general,
     viewportRef,
@@ -323,6 +343,14 @@ function ReaderContentInner(
     isPagedReader,
     removeExtraParagraphSpacing: general.removeExtraParagraphSpacing,
   });
+  // The hidden next chapter must not override the current viewport's generated CSS.
+  const scopedRuntimeCss = useMemo(
+    () => readerContentRuntimeCss.replace(
+      /(^|\n)([ \t]*)(?=\.reader-)/g,
+      `$1$2[data-reader-scope="${readerScope}"] `,
+    ),
+    [readerContentRuntimeCss, readerScope],
+  );
   const viewportClassName = `reader-viewport ${
     isPagedReader ? "reader-viewport-paged" : "reader-viewport-scroll"
   }${isMultiPageReader ? " reader-viewport-multi-page reader-viewport-two-page" : ""}`;
@@ -429,10 +457,16 @@ function ReaderContentInner(
   return (
     <Box
       className="norea-reader-content-stage"
+      aria-hidden={preparing || undefined}
+      inert={preparing}
+      data-reader-scope={readerScope}
+      data-reader-content-key={contentKey}
+      data-reader-preparing={preparing || undefined}
       style={{
         height: viewportHeight,
         background: appearance.backgroundColor,
         color: appearance.textColor,
+        ...(preparing ? { position: "absolute", inset: 0, visibility: "hidden", pointerEvents: "none" } as const : {}),
       }}
     >
       <Box
@@ -470,18 +504,18 @@ function ReaderContentInner(
           style={readerContentStyle}
           dangerouslySetInnerHTML={readerContentInnerHtml}
         />
-        <style>{readerContentRuntimeCss}</style>
+        <style>{scopedRuntimeCss}</style>
         {appearance.customCss.trim() ? (
           <style>{appearance.customCss}</style>
         ) : null}
       </Box>
-      <ReaderStatusOverlay
+      {!preparing ? <ReaderStatusOverlay
         showProgress={general.showScrollPercentage && !chromeVisible}
         showBatteryAndTime={general.showBatteryAndTime}
         progressLabel={positionLabel}
         textColor={appearance.textColor}
-      />
-      <ReaderSeekbars
+      /> : null}
+      {!preparing ? <ReaderSeekbars
         container={seekbarContainer}
         label={t("reader.progressAria", { progress: Math.round(progress) })}
         onActivity={onSeekbarActivity}
@@ -493,7 +527,7 @@ function ReaderContentInner(
         showHorizontal={general.showSeekbar && !general.verticalSeekbar}
         showVertical={general.showSeekbar && general.verticalSeekbar}
         visible={chromeVisible}
-      />
+      /> : null}
     </Box>
   );
 }

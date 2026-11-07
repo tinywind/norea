@@ -20,7 +20,7 @@ vi.mock("../../lib/android-back-navigation", () => ({ usePageBackNavigation: vi.
 vi.mock("../../db/queries/novel", () => ({
   getNovelById: vi.fn(async () => ({ id: 7, pluginId: "source", name: "Work", path: "/work" })),
 }));
-vi.mock("../use-reader-document", () => ({ useReaderDocument: vi.fn() }));
+vi.mock("../use-reader-document", () => ({ useReaderDocument: vi.fn(() => ({ document: undefined, isCurrent: false })) }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   subscribeChapterDownloads: vi.fn(() => () => {}),
   enqueueChapterDownload: vi.fn(() => ({ id: "download", promise: new Promise<void>(() => {}) })),
@@ -104,7 +104,7 @@ it("prepares a stored incomplete next chapter document without requesting source
   queryClient.setQueryData(["chapter", "detail", 12], nextChapter);
   function NextProbe() {
     useNextReaderChapter({
-      nextChapter, currentNovelId: 7, bionicReading: false, currentChapterReady: true,
+      active: true, nextChapter, currentNovelId: 7, bionicReading: false, currentChapterReady: true,
     });
     return null;
   }

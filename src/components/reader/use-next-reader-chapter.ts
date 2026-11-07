@@ -1,23 +1,34 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect } from "react";
+import { useEffect, useMemo } from "react";
 import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/chapter";
+import { hasRemoteChapterMedia } from "../../lib/chapter-media";
 import {
   getNextChapterPreparationPlan,
   readerChapterQueryOptions,
 } from "../../lib/reader-chapter";
 import { invalidateReaderContentQueries } from "../../lib/reader-query-invalidation";
 import { subscribeChapterDownloads } from "../../lib/tasks/chapter-download";
+import type { PreparedReaderDocument } from "../reader-document";
 import { useReaderDocument } from "../use-reader-document";
 
 interface NextReaderChapterOptions {
+  active: boolean;
   nextChapter: ChapterListRow | undefined;
   currentNovelId: number;
   bionicReading: boolean;
   currentChapterReady: boolean;
 }
 
-/** Prepares the stored next chapter; download goals keep the following chapters on the device. */
+/** Hidden layout must not run embedded content, change the current chapter's styles, or fetch remote media. */
+export function canPreRenderReaderDocument(document: PreparedReaderDocument): boolean {
+  return document.virtualDocument.staticHtml.trim() === ""
+    && !/<(?:script|style|link|iframe|object|embed|audio|video)\b|\son[a-z]+\s*=|\bautofocus\b/i.test(document.html)
+    && !hasRemoteChapterMedia(document.html, "https://norea.invalid/");
+}
+
+/** Prepares one stored chapter; download goals remain responsible for fetching missing chapters. */
 export function useNextReaderChapter({
+  active,
   nextChapter,
   currentNovelId,
   bionicReading,
@@ -25,8 +36,8 @@ export function useNextReaderChapter({
 }: NextReaderChapterOptions) {
   const queryClient = useQueryClient();
   const nextChapterPreparationPlan = getNextChapterPreparationPlan({
-    currentChapterReady: currentChapterReady,
-    nextChapter,
+    currentChapterReady: active && currentChapterReady,
+    nextChapter: nextChapter?.novelId === currentNovelId ? nextChapter : undefined,
   });
   const nextChapterId = nextChapterPreparationPlan?.chapterId ?? 0;
   const nextChapterQuery = useQuery({
@@ -35,15 +46,23 @@ export function useNextReaderChapter({
     retry: false,
   });
   const nextContent = nextChapterQuery.data;
-  useReaderDocument(
-    nextContent?.id === nextChapterId &&
-      hasStoredChapterContent(nextContent) &&
-      nextContent.contentType !== "pdf"
-      ? nextContent.content
-      : null,
+  const chapter = nextContent?.id === nextChapterId
+    && nextContent.novelId === currentNovelId
+    && hasStoredChapterContent(nextContent)
+    && nextContent.contentType !== "pdf"
+    ? nextContent
+    : null;
+  const preparation = useReaderDocument(
+    chapter?.content ?? null,
     bionicReading,
     nextChapterId,
   );
+  const preparedChapter = useMemo(() =>
+    chapter && preparation.isCurrent && preparation.document
+      && canPreRenderReaderDocument(preparation.document)
+      ? { chapter, document: preparation.document }
+      : null,
+  [chapter, preparation.document, preparation.isCurrent]);
   const upcomingChapterId = nextChapter?.id ?? 0;
   useEffect(() => {
     if (upcomingChapterId <= 0) return;
@@ -56,4 +75,5 @@ export function useNextReaderChapter({
       });
     });
   }, [currentNovelId, upcomingChapterId, queryClient]);
+  return preparedChapter;
 }

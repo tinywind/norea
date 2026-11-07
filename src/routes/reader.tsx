@@ -40,6 +40,7 @@ import { useReaderSystemBarBackground } from "../lib/runtime/system-bars";
 import { useBodyFlag } from "../lib/use-body-flag";
 import { pluginManager } from "../lib/plugins/manager";
 import { readerChapterQueryOptions, type ReaderChapterRow } from "../lib/reader-chapter";
+import { getReaderContentPhaseKey } from "../lib/reader-progress-session";
 import {
   chapterDetailQueryKey,
   chapterListQueryKey,
@@ -222,7 +223,8 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     contentRef,
     openedChapterRef,
   });
-  useNextReaderChapter({
+  const preparedNextChapter = useNextReaderChapter({
+    active,
     nextChapter,
     currentNovelId,
     bionicReading: effectiveReaderGeneral.bionicReading,
@@ -637,6 +639,29 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         ) : null}
         <Box className="norea-reader-content-frame">
           {readerContent}
+          {preparedNextChapter && currentNovel && effectiveReaderAppearance.customJs.trim() === "" ? (
+            <ReaderContent
+              key={getReaderContentPhaseKey(preparedNextChapter.chapter.id, true)}
+              appearanceSettings={effectiveReaderAppearance}
+              contentKey={getReaderContentPhaseKey(preparedNextChapter.chapter.id, true)}
+              generalSettings={effectiveReaderGeneral}
+              html={preparedNextChapter.chapter.content ?? ""}
+              preparedDocument={preparedNextChapter.document}
+              preparing
+              initialProgress={0}
+              localMediaContext={{
+                chapterId: preparedNextChapter.chapter.id,
+                chapterName: preparedNextChapter.chapter.name,
+                chapterNumber: preparedNextChapter.chapter.chapterNumber,
+                chapterPosition: preparedNextChapter.chapter.position,
+                novelId: currentNovel.id,
+                novelName: currentNovel.name,
+                sourceNovelId: currentNovel.sourceNovelId,
+                sourceId: currentNovel.pluginId,
+              }}
+              viewportHeight="100%"
+            />
+          ) : null}
           {showNovelEnd ? (
             <ReaderEndOfNovel
               check={novelEndCheck.check}

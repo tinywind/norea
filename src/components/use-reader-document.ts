@@ -70,6 +70,7 @@ export function useReaderDocument(
 
   return {
     document,
+    isCurrent: Boolean(prepared),
     error: current?.error,
     isPending: Boolean(html && !document && !current?.error),
     retry,

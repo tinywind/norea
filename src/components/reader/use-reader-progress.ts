@@ -43,6 +43,7 @@ const PROGRESS_SAVE_DELAY_MS = 350;
 interface ReaderProgressOptions {
   contentKey?: number | string;
   initialProgress: number;
+  preparing?: boolean;
   /** Scroll-mode position to reopen at; used when it matches the document. */
   initialScrollAnchor?: ReaderScrollAnchor | null;
   isPagedReader: boolean;
@@ -65,6 +66,7 @@ export function useReaderProgress({
   contentKey,
   initialProgress,
   initialScrollAnchor = null,
+  preparing = false,
   isPagedReader,
   layoutRestoreKey,
   virtualDocument,
@@ -87,6 +89,7 @@ export function useReaderProgress({
   );
   const pendingProgressSaveRef = useRef<number | null>(null);
   const progressTimerRef = useRef<number | null>(null);
+  const preparationPositionRef = useRef({ preparing, progress: initialProgress, anchor: initialScrollAnchor });
   const appliedInitialContentKeyRef = useRef<
     number | string | undefined | null
   >(null);
@@ -337,8 +340,14 @@ export function useReaderProgress({
   ]);
 
   useEffect(() => {
-    if (appliedInitialContentKeyRef.current === contentKey) return;
+    const previous = preparationPositionRef.current;
+    const preparationChanged = previous.preparing !== preparing;
+    preparationPositionRef.current = { preparing, progress: initialProgress, anchor: initialScrollAnchor };
+    const restorePreparedPosition = preparationChanged && (preparing
+      || previous.progress !== initialProgress || previous.anchor !== initialScrollAnchor);
+    if (appliedInitialContentKeyRef.current === contentKey && !restorePreparedPosition) return;
     appliedInitialContentKeyRef.current = contentKey;
+    restoredLayoutKeyRef.current = null;
     const nextProgress = clampProgress(initialProgress);
     pendingInitialProgressRestoreRef.current = {
       contentKey,
@@ -361,6 +370,7 @@ export function useReaderProgress({
     contentKey,
     initialProgress,
     initialScrollAnchor,
+    preparing,
     setRenderedProgress,
     virtualDocument.segments.length,
   ]);
@@ -424,6 +434,7 @@ export function useReaderProgress({
     getActiveScrollNode,
     isPagedReader,
     layoutRestoreKey,
+    preparing,
     virtualDocument,
   ]);
 
