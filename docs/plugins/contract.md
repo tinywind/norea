@@ -201,11 +201,12 @@ challenge reload.
 
 Use the exact marker `data-norea-manual-action="captcha"` for a CAPTCHA and
 `data-norea-manual-action="cloudflare"` for a Cloudflare browser challenge.
+Use `data-norea-manual-action="forbidden"` for an explicit HTTP 403 refusal.
 The page capture failure may then include this additive envelope data:
 
 ```ts
 type SourceAccessChallenge = {
-  kind: "captcha" | "cloudflare";
+  kind: "captcha" | "cloudflare" | "forbidden";
   url: string;
 };
 
@@ -229,7 +230,7 @@ challenge was observed. The host accepts it only when its hostname matches the
 trusted acquisition URL; otherwise the host uses the trusted URL. Credentials
 embedded in a URL are rejected.
 
-A typed CAPTCHA or Cloudflare challenge blocks source access for the source's
+A typed CAPTCHA, Cloudflare challenge, or HTTP 403 refusal blocks source access for the source's
 full task queue, including individual and batch chapter downloads, and keeps
 source-dependent promises pending. Download queues, cooldowns, and challenge
 blocks belong to a plugin id, even when multiple plugins use the same hostname.
@@ -237,7 +238,10 @@ Pausing, cancelling, or verifying one plugin does not affect another plugin's
 queue. The configured concurrency limit still bounds active worker WebViews.
 A chapter task may still reconcile
 authoritative final content locally while blocked; doing so does not verify or
-clear source access. The block survives an application restart. Norea opens the
+clear source access. The block survives an application restart. HTTP 403 always requires a manual
+check before resuming, including when a VPN range otherwise rotates profiles
+for CAPTCHA or Cloudflare challenges. Its notice retains HTTP 403 as the reason.
+Norea opens the
 source in its session-owning browser so the user can complete the challenge,
 then offers **Keep paused** and **Verify**. The verification browser uses the
 same source profile as the queued task selected for verification, including when

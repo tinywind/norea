@@ -9,6 +9,7 @@ import {
 } from "../lib/site-browser";
 import { registerPageBackNavigationHandler } from "../lib/android-back-navigation";
 import { isTauriRuntime } from "../lib/tauri-runtime";
+import { sourceAccessChallengeTitleKey } from "../lib/plugins/source-access";
 import { isAbortError } from "../lib/abort";
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { cancelSourceAccessWait } from "../lib/tasks/source-access-coordinator";
@@ -109,9 +110,7 @@ export function SiteBrowserOverlay() {
   const markReady = useSiteBrowserStore((s) => s.markReady);
   const sourceAccessContext = context?.mode === "source-access" ? context : null;
   const sourceAccessTitle = sourceAccessContext
-    ? sourceAccessContext.challenge.kind === "captcha"
-      ? t("sourceAccess.captchaTitle")
-      : t("sourceAccess.cloudflareTitle")
+    ? t(sourceAccessChallengeTitleKey(sourceAccessContext.challenge.kind))
     : null;
   const keepPausedLabel = t("sourceAccess.keepPaused");
   const verifyLabel = t("sourceAccess.verifyAndResume");
@@ -626,9 +625,11 @@ export function SiteBrowserOverlay() {
       {sourceAccessContext ? (
         <footer className="norea-site-browser-footer" id="norea-site-browser-instructions">
           <Text size="sm">
-            {t("sourceAccess.browserInstructions", {
-              source: sourceAccessContext.sourceName,
-            })}
+            {sourceAccessContext.challenge.kind === "forbidden"
+              ? t("errors.forbidden")
+              : t("sourceAccess.browserInstructions", {
+                  source: sourceAccessContext.sourceName,
+                })}
           </Text>
           <div className="norea-site-browser-actions">
             <Button

@@ -202,3 +202,13 @@ describe("notification targets", () => {
     expect(open).toHaveBeenCalledExactlyOnceWith({ kind: "novel", novelId: 3 });
   });
 });
+
+
+it("opens a forbidden source notice with the HTTP 403 title", async () => {
+  const denied = { ...block, challenge: { kind: "forbidden" as const, url: block.challenge.url } };
+  mocks.getSnapshot.mockReturnValue({ records: [], sourceAccessBlocks: [denied] });
+  await applyTaskNotificationAction({
+    type: "verifySource", sourceId: denied.sourceId, scopeKey: denied.scopeKey, revision: denied.revision,
+  }, vi.fn(), t);
+  expect(mocks.open).toHaveBeenCalledWith(denied, expect.objectContaining({ title: "sourceAccess.forbiddenTitle" }));
+});

@@ -1,7 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { requestAbortedError } from "../abort";
 import { cancelNativeStream } from "../native-stream";
-import { isSourceAccessRequiredError } from "../plugins/source-access";
+import { normalizeSourceAccessRequiredError } from "../plugins/source-access";
 import {
   type ScraperExecutorId,
   activeScraperExecutor,
@@ -11,7 +11,7 @@ import { isWindowsRuntime } from "../tauri-runtime";
 import { fetchErrorMessage, mediaRequestLogContext } from "./diagnostics";
 import {
   checkedResponseFromWire,
-  cloudflareAccessError,
+  sourceAccessResponseError,
   sourceAccessFallbackUrl,
 } from "./response";
 import { awaitScraperInvoke, scraperUserAgent } from "./scraper-transport";
@@ -90,7 +90,8 @@ export async function takeCapturedMediaResponse(
     );
   } catch (error) {
     if (signal?.aborted) throw requestAbortedError();
-    if (isSourceAccessRequiredError(error)) throw error;
+    const accessError = normalizeSourceAccessRequiredError(error, sourceAccessFallbackUrl(url, init));
+    if (accessError) throw accessError;
     console.debug("[plugin-media-fetch] captured response unavailable", {
       error: fetchErrorMessage(error),
       ...mediaRequestLogContext(url, init, scraperExecutor),
@@ -139,7 +140,8 @@ export async function takeCapturedMediaHandle(
     );
   } catch (error) {
     if (signal?.aborted) throw requestAbortedError();
-    if (isSourceAccessRequiredError(error)) throw error;
+    const accessError = normalizeSourceAccessRequiredError(error, sourceAccessFallbackUrl(url, init));
+    if (accessError) throw accessError;
     console.debug("[plugin-media-fetch] captured response handle unavailable", {
       error: fetchErrorMessage(error),
       ...mediaRequestLogContext(url, init, scraperExecutor),
@@ -147,7 +149,7 @@ export async function takeCapturedMediaHandle(
     return null;
   }
   if (result) {
-    const accessError = cloudflareAccessError(
+    const accessError = sourceAccessResponseError(
       result,
       url,
       sourceAccessFallbackUrl(url, init),

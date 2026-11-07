@@ -131,6 +131,7 @@ interface TaskEntry {
   sourceAccessDeferred?: boolean;
   sourceAccessPauseRequested?: boolean;
   sourceAccessStarted?: boolean;
+  sourceAccessUrl?: string;
   sourceAccessVerificationRevision?: number;
   /** Set once the server lane handed the task to its source route. */
   serverLaneDone?: boolean;
@@ -796,6 +797,7 @@ export class TaskScheduler {
     if (configuredScopeKey !== scopeKey) {
       entry.spec = { ...entry.spec, sourceAccessScopeKey: scopeKey };
     }
+    entry.sourceAccessUrl = url;
 
     const block = this.sourceAccess.get(scopeKey);
     if (!block || entry.sourceAccessVerificationRevision !== undefined) {
@@ -1512,7 +1514,7 @@ export class TaskScheduler {
     const sourceId = entry?.record.source?.id;
     if (!entry || entry.record.status !== "queued" || !sourceId || !enrolled ||
       enrolled.rangeId !== worker.rangeId || enrolled.slot !== worker.slot || enrolled.generation !== worker.generation ||
-      (challenge.kind !== "captcha" && challenge.kind !== "cloudflare")) return false;
+      (challenge.kind !== "captcha" && challenge.kind !== "cloudflare" && challenge.kind !== "forbidden")) return false;
     let scopeKey: string;
     try { scopeKey = sourceAccessScopeKey(challenge.url, sourceId, worker.rangeId); } catch { return false; }
     if (entry.spec.sourceAccessScopeKey && entry.spec.sourceAccessScopeKey !== scopeKey) return false;
@@ -2245,7 +2247,7 @@ export class TaskScheduler {
       })
       .catch((error) => {
         const cancelled = entry.controller.signal.aborted || isAbortError(error);
-        const sourceAccessError = normalizeSourceAccessRequiredError(error);
+        const sourceAccessError = normalizeSourceAccessRequiredError(error, entry.sourceAccessUrl);
         if (cancelled && entry.record.status === "cancelled") {
           this.finishCancelledRunningAfterSettlement(entry);
           return;

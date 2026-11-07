@@ -77,4 +77,14 @@ describe("SourceAccessNotice", () => {
     );
     expect($(".norea-blocking-loading-panel").text()).toContain("Cancel");
   });
+
+  it("identifies an access refusal as HTTP 403 in the held-source notice", () => {
+    mocks.blocks = [{ ...BLOCK, challenge: { kind: "forbidden", url: "https://source.test/chapter" } }];
+    const $ = render(<SourceAccessNotice active sourceId="source-a" sourceName="Source A" />);
+    const text = $(".norea-source-access-notice").text();
+    expect(text).toContain("HTTP 403");
+    expect(text).toContain("Downloads are paused");
+    expect(text).not.toContain("Cloudflare");
+  });
+
 });

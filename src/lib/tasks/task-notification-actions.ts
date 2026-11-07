@@ -1,3 +1,4 @@
+import { sourceAccessChallengeTitleKey } from "../plugins/source-access";
 import type { UseNavigateResult } from "@tanstack/react-router";
 import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
@@ -135,7 +136,7 @@ export async function applyTaskNotificationAction(
       const opening = openSourceAccessBrowser(block, {
         isRequestCurrent: () => generation === taskNotificationNavigationGeneration,
         sourceName: sourceAccessBlockSourceNames(block, snapshot).join(", ") || block.sourceId,
-        title: t(block.challenge.kind === "captcha" ? "sourceAccess.captchaTitle" : "sourceAccess.cloudflareTitle"),
+        title: t(sourceAccessChallengeTitleKey(block.challenge.kind)),
       });
       taskNotificationSourceOpening = opening;
       try {

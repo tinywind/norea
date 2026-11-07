@@ -714,6 +714,21 @@ describe("VPN range chapter acquisition", () => {
       expect(pluginMocks.getChapterResource).toHaveBeenCalledWith("/novel/7", "text");
     });
 
+    it("registers source access before refreshing a recovered chapter that receives 403", async () => {
+      const setSourceAccessUrl = vi.fn(() => true);
+      vi.mocked(getNovelById).mockResolvedValue({ ...(await getNovelById(11))!, id: 9012 });
+      vi.mocked(syncNovelFromSource).mockImplementation(async () => {
+        expect(setSourceAccessUrl).toHaveBeenCalledWith("https://source.test/");
+        throw new Error("HTTP 403 Forbidden");
+      });
+      enqueueVpnDownloadChapter(folderJob, worker, async () => undefined);
+      await expect(capturedSpec!.run({
+        executor: "vpn:0:8", setSourceAccessUrl, setDetail: vi.fn(), setProgress: vi.fn(),
+        signal: new AbortController().signal, taskId: "task-1",
+      })).rejects.toThrow("HTTP 403");
+      expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    });
+
     it("reports a content error, not a VPN failure, when the source has no matching chapter", async () => {
       vi.mocked(syncNovelFromSource).mockResolvedValue({} as never);
       vi.mocked(getNovelById).mockResolvedValue({ ...(await getNovelById(11))!, id: 12 });

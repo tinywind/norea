@@ -196,6 +196,50 @@ it("offers range actions only for a manual verification or a range the user paus
   expect(actions.resumeRange).toHaveBeenCalledWith("plan", "lane-e");
 });
 
+it.each(["challenge-forbidden", "site-forbidden"] as const)("offers an explicit range Resume for a restored %s hold", async pauseReason => {
+  const plan = activePlan();
+  Object.assign(plan.ranges[0]!, {
+    pauseReason, userPaused: false,
+    challenge: pauseReason === "challenge-forbidden" ? { kind: "forbidden", url: "https://source.test/chapter" } : null,
+  });
+  const value = withPlans(plan);
+  const resume = iconButton(row(renderDetails(value), "lane-a"), "vpnDownload.resume");
+  expect(resume).toBeDefined();
+  expect(resume.props.disabled).toBe(false);
+  await resume.props.onClick!();
+  expect(actions.resumeRange).toHaveBeenCalledExactlyOnceWith("plan", "lane-a");
+  value.run = { ...value.run!, status: "paused" };
+  expect(iconButton(row(renderDetails(value), "lane-a"), "vpnDownload.resume").props.disabled).toBe(true);
+});
+
+it.each(["challenge-forbidden", "site-forbidden"] as const)("does not offer whole-work Pause for an already held %s range", async pauseReason => {
+  const plan = activePlan();
+  plan.ranges = [plan.ranges[0]!];
+  Object.assign(plan.ranges[0]!, {
+    pauseReason, userPaused: false,
+    challenge: pauseReason === "challenge-forbidden" ? { kind: "forbidden", url: "https://source.test/chapter" } : null,
+  });
+  const value = withPlans(plan);
+  expect(vpnDownloadWorks(value)[0]).toMatchObject({ held: false, canPause: false });
+  expect(item(renderRow(value), "vpnDownload.pauseWork")).toBeUndefined();
+  mocks.states = []; mocks.refs = [];
+  await iconButton(row(renderDetails(value), "lane-a"), "vpnDownload.resume").props.onClick!();
+  expect(actions.resumeRange).toHaveBeenCalledExactlyOnceWith("plan", "lane-a");
+});
+
+it("keeps whole-work Resume available for a healthy sibling of a forbidden range", () => {
+  const plan = activePlan();
+  Object.assign(plan.ranges[0]!, { pauseReason: "challenge-forbidden", challenge: { kind: "forbidden", url: "https://source.test/chapter" } });
+  const value = withPlans(plan);
+  expect(item(renderRow(value), "vpnDownload.pauseWork")).toBeDefined();
+  Object.assign(plan.ranges[1]!, { phase: "paused", userPaused: true, pauseReason: "work-paused" });
+  expect(item(renderRow(value), "vpnDownload.resumeWork")).toBeDefined();
+  mocks.states = []; mocks.refs = [];
+  expect(iconButton(row(renderDetails(value), "lane-a"), "vpnDownload.resume").props.disabled).toBe(true);
+  Object.assign(plan.ranges[1]!, { phase: "running", userPaused: false, pauseReason: null });
+  expect(iconButton(row(renderDetails(value), "lane-a"), "vpnDownload.resume").props.disabled).toBe(false);
+});
+
 it("keeps a range action failure local to its range", async () => {
   const value = withPlans(activePlan());
   actions.openVerification.mockRejectedValueOnce(new Error("Worker verification failed"));
@@ -221,4 +265,15 @@ it("keeps markup bounded for a large catalog instead of rendering chapter or pro
   value.drafts = [{ ...value.drafts[0]!, chapters: Array.from({ length: 20_000 }, (_, index) => ({ id: index + 1, name: `Chapter ${index + 1}`, chapterNumber: String(index + 1) })) }];
   expect(renderRow(value).length).toBeLessThan(30);
   expect(renderDetails(value).length).toBeLessThan(30);
+});
+
+
+it("shows a forbidden range as attention with its HTTP 403 reason", () => {
+  const plan = activePlan();
+  Object.assign(plan.ranges[0]!, {
+    pauseReason: "challenge-forbidden", challenge: { kind: "forbidden", url: "https://source.test/chapter" },
+  });
+  const value = withPlans(plan);
+  expect(vpnDownloadWorkStatus(vpnDownloadWorks(value)[0]!, value)).toBe("attention");
+  expect(text(renderDetails(value))).toContain("errors.forbidden");
 });

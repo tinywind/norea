@@ -295,7 +295,7 @@ describe("pluginFetch", () => {
     expect(response.status).toBe(404);
   });
 
-  it("turns an explicit Cloudflare mitigation response into an access challenge", async () => {
+  it("holds an explicit Cloudflare HTTP 403 without retrying it as a challenge", async () => {
     invokeMock.mockResolvedValueOnce(
       wireOk("Just a moment...", {
         status: 403,
@@ -313,7 +313,7 @@ describe("pluginFetch", () => {
     await expect(request).rejects.toSatisfy(
       (error: unknown) =>
         isSourceAccessRequiredError(error) &&
-        error.challenge.kind === "cloudflare" &&
+        error.challenge.kind === "forbidden" &&
         error.challenge.url ===
           "https://ok.test/cdn-cgi/challenge-platform/",
     );
@@ -377,14 +377,14 @@ describe("pluginFetch", () => {
     );
   });
 
-  it("does not classify a bare 403 response as Cloudflare verification", async () => {
+  it("holds a bare 403 as access denied without calling it Cloudflare", async () => {
     invokeMock.mockResolvedValueOnce(
       wireOk("forbidden", { status: 403, statusText: "Forbidden" }),
     );
 
-    const response = await pluginFetch("https://ok.test/private");
-
-    expect(response.status).toBe(403);
+    await expect(pluginFetch("https://ok.test/private")).rejects.toMatchObject({
+      code: "source-access-required", challenge: { kind: "forbidden" },
+    });
   });
 
   it("does not start native work when cancelled before the readiness check settles", async () => {
@@ -469,6 +469,24 @@ describe("pluginFetch", () => {
 });
 
 describe("pluginMediaFetch", () => {
+  it("propagates a native 403 before requesting another media asset", async () => {
+    invokeMock.mockResolvedValueOnce(null).mockRejectedValueOnce("scraper: HTTP 403 at https://source.test");
+    await expect(pluginMediaFetch("https://cdn.test/page.png", {
+      sourceId: "source", scraperExecutor: "pool:0", sourceAccessUrl: "https://source.test/chapter/1",
+    })).rejects.toMatchObject({
+      code: "source-access-required", challenge: { kind: "forbidden", url: "https://source.test/chapter/1" },
+    });
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not fall back to fetching after a captured lookup reports native 403", async () => {
+    invokeMock.mockRejectedValueOnce("scraper: HTTP 403 at https://source.test");
+    await expect(pluginMediaFetch("https://cdn.test/page.png", {
+      sourceId: "source", scraperExecutor: "pool:0", sourceAccessUrl: "https://source.test/chapter/1",
+    })).rejects.toMatchObject({ code: "source-access-required", challenge: { kind: "forbidden" } });
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
   it("does not reuse captured GET media for non-GET requests", async () => {
     invokeMock.mockResolvedValueOnce(
       wireOk("posted", {
@@ -608,7 +626,7 @@ describe("pluginMediaFetch", () => {
     ).toEqual(["https://source.test/detail", "https://source.test/chapters"]);
   });
 
-  it.each([403, 200])("keeps a cross-host captured challenge from blocking the source (HTTP %s)", async status => {
+  it.each([403, 200, 503])("scopes a captured external refusal to its source only for HTTP 403 (HTTP %s)", async status => {
     invokeMock.mockResolvedValueOnce(
       wireOk("Just a moment...", {
         status,
@@ -622,14 +640,18 @@ describe("pluginMediaFetch", () => {
       scraperExecutor: "pool:1",
       sourceId: "source-a",
     })).rejects.toSatisfy((error: unknown) =>
-      error instanceof Error &&
-      !isSourceAccessRequiredError(error) &&
-      error.message.includes("cdn.test"),
+      status === 403
+        ? isSourceAccessRequiredError(error) &&
+          error.challenge.kind === "forbidden" &&
+          error.challenge.url === "https://source.test/chapter/1"
+        : error instanceof Error &&
+          !isSourceAccessRequiredError(error) &&
+          error.message.includes("cdn.test"),
     );
     expect(invokeMock).toHaveBeenCalledTimes(1);
   });
 
-  it.each([403, 200])("keeps an external browser-first challenge from blocking the source (HTTP %s)", async status => {
+  it.each([403, 200, 503])("scopes an external browser-first refusal to its source only for HTTP 403 (HTTP %s)", async status => {
     invokeMock
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(wireOk("Just a moment...", {
@@ -644,14 +666,18 @@ describe("pluginMediaFetch", () => {
       sourceId: "source-a",
       sourceAccessUrl: "https://source.test/chapter/1",
     })).rejects.toSatisfy((error: unknown) =>
-      error instanceof Error &&
-      !isSourceAccessRequiredError(error) &&
-      error.message.includes("cdn.test"),
+      status === 403
+        ? isSourceAccessRequiredError(error) &&
+          error.challenge.kind === "forbidden" &&
+          error.challenge.url === "https://source.test/chapter/1"
+        : error instanceof Error &&
+          !isSourceAccessRequiredError(error) &&
+          error.message.includes("cdn.test"),
     );
     expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
-  it.each([403, 200])("releases an external captured challenge without blocking the source (HTTP %s)", async status => {
+  it.each([403, 200, 503])("releases an external captured challenge and scopes HTTP 403 to its source (HTTP %s)", async status => {
     invokeMock.mockResolvedValueOnce({
       bodyBytes: 20,
       bodyHandle: "blocked-external-media",
@@ -667,9 +693,13 @@ describe("pluginMediaFetch", () => {
       scraperExecutor: "pool:1",
       sourceId: "source-a",
     })).rejects.toSatisfy((error: unknown) =>
-      error instanceof Error &&
-      !isSourceAccessRequiredError(error) &&
-      error.message.includes("cdn.test"),
+      status === 403
+        ? isSourceAccessRequiredError(error) &&
+          error.challenge.kind === "forbidden" &&
+          error.challenge.url === "https://source.test/chapter/1"
+        : error instanceof Error &&
+          !isSourceAccessRequiredError(error) &&
+          error.message.includes("cdn.test"),
     );
     expect(invokeMock).toHaveBeenNthCalledWith(2, "native_stream_cancel", {
       handle: "blocked-external-media",
@@ -677,7 +707,7 @@ describe("pluginMediaFetch", () => {
     expect(invokeMock).toHaveBeenCalledTimes(2);
   });
 
-  it("propagates a Cloudflare challenge from captured media without falling back", async () => {
+  it("holds a captured Cloudflare HTTP 403 as forbidden without falling back", async () => {
     invokeMock.mockResolvedValueOnce(
       wireOk("Just a moment...", {
         status: 403,
@@ -700,7 +730,7 @@ describe("pluginMediaFetch", () => {
     await expect(request).rejects.toSatisfy(
       (error: unknown) =>
         isSourceAccessRequiredError(error) &&
-        error.challenge.kind === "cloudflare" &&
+        error.challenge.kind === "forbidden" &&
         error.challenge.url === "https://source.test/cdn-cgi/challenge-platform/",
     );
     expect(invokeMock).toHaveBeenCalledTimes(1);
@@ -715,7 +745,7 @@ describe("pluginMediaFetch", () => {
     );
   });
 
-  it("propagates a Cloudflare challenge from the WebView", async () => {
+  it("holds a Cloudflare HTTP 403 from the WebView", async () => {
     invokeMock
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(
@@ -745,7 +775,7 @@ describe("pluginMediaFetch", () => {
     );
   });
 
-  it("propagates a Cloudflare challenge from browser-first media without falling back", async () => {
+  it("holds a browser-first Cloudflare HTTP 403 without falling back", async () => {
     invokeMock
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(
@@ -853,7 +883,35 @@ describe("pluginMediaFetch", () => {
     );
   });
 
-  it("propagates an explicit Cloudflare challenge from a captured body handle", async () => {
+
+  it.each([
+    ["https://source.test/page.png", "https://source.test/page.png"],
+    ["https://cdn.test/page.png", "https://source.test/chapter/1"],
+  ])("releases a plain 403 body handle before rejecting access to %s", async (url, scopeUrl) => {
+    let finishCancellation!: () => void;
+    invokeMock
+      .mockResolvedValueOnce({
+        bodyBytes: 20, bodyHandle: "plain-forbidden-media", finalUrl: url,
+        headers: { "content-type": "image/png" }, status: 403, statusText: "Forbidden",
+      })
+      .mockImplementationOnce(() => new Promise<void>(resolve => { finishCancellation = resolve; }));
+    let settled = false;
+    const request = takeCapturedMediaHandle(url, {
+      contextUrl: "https://source.test/chapter/1", scraperExecutor: "pool:1", sourceId: "source-a",
+    }).catch(error => { settled = true; return error; });
+    await vi.waitFor(() => expect(invokeMock).toHaveBeenCalledWith(
+      "native_stream_cancel", { handle: "plain-forbidden-media" },
+    ));
+    expect(settled).toBe(false);
+    finishCancellation();
+    await expect(request).resolves.toMatchObject({
+      code: "source-access-required", message: expect.stringContaining("HTTP 403"),
+      challenge: { kind: "forbidden", url: scopeUrl },
+    });
+    expect(invokeMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("holds a Cloudflare HTTP 403 from a captured body handle", async () => {
     invokeMock.mockResolvedValueOnce({
       bodyBytes: 20,
       bodyHandle: "captured-media-1",
@@ -992,7 +1050,7 @@ describe("pluginMediaFetch", () => {
     expect(await response.text()).toBe("image");
   });
 
-  it("returns a non-success response from the source-profile WebView", async () => {
+  it("holds an external HTTP 403 from the source-profile WebView", async () => {
     invokeMock
       .mockResolvedValueOnce(null)
       .mockResolvedValueOnce(
@@ -1003,7 +1061,7 @@ describe("pluginMediaFetch", () => {
         }),
       );
 
-    const response = await pluginMediaFetch(
+    const request = pluginMediaFetch(
       "https://newtoki-cdn.test/page.css",
       {
         contextUrl: "https://source.test/webtoon/1",
@@ -1013,13 +1071,15 @@ describe("pluginMediaFetch", () => {
       },
     );
 
+    await expect(request).rejects.toMatchObject({
+      code: "source-access-required",
+      challenge: { kind: "forbidden", url: "https://source.test/webtoon/1" },
+    });
     expect(invokeMock).toHaveBeenCalledTimes(2);
     expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
       "scraper_take_captured_resource",
       "webview_fetch",
     ]);
-    expect(response.status).toBe(403);
-    expect(await response.text()).toBe("blocked");
   });
 
   it("uses the response body captured during chapter navigation", async () => {

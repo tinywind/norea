@@ -35,7 +35,9 @@ it.each([
   ["content sync: upload stopped after sending 1 of 2 bytes in 120 s (attempt 2 of 2): request or response body error for url (https://server.test/api/v1/chapter-files)", "errors.network"],
   ["scraper: browser navigation timed out", "errors.timeout"],
   ["Cloudflare challenge: Just a moment...", "errors.siteAccess"],
-  ["HTTP 403 Forbidden", "errors.siteAccess"],
+  ["HTTP 403 Forbidden", "errors.forbidden"],
+  ["scraper: navigation failed (HTTP 403): Forbidden at https://source.test/chapter", "errors.forbidden"],
+  ["Cloudflare verification is required (HTTP 403).", "errors.forbidden"],
   ["Plugin returned an invalid novel", "errors.generic"],
 ])("maps %s to a plain message key", (message, key) => {
   expect(userFacingErrorKey(new Error(message))).toBe(key);

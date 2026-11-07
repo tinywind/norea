@@ -88,7 +88,7 @@ function assertPlan(value: unknown): asserts value is VpnDownloadPlan {
     }
     if (range.challenge !== null) {
       if (!isObject(range.challenge) ||
-        (range.challenge.kind !== "captcha" && range.challenge.kind !== "cloudflare") ||
+        (range.challenge.kind !== "captcha" && range.challenge.kind !== "cloudflare" && range.challenge.kind !== "forbidden") ||
         typeof range.challenge.url !== "string") {
         throw new Error("Invalid VPN download source challenge.");
       }

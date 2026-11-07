@@ -25,7 +25,7 @@ export class SourceAccessRequiredError
 }
 
 function isChallengeKind(value: unknown): value is SourceAccessChallengeKind {
-  return value === "captcha" || value === "cloudflare";
+  return value === "captcha" || value === "cloudflare" || value === "forbidden";
 }
 
 function safeHttpUrl(value: unknown): URL | null {
@@ -107,9 +107,22 @@ export function normalizeSourceAccessRequiredError(
   value: unknown,
   fallbackUrl?: string,
 ): SourceAccessRequiredErrorShape | null {
+  const typed = isSourceAccessRequiredError(value);
+  const message = typeof value === "string"
+    ? value
+    : value !== null && typeof value === "object" && "message" in value && typeof value.message === "string"
+      ? value.message
+      : null;
+  if (message && /(?:^|[\s(])(?:HTTP|status(?: code)?)\s*:?\s*403\b|(?:^|\s)\(403\)/i.test(message)) {
+    const nativeUrl = /\bat\s+(https?:\/\/\S+)\s*$/i.exec(message)?.[1];
+    const url = safeHttpUrl(fallbackUrl ?? (typed ? value.challenge.url : nativeUrl));
+    return url
+      ? new SourceAccessRequiredError(message, { kind: "forbidden", url: url.href })
+      : null;
+  }
+  if (typed && fallbackUrl === undefined) return value;
   if (value === null || typeof value !== "object") return null;
   const error = value as Record<string, unknown>;
-  if (isSourceAccessRequiredError(value) && !fallbackUrl) return value;
   if (
     error.code !== "manual-action-required" &&
     error.code !== "source-access-required"
@@ -135,6 +148,14 @@ export function normalizeSourceAccessRequiredError(
     trustedFallback,
   );
   return isSourceAccessRequiredError(normalized) ? normalized : null;
+}
+
+export function sourceAccessChallengeTitleKey(kind: SourceAccessChallengeKind) {
+  return ({
+    captcha: "sourceAccess.captchaTitle",
+    cloudflare: "sourceAccess.cloudflareTitle",
+    forbidden: "sourceAccess.forbiddenTitle",
+  } as const)[kind];
 }
 
 export function sourceAccessScopeKey(url: string, sourceId: string, rangeId?: string): string {

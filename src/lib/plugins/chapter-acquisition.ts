@@ -371,7 +371,7 @@ function chapterCaptureScript(
     var detectedKind = detectChallenge();
     if (manualAction || detectedKind) {
       var kind = detectedKind || manualAction.getAttribute("data-norea-manual-action");
-      var challenge = kind === "captcha" || kind === "cloudflare"
+      var challenge = kind === "captcha" || kind === "cloudflare" || kind === "forbidden"
         ? { kind: kind, url: location.href }
         : null;
       fail("manual-action-required", "The source page requires manual action.", challenge);

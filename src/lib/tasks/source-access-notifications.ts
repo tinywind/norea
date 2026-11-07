@@ -37,12 +37,13 @@ export class SourceAccessNotificationTracker {
       else groups.set(block.sourceId, [block]);
     }
     return [...groups].map(([sourceId, blocks]) => {
-      const block = blocks[0]!;
+      const forbidden = blocks.find(block => block.challenge.kind === "forbidden");
+      const block = forbidden ?? blocks[0]!;
       const source = this.names.get(sourceId) ?? sourceId;
       return {
         sourceId, scopeKey: block.scopeKey, revision: block.revision,
-        title: t("sourceAccess.notificationTitleForSource", { source }),
-        body: blocks.length > 1
+        title: forbidden ? t("sourceAccess.forbiddenTitle") : t("sourceAccess.notificationTitleForSource", { source }),
+        body: forbidden ? t("errors.forbidden") : blocks.length > 1
           ? t("sourceAccess.notificationMore", { source, count: blocks.length })
           : t("sourceAccess.notificationMessage", { source }),
         actionLabel: t("sourceAccess.notificationAction"),

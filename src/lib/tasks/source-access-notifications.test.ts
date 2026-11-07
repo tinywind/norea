@@ -31,3 +31,14 @@ it("never turns a range-owned block into a default source browser notification",
   ]);
   expect(tracker.revision([workerBlock, block])).toBe(tracker.revision([block]));
 });
+
+
+it("keeps the HTTP 403 reason in a source notification", () => {
+  const tracker = new SourceAccessNotificationTracker({ records: [task] });
+  const denied = { ...block, challenge: { kind: "forbidden" as const, url: "https://source.test/chapter" } };
+  const t = ((key: string) => key) as Parameters<SourceAccessNotificationTracker["notifications"]>[1];
+  expect(tracker.notifications([denied], t)[0]).toMatchObject({
+    title: "sourceAccess.forbiddenTitle", body: "errors.forbidden",
+  });
+  expect(tracker.notifications([block, denied], t)[0]?.body).toBe("errors.forbidden");
+});

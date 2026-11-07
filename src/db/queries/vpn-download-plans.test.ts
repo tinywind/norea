@@ -660,3 +660,19 @@ it.each(["{", "{}", JSON.stringify({ ...jobs()[0], vpnRangeId: "lane-b" }), JSON
     expect(await listVpnDownloadPlans()).toEqual([plan()]);
   },
 );
+
+
+it("retains a forbidden range and its checkpoint when its plan is reopened", async () => {
+  const value = plan();
+  Object.assign(value.ranges[0]!, {
+    checkpoint: 1, pauseReason: "challenge-forbidden",
+    challenge: { kind: "forbidden", url: "https://source.test/22" },
+  });
+  await createVpnDownloadPlan(value, jobs(value));
+  const [restored] = await listVpnDownloadPlans();
+  expect(restored?.ranges[0]).toMatchObject({
+    id: "lane-a", checkpoint: 1, pauseReason: "challenge-forbidden",
+    challenge: { kind: "forbidden", url: "https://source.test/22" },
+  });
+  expect(restored?.ranges[1]).toMatchObject({ id: "lane-b", checkpoint: 0, challenge: null });
+});

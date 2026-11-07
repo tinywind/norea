@@ -74,9 +74,10 @@ function httpStatus(message: string): number | undefined {
   return status >= 400 && status <= 599 ? status : undefined;
 }
 
-/** A plain HTTP 403 from the source: the site refused the route, unlike a challenge it asks to clear. */
+/** An HTTP 403 access refusal, including the source-access hold created for it. */
 export function isSourceForbiddenFailure(error: unknown): boolean {
-  return !normalizeSourceAccessRequiredError(error) && httpStatus(describeError(error)) === 403;
+  const access = normalizeSourceAccessRequiredError(error);
+  return access ? access.challenge.kind === "forbidden" : httpStatus(describeError(error)) === 403;
 }
 
 /**
@@ -111,7 +112,7 @@ export function classifyDownloadFailure(error: unknown): DownloadFailure {
   const name = errorName(error);
   if (name && PLUGIN_PARSE_ERROR_NAMES.has(name)) return failure("content");
   const status = httpStatus(message);
-  if (status !== undefined && status < 500 && status !== 403 && status !== 408 && status !== 429) {
+  if (status !== undefined && status < 500 && status !== 408 && status !== 429) {
     return failure("content");
   }
   return failure("transient");

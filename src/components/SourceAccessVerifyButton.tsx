@@ -1,5 +1,6 @@
 import { Button, Text } from "@mantine/core";
 import { useTranslation } from "../i18n";
+import { sourceAccessChallengeTitleKey } from "../lib/plugins/source-access";
 import { useTaskSnapshot } from "../lib/tasks/hooks";
 import { taskScheduler } from "../lib/tasks/scheduler";
 import { openSourceAccessBrowser } from "../lib/tasks/source-access-coordinator";
@@ -41,10 +42,7 @@ export function SourceAccessVerifyButton({
   const verify = () => {
     void openSourceAccessBrowser(block, {
       sourceName,
-      title:
-        block.challenge.kind === "captcha"
-          ? t("sourceAccess.captchaTitle")
-          : t("sourceAccess.cloudflareTitle"),
+      title: t(sourceAccessChallengeTitleKey(block.challenge.kind)),
     });
   };
 
@@ -98,10 +96,12 @@ export function SourceAccessNotice({
       <WarningIcon className="norea-source-access-notice-icon" size="1.25rem" />
       <div className="norea-source-access-notice-copy">
         <Text fw="var(--norea-weight-bold)" size="sm">
-          {t("sourceAccess.notice.title", { source: sourceName })}
+          {block.challenge.kind === "forbidden"
+            ? t("sourceAccess.forbiddenTitle")
+            : t("sourceAccess.notice.title", { source: sourceName })}
         </Text>
         <Text c="dimmed" size="sm">
-          {t("sourceAccess.notice.message")}
+          {t(block.challenge.kind === "forbidden" ? "errors.forbidden" : "sourceAccess.notice.message")}
         </Text>
       </div>
       <div className="norea-source-access-notice-actions">

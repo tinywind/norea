@@ -19,6 +19,8 @@ const MANUAL_PAUSE_KEYS: Readonly<Record<string, TranslationKey>> = {
   interrupted: "vpnDownload.reason.interrupted",
   "challenge-captcha": "vpnDownload.reason.captcha",
   "challenge-cloudflare": "vpnDownload.reason.cloudflare",
+  "challenge-forbidden": "errors.forbidden",
+  "site-forbidden": "errors.forbidden",
   "manual-verification": "vpnDownload.reason.verification",
   "verification-unavailable": "vpnDownload.reason.verificationUnavailable",
   "authentication-required": "vpnDownload.reason.authentication",
@@ -35,7 +37,7 @@ export function isVpnDownloadVerificationNeeded(plan: VpnDownloadPlan, range: Vp
 function isManualChallenge(plan: VpnDownloadPlan, range: VpnDownloadRangeState): boolean {
   if (range.phase !== "paused" || !range.challenge) return false;
   return range.pauseReason === "manual-verification" ||
-    (range.pauseReason === `challenge-${range.challenge.kind}` && plan.policies[range.challenge.kind] === "pause");
+    (range.pauseReason === `challenge-${range.challenge.kind}` && (range.challenge.kind === "forbidden" || plan.policies[range.challenge.kind] === "pause"));
 }
 
 export function isVpnDownloadVerificationCurrent(
@@ -55,7 +57,7 @@ export type VpnDownloadAttention =
   | { kind: "failed"; ranges: { planId: string; rangeId: string }[] };
 
 const FAILED_PAUSES: ReadonlySet<string> = new Set([
-  "authentication-required", "download-failed", "runtime-error", "verification-unavailable", "profile-unavailable",
+  "authentication-required", "download-failed", "runtime-error", "verification-unavailable", "profile-unavailable", "site-forbidden",
 ]);
 
 /** The one VPN problem the Queue page asks the user about; restarts, offline waits and busy profiles resolve by themselves. */

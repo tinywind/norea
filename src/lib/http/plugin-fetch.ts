@@ -1,5 +1,6 @@
 import { isAbortError } from "../abort";
 import { withNetworkRequest } from "../network";
+import { normalizeSourceAccessRequiredError } from "../plugins/source-access";
 import { waitForPluginVpnReady } from "../plugin-vpn-traffic";
 import { androidWebviewFetch } from "../android-scraper";
 import {
@@ -68,7 +69,7 @@ async function pluginFetchInternal(
         url: redactUrlForLog(url),
       });
     }
-    throw error;
+    throw normalizeSourceAccessRequiredError(error, sourceAccessFallbackUrl(url, init)) ?? error;
   }
   return checkedResponseFromWire(
     result,

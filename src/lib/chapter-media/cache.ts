@@ -115,6 +115,7 @@ async function fetchChapterMedia(
       if (
         signal?.aborted ||
         isMediaAbortError(error) ||
+        isSourceAccessRequiredError(error) ||
         !isTransientMediaNetworkError(error)
       ) {
         throw error;

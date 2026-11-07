@@ -49,6 +49,7 @@ import {
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
 import { BatteryOptimizationSetting } from "../components/BatteryOptimizationSetting";
+import { sourceAccessChallengeTitleKey } from "../lib/plugins/source-access";
 import { useTranslation, type TranslationKey } from "../i18n";
 import {
   getDownloadGoalPauseSnapshot,
@@ -953,10 +954,7 @@ function SourceAccessBanner({
     }
   })();
   const sourceLabel = sourceNames.length > 0 ? sourceNames.join(", ") : hostname;
-  const title =
-    block.challenge.kind === "captcha"
-      ? t("sourceAccess.captchaTitle")
-      : t("sourceAccess.cloudflareTitle");
+  const title = t(sourceAccessChallengeTitleKey(block.challenge.kind));
   const verifying =
     block.verificationRequested || block.verificationTaskId !== undefined;
   const canOpenVerification =
@@ -970,7 +968,9 @@ function SourceAccessBanner({
           {title} · {hostname}
         </Text>
         <Text c="dimmed" component="p" size="sm">
-          {t("sourceAccess.scopeBlocked", { sources: sourceLabel })}
+          {block.challenge.kind === "forbidden"
+            ? t("errors.forbidden")
+            : t("sourceAccess.scopeBlocked", { sources: sourceLabel })}
         </Text>
         {block.verificationError ? (
           <Text c="danger" component="p" size="sm">

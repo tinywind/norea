@@ -40,6 +40,10 @@ requirements must be decided explicitly before implementation.
 
 ## Other Formats
 
+- Source-access blocks and VPN plan challenge JSON accept `forbidden` for HTTP
+  403. Existing CAPTCHA and Cloudflare values remain valid. A forbidden hold
+  survives reopening and automatic run restoration until explicit verification
+  or range resume. This changes no SQL table, migration, or backup version.
 - Database migration 3 adds durable VPN download batch/IP problem records and
   batch identity on existing plans. It preserves queue payloads, checkpoints,
   generations and O/X verdicts. One unambiguous owned-job batch is retained;

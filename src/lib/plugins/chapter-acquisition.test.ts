@@ -52,7 +52,7 @@ function executeChapterCaptureScript(
     linkTargetUrl,
     settleImageAfterFirstPoll = false,
   }: {
-    manualAction?: "captcha" | "cloudflare" | "legacy";
+    manualAction?: "captcha" | "cloudflare" | "forbidden" | "legacy";
     visiblePuzzle?: boolean;
     linkTargetUrl?: string;
     settleImageAfterFirstPoll?: boolean;
@@ -372,6 +372,23 @@ describe("captureChapterPage", () => {
         sourceId: "source-a",
       }),
     ).rejects.toThrow("manual-action-required");
+  });
+
+  it("keeps an explicit forbidden marker as a typed source refusal", async () => {
+    mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
+      if (!options?.beforeContentScript) throw new Error("Expected chapter capture script.");
+      return executeChapterCaptureScript(options.beforeContentScript, { manualAction: "forbidden" }).message;
+    });
+    const plan = validateChapterAcquisitionPlan({
+      type: "page", url: "https://source.test/chapter/1", contentSelector: "article",
+    });
+    if (plan.type !== "page") throw new Error("Expected page plan.");
+    await expect(captureChapterPage(plan, {
+      contentType: "html", executor: "immediate", sourceId: "source-a",
+    })).rejects.toMatchObject({
+      code: "source-access-required",
+      challenge: { kind: "forbidden", url: "https://source.test/chapter/1" },
+    });
   });
 
   it.each(["marker", "visible-control", "blocked-navigation"])("turns a CAPTCHA %s into a typed source access error", async (evidence) => {

@@ -31,7 +31,7 @@ import { beginChapterDownloadVpnHandover, cancelChapterDownloadTasks, discardQue
 import { recordFailedChapterDownloadAttempt } from "./chapter-download-failures";
 import { taskScheduler } from "./scheduler";
 import type { TaskHandle } from "./task-types";
-import { VpnDownloadCoordinator, type VpnDownloadRuntime } from "./vpn-download-coordinator";
+import { isVpnDownloadForbiddenHeld, VpnDownloadCoordinator, type VpnDownloadRuntime } from "./vpn-download-coordinator";
 import type { VpnDownloadDraftWork, VpnDownloadHandoverWork, VpnDownloadRuntimeSnapshot } from "./vpn-download-drafts";
 import { planVpnDownloadRanges, vpnDownloadChunkCount, type VpnDownloadRangeAssignment } from "./vpn-download-ranges";
 import type {
@@ -428,7 +428,7 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
     const run = activeRun;
     if (resumeAfterRestart && run) queueMicrotask(() => {
       if (activeRun !== run || run.status !== "interrupted" || deviceRestore) return;
-      void launchVpnDownloadRun(run.options, range => !range.userPaused && range.pauseReason === "interrupted").catch(() => undefined);
+      void launchVpnDownloadRun(run.options, range => !range.userPaused && !isVpnDownloadForbiddenHeld(range) && range.pauseReason === "interrupted").catch(() => undefined);
     });
   })().catch(error => { publish({ loading: false, error: describeError(error) }); throw error; });
   return initialization;
@@ -571,7 +571,7 @@ async function launchVpnDownloadRun(options: VpnDownloadLaunchOptions, shouldRes
       for (const plan of coordinator.getPlans()) {
         for (const range of plan.ranges) {
           if (!current()) return;
-          if (range.phase === "paused" && shouldResume(range)) await coordinator.resumeRange(plan.id, range.id);
+          if (range.phase === "paused" && !isVpnDownloadForbiddenHeld(range) && shouldResume(range)) await coordinator.resumeRange(plan.id, range.id);
         }
       }
     })();
@@ -602,8 +602,14 @@ export async function pauseVpnDownloadRun(): Promise<void> {
 }
 
 export async function pauseVpnDownloadWork(pluginId: string, novelId: number): Promise<void> {
-  pausedWorks.add(JSON.stringify([pluginId, novelId]));
   const pending = [...drafts.values()].filter(draft => draft.work.pluginId === pluginId && draft.work.novelId === novelId);
+  const waiting = [...activeRun?.waitingHandover.values() ?? []].some(job => job.pluginId === pluginId && job.novelId === novelId);
+  const canPauseRange = coordinator.getPlans().some(plan => plan.pluginId === pluginId && plan.novelId === novelId &&
+    plan.ranges.some(range => range.phase !== "completed" && range.phase !== "cancelled" &&
+      !(range.phase === "paused" && isVpnDownloadForbiddenHeld(range)) &&
+      (!range.userPaused || range.pauseReason === "work-paused")));
+  if (!pending.length && !waiting && !canPauseRange) return;
+  pausedWorks.add(JSON.stringify([pluginId, novelId]));
   for (const draft of pending) {
     draft.work = { ...draft.work, userPaused: true, phase: "paused" };
     draft.jobs = draft.jobs.map(job => ({ ...job, vpnWorkPaused: true }));
@@ -682,7 +688,7 @@ export async function resumeVpnDownloadRun(): Promise<void> {
       for (const range of plan.ranges) {
         if (!current()) return;
         const key = JSON.stringify([plan.id, range.id]);
-        if (range.phase === "paused" && (!range.userPaused || run.resumeRangeIds.has(key))) {
+        if (range.phase === "paused" && !isVpnDownloadForbiddenHeld(range) && (!range.userPaused || run.resumeRangeIds.has(key))) {
           await coordinator.resumeRange(plan.id, range.id);
           run.resumeRangeIds.delete(key);
         }

@@ -17,10 +17,16 @@ describe("classifyDownloadFailure", () => {
     ["service unavailable", new Error("Request failed (HTTP 503)")],
     ["rate limit", new Error("Too many requests: status 429")],
     ["server error", new Error("Bad gateway (502)")],
-    ["IP block", new Error("Forbidden (HTTP 403)")],
     ["unknown plugin error", new Error("Something went wrong")],
   ])("treats %s as transient", (_, error) => {
     expect(classifyDownloadFailure(error).failureClass).toBe("transient");
+  });
+
+  it("never automatically retries HTTP 403 without a resolvable source scope", () => {
+    const failure = classifyDownloadFailure(new Error("Forbidden (HTTP 403)"));
+    expect(failure.failureClass).toBe("content");
+    expect(automaticRetryDelayMs(failure, 1)).toBeNull();
+    expect(failure.summary).toContain("403");
   });
 
   it("honors Retry-After recorded for a throttled media host", () => {

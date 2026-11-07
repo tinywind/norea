@@ -62,6 +62,7 @@ const PAUSE_KEYS: Record<string, TranslationKey> = {
   "profiles-exhausted": "vpnDownload.reason.exhausted", "profile-unavailable": "vpnDownload.reason.unavailable",
   interrupted: "vpnDownload.reason.interrupted", offline: "network.waiting",
   "challenge-captcha": "vpnDownload.reason.captcha", "challenge-cloudflare": "vpnDownload.reason.cloudflare",
+  "challenge-forbidden": "errors.forbidden", "site-forbidden": "errors.forbidden",
   "manual-verification": "vpnDownload.reason.verification", "verification-unavailable": "vpnDownload.reason.verificationUnavailable",
   "authentication-required": "vpnDownload.reason.authentication", "download-failed": "vpnDownload.reason.downloadFailed",
   "runtime-error": "vpnDownload.reason.runtimeError", "user-paused": "vpnDownload.userPaused",
@@ -105,14 +106,15 @@ export function vpnDownloadWorks(snapshot: VpnDownloadRuntimeSnapshot): VpnDownl
   return [...works.values()].filter(work => work.unfinished.length || work.drafts.length || work.handover.length).map(work => {
     const held = work.unfinished.some(({ range }) => range.userPaused && range.pauseReason === "work-paused") ||
       work.drafts.some(draft => draft.userPaused) || work.handover.some(waiting => waiting.userPaused);
-    return { ...work, held, canPause: !held && (work.unfinished.some(({ range }) => !range.userPaused) || work.drafts.length > 0 || work.handover.length > 0) };
+    return { ...work, held, canPause: !held && (work.unfinished.some(({ range }) => !range.userPaused &&
+      !(range.phase === "paused" && (range.challenge?.kind === "forbidden" || range.pauseReason === "site-forbidden"))) || work.drafts.length > 0 || work.handover.length > 0) };
   });
 }
 
 /** Reasons a VPN range stops that only the user can resolve; other pauses clear by themselves. */
 const ATTENTION_PAUSES = new Set([
-  "profiles-exhausted", "challenge-captcha", "challenge-cloudflare", "manual-verification",
-  "verification-unavailable", "authentication-required", "download-failed", "runtime-error",
+  "profiles-exhausted", "challenge-captcha", "challenge-cloudflare", "challenge-forbidden", "manual-verification",
+  "verification-unavailable", "authentication-required", "download-failed", "runtime-error", "site-forbidden",
 ]);
 
 /** One status for a VPN work, from its most urgent range, draft or handover state. */
@@ -240,7 +242,9 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
         const leased = range.phase === "connecting" || range.phase === "running";
         const profile = leased ? profiles.find(candidate => candidate.id === range.profileId && candidate.hash === range.profileHash) : undefined;
         const verify = isVpnDownloadVerificationNeeded(plan, range);
-        const resume = !terminal(range) && range.phase === "paused" && range.userPaused && range.pauseReason !== "work-paused";
+        const resume = !terminal(range) && range.phase === "paused" &&
+          (range.challenge?.kind === "forbidden" || range.pauseReason === "site-forbidden" ||
+            range.userPaused && range.pauseReason !== "work-paused");
         const canAct = !pendingKeys.has(key) && runEnabled && snapshot.capabilities.supported;
         const actionLabel = (action: string) => t("vpnDownload.rangeAction", { action, title: plan.title, interval });
         return (

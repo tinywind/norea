@@ -1,5 +1,5 @@
 import { base64ToByteChunksCooperatively, base64ToBytes } from "../base64";
-import { sourceAccessErrorFromEnvelope } from "../plugins/source-access";
+import { SourceAccessRequiredError, sourceAccessErrorFromEnvelope } from "../plugins/source-access";
 import { type FetchResultWire, type PluginHttpInit } from "./types";
 
 const CLOUDFLARE_BODY_INSPECTION_BYTES = 512 * 1024;
@@ -106,13 +106,29 @@ export function cloudflareAccessError(
   );
 }
 
+export function sourceAccessResponseError(
+  result: FetchResultWire,
+  requestUrl: string,
+  sourceAccessUrl: string,
+): Error | null {
+  if (result.status === 403) {
+    const refusedUrl = result.finalUrl || requestUrl;
+    const sourceHost = new URL(sourceAccessUrl).hostname.replace(/\.$/, "");
+    const refusedHost = new URL(refusedUrl).hostname.replace(/\.$/, "");
+    return new SourceAccessRequiredError("The site refused access (HTTP 403).", {
+      kind: "forbidden", url: refusedHost === sourceHost ? refusedUrl : sourceAccessUrl,
+    });
+  }
+  return cloudflareAccessError(result, requestUrl, sourceAccessUrl);
+}
+
 export async function checkedResponseFromWire(
   result: FetchResultWire,
   requestUrl: string,
   sourceAccessUrl: string,
   signal?: AbortSignal,
 ): Promise<Response> {
-  const accessError = cloudflareAccessError(result, requestUrl, sourceAccessUrl);
+  const accessError = sourceAccessResponseError(result, requestUrl, sourceAccessUrl);
   if (accessError) throw accessError;
   return responseFromWire(result, signal);
 }

@@ -49,7 +49,7 @@ export type WebViewInteraction =
   | ({ type: "select"; value: string } & WebViewInteractionBase)
   | ({ type: "waitFor" } & WebViewInteractionBase);
 
-export type SourceAccessChallengeKind = "captcha" | "cloudflare";
+export type SourceAccessChallengeKind = "captcha" | "cloudflare" | "forbidden";
 
 export interface SourceAccessChallenge {
   kind: SourceAccessChallengeKind;

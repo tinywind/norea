@@ -511,6 +511,62 @@ describe("automatic VPN run admission", () => {
     } finally { await restored.cancelVpnDownloadRun(); }
   });
 
+  it.each(["challenge-forbidden", "site-forbidden"] as const)("keeps %s held through restart and run Resume while another range continues", async pauseReason => {
+    const runtime = await import("./vpn-download-runtime");
+    const { plan, automatic: forbidden, manual: healthy } = await startTwoRanges(runtime);
+    if (pauseReason === "challenge-forbidden") {
+      const worker = boundary.enqueue.mock.calls.find(([job]) => job.id === 8)![1] as VpnDownloadWorkerRef;
+      const challenge = { kind: "forbidden" as const, url: "https://source.test/chapter/8" };
+      boundary.blocks = [{
+        sourceId: plan.pluginId, rangeId: worker.rangeId, workerGeneration: worker.generation,
+        originTaskId: "task:8", challenge, scopeKey: sourceAccessScopeKey(challenge.url, plan.pluginId, worker.rangeId),
+        revision: 1, detectedAt: 1, verificationRequested: false,
+      }];
+      for (const listener of boundary.listeners) listener();
+    } else boundary.reject.get(8)!(new Error("HTTP 403 Forbidden on https://source.test/chapter/8"));
+    await vi.waitFor(() => expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.find(range => range.id === forbidden.id)?.pauseReason).toBe(pauseReason));
+    const restored = await restartProcess();
+    await restored.initializeVpnDownloadRuntime();
+    try {
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(3));
+      expect(boundary.enqueue.mock.calls[2]![0].id).toBe(9);
+      expect(restored.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.find(range => range.id === forbidden.id))
+        .toMatchObject({ phase: "paused", pauseReason, checkpoint: 0 });
+      await restored.pauseVpnDownloadRun();
+      await restored.resumeVpnDownloadRun();
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(4));
+      expect(boundary.enqueue.mock.calls[3]![0].id).toBe(9);
+      const ranges = restored.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges;
+      expect(ranges.find(range => range.id === forbidden.id)).toMatchObject({ phase: "paused", pauseReason, checkpoint: 0 });
+      expect(ranges.find(range => range.id === healthy.id)?.phase).toBe("running");
+      await restored.pauseVpnDownloadWork(plan.pluginId, plan.novelId);
+      await restored.resumeVpnDownloadWork(plan.pluginId, plan.novelId);
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(5));
+      expect(boundary.enqueue.mock.calls[4]![0].id).toBe(9);
+      expect(restored.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.find(range => range.id === forbidden.id))
+        .toMatchObject({ phase: "paused", pauseReason, checkpoint: 0 });
+      expect(boundary.enqueue.mock.calls.filter(([job]) => job.id === 8)).toHaveLength(1);
+    } finally { await restored.cancelVpnDownloadRun(); }
+  });
+
+  it("does not create a hidden work hold when whole-work Pause targets only a forbidden range", async () => {
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    await interceptChapterDownloadBatch({ jobs: [jobs[0]!], title: "Forbidden work" })!.materialized;
+    await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledOnce());
+    boundary.reject.get(8)!(new Error("HTTP 403 Forbidden on https://source.test/chapter/8"));
+    await vi.waitFor(() => expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges[0]?.pauseReason).toBe("site-forbidden"));
+    try {
+      const plan = runtime.getVpnDownloadRuntimeSnapshot().plans[0]!;
+      await runtime.pauseVpnDownloadWork(plan.pluginId, plan.novelId);
+      expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges[0]).toMatchObject({ pauseReason: "site-forbidden", userPaused: false });
+      await runtime.resumeVpnDownloadRange(plan.id, plan.ranges[0]!.id);
+      await vi.waitFor(() => expect(boundary.enqueue).toHaveBeenCalledTimes(2));
+      await interceptChapterDownloadBatch({ jobs: [jobs[2]!], title: "New work" })!.materialized;
+      expect(boundary.persistPending.mock.calls.at(-1)![1][0].vpnWorkPaused).toBeUndefined();
+    } finally { await runtime.cancelVpnDownloadRun(); }
+  });
+
   it("keeps a run paused by the user across a restart even when restart resume is on", async () => {
     const runtime = await import("./vpn-download-runtime");
     await startTwoRanges(runtime);

@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  SourceAccessRequiredError,
   isSourceAccessRequiredError,
   normalizeSourceAccessRequiredError,
   sourceAccessErrorFromEnvelope,
@@ -101,4 +102,59 @@ describe("source access challenges", () => {
       "plugin:source-b:site:source.test",
     );
   });
+
+  it("retains a forbidden capture envelope as HTTP 403", () => {
+    const error = sourceAccessErrorFromEnvelope({
+      code: "manual-action-required",
+      error: "HTTP 403: Forbidden",
+      challenge: { kind: "forbidden", url: "https://source.test/chapter" },
+    }, "https://source.test/");
+    expect(error).toMatchObject({
+      code: "source-access-required",
+      message: "HTTP 403: Forbidden",
+      challenge: { kind: "forbidden", url: "https://source.test/chapter" },
+    });
+  });
+
+  it.each([
+    "scraper: navigation failed (HTTP 403): Forbidden at https://source.test/chapter",
+    new Error("scraper: navigation failed (HTTP 403): Forbidden at https://source.test/chapter"),
+  ])("normalizes a native 403 while retaining its actual URL: %s", value => {
+    expect(normalizeSourceAccessRequiredError(value)).toMatchObject({
+      code: "source-access-required",
+      challenge: { kind: "forbidden", url: "https://source.test/chapter" },
+    });
+  });
+
+  it("uses the configured URL for a 403 without a URL or with an untrusted URL", () => {
+    for (const message of [
+      "HTTP 403: Forbidden",
+      "Request failed: status code 403",
+      "Failed to fetch (403)",
+      "scraper: navigation failed (HTTP 403): Forbidden at https://other.test/chapter",
+    ]) {
+      expect(normalizeSourceAccessRequiredError(new Error(message), "https://source.test/trusted"))
+        .toMatchObject({ challenge: { kind: "forbidden", url: "https://source.test/trusted" } });
+    }
+  });
+
+  it("keeps a known HTTP 403 terminal even when a plugin calls it Cloudflare", () => {
+    const error = new SourceAccessRequiredError("Cloudflare verification required (HTTP 403)", {
+      kind: "cloudflare", url: "https://source.test/chapter",
+    });
+    expect(normalizeSourceAccessRequiredError(error)?.challenge.kind).toBe("forbidden");
+  });
+
+  it.each([
+    ["HTTP 403: Forbidden", undefined],
+    ["HTTP 403: Forbidden", "javascript:alert(1)"],
+    ["HTTP 403: Forbidden", "https://user:secret@source.test/chapter"],
+    ["scraper: navigation failed (HTTP 403): Forbidden at https://user:secret@source.test/chapter", undefined],
+    ["scraper: navigation failed (HTTP 403): Forbidden at https://source.test/chapter", "file:///source"],
+    ["scraper: navigation failed (HTTP 404): Not Found at https://source.test/HTTP403", "https://source.test/chapter"],
+    ["scraper: timeout waiting for extraction after 35000ms", "https://source.test/chapter"],
+  ])("does not invent a safe 403 challenge for %s and %s", (message, fallback) => {
+    expect(normalizeSourceAccessRequiredError(new Error(message), fallback)).toBeNull();
+  });
+
 });

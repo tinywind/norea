@@ -508,7 +508,6 @@ describe("VPN download coordinator", () => {
     ["scraper: timed out preparing fetch context https://source.test/", "page-unresponsive"],
     ["scraper: timed out preparing extract context https://source.test/chapter/9", "page-unresponsive"],
     ["scraper: navigation failed (-11): net::ERR_TUNNEL_CONNECTION_FAILED at https://source.test", "page-unresponsive"],
-    ["HTTP 403 Forbidden on https://source.test/chapter/9", "site-forbidden"],
   ])("retries the same unfinished chapter on another route after %s and excludes the IP for the batch", async (message, cause) => {
     const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b")];
     const coordinator = new VpnDownloadCoordinator(runtime);
@@ -535,6 +534,24 @@ describe("VPN download coordinator", () => {
       await until(() => expect(runtime.tasks.size).toBe(3));
       expect(runtime.task("a", 2)[1].job.id).toBe(2);
       expect(current(coordinator, "a")).toMatchObject({ checkpoint: 1, attemptedProfileIds: [] });
+    } finally { await coordinator.stopAutomatic(); }
+  });
+
+  it("stops the range on HTTP 403 without trying the next VPN profile", async () => {
+    const runtime = new Runtime(); runtime.profiles = [profile("a"), profile("b")];
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan();
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tasks.size).toBe(1));
+      const original = runtime.task("a")[1];
+      original.result.reject(new Error("HTTP 403 Forbidden on https://source.test/chapter/9"));
+      original.cleanup.resolve(undefined);
+      await until(() => expect(current(coordinator, "a").pauseReason).toBe("site-forbidden"));
+      expect(current(coordinator, "a")).toMatchObject({ phase: "paused", checkpoint: 0 });
+      expect(runtime.tasks.size).toBe(1);
+      expect(runtime.native.size).toBe(0);
+      expect(runtime.issues).toMatchObject([{ profileId: "a", cause: "site-forbidden", excluded: true }]);
     } finally { await coordinator.stopAutomatic(); }
   });
 
@@ -1184,6 +1201,74 @@ describe("VPN download coordinator", () => {
     await until(() => expect(runtime.task("a")[1].job.id).toBe(2));
     expect(current(coordinator, "a").generation).toBeGreaterThan(12);
     expect(current(coordinator, "a").attemptedProfileIds).toEqual(["a", "b", "c"]);
+  });
+
+  it.each(["challenge-forbidden", "site-forbidden"] as const)("keeps the %s hold through restore and work Resume until an explicit range action", async pauseReason => {
+    const runtime = new Runtime();
+    const value = plan([range("a", "a", [1, 2])]);
+    Object.assign(value.ranges[0]!, {
+      generation: 12, pauseReason,
+      challenge: pauseReason === "challenge-forbidden" ? { kind: "forbidden", url: "https://source.test/chapter/1" } : null,
+    });
+    runtime.seed(value);
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    await coordinator.restore();
+    try {
+      expect(current(coordinator, "a")).toMatchObject({ phase: "paused", pauseReason, checkpoint: 0 });
+      await coordinator.networkChanged(true);
+      await coordinator.profilesChanged();
+      await coordinator.resumeWork("source", 10, () => true);
+      expect(runtime.tasks.size).toBe(0);
+      await coordinator.resumeRange("plan", "a");
+      await until(() => expect(runtime.tasks.size).toBe(1));
+      expect(runtime.task("a")[1].job.id).toBe(1);
+      expect(runtime.verifications).toHaveLength(pauseReason === "challenge-forbidden" ? 1 : 0);
+    } finally { await coordinator.cancelPlan("plan"); }
+  });
+
+  it.each(["run", "work", "range"] as const)("keeps a plain HTTP 403 hold through %s Pause instead of treating it as an ordinary stopped range", async action => {
+    const runtime = new Runtime();
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    const value = plan();
+    await coordinator.start(value, jobsFor(value));
+    await until(() => expect(runtime.tasks.size).toBe(1));
+    const [, task] = runtime.task("a");
+    task.result.reject(new Error("HTTP 403 Forbidden on https://source.test/chapter/9"));
+    task.cleanup.resolve(undefined);
+    await until(() => expect(current(coordinator, "a").pauseReason).toBe("site-forbidden"));
+    try {
+      if (action === "run") await coordinator.stopAutomatic();
+      else if (action === "work") await coordinator.pauseWork("source", 10);
+      else await coordinator.pauseRange("plan", "a");
+      expect(current(coordinator, "a")).toMatchObject({ phase: "paused", pauseReason: "site-forbidden", checkpoint: 0 });
+      await coordinator.resumeWork("source", 10, () => true);
+      expect(runtime.tasks.size).toBe(1);
+    } finally { await coordinator.cancelPlan("plan"); }
+  });
+
+  it.each([false, true])("does not fence a forbidden-only work and preserves a held range beside a healthy sibling=%s", async mixed => {
+    const runtime = new Runtime();
+    const value = plan([range("a", "a", [1]), ...(mixed ? [range("b", "b", [2])] : [])]);
+    Object.assign(value.ranges[0]!, { pauseReason: "site-forbidden", generation: 12 });
+    runtime.seed(value);
+    const coordinator = new VpnDownloadCoordinator(runtime);
+    await coordinator.restore();
+    if (mixed) {
+      await coordinator.resumeRange("plan", "b");
+      await until(() => expect(runtime.tasks.size).toBe(1));
+    }
+    try {
+      await coordinator.pauseWork("source", 10);
+      expect(current(coordinator, "a")).toMatchObject({ phase: "paused", pauseReason: "site-forbidden", userPaused: false });
+      if (mixed) {
+        expect(current(coordinator, "b")).toMatchObject({ pauseReason: "work-paused", userPaused: true });
+        await coordinator.resumeWork("source", 10, () => true);
+        await until(() => expect(runtime.tasks.size).toBe(2));
+      }
+      await coordinator.resumeRange("plan", "a");
+      await until(() => expect(runtime.tasks.size).toBe(mixed ? 3 : 1));
+      expect(runtime.task("a")[1].job.id).toBe(1);
+    } finally { await coordinator.cancelPlan("plan"); }
   });
 
   it("keeps user pauses and run holds through restore and interrupts only the ranges a restart stopped", async () => {

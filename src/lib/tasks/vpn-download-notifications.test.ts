@@ -121,3 +121,24 @@ it("stays quiet for waits the app resolves and for pauses the user chose", () =>
   expect(vpnDownloadAttention([plan([range("a")])], "paused")).toBeNull();
   expect(vpnDownloadAttention([quiet], "interrupted")).toEqual({ kind: "interrupted" });
 });
+
+
+it("retains HTTP 403 as a manual stop even when both challenge policies rotate", () => {
+  const denied = range("denied", {
+    pauseReason: "challenge-forbidden", challenge: { kind: "forbidden", url: "https://source.test/chapter" },
+  });
+  const current = plan([denied], { policies: { captcha: "nextProfile", cloudflare: "nextProfile" } });
+  const [notice] = vpnDownloadNotifications([current], t, "running");
+  expect(notice).toMatchObject({
+    body: "errors.forbidden",
+    action: { type: "verifyVpnDownload", rangeId: "denied", profileId: "profile-denied", generation: 7, checkpoint: 0 },
+  });
+  expect(vpnDownloadAttention([current], "running")).toMatchObject({ kind: "verification", rangeId: "denied" });
+});
+it("surfaces an untyped site-forbidden failure as HTTP 403 attention", () => {
+  const current = plan([range("denied", { pauseReason: "site-forbidden", challenge: null })]);
+  expect(vpnDownloadNotifications([current], t, "running")[0]?.body).toBe("errors.forbidden");
+  expect(vpnDownloadAttention([current], "running")).toMatchObject({
+    kind: "failed", ranges: [{ planId: "plan-a", rangeId: "denied" }],
+  });
+});

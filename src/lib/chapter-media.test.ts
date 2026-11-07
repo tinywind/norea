@@ -1449,11 +1449,14 @@ describe("cacheHtmlChapterMedia", () => {
     });
   });
 
-  it("propagates source access errors without using remote media fallbacks", async () => {
+  it.each([
+    { kind: "cloudflare", message: "Complete the Cloudflare challenge." },
+    { kind: "forbidden", message: "Failed to fetch (403)" },
+  ] as const)("propagates $kind source access errors without using remote media fallbacks", async ({ kind, message }) => {
     const accessError = new SourceAccessRequiredError(
-      "Complete the Cloudflare challenge.",
+      message,
       {
-        kind: "cloudflare",
+        kind,
         url: "https://source.test/chapter/1",
       },
     );

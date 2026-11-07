@@ -1261,6 +1261,9 @@ function enqueueChapterDownloadForExecutor(
         const novel = await getNovelById(chapter.novelId);
         if (!novel) throw missingLocalChapterError(job);
         if (sourceJob.chapterPath.startsWith(RECOVERED_CHAPTER_PATH_PREFIX)) {
+          if (setSourceAccessUrl?.(getPluginBaseUrl(plugin)) === false) {
+            throw new Error("Chapter download cannot access its source scope.");
+          }
           const sourcePath = await resolveRecoveredChapterSourcePath(plugin, novel, job.id, signal);
           if (!sourcePath) throw new Error("This chapter is not on the content server, and its source has no matching chapter.");
           sourceJob = chapterDownloadSourceJob(sourceJob, sourcePath);
