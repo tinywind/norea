@@ -8,6 +8,18 @@ import type { ChapterListRow } from "../../db/queries/chapter";
 import type { ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
 import { CHAPTER_ROW_HEIGHT, VirtualChapterList } from "./NovelChapterList";
 
+const rowClickHandlers = vi.hoisted(() => new Map<string, (() => void) | undefined>());
+vi.mock("../IconButton", async importOriginal => {
+  const actual = await importOriginal<typeof import("../IconButton")>();
+  return {
+    ...actual,
+    IconButton: (props: ComponentProps<typeof actual.IconButton>) => {
+      rowClickHandlers.set(props.label, props.onClick as (() => void) | undefined);
+      return <actual.IconButton {...props} />;
+    },
+  };
+});
+
 const chapter: ChapterListRow = {
   id: 1,
   novelId: 1,
@@ -36,6 +48,7 @@ type ListProps = ComponentProps<typeof VirtualChapterList>;
 type Row = ListProps["chapters"][number];
 
 function renderList(overrides: Partial<ListProps> = {}) {
+  rowClickHandlers.clear();
   const props: ListProps = {
     chapters: [chapter],
     canDeleteDownloads: true,
@@ -174,6 +187,15 @@ describe("chapter row structure", () => {
 });
 
 describe("download state", () => {
+  it.each([false, true])("marks only a failed row's download action as an explicit retry (failed: %s)", failed => {
+    const onDownload = vi.fn();
+    renderRow({}, failed ? { kind: "failed", error: "Previous source failure" } : undefined, { onDownload });
+    const click = rowClickHandlers.get(failed ? "Retry download" : "Download chapter");
+    expect(click).toBeTypeOf("function");
+    click!();
+    expect(onDownload).toHaveBeenCalledExactlyOnceWith(chapter, failed);
+  });
+
   it.each<[string, Partial<Row>, ChapterDownloadStatus | undefined, string[]]>([
     ["not downloaded", {}, undefined, ["Download chapter"]],
     ["downloaded", { isDownloaded: true }, undefined, ["Downloaded"]],

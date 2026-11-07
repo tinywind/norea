@@ -437,7 +437,7 @@ interface VirtualChapterListProps {
   selectionMode: boolean;
   statuses: ReadonlyMap<number, ChapterDownloadStatus>;
   onDeleteDownload: (chapterId: number) => void;
-  onDownload: (chapter: ChapterListRow) => void;
+  onDownload: (chapter: ChapterListRow, retryAfterFailure?: boolean) => void;
   /**
    * Long press, right-click or Shift-click: starts a selection with this row,
    * or, while selecting, selects the rows from the range start to this one.
@@ -619,7 +619,7 @@ export function VirtualChapterList({
                 repairBusy={repairPending && repairBusyChapterId === chapter.id}
                 reorderBusy={reorderPending}
                 onOpen={() => onOpen(chapter)}
-                onDownload={() => onDownload(chapter)}
+                onDownload={() => onDownload(chapter, statuses.get(chapter.id)?.kind === "failed")}
                 onDeleteDownload={() => onDeleteDownload(chapter.id)}
                 onExtendSelection={() => onExtendSelection(chapter.id)}
                 onMoveDown={() =>

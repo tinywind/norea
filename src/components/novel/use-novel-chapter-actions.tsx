@@ -14,6 +14,7 @@ import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invali
 import { showErrorToast } from "../../lib/runtime/error-toast";
 import {
   enqueueChapterMediaRepair,
+  resumeChapterDownloadQueueAfterFailure,
 } from "../../lib/tasks/chapter-download";
 import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-requests";
 import { confirmContentDeletion } from "../../store/content-deletion";
@@ -168,8 +169,8 @@ export function useNovelChapterActions(
     });
   }
 
-  function downloadChapter(chapter: ChapterListRow): void {
-    queueChapterDownloads([chapter]);
+  function downloadChapter(chapter: ChapterListRow, retryAfterFailure = false): void {
+    queueChapterDownloads([chapter], retryAfterFailure);
   }
 
   /** Downloads several chapters the user chose and confirms how many were queued. */
@@ -183,7 +184,7 @@ export function useNovelChapterActions(
   }
 
   /** Queues chapters the user chose, ahead of automatic goal work; false when there was nothing to queue. */
-  function queueChapterDownloads(chaptersToDownload: ChapterListRow[]): boolean {
+  function queueChapterDownloads(chaptersToDownload: ChapterListRow[], retryAfterFailure = false): boolean {
     if (!novel || chaptersToDownload.length === 0) return false;
     const batchNovel = novel;
     const chapterDownloadJobs = chaptersToDownload.map((chapter) => ({
@@ -200,13 +201,18 @@ export function useNovelChapterActions(
       title: t("tasks.task.downloadChapter", { name: chapter.name }),
     }));
     const title = t("tasks.task.downloadChapterBatch", { count: chaptersToDownload.length });
-    void submitChapterDownloadRequest({
+    const request = submitChapterDownloadRequest({
       key: JSON.stringify([batchNovel.pluginId, batchNovel.id, chapterDownloadJobs.map(job => job.id).sort((left, right) => left - right)]),
       title,
       novelIds: [batchNovel.id],
       total: chaptersToDownload.length,
       prepare: async () => ({ jobs: chapterDownloadJobs, materializeAllTasks: true, title, total: chaptersToDownload.length }),
-    }).promise.finally(() => queryClient.invalidateQueries({ queryKey: chaptersKey(id), exact: true })).catch(() => undefined);
+    });
+    if (retryAfterFailure) {
+      // Publish the current chapter path before acknowledging its source's failure stop.
+      void request.materialized.then(() => resumeChapterDownloadQueueAfterFailure(batchNovel.pluginId)).catch(() => undefined);
+    }
+    void request.promise.finally(() => queryClient.invalidateQueries({ queryKey: chaptersKey(id), exact: true })).catch(() => undefined);
     return true;
   }
 

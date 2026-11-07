@@ -39,7 +39,7 @@ vi.mock("../../db/queries/chapter", () => ({
 vi.mock("../../lib/reader-query-invalidation", () => ({ invalidateChapterReadStateQueries: vi.fn() }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   enqueueChapterDownload: vi.fn(), enqueueChapterDownloadBatch: vi.fn(), enqueueChapterMediaRepair: vi.fn(),
-  cancelChapterDownloadBatches: vi.fn(),
+  cancelChapterDownloadBatches: vi.fn(), resumeChapterDownloadQueueAfterFailure: vi.fn(async () => true),
 }));
 vi.mock("../../store/content-deletion", () => ({
   confirmContentDeletion: mocks.deleteCache,
@@ -55,7 +55,7 @@ vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty:
 vi.mock("../use-stop-download-goals-offer", () => ({ useStopDownloadGoalsOffer: () => mocks.offerToStopGoals }));
 
 import { useNovelChapterActions } from "./use-novel-chapter-actions";
-import { enqueueChapterDownload, enqueueChapterDownloadBatch } from "../../lib/tasks/chapter-download";
+import { enqueueChapterDownload, enqueueChapterDownloadBatch, resumeChapterDownloadQueueAfterFailure } from "../../lib/tasks/chapter-download";
 import { cancelChapterDownloadRequest, getChapterDownloadRequestSnapshot } from "../../lib/tasks/chapter-download-requests";
 import type { ChapterListRow } from "../../db/queries/chapter";
 
@@ -63,6 +63,38 @@ beforeEach(() => {
   for (const request of getChapterDownloadRequestSnapshot()) cancelChapterDownloadRequest(request.id);
   vi.clearAllMocks();
   mocks.mutations.length = 0;
+});
+
+it.each([false, true])("only resumes a failure stop for an explicit row retry after queuing the current chapter path (retry: %s)", async retryAfterFailure => {
+  let materialize!: () => void;
+  let complete!: () => void;
+  const materialized = new Promise<void>(resolve => { materialize = resolve; });
+  const finished = new Promise<void>(resolve => { complete = resolve; });
+  vi.mocked(enqueueChapterDownloadBatch).mockReturnValue({
+    id: "held-source", materialized,
+    promise: finished.then(() => ({ total: 1, succeeded: 1, failed: 0, cancelled: 0 })),
+  });
+  const chapter = { id: 7, name: "Opening", path: "http://localhost:3000/chapter/1", contentType: "text" } as ChapterListRow;
+  const actions = useNovelChapterActions(3, { id: 3, pluginId: "source", name: "Book", path: "/book", isLocal: false }, [chapter]);
+  chapter.path = "https://example.test/chapter/1";
+
+  try {
+    actions.downloadChapter(chapter, retryAfterFailure);
+    await vi.waitFor(() => expect(enqueueChapterDownloadBatch).toHaveBeenCalledOnce());
+    expect(vi.mocked(enqueueChapterDownloadBatch).mock.calls[0]?.[0].jobs).toEqual([
+      expect.objectContaining({ id: 7, chapterPath: "https://example.test/chapter/1", priority: "user" }),
+    ]);
+    expect(resumeChapterDownloadQueueAfterFailure).not.toHaveBeenCalled();
+
+    materialize();
+    await vi.waitFor(() => expect(getChapterDownloadRequestSnapshot()).toEqual([]));
+    if (retryAfterFailure) expect(resumeChapterDownloadQueueAfterFailure).toHaveBeenCalledExactlyOnceWith("source");
+    else expect(resumeChapterDownloadQueueAfterFailure).not.toHaveBeenCalled();
+  } finally {
+    materialize();
+    complete();
+  }
+  await vi.waitFor(() => expect(mocks.invalidateQueries).toHaveBeenCalledExactlyOnceWith({ queryKey: ["novel", "detail", 3, "chapters"], exact: true }));
 });
 
 it.each([false, true])("admits the chapter request before its queue is materialized (batch: %s)", async batch => {
