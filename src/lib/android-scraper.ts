@@ -386,6 +386,7 @@ export function androidScraperNavigate(
   options: {
     signal?: AbortSignal;
     timeoutMs?: number;
+    forceNavigation?: boolean;
   } = {},
 ): Promise<boolean> {
   const timeoutMs = options.timeoutMs ?? 30_000;
@@ -396,6 +397,7 @@ export function androidScraperNavigate(
       sourceId,
       userAgent,
       timeoutMs,
+      forceNavigation: options.forceNavigation ?? false,
     },
     timeoutMs + 5_000,
     options.signal,

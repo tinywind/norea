@@ -32,6 +32,7 @@ export const androidSiteBrowser: SiteBrowserPlatformApi = {
     await androidScraperNavigate(sourceId, url, getScraperUserAgent(), {
       signal: options?.signal,
       timeoutMs: options?.timeoutMs,
+      forceNavigation: options?.forceNavigation,
     });
   },
   hide: async () => {

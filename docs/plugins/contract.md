@@ -258,9 +258,12 @@ An explicit Android site-browser navigation displays an HTTP error response's
 own document so the user can inspect a refusal or complete a site-provided
 verification step. Displaying that document does not turn its HTTP status into
 a successful acquisition, mark the source response fresh, or release a queue
-hold. The existing document and source profile are retained without another
-request. Background fetch and extraction still fail on a main-document HTTP
-error; DNS, connection, and certificate failures remain navigation errors.
+hold. The first browser handoff retains the existing document and source profile
+without another request. An explicit address submission or Retry starts one new
+navigation, even when the address still matches a retained HTTP error document.
+It preserves the same WebView, cookies, and tab-local storage. Background fetch
+and extraction still fail on a main-document HTTP error; DNS, connection, and
+certificate failures remain navigation errors.
 Verify runs one queued task as a canary and unblocks the source only after that
 task explicitly confirms successful source access and completes. Chapter canaries
 bypass final-content and partial-resume fast paths so verification performs a real

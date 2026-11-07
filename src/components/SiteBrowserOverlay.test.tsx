@@ -260,6 +260,7 @@ describe("site browser navigation failure effect", () => {
   });
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllGlobals();
     useSiteBrowserStore.getState().hide();
   });
 
@@ -267,7 +268,7 @@ describe("site browser navigation failure effect", () => {
     vi.mocked(useEffect).mockClear();
     SiteBrowserOverlay();
     const effect = vi.mocked(useEffect).mock.calls.find(
-      ([, deps]) => deps?.length === 9 && deps.includes(platformMocks) && deps.includes("loading"),
+      ([, deps]) => deps?.length === 10 && deps.includes(platformMocks) && deps.includes("loading"),
     );
     expect(effect).toBeDefined();
     effect![0]();
@@ -294,7 +295,37 @@ describe("site browser navigation failure effect", () => {
     retry!.props.onClick!();
     expect(useSiteBrowserStore.getState()).toMatchObject({
       phase: "loading", navigationError: null, taskId: "browser-task",
-      openSequence: sequence + 1, currentUrl: "https://source.test/chapter/1",
+      openSequence: sequence + 1, currentUrl: "https://source.test/chapter/1", forceNavigation: true,
+    });
+  });
+
+  it.each(["browse", "source-access"] as const)("forces an explicit same-address submission after the initial %s handoff", async (mode) => {
+    vi.stubGlobal("window", { setTimeout: vi.fn(() => 0), clearTimeout: vi.fn() });
+    openBrowser("loading");
+    if (mode === "browse") useSiteBrowserStore.setState({ context: { mode } });
+    platformMocks.navigate.mockResolvedValue(undefined);
+    runNavigationEffect();
+    await vi.waitFor(() => expect(useSiteBrowserStore.getState().phase).toBe("ready"));
+    expect(platformMocks.navigate).toHaveBeenNthCalledWith(1,
+      "source-a", "https://source.test/chapter/1",
+      expect.objectContaining({ forceNavigation: false }),
+    );
+    const view = SiteBrowserOverlay()!;
+    const bar = Children.toArray(view.props.children).find(
+      (child): child is ReactElement<{ onNavigate: (url: string) => void }> =>
+        isValidElement(child) && child.type === SiteBrowserAddressBar,
+    );
+    expect(bar).toBeDefined();
+    bar!.props.onNavigate("https://source.test/chapter/1");
+    runNavigationEffect();
+    await vi.waitFor(() => expect(useSiteBrowserStore.getState().phase).toBe("ready"));
+    expect(platformMocks.navigate).toHaveBeenCalledTimes(2);
+    expect(platformMocks.navigate).toHaveBeenNthCalledWith(2,
+      "source-a", "https://source.test/chapter/1",
+      expect.objectContaining({ forceNavigation: true }),
+    );
+    expect(useSiteBrowserStore.getState()).toMatchObject({
+      visible: true, sourceId: "source-a", taskId: "browser-task", context: { mode },
     });
   });
 

@@ -9,6 +9,7 @@ describe("site browser store", () => {
       currentUrl: null,
       sourceId: null,
       openSequence: 0,
+      forceNavigation: false,
       phase: "closed",
       taskId: null,
       visible: false,
@@ -94,6 +95,22 @@ describe("site browser store", () => {
     store.hide();
     store.navigateTo("task-1", "https://closed.test/");
     expect(useSiteBrowserStore.getState().phase).toBe("closed");
+  });
+
+  it("distinguishes initial handoff from explicit reload and resets intent for the next task", () => {
+    const store = useSiteBrowserStore.getState();
+    const url = "https://source.test/novel";
+    store.queueAt("source-a", url, "task-1");
+    store.startLoading("source-a", url, "task-1");
+    expect(useSiteBrowserStore.getState().forceNavigation).toBe(false);
+    store.markReady("task-1");
+    store.navigateTo("task-1", url);
+    expect(useSiteBrowserStore.getState()).toMatchObject({ forceNavigation: true, openSequence: 2 });
+    store.hide();
+    expect(useSiteBrowserStore.getState().forceNavigation).toBe(false);
+    store.queueAt("source-a", url, "task-2");
+    store.startLoading("source-a", url, "task-2");
+    expect(useSiteBrowserStore.getState()).toMatchObject({ forceNavigation: false, openSequence: 3 });
   });
 
   it("completes source access requests only for the owning task", () => {

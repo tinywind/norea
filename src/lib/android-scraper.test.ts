@@ -26,6 +26,7 @@ interface NavigatePayload {
   timeoutMs: number;
   url: string;
   userAgent: string | null;
+  forceNavigation: boolean;
 }
 
 function installScraperBridge() {
@@ -86,6 +87,7 @@ describe("Android scraper navigation", () => {
       timeoutMs: 12_000,
       url: "https://example.com/chapter",
       userAgent: "Norea/Test",
+      forceNavigation: false,
     });
     expect(payload).not.toHaveProperty("resetHistory");
 
@@ -94,6 +96,18 @@ describe("Android scraper navigation", () => {
       JSON.stringify({ ok: true, result: true }),
     );
 
+    await expect(navigation).resolves.toBe(true);
+  });
+
+  it("passes explicit navigation intent to the native bridge without another action", async () => {
+    const navigate = vi.mocked(window.__NoreaAndroidScraper!.navigate);
+    const navigation = androidScraperNavigate(
+      "source-a", "https://example.com/chapter", null, { forceNavigation: true },
+    );
+    expect(navigate).toHaveBeenCalledOnce();
+    const payload = navigatePayload(navigate);
+    expect(payload.forceNavigation).toBe(true);
+    window.__noreaAndroidScraperResolve?.(payload.id, JSON.stringify({ ok: true, result: true }));
     await expect(navigation).resolves.toBe(true);
   });
 

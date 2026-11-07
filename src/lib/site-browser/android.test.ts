@@ -46,13 +46,14 @@ describe("androidSiteBrowser", () => {
     expect(androidScraperCurrentUrl).toHaveBeenCalledWith("source-a");
   });
 
-  it("does not request a destructive reset for foreground navigation", async () => {
+  it.each([undefined, true])("forwards navigation intent (%s) without a destructive reset", async (forceNavigation) => {
     vi.mocked(androidScraperNavigate).mockResolvedValueOnce(true);
     const controller = new AbortController();
 
     await androidSiteBrowser.navigate("source-a", "https://source.test/", {
       signal: controller.signal,
       timeoutMs: 12_000,
+      forceNavigation,
     });
 
     expect(androidScraperNavigate).toHaveBeenCalledWith(
@@ -62,6 +63,7 @@ describe("androidSiteBrowser", () => {
       {
         signal: controller.signal,
         timeoutMs: 12_000,
+        forceNavigation,
       },
     );
   });

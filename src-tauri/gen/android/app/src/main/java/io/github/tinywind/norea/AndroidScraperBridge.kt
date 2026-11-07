@@ -1778,13 +1778,16 @@ class AndroidScraperBridge(
       "runNavigate start id=$id url=$url timeoutMs=$timeoutMs",
       url,
     )
-    // Show the page that raised the challenge, including its tab-local session.
-    if (state.pendingChallengeUrl != null && webView.url == url) {
+    // The first handoff keeps the challenge's tab-local session. An explicit
+    // address submission or retry must perform the requested navigation.
+    val forceNavigation = payload.optBoolean("forceNavigation", false)
+    if (!forceNavigation && state.pendingChallengeUrl != null && webView.url == url) {
       browserVisible = true
       showScraper()
       finishSuccess(state, id, true)
       return
     }
+    state.pendingChallengeUrl = null
     hideScraperSurface(state)
     webView.stopLoading()
     webView.settings.apply {

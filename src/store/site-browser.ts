@@ -37,6 +37,8 @@ interface SiteBrowserState {
   navigationError: string | null;
   /** Monotonic navigation sequence, including reloads of the same URL. */
   openSequence: number;
+  /** Explicit address submission or retry must start a new native navigation. */
+  forceNavigation: boolean;
   /** The interaction represented by the current browser request. */
   context: SiteBrowserContext | null;
   /** The most recent task-owned browser result. */
@@ -74,6 +76,7 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
   phase: "closed",
   navigationError: null,
   openSequence: 0,
+  forceNavigation: false,
   context: null,
   completion: null,
   queueAt: (sourceId, url, taskId, context = { mode: "browse" }) =>
@@ -84,6 +87,7 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
       taskId,
       phase: "queued",
       navigationError: null,
+      forceNavigation: false,
       context,
       completion: null,
     }),
@@ -97,6 +101,7 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
             phase: "loading",
             navigationError: null,
             openSequence: state.openSequence + 1,
+            forceNavigation: false,
           }
         : state,
     ),
@@ -109,6 +114,7 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
             phase: "loading",
             navigationError: null,
             openSequence: state.openSequence + 1,
+            forceNavigation: true,
           }
         : state,
     ),
@@ -149,6 +155,7 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
         context: null,
         phase: "closed",
         navigationError: null,
+        forceNavigation: false,
         sourceId: null,
         taskId: null,
         visible: false,
@@ -163,6 +170,7 @@ export const useSiteBrowserStore = create<SiteBrowserState>((set) => ({
       visible: false,
       phase: "closed",
       navigationError: null,
+      forceNavigation: false,
       sourceId: null,
       taskId: null,
     }),

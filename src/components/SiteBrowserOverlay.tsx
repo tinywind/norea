@@ -105,6 +105,7 @@ export function SiteBrowserOverlay() {
   const phase = useSiteBrowserStore((s) => s.phase);
   const navigationError = useSiteBrowserStore((s) => s.navigationError);
   const openSequence = useSiteBrowserStore((s) => s.openSequence);
+  const forceNavigation = useSiteBrowserStore((s) => s.forceNavigation);
   const context = useSiteBrowserStore((s) => s.context);
   const hide = useSiteBrowserStore((s) => s.hide);
   const markReady = useSiteBrowserStore((s) => s.markReady);
@@ -316,6 +317,7 @@ export function SiteBrowserOverlay() {
         try {
           await platform.navigate(sourceId, currentUrl, {
             signal: controller.signal,
+            forceNavigation,
           });
           if (controller.signal.aborted) return;
           const state = useSiteBrowserStore.getState();
@@ -391,6 +393,7 @@ export function SiteBrowserOverlay() {
     browserTaskId,
     currentUrl,
     deferWindowsBounds,
+    forceNavigation,
     markReady,
     openSequence,
     phase,

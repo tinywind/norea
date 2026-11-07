@@ -8,6 +8,8 @@ export interface SiteBrowserBounds {
 export interface SiteBrowserNavigateOptions {
   signal?: AbortSignal;
   timeoutMs?: number;
+  /** User-submitted navigation must not reuse a retained challenge document. */
+  forceNavigation?: boolean;
 }
 
 export interface SiteBrowserPlatformApi {

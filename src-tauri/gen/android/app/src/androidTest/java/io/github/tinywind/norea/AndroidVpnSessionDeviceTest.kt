@@ -217,8 +217,9 @@ class AndroidVpnSessionDeviceTest {
       expectedSuccess = null,
     )
 
-    fun openSite(path: String) {
-      assertTrue(command("navigate", JSONObject().put("url", origin + path)).getBoolean("result"))
+    fun openSite(path: String, forceNavigation: Boolean = false) {
+      assertTrue(command("navigate", JSONObject().put("url", origin + path)
+        .put("forceNavigation", forceNavigation)).getBoolean("result"))
     }
 
     fun showRetainedPage(path: String) = openSite(path)
@@ -274,6 +275,22 @@ class AndroidVpnSessionDeviceTest {
           .apply { isAccessible = true }.get(bridge) as AndroidScraperVpnSession
         assertTrue("A later page must not mark the earlier HTTP error URL VPN-fresh",
           session.needsFreshResponse(sourceId, origin + failedPath))
+      }
+    }
+
+    fun assertNavigationSucceeded(path: String) {
+      val view = sourceView()
+      instrumentation.runOnMainSync {
+        val states = AndroidScraperBridge::class.java.getDeclaredField("queues")
+          .apply { isAccessible = true }.get(bridge) as Map<*, *>
+        val state = states.values.filterIsInstance<AndroidScraperState>().single { it.webView === view }
+        assertTrue("A successful explicit navigation must become a usable context", state.contextReady)
+        assertEquals(origin + path, state.currentUrl)
+        assertEquals("A successful explicit navigation must clear the old challenge", null, state.pendingChallengeUrl)
+        val session = AndroidScraperBridge::class.java.getDeclaredField("vpnSession")
+          .apply { isAccessible = true }.get(bridge) as AndroidScraperVpnSession
+        assertFalse("A successful explicit navigation must record its fresh response",
+          session.needsFreshResponse(sourceId, origin + path))
       }
     }
 
@@ -523,6 +540,55 @@ class AndroidVpnSessionDeviceTest {
   @Test
   fun firstWorkerBrowser403ShowsUsableDocumentWithoutRetryAndKeepsLoginSession() =
     verifyFirstBrowserHttpError(namespace = "vpn-worker-qa-${UUID.randomUUID()}")
+
+  private fun verifyExplicitAddressSubmission(namespace: String?) {
+    Fixture().use { fixture ->
+      Browser(fixture.origin, namespace).use { browser ->
+        browser.seedCookies()
+        browser.reset()
+        val path = "/interactive-next"
+        browser.openSite(path)
+        val view = browser.sourceView()
+        val blocked = """
+          document.readyState === 'complete' &&
+          document.getElementById('manual-next-status')?.textContent === 'Blocked next page'
+        """.trimIndent()
+        val deadline = SystemClock.elapsedRealtime() + 10_000
+        while (SystemClock.elapsedRealtime() < deadline && browser.evaluate(blocked) != "true") {
+          Thread.sleep(20)
+        }
+        assertEquals("The original HTTP error must load", "true", browser.evaluate(blocked))
+        browser.evaluate("sessionStorage.setItem('explicit-navigation-session', 'retained')")
+        browser.showRetainedPage(path)
+        assertSame(view, browser.sourceView())
+        assertEquals("The first handoff must retain the challenge without another request",
+          listOf(path), fixture.requests.map { it.path })
+
+        fixture.fresh = true
+        browser.openSite(path, forceNavigation = true)
+        assertSame("Explicit navigation must preserve the source WebView", view, browser.sourceView())
+        assertEquals("\"Recovered same URL\"", browser.evaluate("document.getElementById('manual-next-status')?.textContent"))
+        assertEquals("\"retained\"", browser.evaluate("sessionStorage.getItem('explicit-navigation-session')"))
+        assertEquals("Explicit same-address submission must send exactly one new request",
+          listOf(path, path), fixture.requests.map { it.path })
+        assertTrue("Explicit navigation must preserve the VPN freshness policy",
+          fixture.requests.last().cacheControl.contains("no-cache"))
+        fixture.requests.forEach { request ->
+          assertTrue("Explicit navigation must retain the login cookie", request.cookies.contains("login_session=qa-login"))
+        }
+        assertTrue(browser.cookieNames().contains("login_session"))
+        browser.assertNavigationSucceeded(path)
+      }
+    }
+  }
+
+  @Test
+  fun explicitAddressSubmissionReloadsRetained403AndKeepsLoginSession() =
+    verifyExplicitAddressSubmission(namespace = null)
+
+  @Test
+  fun workerExplicitAddressSubmissionReloadsRetained403AndKeepsLoginSession() =
+    verifyExplicitAddressSubmission(namespace = "vpn-worker-qa-${UUID.randomUUID()}")
 
   private fun verifyMainFrameHttpError(namespace: String?) {
     Fixture().use { fixture ->
