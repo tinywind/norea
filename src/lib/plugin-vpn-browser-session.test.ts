@@ -16,7 +16,7 @@ describe("VPN browser session changes", () => {
     expect(androidScraperResetVpnSession).not.toHaveBeenCalled();
   });
 
-  it("awaits Android selective cleanup before allowing a new route", async () => {
+  it("awaits Android browser quiescence before allowing a new route", async () => {
     vi.mocked(isAndroidRuntime).mockReturnValue(true);
     let complete!: () => void;
     vi.mocked(androidScraperResetVpnSession).mockImplementationOnce(() => new Promise(resolve => { complete = resolve; }));

@@ -1,5 +1,5 @@
-//! Calls into `AndroidVpnUrlTestBridge`, which loads each test page in the private
-//! `:vpn_url_test` WebView process.
+//! Calls into the main-process shared site-browser owner. URL tests use the same
+//! persistent profile and route transition gate as browsing and downloads.
 
 use std::sync::OnceLock;
 
@@ -43,24 +43,27 @@ fn error_message(error: jni::errors::Error) -> String {
 
 /// Loads `url` once through the local proxy on `proxy_port` and blocks until the test browser
 /// reports what it observed, as JSON. `cancel_page` with the same `id` ends the wait early.
-pub(super) fn load_page(id: i64, url: &str, proxy_port: u16, user_agent: &str, page_timeout_ms: i32) -> Result<String, String> {
+pub(super) fn load_page(id: i64, url: &str, proxy_port: u16, user_agent: &str, page_timeout_ms: i32, profile_hash: &str, rotate_fingerprint_on_vpn_change: bool) -> Result<String, String> {
     let bridge = bridge()?;
     bridge
         .java_vm
         .attach_current_thread_for_scope(|env| {
             let url = env.new_string(url)?;
             let user_agent = env.new_string(user_agent)?;
+            let profile_hash = env.new_string(profile_hash)?;
             let observation = env
                 .call_static_method(
                     &bridge.class,
                     jni_str!("load"),
-                    jni_sig!("(JLjava/lang/String;ILjava/lang/String;I)Ljava/lang/String;"),
+                    jni_sig!("(JLjava/lang/String;ILjava/lang/String;ILjava/lang/String;Z)Ljava/lang/String;"),
                     &[
                         JValue::Long(id),
                         JValue::from(&url),
                         JValue::Int(i32::from(proxy_port)),
                         JValue::from(&user_agent),
                         JValue::Int(page_timeout_ms),
+                        JValue::from(&profile_hash),
+                        JValue::Bool(rotate_fingerprint_on_vpn_change),
                     ],
                 )?
                 .l()?;

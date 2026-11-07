@@ -13,6 +13,8 @@ import { listVpnDownloadProfileIssues, recordVpnDownloadProfileIssue, reallowVpn
 import { cancelSourceAccessWait } from "./source-access-coordinator";
 import { usePluginVpnStore } from "../../store/plugin-vpn";
 import { useVpnDownloadStore } from "../../store/vpn-download";
+import { useSiteBrowserStore } from "../../store/site-browser";
+import { downloadRecovery, downloadRecoveryKey } from "./download-recovery";
 import { androidCloseVpnDownloadWorker, androidConfigureVpnDownloadWorker, androidShowVpnDownloadWorker } from "../android-scraper";
 import { describeError } from "../errors";
 import { isAbortError } from "../abort";
@@ -74,6 +76,7 @@ interface WorkerSession {
   worker: VpnDownloadWorkerRef;
   sourceId: string;
   profileId: string;
+  profileHash: string;
   browserStarted: boolean;
   unregister?: () => void;
   closing?: Promise<void>;
@@ -226,25 +229,52 @@ async function persistVpnDownload<T>(operation: string, run: () => Promise<T>): 
 const adapter: VpnDownloadRuntime = {
   generationFloor: getPluginVpnDownloadGenerationFloor,
   loadPlans: () => persistVpnDownload("loading VPN plans", listVpnDownloadPlans),
-  createPlan: (plan, jobs) => persistVpnDownload("creating a VPN plan", () => createVpnDownloadPlan(plan, jobs)),
+  createPlan: (plan, jobs) => persistVpnDownload("creating a VPN plan", async () => {
+    downloadRecovery.register(jobs);
+    await createVpnDownloadPlan(plan, jobs);
+  }),
   loadJobs: (planId, rangeId) => persistVpnDownload("loading VPN jobs", () => getVpnDownloadRangeJobs(planId, rangeId)),
   updatePlan: (plan, revision, options) => persistVpnDownload("saving a VPN plan", () => updateVpnDownloadPlan(plan, revision, options)),
   settleChapter: (planId, rangeId, chapterId, generation) => persistVpnDownload("settling a VPN chapter", () => settleVpnDownloadChapter(planId, rangeId, chapterId, generation)),
-  cancelRange: (planId, rangeId) => persistVpnDownload("cancelling a VPN range", () => cancelStoredRange(planId, rangeId)),
-  cancelPlan: async id => { await persistVpnDownload("cancelling a VPN plan", () => cancelVpnDownloadPlan(id)); releaseVpnDownloadPlanLocalWorkScans(id); },
+  cancelRange: (planId, rangeId) => persistVpnDownload("cancelling a VPN range", async () => {
+    const jobs = await getVpnDownloadRangeJobs(planId, rangeId);
+    const plan = await cancelStoredRange(planId, rangeId);
+    downloadRecovery.forget(jobs.map(downloadRecoveryKey), true);
+    return plan;
+  }),
+  cancelPlan: async id => {
+    const plan = coordinator.getPlans().find(plan => plan.id === id);
+    await persistVpnDownload("cancelling a VPN plan", async () => {
+      await cancelVpnDownloadPlan(id);
+      if (plan) downloadRecovery.forget(plan.ranges.filter(range => range.phase !== "cancelled")
+        .flatMap(range => range.selectedChapterIds.slice(range.checkpoint).map(id => downloadRecoveryKey({ id }))), true);
+    });
+    releaseVpnDownloadPlanLocalWorkScans(id);
+  },
   listProfiles: availableProfiles,
   loadProfileIssues: batchId => persistVpnDownload("loading VPN profile issues", () => listVpnDownloadProfileIssues(batchId)),
   recordProfileIssue: issue => persistVpnDownload("saving a VPN profile issue", () => recordVpnDownloadProfileIssue(issue)),
   reallowProfile: (batchId, ip, revision) => persistVpnDownload("allowing a VPN profile", () => reallowVpnDownloadProfile(batchId, ip, revision)),
   reservedProfileIds: () => reservedProfiles,
+  canSwitchProfile: () => !useSiteBrowserStore.getState().visible && !(taskScheduler.getSnapshot().records ?? []).some(task =>
+    task.lane === "source" && task.status === "running" && !task.vpnWorker),
+  resumeRecovery: jobs => downloadRecovery.resume(undefined, new Set(jobs.map(downloadRecoveryKey))),
+  recoveryProfile: job => downloadRecovery.retryProfile(downloadRecoveryKey(job)),
+  networkRecovery: (job, profile) => {
+    const key = downloadRecoveryKey(job);
+    const action = downloadRecovery.networkLost(key, new Error("Network connection was lost."), { profile });
+    return { action, usedProfileIds: downloadRecovery.usedProfiles(key) };
+  },
   findProfileCandidates,
   testProfileCandidate,
   recordProfileResult: (profile, connected) => { void recordAutomaticPluginVpnProfileResult(profile, connected).catch(report); },
-  connectWorker: async (worker, profile, signal) => {
+  connectWorker: async (worker, profile, signal, job) => {
+    if (!job) throw new Error("VPN connection is missing its owned chapter job.");
+    return downloadRecovery.connect(job, profile, signal, async () => {
     if (!snapshot.capabilities.supported) throw new Error("Isolated VPN download workers are not supported on this device.");
     const plan = coordinator.getPlans().find(plan => plan.ranges.some(range => range.id === worker.rangeId));
     if (!plan) throw new Error("VPN worker has no enrolled plan.");
-    const session: WorkerSession = { planId: plan.id, worker, sourceId: plan.pluginId, profileId: profile.id, browserStarted: false };
+    const session: WorkerSession = { planId: plan.id, worker, sourceId: plan.pluginId, profileId: profile.id, profileHash: profile.hash, browserStarted: false };
     sessions.set(vpnDownloadExecutor(worker), session);
     publish();
     const abort = () => { void disconnectPluginVpnDownloadWorker(worker).catch(report); };
@@ -262,11 +292,12 @@ const adapter: VpnDownloadRuntime = {
       }
       if (status.profile?.id !== profile.id || status.profile.hash !== profile.hash) throw new Error("Native VPN profile identity changed.");
       session.browserStarted = true;
-      await androidConfigureVpnDownloadWorker(worker, { sourceId: plan.pluginId, profileId: profile.id, proxyPort: status.proxyPort });
+      await androidConfigureVpnDownloadWorker(worker, { sourceId: plan.pluginId, profileId: profile.id, profileHash: profile.hash, proxyPort: status.proxyPort });
       if (signal.aborted || session.closing) throw new DOMException("VPN worker cancelled.", "AbortError");
       session.unregister = registerVpnDownloadWorkerContext(worker);
       return "connected";
     } finally { signal.removeEventListener("abort", abort); }
+    });
   },
   disconnectWorker,
   showWorker: async (worker) => {
@@ -277,7 +308,9 @@ const adapter: VpnDownloadRuntime = {
   enqueueChapter: (job, worker, planId) => {
     if (job.vpnPlanId !== planId || job.vpnRangeId !== worker.rangeId) throw new Error("VPN chapter ownership changed.");
     // The coordinator serializes the durable checkpoint only after executor cleanup.
-    return enqueueVpnDownloadChapter(job, worker, async () => undefined);
+    const session = sessions.get(vpnDownloadExecutor(worker));
+    if (!session || session.closing) throw new Error("VPN chapter has no active connection session.");
+    return enqueueVpnDownloadChapter(job, worker, async () => undefined, { id: session.profileId, hash: session.profileHash });
   },
   recordChapterFailure: async (job, error) => {
     const stored = await persistVpnDownload("saving a chapter failure", () => recordFailedChapterDownloadAttempt(job, error));
@@ -367,6 +400,7 @@ function syncBatches(): void {
   }
 }
 coordinator.subscribe(syncBatches);
+useSiteBrowserStore.subscribe(() => coordinator.browserActivityChanged());
 
 function capabilities(): VpnDownloadRuntimeSnapshot["capabilities"] {
   const unsupported = { supported: false, parallelSupported: false, maxWorkers: 0 };
@@ -375,9 +409,8 @@ function capabilities(): VpnDownloadRuntimeSnapshot["capabilities"] {
     const value: unknown = JSON.parse(window.__NoreaAndroidVpnWorkers?.capabilities() ?? "null");
     if (!value || typeof value !== "object" || !("supported" in value) || value.supported !== true ||
       !("maxWorkers" in value) || typeof value.maxWorkers !== "number" || !Number.isInteger(value.maxWorkers) ||
-      value.maxWorkers < 1 || value.maxWorkers > MAX_VPN_DOWNLOAD_WORKERS ||
-      !("parallelSupported" in value) || value.parallelSupported !== true) return unsupported;
-    return { supported: true, parallelSupported: true, maxWorkers: value.maxWorkers };
+      value.maxWorkers < 1 || value.maxWorkers > MAX_VPN_DOWNLOAD_WORKERS) return unsupported;
+    return { supported: true, parallelSupported: false, maxWorkers: 1 };
   } catch { return unsupported; }
 }
 
@@ -416,6 +449,7 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
     const seen = new Set<string>();
     subscribeChapterDownloadRequests(syncBatches);
     taskScheduler.subscribe(() => {
+      coordinator.browserActivityChanged();
       holdVpnDownloadsForStorageFailure();
       for (const block of taskScheduler.getSnapshot().sourceAccessBlocks) {
         if (!block.rangeId || !block.originTaskId || block.verificationRequested || block.verificationTaskId) continue;
@@ -775,7 +809,11 @@ export async function cancelVpnDownloadRun(): Promise<void> {
       if (!run.originalPlanIds.has(plan.id)) continue;
       for (const range of plan.ranges) if (range.phase !== "completed" && range.phase !== "cancelled") await coordinator.cancelRange(plan.id, range.id);
     }
-    await persistVpnDownload("cancelling pending VPN jobs", () => cancelPendingVpnDownloadBatch(run.id));
+    await persistVpnDownload("cancelling pending VPN jobs", async () => {
+      const pending = await listPendingVpnDownloadJobs();
+      await cancelPendingVpnDownloadBatch(run.id);
+      downloadRecovery.forget(pending.filter(({ job }) => job.vpnBatchId === run.id).map(({ job }) => downloadRecoveryKey(job)), true);
+    });
     run.handover?.release();
     run.waitingHandover.clear();
     pausedWorks.clear(); coordinator.clearWorkHolds();
@@ -898,7 +936,10 @@ function stageBatch(request: ChapterDownloadBatchJob, runBatchId: string, persis
   let persisted = !persist;
   const materialized = (async () => {
     if (batch.cancelRequested) return;
-    batch.persistence = persist ? persistVpnDownload("saving pending VPN jobs", () => enqueuePendingVpnDownloadJobs(runBatchId, requested))
+    batch.persistence = persist ? persistVpnDownload("saving pending VPN jobs", async () => {
+      downloadRecovery.register(requested);
+      await enqueuePendingVpnDownloadJobs(runBatchId, requested);
+    })
       : requested.some(job => job.vpnWorkPaused) ? persistVpnDownload("pausing pending VPN jobs", () => setPendingVpnDownloadJobsPaused(runBatchId, requested.filter(job => job.vpnWorkPaused).map(job => job.id), true)).then(() => undefined) : Promise.resolve();
     await batch.persistence;
     persisted = true;
@@ -970,13 +1011,13 @@ function retryPendingDrafts(): void {
   }
 }
 
-/** Explicit assignments are bounded by the worker limit; automatic chunks are not. */
+/** Persisted range partitions remain valid while the shared browser executes them sequentially. */
 function requireDraftStartSettings(assignmentCount?: number) {
   requireNoStorageFailure();
   const settings = useVpnDownloadStore.getState();
-  if (settings.mode === "off" || !snapshot.capabilities.supported || (settings.mode === "parallel" && !snapshot.capabilities.parallelSupported)) throw new Error("Automatic VPN downloads are disabled or unsupported.");
-  const cap = settings.mode === "single" ? 1 : Math.min(settings.workerCount, snapshot.capabilities.maxWorkers);
-  if (assignmentCount !== undefined && (!assignmentCount || assignmentCount > cap)) throw new Error("VPN range count exceeds the configured worker limit.");
+  if (settings.mode === "off" || !snapshot.capabilities.supported) throw new Error("Automatic VPN downloads are disabled or unsupported.");
+  const cap = settings.mode === "single" ? 1 : MAX_VPN_DOWNLOAD_WORKERS;
+  if (assignmentCount !== undefined && (!assignmentCount || assignmentCount > cap)) throw new Error("VPN range count exceeds the supported partition limit.");
   return { mode: settings.mode, captchaPolicy: settings.captchaPolicy, cloudflarePolicy: settings.cloudflarePolicy };
 }
 
@@ -1041,7 +1082,10 @@ export function cancelVpnDownloadDraft(draftId: string): Promise<void> {
   const cancelling = (async () => {
     await batch?.persistence;
     if (draft.planId) await coordinator.cancelPlan(draft.planId);
-    if (batch) await persistVpnDownload("cancelling pending VPN jobs", () => cancelPendingVpnDownloadJobs(batch.runBatchId, draft.jobs.map(job => job.id)));
+    if (batch) await persistVpnDownload("cancelling pending VPN jobs", async () => {
+      await cancelPendingVpnDownloadJobs(batch.runBatchId, draft.jobs.map(job => job.id));
+      downloadRecovery.forget(draft.jobs.map(downloadRecoveryKey), true);
+    });
     finish();
   })();
   draft.cancelling = cancelling;
@@ -1066,7 +1110,8 @@ function cancelBatch(id: string): boolean {
     for (const draft of pending) cancelVpnDownloadDraft(draft.work.id);
     await Promise.all(pending.map(draft => draft.cancelling));
     for (const planId of batch.planIds) await coordinator.cancelPlan(planId);
-    await persistVpnDownload("cancelling pending VPN jobs", () => cancelPendingVpnDownloadJobs(batch.runBatchId, batch.jobs.map(job => job.id)));
+    // Drafts and plans removed their currently owned jobs above. A completed
+    // chapter from this batch may already belong to a later explicit request.
     for (const job of batch.jobs) if (job.novelId) releaseFinishedWorkHold(job.pluginId, job.novelId);
     batch.materializing = false;
     syncBatches();

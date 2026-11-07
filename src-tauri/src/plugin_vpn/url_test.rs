@@ -277,10 +277,11 @@ pub(super) struct UrlTestRequest {
     pub(super) credentials: super::engine::EngineCredentials,
     pub(super) url: reqwest::Url,
     pub(super) user_agent: String,
+    pub(super) rotate_fingerprint_on_vpn_change: bool,
 }
 
-/// Connects a separate tunnel, loads the page once through it in the isolated test browser, which
-/// keeps its process for the rest of the run, and closes the tunnel on every path.
+/// Connects a separate tunnel, acquires the shared site browser for one page load,
+/// and closes the tunnel on every path.
 #[cfg(target_os = "android")]
 pub(super) async fn run_test(guard: &mut UrlTestGuard<'_>, request: UrlTestRequest) -> Result<VpnUrlTestResult, String> {
     if guard.resources.proxy.is_none() {
@@ -292,6 +293,7 @@ pub(super) async fn run_test(guard: &mut UrlTestGuard<'_>, request: UrlTestReque
     let proxy = guard.resources.proxy.as_ref().expect("VPN URL test proxy");
     let cancellation = &mut guard.cancellation;
 
+    let profile_hash = super::saved_profiles::profile_hash(request.profile.as_bytes());
     let (engine_cancel, engine_cancellation) = tokio::sync::watch::channel(false);
     let connect = super::engine::connect(request.profile, request.credentials, engine_cancellation);
     tokio::pin!(connect);
@@ -329,7 +331,7 @@ pub(super) async fn run_test(guard: &mut UrlTestGuard<'_>, request: UrlTestReque
     let page = PAGE_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let (url, port, user_agent) = (request.url.to_string(), proxy.address().port(), request.user_agent);
     let page_timeout_ms = PAGE_TIMEOUT.as_millis() as i32;
-    let mut load = tauri::async_runtime::spawn_blocking(move || android::load_page(page, &url, port, &user_agent, page_timeout_ms));
+    let mut load = tauri::async_runtime::spawn_blocking(move || android::load_page(page, &url, port, &user_agent, page_timeout_ms, &profile_hash, request.rotate_fingerprint_on_vpn_change));
     let mut page_running = true;
     let mut completed = false;
     let result = tokio::select! {

@@ -10,7 +10,7 @@ internal const val MAX_VPN_DOWNLOAD_WORKERS = 10
 
 internal fun androidVpnWorkerCapabilities(apiLevel: Int, multiProfile: Boolean, proxyOverride: Boolean): Map<String, Any> {
   val supported = apiLevel >= 28 && multiProfile && proxyOverride
-  return mapOf("supported" to supported, "parallelSupported" to supported, "maxWorkers" to if (supported) MAX_VPN_DOWNLOAD_WORKERS else 0)
+  return mapOf("supported" to supported, "parallelSupported" to false, "maxWorkers" to if (supported) 1 else 0)
 }
 
 internal fun androidScraperCookieExpiration(cookieInfo: String): String? {
@@ -99,6 +99,8 @@ internal data class AndroidVpnWorkerConfiguration(
   val sourceId: String,
   val profileId: String,
   val proxyPort: Int,
+  val profileHash: String,
+  val rotateFingerprintOnVpnChange: Boolean = false,
 )
 
 internal fun androidVpnWorkerBrowserHiddenDetail(configuration: AndroidVpnWorkerConfiguration): Map<String, String> =
@@ -126,6 +128,8 @@ internal fun androidVpnWorkerConfiguration(
   sourceId: String,
   profileId: String,
   proxyPort: Any?,
+  profileHash: String,
+  rotateFingerprintOnVpnChange: Boolean = false,
 ): AndroidVpnWorkerConfiguration {
   val slotNumber = workerInteger(slot)
   val generationNumber = workerInteger(generation)
@@ -138,7 +142,8 @@ internal fun androidVpnWorkerConfiguration(
       "VPN worker source and profile identities must contain 1 to 512 UTF-8 bytes."
     }
   }
-  return AndroidVpnWorkerConfiguration(slotNumber.toInt(), generationNumber, sourceId, profileId, portNumber.toInt())
+  require(profileHash.matches(Regex("[a-f0-9]{64}"))) { "VPN worker profile hash is invalid." }
+  return AndroidVpnWorkerConfiguration(slotNumber.toInt(), generationNumber, sourceId, profileId, portNumber.toInt(), profileHash, rotateFingerprintOnVpnChange)
 }
 
 internal fun androidScraperProfileName(sourceId: String, namespace: String? = null): String {

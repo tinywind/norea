@@ -347,8 +347,15 @@ non-empty and their media type must match their chapter type.
 For a page plan, the chapter task and its page capture use the task's assigned
 scraper executor. The capture therefore shares the browser cookie jar,
 challenge state, cache, cancellation signal, and foreground/background
-scheduling rules with plugin browsing for that source id. Different source ids
-use isolated browser profiles, even when they point to the same site origin.
+scheduling rules with plugin browsing for that source id. On Android, all site
+WebViews share one persistent browser profile, including different source ids
+that use the same origin, download workers, manual authentication, and VPN URL
+tests. The app UI's own origin remains separate. Source ids still determine
+plugin permissions, task ownership, and cancellation, rather than browser data
+isolation. The shared browser uses one network route at a time; VPN downloads
+therefore execute sequentially. Windows retains its existing per-source
+WebView2 profile behavior. See [Shared site browser](../shared-site-browser.md)
+for Android route transitions, cookie expiry, and configurable recovery.
 
 Before asking a plugin for an acquisition plan or starting network traffic, the
 host checks the resolved chapter directory for a final `content.*` file. An

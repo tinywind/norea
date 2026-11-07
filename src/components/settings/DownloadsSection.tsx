@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { NumberInput, Select, Stack, Switch, Text } from "@mantine/core";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ChapterCleanupPanel } from "../ChapterCleanupPanel";
+import { BatteryOptimizationSetting } from "../BatteryOptimizationSetting";
 import { useConfirm } from "../ui/ConfirmDialog";
 import { StorageRecoveryBanner } from "../runtime/StorageRecovery";
 import {
@@ -29,6 +30,7 @@ import {
 } from "../../store/download-goals";
 import { showSettingsToast } from "./settings-toast";
 import { NovelDownloadGoalSettings } from "./NovelDownloadGoalSettings";
+import { DownloadRecoverySettings } from "./DownloadRecoverySettings";
 
 export const CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY = [
   "settings",
@@ -324,6 +326,8 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
           </SettingsFieldRow>
         </SettingsAdvancedGroup>
       </SettingsSection>
+      <DownloadRecoverySettings isBusy={isBusy} />
+      <BatteryOptimizationSetting />
       <NovelDownloadGoalSettings isBusy={isBusy} />
       <ChapterCleanupPanel
         opened={cleanupOpened}

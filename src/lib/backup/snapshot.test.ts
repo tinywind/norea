@@ -23,12 +23,17 @@ vi.mock("../../store/download-goals", () => ({
   DOWNLOAD_GOAL_SETTINGS_KEY: "download-goal-settings",
   useDownloadGoalSettingsStore: { persist: { rehydrate: vi.fn() } },
 }));
+vi.mock("../../store/download-recovery", () => ({
+  DOWNLOAD_RECOVERY_SETTINGS_KEY: "download-recovery-settings",
+  useDownloadRecoveryStore: { persist: { rehydrate: vi.fn() } },
+}));
 vi.mock("../../store/reader", () => ({ useReaderStore: {
   getState: () => ({ lastReadChapterByNovel: {} }), persist: { rehydrate: vi.fn() },
 } }));
 
 import { invoke } from "@tauri-apps/api/core";
 import { getDb } from "../../db/client";
+import { useDownloadRecoveryStore } from "../../store/download-recovery";
 import { restoreWorkMetadataDirectories } from "../../db/work-metadata";
 import { prepareBackupRestore } from "./restore-plan";
 import { writeStoredChapterContentMirror } from "../chapter-content-storage";
@@ -275,6 +280,7 @@ describe("gatherBackupSnapshot", () => {
     installLocalStorage({
       "app-appearance-settings": "{\"state\":{\"themeMode\":\"dark\"}}",
       "download-goal-settings": "{\"state\":{\"defaultKeepAhead\":5}}",
+      "download-recovery-settings": "{\"state\":{\"forbiddenAction\":\"retry\",\"rotateFingerprintOnVpnChange\":true}}",
       "plugin-v2:demo:token": "secret",
       "plugin:demo:token": "obsolete-token",
       "source-filters:demo": "{\"filters\":{}}",
@@ -291,6 +297,7 @@ describe("gatherBackupSnapshot", () => {
         value: "{\"state\":{\"themeMode\":\"dark\"}}",
       },
       { key: "download-goal-settings", value: "{\"state\":{\"defaultKeepAhead\":5}}" },
+      { key: "download-recovery-settings", value: "{\"state\":{\"forbiddenAction\":\"retry\",\"rotateFingerprintOnVpnChange\":true}}" },
       { key: "plugin-v2:demo:token", value: "secret" },
       { key: "source-filters:demo", value: "{\"filters\":{}}" },
     ]);
@@ -385,6 +392,7 @@ describe("applyBackupSnapshot", () => {
         ...(await gatherForTest()),
         settings: [
           { key: "app-appearance-settings", value: "new" },
+          { key: "download-recovery-settings", value: "{\"state\":{\"transientAction\":\"retry\"}}" },
           { key: "plugin-v2:demo:token", value: "new-token" },
           { key: "plugin:demo:token", value: "ignored-token" },
           { key: "norea-content-device:http://server", value: "foreign-device-key" },
@@ -395,6 +403,8 @@ describe("applyBackupSnapshot", () => {
     await applyBackupSnapshot(manifest);
 
     expect(storage.getItem("app-appearance-settings")).toBe("new");
+    expect(storage.getItem("download-recovery-settings")).toBe("{\"state\":{\"transientAction\":\"retry\"}}");
+    expect(useDownloadRecoveryStore.persist.rehydrate).toHaveBeenCalledOnce();
     expect(storage.getItem("plugin-v2:demo:token")).toBe("new-token");
     expect(storage.getItem("plugin:demo:token")).toBe("obsolete-token");
     expect(storage.getItem("norea-content-device:http://server")).toBe("device-key");

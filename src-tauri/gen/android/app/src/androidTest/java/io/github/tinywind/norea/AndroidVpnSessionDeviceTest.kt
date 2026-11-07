@@ -75,6 +75,7 @@ class AndroidVpnSessionDeviceTest {
               else -> "200 OK"
             }
             val content = when (route) {
+              "/qa-worker.js" -> "self.addEventListener('install', () => self.skipWaiting()); self.addEventListener('activate', e => e.waitUntil(self.clients.claim()));"
               "/forbidden" -> "Access denied"
               "/interactive-forbidden" -> """
                 <main>
@@ -99,12 +100,12 @@ class AndroidVpnSessionDeviceTest {
               "/with-missing-image" -> "<div id='chapter-content'>Chapter content</div><img src='/status/404'>"
               else -> "${if (fresh) "fresh" else "blocked"}-$path"
             }
-            val body = "<!doctype html><html><head><link rel='icon' href='data:,'></head><body>$content</body></html>"
-              .toByteArray(Charsets.UTF_8)
+            val body = (if (route == "/qa-worker.js") content else
+              "<!doctype html><html><head><link rel='icon' href='data:,'></head><body>$content</body></html>").toByteArray(Charsets.UTF_8)
             val response = buildString {
               append("HTTP/1.1 $status\r\n")
               append("Date: ${DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now(java.time.ZoneOffset.UTC))}\r\n")
-              append("Content-Type: text/html; charset=utf-8\r\n")
+              append("Content-Type: ${if (route == "/qa-worker.js") "application/javascript" else "text/html"}; charset=utf-8\r\n")
               append("Cache-Control: public, max-age=3600\r\n")
               append("Content-Length: ${body.size}\r\nConnection: close\r\n\r\n")
             }
@@ -123,7 +124,10 @@ class AndroidVpnSessionDeviceTest {
   }
 
   private inner class Browser(private val origin: String, namespace: String?) : Closeable {
-    val sourceId = "vpn-session-qa-${UUID.randomUUID()}"
+    var sourceId = "vpn-session-qa-${UUID.randomUUID()}"
+      private set
+    private var profileHash: String? = null
+    private var proxyPort = 0
     private val output = LinkedBlockingQueue<Pair<String, String>>()
     private lateinit var activityScenario: ActivityScenario<MainActivity>
     private lateinit var host: WebView
@@ -143,7 +147,7 @@ class AndroidVpnSessionDeviceTest {
       activityScenario.onActivity { activity ->
         assertTrue(WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE))
         assertTrue(WebViewFeature.isFeatureSupported(WebViewFeature.GET_COOKIE_INFO))
-        cookies = ProfileStore.getInstance().getOrCreateProfile(androidScraperProfileName(sourceId, namespace)).cookieManager
+        cookies = ProfileStore.getInstance().getOrCreateProfile(sharedSiteBrowserProfileName()).cookieManager
         surface = FrameLayout(activity)
         host = WebView(activity)
         surface.addView(host, FrameLayout.LayoutParams(480, 800))
@@ -160,6 +164,8 @@ class AndroidVpnSessionDeviceTest {
         )
         bridge.resumeBackgroundWorkWebViews()
       }
+      proxyPort = AndroidSiteBrowserDeviceFixture.foregroundPort()
+      AndroidSiteBrowserDeviceFixture.configure(context, proxyPort)
     }
 
     private fun command(
@@ -175,6 +181,7 @@ class AndroidVpnSessionDeviceTest {
         "extract" -> bridge.extract(value.toString())
         "navigate" -> bridge.navigate(value.toString())
         "resetVpnSession" -> bridge.resetVpnSession(value.toString())
+        "resetSiteData" -> bridge.resetSiteData(value.toString())
         else -> error("Unsupported fixture command")
       }
       val response = checkNotNull(output.poll(30, TimeUnit.SECONDS)) { "No $method response from scraper" }
@@ -300,6 +307,18 @@ class AndroidVpnSessionDeviceTest {
 
     fun reset() {
       assertTrue(command("resetVpnSession").getBoolean("result"))
+      AndroidSiteBrowserDeviceFixture.configure(context, proxyPort, profileHash)
+    }
+
+    fun changeRoute(hash: String?) {
+      AndroidSiteBrowserDeviceFixture.configure(context, proxyPort, hash)
+      profileHash = hash
+    }
+
+    fun changeSource() { sourceId = "vpn-session-qa-${UUID.randomUUID()}" }
+
+    fun resetSiteData() {
+      assertTrue(command("resetSiteData", JSONObject().put("url", origin + "/")).getBoolean("result"))
     }
 
     private fun sourceViewOrNull(): WebView? {
@@ -320,6 +339,53 @@ class AndroidVpnSessionDeviceTest {
       instrumentation.runOnMainSync { view.evaluateJavascript(script) { result = it; done.countDown() } }
       assertTrue("The source WebView did not finish the check", done.await(10, TimeUnit.SECONDS))
       return result
+    }
+
+    private fun awaitJavascriptFlag(name: String) {
+      val deadline = SystemClock.elapsedRealtime() + 15_000
+      while (SystemClock.elapsedRealtime() < deadline) {
+        val result = evaluate("window.$name")
+        if (result == "true") return
+        if (result != "false" && result != "null") error("Site storage fixture failed: $result")
+        Thread.sleep(20)
+      }
+      error("Site storage fixture did not finish: $name")
+    }
+
+    fun seedPersistentStores() {
+      evaluate("""
+        window.__qaStorageReady = false;
+        Promise.all([
+          new Promise((resolve, reject) => {
+            const request = indexedDB.open('norea-vpn-session-qa', 1);
+            request.onupgradeneeded = () => request.result.createObjectStore('values');
+            request.onerror = () => reject(request.error);
+            request.onsuccess = () => {
+              const db = request.result;
+              const tx = db.transaction('values', 'readwrite');
+              tx.objectStore('values').put('shared', 'value');
+              tx.oncomplete = () => { db.close(); resolve(); };
+              tx.onerror = () => reject(tx.error);
+            };
+          }),
+          caches.open('norea-vpn-session-qa').then(cache => cache.put('/qa-cache-entry', new Response('shared'))),
+          navigator.serviceWorker.register('/qa-worker.js')
+        ]).then(() => { window.__qaStorageReady = true; }, e => { window.__qaStorageReady = String(e); });
+      """.trimIndent())
+      awaitJavascriptFlag("__qaStorageReady")
+    }
+
+    fun assertPersistentStoresPresent(expected: Boolean) {
+      evaluate("""
+        window.__qaStorageChecked = false;
+        Promise.all([indexedDB.databases(), caches.keys(), navigator.serviceWorker.getRegistrations()])
+          .then(([databases, caches, workers]) => {
+            const states = [databases.some(d => d.name === 'norea-vpn-session-qa'),
+              caches.includes('norea-vpn-session-qa'), workers.some(w => w.active || w.waiting || w.installing)];
+            window.__qaStorageChecked = states.every(value => value === $expected) || JSON.stringify(states);
+          }, e => { window.__qaStorageChecked = String(e); });
+      """.trimIndent())
+      awaitJavascriptFlag("__qaStorageChecked")
     }
 
     fun cookieNames(): Set<String> {
@@ -388,10 +454,9 @@ class AndroidVpnSessionDeviceTest {
       Browser(fixture.origin, namespace).use { browser ->
         browser.seedCookies()
         assertTrue(browser.read("/first", extract).contains("blocked-/first"))
-        if (namespace != null) {
-          assertFalse("The worker sent its previous route's clearance cookie", fixture.requests.single().cookies.contains("cf_clearance="))
-          assertTrue(fixture.requests.single().cookies.contains("login_session=qa-login"))
-        }
+        assertTrue("Sharing a profile must not expire its cookies on source creation",
+          fixture.requests.single().cookies.contains("cf_clearance="))
+        assertTrue(fixture.requests.single().cookies.contains("login_session=qa-login"))
         assertTrue(browser.read("/second", extract).contains("blocked-/second"))
         assertTrue(browser.read("/first", extract).contains("blocked-/first"))
         assertEquals("The fixture must seed and reuse two HTTP cache entries: ${fixture.requests.map { it.path to it.cacheControl }}", 2, fixture.requests.size)
@@ -405,20 +470,20 @@ class AndroidVpnSessionDeviceTest {
         assertTrue(browser.cookieNames().containsAll(setOf("login_session", "cf_clearance")))
         fixture.fresh = true
         browser.reset()
-        assertSame("VPN reset must preserve the tab's session storage", before, browser.sourceView())
-        assertEquals("false", browser.evaluate("Boolean(window.__noreaOldChallenge)"))
         assertTrue(browser.read("/first", extract).contains("fresh-/first"))
+        assertTrue("Reconnect must retire the previous document before reopening the route", before !== browser.sourceView())
+        assertEquals("false", browser.evaluate("Boolean(window.__noreaOldChallenge)"))
         assertTrue(browser.read("/second", extract).contains("fresh-/second"))
         assertTrue(browser.read("/first", extract).contains("fresh-/first"))
         assertEquals("Two requested URLs refresh once; revisiting uses their updated cache", 4, fixture.requests.size)
         assertEquals(listOf("/first", "/second", "/first", "/second"), fixture.requests.map { it.path })
         fixture.requests.drop(2).forEach { request ->
           assertTrue("Login cookie was lost after route reset", request.cookies.contains("login_session=qa-login"))
-          assertFalse("Old route clearance survived the callback gate", request.cookies.contains("cf_clearance="))
+          assertTrue("Same-route reconnect must retain all cookies", request.cookies.contains("cf_clearance="))
         }
-        assertEquals(setOf("login_session"), browser.cookieNames())
+        assertEquals(setOf("login_session", "cf_clearance"), browser.cookieNames())
         assertEquals(
-          "\"retained|retained\"",
+          "\"retained|null\"",
           browser.evaluate("localStorage.getItem('norea-vpn-session-qa') + '|' + sessionStorage.getItem('norea-vpn-session-qa')"),
         )
       }
@@ -691,10 +756,79 @@ class AndroidVpnSessionDeviceTest {
   }
 
   @Test
-  fun routeChangeRefreshesCachedFetchesAndKeepsLoginAndSourceStorage() =
+  fun sameRouteReconnectRefreshesCachedFetchesAndKeepsAllCookiesAndPersistentStorage() =
     verifyRouteChange(extract = false, namespace = null)
 
   @Test
-  fun workerRouteChangeRefreshesCachedPagesAndKeepsLoginAndSourceStorage() =
+  fun sameRouteWorkerReconnectRefreshesPagesAndKeepsAllCookiesAndPersistentStorage() =
     verifyRouteChange(extract = true, namespace = "vpn-worker-qa-${UUID.randomUUID()}")
+  @Test
+  fun differentSourceViewsShareCookiesAndPersistentSiteData() {
+    Fixture().use { fixture ->
+      Browser(fixture.origin, null).use { browser ->
+        browser.seedCookies()
+        browser.read("/shared-source-one", extract = true)
+        val previous = browser.sourceView()
+        browser.evaluate("localStorage.setItem('norea-vpn-session-qa', 'shared')")
+        browser.seedPersistentStores()
+        browser.changeSource()
+        browser.read("/shared-source-two", extract = true)
+        assertTrue("Different source views must read the same persistent profile", previous !== browser.sourceView())
+        assertEquals("\"shared\"", browser.evaluate("localStorage.getItem('norea-vpn-session-qa')"))
+        browser.assertPersistentStoresPresent(true)
+        assertEquals(setOf("login_session", "cf_clearance"), browser.cookieNames())
+        assertTrue(fixture.requests.last().cookies.contains("login_session=qa-login"))
+        val sharedView = browser.sourceView()
+        instrumentation.runOnMainSync {
+          assertEquals(sharedSiteBrowserProfileName(), WebViewCompat.getProfile(sharedView).name)
+        }
+      }
+    }
+  }
+
+  @Test
+  fun actualRouteHashChangeClearsAllCookiesOnceButKeepsPersistentStorage() {
+    Fixture().use { fixture ->
+      Browser(fixture.origin, null).use { browser ->
+        browser.read("/before-route", extract = true)
+        browser.evaluate("localStorage.setItem('norea-vpn-session-qa', 'retained')")
+        browser.seedCookies()
+        browser.changeRoute("a".repeat(64))
+        assertTrue("Every cookie must expire before the next route can load", browser.cookieNames().isEmpty())
+        browser.read("/new-route", extract = true)
+        assertTrue(fixture.requests.last().cookies.isEmpty())
+        assertEquals("\"retained\"", browser.evaluate("localStorage.getItem('norea-vpn-session-qa')"))
+        browser.seedCookies()
+        browser.changeRoute("a".repeat(64))
+        assertEquals("An unchanged hash must not expire cookies", setOf("login_session", "cf_clearance"), browser.cookieNames())
+        browser.reset()
+        assertEquals("Reconnect must not expire cookies", setOf("login_session", "cf_clearance"), browser.cookieNames())
+        browser.changeRoute("b".repeat(64))
+        assertTrue(browser.cookieNames().isEmpty())
+        browser.seedCookies()
+        browser.changeRoute(null)
+        assertTrue("Explicit direct routing is a real route change", browser.cookieNames().isEmpty())
+      }
+    }
+  }
+
+  @Test
+  fun explicitSiteDataResetClearsSharedCookiesAndStorageBeforeTheNextLoad() {
+    Fixture().use { fixture ->
+      Browser(fixture.origin, null).use { browser ->
+        browser.read("/before-site-reset", extract = true)
+        browser.evaluate("localStorage.setItem('norea-vpn-session-qa', 'remove')")
+        browser.seedPersistentStores()
+        browser.assertPersistentStoresPresent(true)
+        browser.seedCookies()
+        browser.resetSiteData()
+        assertTrue(browser.cookieNames().isEmpty())
+        browser.read("/after-site-reset", extract = true)
+        assertEquals("null", browser.evaluate("localStorage.getItem('norea-vpn-session-qa')"))
+        browser.assertPersistentStoresPresent(false)
+        assertTrue(fixture.requests.last().cookies.isEmpty())
+      }
+    }
+  }
+
 }

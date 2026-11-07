@@ -46,7 +46,7 @@ describe("Android browser VPN diagnostics wiring", () => {
   it("uses the configured worker range and generation for an extraction failure", async () => {
     mocks.enabled = false;
     const worker = { rangeId: "range-transport", slot: 6, generation: 87 } as const;
-    await androidConfigureVpnDownloadWorker(worker, { sourceId: "source", profileId: "profile-a", proxyPort: 18080 });
+    await androidConfigureVpnDownloadWorker(worker, { sourceId: "source", profileId: "profile-a", profileHash: "a".repeat(64), proxyPort: 18080 });
     await expect(androidWebviewExtract("https://source.test/chapter", null, 1000, null, "source", "vpn:6:87"))
       .rejects.toMatchObject({ code: "plugin-vpn-transport", failure: dns });
     expect(requests.map(({ method }) => method)).toEqual(["configureWorker", "extract"]);

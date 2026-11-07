@@ -11,7 +11,7 @@ import org.junit.Test
 
 class AndroidVpnUrlTestPolicyTest {
   @Test
-  fun urlTestServiceRunsInItsOwnPrivateProcessApartFromDownloadWorkers() {
+  fun urlTestServiceUsesTheSharedMainProcessWithoutBecomingExported() {
     val root = generateSequence(File(".").canonicalFile) { it.parentFile }
       .first { File(it, "src-tauri/gen/android/app/src/main/AndroidManifest.xml").isFile }
     val document = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }.newDocumentBuilder()
@@ -21,8 +21,8 @@ class AndroidVpnUrlTestPolicyTest {
     val services = (0 until nodes.length).map { nodes.item(it) as org.w3c.dom.Element }
     val service = services.single { it.getAttributeNS(android, "name") == ".AndroidVpnUrlTestService" }
     assertEquals("false", service.getAttributeNS(android, "exported"))
-    assertEquals(ANDROID_VPN_URL_TEST_PROCESS, service.getAttributeNS(android, "process"))
-    assertEquals(1, services.count { it.getAttributeNS(android, "process") == ANDROID_VPN_URL_TEST_PROCESS })
+    assertEquals("", service.getAttributeNS(android, "process"))
+    assertEquals(0, services.count { it.getAttributeNS(android, "process") == ANDROID_VPN_URL_TEST_PROCESS })
     assertEquals("io.github.tinywind.norea.AndroidVpnUrlTestService", AndroidVpnUrlTestService::class.java.name)
   }
 

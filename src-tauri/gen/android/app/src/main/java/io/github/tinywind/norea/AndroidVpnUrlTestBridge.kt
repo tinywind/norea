@@ -12,7 +12,6 @@ import android.os.Looper
 import android.os.Message
 import android.os.Messenger
 import android.os.Process
-import android.os.SystemClock
 import androidx.annotation.Keep
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.CountDownLatch
@@ -20,17 +19,12 @@ import java.util.concurrent.TimeUnit
 import java.util.concurrent.TimeoutException
 import org.json.JSONObject
 
-private const val ANDROID_VPN_URL_TEST_SETUP_TIMEOUT_MS = 20_000L
-private const val ANDROID_VPN_URL_TEST_EXIT_TIMEOUT_MS = 5_000L
-// Covers several dead servers in a row (each up to a 20 s connect plus close) so a run keeps one browser process.
+private const val ANDROID_VPN_URL_TEST_SETUP_TIMEOUT_MS = 65_000L
+private const val ANDROID_VPN_URL_TEST_EXIT_TIMEOUT_MS = 70_000L
+// Keep the same-process service bound between pages of a URL-test run.
 private const val ANDROID_VPN_URL_TEST_IDLE_TIMEOUT_MS = 120_000L
 
-/**
- * Main-process side of VPN URL tests. Rust calls [load] from a blocking thread while its test
- * tunnel is up. The `:vpn_url_test` process is bound on the first load of a run and kept for the
- * following loads, because some Android builds refuse to start a process for an app that is not
- * in the foreground. It is released after an idle period, a cancel, or a failed load, and exits.
- */
+/** Rust calls [load] off the main thread; the shared browser owner serializes each test route. */
 @Keep
 object AndroidVpnUrlTestBridge {
   private class Test(
@@ -39,6 +33,8 @@ object AndroidVpnUrlTestBridge {
     val proxyPort: Int,
     val userAgent: String,
     val pageTimeoutMs: Int,
+    val profileHash: String,
+    val rotateFingerprintOnVpnChange: Boolean,
   ) {
     val result = CompletableFuture<String>()
     @Volatile var delivered = false
@@ -68,7 +64,6 @@ object AndroidVpnUrlTestBridge {
   // Main thread only.
   private var connection: Connection? = null
   private var current: Test? = null
-  @Volatile private var previousProcess: IBinder? = null
 
   init {
     System.loadLibrary("app_lib")
@@ -84,16 +79,18 @@ object AndroidVpnUrlTestBridge {
     register()
   }
 
-  /** Loads [url] once in the test browser process and returns what the load observed as JSON. */
+  /** Loads [url] once in the shared browser profile and returns what the load observed as JSON. */
   @Keep
   @JvmStatic
-  fun load(id: Long, url: String, proxyPort: Int, userAgent: String, pageTimeoutMs: Int): String {
+  fun load(
+    id: Long, url: String, proxyPort: Int, userAgent: String, pageTimeoutMs: Int,
+    profileHash: String, rotateFingerprintOnVpnChange: Boolean,
+  ): String {
     check(Looper.myLooper() != Looper.getMainLooper()) { "VPN URL tests must not block the main thread." }
     require(pageTimeoutMs in 1..ANDROID_VPN_URL_TEST_MAX_PAGE_TIMEOUT_MS) { "VPN URL test page timeout is invalid." }
     if (Build.VERSION.SDK_INT < 28) return failure("VPN URL tests require Android 9 or newer.")
     val context = checkNotNull(context) { "VPN URL test bridge is not started." }
-    if (!awaitPreviousProcessExit()) return failure("The previous VPN URL test browser is still closing.")
-    val test = Test(id, url, proxyPort, userAgent, pageTimeoutMs)
+    val test = Test(id, url, proxyPort, userAgent, pageTimeoutMs, profileHash, rotateFingerprintOnVpnChange)
     synchronized(lock) {
       if (id <= cancelledThrough) return cancelled()
       check(active == null) { "Another VPN URL test is running." }
@@ -107,10 +104,22 @@ object AndroidVpnUrlTestBridge {
         if (test.delivered) failure("The VPN URL test browser did not answer in time.") else browserUnavailable()
       }
     } finally {
-      synchronized(lock) { if (active === test) active = null }
       val settled = CountDownLatch(1)
-      handler.post { finish(test); settled.countDown() }
-      settled.await(ANDROID_VPN_URL_TEST_EXIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)
+      var cleanupFailure: Throwable? = null
+      handler.post {
+        finish(test) { result ->
+          cleanupFailure = result.exceptionOrNull()
+          settled.countDown()
+        }
+      }
+      try {
+        check(settled.await(ANDROID_VPN_URL_TEST_EXIT_TIMEOUT_MS, TimeUnit.MILLISECONDS)) {
+          "The VPN URL test browser did not finish closing its route."
+        }
+        cleanupFailure?.let { throw IllegalStateException("The VPN URL test browser route could not close.", it) }
+      } finally {
+        synchronized(lock) { if (active === test) active = null }
+      }
     }
   }
 
@@ -124,18 +133,6 @@ object AndroidVpnUrlTestBridge {
     }
     test?.cancelled = true
     test?.result?.complete(cancelled())
-  }
-
-  private fun awaitPreviousProcessExit(): Boolean {
-    val binder = previousProcess ?: return true
-    val deadline = SystemClock.elapsedRealtime() + ANDROID_VPN_URL_TEST_EXIT_TIMEOUT_MS
-    // isBinderAlive only changes on a death notice, and unbinding drops the framework's, so ping instead.
-    while (binder.pingBinder()) {
-      if (SystemClock.elapsedRealtime() >= deadline) return false
-      Thread.sleep(50)
-    }
-    previousProcess = null
-    return true
   }
 
   private fun begin(context: Context, test: Test) {
@@ -185,6 +182,8 @@ object AndroidVpnUrlTestBridge {
         putInt("proxyPort", test.proxyPort)
         putString("userAgent", test.userAgent)
         putInt("pageTimeoutMs", test.pageTimeoutMs)
+        putString("profileHash", test.profileHash)
+        putBoolean("rotateFingerprintOnVpnChange", test.rotateFingerprintOnVpnChange)
       }
     }
     runCatching { remote.send(message) }
@@ -208,13 +207,19 @@ object AndroidVpnUrlTestBridge {
     release(lost)
   }
 
-  private fun finish(test: Test) {
+  private fun finish(test: Test, done: (Result<Unit>) -> Unit) {
     if (current === test) current = null
-    val bound = connection ?: return
-    if (androidVpnUrlTestKeepsBrowser(test.answered, test.cancelled)) {
+    val bound = connection
+    if (bound != null && androidVpnUrlTestKeepsBrowser(test.answered, test.cancelled)) {
       handler.postDelayed(idle, ANDROID_VPN_URL_TEST_IDLE_TIMEOUT_MS)
+      done(Result.success(Unit))
     } else {
-      release(bound)
+      // Rust keeps the test proxy alive until this callback returns. Stop its
+      // document and drain the route before unbinding the same-process service.
+      AndroidVpnUrlTestService.stopLoad(test.id) { result ->
+        if (bound != null) release(bound)
+        done(result)
+      }
     }
   }
 
@@ -223,7 +228,6 @@ object AndroidVpnUrlTestBridge {
     if (connection === bound) connection = null
     if (!bound.bound) return
     bound.bound = false
-    bound.binder?.let { previousProcess = it }
     runCatching { context?.unbindService(bound) }
   }
 

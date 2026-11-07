@@ -9,6 +9,7 @@ import {
 import { androidBridgeAuthority } from "./android-bridge";
 import { isAndroidRuntime } from "./tauri-runtime";
 import { usePluginVpnStore } from "../store/plugin-vpn";
+import { getDownloadRecoveryPolicy } from "../store/download-recovery";
 import { isNetworkOnline, withNetworkRequest } from "./network";
 import { resetPluginVpnBrowserSession } from "./plugin-vpn-browser-session";
 import { cancelAutomaticPluginVpnCandidateTests } from "./plugin-vpn-automatic";
@@ -175,10 +176,7 @@ function trackPluginVpnConnection(
 }
 
 export async function preparePluginVpnProfileChange(): Promise<void> {
-  clearPluginVpnIntent();
-  await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: false });
-  await resetPluginVpnBrowserSession();
-  notifyProfileRelease();
+  await disconnectPluginVpn();
 }
 
 export function getPluginVpnStatus(): Promise<PluginVpnStatus> {
@@ -342,7 +340,7 @@ export async function configureAndroidPluginVpnProxy(
   if (!Number.isInteger(status.proxyPort) || status.proxyPort < 1 || status.proxyPort > 65_535) {
     throw new Error("Plugin VPN proxy port is invalid.");
   }
-  const bridge = window.__NoreaAndroidVpn;
+  const bridge = typeof window === "undefined" ? undefined : window.__NoreaAndroidVpn;
   if (!bridge) {
     throw new Error("Android plugin VPN proxy bridge is unavailable.");
   }
@@ -355,6 +353,12 @@ export async function configureAndroidPluginVpnProxy(
         JSON.stringify({
           _bridge: authority,
           port: status.proxyPort,
+          ...(status.phase === "connected" && status.profile
+            ? { profileHash: status.profile.hash }
+            : status.phase === "disabled" && !usePluginVpnStore.getState().enabled
+              ? { profileHash: null }
+              : {}),
+          rotateFingerprintOnVpnChange: getDownloadRecoveryPolicy().rotateFingerprintOnVpnChange,
         }),
       ),
     ) as AndroidVpnProxyResult;
@@ -442,6 +446,8 @@ function startPluginVpnConnection(
     (async () => {
       try {
         if (disconnectExisting) {
+          await resetPluginVpnBrowserSession();
+          if (!current()) return null;
           await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: true });
         }
         if (!current()) return null;
@@ -487,6 +493,13 @@ async function establishPluginVpnConnection(
     if (status.error) throw new Error(status.error);
     throw new PluginVpnConnectionNotEstablishedError();
   }
+  try {
+    await configureAndroidPluginVpnProxy(status);
+  } catch (error) {
+    if (isCurrent()) await cancelFailedPluginVpnConnection();
+    throw error;
+  }
+  if (!isCurrent()) return null;
   if (status.profile) recordPluginVpnProfileSuccess(status.profile.hash);
   return status;
 }
@@ -501,7 +514,7 @@ async function cancelFailedPluginVpnConnection(): Promise<void> {
   }
 }
 
-export function disconnectPluginVpn(
+export async function disconnectPluginVpn(
   preserveBlock = false,
 ): Promise<PluginVpnStatus> {
   if (preserveBlock) {
@@ -514,11 +527,13 @@ export function disconnectPluginVpn(
     }
   }
   const probesStopped = preserveBlock ? Promise.resolve() : cancelAutomaticPluginVpnCandidateTests();
-  return Promise.all([invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock }), probesStopped]).then(async ([status]) => {
-    if (!preserveBlock) await resetPluginVpnBrowserSession();
-    if (!profileReplacementPending) notifyProfileRelease();
-    return status;
-  });
+  // Stop pages and drain the previous route before native can expose a new one.
+  await probesStopped;
+  await resetPluginVpnBrowserSession();
+  const status = await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock });
+  if (!preserveBlock) await configureAndroidPluginVpnProxy(status);
+  if (!profileReplacementPending) notifyProfileRelease();
+  return status;
 }
 
 export async function removePluginVpnProfile(): Promise<PluginVpnStatus> {
@@ -537,6 +552,8 @@ export async function replacePluginVpnRecoveryProfile(profile: { id: string; has
   if (!current() || connectionAttempt || activeProfileSwitches > 0 || profileReplacementPending) return false;
   activeProfileSwitches += 1;
   try {
+    await resetPluginVpnBrowserSession();
+    if (!current()) return false;
     await invoke<PluginVpnStatus>("plugin_vpn_disconnect", { preserveBlock: true });
     if (!current()) return false;
     await invoke<PluginVpnStatus>("plugin_vpn_apply_saved_profile", { id: profile.id, expectedHash: profile.hash });

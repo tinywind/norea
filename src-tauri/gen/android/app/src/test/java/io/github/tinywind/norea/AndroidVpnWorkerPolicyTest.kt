@@ -13,10 +13,10 @@ import org.junit.Test
 
 class AndroidVpnWorkerPolicyTest {
   private fun configuration(generation: Long = 1, source: String = "source", profile: String = "profile") =
-    AndroidVpnWorkerConfiguration(0, generation, source, profile, 18080)
+    AndroidVpnWorkerConfiguration(0, generation, source, profile, 18080, "a".repeat(64))
 
   @Test
-  fun everyWorkerSlotRegistersItsOwnPrivateServiceAndManualActivityProcess() {
+  fun everyWorkerSlotUsesTheSharedMainProcessForItsPrivateServiceAndManualActivity() {
     val root = generateSequence(File(".").canonicalFile) { it.parentFile }
       .first { File(it, "src-tauri/gen/android/app/src/main/AndroidManifest.xml").isFile }
     val document = DocumentBuilderFactory.newInstance().apply { isNamespaceAware = true }.newDocumentBuilder()
@@ -30,13 +30,13 @@ class AndroidVpnWorkerPolicyTest {
         val element = (0 until nodes.length).map { nodes.item(it) as org.w3c.dom.Element }
           .single { it.getAttributeNS(android, "name") == name }
         assertEquals("false", element.getAttributeNS(android, "exported"))
-        assertEquals(":vpn_download_$slot", element.getAttributeNS(android, "process"))
+        assertEquals("", element.getAttributeNS(android, "process"))
         val component = if (kind == "service") androidVpnDownloadWorkerServiceClass(slot) else androidVpnDownloadWorkerActivityClass(slot)
         assertEquals("io.github.tinywind.norea$name", component.name)
         processes.add(element.getAttributeNS(android, "process"))
       }
     }
-    assertEquals(10, processes.size)
+    assertEquals(setOf(""), processes)
   }
 
   @Test
@@ -52,26 +52,26 @@ class AndroidVpnWorkerPolicyTest {
 
   @Test
   fun validatesConfigurationWithoutCoercingStringsFloatsOrIdentityWhitespace() {
-    assertEquals(configuration(), androidVpnWorkerConfiguration(0, 1L, "source", "profile", 18080))
-    assertEquals(" profile ", androidVpnWorkerConfiguration(0, 1L, " source ", " profile ", 1).profileId)
-    assertEquals(9, androidVpnWorkerConfiguration(9, 1L, "source", "profile", 1).slot)
+    assertEquals(configuration(), androidVpnWorkerConfiguration(0, 1L, "source", "profile", 18080, "a".repeat(64)))
+    assertEquals(" profile ", androidVpnWorkerConfiguration(0, 1L, " source ", " profile ", 1, "a".repeat(64)).profileId)
+    assertEquals(9, androidVpnWorkerConfiguration(9, 1L, "source", "profile", 1, "a".repeat(64)).slot)
     for (slot in listOf<Any?>(10, -1, "0", 0.0, null)) {
-      assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(slot, 1L, "source", "profile", 1) }
+      assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(slot, 1L, "source", "profile", 1, "a".repeat(64)) }
     }
     for (generation in listOf<Any?>(0, -1, "1", 1.0, 9_007_199_254_740_992L)) {
-      assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(0, generation, "source", "profile", 1) }
+      assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(0, generation, "source", "profile", 1, "a".repeat(64)) }
     }
     for (identity in listOf("", " ", "a".repeat(513), "\u00e9".repeat(257))) {
-      assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(0, 1, identity, "profile", 1) }
-      assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(0, 1, "source", identity, 1) }
+      assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(0, 1, identity, "profile", 1, "a".repeat(64)) }
+      assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(0, 1, "source", identity, 1, "a".repeat(64)) }
     }
     for (port in listOf<Any?>(0, 65536, "80", 80.0, null)) {
-      assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(0, 1, "source", "profile", port) }
+      assertThrows(IllegalArgumentException::class.java) { androidVpnWorkerConfiguration(0, 1, "source", "profile", port, "a".repeat(64)) }
     }
   }
 
   @Test
-  fun profileKeysSeparateExactProfileAndSourcePairsWithoutChangingDefaultNames() {
+  fun legacyProfileKeysRemainStableForTheOneTimeSharedProfileAdoption() {
     assertEquals("norea-source-41cf6794ba4200b839c53531555f0f3998df4cbb01a4d5cb0b94e3ca5e23947d", androidScraperProfileName("source"))
     assertNotEquals(androidScraperProfileName("source"), androidScraperProfileName("source", "profile"))
     assertNotEquals(androidScraperProfileName("source", "profile"), androidScraperProfileName("source", "profile "))
@@ -230,7 +230,7 @@ class AndroidVpnWorkerPolicyTest {
   fun browserHiddenEventIdentifiesTheExactWorkerAndSourceWithoutProfileData() {
     assertEquals(
       mapOf("queue" to "vpn:1:42", "sourceId" to " source "),
-      androidVpnWorkerBrowserHiddenDetail(AndroidVpnWorkerConfiguration(1, 42, " source ", "private-profile-id", 18081)),
+      androidVpnWorkerBrowserHiddenDetail(AndroidVpnWorkerConfiguration(1, 42, " source ", "private-profile-id", 18081, "a".repeat(64))),
     )
   }
 
@@ -255,7 +255,7 @@ class AndroidVpnWorkerPolicyTest {
   @Test
   fun capabilityResultRequiresApi28AndBothWebViewFeatures() {
     val unsupported = mapOf("supported" to false, "parallelSupported" to false, "maxWorkers" to 0)
-    val supported = mapOf("supported" to true, "parallelSupported" to true, "maxWorkers" to 10)
+    val supported = mapOf("supported" to true, "parallelSupported" to false, "maxWorkers" to 1)
     assertEquals(unsupported, androidVpnWorkerCapabilities(27, true, true))
     assertEquals(unsupported, androidVpnWorkerCapabilities(28, false, true))
     assertEquals(unsupported, androidVpnWorkerCapabilities(28, true, false))

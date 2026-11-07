@@ -36,7 +36,7 @@ describe("source UI transport isolation", () => {
     ["Android", "source.refreshNovel", "immediate"],
     ["Windows", "source.globalSearch", "search:0"],
     ["Android", "source.globalSearch", "search:0"],
-  ] as const)("sends %s %s while a download remains in flight", async (platform, kind, executor) => {
+  ] as const)("dispatches %s %s according to the platform browser ownership policy", async (platform, kind, executor) => {
     const android = platform === "Android";
     vi.mocked(isAndroidRuntime).mockReturnValue(android);
     vi.mocked(isWindowsRuntime).mockReturnValue(!android);
@@ -93,12 +93,20 @@ describe("source UI transport isolation", () => {
     void ui.promise.catch(() => undefined);
     try {
       await vi.advanceTimersByTimeAsync(0);
+      if (android) {
+        // Android has one shared-profile dispatch lease across all source queues.
+        expect(requests).toEqual([{ url: downloadUrl, queue: "pool:0" }]);
+        expect(scheduler.getTask(download.id)?.status).toBe("running");
+        releaseDownload();
+        await download.promise;
+        await vi.advanceTimersByTimeAsync(0);
+      }
       expect(requests).toEqual([
         { url: downloadUrl, queue: "pool:0" },
         { url: uiUrl, queue: executor },
       ]);
       await expect(ui.promise).resolves.toBe("source response");
-      expect(scheduler.getTask(download.id)?.status).toBe("running");
+      if (!android) expect(scheduler.getTask(download.id)?.status).toBe("running");
     } finally {
       releaseDownload();
       await download.promise;

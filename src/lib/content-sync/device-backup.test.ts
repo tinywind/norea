@@ -78,10 +78,14 @@ it("does not send data to a server without the backup capability", async () => {
 it("backs up all settings including source, server and VPN configuration with the complete native snapshot", async () => {
   mocks.values.set("plugin-v2:source", "source-settings");
   mocks.values.set("plugin-vpn-settings", "VPN-enabled");
+  mocks.values.set("download-recovery-settings", '{"state":{"forbiddenAction":"retry","rotateFingerprintOnVpnChange":true}}');
   mocks.values.set("norea-content-device:http://server", "credential");
   expect(await uploadDeviceBackup("http://server")).toEqual(entry);
   expect(mocks.invoke).toHaveBeenCalledWith("device_backup_create", {
     deviceName: entry.deviceName, settings: readDeviceSettings(),
+  });
+  expect(readDeviceSettings()).toContainEqual({
+    key: "download-recovery-settings", value: '{"state":{"forbiddenAction":"retry","rotateFingerprintOnVpnChange":true}}',
   });
   expect(mocks.exclusive).toHaveBeenCalledWith(expect.any(Function), { publishMetadata: false });
   expect(mocks.invoke).toHaveBeenCalledWith("device_backup_cleanup", { path: file.path });

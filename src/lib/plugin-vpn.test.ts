@@ -34,6 +34,7 @@ import {
 } from "./android-storage";
 import { isAndroidRuntime } from "./tauri-runtime";
 import { usePluginVpnStore } from "../store/plugin-vpn";
+import { useDownloadRecoveryStore } from "../store/download-recovery";
 import { useNetworkStore, NetworkUnavailableError } from "./network";
 import {
   applyPluginVpnFinderProfile,
@@ -41,7 +42,6 @@ import {
   configureAndroidPluginVpnProxy,
   connectPluginVpn,
   disconnectPluginVpn,
-  ensureAndroidPluginVpnProxy,
   importPluginVpnProfile,
   isPluginVpnRecoveryStopped,
   loadPluginVpnFinderServers,
@@ -116,8 +116,20 @@ const SESSION_CREDENTIALS: PluginVpnCredentials = {
   username: "reader",
 };
 
+function stubAndroidProxy() {
+  const configure = vi.fn((_payload: string) => JSON.stringify({ ok: true }));
+  vi.stubGlobal("window", Object.assign(new EventTarget(), {
+    __NoreaAndroidBridge: {
+      nonce: () => "nonce-123",
+      session: () => JSON.stringify({ capabilities: ["vpn.proxy.configure"], sessionToken: "session-token" }),
+    },
+    __NoreaAndroidVpn: { configure },
+  }));
+  return configure;
+}
+
 describe("plugin VPN", () => {
-  it("keeps connection publication behind selective browser cleanup", async () => {
+  it("keeps connection publication behind browser quiescence", async () => {
     let release!: () => void;
     vi.mocked(resetPluginVpnBrowserSession).mockImplementationOnce(() => new Promise(resolve => { release = resolve; }));
     invokeMock.mockResolvedValue(CONNECTED_STATUS);
@@ -128,6 +140,8 @@ describe("plugin VPN", () => {
     await expect(connecting).resolves.toEqual(CONNECTED_STATUS);
   });
   beforeEach(async () => {
+    isAndroidRuntimeMock.mockReturnValue(false);
+    useDownloadRecoveryStore.setState({ rotateFingerprintOnVpnChange: false });
     useNetworkStore.setState({ connectivity: "online", revision: 1 });
     invokeMock.mockResolvedValue(STATUS);
     await disconnectPluginVpn();
@@ -435,6 +449,7 @@ describe("plugin VPN", () => {
     let finishDisconnect!: (status: PluginVpnStatus) => void;
     invokeMock.mockImplementationOnce(() => new Promise((resolve) => { finishDisconnect = resolve; }));
     const connection = connectPluginVpn(SESSION_CREDENTIALS);
+    await vi.waitFor(() => expect(finishDisconnect).toBeTypeOf("function"));
     await disconnectPluginVpn();
     finishDisconnect(STATUS);
 
@@ -512,10 +527,51 @@ describe("plugin VPN", () => {
         sessionToken: "session-token",
       },
       port: 43127,
+      profileHash: null,
+      rotateFingerprintOnVpnChange: false,
     });
   });
 
+  it("publishes only committed route identities and the current fingerprint policy", async () => {
+    isAndroidRuntimeMock.mockReturnValue(true);
+    const configure = stubAndroidProxy();
+    useDownloadRecoveryStore.setState({ rotateFingerprintOnVpnChange: true });
+    usePluginVpnStore.getState().setEnabled(true);
+    for (const phase of ["connecting", "reconnecting", "error", "disabled"] as const) {
+      await configureAndroidPluginVpnProxy({ ...STATUS, phase });
+      const payload = JSON.parse(configure.mock.calls.at(-1)![0]);
+      expect(payload).not.toHaveProperty("profileHash");
+      expect(payload.rotateFingerprintOnVpnChange).toBe(true);
+    }
+    await configureAndroidPluginVpnProxy(CONNECTED_STATUS);
+    expect(JSON.parse(configure.mock.calls.at(-1)![0]).profileHash).toBe(STATUS.profile!.hash);
+    usePluginVpnStore.getState().setEnabled(false);
+    await configureAndroidPluginVpnProxy(STATUS);
+    expect(JSON.parse(configure.mock.calls.at(-1)![0]).profileHash).toBeNull();
+  });
+
+  it("quiesces the browser before explicit Off changes the native route", async () => {
+    const order: string[] = [];
+    vi.mocked(resetPluginVpnBrowserSession).mockImplementationOnce(async () => { order.push("quiesce"); });
+    invokeMock.mockImplementationOnce(async () => { order.push("disconnect"); return STATUS; });
+    await disconnectPluginVpn();
+    expect(order).toEqual(["quiesce", "disconnect"]);
+  });
+
+  it("does not publish a connected session if cookie and environment preparation fails", async () => {
+    isAndroidRuntimeMock.mockReturnValue(true);
+    const configure = stubAndroidProxy();
+    configure.mockImplementation(payload => JSON.stringify(
+      JSON.parse(payload).profileHash ? { ok: false, error: "Cookie transition failed" } : { ok: true },
+    ));
+    invokeMock.mockImplementation(async command => command === "plugin_vpn_connect" ? CONNECTED_STATUS : STATUS);
+    await expect(connectPluginVpn(EMPTY_CREDENTIALS)).rejects.toThrow("Cookie transition failed");
+    expect(invokeMock).toHaveBeenLastCalledWith("plugin_vpn_disconnect", { preserveBlock: true });
+    expect(usePluginVpnStore.getState().enabled).toBe(true);
+  });
+
   it("imports Android content profiles through a capped temp file and cleans it", async () => {
+    stubAndroidProxy();
     isAndroidRuntimeMock.mockReturnValue(true);
     openMock.mockResolvedValue("content://profiles/client.ovpn");
     copyAndroidContentUriToTempFileMock.mockResolvedValue({
@@ -988,13 +1044,15 @@ describe("plugin VPN", () => {
   });
 
   it("fails closed until the Android proxy is configured and retries failures", async () => {
+    vi.resetModules();
+    const { ensureAndroidPluginVpnProxy: ensureFreshProxy, connectPluginVpn: connectFreshVpn } = await import("./plugin-vpn");
     isAndroidRuntimeMock.mockReturnValue(true);
     const configure = vi
       .fn()
       .mockReturnValueOnce(
         JSON.stringify({ error: "proxy setup failed", ok: false }),
       )
-      .mockReturnValueOnce(JSON.stringify({ ok: true }));
+      .mockReturnValue(JSON.stringify({ ok: true }));
     vi.stubGlobal("window", {
       __NoreaAndroidBridge: {
         nonce: vi.fn(() => "nonce-123"),
@@ -1008,7 +1066,7 @@ describe("plugin VPN", () => {
       __NoreaAndroidVpn: { configure },
     });
 
-    await expect(ensureAndroidPluginVpnProxy()).rejects.toThrow(
+    await expect(ensureFreshProxy()).rejects.toThrow(
       "proxy setup failed",
     );
     expect(invokeMock.mock.calls.map(([command]) => command)).toEqual([
@@ -1024,7 +1082,7 @@ describe("plugin VPN", () => {
     invokeMock
       .mockResolvedValueOnce(STATUS)
       .mockResolvedValueOnce(CONNECTED_STATUS);
-    await expect(connectPluginVpn(credentials)).resolves.toEqual(
+    await expect(connectFreshVpn(credentials)).resolves.toEqual(
       CONNECTED_STATUS,
     );
 

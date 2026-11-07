@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { usePluginVpnUrlTestStore } from "../store/plugin-vpn-url-test";
 import { useUserAgentStore } from "../store/user-agent";
+import { getDownloadRecoveryPolicy } from "../store/download-recovery";
 import { describeError } from "./errors";
 
 /** The profile a URL test connects with, identified as each list shows it. */
@@ -60,12 +61,13 @@ function testPluginVpnProfileUrl(
     profile,
     url,
     userAgent: useUserAgentStore.getState().userAgent,
+    rotateFingerprintOnVpnChange: getDownloadRecoveryPolicy().rotateFingerprintOnVpnChange,
   });
 }
 
 /**
  * Tests each target in turn: one separate test tunnel and one page load in
- * the isolated test browser per host, never two at once and never retried.
+ * the shared site browser per host, never two at once and never retried.
  * Duplicate hosts are tested once. A run already in progress makes this a
  * no-op that returns false.
  */

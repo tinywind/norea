@@ -1,7 +1,6 @@
 package io.github.tinywind.norea
 
 import android.annotation.SuppressLint
-import android.app.Application
 import android.app.Service
 import android.content.Context
 import android.content.Intent
@@ -24,54 +23,34 @@ import android.webkit.WebResourceRequest
 import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import android.webkit.WebViewClient
-import androidx.webkit.ProfileStore
 import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
-import java.util.UUID
-import java.util.concurrent.Executors
 import org.json.JSONObject
 
 private const val TAG = "NoreaVpnUrlTest"
 
-internal object AndroidVpnUrlTestProcess {
-  private var initialized = false
-
-  @Synchronized
-  fun initialize() {
-    check(Build.VERSION.SDK_INT >= 28) { "VPN URL tests require Android 9 or newer." }
-    check(Application.getProcessName().endsWith(ANDROID_VPN_URL_TEST_PROCESS)) { "VPN URL test process is invalid." }
-    if (initialized) return
-    // A separate data directory keeps this WebView from sharing cookies or storage with the app,
-    // the scrapers, and the VPN download workers.
-    WebView.setDataDirectorySuffix(ANDROID_VPN_URL_TEST_DATA_DIRECTORY_SUFFIX)
-    initialized = true
-  }
-}
-
-/**
- * Loads URL test pages one at a time in the private `:vpn_url_test` process, through the test
- * tunnel's local proxy. A run uses one new WebView profile whose cookies, storage and cache are
- * cleared before every load, and every load gets a new WebView, destroyed when the load ends. An
- * idle WebView in that profile keeps its renderer process alive between loads: some Android builds
- * refuse to start a renderer for an app that is not in the foreground. The process serves a whole
- * run and exits when the main process unbinds it.
- */
+/** Uses the same main-process profile and exclusive route lease as all source browsers. */
 class AndroidVpnUrlTestService : Service() {
+  companion object {
+    private var instance: AndroidVpnUrlTestService? = null
+
+    internal fun stopLoad(ticket: Long, done: (Result<Unit>) -> Unit) {
+      val service = instance
+      if (service == null) AndroidSiteBrowserOwner.release("url-test:$ticket", done)
+      else service.stopOwnedLoad(ticket, done)
+    }
+  }
   private val handler = Handler(Looper.getMainLooper())
-  private val proxyExecutor = Executors.newSingleThreadExecutor()
   private val messenger = Messenger(Handler(Looper.getMainLooper()) { message -> receive(message); true })
-  private val createdProfiles = mutableListOf<String>()
-  private var runProfile: String? = null
-  private var rendererKeeper: WebView? = null
   private var page: AndroidVpnUrlTestPage? = null
   private var loading = false
-  private var earlierProfilesDeleted = false
-  private var proxyPort: Int? = null
   private var destroyed = false
+  private var browserOwner: String? = null
 
   override fun onCreate() {
-    AndroidVpnUrlTestProcess.initialize()
     super.onCreate()
+    AndroidSiteBrowserOwner.initialize(this)
+    instance = this
   }
 
   override fun onBind(intent: Intent?): IBinder = messenger.binder
@@ -80,14 +59,26 @@ class AndroidVpnUrlTestService : Service() {
     destroyed = true
     page?.close()
     page = null
-    rendererKeeper?.destroy()
-    rendererKeeper = null
-    proxyExecutor.shutdownNow()
+    browserOwner?.let { AndroidSiteBrowserOwner.release(it) }
+    browserOwner = null
     handler.removeCallbacksAndMessages(null)
-    deleteCreatedProfiles()
+    if (instance === this) instance = null
     super.onDestroy()
-    // Profiles that stay loaded until the process exits are deleted by the next test process.
-    Process.killProcess(Process.myPid())
+  }
+
+  private fun stopOwnedLoad(ticket: Long, done: (Result<Unit>) -> Unit) {
+    val owner = "url-test:$ticket"
+    if (browserOwner == owner) {
+      page?.close()
+      page = null
+    }
+    AndroidSiteBrowserOwner.release(owner) { result ->
+      if (browserOwner == owner) {
+        browserOwner = null
+        loading = false
+      }
+      done(result)
+    }
   }
 
   private fun receive(message: Message) {
@@ -101,114 +92,51 @@ class AndroidVpnUrlTestService : Service() {
     }
     val request = runCatching {
       val url = checkNotNull(data.getString("url")) { "VPN URL test address is missing." }
+      androidVpnWorkerAppOrigin(url)
       val port = data.getInt("proxyPort")
+      androidVpnLoopbackProxyUrl(port)
       val timeoutMs = data.getInt("pageTimeoutMs")
       require(timeoutMs in 1..ANDROID_VPN_URL_TEST_MAX_PAGE_TIMEOUT_MS) { "VPN URL test page timeout is invalid." }
-      prepareProfiles()
-      AndroidVpnUrlTestRequest(url, port, data.getString("userAgent").orEmpty(), timeoutMs.toLong())
+      val hash = checkNotNull(siteBrowserProfileHash(data.getString("profileHash"))) { "VPN URL test profile hash is missing." }
+      AndroidVpnUrlTestRequest(url, port, data.getString("userAgent").orEmpty(), timeoutMs.toLong(), hash,
+        data.getBoolean("rotateFingerprintOnVpnChange", false))
     }.getOrElse { error ->
       send(reply, ticket, androidVpnUrlTestFailure(error.message ?: "VPN URL test browser could not start."))
       return
     }
     loading = true
+    val owner = "url-test:$ticket"
+    browserOwner = owner
     val done: (JSONObject) -> Unit = { observation ->
-      loading = false
       page = null
-      send(reply, ticket, observation)
-    }
-    // The proxy override is process-wide and the tester keeps one local proxy, so it is applied once.
-    if (proxyPort == request.proxyPort) {
-      load(request, done)
-      return
-    }
-    proxyExecutor.execute {
-      val proxy = runCatching { configureAndroidVpnWebViewProxy(request.proxyPort) }
-      handler.post {
-        if (destroyed) return@post
-        proxy.fold(
-          onSuccess = {
-            proxyPort = request.proxyPort
-            load(request, done)
-          },
-          onFailure = { error -> done(androidVpnUrlTestFailure(error.message ?: "VPN URL test proxy configuration failed.")) },
-        )
+      AndroidSiteBrowserOwner.release(owner) { released ->
+        loading = false
+        if (browserOwner == owner) browserOwner = null
+        if (!destroyed) send(reply, ticket, released.fold({ observation }, {
+          androidVpnUrlTestFailure(it.message ?: "The previous browser route could not be restored.")
+        }))
       }
     }
-  }
-
-  private fun load(request: AndroidVpnUrlTestRequest, done: (JSONObject) -> Unit) {
-    val fail = { error: Throwable ->
-      page?.close()
-      done(androidVpnUrlTestFailure(error.message ?: "VPN URL test browser could not load the page."))
-    }
-    val profileName = runCatching { runProfile ?: createEmptyProfile().also(::startRun) }.getOrElse { error -> fail(error); return }
-    clearProfile(profileName) { cleared ->
-      if (destroyed) return@clearProfile
-      cleared.mapCatching { AndroidVpnUrlTestPage(this, request, profileName, done).also { page = it }.start() }
-        .onFailure(fail)
-    }
-  }
-
-  private fun startRun(profileName: String) {
-    runProfile = profileName
-    rendererKeeper = WebView(this).also { view ->
-      WebViewCompat.setProfile(view, profileName)
-      view.loadUrl("about:blank")
-    }
-  }
-
-  /** Removes what earlier loads of the run left in the profile, so each tunnel starts empty. */
-  private fun clearProfile(profileName: String, then: (Result<Unit>) -> Unit) {
-    val profile = runCatching { checkNotNull(ProfileStore.getInstance().getProfile(profileName)) { "VPN URL test profile is missing." } }
-      .getOrElse { error -> then(Result.failure(error)); return }
-    profile.webStorage.deleteAllData()
-    profile.cookieManager.removeAllCookies {
-      then(runCatching { check(!profile.cookieManager.hasCookies()) { "VPN URL test profile cookies could not be cleared." } })
-    }
-  }
-
-  private fun prepareProfiles() {
-    check(WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) { "VPN URL tests require WebView multi-profile support." }
-    check(WebViewFeature.isFeatureSupported(WebViewFeature.PROXY_OVERRIDE)) { "VPN URL tests require WebView proxy override support." }
-    val store = ProfileStore.getInstance()
-    if (earlierProfilesDeleted) return
-    // Profiles of an earlier test process are no longer loaded, so they can be deleted now.
-    val earlier = store.allProfileNames.filter(::isAndroidVpnUrlTestProfile)
-    val failures = earlier.mapNotNull { name -> runCatching { store.deleteProfile(name) }.exceptionOrNull() }
-    if (failures.isNotEmpty()) {
-      AppLog.w(TAG, "Could not delete ${failures.size} of ${earlier.size} earlier VPN URL test profiles", failures.first())
-    }
-    earlierProfilesDeleted = true
-  }
-
-  /** A profile no earlier load used, created after the proxy override is in place. */
-  private fun createEmptyProfile(): String {
-    val store = ProfileStore.getInstance()
-    val name = androidVpnUrlTestProfileName(UUID.randomUUID().toString())
-    check(store.getProfile(name) == null) { "VPN URL test profile already exists." }
-    val profile = store.getOrCreateProfile(name)
-    createdProfiles.add(name)
-    check(!profile.cookieManager.hasCookies()) { "VPN URL test profile did not start empty." }
-    return name
-  }
-
-  /** Best effort: WebView may keep a profile loaded until the process exits. */
-  private fun deleteCreatedProfiles() {
-    if (createdProfiles.isEmpty()) return
-    val failures = runCatching {
-      val store = ProfileStore.getInstance()
-      createdProfiles.mapNotNull { name -> runCatching { store.deleteProfile(name) }.exceptionOrNull() }
-    }.getOrElse { error -> createdProfiles.map { error } }
-    if (failures.isEmpty()) {
-      AppLog.d(TAG, "Deleted ${createdProfiles.size} VPN URL test profiles when the run ended")
-    } else {
-      AppLog.w(
-        TAG,
-        "Could not delete ${failures.size} of ${createdProfiles.size} VPN URL test profiles when the run ended; the next test process deletes them",
-        failures.first(),
+    AndroidSiteBrowserOwner.acquire(owner, request.profileHash, request.proxyPort, request.rotateFingerprintOnVpnChange) { result ->
+      if (destroyed) {
+        AndroidSiteBrowserOwner.release(owner)
+        return@acquire
+      }
+      result.fold(
+        onSuccess = {
+          runCatching { AndroidVpnUrlTestPage(this, request, owner, done).also { page = it }.start() }
+            .onFailure { error ->
+              page?.close()
+              done(androidVpnUrlTestFailure(error.message ?: "VPN URL test browser could not load the page."))
+            }
+        },
+        onFailure = { error ->
+          loading = false
+          browserOwner = null
+          send(reply, ticket, androidVpnUrlTestFailure(error.message ?: "VPN URL test browser route is unavailable."))
+        },
       )
     }
-    createdProfiles.clear()
   }
 
   private fun send(reply: Messenger, ticket: Long, observation: JSONObject) {
@@ -230,13 +158,15 @@ private class AndroidVpnUrlTestRequest(
   val proxyPort: Int,
   val userAgent: String,
   val timeoutMs: Long,
+  val profileHash: String,
+  val rotateFingerprintOnVpnChange: Boolean,
 )
 
 /** One page load: the requested URL and its server redirects, observed until the page finishes. */
 private class AndroidVpnUrlTestPage(
   private val context: Context,
   private val test: AndroidVpnUrlTestRequest,
-  private val profileName: String,
+  private val browserOwner: String,
   private val onResult: (JSONObject) -> Unit,
 ) {
   private val handler = Handler(Looper.getMainLooper())
@@ -254,7 +184,7 @@ private class AndroidVpnUrlTestPage(
   @SuppressLint("SetJavaScriptEnabled")
   fun start() {
     val view = WebView(context)
-    WebViewCompat.setProfile(view, profileName)
+    WebViewCompat.setProfile(view, sharedSiteBrowserProfileName())
     webView = view
     view.settings.apply {
       javaScriptEnabled = true
@@ -263,8 +193,9 @@ private class AndroidVpnUrlTestPage(
       allowContentAccess = false
       // Safe Browsing lookups would add requests through the test tunnel.
       safeBrowsingEnabled = false
-      if (test.userAgent.isNotEmpty()) userAgentString = test.userAgent
     }
+    AndroidBrowserEnvironment.apply(view, test.userAgent)
+    AndroidSiteBrowserOwner.registerView(view, browserOwner)
     view.webViewClient = client
     val metrics = context.resources.displayMetrics
     view.measure(
@@ -274,9 +205,8 @@ private class AndroidVpnUrlTestPage(
     view.layout(0, 0, view.measuredWidth, view.measuredHeight)
     startedAt = SystemClock.elapsedRealtime()
     handler.postDelayed(timeout, test.timeoutMs)
-    // The run's profile is reused, so no cached response of an earlier tunnel may answer this load.
-    view.clearCache(true)
-    view.loadUrl(test.url)
+    // Revalidate this observation without deleting the shared browser cache.
+    view.loadUrl(test.url, mapOf("Cache-Control" to "no-cache", "Pragma" to "no-cache"))
   }
 
   fun close() {
@@ -284,6 +214,7 @@ private class AndroidVpnUrlTestPage(
     handler.removeCallbacks(timeout)
     val view = webView ?: return
     webView = null
+    AndroidSiteBrowserOwner.unregisterView(view)
     view.webViewClient = WebViewClient()
     view.stopLoading()
     view.destroy()
@@ -313,6 +244,9 @@ private class AndroidVpnUrlTestPage(
   }
 
   private val client = object : WebViewClient() {
+    override fun shouldInterceptRequest(view: WebView, request: WebResourceRequest): WebResourceResponse? =
+      AndroidSiteBrowserOwner.interceptedResponse(browserOwner)
+
     override fun shouldOverrideUrlLoading(view: WebView, request: WebResourceRequest): Boolean {
       if (androidVpnUrlTestFollowsNavigation(request.isForMainFrame, request.isRedirect, request.url.scheme)) {
         mainHost = request.url.host

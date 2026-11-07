@@ -14,6 +14,8 @@ import {
   androidScraperCurrentOrigin,
   androidScraperCurrentUrl,
   androidScraperNavigate,
+  androidScraperResetSiteData,
+  androidWebviewFetch,
   androidWebviewExtract,
 } from "./android-scraper";
 
@@ -37,6 +39,8 @@ function installScraperBridge() {
       cancel,
       clearCache: vi.fn(),
       clearCookies: vi.fn(),
+      resetSiteData: vi.fn(),
+      canResetSiteData: () => true,
       currentOrigin: vi.fn(),
       currentUrl: vi.fn(),
       extract: vi.fn(),
@@ -128,12 +132,81 @@ describe("Android scraper navigation", () => {
     const payload = navigatePayload(navigate);
 
     controller.abort();
+    // The global dispatch lease remains held until native cancellation settles.
+    window.__noreaAndroidScraperResolve?.(payload.id, JSON.stringify({ ok: false, error: "cancelled" }));
 
     await rejection;
     expect(cancel).toHaveBeenCalledTimes(1);
     expect(JSON.parse(cancel.mock.calls[0][0] as string)).toMatchObject({
       id: payload.id,
     });
+  });
+});
+
+describe("shared-profile site dispatch", () => {
+  beforeEach(() => { installScraperBridge(); });
+  afterEach(() => { vi.unstubAllGlobals(); });
+
+  it("serializes different queues and sources through native completion", async () => {
+    const native = window.__NoreaAndroidScraper!;
+    const first = androidWebviewExtract("https://one.test/1", null, 1_000, null, "one", "pool:0");
+    const second = androidWebviewFetch("https://two.test/2", {}, null, null, "two", "search:0", 1_000);
+    expect(native.extract).toHaveBeenCalledOnce();
+    expect(native.fetch).not.toHaveBeenCalled();
+    const firstId = JSON.parse(vi.mocked(native.extract).mock.calls[0][0]).id;
+    window.__noreaAndroidScraperResolve?.(firstId, JSON.stringify({ ok: true, result: "chapter" }));
+    await expect(first).resolves.toBe("chapter");
+    expect(native.fetch).toHaveBeenCalledOnce();
+    const secondId = JSON.parse(vi.mocked(native.fetch).mock.calls[0][0]).id;
+    window.__noreaAndroidScraperResolve?.(secondId, JSON.stringify({ ok: true, result: { status: 200 } }));
+    await expect(second).resolves.toMatchObject({ status: 200 });
+  });
+
+  it("cancels a queued operation without issuing it or cancelling the active operation", async () => {
+    const native = window.__NoreaAndroidScraper!;
+    const first = androidWebviewExtract("https://one.test/1", null, 1_000, null, "one", "pool:0");
+    const controller = new AbortController();
+    const second = androidScraperNavigate("two", "https://two.test", null, { signal: controller.signal });
+    controller.abort();
+    await expect(second).rejects.toMatchObject({ name: "AbortError" });
+    expect(native.navigate).not.toHaveBeenCalled();
+    expect(native.cancel).not.toHaveBeenCalled();
+    window.__noreaAndroidScraperResolve?.(JSON.parse(vi.mocked(native.extract).mock.calls[0][0]).id,
+      JSON.stringify({ ok: true, result: "chapter" }));
+    await first;
+  });
+
+  it("waits for active cancellation cleanup before dispatching another source", async () => {
+    const native = window.__NoreaAndroidScraper!;
+    const controller = new AbortController();
+    const first = androidScraperNavigate("one", "https://one.test", null, { signal: controller.signal });
+    const rejection = expect(first).rejects.toMatchObject({ name: "AbortError" });
+    const second = androidWebviewExtract("https://two.test", null, 1_000, null, "two", "pool:0");
+    controller.abort();
+    expect(native.cancel).toHaveBeenCalledOnce();
+    expect(native.extract).not.toHaveBeenCalled();
+    window.__noreaAndroidScraperResolve?.(JSON.parse(vi.mocked(native.navigate).mock.calls[0][0]).id,
+      JSON.stringify({ ok: false, error: "native cleanup complete" }));
+    await rejection;
+    expect(native.extract).toHaveBeenCalledOnce();
+    window.__noreaAndroidScraperResolve?.(JSON.parse(vi.mocked(native.extract).mock.calls[0][0]).id,
+      JSON.stringify({ ok: true, result: "chapter" }));
+    await second;
+  });
+
+  it("gates site-data reset behind the previous request and awaits its callback", async () => {
+    const native = window.__NoreaAndroidScraper!;
+    const first = androidWebviewExtract("https://one.test", null, 1_000, null, "one", "pool:0");
+    const reset = androidScraperResetSiteData("https://one.test", "one");
+    expect(native.resetSiteData).not.toHaveBeenCalled();
+    window.__noreaAndroidScraperResolve?.(JSON.parse(vi.mocked(native.extract).mock.calls[0][0]).id,
+      JSON.stringify({ ok: true, result: "chapter" }));
+    await first;
+    expect(native.resetSiteData).toHaveBeenCalledOnce();
+    const payload = JSON.parse(vi.mocked(native.resetSiteData!).mock.calls[0][0]);
+    expect(payload).toMatchObject({ url: "https://one.test", sourceId: "one" });
+    window.__noreaAndroidScraperResolve?.(payload.id, JSON.stringify({ ok: true, result: true }));
+    await reset;
   });
 });
 

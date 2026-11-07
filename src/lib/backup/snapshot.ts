@@ -3,6 +3,7 @@ import { cancelWorkMetadataRecovery, getDb, runExclusiveDatabaseOperation } from
 import { restoreWorkMetadataDirectories } from "../../db/work-metadata";
 import { sqliteBoolean } from "../../db/sqlite-value";
 import { DOWNLOAD_GOAL_SETTINGS_KEY, useDownloadGoalSettingsStore } from "../../store/download-goals";
+import { DOWNLOAD_RECOVERY_SETTINGS_KEY, useDownloadRecoveryStore } from "../../store/download-recovery";
 import { useReaderStore } from "../../store/reader";
 import { runContentStorageOperation } from "../content-sync/storage-operation";
 import {
@@ -105,6 +106,7 @@ const BACKUP_SETTING_KEYS = new Set([
   "app-notification-settings",
   "browse-plugin-settings",
   DOWNLOAD_GOAL_SETTINGS_KEY,
+  DOWNLOAD_RECOVERY_SETTINGS_KEY,
   "http-user-agent",
   "norea-library-settings",
   "reader-settings",
@@ -413,5 +415,6 @@ async function restoreBackupSnapshot(manifest: BackupManifest): Promise<void> {
   writeBackupSettings(manifest.settings);
   await useReaderStore.persist.rehydrate();
   await useDownloadGoalSettingsStore.persist.rehydrate();
+  await useDownloadRecoveryStore.persist.rehydrate();
   notifyWorkMetadataChanges();
 }

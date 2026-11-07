@@ -26,6 +26,7 @@ import {
 } from "../components/ChapterDownloadFailureAttention";
 import { BackupFolderAttention, useBackupFolderUnavailable } from "../components/BackupFolderAttention";
 import { DownloadFailureStopNotice } from "../components/DownloadFailureStopNotice";
+import { DownloadRecoveryStatus } from "../components/DownloadRecoveryStatus";
 import { DownloadGoalAttention } from "../components/DownloadGoalAttention";
 import { DownloadGoalWorkLine } from "../components/DownloadGoalWorkLine";
 import { DownloadWorkStatusLabel, type DownloadWorkStatus } from "../components/DownloadWorkStatusLabel";
@@ -41,6 +42,7 @@ import {
   DownloadsIcon,
   PauseIcon,
   PlayIcon,
+  SettingsIcon,
   SortIcon,
   TrashIcon,
   VerifyIcon,
@@ -49,7 +51,6 @@ import {
 } from "../components/ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
-import { BatteryOptimizationSetting } from "../components/BatteryOptimizationSetting";
 import { sourceAccessChallengeTitleKey } from "../lib/plugins/source-access";
 import { useTranslation, type TranslationKey } from "../i18n";
 import {
@@ -1177,6 +1178,7 @@ export function DownloadsQueueView({
   viewTabs,
 }: DownloadsQueueViewProps = {}) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const confirm = useConfirm();
   const snapshot = useTaskSnapshot(active);
   const vpn = useVpnDownloadRuntimeSnapshot(active);
@@ -1337,6 +1339,7 @@ export function DownloadsQueueView({
     });
   };
   const overflowItems: OverflowMenuItem[] = [
+    { icon: SettingsIcon, label: t("downloads.settings"), onClick: () => { void navigate({ to: "/settings", search: { section: "downloads" } }); } },
     { icon: SortIcon, label: t("tasks.sort"), onClick: () => setSortOpened(true) },
     { icon: TrashIcon, label: t("tasks.clearErrors"), disabled: taskStats.failed === 0,
       onClick: () => taskScheduler.clearFailedTasks() },
@@ -1418,7 +1421,7 @@ export function DownloadsQueueView({
     >
 
       {queueError ? <Alert color="danger" role="alert">{queueError}</Alert> : null}
-      <BatteryOptimizationSetting />
+      {active ? <DownloadRecoveryStatus /> : null}
 
       {hasAttention ? (
         <NeedsAttentionSection active={active} blocks={ordinaryBlocks} sectionRef={attentionRef} snapshot={snapshot} vpn={vpn} />

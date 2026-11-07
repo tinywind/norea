@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { getDownloadRecoveryPolicy, type DownloadRecoveryPolicy } from "../../store/download-recovery";
+import { downloadRecovery, downloadRecoveryKey, isDownloadRecoveryNextProfile } from "./download-recovery";
 import { getChapterById, listExistingChapterIds, markChapterMediaRepairPending } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { refreshStoredNovelChapterDownloads } from "../../db/work-metadata";
@@ -63,7 +65,6 @@ import { pluginManager } from "../plugins/manager";
 import { ChapterMediaIncompleteError } from "../chapter-media/errors";
 import { isTaskUserCancelledError } from "./task-errors";
 import {
-  normalizeSourceAccessRequiredError,
   sourceAccessScopeKey,
 } from "../plugins/source-access";
 import type {
@@ -517,25 +518,6 @@ function normalizeChapterDownloadBatchWindowSize(
   );
 }
 
-function isPauseAbort(signal: AbortSignal): boolean {
-  const reason = (signal as AbortSignal & { reason?: unknown }).reason;
-  return (
-    reason instanceof DOMException &&
-    reason.name === "AbortError" &&
-    reason.message === TASK_PAUSE_ABORT_MESSAGE
-  );
-}
-
-function isPauseAbortError(error: unknown): boolean {
-  return (
-    isAbortError(error) &&
-    error !== null &&
-    typeof error === "object" &&
-    "message" in error &&
-    error.message === TASK_PAUSE_ABORT_MESSAGE
-  );
-}
-
 function abortReason(signal: AbortSignal): Error {
   const reason = (signal as AbortSignal & { reason?: unknown }).reason;
   return reason instanceof Error
@@ -645,8 +627,10 @@ function normalizeQueuedChapterDownloadJob(
 
 async function enqueueBackendChapterDownloadJobs(
   jobs: ChapterDownloadJob[],
+  recoveryPolicy = getDownloadRecoveryPolicy(),
 ): Promise<void> {
   if (jobs.length === 0) return;
+  downloadRecovery.register(jobs, recoveryPolicy);
   await invoke("chapter_download_queue_enqueue", { jobs });
 }
 
@@ -707,16 +691,22 @@ function queueChapterDownloadJob(job: ChapterDownloadJob, ownerId: string): Prom
 }
 
 function removeQueuedChapterDownloadJobs(chapterIds: Iterable<number>): Promise<void> {
-  if (!isTauriRuntime()) return Promise.resolve();
   const uniqueChapterIds = [...new Set(chapterIds)];
+  if (!isTauriRuntime()) {
+    downloadRecovery.forget(uniqueChapterIds.map(id => downloadRecoveryKey({ id })), true);
+    return Promise.resolve();
+  }
   if (uniqueChapterIds.length === 0) return Promise.resolve();
   for (const id of uniqueChapterIds) {
     pendingBackendChapterDownloadJobsById.delete(id);
     backendChapterDownloadRegistrations.delete(id);
   }
-  return queueBackendChapterDownloadMutation("remove queued chapter download", () =>
-    removeBackendChapterDownloadJobs(uniqueChapterIds),
-  );
+  return queueBackendChapterDownloadMutation("remove queued chapter download", async () => {
+    await removeBackendChapterDownloadJobs(uniqueChapterIds);
+    downloadRecovery.forget(uniqueChapterIds
+      .filter(id => !backendChapterDownloadRegistrations.has(id) && !pendingBackendChapterDownloadJobsById.has(id))
+      .map(id => downloadRecoveryKey({ id })), true);
+  });
 }
 
 function scheduleQueuedChapterDownloadJobsRemoval(
@@ -741,6 +731,9 @@ function scheduleQueuedChapterDownloadJobsRemoval(
         }
         if (chunk.length > 0) {
           await removeBackendChapterDownloadJobs(chunk);
+          downloadRecovery.forget(chunk
+            .filter(id => !backendChapterDownloadRegistrations.has(id) && !pendingBackendChapterDownloadJobsById.has(id))
+            .map(id => downloadRecoveryKey({ id })), true);
         }
         if (!done) {
           await new Promise((resolve) => setTimeout(resolve, 0));
@@ -764,6 +757,7 @@ function removeQueuedChapterDownloadJob(
 
 function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>, ownerId: string): Promise<void> {
   if (!isTauriRuntime()) return Promise.resolve();
+  const recoveryPolicy = getDownloadRecoveryPolicy();
   const jobsById = new Map<number, ChapterDownloadJob>();
   for (const job of jobs) {
     const queuedJob = normalizeQueuedChapterDownloadJob(job);
@@ -778,7 +772,7 @@ function queueChapterDownloadJobs(jobs: Iterable<ChapterDownloadJob>, ownerId: s
   const write = queueBackendChapterDownloadMutation("queue chapter downloads", async () => {
     const pending = queuedJobs.filter((job) => pendingBackendChapterDownloadJobsById.get(job.id) === job);
     try {
-      await enqueueBackendChapterDownloadJobs(pending);
+      await enqueueBackendChapterDownloadJobs(pending, recoveryPolicy);
       const discarded = pending.filter((job) => pendingBackendChapterDownloadJobsById.get(job.id) !== job);
       await removeBackendChapterDownloadJobs(discarded.map((job) => job.id));
     } finally {
@@ -1113,12 +1107,18 @@ function enqueueChapterDownloadForExecutor(
     waitForBackendQueue?: boolean;
     backendQueueWrite?: Promise<void>;
     localWorkScans?: Map<number, Promise<void>>;
+    recoveryPolicy?: DownloadRecoveryPolicy;
+    recoveryProfile?: { id: string; hash: string };
   } = {},
 ): TaskHandle<void> {
   if (!options.vpnWorker && (job.vpnBatchId || job.vpnPlanId || job.vpnRangeId)) {
     throw new Error("A VPN-owned download requires its owning worker.");
   }
   const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
+  const recoveryPolicy = options.recoveryPolicy ?? getDownloadRecoveryPolicy();
+  let recoveryProfile = options.recoveryProfile;
+  const recoveryPlugin = pluginManager.getPlugin(job.pluginId);
+  const recoveryUrl = recoveryPlugin ? getPluginBaseUrl(recoveryPlugin) : undefined;
   const sourceCooldownKey = options.vpnWorker?.rangeId ?? job.pluginId;
   const completeJob = async (): Promise<void> => {
     await options.onCompleted?.();
@@ -1141,6 +1141,7 @@ function enqueueChapterDownloadForExecutor(
     kind: "chapter.download",
     ...(!options.vpnWorker ? {
       retryManually: () => {
+        downloadRecovery.resume(job.pluginId, new Set([downloadRecoveryKey(job)]));
         if (isTauriRuntime()) forgetFailures([job.id]);
         return enqueueChapterDownload(explicitChapterDownloadJob(withoutRetryTime(job)));
       },
@@ -1172,7 +1173,10 @@ function enqueueChapterDownloadForExecutor(
     sourceAccessVerificationKey: `chapter.download:${job.pluginId}:${job.id}`,
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
-    run: async ({
+    run: async (context) => downloadRecovery.run({
+      job, url: recoveryUrl, policy: recoveryPolicy, vpn: Boolean(options.vpnWorker),
+      ...(options.vpnWorker ? { profileId: () => recoveryProfile?.id ?? null, profileHash: () => recoveryProfile?.hash ?? null } : {}),
+    }, context, async ({
       confirmSourceAccess,
       executor,
       setChapterDownloadPhase,
@@ -1198,8 +1202,12 @@ function enqueueChapterDownloadForExecutor(
               status.worker.rangeId !== worker.rangeId || status.worker.slot !== worker.slot || status.worker.generation !== worker.generation) {
             throw new Error(status.error ?? "VPN worker lease is no longer connected to its enrolled route.");
           }
+          if (options.recoveryProfile && (status.profile.id !== options.recoveryProfile.id || status.profile.hash !== options.recoveryProfile.hash)) {
+            throw new Error("VPN worker profile identity changed before source access.");
+          }
+          recoveryProfile = { id: status.profile.id, hash: status.profile.hash };
           await abortableStep(signal, androidEnsureVpnDownloadWorker(worker, {
-            sourceId: job.pluginId, profileId: status.profile.id, proxyPort: status.proxyPort,
+            sourceId: job.pluginId, profileId: status.profile.id, profileHash: status.profile.hash, proxyPort: status.proxyPort,
           }));
         }
         if (waitForBackendQueue) {
@@ -1539,24 +1547,20 @@ function enqueueChapterDownloadForExecutor(
           { force: true },
         );
       } catch (error) {
-        if (
-          !normalizeSourceAccessRequiredError(error) &&
-          !isPauseAbort(signal) &&
-          !isPauseAbortError(error)
-        ) {
-          settleChapterDownloadBatchJob(
-            job.batchId,
-            job.id,
-            signal.aborted || isAbortError(error) ? "cancelled" : "failed",
-          );
-        }
         throw error;
       }
-    },
+    }),
   });
   void handle.promise.then(
     () => removeQueuedChapterDownloadJob(job, queueOwnerId),
     (error) => {
+      if (isDownloadRecoveryNextProfile(error)) return;
+      if (isTaskUserCancelledError(error) && !options.vpnWorker && !isTauriRuntime() &&
+          ordinaryChapterDownloadHandles.get(job.id) === handle &&
+          (!backendChapterDownloadRegistrations.has(job.id) || backendChapterDownloadRegistrations.get(job.id)?.ownerId === queueOwnerId)) {
+        try { downloadRecovery.forget([downloadRecoveryKey(job)], true); }
+        catch (recoveryError) { taskScheduler.reportDownloadFailure(recoveryError); }
+      }
       if (!isTaskUserCancelledError(error) && [...chapterDownloadHandoverCohorts].some(cohort => cohort.has(job.id))) return;
       if (shouldKeepQueuedChapterDownloadJobAfterRejection(error)) return;
       if (!options.vpnWorker && isTauriRuntime()) {
@@ -1693,6 +1697,7 @@ export function enqueueVpnDownloadChapter(
   job: ChapterDownloadJob,
   worker: VpnDownloadWorkerRef,
   onCompleted: () => Promise<void>,
+  recoveryProfile?: { id: string; hash: string },
 ): TaskHandle<void> {
   if (!job.vpnPlanId || job.vpnRangeId !== worker.rangeId) {
     throw new Error("VPN download chapter range ownership does not match its worker.");
@@ -1708,6 +1713,7 @@ export function enqueueVpnDownloadChapter(
     vpnWorker: worker,
     onCompleted,
     localWorkScans,
+    recoveryProfile,
   });
 }
 
@@ -1723,7 +1729,10 @@ export function enqueueChapterMediaRepair(
     : undefined;
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.repairMedia",
-    retryManually: () => enqueueChapterMediaRepair(job),
+    retryManually: () => {
+      downloadRecovery.resume(job.pluginId, new Set([downloadRecoveryKey(job)]));
+      return enqueueChapterMediaRepair(job);
+    },
     priority: job.priority ?? "user",
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
@@ -1738,7 +1747,7 @@ export function enqueueChapterMediaRepair(
       : {}),
     sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
     sourceCooldownMs: chapterDownloadCooldownMs(),
-    run: async ({
+    run: async (context) => downloadRecovery.run({ job, url: sourceBaseUrl }, context, async ({
       confirmSourceAccess,
       executor,
       setDetail,
@@ -1894,9 +1903,16 @@ export function enqueueChapterMediaRepair(
         { current: progressTotal, total: progressTotal },
         { force: true },
       );
-    },
+    }),
   });
-  void handle.promise.then(notifyChapterDownloadsSettled, notifyChapterDownloadsSettled);
+  void handle.promise.then(notifyChapterDownloadsSettled, error => {
+    const current = taskScheduler.getTaskByDedupeKey(chapterMediaRepairDedupeKey(job.id));
+    if (isTaskUserCancelledError(error) && (!current || current.id === handle.id)) {
+      try { downloadRecovery.forget([downloadRecoveryKey(job)], true); }
+      catch (recoveryError) { taskScheduler.reportDownloadFailure(recoveryError); }
+    }
+    notifyChapterDownloadsSettled();
+  });
   return handle;
 }
 
@@ -1914,6 +1930,7 @@ export function enqueueChapterDownloadBatch({
     if (intercepted) return intercepted;
   }
   const batchId = makeChapterDownloadBatchId();
+  const recoveryPolicy = getDownloadRecoveryPolicy();
   const batchJobs = Array.isArray(jobs) ? jobs : null;
   const total = normalizeChapterDownloadBatchTotal(jobs, requestedTotal);
   const windowSize = normalizeChapterDownloadBatchWindowSize(
@@ -1980,6 +1997,7 @@ export function enqueueChapterDownloadBatch({
           waitForBackendQueue: waitForBatchQueue || persistMaterializedJobs,
           backendQueueWrite,
           localWorkScans,
+          recoveryPolicy,
         },
       );
       return handle.promise.then(

@@ -6,6 +6,7 @@ import type { TaskRecord, TaskSnapshot } from "../lib/tasks/task-types";
 import type { VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-drafts";
 import type { ChapterDownloadRequestState } from "../lib/tasks/chapter-download-requests";
 import type { VpnDownloadWork } from "../components/VpnDownloadWorks";
+import type { OverflowMenuItem } from "../components/ui/OverflowMenu";
 
 const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefined,
   vpn: { drafts: [], plans: [], loading: false, error: null, capabilities: { supported: true, parallelSupported: true, maxWorkers: 10 }, chapterLabels: {}, ownedChapterIds: [] } as VpnDownloadRuntimeSnapshot,
@@ -14,6 +15,7 @@ const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefine
   fontScalePercent: 100,
   focus: undefined as string | undefined,
   navigate: vi.fn(),
+  menus: [] as (readonly OverflowMenuItem[])[],
 }));
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => state.navigate,
@@ -25,6 +27,14 @@ vi.mock("../lib/tasks/hooks", () => ({ useTaskSnapshot: () => state.snapshot, us
 vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn() }));
 vi.mock("../lib/tasks/chapter-download-requests", () => ({ cancelChapterDownloadRequest: vi.fn() }));
 vi.mock("../lib/tasks/vpn-download-runtime", () => ({ pauseVpnDownloadRun: vi.fn(), resumeVpnDownloadRun: vi.fn(), cancelVpnDownloadRun: vi.fn() }));
+vi.mock("../components/ui/OverflowMenu", async importOriginal => {
+  const actual = await importOriginal<typeof import("../components/ui/OverflowMenu")>();
+  return { ...actual, OverflowMenu: (props: Parameters<typeof actual.OverflowMenu>[0]) => {
+    state.menus.push(props.items);
+    return <actual.OverflowMenu {...props} />;
+  } };
+});
+vi.mock("../components/DownloadRecoveryStatus", () => ({ DownloadRecoveryStatus: () => null }));
 vi.mock("../components/VpnDownloadAttention", () => ({ VpnDownloadAttention: () => null }));
 vi.mock("../components/ChapterDownloadFailureAttention", () => ({ ChapterDownloadFailureAttention: () => null, ChapterDownloadRetryingStatus: () => null }));
 vi.mock("../components/DownloadGoalAttention", () => ({ DownloadGoalAttention: () => null }));
@@ -271,3 +281,24 @@ describe("virtual task row geometry", () => {
   });
 });
 
+
+it("opens Download settings from the queue menu without replacing the back destination", () => {
+  state.menus = [];
+  state.navigate.mockReset();
+  workTitles([]);
+  const item = state.menus.flat().find(item => item.label === "Download settings")!;
+  expect(item).toBeDefined();
+  item.onClick();
+  expect(state.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: "downloads" } });
+});
+
+it("keeps the OS battery control out of the downloads queue", () => {
+  vi.stubGlobal("window", { __NoreaAndroidBatteryOptimization: { isIgnoring: () => false, request: vi.fn() } });
+  try {
+    workTitles([]);
+    const markup = renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>);
+    expect(markup).not.toContain("Battery optimization exemption");
+  } finally {
+    vi.unstubAllGlobals();
+  }
+});

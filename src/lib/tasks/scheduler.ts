@@ -50,6 +50,7 @@ import { describeError } from "../errors";
 import { isHttpNotFoundError } from "../http/status-error";
 import { classifyDownloadFailure } from "./download-failure";
 import type { DownloadFailureStops } from "./download-failure-stop";
+import { downloadRecovery, downloadRecoveryKey, isDownloadRecoveryHold, isDownloadRecoveryNextProfile } from "./download-recovery";
 import { recordPerformanceObservation } from "../observability";
 import {
   normalizeSourceAccessRequiredError,
@@ -1311,7 +1312,14 @@ export class TaskScheduler {
         if (entry.record.status === "running" &&
             !(entry.spec.canCompleteWithoutSourceAccess && !entry.sourceAccessStarted)) {
           if (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia") {
-            this.reportDownloadFailure(new Error(detail ?? "Network connection was lost."), entry.record.source?.id, entry.spec.vpnWorker, entry.record.id);
+            const failure = new Error(detail ?? "Network connection was lost.");
+            try {
+              const chapterId = entry.record.subject?.chapterId;
+              const action = !entry.spec.vpnWorker && chapterId !== undefined
+                ? downloadRecovery.networkLost(downloadRecoveryKey({ id: chapterId }), failure, { url: entry.sourceAccessUrl })
+                : null;
+              if (!action || action === "pause") this.reportDownloadFailure(failure, entry.record.source?.id, entry.spec.vpnWorker, entry.record.id);
+            } catch (error) { this.reportDownloadFailure(error, entry.record.source?.id, entry.spec.vpnWorker, entry.record.id); }
           }
           entry.pauseRequested = true;
           entry.controller.abort(new DOMException(TASK_PAUSE_ABORT_MESSAGE, "AbortError"));
@@ -1375,7 +1383,7 @@ export class TaskScheduler {
   reportDownloadFailure(
     error: unknown, sourceId?: string, worker?: VpnDownloadWorkerRef, failedTaskId?: string,
   ): void {
-    if (isAbortError(error) || isHttpNotFoundError(error)) return;
+    if (isAbortError(error) || isDownloadRecoveryNextProfile(error) || (isHttpNotFoundError(error) && !isDownloadRecoveryHold(error))) return;
     const failure = classifyDownloadFailure(error);
     if (failure.failureClass === "storage" || !sourceId) {
       this.downloadFailureStops = { ...this.downloadFailureStops, globalError: failure.summary };
@@ -1414,6 +1422,7 @@ export class TaskScheduler {
       if (!this.sourceQueuesPaused && this.pausedSourceIds.size === 0 && Object.keys(this.downloadFailureStops.sourceErrors).length === 0) {
         return false;
       }
+      downloadRecovery.resume();
       this.sourceQueuesPaused = false;
       this.pausedSourceIds.clear();
       this.downloadFailureStops = { sourceErrors: {} };
@@ -1423,8 +1432,10 @@ export class TaskScheduler {
       return true;
     }
 
-    const paused = this.pausedSourceIds.delete(sourceId);
+    const paused = this.pausedSourceIds.has(sourceId);
     if (!paused && !Object.hasOwn(this.downloadFailureStops.sourceErrors, sourceId)) return false;
+    downloadRecovery.resume(sourceId);
+    this.pausedSourceIds.delete(sourceId);
     const sourceErrors = { ...this.downloadFailureStops.sourceErrors };
     delete sourceErrors[sourceId];
     this.downloadFailureStops = { ...this.downloadFailureStops, sourceErrors };
@@ -1546,6 +1557,7 @@ export class TaskScheduler {
     const block = this.sourceAccess.get(scopeKey);
     if (!block) return false;
 
+    downloadRecovery.resume(block.sourceId);
     this.sourceAccess.requestVerification(scopeKey);
     this.debug("source access verification requested", undefined, {
       scopeKey,

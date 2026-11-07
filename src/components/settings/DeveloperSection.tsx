@@ -11,6 +11,7 @@ import { IconButton } from "../IconButton";
 import { useConfirm } from "../ui/ConfirmDialog";
 import { DownloadIcon, RefreshIcon, ResetIcon, SaveIcon, TrashIcon } from "../ui/icons";
 import { describeError } from "../../lib/errors";
+import { isAndroidRuntime } from "../../lib/tauri-runtime";
 import { enqueueMainTask } from "../../lib/tasks/main-tasks";
 import { clearWebViewCache } from "../../lib/webview-cache";
 import {
@@ -63,6 +64,7 @@ function formatOptionalBuildTime(
 
 export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
   const { locale, t } = useTranslation();
+  const sharedBrowserEnvironment = isAndroidRuntime();
   const confirm = useConfirm();
   const updates = useAppUpdates("dev");
   const logLevel = useLoggingStore((state) => state.logLevel);
@@ -236,15 +238,15 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
         </SettingsFieldRow>
         <SettingsFieldRow
           label={t("settings.data.userAgent.label")}
-          description={t("settings.data.userAgent.description")}
+          description={t(sharedBrowserEnvironment ? "settings.data.userAgent.sharedDescription" : "settings.data.userAgent.description")}
           layout="stacked"
           status={
-            userAgent === USER_AGENT_AT_STARTUP
+            sharedBrowserEnvironment || userAgent === USER_AGENT_AT_STARTUP
               ? null
               : t("settings.data.userAgent.restartRequired")
           }
         >
-          <SettingsWideField>
+          {sharedBrowserEnvironment ? <ConsoleChip>{t("settings.data.userAgent.sharedEnvironment")}</ConsoleChip> : <SettingsWideField>
             <Stack gap="sm">
               <Textarea
                 aria-label={t("settings.data.userAgent.label")}
@@ -284,7 +286,7 @@ export function DeveloperSection({ isBusy, onBusyChange }: SettingsBusyProps) {
                 </IconButton>
               </SettingsInlineControls>
             </Stack>
-          </SettingsWideField>
+          </SettingsWideField>}
         </SettingsFieldRow>
       </SettingsSection>
     </Stack>

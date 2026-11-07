@@ -13,8 +13,10 @@ import {
 } from "../../lib/plugin-vpn";
 import { startPluginVpnLifecycle } from "../../lib/plugin-vpn-lifecycle";
 import { showErrorToast } from "../../lib/runtime/error-toast";
+import { canRotateBrowserFingerprint } from "../../lib/site-browser/session";
 import { isAndroidRuntime, isTauriRuntime } from "../../lib/tauri-runtime";
 import { useAppearanceStore } from "../../store/appearance";
+import { useDownloadRecoveryStore } from "../../store/download-recovery";
 import { StartupSplash } from "./StartupSplash";
 
 const PLUGIN_VPN_RECOVERY_STOPPED_NOTIFICATION_ID = "plugin-vpn-recovery-stopped";
@@ -23,6 +25,9 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
   const appLocale = useAppearanceStore((state) => state.appLocale);
   const queryClient = useQueryClient();
   const android = isAndroidRuntime();
+  const rotateFingerprint = useDownloadRecoveryStore((state) => state.rotateFingerprintOnVpnChange);
+  const setRecoveryPolicy = useDownloadRecoveryStore((state) => state.setPolicy);
+  const canDisableUnsupportedFingerprint = android && rotateFingerprint && !canRotateBrowserFingerprint();
   const [attempt, setAttempt] = useState(0);
   const [checking, setChecking] = useState(android);
   const [ready, setReady] = useState(!android);
@@ -51,7 +56,7 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
   }, [android, attempt]);
 
   useEffect(() => {
-    if (!isTauriRuntime()) return;
+    if (!ready || !isTauriRuntime()) return;
     let active = true;
     let unlisten: (() => void) | undefined;
 
@@ -128,7 +133,7 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
       stopRecovery();
       unlisten?.();
     };
-  }, [queryClient]);
+  }, [queryClient, ready]);
 
   if (!android || ready) return children;
   if (checking) return <StartupSplash />;
@@ -148,6 +153,22 @@ export function PluginVpnProxyGate({ children }: { children: ReactNode }) {
             <Text className="norea-storage-setup-error" role="alert">
               {translate(appLocale, "pluginVpn.bootstrap.failed", { error })}
             </Text>
+          ) : null}
+          {canDisableUnsupportedFingerprint ? (
+            <Stack gap="xs">
+              <Text size="sm">
+                {translate(appLocale, "pluginVpn.bootstrap.fingerprintUnsupported")}
+              </Text>
+              <Button
+                variant="default"
+                onClick={() => {
+                  setRecoveryPolicy({ rotateFingerprintOnVpnChange: false });
+                  setAttempt((value) => value + 1);
+                }}
+              >
+                {translate(appLocale, "pluginVpn.bootstrap.disableFingerprintAndRetry")}
+              </Button>
+            </Stack>
           ) : null}
           <Button
             onClick={() => {

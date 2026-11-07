@@ -434,6 +434,37 @@ unknown values read as off. The last run time and result are device-only state
 in `finished-chapter-cleanup-state` and are not backed up. No schema change is
 required.
 
+## Shared Android browser and recovery settings
+
+The 2026-11-07 browser change adds no SQLite schema migration and does not rewrite
+queue job JSON or VPN plan payloads. It adopts the existing main-process
+Newtoki Webtoon WebView profile for all Android site browsers. Legacy source
+and worker profile directories are retained, without merging their databases.
+The app UI's storage stays separate from site browsing data.
+
+The additive `download-recovery-settings` localStorage entry stores normalized
+failure actions, bounded retry/delay/profile-change settings, and the opt-in
+`rotateFingerprintOnVpnChange` flag. Missing values preserve the conservative
+defaults. Portable file backups include this settings entry and rehydrate its
+store on restore.
+
+`download-recovery-runtime` version 1 stores deduplicated job policy snapshots,
+retry deadlines, consumed retry/reset/profile budgets, and used profile ids.
+It is local execution state, excluded from portable file backups. Full device
+backups already preserve all localStorage entries and therefore include it.
+Interrupted resetting/retrying/profile-switch episodes reopen held; waiting
+episodes retain their recorded deadline and budget. Restored jobs remain subject
+to the existing explicit-resume and queue cleanup rules below.
+
+Android SharedPreferences retain the committed browser route, any unfinished
+cookie expiry, and the generated environment seed and target route. These,
+like site cookies and other browser profile data, are outside both app snapshot
+formats. Restoring the rotation preference does not copy another device's seed
+or browsing identity. A failed route transition keeps site networking closed.
+
+See [Shared site browser](./shared-site-browser.md) for the cookie, origin-data,
+single-route, and environment capability contracts.
+
 ## Full Device Backups on the Content Server
 
 The version 1 device-backup transport stores one current snapshot per device name. The app's

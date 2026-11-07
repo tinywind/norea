@@ -133,7 +133,7 @@ class MainActivity : TauriActivity() {
     webView.addJavascriptInterface(taskNotificationBridge, "__NoreaAndroidTasks")
     webView.addJavascriptInterface(AndroidUpdateInstallBridge(this, bridgeSession), "__NoreaAndroidUpdater")
     webView.addJavascriptInterface(storageBridge, "__NoreaAndroidStorage")
-    webView.addJavascriptInterface(AndroidVpnProxyBridge(bridgeSession), "__NoreaAndroidVpn")
+    webView.addJavascriptInterface(AndroidVpnProxyBridge(bridgeSession, applicationContext), "__NoreaAndroidVpn")
     webView.addJavascriptInterface(AndroidBatteryOptimizationBridge(this), "__NoreaAndroidBatteryOptimization")
     webView.addJavascriptInterface(vpnWorkers, "__NoreaAndroidVpnWorkers")
     webView.addJavascriptInterface(AndroidWindowMetricsBridge(this, webView), "__NoreaAndroidWindow")

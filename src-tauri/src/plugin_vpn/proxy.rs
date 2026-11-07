@@ -1,10 +1,10 @@
 use std::{
-    collections::VecDeque,
+    collections::{HashMap, VecDeque},
     future::Future,
     io,
     net::{Ipv4Addr, SocketAddr, TcpListener as StdTcpListener},
     pin::Pin,
-    sync::{atomic::{AtomicU64, Ordering}, Arc, Mutex, RwLock},
+    sync::{atomic::{AtomicU64, Ordering}, Arc, Condvar, Mutex, OnceLock, RwLock, Weak},
     time::{Duration, Instant},
 };
 
@@ -19,6 +19,37 @@ use super::transport::{PluginVpnTransportCursor, PluginVpnTransportFailure, Prox
 const MAX_TRANSPORT_FAILURES: usize = 64;
 const TRANSPORT_FAILURE_MAX_AGE: Duration = Duration::from_secs(120);
 static NEXT_ROUTE_GENERATION: AtomicU64 = AtomicU64::new(1);
+static LOCAL_ROUTERS: OnceLock<Mutex<HashMap<u16, Weak<ProxyRouter>>>> = OnceLock::new();
+
+fn local_routers() -> &'static Mutex<HashMap<u16, Weak<ProxyRouter>>> {
+    LOCAL_ROUTERS.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+/// Stops accepted sockets without changing the tunnel selection. The browser
+/// owner first stops its pages, then waits here before deleting shared cookies.
+#[cfg(any(target_os = "android", test))]
+fn close_connections(port: u16) -> Result<(), String> {
+    let router = local_routers().lock().map_err(|_| "proxy registry lock failed")?
+        .get(&port).and_then(Weak::upgrade)
+        .ok_or_else(|| "The previous browser proxy is unavailable".to_string())?;
+    router.drain_connections()
+}
+
+#[cfg(target_os = "android")]
+#[unsafe(no_mangle)]
+pub extern "system" fn Java_io_github_tinywind_norea_AndroidSiteBrowserOwner_closeConnections(
+    _env: jni::EnvUnowned<'_>, _class: jni::objects::JClass<'_>, port: jni::sys::jint,
+) -> jni::sys::jboolean {
+    let result = u16::try_from(port).map_err(|_| "Browser proxy port is invalid".to_string())
+        .and_then(close_connections);
+    match result {
+        Ok(()) => jni::sys::JNI_TRUE,
+        Err(error) => {
+            log::warn!("Could not drain the shared browser route: {error}");
+            jni::sys::JNI_FALSE
+        }
+    }
+}
 
 const MAX_REQUEST_HEAD_BYTES: usize = 32 * 1024;
 const MAX_CHUNK_LINE_BYTES: usize = 8 * 1024;
@@ -105,6 +136,24 @@ struct AcceptedConnection {
 pub(super) struct ProxyRouter {
     route: RwLock<ProxyRouteState>,
     generation: watch::Sender<u64>,
+    active: Mutex<HashMap<u64, usize>>,
+    drained: Condvar,
+}
+
+struct ActiveConnection {
+    router: Arc<ProxyRouter>,
+    generation: u64,
+}
+
+impl Drop for ActiveConnection {
+    fn drop(&mut self) {
+        let mut active = self.router.active.lock().expect("proxy active connection lock");
+        if let Some(count) = active.get_mut(&self.generation) {
+            *count -= 1;
+            if *count == 0 { active.remove(&self.generation); }
+        }
+        self.router.drained.notify_all();
+    }
 }
 
 impl ProxyRouter {
@@ -118,6 +167,37 @@ impl ProxyRouter {
                 failures: VecDeque::new(),
             }),
             generation,
+            active: Mutex::new(HashMap::new()),
+            drained: Condvar::new(),
+        }
+    }
+
+    fn track_connection(self: &Arc<Self>, generation: u64) -> Option<ActiveConnection> {
+        let state = self.route.read().expect("plugin VPN proxy route lock");
+        // A route change between accept and spawn must not escape the drain.
+        if state.generation != generation { return None; }
+        *self.active.lock().expect("proxy active connection lock").entry(generation).or_default() += 1;
+        Some(ActiveConnection { router: self.clone(), generation })
+    }
+
+    #[cfg(any(target_os = "android", test))]
+    fn drain_connections(&self) -> Result<(), String> {
+        let cutoff = {
+            let mut state = self.route.write().map_err(|_| "proxy route lock failed")?;
+            let cutoff = state.generation;
+            state.generation = NEXT_ROUTE_GENERATION.fetch_add(1, Ordering::Relaxed);
+            state.failures.clear();
+            self.generation.send_replace(state.generation);
+            cutoff
+        };
+        let active = self.active.lock().map_err(|_| "proxy active connection lock failed")?;
+        let (active, _) = self.drained.wait_timeout_while(active, Duration::from_secs(5), |active| {
+            active.keys().any(|generation| *generation <= cutoff)
+        }).map_err(|_| "proxy connection drain failed")?;
+        if active.keys().any(|generation| *generation <= cutoff) {
+            Err("The previous browser connections did not close".to_string())
+        } else {
+            Ok(())
         }
     }
 
@@ -248,10 +328,16 @@ impl LocalProxy {
         let address = listener
             .local_addr()
             .map_err(|error| format!("could not read the plugin VPN proxy address: {error}"))?;
+        let router = Arc::new(ProxyRouter::new());
+        {
+            let mut routers = local_routers().lock().map_err(|_| "proxy registry lock failed")?;
+            routers.retain(|_, router| router.strong_count() > 0);
+            routers.insert(address.port(), Arc::downgrade(&router));
+        }
         Ok(Self {
             address,
             listener: Mutex::new(Some(listener)),
-            router: Arc::new(ProxyRouter::new()),
+            router,
         })
     }
 
@@ -313,9 +399,11 @@ async fn serve(listener: StdTcpListener, router: Arc<ProxyRouter>) -> io::Result
             continue;
         };
         let (accepted, mut route_changes) = router.accept();
+        let Some(active) = router.track_connection(accepted.generation) else { continue };
         let router = router.clone();
         tokio::spawn(async move {
             let _permit = permit;
+            let _active = active;
             let mut network = crate::network::subscribe();
             // Tests exercise local proxy routing without an OS network monitor.
             if !cfg!(test) && crate::network::require_online().is_err() { return; }
@@ -1053,6 +1141,38 @@ mod tests {
         });
     }
 
+
+    #[test]
+    fn explicit_browser_drain_closes_an_idle_connect_and_preserves_the_route() {
+        test_runtime().block_on(async {
+            let origin = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let target = origin.local_addr().unwrap();
+            let proxy = LocalProxy::bind().unwrap();
+            let address = proxy.address();
+            let serving = tokio::spawn(serve(proxy.take_listener().unwrap(), proxy.router()));
+            let mut client = TcpStream::connect(address).await.unwrap();
+            client.write_all(format!("CONNECT {target} HTTP/1.1\r\n\r\n").as_bytes()).await.unwrap();
+            let (_upstream, _) = origin.accept().await.unwrap();
+            let mut head = vec![0; b"HTTP/1.1 200 Connection Established\r\n\r\n".len()];
+            client.read_exact(&mut head).await.unwrap();
+            tokio::task::spawn_blocking(move || close_connections(address.port())).await.unwrap().unwrap();
+            let mut byte = [0];
+            assert_eq!(tokio::time::timeout(Duration::from_secs(1), client.read(&mut byte)).await.unwrap().unwrap(), 0);
+            assert!(matches!(proxy.router.route.read().unwrap().route, ProxyRoute::Direct));
+            assert!(proxy.router.active.lock().unwrap().is_empty());
+            serving.abort();
+        });
+    }
+
+    #[test]
+    fn a_connection_accepted_before_a_drain_cannot_start_afterward() {
+        let proxy = LocalProxy::bind().unwrap();
+        let (accepted, _) = proxy.router.accept();
+        close_connections(proxy.address().port()).unwrap();
+        assert!(proxy.router.track_connection(accepted.generation).is_none());
+        let (current, _) = proxy.router.accept();
+        assert!(proxy.router.track_connection(current.generation).is_some());
+    }
 
     struct FailingConnector(ProxyConnectError);
 

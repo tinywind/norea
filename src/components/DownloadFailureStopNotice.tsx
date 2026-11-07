@@ -1,4 +1,5 @@
-import { Button, Text } from "@mantine/core";
+import { Button, Group, Text } from "@mantine/core";
+import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { useTranslation } from "../i18n";
 import { pluginManager } from "../lib/plugins/manager";
@@ -6,11 +7,13 @@ import { describeError } from "../lib/errors";
 import { resumeChapterDownloadQueueAfterFailure } from "../lib/tasks/chapter-download";
 import { redactUrlsForLog } from "../lib/url-log";
 import type { TaskSnapshot } from "../lib/tasks/task-types";
+import { useSettingsRevealStore } from "./settings/settings-reveal";
 
 export function DownloadFailureStopNotice({ snapshot }: {
   snapshot: Pick<TaskSnapshot, "downloadFailureStops" | "records">;
 }) {
   const { t } = useTranslation();
+  const navigate = useNavigate();
   const [pending, setPending] = useState<string | null>(null);
   const busy = useRef(false);
 
@@ -49,15 +52,27 @@ export function DownloadFailureStopNotice({ snapshot }: {
             <Text component="p" size="sm">{message}</Text>
             <Text c="dimmed" component="p" size="xs">{t("downloads.stopped.resumeHint")}</Text>
           </div>
-          <Button
-            disabled={pending !== null}
-            loading={pending === (sourceId === undefined ? "global" : `source:${sourceId}`)}
-            onClick={() => resume(sourceId)}
-            size="compact-sm"
-            variant="default"
-          >
-            {source ? t("downloads.queue.resumeSource", { source }) : t("downloads.queue.resume")}
-          </Button>
+          <Group gap="xs">
+            <Button
+              disabled={pending !== null}
+              loading={pending === (sourceId === undefined ? "global" : `source:${sourceId}`)}
+              onClick={() => resume(sourceId)}
+              size="compact-sm"
+              variant="default"
+            >
+              {source ? t("downloads.queue.resumeSource", { source }) : t("downloads.queue.resume")}
+            </Button>
+            <Button
+              onClick={() => {
+                useSettingsRevealStore.getState().reveal("downloads", t("settings.downloads.recovery.forbidden.label"));
+                void navigate({ to: "/settings", search: { section: "downloads" } });
+              }}
+              size="compact-sm"
+              variant="subtle"
+            >
+              {t("downloads.recoverySettings")}
+            </Button>
+          </Group>
         </section>
       ))}
     </>

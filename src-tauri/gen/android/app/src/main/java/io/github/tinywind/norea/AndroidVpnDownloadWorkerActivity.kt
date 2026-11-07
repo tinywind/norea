@@ -35,7 +35,7 @@ abstract class AndroidVpnDownloadWorkerActivity(private val slot: Int) : Compone
   private var generation = 0L
 
   override fun onCreate(savedInstanceState: Bundle?) {
-    AndroidVpnWorkerProcess.initialize(slot)
+    AndroidVpnWorkerProcess.initialize(this, slot)
     super.onCreate(savedInstanceState)
     generation = intent.getLongExtra("generation", 0)
     val token = intent.getStringExtra("manualToken")

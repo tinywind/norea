@@ -758,11 +758,11 @@ async fn test_candidate_tunnel(_bytes: &[u8], _cancellation: tokio::sync::watch:
 }
 
 /// Tests one profile against the URL the user typed: a separate tunnel, one page load in the
-/// isolated Android test browser, then teardown.
+/// shared Android site browser, then teardown.
 /// Only one test runs at a time; a second call while one runs fails instead of waiting.
 #[tauri::command]
 pub(crate) async fn plugin_vpn_test_profile_url(
-    run_id: String, profile: VpnUrlTestProfile, url: String, user_agent: String, app: AppHandle, state: State<'_, PluginVpnState>,
+    run_id: String, profile: VpnUrlTestProfile, url: String, user_agent: String, rotate_fingerprint_on_vpn_change: Option<bool>, app: AppHandle, state: State<'_, PluginVpnState>,
 ) -> Result<VpnUrlTestResult, String> {
     if !cfg!(target_os = "android") { return Err("VPN URL tests are supported only on Android".to_string()); }
     super::url_test::validate_run_id(&run_id)?;
@@ -792,11 +792,11 @@ pub(crate) async fn plugin_vpn_test_profile_url(
         let credentials = super::engine::EngineCredentials {
             username: public.into(), password: public.into(), private_key_password: String::new(), challenge_response: String::new(),
         };
-        super::url_test::run_test(&mut guard, super::url_test::UrlTestRequest { profile, credentials, url, user_agent }).await
+        super::url_test::run_test(&mut guard, super::url_test::UrlTestRequest { profile, credentials, url, user_agent, rotate_fingerprint_on_vpn_change: rotate_fingerprint_on_vpn_change.unwrap_or(false) }).await
     }
     #[cfg(not(target_os = "android"))]
     {
-        let _ = (&mut guard, profile, url, user_agent);
+        let _ = (&mut guard, profile, url, user_agent, rotate_fingerprint_on_vpn_change);
         Err("VPN URL tests are supported only on Android".to_string())
     }
 }

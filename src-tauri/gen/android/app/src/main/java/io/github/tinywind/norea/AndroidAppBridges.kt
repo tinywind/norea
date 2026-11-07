@@ -3,6 +3,7 @@ package io.github.tinywind.norea
 import android.app.Activity
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.Context
 import android.net.Uri
 import android.os.PowerManager
 import android.provider.Settings
@@ -48,7 +49,7 @@ internal class AndroidSafeAreaBridge(private val safeAreaInsetsJson: () -> Strin
   fun getInsets(): String = safeAreaInsetsJson()
 }
 
-internal class AndroidVpnProxyBridge(private val bridgeSession: BridgeSession) {
+internal class AndroidVpnProxyBridge(private val bridgeSession: BridgeSession, private val context: Context) {
   @JavascriptInterface
   fun configure(payload: String): String =
     runCatching {
@@ -57,7 +58,7 @@ internal class AndroidVpnProxyBridge(private val bridgeSession: BridgeSession) {
         BridgeCapabilities.VPN_PROXY_CONFIGURE,
         bridgeAuthorityFields(json),
       )
-      configureAndroidVpnWebViewProxy(json.opt("port"))
+      AndroidSiteBrowserOwner.configureForeground(context, json)
     }.fold(
       onSuccess = { JSONObject().put("ok", true).toString() },
       onFailure = { error ->

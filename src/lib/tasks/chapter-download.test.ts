@@ -2,6 +2,23 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { taskScheduler, type SourceTaskSpec, type TaskHandle } from "./scheduler";
 vi.mock("../android-scraper", () => ({ androidEnsureVpnDownloadWorker: vi.fn(async () => undefined) }));
 
+const recoveryHarness = vi.hoisted(() => ({ current: null as unknown as import("./download-recovery").DownloadRecoveryController }));
+vi.mock("./download-recovery", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("./download-recovery")>();
+  return { ...actual, downloadRecovery: new Proxy({} as typeof actual.downloadRecovery, {
+    get: (_target, key) => {
+      const value = Reflect.get(recoveryHarness.current, key);
+      return typeof value === "function" ? value.bind(recoveryHarness.current) : value;
+    },
+  }) };
+});
+import { DownloadRecoveryController } from "./download-recovery";
+import { HttpStatusError } from "../http/status-error";
+import { getDownloadRecoveryPolicy, useDownloadRecoveryStore } from "../../store/download-recovery";
+const siteRecoveryMocks = vi.hoisted(() => ({ reset: vi.fn<(_source: string, _url: string) => Promise<void>>() }));
+vi.mock("../site-browser/session", () => ({ resetSourceSiteData: siteRecoveryMocks.reset }));
+
+
 const schedulerMocks = vi.hoisted(() => ({
   batch: vi.fn((run: () => void) => run()),
   enqueueSource: vi.fn(),
@@ -237,6 +254,11 @@ function installBrowserHarness(): void {
 }
 
 beforeEach(() => {
+  const recoveryValues = new Map<string, string>();
+  recoveryHarness.current = new DownloadRecoveryController({
+    getItem: key => recoveryValues.get(key) ?? null,
+    setItem: (key, value) => { recoveryValues.set(key, value); },
+  });
   vi.clearAllMocks();
   installChapterDownloadBatchInterceptor({ enqueue: () => null, cancel: () => false });
   vi.mocked(taskScheduler.getTaskByDedupeKey).mockReset();
@@ -826,6 +848,8 @@ describe("chapter download queue membership", () => {
     const deleting = createDeferred<void>();
     const failure = new Error("Queue deletion failed");
     backendQueueValues.set(900080, { id: 900080 });
+    recoveryHarness.current.register([{ id: 900080, pluginId: "source-a", title: "Held chapter" }]);
+    recoveryHarness.current.networkLost("chapter:900080", new Error("Network connection was lost."));
     const original = tauriMocks.invoke.getMockImplementation()!;
     tauriMocks.invoke.mockImplementation(async (command: string, args?: Record<string, unknown>) => {
       if (command === "chapter_download_queue_remove") await deleting.promise;
@@ -835,16 +859,21 @@ describe("chapter download queue membership", () => {
     const result = Promise.resolve(discardQueuedChapterDownloads([900080])).finally(() => { settled = true; });
     const outcome = result.then(() => null, error => error);
     await flushMicrotasks();
-    try { expect(settled).toBe(false); }
-    finally {
+    try {
+      expect(settled).toBe(false);
+      expect(recoveryHarness.current.getSnapshot()).toMatchObject([{ key: "chapter:900080", status: "held" }]);
+    } finally {
       deleting.reject(failure);
       expect(await outcome).toMatchObject({ code: "chapter-storage-failed", cause: failure });
       await expect(waitForChapterDownloadQueueMutations()).rejects.toMatchObject({ code: "chapter-storage-failed", cause: failure });
     }
     expect(backendQueueValues.has(900080)).toBe(true);
+    expect(recoveryHarness.current.getSnapshot()).toMatchObject([{ key: "chapter:900080", status: "held" }]);
     tauriMocks.invoke.mockImplementation(original);
     await discardQueuedChapterDownloads([900080]);
     expect(backendQueueValues.has(900080)).toBe(false);
+    expect(recoveryHarness.current.getSnapshot()).toEqual([]);
+    expect(recoveryHarness.current.networkLost("chapter:900080", new Error("Network connection was lost."))).toBeNull();
   });
 
   it.each(["queued", "running", "succeeded", "failed", "cancelled"] as const)(
@@ -3687,4 +3716,59 @@ describe("enqueueChapterMediaRepair", () => {
     expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 
+});
+
+
+describe("selected recovery in chapter acquisition", () => {
+  it.each(["ordinary", "vpn"] as const)("waits for one origin reset before retrying a 403 on the same %s route", async route => {
+    vi.useFakeTimers();
+    const previousPolicy = getDownloadRecoveryPolicy();
+    useDownloadRecoveryStore.getState().setPolicy({ forbiddenAction: "resetSite", maxRetries: 1, retryDelaySeconds: 5 });
+    const reset = createDeferred<void>();
+    siteRecoveryMocks.reset.mockReset().mockReturnValue(reset.promise);
+    // Media-only fixtures deliberately leave unused one-shot server/source mocks.
+    vi.mocked(tryDownloadServerChapter).mockReset().mockResolvedValue(false);
+    pluginMocks.getChapterResource.mockReset().mockResolvedValue(contentResource("Recovered chapter", "text"))
+      .mockRejectedValueOnce(new HttpStatusError(403, "Forbidden"));
+    const worker = { rangeId: "recovery-range", slot: 0, generation: 8 } as const;
+    const profile = { id: "profile-a", ip: "192.0.2.1", protocol: "tcp", hash: "a".repeat(64), approvedAt: 1, approvalSequence: 1 };
+    const invoke = tauriMocks.invoke.getMockImplementation()!;
+    tauriMocks.invoke.mockImplementation((command, args) => command === "plugin_vpn_download_worker_validate"
+      ? Promise.resolve({ supported: true, worker, phase: "connected", proxyPort: 12000, error: null, profile }) : invoke(command, args));
+    const job = { id: 7, pluginId: "source-a", novelId: 11, chapterPath: "/chapter/7", title: "Chapter 7" };
+    const completed = vi.fn(async () => undefined);
+    if (route === "vpn") enqueueVpnDownloadChapter({ ...job, vpnPlanId: "recovery-plan", vpnRangeId: worker.rangeId }, worker, completed, profile);
+    else enqueueChapterDownload(job);
+    const controller = new AbortController();
+    const running = capturedSpec!.run({ executor: route === "vpn" ? "vpn:0:8" : "pool:0", setDetail: vi.fn(), setProgress: vi.fn(),
+      signal: controller.signal, taskId: "recovery-task" });
+    try {
+      await flushMicrotasks(100);
+      expect(pluginMocks.getChapterResource).toHaveBeenCalledOnce();
+      expect(recoveryHarness.current.getSnapshot()).toMatchObject([{ action: "resetSite", status: "waiting", retries: 1, siteResetCount: 1 }]);
+      await vi.advanceTimersByTimeAsync(5000);
+      expect(siteRecoveryMocks.reset).toHaveBeenCalledExactlyOnceWith("source-a", "https://source.test");
+      expect(pluginMocks.getChapterResource).toHaveBeenCalledOnce();
+      expect(saveStoredChapterContent).not.toHaveBeenCalled();
+      expect(completed).not.toHaveBeenCalled();
+      reset.resolve();
+      await running;
+      expect(pluginMocks.getChapterResource).toHaveBeenCalledTimes(2);
+      expect(saveStoredChapterContent).toHaveBeenCalledOnce();
+      expect(failureMocks.record).not.toHaveBeenCalled();
+      expect(recoveryHarness.current.getSnapshot()).toEqual([]);
+      if (route === "vpn") {
+        expect(completed).toHaveBeenCalledOnce();
+        const validations = tauriMocks.invoke.mock.calls.filter(([command]) => command === "plugin_vpn_download_worker_validate");
+        expect(validations.length).toBeGreaterThanOrEqual(2);
+        expect(validations.every(([, args]) => JSON.stringify(args) === JSON.stringify({ worker }))).toBe(true);
+      }
+    } finally {
+      reset.resolve();
+      controller.abort();
+      await running.catch(() => undefined);
+      useDownloadRecoveryStore.getState().setPolicy(previousPolicy);
+      vi.useRealTimers();
+    }
+  });
 });

@@ -10,6 +10,8 @@ const SECTION_SOURCES = [
   "./AppearanceSection.tsx",
   "./GeneralSection.tsx",
   "./DownloadsSection.tsx",
+  "./DownloadRecoverySettings.tsx",
+  "../BatteryOptimizationSetting.tsx",
   "./NovelDownloadGoalSettings.tsx",
   "./BackupSection.tsx",
   "./BrowseSection.tsx",

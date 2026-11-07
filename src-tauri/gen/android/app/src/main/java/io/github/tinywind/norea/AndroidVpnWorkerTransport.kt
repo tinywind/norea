@@ -52,6 +52,7 @@ internal class AndroidVpnWorkerTransport(context: Context) {
           try {
             file.outputStream().use { it.write(bytes) }
             val descriptor = ParcelFileDescriptor.open(file, ParcelFileDescriptor.MODE_READ_ONLY)
+            var transferredLocally = false
             try {
               // Only an already-open descriptor crosses Binder; no caller-controlled path is accepted.
               check(file.delete()) { "VPN worker transfer could not be unlinked." }
@@ -66,10 +67,21 @@ internal class AndroidVpnWorkerTransport(context: Context) {
                   putParcelable("payload", descriptor)
                 }
               }
-              destination.send(message)
+              val local = destination.binder.interfaceDescriptor
+                ?.let { destination.binder.queryLocalInterface(it) != null } ?: false
+              synchronized(descriptors) {
+                check(!closed) { "VPN worker transport is closed." }
+                destination.send(message)
+                if (local) {
+                  // A local Messenger does not marshal/duplicate the descriptor.
+                  // Its receiver owns this exact object after enqueueing succeeds.
+                  descriptors.remove(descriptor)
+                  transferredLocally = true
+                }
+              }
             } finally {
               synchronized(descriptors) { descriptors.remove(descriptor) }
-              descriptor.close()
+              if (!transferredLocally) descriptor.close()
             }
           } finally {
             file.delete()

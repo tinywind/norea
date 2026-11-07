@@ -1,9 +1,9 @@
 package io.github.tinywind.norea
 
 import android.app.Activity
-import android.app.Application
 import android.app.Service
 import android.content.Intent
+import android.content.Context
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -16,20 +16,15 @@ import android.view.ViewGroup
 import android.webkit.WebView
 import android.widget.FrameLayout
 import androidx.webkit.WebViewFeature
-import java.util.concurrent.Executors
 import org.json.JSONObject
 
 internal object AndroidVpnWorkerProcess {
-  private var initializedSlot: Int? = null
   var service: AndroidVpnDownloadWorkerService? = null
 
-  @Synchronized
-  fun initialize(slot: Int) {
+  fun initialize(context: Context, slot: Int) {
     check(Build.VERSION.SDK_INT >= 28) { "VPN browser workers require Android 9 or newer." }
-    check(Application.getProcessName().endsWith(":vpn_download_$slot")) { "VPN worker process is invalid." }
-    initializedSlot?.let { check(it == slot); return }
-    WebView.setDataDirectorySuffix("norea_vpn_download_$slot")
-    initializedSlot = slot
+    require(slot in 0 until MAX_VPN_DOWNLOAD_WORKERS)
+    AndroidSiteBrowserOwner.initialize(context)
   }
 }
 
@@ -63,7 +58,6 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
   private val handler = Handler(Looper.getMainLooper())
   private val lease = AndroidVpnWorkerLease(slot)
   private val session = BridgeSession()
-  private val proxyExecutor = Executors.newSingleThreadExecutor()
   private val calls = mutableMapOf<Long, Call>()
   private val requestTickets = mutableMapOf<String, Long>()
   private val deferredNavigations = mutableMapOf<Long, () -> Unit>()
@@ -80,9 +74,10 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
   private var manualActivity: Activity? = null
   private var manualVisible = false
   private var manualRevision = 0L
+  private var browserOwner: String? = null
 
   override fun onCreate() {
-    AndroidVpnWorkerProcess.initialize(slot)
+    AndroidVpnWorkerProcess.initialize(this, slot)
     super.onCreate()
     AndroidVpnWorkerProcess.service = this
   }
@@ -98,7 +93,6 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
     destroyed = true
     releaseClient()
     transport.close()
-    proxyExecutor.shutdownNow()
     handler.removeCallbacksAndMessages(null)
     if (AndroidVpnWorkerProcess.service === this) AndroidVpnWorkerProcess.service = null
     super.onDestroy()
@@ -170,7 +164,9 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
         lease.close()
         destroyBrowser()
         if (manualWasOpen) notifyManualClosed(configuration.generation)
-        reply(ticket, workerSuccess(true))
+        releaseBrowserOwner { result ->
+          reply(ticket, result.fold({ workerSuccess(true) }, { workerError(it.message ?: "Browser route release failed.") }))
+        }
       }
       "showWorker" -> {
         showManual(configuration, allowNewBrowser = false)
@@ -225,25 +221,36 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
   private fun configure(ticket: Long, json: JSONObject) {
     val configuration = androidVpnWorkerConfiguration(
       json.opt("slot"), json.opt("generation"), json.getString("sourceId"),
-      json.getString("profileId"), json.opt("proxyPort"),
+      json.getString("profileId"), json.opt("proxyPort"), json.getString("profileHash"),
+      json.optBoolean("rotateFingerprintOnVpnChange", false),
     )
     val appOrigin = androidVpnWorkerAppOrigin(json.opt("_appOrigin"))
     check(WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE)) { "VPN workers require WebView multi-profile support." }
     lease.beginConfigure(configuration)
     cancelCalls("VPN worker reconfigured.", except = ticket)
     destroyBrowser()
-    val surface = FrameLayout(this)
-    val host = WebView(this).apply { visibility = View.INVISIBLE }
-    surface.addView(host, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
-    container = surface
-    dummy = host
-    proxyExecutor.execute {
-      val result = runCatching { configureAndroidVpnWebViewProxy(configuration.proxyPort) }
-      handler.post {
-        if (destroyed || lease.configuration?.generation != configuration.generation || !calls.containsKey(ticket)) return@post
+    releaseBrowserOwner { released ->
+      if (destroyed || lease.configuration?.generation != configuration.generation || !calls.containsKey(ticket)) return@releaseBrowserOwner
+      if (released.isFailure) {
+        lease.close()
+        reply(ticket, workerError(released.exceptionOrNull()?.message ?: "Previous browser route could not close."))
+        return@releaseBrowserOwner
+      }
+      val owner = "vpn:${configuration.slot}:${configuration.generation}"
+      browserOwner = owner
+      AndroidSiteBrowserOwner.acquire(owner, configuration.profileHash, configuration.proxyPort, configuration.rotateFingerprintOnVpnChange) { result ->
+        if (destroyed || lease.configuration?.generation != configuration.generation || !calls.containsKey(ticket)) {
+          AndroidSiteBrowserOwner.release(owner)
+          return@acquire
+        }
         result.fold(
           onSuccess = {
             runCatching {
+              val surface = FrameLayout(this)
+              val host = WebView(this).apply { visibility = View.INVISIBLE }
+              surface.addView(host, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
+              container = surface
+              dummy = host
               scraper = AndroidScraperBridge(
                 host, session,
                 output = { id, envelope ->
@@ -262,6 +269,7 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
                     androidVpnWorkerMayExecute(command.optString("method"), executionActive, lease.manualOpen, manualVisible)
                 },
                 appUrl = appOrigin,
+                browserOwnerId = owner,
               )
               surface.addOnLayoutChangeListener { _, left, top, right, bottom, oldLeft, oldTop, oldRight, oldBottom ->
                 if (right - left != oldRight - oldLeft || bottom - top != oldBottom - oldTop) scraper?.layoutWorkerBrowser()
@@ -273,12 +281,13 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
             }.onFailure { error ->
               lease.close()
               destroyBrowser()
-              reply(ticket, workerError(error.message ?: "VPN worker initialization failed."))
+              releaseBrowserOwner { reply(ticket, workerError(error.message ?: "VPN worker initialization failed.")) }
             }
           },
           onFailure = { error ->
             lease.close()
-            reply(ticket, workerError(error.message ?: "VPN worker proxy configuration failed."))
+            browserOwner = null
+            reply(ticket, workerError(error.message ?: "VPN worker browser route configuration failed."))
           },
         )
       }
@@ -387,10 +396,17 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
     container = null
   }
 
+  private fun releaseBrowserOwner(done: (Result<Unit>) -> Unit = {}) {
+    val owner = browserOwner
+    browserOwner = null
+    if (owner == null) done(Result.success(Unit)) else AndroidSiteBrowserOwner.release(owner, done)
+  }
+
   private fun releaseClient() {
     cancelCalls("VPN worker client disconnected.")
     lease.died()
     destroyBrowser()
+    releaseBrowserOwner()
     clientDeath?.let { death -> runCatching { client?.binder?.unlinkToDeath(death, 0) } }
     clientDeath = null
     client = null

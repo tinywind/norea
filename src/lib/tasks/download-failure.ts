@@ -72,8 +72,7 @@ export function isSourceForbiddenFailure(error: unknown): boolean {
 }
 
 /**
- * Groups terminal errors for diagnostics and manual recovery. These classes no
- * longer grant automatic attempts.
+ * Groups errors for diagnostics. The recovery policy separately authorizes bounded attempts.
  */
 export function classifyDownloadFailure(error: unknown): DownloadFailure {
   const summary = summarize(errorCode(error) === "chapter-media-incomplete" && isHttpNotFoundError(error)
@@ -107,7 +106,7 @@ export function classifyDownloadFailure(error: unknown): DownloadFailure {
   if (status !== undefined && status < 500 && status !== 408 && status !== 429) {
     return failure("content");
   }
-  return failure("transient");
+  return failure("transient", { retryAfterMs: retryAfter(error !== null && typeof error === "object" ? (error as { retryAfterMs?: unknown }).retryAfterMs : undefined) });
 }
 
 /** Download errors require an explicit retry, including formerly scheduled transient failures. */

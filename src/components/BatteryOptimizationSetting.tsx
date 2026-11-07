@@ -27,7 +27,7 @@ export function BatteryOptimizationSetting() {
 
   if (exempt === null) return null;
   return (
-    <SettingsSection>
+    <SettingsSection title={t("settings.downloads.background.title")}>
       <SettingsFieldRow
         description={t("downloads.battery.description")}
         error={openFailed ? t("downloads.battery.openFailed") : null}

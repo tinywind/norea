@@ -6,7 +6,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { DownloadFailureStops } from "../lib/tasks/download-failure-stop";
 import type { TaskSnapshot } from "../lib/tasks/task-types";
 
-const mocks = vi.hoisted(() => ({ resume: vi.fn(), direct: false, pending: null as string | null, busy: { current: false } }));
+const mocks = vi.hoisted(() => ({ resume: vi.fn(), navigate: vi.fn(), direct: false, pending: null as string | null, busy: { current: false } }));
 vi.mock("react", async original => {
   const react = await original<typeof import("react")>();
   return { ...react,
@@ -14,6 +14,7 @@ vi.mock("react", async original => {
     useRef: (initial: unknown) => mocks.direct ? mocks.busy : react.useRef(initial),
   };
 });
+vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
 vi.mock("../lib/tasks/chapter-download", () => ({ resumeChapterDownloadQueueAfterFailure: mocks.resume }));
 vi.mock("../lib/tasks/scheduler", () => ({ taskScheduler: { resumeSourceQueue: vi.fn() } }));
 vi.mock("../lib/plugins/manager", () => ({ pluginManager: { getPlugin: (id: string) => id === "installed" ? { name: "Installed source" } : undefined } }));
@@ -22,6 +23,7 @@ vi.mock("../i18n", async original => {
   return { ...i18n, useTranslation: () => ({ t: (key: import("../i18n").TranslationKey, values?: Record<string, string | number>) => i18n.translate("en", key, values) }) };
 });
 import { DownloadFailureStopNotice } from "./DownloadFailureStopNotice";
+import { useSettingsRevealStore } from "./settings/settings-reveal";
 
 type NoticeSnapshot = Pick<TaskSnapshot, "records"> & { downloadFailureStops?: DownloadFailureStops };
 function snapshot(stops?: DownloadFailureStops): NoticeSnapshot {
@@ -57,7 +59,8 @@ it("shows each stopped source name, actual error and semantic resume button", ()
   expect($('[data-download-failure-stop="source-a"]').text()).toContain("HTTP 503 from source.test");
   expect($('[data-download-failure-stop="installed"]').text()).toContain("Installed source downloads stopped");
   expect($('[data-download-failure-stop="unknown"]').text()).toContain("unknown downloads stopped");
-  expect($('[data-download-failure-stop="source-a"] button').text()).toBe("Resume source Source A");
+  expect($('[data-download-failure-stop="source-a"] button').first().text()).toBe("Resume source Source A");
+  expect($('[data-download-failure-stop="source-a"] button').last().text()).toBe("Error recovery settings");
   expect($('[data-download-failure-stop="source-a"] button').attr("type")).toBe("button");
 });
 
@@ -66,7 +69,7 @@ it("shows a global save failure without hiding the independent source stop", () 
   expect($("[role=alert]")).toHaveLength(2);
   expect($('[data-download-failure-stop="global"]').text()).toContain("Downloads stopped");
   expect($('[data-download-failure-stop="global"]').text()).toContain("Disk is full");
-  expect($('[data-download-failure-stop="global"] button').text()).toBe("Resume downloads");
+  expect($('[data-download-failure-stop="global"] button').first().text()).toBe("Resume downloads");
 });
 
 it("restores the queue before resuming only the selected source or explicit global scope", async () => {
@@ -107,4 +110,16 @@ it("settles a rejected recovery without leaving the button pending or hiding the
   const settled = elements(direct(state));
   expect(settled.find(element => element.props.onClick)!.props.loading).toBe(false);
   expect(settled.some(element => element.props.children === "Disk is full")).toBe(true);
+});
+
+it("opens the error policy row while preserving a history entry back to downloads", () => {
+  useSettingsRevealStore.setState({ target: null });
+  const button = elements(direct(snapshot({ sourceErrors: { "source-a": "HTTP 503" } })))
+    .find(element => element.props.children === "Error recovery settings")!;
+  button.props.onClick!();
+  expect(mocks.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: "downloads" } });
+  expect(useSettingsRevealStore.getState().target).toMatchObject({
+    section: "downloads", label: "Access denied (403)",
+  });
+  expect(mocks.resume).not.toHaveBeenCalled();
 });

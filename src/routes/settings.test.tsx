@@ -93,7 +93,7 @@ describe("settings sections", () => {
   });
 
   it.each([
-    ["downloads", ["Storage folder", "Concurrent source work", "Per-source chapter download cooldown"], ["Source request timeout"]],
+    ["downloads", ["Storage folder", "Concurrent source work", "Per-source chapter download cooldown", "Browser access &amp; error recovery", "Access denied (403)", "Maximum recovery attempts", "Refresh browser fingerprint when VPN changes"], ["Source request timeout"]],
     ["backup", ["Backup file", "Content server"], ["Plugin VPN"]],
     ["network", ["Plugin VPN"], ["Backup file"]],
     ["reset", ["Clear library", "Clear reading progress", "Clear updates tab", "Appearance defaults", "Reader defaults"], ["Clear WebView cache"]],
@@ -110,4 +110,17 @@ describe("settings sections", () => {
     expect(detail(renderSettings("data"))).toContain("Backup file");
     expect(detail(renderSettings("app"))).toContain("Theme mode");
   });
+});
+
+it("places the Android battery exemption in the downloads background group with the OS state intact", () => {
+  vi.stubGlobal("window", { __NoreaAndroidBatteryOptimization: { isIgnoring: () => false, request: vi.fn(() => true) } });
+  try {
+    const markup = detail(renderSettings("downloads"));
+    expect(markup).toContain("Background downloads");
+    expect(markup).toContain('data-settings-label="Battery optimization exemption"');
+    expect(markup).toContain(">Optimized<");
+    expect(markup).toContain('aria-label="Request battery optimization exemption"');
+  } finally {
+    vi.unstubAllGlobals();
+  }
 });

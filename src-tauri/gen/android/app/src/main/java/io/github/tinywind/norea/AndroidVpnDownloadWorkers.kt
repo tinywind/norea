@@ -116,7 +116,7 @@ internal class AndroidVpnDownloadWorkers(
       lastConfigurations[queue.slot] = null
     }
     if (method == "closeWorker" && androidVpnWorkerCloseAlreadySettled(queue.generation, workers[queue.slot]?.configuration?.generation)) {
-      resolve(id, workerSuccess(true))
+      settleClosedRoute(queue, id)
       return
     }
     val worker = workers[queue.slot] ?: throw IllegalStateException("VPN worker is not configured or has disconnected.")
@@ -147,7 +147,7 @@ internal class AndroidVpnDownloadWorkers(
       cancelPending(worker, "VPN worker closed.")
       if (worker.remote == null) {
         failWorker(worker, "VPN worker closed.")
-        resolve(id, workerSuccess(true))
+        settleClosedRoute(queue, id)
         return
       }
     }
@@ -178,16 +178,18 @@ internal class AndroidVpnDownloadWorkers(
     val configuration = androidVpnWorkerConfiguration(
       json.opt("slot"), json.opt("generation"),
       json.opt("sourceId") as? String ?: "", json.opt("profileId") as? String ?: "", json.opt("proxyPort"),
+      json.optString("profileHash"), json.optBoolean("rotateFingerprintOnVpnChange", false),
     )
     json.put("_appOrigin", androidVpnWorkerAppOrigin(webView.url))
+    check(workers.indices.none { it != configuration.slot && workers[it] != null }) { "Only one shared-profile browser worker may run at a time." }
     var previous = workers[configuration.slot]
     if (restoring) {
-      require(lastConfigurations[configuration.slot] == configuration) { "VPN worker recovery route is stale." }
+      require(lastConfigurations[configuration.slot]?.copy(rotateFingerprintOnVpnChange = configuration.rotateFingerprintOnVpnChange) == configuration) { "VPN worker recovery route is stale." }
       if (previous?.remote?.binder?.isBinderAlive == false) {
         failWorker(previous, "VPN worker process disconnected.")
         previous = null
       }
-      if (previous?.ready == true && previous.configuration == configuration) {
+      if (previous?.ready == true && previous.configuration.copy(rotateFingerprintOnVpnChange = configuration.rotateFingerprintOnVpnChange) == configuration) {
         resolve(id, workerSuccess(true))
         return
       }
@@ -230,7 +232,7 @@ internal class AndroidVpnDownloadWorkers(
     require(method == "cancel" || pending.values.none { it.id == id }) { "VPN worker request id is duplicated." }
     val timeout = Runnable { failWorker(worker, "VPN worker response timed out.") }
     pending[ticket] = Pending(id, method, worker, timeout)
-    val timeoutMs = if (method == "configureWorker") 20_000L else
+    val timeoutMs = if (method == "configureWorker") 75_000L else
       json.optLong("timeoutMs", 60_000L).coerceIn(1L, Long.MAX_VALUE - 30_000L) + 30_000L
     handler.postDelayed(timeout, timeoutMs)
   }
@@ -355,6 +357,14 @@ internal class AndroidVpnDownloadWorkers(
     cancelPending(worker, message)
     if (workers[worker.configuration.slot] === worker) workers[worker.configuration.slot] = null
     unbind(worker)
+  }
+
+  private fun settleClosedRoute(queue: AndroidVpnWorkerQueue, id: String) {
+    AndroidSiteBrowserOwner.release("vpn:${queue.slot}:${queue.generation}") { result ->
+      resolve(id, result.fold({ workerSuccess(true) }, {
+        workerError(it.message ?: "The shared worker browser route could not close.")
+      }))
+    }
   }
 
   private fun unbind(worker: Worker) {
