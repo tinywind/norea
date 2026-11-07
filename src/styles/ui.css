@@ -436,19 +436,6 @@
     line-height: var(--norea-leading-tight);
   }
 
-  /*
-   * The overflow is an icon-only button in the trailing cell. Bottom padding
-   * of one label line plus the icon gap lifts its glyph onto the same line
-   * as the labeled items' icons.
-   */
-  .norea-app-bar .norea-selection-bar-actions .norea-icon-button {
-    align-self: stretch;
-    height: 100%;
-    justify-self: stretch;
-    padding-bottom: calc(var(--norea-text-xs) * var(--norea-leading-tight) + 0.125rem);
-    width: auto;
-  }
-
   .norea-selection-action .mantine-Button-section {
     margin: 0;
   }

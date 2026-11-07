@@ -19,6 +19,8 @@ interface ElementProps {
   onClick?: () => void;
   "aria-pressed"?: boolean;
   "aria-expanded"?: boolean;
+  "aria-label"?: string;
+  "data-active"?: boolean;
 }
 
 function elements(node: ReactNode): ReactElement<ElementProps>[] {
@@ -45,7 +47,7 @@ function withClass(tree: ReactElement<ElementProps>[], className: string) {
 }
 
 function withLabel(tree: ReactElement<ElementProps>[], label: string) {
-  return tree.filter((element) => element.props.label === label);
+  return tree.filter((element) => (element.props.label ?? element.props["aria-label"]) === label);
 }
 
 it("shows the novel name over the chapter name", () => {
@@ -78,19 +80,52 @@ it("reports the bookmark as a pressed toggle", () => {
   expect(withLabel(topBar({ bookmarked: true }), "reader.removeBookmark")[0]!.props["aria-pressed"]).toBe(true);
 });
 
-it("disables chapter steps at the ends of the chapter list and reports the chapter list state", () => {
-  const tree = elements(ReaderBottomBar({
-    chapterListExpanded: true, focusHandlers, hasNextChapter: true, hasPreviousChapter: false,
-    onNextChapter: vi.fn(), onOpenChapters: vi.fn(), onOpenSettings: vi.fn(), onPreviousChapter: vi.fn(),
-    seekSlotRef: vi.fn(), settingsOpen: false,
-  }));
-  expect(withLabel(tree, "reader.previousChapter")[0]!.props.disabled).toBe(true);
-  expect(withLabel(tree, "reader.nextChapter")[0]!.props.disabled).toBe(false);
-  expect(withLabel(tree, "reader.chapters")[0]!.props["aria-expanded"]).toBe(true);
-  expect(withLabel(tree, "reader.openSettings")).toHaveLength(1);
+it.each([
+  { hasPreviousChapter: false, hasNextChapter: true, chapterListExpanded: true, settingsOpen: false },
+  { hasPreviousChapter: true, hasNextChapter: false, chapterListExpanded: false, settingsOpen: true },
+])("keeps labeled chapter actions, boundary guards and expanded states: %j", (state) => {
+  const onPreviousChapter = vi.fn();
+  const onNextChapter = vi.fn();
+  const onOpenChapters = vi.fn();
+  const onOpenSettings = vi.fn();
+  const seekSlotRef = vi.fn();
+  const footer = ReaderBottomBar({
+    ...state, focusHandlers, onNextChapter, onOpenChapters, onOpenSettings, onPreviousChapter, seekSlotRef,
+  });
+  const tree = elements(footer);
+  const previous = withLabel(tree, "reader.previousChapter")[0]!;
+  const next = withLabel(tree, "reader.nextChapter")[0]!;
+  const chapters = withLabel(tree, "reader.chapters")[0]!;
+  const settings = withLabel(tree, "reader.openSettings")[0]!;
+
+  expect(previous.props.children).toBe("reader.previousShort");
+  expect(next.props.children).toBe("reader.nextShort");
+  expect(chapters.props.children).toBe("reader.chapters");
+  expect(settings.props.children).toBe("reader.settingsShort");
+  expect(previous.props.disabled).toBe(!state.hasPreviousChapter);
+  expect(next.props.disabled).toBe(!state.hasNextChapter);
+  expect(chapters.props["aria-expanded"]).toBe(state.chapterListExpanded);
+  expect(chapters.props["data-active"]).toBe(state.chapterListExpanded || undefined);
+  expect(settings.props["aria-expanded"]).toBe(state.settingsOpen);
+  expect(settings.props["data-active"]).toBe(state.settingsOpen || undefined);
+  expect(previous.props.onClick).toBe(onPreviousChapter);
+  expect(next.props.onClick).toBe(onNextChapter);
+  expect(chapters.props.onClick).toBe(onOpenChapters);
+  expect(settings.props.onClick).toBe(onOpenSettings);
+  expect(footer.props.onFocus).toBe(focusHandlers.onFocus);
+  expect(footer.props.onBlur).toBe(focusHandlers.onBlur);
+  expect(footer.props.children[1].props.ref).toBe(seekSlotRef);
+  expect(footer.props.children.map((child: ReactElement<ElementProps>) =>
+    child.props["aria-label"] ?? child.props.className,
+  )).toEqual([
+    "reader.previousChapter", "norea-reader-seek-slot", "reader.nextChapter", "reader.chapters", "reader.openSettings",
+  ]);
 });
 
 it("centers the bottom bar position label when no horizontal seekbar shares its slot", () => {
   const css = readFileSync(new URL("../../styles/reader.css", import.meta.url), "utf8");
   expect(css).toMatch(/\.norea-reader-seek-label:only-child \{\s*margin-inline: auto;/);
+  expect(css).toContain('grid-template-areas: "previous seek next chapters settings";');
+  expect(css).toMatch(/\.norea-reader-footer-action\.mantine-Button-root \{[^}]*min-height: var\(--norea-control-md\);[^}]*min-width: var\(--norea-control-md\);/);
+  expect(css).toMatch(/\.norea-reader-footer-action \.mantine-Button-inner \{\s*flex-direction: column;/);
 });

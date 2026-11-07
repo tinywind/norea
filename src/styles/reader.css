@@ -47,6 +47,56 @@
   justify-items: center;
 }
 
+/* Keep labeled actions compact enough to share one row with chapter progress. */
+.norea-reader-bottombar .norea-reader-footer-action.mantine-Button-root,
+.norea-pdf-reader-zoom .norea-reader-footer-action.mantine-Button-root {
+  background: transparent;
+  border: 0;
+  color: inherit;
+  font-size: var(--norea-text-xs);
+  font-weight: var(--norea-weight-medium);
+  height: auto;
+  min-height: var(--norea-control-md);
+  min-width: var(--norea-control-md);
+  padding: var(--norea-space-1);
+}
+
+.norea-reader-footer-action .mantine-Button-inner {
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.norea-reader-footer-action .mantine-Button-section {
+  margin: 0;
+}
+
+.norea-reader-footer-action .mantine-Button-section > svg {
+  height: var(--norea-icon-md);
+  width: var(--norea-icon-md);
+}
+
+.norea-reader-footer-action .mantine-Button-label {
+  line-height: var(--norea-leading-tight);
+}
+
+.norea-reader-bottombar .norea-reader-footer-action.mantine-Button-root[data-active="true"] {
+  color: var(--norea-color-accent);
+}
+
+.norea-reader-bottombar .norea-reader-footer-action.mantine-Button-root:disabled,
+.norea-pdf-reader-zoom .norea-reader-footer-action.mantine-Button-root:disabled {
+  cursor: not-allowed;
+  opacity: var(--norea-disabled-opacity);
+}
+
+@media (hover: hover) {
+  .norea-reader-bottombar .norea-reader-footer-action.mantine-Button-root:hover:not(:disabled),
+  .norea-pdf-reader-zoom .norea-reader-footer-action.mantine-Button-root:hover:not(:disabled) {
+    background: transparent;
+    color: var(--norea-color-accent);
+  }
+}
+
 .norea-reader-bottombar-previous {
   grid-area: previous;
 }
@@ -88,6 +138,13 @@
 /* Without a horizontal seekbar (scroll mode) the label is the slot's only content and sits centered. */
 .norea-reader-seek-label:only-child {
   margin-inline: auto;
+}
+
+@media (max-width: 420px) {
+  .norea-reader-seek-slot {
+    gap: var(--norea-space-1);
+    padding-inline: var(--norea-space-1);
+  }
 }
 
 .norea-reader-icon-button,

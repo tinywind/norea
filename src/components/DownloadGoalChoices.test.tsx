@@ -5,6 +5,7 @@ import type { NovelDownloadGoal } from "../db/queries/novel-download-goal";
 const hooks = vi.hoisted(() => ({ index: 0, slots: [] as unknown[] }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
+  useId: () => "download-goal-choices",
   useState: (initial: unknown) => {
     const index = hooks.index++;
     if (!(index in hooks.slots)) hooks.slots[index] = initial;
@@ -15,10 +16,13 @@ vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) 
 
 import { DownloadGoalChoices } from "./DownloadGoalChoices";
 import { SegmentedToggle } from "./SegmentedToggle";
-import { ListRow } from "./ui/ListRow";
+import { SettingsFieldRow } from "./SettingsPrimitives";
 
 interface Props {
-  "aria-checked"?: boolean;
+  checked?: boolean;
+  label?: string;
+  name?: string;
+  type?: string;
   children?: ReactNode;
   disabled?: boolean;
   onChange?: (value: string) => void;
@@ -41,12 +45,15 @@ function render(current: NovelDownloadGoal = { kind: "none" }, disabled = false)
 beforeEach(() => { hooks.slots = []; onChoose.mockClear(); });
 
 it("offers one global policy with no inherited or per-work default choice", () => {
-  const rows = render({ kind: "entire" }).filter(element => element.type === ListRow);
-  expect(rows.map(row => row.props.title)).toEqual([
+  const tree = render({ kind: "entire" });
+  const rows = tree.filter(element => element.type === SettingsFieldRow);
+  const radios = tree.filter(element => element.type === "input" && element.props.type === "radio");
+  expect(rows.map(row => row.props.label)).toEqual([
     "downloadGoals.kind.none", "downloadGoals.kind.keepAhead", "downloadGoals.kind.allRemaining", "downloadGoals.kind.entire",
   ]);
-  expect(rows.filter(row => row.props["aria-checked"]).map(row => row.props.title)).toEqual(["downloadGoals.kind.entire"]);
-  rows[0]!.props.onClick!();
+  expect(radios.filter(row => row.props.checked).map(row => row.props.value)).toEqual(["entire"]);
+  expect(new Set(radios.map(row => row.props.name))).toEqual(new Set(["download-goal-choices"]));
+  radios[0]!.props.onChange!("none");
   expect(onChoose).toHaveBeenCalledExactlyOnceWith({ kind: "none" });
 });
 
@@ -59,7 +66,7 @@ it("keeps supported saved counts visible and changes the shared policy when a co
 });
 
 it("disables policy controls only for the settings operation's busy state", () => {
-  const controls = render({ kind: "none" }, true).filter(element => element.type === ListRow || element.type === SegmentedToggle);
+  const controls = render({ kind: "none" }, true).filter(element => (element.type === "input" && element.props.type === "radio") || element.type === SegmentedToggle);
   expect(controls).toHaveLength(5);
   expect(controls.every(element => element.props.disabled)).toBe(true);
 });

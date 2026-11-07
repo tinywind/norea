@@ -43,7 +43,6 @@ import { LocalImportReviewRow } from "./LocalImportReviewRow";
 const LOCAL_IMPORT_ACCEPT = ".txt,.html,.htm,.md,.markdown,.epub,.pdf";
 export interface LibraryLocalImportHandle {
   openFilePicker: () => void;
-  openLocalHome: () => void;
 }
 
 export const LibraryLocalImport = forwardRef<
@@ -202,9 +201,8 @@ export const LibraryLocalImport = forwardRef<
     ref,
     () => ({
       openFilePicker: () => localImportInputRef.current?.click(),
-      openLocalHome: () => openLocalHome.mutate(),
     }),
-    [openLocalHome],
+    [],
   );
   return (
     <>
@@ -229,7 +227,7 @@ export const LibraryLocalImport = forwardRef<
                 type="button"
                 variant="default"
               >
-                {t("library.localNovel.create")}
+                {t("library.localImport.viewCollection")}
               </Button>
               <Button onClick={dismissBatch} type="button">
                 {t("common.done")}

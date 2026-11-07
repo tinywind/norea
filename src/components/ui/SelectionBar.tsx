@@ -1,10 +1,11 @@
 import { Button } from "@mantine/core";
-import { useId, type ReactNode } from "react";
+import { useId, type ComponentProps, type ComponentPropsWithRef, type ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import { useBodyFlag } from "../../lib/use-body-flag";
 import { PageHeader } from "../AppFrame";
 import { IconButton } from "../IconButton";
-import { DeselectIcon, SelectAllIcon, type AppIcon } from "./icons";
+import { DeselectIcon, OverflowIcon, SelectAllIcon, type AppIcon } from "./icons";
+import { OverflowMenu } from "./OverflowMenu";
 
 interface SelectionBarProps {
   /** Labeled actions: a bottom bar below 768px, inline in the bar above. */
@@ -93,15 +94,14 @@ export function SelectionBar({
   );
 }
 
-interface SelectionActionProps {
-  disabled?: boolean;
+interface SelectionActionProps extends ComponentPropsWithRef<"button"> {
   icon: AppIcon;
   label: string;
-  onClick?: () => void;
 }
 
 /** A labeled selection action: icon over label on phones, inline above. */
 export function SelectionAction({
+  className,
   disabled,
   icon: Icon,
   label,
@@ -110,7 +110,7 @@ export function SelectionAction({
 }: SelectionActionProps) {
   return (
     <Button
-      className="norea-selection-action"
+      className={`norea-selection-action${className ? ` ${className}` : ""}`}
       disabled={disabled}
       leftSection={<Icon size="1.25rem" />}
       onClick={onClick}
@@ -119,5 +119,21 @@ export function SelectionAction({
     >
       {label}
     </Button>
+  );
+}
+
+/** The same labeled action as its siblings, with the menu's focus behavior. */
+export function SelectionOverflowMenu({
+  disabled,
+  items,
+  label,
+}: Omit<ComponentProps<typeof OverflowMenu>, "trigger">) {
+  return (
+    <OverflowMenu
+      disabled={disabled}
+      items={items}
+      label={label}
+      trigger={<SelectionAction disabled={disabled} icon={OverflowIcon} label={label} />}
+    />
   );
 }

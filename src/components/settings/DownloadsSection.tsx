@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { NumberInput, Select, Stack, Switch, Text } from "@mantine/core";
+import { NumberInput, Select, Stack, Switch } from "@mantine/core";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ChapterCleanupPanel } from "../ChapterCleanupPanel";
 import { BatteryOptimizationSetting } from "../BatteryOptimizationSetting";
@@ -9,7 +9,6 @@ import {
   SettingsAdvancedGroup,
   SettingsFieldRow,
   SettingsSection,
-  SettingsWideField,
 } from "../SettingsPrimitives";
 import { IconButton } from "../IconButton";
 import { TrashIcon, FolderIcon } from "../ui/icons";
@@ -130,46 +129,37 @@ function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
   return (
     <SettingsSection title={t("settings.data.mediaStorage.title")}>
       <StorageRecoveryBanner />
-      <SettingsFieldRow
-        label={t("settings.data.mediaStorage.folder.label")}
-        description={
-          isAndroidRuntime()
-            ? t("settings.data.mediaStorage.folder.androidDefaultDescription")
-            : t("settings.data.mediaStorage.folder.description")
-        }
-        error={loadError}
-        layout="stacked"
-      >
-        <SettingsWideField>
-          <Text className="norea-settings-path-value">
-            {mediaStorageRoot
-              ? formatStorageFolder(mediaStorageRoot, t("settings.data.mediaStorage.folder.internal"))
-              : t("settings.data.mediaStorage.folder.empty")}
-          </Text>
-        </SettingsWideField>
-      </SettingsFieldRow>
-      <SettingsFieldRow
-        label={t("settings.data.mediaStorage.change.label")}
-        description={
-          isAndroidRuntime()
-            ? t("settings.data.mediaStorage.change.androidDefaultDescription")
-            : t("settings.data.mediaStorage.change.description")
-        }
-      >
-        <IconButton
-          label={isAndroidRuntime()
-            ? t("storageSetup.selectExternalFolder")
-            : t("storageSetup.selectFolder")}
-          size="lg"
-          loading={mediaStorageBusy}
-          disabled={mediaStorageBusy || isBusy}
-          onClick={() => {
-            void chooseMediaStorageRoot();
-          }}
+      <div className="norea-media-storage-folder">
+        <SettingsFieldRow
+          label={t("settings.data.mediaStorage.folder.label")}
+          description={[
+            isAndroidRuntime()
+              ? t("settings.data.mediaStorage.folder.androidDefaultDescription")
+              : t("settings.data.mediaStorage.folder.description"),
+            isAndroidRuntime()
+              ? t("settings.data.mediaStorage.change.androidDefaultDescription")
+              : t("settings.data.mediaStorage.change.description"),
+          ].join(" ")}
+          status={mediaStorageRoot
+            ? formatStorageFolder(mediaStorageRoot, t("settings.data.mediaStorage.folder.internal"))
+            : t("settings.data.mediaStorage.folder.empty")}
+          error={loadError}
         >
-          <FolderIcon />
-        </IconButton>
-      </SettingsFieldRow>
+          <IconButton
+            label={isAndroidRuntime()
+              ? t("storageSetup.selectExternalFolder")
+              : t("storageSetup.selectFolder")}
+            size="lg"
+            loading={mediaStorageBusy}
+            disabled={mediaStorageBusy || isBusy}
+            onClick={() => {
+              void chooseMediaStorageRoot();
+            }}
+          >
+            <FolderIcon />
+          </IconButton>
+        </SettingsFieldRow>
+      </div>
     </SettingsSection>
   );
 }

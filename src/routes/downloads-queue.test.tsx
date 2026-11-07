@@ -164,9 +164,54 @@ describe("task work group order", () => {
     const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
     expect($(".norea-downloads-summary")).toHaveLength(0);
     const warning = $("button.norea-downloads-warning");
-    expect(warning.text()).toBe("Blocked 1");
-    expect(warning.attr("aria-label")).toBe("Show what needs attention: Blocked 1");
+    expect(warning.text()).toBe("Blocked sources 1");
+    expect(warning.attr("aria-label")).toBe("Show what needs attention: Blocked sources 1");
   });
+  it("shares one HTTP 403 warning across ordinary plugin scopes without hiding the blocked source count", () => {
+    const first = {
+      challenge: { kind: "forbidden" as const, url: "https://source.test/first" },
+      detectedAt: 1, revision: 3, scopeKey: "plugin:source-a:site:source.test", sourceId: "source-a",
+      verificationRequested: false,
+    };
+    const second = { ...first, sourceId: "source-b", scopeKey: "plugin:source-b:site:source.test", revision: 5,
+      challenge: { kind: "forbidden" as const, url: "https://source.test/second" } };
+    state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceAccessBlocks: [first, second] };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($(".norea-source-access-banner")).toHaveLength(1);
+    expect($(".norea-source-access-banner").text()).toContain("Sources: source-a, source-b");
+    expect($("button.norea-downloads-warning").text()).toBe("Blocked sources 2");
+    expect(state.snapshot.sourceAccessBlocks).toEqual([first, second]);
+  });
+
+  it("keeps different challenges for one plugin separate and counts scopes rather than duplicate sources", () => {
+    const captcha = {
+      challenge: { kind: "captcha" as const, url: "https://previous.test" },
+      detectedAt: 1, revision: 3, scopeKey: "plugin:source:site:previous.test", sourceId: "source",
+      verificationRequested: false,
+    };
+    const forbidden = { ...captcha, scopeKey: "plugin:source:site:current.test", revision: 5,
+      challenge: { kind: "forbidden" as const, url: "https://current.test" } };
+    state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceAccessBlocks: [captcha, forbidden] };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($(".norea-source-access-banner")).toHaveLength(2);
+    expect($("button.norea-downloads-warning").text()).toBe("Blocked 2");
+  });
+
+  it("does not count a VPN range as an additional ordinary source in the warning badge", () => {
+    const ordinary = {
+      challenge: { kind: "forbidden" as const, url: "https://source.test" },
+      detectedAt: 1, revision: 3, scopeKey: "plugin:source-a:site:source.test", sourceId: "source-a",
+      verificationRequested: false,
+    };
+    const vpn = { ...ordinary, sourceId: "source-b", scopeKey: "plugin:source-b:site:source.test:range:vpn",
+      revision: 5, rangeId: "vpn", workerGeneration: 1 };
+    state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceAccessBlocks: [ordinary, vpn] };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($(".norea-source-access-banner")).toHaveLength(1);
+    expect($(".norea-source-access-banner").attr("data-source-access")).toBe(ordinary.scopeKey);
+    expect($("button.norea-downloads-warning").text()).toBe("Blocked 2");
+  });
+
   it("states a failed chapter in plain words and keeps the raw error behind Details", () => {
     const failed = { ...chapter(4, 3, "failed"), error: "scraper: browser fetch failed: Failed to fetch" };
     state.snapshot = {

@@ -95,26 +95,39 @@
   margin-top: var(--norea-space-2);
 }
 
+/* Reserve the header actions before sizing the native tab scroll viewport. */
+.norea-library-app-bar .norea-app-bar-slot {
+  flex-basis: 0;
+  overflow: hidden;
+}
+
+.norea-library-app-bar .norea-app-bar-actions {
+  flex-shrink: 0;
+}
+
 .norea-library-category-tabs {
   border-bottom: 1px solid var(--norea-color-rule);
   display: flex;
-  flex: 0 0 auto;
+  flex: 1 1 0;
   gap: var(--norea-space-1);
+  min-width: 0;
   overflow-x: auto;
+  overflow-y: hidden;
+  overscroll-behavior-x: contain;
   padding: 0 var(--norea-space-2);
+  scroll-padding-inline: var(--norea-space-1);
   scrollbar-width: none;
+}
+
+.norea-library-category-tabs::-webkit-scrollbar {
+  display: none;
 }
 
 /* In the app bar the tabs fill its height and its bottom rule replaces their own. */
 .norea-app-bar .norea-library-category-tabs {
   align-self: stretch;
   border-bottom: 0;
-  min-width: 0;
-  padding: 0;
-}
-
-.norea-app-bar .norea-library-category-tab {
-  min-height: 0;
+  padding: 0 var(--norea-space-1);
 }
 
 .norea-library-category-tab {
@@ -124,9 +137,15 @@
   display: inline-flex;
   flex: 0 0 auto;
   gap: var(--norea-space-2);
-  max-width: 12rem;
+  max-width: min(12rem, 100%);
   min-height: var(--norea-control-md);
+  min-width: var(--norea-control-md);
   padding: 0 var(--norea-space-3);
+}
+
+.norea-library-category-tab:focus-visible {
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
+  outline-offset: -2px;
 }
 
 .norea-library-category-tab[data-active="true"] {

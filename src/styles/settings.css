@@ -483,6 +483,11 @@ html:root .norea-settings-inline-controls > :is(.mantine-Button-root, .norea-tex
   min-height: 7rem;
 }
 
+/* The current storage path and its picker share one row with a compact action column. */
+.norea-media-storage-folder > .norea-settings-form-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+}
+
 .norea-settings-path-value {
   background: var(--norea-color-surface-raised);
   border: 1px solid var(--norea-color-rule);

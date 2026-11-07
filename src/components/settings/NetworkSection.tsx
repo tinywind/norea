@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { PasswordInput, Switch, Text, TextInput } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { PluginVpnFinder, pluginVpnFinderVerdictCaptureSource } from "../PluginVpnFinder";
+import { PluginVpnFinder } from "../PluginVpnFinder";
 import { SavedVpnProfilesSettings } from "../SavedVpnProfilesSettings";
 import { TestedVpnServers } from "../TestedVpnServers";
 import {
@@ -39,7 +39,6 @@ import {
   switchPluginVpnFinderServer,
   switchPluginVpnSavedProfile,
   PluginVpnConnectionNotEstablishedError,
-  type PluginVpnFinderServer,
   type PluginVpnFinderSwitchLifecycle,
   type PluginVpnCredentials,
   type PluginVpnPhase,
@@ -245,35 +244,6 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
       void queryClient.invalidateQueries({ queryKey: SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY });
       void queryClient.invalidateQueries({ queryKey: VPN_GATE_SERVER_VERDICTS_QUERY_KEY });
       updateVerdictSavingState(ip, false);
-    }
-  }
-
-  /** Finder bulk action: captures each server's exact profile in turn, as its Preferred toggle does. */
-  async function addFinderServersToPreferred(
-    servers: readonly PluginVpnFinderServer[],
-  ): Promise<void> {
-    const failures: string[] = [];
-    for (const server of servers) {
-      const error = await saveServerVerdict(
-        server.ip,
-        "works",
-        pluginVpnFinderVerdictCaptureSource(server),
-      );
-      if (error !== null) failures.push(`${server.ip}: ${error}`);
-    }
-    const saved = servers.length - failures.length;
-    if (saved > 0) {
-      showSettingsToast("ok", t("settings.data.pluginVpn.selection.preferred", { count: saved }));
-    }
-    if (failures.length > 0) {
-      showSettingsToast(
-        "danger",
-        t("settings.data.pluginVpn.title"),
-        t("settings.data.pluginVpn.selection.preferFailed", {
-          count: failures.length,
-          error: failures.join("; "),
-        }),
-      );
     }
   }
 
@@ -690,7 +660,6 @@ export function NetworkSection({ isBusy }: { isBusy: boolean }) {
             connectionTarget={status?.profile?.remoteHost ?? null}
             disabled={finderDisabled}
             disabledReason={finderDisabledReason}
-            onAddToPreferred={addFinderServersToPreferred}
             onApplyAndConnect={applyAndConnectFinderServer}
             onCancelConnection={disconnect}
             onClose={() => setFinderOpen(false)}

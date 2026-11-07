@@ -29,7 +29,8 @@ import { DownloadFailureStopNotice } from "../components/DownloadFailureStopNoti
 import { DownloadRecoveryStatus } from "../components/DownloadRecoveryStatus";
 import { DownloadGoalAttention } from "../components/DownloadGoalAttention";
 import { DownloadGoalWorkLine } from "../components/DownloadGoalWorkLine";
-import { SourceAccessBanner } from "../components/SourceAccessBanner";
+import { SourceAccessBannerGroup } from "../components/SourceAccessBanner";
+import { groupSourceAccessBanners } from "../components/source-access-groups";
 import { DownloadWorkStatusLabel, type DownloadWorkStatus } from "../components/DownloadWorkStatusLabel";
 import { VpnDownloadAttention } from "../components/VpnDownloadAttention";
 import { VpnDownloadLaunchDialog } from "../components/VpnDownloadLaunchDialog";
@@ -979,11 +980,10 @@ function NeedsAttentionSection({
       <Text className="norea-downloads-section-title" component="h2" id="norea-downloads-attention-title">
         {t("vpnDownload.attention.title")}
       </Text>
-      {blocks.map((block) => (
-        <SourceAccessBanner
-          block={block}
-          key={block.scopeKey}
-          sourceNames={sourceAccessBlockSourceNames(block, snapshot)}
+      {groupSourceAccessBanners(blocks).map((group) => (
+        <SourceAccessBannerGroup
+          entries={group.blocks.map(block => ({ block, sourceNames: sourceAccessBlockSourceNames(block, snapshot) }))}
+          key={group.key}
         />
       ))}
       <DownloadFailureStopNotice snapshot={snapshot} />
@@ -1279,9 +1279,13 @@ export function DownloadsQueueView({
     taskStats.retrying > 0 ? t("tasks.summary.retrying", { count: taskStats.retrying }) : null,
     taskStats.succeeded > 0 ? t("tasks.summary.done", { count: taskStats.succeeded }) : null,
   ].filter((part) => part !== null);
+  // A scope count is also a source count only when each ordinary source occurs once.
+  const blockedCountKey = snapshot.sourceAccessBlocks.every(block => block.rangeId === undefined) &&
+    new Set(snapshot.sourceAccessBlocks.map(block => block.sourceId)).size === snapshot.sourceAccessBlocks.length
+    ? "tasks.summary.blockedSources" : "tasks.summary.blocked";
   const warningParts = [
     snapshot.sourceAccessBlocks.length > 0
-      ? t("tasks.summary.blocked", { count: snapshot.sourceAccessBlocks.length })
+      ? t(blockedCountKey, { count: snapshot.sourceAccessBlocks.length })
       : null,
     taskStats.failed > 0 ? t("tasks.summary.failed", { count: taskStats.failed }) : null,
   ].filter((part) => part !== null);

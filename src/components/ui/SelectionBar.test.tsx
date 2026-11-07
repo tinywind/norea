@@ -8,8 +8,7 @@ import { expect, it, vi } from "vitest";
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
 import { DownloadIcon } from "./icons";
-import { OverflowMenu } from "./OverflowMenu";
-import { SelectionAction, SelectionBar } from "./SelectionBar";
+import { SelectionAction, SelectionBar, SelectionOverflowMenu } from "./SelectionBar";
 
 function renderBar(props: Partial<ComponentProps<typeof SelectionBar>> = {}) {
   return load(renderToStaticMarkup(
@@ -89,23 +88,39 @@ it("draws the phone action bar as the bottom navigation's twin, with the safe ar
   expect(phone).not.toMatch(/\.norea-selection-bar-actions \{[^}]*margin/);
 });
 
-it("puts the overflow in the action bar as an icon-only trailing button", () => {
+it("gives every bottom action, including overflow, a visible label", () => {
   const $ = renderBar({
     actions: (
       <>
         <SelectionAction icon={DownloadIcon} label="Download" onClick={vi.fn()} />
-        <OverflowMenu items={[]} label="More" />
+        <SelectionOverflowMenu items={[]} label="More" />
       </>
     ),
   });
   const actions = $(".norea-selection-bar-actions").children();
-  expect(actions.last().attr("aria-label")).toBe("More");
-  expect(actions.last().hasClass("norea-icon-button")).toBe(true);
-  expect(actions.last().text()).toBe("");
+  expect(actions.map((_, action) => $(action).text()).get()).toEqual(["Download", "More"]);
+  expect(actions.last().attr("aria-haspopup")).toBe("menu");
+  expect(actions.last().attr("aria-expanded")).toBe("false");
 });
 
 it("hides the phone navigation while the selection bar is shown", () => {
   const css = readFileSync(new URL("../../styles/ui.css", import.meta.url), "utf8");
   const phone = css.slice(css.lastIndexOf("@media (max-width: 767px)"));
   expect(phone).toMatch(/body\[data-norea-selection-bar\] \.norea-mobile-nav \{\s*visibility: hidden;/);
+});
+
+it("preserves a short visible label, descriptive accessible name and disabled menu trigger", () => {
+  const $ = renderBar({
+    actions: (
+      <>
+        <SelectionAction aria-label="Mark selected novels read" icon={DownloadIcon} label="Read" />
+        <SelectionOverflowMenu disabled items={[]} label="More" />
+      </>
+    ),
+  });
+  const actions = $(".norea-selection-bar-actions button");
+  expect(actions.first().text()).toBe("Read");
+  expect(actions.first().attr("aria-label")).toBe("Mark selected novels read");
+  expect(actions.last().text()).toBe("More");
+  expect(actions.last().attr("disabled")).toBeDefined();
 });

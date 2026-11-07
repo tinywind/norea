@@ -93,6 +93,7 @@ export function LibraryAppBar({
           <OverflowMenu items={overflowItems} label={t("common.more")} />
         </>
       }
+      className="norea-library-app-bar"
       title={t("nav.library")}
       titleHidden
     >

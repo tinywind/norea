@@ -1,3 +1,4 @@
+import { Button } from "@mantine/core";
 import { useEffect, useRef, useState, type CSSProperties, type FocusEvent } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation } from "../../i18n";
@@ -182,45 +183,53 @@ export function ReaderBottomBar({
 
   return (
     <footer className="norea-reader-bottombar" {...focusHandlers}>
-      <IconButton
-        className="norea-reader-icon-button norea-reader-bottombar-previous norea-state-layer"
+      <Button
+        aria-label={t("reader.previousChapter")}
+        className="norea-reader-footer-action norea-reader-bottombar-previous norea-state-layer"
         disabled={!hasPreviousChapter}
-        label={t("reader.previousChapter")}
+        leftSection={<ChevronLeftIcon />}
         onClick={onPreviousChapter}
-        size="sm"
+        title={t("reader.previousChapter")}
+        variant="subtle"
       >
-        <ChevronLeftIcon />
-      </IconButton>
+        {t("reader.previousShort")}
+      </Button>
       <div className="norea-reader-seek-slot" ref={seekSlotRef} />
-      <IconButton
-        className="norea-reader-icon-button norea-reader-bottombar-next norea-state-layer"
+      <Button
+        aria-label={t("reader.nextChapter")}
+        className="norea-reader-footer-action norea-reader-bottombar-next norea-state-layer"
         disabled={!hasNextChapter}
-        label={t("reader.nextChapter")}
+        leftSection={<ChevronRightIcon />}
         onClick={onNextChapter}
-        size="sm"
+        title={t("reader.nextChapter")}
+        variant="subtle"
       >
-        <ChevronRightIcon />
-      </IconButton>
-      <IconButton
-        active={chapterListExpanded}
+        {t("reader.nextShort")}
+      </Button>
+      <Button
         aria-expanded={chapterListExpanded}
-        className="norea-reader-icon-button norea-reader-bottombar-chapters norea-state-layer"
-        label={t("reader.chapters")}
+        aria-label={t("reader.chapters")}
+        className="norea-reader-footer-action norea-reader-bottombar-chapters norea-state-layer"
+        data-active={chapterListExpanded || undefined}
+        leftSection={<ChapterListIcon />}
         onClick={onOpenChapters}
-        size="sm"
+        title={t("reader.chapters")}
+        variant="subtle"
       >
-        <ChapterListIcon />
-      </IconButton>
-      <IconButton
-        active={settingsOpen}
+        {t("reader.chapters")}
+      </Button>
+      <Button
         aria-expanded={settingsOpen}
-        className="norea-reader-icon-button norea-reader-bottombar-settings norea-state-layer"
-        label={t("reader.openSettings")}
+        aria-label={t("reader.openSettings")}
+        className="norea-reader-footer-action norea-reader-bottombar-settings norea-state-layer"
+        data-active={settingsOpen || undefined}
+        leftSection={<ReaderSettingsIcon />}
         onClick={onOpenSettings}
-        size="sm"
+        title={t("reader.openSettings")}
+        variant="subtle"
       >
-        <ReaderSettingsIcon />
-      </IconButton>
+        {t("reader.settingsShort")}
+      </Button>
     </footer>
   );
 }

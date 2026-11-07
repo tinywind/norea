@@ -534,11 +534,16 @@ it("replaces the app bar with a labeled selection bar from the visible Select ic
       .filter((label) => typeof label === "string");
     expect(labels).toEqual(expect.arrayContaining([
       "novel.selection.downloadSelected",
-      "novel.selection.markRead",
-      "novel.selection.markUnread",
-      "novel.selection.selectRange",
+      "selection.markRead",
+      "selection.markUnread",
+      "selection.selectRange",
       "common.more",
     ]));
+    for (const action of ["markRead", "markUnread", "selectRange"]) {
+      const button = collectElements(bar.props.actions as Parameters<typeof collectElements>[0])
+        .find((element) => element.props.label === `selection.${action}`);
+      expect(button?.props["aria-label"]).toBe(`novel.selection.${action}`);
+    }
     expect(find((props) => props.className === "norea-novel-app-bar")).toBeUndefined();
   });
 });
@@ -691,7 +696,7 @@ it("adds chapters chosen by number to the selection, prefilled from the range st
     await run(() => (chapterList(find).props.onToggleSelected as (id: number) => void)(2));
     const bar = find((props) => typeof props.onSelectAll === "function")!;
     const selectRange = collectElements(bar.props.actions as ReturnType<typeof NovelDetailPage>)
-      .find((element) => element.props.label === "novel.selection.selectRange")!;
+      .find((element) => element.props.label === "selection.selectRange")!;
     await run(() => (selectRange.props.onClick as () => void)());
     const sheet = () => find((props) => typeof props.onSelect === "function" && "initialFrom" in props)!;
     expect(sheet().props.opened).toBe(true);

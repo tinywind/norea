@@ -5,7 +5,6 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageFrame, StateView } from "../components/AppFrame";
-import { IconButton } from "../components/IconButton";
 import {
   CategoryList,
   CategoryManager,
@@ -52,16 +51,12 @@ import {
   MarkReadIcon,
   MarkUnreadIcon,
   DownloadIcon,
-  FolderIcon,
   ImportIcon,
   RefreshAllIcon,
   SettingsIcon,
 } from "../components/ui/icons";
-import {
-  OverflowMenu,
-  type OverflowMenuItem,
-} from "../components/ui/OverflowMenu";
-import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
+import type { OverflowMenuItem } from "../components/ui/OverflowMenu";
+import { SelectionAction, SelectionBar, SelectionOverflowMenu } from "../components/ui/SelectionBar";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
 import { showErrorToast } from "../lib/runtime/error-toast";
@@ -82,10 +77,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const categoryDialogsRef = useRef<LibraryCategoryDialogsHandle>(null);
   const openLocalImportInput = useCallback(
     () => localImportRef.current?.openFilePicker(),
-    [],
-  );
-  const openLocalHome = useCallback(
-    () => localImportRef.current?.openLocalHome(),
     [],
   );
   const openCreateCategory = useCallback(
@@ -338,11 +329,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       onClick: openLocalImportInput,
     },
     {
-      icon: FolderIcon,
-      label: t("library.localNovel.create"),
-      onClick: openLocalHome,
-    },
-    {
       icon: CategoryIcon,
       label: t("library.manageCategories"),
       onClick: () => setCategoryManagerOpen(true),
@@ -384,23 +370,21 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     label={t("library.selection.categories")}
                     onClick={() => setCategorySheetOpen(true)}
                   />
-                  <IconButton
+                  <SelectionAction
+                    aria-label={t("library.selection.markRead")}
                     disabled={selectedIds.size === 0 || setNovelsReadStateMutation.isPending}
-                    label={t("library.selection.markRead")}
+                    icon={MarkReadIcon}
+                    label={t("selection.markRead")}
                     onClick={() => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: false })}
-                    size="lg"
-                  >
-                    <MarkReadIcon />
-                  </IconButton>
-                  <IconButton
+                  />
+                  <SelectionAction
+                    aria-label={t("library.selection.markUnread")}
                     disabled={selectedIds.size === 0 || setNovelsReadStateMutation.isPending}
-                    label={t("library.selection.markUnread")}
+                    icon={MarkUnreadIcon}
+                    label={t("selection.markUnread")}
                     onClick={() => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: true })}
-                    size="lg"
-                  >
-                    <MarkUnreadIcon />
-                  </IconButton>
-                  <OverflowMenu
+                  />
+                  <SelectionOverflowMenu
                     items={[
                       {
                         disabled: selectedIds.size === 0 || refreshAllMetadataMutation.isPending,

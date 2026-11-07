@@ -49,19 +49,40 @@ interface CategoryTabsProps {
   onSelect: (id: number | null) => void;
 }
 
+/** Reveals a tab without moving the page or any other scroll container. */
+function revealCategoryTab(strip: HTMLDivElement | null, tab: HTMLButtonElement | null): void {
+  if (!strip || !tab || strip.clientWidth === 0) return;
+  const left = strip.getBoundingClientRect().left + strip.clientLeft;
+  const right = left + strip.clientWidth;
+  const bounds = tab.getBoundingClientRect();
+  const delta = bounds.left < left
+    ? bounds.left - left
+    : bounds.right > right ? bounds.right - right : 0;
+  if (delta !== 0) strip.scrollBy({ left: delta });
+}
+
 /** Horizontally scrolling category switcher for phones and tablets. */
 export function CategoryTabs({ activeId, entries, onSelect }: CategoryTabsProps) {
   const { t } = useTranslation();
+  const stripRef = useRef<HTMLDivElement>(null);
   const activeRef = useRef<HTMLButtonElement>(null);
+  const activeIndex = entries.findIndex((entry) => entry.id === activeId);
 
   useEffect(() => {
-    activeRef.current?.scrollIntoView?.({ block: "nearest", inline: "nearest" });
-  }, [activeId]);
+    const strip = stripRef.current;
+    const revealActive = () => revealCategoryTab(strip, activeRef.current);
+    revealActive();
+    if (!strip || typeof ResizeObserver === "undefined") return;
+    const observer = new ResizeObserver(revealActive);
+    observer.observe(strip);
+    return () => observer.disconnect();
+  }, [activeId, activeIndex]);
 
   return (
     <div
       aria-label={t("categories.title")}
       className="norea-library-category-tabs"
+      ref={stripRef}
       role="group"
     >
       {entries.map((entry) => {
@@ -73,6 +94,7 @@ export function CategoryTabs({ activeId, entries, onSelect }: CategoryTabsProps)
             data-active={active}
             key={entry.id ?? "all"}
             onClick={() => onSelect(entry.id)}
+            onFocus={(event) => revealCategoryTab(stripRef.current, event.currentTarget)}
             ref={active ? activeRef : undefined}
           >
             <span className="norea-library-category-tab-label">{entry.label}</span>

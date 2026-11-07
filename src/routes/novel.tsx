@@ -30,7 +30,7 @@ import {
 } from "../components/ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
-import { SelectionAction, SelectionBar } from "../components/ui/SelectionBar";
+import { SelectionAction, SelectionBar, SelectionOverflowMenu } from "../components/ui/SelectionBar";
 import {
   buildMissingChapterDownloadTargets,
   buildPreviousChapterDownloadTargets,
@@ -719,7 +719,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 <SelectionAction
                   disabled={selectedUnreadCount === 0 || chapterSelectionBusy}
                   icon={MarkReadIcon}
-                  label={t("novel.selection.markRead")}
+                  aria-label={t("novel.selection.markRead")}
+                  label={t("selection.markRead")}
                   onClick={() =>
                     setSelectedChapterReadState.mutate({
                       chapterIds: selectedChapterIdList,
@@ -730,7 +731,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 <SelectionAction
                   disabled={selectedReadCount === 0 || chapterSelectionBusy}
                   icon={MarkUnreadIcon}
-                  label={t("novel.selection.markUnread")}
+                  aria-label={t("novel.selection.markUnread")}
+                  label={t("selection.markUnread")}
                   onClick={() =>
                     setSelectedChapterReadState.mutate({
                       chapterIds: selectedChapterIdList,
@@ -741,11 +743,12 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 <SelectionAction
                   disabled={chapterSelectionBusy}
                   icon={SelectAllIcon}
-                  label={t("novel.selection.selectRange")}
+                  aria-label={t("novel.selection.selectRange")}
+                  label={t("selection.selectRange")}
                   onClick={() => setRangeSheetOpen(true)}
                 />
                 {selectionMoreItems.length > 0 ? (
-                  <OverflowMenu
+                  <SelectionOverflowMenu
                     disabled={
                       chapterSelectionBusy ||
                       selectionMoreItems.every((item) => item.disabled)

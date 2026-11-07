@@ -12,7 +12,7 @@ import {
   type TouchList as ReactTouchList,
   type WheelEvent,
 } from "react";
-import { Box } from "@mantine/core";
+import { Box, Button } from "@mantine/core";
 import {
   getDocument,
   GlobalWorkerOptions,
@@ -34,7 +34,6 @@ import {
   type ReaderTapZoneMap,
 } from "../store/reader";
 import { StateView } from "./AppFrame";
-import { IconButton } from "./IconButton";
 import { MinusIcon, PlusIcon } from "./ui/icons";
 import type { ReaderContentHandle } from "./ReaderContent";
 import { ReaderSeekbars } from "./ReaderSeekbars";
@@ -1671,14 +1670,16 @@ function PdfReaderContentInner(
           className="norea-pdf-reader-zoom"
           role="group"
         >
-          <IconButton
+          <Button
+            aria-label={t("reader.pdfZoom.out")}
+            className="norea-reader-footer-action norea-state-layer"
             disabled={zoom <= MIN_PDF_ZOOM}
-            label={t("reader.pdfZoom.out")}
+            leftSection={<MinusIcon />}
             onClick={() => setZoom((current) => stepPdfZoom(current, -1))}
-            size="lg"
+            variant="subtle"
           >
-            <MinusIcon />
-          </IconButton>
+            {t("reader.pdfZoom.out")}
+          </Button>
           <button
             aria-label={t("reader.pdfZoom.fit")}
             className="norea-pdf-reader-zoom-level norea-state-layer"
@@ -1689,14 +1690,16 @@ function PdfReaderContentInner(
           >
             {zoomed ? `${Math.round(zoom * 100)}%` : t("reader.pdfZoom.fitShort")}
           </button>
-          <IconButton
+          <Button
+            aria-label={t("reader.pdfZoom.in")}
+            className="norea-reader-footer-action norea-state-layer"
             disabled={zoom >= MAX_PDF_ZOOM}
-            label={t("reader.pdfZoom.in")}
+            leftSection={<PlusIcon />}
             onClick={() => setZoom((current) => stepPdfZoom(current, 1))}
-            size="lg"
+            variant="subtle"
           >
-            <PlusIcon />
-          </IconButton>
+            {t("reader.pdfZoom.in")}
+          </Button>
         </div>
       ) : null}
       <ReaderSeekbars

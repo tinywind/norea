@@ -1,47 +1,54 @@
-/* Drawn like the app's radios: an outlined ring, filled with a center dot once checked. */
-.norea-download-goal-radio {
+/* Native radio inputs keep keyboard arrow selection; the enclosing label is the touch target. */
+.norea-download-goal-radio-target {
   align-items: center;
-  border: 0.125rem solid var(--norea-color-rule-strong);
-  border-radius: 50%;
-  box-sizing: border-box;
-  display: inline-flex;
-  flex: none;
-  height: 1.25rem;
+  cursor: pointer;
+  display: flex;
   justify-content: center;
+  min-height: var(--norea-control-md);
+  min-width: var(--norea-control-md);
+}
+
+.norea-download-goal-radio {
+  accent-color: var(--norea-color-accent);
+  cursor: inherit;
+  height: 1.25rem;
+  margin: 0;
   width: 1.25rem;
 }
 
-.norea-download-goal-radio[data-checked] {
-  background: var(--norea-color-accent);
-  border-color: var(--norea-color-accent);
-}
-
-.norea-download-goal-radio[data-checked]::after {
-  background: var(--norea-color-on-accent);
-  border-radius: 50%;
-  content: "";
-  height: 0.5rem;
-  width: 0.5rem;
+.norea-automatic-download-goals > .norea-settings-form-row {
+  grid-template-columns: minmax(0, 1fr) auto;
+  min-height: var(--norea-control-md);
+  padding-block: 0;
 }
 
 .norea-download-goal-count {
-  /* Line the counts up under the download row's title: row padding, icon and gap. */
+  /* One-time download actions retain their own list-row alignment. */
   margin: 0 var(--norea-space-4) var(--norea-space-2) calc(var(--norea-space-4) + 1.25rem + var(--norea-space-3));
   max-width: 20rem;
 }
 
-@media (forced-colors: active) {
-  .norea-download-goal-radio {
-    border-color: ButtonText;
-    forced-color-adjust: none;
-  }
+.norea-download-goal-count.norea-download-goal-count--automatic {
+  align-items: stretch;
+  box-sizing: border-box;
+  height: var(--norea-control-md);
+  margin: 0 0 var(--norea-space-2);
+  max-width: none;
+  min-height: var(--norea-control-md);
+  width: 100%;
+}
 
-  .norea-download-goal-radio[data-checked] {
-    background: Highlight;
-    border-color: Highlight;
-  }
+.norea-download-goal-count--automatic .norea-segmented-toggle-control {
+  display: flex;
+  flex: 1 1 0;
+  min-height: 0;
+  min-width: 0;
+}
 
-  .norea-download-goal-radio[data-checked]::after {
-    background: HighlightText;
-  }
+.norea-download-goal-count--automatic .norea-segmented-toggle-label {
+  flex: 1;
+  height: 100%;
+  line-height: 1;
+  min-height: 0;
+  padding: 0;
 }
