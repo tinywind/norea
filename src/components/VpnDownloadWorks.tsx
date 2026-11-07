@@ -157,11 +157,6 @@ export function VpnDownloadWorkRow({ work, snapshot, actions = runtimeActions }:
   const busy = pendingKeys.has(work.key);
   const runEnabled = !snapshot.run || snapshot.run.status === "running";
   const items: OverflowMenuItem[] = [];
-  if (work.canPause) items.push({ icon: PauseIcon, label: t("vpnDownload.pauseWork"), disabled: busy || !runEnabled,
-    onClick: () => { if (runEnabled) void run(work.key, () => actions.pauseWork(work.pluginId, work.novelId)); } });
-  else if (work.held) items.push({ icon: PlayIcon, label: t("vpnDownload.resumeWork"), disabled: busy || !runEnabled,
-    onClick: () => { if (runEnabled) void run(work.key, () => actions.resumeWork(work.pluginId, work.novelId)); } });
-  items.push({ icon: InfoIcon, label: t("vpnDownload.details"), onClick: () => setDetailsOpened(true) });
   items.push({ icon: CloseIcon, label: t("vpnDownload.cancelWork"), danger: true, disabled: busy, onClick: () => { void (async () => {
     const confirmed = await confirm({ title: t("vpnDownload.cancelWorkConfirm.title", { title: work.title }),
       message: t("vpnDownload.cancelWorkConfirm.message", { count: work.drafts.length + work.handover.length + work.unfinished.length }),
@@ -176,13 +171,39 @@ export function VpnDownloadWorkRow({ work, snapshot, actions = runtimeActions }:
   return (
     <div className="norea-task-work-group" data-collapsed="true" data-vpn-work={work.key}>
       <div className="norea-task-work-header">
-        <div className="norea-task-work-copy">
+        <div className="norea-task-work-copy norea-task-work-copy-stacked">
           <Text className="norea-task-work-title" lineClamp={1}>{work.title}</Text>
-          <span className="norea-task-route-label">{t("vpnDownload.routeLabel")}</span>
-          <span className="norea-task-group-count">{t("vpnDownload.workProgress", { completed: work.completed, total: work.total })}</span>
-          <DownloadWorkStatusLabel status={vpnDownloadWorkStatus(work, snapshot)} />
+          <div className="norea-task-work-heading norea-task-work-meta">
+            <span className="norea-task-route-label">{t("vpnDownload.routeLabel")}</span>
+            <span className="norea-task-group-count">{t("vpnDownload.workProgress", { completed: work.completed, total: work.total })}</span>
+            <DownloadWorkStatusLabel status={vpnDownloadWorkStatus(work, snapshot)} />
+          </div>
         </div>
         <div className="norea-task-group-actions">
+          {work.canPause || work.held ? (
+            <IconButton
+              disabled={busy || !runEnabled}
+              label={`${t(work.canPause ? "vpnDownload.pauseWork" : "vpnDownload.resumeWork")}: ${work.title}`}
+              loading={busy}
+              onClick={() => {
+                if (runEnabled) void run(work.key, () => work.canPause
+                  ? actions.pauseWork(work.pluginId, work.novelId)
+                  : actions.resumeWork(work.pluginId, work.novelId));
+              }}
+              size="lg"
+            >
+              {work.canPause ? <PauseIcon /> : <PlayIcon />}
+            </IconButton>
+          ) : null}
+          <IconButton
+            aria-expanded={detailsOpened}
+            aria-haspopup="dialog"
+            label={`${t("vpnDownload.details")}: ${work.title}`}
+            onClick={() => setDetailsOpened(true)}
+            size="lg"
+          >
+            <InfoIcon />
+          </IconButton>
           <OverflowMenu items={items} label={t("vpnDownload.workOptions", { title: work.title })} />
         </div>
       </div>

@@ -1,4 +1,3 @@
-import { Popover, Switch } from "@mantine/core";
 import { useEffect, useRef, useState, type CSSProperties, type FocusEvent } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation } from "../../i18n";
@@ -19,7 +18,7 @@ import {
   ChevronLeftIcon,
   ChevronRightIcon,
   CloseIcon,
-  OverflowIcon,
+  MarkUnreadIcon as IncognitoIcon,
   ReaderSettingsIcon,
   RepairIcon,
 } from "../ui/icons";
@@ -85,7 +84,6 @@ export function ReaderTopBar({
   showMediaRepair: boolean;
 }) {
   const { t } = useTranslation();
-  const [overflowOpen, setOverflowOpen] = useState(false);
   const trimmedNovelName = novelName?.trim();
   const title = trimmedNovelName || chapterName || t("reader.title");
   const subtitle = trimmedNovelName ? chapterName : undefined;
@@ -107,11 +105,6 @@ export function ReaderTopBar({
           </div>
         ) : null}
       </div>
-      {incognitoMode ? (
-        <span className="norea-reader-status" data-status="muted">
-          {t("reader.incognito")}
-        </span>
-      ) : null}
       {showMediaRepair ? (
         <IconButton
           className="norea-reader-icon-button norea-state-layer"
@@ -127,7 +120,7 @@ export function ReaderTopBar({
       <IconButton
         active={bookmarked}
         aria-pressed={bookmarked}
-        className="norea-reader-icon-button norea-state-layer"
+        className="norea-reader-icon-button norea-reader-bookmark norea-state-layer"
         disabled={bookmarkDisabled || bookmarkLoading}
         label={
           bookmarked ? t("reader.removeBookmark") : t("reader.bookmarkChapter")
@@ -147,34 +140,17 @@ export function ReaderTopBar({
       >
         <ReaderSettingsIcon />
       </IconButton>
-      <Popover
-        opened={overflowOpen}
-        onChange={setOverflowOpen}
-        position="bottom-end"
+      <IconButton
+        active={incognitoMode}
+        aria-pressed={incognitoMode}
+        className="norea-reader-icon-button norea-state-layer"
+        label={t("more.pauseHistory")}
+        onClick={() => onIncognitoModeChange(!incognitoMode)}
+        size="sm"
+        title={t("more.pauseHistory.description")}
       >
-        <Popover.Target>
-          <IconButton
-            aria-expanded={overflowOpen}
-            className="norea-reader-icon-button norea-state-layer"
-            label={t("reader.moreActions")}
-            onClick={() => setOverflowOpen((current) => !current)}
-            size="sm"
-          >
-            <OverflowIcon />
-          </IconButton>
-        </Popover.Target>
-        <Popover.Dropdown className="norea-reader-overflow">
-          <Switch
-            checked={incognitoMode}
-            description={t("more.pauseHistory.description")}
-            label={t("more.pauseHistory")}
-            labelPosition="left"
-            onChange={(event) =>
-              onIncognitoModeChange(event.currentTarget.checked)
-            }
-          />
-        </Popover.Dropdown>
-      </Popover>
+        <IncognitoIcon />
+      </IconButton>
     </header>
   );
 }

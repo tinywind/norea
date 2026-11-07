@@ -128,7 +128,7 @@
   color: var(--norea-color-accent);
 }
 
-.norea-reader-icon-button[aria-pressed="true"] svg {
+.norea-reader-bookmark[aria-pressed="true"] svg {
   fill: currentColor;
 }
 
@@ -160,29 +160,12 @@
   line-height: var(--norea-leading-tight);
 }
 
-.norea-reader-status,
 .norea-reader-panel-kicker,
 .norea-reader-panel-empty,
 .norea-reader-chapter-number,
 .norea-reader-status-overlay {
   font-family: var(--norea-font-ui);
   font-variant-numeric: tabular-nums;
-}
-
-.norea-reader-status {
-  border: 1px solid currentColor;
-  border-radius: var(--norea-radius-full);
-  color: var(--norea-color-warn);
-  flex: 0 0 auto;
-  font-size: var(--norea-text-xs);
-  font-weight: var(--norea-weight-bold);
-  line-height: var(--norea-leading-tight);
-  padding: 0.125rem var(--norea-space-2);
-  white-space: nowrap;
-}
-
-.norea-reader-overflow {
-  max-width: min(20rem, calc(100vw - 2rem));
 }
 
 .norea-reader-body {

@@ -97,16 +97,27 @@ const labelled = (elements: ReactElement<Record<string, unknown>>[], label: stri
   elements.find((element) => element.props.label === label || element.props["aria-label"] === label);
 
 describe("SourcePage", () => {
-  it("shows the source name in the app bar and keeps rare actions in the overflow", async () => {
+  it("opens source reader settings directly when no plugin settings need an overflow", async () => {
     const elements = await mountPage();
     const header = elements.find((element) => element.type === PageHeader)!;
     expect(header.props.title).toBe("Demo Source");
     expect(header.props.onBack).toEqual(expect.any(Function));
+    expect(labelled(elements, "common.openSite")).toBeDefined();
+    await harness!.run(() => (labelled(elements, "source.readerSettings")!.props.onClick as () => void)());
+    const panel = collectElements(tree).find((element) => element.props.target !== undefined);
+    expect(panel!.props.target).toEqual({ kind: "source", sourceId: "demo", label: "Demo Source" });
+  });
+
+  it("keeps both source settings choices reachable while exposing Open site directly", async () => {
+    mocks.plugins = [{ ...plugin(), pluginSettings: { token: { type: "Text", label: "Token", value: "" } } } as unknown as Plugin];
+    const elements = await mountPage();
+    expect(labelled(elements, "common.openSite")).toBeDefined();
     const menu = elements.find((element) => Array.isArray(element.props.items))!;
-    expect((menu.props.items as { label: string }[]).map((item) => item.label)).toEqual([
-      "common.openSite",
-      "source.readerSettings",
-    ]);
+    const items = menu.props.items as { label: string; onClick: () => void }[];
+    expect(items.map((item) => item.label)).toEqual(["source.sourceSettings", "source.readerSettings"]);
+    await harness!.run(() => items.find((item) => item.label === "source.sourceSettings")!.onClick());
+    const settings = collectElements(tree).find((element) => "plugin" in element.props && "onClose" in element.props);
+    expect((settings!.props.plugin as Plugin).id).toBe("demo");
   });
 
   it("offers the filter button only when the plugin has filters", async () => {

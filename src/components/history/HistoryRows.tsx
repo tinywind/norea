@@ -14,6 +14,7 @@ import { formatChapterNumber } from "../novel/novel-detail-model";
 import { InfoIcon, TrashIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
 import { OverflowMenu } from "../ui/OverflowMenu";
+import { IconButton } from "../IconButton";
 
 export const FINISHED_PROGRESS = 100;
 const SKELETON_ROWS = 6;
@@ -121,18 +122,22 @@ export function HistoryRow({
             <Loader aria-hidden="true" size="xs" />
           </span>
         ) : (
-          <OverflowMenu
-            items={[
-              { icon: InfoIcon, label: t("history.novelDetails"), onClick: onOpenNovel },
-              {
-                danger: true,
-                icon: TrashIcon,
-                label: t("history.remove"),
-                onClick: onRemove,
-              },
-            ]}
-            label={t("history.rowMore", { name: entry.novelName })}
-          />
+          <>
+            <IconButton label={t("history.novelDetails")} onClick={onOpenNovel} size="lg">
+              <InfoIcon />
+            </IconButton>
+            <OverflowMenu
+              items={[
+                {
+                  danger: true,
+                  icon: TrashIcon,
+                  label: t("history.remove"),
+                  onClick: onRemove,
+                },
+              ]}
+              label={t("history.rowMore", { name: entry.novelName })}
+            />
+          </>
         )}
       </div>
     </div>

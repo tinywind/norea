@@ -23,7 +23,6 @@ import { SourceNovelCover } from "../SourceNovelCover";
 import { QuickAddCard } from "./QuickAddCard";
 import { useQuickAddToLibrary, type QuickAddTarget } from "./use-quick-add";
 import {
-  BrowseIcon,
   CheckIcon,
   ChevronDownIcon,
   ChevronRightIcon,
@@ -32,6 +31,7 @@ import {
   RetryIcon,
   SelectAllIcon,
   SourceIcon,
+  SortIcon,
   UnpinIcon,
   VerifyIcon,
   WarningIcon,
@@ -347,30 +347,40 @@ function SearchResultSection({
       <div className="norea-search-result-head">
         <PluginIcon plugin={plugin} />
         <h3 className="norea-search-result-title" id={headingId}>
-          <span className="norea-search-result-name">{plugin.name}</span>
-          <span className="norea-search-result-count">
-            {t("globalSearch.status.results", { count: result.novels.length })}
-          </span>
+          <button
+            aria-label={`${t("globalSearch.openSource")}: ${plugin.name}`}
+            className="norea-search-result-source norea-state-layer"
+            onClick={() => onOpenSource(plugin)}
+            title={t("globalSearch.openSource")}
+            type="button"
+          >
+            <span className="norea-search-result-name">{plugin.name}</span>
+            <span className="norea-search-result-count">
+              {t("globalSearch.status.results", { count: result.novels.length })}
+            </span>
+          </button>
         </h3>
-        <OverflowMenu
-          items={[
-            {
-              icon: pinned ? UnpinIcon : PinIcon,
-              label: pinned ? t("browse.unpin") : t("browse.pin"),
-              onClick: () => onTogglePinned(plugin.id),
-            },
-            { icon: BrowseIcon, label: t("globalSearch.openSource"), onClick: () => onOpenSource(plugin) },
-            { icon: SourceIcon, label: t("common.openSite"), onClick: () => onOpenSite(plugin) },
-          ]}
-          label={t("browse.sources.rowActions", { name: plugin.name })}
-        />
-        <IconButton
-          label={t("globalSearch.openSourceResultsFor", { name: plugin.name })}
-          onClick={() => onMore(result)}
-          size="lg"
-        >
-          <ChevronRightIcon />
-        </IconButton>
+        <div className="norea-browse-actions">
+          <IconButton
+            active={pinned}
+            aria-pressed={pinned}
+            label={`${pinned ? t("browse.unpin") : t("browse.pin")}: ${plugin.name}`}
+            onClick={() => onTogglePinned(plugin.id)}
+            size="lg"
+          >
+            {pinned ? <UnpinIcon /> : <PinIcon />}
+          </IconButton>
+          <IconButton label={`${t("common.openSite")}: ${plugin.name}`} onClick={() => onOpenSite(plugin)} size="lg">
+            <SourceIcon />
+          </IconButton>
+          <IconButton
+            label={t("globalSearch.openSourceResultsFor", { name: plugin.name })}
+            onClick={() => onMore(result)}
+            size="lg"
+          >
+            <ChevronRightIcon />
+          </IconButton>
+        </div>
       </div>
       <div className="norea-search-preview-strip">
         {result.novels.slice(0, PREVIEW_RESULT_COUNT).map((novel, index) => {
@@ -1065,7 +1075,11 @@ export function BrowseSearchTab({
             selectedPluginIds={selectedPluginIds}
           />
           {hasSearchTerm ? (
-            <OverflowMenu items={sortItems} label={t("globalSearch.resultOptions")} />
+            <OverflowMenu
+              items={sortItems}
+              label={t("globalSearch.resultOptions")}
+              trigger={<IconButton label={t("globalSearch.resultOptions")} size="lg"><SortIcon /></IconButton>}
+            />
           ) : null}
         </div>
       )}

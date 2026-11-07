@@ -6,6 +6,7 @@ import type { TaskRecord, TaskSnapshot } from "../lib/tasks/task-types";
 import type { VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-drafts";
 import type { ChapterDownloadRequestState } from "../lib/tasks/chapter-download-requests";
 import type { VpnDownloadWork } from "../components/VpnDownloadWorks";
+import type { IconButton } from "../components/IconButton";
 import type { OverflowMenuItem } from "../components/ui/OverflowMenu";
 
 const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefined,
@@ -16,6 +17,7 @@ const state = vi.hoisted(() => ({ snapshot: undefined as TaskSnapshot | undefine
   focus: undefined as string | undefined,
   navigate: vi.fn(),
   menus: [] as (readonly OverflowMenuItem[])[],
+  buttons: [] as Parameters<typeof IconButton>[0][],
 }));
 vi.mock("@tanstack/react-router", () => ({
   useNavigate: () => state.navigate,
@@ -32,6 +34,13 @@ vi.mock("../components/ui/OverflowMenu", async importOriginal => {
   return { ...actual, OverflowMenu: (props: Parameters<typeof actual.OverflowMenu>[0]) => {
     state.menus.push(props.items);
     return <actual.OverflowMenu {...props} />;
+  } };
+});
+vi.mock("../components/IconButton", async importOriginal => {
+  const actual = await importOriginal<typeof import("../components/IconButton")>();
+  return { ...actual, IconButton: (props: Parameters<typeof actual.IconButton>[0]) => {
+    state.buttons.push(props);
+    return <actual.IconButton {...props} />;
   } };
 });
 vi.mock("../components/DownloadRecoveryStatus", () => ({ DownloadRecoveryStatus: () => null }));
@@ -241,12 +250,14 @@ describe("task work group order", () => {
     expect($('button[aria-label="Resume downloads"]')).toHaveLength(1);
   });
 
-  it("draws the pause control as a named icon and moves rare queue actions into the page overflow", () => {
+  it("shows pause, sort and settings directly while keeping rare queue actions in the overflow", () => {
     state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1, records: [chapter(1, 1, "queued", 0)] };
     const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
     const header = $(".norea-app-bar-actions");
     expect(header.find("button").first().attr("aria-label")).toBe("Pause downloads");
     expect(header.find("button").first().text()).toBe("");
+    expect(header.find('button[aria-label="Download settings"]')).toHaveLength(1);
+    expect(header.find('button[aria-label="Sort"]')).toHaveLength(1);
     expect(header.find('button[aria-label="More"]')).toHaveLength(1);
     expect($("h1.norea-app-bar-title").text()).toContain("Downloads");
   });
@@ -282,13 +293,15 @@ describe("virtual task row geometry", () => {
 });
 
 
-it("opens Download settings from the queue menu without replacing the back destination", () => {
+it("opens Download settings directly without replacing the back destination", () => {
   state.menus = [];
+  state.buttons = [];
   state.navigate.mockReset();
   workTitles([]);
-  const item = state.menus.flat().find(item => item.label === "Download settings")!;
-  expect(item).toBeDefined();
-  item.onClick();
+  const button = state.buttons.find(button => button.label === "Download settings")!;
+  expect(button).toBeDefined();
+  expect(state.menus.flat().some(item => item.label === "Download settings")).toBe(false);
+  button.onClick!({} as never);
   expect(state.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: "downloads" } });
 });
 

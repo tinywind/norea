@@ -73,7 +73,7 @@ import { SearchBar } from "../SearchBar";
 import { ChipButton } from "../ChipButton";
 import { StateView } from "../AppFrame";
 import { useContentServerBrowseStore } from "../../store/content-server-browse";
-import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
+import { IconButton } from "../IconButton";
 import { SelectionAction, SelectionBar } from "../ui/SelectionBar";
 
 interface ControlProps {
@@ -83,7 +83,6 @@ interface ControlProps {
   action?: { onClick: () => void };
   actions?: ReactNode;
   allSelected?: boolean;
-  items?: readonly OverflowMenuItem[];
   label?: string;
   onSelect?: () => void;
   onSelectAll?: () => void;
@@ -175,19 +174,19 @@ it("keeps filters separate for each content server", () => {
   expect(render().find(element => element.type === SearchBar)!.props.value).toBe("first server");
 });
 
-const overflowItem = (elements: ReactElement<ControlProps>[], label: string) =>
-  elements.find(element => element.type === OverflowMenu)!.props.items!.find(item => item.label === label)!;
+const toolbarAction = (elements: ReactElement<ControlProps>[], label: string) =>
+  elements.find(element => element.type === IconButton && element.props.label === label)!.props;
 
-it("offers adding every matching server work, including unloaded pages, from the overflow menu", () => {
+it("offers adding every matching server work, including unloaded pages, from the toolbar", () => {
   mocks.pages = [{ items: [work("first"), work("second")], total: 120, hasMore: true }];
   useContentServerBrowseStore.getState().setFilters("http://server", { query: "saga", source: "source-a" });
-  overflowItem(render(), "serverLibraryAdd.addAll").onClick();
+  toolbarAction(render(), "serverLibraryAdd.addAll").onClick!();
   expect(mocks.bulkRequest).toHaveBeenCalledWith({ count: 120, works: { query: "saga", source: "source-a" } });
 });
 
-it("enters selection from the overflow menu or a card's long-press menu", () => {
+it("enters selection from the toolbar or a card's long press", () => {
   const elements = render();
-  overflowItem(elements, "library.selection.start").onClick();
+  toolbarAction(elements, "library.selection.start").onClick!();
   expect(mocks.selection.enter).toHaveBeenCalledWith();
   elements.filter(element => element.type === QuickAddCard)[1]!.props.onSelect!();
   expect(mocks.selection.enter).toHaveBeenLastCalledWith(expect.objectContaining({ id: "second" }));
@@ -211,8 +210,8 @@ it("toggles works in selection mode, works in the library included", () => {
 it("keeps selecting when every shown work is already in the library", () => {
   mocks.inLibrary.add("/first");
   mocks.inLibrary.add("/second");
-  const menu = overflowItem(render(), "library.selection.start");
-  expect(menu.disabled).toBe(false);
+  const select = toolbarAction(render(), "library.selection.start");
+  expect(select.disabled).toBe(false);
   Object.assign(mocks.selection, { selectionMode: true });
   expect(render().some(element => element.type === StateView)).toBe(false);
 

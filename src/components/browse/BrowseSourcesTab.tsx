@@ -107,12 +107,13 @@ interface SourceRowProps {
   locale: AppLocale;
   menuItems: readonly OverflowMenuItem[];
   onOpen: () => void;
+  onOpenSite?: () => void;
   onTogglePinned: () => void;
   pinned: boolean;
   plugin: Plugin;
 }
 
-function SourceRow({ clearingCookies, locale, menuItems, onOpen, onTogglePinned, pinned, plugin }: SourceRowProps) {
+function SourceRow({ clearingCookies, locale, menuItems, onOpen, onOpenSite, onTogglePinned, pinned, plugin }: SourceRowProps) {
   const { t } = useTranslation();
 
   return (
@@ -125,6 +126,11 @@ function SourceRow({ clearingCookies, locale, menuItems, onOpen, onTogglePinned,
         title={plugin.name}
       />
       <span className="norea-source-row-trailing">
+        {onOpenSite ? (
+          <IconButton disabled={clearingCookies} label={`${t("common.openSite")}: ${plugin.name}`} onClick={onOpenSite} size="lg">
+            <SourceIcon />
+          </IconButton>
+        ) : null}
         <IconButton label={pinned ? t("browse.unpin") : t("browse.pin")} onClick={onTogglePinned} size="lg">
           {pinned ? <UnpinIcon /> : <PinIcon />}
         </IconButton>
@@ -235,13 +241,6 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
       ...(hasPluginInputs(plugin)
         ? [{ icon: SettingsIcon, label: t("common.settings"), onClick: () => setSettingsPlugin(plugin) }]
         : []),
-      ...(hasPluginSite(plugin)
-        ? [{
-            icon: SourceIcon,
-            label: t("common.openSite"),
-            onClick: () => openPluginSite(plugin, t("tasks.task.openSite", { source: plugin.name })),
-          }]
-        : []),
       {
         icon: ReaderSettingsIcon,
         label: t("source.readerSettings"),
@@ -272,6 +271,9 @@ export function BrowseSourcesTab({ active }: { active: boolean }) {
           locale={locale}
           menuItems={menuItemsFor(plugin)}
           onOpen={() => openSource(plugin)}
+          onOpenSite={hasPluginSite(plugin)
+            ? () => { void openPluginSite(plugin, t("tasks.task.openSite", { source: plugin.name })); }
+            : undefined}
           onTogglePinned={() => togglePinnedPlugin(plugin.id)}
           pinned={pinnedPluginIds.includes(plugin.id)}
           plugin={plugin}

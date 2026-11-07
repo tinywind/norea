@@ -8,6 +8,7 @@ import {
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
+  openSite: vi.fn(),
   plugins: [] as Plugin[],
 }));
 
@@ -22,6 +23,7 @@ vi.mock("../../i18n", () => ({
 }));
 vi.mock("../ui/ConfirmDialog", () => ({ useConfirm: () => vi.fn() }));
 vi.mock("../../lib/plugins/manager", () => ({ isValidPluginItem: () => true, pluginManager: {} }));
+vi.mock("../../lib/plugins/open-plugin-site", () => ({ openPluginSite: mocks.openSite }));
 
 import { BrowseSourcesTab, groupSources } from "./BrowseSourcesTab";
 
@@ -82,11 +84,15 @@ function rowMenu(elements: Awaited<ReturnType<typeof mountTab>>, index = 0): Men
   return rows[index]!.props.menuItems as MenuItem[];
 }
 
-it("offers Open site only when the source has a usable site URL", async () => {
+it("opens a source site directly only when it has a usable URL", async () => {
   mocks.plugins = [plugin("alpha"), { ...plugin("beta"), getBaseUrl: () => "" } as Plugin];
   const elements = await mountTab();
-  expect(rowMenu(elements, 0).map((item) => item.label)).toContain("common.openSite");
-  expect(rowMenu(elements, 1).map((item) => item.label)).not.toContain("common.openSite");
+  const rows = elements.filter((element) => Array.isArray(element.props.menuItems));
+  expect(rows[0]!.props.onOpenSite).toEqual(expect.any(Function));
+  expect(rows[1]!.props.onOpenSite).toBeUndefined();
+  (rows[0]!.props.onOpenSite as () => void)();
+  expect(mocks.openSite).toHaveBeenCalledWith(mocks.plugins[0], "tasks.task.openSite");
+  expect(rowMenu(elements, 0).map((item) => item.label)).not.toContain("common.openSite");
 });
 
 it("opens the source's plugin settings in place only when the plugin exposes settings", async () => {

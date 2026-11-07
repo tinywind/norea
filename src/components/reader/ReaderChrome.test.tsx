@@ -16,6 +16,7 @@ interface ElementProps {
   className?: string;
   label?: string;
   disabled?: boolean;
+  onClick?: () => void;
   "aria-pressed"?: boolean;
   "aria-expanded"?: boolean;
 }
@@ -59,9 +60,12 @@ it("falls back to the chapter name alone without a novel name", () => {
   expect(withClass(tree, "norea-reader-subtitle")).toBeUndefined();
 });
 
-it("shows the History paused pill whenever reading history is paused", () => {
-  expect(topBar().some((element) => element.props.children === "reader.incognito")).toBe(false);
-  expect(topBar({ incognitoMode: true }).some((element) => element.props.children === "reader.incognito")).toBe(true);
+it.each([false, true])("toggles paused history directly and reports its current state: %s", (incognitoMode) => {
+  const onIncognitoModeChange = vi.fn();
+  const toggle = withLabel(topBar({ incognitoMode, onIncognitoModeChange }), "more.pauseHistory")[0]!;
+  expect(toggle.props["aria-pressed"]).toBe(incognitoMode);
+  toggle.props.onClick!();
+  expect(onIncognitoModeChange).toHaveBeenCalledWith(!incognitoMode);
 });
 
 it("shows the repair button only while chapter media needs repair", () => {

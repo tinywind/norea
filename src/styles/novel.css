@@ -252,7 +252,14 @@
   line-height: var(--norea-leading-normal);
   margin: 0;
   overflow: hidden;
-  white-space: pre-wrap;
+  white-space: normal;
+}
+
+.norea-novel-summary-footer {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-2);
+  min-width: 0;
 }
 
 .norea-novel-genres {
@@ -260,7 +267,9 @@
   flex-wrap: wrap;
   gap: var(--norea-space-2);
   list-style: none;
-  margin: var(--norea-space-2) 0 0;
+  flex: 1 1 auto;
+  margin: 0;
+  min-width: 0;
   max-height: 1.75rem;
   overflow: hidden;
   padding: 0;
@@ -269,6 +278,7 @@
 .norea-novel-summary[data-expanded="true"] .norea-novel-summary-text {
   -webkit-line-clamp: unset;
   display: block;
+  white-space: pre-wrap;
 }
 
 .norea-novel-summary[data-expanded="true"] .norea-novel-genres {
@@ -292,6 +302,8 @@
 
 .norea-novel-summary-toggle {
   align-self: flex-start;
+  flex: 0 0 auto;
+  margin-left: auto;
 }
 
 .norea-novel-chapters {

@@ -137,37 +137,41 @@ export function RepositoriesDialog({
                         <Loader aria-hidden="true" size="xs" />
                       </span>
                     ) : (
-                      <OverflowMenu
-                        items={[
-                          ...(index > 0
-                            ? [{
-                                icon: ChevronUpIcon,
-                                label: t("extensions.repositories.moveUp"),
-                                onClick: () => onMove(repository, -1),
-                              }]
-                            : []),
-                          ...(index < repositories.length - 1
-                            ? [{
-                                icon: ChevronDownIcon,
-                                label: t("extensions.repositories.moveDown"),
-                                onClick: () => onMove(repository, 1),
-                              }]
-                            : []),
-                          {
-                            disabled: !repository.enabled,
-                            icon: RefreshIcon,
-                            label: t("common.refresh"),
-                            onClick: () => onRefresh(repository),
-                          },
-                          {
-                            danger: true,
-                            icon: TrashIcon,
-                            label: t("common.remove"),
-                            onClick: () => onRemove(repository),
-                          },
-                        ]}
-                        label={t("extensions.repositoryActions")}
-                      />
+                      <>
+                        <IconButton
+                          disabled={!repository.enabled}
+                          label={`${t("common.refresh")}: ${label}`}
+                          onClick={() => onRefresh(repository)}
+                          size="lg"
+                        >
+                          <RefreshIcon />
+                        </IconButton>
+                        <OverflowMenu
+                          items={[
+                            ...(index > 0
+                              ? [{
+                                  icon: ChevronUpIcon,
+                                  label: t("extensions.repositories.moveUp"),
+                                  onClick: () => onMove(repository, -1),
+                                }]
+                              : []),
+                            ...(index < repositories.length - 1
+                              ? [{
+                                  icon: ChevronDownIcon,
+                                  label: t("extensions.repositories.moveDown"),
+                                  onClick: () => onMove(repository, 1),
+                                }]
+                              : []),
+                            {
+                              danger: true,
+                              icon: TrashIcon,
+                              label: t("common.remove"),
+                              onClick: () => onRemove(repository),
+                            },
+                          ]}
+                          label={t("extensions.repositoryActions")}
+                        />
+                      </>
                     )}
                   </span>
                 </li>

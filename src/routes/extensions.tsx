@@ -605,25 +605,25 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
       <PageHeader
         actions={
           <>
-            <OverflowMenu
-              items={[
-                {
-                  disabled: installFromFile.isPending,
-                  icon: ImportIcon,
-                  label: t("extensions.installFromFile"),
-                  onClick: () => fileInputRef.current?.click(),
-                },
-                {
-                  disabled: githubSourceTemplate === null,
-                  icon: GithubIcon,
-                  label: t("browse.sourceInstance.title"),
-                  onClick: () => {
-                    if (githubSourceTemplate) openSourceForm(githubSourceTemplate);
-                  },
-                },
-              ]}
-              label={t("common.more")}
-            />
+            <IconButton
+              disabled={installFromFile.isPending}
+              label={t("extensions.installFromFile")}
+              loading={installFromFile.isPending}
+              onClick={() => fileInputRef.current?.click()}
+              size="lg"
+            >
+              <ImportIcon />
+            </IconButton>
+            <IconButton
+              disabled={githubSourceTemplate === null}
+              label={t("browse.sourceInstance.title")}
+              onClick={() => {
+                if (githubSourceTemplate) openSourceForm(githubSourceTemplate);
+              }}
+              size="lg"
+            >
+              <GithubIcon />
+            </IconButton>
             <input
               accept=".js,text/javascript,application/javascript"
               hidden
@@ -1098,11 +1098,13 @@ export function InstalledSection({
                         }
                       />
                     ) : null}
+                  {hasPluginInputs(plugin) ? (
+                    <IconButton label={`${t("common.settings")}: ${plugin.name}`} onClick={() => onOpenSettings(plugin)} size="lg">
+                      <SettingsIcon />
+                    </IconButton>
+                  ) : null}
                   <OverflowMenu
                     items={[
-                      ...(hasPluginInputs(plugin)
-                        ? [{ icon: SettingsIcon, label: t("common.settings"), onClick: () => onOpenSettings(plugin) }]
-                        : []),
                       ...(publisherOf(plugin.id) === null
                         ? []
                         : (publisherOffers.get(plugin.id) ?? []).map((offer) => ({

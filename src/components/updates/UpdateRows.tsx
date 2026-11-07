@@ -9,11 +9,11 @@ import {
   ChevronDownIcon,
   ChevronUpIcon,
   DownloadIcon,
+  InfoIcon,
   DownloadedIcon,
   RetryIcon,
 } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
-import { OverflowMenu } from "../ui/OverflowMenu";
 
 const SKELETON_ROWS = 6;
 
@@ -125,7 +125,7 @@ interface UpdateRowProps {
 
 /**
  * One new chapter. The cover opens the novel, the row body opens the reader,
- * and the download control and overflow sit beside the row, not inside it.
+ * and the download and details controls sit beside the row, not inside it.
  */
 export function UpdateRow({
   downloadStatus,
@@ -161,10 +161,9 @@ export function UpdateRow({
           onDownload={onDownload}
           status={downloadStatus}
         />
-        <OverflowMenu
-          items={[{ label: t("updates.openNovelAction"), onClick: onOpenNovel }]}
-          label={t("updates.rowMore", { name: entry.chapterName })}
-        />
+        <IconButton label={t("updates.openNovelAction")} onClick={onOpenNovel} size="lg">
+          <InfoIcon />
+        </IconButton>
       </div>
     </div>
   );

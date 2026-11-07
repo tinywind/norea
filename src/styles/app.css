@@ -667,7 +667,7 @@ html[data-norea-keyboard="open"] .norea-mobile-nav {
   display: grid;
   gap: var(--norea-space-2);
   min-width: 0;
-  padding: 0 var(--norea-app-bar-padding-inline) var(--norea-space-2);
+  padding: var(--norea-space-2) var(--norea-app-bar-padding-inline);
 }
 
 .norea-app-bar-actions {

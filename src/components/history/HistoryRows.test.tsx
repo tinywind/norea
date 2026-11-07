@@ -136,6 +136,7 @@ describe("HistoryRow actions", () => {
         onClick: () => void;
       }[],
       row: elements.find((element) => element.props.title === row.novelName)!,
+      details: elements.find((element) => element.props.label === "history.novelDetails")!,
     };
   }
 
@@ -155,14 +156,13 @@ describe("HistoryRow actions", () => {
     expect(onContinue).toHaveBeenCalledWith(nextChapter);
   });
 
-  it("keeps novel details and a danger removal in the overflow", async () => {
-    const { menu } = await mount(entry);
+  it("opens novel details directly and keeps removal in the overflow", async () => {
+    const { menu, details } = await mount(entry);
     expect(menu.map((item) => [item.label, item.danger ?? false])).toEqual([
-      ["history.novelDetails", false],
       ["history.remove", true],
     ]);
+    (details.props.onClick as () => void)();
     menu[0]!.onClick();
-    menu[1]!.onClick();
     expect(onOpenNovel).toHaveBeenCalledOnce();
     expect(onRemove).toHaveBeenCalledOnce();
   });

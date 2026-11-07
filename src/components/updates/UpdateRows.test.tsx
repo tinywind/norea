@@ -54,7 +54,7 @@ describe("UpdateRow", () => {
       'updates.openNovel{"name":"Novel A"}',
       "Novel AThe ReturnSource Foo · 2h ago",
       "novel.downloadChapter",
-      'updates.rowMore{"name":"The Return"}',
+      "updates.openNovelAction",
     ]);
   });
 
@@ -78,7 +78,7 @@ describe("UpdateRow", () => {
 
   it("leaves the cover and the novel name to the run row when nested", () => {
     const $ = render(<UpdateRow {...rowProps} nested />);
-    expect($('button[aria-label^="updates.openNovel"]')).toHaveLength(0);
+    expect($('button[aria-label^="updates.openNovel{"]')).toHaveLength(0);
     expect($("button").first().text()).toBe("The ReturnSource Foo · 2h ago");
   });
 });

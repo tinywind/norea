@@ -8,7 +8,6 @@ import { SourceAccessNotice } from "../components/SourceAccessVerifyButton";
 import { ChipButton } from "../components/ChipButton";
 import { IconButton } from "../components/IconButton";
 import {
-  CategoryIcon,
   ChapterListIcon,
   CheckIcon,
   CloseIcon,
@@ -615,26 +614,11 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
   const overflowItems: OverflowMenuItem[] = [];
   if (!novel.isLocal) {
-    overflowItems.push(
-      {
-        disabled: refreshMetadata.isPending || fullRefreshMetadata.isPending,
-        icon: RefreshIcon,
-        label: t("novel.checkNewChapters"),
-        onClick: () => refreshMetadata.mutate(),
-      },
-      {
-        disabled: refreshMetadata.isPending || fullRefreshMetadata.isPending,
-        icon: RefreshAllIcon,
-        label: t("novel.refreshAllDetails"),
-        onClick: () => fullRefreshMetadata.mutate(),
-      },
-    );
-  }
-  if (novel.inLibrary) {
     overflowItems.push({
-      icon: CategoryIcon,
-      label: t("categories.editWork"),
-      onClick: () => setCategorySheetOpen(true),
+      disabled: refreshMetadata.isPending || fullRefreshMetadata.isPending,
+      icon: RefreshAllIcon,
+      label: t("novel.refreshAllDetails"),
+      onClick: () => fullRefreshMetadata.mutate(),
     });
   }
   if (novel.inLibrary && allowSourceAccess && !novel.isLocal) {
@@ -649,19 +633,6 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
         }),
     });
   }
-  if (allowSourceAccess && !novel.isLocal) {
-    overflowItems.push({
-      disabled: !sourceUrl,
-      icon: SourceIcon,
-      label: t("novel.openInWebView"),
-      onClick: () => openSourceNovel(novel.pluginId, sourceUrl),
-    });
-  }
-  overflowItems.push({
-    icon: ReaderSettingsIcon,
-    label: t("novel.readerSettingsForNovel"),
-    onClick: () => setReaderSettingsOpen(true),
-  });
   if (managedServerWork) {
     overflowItems.push({
       icon: ServerIcon,
@@ -675,12 +646,6 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
         icon: EditIcon,
         label: t("novel.local.editMetadata"),
         onClick: openLocalMetadataEditor,
-      },
-      {
-        disabled: addLocalChapters.isPending,
-        icon: ImportIcon,
-        label: t("novel.local.addChapters"),
-        onClick: openLocalChapterInput,
       },
       {
         disabled: chapters.length < 2,
@@ -699,11 +664,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const rangeStartChapter = rangeStartChapterId === null
     ? undefined
     : chapters.find((chapter) => chapter.id === rangeStartChapterId);
-  const selectionMoreItems: OverflowMenuItem[] = [{
-    icon: SelectAllIcon,
-    label: t("novel.selection.selectRange"),
-    onClick: () => setRangeSheetOpen(true),
-  }];
+  const selectionMoreItems: OverflowMenuItem[] = [];
   if (!novel.isLocal) {
     selectionMoreItems.push({
       disabled: previousDownloadTargets.length === 0,
@@ -730,6 +691,16 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
           setRelativeChapterReadState.mutate({ anchorChapterId, direction: "after", unread: true }),
       },
     );
+  }
+
+  if (!novel.isLocal) {
+    selectionMoreItems.push({
+      danger: true,
+      disabled: selectedDownloadedChapterIds.length === 0,
+      icon: TrashIcon,
+      label: t("novel.selection.deleteDownloads"),
+      onClick: () => clearSelectedDownloads.mutate(selectedDownloadedChapterIds),
+    });
   }
 
   return (
@@ -767,22 +738,22 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     })
                   }
                 />
-                {novel.isLocal ? null : (
-                  <SelectionAction
-                    disabled={selectedDownloadedChapterIds.length === 0 || chapterSelectionBusy}
-                    icon={TrashIcon}
-                    label={t("novel.selection.deleteDownloads")}
-                    onClick={() => clearSelectedDownloads.mutate(selectedDownloadedChapterIds)}
-                  />
-                )}
-                <OverflowMenu
-                  disabled={
-                    chapterSelectionBusy ||
-                    selectionMoreItems.every((item) => item.disabled)
-                  }
-                  items={selectionMoreItems}
-                  label={t("common.more")}
+                <SelectionAction
+                  disabled={chapterSelectionBusy}
+                  icon={SelectAllIcon}
+                  label={t("novel.selection.selectRange")}
+                  onClick={() => setRangeSheetOpen(true)}
                 />
+                {selectionMoreItems.length > 0 ? (
+                  <OverflowMenu
+                    disabled={
+                      chapterSelectionBusy ||
+                      selectionMoreItems.every((item) => item.disabled)
+                    }
+                    items={selectionMoreItems}
+                    label={t("common.more")}
+                  />
+                ) : null}
               </>
             }
             allSelected={allChaptersSelected}
@@ -796,7 +767,51 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
           />
         ) : (
           <PageHeader
-            actions={<OverflowMenu items={overflowItems} label={t("novel.moreOptions")} />}
+            actions={
+              <>
+                {novel.isLocal ? (
+                  <IconButton
+                    disabled={addLocalChapters.isPending}
+                    label={t("novel.local.addChapters")}
+                    loading={addLocalChapters.isPending}
+                    onClick={openLocalChapterInput}
+                    size="lg"
+                  >
+                    <ImportIcon />
+                  </IconButton>
+                ) : (
+                  <IconButton
+                    disabled={refreshMetadata.isPending || fullRefreshMetadata.isPending}
+                    label={t("novel.checkNewChapters")}
+                    loading={refreshMetadata.isPending || fullRefreshMetadata.isPending}
+                    onClick={() => refreshMetadata.mutate()}
+                    size="lg"
+                  >
+                    <RefreshIcon />
+                  </IconButton>
+                )}
+                {allowSourceAccess && !novel.isLocal ? (
+                  <IconButton
+                    disabled={!sourceUrl}
+                    label={t("novel.openInWebView")}
+                    onClick={() => openSourceNovel(novel.pluginId, sourceUrl)}
+                    size="lg"
+                  >
+                    <SourceIcon />
+                  </IconButton>
+                ) : null}
+                <IconButton
+                  active={readerSettingsOpen}
+                  aria-expanded={readerSettingsOpen}
+                  label={t("novel.readerSettingsForNovel")}
+                  onClick={() => setReaderSettingsOpen(true)}
+                  size="lg"
+                >
+                  <ReaderSettingsIcon />
+                </IconButton>
+                <OverflowMenu items={overflowItems} label={t("novel.moreOptions")} />
+              </>
+            }
             className="norea-novel-app-bar"
             data-title-visible={titleScrolledAway ? "true" : undefined}
             onBack={goBack}

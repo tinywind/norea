@@ -16,8 +16,11 @@ import { pluginManager } from "../../lib/plugins/manager";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
 import { useNovelCoverSource } from "../../lib/use-novel-cover-source";
 import { ConsoleCover } from "../ConsolePrimitives";
+import { IconButton } from "../IconButton";
 import {
   AddToLibraryIcon,
+  ChevronDownIcon,
+  ChevronUpIcon,
   DownloadedIcon,
   DownloadIcon,
   FromStartIcon,
@@ -224,6 +227,7 @@ function NovelSummary({
 }) {
   const { t } = useTranslation();
   const contentId = useId();
+  const genresId = useId();
   const textRef = useRef<HTMLParagraphElement>(null);
   const genresRef = useRef<HTMLUListElement>(null);
   const [expanded, setExpanded] = useState(false);
@@ -246,31 +250,25 @@ function NovelSummary({
 
   return (
     <div className="norea-novel-summary" data-expanded={expanded ? "true" : undefined}>
-      <div id={contentId}>
-        <p className="norea-novel-summary-text" ref={textRef}>
-          {summary || t("novel.noSummary")}
-        </p>
-        {genres.length > 0 ? (
-          <ul aria-label={t("library.tags.title")} className="norea-novel-genres" ref={genresRef}>
-            {genres.map((genre) => (
-              <li className="norea-novel-genre" key={genre}>
-                {genre}
-              </li>
-            ))}
-          </ul>
-        ) : null}
-      </div>
-      {overflowing || expanded ? (
-        <Button
-          aria-controls={contentId}
-          aria-expanded={expanded}
-          className="norea-novel-summary-toggle"
-          onClick={() => setExpanded((current) => !current)}
-          size="compact-sm"
-          variant="subtle"
-        >
-          {expanded ? t("novel.summaryLess") : t("common.more")}
-        </Button>
+      <p className="norea-novel-summary-text" id={contentId} ref={textRef}>
+        {summary || t("novel.noSummary")}
+      </p>
+      {genres.length > 0 || overflowing || expanded ? (
+        <div className="norea-novel-summary-footer">
+          {genres.length > 0 ? (
+            <ul aria-label={t("library.tags.title")} className="norea-novel-genres" id={genresId} ref={genresRef}>
+              {genres.map(genre => <li className="norea-novel-genre" key={genre}>{genre}</li>)}
+            </ul>
+          ) : null}
+          {overflowing || expanded ? (
+            <IconButton aria-controls={genres.length > 0 ? `${contentId} ${genresId}` : contentId}
+              aria-expanded={expanded} className="norea-novel-summary-toggle"
+              label={expanded ? t("novel.summaryLess") : t("novel.summaryMore")}
+              onClick={() => setExpanded(current => !current)} size="lg">
+              {expanded ? <ChevronUpIcon /> : <ChevronDownIcon />}
+            </IconButton>
+          ) : null}
+        </div>
       ) : null}
     </div>
   );

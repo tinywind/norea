@@ -1,4 +1,4 @@
-import { Alert, Group, Popover, Progress, Stack, Text } from "@mantine/core";
+import { Alert, Popover, Progress, Stack, Text } from "@mantine/core";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   memo,
@@ -29,6 +29,7 @@ import { DownloadFailureStopNotice } from "../components/DownloadFailureStopNoti
 import { DownloadRecoveryStatus } from "../components/DownloadRecoveryStatus";
 import { DownloadGoalAttention } from "../components/DownloadGoalAttention";
 import { DownloadGoalWorkLine } from "../components/DownloadGoalWorkLine";
+import { SourceAccessBanner } from "../components/SourceAccessBanner";
 import { DownloadWorkStatusLabel, type DownloadWorkStatus } from "../components/DownloadWorkStatusLabel";
 import { VpnDownloadAttention } from "../components/VpnDownloadAttention";
 import { VpnDownloadLaunchDialog } from "../components/VpnDownloadLaunchDialog";
@@ -37,7 +38,6 @@ import { useConfirm } from "../components/ui/ConfirmDialog";
 import { goalNovelIdsOf, stopsGoalsLine, useCancelDownloadTask } from "../components/use-cancel-goal-work";
 import {
   ChevronDownIcon,
-  ChevronUpIcon,
   CloseIcon,
   DownloadsIcon,
   PauseIcon,
@@ -45,13 +45,11 @@ import {
   SettingsIcon,
   SortIcon,
   TrashIcon,
-  VerifyIcon,
   VpnIcon,
   WarningIcon,
 } from "../components/ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "../components/ui/OverflowMenu";
 import { ResponsiveSheet } from "../components/ui/ResponsiveSheet";
-import { sourceAccessChallengeTitleKey } from "../lib/plugins/source-access";
 import { useTranslation, type TranslationKey } from "../i18n";
 import {
   getDownloadGoalPauseSnapshot,
@@ -72,12 +70,7 @@ import {
 import { vpnDownloadAttention } from "../lib/tasks/vpn-download-notifications";
 import { pauseVpnDownloadRun, resumeVpnDownloadRun, cancelVpnDownloadRun } from "../lib/tasks/vpn-download-runtime";
 import { workProgress } from "../lib/tasks/work-progress";
-import {
-  applySourceAccessBrowserOutcome,
-  cancelSourceAccessWait,
-  openSourceAccessBrowser,
-  sourceAccessBlockSourceNames,
-} from "../lib/tasks/source-access-coordinator";
+import { sourceAccessBlockSourceNames } from "../lib/tasks/source-access-coordinator";
 import {
   taskWorkQueueKey,
   taskScheduler,
@@ -93,7 +86,6 @@ import {
   normalizeFontScalePercent,
   useAppearanceStore,
 } from "../store/appearance";
-import { useSiteBrowserStore } from "../store/site-browser";
 import "../styles/tasks.css";
 
 const TASK_ROW_HEIGHT = 72;
@@ -861,8 +853,6 @@ function NovelWorkGroup({
     if (goalNovelIds.length > 0) await stopDownloadGoals(goalNovelIds);
   };
   const items: OverflowMenuItem[] = [
-    { icon: ChevronUpIcon, label: t("tasks.moveWorkTop"), disabled: !canMove,
-      onClick: () => taskScheduler.moveSourceWorkQueue(sourceId, group.workKey, "top") },
     { icon: ChevronDownIcon, label: t("tasks.moveWorkBottom"), disabled: !canMove,
       onClick: () => taskScheduler.moveSourceWorkQueue(sourceId, group.workKey, "bottom") },
   ];
@@ -889,10 +879,10 @@ function NovelWorkGroup({
     >
       <div className="norea-task-work-header">
         <div className="norea-task-work-copy norea-task-work-copy-stacked">
-          <div className="norea-task-work-heading">
-            <Text className="norea-task-work-title" lineClamp={1}>
-              {group.title}
-            </Text>
+          <Text className="norea-task-work-title" lineClamp={1}>
+            {group.title}
+          </Text>
+          <div className="norea-task-work-heading norea-task-work-meta">
             <span className="norea-task-group-count">
               {t("vpnDownload.workProgress", { completed: progress.done, total: progress.total })}
             </span>
@@ -910,6 +900,14 @@ function NovelWorkGroup({
             size="lg"
           >
             <ChevronDownIcon />
+          </IconButton>
+          <IconButton
+            disabled={!canMove}
+            label={`${t("tasks.moveWorkTop")}: ${group.title}`}
+            onClick={() => taskScheduler.moveSourceWorkQueue(sourceId, group.workKey, "top")}
+            size="lg"
+          >
+            <ArrowUpGlyph />
           </IconButton>
           <OverflowMenu items={items} label={t("vpnDownload.workOptions", { title: group.title })} />
         </div>
@@ -939,84 +937,6 @@ function NovelWorkGroup({
         />
       ) : null}
     </div>
-  );
-}
-
-function SourceAccessBanner({
-  block,
-  snapshot,
-}: {
-  block: SourceAccessBlock;
-  snapshot: TaskSnapshot;
-}) {
-  const { t } = useTranslation();
-  const browserVisible = useSiteBrowserStore((state) => state.visible);
-  const sourceNames = sourceAccessBlockSourceNames(block, snapshot);
-  const hostname = (() => {
-    try {
-      return new URL(block.challenge.url).hostname;
-    } catch {
-      return block.sourceId;
-    }
-  })();
-  const sourceLabel = sourceNames.length > 0 ? sourceNames.join(", ") : hostname;
-  const title = t(sourceAccessChallengeTitleKey(block.challenge.kind));
-  const verifying =
-    block.verificationRequested || block.verificationTaskId !== undefined;
-  const canOpenVerification =
-    taskScheduler.canBeginSourceAccessVerification(block.scopeKey);
-  const verifyDisabled = browserVisible || verifying || !canOpenVerification;
-
-  return (
-    <section className="norea-source-access-banner" data-source-access={block.scopeKey} role="alert">
-      <div className="norea-source-access-copy">
-        <Text component="h3" fw="var(--norea-weight-bold)" size="sm">
-          {title} · {hostname}
-        </Text>
-        <Text c="dimmed" component="p" size="sm">
-          {block.challenge.kind === "forbidden"
-            ? t("errors.forbidden")
-            : t("sourceAccess.scopeBlocked", { sources: sourceLabel })}
-        </Text>
-        {block.verificationError ? (
-          <Text c="danger" component="p" size="sm">
-            {t("sourceAccess.verificationFailed", {
-              error: block.verificationError,
-            })}
-          </Text>
-        ) : null}
-        {!verifying && !canOpenVerification ? (
-          <Text c="dimmed" component="p" size="sm">
-            {t("sourceAccess.queueTaskToVerify")}
-          </Text>
-        ) : null}
-      </div>
-      <Group gap="xs" justify="flex-end" wrap="nowrap">
-        <IconButton
-          disabled={verifyDisabled}
-          label={t("downloads.queue.verifySource", { source: sourceLabel })}
-          loading={verifying}
-          onClick={() => {
-            void openSourceAccessBrowser(block, {
-              sourceName: sourceLabel,
-              title,
-            });
-          }}
-          size="lg"
-        >
-          <VerifyIcon />
-        </IconButton>
-        <OverflowMenu
-          items={[
-            { label: t("sourceAccess.verifyAndResume"), disabled: verifyDisabled,
-              onClick: () => applySourceAccessBrowserOutcome(taskScheduler, block, "verify") },
-            { label: t("sourceAccess.forceStopAndContinue"), danger: true,
-              onClick: () => cancelSourceAccessWait(block.scopeKey, block.revision) },
-          ]}
-          label={t("downloads.queue.verifyOptions", { source: sourceLabel })}
-        />
-      </Group>
-    </section>
   );
 }
 
@@ -1060,7 +980,11 @@ function NeedsAttentionSection({
         {t("vpnDownload.attention.title")}
       </Text>
       {blocks.map((block) => (
-        <SourceAccessBanner block={block} key={block.scopeKey} snapshot={snapshot} />
+        <SourceAccessBanner
+          block={block}
+          key={block.scopeKey}
+          sourceNames={sourceAccessBlockSourceNames(block, snapshot)}
+        />
       ))}
       <DownloadFailureStopNotice snapshot={snapshot} />
       {active ? <VpnDownloadAttention snapshot={vpn} /> : null}
@@ -1339,8 +1263,6 @@ export function DownloadsQueueView({
     });
   };
   const overflowItems: OverflowMenuItem[] = [
-    { icon: SettingsIcon, label: t("downloads.settings"), onClick: () => { void navigate({ to: "/settings", search: { section: "downloads" } }); } },
-    { icon: SortIcon, label: t("tasks.sort"), onClick: () => setSortOpened(true) },
     { icon: TrashIcon, label: t("tasks.clearErrors"), disabled: taskStats.failed === 0,
       onClick: () => taskScheduler.clearFailedTasks() },
   ];
@@ -1406,6 +1328,16 @@ export function DownloadsQueueView({
                 size="lg"
               >
                 {allPaused ? <PlayIcon /> : <PauseIcon />}
+              </IconButton>
+              <IconButton label={t("tasks.sort")} onClick={() => setSortOpened(true)} size="lg">
+                <SortIcon />
+              </IconButton>
+              <IconButton
+                label={t("downloads.settings")}
+                onClick={() => { void navigate({ to: "/settings", search: { section: "downloads" } }); }}
+                size="lg"
+              >
+                <SettingsIcon />
               </IconButton>
               <OverflowMenu items={overflowItems} label={t("common.more")} />
             </>

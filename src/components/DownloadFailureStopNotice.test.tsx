@@ -37,7 +37,7 @@ function direct(state: NoticeSnapshot) {
   mocks.direct = true;
   return DownloadFailureStopNotice({ snapshot: state });
 }
-interface Props { children?: ReactNode; onClick?: () => void | Promise<void>; disabled?: boolean; loading?: boolean }
+interface Props { label?: string; children?: ReactNode; onClick?: () => void | Promise<void>; disabled?: boolean; loading?: boolean }
 function elements(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
@@ -59,8 +59,8 @@ it("shows each stopped source name, actual error and semantic resume button", ()
   expect($('[data-download-failure-stop="source-a"]').text()).toContain("HTTP 503 from source.test");
   expect($('[data-download-failure-stop="installed"]').text()).toContain("Installed source downloads stopped");
   expect($('[data-download-failure-stop="unknown"]').text()).toContain("unknown downloads stopped");
-  expect($('[data-download-failure-stop="source-a"] button').first().text()).toBe("Resume source Source A");
-  expect($('[data-download-failure-stop="source-a"] button').last().text()).toBe("Error recovery settings");
+  expect($('[data-download-failure-stop="source-a"] button').first().attr("aria-label")).toBe("Resume source Source A");
+  expect($('[data-download-failure-stop="source-a"] button').last().attr("aria-label")).toBe("Error recovery settings");
   expect($('[data-download-failure-stop="source-a"] button').attr("type")).toBe("button");
 });
 
@@ -69,7 +69,7 @@ it("shows a global save failure without hiding the independent source stop", () 
   expect($("[role=alert]")).toHaveLength(2);
   expect($('[data-download-failure-stop="global"]').text()).toContain("Downloads stopped");
   expect($('[data-download-failure-stop="global"]').text()).toContain("Disk is full");
-  expect($('[data-download-failure-stop="global"] button').first().text()).toBe("Resume downloads");
+  expect($('[data-download-failure-stop="global"] button').first().attr("aria-label")).toBe("Resume downloads");
 });
 
 it("restores the queue before resuming only the selected source or explicit global scope", async () => {
@@ -115,7 +115,7 @@ it("settles a rejected recovery without leaving the button pending or hiding the
 it("opens the error policy row while preserving a history entry back to downloads", () => {
   useSettingsRevealStore.setState({ target: null });
   const button = elements(direct(snapshot({ sourceErrors: { "source-a": "HTTP 503" } })))
-    .find(element => element.props.children === "Error recovery settings")!;
+    .find(element => element.props.label === "Error recovery settings")!;
   button.props.onClick!();
   expect(mocks.navigate).toHaveBeenCalledWith({ to: "/settings", search: { section: "downloads" } });
   expect(useSettingsRevealStore.getState().target).toMatchObject({

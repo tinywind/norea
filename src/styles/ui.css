@@ -504,32 +504,45 @@ body[data-norea-reader-bars] {
   }
 }
 
-/* Verify in place for a source held by an access check. */
-.norea-source-access-notice {
-  align-items: flex-start;
-  background: var(--norea-color-surface-raised);
-  border: 1px solid var(--norea-color-rule);
+/* Access and recovery notices share the queue's compact warning surface. */
+.norea-source-access-banners {
+  display: grid;
+  gap: var(--norea-space-2);
+}
+
+.norea-source-access-banner {
+  align-items: center;
+  background: var(--norea-color-warn-soft);
+  border: 1px solid var(--norea-color-warn);
   border-radius: var(--norea-radius-md);
   display: grid;
   gap: var(--norea-space-2) var(--norea-space-3);
-  grid-template-columns: auto minmax(0, 1fr);
+  grid-template-columns: minmax(0, 1fr) auto;
   padding: var(--norea-space-3);
   text-align: start;
 }
 
-.norea-source-access-notice-icon {
-  color: var(--norea-color-warn);
-}
-
-.norea-source-access-notice-copy {
+.norea-source-access-copy {
   display: grid;
   gap: var(--norea-space-1);
   min-width: 0;
+  overflow-wrap: anywhere;
 }
 
-.norea-source-access-notice-actions {
+.norea-source-access-copy h2,
+.norea-source-access-copy h3,
+.norea-source-access-copy p {
+  margin: 0;
+}
+
+.norea-source-access-actions {
+  align-items: center;
   display: flex;
-  flex-wrap: wrap;
-  gap: var(--norea-space-2);
-  grid-column: 2;
+  flex-wrap: nowrap;
+  gap: var(--norea-space-1);
+}
+
+/* Status-only notices use the full width; icon actions remain beside the message. */
+.norea-source-access-copy:only-child {
+  grid-column: 1 / -1;
 }

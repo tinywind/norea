@@ -149,13 +149,23 @@
   min-width: 0;
 }
 
-.norea-library-chips {
+.norea-library-filter-row {
   align-items: center;
   display: flex;
   flex: 0 0 auto;
-  gap: var(--norea-space-2);
-  overflow-x: auto;
+  gap: var(--norea-space-1);
+  min-width: 0;
   padding: var(--norea-space-1) var(--norea-space-2);
+}
+
+.norea-library-chips {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  gap: var(--norea-space-2);
+  min-height: var(--norea-control-md);
+  min-width: 0;
+  overflow-x: auto;
   scrollbar-width: none;
 }
 

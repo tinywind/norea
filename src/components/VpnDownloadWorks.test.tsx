@@ -109,7 +109,9 @@ it("shows a plain novel row with progress and a VPN label but no range rows or r
   expect(text(view)).toContain('vpnDownload.workProgress{"completed":1,"total":4}');
   expect(view.some(element => element.props["data-vpn-range"])).toBe(false);
   expect(text(view)).not.toContain("vpnDownload.reason");
-  expect(menu(view).map(entry => entry.label)).toEqual(["vpnDownload.pauseWork", "vpnDownload.details", "vpnDownload.cancelWork"]);
+  expect(iconButton(view, "vpnDownload.pauseWork")).toBeDefined();
+  expect(iconButton(view, "vpnDownload.details")).toBeDefined();
+  expect(menu(view).map(entry => entry.label)).toEqual(["vpnDownload.cancelWork"]);
 });
 
 it("gives a VPN work one status from its most urgent part", () => {
@@ -125,13 +127,13 @@ it("gives a VPN work one status from its most urgent part", () => {
 
 it("opens the technical breakdown only from the row's Details action", () => {
   expect(renderRow(withPlans(activePlan())).some(element => element.type === VpnDownloadWorkDetails)).toBe(false);
-  item(renderRow(withPlans(activePlan())), "vpnDownload.details")!.onClick();
+  iconButton(renderRow(withPlans(activePlan())), "vpnDownload.details").props.onClick!();
   expect(renderRow(withPlans(activePlan())).some(element => element.type === VpnDownloadWorkDetails)).toBe(true);
 });
 
 it("routes work pause and resume through the whole-work boundary and holds them while the run is paused", async () => {
   const value = withPlans(activePlan());
-  item(renderRow(value), "vpnDownload.pauseWork")!.onClick();
+  iconButton(renderRow(value), "vpnDownload.pauseWork").props.onClick!();
   await vi.waitFor(() => expect(actions.pauseWork).toHaveBeenCalledExactlyOnceWith("source", 42));
   value.plans[0]!.ranges[1]!.phase = "paused";
   value.plans[0]!.ranges[1]!.userPaused = true;
@@ -141,10 +143,13 @@ it("routes work pause and resume through the whole-work boundary and holds them 
   value.plans[0]!.ranges[0]!.userPaused = true;
   value.plans[0]!.ranges[0]!.pauseReason = "work-paused";
   expect(status()).toBe("paused");
-  item(renderRow(value), "vpnDownload.resumeWork")!.onClick();
+  iconButton(renderRow(value), "vpnDownload.resumeWork").props.onClick!();
   await vi.waitFor(() => expect(actions.resumeWork).toHaveBeenCalledExactlyOnceWith("source", 42));
   value.run = { ...value.run!, status: "paused" };
-  expect(item(renderRow(value), "vpnDownload.resumeWork")!.disabled).toBe(true);
+  const resume = iconButton(renderRow(value), "vpnDownload.resumeWork");
+  expect(resume.props.disabled).toBe(true);
+  resume.props.onClick!();
+  expect(actions.resumeWork).toHaveBeenCalledOnce();
   expect(actions.resumeRange).not.toHaveBeenCalled();
 });
 
@@ -222,7 +227,7 @@ it.each(["challenge-forbidden", "site-forbidden", "chapter-failed", "download-fa
   });
   const value = withPlans(plan);
   expect(vpnDownloadWorks(value)[0]).toMatchObject({ held: false, canPause: false });
-  expect(item(renderRow(value), "vpnDownload.pauseWork")).toBeUndefined();
+  expect(iconButton(renderRow(value), "vpnDownload.pauseWork")).toBeUndefined();
   mocks.states = []; mocks.refs = [];
   await iconButton(row(renderDetails(value), "lane-a"), "vpnDownload.resume").props.onClick!();
   expect(actions.resumeRange).toHaveBeenCalledExactlyOnceWith("plan", "lane-a");
@@ -232,9 +237,9 @@ it("keeps whole-work Resume available for a healthy sibling of a forbidden range
   const plan = activePlan();
   Object.assign(plan.ranges[0]!, { pauseReason: "challenge-forbidden", challenge: { kind: "forbidden", url: "https://source.test/chapter" } });
   const value = withPlans(plan);
-  expect(item(renderRow(value), "vpnDownload.pauseWork")).toBeDefined();
+  expect(iconButton(renderRow(value), "vpnDownload.pauseWork")).toBeDefined();
   Object.assign(plan.ranges[1]!, { phase: "paused", userPaused: true, pauseReason: "work-paused" });
-  expect(item(renderRow(value), "vpnDownload.resumeWork")).toBeDefined();
+  expect(iconButton(renderRow(value), "vpnDownload.resumeWork")).toBeDefined();
   mocks.states = []; mocks.refs = [];
   expect(iconButton(row(renderDetails(value), "lane-a"), "vpnDownload.resume").props.disabled).toBe(true);
   Object.assign(plan.ranges[1]!, { phase: "running", userPaused: false, pauseReason: null });

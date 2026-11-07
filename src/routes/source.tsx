@@ -536,7 +536,6 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     applyFilters({ ...activeFilters, [key]: empty });
   };
   const overflowItems: OverflowMenuItem[] = [
-    { icon: SourceIcon, label: t("common.openSite"), onClick: openSite },
     ...(hasPluginInputs(plugin)
       ? [{ icon: SettingsIcon, label: t("source.sourceSettings"), onClick: () => setSettingsOpen(true) }]
       : []),
@@ -595,7 +594,16 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
                 ) : null}
               </>
             )}
-            <OverflowMenu items={overflowItems} label={t("common.more")} />
+            <IconButton label={t("common.openSite")} onClick={openSite} size="lg">
+              <SourceIcon />
+            </IconButton>
+            {hasPluginInputs(plugin) ? (
+              <OverflowMenu items={overflowItems} label={t("common.more")} />
+            ) : (
+              <IconButton label={t("source.readerSettings")} onClick={() => setReaderSettingsOpen(true)} size="lg">
+                <ReaderSettingsIcon />
+              </IconButton>
+            )}
           </>
         }
         onBack={goBack}

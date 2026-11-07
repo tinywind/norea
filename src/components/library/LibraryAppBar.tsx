@@ -15,7 +15,7 @@ import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
 interface LibraryAppBarProps {
   /** Category tabs for the bar's leading slot; null where a side list shows them. */
   categoryTabs?: ReactNode;
-  /** Shows the inline search field and the refresh action. */
+  /** Shows the inline search field in place of the search icon. */
   wide: boolean;
   onOpenViewOptions: () => void;
   onRefresh: () => void;
@@ -66,19 +66,7 @@ export function LibraryAppBar({
     <PageHeader
       actions={
         <>
-          {wide ? (
-            <>
-              {categoryTabs ? searchField : null}
-              <IconButton
-                disabled={refreshDisabled || refreshing}
-                label={t("library.refresh")}
-                onClick={onRefresh}
-                size="lg"
-              >
-                {refreshing ? <Loader size="sm" /> : <RefreshIcon />}
-              </IconButton>
-            </>
-          ) : (
+          {wide ? (categoryTabs ? searchField : null) : (
             <IconButton
               label={t("library.search.aria")}
               onClick={() => setSearchOpen(true)}
@@ -87,6 +75,14 @@ export function LibraryAppBar({
               <SearchIcon />
             </IconButton>
           )}
+          <IconButton
+            disabled={refreshDisabled || refreshing}
+            label={t("library.refresh")}
+            onClick={onRefresh}
+            size="lg"
+          >
+            {refreshing ? <Loader size="sm" /> : <RefreshIcon />}
+          </IconButton>
           <IconButton
             label={t("library.viewOptions.title")}
             onClick={onOpenViewOptions}

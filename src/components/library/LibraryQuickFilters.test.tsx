@@ -30,9 +30,15 @@ const counts: LibraryNovelSummary = {
 
 let harness: BackNavigationHarness | undefined;
 let tree: ReactNode;
+const onToggleSelection = vi.fn();
 
-function ChipsProbe({ sourceActive }: { sourceActive: boolean }) {
-  tree = LibraryQuickFilters({ counts, onClear: vi.fn(), onOpenFilters: vi.fn(), sourceActive });
+function ChipsProbe({ sourceActive, selectionActive = false, selectionDisabled = false }: {
+  sourceActive: boolean; selectionActive?: boolean; selectionDisabled?: boolean;
+}) {
+  tree = LibraryQuickFilters({
+    counts, onClear: vi.fn(), onOpenFilters: vi.fn(), onToggleSelection,
+    selectionActive, selectionDisabled, sourceActive,
+  });
   return null;
 }
 
@@ -49,6 +55,7 @@ afterEach(async () => {
 
 beforeEach(() => {
   useLibraryStore.getState().clearFilters();
+  onToggleSelection.mockClear();
 });
 
 it.each([en, ko])("offers Unread and Downloaded as pressable chips without Clear when nothing is filtered", async (strings) => {
@@ -68,4 +75,22 @@ it.each([en, ko])("counts every active filter, including the source, and offers 
   expect(chip(strings["library.filter.unread"])[0]!.props.selected).toBe(true);
   expect(chip(strings["library.filter.moreActive"].replace("{count}", "3"))).toHaveLength(1);
   expect(chip(strings["common.clear"])).toHaveLength(1);
+});
+
+it("offers selection directly beside the filters and reports its active and unavailable states", async () => {
+  locale.strings = en;
+  harness = mountBackNavigationHarness();
+  await harness.render(<ChipsProbe sourceActive={false} />);
+  const selection = () => collectElements(tree).find((element) => element.props.onClick === onToggleSelection)!;
+  expect(selection().props.label).toBe(en["library.selection.start"]);
+  expect(selection().props["aria-pressed"]).toBe(false);
+  expect(selection().props.disabled).toBe(false);
+  await harness.run(() => (selection().props.onClick as () => void)());
+  expect(onToggleSelection).toHaveBeenCalledTimes(1);
+
+  await harness.render(<ChipsProbe selectionActive sourceActive={false} />);
+  expect(selection().props.label).toBe(en["selection.exit"]);
+  expect(selection().props["aria-pressed"]).toBe(true);
+  await harness.render(<ChipsProbe selectionDisabled sourceActive={false} />);
+  expect(selection().props.disabled).toBe(true);
 });

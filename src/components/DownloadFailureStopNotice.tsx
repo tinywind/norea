@@ -1,4 +1,4 @@
-import { Button, Group, Text } from "@mantine/core";
+import { Text } from "@mantine/core";
 import { useNavigate } from "@tanstack/react-router";
 import { useRef, useState } from "react";
 import { useTranslation } from "../i18n";
@@ -7,6 +7,8 @@ import { describeError } from "../lib/errors";
 import { resumeChapterDownloadQueueAfterFailure } from "../lib/tasks/chapter-download";
 import { redactUrlsForLog } from "../lib/url-log";
 import type { TaskSnapshot } from "../lib/tasks/task-types";
+import { IconButton } from "./IconButton";
+import { PlayIcon, SettingsIcon } from "./ui/icons";
 import { useSettingsRevealStore } from "./settings/settings-reveal";
 
 export function DownloadFailureStopNotice({ snapshot }: {
@@ -52,27 +54,27 @@ export function DownloadFailureStopNotice({ snapshot }: {
             <Text component="p" size="sm">{message}</Text>
             <Text c="dimmed" component="p" size="xs">{t("downloads.stopped.resumeHint")}</Text>
           </div>
-          <Group gap="xs">
-            <Button
+          <div className="norea-source-access-actions">
+            <IconButton
               disabled={pending !== null}
               loading={pending === (sourceId === undefined ? "global" : `source:${sourceId}`)}
               onClick={() => resume(sourceId)}
-              size="compact-sm"
-              variant="default"
+              size="lg"
+              label={source ? t("downloads.queue.resumeSource", { source }) : t("downloads.queue.resume")}
             >
-              {source ? t("downloads.queue.resumeSource", { source }) : t("downloads.queue.resume")}
-            </Button>
-            <Button
+              <PlayIcon />
+            </IconButton>
+            <IconButton
               onClick={() => {
                 useSettingsRevealStore.getState().reveal("downloads", t("settings.downloads.recovery.forbidden.label"));
                 void navigate({ to: "/settings", search: { section: "downloads" } });
               }}
-              size="compact-sm"
-              variant="subtle"
+              size="lg"
+              label={t("downloads.recoverySettings")}
             >
-              {t("downloads.recoverySettings")}
-            </Button>
-          </Group>
+              <SettingsIcon />
+            </IconButton>
+          </div>
         </section>
       ))}
     </>

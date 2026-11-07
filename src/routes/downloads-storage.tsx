@@ -28,7 +28,6 @@ import {
   TrashIcon,
   DownloadedIcon,
   FilterIcon,
-  OpenWorkIcon,
   PlayIcon,
   RefreshIcon,
   RepairIcon,
@@ -428,7 +427,6 @@ function DownloadCacheNovelCard({
   const novelDeleting = allDeleting || deleteNovel.isPending;
   const toggleLabel = expanded ? t("downloads.collapse") : t("downloads.expand");
   const menuItems: OverflowMenuItem[] = [
-    { icon: OpenWorkIcon, label: t("downloads.openNovel"), disabled: novelDeleting, onClick: onOpenNovel },
     {
       icon: TrashIcon,
       label: t("downloads.deleteNovel", { name: novel.novelName }),
@@ -471,7 +469,18 @@ function DownloadCacheNovelCard({
             component="h2"
             title={novel.novelName}
           >
-            {novel.novelName}
+            {selectionMode ? novel.novelName : (
+              <button
+                aria-label={`${t("downloads.openNovel")}: ${novel.novelName}`}
+                className="norea-downloads-novel-open norea-state-layer"
+                disabled={novelDeleting}
+                onClick={onOpenNovel}
+                title={t("downloads.openNovel")}
+                type="button"
+              >
+                {novel.novelName}
+              </button>
+            )}
           </Text>
           <Text className="norea-downloads-novel-count" component="div" title={countText}>
             {countText}
@@ -682,22 +691,12 @@ export function DownloadsStorageView({
     void navigate({ to: "/reader", search: { chapterId } });
   };
   const headerItems: OverflowMenuItem[] = [
-    { icon: SelectIcon, label: t("library.selection.start"), disabled: visibleRows.length === 0,
-      onClick: () => setSelectionMode(true) },
-    {
-      icon: FilterIcon,
-      label: mediaFallbackOnly ? t("downloads.showAllNovels") : t("downloads.filterMediaFallback"),
-      disabled: !mediaFallbackOnly && totals.repairNeeded === 0,
-      onClick: () => setMediaFallbackOnly((current) => !current),
-    },
-    { icon: RefreshIcon, label: t("downloads.refresh"), disabled: query.isFetching,
-      onClick: () => { void query.refetch(); } },
     { icon: TrashIcon, label: t("downloads.deleteAll"), danger: true,
       disabled: rows.length === 0 || deleteAll.isPending, onClick: () => deleteAll.mutate() },
   ];
 
   // Both header states keep this row, so selecting never moves the list.
-  const subrow = rows.length > 0 ? (
+  const subrow = rows.length > 0 || mediaFallbackOnly ? (
     <div className="norea-downloads-subrow">
       <span className="norea-app-bar-meta norea-downloads-summary">
         {[
@@ -706,7 +705,7 @@ export function DownloadsStorageView({
           t("downloads.summary.size", { size: totalSize }),
         ].join(" · ")}
       </span>
-      {totals.repairNeeded > 0 ? (
+      {totals.repairNeeded > 0 || mediaFallbackOnly ? (
         <button
           aria-pressed={mediaFallbackOnly}
           className="norea-downloads-warning norea-state-layer"
@@ -747,6 +746,23 @@ export function DownloadsStorageView({
         <PageHeader
           actions={
             <>
+              <IconButton
+                disabled={visibleRows.length === 0}
+                label={t("library.selection.start")}
+                onClick={() => setSelectionMode(true)}
+                size="lg"
+              >
+                <SelectIcon />
+              </IconButton>
+              <IconButton
+                disabled={query.isFetching}
+                label={t("downloads.refresh")}
+                loading={query.isFetching}
+                onClick={() => { void query.refetch(); }}
+                size="lg"
+              >
+                <RefreshIcon />
+              </IconButton>
               <IconButton
                 disabled={rows.length === 0}
                 label={t("chapterCleanup.title")}

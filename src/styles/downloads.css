@@ -136,6 +136,32 @@
   white-space: nowrap;
 }
 
+.norea-downloads-novel-open {
+  background: transparent;
+  border: 0;
+  border-radius: var(--norea-radius-sm);
+  color: inherit;
+  cursor: pointer;
+  display: block;
+  font: inherit;
+  min-height: var(--norea-control-md);
+  overflow: hidden;
+  padding: 0;
+  text-align: start;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  width: 100%;
+}
+
+.norea-downloads-novel-open:focus-visible {
+  outline: var(--norea-focus-width) solid var(--norea-color-focus);
+  outline-offset: -2px;
+}
+
+.norea-downloads-novel-open:disabled {
+  cursor: default;
+}
+
 .norea-downloads-novel-count,
 .norea-downloads-novel-status {
   min-width: 0;

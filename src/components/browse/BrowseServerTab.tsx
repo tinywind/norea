@@ -17,7 +17,6 @@ import { ContentServerCover } from "../ContentServerCover";
 import { IconButton } from "../IconButton";
 import { SearchBar } from "../SearchBar";
 import { AddToLibraryIcon, CheckIcon, DownloadIcon, InLibraryIcon, RefreshIcon, SelectIcon } from "../ui/icons";
-import { OverflowMenu } from "../ui/OverflowMenu";
 import { SelectionAction, SelectionBar } from "../ui/SelectionBar";
 import { CoverGridSkeleton } from "./CoverGridSkeleton";
 import { QuickAddCard } from "./QuickAddCard";
@@ -159,21 +158,22 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
       ) : (
         <div className="norea-server-browse-toolbar">
           <SearchBar value={draft} onChange={value => setFilters(server, { draft: value })} onSubmit={() => setFilters(server, { query: draft.trim() })} placeholder={t("contentSync.search")} />
-          <IconButton label={t("common.refresh")} loading={works.isRefetching} onClick={refresh} size="lg">
-            <RefreshIcon />
-          </IconButton>
-          <OverflowMenu
-            items={[
-              { disabled: !enabled || items.length === 0, icon: SelectIcon, label: t("library.selection.start"), onClick: () => selection.enter() },
-              {
-                disabled: !enabled || matchingTotal === 0,
-                icon: AddToLibraryIcon,
-                label: t("serverLibraryAdd.addAll", { count: matchingTotal }),
-                onClick: () => bulkAdd.request({ count: matchingTotal, works: { query, source } }),
-              },
-            ]}
-            label={t("common.more")}
-          />
+          <div className="norea-browse-actions">
+            <IconButton label={t("common.refresh")} loading={works.isRefetching} onClick={refresh} size="lg">
+              <RefreshIcon />
+            </IconButton>
+            <IconButton disabled={!enabled || items.length === 0} label={t("library.selection.start")} onClick={() => selection.enter()} size="lg">
+              <SelectIcon />
+            </IconButton>
+            <IconButton
+              disabled={!enabled || matchingTotal === 0}
+              label={t("serverLibraryAdd.addAll", { count: matchingTotal })}
+              onClick={() => bulkAdd.request({ count: matchingTotal, works: { query, source } })}
+              size="lg"
+            >
+              <AddToLibraryIcon />
+            </IconButton>
+          </div>
         </div>
       )}
       {(sources.data?.items.length ?? 0) > 0 ? (

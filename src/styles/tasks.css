@@ -64,33 +64,6 @@
   }
 }
 
-.norea-source-access-banners {
-  display: grid;
-  gap: var(--norea-space-2);
-}
-
-.norea-source-access-banner {
-  align-items: center;
-  background: var(--norea-color-warn-soft);
-  border: 1px solid var(--norea-color-warn);
-  border-radius: var(--norea-radius-md);
-  display: grid;
-  gap: var(--norea-space-3);
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: var(--norea-space-3);
-}
-
-.norea-source-access-copy {
-  display: grid;
-  gap: var(--norea-space-1);
-  min-width: 0;
-}
-
-.norea-source-access-copy h2,
-.norea-source-access-copy p {
-  margin: 0;
-}
-
 .norea-task-shell {
   border: 1px solid var(--norea-color-rule);
   border-radius: var(--norea-radius-md);
@@ -276,6 +249,10 @@
   min-width: 0;
 }
 
+.norea-task-work-meta {
+  flex-wrap: wrap;
+}
+
 .norea-task-route-label {
   border: 1px solid var(--norea-color-rule-strong);
   border-radius: var(--norea-radius-sm);
@@ -340,6 +317,13 @@
   grid-template-columns: auto minmax(0, 1fr) auto;
   min-height: 4.5rem;
   padding: var(--norea-space-2) var(--norea-space-3);
+}
+
+/* Small groups fit their content; virtual rows keep their measured height. */
+.norea-task-work-rows:not(.norea-task-virtual-viewport) > .norea-task-row {
+  contain-intrinsic-size: auto var(--norea-control-md);
+  min-height: var(--norea-control-md);
+  padding-block: var(--norea-space-1);
 }
 
 .norea-task-virtual-window .norea-task-row {
@@ -520,11 +504,6 @@
 }
 
 @media (max-width: 575px) {
-  .norea-source-access-banner {
-    align-items: stretch;
-    grid-template-columns: minmax(0, 1fr);
-  }
-
   .norea-task-row-title {
     font-size: var(--norea-text-sm);
   }

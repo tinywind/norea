@@ -373,6 +373,28 @@
   min-width: 0;
 }
 
+.norea-search-result-source {
+  background: transparent;
+  border: 0;
+  border-radius: var(--norea-radius-sm);
+  color: inherit;
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  min-height: var(--norea-control-md);
+  min-width: 0;
+  padding: 0;
+  text-align: start;
+  width: 100%;
+}
+
+.norea-browse-actions {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0;
+}
+
 .norea-search-result-name {
   overflow: hidden;
   text-overflow: ellipsis;

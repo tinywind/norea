@@ -1,4 +1,4 @@
-import { Button, Text } from "@mantine/core";
+import { Button } from "@mantine/core";
 import { useTranslation } from "../i18n";
 import { sourceAccessChallengeTitleKey } from "../lib/plugins/source-access";
 import { useTaskSnapshot } from "../lib/tasks/hooks";
@@ -7,7 +7,8 @@ import { openSourceAccessBrowser } from "../lib/tasks/source-access-coordinator"
 import type { SourceAccessBlock } from "../lib/tasks/source-access-gate";
 import { useSiteBrowserStore } from "../store/site-browser";
 import { IconButton } from "./IconButton";
-import { VerifyIcon, WarningIcon } from "./ui/icons";
+import { SourceAccessBanner } from "./SourceAccessBanner";
+import { VerifyIcon } from "./ui/icons";
 
 /** Looks up the open source-access challenge of a source, if any. */
 export function useSourceAccessBlocks(
@@ -87,30 +88,7 @@ export function SourceAccessNotice({
   sourceId,
   sourceName,
 }: SourceAccessNoticeProps) {
-  const { t } = useTranslation();
   const block = useSourceAccessBlocks(active)(sourceId);
   if (!enabled || !block) return null;
-
-  return (
-    <section className="norea-source-access-notice" role="status">
-      <WarningIcon className="norea-source-access-notice-icon" size="1.25rem" />
-      <div className="norea-source-access-notice-copy">
-        <Text fw="var(--norea-weight-bold)" size="sm">
-          {block.challenge.kind === "forbidden"
-            ? t("sourceAccess.forbiddenTitle")
-            : t("sourceAccess.notice.title", { source: sourceName })}
-        </Text>
-        <Text c="dimmed" size="sm">
-          {t(block.challenge.kind === "forbidden" ? "errors.forbidden" : "sourceAccess.notice.message")}
-        </Text>
-      </div>
-      <div className="norea-source-access-notice-actions">
-        <SourceAccessVerifyButton
-          block={block}
-          label={t("updates.failure.verify")}
-          sourceName={sourceName}
-        />
-      </div>
-    </section>
-  );
+  return <SourceAccessBanner block={block} sourceNames={[sourceName]} />;
 }

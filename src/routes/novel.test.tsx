@@ -12,7 +12,11 @@ const mocks = vi.hoisted(() => ({
   sync: { serverError: null as unknown, sourceError: null as unknown, retry: vi.fn() },
   metadataError: null as unknown,
   toggleMutate: vi.fn(),
+  refresh: vi.fn(),
+  refreshPending: false,
   fullRefresh: vi.fn(),
+  fullRefreshPending: false,
+  clearSelectedDownloads: vi.fn(),
   clearDownloadMutate: vi.fn(),
   confirm: vi.fn(),
   toast: vi.fn(),
@@ -42,7 +46,7 @@ vi.mock("../i18n", () => ({ useTranslation: () => ({
 }) }));
 vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown) => unknown) => selector({ defaultChapterSort: "asc", setDefaultChapterSort: vi.fn() }) }));
 vi.mock("../store/reader", () => ({ useReaderStore: (selector: (state: unknown) => unknown) => selector({ lastReadChapterByNovel: {} }) }));
-vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () => ({ sourceDuplicateChapters: [], toggle: { mutate: mocks.toggleMutate }, refreshMetadata: { error: mocks.metadataError }, fullRefreshMetadata: { mutate: mocks.fullRefresh } }) }));
+vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () => ({ sourceDuplicateChapters: [], toggle: { mutate: mocks.toggleMutate }, refreshMetadata: { mutate: mocks.refresh, isPending: mocks.refreshPending, error: mocks.metadataError }, fullRefreshMetadata: { mutate: mocks.fullRefresh, isPending: mocks.fullRefreshPending } }) }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.toast, hide: vi.fn() } }));
 vi.mock("@mantine/core", async (importOriginal) => ({
   ...await importOriginal<typeof import("@mantine/core")>(),
@@ -50,7 +54,7 @@ vi.mock("@mantine/core", async (importOriginal) => ({
   Modal: () => null,
 }));
 vi.mock("../components/novel/use-server-novel-sync", () => ({ useServerNovelSync: () => mocks.sync }));
-vi.mock("../components/novel/use-novel-chapter-actions", () => ({ useNovelChapterActions: () => ({ clearDownload: { mutate: mocks.clearDownloadMutate }, clearSelectedDownloads: {}, setSelectedChapterReadState: {}, setRelativeChapterReadState: {}, repairMedia: {} }) }));
+vi.mock("../components/novel/use-novel-chapter-actions", () => ({ useNovelChapterActions: () => ({ clearDownload: { mutate: mocks.clearDownloadMutate }, clearSelectedDownloads: { mutate: mocks.clearSelectedDownloads }, setSelectedChapterReadState: {}, setRelativeChapterReadState: {}, repairMedia: {} }) }));
 vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => mocks.confirm }));
 vi.mock("../components/novel/use-novel-download-statuses", () => ({ useNovelDownloadStatuses: () => new Map() }));
 vi.mock("../components/novel/use-local-novel-editor", () => ({ useLocalNovelEditor: () => ({ addLocalChapters: {}, reorderLocalChapters: {} }) }));
@@ -153,7 +157,11 @@ beforeEach(() => {
   mocks.metadataError = null;
   mocks.installed = false;
   mocks.toggleMutate.mockReset();
+  mocks.refresh.mockReset();
+  mocks.refreshPending = false;
   mocks.fullRefresh.mockReset();
+  mocks.fullRefreshPending = false;
+  mocks.clearSelectedDownloads.mockReset();
   mocks.clearDownloadMutate.mockReset();
   mocks.confirm.mockReset();
   mocks.toast.mockReset();
@@ -285,8 +293,8 @@ it("keeps installed source actions available while server binding is pending", a
   mocks.novel.isLocal = false;
   mocks.source.isPending = true;
   mocks.installed = true;
-  await withOverflowItems((items) => {
-    expect(items.find((item) => item.label === "novel.openInWebView")?.disabled).toBe(false);
+  await withPageTree(async (find) => {
+    expect(find((props) => props.label === "novel.openInWebView")?.props.disabled).toBe(false);
   });
 });
 
@@ -297,33 +305,45 @@ it("does not expose source actions for a server folder path before binding looku
   mocks.installed = true;
   const $ = renderPage();
   expect($("h1").text()).toBe("Saved novel");
+  expect($("button[aria-label='novel.openInWebView']")).toHaveLength(0);
   expect(await overflowLabels()).not.toContain("novel.openInWebView");
 });
 
 it("retains local editing presentation for unbound local works", async () => {
   const labels = await overflowLabels();
-  expect(labels).toEqual(expect.arrayContaining(["novel.local.editMetadata", "novel.local.addChapters", "novel.local.reorderChapters"]));
-  expect(labels).not.toContain("contentSync.manageChapters");
-  expect(labels).not.toContain("novel.checkNewChapters");
-  expect(renderPage().text()).not.toContain("contentSync.deleteServer");
+  expect(labels).toEqual(["novel.local.editMetadata", "novel.local.reorderChapters"]);
+  const $ = renderPage();
+  expect($("button[aria-label='novel.local.addChapters']")).toHaveLength(1);
+  expect($.text()).not.toContain("contentSync.deleteServer");
 });
 
-it("offers the source refresh, migration and reader actions in the overflow for library source works", async () => {
+it("offers refresh, source and reader settings directly and keeps advanced work actions in the overflow", async () => {
   mocks.novel.isLocal = false;
   mocks.novel.inLibrary = true;
   mocks.installed = true;
   try {
-    expect(await overflowLabels()).toEqual([
-      "novel.checkNewChapters",
-      "novel.refreshAllDetails",
-      "categories.editWork",
-      "novel.mergeSource",
-      "novel.openInWebView",
-      "novel.readerSettingsForNovel",
-    ]);
+    expect(await overflowLabels()).toEqual(["novel.refreshAllDetails", "novel.mergeSource"]);
+    await withPageTree(async (find, run) => {
+      const refresh = find((props) => props.label === "novel.checkNewChapters")!;
+      expect(refresh.props.disabled).toBe(false);
+      expect(find((props) => props.label === "novel.openInWebView")).toBeDefined();
+      expect(find((props) => props.label === "novel.readerSettingsForNovel")).toBeDefined();
+      await run(() => (refresh.props.onClick as () => void)());
+      expect(mocks.refresh).toHaveBeenCalledTimes(1);
+    });
   } finally {
     mocks.novel.inLibrary = false;
   }
+});
+
+it.each(["refreshPending", "fullRefreshPending"] as const)("disables the direct refresh action while %s", async (pending) => {
+  mocks.novel.isLocal = false;
+  mocks[pending] = true;
+  await withPageTree(async (find) => {
+    const refresh = find((props) => props.label === "novel.checkNewChapters")!;
+    expect(refresh.props.disabled).toBe(true);
+    expect(refresh.props.loading).toBe(true);
+  });
 });
 
 it("shows available packages and downloaded chapters without deleting canonical metadata chapters", () => {
@@ -399,7 +419,7 @@ it("shows source-only chapters and source controls for a bound work with its ori
   mocks.chapters = [{ ...chapter, name: "New source chapter" }];
   const $ = renderPage();
   expect($("button[aria-label='novel.openChapter']").text()).toContain("New source chapter");
-  expect(await overflowLabels()).toContain("novel.openInWebView");
+  expect($("button[aria-label='novel.openInWebView']")).toHaveLength(1);
   expect(mocks.queries.find(query => query.queryKey[1] === "novel-chapters")?.enabled).toBe(true);
 });
 
@@ -418,11 +438,10 @@ it("closes the novel reader settings drawer on back before leaving the page", as
     return collectElements(tree).find((element) => element.props.title === "readerSettings.novel.title") ?? null;
   }
   const drawer = () => collectElements(tree).find((element) => element.props.title === "readerSettings.novel.title")!;
-  const readerSettingsItem = () => (collectElements(tree).find((element) => Array.isArray(element.props.items))!
-    .props.items as MenuItem[]).find((item) => item.label === "novel.readerSettingsForNovel")!;
+  const readerSettingsAction = () => collectElements(tree).find((element) => element.props.label === "novel.readerSettingsForNovel")!;
   try {
     await harness.render(<PageProbe />);
-    await harness.run(() => readerSettingsItem().onClick());
+    await harness.run(() => (readerSettingsAction().props.onClick as () => void)());
     expect(drawer().props.opened).toBe(true);
 
     expect(harness.pressBack()).toBe(true);
@@ -517,10 +536,31 @@ it("replaces the app bar with a labeled selection bar from the visible Select ic
       "novel.selection.downloadSelected",
       "novel.selection.markRead",
       "novel.selection.markUnread",
-      "novel.selection.deleteDownloads",
+      "novel.selection.selectRange",
       "common.more",
     ]));
     expect(find((props) => props.className === "norea-novel-app-bar")).toBeUndefined();
+  });
+});
+
+it("keeps download deletion in the selection menu and enables it only for stored selected chapters", async () => {
+  mocks.novel.isLocal = false;
+  mocks.chapters = [chapter, { ...chapter, id: 2, position: 2, isDownloaded: true }];
+  await withPageTree(async (find, run) => {
+    const list = () => find((props) => typeof props.onToggleSelected === "function")!;
+    const toggle = (id: number) => (list().props.onToggleSelected as (id: number) => void)(id);
+    const deletion = () => {
+      const bar = find((props) => typeof props.onSelectAll === "function")!;
+      const menu = collectElements(bar.props.actions as ReturnType<typeof NovelDetailPage>)
+        .find((element) => Array.isArray(element.props.items))!;
+      return (menu.props.items as MenuItem[]).find((item) => item.label === "novel.selection.deleteDownloads")!;
+    };
+    await run(() => toggle(1));
+    expect(deletion().disabled).toBe(true);
+    await run(() => toggle(2));
+    expect(deletion().disabled).toBe(false);
+    await run(() => deletion().onClick());
+    expect(mocks.clearSelectedDownloads).toHaveBeenCalledWith([2]);
   });
 });
 
@@ -537,13 +577,13 @@ it("offers anchor-relative read actions only for a single selected chapter", asy
       return (menu.props.items as MenuItem[]).map((item) => item.label);
     };
     expect(moreLabels()).toEqual([
-      "novel.selection.selectRange",
       "novel.selection.downloadPrevious",
       "novel.selection.markPreviousRead",
       "novel.selection.markFollowingUnread",
+      "novel.selection.deleteDownloads",
     ]);
     await run(() => (list().props.onToggleSelected as (id: number) => void)(3));
-    expect(moreLabels()).toEqual(["novel.selection.selectRange", "novel.selection.downloadPrevious"]);
+    expect(moreLabels()).toEqual(["novel.selection.downloadPrevious", "novel.selection.deleteDownloads"]);
   });
 });
 
@@ -650,10 +690,9 @@ it("adds chapters chosen by number to the selection, prefilled from the range st
   await withPageTree(async (find, run) => {
     await run(() => (chapterList(find).props.onToggleSelected as (id: number) => void)(2));
     const bar = find((props) => typeof props.onSelectAll === "function")!;
-    const menu = collectElements(bar.props.actions as ReturnType<typeof NovelDetailPage>)
-      .find((element) => Array.isArray(element.props.items))!;
-    const selectRange = (menu.props.items as MenuItem[]).find((item) => item.label === "novel.selection.selectRange")!;
-    await run(() => selectRange.onClick());
+    const selectRange = collectElements(bar.props.actions as ReturnType<typeof NovelDetailPage>)
+      .find((element) => element.props.label === "novel.selection.selectRange")!;
+    await run(() => (selectRange.props.onClick as () => void)());
     const sheet = () => find((props) => typeof props.onSelect === "function" && "initialFrom" in props)!;
     expect(sheet().props.opened).toBe(true);
     expect(sheet().props.initialFrom).toBe(2);

@@ -5,6 +5,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageFrame, StateView } from "../components/AppFrame";
+import { IconButton } from "../components/IconButton";
 import {
   CategoryList,
   CategoryManager,
@@ -53,9 +54,7 @@ import {
   DownloadIcon,
   FolderIcon,
   ImportIcon,
-  RefreshIcon,
   RefreshAllIcon,
-  SelectIcon,
   SettingsIcon,
 } from "../components/ui/icons";
 import {
@@ -333,23 +332,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     setSearch("");
   };
   const overflowItems: OverflowMenuItem[] = [
-    ...(wide
-      ? []
-      : [
-          {
-            disabled:
-              summary.totalNovels === 0 || metadataRefreshMutation.isPending,
-            icon: RefreshIcon,
-            label: t("library.refresh"),
-            onClick: () => metadataRefreshMutation.mutate(),
-          },
-        ]),
-    {
-      disabled: summary.totalNovels === 0,
-      icon: SelectIcon,
-      label: t("library.selection.start"),
-      onClick: enterSelection,
-    },
     {
       icon: ImportIcon,
       label: t("library.localImport.open"),
@@ -402,6 +384,22 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     label={t("library.selection.categories")}
                     onClick={() => setCategorySheetOpen(true)}
                   />
+                  <IconButton
+                    disabled={selectedIds.size === 0 || setNovelsReadStateMutation.isPending}
+                    label={t("library.selection.markRead")}
+                    onClick={() => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: false })}
+                    size="lg"
+                  >
+                    <MarkReadIcon />
+                  </IconButton>
+                  <IconButton
+                    disabled={selectedIds.size === 0 || setNovelsReadStateMutation.isPending}
+                    label={t("library.selection.markUnread")}
+                    onClick={() => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: true })}
+                    size="lg"
+                  >
+                    <MarkUnreadIcon />
+                  </IconButton>
                   <OverflowMenu
                     items={[
                       {
@@ -409,18 +407,6 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                         icon: RefreshAllIcon,
                         label: t("novel.refreshAllDetails"),
                         onClick: () => refreshAllMetadataMutation.mutate({ novelIds: selectedNovelIds }),
-                      },
-                      {
-                        disabled: selectedIds.size === 0 || setNovelsReadStateMutation.isPending,
-                        icon: MarkReadIcon,
-                        label: t("library.selection.markRead"),
-                        onClick: () => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: false }),
-                      },
-                      {
-                        disabled: selectedIds.size === 0 || setNovelsReadStateMutation.isPending,
-                        icon: MarkUnreadIcon,
-                        label: t("library.selection.markUnread"),
-                        onClick: () => setNovelsReadStateMutation.mutate({ novelIds: selectedNovelIds, unread: true }),
                       },
                       {
                         disabled:
@@ -497,6 +483,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                 setSelectedSourceId(null);
               }}
               onOpenFilters={() => openViewOptions("filter")}
+              onToggleSelection={selectionMode ? exitSelection : enterSelection}
+              selectionActive={selectionMode}
+              selectionDisabled={!selectionMode && (isInitialLibraryLoading || Boolean(libraryError) || summary.totalNovels === 0)}
               sourceActive={selectedSourceId !== null}
             />
             <StorageRecoveryBanner />

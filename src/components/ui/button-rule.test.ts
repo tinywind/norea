@@ -232,7 +232,6 @@ function iconedActions(): Array<{ at: string; keys: string[]; icons: string[] }>
 
 /** The most common actions and the one icon each keeps everywhere it appears. */
 const ACTION_ICONS: Record<string, string> = {
-  "categories.editWork": "CategoryIcon",
   "common.openSite": "SourceIcon",
   "common.refresh": "RefreshIcon",
   "common.retry": "RetryIcon",
