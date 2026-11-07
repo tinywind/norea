@@ -185,7 +185,7 @@ describe("chapter download writes", () => {
     const localWrite = deferred<void>();
     const error = new Error("Storage failed");
     const write = withChapterDownloadWrite(42, undefined, () => localWrite.promise);
-    const failed = expect(write).rejects.toBe(error);
+    const failed = expect(write).rejects.toMatchObject({ code: "chapter-storage-failed", cause: error });
     const waiting = waitForChapterDownloadWrites([42]);
 
     localWrite.reject(error);

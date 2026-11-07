@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { taskScheduler, type SourceTaskSpec } from "./scheduler";
+import { taskScheduler, type SourceTaskSpec, type TaskHandle } from "./scheduler";
 vi.mock("../android-scraper", () => ({ androidEnsureVpnDownloadWorker: vi.fn(async () => undefined) }));
 
 const schedulerMocks = vi.hoisted(() => ({
@@ -8,6 +8,8 @@ const schedulerMocks = vi.hoisted(() => ({
   holdOrdinary: vi.fn<() => (() => void)>(() => () => undefined),
 }));
 const queueMocks = vi.hoisted(() => ({ list: vi.fn(), adopt: vi.fn() }));
+const failureQueryMocks = vi.hoisted(() => ({ clearScheduledRetries: vi.fn(async () => 0) }));
+vi.mock("../../db/queries/chapter-download-failure", () => ({ clearScheduledChapterDownloadRetries: failureQueryMocks.clearScheduledRetries }));
 vi.mock("../../db/queries/chapter-download-queue", () => ({
   listOrdinaryChapterDownloadJobs: queueMocks.list,
   adoptOrdinaryChapterDownloadJobs: queueMocks.adopt,
@@ -104,8 +106,8 @@ vi.mock("../plugins/sync-novel", () => ({ syncNovelFromSource: vi.fn() }));
 const failureMocks = vi.hoisted(() => ({
   record: vi.fn(async (): Promise<{ nextRetryAt: number | null } | null> => null),
   forget: vi.fn(async () => undefined),
-  refresh: vi.fn(async () => undefined),
-  snapshot: vi.fn((): { chapterId: number; jobJson: string; nextRetryAt: number | null }[] => []),
+  refresh: vi.fn(async (): Promise<void> => undefined),
+  snapshot: vi.fn((): StoredChapterDownloadFailure[] => []),
 }));
 vi.mock("./chapter-download-failures", () => ({
   recordFailedChapterDownloadAttempt: failureMocks.record,
@@ -119,12 +121,14 @@ vi.mock("./scheduler", () => ({
     batch: schedulerMocks.batch,
     holdOrdinaryChapterDownloads: schedulerMocks.holdOrdinary,
     enqueueSource: schedulerMocks.enqueueSource,
-    getSnapshot: vi.fn(() => ({ records: [] })),
+    getSnapshot: vi.fn(() => ({ records: [], sourceAccessBlocks: [] })),
     getTaskByDedupeKey: vi.fn(),
     cancel: vi.fn(),
     waitForSourceTaskSettlement: vi.fn(async () => undefined),
     subscribeEvents: vi.fn(() => () => undefined),
     forgetSettledTask: vi.fn(),
+    reportDownloadFailure: vi.fn(),
+    resumeSourceQueue: vi.fn(),
   },
 }));
 
@@ -182,6 +186,7 @@ import {
   type ChapterDownloadJob,
 } from "./chapter-download";
 import type { StoredQueuedChapterDownload } from "../../db/queries/chapter-download-queue";
+import type { StoredChapterDownloadFailure } from "../../db/queries/chapter-download-failure";
 
 let capturedSpec: SourceTaskSpec<void> | null = null;
 const backendQueueValues = new Map<number, unknown>();
@@ -235,8 +240,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   installChapterDownloadBatchInterceptor({ enqueue: () => null, cancel: () => false });
   vi.mocked(taskScheduler.getTaskByDedupeKey).mockReset();
-  vi.mocked(taskScheduler.getSnapshot).mockReset().mockReturnValue({ records: [] } as never);
+  vi.mocked(taskScheduler.getSnapshot).mockReset().mockReturnValue({ records: [], sourceAccessBlocks: [] } as never);
   vi.mocked(taskScheduler.cancel).mockReset();
+  vi.mocked(taskScheduler.reportDownloadFailure).mockReset();
+  vi.mocked(taskScheduler.resumeSourceQueue).mockReset();
+  failureQueryMocks.clearScheduledRetries.mockReset().mockResolvedValue(0);
+  failureMocks.refresh.mockReset().mockResolvedValue(undefined);
+  failureMocks.snapshot.mockReset().mockReturnValue([]);
   vi.mocked(taskScheduler.waitForSourceTaskSettlement).mockReset().mockResolvedValue(undefined);
   backendQueueValues.clear();
   schedulerMocks.holdOrdinary.mockReset().mockReturnValue(() => undefined);
@@ -828,8 +838,8 @@ describe("chapter download queue membership", () => {
     try { expect(settled).toBe(false); }
     finally {
       deleting.reject(failure);
-      expect(await outcome).toBe(failure);
-      await expect(waitForChapterDownloadQueueMutations()).rejects.toBe(failure);
+      expect(await outcome).toMatchObject({ code: "chapter-storage-failed", cause: failure });
+      await expect(waitForChapterDownloadQueueMutations()).rejects.toMatchObject({ code: "chapter-storage-failed", cause: failure });
     }
     expect(backendQueueValues.has(900080)).toBe(true);
     tauriMocks.invoke.mockImplementation(original);
@@ -923,7 +933,7 @@ describe("enqueueChapterDownloadBatch", () => {
       title: "Reject an unpersisted request", materializeAllTasks: true,
     });
     try {
-      await expect(handle.materialized).rejects.toBe(failure);
+      await expect(handle.materialized).rejects.toMatchObject({ code: "chapter-storage-failed", cause: failure });
       expect(backendQueueValues.has(900051)).toBe(false);
     } finally {
       const settled = expect(handle.promise).rejects.toThrow("1 chapter downloads failed.");
@@ -1538,6 +1548,145 @@ describe("enqueueChapterDownloadBatch", () => {
 });
 
 describe("startChapterDownloadQueueExecutor", () => {
+  function failureRow(chapterId: number, nextRetryAt: number | null, patch: Partial<StoredChapterDownloadFailure> = {}): StoredChapterDownloadFailure {
+    return { chapterId, pluginId: "source-a", failureClass: "transient", messageSummary: "HTTP 503 Service Unavailable",
+      attempts: 2, nextRetryAt, challengeUrl: null, updatedAt: 1,
+      jobJson: JSON.stringify({ id: chapterId, pluginId: "source-a", chapterPath: `/chapter/${chapterId}`, title: `Chapter ${chapterId}` }), ...patch };
+  }
+
+  it("restores preserved jobs before explicit resume after the startup database recovers", async () => {
+    vi.resetModules();
+    const downloads = await import("./chapter-download");
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler();
+    const restored: TaskHandle<void>[] = [];
+    vi.mocked(taskScheduler.reportDownloadFailure).mockImplementation((error, sourceId) => scheduler.reportDownloadFailure(error, sourceId));
+    vi.mocked(taskScheduler.getSnapshot).mockImplementation(() => scheduler.getSnapshot());
+    vi.mocked(taskScheduler.resumeSourceQueue).mockImplementation(sourceId => scheduler.resumeSourceQueue(sourceId));
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => {
+      const handle = scheduler.enqueueSource({ ...spec, sourceCooldownMs: 0 });
+      restored.push(handle);
+      return handle;
+    });
+    vi.mocked(listExistingChapterIds).mockResolvedValue([7]);
+    pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const job = { id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Preserved chapter" };
+    backendQueueValues.set(7, job);
+    failureMocks.refresh.mockRejectedValueOnce(new Error("Database unavailable"));
+    downloads.startChapterDownloadQueueExecutor();
+    await downloads.waitForChapterDownloadQueueRestoration();
+    expect(scheduler.getDownloadFailureStops().globalError).toContain("Database unavailable");
+    expect(backendQueueValues.get(7)).toEqual(job);
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+
+    expect(await downloads.resumeChapterDownloadQueueAfterFailure()).toBe(true);
+    expect(restored).toHaveLength(1);
+    await restored[0]!.promise;
+    await downloads.waitForChapterDownloadQueueMutations();
+    expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+    expect(scheduler.getTask(restored[0]!.id)?.status).toBe("succeeded");
+    expect(backendQueueValues.has(7)).toBe(false);
+    const requests = tauriMocks.invoke.mock.calls.length;
+    expect(await downloads.resumeChapterDownloadQueueAfterFailure()).toBe(true);
+    expect(tauriMocks.invoke).toHaveBeenCalledTimes(requests);
+  });
+
+  it("retains the storage hold and durable jobs when an explicit queue restart fails again", async () => {
+    vi.resetModules();
+    const downloads = await import("./chapter-download");
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler();
+    vi.mocked(taskScheduler.reportDownloadFailure).mockImplementation((error, sourceId) => scheduler.reportDownloadFailure(error, sourceId));
+    vi.mocked(taskScheduler.getSnapshot).mockImplementation(() => scheduler.getSnapshot());
+    vi.mocked(taskScheduler.resumeSourceQueue).mockImplementation(sourceId => scheduler.resumeSourceQueue(sourceId));
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const job = { id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Preserved chapter" };
+    backendQueueValues.set(7, job);
+    failureMocks.refresh.mockRejectedValue(new Error("Database still unavailable"));
+    downloads.startChapterDownloadQueueExecutor();
+    await downloads.waitForChapterDownloadQueueRestoration();
+
+    expect(await downloads.resumeChapterDownloadQueueAfterFailure()).toBe(false);
+    expect(taskScheduler.resumeSourceQueue).not.toHaveBeenCalled();
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(true);
+    expect(scheduler.getDownloadFailureStops().globalError).toContain("Database still unavailable");
+    expect(backendQueueValues.get(7)).toEqual(job);
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+    expect(tauriMocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("allows explicit source resume outside the native runtime without queue calls", async () => {
+    vi.resetModules();
+    const downloads = await import("./chapter-download");
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler();
+    scheduler.reportDownloadFailure(new Error("HTTP 503"), "source-a");
+    vi.mocked(taskScheduler.resumeSourceQueue).mockImplementation(sourceId => scheduler.resumeSourceQueue(sourceId));
+
+    expect(await downloads.resumeChapterDownloadQueueAfterFailure("source-a")).toBe(true);
+    expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+    expect(tauriMocks.invoke).not.toHaveBeenCalled();
+  });
+
+  it("does not restore an acknowledged source or storage stop from retained manual failure rows", async () => {
+    vi.resetModules();
+    const downloads = await import("./chapter-download");
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler();
+    scheduler.hydrateDownloadFailureStops({ sourceErrors: {} });
+    vi.mocked(taskScheduler.reportDownloadFailure).mockImplementation((error, sourceId) => scheduler.reportDownloadFailure(error, sourceId));
+    failureMocks.snapshot.mockReturnValue([failureRow(7, null), failureRow(8, null, { failureClass: "storage", messageSummary: "Disk is full" })]);
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+
+    downloads.startChapterDownloadQueueExecutor();
+    await downloads.waitForChapterDownloadQueueRestoration();
+
+    expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(false);
+    expect(taskScheduler.reportDownloadFailure).not.toHaveBeenCalled();
+    expect(failureMocks.snapshot()).toHaveLength(2);
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+  });
+
+  it("converts legacy scheduled failures into holds and clears their deadlines before queue leasing", async () => {
+    vi.resetModules();
+    const downloads = await import("./chapter-download");
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler();
+    vi.mocked(taskScheduler.reportDownloadFailure).mockImplementation((error, sourceId) => scheduler.reportDownloadFailure(error, sourceId));
+    scheduler.hydrateSourceAccessBlocks([{ sourceId: "blocked", scopeKey: "plugin:blocked:site:source.test", revision: 1, detectedAt: 1,
+      verificationRequested: false, challenge: { kind: "forbidden", url: "https://source.test/" } }]);
+    vi.mocked(taskScheduler.getSnapshot).mockImplementation(() => scheduler.getSnapshot());
+    let rows = [failureRow(7, Date.now() + 30_000), failureRow(8, Date.now() + 30_000, { pluginId: "blocked", failureClass: "storage", messageSummary: "Disk is full" }),
+      failureRow(9, Date.now() + 30_000, { pluginId: "missing", messageSummary: "HTTP 404 Not Found" }),
+      failureRow(10, Date.now() + 30_000, { pluginId: "blocked", jobJson: JSON.stringify({ id: 10, pluginId: "blocked", chapterPath: "/chapter/10", title: "Blocked chapter" }) })];
+    failureMocks.snapshot.mockImplementation(() => rows);
+    failureQueryMocks.clearScheduledRetries.mockImplementationOnce(async () => {
+      rows = rows.map(row => ({ ...row, nextRetryAt: null }));
+      return 4;
+    });
+    const failuresRefreshed = createDeferred<void>();
+    failureMocks.refresh.mockResolvedValueOnce(undefined).mockReturnValueOnce(failuresRefreshed.promise);
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+
+    downloads.startChapterDownloadQueueExecutor();
+    await flushMicrotasks(50);
+    expect(scheduler.getDownloadFailureStops()).toMatchObject({ sourceErrors: { "source-a": "HTTP 503 Service Unavailable" }, globalError: expect.stringContaining("Disk is full") });
+    expect(scheduler.getSnapshot().pausedSourceIds).not.toContain("missing");
+    expect(scheduler.getDownloadFailureStops().sourceErrors).not.toHaveProperty("blocked");
+    expect(scheduler.getSnapshot().sourceAccessBlocks).toHaveLength(1);
+    expect(rows.every(row => row.nextRetryAt === null)).toBe(true);
+    expect(tauriMocks.invoke.mock.calls.some(([command]) => command === "chapter_download_queue_lease")).toBe(false);
+    failuresRefreshed.resolve();
+    await downloads.waitForChapterDownloadQueueRestoration();
+
+    expect(tauriMocks.invoke.mock.calls.filter(([command]) => command === "chapter_download_queue_lease")).toHaveLength(1);
+    expect(taskScheduler.reportDownloadFailure).toHaveBeenCalledTimes(2);
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+    expect(rows[0]).toMatchObject({ chapterId: 7, attempts: 2, messageSummary: "HTTP 503 Service Unavailable" });
+  });
+
   it("restores every verification candidate after storage operations and deletion checks", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
@@ -1601,8 +1750,23 @@ describe("startChapterDownloadQueueExecutor", () => {
       discardQueuedChapterDownloads([3]);
       return chapterIds.filter((id) => id !== 2);
     });
+    const initialFailuresRead = createDeferred<void>();
+    const deadlinesCleared = createDeferred<number>();
+    const failuresRefreshed = createDeferred<void>();
+    failureQueryMocks.clearScheduledRetries.mockReturnValueOnce(deadlinesCleared.promise);
+    failureMocks.refresh.mockReturnValueOnce(initialFailuresRead.promise).mockReturnValueOnce(failuresRefreshed.promise);
     startChapterDownloadQueueExecutor(onRestoreError);
     await flushMicrotasks();
+    expect(failureMocks.refresh).toHaveBeenCalledOnce();
+    expect(failureQueryMocks.clearScheduledRetries).not.toHaveBeenCalled();
+    expect(tauriMocks.invoke.mock.calls.some(([command]) => command === "chapter_download_queue_lease")).toBe(false);
+    initialFailuresRead.resolve();
+    await flushMicrotasks();
+    expect(failureQueryMocks.clearScheduledRetries).toHaveBeenCalledOnce();
+    expect(failureMocks.refresh).toHaveBeenCalledOnce();
+    deadlinesCleared.resolve(1);
+    await flushMicrotasks();
+    expect(failureMocks.refresh).toHaveBeenCalledTimes(2);
 
     expect(getChapterById).not.toHaveBeenCalled();
     expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
@@ -1611,6 +1775,9 @@ describe("startChapterDownloadQueueExecutor", () => {
     backendQueueValues.delete(1);
     releaseStorageOperation.resolve();
     await storageOperation;
+    await flushMicrotasks(100);
+    expect(tauriMocks.invoke.mock.calls.some(([command]) => command === "chapter_download_queue_lease")).toBe(false);
+    failuresRefreshed.resolve();
     await flushMicrotasks(100);
     expect(onRestoreError).toHaveBeenCalledExactlyOnceWith(restoreError);
     expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
@@ -1748,7 +1915,7 @@ describe("enqueueChapterDownload", () => {
     }
     const results = await settled;
     for (const result of results) {
-      expect(result).toMatchObject({ status: "rejected", reason: { message: "Queue storage unavailable" } });
+      expect(result).toMatchObject({ status: "rejected", reason: { code: "chapter-storage-failed", cause: { message: "Queue storage unavailable" } } });
     }
     await waitForChapterDownloadQueueMutations();
   });
@@ -1787,7 +1954,7 @@ describe("enqueueChapterDownload", () => {
       await flushMicrotasks();
       expect(getChapterById).not.toHaveBeenCalled();
       inserting.reject(new Error("Queue storage unavailable"));
-      expect(await sharedRun).toMatchObject([{ status: "rejected", reason: { message: "Queue storage unavailable" } }]);
+      expect(await sharedRun).toMatchObject([{ status: "rejected", reason: { code: "chapter-storage-failed", cause: { message: "Queue storage unavailable" } } }]);
     } finally {
       inserting.reject(new Error("Queue storage unavailable"));
       cancelChapterDownloadBatches([first.id, second.id]);
@@ -2352,7 +2519,7 @@ describe("enqueueChapterDownload", () => {
         taskId: "task-1",
         tryStartSourceAccess,
       }),
-    ).rejects.toBe(storageError);
+    ).rejects.toMatchObject({ code: "chapter-storage-failed", cause: storageError });
 
     expect(tryStartSourceAccess).not.toHaveBeenCalled();
     expect(tryDownloadServerChapter).not.toHaveBeenCalled();
@@ -3330,7 +3497,7 @@ describe("enqueueChapterDownload", () => {
   });
 });
 
-describe("automatic retries after a failed chapter download", () => {
+describe("explicit retries after a failed chapter download", () => {
   async function realScheduler() {
     const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
@@ -3345,31 +3512,37 @@ describe("automatic retries after a failed chapter download", () => {
   }
   const job = { id: 7, pluginId: "source-a", chapterPath: "/chapter/7", title: "Chapter 7", batchId: "batch-a", batchTitle: "Batch" };
 
-  it("replaces the failed record with a fresh attempt that waits and stops when cancelled", async () => {
+  it("retains the failed record and source hold until manual retry despite a legacy retry deadline", async () => {
     const scheduler = await realScheduler();
     const error = new Error("Failed to fetch");
     pluginMocks.getChapterResource.mockRejectedValueOnce(error);
-    const retryAt = Date.now() + 30_000;
-    failureMocks.record.mockResolvedValueOnce({ nextRetryAt: retryAt });
+    failureMocks.record.mockResolvedValueOnce({ nextRetryAt: Date.now() + 30_000 });
     const original = enqueueChapterDownload(job);
-    await expect(original.promise).rejects.toBe(error);
-    await waitForChapterDownloadQueueMutations();
-    await waitForChapterDownloadQueueMutations();
+    try {
+      await expect(original.promise).rejects.toBe(error);
+      await waitForChapterDownloadQueueMutations();
+      await flushMicrotasks(50);
 
-    expect(failureMocks.record).toHaveBeenCalledWith(expect.objectContaining({ id: 7, pluginId: "source-a" }), error);
-    expect(scheduler.getTask(original.id)).toBeUndefined();
-    const waiting = scheduler.getTaskByDedupeKey("chapter.download:7");
-    expect(waiting).toMatchObject({ status: "queued", retryAt, canCancel: true });
-    expect(waiting?.subject?.batchId).toBeUndefined();
-    expect(backendQueueValues.get(7)).toMatchObject({ id: 7, retryAt });
-    expect(pluginMocks.getChapterResource).toHaveBeenCalledTimes(1);
+      expect(failureMocks.record).toHaveBeenCalledWith(expect.objectContaining({ id: 7, pluginId: "source-a" }), error);
+      expect(scheduler.getTask(original.id)).toMatchObject({ status: "failed", canRetry: true });
+      expect(scheduler.getSnapshot().pausedSourceIds).toContain("source-a");
+      expect(scheduler.getDownloadFailureStops()).toMatchObject({ sourceErrors: { "source-a": "Failed to fetch" } });
+      expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(1);
+      expect(backendQueueValues.has(7)).toBe(false);
+      expect(pluginMocks.getChapterResource).toHaveBeenCalledTimes(1);
 
-    expect(scheduler.cancel(waiting!.id)).toBe(true);
-    await flushMicrotasks(50);
-    await waitForChapterDownloadQueueMutations();
-    expect(failureMocks.forget).toHaveBeenCalledWith([7]);
-    expect(backendQueueValues.has(7)).toBe(false);
-    expect(pluginMocks.getChapterResource).toHaveBeenCalledTimes(1);
+      const retry = scheduler.retry(original.id);
+      if (!retry) throw new Error("Missing manual retry");
+      await retry.promise;
+      await waitForChapterDownloadQueueMutations();
+      expect(scheduler.getTask(retry.id)).toMatchObject({ status: "succeeded" });
+      expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+      expect(failureMocks.forget).toHaveBeenCalledWith([7]);
+      expect(pluginMocks.getChapterResource).toHaveBeenCalledTimes(2);
+      expect(backendQueueValues.has(7)).toBe(false);
+    } finally {
+      scheduler.cancelActiveTasks({ discardQueued: true });
+    }
   });
 
   it("keeps a failure without retry budget as a failed record and removes its queue row", async () => {

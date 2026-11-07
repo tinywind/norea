@@ -16,6 +16,7 @@ import { useVpnDownloadStore } from "../../store/vpn-download";
 import { androidCloseVpnDownloadWorker, androidConfigureVpnDownloadWorker, androidShowVpnDownloadWorker } from "../android-scraper";
 import { describeError } from "../errors";
 import { isAbortError } from "../abort";
+import { ChapterStorageError } from "../chapter-storage-error";
 import { getChapterDownloadFailure } from "../../db/queries/chapter-download-failure";
 import { pluginManager } from "../plugins/manager";
 import { releaseVpnDownloadPlanLocalWorkScans } from "./chapter-download";
@@ -28,10 +29,10 @@ import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
 import { installChapterDownloadBatchInterceptor } from "./chapter-download-batch-interceptor";
 import { cancelChapterDownloadRequest, getChapterDownloadRequestSnapshot, subscribeChapterDownloadRequests } from "./chapter-download-requests";
 import { beginChapterDownloadVpnHandover, cancelChapterDownloadTasks, discardQueuedChapterDownloads, enqueueVpnDownloadChapter, publishVpnDownloadBatchProgress, type ChapterDownloadVpnHandover, type ChapterDownloadBatchHandle, type ChapterDownloadBatchJob, type ChapterDownloadBatchResult, type ChapterDownloadJob } from "./chapter-download";
-import { recordFailedChapterDownloadAttempt } from "./chapter-download-failures";
+import { forgetChapterDownloadFailures, recordFailedChapterDownloadAttempt } from "./chapter-download-failures";
 import { taskScheduler } from "./scheduler";
 import type { TaskHandle } from "./task-types";
-import { isVpnDownloadForbiddenHeld, VpnDownloadCoordinator, type VpnDownloadRuntime } from "./vpn-download-coordinator";
+import { isVpnDownloadFailureHeld, VpnDownloadCoordinator, type VpnDownloadRuntime } from "./vpn-download-coordinator";
 import type { VpnDownloadDraftWork, VpnDownloadHandoverWork, VpnDownloadRuntimeSnapshot } from "./vpn-download-drafts";
 import { planVpnDownloadRanges, vpnDownloadChunkCount, type VpnDownloadRangeAssignment } from "./vpn-download-ranges";
 import type {
@@ -173,7 +174,7 @@ async function findProfileCandidates({ poolEmpty }: { poolEmpty: boolean }): Pro
     return servers.filter(server => !testedCandidates.has(server.candidateId) && !knownIps.has(server.ip))
       .sort((left, right) => right.score - left.score).slice(0, MAX_CANDIDATES_PER_DISCOVERY)
       .map(({ candidateId, ip, score }) => ({ candidateId, ip, score }));
-  } catch (error) { report(error); return []; }
+  } catch (error) { report(error); throw error; }
 }
 
 async function testProfileCandidate(candidate: VpnDownloadProfileCandidate, signal: AbortSignal): Promise<boolean> {
@@ -185,7 +186,7 @@ async function testProfileCandidate(candidate: VpnDownloadProfileCandidate, sign
       return false;
     }
     report(error);
-    return false;
+    throw error;
   }
 }
 
@@ -211,19 +212,30 @@ async function disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void> {
   }
 }
 
+async function persistVpnDownload<T>(operation: string, run: () => Promise<T>): Promise<T> {
+  try { return await run(); }
+  catch (error) {
+    if (isAbortError(error)) throw error;
+    const failure = new ChapterStorageError(operation, error);
+    taskScheduler.reportDownloadFailure(failure);
+    holdVpnDownloadsForStorageFailure();
+    throw failure;
+  }
+}
+
 const adapter: VpnDownloadRuntime = {
   generationFloor: getPluginVpnDownloadGenerationFloor,
-  loadPlans: listVpnDownloadPlans,
-  createPlan: createVpnDownloadPlan,
-  loadJobs: getVpnDownloadRangeJobs,
-  updatePlan: updateVpnDownloadPlan,
-  settleChapter: settleVpnDownloadChapter,
-  cancelRange: cancelStoredRange,
-  cancelPlan: async id => { await cancelVpnDownloadPlan(id); releaseVpnDownloadPlanLocalWorkScans(id); },
+  loadPlans: () => persistVpnDownload("loading VPN plans", listVpnDownloadPlans),
+  createPlan: (plan, jobs) => persistVpnDownload("creating a VPN plan", () => createVpnDownloadPlan(plan, jobs)),
+  loadJobs: (planId, rangeId) => persistVpnDownload("loading VPN jobs", () => getVpnDownloadRangeJobs(planId, rangeId)),
+  updatePlan: (plan, revision, options) => persistVpnDownload("saving a VPN plan", () => updateVpnDownloadPlan(plan, revision, options)),
+  settleChapter: (planId, rangeId, chapterId, generation) => persistVpnDownload("settling a VPN chapter", () => settleVpnDownloadChapter(planId, rangeId, chapterId, generation)),
+  cancelRange: (planId, rangeId) => persistVpnDownload("cancelling a VPN range", () => cancelStoredRange(planId, rangeId)),
+  cancelPlan: async id => { await persistVpnDownload("cancelling a VPN plan", () => cancelVpnDownloadPlan(id)); releaseVpnDownloadPlanLocalWorkScans(id); },
   listProfiles: availableProfiles,
-  loadProfileIssues: listVpnDownloadProfileIssues,
-  recordProfileIssue: recordVpnDownloadProfileIssue,
-  reallowProfile: reallowVpnDownloadProfile,
+  loadProfileIssues: batchId => persistVpnDownload("loading VPN profile issues", () => listVpnDownloadProfileIssues(batchId)),
+  recordProfileIssue: issue => persistVpnDownload("saving a VPN profile issue", () => recordVpnDownloadProfileIssue(issue)),
+  reallowProfile: (batchId, ip, revision) => persistVpnDownload("allowing a VPN profile", () => reallowVpnDownloadProfile(batchId, ip, revision)),
   reservedProfileIds: () => reservedProfiles,
   findProfileCandidates,
   testProfileCandidate,
@@ -268,11 +280,13 @@ const adapter: VpnDownloadRuntime = {
     return enqueueVpnDownloadChapter(job, worker, async () => undefined);
   },
   recordChapterFailure: async (job, error) => {
-    const stored = await recordFailedChapterDownloadAttempt(job, error);
+    const stored = await persistVpnDownload("saving a chapter failure", () => recordFailedChapterDownloadAttempt(job, error));
     return { failureClass: stored?.failureClass ?? "transient", nextRetryAt: stored?.nextRetryAt ?? null };
   },
+  clearChapterFailure: chapterId => persistVpnDownload("clearing a chapter failure", () => forgetChapterDownloadFailures([chapterId])),
+  reportFailure: (error, sourceId, worker) => taskScheduler.reportDownloadFailure(error, sourceId, worker),
   loadChapterFailure: async job => {
-    const failure = await getChapterDownloadFailure(job.id);
+    const failure = await persistVpnDownload("loading a chapter failure", () => getChapterDownloadFailure(job.id));
     return failure && { failureClass: failure.failureClass, nextRetryAt: failure.nextRetryAt };
   },
   cancelTask: id => {
@@ -290,6 +304,27 @@ const adapter: VpnDownloadRuntime = {
 };
 
 const coordinator = new VpnDownloadCoordinator(adapter);
+let storageStopObserved = false;
+
+function requireNoStorageFailure(): void {
+  const error = taskScheduler.getSnapshot().downloadFailureStops?.globalError;
+  if (error) throw new Error(error);
+}
+
+function holdVpnDownloadsForStorageFailure(): void {
+  const error = taskScheduler.getSnapshot().downloadFailureStops?.globalError;
+  if (!error) {
+    if (storageStopObserved) publish({ error: null });
+    storageStopObserved = false;
+    return;
+  }
+  if (storageStopObserved) return;
+  storageStopObserved = true;
+  automaticStopEpoch++;
+  if (activeRun && ["starting", "running"].includes(activeRun.status)) holdRunAdmission(activeRun);
+  publish({ error });
+  void coordinator.stopForStorageFailure().catch(report);
+}
 
 function syncBatches(): void {
   const plans = coordinator.getPlans();
@@ -357,7 +392,7 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
     for (const plan of coordinator.getPlans()) if (plan.ranges.some(range => range.userPaused && range.pauseReason === "work-paused")) {
       pausedWorks.add(JSON.stringify([plan.pluginId, plan.novelId]));
     }
-    const pending = await listPendingVpnDownloadJobs();
+    const pending = await persistVpnDownload("loading pending VPN jobs", listPendingVpnDownloadJobs);
     const restored = new Map<string, ChapterDownloadJob[]>();
     for (const { job } of pending) {
       if (job.vpnWorkPaused) pausedWorks.add(JSON.stringify([job.pluginId, job.novelId]));
@@ -374,13 +409,14 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
     const resumeAfterRestart = activeRun?.status === "interrupted" && !afterDeviceRestore && resumesAfterRestart(pending.map(({ job }) => job));
     const labels: Record<string, Record<number, string>> = {};
     for (const plan of coordinator.getPlans()) {
-      const catalog = await listChaptersByNovel(plan.novelId);
+      const catalog = await persistVpnDownload("loading VPN chapter labels", () => listChaptersByNovel(plan.novelId));
       labels[plan.id] = Object.fromEntries(catalog.map(chapter => [chapter.id, chapter.name]));
     }
     publish({ loading: false, chapterLabels: labels });
     const seen = new Set<string>();
     subscribeChapterDownloadRequests(syncBatches);
     taskScheduler.subscribe(() => {
+      holdVpnDownloadsForStorageFailure();
       for (const block of taskScheduler.getSnapshot().sourceAccessBlocks) {
         if (!block.rangeId || !block.originTaskId || block.verificationRequested || block.verificationTaskId) continue;
         const identity = JSON.stringify([block.scopeKey, block.revision, block.originTaskId, block.workerGeneration]);
@@ -418,6 +454,7 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
       void Promise.all([coordinator.stopAutomatic(), stopPluginVpnDownloadWorkers()]).catch(report);
     });
     window.addEventListener("norea-vpn-worker-browser-hidden", event => {
+      if (taskScheduler.getSnapshot().downloadFailureStops?.globalError) return;
       const detail: unknown = (event as CustomEvent<unknown>).detail;
       if (!detail || typeof detail !== "object" || !("queue" in detail) || !("sourceId" in detail)) return;
       const session = typeof detail.queue === "string" ? sessions.get(detail.queue) : undefined;
@@ -425,10 +462,11 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
       const plan = coordinator.getPlans().find(plan => plan.pluginId === session.sourceId && plan.ranges.some(range => range.id === session.worker.rangeId && range.generation === session.worker.generation && range.pauseReason === "manual-verification"));
       if (plan) void coordinator.finishVerification(plan.id, session.worker.rangeId, { resume: true }).catch(report);
     });
+    holdVpnDownloadsForStorageFailure();
     const run = activeRun;
     if (resumeAfterRestart && run) queueMicrotask(() => {
       if (activeRun !== run || run.status !== "interrupted" || deviceRestore) return;
-      void launchVpnDownloadRun(run.options, range => !range.userPaused && !isVpnDownloadForbiddenHeld(range) && range.pauseReason === "interrupted").catch(() => undefined);
+      void launchVpnDownloadRun(run.options, range => !range.userPaused && !isVpnDownloadFailureHeld(range) && range.pauseReason === "interrupted").catch(() => undefined);
     });
   })().catch(error => { publish({ loading: false, error: describeError(error) }); throw error; });
   return initialization;
@@ -459,7 +497,7 @@ function takeDeviceRestoreMarker(): boolean {
 /** An ordinary restart resumes the run unless the user turned that off or a run hold (run Pause, VPN off) was in place. */
 function resumesAfterRestart(pending: readonly ChapterDownloadJob[]): boolean {
   const settings = useVpnDownloadStore.getState();
-  if (!settings.resumeAfterRestart || settings.mode === "off" || !snapshot.capabilities.supported) return false;
+  if (!settings.resumeAfterRestart || settings.mode === "off" || !snapshot.capabilities.supported || taskScheduler.getSnapshot().downloadFailureStops?.globalError) return false;
   const ranges = coordinator.getPlans().flatMap(plan => plan.ranges).filter(range => range.phase !== "completed" && range.phase !== "cancelled" && !range.userPaused);
   if (ranges.some(range => range.pauseReason === "automatic-off")) return false;
   return ranges.some(range => range.pauseReason === "interrupted") || pending.some(job => !job.vpnWorkPaused);
@@ -508,7 +546,7 @@ function validateLaunchOptions(options: VpnDownloadLaunchOptions): void {
 }
 
 function canAdmitRunWork(run: ActiveRun): boolean {
-  return activeRun === run && !deviceRestore && ["starting", "running", "paused"].includes(run.status);
+  return activeRun === run && !deviceRestore && !taskScheduler.getSnapshot().downloadFailureStops?.globalError && ["starting", "running", "paused"].includes(run.status);
 }
 
 export function startVpnDownloadRun(options: VpnDownloadLaunchOptions): Promise<void> {
@@ -518,6 +556,7 @@ export function startVpnDownloadRun(options: VpnDownloadLaunchOptions): Promise<
 async function launchVpnDownloadRun(options: VpnDownloadLaunchOptions, shouldResume: (range: VpnDownloadRangeState) => boolean): Promise<void> {
   validateLaunchOptions(options);
   requireNoDeviceRestore();
+  requireNoStorageFailure();
   if (activeRun && (["starting", "running", "cancelling"].includes(activeRun.status) ||
     (activeRun.status === "paused" && activeRun.handover))) throw new Error("A VPN download run is already active. Resume or cancel it first.");
   const run: ActiveRun = { id: activeRun && ["paused", "interrupted"].includes(activeRun.status) ? activeRun.id : `vpn-run-${crypto.randomUUID()}`,
@@ -571,7 +610,7 @@ async function launchVpnDownloadRun(options: VpnDownloadLaunchOptions, shouldRes
       for (const plan of coordinator.getPlans()) {
         for (const range of plan.ranges) {
           if (!current()) return;
-          if (range.phase === "paused" && !isVpnDownloadForbiddenHeld(range) && shouldResume(range)) await coordinator.resumeRange(plan.id, range.id);
+          if (range.phase === "paused" && !isVpnDownloadFailureHeld(range) && shouldResume(range)) await coordinator.resumeRange(plan.id, range.id);
         }
       }
     })();
@@ -606,7 +645,7 @@ export async function pauseVpnDownloadWork(pluginId: string, novelId: number): P
   const waiting = [...activeRun?.waitingHandover.values() ?? []].some(job => job.pluginId === pluginId && job.novelId === novelId);
   const canPauseRange = coordinator.getPlans().some(plan => plan.pluginId === pluginId && plan.novelId === novelId &&
     plan.ranges.some(range => range.phase !== "completed" && range.phase !== "cancelled" &&
-      !(range.phase === "paused" && isVpnDownloadForbiddenHeld(range)) &&
+      !(range.phase === "paused" && isVpnDownloadFailureHeld(range)) &&
       (!range.userPaused || range.pauseReason === "work-paused")));
   if (!pending.length && !waiting && !canPauseRange) return;
   pausedWorks.add(JSON.stringify([pluginId, novelId]));
@@ -620,13 +659,14 @@ export async function pauseVpnDownloadWork(pluginId: string, novelId: number): P
     ...pending.map(async draft => {
       const batch = batches.get(draft.work.batchId);
       await batch?.persistence;
-      if (batch) await setPendingVpnDownloadJobsPaused(batch.runBatchId, draft.jobs.map(job => job.id), true);
+      if (batch) await persistVpnDownload("pausing pending VPN jobs", () => setPendingVpnDownloadJobsPaused(batch.runBatchId, draft.jobs.map(job => job.id), true));
     }),
   ]);
 }
 
 export async function resumeVpnDownloadWork(pluginId: string, novelId: number): Promise<void> {
   requireNoDeviceRestore();
+  requireNoStorageFailure();
   const run = activeRun;
   const epoch = automaticStopEpoch;
   const current = () => activeRun === run && run?.status === "running" && !deviceRestore && epoch === automaticStopEpoch;
@@ -635,7 +675,7 @@ export async function resumeVpnDownloadWork(pluginId: string, novelId: number): 
   for (const draft of pending) {
     const batch = batches.get(draft.work.batchId);
     await batch?.persistence;
-    if (batch) await setPendingVpnDownloadJobsPaused(batch.runBatchId, draft.jobs.map(job => job.id), false);
+    if (batch) await persistVpnDownload("resuming pending VPN jobs", () => setPendingVpnDownloadJobsPaused(batch.runBatchId, draft.jobs.map(job => job.id), false));
   }
   if (!current()) return;
   pausedWorks.delete(JSON.stringify([pluginId, novelId]));
@@ -660,6 +700,7 @@ function releaseFinishedWorkHold(pluginId: string, novelId: number): void {
 export async function resumeVpnDownloadRun(): Promise<void> {
   await initializeVpnDownloadRuntime();
   requireNoDeviceRestore();
+  requireNoStorageFailure();
   if (!activeRun) throw new Error("There is no VPN download run to resume.");
   if (activeRun.status === "interrupted" || (activeRun.status === "paused" && !activeRun.handover)) { await startVpnDownloadRun(activeRun.options); return; }
   if (activeRun.status !== "paused") return;
@@ -672,7 +713,7 @@ export async function resumeVpnDownloadRun(): Promise<void> {
     const ready = await run.handover?.commitReady(run.id);
     if (!current()) return;
     if (ready?.length) { run.receivedWork = true; stageBatch({ jobs: ready, title: "VPN downloads" }, run.id, false); }
-    const pending = await listPendingVpnDownloadJobs();
+    const pending = await persistVpnDownload("loading pending VPN jobs", listPendingVpnDownloadJobs);
     if (!current()) return;
     const unassigned = new Map<string, ChapterDownloadJob[]>();
     for (const { job } of pending) {
@@ -688,7 +729,7 @@ export async function resumeVpnDownloadRun(): Promise<void> {
       for (const range of plan.ranges) {
         if (!current()) return;
         const key = JSON.stringify([plan.id, range.id]);
-        if (range.phase === "paused" && !isVpnDownloadForbiddenHeld(range) && (!range.userPaused || run.resumeRangeIds.has(key))) {
+        if (range.phase === "paused" && !isVpnDownloadFailureHeld(range) && (!range.userPaused || run.resumeRangeIds.has(key))) {
           await coordinator.resumeRange(plan.id, range.id);
           run.resumeRangeIds.delete(key);
         }
@@ -734,7 +775,7 @@ export async function cancelVpnDownloadRun(): Promise<void> {
       if (!run.originalPlanIds.has(plan.id)) continue;
       for (const range of plan.ranges) if (range.phase !== "completed" && range.phase !== "cancelled") await coordinator.cancelRange(plan.id, range.id);
     }
-    await cancelPendingVpnDownloadBatch(run.id);
+    await persistVpnDownload("cancelling pending VPN jobs", () => cancelPendingVpnDownloadBatch(run.id));
     run.handover?.release();
     run.waitingHandover.clear();
     pausedWorks.clear(); coordinator.clearWorkHolds();
@@ -857,8 +898,8 @@ function stageBatch(request: ChapterDownloadBatchJob, runBatchId: string, persis
   let persisted = !persist;
   const materialized = (async () => {
     if (batch.cancelRequested) return;
-    batch.persistence = persist ? enqueuePendingVpnDownloadJobs(runBatchId, requested)
-      : requested.some(job => job.vpnWorkPaused) ? setPendingVpnDownloadJobsPaused(runBatchId, requested.filter(job => job.vpnWorkPaused).map(job => job.id), true).then(() => undefined) : Promise.resolve();
+    batch.persistence = persist ? persistVpnDownload("saving pending VPN jobs", () => enqueuePendingVpnDownloadJobs(runBatchId, requested))
+      : requested.some(job => job.vpnWorkPaused) ? persistVpnDownload("pausing pending VPN jobs", () => setPendingVpnDownloadJobsPaused(runBatchId, requested.filter(job => job.vpnWorkPaused).map(job => job.id), true)).then(() => undefined) : Promise.resolve();
     await batch.persistence;
     persisted = true;
     if (batch.cancelRequested || batches.get(id) !== batch) return;
@@ -892,7 +933,7 @@ function stageBatch(request: ChapterDownloadBatchJob, runBatchId: string, persis
 
 function prepareDraft(draft: PendingDraft): Promise<void> {
   draft.preparation ??= (async () => {
-    const catalog = await listChaptersByNovel(draft.work.novelId);
+    const catalog = await persistVpnDownload("loading VPN chapters", () => listChaptersByNovel(draft.work.novelId));
     if (drafts.get(draft.work.id) !== draft || draft.cancelling) return;
     const selected = new Set(draft.jobs.map(job => job.id));
     const selectedChapterIds = catalog.filter(chapter => selected.has(chapter.id)).map(chapter => chapter.id);
@@ -917,7 +958,7 @@ function resetFailedDrafts(): void {
 }
 
 function retryPendingDrafts(): void {
-  if (activeRun?.status !== "running" || deviceRestore) return;
+  if (activeRun?.status !== "running" || deviceRestore || taskScheduler.getSnapshot().downloadFailureStops?.globalError) return;
   for (const draft of drafts.values()) {
     const batch = batches.get(draft.work.batchId);
     if (!batch || batch.materializing || batch.cancelRequested || draft.starting || draft.planId || draft.cancelling || draft.work.userPaused || draft.work.phase === "failed") continue;
@@ -931,6 +972,7 @@ function retryPendingDrafts(): void {
 
 /** Explicit assignments are bounded by the worker limit; automatic chunks are not. */
 function requireDraftStartSettings(assignmentCount?: number) {
+  requireNoStorageFailure();
   const settings = useVpnDownloadStore.getState();
   if (settings.mode === "off" || !snapshot.capabilities.supported || (settings.mode === "parallel" && !snapshot.capabilities.parallelSupported)) throw new Error("Automatic VPN downloads are disabled or unsupported.");
   const cap = settings.mode === "single" ? 1 : Math.min(settings.workerCount, snapshot.capabilities.maxWorkers);
@@ -999,7 +1041,7 @@ export function cancelVpnDownloadDraft(draftId: string): Promise<void> {
   const cancelling = (async () => {
     await batch?.persistence;
     if (draft.planId) await coordinator.cancelPlan(draft.planId);
-    if (batch) await cancelPendingVpnDownloadJobs(batch.runBatchId, draft.jobs.map(job => job.id));
+    if (batch) await persistVpnDownload("cancelling pending VPN jobs", () => cancelPendingVpnDownloadJobs(batch.runBatchId, draft.jobs.map(job => job.id)));
     finish();
   })();
   draft.cancelling = cancelling;
@@ -1024,7 +1066,7 @@ function cancelBatch(id: string): boolean {
     for (const draft of pending) cancelVpnDownloadDraft(draft.work.id);
     await Promise.all(pending.map(draft => draft.cancelling));
     for (const planId of batch.planIds) await coordinator.cancelPlan(planId);
-    await cancelPendingVpnDownloadJobs(batch.runBatchId, batch.jobs.map(job => job.id));
+    await persistVpnDownload("cancelling pending VPN jobs", () => cancelPendingVpnDownloadJobs(batch.runBatchId, batch.jobs.map(job => job.id)));
     for (const job of batch.jobs) if (job.novelId) releaseFinishedWorkHold(job.pluginId, job.novelId);
     batch.materializing = false;
     syncBatches();
@@ -1042,6 +1084,7 @@ installChapterDownloadBatchInterceptor({ enqueue: enqueueBatch, enqueueChapter: 
 export async function resumeVpnDownloadRange(planId: string, rangeId: string, restartPass = false): Promise<void> {
   await initializeVpnDownloadRuntime();
   requireNoDeviceRestore();
+  requireNoStorageFailure();
   if (useVpnDownloadStore.getState().mode === "off" || !snapshot.capabilities.supported) throw new Error("Automatic VPN downloads are disabled or unsupported.");
   await coordinator.resumeRange(planId, rangeId, { restartPass });
 }

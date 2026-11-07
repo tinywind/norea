@@ -178,7 +178,7 @@ it("shows each range's interval and state in Details, with the server only while
   expect(text(view)).not.toContain("vpnDownload.reason.inUse");
 });
 
-it("offers range actions only for a manual verification or a range the user paused", async () => {
+it("offers range resume for failures and user pauses while keeping automatic waits quiet", async () => {
   const value = withPlans(activePlan());
   value.plans[0]!.ranges.push(
     { ...activePlan().ranges[1]!, id: "lane-c", phase: "paused", pauseReason: "profiles-exhausted" },
@@ -188,6 +188,7 @@ it("offers range actions only for a manual verification or a range the user paus
   const view = renderDetails(value);
   expect(row(view, "lane-a").filter(element => element.props.onClick).map(element => element.props.label)).toEqual([
     expect.stringContaining('"action":"vpnDownload.openVerification"'),
+    expect.stringContaining('"action":"vpnDownload.resume"'),
   ]);
   for (const id of ["lane-b", "lane-c", "lane-d"]) expect(row(view, id).some(element => element.props.onClick)).toBe(false);
   await iconButton(row(view, "lane-a"), "vpnDownload.openVerification").props.onClick!();
@@ -196,7 +197,7 @@ it("offers range actions only for a manual verification or a range the user paus
   expect(actions.resumeRange).toHaveBeenCalledWith("plan", "lane-e");
 });
 
-it.each(["challenge-forbidden", "site-forbidden"] as const)("offers an explicit range Resume for a restored %s hold", async pauseReason => {
+it.each(["challenge-forbidden", "site-forbidden", "chapter-failed", "download-failed", "runtime-error"] as const)("offers an explicit range Resume for a restored %s hold", async pauseReason => {
   const plan = activePlan();
   Object.assign(plan.ranges[0]!, {
     pauseReason, userPaused: false,
@@ -212,7 +213,7 @@ it.each(["challenge-forbidden", "site-forbidden"] as const)("offers an explicit 
   expect(iconButton(row(renderDetails(value), "lane-a"), "vpnDownload.resume").props.disabled).toBe(true);
 });
 
-it.each(["challenge-forbidden", "site-forbidden"] as const)("does not offer whole-work Pause for an already held %s range", async pauseReason => {
+it.each(["challenge-forbidden", "site-forbidden", "chapter-failed", "download-failed", "runtime-error"] as const)("does not offer whole-work Pause for an already held %s range", async pauseReason => {
   const plan = activePlan();
   plan.ranges = [plan.ranges[0]!];
   Object.assign(plan.ranges[0]!, {

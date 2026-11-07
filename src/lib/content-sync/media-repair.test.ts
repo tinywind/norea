@@ -78,9 +78,21 @@ it("returns null when no server is configured", async () => {
 
 it("falls back only when an installed plugin can fetch the missing HTTP asset", async () => {
   vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
-  vi.mocked(nativeFetch).mockImplementation(async url => String(url).includes("/catalog/chapter?") ? Response.json(entry) : new Response(null, { status: 410 }));
+  vi.mocked(nativeFetch).mockImplementation(async url => String(url).includes("/catalog/chapter?") ? Response.json(entry) : new Response(null, { status: 404 }));
   await expect(createServerChapterMediaFetcher(job)({ ...file, sourceUrl: "https://source.test/page.png" })).resolves.toBeNull();
-  await expect(createServerChapterMediaFetcher(job)(file)).rejects.toThrow("410");
+  await expect(createServerChapterMediaFetcher(job)(file)).rejects.toThrow("404");
+});
+
+it.each([401, 403, 410, 429, 500, 503])("propagates server media HTTP %i even when the source plugin is installed", async status => {
+  vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+  vi.mocked(nativeFetch).mockResolvedValueOnce(Response.json(entry)).mockResolvedValueOnce(new Response(null, { status }));
+  await expect(createServerChapterMediaFetcher(job)({ ...file, sourceUrl: "https://source.test/page.png" })).rejects.toMatchObject({ status });
+});
+
+it("propagates malformed server media instead of falling back to the source", async () => {
+  vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+  vi.mocked(nativeFetch).mockResolvedValueOnce(Response.json(entry)).mockResolvedValueOnce(new Response("bad", { headers: { "Content-Length": "5" } }));
+  await expect(createServerChapterMediaFetcher(job)({ ...file, sourceUrl: "https://source.test/page.png" })).rejects.toThrow("size");
 });
 
 it("surfaces blocked or unregistered server access when no plugin source is available", async () => {
@@ -122,7 +134,34 @@ it("propagates cancellation while reading an asset response body", async () => {
   await rejected;
 });
 
+it("cancels the active media request without aborting its parent download signal", async () => {
+  const owner = new AbortController();
+  const media = new AbortController();
+  vi.mocked(nativeFetch).mockResolvedValueOnce(Response.json(entry)).mockResolvedValueOnce(new Response(new ReadableStream(), { headers: { "Content-Length": "5" } }));
+  const pending = createServerChapterMediaFetcher(job, owner.signal)(file, media.signal).catch(error => error);
+  await vi.waitFor(() => expect(nativeFetch).toHaveBeenCalledTimes(2));
+  const reason = new Error("Media storage failed");
+  media.abort(reason);
+  const interrupted = await Promise.race([pending, new Promise(resolve => setTimeout(() => resolve("still waiting"), 20))]);
+  try {
+    expect(interrupted).toBe(reason);
+    expect(owner.signal.aborted).toBe(false);
+  } finally {
+    owner.abort();
+    await pending;
+  }
+});
+
 it("rejects an incomplete asset response before it can be stored", async () => {
   vi.mocked(nativeFetch).mockResolvedValueOnce(Response.json(entry)).mockResolvedValueOnce(new Response("bad", { headers: { "Content-Length": "5" } }));
   await expect(createServerChapterMediaFetcher(job)(file)).rejects.toThrow("size");
+});
+
+it.each(["chapter", "work"] as const)("preserves media repair %s database failures before requesting assets", async operation => {
+  const failure = new Error("Connection pool closed");
+  if (operation === "chapter") vi.mocked(getChapterById).mockRejectedValueOnce(failure);
+  else vi.mocked(getNovelById).mockRejectedValueOnce(failure);
+  await expect(createServerChapterMediaFetcher(job)(file)).rejects.toMatchObject({ code: "chapter-storage-failed", cause: failure });
+  expect(registerContentDevice).not.toHaveBeenCalled();
+  expect(nativeFetch).not.toHaveBeenCalled();
 });

@@ -21,6 +21,7 @@ const entry: CatalogEntry = {
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(snapshotAndroidContentChapter).mockReset();
+  vi.mocked(installAndroidContentChapter).mockReset();
   vi.mocked(isAndroidRuntime).mockReturnValue(true);
   vi.mocked(invoke).mockImplementation(async command => {
     if (command === "content_sync_create_stage") return "/cache/content-sync/one";
@@ -95,6 +96,88 @@ it.each([true, false])("stages a download before publishing it and always remove
   if (android) expect(installAndroidContentChapter).toHaveBeenCalledExactlyOnceWith(storageDir, "/cache/content-sync/one");
   else expect(invoke).toHaveBeenCalledWith("content_sync_install", { storageDir, stagePath: "/cache/content-sync/one" });
   expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual(["content_sync_remove_stage", { stagePath: "/cache/content-sync/one" }]);
+});
+
+it("keeps an invalid native server package separate from local storage failure", async () => {
+  const failure = "content sync: invalid chapter file manifest";
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "content_sync_create_stage") return "/cache/content-sync/one";
+    if (command === "content_sync_download") throw failure;
+    return undefined;
+  });
+  const apply = vi.fn();
+  await expect(withDownloadedContentChapter({
+    serverUrl: "http://server", entry, storageDir: "contents/source/book/1", chapterId: 1,
+  }, apply)).rejects.toBe(failure);
+  expect(apply).not.toHaveBeenCalled();
+});
+
+it.each(["Cannot create Android storage folder: book", "Cannot publish downloaded chapter."])("classifies Android installation failure as storage: %s", async message => {
+  const failure = new Error(message);
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "content_sync_create_stage") return "/cache/content-sync/one";
+    if (command === "content_sync_download") return { contentBytes: 18, mediaBytes: 0, mediaComplete: true };
+    return undefined;
+  });
+  vi.mocked(installAndroidContentChapter).mockRejectedValueOnce(failure);
+  await expect(withDownloadedContentChapter({
+    serverUrl: "http://server", entry, storageDir: "contents/source/book/1", chapterId: 1,
+  }, async (_sizes, install) => install("contents/source/book/1"))).rejects.toMatchObject({
+    code: "chapter-storage-failed", operation: "install downloaded chapter", cause: failure,
+  });
+  expect(invoke).toHaveBeenCalledWith("content_sync_remove_stage", { stagePath: "/cache/content-sync/one" });
+});
+
+it("preserves Android installation cancellation without stopping shared storage", async () => {
+  const failure = new DOMException("Cancelled", "AbortError");
+  vi.mocked(installAndroidContentChapter).mockRejectedValueOnce(failure);
+  await expect(withDownloadedContentChapter({
+    serverUrl: "http://server", entry, storageDir: "contents/source/book/1", chapterId: 1,
+  }, async (_sizes, install) => install("contents/source/book/1"))).rejects.toBe(failure);
+});
+
+it("restores a native install I/O error while preserving its operation", async () => {
+  const failure = "chapter-storage-failed: publish downloaded chapter: storage unavailable";
+  vi.mocked(isAndroidRuntime).mockReturnValue(false);
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "content_sync_create_stage") return "/cache/content-sync/one";
+    if (command === "content_sync_download") return { contentBytes: 18, mediaBytes: 0, mediaComplete: true };
+    if (command === "content_sync_install") throw failure;
+    return undefined;
+  });
+  await expect(withDownloadedContentChapter({
+    serverUrl: "http://server", entry, storageDir: "contents/source/book/1", chapterId: 1,
+  }, async (_sizes, install) => install("contents/source/book/1"))).rejects.toMatchObject({
+    code: "chapter-storage-failed", operation: "publish downloaded chapter", cause: failure,
+  });
+});
+
+it("preserves native local I/O failures as storage failures before considering HTTP text", async () => {
+  const failure = "chapter-storage-failed: write content download file: disk error during HTTP 404";
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "content_sync_create_stage") return "/cache/content-sync/one";
+    if (command === "content_sync_download") throw failure;
+    return undefined;
+  });
+  const apply = vi.fn();
+  await expect(withDownloadedContentChapter({
+    serverUrl: "http://server", entry, storageDir: "contents/source/book/1", chapterId: 1,
+  }, apply)).rejects.toMatchObject({ code: "chapter-storage-failed", operation: "write content download file", cause: failure });
+  expect(apply).not.toHaveBeenCalled();
+});
+
+it.each([404, 401, 403, 429, 503])("preserves native download HTTP %i without applying a partial package", async status => {
+  vi.mocked(invoke).mockImplementation(async command => {
+    if (command === "content_sync_create_stage") return "/cache/content-sync/one";
+    if (command === "content_sync_download") throw `content sync: server returned ${status}: Package unavailable`;
+    return undefined;
+  });
+  const apply = vi.fn();
+  await expect(withDownloadedContentChapter({
+    serverUrl: "http://server", entry, storageDir: "contents/source/book/1", chapterId: 1,
+  }, apply)).rejects.toMatchObject({ status });
+  expect(apply).not.toHaveBeenCalled();
+  expect(invoke).toHaveBeenCalledWith("content_sync_remove_stage", { stagePath: "/cache/content-sync/one" });
 });
 
 it("settles a cancelled transfer immediately and cleans its private files after the native request ends", async () => {

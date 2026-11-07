@@ -32,10 +32,9 @@ it("keeps same-source range cards separate and clears only the fully settled own
   expect(vpnDownloadNotifications([plan([a]), plan([a], { id: "plan-b" })], t)[1]?.id).not.toBe(original[0]?.id);
 });
 
-it("never emits manual cards for automatic rotation, offline waits or user pauses", () => {
+it("never emits manual cards for connection activity, offline waits or user pauses", () => {
   expect(vpnDownloadNotifications([plan([
     range("connecting", { phase: "connecting" }), range("running", { phase: "running" }),
-    range("next", { challenge: { kind: "cloudflare", url: "https://source.test" }, pauseReason: "challenge-cloudflare" }),
     range("offline", { pauseReason: "offline" }), range("user", { pauseReason: "user-paused", userPaused: true }),
     range("lease", { pauseReason: "profile-in-use" }), range("off", { pauseReason: "automatic-off" }),
   ])], t)).toEqual([]);
@@ -107,14 +106,15 @@ it("asks the Queue page about one VPN problem the app cannot solve by itself", (
     .toEqual({ kind: "failed", ranges: [{ planId: "plan-a", rangeId: "a" }, { planId: "plan-a", rangeId: "b" }] });
 });
 
-it("leaves a range paused by a chapter failure to the per-chapter failure list", () => {
-  expect(vpnDownloadAttention([plan([range("a", { pauseReason: "chapter-failed", challenge: null })])], "running")).toBeNull();
+it("offers explicit range retry for a chapter failure", () => {
+  expect(vpnDownloadAttention([plan([range("a", { pauseReason: "chapter-failed", challenge: null })])], "running"))
+    .toEqual({ kind: "failed", ranges: [{ planId: "plan-a", rangeId: "a" }] });
 });
 
 it("stays quiet for waits the app resolves and for pauses the user chose", () => {
   const quiet = plan([
     range("offline", { pauseReason: "offline", challenge: null }), range("lease", { pauseReason: "profile-in-use", challenge: null }),
-    range("restart", { pauseReason: "interrupted", challenge: null }), range("next", { pauseReason: "challenge-cloudflare", challenge: { kind: "cloudflare", url: "https://source.test" } }),
+    range("restart", { pauseReason: "interrupted", challenge: null }),
     range("user", { pauseReason: "challenge-captcha", userPaused: true }), range("running", { phase: "running", pauseReason: null, challenge: null }),
   ]);
   expect(vpnDownloadAttention([quiet], "running")).toBeNull();

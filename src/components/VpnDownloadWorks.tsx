@@ -7,6 +7,7 @@ import { AUTOMATIC_PLUGIN_VPN_PROFILES_QUERY_KEY, listAutomaticPluginVpnProfiles
 import { listSavedPluginVpnProfiles, SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY } from "../lib/plugin-vpn-profiles";
 import type { VpnDownloadDraftWork, VpnDownloadHandoverWork, VpnDownloadRuntimeSnapshot } from "../lib/tasks/vpn-download-drafts";
 import { isVpnDownloadVerificationNeeded } from "../lib/tasks/vpn-download-notifications";
+import { isVpnDownloadFailureHeld } from "../lib/tasks/vpn-download-coordinator";
 import {
   cancelVpnDownloadDraft, cancelVpnDownloadHandoverWork, cancelVpnDownloadRange, openVpnDownloadVerification,
   pauseVpnDownloadWork, resumeVpnDownloadRange, resumeVpnDownloadWork, startVpnDownloadDraft,
@@ -65,6 +66,7 @@ const PAUSE_KEYS: Record<string, TranslationKey> = {
   "challenge-forbidden": "errors.forbidden", "site-forbidden": "errors.forbidden",
   "manual-verification": "vpnDownload.reason.verification", "verification-unavailable": "vpnDownload.reason.verificationUnavailable",
   "authentication-required": "vpnDownload.reason.authentication", "download-failed": "vpnDownload.reason.downloadFailed",
+  "chapter-failed": "vpnDownload.reason.chapterFailed",
   "runtime-error": "vpnDownload.reason.runtimeError", "user-paused": "vpnDownload.userPaused",
   "automatic-off": "vpnDownload.reason.off", cancelled: "vpnDownload.phase.cancelled",
   "work-paused": "vpnDownload.workPaused",
@@ -107,14 +109,14 @@ export function vpnDownloadWorks(snapshot: VpnDownloadRuntimeSnapshot): VpnDownl
     const held = work.unfinished.some(({ range }) => range.userPaused && range.pauseReason === "work-paused") ||
       work.drafts.some(draft => draft.userPaused) || work.handover.some(waiting => waiting.userPaused);
     return { ...work, held, canPause: !held && (work.unfinished.some(({ range }) => !range.userPaused &&
-      !(range.phase === "paused" && (range.challenge?.kind === "forbidden" || range.pauseReason === "site-forbidden"))) || work.drafts.length > 0 || work.handover.length > 0) };
+      !(range.phase === "paused" && isVpnDownloadFailureHeld(range))) || work.drafts.length > 0 || work.handover.length > 0) };
   });
 }
 
 /** Reasons a VPN range stops that only the user can resolve; other pauses clear by themselves. */
 const ATTENTION_PAUSES = new Set([
   "profiles-exhausted", "challenge-captcha", "challenge-cloudflare", "challenge-forbidden", "manual-verification",
-  "verification-unavailable", "authentication-required", "download-failed", "runtime-error", "site-forbidden",
+  "verification-unavailable", "authentication-required", "download-failed", "runtime-error", "site-forbidden", "chapter-failed",
 ]);
 
 /** One status for a VPN work, from its most urgent range, draft or handover state. */
@@ -243,8 +245,7 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
         const profile = leased ? profiles.find(candidate => candidate.id === range.profileId && candidate.hash === range.profileHash) : undefined;
         const verify = isVpnDownloadVerificationNeeded(plan, range);
         const resume = !terminal(range) && range.phase === "paused" &&
-          (range.challenge?.kind === "forbidden" || range.pauseReason === "site-forbidden" ||
-            range.userPaused && range.pauseReason !== "work-paused");
+          (isVpnDownloadFailureHeld(range) || range.userPaused && range.pauseReason !== "work-paused");
         const canAct = !pendingKeys.has(key) && runEnabled && snapshot.capabilities.supported;
         const actionLabel = (action: string) => t("vpnDownload.rangeAction", { action, title: plan.title, interval });
         return (

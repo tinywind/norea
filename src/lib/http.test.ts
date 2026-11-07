@@ -487,6 +487,15 @@ describe("pluginMediaFetch", () => {
     expect(invokeMock).toHaveBeenCalledOnce();
   });
 
+  it.each(["Failed to fetch", "scraper: HTTP 503 at https://source.test", "native stream failed"])("does not fetch after a captured lookup fails: %s", async message => {
+    const failure = new Error(message);
+    invokeMock.mockRejectedValueOnce(failure);
+    await expect(pluginMediaFetch("https://cdn.test/page.png", {
+      sourceId: "source", scraperExecutor: "pool:0", sourceAccessUrl: "https://source.test/chapter/1",
+    })).rejects.toBe(failure);
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
+
   it("does not reuse captured GET media for non-GET requests", async () => {
     invokeMock.mockResolvedValueOnce(
       wireOk("posted", {

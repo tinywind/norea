@@ -22,8 +22,8 @@ describe("VPN download settings", () => {
     } finally { ordinary.sourceWorkConcurrency = 3; }
   });
 
-  it("starts disabled with automatic replacement defaults and preserves explicit pause choices", () => {
-    expect(normalizeVpnDownloadSettings(null)).toEqual({ mode: "off", workerCount: 3, captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile", resumeAfterRestart: true, useTestedServers: true });
+  it("starts disabled with fixed pause policies and normalizes earlier replacement choices", () => {
+    expect(normalizeVpnDownloadSettings(null)).toEqual({ mode: "off", workerCount: 3, captchaPolicy: "pause", cloudflarePolicy: "pause", resumeAfterRestart: true, useTestedServers: true });
     expect(normalizeVpnDownloadSettings({ captchaPolicy: "pause", cloudflarePolicy: "pause" }))
       .toEqual({ mode: "off", workerCount: 3, captchaPolicy: "pause", cloudflarePolicy: "pause", resumeAfterRestart: true, useTestedServers: true });
     expect(normalizeVpnDownloadSettings({ useTestedServers: false }).useTestedServers).toBe(false);
@@ -46,9 +46,9 @@ describe("VPN download settings", () => {
 
   it("rejects malformed persisted choices without starting an automatic run", () => {
     expect(normalizeVpnDownloadSettings({ mode: "unknown", workerCount: 100, captchaPolicy: true, cloudflarePolicy: "nextProfile" }))
-      .toEqual({ mode: "off", workerCount: 10, captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile", resumeAfterRestart: true, useTestedServers: true });
+      .toEqual({ mode: "off", workerCount: 10, captchaPolicy: "pause", cloudflarePolicy: "pause", resumeAfterRestart: true, useTestedServers: true });
     expect(normalizeVpnDownloadSettings({ mode: "single", workerCount: 1.8, captchaPolicy: "nextProfile" }))
-      .toEqual({ mode: "single", workerCount: 1, captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile", resumeAfterRestart: true, useTestedServers: true });
+      .toEqual({ mode: "single", workerCount: 1, captchaPolicy: "pause", cloudflarePolicy: "pause", resumeAfterRestart: true, useTestedServers: true });
   });
 
   it("resumes after an ordinary restart unless the stored choice turned it off", () => {

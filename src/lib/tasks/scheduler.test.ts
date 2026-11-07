@@ -3,6 +3,7 @@ import { buildSyntheticSourceTasks } from "../../test/fixtures/performance";
 import { subscribePerformanceObservations } from "../observability";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
+import { ChapterStorageError } from "../chapter-storage-error";
 import {
   taskWorkQueueKey,
   TaskScheduler,
@@ -1829,16 +1830,23 @@ describe("TaskScheduler", () => {
     expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
     expect(scheduler.getTask(challenged.id)?.status).toBe("running");
     expect(siblingRun).not.toHaveBeenCalled();
-    const rejected = expect(challenged.promise).rejects.toThrow("Storage is full.");
-    failStorage(new Error("Storage is full."));
+    const storageError = new ChapterStorageError("Save chapter", new Error("Storage is full."));
+    const rejected = expect(challenged.promise).rejects.toBe(storageError);
+    failStorage(storageError);
     await rejected;
-    await sibling.promise;
+    await settle();
 
     expect(scheduler.getTask(challenged.id)).toMatchObject({
       status: "failed",
-      error: "Storage is full.",
+      error: storageError.message,
     });
     expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(true);
+    expect(scheduler.getDownloadFailureStops().globalError).toContain("Storage is full.");
+    expect(scheduler.getTask(sibling.id)?.status).toBe("queued");
+    expect(siblingRun).not.toHaveBeenCalled();
+    expect(scheduler.resumeSourceQueue()).toBe(true);
+    await sibling.promise;
     expect(siblingRun).toHaveBeenCalledOnce();
     expect(runCount).toBe(2);
   });

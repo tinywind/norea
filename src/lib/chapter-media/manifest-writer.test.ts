@@ -107,7 +107,24 @@ describe("chapter media manifest writer", () => {
     expect(writes).toHaveLength(2);
   });
 
-  it("retries changes after a failed write and stops a pending write when flushed", async () => {
+  it("reports a deferred write failure immediately and keeps it terminal", async () => {
+    const failure = new Error("disk full");
+    let attempts = 0;
+    const stopped = vi.fn();
+    const writer = createChapterMediaManifestWriter(() => [...files.values()], async () => {
+      attempts += 1;
+      if (attempts > 1) throw failure;
+    }, stopped);
+    await writer.flush();
+    store("0001.png");
+    await writer.progress();
+    await vi.advanceTimersByTimeAsync(CHAPTER_MEDIA_MANIFEST_PROGRESS_INTERVAL_MS);
+    expect(stopped).toHaveBeenCalledWith(failure);
+    await expect(writer.flush()).rejects.toBe(failure);
+    expect(attempts).toBe(2);
+  });
+
+  it("retains a failed write without retrying it", async () => {
     const failure = new Error("storage unavailable");
     let failNext = true;
     const writer = createWriter(async (snapshot) => {
@@ -120,14 +137,10 @@ describe("chapter media manifest writer", () => {
 
     await expect(writer.flush()).rejects.toBe(failure);
     store("0001.png");
-    await writer.progress();
-    await writer.flush();
-    expect(writes).toHaveLength(1);
-
-    store("0002.png");
-    await writer.progress();
-    await writer.flush();
+    await expect(writer.progress()).rejects.toBe(failure);
+    await expect(writer.flush()).rejects.toBe(failure);
     await vi.advanceTimersByTimeAsync(CHAPTER_MEDIA_MANIFEST_PROGRESS_INTERVAL_MS * 2);
-    expect(writes).toHaveLength(2);
+    expect(writes).toHaveLength(0);
+    expect(failNext).toBe(false);
   });
 });

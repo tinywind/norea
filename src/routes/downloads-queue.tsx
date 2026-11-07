@@ -25,6 +25,7 @@ import {
   ChapterDownloadRetryingStatus,
 } from "../components/ChapterDownloadFailureAttention";
 import { BackupFolderAttention, useBackupFolderUnavailable } from "../components/BackupFolderAttention";
+import { DownloadFailureStopNotice } from "../components/DownloadFailureStopNotice";
 import { DownloadGoalAttention } from "../components/DownloadGoalAttention";
 import { DownloadGoalWorkLine } from "../components/DownloadGoalWorkLine";
 import { DownloadWorkStatusLabel, type DownloadWorkStatus } from "../components/DownloadWorkStatusLabel";
@@ -58,7 +59,7 @@ import {
 } from "../lib/download-goals/goal-service";
 import { describeError, userFacingErrorKey } from "../lib/errors";
 import { parseDownloadsSearch } from "../lib/route-search";
-import { cancelChapterDownloadBatches } from "../lib/tasks/chapter-download";
+import { cancelChapterDownloadBatches, resumeChapterDownloadQueueAfterFailure } from "../lib/tasks/chapter-download";
 import { chapterDownloadFailureAttention } from "../lib/tasks/chapter-download-failure-attention";
 import { cancelChapterDownloadRequest } from "../lib/tasks/chapter-download-requests";
 import {
@@ -791,6 +792,8 @@ export function novelWorkStatus(
 
 function NovelWorkGroup({
   automaticPaused,
+  onResumeSource,
+  queueActionPending,
   onSelectTask,
   onToggleOpen,
   open,
@@ -800,6 +803,8 @@ function NovelWorkGroup({
   work,
 }: {
   automaticPaused: boolean;
+  onResumeSource: (sourceId: string) => Promise<void>;
+  queueActionPending: boolean;
   onSelectTask: (taskId: string) => void;
   onToggleOpen: () => void;
   open: boolean;
@@ -862,8 +867,8 @@ function NovelWorkGroup({
   ];
   if (!snapshot.sourceQueuesPaused) {
     items.push(sourcePaused
-      ? { icon: PlayIcon, label: t("downloads.queue.resumeSource", { source: sourceName }),
-        onClick: () => taskScheduler.resumeSourceQueue(sourceId) }
+      ? { icon: PlayIcon, label: t("downloads.queue.resumeSource", { source: sourceName }), disabled: queueActionPending,
+        onClick: () => onResumeSource(sourceId) }
       : { icon: PauseIcon, label: t("downloads.queue.pauseSource", { source: sourceName }),
         onClick: () => taskScheduler.pauseSourceQueue(sourceId) });
   }
@@ -1019,13 +1024,15 @@ function useHasDownloadAttention(
   active: boolean,
   vpn: ReturnType<typeof useVpnDownloadRuntimeSnapshot>,
   ordinaryBlocks: readonly SourceAccessBlock[],
+  snapshot: TaskSnapshot,
 ): boolean {
   const failures = useChapterDownloadFailureSnapshot(active);
   const { pause } = useSyncExternalStore(subscribeDownloadGoalPause, getDownloadGoalPauseSnapshot, getDownloadGoalPauseSnapshot);
   const backupFolderUnavailable = useBackupFolderUnavailable();
   const vpnItem = vpn.loading ? null : vpnDownloadAttention(vpn.plans, vpn.run?.status);
-  return ordinaryBlocks.length > 0 || pause !== null || vpnItem !== null || backupFolderUnavailable ||
-    chapterDownloadFailureAttention(failures).groups.length > 0;
+  const failureStops = snapshot.downloadFailureStops;
+  return ordinaryBlocks.length > 0 || Boolean(failureStops?.globalError) || Object.keys(failureStops?.sourceErrors ?? {}).length > 0 ||
+    pause !== null || vpnItem !== null || backupFolderUnavailable || chapterDownloadFailureAttention(failures).groups.length > 0;
 }
 
 function NeedsAttentionSection({
@@ -1054,6 +1061,7 @@ function NeedsAttentionSection({
       {blocks.map((block) => (
         <SourceAccessBanner block={block} key={block.scopeKey} snapshot={snapshot} />
       ))}
+      <DownloadFailureStopNotice snapshot={snapshot} />
       {active ? <VpnDownloadAttention snapshot={vpn} /> : null}
       {active ? <ChapterDownloadFailureAttention /> : null}
       {active ? <DownloadGoalAttention /> : null}
@@ -1209,7 +1217,7 @@ export function DownloadsQueueView({
   const allPaused = hasVpnRun ? (vpn.run?.status === "paused" || vpn.run?.status === "interrupted") &&
     (!sourceTasks.length || snapshot.sourceQueuesPaused) : snapshot.sourceQueuesPaused;
   const ordinaryBlocks = snapshot.sourceAccessBlocks.filter(block => !block.rangeId);
-  const hasAttention = useHasDownloadAttention(active, vpn, ordinaryBlocks);
+  const hasAttention = useHasDownloadAttention(active, vpn, ordinaryBlocks, snapshot);
   useAttentionFocus(active, hasAttention, attentionRef);
   const taskStats = useMemo(() => {
     const count = (status: TaskRecord["status"]) =>
@@ -1385,7 +1393,7 @@ export function DownloadsQueueView({
                 label={allPaused ? t("downloads.queue.resume") : t("downloads.queue.pause")}
                 onClick={() => runQueueAction(async () => {
                   if (allPaused) {
-                    taskScheduler.resumeSourceQueue();
+                    if (!await resumeChapterDownloadQueueAfterFailure()) return;
                     if (hasVpnRun) await resumeVpnDownloadRun();
                   } else {
                     taskScheduler.pauseSourceQueue();
@@ -1464,6 +1472,8 @@ export function DownloadsQueueView({
                 {novelWorks.map((work) => (
                   <NovelWorkGroup
                     automaticPaused={goalPause !== null}
+                    onResumeSource={sourceId => runQueueAction(async () => { await resumeChapterDownloadQueueAfterFailure(sourceId); })}
+                    queueActionPending={queueActionPending}
                     key={work.key}
                     onSelectTask={setSelectedTaskId}
                     onToggleOpen={() => toggleWork(work)}

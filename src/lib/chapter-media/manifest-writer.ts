@@ -1,4 +1,3 @@
-import { isMediaAbortError } from "./errors";
 import { type ChapterMediaManifestFile } from "./types";
 
 /** Minimum time between progress writes of one chapter's incomplete manifest. */
@@ -19,7 +18,9 @@ export interface ChapterMediaManifestWriter {
 export function createChapterMediaManifestWriter(
   files: () => ChapterMediaManifestFile[],
   write: (files: ChapterMediaManifestFile[]) => Promise<void>,
+  onError?: (error: unknown) => void,
 ): ChapterMediaManifestWriter {
+  let failure: { error: unknown } | undefined;
   let written: string | null = null;
   let lastWriteAt = Number.NEGATIVE_INFINITY;
   let queue = Promise.resolve();
@@ -27,6 +28,7 @@ export function createChapterMediaManifestWriter(
 
   const writeChanges = (): Promise<void> => {
     const run = queue.then(async () => {
+      if (failure) throw failure.error;
       const current = files();
       const key = JSON.stringify(current);
       if (key === written) return;
@@ -34,23 +36,23 @@ export function createChapterMediaManifestWriter(
       await write(current);
       written = key;
     });
-    queue = run.catch(() => undefined);
+    queue = run.catch((error: unknown) => {
+      if (failure) return;
+      failure = { error };
+      onError?.(error);
+    });
     return run;
   };
 
   return {
     progress() {
+      if (failure) return Promise.reject(failure.error);
       if (timer !== undefined) return Promise.resolve();
       const delay = lastWriteAt + CHAPTER_MEDIA_MANIFEST_PROGRESS_INTERVAL_MS - Date.now();
       if (delay <= 0) return writeChanges();
       timer = setTimeout(() => {
         timer = undefined;
-        writeChanges().catch((error: unknown) => {
-          // The final flush retries unsaved changes; cancellation needs no report.
-          if (!isMediaAbortError(error)) {
-            console.warn("[chapter-media] deferred media manifest write failed", { error });
-          }
-        });
+        void writeChanges().catch(() => undefined);
       }, delay);
       return Promise.resolve();
     },

@@ -8,7 +8,7 @@ import {
   activeScraperExecutorSignal,
 } from "../tasks/scraper-queue";
 import { isWindowsRuntime } from "../tauri-runtime";
-import { fetchErrorMessage, mediaRequestLogContext } from "./diagnostics";
+import { mediaRequestLogContext } from "./diagnostics";
 import {
   checkedResponseFromWire,
   sourceAccessResponseError,
@@ -92,11 +92,7 @@ export async function takeCapturedMediaResponse(
     if (signal?.aborted) throw requestAbortedError();
     const accessError = normalizeSourceAccessRequiredError(error, sourceAccessFallbackUrl(url, init));
     if (accessError) throw accessError;
-    console.debug("[plugin-media-fetch] captured response unavailable", {
-      error: fetchErrorMessage(error),
-      ...mediaRequestLogContext(url, init, scraperExecutor),
-    });
-    return null;
+    throw error;
   }
   if (result) {
     console.debug("[plugin-media-fetch] captured response used", {
@@ -142,11 +138,7 @@ export async function takeCapturedMediaHandle(
     if (signal?.aborted) throw requestAbortedError();
     const accessError = normalizeSourceAccessRequiredError(error, sourceAccessFallbackUrl(url, init));
     if (accessError) throw accessError;
-    console.debug("[plugin-media-fetch] captured response handle unavailable", {
-      error: fetchErrorMessage(error),
-      ...mediaRequestLogContext(url, init, scraperExecutor),
-    });
-    return null;
+    throw error;
   }
   if (result) {
     const accessError = sourceAccessResponseError(

@@ -105,22 +105,9 @@ describe("isSourceForbiddenFailure", () => {
 });
 
 describe("automaticRetryDelayMs", () => {
-  it("backs off 30s, 2min and 10min, then stops", () => {
-    const transient = { failureClass: "transient" as const, retryAfterMs: 0 };
-    expect([1, 2, 3, 4].map((attempts) => automaticRetryDelayMs(transient, attempts)))
-      .toEqual([30_000, 120_000, 600_000, null]);
-  });
-
-  it("waits for a longer Retry-After, capped at one hour", () => {
-    expect(automaticRetryDelayMs({ failureClass: "transient", retryAfterMs: 300_000 }, 1)).toBe(300_000);
-    expect(automaticRetryDelayMs({ failureClass: "transient", retryAfterMs: 86_400_000 }, 3)).toBe(3_600_000);
-  });
-
-  it("gives incomplete media one repair attempt and never retries content, storage or challenges", () => {
-    expect(automaticRetryDelayMs({ failureClass: "media-incomplete", retryAfterMs: 0 }, 1)).toBe(30_000);
-    expect(automaticRetryDelayMs({ failureClass: "media-incomplete", retryAfterMs: 0 }, 2)).toBeNull();
-    for (const failureClass of ["content", "storage", "challenge"] as const) {
-      expect(automaticRetryDelayMs({ failureClass, retryAfterMs: 0 }, 1)).toBeNull();
+  it.each(["transient", "content", "storage", "challenge", "media-incomplete"] as const)("requires explicit retry after every %s failure", failureClass => {
+    for (const attempts of [1,2,3,4]) {
+      expect(automaticRetryDelayMs({failureClass, retryAfterMs:900_000}, attempts)).toBeNull();
     }
   });
 });

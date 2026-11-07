@@ -3,6 +3,7 @@ import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { useContentSyncStore } from "../../store/content-sync";
 import { isAbortError } from "../abort";
+import { withChapterStorageOperation } from "../chapter-storage-error";
 import type { ChapterMediaManifestFile } from "../chapter-media/types";
 import { pluginManager } from "../plugins/manager";
 import type { ChapterMediaRepairJob } from "../tasks/chapter-download";
@@ -19,18 +20,18 @@ interface ServerChapterMediaSource {
 
 export function createServerChapterMediaFetcher(
   job: Pick<ChapterMediaRepairJob, "id" | "pluginId">,
-  signal?: AbortSignal,
-): (file: ChapterMediaManifestFile) => Promise<Response | null> {
+  ownerSignal?: AbortSignal,
+): (file: ChapterMediaManifestFile, requestSignal?: AbortSignal) => Promise<Response | null> {
   let lookup: Promise<ServerChapterMediaSource | null> | undefined;
-  const resolveChapter = async (): Promise<ServerChapterMediaSource | null> => {
+  const resolveChapter = async (signal?: AbortSignal): Promise<ServerChapterMediaSource | null> => {
     signal?.throwIfAborted();
-    const chapter = await getChapterById(job.id);
+    const chapter = await withChapterStorageOperation("load media repair chapter", () => getChapterById(job.id));
     if (!chapter) throw new Error("Content server repair chapter no longer exists locally.");
     const source = await readServerNovelSource(chapter.novelId);
     const settings = useContentSyncStore.getState();
     const serverUrl = source?.serverUrl ?? settings.serverUrl;
     if (!serverUrl) return null;
-    const novel = await getNovelById(chapter.novelId);
+    const novel = await withChapterStorageOperation("load media repair work", () => getNovelById(chapter.novelId));
     if (!novel || novel.pluginId !== job.pluginId) throw new Error("Content server repair identity does not match the local work.");
     const number = chapter.chapterNumber ?? (chapter.position > 0 ? String(chapter.position) : undefined);
     const chapterNumber = number && /^\d+(?:\.\d+)?$/.test(number) ? number : undefined;
@@ -52,10 +53,13 @@ export function createServerChapterMediaFetcher(
     }, settings.lookupTimeoutSeconds ?? 3, signal);
   };
 
-  return async file => {
+  return async (file, requestSignal) => {
+    const signal = ownerSignal && requestSignal
+      ? AbortSignal.any([ownerSignal, requestSignal])
+      : requestSignal ?? ownerSignal;
     signal?.throwIfAborted();
     try {
-      const source = await (lookup ??= resolveChapter());
+      const source = await (lookup ??= resolveChapter(signal));
       signal?.throwIfAborted();
       if (!source) return null;
       return await withContentServerLookup(async deadline => {
@@ -81,7 +85,8 @@ export function createServerChapterMediaFetcher(
     } catch (error) {
       signal?.throwIfAborted();
       if (isAbortError(error)) throw error;
-      if (/^https?:\/\//i.test(file.sourceUrl) && pluginManager.getPlugin(job.pluginId)) return null;
+      if (error instanceof ContentServerError && error.status === 404
+        && /^https?:\/\//i.test(file.sourceUrl) && pluginManager.getPlugin(job.pluginId)) return null;
       throw error;
     }
   };

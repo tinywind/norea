@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { SourceAccessRequiredError } from "../plugins/source-access";
+import { NetworkUnavailableError } from "../network";
 import { TaskScheduler, type SourceTaskSpec, type TaskRunContext } from "./scheduler";
 import type { VpnDownloadWorkerRef } from "./vpn-download-types";
 
@@ -35,6 +36,21 @@ afterEach(async () => {
 });
 
 describe("dedicated VPN worker scheduling", () => {
+  it("returns a network failure to the owning worker without retrying after connectivity returns", async () => {
+    const failure = new NetworkUnavailableError();
+    const run = vi.fn().mockRejectedValueOnce(failure).mockResolvedValue(undefined);
+    const handle = queue("range", 0, run);
+    await settle();
+    expect(run).toHaveBeenCalledOnce();
+    await expect(handle.promise).rejects.toBe(failure);
+    expect(scheduler.getTask(handle.id)?.status).toBe("failed");
+    expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+    scheduler.setNetworkAvailable(false);
+    scheduler.setNetworkAvailable(true);
+    await settle();
+    expect(run).toHaveBeenCalledOnce();
+  });
+
   it("does not scan idle VPN slots while a long ordinary queue drains", async () => {
     type Predicate = (entry: unknown) => boolean;
     const pick = vi.spyOn(

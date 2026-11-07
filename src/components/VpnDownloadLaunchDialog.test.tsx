@@ -78,7 +78,7 @@ it("starts all queued work with accepted defaults and coalesces duplicate submis
   const submit = button(render(), "vpnDownload.start");
   const first = submit.props.onClick!();
   const second = submit.props.onClick!();
-  expect(mocks.start).toHaveBeenCalledExactlyOnceWith({ workerCount: 2, captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile" });
+  expect(mocks.start).toHaveBeenCalledExactlyOnceWith({ workerCount: 2, captchaPolicy: "pause", cloudflarePolicy: "pause" });
   expect(button(render(), "common.cancel").props.disabled).toBe(true);
   await button(render(), "common.cancel").props.onClick!();
   expect(mocks.close).not.toHaveBeenCalled();
@@ -95,10 +95,10 @@ it("keeps the modal open with the failure when the run cannot start", async () =
 
 it("keeps optional edits local until Start is accepted", async () => {
   const editor = render().find(element => element.type === VpnDownloadSettings)!;
-  editor.props.onChange!({ workerCount: 10, captchaPolicy: "pause", cloudflarePolicy: "nextProfile" });
+  editor.props.onChange!({ workerCount: 10, captchaPolicy: "pause", cloudflarePolicy: "pause" });
   expect(mocks.settings.workerCount).toBe(2);
   await button(render(), "vpnDownload.start").props.onClick!();
-  expect(mocks.start).toHaveBeenCalledWith({ workerCount: 10, captchaPolicy: "pause", cloudflarePolicy: "nextProfile" });
+  expect(mocks.start).toHaveBeenCalledWith({ workerCount: 10, captchaPolicy: "pause", cloudflarePolicy: "pause" });
 });
 
 it("explains missing profiles while allowing automatic waiting without per-work setup", async () => {

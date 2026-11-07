@@ -33,14 +33,11 @@ const render = (caps = capabilities, disabled = false) => controls(VpnDownloadSe
 const get = (view: ReactElement<Props>[], key: string) => view.find(element => element.props["aria-label"] === key)!;
 beforeEach(() => { vi.clearAllMocks(); });
 
-it("edits only the unsubmitted launch options and keeps the two challenge policies independent", () => {
+it("shows the fixed error-stop rule without offering automatic profile rotation", () => {
   const view = render();
-  expect(get(view, "vpnDownload.captchaPolicy").props.value).toBe("nextProfile");
-  expect(get(view, "vpnDownload.cloudflarePolicy").props.value).toBe("nextProfile");
-  get(view, "vpnDownload.captchaPolicy").props.onChange!("pause");
-  expect(change).toHaveBeenLastCalledWith({ workerCount: 2, captchaPolicy: "pause", cloudflarePolicy: "nextProfile" });
-  get(view, "vpnDownload.cloudflarePolicy").props.onChange!("pause");
-  expect(change).toHaveBeenLastCalledWith({ workerCount: 2, captchaPolicy: "nextProfile", cloudflarePolicy: "pause" });
+  expect(get(view, "vpnDownload.captchaPolicy")).toBeUndefined();
+  expect(get(view, "vpnDownload.cloudflarePolicy")).toBeUndefined();
+  expect(view.some(element => element.props.children === "vpnDownload.errorStopHint")).toBe(true);
   expect(get(view, "vpnDownload.mode")).toBeUndefined();
 });
 
@@ -60,11 +57,10 @@ it.each([0, 11, 1.5, "", null])("does not submit an invalid worker count %s", co
 it("limits a single-worker device and guards callbacks while submission is pending", () => {
   expect(get(render({ supported: true, parallelSupported: false, maxWorkers: 1 }), "vpnDownload.workerCount").props.max).toBe(1);
   const view = render(capabilities, true);
-  for (const key of ["vpnDownload.workerCount", "vpnDownload.captchaPolicy", "vpnDownload.cloudflarePolicy", "vpnDownload.resumeAfterRestart", "vpnDownload.useTestedServers"]) {
+  for (const key of ["vpnDownload.workerCount", "vpnDownload.resumeAfterRestart", "vpnDownload.useTestedServers"]) {
     expect(get(view, key).props.disabled).toBe(true);
   }
   get(view, "vpnDownload.workerCount").props.onChange!(3);
-  get(view, "vpnDownload.captchaPolicy").props.onChange!("pause");
   expect(change).not.toHaveBeenCalled();
 });
 

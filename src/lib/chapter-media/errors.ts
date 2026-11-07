@@ -62,13 +62,6 @@ export class ChapterMediaHttpRetryError extends Error {
   }
 }
 
-export function mediaRetryAfterMs(value: string | null, now = Date.now()): number {
-  if (!value?.trim()) return 0;
-  const seconds = Number(value);
-  const delay = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(value) - now;
-  return Number.isFinite(delay) ? Math.max(0, Math.min(86_400_000, delay)) : 0;
-}
-
 export function isTransientMediaHttpStatus(status: number): boolean {
   return status === 408 || status === 429 || status === 502 || status === 503 || status === 504;
 }

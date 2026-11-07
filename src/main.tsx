@@ -20,6 +20,8 @@ import { describeError } from "./lib/errors";
 import { startContentServerSync } from "./lib/content-sync/scheduler";
 import { initializeNetworkStatus } from "./lib/network";
 import { initializeTaskNetworkState } from "./lib/tasks/network-lifecycle";
+import { initializeDownloadFailureStopPersistence } from "./lib/tasks/download-failure-stop";
+import { taskScheduler } from "./lib/tasks/scheduler";
 import { initializeVpnDownloadRuntime } from "./lib/tasks/vpn-download-runtime";
 import {
   installRuntimeLogLevelFilter,
@@ -217,6 +219,7 @@ function AppProviders() {
   );
 }
 
+initializeDownloadFailureStopPersistence(taskScheduler);
 initializeSourceAccessCoordinator();
 void initializeNetworkStatus();
 initializeTaskNetworkState();

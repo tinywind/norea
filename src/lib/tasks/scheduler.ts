@@ -47,6 +47,9 @@ import { LOCAL_PLUGIN_ID } from "../plugins/types";
 import { isNetworkUnavailableError } from "../network";
 import { TaskUserCancelledError } from "./task-errors";
 import { describeError } from "../errors";
+import { isHttpNotFoundError } from "../http/status-error";
+import { classifyDownloadFailure } from "./download-failure";
+import type { DownloadFailureStops } from "./download-failure-stop";
 import { recordPerformanceObservation } from "../observability";
 import {
   normalizeSourceAccessRequiredError,
@@ -271,6 +274,7 @@ export class TaskScheduler {
   private sourceBackgroundConcurrency: number;
   private readonly sourceBackgroundConcurrencyFollowsForeground: boolean;
   private sourceQueuesPaused: boolean;
+  private downloadFailureStops: DownloadFailureStops = { sourceErrors: {} };
   private backgroundExecutionSuspended = false;
   private backgroundExecutionDetail: string | undefined;
   private networkAvailable = true;
@@ -358,7 +362,7 @@ export class TaskScheduler {
       kind: entry?.record.kind,
       lane: entry?.record.lane,
       mainQueueLength: this.mainQueue.length,
-      pausedSourceIds: [...this.pausedSourceIds].sort(),
+      pausedSourceIds: [...new Set([...this.pausedSourceIds, ...Object.keys(this.downloadFailureStops.sourceErrors)])].sort(),
       pausedTaskGroups: [...this.pausedTaskGroups].sort(),
       priority: entry?.record.priority,
       sourceAccessScopeKey: entry?.spec.sourceAccessScopeKey,
@@ -1254,6 +1258,10 @@ export class TaskScheduler {
     const { spec } = entry;
     const retried = spec.retryManually?.() ?? this.enqueue({ ...spec, dedupeKey: spec.dedupeKey });
     this.sourceAccess.replaceOriginTaskId(entry.record.id, retried.id);
+    if (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia") {
+      if (classifyDownloadFailure(entry.record.error).failureClass === "storage") this.resumeSourceQueue();
+      else this.resumeSourceQueue(entry.record.source?.id);
+    }
     this.publishSnapshot();
     this.requestDrain();
     return retried;
@@ -1302,6 +1310,9 @@ export class TaskScheduler {
         entry.record.detail = detail;
         if (entry.record.status === "running" &&
             !(entry.spec.canCompleteWithoutSourceAccess && !entry.sourceAccessStarted)) {
+          if (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia") {
+            this.reportDownloadFailure(new Error(detail ?? "Network connection was lost."), entry.record.source?.id, entry.spec.vpnWorker, entry.record.id);
+          }
           entry.pauseRequested = true;
           entry.controller.abort(new DOMException(TASK_PAUSE_ABORT_MESSAGE, "AbortError"));
         }
@@ -1350,6 +1361,37 @@ export class TaskScheduler {
     return group !== null && this.pausedTaskGroups.has(group);
   }
 
+  getDownloadFailureStops(): DownloadFailureStops {
+    return { ...this.downloadFailureStops, sourceErrors: { ...this.downloadFailureStops.sourceErrors } };
+  }
+
+  hydrateDownloadFailureStops(stops: DownloadFailureStops): void {
+    this.downloadFailureStops = { ...stops, sourceErrors: { ...stops.sourceErrors } };
+    if (stops.globalError) this.sourceQueuesPaused = true;
+    this.publishSnapshot();
+  }
+
+  /** Stops subsequent downloads before the failing executor is released. */
+  reportDownloadFailure(
+    error: unknown, sourceId?: string, worker?: VpnDownloadWorkerRef, failedTaskId?: string,
+  ): void {
+    if (isAbortError(error) || isHttpNotFoundError(error)) return;
+    const failure = classifyDownloadFailure(error);
+    if (failure.failureClass === "storage" || !sourceId) {
+      this.downloadFailureStops = { ...this.downloadFailureStops, globalError: failure.summary };
+      this.sourceQueuesPaused = true;
+      this.pauseRunningSourceTasks(undefined, candidate => candidate.record.id !== failedTaskId &&
+        (candidate.record.kind === "chapter.download" || candidate.record.kind === "chapter.repairMedia"));
+    } else if (!worker) {
+      this.downloadFailureStops = { ...this.downloadFailureStops, sourceErrors: {
+        ...this.downloadFailureStops.sourceErrors, [sourceId]: failure.summary,
+      } };
+      this.pauseRunningSourceTasks(sourceId, candidate => candidate.record.id !== failedTaskId &&
+        !candidate.spec.vpnWorker && (candidate.record.kind === "chapter.download" || candidate.record.kind === "chapter.repairMedia"));
+    } else return;
+    this.publishSnapshot();
+  }
+
   pauseSourceQueue(sourceId?: string): boolean {
     const paused = this.pauseRunningSourceTasks(sourceId, entry => !isUiInteraction(entry));
     if (!sourceId) {
@@ -1369,18 +1411,23 @@ export class TaskScheduler {
 
   resumeSourceQueue(sourceId?: string): boolean {
     if (!sourceId) {
-      if (!this.sourceQueuesPaused && this.pausedSourceIds.size === 0) {
+      if (!this.sourceQueuesPaused && this.pausedSourceIds.size === 0 && Object.keys(this.downloadFailureStops.sourceErrors).length === 0) {
         return false;
       }
       this.sourceQueuesPaused = false;
       this.pausedSourceIds.clear();
+      this.downloadFailureStops = { sourceErrors: {} };
       this.debug("all source queues resumed");
       this.publishSnapshot();
       this.drain();
       return true;
     }
 
-    if (!this.pausedSourceIds.delete(sourceId)) return false;
+    const paused = this.pausedSourceIds.delete(sourceId);
+    if (!paused && !Object.hasOwn(this.downloadFailureStops.sourceErrors, sourceId)) return false;
+    const sourceErrors = { ...this.downloadFailureStops.sourceErrors };
+    delete sourceErrors[sourceId];
+    this.downloadFailureStops = { ...this.downloadFailureStops, sourceErrors };
     this.debug("source queue resumed", undefined, { sourceId });
     this.publishSnapshot();
     this.drain();
@@ -1405,6 +1452,7 @@ export class TaskScheduler {
   }
 
   canBeginSourceAccessVerification(scopeKey: string): boolean {
+    if (this.downloadFailureStops.globalError) return false;
     const block = this.sourceAccess.get(scopeKey);
     return Boolean(
       block &&
@@ -2042,11 +2090,14 @@ export class TaskScheduler {
 
   private isSourceQueuePaused(entry: TaskEntry): boolean {
     if (this.isTaskGroupPaused(entry)) return true;
+    if (this.downloadFailureStops.globalError &&
+      (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia")) return true;
     if (isUiInteraction(entry)) return false;
     const sourceId = entry.record.source?.id;
     return (
       this.sourceQueuesPaused ||
-      (sourceId !== undefined && this.pausedSourceIds.has(sourceId))
+      (sourceId !== undefined && (this.pausedSourceIds.has(sourceId) ||
+        !entry.spec.vpnWorker && Object.hasOwn(this.downloadFailureStops.sourceErrors, sourceId)))
     );
   }
 
@@ -2058,6 +2109,8 @@ export class TaskScheduler {
     entry: TaskEntry,
     options: { allowActiveSource?: boolean } = {},
   ): boolean {
+    if (this.downloadFailureStops.globalError &&
+      (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia")) return false;
     if (this.backgroundExecutionSuspended || entry.retryTimer !== undefined) return false;
     if (this.automaticWorkPaused && entry.spec.automatic) return false;
     if (this.ordinaryChapterDownloadHolds > 0 && entry.record.kind === "chapter.download" &&
@@ -2247,14 +2300,10 @@ export class TaskScheduler {
       })
       .catch((error) => {
         const cancelled = entry.controller.signal.aborted || isAbortError(error);
-        const sourceAccessError = normalizeSourceAccessRequiredError(error, entry.sourceAccessUrl);
+        const sourceAccessError = classifyDownloadFailure(error).failureClass === "storage"
+          ? null : normalizeSourceAccessRequiredError(error, entry.sourceAccessUrl);
         if (cancelled && entry.record.status === "cancelled") {
           this.finishCancelledRunningAfterSettlement(entry);
-          return;
-        }
-        if (this.requiresNetwork(entry) && entry.record.status === "running" &&
-            (!this.networkAvailable || isNetworkUnavailableError(error))) {
-          this.requeuePausedRunningAfterSettlement(entry);
           return;
         }
         if (
@@ -2263,6 +2312,15 @@ export class TaskScheduler {
           sourceAccessError &&
           this.recordSourceAccessChallenge(entry, sourceAccessError)
         ) {
+          return;
+        }
+        if (!cancelled && (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia")) {
+          this.reportDownloadFailure(error, entry.record.source?.id, entry.spec.vpnWorker, entry.record.id);
+        }
+        if (this.requiresNetwork(entry) && entry.record.status === "running" &&
+            (!entry.spec.vpnWorker || cancelled) &&
+            (!this.networkAvailable || isNetworkUnavailableError(error))) {
+          this.requeuePausedRunningAfterSettlement(entry);
           return;
         }
         if (entry.pauseRequested && entry.record.lane === "source" && cancelled) {
@@ -2280,7 +2338,7 @@ export class TaskScheduler {
         ) {
           return;
         }
-        if (!cancelled && this.requeueRetryableTask(entry, error)) return;
+        if (!cancelled && entry.record.kind !== "chapter.download" && entry.record.kind !== "chapter.repairMedia" && this.requeueRetryableTask(entry, error)) return;
         if (!cancelled) {
           console.error("[task-scheduler] task failed", {
             error: describeTaskError(error),
@@ -2855,7 +2913,7 @@ export class TaskScheduler {
     const total = this.entries.size;
     const sourceQueuesTotal = sourceIdsInActiveEntries.size;
     const snapshot = {
-      pausedSourceIds: [...this.pausedSourceIds].sort(),
+      pausedSourceIds: [...new Set([...this.pausedSourceIds, ...Object.keys(this.downloadFailureStops.sourceErrors)])].sort(),
       pausedTaskGroups: [...this.pausedTaskGroups].sort(),
       records,
       recordLimit: records.length,
@@ -2866,6 +2924,8 @@ export class TaskScheduler {
       sourceQueuesTruncated: false,
       sourceQueuesPaused: this.sourceQueuesPaused,
       sourceAccessBlocks: this.sourceAccess.snapshot(),
+      ...(this.downloadFailureStops.globalError || Object.keys(this.downloadFailureStops.sourceErrors).length
+        ? { downloadFailureStops: this.getDownloadFailureStops() } : {}),
       total,
       running: counts.running,
       queued: counts.queued,

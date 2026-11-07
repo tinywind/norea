@@ -73,6 +73,13 @@ export async function getChapterDownloadFailure(chapterId: number): Promise<Stor
   return row;
 }
 
+/** Removes deadlines left by an earlier automatic retry policy without deleting failures. */
+export async function clearScheduledChapterDownloadRetries(): Promise<number> {
+  const db = await getDb();
+  const result = await db.execute("UPDATE chapter_download_failure SET next_retry_at=NULL WHERE next_retry_at IS NOT NULL");
+  return result.rowsAffected;
+}
+
 export async function listChapterDownloadFailures(): Promise<StoredChapterDownloadFailure[]> {
   const db = await getDb();
   return db.select<StoredChapterDownloadFailure[]>(

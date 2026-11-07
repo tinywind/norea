@@ -2,7 +2,8 @@ import { isAbortError } from "../abort";
 import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { sourceAccessScopeKey, type SourceAccessChallenge } from "../plugins/source-access";
 import type { ChapterDownloadJob } from "./chapter-download";
-import { isSourceForbiddenFailure, type DownloadFailureClass } from "./download-failure";
+import { classifyDownloadFailure, isSourceForbiddenFailure, type DownloadFailureClass } from "./download-failure";
+import { isHttpNotFoundError } from "../http/status-error";
 import type { SourceAccessBlock } from "./source-access-gate";
 import { isTaskUserCancelledError } from "./task-errors";
 import type { TaskHandle } from "./task-types";
@@ -12,7 +13,7 @@ import type {
 } from "./vpn-download-types";
 import { isVpnDownloadWorkerSlot, MAX_VPN_DOWNLOAD_WORKERS } from "./vpn-download-types";
 
-/** A chapter failure after its retry rules: a new attempt time inside the persisted budget, or null. */
+/** A saved chapter failure. Earlier automatic retry deadlines never authorize a new attempt. */
 export interface VpnDownloadChapterFailure {
   failureClass: DownloadFailureClass;
   nextRetryAt: number | null;
@@ -50,10 +51,12 @@ export interface VpnDownloadRuntime {
   disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void>;
   showWorker(worker: VpnDownloadWorkerRef, url: string): Promise<void>;
   enqueueChapter(job: ChapterDownloadJob, worker: VpnDownloadWorkerRef, planId: string): TaskHandle<unknown>;
-  /** Reads the persisted chapter retry deadline and remaining admission decision before dispatch. */
+  /** Reads the persisted failure before dispatch so reopening cannot retry a failed chapter. */
   loadChapterFailure(job: ChapterDownloadJob): Promise<VpnDownloadChapterFailure | undefined>;
-  /** Persists a failed chapter attempt with its class and returns when to try it again, if ever. */
+  /** Persists a failed chapter attempt without scheduling another attempt. */
   recordChapterFailure(job: ChapterDownloadJob, error: unknown): Promise<VpnDownloadChapterFailure>;
+  clearChapterFailure(chapterId: number): Promise<void>;
+  reportFailure(error: unknown, sourceId?: string, worker?: VpnDownloadWorkerRef): void;
   cancelTask(taskId: string): void | Promise<void>;
   waitForTask(taskId: string, worker: VpnDownloadWorkerRef): Promise<void>;
   requestVerification(taskId: string, worker: VpnDownloadWorkerRef, challenge: SourceAccessChallenge): boolean;
@@ -88,6 +91,7 @@ interface RangeRuntime {
   epoch: number;
   intent: boolean;
   userHeld: boolean;
+  failureReason?: string;
   manual: boolean;
   networkHeld: boolean;
   jobs: Map<number, ChapterDownloadJob> | null;
@@ -102,10 +106,6 @@ interface RangeRuntime {
   awaitingDiscovery?: boolean;
   /** The epoch whose discovery already ran without yielding an eligible profile. */
   discoveredEpoch?: number;
-  /** Wakes a chapter retry backoff early when the range halts. */
-  retryWait?: AbortController;
-  /** When the range last gave up a failed lease, so waiting ranges reach the freed slot before it reconnects. */
-  yieldedAt?: number;
 }
 
 const MAX_PROFILE_TESTS = 3;
@@ -129,6 +129,16 @@ const isRetryableScraperFailure = (error: unknown): boolean => error instanceof 
 /** A source refusal excludes its range from automatic and run-level resumption. */
 export function isVpnDownloadForbiddenHeld(range: VpnDownloadRangeState): boolean {
   return range.challenge?.kind === "forbidden" || range.pauseReason === "site-forbidden";
+}
+
+const FAILURE_PAUSES = new Set([
+  "chapter-failed", "download-failed", "runtime-error", "authentication-required", "verification-unavailable",
+  "challenge-captcha", "challenge-cloudflare", "manual-verification", "profile-unavailable",
+]);
+
+/** A failed range waits for an explicit range resume, including across restarts and bulk actions. */
+export function isVpnDownloadFailureHeld(range: VpnDownloadRangeState): boolean {
+  return isVpnDownloadForbiddenHeld(range) || FAILURE_PAUSES.has(range.pauseReason ?? "");
 }
 
 function freezePlan(input: VpnDownloadPlan): VpnDownloadPlan {
@@ -173,7 +183,6 @@ export class VpnDownloadCoordinator {
   private readonly connectedProfiles = new Map<string, number>();
   private successSequence = 0;
   private readonly failedProfiles = new Map<string, number>();
-  private yieldSequence = 0;
 
   constructor(private readonly runtime: VpnDownloadRuntime) {
     this.online = runtime.isOnline();
@@ -214,8 +223,10 @@ export class VpnDownloadCoordinator {
             this.pausedWorks.add(JSON.stringify([plan.pluginId, plan.novelId]));
             continue;
           }
-          if (isVpnDownloadForbiddenHeld(range)) {
-            const reason = range.challenge?.kind === "forbidden" ? "challenge-forbidden" : "site-forbidden";
+          if (isVpnDownloadFailureHeld(range)) {
+            const reason = isVpnDownloadForbiddenHeld(range)
+              ? range.challenge?.kind === "forbidden" ? "challenge-forbidden" : "site-forbidden"
+              : range.pauseReason;
             changed ||= range.phase !== "paused" || range.pauseReason !== reason;
             range.phase = "paused";
             range.pauseReason = reason;
@@ -273,7 +284,7 @@ export class VpnDownloadCoordinator {
     if (terminal(state)) return;
     if (range.manual) throw new Error("Finish manual VPN verification before resuming.");
     if (range.intent && range.run?.epoch === range.epoch && !range.networkHeld) return;
-    const requestedEpoch = range.epoch;
+    let requestedEpoch = range.epoch;
     await this.settleTransition(range);
     if (!this.isEpoch(range, requestedEpoch) || this.cancellingPlans.has(planId)) return;
     if (options.restartPass) {
@@ -281,7 +292,14 @@ export class VpnDownloadCoordinator {
       const stoppedEpoch = range.epoch;
       await stopped;
       if (!this.isEpoch(range, stoppedEpoch)) return;
+      requestedEpoch = stoppedEpoch;
     }
+    if (isVpnDownloadFailureHeld(state)) {
+      const chapterId = state.selectedChapterIds[state.checkpoint];
+      if (chapterId !== undefined) await this.runtime.clearChapterFailure(chapterId);
+      if (!this.isEpoch(range, requestedEpoch)) return;
+    }
+    range.failureReason = undefined;
     range.intent = false;
     range.userHeld = false;
     range.networkHeld = !this.online;
@@ -318,7 +336,7 @@ export class VpnDownloadCoordinator {
     });
     const ranges = matching.filter(range => {
       const state = this.state(range);
-      return !terminal(state) && !(state.phase === "paused" && isVpnDownloadForbiddenHeld(state)) &&
+      return !terminal(state) && !(state.phase === "paused" && isVpnDownloadFailureHeld(state)) &&
         (!state.userPaused || state.pauseReason === "work-paused");
     });
     if (!ranges.length && matching.length) return Promise.resolve();
@@ -335,7 +353,7 @@ export class VpnDownloadCoordinator {
       if (plan.pluginId !== pluginId || plan.novelId !== novelId) continue;
       for (const range of plan.ranges) {
         if (!canContinue()) return;
-        if (range.phase === "paused" && !isVpnDownloadForbiddenHeld(range) &&
+        if (range.phase === "paused" && !isVpnDownloadFailureHeld(range) &&
           (range.pauseReason === "work-paused" || !range.userPaused && range.pauseReason !== "profiles-exhausted")) {
           await this.resumeRange(plan.id, range.id);
         }
@@ -391,6 +409,19 @@ export class VpnDownloadCoordinator {
     const settled = await Promise.allSettled([...pending, this.discovery]);
     const failed = settled.find(result => result.status === "rejected");
     if (failed?.status === "rejected") throw failed.reason;
+  }
+
+  async stopForStorageFailure(): Promise<void> {
+    this.automaticStopEpoch++;
+    this.discoveryAbort?.abort();
+    await Promise.all([...this.ranges.values()].filter(range => !terminal(this.state(range))).map(range => {
+      const state = this.state(range);
+      range.manual = false;
+      const reason = isVpnDownloadFailureHeld(state) ? state.pauseReason ?? "runtime-error"
+        : range.failureReason === "site-forbidden" ? "site-forbidden" : "runtime-error";
+      range.failureReason = reason;
+      return this.halt(range, reason, state.userPaused, true, false);
+    }));
   }
 
   async stopForRestore(): Promise<void> {
@@ -451,8 +482,9 @@ export class VpnDownloadCoordinator {
     } catch { return Promise.resolve(false); }
 
     const block = clone(input);
+    range.failureReason = `challenge-${block.challenge.kind}`;
     const epoch = ++range.epoch;
-    if (block.challenge.kind === "forbidden" || plan.policies[block.challenge.kind] === "pause") range.intent = false;
+    range.intent = false;
     const previous = range.transition;
     const issue = this.excludeProfile(range, task.lease, block.challenge.kind === "forbidden" ? "site-forbidden" : block.challenge.kind);
     const cancellation = this.cancelEnrolled(range, task);
@@ -468,18 +500,13 @@ export class VpnDownloadCoordinator {
         addAttempt(next, task.lease.profile.id);
       }), previous, cancellation, issue]);
       if (!this.isEpoch(range, epoch)) return;
-      if (block.challenge.kind === "forbidden" || this.plans.get(range.planId)!.policies[block.challenge.kind] === "pause") {
-        this.notice(range, `challenge-${block.challenge.kind}`);
-      } else if (!this.online) {
-        range.networkHeld = true;
-        await this.updateRange(range, next => { next.pauseReason = "offline"; }, epoch);
-        await this.closeLease(task.lease);
-      } else {
-        await this.closeLease(task.lease);
-      }
+      this.notice(range, `challenge-${block.challenge.kind}`);
     })();
     range.transition = operation;
-    return operation.then(() => { this.schedule(); return true; });
+    return operation.then(() => { this.schedule(); return true; }, async error => {
+      await this.fail(range, epoch, "runtime-error", error);
+      throw error;
+    });
   }
 
   async networkChanged(online = this.runtime.isOnline()): Promise<void> {
@@ -488,8 +515,9 @@ export class VpnDownloadCoordinator {
     for (const range of this.ranges.values()) {
       if (terminal(this.state(range)) || !range.intent || range.manual || this.state(range).userPaused) continue;
       if (!online) {
-        range.networkHeld = true;
-        pending.push(this.halt(range, "offline", false, true, true));
+        const active = range.worker !== undefined || range.task !== undefined;
+        range.networkHeld = !active;
+        pending.push(this.halt(range, active ? "download-failed" : "offline", false, true, !active));
       } else if (range.networkHeld) {
         range.networkHeld = false;
         pending.push(this.updateRange(range, next => { next.pauseReason = null; }, range.epoch));
@@ -613,11 +641,10 @@ export class VpnDownloadCoordinator {
     });
   }
 
-  /** Plan creation order, then range order inside the plan; ranges that gave up a failed lease follow, oldest yield first. */
+  /** Plan creation order, then range order inside the plan. */
   private dispatchOrder(): RangeRuntime[] {
     const plans = [...this.plans.values()].sort((left, right) => left.createdAt - right.createdAt || (left.id < right.id ? -1 : left.id > right.id ? 1 : 0));
-    return plans.flatMap(plan => plan.ranges.map(state => this.ranges.get(key(plan.id, state.id))).filter((range): range is RangeRuntime => range !== undefined))
-      .sort((left, right) => (left.yieldedAt ?? 0) - (right.yieldedAt ?? 0));
+    return plans.flatMap(plan => plan.ranges.map(state => this.ranges.get(key(plan.id, state.id))).filter((range): range is RangeRuntime => range !== undefined));
   }
 
   private occupiedSlots(): number {
@@ -681,10 +708,17 @@ export class VpnDownloadCoordinator {
   /** A range that waits for discovery is covered by the run that started after it; a later waiter gets its own run. */
   private requestDiscovery(): Promise<void> {
     if (this.discovery) return this.discovery;
-    const covered = [...this.ranges.values()].filter(range => range.awaitingDiscovery);
+    const covered = [...this.ranges.values()].filter(range => this.canWork(range, range.epoch) &&
+      (range.awaitingDiscovery || range.waitingProfiles !== undefined));
     const abort = new AbortController();
     this.discoveryAbort = abort;
-    const discovery = this.runDiscovery(covered.length > 0, abort.signal).finally(() => {
+    const discovery = this.runDiscovery(covered.some(range => range.awaitingDiscovery), abort.signal).catch(error => {
+      for (const range of covered) {
+        if (!this.canWork(range, range.epoch)) continue;
+        void this.fail(range, range.epoch, "download-failed", error).catch(failure => this.notice(range, "runtime-error", failure));
+      }
+      throw error;
+    }).finally(() => {
       this.discovery = undefined;
       if (this.discoveryAbort === abort) this.discoveryAbort = undefined;
       for (const range of covered) {
@@ -813,13 +847,9 @@ export class VpnDownloadCoordinator {
       if (pendingJob) {
         const failure = await this.runtime.loadChapterFailure(clone(pendingJob));
         if (!this.canWork(range, epoch)) return;
-        if (failure?.nextRetryAt === null) {
+        if (failure) {
           await this.fail(range, epoch, "chapter-failed");
           return;
-        }
-        if (failure && failure.nextRetryAt > Date.now()) {
-          await this.waitForChapterRetry(range, failure.nextRetryAt);
-          continue;
         }
       }
       const lease = range.worker?.connected ? range.worker : await this.connectRange(range, epoch);
@@ -865,52 +895,35 @@ export class VpnDownloadCoordinator {
       if (task.owned || !this.owns(range, epoch, lease) || range.task !== task) return;
       this.detach(range, task);
       if (!outcome.ok) {
-        if (isTaskUserCancelledError(outcome.error)) await this.halt(range, "user-paused", true, true, false);
-        else if (!this.runtime.isOnline()) await this.networkChanged(false);
-        else if (isPluginVpnUnavailableError(outcome.error)) {
-          this.recordProfileResult(lease.profile, false);
-          await this.excludeProfile(range, lease, "tunnel-lost");
-          await this.updateRange(range, next => { addAttempt(next, lease.profile.id); next.attemptProfileId = null; next.phase = "paused"; }, epoch);
-          await this.closeLease(lease);
-          range.yieldedAt = ++this.yieldSequence;
+        if (isTaskUserCancelledError(outcome.error)) {
+          await this.halt(range, "user-paused", true, true, false);
           return;
         }
-        else if (isSourceForbiddenFailure(outcome.error)) {
+        if (!isHttpNotFoundError(outcome.error)) range.failureReason = isSourceForbiddenFailure(outcome.error) ? "site-forbidden" : "chapter-failed";
+        if (isSourceForbiddenFailure(outcome.error)) {
           await this.excludeProfile(range, lease, "site-forbidden");
           await this.fail(range, epoch, "site-forbidden", outcome.error);
           return;
         }
-        else if (isRetryableScraperFailure(outcome.error)) {
-          const issue = this.profileIssues.get(plan.batchId)?.get(lease.profile.ip);
-          // The route reached the tunnel but not the page, so the batch moves on to its other profiles.
-          await this.excludeProfile(range, lease, "page-unresponsive");
-          await this.updateRange(range, next => {
-            if (terminal(next) || next.generation !== lease.ref.generation || next.checkpoint !== state.checkpoint) return;
-            addAttempt(next, lease.profile.id);
-            next.attemptProfileId = null;
-            if (this.isEpoch(range, epoch)) next.phase = "paused";
-            consumeReallow(next, lease.profile.id, issue);
-          });
-          await this.closeLease(lease);
-          if (state.challenge && (state.challenge.kind === "forbidden" || plan.policies[state.challenge.kind] === "pause")) {
-            await this.fail(range, epoch, "download-failed", outcome.error);
-            return;
+        await this.recordChapterFailure(job, outcome.error);
+        if (!this.owns(range, epoch, lease)) return;
+        if (!isHttpNotFoundError(outcome.error)) {
+          if (isPluginVpnUnavailableError(outcome.error)) {
+            this.recordProfileResult(lease.profile, false);
+            await this.excludeProfile(range, lease, "tunnel-lost");
+          } else if (isRetryableScraperFailure(outcome.error)) {
+            await this.excludeProfile(range, lease, "page-unresponsive");
           }
-          range.yieldedAt = ++this.yieldSequence;
+          if (isPluginVpnUnavailableError(outcome.error) || isRetryableScraperFailure(outcome.error)) {
+            await this.updateRange(range, next => {
+              if (next.generation !== lease.ref.generation || next.checkpoint !== state.checkpoint || terminal(next)) return;
+              addAttempt(next, lease.profile.id);
+              next.attemptProfileId = null;
+            });
+          }
+          await this.fail(range, epoch, "chapter-failed", outcome.error);
           return;
         }
-        else {
-          const failure = await this.recordChapterFailure(job, outcome.error);
-          if (!this.owns(range, epoch, lease)) return;
-          if (failure.nextRetryAt !== null) {
-            // A fresh attempt of the same chapter after the backoff; the route keeps its lease.
-            await this.waitForChapterRetry(range, failure.nextRetryAt);
-            continue;
-          }
-          // Reported per chapter, not as a VPN problem: the route itself worked.
-          await this.fail(range, epoch, "chapter-failed", outcome.error);
-        }
-        return;
       }
       await this.serialize(range.planId, async () => {
         if (!this.owns(range, epoch, lease)) return;
@@ -984,27 +997,13 @@ export class VpnDownloadCoordinator {
         outcome = await this.runtime.connectWorker(ref, clone(candidate), lease.abort.signal);
       } catch (error) {
         if (!this.owns(range, epoch, lease)) { await this.runtime.disconnectWorker(ref); return; }
-        if (!this.runtime.isOnline()) {
-          await this.networkChanged(false);
-          return;
+        if (isPluginVpnUnavailableError(error)) {
+          this.recordProfileResult(candidate, false);
+          await this.excludeProfile(range, lease, "connection-failed");
+          await this.updateRange(range, next => { addAttempt(next, candidate.id); next.attemptProfileId = null; }, epoch);
         }
-        if (!isPluginVpnUnavailableError(error)) {
-          await this.fail(range, epoch, "runtime-error", error);
-          return;
-        }
-        this.recordProfileResult(candidate, false);
-        await this.excludeProfile(range, lease, "connection-failed");
-        await this.updateRange(range, next => {
-          addAttempt(next, candidate.id);
-          next.attemptProfileId = null;
-          next.phase = "paused";
-        }, epoch);
-        await this.closeLease(lease);
-        if (state.challenge && (state.challenge.kind === "forbidden" || plan.policies[state.challenge.kind] === "pause")) {
-          await this.fail(range, epoch, "download-failed", error);
-          return;
-        }
-        continue;
+        await this.fail(range, epoch, "runtime-error", error);
+        return;
       }
       if (!this.owns(range, epoch, lease)) { await this.runtime.disconnectWorker(ref); return; }
       if (!this.runtime.isOnline()) { await this.networkChanged(false); return; }
@@ -1031,20 +1030,7 @@ export class VpnDownloadCoordinator {
       return await this.runtime.recordChapterFailure(clone(job), error);
     } catch (recordError) {
       this.runtime.notice({ planId: job.vpnPlanId ?? "", rangeId: job.vpnRangeId ?? "", reason: "chapter-failure-record", error: recordError });
-      return { failureClass: "transient", nextRetryAt: null };
-    }
-  }
-
-  private async waitForChapterRetry(range: RangeRuntime, until: number): Promise<void> {
-    const wait = new AbortController();
-    range.retryWait = wait;
-    try {
-      await new Promise<void>(resolve => {
-        const timer = setTimeout(resolve, Math.max(0, Math.min(2_147_483_647, until - Date.now())));
-        wait.signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true });
-      });
-    } finally {
-      if (range.retryWait === wait) range.retryWait = undefined;
+      throw recordError;
     }
   }
 
@@ -1066,12 +1052,13 @@ export class VpnDownloadCoordinator {
 
   private halt(range: RangeRuntime, reason: string, userPaused: boolean, disconnect: boolean, intent: boolean): Promise<void> {
     const state = this.state(range);
-    const pauseReason = ["automatic-off", "work-paused", "user-paused"].includes(reason) && isVpnDownloadForbiddenHeld(state)
-      ? state.challenge?.kind === "forbidden" ? "challenge-forbidden" : "site-forbidden"
+    const pauseReason = ["automatic-off", "work-paused", "user-paused"].includes(reason) && (range.failureReason || isVpnDownloadFailureHeld(state))
+      ? range.failureReason ?? (isVpnDownloadForbiddenHeld(state)
+        ? state.challenge?.kind === "forbidden" ? "challenge-forbidden" : "site-forbidden"
+        : state.pauseReason ?? reason)
       : reason;
     range.intent = intent;
     range.userHeld = userPaused;
-    range.retryWait?.abort();
     const epoch = ++range.epoch;
     const previous = this.settleTransition(range);
     const lease = range.worker;
@@ -1115,6 +1102,16 @@ export class VpnDownloadCoordinator {
 
   private async fail(range: RangeRuntime, epoch: number, reason: string, error?: unknown): Promise<void> {
     if (!this.isEpoch(range, epoch)) return;
+    if (FAILURE_PAUSES.has(reason) || reason === "site-forbidden") range.failureReason = reason;
+    if (error !== undefined && classifyDownloadFailure(error).failureClass === "storage") {
+      const plan = this.plans.get(range.planId)!;
+      this.runtime.reportFailure(error, plan.pluginId, range.worker?.ref);
+      if (!this.isEpoch(range, epoch)) return;
+      const stopped = this.stopForStorageFailure();
+      this.notice(range, reason, error);
+      await stopped;
+      return;
+    }
     const stopped = this.halt(range, reason, false, true, false);
     this.notice(range, reason, error);
     await stopped;

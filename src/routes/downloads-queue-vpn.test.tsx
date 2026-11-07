@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   states: [] as unknown[], refs: [] as { current: unknown }[], index: 0, refIndex: 0,
   vpn: undefined as VpnDownloadRuntimeSnapshot | undefined,
   snapshot: undefined as import("../lib/tasks/task-types").TaskSnapshot | undefined,
-  pause: vi.fn(), resume: vi.fn(), cancel: vi.fn(), cancelRequest: vi.fn(),
+  pause: vi.fn(), resume: vi.fn(), resumeQueue: vi.fn(), cancel: vi.fn(), cancelRequest: vi.fn(),
 }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(), useEffect: () => undefined, useMemo: (compute: () => unknown) => compute(),
@@ -35,7 +35,7 @@ vi.mock("../components/VpnDownloadWorks", () => ({
   vpnDownloadWorks: (snapshot: VpnDownloadRuntimeSnapshot) => snapshot.plans.map(plan => ({ key: plan.id, title: plan.title })),
 }));
 vi.mock("../lib/tasks/vpn-download-runtime", () => ({ pauseVpnDownloadRun: mocks.pause, resumeVpnDownloadRun: mocks.resume, cancelVpnDownloadRun: mocks.cancel }));
-vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn() }));
+vi.mock("../lib/tasks/chapter-download", () => ({ cancelChapterDownloadBatches: vi.fn(), resumeChapterDownloadQueueAfterFailure: mocks.resumeQueue }));
 vi.mock("../lib/tasks/chapter-download-requests", () => ({ cancelChapterDownloadRequest: mocks.cancelRequest }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 const confirm = vi.hoisted(() => vi.fn());
@@ -58,6 +58,8 @@ const menuItem = (label: string) => pageMenu().find(item => item.label === label
 const pauseButton = (label: string) => render().find(element => element.props.label === label && element.props.onClick)!;
 beforeEach(() => {
   vi.clearAllMocks(); mocks.states = []; mocks.refs = []; mocks.snapshot = undefined;
+  taskScheduler.resumeSourceQueue();
+  mocks.resumeQueue.mockReset().mockImplementation(async (sourceId?: string) => { taskScheduler.resumeSourceQueue(sourceId); return true; });
   confirm.mockResolvedValue(true);
   mocks.pause.mockReset().mockResolvedValue(undefined); mocks.resume.mockReset().mockResolvedValue(undefined); mocks.cancel.mockReset().mockResolvedValue(undefined);
   mocks.vpn = { drafts: [], plans: [], loading: false, error: null, capabilities: { supported: true, parallelSupported: true, maxWorkers: 10 }, chapterLabels: {},
@@ -129,4 +131,75 @@ it("offers source-wide actions over the source's listed tasks, not its hidden VP
   const row = render().find(element => typeof element.type === "function" && element.type.name === "NovelWorkGroup")!;
   expect(row.props.work?.group?.title).toBe("Novel");
   expect(row.props.work?.sourceTasks?.map(task => task.id)).toEqual(["ordinary"]);
+});
+
+it("shows retained failure stops in Needs attention even without queued tasks", () => {
+  mocks.vpn!.run = null;
+  mocks.snapshot = { ...taskScheduler.getSnapshot(), records: [], sourceAccessBlocks: [],
+    downloadFailureStops: { sourceErrors: { "source-a": "HTTP 503" } } };
+  expect(render().some(element => typeof element.type === "function" && element.type.name === "NeedsAttentionSection")).toBe(true);
+});
+
+
+it("waits for ordinary queue restoration before resuming either queue from the header", async () => {
+  taskScheduler.pauseSourceQueue();
+  mocks.vpn!.run = { ...mocks.vpn!.run!, status: "paused" };
+  let finish!: (restored: boolean) => void;
+  mocks.resumeQueue.mockImplementationOnce(async () => {
+    const restored = await new Promise<boolean>(resolve => { finish = resolve; });
+    if (restored) taskScheduler.resumeSourceQueue();
+    return restored;
+  });
+  const pending = pauseButton("downloads.queue.resume").props.onClick!();
+  expect(mocks.resumeQueue).toHaveBeenCalledExactlyOnceWith();
+  expect(taskScheduler.getSnapshot().sourceQueuesPaused).toBe(true);
+  expect(mocks.resume).not.toHaveBeenCalled();
+  const waiting = pauseButton("downloads.queue.resume");
+  expect(waiting.props.disabled).toBe(true);
+  await waiting.props.onClick!();
+  expect(mocks.resumeQueue).toHaveBeenCalledOnce();
+  finish(true);
+  await pending;
+  expect(taskScheduler.getSnapshot().sourceQueuesPaused).toBe(false);
+  expect(mocks.resume).toHaveBeenCalledOnce();
+});
+
+it("keeps both queues paused when restoration fails and permits a later explicit resume", async () => {
+  taskScheduler.pauseSourceQueue();
+  mocks.vpn!.run = { ...mocks.vpn!.run!, status: "paused" };
+  mocks.resumeQueue.mockResolvedValueOnce(false);
+  await pauseButton("downloads.queue.resume").props.onClick!();
+  expect(taskScheduler.getSnapshot().sourceQueuesPaused).toBe(true);
+  expect(mocks.resume).not.toHaveBeenCalled();
+  expect(pauseButton("downloads.queue.resume").props.disabled).toBe(false);
+  await pauseButton("downloads.queue.resume").props.onClick!();
+  expect(mocks.resumeQueue).toHaveBeenCalledTimes(2);
+  expect(taskScheduler.getSnapshot().sourceQueuesPaused).toBe(false);
+  expect(mocks.resume).toHaveBeenCalledOnce();
+});
+
+it("restores a source queue through the recovery service and serializes its row action", async () => {
+  mocks.vpn!.run = null;
+  mocks.snapshot = { ...taskScheduler.getSnapshot(), pausedSourceIds: ["source"], sourceQueueOrder: ["source"], records: [{
+    id: "ordinary", lane: "source", kind: "chapter.download", priority: "background", title: "Chapter",
+    source: { id: "source", name: "Source" }, status: "queued", createdAt: 1, canCancel: true, canRetry: false,
+    subject: { chapterId: 1, novelId: 1, novelName: "Novel" },
+  }] };
+  const sourceResume = () => {
+    const row = render().find(element => typeof element.type === "function" && element.type.name === "NovelWorkGroup")!;
+    return elements((row.type as (props: Props) => ReactNode)(row.props))
+      .flatMap(element => element.props.items ?? []).find(item => item.label === "downloads.queue.resumeSource")!;
+  };
+  let finish!: (restored: boolean) => void;
+  mocks.resumeQueue.mockReturnValueOnce(new Promise<boolean>(resolve => { finish = resolve; }));
+  const pending = sourceResume().onClick();
+  expect(mocks.resumeQueue).toHaveBeenCalledExactlyOnceWith("source");
+  expect(sourceResume().disabled).toBe(true);
+  await sourceResume().onClick();
+  expect(mocks.resumeQueue).toHaveBeenCalledOnce();
+  expect(mocks.resume).not.toHaveBeenCalled();
+  finish(false);
+  await pending;
+  expect(sourceResume().disabled).toBe(false);
+  expect(mocks.snapshot.pausedSourceIds).toEqual(["source"]);
 });

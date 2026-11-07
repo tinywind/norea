@@ -18,7 +18,7 @@ export interface CacheChapterMediaOptions {
   onHtmlUpdate?: (html: string) => Promise<void> | void;
   onMediaPatch?: (patches: ChapterMediaElementPatch[]) => Promise<void> | void;
   onProgress?: (progress: { current: number; total: number }) => void;
-  fetchMissingMedia?: (file: ChapterMediaManifestFile) => Promise<Response | null>;
+  fetchMissingMedia?: (file: ChapterMediaManifestFile, signal?: AbortSignal) => Promise<Response | null>;
   requestInit?: ChapterMediaRequestInit;
   repair?: boolean;
   /** Report missing assets after archiving successfully stored files. */

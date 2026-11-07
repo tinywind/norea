@@ -35,6 +35,25 @@ fn failure(error: impl std::fmt::Display) -> String {
     format!("content sync: {error}")
 }
 
+fn chapter_storage_failure(operation: &str, error: impl std::fmt::Display) -> String {
+    format!("chapter-storage-failed: {operation}: {error}")
+}
+
+fn copy_downloaded_file(input: &mut impl Read, output: &mut impl Write, limit: u64) -> Result<u64, String> {
+    let mut input = input.take(limit + 1);
+    let mut buffer = [0; 64 * 1024];
+    let mut total = 0;
+    loop {
+        let count = input.read(&mut buffer).map_err(failure)?;
+        if count == 0 { break; }
+        output.write_all(&buffer[..count])
+            .map_err(|error| chapter_storage_failure("write content download file", error))?;
+        total += count as u64;
+    }
+    if total > limit { return Err(failure("content exceeds byte limit")); }
+    Ok(total)
+}
+
 fn safe_path(value: &str) -> Result<(), String> {
     if value.is_empty()
         || value.contains(['\\', ':', '\0'])
@@ -89,11 +108,14 @@ fn copy_limited(input: &mut impl Read, output: &mut impl Write, limit: u64) -> R
     Ok(bytes)
 }
 
-fn read_json(path: &Path) -> Result<Value, String> {
-    if fs::metadata(path).map_err(failure)?.len() > 16 * 1024 * 1024 {
+fn read_json(path: &Path, io_failure: &impl Fn(&dyn std::fmt::Display) -> String) -> Result<Value, String> {
+    if fs::metadata(path).map_err(|error| io_failure(&error))?.len() > 16 * 1024 * 1024 {
         return Err(failure("manifest exceeds byte limit"));
     }
-    serde_json::from_reader(File::open(path).map_err(failure)?).map_err(failure)
+    let file = File::open(path).map_err(|error| io_failure(&error))?;
+    serde_json::from_reader(file).map_err(|error| {
+        if error.is_io() { io_failure(&error) } else { failure(error) }
+    })
 }
 
 fn media_files(manifest: &Value) -> Result<Vec<String>, String> {
@@ -132,34 +154,50 @@ pub(crate) fn validate_chapter_media(source: &Path) -> Result<(), String> {
 }
 
 fn inspect_chapter_media(source: &Path) -> Result<bool, String> {
-    for name in ["manifest.json", "media.zip"] {
+    inspect_chapter_media_with_io_failure(source, &|error| failure(error))
+}
+
+fn inspect_chapter_media_with_io_failure(
+    source: &Path,
+    io_failure: &impl Fn(&dyn std::fmt::Display) -> String,
+) -> Result<bool, String> {
+    let artifact_exists = |name| {
         match fs::symlink_metadata(source.join(name)) {
             Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
-                return Err(failure("invalid chapter media artifact"));
+                Err(failure("invalid chapter media artifact"))
             }
-            Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(failure(error)),
-            _ => {}
+            Ok(_) => Ok(true),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(io_failure(&error)),
         }
-    }
-    if !source.join("manifest.json").exists() {
-        return if source.join("media.zip").exists() {
+    };
+    let manifest_exists = artifact_exists("manifest.json")?;
+    let archive_exists = artifact_exists("media.zip")?;
+    if !manifest_exists {
+        return if archive_exists {
             Err(failure("chapter media manifest is missing"))
         } else {
             Ok(true)
         };
     }
-    let media = media_files(&read_json(&source.join("manifest.json"))?)?;
+    let media = media_files(&read_json(&source.join("manifest.json"), io_failure)?)?;
     if media.len() + 2 > MAX_FILES {
         return Err(failure("too many chapter media files"));
     }
-    if !source.join("media.zip").is_file() {
+    if !archive_exists {
         return Ok(media.is_empty());
     }
-    let zip_file = File::open(source.join("media.zip")).map_err(failure)?;
-    if zip_file.metadata().map_err(failure)?.len() > MAX_MEDIA_ZIP_BYTES {
+    let zip_file = File::open(source.join("media.zip")).map_err(|error| io_failure(&error))?;
+    if zip_file.metadata().map_err(|error| io_failure(&error))?.len() > MAX_MEDIA_ZIP_BYTES {
         return Err(failure("chapter media archive exceeds byte limit"));
     }
-    let mut archive = ZipArchive::new(zip_file).map_err(failure)?;
+    let archive_failure = |error| match error {
+        zip::result::ZipError::Io(error) if !matches!(error.kind(),
+            std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput
+        ) => io_failure(&error),
+        error => failure(error),
+    };
+    let mut archive = ZipArchive::new(zip_file).map_err(&archive_failure)?;
     if archive.len() > MAX_FILES {
         return Err(failure("too many chapter media files"));
     }
@@ -167,9 +205,9 @@ fn inspect_chapter_media(source: &Path) -> Result<bool, String> {
     let mut found = HashSet::new();
     let mut names = HashSet::new();
     for index in 0..archive.len() {
-        let file = archive.by_index(index).map_err(failure)?;
+        let file = archive.by_index(index).map_err(&archive_failure)?;
         let directory = file.is_dir() || file.unix_mode().is_some_and(|mode| mode & 0o170000 == 0o040000);
-        let file_name = file.name().map_err(failure)?;
+        let file_name = file.name().map_err(&archive_failure)?;
         let name = file_name.strip_suffix('/').unwrap_or(file_name.as_ref());
         safe_path(name)?;
         if file.unix_mode().is_some_and(|mode| mode & 0o170000 != 0 && mode & 0o170000 != if directory { 0o040000 } else { 0o100000 })
@@ -186,6 +224,14 @@ fn inspect_chapter_media(source: &Path) -> Result<bool, String> {
 }
 
 fn checked_storage_directory(root: &Path, relative: &str) -> Result<PathBuf, String> {
+    checked_storage_directory_with_io_failure(root, relative, &|error| failure(error))
+}
+
+fn checked_storage_directory_with_io_failure(
+    root: &Path,
+    relative: &str,
+    io_failure: &impl Fn(&dyn std::fmt::Display) -> String,
+) -> Result<PathBuf, String> {
     safe_path(relative)?;
     let segments: Vec<_> = relative.split('/').collect();
     if segments.len() != 4 || segments[0] != "contents" {
@@ -200,7 +246,7 @@ fn checked_storage_directory(root: &Path, relative: &str) -> Result<PathBuf, Str
             }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => return Err(failure(error)),
+            Err(error) => return Err(io_failure(&error)),
         }
     }
     Ok(path)
@@ -221,17 +267,24 @@ fn content_backup_path(destination: &Path) -> Result<PathBuf, String> {
 }
 
 fn recover_content_directory_locked(destination: &Path) -> Result<(), String> {
+    recover_content_directory_with_io_failure(destination, &|error| failure(error))
+}
+
+fn recover_content_directory_with_io_failure(
+    destination: &Path,
+    io_failure: &impl Fn(&dyn std::fmt::Display) -> String,
+) -> Result<(), String> {
     let backup = content_backup_path(destination)?;
     let metadata = match fs::symlink_metadata(&backup) {
         Ok(metadata) => metadata,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(error) => return Err(failure(error)),
+        Err(error) => return Err(io_failure(&error)),
     };
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Err(failure("invalid chapter recovery directory"));
     }
-    if !destination.exists() {
-        fs::rename(&backup, destination).map_err(failure)?;
+    if !destination.try_exists().map_err(|error| io_failure(&error))? {
+        fs::rename(&backup, destination).map_err(|error| io_failure(&error))?;
     }
     Ok(())
 }
@@ -244,72 +297,83 @@ pub(crate) fn recover_content_directory(destination: &Path) -> Result<(), String
 }
 
 fn install_directory(source: &Path, destination: &Path) -> Result<(), String> {
+    let io_failure = |error| chapter_storage_failure("install downloaded chapter", error);
     let _guard = INSTALL_LOCK
         .lock()
         .map_err(|_| failure("chapter install lock failed"))?;
-    recover_content_directory_locked(destination)?;
+    recover_content_directory_with_io_failure(destination, &|error|
+        chapter_storage_failure("recover installed chapter", error))?;
     let parent = destination
         .parent()
         .ok_or_else(|| failure("missing chapter parent"))?;
-    fs::create_dir_all(parent).map_err(failure)?;
+    fs::create_dir_all(parent).map_err(&io_failure)?;
     let token = stage_token();
     let stage = parent.join(format!(".norea-sync-{token}.stage"));
     let backup = content_backup_path(destination)?;
-    if backup.exists() {
-        if !destination.join("content.html").is_file() && !destination.join("content.pdf").is_file()
-        {
+    if backup.try_exists().map_err(&io_failure)? {
+        let mut readable = false;
+        for name in ["content.html", "content.pdf"] {
+            match fs::metadata(destination.join(name)) {
+                Ok(metadata) if metadata.is_file() => { readable = true; break; }
+                Err(error) if error.kind() != std::io::ErrorKind::NotFound => return Err(io_failure(error)),
+                _ => {}
+            }
+        }
+        if !readable {
             return Err(failure(
                 "previous chapter backup retained because current content is incomplete",
             ));
         }
-        fs::remove_dir_all(&backup).map_err(failure)?;
+        fs::remove_dir_all(&backup).map_err(&io_failure)?;
     }
-    fs::create_dir(&stage).map_err(failure)?;
+    fs::create_dir(&stage).map_err(&io_failure)?;
     let preparation = (|| {
-        for entry in fs::read_dir(source).map_err(failure)? {
-            let entry = entry.map_err(failure)?;
-            if !entry.file_type().map_err(failure)?.is_file() {
+        for entry in fs::read_dir(source).map_err(&io_failure)? {
+            let entry = entry.map_err(&io_failure)?;
+            if !entry.file_type().map_err(&io_failure)?.is_file() {
                 return Err(failure("invalid installed artifact"));
             }
             let target = stage.join(entry.file_name());
-            let original = entry.metadata().map_err(failure)?;
-            if fs::copy(entry.path(), &target).map_err(failure)? != original.len() {
-                return Err(failure("storage copy size mismatch"));
+            let original = entry.metadata().map_err(&io_failure)?;
+            if fs::copy(entry.path(), &target).map_err(&io_failure)? != original.len() {
+                return Err(chapter_storage_failure("copy installed chapter", "storage copy size mismatch"));
             }
             let stored = File::options()
                 .write(true)
                 .open(&target)
-                .map_err(failure)?;
-            stored.set_times(fs::FileTimes::new().set_modified(original.modified().map_err(failure)?)).map_err(failure)?;
-            stored.sync_all().map_err(failure)?;
-            if stored.metadata().map_err(failure)?.len() != original.len() {
-                return Err(failure("storage copy size mismatch"));
+                .map_err(&io_failure)?;
+            stored.set_times(fs::FileTimes::new().set_modified(original.modified().map_err(&io_failure)?)).map_err(&io_failure)?;
+            stored.sync_all().map_err(&io_failure)?;
+            if stored.metadata().map_err(&io_failure)?.len() != original.len() {
+                return Err(chapter_storage_failure("copy installed chapter", "storage copy size mismatch"));
             }
         }
         Ok(())
     })();
     if let Err(error) = preparation {
-        let _ = fs::remove_dir_all(&stage);
+        fs::remove_dir_all(&stage).map_err(|cleanup|
+            chapter_storage_failure("remove failed content install stage", format!("{cleanup}; original error: {error}")))?;
         return Err(error);
     }
-    let previous = destination.exists();
+    let previous = destination.try_exists().map_err(&io_failure)?;
     if previous {
-        fs::rename(destination, &backup).map_err(failure)?;
+        fs::rename(destination, &backup).map_err(&io_failure)?;
     }
     if let Err(error) = fs::rename(&stage, destination) {
         if previous {
             fs::rename(&backup, destination).map_err(|rollback| {
-                failure(format!(
+                chapter_storage_failure("restore previous chapter", format!(
                     "install failed: {error}; previous files retained at {}: {rollback}",
                     backup.display()
                 ))
             })?;
         }
-        let _ = fs::remove_dir_all(&stage);
-        return Err(failure(error));
+        fs::remove_dir_all(&stage).map_err(|cleanup|
+            chapter_storage_failure("remove failed content install stage", format!("{cleanup}; original error: {error}")))?;
+        return Err(chapter_storage_failure("publish downloaded chapter", error));
     }
     if previous {
-        let _ = fs::remove_dir_all(backup);
+        fs::remove_dir_all(backup).map_err(&io_failure)?;
     }
     Ok(())
 }
@@ -455,15 +519,23 @@ pub async fn content_sync_fingerprint(
 }
 
 fn checked_stage(app: &AppHandle, path: &str) -> Result<PathBuf, String> {
+    checked_stage_with_io_failure(app, path, &|error| failure(error))
+}
+
+fn checked_stage_with_io_failure(
+    app: &AppHandle,
+    path: &str,
+    io_failure: &impl Fn(&dyn std::fmt::Display) -> String,
+) -> Result<PathBuf, String> {
     let root = app
         .path()
         .app_cache_dir()
-        .map_err(failure)?
+        .map_err(|error| io_failure(&error))?
         .join("content-sync")
         .canonicalize()
-        .map_err(failure)?;
-    let stage = PathBuf::from(path).canonicalize().map_err(failure)?;
-    if stage.parent() != Some(root.as_path()) || !stage.is_dir() {
+        .map_err(|error| io_failure(&error))?;
+    let stage = PathBuf::from(path).canonicalize().map_err(|error| io_failure(&error))?;
+    if stage.parent() != Some(root.as_path()) || !fs::metadata(&stage).map_err(|error| io_failure(&error))?.is_dir() {
         return Err(failure("invalid content staging directory"));
     }
     Ok(stage)
@@ -647,7 +719,8 @@ pub async fn content_sync_download(
     stage_path: String,
     entry: Value,
 ) -> Result<Value, String> {
-    let stage = checked_stage(&app, &stage_path)?;
+    let stage = checked_stage_with_io_failure(&app, &stage_path, &|error|
+        chapter_storage_failure("resolve content download stage", error))?;
     safe_path(&storage_dir)?;
     tauri::async_runtime::spawn_blocking(move || {
         download_chapter_files(&server_url, token.as_deref(), &entry, &stage.join("install"))
@@ -701,7 +774,8 @@ fn download_chapter_files(server_url: &str, token: Option<&str>, entry: &Value, 
     if total != file_bytes {
         return Err(failure("chapter file size differs from catalog"));
     }
-    fs::create_dir(destination).map_err(failure)?;
+    fs::create_dir(destination)
+        .map_err(|error| chapter_storage_failure("create content download directory", error))?;
     let client = http_client()?;
     for (name, size, modified) in declared {
         let mut url = endpoint(server_url, &format!("chapters/{id}/files"))?;
@@ -710,15 +784,23 @@ fn download_chapter_files(server_url: &str, token: Option<&str>, entry: &Value, 
         if let Some(token) = token { request = request.bearer_auth(token); }
         let mut response = checked_response(request.send().map_err(failure)?)?;
         let path = destination.join(name);
-        let mut output = File::create(&path).map_err(failure)?;
-        if copy_limited(&mut response, &mut output, size)? != size {
+        let mut output = File::create(&path)
+            .map_err(|error| chapter_storage_failure("create content download file", error))?;
+        if copy_downloaded_file(&mut response, &mut output, size)? != size {
             return Err(failure(format!("downloaded {name} size mismatch")));
         }
-        output.set_times(fs::FileTimes::new().set_modified(modified)).map_err(failure)?;
+        output.set_times(fs::FileTimes::new().set_modified(modified))
+            .map_err(|error| chapter_storage_failure("set content download file metadata", error))?;
     }
-    let media_complete = inspect_chapter_media(destination)?;
-    Ok(json!({"mediaComplete": media_complete, "contentBytes": fs::metadata(destination.join(body)).map_err(failure)?.len(),
-        "mediaBytes": if names.contains("media.zip") { fs::metadata(destination.join("media.zip")).map_err(failure)?.len() } else { 0 }}))
+    let media_complete = inspect_chapter_media_with_io_failure(destination, &|error|
+        chapter_storage_failure("inspect downloaded media", error))?;
+    let content_bytes = fs::metadata(destination.join(body))
+        .map_err(|error| chapter_storage_failure("inspect downloaded content size", error))?.len();
+    let media_bytes = if names.contains("media.zip") {
+        fs::metadata(destination.join("media.zip"))
+            .map_err(|error| chapter_storage_failure("inspect downloaded media size", error))?.len()
+    } else { 0 };
+    Ok(json!({"mediaComplete": media_complete, "contentBytes": content_bytes, "mediaBytes": media_bytes}))
 }
 
 #[tauri::command]
@@ -727,13 +809,18 @@ pub async fn content_sync_install(
     storage_dir: String,
     stage_path: String,
 ) -> Result<(), String> {
-    let stage = checked_stage(&app, &stage_path)?;
+    let stage = checked_stage_with_io_failure(&app, &stage_path, &|error|
+        chapter_storage_failure("resolve content install stage", error))?;
     let source = stage.join("install");
-    let metadata = fs::symlink_metadata(&source).map_err(failure)?;
+    let metadata = fs::symlink_metadata(&source)
+        .map_err(|error| chapter_storage_failure("inspect staged chapter directory", error))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(failure("invalid staged chapter directory"));
     }
-    let destination = storage_directory(&crate::chapter_media::media_root(&app)?, &storage_dir)?;
+    let root = crate::chapter_media::media_root(&app)
+        .map_err(|error| chapter_storage_failure("resolve chapter storage directory", error))?;
+    let destination = checked_storage_directory_with_io_failure(&root, &storage_dir, &|error|
+        chapter_storage_failure("inspect chapter storage directory", error))?;
     tauri::async_runtime::spawn_blocking(move || install_directory(&source, &destination))
         .await
         .map_err(failure)?
@@ -768,6 +855,106 @@ mod tests {
     }
 
     #[test]
+    fn download_copy_separates_response_read_errors_from_file_write_errors() {
+        struct FailedReader;
+        impl Read for FailedReader {
+            fn read(&mut self, _: &mut [u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(std::io::ErrorKind::ConnectionReset, "response disconnected"))
+            }
+        }
+        struct FailedWriter;
+        impl Write for FailedWriter {
+            fn write(&mut self, _: &[u8]) -> std::io::Result<usize> {
+                Err(std::io::Error::new(std::io::ErrorKind::PermissionDenied, "storage refused"))
+            }
+            fn flush(&mut self) -> std::io::Result<()> { Ok(()) }
+        }
+        let read_error = copy_downloaded_file(&mut FailedReader, &mut Vec::new(), 3).unwrap_err();
+        assert!(read_error.starts_with("content sync:"), "{read_error}");
+        assert!(!read_error.starts_with("chapter-storage-failed:"), "{read_error}");
+        let write_error = copy_downloaded_file(&mut std::io::Cursor::new(b"one"), &mut FailedWriter, 3).unwrap_err();
+        assert!(write_error.starts_with("chapter-storage-failed: write content download file:"), "{write_error}");
+    }
+
+    #[test]
+    fn download_media_inspection_separates_local_io_from_invalid_server_packages() {
+        let root = workspace();
+        let io_failure = |error: &dyn std::fmt::Display| chapter_storage_failure("inspect downloaded media", error);
+        let blocked = root.path().join("blocked");
+        fs::write(&blocked, "file").unwrap();
+        let error = inspect_chapter_media_with_io_failure(&blocked.join("child"), &io_failure).unwrap_err();
+        assert!(error.starts_with("chapter-storage-failed:"), "{error}");
+        fs::write(root.path().join("manifest.json"), "{broken").unwrap();
+        let error = inspect_chapter_media_with_io_failure(root.path(), &io_failure).unwrap_err();
+        assert!(!error.starts_with("chapter-storage-failed:"), "{error}");
+        fs::write(root.path().join("manifest.json"), json!({"version":1,"media":{"files":[
+            {"fileName":"page.png","path":"media/page.png"}]}}).to_string()).unwrap();
+        let truncated = original_media_archive()[..14].to_vec();
+        for archive in [b"not a zip".to_vec(), Vec::new(), truncated] {
+            fs::write(root.path().join("media.zip"), archive).unwrap();
+            let error = inspect_chapter_media_with_io_failure(root.path(), &io_failure).unwrap_err();
+            assert!(!error.starts_with("chapter-storage-failed:"), "{error}");
+        }
+    }
+
+    #[test]
+    fn download_local_directory_failure_is_storage_and_preserves_existing_files() {
+        let root = workspace();
+        let destination = root.path().join("existing");
+        fs::create_dir(&destination).unwrap();
+        fs::write(destination.join("content.html"), "previous").unwrap();
+        let entry = json!({"id":"chapter","revision":"upload","fileBytes":1,"deleted":false,
+            "manifest":{"packageVersion":1,"layout":"chapter-files","chapter":{"contentType":"html"},
+                "bodyPath":"content.html","files":[{"path":"content.html","size":1,"modifiedAt":1}]}});
+        let error = download_chapter_files("http://127.0.0.1:1", None, &entry, &destination).unwrap_err();
+        assert!(error.starts_with("chapter-storage-failed: create content download directory:"), "{error}");
+        assert_eq!(fs::read_to_string(destination.join("content.html")).unwrap(), "previous");
+    }
+
+    #[test]
+    fn install_local_directory_failure_is_storage_and_preserves_source() {
+        let root = workspace();
+        let source = root.path().join("incoming");
+        fs::create_dir(&source).unwrap();
+        fs::write(source.join("content.html"), "incoming").unwrap();
+        let blocked_parent = root.path().join("blocked");
+        fs::write(&blocked_parent, "existing").unwrap();
+        let error = install_directory(&source, &blocked_parent.join("chapter")).unwrap_err();
+        assert!(error.starts_with("chapter-storage-failed:"), "{error}");
+        assert_eq!(fs::read_to_string(source.join("content.html")).unwrap(), "incoming");
+        assert_eq!(fs::read_to_string(blocked_parent).unwrap(), "existing");
+    }
+
+    #[test]
+    fn download_http_not_found_remains_a_source_error() {
+        use std::net::TcpListener;
+        let root = workspace();
+        let entry = json!({"id":"chapter","revision":"upload","fileBytes":2,"deleted":false,
+            "manifest":{"packageVersion":1,"layout":"chapter-files","chapter":{"contentType":"html"},
+                "bodyPath":"content.html","files":[{"path":"content.html","size":1,"modifiedAt":1},
+                    {"path":"manifest.json","size":1,"modifiedAt":1}]}});
+        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        let receiver = std::thread::spawn(move || {
+            let (mut connection, _) = listener.accept().unwrap();
+            connection.set_read_timeout(Some(Duration::from_secs(10))).unwrap();
+            let mut head = Vec::new();
+            while !head.ends_with(b"\r\n\r\n") {
+                let mut byte = [0];
+                connection.read_exact(&mut byte).unwrap();
+                head.push(byte[0]);
+            }
+            connection.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n").unwrap();
+        });
+        let destination = root.path().join("downloaded");
+        let error = download_chapter_files(&server, None, &entry, &destination).unwrap_err();
+        receiver.join().unwrap();
+        assert_eq!(error, "content sync: server returned 404: Not Found");
+        assert!(!destination.join("content.html").exists());
+        assert!(!destination.join("manifest.json").exists());
+    }
+
+    #[test]
     fn download_requires_current_layout_and_file_metadata_before_creating_stage() {
         let root = workspace();
         let mut entry = json!({"id":"chapter","revision":"upload","fileBytes":1,"deleted":false,"sequence":1,
@@ -781,7 +968,8 @@ mod tests {
                 _ => { incomplete.as_object_mut().unwrap().remove(field); }
             }
             let destination = root.path().join(field);
-            assert!(download_chapter_files("http://127.0.0.1:1", None, &incomplete, &destination).is_err());
+            let error = download_chapter_files("http://127.0.0.1:1", None, &incomplete, &destination).unwrap_err();
+            assert!(!error.starts_with("chapter-storage-failed:"), "{error}");
             assert!(!destination.exists(), "invalid {field} reached the download stage");
         }
         entry["fileBytes"] = json!(2);

@@ -662,6 +662,18 @@ it.each(["{", "{}", JSON.stringify({ ...jobs()[0], vpnRangeId: "lane-b" }), JSON
 );
 
 
+it("atomically checkpoints a missing chapter without changing its downloaded state or its siblings", async () => {
+  const value = plan(); await createVpnDownloadPlan(value, jobs(value));
+  const before = sqlite.prepare("SELECT * FROM chapter ORDER BY id").all();
+  const settled = await settleVpnDownloadChapter(value.id, "lane-a", 31, 2);
+  expect(settled.ranges[0]).toMatchObject({ checkpoint: 1 });
+  expect(settled.ranges[1]).toEqual(value.ranges[1]);
+  expect(sqlite.prepare("SELECT * FROM chapter ORDER BY id").all()).toEqual(before);
+  expect(queueRows().map(row => row.chapter_id)).not.toContain(31);
+  sqlite.close(); sqlite = new DatabaseSync(join(directory, "norea.db"));
+  expect((await listVpnDownloadPlans())[0]!.ranges[0]!.checkpoint).toBe(1);
+});
+
 it("retains a forbidden range and its checkpoint when its plan is reopened", async () => {
   const value = plan();
   Object.assign(value.ranges[0]!, {

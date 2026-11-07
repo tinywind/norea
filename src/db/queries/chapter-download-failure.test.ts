@@ -6,6 +6,7 @@ vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() })
 import { getDb, runDatabaseTransaction } from "../client";
 import {
   clearChapterDownloadFailures,
+  clearScheduledChapterDownloadRetries,
   getChapterDownloadFailure,
   listChapterDownloadFailures,
   recordChapterDownloadFailure,
@@ -56,6 +57,21 @@ it("counts attempts from the persisted row and stops scheduling after the budget
   expect(await listChapterDownloadFailures()).toEqual([expect.objectContaining({
     chapterId: 1, pluginId: "source", failureClass: "transient", attempts: 4, nextRetryAt: null, updatedAt: 1_003,
   })]);
+});
+
+it("clears legacy retry deadlines while retaining failure jobs, attempts and error details", async () => {
+  await recordChapterDownloadFailure(failure(1, { jobJson: '{"id":1,"pluginId":"source","chapterPath":"/1","title":"One"}' }));
+  await recordChapterDownloadFailure(failure(1, { now: 2_000, messageSummary: "Still unavailable", jobJson: '{"id":1,"pluginId":"source","chapterPath":"/1","title":"One"}' }));
+  await recordChapterDownloadFailure(failure(2, { retryDelayMs: () => null }));
+
+  expect(await clearScheduledChapterDownloadRetries()).toBe(1);
+  expect(await listChapterDownloadFailures()).toEqual([
+    { chapterId: 2, pluginId: "source", failureClass: "transient", messageSummary: "Timed out", challengeUrl: null,
+      attempts: 1, nextRetryAt: null, jobJson: '{"id":2}', updatedAt: 1_000 },
+    { chapterId: 1, pluginId: "source", failureClass: "transient", messageSummary: "Still unavailable", challengeUrl: null,
+      attempts: 2, nextRetryAt: null, jobJson: '{"id":1,"pluginId":"source","chapterPath":"/1","title":"One"}', updatedAt: 2_000 },
+  ]);
+  expect(await clearScheduledChapterDownloadRetries()).toBe(0);
 });
 
 it("reads only the requested chapter with its persisted retry admission", async () => {

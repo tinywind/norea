@@ -182,24 +182,34 @@ describe("UI interactions independent of download settings", () => {
     expect(scheduler.getTask(opened.id)?.status).toBe("succeeded");
   });
 
-  it("starts an explicit read-now attempt while the queued download is waiting to retry", async () => {
+  it.each(["source.openNovel", "chapter.download"] as const)("allows explicit %s while a failed download stays stopped", async kind => {
     const events: string[] = [];
+    const retry = vi.fn(() => ({ delayMs: 60_000 }));
     const spec: SourceTaskSpec<void> = {
-      kind: "chapter.download", title: "Retrying chapter", priority: "background", source,
-      dedupeKey: "chapter:retry", retry: () => ({ delayMs: 60_000 }),
+      kind: "chapter.download", title: "Failed chapter", priority: "background", source,
+      dedupeKey: "chapter:retry", retry,
       run: async context => {
         events.push(`chapter:${context.executor}`);
         if (events.length === 1) throw new TypeError("Failed to fetch");
       },
     };
-    const queued = enqueue(spec);
+    const failed = enqueue(spec);
+    await expect(failed.promise).rejects.toThrow("Failed to fetch");
     await settle();
-    expect(scheduler.getTask(queued.id)?.status).toBe("queued");
-    const opened = enqueue({ ...spec, priority: "interactive" });
+    expect(scheduler.getTask(failed.id)?.status).toBe("failed");
+    expect(scheduler.getSnapshot().pausedSourceIds).toContain(source.id);
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(events).toEqual(["chapter:pool:0"]);
+    expect(retry).not.toHaveBeenCalled();
+
+    const opened = enqueue({ ...spec, kind, priority: "interactive" });
     await settle();
-    expect(opened.id).toBe(queued.id);
+    await opened.promise;
+    expect(opened.id).not.toBe(failed.id);
     expect(events).toEqual(["chapter:pool:0", "chapter:immediate"]);
     expect(scheduler.getTask(opened.id)?.status).toBe("succeeded");
+    expect(scheduler.getTask(failed.id)?.status).toBe("failed");
+    expect(scheduler.getSnapshot().pausedSourceIds).toContain(source.id);
   });
 
   it("preserves download source order when another source is opened in the UI", async () => {

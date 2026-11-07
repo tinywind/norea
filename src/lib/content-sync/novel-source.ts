@@ -2,6 +2,7 @@ import { getChapterById } from "../../db/queries/chapter";
 import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { getNovelById } from "../../db/queries/novel";
 import { useContentSyncStore } from "../../store/content-sync";
+import { withChapterStorageOperation } from "../chapter-storage-error";
 import type { ChapterDownloadJob } from "../tasks/chapter-download";
 import type { ChapterDownloadPhase } from "../tasks/task-types";
 import { pluginManager } from "../plugins/manager";
@@ -15,10 +16,8 @@ export interface ServerNovelSource {
   workId: string;
 }
 
-const unavailableUntil = new Map<string, number>();
-
 export async function readServerNovelSource(novelId: number): Promise<ServerNovelSource | null> {
-  const saved = await readContentSyncCache(`norea-content-source:${novelId}`);
+  const saved = await withChapterStorageOperation("read content server source", () => readContentSyncCache(`norea-content-source:${novelId}`));
   if (saved === null) return null;
   const source: unknown = JSON.parse(saved);
   if (!source || typeof source !== "object"
@@ -31,9 +30,8 @@ export async function readServerNovelSource(novelId: number): Promise<ServerNove
 
 export async function rememberServerNovelSource(novelId: number, source: ServerNovelSource): Promise<void> {
   if (!source.workId.trim()) throw new Error("Content server work ID is required.");
-  await writeContentSyncCache(`norea-content-source:${novelId}`, JSON.stringify({
-    serverUrl: normalizeContentServerUrl(source.serverUrl), workId: source.workId,
-  }));
+  const saved = JSON.stringify({ serverUrl: normalizeContentServerUrl(source.serverUrl), workId: source.workId });
+  await withChapterStorageOperation("save content server source", () => writeContentSyncCache(`norea-content-source:${novelId}`, saved));
 }
 
 export async function listServerChapterAvailability(source: ServerNovelSource, signal?: AbortSignal): Promise<{ paths: Map<string, boolean>; numbers: Map<number, boolean> }> {
@@ -64,14 +62,14 @@ export async function tryDownloadServerChapter(
   options: { requireComplete?: boolean } = {},
 ): Promise<boolean> {
   signal?.throwIfAborted();
-  const chapter = await getChapterById(job.id);
+  const chapter = await withChapterStorageOperation("load server chapter", () => getChapterById(job.id));
   const novelId = chapter?.novelId ?? job.novelId;
   if (!novelId) return false;
   const source = await readServerNovelSource(novelId);
   const settings = useContentSyncStore.getState();
   const serverUrl = source?.serverUrl ?? settings.serverUrl;
   if (!serverUrl) return false;
-  const novel = await getNovelById(novelId);
+  const novel = await withChapterStorageOperation("load server work", () => getNovelById(novelId));
   if (!chapter || !novel) throw new Error("Content server chapter no longer exists locally.");
   if (novel.pluginId !== job.pluginId || chapter.path !== job.chapterPath) {
     throw new Error("Content server download identity does not match the local chapter.");
@@ -81,8 +79,6 @@ export async function tryDownloadServerChapter(
   if (folderChapter && !novel.isLocal && !pluginManager.getPlugin(novel.pluginId)) await pluginManager.loadInstalledFromDb();
   const sourceResolvable = !novel.isLocal && !novel.path.startsWith("norea-folder:") && Boolean(pluginManager.getPlugin(novel.pluginId));
   const serverRequired = (folderChapter && !sourceResolvable) || Boolean(source && novel.isLocal);
-  if (!serverRequired && (!source || pluginManager.getPlugin(novel.pluginId))
-    && (unavailableUntil.get(serverUrl) ?? 0) > Date.now()) return false;
   const target = { pluginId: novel.pluginId, novelPath: novel.path, chapterPath: chapter.path };
   const number = chapter.chapterNumber ?? (chapter.position > 0 ? String(chapter.position) : undefined);
   const chapterNumber = number && /^\d+(?:\.\d+)?$/.test(number) ? number : undefined;
@@ -112,7 +108,7 @@ export async function tryDownloadServerChapter(
     await downloadServerChapterFromServer(entry, serverUrl, { token, target, ...(signal ? { signal } : {}) });
   } catch (error) {
     signal?.throwIfAborted();
-    if (!(error instanceof ContentServerError && error.status === 404)) unavailableUntil.set(serverUrl, Date.now() + 30_000);
+    if (!(error instanceof ContentServerError && error.status === 404)) throw error;
     if (serverRequired) throw error;
     if (source && !pluginManager.getPlugin(novel.pluginId)) {
       await pluginManager.loadInstalledFromDb();
@@ -121,6 +117,5 @@ export async function tryDownloadServerChapter(
     }
     return false;
   }
-  unavailableUntil.delete(serverUrl);
   return true;
 }

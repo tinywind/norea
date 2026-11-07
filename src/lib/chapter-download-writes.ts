@@ -1,4 +1,5 @@
-import { throwIfAborted } from "./abort";
+import { isAbortError, throwIfAborted } from "./abort";
+import { ChapterStorageError, isChapterStorageError } from "./chapter-storage-error";
 
 const activeWrites = new Map<number, Set<Promise<void>>>();
 const activeDeletions = new Map<number, Set<Promise<void>>>();
@@ -43,6 +44,9 @@ export async function withChapterDownloadWrite<T>(
     const result = await write();
     throwIfAborted(signal, "Chapter download was cancelled.");
     return result;
+  } catch (error) {
+    if (isAbortError(error) || isChapterStorageError(error)) throw error;
+    throw new ChapterStorageError("Read or write chapter storage", error);
   } finally {
     downloadRevisions.set(chapterId, ++downloadRevision);
     writes.delete(settled);

@@ -15,8 +15,8 @@ check the completed content file or archive.
 
 Use an isolated fixture work and previously unused image URLs to prevent a warm
 browser cache from hiding a network outage. Do not clear unrelated browser
-sessions, library rows, or download folders. Keep terminal HTTP errors such as
-404 separate from transient transport failures.
+sessions, library rows, or download folders. HTTP 404 skips the missing resource;
+all other download errors require a hold and explicit user recovery.
 
 ## Recovery During Background Work
 
@@ -28,35 +28,44 @@ sessions, library rows, or download folders. Keep terminal HTTP errors such as
    them in a cleanup path even if the test fails. Do not disrupt the development
    host's network.
 5. Observe the VPN and task states without returning the app to the foreground.
-6. Confirm the VPN and source tasks wait for internet without retrying during the
-   outage. The task foreground service should stop while waiting. When Android
-   permits background execution, confirm the VPN reconnects and media requests
-   resume. The ordinary 1-second and 3-second network retries must not be exhausted
-   by the VPN recovery wait.
-7. Inspect the fixture's final content, media manifest, and database flags.
-   Previously uncached images must be stored, not merely retained as remote URLs.
+6. Confirm an active acquisition interrupted by the outage stops its source
+   queue or VPN range and preserves pending work. The VPN may reconnect when
+   Android permits background execution, but media requests must remain held
+   after connectivity returns and after reopening the app. Record the task
+   foreground-service state while the downloads are held.
+7. Explicitly resume the affected queue or VPN range and manually retry failed
+   chapters. Inspect the fixture's final content, media manifest, and database
+   flags. Previously uncached images must be stored before the chapter is marked
+   complete.
 
 ## Failure and Cancellation
 
-- With system internet available, keep the VPN unavailable past the shared
-  120-second media-readiness deadline.
-  The current acquisition run must release its executor and return to the same
-  queued task with automatic backoff, without publishing a completed remote-fallback
-  download or settling the batch. Partial files and the backend queue entry remain;
-  the task foreground service must stay active while recovery is pending.
+- With system internet available, keep the VPN unavailable past a 120-second
+  readiness deadline. The acquisition must release its executor and hold the
+  affected source queue or VPN range without automatic retry. Partial files,
+  pending queue records, and failed-chapter records remain available for manual
+  recovery; incomplete content must not be marked downloaded.
 - Cancel a waiting task. It must stop promptly without creating a completed
   content file or leaving readiness timers and listeners attached.
-- Restore connectivity without pressing Retry. Confirm the same task resumes,
-  reuses partial media, and completes normally. If Android blocks background
-  execution, open the app and confirm it resumes then without a service restart loop.
-- Cancel both running and retry-waiting tasks while hidden. Confirm their backend
-  queue entries are removed and do not reappear after an app restart.
-- Test temporary HTTP failures separately from permanent 404 responses. Temporary
-  failures must back off; missing content must remain explicitly incomplete.
+- Restore connectivity without pressing Resume or Retry. Confirm failed
+  downloads stay held after foreground return and app restart. Explicit queue
+  resume must restore preserved backend jobs before clearing the hold; a failed
+  restoration must retain the hold. Manual chapter retry must reuse valid partial
+  media and complete normally after the cause is fixed.
+- Cancel both running and paused tasks while hidden. Confirm their backend queue
+  entries are removed and do not reappear after an app restart.
+- Test HTTP 401, 403, 429, 5xx, timeouts, and parser failures. Each must hold its
+  source queue or VPN range without another automatic request or profile change.
+  A separate unaffected source may continue. Test HTTP 404 separately: later
+  resources and chapters may proceed, but missing media remains incomplete.
+- Inject a local storage or database failure. Confirm all source queues and VPN
+  ranges hold, new downloads cannot start, and the hold survives app restart.
+  Preserve existing files, pending jobs, and VPN checkpoints throughout recovery.
 - On Android 15+, shorten data_sync_fgs_timeout_duration only for a controlled
   test, saving and restoring the original setting in a cleanup path. Confirm quota
   expiry stops the service without a crash or restart loop, preserves queued work,
-  and resumes after a user foreground visit without clearing a user queue pause.
+  and resumes after a user foreground visit without clearing a user queue pause
+  or download failure hold.
 - Run the final non-debuggable APK with at least two independent source queues,
   a large uncached batch, screen lock, and repeated outages including one exceeding
   three minutes. Inspect every completed manifest and ZIP entry, not only counts.
@@ -97,11 +106,13 @@ not a guarantee of the task foreground service.
   reconnection, lockdown, and an app-blocked route. Catalog retrieval follows the
   system route; an inner tunnel failure must not become a catalog failure.
 - During downloads, switch between usable networks. Confirm obsolete requests
-  stop and only one VPN recovery runs before source work resumes.
+  stop and only one VPN recovery runs. Downloads interrupted during acquisition
+  must retain their failure hold until explicit resume.
 - Pause or cancel work, or select VPN Off during an outage. Restoring connectivity
   must preserve those decisions. Explicit Off must clear the previous tunnel error.
 - Exercise authentication/profile failures separately from connection timeouts.
-  Authentication failures require user action; transient failures back off online.
+  Download failures require user action in both cases. Independent foreground VPN
+  connection recovery must not release a source or VPN-range failure hold.
 - Repeat the applicable cases in the Windows app, including an external VPN and
   a system proxy. Observe actual catalog cancellation and downloads, not only an
   independent HTTP request to the API. Close and reopen the finder after cancelling.

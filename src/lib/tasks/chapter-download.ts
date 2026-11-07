@@ -10,6 +10,9 @@ import {
 import { createServerChapterMediaFetcher } from "../content-sync/media-repair";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
+import { ChapterStorageError, withChapterStorageOperation } from "../chapter-storage-error";
+import { isHttpNotFoundError } from "../http/status-error";
+import { clearScheduledChapterDownloadRetries } from "../../db/queries/chapter-download-failure";
 import { beginChapterDownloadQueueWrite, notifyChapterDownloadsSettled } from "./chapter-download-activity";
 import {
   forgetChapterDownloadFailures,
@@ -111,7 +114,7 @@ export interface ChapterDownloadJob {
   novelName?: string;
   novelPath?: string;
   priority?: TaskPriority;
-  /** The earliest start of an automatic retry after a transient failure. */
+  /** Optional start time retained in stored queue records; it never clears a failure hold. */
   retryAt?: number;
   /** Submitted by a download goal; waits while automatic downloads are paused. */
   goal?: true;
@@ -677,8 +680,9 @@ function queueBackendChapterDownloadMutation(
 ): Promise<void> {
   backendChapterDownloadQueueMutation = backendChapterDownloadQueueMutation
     .catch(() => undefined)
-    .then(mutation);
+    .then(() => withChapterStorageOperation(context, mutation));
   void backendChapterDownloadQueueMutation.catch((error) => {
+    if (!isAbortError(error)) taskScheduler.reportDownloadFailure(error);
     console.warn(`[chapter-download] failed to ${context}:`, error);
   });
   return backendChapterDownloadQueueMutation;
@@ -1077,7 +1081,7 @@ async function resolveRecoveredChapterSourcePath(
       if (recoveredSourceRefreshes.get(novel.id) === refresh) recoveredSourceRefreshes.delete(novel.id);
     }
   }
-  const chapter = await getChapterById(chapterId);
+  const chapter = await withChapterStorageOperation("Read chapter state", () => getChapterById(chapterId));
   return chapter && !chapter.path.startsWith(RECOVERED_CHAPTER_PATH_PREFIX) ? chapter.path : null;
 }
 
@@ -1086,7 +1090,7 @@ async function resolveChapterDownloadSourceAccessUrl(
 ): Promise<string> {
   if (isTauriRuntime()) await pluginManager.loadInstalledFromDb();
   const plugin = pluginManager.getPluginForExecutor(job.pluginId, "immediate");
-  const chapter = await getChapterById(job.id);
+  const chapter = await withChapterStorageOperation("Read chapter state", () => getChapterById(job.id));
   if (!chapter) throw missingLocalChapterError(job);
   const sourceJob = chapterDownloadSourceJob(job, chapter.path);
   const contentType = normalizeChapterContentType(
@@ -1213,7 +1217,7 @@ function enqueueChapterDownloadForExecutor(
           if (novelId) {
             let scan = localWorkScans.get(novelId);
             if (!scan) {
-              scan = refreshStoredNovelChapterDownloads(novelId).catch((error: unknown) => {
+              scan = withChapterStorageOperation("Scan stored chapter downloads", () => refreshStoredNovelChapterDownloads(novelId)).catch((error: unknown) => {
                 localWorkScans.delete(novelId);
                 throw error;
               });
@@ -1258,7 +1262,8 @@ function enqueueChapterDownloadForExecutor(
           job.pluginId,
           executor ?? "immediate",
         );
-        const novel = await getNovelById(chapter.novelId);
+        const chapterNovelId = chapter.novelId;
+        const novel = await withChapterStorageOperation("Read chapter novel", () => getNovelById(chapterNovelId));
         if (!novel) throw missingLocalChapterError(job);
         if (sourceJob.chapterPath.startsWith(RECOVERED_CHAPTER_PATH_PREFIX)) {
           if (setSourceAccessUrl?.(getPluginBaseUrl(plugin)) === false) {
@@ -1292,7 +1297,7 @@ function enqueueChapterDownloadForExecutor(
         const previousHtml =
           !isBinaryChapterContentType(contentType) &&
           isHtmlLikeChapterContentType(savedContentType)
-            ? await readStoredChapterPartialContentMirror(job.id)
+            ? await withChapterStorageOperation("Read partial chapter content", () => readStoredChapterPartialContentMirror(job.id))
             : null;
         const storageContext = {
           chapterId: job.id,
@@ -1557,7 +1562,7 @@ function enqueueChapterDownloadForExecutor(
       if (!options.vpnWorker && isTauriRuntime()) {
         if (isTaskUserCancelledError(error)) forgetFailures([job.id]);
         else if (!isAbortError(error)) {
-          settleFailedChapterDownload(job, queueOwnerId, handle.id, error);
+          settleFailedChapterDownload(job, queueOwnerId, error);
           return;
         }
       }
@@ -1595,58 +1600,42 @@ function explicitChapterDownloadJob(job: ChapterDownloadJob): ChapterDownloadJob
   return next;
 }
 
-function isChapterDownloadActive(chapterId: number): boolean {
-  const status = getChapterDownloadStatus(chapterId);
-  return status?.kind === "queued" || status?.kind === "running" || pendingBackendChapterDownloadJobsById.has(chapterId);
-}
-
-/**
- * Persists a terminal failure and, while its class and persisted budget allow it,
- * queues a fresh attempt that waits for the backoff. The failed record is replaced
- * by the waiting attempt so the row shows "Retrying in" from the first failure.
- * Runs in the queue mutation order, so waiting for queue mutations covers the decision.
- */
+/** Persists a failed job for explicit retry without scheduling another source request. */
 function settleFailedChapterDownload(
-  job: ChapterDownloadJob,
-  queueOwnerId: string,
-  failedTaskId: string,
-  error: unknown,
+  job: ChapterDownloadJob, queueOwnerId: string, error: unknown,
 ): void {
   void queueBackendChapterDownloadMutation("settle failed chapter download", async () => {
-    let nextRetryAt: number | null = null;
-    try {
-      nextRetryAt = (await recordFailedChapterDownloadAttempt(withoutRetryTime(job), error))?.nextRetryAt ?? null;
-    } catch (recordError) {
-      console.warn("[chapter-download] failed to record a download failure:", recordError);
-    }
+    await recordFailedChapterDownloadAttempt(withoutRetryTime(job), error);
     if (backendChapterDownloadRegistrations.get(job.id)?.ownerId !== queueOwnerId) return;
     const state = job.batchId ? chapterDownloadBatchStates.get(job.batchId) : undefined;
     if (state && !state.queuedChapterIds.delete(job.id)) return;
-    if (nextRetryAt === null || isChapterDownloadActive(job.id)) {
-      pendingBackendChapterDownloadJobsById.delete(job.id);
-      backendChapterDownloadRegistrations.delete(job.id);
-      await removeBackendChapterDownloadJobs([job.id]);
-      return;
-    }
-    const retryJob: ChapterDownloadJob = { ...withoutRetryTime(job), priority: "background", retryAt: nextRetryAt };
-    delete retryJob.batchId;
-    delete retryJob.batchTitle;
-    void enqueueChapterDownload(retryJob).promise.catch(() => undefined);
-    taskScheduler.forgetSettledTask(failedTaskId);
+    pendingBackendChapterDownloadJobsById.delete(job.id);
+    backendChapterDownloadRegistrations.delete(job.id);
+    await removeBackendChapterDownloadJobs([job.id]);
   });
 }
 
-/**
- * Queues the scheduled retries whose queue rows were lost, for example when the
- * process stopped between recording a failure and queueing its next attempt.
- */
-async function resumeScheduledChapterDownloadRetries(): Promise<void> {
-  await refreshChapterDownloadFailures();
-  for (const row of getChapterDownloadFailureSnapshot()) {
-    if (row.nextRetryAt === null || isChapterDownloadActive(row.chapterId)) continue;
-    const job = failedChapterDownloadJob(row.jobJson);
-    if (!job || job.id !== row.chapterId) continue;
-    void enqueueChapterDownload({ ...job, priority: "background", retryAt: row.nextRetryAt }).promise.catch(() => undefined);
+/** Restores failure holds before queued downloads can reach the source. */
+async function restoreChapterDownloadFailureStops(): Promise<void> {
+  try {
+    await refreshChapterDownloadFailures();
+    const blockedSources = new Set(taskScheduler.getSnapshot().sourceAccessBlocks
+      .filter(block => !block.rangeId).map(block => block.sourceId));
+    for (const row of getChapterDownloadFailureSnapshot()) {
+      if (row.nextRetryAt === null || isHttpNotFoundError(row.messageSummary)) continue;
+      if (row.failureClass !== "storage" && blockedSources.has(row.pluginId)) continue;
+      const error = row.failureClass === "storage"
+        ? new ChapterStorageError("Restore failed chapter", new Error(row.messageSummary))
+        : new Error(row.messageSummary);
+      if (row.failureClass === "storage" || failedChapterDownloadJob(row.jobJson)) {
+        taskScheduler.reportDownloadFailure(error, row.pluginId);
+      }
+    }
+    await clearScheduledChapterDownloadRetries();
+    await refreshChapterDownloadFailures();
+  } catch (error) {
+    taskScheduler.reportDownloadFailure(new ChapterStorageError("Read download failures", error));
+    throw error;
   }
 }
 
@@ -1661,17 +1650,20 @@ export function failedChapterDownloadJob(jobJson: string): ChapterDownloadJob | 
   return job ? withoutRetryTime(job) : null;
 }
 
-/** Manual "Retry all": clears the recorded failures, so each chapter starts a fresh budget, and queues them now. */
+/** Manual "Retry all": clears the recorded failures and queues each chapter for an explicit attempt. */
 export async function retryFailedChapterDownloads(chapterIds: readonly number[]): Promise<number> {
   const wanted = new Set(chapterIds);
   const jobs = getChapterDownloadFailureSnapshot()
     .filter((row) => wanted.has(row.chapterId))
     .map((row) => failedChapterDownloadJob(row.jobJson))
     .filter((job): job is ChapterDownloadJob => job !== null);
+  const storageRetry = getChapterDownloadFailureSnapshot().some(row => wanted.has(row.chapterId) && row.failureClass === "storage");
   await forgetChapterDownloadFailures(jobs.map((job) => job.id));
   for (const job of jobs) {
     void enqueueChapterDownload({ ...explicitChapterDownloadJob(job), priority: "user" }).promise.catch(() => undefined);
   }
+  if (storageRetry) taskScheduler.resumeSourceQueue();
+  else for (const sourceId of new Set(jobs.map(job => job.pluginId))) taskScheduler.resumeSourceQueue(sourceId);
   return jobs.length;
 }
 
@@ -1763,7 +1755,7 @@ export function enqueueChapterMediaRepair(
       reportProgress({ current: 0, total: progressTotal }, { force: true });
       await waitForChapterStorageOperation(job.pluginId, signal);
       if (signal.aborted) throw abortReason(signal);
-      const chapter = await getChapterById(job.id);
+      const chapter = await withChapterStorageOperation("Read chapter state", () => getChapterById(job.id));
       if (!chapter) {
         throw missingRepairChapterError(job);
       }
@@ -1780,7 +1772,7 @@ export function enqueueChapterMediaRepair(
       const storedContentType = storedChapterContentType(
         normalizeChapterContentType(chapter.contentType),
       );
-      const content = await readStoredChapterContentMirror(chapter.id);
+      const content = await withChapterStorageOperation("Read stored chapter content", () => readStoredChapterContentMirror(chapter.id));
       if (
         !isHtmlLikeChapterContentType(storedContentType) ||
         !content
@@ -1799,7 +1791,7 @@ export function enqueueChapterMediaRepair(
       const repairHtml = restoreProtectedRemoteChapterMediaSources(content, baseUrl);
       const pending = await withChapterDownloadWrite(chapter.id, signal, () => markChapterMediaRepairPending(chapter.id));
       if (pending.rowsAffected <= 0) throw missingRepairChapterError(job);
-      const novel = await getNovelById(chapter.novelId);
+      const novel = await withChapterStorageOperation("Read chapter novel", () => getNovelById(chapter.novelId));
       const storageContext = {
         chapterId: chapter.id,
         chapterName: chapter.name,
@@ -1811,8 +1803,8 @@ export function enqueueChapterMediaRepair(
         sourceId: job.pluginId,
       };
       const media = await cacheHtmlChapterMedia({
-        fetchMissingMedia: async (file) => {
-          const serverAsset = await fetchServerMedia(file);
+        fetchMissingMedia: async (file, mediaSignal) => {
+          const serverAsset = await fetchServerMedia(file, mediaSignal);
           if (serverAsset) return serverAsset;
           if (!plugin || !/^https?:\/\//i.test(file.sourceUrl)) {
             throw new Error(`No source is available to repair media asset: ${file.fileName}`);
@@ -2262,13 +2254,20 @@ export function startChapterDownloadQueueExecutor(
 
   let onRestored!: () => void;
   chapterDownloadQueueRestoration = new Promise<void>((resolve) => { onRestored = resolve; });
-  void chapterDownloadQueueRestoration.then(resumeScheduledChapterDownloadRetries).catch((error: unknown) => {
-    console.warn("[chapter-download] failed to resume scheduled retries:", error);
-  });
-  void runBackendChapterDownloadExecutor(onRestored).catch((error) => {
+  void restoreChapterDownloadFailureStops().then(() => runBackendChapterDownloadExecutor(onRestored)).catch((error) => {
     onRestored();
     chapterDownloadQueueExecutorStarted = false;
+    taskScheduler.reportDownloadFailure(new ChapterStorageError("Restore chapter download queue", error));
     console.warn("[chapter-download] failed to run download queue:", error);
     onError?.(error);
   });
+}
+
+/** Restores preserved queued jobs before lifting a user-acknowledged failure stop. */
+export async function resumeChapterDownloadQueueAfterFailure(sourceId?: string): Promise<boolean> {
+  startChapterDownloadQueueExecutor();
+  await waitForChapterDownloadQueueRestoration();
+  if (isTauriRuntime() && !chapterDownloadQueueExecutorStarted) return false;
+  taskScheduler.resumeSourceQueue(sourceId);
+  return true;
 }

@@ -3,6 +3,7 @@ import { snapshotAndroidContentChapter, installAndroidContentChapter } from "../
 import { isAndroidRuntime } from "../tauri-runtime";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { ContentServerError } from "./client";
+import { ChapterStorageError, withChapterStorageOperation } from "../chapter-storage-error";
 
 export interface ContentIdentity {
   pluginId: string;
@@ -83,6 +84,11 @@ export async function uploadContentChapter(input: {
   }
 }
 
+function nativeChapterStorageError(error: unknown): ChapterStorageError | null {
+  const failure = /^chapter-storage-failed: ([^:]+):/.exec(String(error));
+  return failure ? new ChapterStorageError(failure[1], error) : null;
+}
+
 export interface ContentChapterDownloadResult {
   contentBytes: number;
   mediaBytes: number;
@@ -98,8 +104,12 @@ export async function withDownloadedContentChapter<T>(input: {
   signal?: AbortSignal;
 }, apply: (sizes: ContentChapterDownloadResult, install: (storageDir: string) => Promise<void>) => Promise<T>): Promise<T> {
   input.signal?.throwIfAborted();
-  const stagePath = await invoke<string>("content_sync_create_stage");
-  const removeStage = () => invoke<void>("content_sync_remove_stage", { stagePath });
+  const stagePath = await invoke<string>("content_sync_create_stage").catch((error: unknown) => {
+    throw new ChapterStorageError("create content download stage", error);
+  });
+  const removeStage = () => invoke<void>("content_sync_remove_stage", { stagePath }).catch((error: unknown) => {
+    throw new ChapterStorageError("remove content download stage", error);
+  });
   let transfer: Promise<ContentChapterDownloadResult> | undefined;
   let settled = false;
   let onAbort: (() => void) | undefined;
@@ -112,12 +122,27 @@ export async function withDownloadedContentChapter<T>(input: {
     transfer = invoke<ContentChapterDownloadResult>("content_sync_download", {
       serverUrl: input.serverUrl, token: input.token ?? null, entry: input.entry,
       storageDir: input.storageDir, stagePath,
+    }).catch(async (error: unknown) => {
+      const storageFailure = nativeChapterStorageError(error);
+      if (storageFailure) throw storageFailure;
+      const rejected = /^content sync: server returned (\d{3}): ([\s\S]*)$/.exec(String(error));
+      if (!rejected) throw error;
+      const status = Number(rejected[1]);
+      if (status === 401 && input.token) {
+        const { forgetContentDeviceRegistration } = await import("./device");
+        forgetContentDeviceRegistration(input.serverUrl, input.token);
+      }
+      throw new ContentServerError(status, rejected[2]);
     }).finally(() => { settled = true; });
     const result = await (interrupted ? Promise.race([transfer, interrupted]) : transfer);
     input.signal?.throwIfAborted();
     return await apply(result, async storageDir => {
-      if (isAndroidRuntime()) await installAndroidContentChapter(storageDir, stagePath);
-      else await invoke("content_sync_install", { storageDir, stagePath });
+      try {
+        if (isAndroidRuntime()) await withChapterStorageOperation("install downloaded chapter", () => installAndroidContentChapter(storageDir, stagePath));
+        else await invoke("content_sync_install", { storageDir, stagePath });
+      } catch (error) {
+        throw nativeChapterStorageError(error) ?? error;
+      }
     });
   } finally {
     if (onAbort) input.signal?.removeEventListener("abort", onAbort);

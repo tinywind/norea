@@ -37,12 +37,19 @@ describe("manual download retries", () => {
     await checked;
     expect(scheduler.getTask(handle.id)).toMatchObject({ status: "failed", canRetry: true });
     expect(scheduler.getTask(handle.id)?.error).toBeTruthy();
-    const next = scheduler.enqueueSource({ ...spec(async () => undefined), dedupeKey: "download:next" });
+    const nextRun = vi.fn(async () => undefined);
+    const next = scheduler.enqueueSource({ ...spec(nextRun), dedupeKey: "download:next" });
     await settle();
-    await expect(next.promise).resolves.toBeUndefined();
+    expect(scheduler.getTask(next.id)?.status).toBe("queued");
+    expect(scheduler.getSnapshot().pausedSourceIds).toContain("a");
     await vi.advanceTimersByTimeAsync(600_000);
     expect(run).toHaveBeenCalledTimes(1);
+    expect(nextRun).not.toHaveBeenCalled();
     expect(scheduler.getTask(handle.id)).toMatchObject({ status: "failed", canRetry: true });
+    scheduler.resumeSourceQueue("a");
+    await settle();
+    await expect(next.promise).resolves.toBeUndefined();
+    expect(nextRun).toHaveBeenCalledOnce();
   });
 
   it.each([0, 250])("retains a body failure alongside %i queued tasks", async (pendingCount) => {

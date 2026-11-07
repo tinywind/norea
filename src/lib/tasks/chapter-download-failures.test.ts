@@ -23,14 +23,14 @@ const job = { id: 7, pluginId: "source", chapterPath: "/7", title: "Seven", retr
 
 beforeEach(() => { vi.clearAllMocks(); });
 
-it("records the classified failure with the transient budget and without the old wait", async () => {
-  queries.record.mockImplementation(async (input) => ({ ...input, attempts: 1, nextRetryAt: 30_100 }));
+it("records the classified failure without scheduling another attempt or retaining the old wait", async () => {
+  queries.record.mockImplementation(async (input) => ({ ...input, attempts: 1, nextRetryAt: null }));
   const stored = await recordFailedChapterDownloadAttempt(job, new Error("Failed to fetch"), 100);
   const input = queries.record.mock.calls[0]![0];
   expect(input).toMatchObject({ chapterId: 7, pluginId: "source", failureClass: "transient", messageSummary: "Failed to fetch", now: 100 });
   expect(JSON.parse(input.jobJson)).toEqual({ id: 7, pluginId: "source", chapterPath: "/7", title: "Seven" });
-  expect([1, 2, 3, 4].map(input.retryDelayMs)).toEqual([30_000, 120_000, 600_000, null]);
-  expect(stored).toMatchObject({ nextRetryAt: 30_100 });
+  expect([1, 2, 3, 4].map(input.retryDelayMs)).toEqual([null, null, null, null]);
+  expect(stored).toMatchObject({ nextRetryAt: null });
 });
 
 it("gives content failures no automatic attempt and records the challenged host", async () => {

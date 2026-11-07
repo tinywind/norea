@@ -304,10 +304,11 @@ describe("per-range VPN notifications", () => {
     expect(notificationsStore.getState().notifications.map(item => item.id)).toEqual([id("a"), id("a", "plan-b")]);
   });
 
-  it("does not emit a notice for automatic replacement or unchanged progress", () => {
+  it("shows a manual challenge notice for a legacy replacement policy without repeating unchanged progress", () => {
     const a = range("a", { pauseReason: "challenge-cloudflare", challenge: { kind: "cloudflare", url: "https://source.test/chapter" } });
     const sync = mount([plan([a])]);
-    expect(notificationsStore.getState().notifications).toEqual([]);
+    expect(notificationsStore.getState().notifications.map(item => item.id)).toEqual([id("a")]);
+    expect(vpnMocks.open).not.toHaveBeenCalled();
     sync.update([plan([{ ...a, phase: "connecting", pauseReason: null }])]);
     expect(notificationsStore.getState().notifications).toEqual([]);
     sync.update([plan([range("a")])]);

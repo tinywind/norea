@@ -30,8 +30,8 @@ export function normalizeVpnDownloadSettings(value: unknown): VpnDownloadSetting
     workerCount: typeof stored.workerCount === "number" && Number.isFinite(stored.workerCount)
       ? Math.max(1, Math.min(MAX_VPN_DOWNLOAD_WORKERS, Math.floor(stored.workerCount)))
       : Math.max(1, Math.min(3, useBrowseStore.getState().sourceWorkConcurrency)),
-    captchaPolicy: stored.captchaPolicy === "pause" ? "pause" : "nextProfile",
-    cloudflarePolicy: stored.cloudflarePolicy === "pause" ? "pause" : "nextProfile",
+    captchaPolicy: "pause",
+    cloudflarePolicy: "pause",
     resumeAfterRestart: stored.resumeAfterRestart !== false,
     useTestedServers: stored.useTestedServers !== false,
   };

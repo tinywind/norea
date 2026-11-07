@@ -39,7 +39,7 @@ export function parseChapterMediaManifest(
           urls.add(file.sourceUrl);
           return false;
         })) {
-        throw new Error("A valid manifest is required to repair chapter media.");
+        throw new Error("Chapter media manifest is invalid.");
       }
     }
     return {
@@ -62,7 +62,7 @@ export function parseChapterMediaManifest(
       version: 1,
     };
   } catch (error) {
-    if (strict) throw new Error("Cannot read chapter media repair manifest.", { cause: error });
+    if (strict) throw new Error("Cannot read chapter media manifest.", { cause: error });
     return emptyChapterMediaManifest();
   }
 }

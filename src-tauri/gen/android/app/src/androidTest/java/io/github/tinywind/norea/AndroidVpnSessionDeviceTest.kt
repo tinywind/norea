@@ -60,16 +60,25 @@ class AndroidVpnSessionDeviceTest {
             }
             requests.add(Request(path, headers["cookie"].orEmpty(), headers["cache-control"].orEmpty()))
             val route = path.substringBefore("?")
-            val forbidden = route == "/forbidden" || route == "/forbidden-image"
+            val status = when (route) {
+              "/forbidden", "/forbidden-image" -> "403 Forbidden"
+              "/status/401" -> "401 Unauthorized"
+              "/status/404" -> "404 Not Found"
+              "/status/429" -> "429 Too Many Requests"
+              "/status/500" -> "500 Internal Server Error"
+              "/status/503" -> "503 Service Unavailable"
+              else -> "200 OK"
+            }
             val content = when (route) {
               "/forbidden" -> "Access denied"
               "/with-forbidden-image" -> "<div id='chapter-content'>Chapter content</div><img src='/forbidden-image'>"
+              "/with-missing-image" -> "<div id='chapter-content'>Chapter content</div><img src='/status/404'>"
               else -> "${if (fresh) "fresh" else "blocked"}-$path"
             }
             val body = "<!doctype html><html><head><link rel='icon' href='data:,'></head><body>$content</body></html>"
               .toByteArray(Charsets.UTF_8)
             val response = buildString {
-              append(if (forbidden) "HTTP/1.1 403 Forbidden\r\n" else "HTTP/1.1 200 OK\r\n")
+              append("HTTP/1.1 $status\r\n")
               append("Date: ${DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now(java.time.ZoneOffset.UTC))}\r\n")
               append("Content-Type: text/html; charset=utf-8\r\n")
               append("Cache-Control: public, max-age=3600\r\n")
@@ -334,6 +343,55 @@ class AndroidVpnSessionDeviceTest {
       }
     }
   }
+
+  private fun verifyMainFrameHttpStatuses(namespace: String?) {
+    Fixture().use { fixture ->
+      Browser(fixture.origin, namespace).use { browser ->
+        browser.seedCookies()
+        assertTrue(browser.read("/initial", extract = true).contains("blocked-/initial"))
+        val before = browser.sourceView()
+        val requestedPaths = mutableListOf("/initial")
+        for (status in listOf(401, 404, 429, 500, 503)) {
+          val path = "/status/$status?access=qa-private-$status"
+          val started = SystemClock.elapsedRealtime()
+          val result = browser.extractChapter(path)
+          val elapsed = SystemClock.elapsedRealtime() - started
+          assertFalse(result.toString(), result.getBoolean("ok"))
+          val error = result.getString("error")
+          assertTrue(error, error.contains("HTTP $status"))
+          assertFalse("HTTP error leaked URL query data", error.contains("qa-private-$status"))
+          assertTrue("HTTP $status must settle before the extraction timeout: ${elapsed}ms", elapsed < 10_000)
+          assertSame("HTTP $status must keep the session WebView", before, browser.sourceView())
+          assertTrue("HTTP $status removed the login cookie", browser.cookieNames().contains("login_session"))
+          browser.showRetainedPage(path)
+          assertSame("Manual inspection must reuse the HTTP $status page", before, browser.sourceView())
+          requestedPaths.add(path)
+          assertEquals("HTTP $status must not repeat or implicitly retry a request", requestedPaths, fixture.requests.map { it.path })
+          browser.hideRetainedPage()
+        }
+        val chapter = browser.extractChapter("/with-missing-image")
+        assertTrue(chapter.toString(), chapter.getBoolean("ok"))
+        assertEquals("Chapter content", chapter.getString("result"))
+        requestedPaths.addAll(listOf("/with-missing-image", "/status/404"))
+        assertEquals("A subresource 404 must not retry the chapter", requestedPaths, fixture.requests.map { it.path })
+        assertTrue(browser.read("/recovered", extract = true).contains("blocked-/recovered"))
+        requestedPaths.add("/recovered")
+        assertEquals(requestedPaths, fixture.requests.map { it.path })
+        fixture.requests.forEach { request ->
+          assertTrue("Login cookie was lost after an HTTP error", request.cookies.contains("login_session=qa-login"))
+        }
+        assertSame("HTTP status failures must preserve the source session", before, browser.sourceView())
+      }
+    }
+  }
+
+  @Test
+  fun mainFrameHttpErrorsFailExtractionImmediatelyAndKeepLoginSession() =
+    verifyMainFrameHttpStatuses(namespace = null)
+
+  @Test
+  fun workerMainFrameHttpErrorsFailExtractionImmediatelyAndKeepLoginSession() =
+    verifyMainFrameHttpStatuses(namespace = "vpn-worker-qa-${UUID.randomUUID()}")
 
   @Test
   fun mainFrame403FailsExtractionImmediatelyAndKeepsLoginSession() =

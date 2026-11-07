@@ -16,10 +16,8 @@ import { VpnDownloadSettings } from "./VpnDownloadSettings";
 export function VpnDownloadLaunchDialog({ snapshot, onClose }: { snapshot: VpnDownloadRuntimeSnapshot; onClose: () => void }) {
   const { t } = useTranslation();
   const workerCount = useVpnDownloadStore(state => state.workerCount);
-  const captchaPolicy = useVpnDownloadStore(state => state.captchaPolicy);
-  const cloudflarePolicy = useVpnDownloadStore(state => state.cloudflarePolicy);
   const maxWorkers = snapshot.capabilities.parallelSupported ? Math.max(1, snapshot.capabilities.maxWorkers) : 1;
-  const [options, setOptions] = useState<VpnDownloadLaunchOptions>(() => ({ workerCount: Math.min(workerCount, maxWorkers), captchaPolicy, cloudflarePolicy }));
+  const [options, setOptions] = useState<VpnDownloadLaunchOptions>(() => ({ workerCount: Math.min(workerCount, maxWorkers), captchaPolicy: "pause", cloudflarePolicy: "pause" }));
   const [pending, setPending] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const busy = useRef(false);
@@ -44,7 +42,6 @@ export function VpnDownloadLaunchDialog({ snapshot, onClose }: { snapshot: VpnDo
       <Stack gap="md">
         <Text size="sm">{t("vpnDownload.launchHint")}</Text>
         <Text size="sm" fw="var(--norea-weight-bold)">{t("vpnDownload.workerTarget", { count: options.workerCount })}</Text>
-        <Text size="sm">{t("vpnDownload.policySummary", { captcha: t(`vpnDownload.policy.${options.captchaPolicy}`), cloudflare: t(`vpnDownload.policy.${options.cloudflarePolicy}`) })}</Text>
         {snapshot.loading || vault.isPending ? <Text size="sm" role="status">{t("vpnDownload.loading")}</Text> : null}
         {!snapshot.capabilities.supported ? <Alert color="warn">{t("vpnDownload.unsupported")}</Alert> : null}
         {snapshot.error ? <Alert color="danger" role="alert">{snapshot.error}</Alert> : null}

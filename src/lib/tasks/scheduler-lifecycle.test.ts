@@ -106,7 +106,7 @@ describe("scheduler lifecycle boundaries", () => {
     const failedIds: string[] = [];
     for (let index = 0; index < 201; index += 1) {
       const handle = scheduler.enqueueSource({
-        kind: "chapter.download", source: { id: "failed", name: "Failed" },
+        kind: "chapter.download", source: { id: `failed-${index}`, name: `Failed ${index}` },
         title: `Failed ${index}`, retry: () => null,
         run: async () => { throw new Error("Unavailable asset"); },
       });

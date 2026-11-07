@@ -239,8 +239,9 @@ queue. The configured concurrency limit still bounds active worker WebViews.
 A chapter task may still reconcile
 authoritative final content locally while blocked; doing so does not verify or
 clear source access. The block survives an application restart. HTTP 403 always requires a manual
-check before resuming, including when a VPN range otherwise rotates profiles
-for CAPTCHA or Cloudflare challenges. Its notice retains HTTP 403 as the reason.
+check before resuming. Download failures, including CAPTCHA and Cloudflare
+challenges, hold the affected VPN range without rotating profiles. The notice
+retains HTTP 403 when that is the cause.
 Norea opens the
 source in its session-owning browser so the user can complete the challenge,
 then offers **Keep paused** and **Verify**. The verification browser uses the
@@ -490,25 +491,37 @@ plugin traffic blocked and shows one notice that opens network settings. A user
 connect, Off or a new network route resumes recovery.
 
 While VPN use is On, host-mediated source fetches and page acquisition wait for
-a confirmed connected tunnel before starting network work. A single media run
-shares an abortable 120-second VPN-readiness deadline across its requests.
-Waiting for recovery does not consume its ordinary transient-network retry budget.
-If a run exhausts that deadline, the download scheduler keeps the same task and
-persistent queue record, releases its scraper executor, and automatically retries
-with 5/15/30/60-second capped backoff. Queued retry work keeps the Android task
-foreground service active; it is not a completed or failed batch item. Partial
-media is reused on the next run. Missing/unsupported VPN configuration is terminal,
-not an endless network retry.
+a confirmed connected tunnel before starting network work. Each readiness wait
+has an abortable deadline, normally 120 seconds. An exhausted deadline stops the
+affected download queue or VPN range until an
+explicit resume. Download errors do not grant automatic retries or profile
+rotation. Preserved queue records and partial media remain available for manual
+recovery. Missing or unsupported VPN configuration also requires user action.
 
-Offline download and repair tasks require complete media. Exhausted fast network
-retries and temporary HTTP 408/429/502/503/504 responses are collected per asset
-while acquisition continues for the remaining assets. The host archives stored
-assets before reporting the missing-asset count and handing retryable failures
-to the durable task retry policy, honoring valid Retry-After headers. Permanent
-HTTP failures such as 404 leave a failed/incomplete chapter with a reusable
-partial ZIP. Missing assets remain declared in the manifest; the host does not
-publish final chapter content or mark the partial package complete. Local-file
-import remains explicitly best-effort. User cancellation is tagged separately from lifecycle suspension
+Offline download and repair tasks require complete media. HTTP 404 skips only
+the missing resource and records a failed or incomplete chapter; remaining
+resources and chapters may proceed. Missing assets stay in the manifest, and
+partial packages are never marked complete. A VPN range advances its checkpoint
+past a missing chapter without marking that chapter downloaded.
+
+Every other download error stops the affected ordinary source queue or VPN
+range until an explicit resume. This includes HTTP failures, network loss during
+acquisition, timeouts, plugin parsing failures, and unknown exceptions. The notice
+preserves the redacted cause. Media requests run serially within each executor;
+non-404 failures stop further requests and preserve reusable partial files. A
+content-server cache miss may fall back to the source, but other server errors
+propagate. Local filesystem or database failures stop all download queues and
+VPN ranges, including new work admission. The native storage boundary tags actual
+file I/O failures as `chapter-storage-failed`; remote HTTP, network, and malformed
+payload failures keep their source error classification.
+
+Ordinary source holds and the global storage hold persist across app restarts.
+VPN plans preserve their failure reason, queued chapters, and checkpoint. Network
+recovery, reopening the app, and bulk VPN run actions do not clear a failure hold.
+Explicit queue resume restores preserved backend jobs before clearing the hold;
+if restoration fails, both the hold and queued work remain. Failed chapters stay
+available for a separate manual retry. Local-file import remains explicitly
+best-effort. User cancellation is tagged separately from lifecycle suspension
 and removes the cancelled chapter's persistent queue entry even while hidden.
 Genuine process/lifecycle interruptions keep resumable work.
 

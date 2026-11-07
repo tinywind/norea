@@ -1,6 +1,7 @@
 package io.github.tinywind.norea
 
 import android.app.ActivityManager
+import android.app.ActivityOptions
 import android.content.Intent
 import android.os.Process
 import android.os.SystemClock
@@ -83,6 +84,7 @@ class AndroidVpnWorkerRecoveryDeviceTest {
     try {
       val owner = instrumentation.startActivitySync(
         Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        ActivityOptions.makeBasic().apply { launchDisplayId = 0 }.toBundle(),
       ) as MainActivity
       activity = owner
       val loaded = CountDownLatch(1)

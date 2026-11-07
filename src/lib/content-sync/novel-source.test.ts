@@ -16,6 +16,7 @@ vi.mock("./sync", () => ({ downloadServerChapterFromServer: vi.fn(async () => ({
 vi.mock("../plugins/manager", () => ({ pluginManager: { getPlugin: vi.fn(), loadInstalledFromDb: vi.fn(async () => undefined) } }));
 
 import { getNovelById } from "../../db/queries/novel";
+import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { getChapterById } from "../../db/queries/chapter";
 import { ContentServerError, contentServerRequest } from "./client";
 import { registerContentDevice } from "./device";
@@ -68,7 +69,7 @@ it("rechecks completeness for the server lane and leaves an incomplete copy to t
   expect(downloadServerChapterFromServer).toHaveBeenCalledTimes(2);
 });
 
-it.each([404, 403, 503])("falls back to the plugin when the optional server returns %i", async status => {
+it.each([404])("falls back to the plugin when the optional server returns %i", async status => {
   settings.serverUrl = "http://configured";
   vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(status));
   const onPhase = vi.fn();
@@ -94,10 +95,18 @@ it("loads installed plugin metadata before deciding a bound work cannot fall bac
   expect(pluginManager.loadInstalledFromDb).toHaveBeenCalledOnce();
 });
 
-it("falls back without installing mismatched content from an optional server", async () => {
+it("stops without installing mismatched content from an optional server", async () => {
   settings.serverUrl = "http://configured";
   vi.mocked(contentServerRequest).mockResolvedValueOnce({ ...entry, manifest: { identity: { ...entry.manifest.identity, chapterPath: "/other" } } });
-  expect(await tryDownloadServerChapter(job)).toBe(false);
+  await expect(tryDownloadServerChapter(job)).rejects.toThrow("identity");
+  expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
+});
+
+it.each([401, 403, 429, 500, 503])("propagates optional server HTTP %i without a source fallback", async status => {
+  settings.serverUrl = "http://configured";
+  const failure = new ContentServerError(status);
+  vi.mocked(contentServerRequest).mockRejectedValueOnce(failure);
+  await expect(tryDownloadServerChapter(job)).rejects.toBe(failure);
   expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
 });
 
@@ -105,11 +114,11 @@ it("bounds registration and lookup together and ignores responses after timeout"
   vi.useFakeTimers(); settings.serverUrl = "http://configured";
   let complete!: (token: string) => void;
   vi.mocked(registerContentDevice).mockReturnValueOnce(new Promise(resolve => { complete = resolve; }));
-  const pending = tryDownloadServerChapter(job);
+  const pending = tryDownloadServerChapter(job).catch(error => error);
   await vi.advanceTimersByTimeAsync(2999);
   expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
   await vi.advanceTimersByTimeAsync(1);
-  expect(await pending).toBe(false);
+  expect(await pending).toMatchObject({ message: "Content server lookup timed out." });
   complete("device-key"); await vi.advanceTimersByTimeAsync(0);
   expect(contentServerRequest).not.toHaveBeenCalled();
 });
@@ -123,22 +132,21 @@ it("uses the configured deadline without limiting a successful package transfer"
   expect(await pending).toBe(true);
 });
 
-it("does not make every queued source chapter wait again after the server timed out", async () => {
+it("allows a fresh explicit attempt after surfacing a server timeout", async () => {
   vi.useFakeTimers(); settings.serverUrl = "http://configured";
   vi.mocked(registerContentDevice).mockImplementationOnce(() => new Promise(() => undefined));
-  const first = tryDownloadServerChapter(job);
+  const first = tryDownloadServerChapter(job).catch(error => error);
   await vi.advanceTimersByTimeAsync(3000);
-  expect(await first).toBe(false);
-  expect(await tryDownloadServerChapter(job)).toBe(false);
+  expect(await first).toMatchObject({ message: "Content server lookup timed out." });
   expect(contentServerRequest).not.toHaveBeenCalled();
-  await vi.advanceTimersByTimeAsync(30_000);
   expect(await tryDownloadServerChapter(job)).toBe(true);
 });
 
-it("falls back after a failed optional package transfer without marking it as installed", async () => {
+it("propagates a failed optional package transfer without a source fallback", async () => {
   settings.serverUrl = "http://configured";
-  vi.mocked(downloadServerChapterFromServer).mockRejectedValueOnce(new Error("server connection closed"));
-  expect(await tryDownloadServerChapter(job)).toBe(false);
+  const failure = new Error("server connection closed");
+  vi.mocked(downloadServerChapterFromServer).mockRejectedValueOnce(failure);
+  await expect(tryDownloadServerChapter(job)).rejects.toBe(failure);
 });
 
 it("does not treat an absent chapter as an unavailable server", async () => {
@@ -182,11 +190,11 @@ describe("recovered folder chapters", () => {
     expect(await tryDownloadServerChapter(folderJob)).toBe(true);
   });
 
-  it("keeps the 30 second server skip for other server failures", async () => {
+  it("surfaces a server failure instead of silently skipping the server", async () => {
     vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
-    vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(503));
-    expect(await tryDownloadServerChapter(folderJob)).toBe(false);
-    expect(await tryDownloadServerChapter(folderJob)).toBe(false);
+    const failure = new ContentServerError(503);
+    vi.mocked(contentServerRequest).mockRejectedValueOnce(failure);
+    await expect(tryDownloadServerChapter(folderJob)).rejects.toBe(failure);
     expect(contentServerRequest).toHaveBeenCalledOnce();
   });
 
@@ -275,4 +283,22 @@ it("pages only the selected work when reading available server chapter paths", a
     ["http://origin", "/catalog/works/work-a/chapters?offset=0&limit=100"],
     ["http://origin", "/catalog/works/work-a/chapters?offset=1&limit=100"],
   ]);
+});
+
+it.each(["chapter", "work", "source"] as const)("preserves %s database failures as storage errors before server traffic", async operation => {
+  settings.serverUrl = "http://configured";
+  const failure = new Error("Connection pool closed");
+  if (operation === "chapter") vi.mocked(getChapterById).mockRejectedValueOnce(failure);
+  if (operation === "work") vi.mocked(getNovelById).mockRejectedValueOnce(failure);
+  if (operation === "source") vi.mocked(readContentSyncCache).mockRejectedValueOnce(failure);
+  await expect(tryDownloadServerChapter(job)).rejects.toMatchObject({ code: "chapter-storage-failed", cause: failure });
+  expect(registerContentDevice).not.toHaveBeenCalled();
+  expect(contentServerRequest).not.toHaveBeenCalled();
+});
+
+it("preserves a failed content source database write as a storage error", async () => {
+  const failure = new Error("Connection pool closed");
+  vi.mocked(writeContentSyncCache).mockRejectedValueOnce(failure);
+  await expect(rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" }))
+    .rejects.toMatchObject({ code: "chapter-storage-failed", cause: failure });
 });

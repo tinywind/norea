@@ -1,6 +1,7 @@
 import type { ScraperExecutorId } from "./scraper-queue";
 import type { SourceAccessBlock } from "./source-access-gate";
 import type { VpnDownloadWorkerRef } from "./vpn-download-types";
+import type { DownloadFailureStops } from "./download-failure-stop";
 
 export type TaskLane = "main" | "source";
 
@@ -157,6 +158,7 @@ export type SourceQueueSortMode =
   | "queuedCount";
 
 export interface TaskSnapshot {
+  downloadFailureStops?: DownloadFailureStops;
   pausedTaskGroups?: TaskNotificationGroupKey[];
   pausedSourceIds: string[];
   records: TaskRecord[];

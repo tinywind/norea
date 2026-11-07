@@ -30,7 +30,7 @@ describe("source work during network loss", () => {
     expect(run).toHaveBeenCalledTimes(1);
   });
 
-  it("cancels an active transport and resumes the same task without consuming retries", async () => {
+  it("stops an active transport and requires explicit resume after connectivity returns", async () => {
     const retry = vi.fn();
     const run = vi.fn().mockImplementationOnce(({ signal }: TaskRunContext) =>
       new Promise<void>((_resolve, reject) => {
@@ -42,20 +42,27 @@ describe("source work during network loss", () => {
     await settle();
     expect(retry).not.toHaveBeenCalled();
     expect(scheduler.getTask(handle.id)?.status).toBe("queued");
+    expect(scheduler.getSnapshot().pausedSourceIds).toContain("source");
+    expect(scheduler.getDownloadFailureStops().sourceErrors.source).toBe("Waiting for internet");
     await vi.advanceTimersByTimeAsync(600_000);
     expect(run).toHaveBeenCalledTimes(1);
     scheduler.setNetworkAvailable(true);
     await settle();
+    expect(run).toHaveBeenCalledTimes(1);
+    expect(scheduler.getTask(handle.id)?.status).toBe("queued");
+    scheduler.resumeSourceQueue("source");
+    await settle();
     await handle.promise;
     expect(run).toHaveBeenCalledTimes(2);
+    expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
     expect(scheduler.getTask(handle.id)?.waitingForNetwork).toBeUndefined();
   });
 
-  it("freezes backoff during an outage and retains the retry count", async () => {
+  it("freezes search backoff during an outage and retains the retry count", async () => {
     const error = new TypeError("Failed to fetch");
     const run = vi.fn().mockRejectedValueOnce(error).mockRejectedValueOnce(error).mockResolvedValue(undefined);
     const retry = vi.fn(() => ({ delayMs: 5_000 }));
-    const handle = scheduler.enqueueSource({ ...spec(run), retry });
+    const handle = scheduler.enqueueSource({ ...spec(run), kind: "source.search", retry });
     await settle();
     scheduler.setNetworkAvailable(false);
     await vi.advanceTimersByTimeAsync(600_000);

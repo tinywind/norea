@@ -34,10 +34,10 @@ export function isVpnDownloadVerificationNeeded(plan: VpnDownloadPlan, range: Vp
   return !range.userPaused && isManualChallenge(plan, range);
 }
 
-function isManualChallenge(plan: VpnDownloadPlan, range: VpnDownloadRangeState): boolean {
+function isManualChallenge(_plan: VpnDownloadPlan, range: VpnDownloadRangeState): boolean {
   if (range.phase !== "paused" || !range.challenge) return false;
   return range.pauseReason === "manual-verification" ||
-    (range.pauseReason === `challenge-${range.challenge.kind}` && (range.challenge.kind === "forbidden" || plan.policies[range.challenge.kind] === "pause"));
+    range.pauseReason === `challenge-${range.challenge.kind}`;
 }
 
 export function isVpnDownloadVerificationCurrent(
@@ -57,7 +57,7 @@ export type VpnDownloadAttention =
   | { kind: "failed"; ranges: { planId: string; rangeId: string }[] };
 
 const FAILED_PAUSES: ReadonlySet<string> = new Set([
-  "authentication-required", "download-failed", "runtime-error", "verification-unavailable", "profile-unavailable", "site-forbidden",
+  "authentication-required", "download-failed", "runtime-error", "verification-unavailable", "profile-unavailable", "site-forbidden", "chapter-failed",
 ]);
 
 /** The one VPN problem the Queue page asks the user about; restarts, offline waits and busy profiles resolve by themselves. */

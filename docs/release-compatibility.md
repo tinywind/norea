@@ -59,8 +59,9 @@ requirements must be decided explicitly before implementation.
   remain intact. These revisions cannot regress during ordinary updates and reset
   only after full chapter settlement or an explicit profile-pass restart. Native
   scraper timeouts and the recognized browser tunnel-navigation failure consume a
-  range attempt without creating a batch/IP exclusion. TLS certificate failures
-  remain explicit stops.
+  range attempt, record a `page-unresponsive` batch/IP exclusion, and hold the
+  range until explicit resume. TLS certificate failures also require user action.
+  Download failures do not automatically switch profiles.
   A range's `profileId` and `profileHash` are a nullable pair that records the
   profile it leased last. New plans start with both null; a worker leases any
   eligible idle profile when it takes the range, so unfinished ranges may share a
@@ -72,19 +73,26 @@ requirements must be decided explicitly before implementation.
   plan JSON keeps its shape and existing plans keep their ranges unchanged.
 - Database migration 4 adds `chapter_download_failure`, one row per chapter with
   the last terminal download failure: its class, a redacted message summary, the
-  challenged URL for challenges, the attempt count, the next automatic attempt
-  time, and the failed job's queue JSON. It changes no existing table; queue
-  rows, plans, chapters and reading state upgrade unchanged. A row is removed with
-  its chapter row through the foreign key, and when its chapter later downloads,
-  the user cancels it, or the user retries it, which starts a fresh budget.
-  An ordinary queue row may carry an optional `retryAt` in its job JSON while a
-  fresh automatic attempt waits for its backoff; restored rows keep that wait.
-  Rows without it start at once, as before, and the SQL schema is unchanged. The attempt count is the persisted retry
-  budget, so restarts cannot reset it. Full device snapshots include the table
-  under the exact-schema policy; restore keeps the rows but clears every
-  scheduled retry time, so a restored snapshot never starts automatic downloads.
-  Portable file backups exclude the table, and their restore drops it with the
-  replaced chapter rows.
+  challenged URL for challenges, the attempt count, a nullable retry timestamp,
+  and the failed job's queue JSON. It changes no existing table; queue rows,
+  plans, chapters and reading state upgrade unchanged. A row is removed with its
+  chapter row through the foreign key, and when its chapter later downloads,
+  the user cancels it, or the user explicitly retries it.
+  Download failures no longer schedule automatic attempts. New failure rows keep
+  `next_retry_at` null. Startup restores source or storage holds for earlier
+  scheduled ordinary failures other than HTTP 404, then clears retry timestamps.
+  An optional `retryAt` in existing queue JSON does not release a failure hold. The stored attempt
+  count remains diagnostic state until the failure is cleared.
+  Source holds and the global storage hold use the additive version 1
+  `download-failure-stops` localStorage entry. It loads before ordinary queue
+  dispatch. Explicit resume restores preserved backend jobs before clearing the
+  hold; a failed restoration leaves both intact. VPN plans retain their failure
+  pause reason and checkpoint until explicit range resume. HTTP 404 alone may
+  advance past a missing resource or chapter; incomplete media stays incomplete.
+  These policy changes require no SQL migration or chapter package change.
+  Full device snapshots include the failure table under the exact-schema policy;
+  restore keeps its rows and clears scheduled retry times. Portable file backups
+  exclude the table, and their restore drops it with the replaced chapter rows.
 - Database migration 5 adds `novel_download_goal`, one row per novel with its
   persistent download goal: keep N chapters ahead (with `count`), all remaining
   chapters, or the entire novel. It changes no existing table; queue rows,

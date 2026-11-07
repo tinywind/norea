@@ -5,6 +5,7 @@ import {
 import type { ChapterMediaFailure } from "../chapter-media/types";
 import type { CHAPTER_DOWNLOAD_FAILURE_CLASSES } from "../../db/schema";
 import { describeError } from "../errors";
+import { errorHttpStatus, isHttpNotFoundError } from "../http/status-error";
 import { normalizeSourceAccessRequiredError } from "../plugins/source-access";
 import { redactUrlsForLog } from "../url-log";
 
@@ -20,20 +21,16 @@ export interface DownloadFailure {
   challengeUrl?: string;
 }
 
-/** Waits before the first, second and third automatic attempt after a transient failure. */
-export const AUTOMATIC_RETRY_BACKOFF_MS = [30_000, 120_000, 600_000] as const;
-
 const MAX_RETRY_AFTER_MS = 3_600_000;
 const MAX_SUMMARY_LENGTH = 300;
 
 const EXTERNAL_CHALLENGE =
   /External resource at (\S+?) requires Cloudflare verification/i;
 const STORAGE_FAILURE =
-  /\b(?:no space left on device|disk (?:i\/o error|is full)|database or disk is full|database disk image is malformed|SQLITE_(?:FULL|IOERR|CORRUPT|READONLY|CANTOPEN)|read-only file system|os error (?:28|30)|storage (?:root|folder) (?:is )?(?:unavailable|not available))\b/i;
+  /^Chapter storage failed\b|\b(?:no space left on device|disk (?:i\/o error|is full)|database or disk is full|database disk image is malformed|SQLITE_(?:FULL|IOERR|CORRUPT|READONLY|CANTOPEN)|read-only file system|os error (?:28|30)|storage (?:root|folder) (?:is )?(?:unavailable|not available))\b/i;
 const CONTENT_FAILURE =
   /^(?:chapter-download: local chapter \d+ was not found|Chapter acquisition |Plugin must declare a resource acquisition plan|content-not-found:)|This chapter is not on the content server, and its source has no matching chapter\./i;
 const PLUGIN_PARSE_ERROR_NAMES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError"]);
-const HTTP_STATUS = /\b(?:HTTP|status(?: code)?)\s*:?\s*(\d{3})\b|\((\d{3})\)/i;
 
 function errorName(error: unknown): string | undefined {
   return error instanceof Error ? error.name : undefined;
@@ -68,29 +65,24 @@ function isTransientMediaFailure(failure: ChapterMediaFailure): boolean {
     : isTransientMediaNetworkError(failure.message);
 }
 
-function httpStatus(message: string): number | undefined {
-  const match = HTTP_STATUS.exec(message);
-  const status = Number(match?.[1] ?? match?.[2]);
-  return status >= 400 && status <= 599 ? status : undefined;
-}
-
 /** An HTTP 403 access refusal, including the source-access hold created for it. */
 export function isSourceForbiddenFailure(error: unknown): boolean {
   const access = normalizeSourceAccessRequiredError(error);
-  return access ? access.challenge.kind === "forbidden" : httpStatus(describeError(error)) === 403;
+  return access ? access.challenge.kind === "forbidden" : errorHttpStatus(error) === 403;
 }
 
 /**
- * Sorts a terminal chapter download error into the class that decides whether the
- * app retries it by itself. Unknown errors count as transient because the retry
- * budget is bounded and a wrong "content" verdict would need the user's tap.
+ * Groups terminal errors for diagnostics and manual recovery. These classes no
+ * longer grant automatic attempts.
  */
 export function classifyDownloadFailure(error: unknown): DownloadFailure {
-  const summary = summarize(error);
+  const summary = summarize(errorCode(error) === "chapter-media-incomplete" && isHttpNotFoundError(error)
+    ? `HTTP 404: ${describeError(error)}` : error);
   const message = describeError(error);
   const failure = (failureClass: DownloadFailureClass, extra: Partial<DownloadFailure> = {}): DownloadFailure =>
     ({ failureClass, summary, retryAfterMs: 0, ...extra });
 
+  if (errorCode(error) === "chapter-storage-failed" || errorCode(error) === "chapter-media-finalization-failed") return failure("storage");
   const sourceAccess = normalizeSourceAccessRequiredError(error);
   if (sourceAccess) return failure("challenge", { challengeUrl: sourceAccess.challenge.url });
   const externalChallenge = externalChallengeUrl(message);
@@ -107,28 +99,21 @@ export function classifyDownloadFailure(error: unknown): DownloadFailure {
   if (errorCode(error) === "chapter-media-http-retry") {
     return failure("transient", { retryAfterMs: retryAfter((error as { retryAfterMs?: unknown }).retryAfterMs) });
   }
-  if (errorCode(error) === "chapter-media-finalization-failed" || STORAGE_FAILURE.test(message)) return failure("storage");
+  if (errorCode(error) === "chapter-media-finalization-failed" || errorCode(error) === "chapter-storage-failed" || STORAGE_FAILURE.test(message)) return failure("storage");
   if (CONTENT_FAILURE.test(message)) return failure("content");
   const name = errorName(error);
   if (name && PLUGIN_PARSE_ERROR_NAMES.has(name)) return failure("content");
-  const status = httpStatus(message);
+  const status = errorHttpStatus(error);
   if (status !== undefined && status < 500 && status !== 408 && status !== 429) {
     return failure("content");
   }
   return failure("transient");
 }
 
-/**
- * The wait before the next fresh attempt after `attempts` recorded failures, or
- * null when the class never retries by itself or its budget is spent. Transient
- * failures get three attempts; incomplete media gets one repair attempt.
- */
+/** Download errors require an explicit retry, including formerly scheduled transient failures. */
 export function automaticRetryDelayMs(
-  failure: Pick<DownloadFailure, "failureClass" | "retryAfterMs">,
-  attempts: number,
-): number | null {
-  const budget = failure.failureClass === "transient" ? AUTOMATIC_RETRY_BACKOFF_MS.length
-    : failure.failureClass === "media-incomplete" ? 1 : 0;
-  if (!Number.isInteger(attempts) || attempts < 1 || attempts > budget) return null;
-  return Math.max(AUTOMATIC_RETRY_BACKOFF_MS[attempts - 1], retryAfter(failure.retryAfterMs));
+  _failure: Pick<DownloadFailure, "failureClass" | "retryAfterMs">,
+  _attempts: number,
+): null {
+  return null;
 }

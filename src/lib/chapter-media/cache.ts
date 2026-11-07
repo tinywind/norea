@@ -1,13 +1,8 @@
 import { throwIfAborted } from "../abort";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
 import { pluginMediaFetch, takeCapturedMediaHandle } from "../http";
+import { HttpStatusError, isHttpNotFoundError } from "../http/status-error";
 import { cancelNativeStream } from "../native-stream";
-import {
-  isPluginVpnUnavailableError,
-  PLUGIN_VPN_READY_TIMEOUT_MS,
-  waitForPluginVpnReady,
-} from "../plugin-vpn-traffic";
-import { isSourceAccessRequiredError } from "../plugins/source-access";
 import { runBoundedTaskBatch } from "../tasks/batch-window";
 import { isTauriRuntime } from "../tauri-runtime";
 import {
@@ -17,11 +12,7 @@ import {
 import {
   ChapterMediaFinalizationError,
   ChapterMediaIncompleteError,
-  ChapterMediaHttpRetryError,
-  isTransientMediaHttpStatus,
-  mediaRetryAfterMs,
   isMediaAbortError,
-  isTransientMediaNetworkError,
   recordChapterMediaFailure,
 } from "./errors";
 import {
@@ -69,65 +60,7 @@ import {
 const DEFAULT_MEDIA_ACCEPT =
   "image/avif,image/webp,image/apng,image/svg+xml,image/*,video/*,audio/*,*/*;q=0.8";
 
-const CHAPTER_MEDIA_STORE_WINDOW = 4;
-const MEDIA_NETWORK_RETRY_DELAYS_MS = [1_000, 3_000] as const;
-
-function waitForMediaRetry(
-  delayMs: number,
-  signal: AbortSignal | undefined,
-): Promise<void> {
-  return new Promise((resolve, reject) => {
-    const abort = () => {
-      clearTimeout(timer);
-      reject(new DOMException(CHAPTER_MEDIA_CANCELLED_MESSAGE, "AbortError"));
-    };
-    const timer = setTimeout(() => {
-      signal?.removeEventListener("abort", abort);
-      resolve();
-    }, delayMs);
-    if (signal?.aborted) {
-      abort();
-      return;
-    }
-    signal?.addEventListener("abort", abort, { once: true });
-  });
-}
-
-// A reset connection fails every media request multiplexed on it, so retry
-// network-level failures before keeping the asset on its remote URL.
-async function fetchChapterMedia(
-  url: string,
-  request: Parameters<typeof pluginMediaFetch>[1],
-  signal: AbortSignal | undefined,
-): Promise<Response> {
-  const vpnDeadline = Date.now() + PLUGIN_VPN_READY_TIMEOUT_MS;
-  let networkFailures = 0;
-  for (;;) {
-    await waitForPluginVpnReady(signal, vpnDeadline, request?.scraperExecutor);
-    try {
-      const response = await pluginMediaFetch(url, { ...request, vpnReadyDeadline: vpnDeadline });
-      // Plain HTTP proxy refusals are 502 responses, not fetch exceptions.
-      if (response.status === 502 && await waitForPluginVpnReady(signal, vpnDeadline, request?.scraperExecutor)) {
-        continue;
-      }
-      return response;
-    } catch (error) {
-      if (
-        signal?.aborted ||
-        isMediaAbortError(error) ||
-        isSourceAccessRequiredError(error) ||
-        !isTransientMediaNetworkError(error)
-      ) {
-        throw error;
-      }
-      if (await waitForPluginVpnReady(signal, vpnDeadline, request?.scraperExecutor)) continue;
-      const delayMs = MEDIA_NETWORK_RETRY_DELAYS_MS[networkFailures];
-      if (delayMs === undefined) throw error;
-      networkFailures += 1;
-      await waitForMediaRetry(delayMs, signal);
-    }
-  }
-}
+const CHAPTER_MEDIA_STORE_WINDOW = 1;
 
 export async function cacheHtmlChapterMedia({
   baseUrl,
@@ -190,10 +123,10 @@ export async function cacheHtmlChapterMedia({
   };
   const mediaContextUrl = contextUrl ?? baseUrl ?? undefined;
   const mediaFailures: ChapterMediaFailure[] = [];
+  let previousManifest = await readChapterMediaManifest(storageContext, true);
   let storedFileBytes: Map<string, number> | null = repair
     ? await withChapterDownloadWrite(chapterId, signal, () => prepareChapterMediaWorkspace(storageContext, true))
     : null;
-  let previousManifest = await readChapterMediaManifest(storageContext, repair);
   const fetchedSourceUrls = new Set(urls);
   const resetChangedMedia =
     !repair &&
@@ -287,6 +220,10 @@ export async function cacheHtmlChapterMedia({
     ),
   ];
   let storedMediaCount = 0;
+  const mediaController = new AbortController();
+  const mediaSignal = signal
+    ? AbortSignal.any([signal, mediaController.signal])
+    : mediaController.signal;
   const session = new ChapterMediaDownloadSession({
     total: downloadUrls.length,
     onProgress,
@@ -325,6 +262,10 @@ export async function cacheHtmlChapterMedia({
       withChapterDownloadWrite(chapterId, signal, () =>
         writeChapterMediaManifest({ context: storageContext, files }),
       ),
+    (error) => {
+      session.fail(error);
+      mediaController.abort(error);
+    },
   );
   if (downloadUrls.length > 0) {
     await manifestWriter.flush();
@@ -357,19 +298,22 @@ export async function cacheHtmlChapterMedia({
         },
         ...(mediaContextUrl ? { contextUrl: mediaContextUrl } : {}),
         ...(scraperExecutor ? { scraperExecutor } : {}),
-        signal,
+        signal: mediaSignal,
         ...(sourceId ? { sourceId } : {}),
         ...(sourceAccessUrl ? { sourceAccessUrl } : {}),
       };
       let response = fetchMissingMedia
-        ? await fetchMissingMedia(mediaFilesBySourceUrl.get(url)!)
+        ? await fetchMissingMedia(mediaFilesBySourceUrl.get(url)!, mediaSignal)
         : null;
+      if (session.failed) session.throwIfStopped();
       if (!response) {
         const acquisition = await session.acquireCapturedMedia(url, mediaRequest);
         capturedHandle = acquisition.capturedHandle;
         releaseFallbackAcquisition = acquisition.releaseFallback;
-        response = capturedHandle ? null : await fetchChapterMedia(url, mediaRequest, signal);
+        if (session.failed) session.throwIfStopped();
+        response = capturedHandle ? null : await pluginMediaFetch(url, mediaRequest);
       }
+      if (session.failed) session.throwIfStopped();
       const status = capturedHandle?.status ?? response?.status ?? 0;
       const statusText =
         capturedHandle?.statusText ?? response?.statusText ?? "";
@@ -377,11 +321,9 @@ export async function cacheHtmlChapterMedia({
         ? capturedHandle.status >= 200 && capturedHandle.status < 300
         : response?.ok === true;
       if (!responseOk) {
-        const retryError = requireComplete && isTransientMediaHttpStatus(status)
-          ? new ChapterMediaHttpRetryError(status, mediaRetryAfterMs(
-              (capturedHandle ? new Headers(capturedHandle.headers) : response!.headers).get("retry-after"),
-            ))
-          : undefined;
+        if (status !== 404) {
+          throw new HttpStatusError(status, `Chapter media request failed (HTTP ${status} ${statusText}).`);
+        }
         if (capturedHandle) {
           await cancelNativeStream(capturedHandle.bodyHandle).catch(
             () => undefined,
@@ -391,8 +333,7 @@ export async function cacheHtmlChapterMedia({
         await session.runUpdate(async () => {
           recordChapterMediaFailure(mediaFailures, {
             contextUrl: mediaContextUrl ?? url,
-            error: retryError ?? `HTTP ${status} ${statusText}`,
-            ...(retryError ? { retryAfterMs: retryError.retryAfterMs } : {}),
+            error: `HTTP ${status} ${statusText}`,
             fileName: mediaFilesBySourceUrl.get(url)?.fileName,
             scraperExecutor,
             sourceId,
@@ -506,20 +447,18 @@ export async function cacheHtmlChapterMedia({
         capturedHandle = null;
       }
       if (signal?.aborted) {
-        releaseMediaAcquisition();
         session.fail(new DOMException("Task was cancelled.", "AbortError"));
+        releaseMediaAcquisition();
         return;
       }
       if (isMediaAbortError(error)) {
-        releaseMediaAcquisition();
         session.fail(error);
+        releaseMediaAcquisition();
         return;
       }
-      if (
-        isSourceAccessRequiredError(error) || isPluginVpnUnavailableError(error)
-      ) {
-        releaseMediaAcquisition();
+      if (!isHttpNotFoundError(error)) {
         session.fail(error);
+        releaseMediaAcquisition();
         return;
       }
       try {
@@ -527,9 +466,7 @@ export async function cacheHtmlChapterMedia({
           recordChapterMediaFailure(mediaFailures, {
             contextUrl: mediaContextUrl ?? url,
             error,
-            ...(error instanceof ChapterMediaHttpRetryError
-              ? { status: error.status, retryAfterMs: error.retryAfterMs }
-              : {}),
+            status: 404,
             fileName: mediaFilesBySourceUrl.get(url)?.fileName,
             scraperExecutor,
             sourceId,
@@ -544,8 +481,8 @@ export async function cacheHtmlChapterMedia({
           });
         });
       } catch (updateError) {
-        releaseMediaAcquisition();
         session.fail(updateError);
+        releaseMediaAcquisition();
         return;
       }
     }
@@ -567,12 +504,12 @@ export async function cacheHtmlChapterMedia({
     });
     session.throwIfStopped();
   } catch (error) {
-    // Keep stored media listed for the next attempt; a cancelled download cannot write.
-    await manifestWriter.flush().catch((flushError: unknown) => {
-      if (!isMediaAbortError(flushError)) {
-        console.warn("[chapter-media] media manifest write failed", { error: flushError });
-      }
-    });
+    // Keep stored media listed for an explicit resume without retrying a failed write.
+    try {
+      await manifestWriter.flush();
+    } catch (flushError) {
+      if (!isMediaAbortError(flushError)) throw flushError;
+    }
     throw error;
   }
 

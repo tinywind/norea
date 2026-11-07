@@ -34,10 +34,7 @@ export function refreshChapterDownloadFailures(): Promise<void> {
   return refreshing;
 }
 
-/**
- * Records one failed attempt with its class and returns the stored row. The row's
- * `nextRetryAt` is set only while the persisted attempt count is inside the budget.
- */
+/** Records one failed attempt and returns its stored row without scheduling another attempt. */
 export async function recordFailedChapterDownloadAttempt(
   job: ChapterDownloadJob,
   error: unknown,
