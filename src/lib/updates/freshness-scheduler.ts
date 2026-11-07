@@ -6,6 +6,7 @@ import { useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { normalizeCheckIntervalHours, useLibraryStore } from "../../store/library";
 import { isAbortError } from "../abort";
 import { readDownloadBudgetStatus } from "../download-goals/budget";
+import { automaticDownloadActiveSince } from "../download-goals/goal-targets";
 import { isNetworkOnline } from "../network";
 import { pluginManager } from "../plugins/manager";
 import { taskScheduler } from "../tasks/scheduler";
@@ -48,7 +49,8 @@ export async function runDueChecks(nowMs = Date.now()): Promise<void> {
     if (await isBudgetPaused()) return;
     await pluginManager.loadInstalledFromDb();
     const nowSeconds = Math.floor(nowMs / 1000);
-    const candidates = (await listCheckCandidates()).filter((novel) => pluginManager.getPlugin(novel.pluginId));
+    const activeSince = automaticDownloadActiveSince(useDownloadGoalSettingsStore.getState().automaticGoal, nowSeconds);
+    const candidates = (await listCheckCandidates(activeSince)).filter((novel) => pluginManager.getPlugin(novel.pluginId));
     const due = selectDueChecks(candidates, {
       intervalHours, nowSeconds, recentChecksBySource: await countRecentChecksBySource(nowSeconds - HOUR_SECONDS),
     });

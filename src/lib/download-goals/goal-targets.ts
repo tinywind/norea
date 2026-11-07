@@ -1,25 +1,25 @@
 import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/chapter";
 import type { NovelDownloadGoal } from "../../db/queries/novel-download-goal";
 
-/** The default keep-ahead applies to library novels opened within this window. */
+/** Automatic policies apply to library novels opened within this window. */
 export const ACTIVE_NOVEL_WINDOW_SECONDS = 14 * 24 * 60 * 60;
 
-/**
- * A novel's own goal, else the default keep-ahead for an active library source novel, else none.
- * An explicit `none` opts the novel out of the default as well.
- */
+export function automaticDownloadActiveSince(goal: NovelDownloadGoal, nowSeconds = Math.floor(Date.now() / 1000)): number | null {
+  return goal.kind === "none" ? null : nowSeconds - ACTIVE_NOVEL_WINDOW_SECONDS;
+}
+
+/** The global automatic policy applies to every active library source novel except an explicit pause. */
 export function effectiveDownloadGoal(
   own: NovelDownloadGoal | null,
   novel: { inLibrary: boolean; isLocal: boolean; lastReadAt: number | null },
-  defaultKeepAhead: number,
+  automaticGoal: NovelDownloadGoal,
   nowSeconds: number,
 ): { goal: NovelDownloadGoal | null; isDefault: boolean } {
-  if (own?.kind === "none") return { goal: null, isDefault: false };
-  if (own) return { goal: own, isDefault: false };
-  const active = novel.inLibrary && !novel.isLocal && novel.lastReadAt !== null &&
-    novel.lastReadAt >= nowSeconds - ACTIVE_NOVEL_WINDOW_SECONDS;
-  return active && defaultKeepAhead > 0
-    ? { goal: { kind: "keep_ahead", count: defaultKeepAhead }, isDefault: true }
+  const activeSince = automaticDownloadActiveSince(automaticGoal, nowSeconds);
+  const active = activeSince !== null && novel.inLibrary && !novel.isLocal && novel.lastReadAt !== null &&
+    novel.lastReadAt >= activeSince;
+  return active && own?.kind !== "none"
+    ? { goal: automaticGoal, isDefault: true }
     : { goal: null, isDefault: false };
 }
 

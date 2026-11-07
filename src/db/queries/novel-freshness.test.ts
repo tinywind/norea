@@ -53,7 +53,7 @@ it("lists library source novels with their reading state, goal and freshness, an
     INSERT INTO novel_download_goal VALUES(1,'entire',NULL,1),(2,'none',NULL,1)`);
   await recordNovelCheck(1, { ok: false }, 900);
   await recordNovelCheck(2, { ok: true, newChapters: 0 }, 100);
-  expect(await listCheckCandidates()).toEqual([
+  expect(await listCheckCandidates(40)).toEqual([
     { novelId: 1, pluginId: "source", status: "Ongoing", lastReadAt: 50, lastCheckedAt: 900, consecutiveFailures: 1,
       totalChapters: 2, unreadChapters: 1, hasGoal: true },
     { novelId: 2, pluginId: "other", status: null, lastReadAt: null, lastCheckedAt: 100, consecutiveFailures: 0,
@@ -69,4 +69,15 @@ it("reports when a library novel was last checked, ignoring novels outside the l
   await recordNovelCheck(1, { ok: false }, 30);
   await recordNovelCheck(2, { ok: true, newChapters: 0 }, 90);
   expect(await getLatestLibraryCheckAt()).toBe(30);
+});
+
+it("uses global eligibility for check priority without reviving old positive overrides or paused works", async () => {
+  sqlite.exec(`UPDATE novel SET in_library=1,last_read_at=500 WHERE id=1;
+    INSERT INTO novel(id,plugin_id,path,name,in_library,last_read_at) VALUES
+      (2,'source','/paused','Paused',1,500),(3,'source','/global','Global',1,600),(4,'source','/old','Old',1,100);
+    INSERT INTO novel_download_goal VALUES(1,'entire',NULL,1),(2,'none',NULL,1),(4,'entire',NULL,1)`);
+  expect((await listCheckCandidates(400)).map(row => [row.novelId, row.hasGoal])).toEqual([
+    [1, true], [2, false], [3, true], [4, false],
+  ]);
+  expect((await listCheckCandidates(null)).every(row => !row.hasGoal)).toBe(true);
 });

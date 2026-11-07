@@ -34,9 +34,9 @@ const novel = (id: number, extra: Record<string, unknown> = {}) =>
   ({ id, pluginId: "source", path: `/${id}`, name: `N${id}`, lastReadAt: 1, goal: null, ...extra });
 
 beforeEach(() => {
-  useDownloadGoalSettingsStore.setState({ defaultKeepAhead: 1 });
+  useDownloadGoalSettingsStore.setState({ automaticGoal: { kind: "keep_ahead", count: 1 } });
   useReaderStore.setState({ lastReadChapterByNovel: { 1: 10, 2: 20, 3: 30, 4: 40, 5: 50 } });
-  mocks.novels = [novel(1), novel(2), novel(3), novel(4, { goal: { kind: "entire" } }), novel(5, { pluginId: "gone" }), novel(6)];
+  mocks.novels = [novel(1, { goal: { kind: "entire" } }), novel(2), novel(3), novel(4, { goal: { kind: "entire" } }), novel(5, { pluginId: "gone" }), novel(6)];
   mocks.chapters = new Map([
     [1, [row(10), row(11, stored)]],
     [2, [row(20), row(21, { isDownloadQueued: true })]],
@@ -48,8 +48,18 @@ beforeEach(() => {
   mocks.failed = [{ chapterId: 31 }];
 });
 
-it("reports ready, downloading and attention per goal novel", async () => {
+it("reports offline state from the global range while ignoring retained per-work policies", async () => {
   expect(Object.fromEntries(await describeDownloadGoalOfflineStates())).toEqual({
     1: "ready", 2: "downloading", 3: "attention", 4: "attention", 5: "attention", 6: "ready",
   });
+});
+
+it("reports no automatic goal state when the global policy is off despite retained positive policies", async () => {
+  useDownloadGoalSettingsStore.getState().setAutomaticGoal({ kind: "none" });
+  expect(await describeDownloadGoalOfflineStates()).toEqual(new Map());
+});
+
+it("uses the global entire range for offline state", async () => {
+  useDownloadGoalSettingsStore.getState().setAutomaticGoal({ kind: "entire" });
+  expect((await describeDownloadGoalOfflineStates()).get(1)).toBe("downloading");
 });

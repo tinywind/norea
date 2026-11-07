@@ -14,8 +14,10 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../ui/ResponsiveSheet", () => ({ ResponsiveSheet: () => null }));
 
+import { DownloadOnceChoices } from "../DownloadOnceChoices";
 import {
   LibraryCategorySheet,
+  LibraryDownloadSheet,
   nextCategoryMembership,
 } from "./LibrarySelectionSheets";
 
@@ -76,4 +78,15 @@ it("shows all, some or none per category and applies only the explicit changes",
 
   await harness.run(() => (apply().props.onClick as () => void)());
   expect(onApply).toHaveBeenCalledWith({ add: [5, 6], remove: [4] });
+});
+
+it("asks for an immediate download range for selected works and queues nothing when opened", () => {
+  const onChoose = vi.fn();
+  const sheet = LibraryDownloadSheet({ applying: false, error: null, novelCount: 2, onChoose, onClose: vi.fn(), opened: true });
+  const contents = collectElements(sheet.props.children as ReactNode);
+  const choice = contents.find(element => element.type === DownloadOnceChoices)!;
+  expect(choice.props.disabled).toBe(false);
+  expect(onChoose).not.toHaveBeenCalled();
+  (choice.props.onChoose as (selection: unknown) => void)({ kind: "remaining" });
+  expect(onChoose).toHaveBeenCalledExactlyOnceWith({ kind: "remaining" });
 });

@@ -24,12 +24,12 @@ import { useTranslation } from "../../i18n";
 import { useBrowseStore } from "../../store/browse";
 import { useContentSyncStore } from "../../store/content-sync";
 import {
-  DEFAULT_KEEP_AHEAD_CHOICES,
   FINISHED_CHAPTER_KEEP_CHOICES,
   useDownloadGoalSettingsStore,
 } from "../../store/download-goals";
 import { showSettingsToast } from "./settings-toast";
 import { NovelDownloadGoalSettings } from "./NovelDownloadGoalSettings";
+import { DownloadGoalChoices } from "../DownloadGoalChoices";
 import { DownloadRecoverySettings } from "./DownloadRecoverySettings";
 
 export const CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY = [
@@ -242,22 +242,12 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
 
       <SettingsSection title={t("browseSettings.group.downloads")}>
         <SettingsFieldRow
-          label={t("settings.downloads.keepAhead.label")}
-          description={t("settings.downloads.keepAhead.description")}
+          label={t("settings.downloads.automaticGoal.label")}
+          description={t("settings.downloads.automaticGoal.description")}
+          layout="stacked"
         >
-          <Select
-            allowDeselect={false}
-            data={DEFAULT_KEEP_AHEAD_CHOICES.map((count) => ({
-              value: String(count),
-              label: count === 0
-                ? t("settings.downloads.keepAhead.off")
-                : t("settings.downloads.keepAhead.count", { count }),
-            }))}
-            value={String(goalSettings.defaultKeepAhead)}
-            onChange={(value) => {
-              if (value !== null) goalSettings.setDefaultKeepAhead(Number(value));
-            }}
-          />
+          <DownloadGoalChoices current={goalSettings.automaticGoal} disabled={isBusy}
+            onChoose={goalSettings.setAutomaticGoal} />
         </SettingsFieldRow>
         {isAndroidRuntime() ? (
           <SettingsFieldRow

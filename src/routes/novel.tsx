@@ -810,6 +810,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
               <NovelWorkspace
                 key={novel.id}
                 allowSourceAccess={allowSourceAccess}
+                hasServerSource={Boolean(serverSourceQuery.data)}
                 categoryChips={novel.inLibrary ? (
                   <NovelCategoryEditor
                     key={novel.id}

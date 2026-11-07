@@ -1,6 +1,6 @@
 import { Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
-import { listNovelDownloadGoals, type NovelDownloadGoal } from "../db/queries/novel-download-goal";
+import { listNovelDownloadGoals } from "../db/queries/novel-download-goal";
 import { useTranslation } from "../i18n";
 import { estimateNovelDownloadMs } from "../lib/download-goals/download-eta";
 import { formatDownloadEta } from "../lib/download-goals/goal-status";
@@ -20,17 +20,15 @@ export function DownloadGoalWorkLine({ records, tasks }: { records: readonly Tas
     queryFn: listNovelDownloadGoals,
     enabled: novelId !== undefined && automatic,
   }).data;
-  const defaultKeepAhead = useDownloadGoalSettingsStore((state) => state.defaultKeepAhead);
+  const automaticGoal = useDownloadGoalSettingsStore((state) => state.automaticGoal);
   const cooldownSeconds = useBrowseStore((state) => state.chapterDownloadCooldownSeconds);
   if (novelId === undefined) return null;
-  const goal: NovelDownloadGoal | undefined = goals?.find((row) => row.novelId === novelId)?.goal;
-  const label = !automatic || !goals || goal?.kind === "none"
+  const paused = goals?.some((row) => row.novelId === novelId && row.goal.kind === "none");
+  const label = !automatic || !goals || paused || automaticGoal.kind === "none"
     ? null
-    : !goal
-      ? t("downloadGoals.goal.defaultKeepAhead", { count: defaultKeepAhead })
-      : goal.kind === "keep_ahead"
-        ? t("downloadGoals.goal.keepAhead", { count: goal.count })
-        : t(goal.kind === "entire" ? "downloadGoals.goal.entire" : "downloadGoals.goal.allRemaining");
+    : automaticGoal.kind === "keep_ahead"
+      ? t("downloadGoals.goal.keepAhead", { count: automaticGoal.count })
+      : t(automaticGoal.kind === "entire" ? "downloadGoals.goal.entire" : "downloadGoals.goal.allRemaining");
   const etaMs = estimateNovelDownloadMs(novelId, records, cooldownSeconds * 1000);
   const eta = etaMs === null ? null : formatDownloadEta(etaMs);
   const line = [label, eta ? t(eta.key, { count: eta.minutes }) : null].filter(Boolean).join(" · ");

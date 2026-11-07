@@ -1,13 +1,12 @@
 import { listLibraryDownloadChapters, type LibraryDownloadChapter } from "../../db/queries/chapter";
 import {
-  clearDownloadGoalExclusions,
   excludeChaptersFromDownloadGoals,
   listDownloadGoalExcludedChapterIds,
   listDownloadGoalNovels,
   listGoalNovelIdsForDownloadScope,
   setNovelDownloadGoal,
+  resumeStoppedNovelDownloadGoal,
   type DownloadGoalNovel,
-  type NovelDownloadGoal,
 } from "../../db/queries/novel-download-goal";
 import { translate } from "../../i18n";
 import { useAppearanceStore } from "../../store/appearance";
@@ -40,7 +39,7 @@ import {
   readDownloadBudgetStatus,
   type DownloadGoalPause,
 } from "./budget";
-import { ACTIVE_NOVEL_WINDOW_SECONDS, goalReadingChapterId, resolveGoalTargets } from "./goal-targets";
+import { automaticDownloadActiveSince, goalReadingChapterId, resolveGoalTargets } from "./goal-targets";
 import { recordChapterDownloadDuration } from "./download-eta";
 import { migrateLegacyReadAhead } from "./legacy-read-ahead";
 
@@ -133,20 +132,12 @@ function schedulePausedRecheck(): void {
   }, PAUSED_RECHECK_MS);
 }
 
-function goalFor(novel: DownloadGoalNovel): NovelDownloadGoal | null {
-  if (novel.goal) return novel.goal;
-  const count = useDownloadGoalSettingsStore.getState().defaultKeepAhead;
-  return count > 0 ? { kind: "keep_ahead", count } : null;
-}
-
 function isOwned(chapter: LibraryDownloadChapter): boolean {
   return chapter.isDownloadQueued || preparingChapterIds.has(chapter.id) || isChapterDownloadQueued(chapter.id);
 }
 
 function activeSinceSeconds(): number | null {
-  return useDownloadGoalSettingsStore.getState().defaultKeepAhead > 0
-    ? Math.floor(Date.now() / 1000) - ACTIVE_NOVEL_WINDOW_SECONDS
-    : null;
+  return automaticDownloadActiveSince(useDownloadGoalSettingsStore.getState().automaticGoal);
 }
 
 function persistExclusions(chapterIds: readonly number[]): Promise<void> {
@@ -167,7 +158,9 @@ async function runReconcile(novelIds: number[] | undefined): Promise<void> {
     if (pause !== "restore") schedulePausedRecheck();
     return;
   }
-  const activeSince = activeSinceSeconds();
+  const goal = useDownloadGoalSettingsStore.getState().automaticGoal;
+  if (goal.kind === "none") return;
+  const activeSince = automaticDownloadActiveSince(goal);
   const novels = await listDownloadGoalNovels(activeSince, novelIds);
   if (novels.length === 0) return;
   await pluginManager.loadInstalledFromDb();
@@ -176,8 +169,7 @@ async function runReconcile(novelIds: number[] | undefined): Promise<void> {
   const [latest] = novelIds ? await listDownloadGoalNovels(activeSince) : novels;
   const focusNovelId = latest?.lastReadAt != null ? latest.id : undefined;
   for (const novel of novels) {
-    const goal = goalFor(novel);
-    if (!goal) continue;
+    if (useDownloadGoalSettingsStore.getState().automaticGoal !== goal) return;
     const plugin = pluginManager.getPlugin(novel.pluginId);
     if (!plugin) continue;
     const chapters = await listLibraryDownloadChapters(novel.id);
@@ -185,6 +177,7 @@ async function runReconcile(novelIds: number[] | undefined): Promise<void> {
     const readingChapterId = goalReadingChapterId(chapters, useReaderStore.getState().lastReadChapterByNovel[novel.id]);
     const targets = resolveGoalTargets(goal, chapters, readingChapterId, isOwned,
       (chapter) => excluded.has(chapter.id) || failed.has(chapter.id));
+    if (useDownloadGoalSettingsStore.getState().automaticGoal !== goal) return;
     if (targets.pending.length > 0) submitGoalWork(novel, plugin.name, targets.pending, novel.id === focusNovelId);
   }
 }
@@ -238,20 +231,17 @@ function submitGoalWork(
   void handle.promise.catch(() => undefined);
 }
 
-/**
- * Stores a novel's goal, withdraws goal work it no longer wants, and reconciles.
- * Null returns the novel to the default keep-ahead; `none` stops automatic downloads for it.
- */
-export async function setDownloadGoal(novelId: number, goal: NovelDownloadGoal | null): Promise<void> {
-  await setNovelDownloadGoal(novelId, goal);
-  await withdrawGoalWork([novelId]);
-  // A goal the user just chose covers chapters they cancelled or deleted before.
-  await exclusionWrite;
-  await clearDownloadGoalExclusions(novelId);
-  reconcileDownloadGoals([novelId]);
+/** Explicitly resumes stopped novels under the current global policy without clearing their chapter exclusions or queued work. */
+export async function resumeStoppedDownloadGoals(novelIds: readonly number[]): Promise<number> {
+  const resumed: number[] = [];
+  for (const novelId of new Set(novelIds.filter(Number.isSafeInteger))) {
+    if (await resumeStoppedNovelDownloadGoal(novelId)) resumed.push(novelId);
+  }
+  if (resumed.length > 0) reconcileDownloadGoals(resumed);
+  return resumed.length;
 }
 
-/** The user stopped keeping these novels downloaded: no goal and no default keep-ahead; downloads are kept. */
+/** The user paused automatic downloads for these novels; downloaded content is kept. */
 export async function stopDownloadGoals(novelIds: readonly number[]): Promise<void> {
   for (const novelId of novelIds) await setNovelDownloadGoal(novelId, { kind: "none" });
   await withdrawGoalWork(novelIds);
@@ -296,8 +286,8 @@ async function withdrawGoalWork(novelIds: readonly number[]): Promise<void> {
 }
 
 /**
- * Called after the user deleted these chapters' downloads. Deleted chapters stay out of goal work until the
- * novel's goal is set again; returns the novels with a goal in effect so the caller can offer to stop it.
+ * Called after the user deleted these chapters' downloads. Deleted chapters stay out of automatic work;
+ * returns the covered novels so the caller can offer to pause their automatic downloads.
  */
 export async function noteDownloadDeletion(chapterIds: readonly number[]): Promise<number[]> {
   await persistExclusions(chapterIds);
@@ -337,7 +327,7 @@ export function startDownloadGoals(): void {
       if (changed.length) reconcileDownloadGoals(changed);
     }),
     useDownloadGoalSettingsStore.subscribe((state, previous) => {
-      if (state.defaultKeepAhead !== previous.defaultKeepAhead ||
+      if (state.automaticGoal !== previous.automaticGoal ||
           state.automaticOnMobileData !== previous.automaticOnMobileData) reconcileDownloadGoals();
     }),
     useNetworkStore.subscribe((state, previous) => {

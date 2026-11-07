@@ -9,6 +9,9 @@ import { useTranslation } from "../../i18n";
 import { IconButton } from "../IconButton";
 import { PlusIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
+import { DownloadOnceChoices } from "../DownloadOnceChoices";
+import type { DownloadOnceSelection } from "./download-once";
+import { describeError } from "../../lib/errors";
 
 function sortedIds(novelIds: readonly number[]): number[] {
   return [...novelIds].sort((left, right) => left - right);
@@ -163,4 +166,27 @@ function getMembershipDescription(
     return t("library.categoryAction.inSome", { count: row.count, total });
   }
   return t("library.categoryAction.inNone");
+}
+
+interface LibraryDownloadSheetProps {
+  applying: boolean;
+  error: unknown;
+  novelCount: number;
+  onChoose: (selection: DownloadOnceSelection) => void;
+  onClose: () => void;
+  opened: boolean;
+}
+
+/** Choosing a range queues it once for each selected source work. */
+export function LibraryDownloadSheet({ applying, error, novelCount, onChoose, onClose, opened }: LibraryDownloadSheetProps) {
+  const { t } = useTranslation();
+  return (
+    <ResponsiveSheet onClose={onClose} opened={opened} title={t("library.downloadOnce.title")}>
+      {opened ? <Stack gap="md">
+        <Text size="sm">{t("downloadOnce.selectedWorks", { count: novelCount })}</Text>
+        {error ? <Text c="danger" role="alert" size="sm">{describeError(error)}</Text> : null}
+        <DownloadOnceChoices disabled={applying || novelCount === 0} onChoose={onChoose} onClose={onClose} />
+      </Stack> : null}
+    </ResponsiveSheet>
+  );
 }

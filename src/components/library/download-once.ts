@@ -1,12 +1,31 @@
 import type { QueryClient } from "@tanstack/react-query";
-import { listUnqueuedChapterDownloads, type ChapterListRow } from "../../db/queries/chapter";
+import { hasStoredChapterContent, listLibraryDownloadChapters, listUnqueuedChapterDownloads, type ChapterListRow, type LibraryDownloadChapter } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import type { TranslationKey } from "../../i18n";
 import { isChapterDownloadQueued, type ChapterDownloadJob } from "../../lib/tasks/chapter-download";
 import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-requests";
 import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
+import { goalReadingChapterId } from "../../lib/download-goals/goal-targets";
+import { readServerNovelSource } from "../../lib/content-sync/novel-source";
+import { useReaderStore } from "../../store/reader";
 
 type Translate = (key: TranslationKey, values?: Record<string, string | number>) => string;
+
+export type DownloadOnceSelection = { kind: "next"; count: number } | { kind: "remaining" } | { kind: "all" };
+
+/** Selects the requested reading-order range before excluding stored or already queued chapters. */
+export function selectDownloadChaptersOnce(
+  chapters: readonly LibraryDownloadChapter[],
+  selection: DownloadOnceSelection,
+  rememberedChapterId: number | undefined,
+): LibraryDownloadChapter[] {
+  const current = goalReadingChapterId(chapters, rememberedChapterId);
+  const currentIndex = current === undefined ? -1 : chapters.findIndex(chapter => chapter.id === current);
+  const after = chapters.slice(currentIndex + 1);
+  const targets = selection.kind === "all" ? chapters
+    : selection.kind === "remaining" ? after : after.slice(0, Math.max(0, Math.floor(selection.count)));
+  return targets.filter(chapter => !hasStoredChapterContent(chapter) && !chapter.isDownloadQueued && !isChapterDownloadQueued(chapter.id));
+}
 
 export interface DownloadOnceOutcome {
   queued: number;
@@ -14,26 +33,30 @@ export interface DownloadOnceOutcome {
 }
 
 /**
- * Queues every chapter of each source novel that has no stored body and is not
- * queued yet, one request per novel at user priority. Local and missing
- * novels are left alone; local ones are counted as skipped.
+ * Queues the chosen range of each source novel once, skipping stored and queued
+ * chapters, one request per novel at user priority. Missing novels and local-only
+ * novels without a remembered content server are left alone; local-only ones are counted as skipped.
  */
 export async function queueChapterDownloadsOnce(
   novelIds: readonly number[],
   t: Translate,
   queryClient: QueryClient,
+  selection: DownloadOnceSelection = { kind: "all" },
 ): Promise<DownloadOnceOutcome> {
   let queued = 0;
   let skippedLocal = 0;
-  for (const novelId of novelIds) {
+  for (const novelId of new Set(novelIds)) {
     const novel = await getNovelById(novelId);
     if (!novel) continue;
-    if (novel.isLocal) {
+    if (novel.isLocal && !await readServerNovelSource(novel.id)) {
       skippedLocal += 1;
       continue;
     }
-    const chapters = (await listChaptersToDownloadOnce(novel.id))
-      .filter((chapter) => !isChapterDownloadQueued(chapter.id));
+    // The paged source query excludes local rows, including works restored from a content server.
+    const chapters = selection.kind === "all" && !novel.isLocal
+      ? (await listChaptersToDownloadOnce(novel.id)).filter(chapter => !isChapterDownloadQueued(chapter.id))
+      : selectDownloadChaptersOnce(await listLibraryDownloadChapters(novel.id), selection,
+          useReaderStore.getState().lastReadChapterByNovel[novel.id]);
     if (chapters.length === 0) continue;
     const jobs: ChapterDownloadJob[] = chapters.map((chapter) => ({
       id: chapter.id,
@@ -56,8 +79,10 @@ export async function queueChapterDownloadsOnce(
       total: jobs.length,
       prepare: async () => ({ jobs, materializeAllTasks: true, title, total: jobs.length }),
     });
-    void request.promise.finally(() => queryClient.invalidateQueries({ queryKey: ["novel", "library"] }))
-      .catch(() => undefined);
+    void request.promise.finally(() => Promise.all([
+      queryClient.invalidateQueries({ queryKey: ["novel", "library"] }),
+      queryClient.invalidateQueries({ queryKey: ["novel", "detail", novel.id, "chapters"], exact: true }),
+    ])).catch(() => undefined);
     await request.materialized;
     queued += jobs.length;
   }

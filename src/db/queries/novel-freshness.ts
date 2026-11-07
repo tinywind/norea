@@ -68,23 +68,23 @@ export interface CheckCandidate {
   consecutiveFailures: number;
   totalChapters: number;
   unreadChapters: number;
-  /** The novel has its own goal other than None. */
+  /** The current global automatic policy covers this active, unpaused library novel. */
   hasGoal: boolean;
 }
 
-export async function listCheckCandidates(): Promise<CheckCandidate[]> {
+export async function listCheckCandidates(activeSince: number | null = null): Promise<CheckCandidate[]> {
   const db = await getDb();
   const rows = await db.select<(Omit<CheckCandidate, "hasGoal"> & { hasGoal: unknown })[]>(
     `SELECT n.id AS novelId,n.plugin_id AS pluginId,n.status,n.last_read_at AS lastReadAt,
        f.last_checked_at AS lastCheckedAt,COALESCE(f.consecutive_failures,0) AS consecutiveFailures,
        COALESCE(s.total_chapters,0) AS totalChapters,COALESCE(s.chapters_unread,0) AS unreadChapters,
-       (g.novel_id IS NOT NULL AND g.kind <> 'none') AS hasGoal
+       ($1 IS NOT NULL AND n.last_read_at >= $1 AND (g.novel_id IS NULL OR g.kind <> 'none')) AS hasGoal
      FROM novel n
      LEFT JOIN novel_freshness f ON f.novel_id=n.id
      LEFT JOIN novel_stats s ON s.novel_id=n.id
      LEFT JOIN novel_download_goal g ON g.novel_id=n.id
      WHERE n.in_library=1 AND n.is_local=0
-     ORDER BY n.id`);
+     ORDER BY n.id`, [activeSince]);
   return rows.map((row) => ({ ...row, hasGoal: row.hasGoal === 1 || row.hasGoal === true }));
 }
 

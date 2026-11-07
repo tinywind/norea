@@ -34,10 +34,11 @@ import {
   novelStatusLabel,
   splitGenres,
 } from "./novel-detail-model";
-import { NovelDownloadGoalSheet } from "./NovelActions";
+import { NovelDownloadSheet } from "./NovelActions";
 
 interface NovelWorkspaceProps {
   allowSourceAccess: boolean;
+  hasServerSource?: boolean;
   /** Category chips, shown under the title while the novel is in the library. */
   categoryChips?: ReactNode;
   chapters: ChapterListRow[];
@@ -71,6 +72,7 @@ const OFFLINE_STATE_ICONS = { ready: DownloadedIcon, downloading: DownloadIcon, 
  */
 export function NovelWorkspace({
   allowSourceAccess,
+  hasServerSource = false,
   categoryChips,
   chapters,
   checkingNewChapters = false,
@@ -199,10 +201,10 @@ export function NovelWorkspace({
       <NovelSummary genres={genres} summary={novel.summary} />
 
       {novel.isLocal ? null : (
-        <NovelDownloadGoalSheet
+        <NovelDownloadSheet
           chapters={chapters}
           downloadStatuses={downloadStatuses}
-          lastReadChapterId={lastReadChapterId}
+          hasServerSource={hasServerSource}
           novel={novel}
           onClose={() => setDownloadSheetOpen(false)}
           onSelectChapters={onSelectChapters}

@@ -1,9 +1,10 @@
 import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
+import type { NovelDownloadGoal } from "../db/queries/novel-download-goal";
 
 const hooks = vi.hoisted(() => ({ index: 0, slots: [] as unknown[] }));
-vi.mock("react", async (original) => ({
-  ...(await original<typeof import("react")>()),
+vi.mock("react", async original => ({
+  ...await original<typeof import("react")>(),
   useState: (initial: unknown) => {
     const index = hooks.index++;
     if (!(index in hooks.slots)) hooks.slots[index] = initial;
@@ -11,69 +12,54 @@ vi.mock("react", async (original) => ({
   },
 }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
-vi.mock("../store/download-goals", () => ({
-  useDownloadGoalSettingsStore: (select: (state: { defaultKeepAhead: number }) => unknown) => select({ defaultKeepAhead: 3 }),
-}));
 
-import { DownloadGoalChoices, sharedDownloadGoal } from "./DownloadGoalChoices";
+import { DownloadGoalChoices } from "./DownloadGoalChoices";
 import { SegmentedToggle } from "./SegmentedToggle";
 import { ListRow } from "./ui/ListRow";
 
 interface Props {
-  "aria-busy"?: boolean;
+  "aria-checked"?: boolean;
   children?: ReactNode;
-  leading?: ReactElement<{ className?: string }>;
+  disabled?: boolean;
   onChange?: (value: string) => void;
   onClick?: () => void;
   title?: string;
+  value?: string;
+  data?: Array<{ value: string }>;
 }
-
 function elements(node: ReactNode): ReactElement<Props>[] {
   if (Array.isArray(node)) return node.flatMap(elements);
   if (!node || typeof node !== "object" || !("props" in node)) return [];
   const element = node as ReactElement<Props>;
   return [element, ...elements(element.props.children)];
 }
-
 const onChoose = vi.fn();
-function render(pending: boolean) {
+function render(current: NovelDownloadGoal = { kind: "none" }, disabled = false) {
   hooks.index = 0;
-  return elements(DownloadGoalChoices({
-    allRemainingDescription: "", current: null, disabled: pending, entireDescription: "", onChoose, pending,
-  }));
+  return elements(DownloadGoalChoices({ current, disabled, onChoose }));
 }
-const row = (tree: ReactElement<Props>[], title: string) =>
-  tree.find((element) => element.type === ListRow && element.props.title === title)!;
+beforeEach(() => { hooks.slots = []; onChoose.mockClear(); });
 
-beforeEach(() => {
-  hooks.slots = [];
-  onChoose.mockClear();
+it("offers one global policy with no inherited or per-work default choice", () => {
+  const rows = render({ kind: "entire" }).filter(element => element.type === ListRow);
+  expect(rows.map(row => row.props.title)).toEqual([
+    "downloadGoals.kind.none", "downloadGoals.kind.keepAhead", "downloadGoals.kind.allRemaining", "downloadGoals.kind.entire",
+  ]);
+  expect(rows.filter(row => row.props["aria-checked"]).map(row => row.props.title)).toEqual(["downloadGoals.kind.entire"]);
+  rows[0]!.props.onClick!();
+  expect(onChoose).toHaveBeenCalledExactlyOnceWith({ kind: "none" });
 });
 
-it("marks the goal every selected novel shares and nothing when they differ", () => {
-  const goals = [
-    { novelId: 1, goal: { kind: "entire" as const }, updatedAt: 1 },
-    { novelId: 2, goal: { kind: "entire" as const }, updatedAt: 2 },
-    { novelId: 3, goal: { kind: "none" as const }, updatedAt: 3 },
-  ];
-  expect(sharedDownloadGoal([1, 2], goals)).toEqual({ kind: "entire" });
-  expect(sharedDownloadGoal([1, 3], goals)).toBeUndefined();
-  expect(sharedDownloadGoal([4, 5], goals)).toBeNull();
-  expect(sharedDownloadGoal([1, 4], goals)).toBeUndefined();
-});
-
-it("chooses keep-ahead with the count picked, even when another goal is active", () => {
-  const toggle = render(false).find((element) => element.type === SegmentedToggle)!;
+it("keeps supported saved counts visible and changes the shared policy when a count is chosen", () => {
+  const toggle = render({ kind: "keep_ahead", count: 30 }).find(element => element.type === SegmentedToggle)!;
+  expect(toggle.props.value).toBe("30");
+  expect(toggle.props.data?.map(item => item.value)).toEqual(["1", "3", "5", "10", "30"]);
   toggle.props.onChange!("10");
-  expect(onChoose).toHaveBeenCalledWith({ kind: "keep_ahead", count: 10 });
+  expect(onChoose).toHaveBeenCalledExactlyOnceWith({ kind: "keep_ahead", count: 10 });
 });
 
-it("marks only the tapped row as in progress while the choice is written", () => {
-  row(render(false), "downloadGoals.kind.entire").props.onClick!();
-  expect(onChoose).toHaveBeenCalledWith({ kind: "entire" });
-  const tree = render(true);
-  expect(row(tree, "downloadGoals.kind.entire").props["aria-busy"]).toBe(true);
-  expect(row(tree, "downloadGoals.kind.entire").props.leading!.props.className).toBe("norea-download-goal-pending");
-  expect(row(tree, "downloadGoals.kind.none").props["aria-busy"]).toBeUndefined();
-  expect(row(render(false), "downloadGoals.kind.entire").props["aria-busy"]).toBeUndefined();
+it("disables policy controls only for the settings operation's busy state", () => {
+  const controls = render({ kind: "none" }, true).filter(element => element.type === ListRow || element.type === SegmentedToggle);
+  expect(controls).toHaveLength(5);
+  expect(controls.every(element => element.props.disabled)).toBe(true);
 });

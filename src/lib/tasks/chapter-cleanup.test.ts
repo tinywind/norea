@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { NovelDownloadGoal } from "../../db/queries/novel-download-goal";
 import type { ChapterCleanupCandidate } from "../../db/queries/chapter-cleanup";
 import type { ChapterCleanupFilters } from "../chapter-cleanup";
 import { approveChapterCleanupTargets, chapterCleanupProtectedCounts, previewChapterCleanup } from "../chapter-cleanup";
@@ -9,8 +10,12 @@ const mocks = vi.hoisted(() => ({
   candidates: vi.fn(), reconcile: vi.fn(), inspect: vi.fn(), remove: vi.fn(), fetch: vi.fn(),
   cancel: vi.fn(), discard: vi.fn(), queueWait: vi.fn(), writesWait: vi.fn(),
   state: { serverUrl: "https://server" },
+  automaticGoal: { kind: "keep_ahead", count: 3 } as NovelDownloadGoal,
+  protectedIds: vi.fn(),
 }));
 vi.mock("../../db/queries/chapter-cleanup", () => ({ listChapterCleanupCandidates: mocks.candidates, reconcileCleanedChapter: mocks.reconcile }));
+vi.mock("../../store/download-goals", () => ({ useDownloadGoalSettingsStore: { getState: () => ({ automaticGoal: mocks.automaticGoal }) } }));
+vi.mock("../download-goals/goal-protection", () => ({ listGoalProtectedChapterIds: mocks.protectedIds }));
 vi.mock("../../store/content-sync", () => ({ useContentSyncStore: { getState: () => mocks.state } }));
 vi.mock("../chapter-content/storage-platform", () => ({ inspectChapterPayloadInventory: mocks.inspect, deleteChapterPayload: mocks.remove }));
 vi.mock("../content-sync/chapter-inventory", () => ({ cleanupServerUrl: (_candidate: unknown, fallback: string) => fallback, fetchCleanupServerInventory: mocks.fetch }));
@@ -33,6 +38,8 @@ const filters = (mode: ChapterCleanupFilters["server"]): ChapterCleanupFilters =
 
 beforeEach(() => {
   vi.clearAllMocks(); mocks.state.serverUrl = "https://server";
+  mocks.automaticGoal = { kind: "keep_ahead", count: 3 };
+  mocks.protectedIds.mockResolvedValue(new Set());
   mocks.candidates.mockImplementation(async (_filter, options) => options.chapterId ? [candidate] : options.afterId ? [] : [candidate]);
   mocks.inspect.mockResolvedValue(snapshot); mocks.fetch.mockResolvedValue(server); mocks.reconcile.mockResolvedValue(1);
   mocks.remove.mockResolvedValue({ snapshot: empty, errors: [] });
@@ -229,4 +236,27 @@ it("preserves native deletion errors if the first database reconciliation also t
   expect(result.results[0]?.reason).toContain("permission denied");
   expect(result.results[0]?.reason).toContain("database failed");
   expect(result).toMatchObject({ failed: 1, bytesFreed: 28 });
+});
+
+it("preserves a finished chapter when the global entire policy covers it immediately before automatic deletion", async () => {
+  const preview = await previewChapterCleanup({ ...filters("any"), finished: { keepLast: 5 } });
+  mocks.inspect.mockImplementationOnce(async () => {
+    mocks.automaticGoal = { kind: "entire" };
+    return snapshot;
+  });
+  mocks.protectedIds.mockResolvedValue(new Set([3]));
+  expect(await runChapterCleanup(preview)).toMatchObject({ deleted: 0, skipped: 1, results: [{ chapterId: 3, reason: "changed" }] });
+  expect(mocks.protectedIds).toHaveBeenCalledWith([1]);
+  expect(mocks.remove).not.toHaveBeenCalled();
+  expect(mocks.reconcile).not.toHaveBeenCalled();
+});
+
+it("keeps an explicitly approved manual cleanup independent of the global entire policy", async () => {
+  mocks.automaticGoal = { kind: "entire" };
+  mocks.protectedIds.mockResolvedValue(new Set([3]));
+  const preview = await previewChapterCleanup(filters("any"));
+  const approved = approveChapterCleanupTargets(preview, new Set([3]), { includeUnread: false, includeGoalKept: true });
+  expect(await runChapterCleanup(approved)).toMatchObject({ deleted: 1, skipped: 0 });
+  expect(mocks.remove).toHaveBeenCalledOnce();
+  expect(mocks.protectedIds).not.toHaveBeenCalled();
 });

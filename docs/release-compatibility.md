@@ -378,6 +378,32 @@ requirements must be decided explicitly before implementation.
 - Source plugins use their independent API version 0.2. Their contract is
   documented in [docs/plugins/contract.md](./plugins/contract.md).
 
+## Global automatic download policy
+
+The `download-goal-settings` entry now stores one `automaticGoal` (`none`,
+`keep_ahead` with 1, 3, 5, 10 or 30 chapters, `all_remaining`, or `entire`). A
+valid saved policy takes precedence over the earlier `defaultKeepAhead` field;
+when it is absent, that saved count carries forward and 0 becomes `none`.
+Settings and backup storage keep the same key and require no SQL migration.
+
+The policy selects future automatic work for source novels in the library read
+within the last 14 days. Retained positive `novel_download_goal` rows no longer
+select a different range or bypass that eligibility, including after backup
+restore. Their rows remain intact. A stored `none` remains an intentional
+per-work pause, visible in Settings, and only explicit resume removes it. Resume
+and global policy changes retain chapter cancellation/deletion exclusions,
+failed chapters, queued requests, VPN plans and downloaded content. Previously
+admitted requests continue under their existing queue and budget controls.
+
+The retired reader option is carried forward once: an unsaved global off choice
+stays off, and explicit per-source/per-novel off overrides become pauses. Old on
+overrides do not recreate positive per-work policies or override the global
+choice. Restore holds, source failures and network/battery/storage budgets remain
+in force. Legacy `entire` rows still protect existing content from automatic
+finished-chapter cleanup; changing the download policy does not authorize its
+deletion. The current global `entire` policy also protects its covered chapters,
+checked again immediately before automatic finished-chapter deletion.
+
 ## Device-only chapter cleanup
 
 Settings > Data > Clear downloaded chapters previews an explicit cleanup before

@@ -25,7 +25,7 @@ import { confirmContentDeletion } from "../../store/content-deletion";
 import { type LibrarySortOrder } from "../../store/library";
 import { showReadStateUndoToast } from "../read-state-undo-toast";
 import { chaptersKey, novelKey } from "../novel/novel-detail-model";
-import { downloadOnceNotice, queueChapterDownloadsOnce } from "./download-once";
+import { downloadOnceNotice, queueChapterDownloadsOnce, type DownloadOnceSelection } from "./download-once";
 
 export function useLibrarySelection(
   libraryFilter: LibraryNovelRefreshFilter,
@@ -169,7 +169,7 @@ export function useLibrarySelection(
   });
 
   const downloadOnceMutation = useMutation({
-    mutationFn: ({ novelIds }: DownloadOnceInput) => queueChapterDownloadsOnce(novelIds, t, queryClient),
+    mutationFn: ({ novelIds, selection }: DownloadOnceInput) => queueChapterDownloadsOnce(novelIds, t, queryClient, selection),
     onSuccess: (outcome) => {
       exitSelection();
       notifications.show(downloadOnceNotice(t, outcome));
@@ -288,6 +288,7 @@ interface SetNovelsReadStateInput {
 }
 
 interface DownloadOnceInput {
+  selection?: DownloadOnceSelection;
   novelIds: readonly number[];
 }
 

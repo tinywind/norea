@@ -38,21 +38,23 @@ it("counts stored chapters, reports missing images separately and requests only 
   expect(ids(targets.pending)).toEqual([6]);
 });
 
-it("applies the default keep-ahead only to active library source novels without their own goal", () => {
+it.each([
+  { kind: "keep_ahead", count: 5 } as const, { kind: "all_remaining" } as const, { kind: "entire" } as const,
+])("applies the global $kind policy to every active library source novel regardless of legacy positive goals", automaticGoal => {
   const now = 10 * ACTIVE_NOVEL_WINDOW_SECONDS;
   const active = { inLibrary: true, isLocal: false, lastReadAt: now - ACTIVE_NOVEL_WINDOW_SECONDS };
-  expect(effectiveDownloadGoal(null, active, 3, now)).toEqual({ goal: { kind: "keep_ahead", count: 3 }, isDefault: true });
-  expect(effectiveDownloadGoal({ kind: "entire" }, { ...active, inLibrary: false }, 3, now))
-    .toEqual({ goal: { kind: "entire" }, isDefault: false });
-  for (const novel of [{ ...active, lastReadAt: now - ACTIVE_NOVEL_WINDOW_SECONDS - 1 }, { ...active, inLibrary: false },
-    { ...active, isLocal: true }, { ...active, lastReadAt: null }]) {
-    expect(effectiveDownloadGoal(null, novel, 3, now)).toEqual({ goal: null, isDefault: false });
+  for (const own of [null, { kind: "keep_ahead", count: 30 } as const, { kind: "all_remaining" } as const, { kind: "entire" } as const]) {
+    expect(effectiveDownloadGoal(own, active, automaticGoal, now)).toEqual({ goal: automaticGoal, isDefault: true });
+    for (const novel of [{ ...active, lastReadAt: now - ACTIVE_NOVEL_WINDOW_SECONDS - 1 }, { ...active, inLibrary: false },
+      { ...active, isLocal: true }, { ...active, lastReadAt: null }]) {
+      expect(effectiveDownloadGoal(own, novel, automaticGoal, now)).toEqual({ goal: null, isDefault: false });
+    }
   }
-  expect(effectiveDownloadGoal(null, active, 0, now)).toEqual({ goal: null, isDefault: false });
 });
 
-it("lets an explicit None opt an active library novel out of the default keep-ahead", () => {
+it("keeps an explicit work pause and a global off policy authoritative over retained positive goals", () => {
   const now = 10 * ACTIVE_NOVEL_WINDOW_SECONDS;
   const active = { inLibrary: true, isLocal: false, lastReadAt: now };
-  expect(effectiveDownloadGoal({ kind: "none" }, active, 3, now)).toEqual({ goal: null, isDefault: false });
+  expect(effectiveDownloadGoal({ kind: "none" }, active, { kind: "entire" }, now)).toEqual({ goal: null, isDefault: false });
+  expect(effectiveDownloadGoal({ kind: "entire" }, active, { kind: "none" }, now)).toEqual({ goal: null, isDefault: false });
 });

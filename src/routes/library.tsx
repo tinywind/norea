@@ -13,6 +13,7 @@ import {
 } from "../components/library/LibraryCategories";
 import {
   LibraryCategorySheet,
+  LibraryDownloadSheet,
 } from "../components/library/LibrarySelectionSheets";
 import { LibraryAppBar } from "../components/library/LibraryAppBar";
 import {
@@ -180,6 +181,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const [categoryManagerOpen, setCategoryManagerOpen] = useState(false);
   const offlineStates = useDownloadGoalOfflineStates(active && showDownloadBadges);
   const [categorySheetOpen, setCategorySheetOpen] = useState(false);
+  const [downloadSheetOpen, setDownloadSheetOpen] = useState(false);
   const [viewOptionsOpen, setViewOptionsOpen] = useState(false);
   const [viewOptionsTab, setViewOptionsTab] =
     useState<LibraryViewOptionsTab>("filter");
@@ -392,7 +394,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     disabled={selectedIds.size === 0 || downloadOnceMutation.isPending}
                     icon={DownloadIcon}
                     label={t("library.selection.download")}
-                    onClick={() => downloadOnceMutation.mutate({ novelIds: selectedNovelIds })}
+                    onClick={() => { downloadOnceMutation.reset(); setDownloadSheetOpen(true); }}
                   />
                   <SelectionAction
                     disabled={selectedIds.size === 0}
@@ -625,6 +627,16 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         sources={sourceRows}
         sourcesLoading={sourceFilters.isLoading}
         tab={viewOptionsTab}
+      />
+      <LibraryDownloadSheet
+        applying={downloadOnceMutation.isPending}
+        error={downloadOnceMutation.error}
+        novelCount={selectedNovelIds.length}
+        onChoose={selection => downloadOnceMutation.mutate(
+          { novelIds: selectedNovelIds, selection }, { onSuccess: () => setDownloadSheetOpen(false) },
+        )}
+        onClose={() => setDownloadSheetOpen(false)}
+        opened={active && selectionMode && downloadSheetOpen}
       />
       <LibraryCategorySheet
         applying={assignCategoryMutation.isPending}

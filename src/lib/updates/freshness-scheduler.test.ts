@@ -13,7 +13,7 @@ const mocks = vi.hoisted(() => ({
   lastCheckedAt: null as number | null,
 }));
 vi.mock("../../db/queries/novel-freshness", () => ({
-  listCheckCandidates: async () => mocks.candidates,
+  listCheckCandidates: vi.fn(async () => mocks.candidates),
   countRecentChecksBySource: async () => mocks.recent,
   getNovelFreshness: async () => ({ lastCheckedAt: mocks.lastCheckedAt }),
 }));
@@ -28,6 +28,8 @@ vi.mock("../plugins/manager", () => ({
 vi.mock("../tasks/scheduler", () => ({ taskScheduler: { getSnapshot: () => ({ records: mocks.records }), cancel: vi.fn() } }));
 vi.mock("./check-library-updates", () => ({ checkForNewChapters: mocks.check, checkNovelForNewChapters: mocks.checkNovel }));
 
+import { listCheckCandidates } from "../../db/queries/novel-freshness";
+import { ACTIVE_NOVEL_WINDOW_SECONDS } from "../download-goals/goal-targets";
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { useLibraryStore } from "../../store/library";
 import { checkNovelIfStale, resetFreshnessChecksForTests, runDueChecks } from "./freshness-scheduler";
@@ -49,7 +51,8 @@ beforeEach(() => {
   mocks.serverSource = null;
   mocks.lastCheckedAt = null;
   useLibraryStore.setState({ checkIntervalHours: 12 });
-  useDownloadGoalSettingsStore.setState({ automaticOnMobileData: false });
+  useDownloadGoalSettingsStore.setState({ automaticGoal: { kind: "keep_ahead", count: 3 }, automaticOnMobileData: false });
+  vi.mocked(listCheckCandidates).mockClear();
 });
 
 afterEach(() => { resetFreshnessChecksForTests(); });
@@ -113,4 +116,13 @@ it("checks a content-server work outside the library but never a browsed novel o
   mocks.novel = { id: 7, pluginId: "local", path: "/n", name: "N", isLocal: true, inLibrary: true };
   expect(await checkNovelIfStale(7, "title", new AbortController().signal)).toBe(false);
   expect(mocks.checkNovel).toHaveBeenCalledOnce();
+});
+
+it("passes the current global automatic eligibility into check priority", async () => {
+  const now = 20 * ACTIVE_NOVEL_WINDOW_SECONDS;
+  await runDueChecks(now * 1000);
+  expect(listCheckCandidates).toHaveBeenLastCalledWith(now - ACTIVE_NOVEL_WINDOW_SECONDS);
+  useDownloadGoalSettingsStore.getState().setAutomaticGoal({ kind: "none" });
+  await runDueChecks(now * 1000);
+  expect(listCheckCandidates).toHaveBeenLastCalledWith(null);
 });

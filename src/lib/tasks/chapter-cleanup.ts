@@ -1,12 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listChapterCleanupCandidates, reconcileCleanedChapter, type ChapterCleanupCandidate } from "../../db/queries/chapter-cleanup";
 import { useContentSyncStore } from "../../store/content-sync";
+import { useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { chapterCleanupInventorySkip, cleanupServerFailure, type ChapterCleanupPreview, type ChapterCleanupTarget } from "../chapter-cleanup";
 import { deleteChapterPayload, inspectChapterPayloadInventory } from "../chapter-content/storage-platform";
 import { waitForChapterDownloadWrites, withChapterDownloadDeletion } from "../chapter-download-writes";
 import { cleanupServerUrl, fetchCleanupServerInventory } from "../content-sync/chapter-inventory";
 import { runWorkContentStorageOperation } from "../content-sync/storage-operation";
 import { isTauriRuntime } from "../tauri-runtime";
+import { listGoalProtectedChapterIds } from "../download-goals/goal-protection";
 import { cancelChapterDownloadTasks, discardQueuedChapterDownloads, waitForChapterDownloadQueueMutations } from "./chapter-download";
 import { taskScheduler, type TaskHandle, type TaskPriority } from "./scheduler";
 import { isTaskUserCancelledError } from "./task-errors";
@@ -43,6 +45,10 @@ async function eligibilityFailure(preview: ChapterCleanupPreview, target: Chapte
   if (preview.filters.server !== "any" && useContentSyncStore.getState().serverUrl !== preview.serverSetting) return "changed";
   const rows = await listChapterCleanupCandidates(preview.filters, { chapterId: target.candidate.identity.chapter.id, readMode: "queued" });
   if (rows.length !== 1 || !sameCandidate(rows[0]!, target.candidate)) return "changed";
+  if (preview.filters.finished && useDownloadGoalSettingsStore.getState().automaticGoal.kind === "entire") {
+    const protectedIds = await listGoalProtectedChapterIds([target.candidate.identity.novel.id]);
+    if (protectedIds.has(target.candidate.identity.chapter.id)) return "changed";
+  }
   return rows[0]!.storageAmbiguous ? "ambiguous-storage" : null;
 }
 

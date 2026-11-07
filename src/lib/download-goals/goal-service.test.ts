@@ -10,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   records: [] as unknown[],
   downloadListener: null as ((event: unknown) => void) | null,
   excluded: new Set<number>(),
+  stopped: new Set<number>(),
 }));
 
 vi.mock("../../db/queries/chapter", () => ({
@@ -18,12 +19,16 @@ vi.mock("../../db/queries/chapter", () => ({
 }));
 vi.mock("../../db/queries/novel-download-goal", () => ({
   listDownloadGoalNovels: vi.fn(async (_since: number | null, ids?: readonly number[]) =>
-    ids ? mocks.novels.filter((novel) => ids.includes((novel as { id: number }).id)) : mocks.novels),
+    mocks.novels.filter(novel => !mocks.stopped.has((novel as { id: number }).id) && (!ids || ids.includes((novel as { id: number }).id)))),
   listGoalNovelIdsForDownloadScope: vi.fn(async () => [5]),
-  setNovelDownloadGoal: vi.fn(async () => true),
+  setNovelDownloadGoal: vi.fn(async (id: number, goal: { kind: string } | null) => {
+    if (goal?.kind === "none") mocks.stopped.add(id);
+    else mocks.stopped.delete(id);
+    return true;
+  }),
+  resumeStoppedNovelDownloadGoal: vi.fn(async (id: number) => mocks.stopped.delete(id)),
   excludeChaptersFromDownloadGoals: vi.fn(async (ids: readonly number[]) => { for (const id of ids) mocks.excluded.add(id); }),
   listDownloadGoalExcludedChapterIds: vi.fn(async () => [...mocks.excluded]),
-  clearDownloadGoalExclusions: vi.fn(async () => { mocks.excluded.clear(); }),
 }));
 vi.mock("../../i18n", () => ({ translate: (_locale: string, key: string) => key }));
 vi.mock("../../store/appearance", () => ({ useAppearanceStore: { getState: () => ({ appLocale: "en" }) } }));
@@ -75,11 +80,13 @@ vi.mock("./budget", async (importOriginal) => ({
   readDownloadBudgetStatus: async () => mocks.budget,
 }));
 
-import { listGoalNovelIdsForDownloadScope, setNovelDownloadGoal } from "../../db/queries/novel-download-goal";
+import { listLibraryDownloadChapters } from "../../db/queries/chapter";
+import { listGoalNovelIdsForDownloadScope, resumeStoppedNovelDownloadGoal, setNovelDownloadGoal } from "../../db/queries/novel-download-goal";
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { useReaderStore } from "../../store/reader";
 import { cancelChapterDownloadTasks, discardQueuedChapterDownloads } from "../tasks/chapter-download";
 import { taskScheduler } from "../tasks/scheduler";
+import { cancelChapterDownloadRequest } from "../tasks/chapter-download-requests";
 import { holdDownloadGoalsAfterRestore } from "./budget";
 import {
   allowAutomaticDownloadsOnce,
@@ -88,7 +95,8 @@ import {
   reconcileDownloadGoals,
   resetDownloadGoalsForTests,
   resumeDownloadGoalsAfterRestore,
-  setDownloadGoal,
+  removeDownloadGoals,
+  resumeStoppedDownloadGoals,
   startDownloadGoals,
   stopDownloadGoals,
   waitForDownloadGoalReconcile,
@@ -124,7 +132,7 @@ beforeEach(() => {
   ];
   mocks.chapters = new Map([
     [1, [row(10, { readAt: 50 }), row(11), row(12, { isDownloaded: true, contentBytes: 5 }), row(13), row(14), row(15)]],
-    [2, [row(20), row(21, { isDownloadQueued: true }), row(22)]],
+    [2, [row(20), row(21, { isDownloadQueued: true }), row(22), row(23)]],
   ]);
   mocks.queued = new Set([14]);
   mocks.failed = [{ chapterId: 22 }];
@@ -132,7 +140,8 @@ beforeEach(() => {
   mocks.submitted = [];
   mocks.records = [];
   mocks.excluded = new Set();
-  useDownloadGoalSettingsStore.setState({ defaultKeepAhead: 3, automaticOnMobileData: false });
+  mocks.stopped = new Set();
+  useDownloadGoalSettingsStore.setState({ automaticGoal: { kind: "keep_ahead", count: 3 }, automaticOnMobileData: false });
   useReaderStore.setState({ lastReadChapterByNovel: {} });
   vi.clearAllMocks();
 });
@@ -143,7 +152,7 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
-it("queues each goal's missing chapters at start, the most recently read novel first", async () => {
+it("queues the global range for each active novel, the most recently read first", async () => {
   startDownloadGoals();
   await settle();
 
@@ -197,12 +206,12 @@ it("holds restored goals until the user resumes", async () => {
   expect(mocks.submitted).toHaveLength(2);
 });
 
-it("withdraws queued goal work when the goal is cleared", async () => {
+it("withdraws queued goal work when a novel leaves the library", async () => {
   startDownloadGoals();
   await settle();
   mocks.queued = new Set([11, 13]);
 
-  const cleared = setDownloadGoal(1, null);
+  const cleared = removeDownloadGoals([1]);
   await vi.advanceTimersByTimeAsync(10);
   await cleared;
 
@@ -237,7 +246,7 @@ it("keeps deleted and cancelled chapters out of later goal work", async () => {
   expect(mocks.submitted).toEqual([]);
 });
 
-it("keeps chapters the user deleted or cancelled excluded after a restart until a goal is chosen again", async () => {
+it("keeps deleted and cancelled chapters excluded after restart and an explicit work resume", async () => {
   startDownloadGoals();
   await settle();
   await noteDownloadDeletion([11]);
@@ -252,10 +261,81 @@ it("keeps chapters the user deleted or cancelled excluded after a restart until 
   expect(mocks.submitted.map((request) => request.novelIds)).toEqual([[2]]);
 
   mocks.submitted = [];
-  const chosen = setDownloadGoal(1, { kind: "keep_ahead", count: 3 });
-  await vi.advanceTimersByTimeAsync(10);
-  await chosen;
+  await stopDownloadGoals([1]);
+  expect(await resumeStoppedDownloadGoals([1, 1, 2, 99, Number.NaN])).toBe(1);
   await settle();
-  expect(mocks.excluded).toEqual(new Set());
-  expect((await jobsOf(0)).map((job) => job.id)).toEqual([11, 13]);
+  expect(mocks.excluded).toEqual(new Set([11, 13]));
+  expect(mocks.submitted).toEqual([]);
+  expect(resumeStoppedNovelDownloadGoal).toHaveBeenCalledTimes(3);
+});
+
+it.each([
+  { goal: { kind: "keep_ahead", count: 1 } as const, first: [11], second: [20] },
+  { goal: { kind: "all_remaining" } as const, first: [11, 13, 15], second: [20, 23] },
+  { goal: { kind: "entire" } as const, first: [10, 11, 13, 15], second: [20, 23] },
+])("uses the global $goal.kind range instead of a retained per-novel policy", async ({ goal, first, second }) => {
+  (mocks.novels[0] as { goal: unknown }).goal = { kind: "keep_ahead", count: 30 };
+  useDownloadGoalSettingsStore.getState().setAutomaticGoal(goal);
+  startDownloadGoals();
+  await settle();
+  expect((await jobsOf(0)).map(job => job.id)).toEqual(first);
+  expect((await jobsOf(1)).map(job => job.id)).toEqual(second);
+});
+
+it("changes future automatic selection without cancelling queued requests or clearing failures and exclusions", async () => {
+  startDownloadGoals();
+  await settle();
+  mocks.queued = new Set([11, 13, 14, 20]);
+  mocks.records = [{ kind: "chapter.download", automatic: false, status: "queued", subject: { chapterId: 99, novelId: 1 } }];
+  mocks.excluded.add(15);
+  mocks.submitted = [];
+
+  useDownloadGoalSettingsStore.getState().setAutomaticGoal({ kind: "entire" });
+  await settle();
+  expect((await jobsOf(0)).map(job => job.id)).toEqual([10]);
+  expect((await jobsOf(1)).map(job => job.id)).toEqual([23]);
+  mocks.submitted = [];
+  useDownloadGoalSettingsStore.getState().setAutomaticGoal({ kind: "none" });
+  await settle();
+
+  expect(mocks.submitted).toEqual([]);
+  expect(mocks.queued).toEqual(new Set([11, 13, 14, 20]));
+  expect(mocks.records).toHaveLength(1);
+  expect(mocks.failed).toEqual([{ chapterId: 22 }]);
+  expect(mocks.excluded).toEqual(new Set([15]));
+  expect(setNovelDownloadGoal).not.toHaveBeenCalled();
+  expect(discardQueuedChapterDownloads).not.toHaveBeenCalled();
+  expect(cancelChapterDownloadTasks).not.toHaveBeenCalled();
+  expect(cancelChapterDownloadRequest).not.toHaveBeenCalled();
+});
+
+it("resumes a stopped work while global downloads are off without adding or clearing work", async () => {
+  useDownloadGoalSettingsStore.getState().setAutomaticGoal({ kind: "none" });
+  mocks.stopped.add(1);
+  mocks.excluded.add(11);
+  startDownloadGoals();
+  await settle();
+
+  expect(await resumeStoppedDownloadGoals([1, 2])).toBe(1);
+  await settle();
+  expect(mocks.stopped).toEqual(new Set());
+  expect(mocks.submitted).toEqual([]);
+  expect(mocks.queued).toEqual(new Set([14]));
+  expect(mocks.failed).toEqual([{ chapterId: 22 }]);
+  expect(mocks.excluded).toEqual(new Set([11]));
+  expect(discardQueuedChapterDownloads).not.toHaveBeenCalled();
+  expect(cancelChapterDownloadTasks).not.toHaveBeenCalled();
+});
+
+it("does not publish a stale automatic range after the global policy changes during a chapter read", async () => {
+  let release!: () => void;
+  vi.mocked(listLibraryDownloadChapters).mockImplementationOnce(() => new Promise(resolve => {
+    release = () => resolve(mocks.chapters.get(1) as never);
+  }));
+  startDownloadGoals();
+  await vi.advanceTimersByTimeAsync(600);
+  useDownloadGoalSettingsStore.getState().setAutomaticGoal({ kind: "none" });
+  release();
+  await settle();
+  expect(mocks.submitted).toEqual([]);
 });
