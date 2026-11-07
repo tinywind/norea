@@ -5,13 +5,19 @@ import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SourceAccessBlock } from "../lib/tasks/source-access-gate";
 
-const mocks = vi.hoisted(() => ({ blocks: [] as SourceAccessBlock[], canVerify: true }));
+const mocks = vi.hoisted(() => ({
+  blocks: [] as SourceAccessBlock[],
+  canVerify: true,
+  canVerifyByScope: new Map<string, boolean>(),
+}));
 
 vi.mock("../lib/tasks/hooks", () => ({
   useTaskSnapshot: () => ({ sourceAccessBlocks: mocks.blocks }),
 }));
 vi.mock("../lib/tasks/scheduler", () => ({
-  taskScheduler: { canBeginSourceAccessVerification: () => mocks.canVerify },
+  taskScheduler: {
+    canBeginSourceAccessVerification: (scopeKey: string) => mocks.canVerifyByScope.get(scopeKey) ?? mocks.canVerify,
+  },
 }));
 vi.mock("../lib/tasks/source-access-coordinator", () => ({
   openSourceAccessBrowser: vi.fn(),
@@ -35,10 +41,20 @@ function render(node: ReactNode) {
   return load(renderToStaticMarkup(<MantineProvider>{node}</MantineProvider>));
 }
 
+function hostBlock(host: string, overrides: Partial<SourceAccessBlock> = {}): SourceAccessBlock {
+  return {
+    ...BLOCK,
+    challenge: { kind: "forbidden", url: `https://${host}` },
+    scopeKey: `plugin:source-a:site:${host}`,
+    ...overrides,
+  };
+}
+
 describe("SourceAccessNotice", () => {
   afterEach(() => {
     mocks.blocks = [];
     mocks.canVerify = true;
+    mocks.canVerifyByScope.clear();
   });
 
   it("stays out of the way while the source has no access check", () => {
@@ -97,6 +113,82 @@ describe("SourceAccessNotice", () => {
     expect($(".norea-source-access-banner").text()).toContain("HTTP 403 from source.test");
     expect($(".norea-source-access-banner").text()).toContain("Start a download or open the source before verifying");
     expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeDefined();
+  });
+
+  it("uses the ordinary challenge instead of an older VPN range challenge for the same source", () => {
+    const vpn: SourceAccessBlock = {
+      ...BLOCK,
+      challenge: { kind: "captcha", url: "https://source.test" },
+      rangeId: "vpn-range",
+      workerGeneration: 1,
+      scopeKey: `${BLOCK.scopeKey}:range:vpn-range`,
+      verificationRequested: true,
+    };
+    const ordinary = hostBlock("source.test", { detectedAt: 5, revision: 5 });
+    mocks.blocks = [vpn, ordinary];
+    const $ = render(<SourceAccessNotice active sourceId="source-a" sourceName="Source A" />);
+
+    expect($(".norea-source-access-banner").attr("data-source-access")).toBe(ordinary.scopeKey);
+    expect($(".norea-source-access-banner").text()).toContain("HTTP 403");
+    expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeUndefined();
+  });
+
+  it("prefers a verifiable host over a newer unavailable challenge", () => {
+    const unavailable = hostBlock("previous.test", {
+      challenge: { kind: "captcha", url: "https://previous.test" },
+      detectedAt: 20,
+      revision: 8,
+    });
+    const current = hostBlock("current.test", { detectedAt: 10, revision: 5 });
+    mocks.canVerify = false;
+    mocks.canVerifyByScope.set(current.scopeKey, true);
+    mocks.blocks = [unavailable, current];
+    const $ = render(<SourceAccessNotice active sourceId="source-a" sourceName="Source A" />);
+
+    expect($(".norea-source-access-banner").attr("data-source-access")).toBe(current.scopeKey);
+    expect($(".norea-source-access-banner").text()).toContain("(HTTP 403) · current.test");
+    expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeUndefined();
+  });
+
+  it.each([
+    { verificationRequested: true },
+    { verificationTaskId: "verification-task" },
+  ])("keeps an in-flight verification selected: %j", verificationState => {
+    const verifying = hostBlock("verifying.test", verificationState);
+    const available = hostBlock("available.test", { detectedAt: 20, revision: 8 });
+    mocks.canVerify = false;
+    mocks.canVerifyByScope.set(available.scopeKey, true);
+    mocks.blocks = [available, verifying];
+    const $ = render(<SourceAccessNotice active sourceId="source-a" sourceName="Source A" />);
+
+    expect($(".norea-source-access-banner").attr("data-source-access")).toBe(verifying.scopeKey);
+    expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeDefined();
+    expect($(".norea-source-access-banner").text()).not.toContain("Start a download or open the source before verifying");
+  });
+
+  it("falls back to the latest unavailable ordinary challenge with revision breaking timestamp ties", () => {
+    const older = hostBlock("older.test", { detectedAt: 5, revision: 9 });
+    const sameTime = hostBlock("same-time.test", { detectedAt: 10, revision: 4 });
+    const latest = hostBlock("latest.test", { detectedAt: 10, revision: 5 });
+    mocks.canVerify = false;
+    mocks.blocks = [older, latest, sameTime];
+    const orderBeforeRender = mocks.blocks.map(block => block.scopeKey);
+    const $ = render(<SourceAccessNotice active sourceId="source-a" sourceName="Source A" />);
+
+    expect($(".norea-source-access-banner").attr("data-source-access")).toBe(latest.scopeKey);
+    expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeDefined();
+    expect($(".norea-source-access-banner").text()).toContain("Start a download or open the source before verifying");
+    expect(mocks.blocks.map(block => block.scopeKey)).toEqual(orderBeforeRender);
+  });
+
+  it("hides source-level recovery when only VPN ranges match the source", () => {
+    mocks.blocks = [
+      { ...BLOCK, rangeId: "vpn-range", workerGeneration: 1, scopeKey: `${BLOCK.scopeKey}:range:vpn-range` },
+      { ...BLOCK, sourceId: "source-b", scopeKey: "plugin:source-b:site:source.test" },
+    ];
+    const $ = render(<SourceAccessNotice active sourceId="source-a" sourceName="Source A" />);
+
+    expect($(".norea-source-access-banner")).toHaveLength(0);
   });
 
 });

@@ -10,12 +10,43 @@ import { IconButton } from "./IconButton";
 import { SourceAccessBanner } from "./SourceAccessBanner";
 import { VerifyIcon } from "./ui/icons";
 
-/** Looks up the open source-access challenge of a source, if any. */
+/** Source-level recovery uses ordinary blocks; VPN ranges have their own recovery controls. */
+function selectSourceAccessBlock(
+  blocks: readonly SourceAccessBlock[],
+  sourceId: string,
+  canVerify: (scopeKey: string) => boolean,
+): SourceAccessBlock | undefined {
+  let selected: SourceAccessBlock | undefined;
+  let selectedPriority = -1;
+  for (const block of blocks) {
+    if (block.sourceId !== sourceId || block.rangeId) continue;
+    // Keep an in-flight verification visible when it is no longer eligible to begin again.
+    const priority = block.verificationRequested || block.verificationTaskId !== undefined
+      ? 2
+      : canVerify(block.scopeKey) ? 1 : 0;
+    if (!selected || priority > selectedPriority || (
+      priority === selectedPriority && (
+        block.detectedAt > selected.detectedAt ||
+        (block.detectedAt === selected.detectedAt && block.revision > selected.revision)
+      )
+    )) {
+      selected = block;
+      selectedPriority = priority;
+    }
+  }
+  return selected;
+}
+
+/** Looks up the current ordinary source challenge without changing the scheduler's blocks. */
 export function useSourceAccessBlocks(
   active: boolean,
 ): (pluginId: string) => SourceAccessBlock | undefined {
   const blocks = useTaskSnapshot(active).sourceAccessBlocks;
-  return (pluginId) => blocks.find((block) => block.sourceId === pluginId);
+  return (pluginId) => selectSourceAccessBlock(
+    blocks,
+    pluginId,
+    scopeKey => taskScheduler.canBeginSourceAccessVerification(scopeKey),
+  );
 }
 
 interface SourceAccessVerifyButtonProps {

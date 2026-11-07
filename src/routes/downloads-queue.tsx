@@ -1370,7 +1370,7 @@ export function DownloadsQueueView({
       ) : (
         <Stack gap="md">
           {hasDownloads ? (
-            <section aria-labelledby="norea-downloads-list-title" className="norea-downloads-list">
+            <section aria-labelledby="norea-downloads-list-title" className="norea-downloads-work-section">
               <Text className="norea-downloads-section-title" component="h2" id="norea-downloads-list-title">
                 {t("downloads.title")}
               </Text>

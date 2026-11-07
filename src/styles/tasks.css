@@ -227,7 +227,7 @@
 }
 
 .norea-downloads-attention,
-.norea-downloads-list {
+.norea-downloads-work-section {
   display: grid;
   gap: var(--norea-space-2);
   min-width: 0;
