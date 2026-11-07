@@ -1,10 +1,14 @@
 package io.github.tinywind.norea
 
+import android.app.ActivityOptions
+import android.content.Intent
+import android.os.SystemClock
 import android.util.Base64
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebView
 import android.widget.FrameLayout
+import androidx.test.core.app.ActivityScenario
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.webkit.CookieManagerCompat
@@ -55,10 +59,17 @@ class AndroidVpnSessionDeviceTest {
               headers[header.substringBefore(":").lowercase()] = header.substringAfter(":").trim()
             }
             requests.add(Request(path, headers["cookie"].orEmpty(), headers["cache-control"].orEmpty()))
-            val body = "<!doctype html><html><head><link rel='icon' href='data:,'></head><body>${if (fresh) "fresh" else "blocked"}-$path</body></html>"
+            val route = path.substringBefore("?")
+            val forbidden = route == "/forbidden" || route == "/forbidden-image"
+            val content = when (route) {
+              "/forbidden" -> "Access denied"
+              "/with-forbidden-image" -> "<div id='chapter-content'>Chapter content</div><img src='/forbidden-image'>"
+              else -> "${if (fresh) "fresh" else "blocked"}-$path"
+            }
+            val body = "<!doctype html><html><head><link rel='icon' href='data:,'></head><body>$content</body></html>"
               .toByteArray(Charsets.UTF_8)
             val response = buildString {
-              append("HTTP/1.1 200 OK\r\n")
+              append(if (forbidden) "HTTP/1.1 403 Forbidden\r\n" else "HTTP/1.1 200 OK\r\n")
               append("Date: ${DateTimeFormatter.RFC_1123_DATE_TIME.format(ZonedDateTime.now(java.time.ZoneOffset.UTC))}\r\n")
               append("Content-Type: text/html; charset=utf-8\r\n")
               append("Cache-Control: public, max-age=3600\r\n")
@@ -81,6 +92,7 @@ class AndroidVpnSessionDeviceTest {
   private inner class Browser(private val origin: String, namespace: String?) : Closeable {
     val sourceId = "vpn-session-qa-${UUID.randomUUID()}"
     private val output = LinkedBlockingQueue<Pair<String, String>>()
+    private lateinit var activityScenario: ActivityScenario<MainActivity>
     private lateinit var host: WebView
     private lateinit var surface: FrameLayout
     private lateinit var bridge: AndroidScraperBridge
@@ -90,13 +102,20 @@ class AndroidVpnSessionDeviceTest {
       check(context.packageName == "io.github.tinywind.norea.debug") {
         "VPN session device checks require the isolated debug application."
       }
-      instrumentation.runOnMainSync {
+      val options = ActivityOptions.makeBasic().apply { launchDisplayId = 0 }.toBundle()
+      activityScenario = ActivityScenario.launch(
+        Intent(context, MainActivity::class.java).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+        options,
+      )
+      activityScenario.onActivity { activity ->
         assertTrue(WebViewFeature.isFeatureSupported(WebViewFeature.MULTI_PROFILE))
         assertTrue(WebViewFeature.isFeatureSupported(WebViewFeature.GET_COOKIE_INFO))
         cookies = ProfileStore.getInstance().getOrCreateProfile(androidScraperProfileName(sourceId, namespace)).cookieManager
-        surface = FrameLayout(context)
-        host = WebView(context)
+        surface = FrameLayout(activity)
+        host = WebView(activity)
         surface.addView(host, FrameLayout.LayoutParams(480, 800))
+        activity.findViewById<ViewGroup>(android.R.id.content)
+          .addView(surface, FrameLayout.LayoutParams(480, 800))
         surface.measure(
           android.view.View.MeasureSpec.makeMeasureSpec(480, android.view.View.MeasureSpec.EXACTLY),
           android.view.View.MeasureSpec.makeMeasureSpec(800, android.view.View.MeasureSpec.EXACTLY),
@@ -106,22 +125,29 @@ class AndroidVpnSessionDeviceTest {
           host, BridgeSession(), output = { id, envelope -> output.put(id to envelope) },
           profileNamespace = namespace, surfaceContainer = surface, appUrl = "https://tauri.localhost",
         )
+        bridge.resumeBackgroundWorkWebViews()
       }
     }
 
-    private fun command(method: String, value: JSONObject = JSONObject()): JSONObject {
+    private fun command(
+      method: String,
+      value: JSONObject = JSONObject(),
+      expectedSuccess: Boolean? = true,
+    ): JSONObject {
       val id = UUID.randomUUID().toString()
-      value.put("id", id).put("sourceId", sourceId).put("queue", "pool:0").put("timeoutMs", 20_000)
+      value.put("id", id).put("sourceId", sourceId).put("queue", "pool:0")
+        .put("timeoutMs", value.optLong("timeoutMs", 20_000))
       when (method) {
         "fetch" -> bridge.fetch(value.toString())
         "extract" -> bridge.extract(value.toString())
+        "navigate" -> bridge.navigate(value.toString())
         "resetVpnSession" -> bridge.resetVpnSession(value.toString())
         else -> error("Unsupported fixture command")
       }
       val response = checkNotNull(output.poll(30, TimeUnit.SECONDS)) { "No $method response from scraper" }
       assertEquals("Unexpected scraper response", id, response.first)
       val json = JSONObject(response.second)
-      assertTrue(json.toString(), json.getBoolean("ok"))
+      expectedSuccess?.let { assertEquals(json.toString(), it, json.getBoolean("ok")) }
       return json
     }
 
@@ -143,18 +169,43 @@ class AndroidVpnSessionDeviceTest {
       }
     }
 
+    fun extractChapter(path: String): JSONObject = command(
+      "extract",
+      JSONObject().put("url", origin + path).put("timeoutMs", 12_000)
+        .put("chapterNavigationScript", "function () { return false; }")
+        .put("beforeScript", """
+          function capture() {
+            const content = document.querySelector('#chapter-content');
+            if (content) window.ReactNativeWebView.postMessage(content.textContent);
+          }
+          if (document.readyState === 'complete') capture();
+          else window.addEventListener('load', capture, {once:true});
+        """.trimIndent()),
+      expectedSuccess = null,
+    )
+
+    fun showRetainedPage(path: String) {
+      assertTrue(command("navigate", JSONObject().put("url", origin + path)).getBoolean("result"))
+    }
+
+    fun hideRetainedPage() {
+      instrumentation.runOnMainSync { bridge.releaseWorkerBrowser() }
+    }
+
     fun reset() {
       assertTrue(command("resetVpnSession").getBoolean("result"))
     }
 
-    fun sourceView(): WebView {
+    private fun sourceViewOrNull(): WebView? {
       var view: WebView? = null
       instrumentation.runOnMainSync {
         view = (0 until surface.childCount).map { surface.getChildAt(it) }
-          .filterIsInstance<WebView>().single { it !== host }
+          .filterIsInstance<WebView>().singleOrNull { it !== host }
       }
-      return checkNotNull(view)
+      return view
     }
+
+    fun sourceView(): WebView = checkNotNull(sourceViewOrNull())
 
     fun evaluate(script: String): String? {
       val done = CountDownLatch(1)
@@ -192,7 +243,9 @@ class AndroidVpnSessionDeviceTest {
 
     override fun close() {
       try {
-        evaluate("localStorage.removeItem('norea-vpn-session-qa'); sessionStorage.removeItem('norea-vpn-session-qa')")
+        if (sourceViewOrNull() != null) {
+          evaluate("localStorage.removeItem('norea-vpn-session-qa'); sessionStorage.removeItem('norea-vpn-session-qa')")
+        }
       } finally {
         try {
           setCookies(listOf("login_session=; Path=/; Max-Age=0", "cf_clearance=; Path=/; Max-Age=0"))
@@ -201,7 +254,9 @@ class AndroidVpnSessionDeviceTest {
             bridge.destroy()
             (host.parent as? ViewGroup)?.removeView(host)
             host.destroy()
+            (surface.parent as? ViewGroup)?.removeView(surface)
           }
+          activityScenario.close()
         }
       }
     }
@@ -245,6 +300,57 @@ class AndroidVpnSessionDeviceTest {
           "\"retained|retained\"",
           browser.evaluate("localStorage.getItem('norea-vpn-session-qa') + '|' + sessionStorage.getItem('norea-vpn-session-qa')"),
         )
+      }
+    }
+  }
+
+  private fun verifyMainFrameHttpError(namespace: String?) {
+    Fixture().use { fixture ->
+      Browser(fixture.origin, namespace).use { browser ->
+        browser.seedCookies()
+        assertTrue(browser.read("/initial", extract = true).contains("blocked-/initial"))
+        val before = browser.sourceView()
+        val started = SystemClock.elapsedRealtime()
+        val forbiddenPath = "/forbidden?access=qa-private-value"
+        val result = browser.extractChapter(forbiddenPath)
+        val elapsed = SystemClock.elapsedRealtime() - started
+        assertFalse(result.toString(), result.getBoolean("ok"))
+        val error = result.getString("error")
+        assertTrue(error, error.contains("HTTP 403"))
+        assertTrue(error, error.contains(fixture.origin))
+        assertFalse("HTTP error leaked URL query data", error.contains("qa-private-value"))
+        assertTrue("HTTP errors must settle before the extraction timeout: ${elapsed}ms", elapsed < 10_000)
+        assertSame("HTTP errors must keep the session WebView", before, browser.sourceView())
+        assertTrue(browser.cookieNames().contains("login_session"))
+        browser.showRetainedPage(forbiddenPath)
+        assertSame("Manual inspection must reuse the blocked page", before, browser.sourceView())
+        assertEquals("Manual inspection must not retry the blocked URL", listOf("/initial", forbiddenPath), fixture.requests.map { it.path })
+        browser.hideRetainedPage()
+        assertTrue(browser.read("/recovered", extract = true).contains("blocked-/recovered"))
+        assertEquals(listOf("/initial", forbiddenPath, "/recovered"), fixture.requests.map { it.path })
+        fixture.requests.forEach { request ->
+          assertTrue("Login cookie was lost after an HTTP error", request.cookies.contains("login_session=qa-login"))
+        }
+      }
+    }
+  }
+
+  @Test
+  fun mainFrame403FailsExtractionImmediatelyAndKeepsLoginSession() =
+    verifyMainFrameHttpError(namespace = null)
+
+  @Test
+  fun workerMainFrame403FailsExtractionImmediatelyAndKeepsLoginSession() =
+    verifyMainFrameHttpError(namespace = "vpn-worker-qa-${UUID.randomUUID()}")
+
+  @Test
+  fun subresource403DoesNotFailSuccessfulChapterExtraction() {
+    Fixture().use { fixture ->
+      Browser(fixture.origin, "vpn-worker-qa-${UUID.randomUUID()}").use { browser ->
+        val result = browser.extractChapter("/with-forbidden-image")
+        assertTrue(result.toString(), result.getBoolean("ok"))
+        assertEquals("Chapter content", result.getString("result"))
+        assertEquals(listOf("/with-forbidden-image", "/forbidden-image"), fixture.requests.map { it.path })
       }
     }
   }

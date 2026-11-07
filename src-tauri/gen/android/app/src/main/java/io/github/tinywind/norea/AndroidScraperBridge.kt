@@ -14,6 +14,7 @@ import android.webkit.JavascriptInterface
 import android.webkit.SslErrorHandler
 import android.webkit.WebResourceError
 import android.webkit.WebResourceRequest
+import android.webkit.WebResourceResponse
 import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
@@ -1376,6 +1377,7 @@ class AndroidScraperBridge(
     private var mainFrameFailed = false
 
     private fun failNavigation(message: String) {
+      if (mainFrameFailed) return
       mainFrameFailed = true
       state.contextReady = false
       state.pendingDocumentReady = null
@@ -1402,6 +1404,24 @@ class AndroidScraperBridge(
       recordVpnNavigationResponse(view, url)
       logState(state, "pageFinished url=$url", url)
       onFinished?.invoke(url)
+    }
+
+    override fun onReceivedHttpError(
+      view: WebView,
+      request: WebResourceRequest,
+      errorResponse: WebResourceResponse,
+    ) {
+      if (
+        state.webView !== view || !request.isForMainFrame ||
+        errorResponse.statusCode < 400 || mainFrameFailed
+      ) return
+      if (
+        WebViewFeature.isFeatureSupported(WebViewFeature.GET_WEB_VIEW_CLIENT) &&
+        WebViewCompat.getWebViewClient(view) !== this
+      ) return
+      val url = request.url.toString()
+      state.pendingChallengeUrl = url.takeIf(::isHttpUrl)
+      failNavigation("scraper: HTTP ${errorResponse.statusCode} at $url")
     }
 
     override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
