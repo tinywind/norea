@@ -4,6 +4,7 @@ import type {
   ChapterDownloadStatus,
 } from "../../lib/tasks/chapter-download";
 import type { ChapterListRow } from "../../db/queries/chapter";
+import type { StoredChapterDownloadFailure } from "../../db/queries/chapter-download-failure";
 
 const state = vi.hoisted(() => ({
   effects: [] as Array<() => (() => void) | undefined>,
@@ -12,10 +13,13 @@ const state = vi.hoisted(() => ({
   frame: undefined as FrameRequestCallback | undefined,
   cleanup: undefined as (() => void) | undefined,
   current: new Map<number, ChapterDownloadStatus>(),
+  failures: [] as StoredChapterDownloadFailure[],
+  failuresActive: undefined as boolean | undefined,
   updates: 0,
 }));
 
 vi.mock("react", () => ({
+  useMemo: <T>(calculate: () => T) => calculate(),
   useEffect: (effect: () => (() => void) | undefined) => state.effects.push(effect),
   useState: () => [
     state.statuses,
@@ -34,6 +38,13 @@ vi.mock("../../lib/tasks/chapter-download", () => ({
   },
 }));
 
+vi.mock("../../lib/tasks/hooks", () => ({
+  useChapterDownloadFailureSnapshot: (active: boolean) => {
+    state.failuresActive = active;
+    return state.failures;
+  },
+}));
+
 import { STATUS_FLUSH_MIN_INTERVAL_MS, useNovelDownloadStatuses } from "./use-novel-download-statuses";
 
 beforeEach(() => {
@@ -41,6 +52,8 @@ beforeEach(() => {
   state.effects.length = 0;
   state.statuses = new Map();
   state.current = new Map();
+  state.failures = [];
+  state.failuresActive = undefined;
   state.frame = undefined;
   state.updates = 0;
   vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
@@ -168,5 +181,73 @@ describe("novel download status updates", () => {
     runFrame();
 
     expect(state.statuses.get(2)).toEqual({ kind: "queued" });
+  });
+});
+
+
+function storedFailure(overrides: Partial<StoredChapterDownloadFailure> = {}): StoredChapterDownloadFailure {
+  return {
+    chapterId: 1, pluginId: "source", failureClass: "transient", messageSummary: "Stored source failure",
+    challengeUrl: null, attempts: 1, nextRetryAt: null, updatedAt: 1,
+    jobJson: JSON.stringify({ id: 1, novelId: 42, pluginId: "source", chapterPath: "/old-path" }),
+    ...overrides,
+  };
+}
+
+const storedRow = { id: 1, novelId: 42, path: "/current-path" } as ChapterListRow;
+
+describe("persisted novel download failures", () => {
+  it("shows a saved failure without scheduler history after restart and keeps the current row path", () => {
+    state.failures = [storedFailure()];
+    const statuses = useNovelDownloadStatuses(42, [storedRow], true, "source");
+    expect([...statuses]).toEqual([[1, { kind: "failed", error: "Stored source failure" }]]);
+    expect(storedRow.path).toBe("/current-path");
+    expect(state.statuses.size).toBe(0);
+  });
+
+  it.each<ChapterDownloadStatus>([
+    { kind: "queued", phase: "source-download" },
+    { kind: "running", phase: "server-download" },
+    { kind: "done" },
+    { kind: "failed", error: "Current attempt failure" },
+  ])("preserves a current $kind status over an older saved failure", current => {
+    state.failures = [storedFailure()];
+    state.current.set(1, current);
+    state.statuses.set(1, current);
+    const statuses = useNovelDownloadStatuses(42, [storedRow], true, "source");
+    expect(statuses).toBe(state.statuses);
+    expect(statuses.get(1)).toEqual(current);
+  });
+
+  it.each<ChapterDownloadStatus>([{ kind: "queued" }, { kind: "running" }, { kind: "cancelled" }])(
+    "does not revive a saved failure while a newer $kind event is waiting for its UI flush", current => {
+      state.failures = [storedFailure()];
+      state.current.set(1, current);
+      expect(useNovelDownloadStatuses(42, [storedRow], true, "source").has(1)).toBe(false);
+    },
+  );
+
+  it("drops the fallback as soon as its saved failure is cleared", () => {
+    state.failures = [storedFailure()];
+    expect(useNovelDownloadStatuses(42, [storedRow], true, "source").get(1)?.kind).toBe("failed");
+    state.failures = [];
+    expect(useNovelDownloadStatuses(42, [storedRow], true, "source").has(1)).toBe(false);
+  });
+
+  it("only merges failures of this source and the current novel's chapter rows", () => {
+    state.failures = [
+      storedFailure({ pluginId: "other-source" }),
+      storedFailure({ chapterId: 2 }),
+      storedFailure({ chapterId: 3 }),
+    ];
+    const rows = [storedRow, { id: 2, novelId: 99 } as ChapterListRow];
+    expect(useNovelDownloadStatuses(42, rows, true, "source").size).toBe(0);
+    expect(useNovelDownloadStatuses(42, [storedRow], true).size).toBe(0);
+  });
+
+  it("does not subscribe to or merge persisted failures while the novel is hidden", () => {
+    state.failures = [storedFailure()];
+    expect(useNovelDownloadStatuses(42, [storedRow], false, "source").size).toBe(0);
+    expect(state.failuresActive).toBe(false);
   });
 });

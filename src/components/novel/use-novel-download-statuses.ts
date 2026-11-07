@@ -1,10 +1,11 @@
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { type ChapterListRow } from "../../db/queries/chapter";
 import {
   getChapterDownloadStatus,
   subscribeChapterDownloads,
   type ChapterDownloadStatus,
 } from "../../lib/tasks/chapter-download";
+import { useChapterDownloadFailureSnapshot } from "../../lib/tasks/hooks";
 
 // Big batches change several chapters per frame; each flush re-renders the whole novel page.
 export const STATUS_FLUSH_MIN_INTERVAL_MS = 250;
@@ -20,7 +21,9 @@ export function useNovelDownloadStatuses(
   id: number,
   rows: readonly ChapterListRow[],
   active = true,
+  pluginId?: string,
 ) {
+  const failures = useChapterDownloadFailureSnapshot(active);
   const [statuses, setStatuses] = useState<
     ReadonlyMap<number, ChapterDownloadStatus>
   >(() => new Map());
@@ -95,5 +98,16 @@ export function useNovelDownloadStatuses(
     });
   }, [id, rows, active]);
 
-  return statuses;
+  return useMemo(() => {
+    if (!active || !pluginId || failures.length === 0) return statuses;
+    const chapterIds = new Set(rows.filter(row => row.novelId === id).map(row => row.id));
+    let merged: Map<number, ChapterDownloadStatus> | null = null;
+    for (const failure of failures) {
+      if (failure.pluginId !== pluginId || !chapterIds.has(failure.chapterId) ||
+          statuses.has(failure.chapterId) || getChapterDownloadStatus(failure.chapterId)) continue;
+      merged ??= new Map(statuses);
+      merged.set(failure.chapterId, { kind: "failed", error: failure.messageSummary });
+    }
+    return merged ?? statuses;
+  }, [active, failures, id, pluginId, rows, statuses]);
 }

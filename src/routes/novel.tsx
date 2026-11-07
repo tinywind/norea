@@ -217,7 +217,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     downloadChapter,
     downloadChapters,
   } = useNovelChapterActions(id, displayNovel, chapters);
-  const statuses = useNovelDownloadStatuses(id, rows, active);
+  const statuses = useNovelDownloadStatuses(id, rows, active, novelQuery.data?.pluginId);
   const chapterFiltersActive = hasChapterListFilters(chapterFilters);
   const visibleChapters = useMemo(
     () => filterChapterList(chapters, chapterFilters, statuses),
