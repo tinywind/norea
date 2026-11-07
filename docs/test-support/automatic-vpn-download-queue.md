@@ -206,12 +206,21 @@ Follow-up evidence is under `.tmp/y700-download-debug-20261103/y700-fixes/`.
 ## Handoff after testing was stopped
 
 The user stopped further debugging and requested committing and pushing the
-current changes across the Norea projects. Hardware acceptance remains incomplete.
-The installed Y700 APK is still the temporary diagnostic build from `0c019ef`,
-with checksum `7add9684dccc125505bb6d1b13555da13731b221d41e9cf37376658b17365739`.
-The installed Newtoki Novel source is the local metadata-only probe
+current changes across the Norea projects. Hardware acceptance was incomplete.
+At that handoff, the installed Y700 APK was the temporary diagnostic build from
+`0c019ef`, with checksum
+`7add9684dccc125505bb6d1b13555da13731b221d41e9cf37376658b17365739`.
+The installed Newtoki Novel source was the local metadata-only probe
 `1.0.20-y700-probe.1`; its base URL and disabled paid-unlock setting were retained.
-Remove both temporary probes before final product delivery.
+The handoff required both temporary probes to be removed before final delivery.
+
+Follow-up on 2026-11-07 removed both historical probes. The updated APK no longer
+contains the temporary native capture diagnostic, and Newtoki Novel was restored
+to the existing packaged `1.0.20` artifact. Its source id, input settings, browser
+profiles, library, pending jobs, failure records, and VPN plans were retained.
+The current [plugin contract](../plugins/contract.md) supersedes the earlier
+bounded retry behavior in this historical report: every non-404 acquisition
+failure holds the affected source queue or VPN range until explicit recovery.
 
 The plugin probe's three-minute sample advanced checkpoints from 1,721 to 1,727.
 All eight extraction requests in its log succeeded within 35 seconds. Its empty

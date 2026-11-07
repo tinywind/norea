@@ -75,6 +75,22 @@ all other download errors require a hold and explicit user recovery.
 - Verify ordinary app-owned requests, such as repository and update checks,
   retain their direct app HTTP path; do not reroute them through the source VPN.
 
+## Interactive HTTP Error Documents
+
+Open a fixture URL whose first main-document response is HTTP 403 in the
+foreground site browser and through a worker's authentication handoff. Confirm
+that the original response document is visible, its page script can run, and
+opening it produces exactly one request. Closing and reopening the retained
+response must not reload it or reset its tab session or source cookies. A late
+page-finished event must not mark the failed response ready for scraping or
+fresh for the VPN route, and displaying the page must not resume held work.
+
+Run the same URL as background fetch and extraction. Both must retain the HTTP
+failure rather than accepting the error document as content. Keep coverage for
+other main-document HTTP failures and for subresource errors that must not fail
+a successful main document. DNS, connection, and certificate failures must
+continue to reject interactive navigation.
+
 ## Idle Lifecycle Investigation
 
 After tasks finish, confirm the task foreground service stops. Disconnect any

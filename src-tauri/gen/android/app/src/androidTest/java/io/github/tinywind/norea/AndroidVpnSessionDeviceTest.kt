@@ -2,8 +2,10 @@ package io.github.tinywind.norea
 
 import android.app.ActivityOptions
 import android.content.Intent
+import android.graphics.Rect
 import android.os.SystemClock
 import android.util.Base64
+import android.view.View
 import android.view.ViewGroup
 import android.webkit.CookieManager
 import android.webkit.WebView
@@ -14,6 +16,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import androidx.webkit.CookieManagerCompat
 import androidx.webkit.ProfileStore
+import androidx.webkit.WebViewCompat
 import androidx.webkit.WebViewFeature
 import java.io.Closeable
 import java.net.InetAddress
@@ -62,7 +65,8 @@ class AndroidVpnSessionDeviceTest {
             requests.add(Request(path, headers["cookie"].orEmpty(), headers["cache-control"].orEmpty()))
             val route = path.substringBefore("?")
             val status = when (route) {
-              "/forbidden", "/forbidden-image" -> "403 Forbidden"
+              "/forbidden", "/forbidden-image", "/interactive-forbidden" -> "403 Forbidden"
+              "/interactive-next" -> if (fresh) "200 OK" else "403 Forbidden"
               "/status/401" -> "401 Unauthorized"
               "/status/404" -> "404 Not Found"
               "/status/429" -> "429 Too Many Requests"
@@ -72,6 +76,25 @@ class AndroidVpnSessionDeviceTest {
             }
             val content = when (route) {
               "/forbidden" -> "Access denied"
+              "/interactive-forbidden" -> """
+                <main>
+                  <p id='manual-status'>HTTP 403 verification page</p>
+                  <button id='manual-check' type='button'>Verify</button>
+                  <span id='manual-result'>waiting</span>
+                  <a id='manual-next' href='/interactive-next'>Continue</a>
+                </main>
+                <script>
+                  window.noreaManualHttpErrorLoaded = true;
+                  document.getElementById('manual-check').addEventListener('click', function () {
+                    document.getElementById('manual-result').textContent = 'clicked';
+                  });
+                </script>
+              """.trimIndent()
+              "/interactive-next" -> """
+                <p id='manual-next-status'>${if (fresh) "Recovered same URL" else "Blocked next page"}</p>
+                <a id='manual-next' href='/interactive-recovered'>Continue</a>
+              """.trimIndent()
+              "/interactive-recovered" -> "<p id='manual-recovered'>Recovered page</p>"
               "/with-forbidden-image" -> "<div id='chapter-content'>Chapter content</div><img src='/forbidden-image'>"
               "/with-missing-image" -> "<div id='chapter-content'>Chapter content</div><img src='/status/404'>"
               else -> "${if (fresh) "fresh" else "blocked"}-$path"
@@ -194,8 +217,64 @@ class AndroidVpnSessionDeviceTest {
       expectedSuccess = null,
     )
 
-    fun showRetainedPage(path: String) {
+    fun openSite(path: String) {
       assertTrue(command("navigate", JSONObject().put("url", origin + path)).getBoolean("result"))
+    }
+
+    fun showRetainedPage(path: String) = openSite(path)
+
+    fun sourceIsVisible(): Boolean {
+      val view = sourceView()
+      var visible = false
+      instrumentation.runOnMainSync {
+        val bounds = Rect()
+        visible = view.visibility == View.VISIBLE && view.alpha > 0f && view.isClickable &&
+          view.isShown && view.getGlobalVisibleRect(bounds) && bounds.width() > 1 && bounds.height() > 1
+      }
+      return visible
+    }
+
+    fun assertLatePageFinishedKeepsHttpErrorUnusable(path: String, phase: String) {
+      val view = sourceView()
+      instrumentation.runOnMainSync {
+        assertTrue(WebViewFeature.isFeatureSupported(WebViewFeature.GET_WEB_VIEW_CLIENT))
+        // Inspect the existing state without adding a production-only test API.
+        val states = AndroidScraperBridge::class.java.getDeclaredField("queues")
+          .apply { isAccessible = true }.get(bridge) as Map<*, *>
+        val state = states.values.filterIsInstance<AndroidScraperState>().single { it.webView === view }
+        val client = WebViewCompat.getWebViewClient(view)
+        val contextBefore = state.contextReady
+        val failureBefore = runCatching {
+          client.javaClass.getDeclaredField("mainFrameFailed").apply { isAccessible = true }.getBoolean(client)
+        }.getOrNull()
+        client.onPageFinished(view, origin + path)
+        assertFalse(
+          "A late page-finished callback made the HTTP error a reusable context " +
+            "(phase=$phase, contextBefore=$contextBefore, failureBefore=$failureBefore)",
+          state.contextReady,
+        )
+        assertEquals(origin + path, state.pendingChallengeUrl)
+        val session = AndroidScraperBridge::class.java.getDeclaredField("vpnSession")
+          .apply { isAccessible = true }.get(bridge) as AndroidScraperVpnSession
+        assertTrue("Displaying an HTTP error must not mark the URL VPN-fresh",
+          session.needsFreshResponse(sourceId, origin + path))
+      }
+    }
+
+    fun assertSuccessfulPageDoesNotRefreshFailedTarget(failedPath: String, successfulPath: String) {
+      val view = sourceView()
+      instrumentation.runOnMainSync {
+        WebViewCompat.getWebViewClient(view).onPageFinished(view, origin + successfulPath)
+        val states = AndroidScraperBridge::class.java.getDeclaredField("queues")
+          .apply { isAccessible = true }.get(bridge) as Map<*, *>
+        val state = states.values.filterIsInstance<AndroidScraperState>().single { it.webView === view }
+        assertTrue("A later successful page must become a usable context", state.contextReady)
+        assertEquals(origin + successfulPath, state.currentUrl)
+        val session = AndroidScraperBridge::class.java.getDeclaredField("vpnSession")
+          .apply { isAccessible = true }.get(bridge) as AndroidScraperVpnSession
+        assertTrue("A later page must not mark the earlier HTTP error URL VPN-fresh",
+          session.needsFreshResponse(sourceId, origin + failedPath))
+      }
     }
 
     fun hideRetainedPage() {
@@ -328,6 +407,122 @@ class AndroidVpnSessionDeviceTest {
       }
     }
   }
+
+  private fun verifyFirstBrowserHttpError(namespace: String?) {
+    Fixture().use { fixture ->
+      Browser(fixture.origin, namespace).use { browser ->
+        browser.seedCookies()
+        browser.reset()
+        assertTrue("Setup must not request a source document", fixture.requests.isEmpty())
+        val forbiddenPath = "/interactive-forbidden?access=qa-private-value"
+
+        // No fetch/extraction precedes this first explicit browser navigation.
+        browser.openSite(forbiddenPath)
+        val view = browser.sourceView()
+        val loaded = """
+          document.readyState === 'complete' &&
+          window.noreaManualHttpErrorLoaded === true &&
+          document.getElementById('manual-status')?.textContent === 'HTTP 403 verification page'
+        """.trimIndent()
+        val deadline = SystemClock.elapsedRealtime() + 10_000
+        while (SystemClock.elapsedRealtime() < deadline) {
+          if (browser.evaluate(loaded) == "true" && browser.sourceIsVisible()) break
+          Thread.sleep(20)
+        }
+        assertEquals("The HTTP 403 response body and its script must load", "true", browser.evaluate(loaded))
+        assertTrue("The first HTTP 403 document must be visible and clickable", browser.sourceIsVisible())
+        assertEquals(
+          "\"clicked\"",
+          browser.evaluate(
+            "document.getElementById('manual-check').click(); document.getElementById('manual-result').textContent",
+          ),
+        )
+        assertEquals("Opening the HTTP error must not retry it", listOf(forbiddenPath), fixture.requests.map { it.path })
+        assertTrue("The login cookie must reach the first request",
+          fixture.requests.single().cookies.contains("login_session=qa-login"))
+        assertTrue("The HTTP error must preserve the login cookie", browser.cookieNames().contains("login_session"))
+        browser.assertLatePageFinishedKeepsHttpErrorUnusable(forbiddenPath, "first open")
+
+        browser.showRetainedPage(forbiddenPath)
+        assertSame("Reopening the retained response must keep its WebView", view, browser.sourceView())
+        assertTrue(browser.sourceIsVisible())
+        assertEquals("\"clicked\"", browser.evaluate("document.getElementById('manual-result').textContent"))
+        assertEquals("Retained-page opening must not send another request",
+          listOf(forbiddenPath), fixture.requests.map { it.path })
+        assertTrue(browser.cookieNames().contains("login_session"))
+        browser.assertLatePageFinishedKeepsHttpErrorUnusable(forbiddenPath, "retained open")
+
+        // The next page can also fail before its page-start callback. The
+        // previous document's failed flag must not suppress this new response.
+        val blockedNextPath = "/interactive-next"
+        browser.evaluate("document.getElementById('manual-next').click()")
+        val blockedNext = """
+          document.readyState === 'complete' &&
+          document.getElementById('manual-next-status')?.textContent === 'Blocked next page'
+        """.trimIndent()
+        val blockedNextDeadline = SystemClock.elapsedRealtime() + 10_000
+        while (SystemClock.elapsedRealtime() < blockedNextDeadline) {
+          if (browser.evaluate(blockedNext) == "true" && browser.sourceIsVisible()) break
+          Thread.sleep(20)
+        }
+        assertEquals("The next HTTP error document must load", "true", browser.evaluate(blockedNext))
+        assertTrue(browser.sourceIsVisible())
+        assertSame(view, browser.sourceView())
+        assertEquals(listOf(forbiddenPath, blockedNextPath), fixture.requests.map { it.path })
+        browser.assertLatePageFinishedKeepsHttpErrorUnusable(blockedNextPath, "next HTTP error")
+
+        // A real same-URL reload is a new navigation, unlike retained-page open.
+        fixture.fresh = true
+        browser.evaluate("window.location.reload()")
+        val sameUrlRecovered = """
+          document.readyState === 'complete' &&
+          document.getElementById('manual-next-status')?.textContent === 'Recovered same URL'
+        """.trimIndent()
+        val sameUrlDeadline = SystemClock.elapsedRealtime() + 10_000
+        while (SystemClock.elapsedRealtime() < sameUrlDeadline) {
+          if (browser.evaluate(sameUrlRecovered) == "true" && browser.sourceIsVisible()) break
+          Thread.sleep(20)
+        }
+        assertEquals("A successful same-URL reload must recover", "true", browser.evaluate(sameUrlRecovered))
+        assertTrue(browser.sourceIsVisible())
+        assertSame(view, browser.sourceView())
+        assertEquals("Only the explicit reload may repeat the URL",
+          listOf(forbiddenPath, blockedNextPath, blockedNextPath), fixture.requests.map { it.path })
+        browser.assertSuccessfulPageDoesNotRefreshFailedTarget(forbiddenPath, blockedNextPath)
+
+        // A normal in-page link must settle its own document without consuming
+        // the failed attempt's VPN-fresh bookkeeping.
+        val successfulPath = "/interactive-recovered"
+        browser.evaluate("document.getElementById('manual-next').click()")
+        val recovered = """
+          document.readyState === 'complete' &&
+          document.getElementById('manual-recovered')?.textContent === 'Recovered page'
+        """.trimIndent()
+        val recoveryDeadline = SystemClock.elapsedRealtime() + 10_000
+        while (SystemClock.elapsedRealtime() < recoveryDeadline) {
+          if (browser.evaluate(recovered) == "true" && browser.sourceIsVisible()) break
+          Thread.sleep(20)
+        }
+        assertEquals("The in-page navigation must display the successful document", "true", browser.evaluate(recovered))
+        assertSame("In-page navigation must keep the source WebView", view, browser.sourceView())
+        assertTrue(browser.sourceIsVisible())
+        assertEquals("Only explicit clicks and the explicit reload may add requests",
+          listOf(forbiddenPath, blockedNextPath, blockedNextPath, successfulPath), fixture.requests.map { it.path })
+        fixture.requests.forEach { request ->
+          assertTrue("In-page navigation must retain the login cookie", request.cookies.contains("login_session=qa-login"))
+        }
+        browser.assertSuccessfulPageDoesNotRefreshFailedTarget(forbiddenPath, successfulPath)
+      }
+    }
+  }
+
+  @Test
+  fun firstBrowser403ShowsUsableDocumentWithoutRetryAndKeepsLoginSession() =
+    verifyFirstBrowserHttpError(namespace = null)
+
+  @Test
+  fun firstWorkerBrowser403ShowsUsableDocumentWithoutRetryAndKeepsLoginSession() =
+    verifyFirstBrowserHttpError(namespace = "vpn-worker-qa-${UUID.randomUUID()}")
 
   private fun verifyMainFrameHttpError(namespace: String?) {
     Fixture().use { fixture ->

@@ -254,6 +254,13 @@ navigation within the same source profile and keeps its scheduler task active.
 It follows native redirects without replacing an unfinished address edit.
 Android's foreground source WebView supports pinch zoom. Manual navigation to
 another hostname does not enable verification for the blocked hostname.
+An explicit Android site-browser navigation displays an HTTP error response's
+own document so the user can inspect a refusal or complete a site-provided
+verification step. Displaying that document does not turn its HTTP status into
+a successful acquisition, mark the source response fresh, or release a queue
+hold. The existing document and source profile are retained without another
+request. Background fetch and extraction still fail on a main-document HTTP
+error; DNS, connection, and certificate failures remain navigation errors.
 Verify runs one queued task as a canary and unblocks the source only after that
 task explicitly confirms successful source access and completes. Chapter canaries
 bypass final-content and partial-resume fast paths so verification performs a real

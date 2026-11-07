@@ -1372,12 +1372,14 @@ class AndroidScraperBridge(
   private fun makeClient(
     state: AndroidScraperState,
     onStarted: ((String) -> Unit)? = null,
+    onHttpErrorDocument: ((Int, String) -> Unit)? = null,
     onFinished: ((String) -> Unit)? = null,
   ): WebViewClient = object : WebViewClient() {
     private var mainFrameFailed = false
+    private var pendingHttpErrorStartUrl: String? = null
 
-    private fun failNavigation(message: String) {
-      if (mainFrameFailed) return
+    private fun failNavigation(message: String, newHttpResponse: Boolean = false) {
+      if (mainFrameFailed && !newHttpResponse) return
       mainFrameFailed = true
       state.contextReady = false
       state.pendingDocumentReady = null
@@ -1388,7 +1390,11 @@ class AndroidScraperBridge(
 
     override fun onPageStarted(view: WebView, url: String, favicon: android.graphics.Bitmap?) {
       if (state.webView !== view) return
-      mainFrameFailed = false
+      // Chromium can report the HTTP response before page-start at commit.
+      // Consume that response's marker once; a later same-URL reload is a new
+      // navigation and must be able to succeed.
+      mainFrameFailed = pendingHttpErrorStartUrl == url.substringBefore("#")
+      pendingHttpErrorStartUrl = null
       state.contextReady = false
       state.currentUrl = url
       logState(state, "pageStarted url=$url", url)
@@ -1397,7 +1403,12 @@ class AndroidScraperBridge(
     }
 
     override fun onPageFinished(view: WebView, url: String) {
-      if (state.webView !== view || mainFrameFailed) return
+      if (state.webView !== view) return
+      if (mainFrameFailed) {
+        // Also support the start -> HTTP error -> finish callback order.
+        if (pendingHttpErrorStartUrl == url.substringBefore("#")) pendingHttpErrorStartUrl = null
+        return
+      }
       state.currentUrl = url
       state.contextReady = isHttpUrl(url)
       profileCookieManager(view).flush()
@@ -1413,15 +1424,42 @@ class AndroidScraperBridge(
     ) {
       if (
         state.webView !== view || !request.isForMainFrame ||
-        errorResponse.statusCode < 400 || mainFrameFailed
+        errorResponse.statusCode < 400
       ) return
       if (
         WebViewFeature.isFeatureSupported(WebViewFeature.GET_WEB_VIEW_CLIENT) &&
         WebViewCompat.getWebViewClient(view) !== this
       ) return
       val url = request.url.toString()
+      val status = errorResponse.statusCode
+      // Do not discard a new page's HTTP error merely because the previous
+      // displayed document failed: this response may precede its page-start.
+      pendingHttpErrorStartUrl = url.substringBefore("#")
+      // This attempt failed. A later in-page navigation must not mark its
+      // original target VPN-fresh when the new document finishes loading.
+      vpnFreshNavigations.remove(view)
       state.pendingChallengeUrl = url.takeIf(::isHttpUrl)
-      failNavigation("scraper: HTTP ${errorResponse.statusCode} at $url")
+      Log.w(
+        TAG,
+        singleLineLogMessage(
+          "[${state.key}] main document HTTP $status sourceId=${state.sourceId ?: "<none>"} " +
+            "host=${request.url.host ?: "<none>"} url=${urlForLog(url)} " +
+            "browserAction=${state.activeAction?.browserAction == true}",
+        ),
+      )
+      if (onHttpErrorDocument != null && state.activeAction?.browserAction == true) {
+        // An explicit browser open may display a verification/error response.
+        // Keep this client failed so a late onPageFinished cannot turn that
+        // response into a usable scraper context or mark it VPN-fresh.
+        mainFrameFailed = true
+        state.contextReady = false
+        state.pendingDocumentReady = null
+        onHttpErrorDocument(status, url)
+      } else {
+        // A new response must settle its acquisition even when the preceding
+        // document failed and this response arrives before its own page-start.
+        failNavigation("scraper: HTTP $status at $url", newHttpResponse = true)
+      }
     }
 
     override fun onReceivedError(view: WebView, request: WebResourceRequest, error: WebResourceError) {
@@ -1755,7 +1793,17 @@ class AndroidScraperBridge(
       useWideViewPort = true
     }
     webView.setInitialScale(0)
-    webView.webViewClient = makeClient(state) {
+    webView.webViewClient = makeClient(
+      state,
+      onHttpErrorDocument = { _, _ ->
+        if (state.activeAction?.id == id) {
+          // Show the response already being loaded; do not retry or replace
+          // its client, tab session, cookies, or HTTP failure state.
+          showScraper()
+          finishSuccess(state, id, true)
+        }
+      },
+    ) {
       if (state.activeAction?.id != id) return@makeClient
       webView.clearHistory()
       webView.webViewClient = makeClient(state, null)
