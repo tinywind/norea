@@ -627,6 +627,7 @@ describe("android storage bridge facade", () => {
       expect.any(String),
       root,
       expect.any(String),
+      JSON.stringify({}),
     );
     expect(finalizeChapterStorageTransfer).toHaveBeenCalledWith(
       expect.any(String),

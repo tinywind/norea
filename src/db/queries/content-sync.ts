@@ -320,6 +320,11 @@ export async function isNovelMigrationSourceHeldInDb(
     SELECT 1 FROM content_sync_cache WHERE cache_key LIKE $1
     AND json_extract(payload,'$.serverUrl')=$2 AND json_extract(payload,'$.source.pluginId')=$3
     AND (json_extract(payload,'$.source.novelPath')=$4 OR json_extract(payload,'$.source.novelId')=$5)
+    UNION ALL
+    SELECT 1 FROM content_sync_cache WHERE cache_key LIKE 'norea-content-chapter-number-reconciliation:%'
+    AND json_extract(payload,'$.serverUrl')=$2 AND json_extract(payload,'$.status')='pending'
+    AND json_extract(payload,'$.identity.pluginId')=$3
+    AND (json_extract(payload,'$.identity.novelPath')=$4 OR json_extract(payload,'$.identity.novelId')=$5)
   ) AS held`, [`${NOVEL_MIGRATION_CACHE_PREFIX}%`, serverUrl, identity.pluginId, identity.novelPath, identity.novelId]);
   return sqliteBoolean(rows[0]?.held);
 }

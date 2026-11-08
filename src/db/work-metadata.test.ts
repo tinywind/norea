@@ -124,8 +124,8 @@ it("rechecks refresh order when an earlier response was already waiting for the 
   const plugin = (name: string) => ({ id: "source", parseNovel: async () => ({ novelId: "book", name, path: "/book", chapters: [{ chapterNumber: 1, name, path: "/chapter/1" }] }) } as unknown as Plugin);
   const earlier = syncNovelFromSource(plugin("Earlier response"), { name: "Book", path: "/book" });
   await waiting;
-  await syncNovelFromSource(plugin("Latest response"), { name: "Book", path: "/book" });
-  release(); await earlier;
+  const latest = syncNovelFromSource(plugin("Latest response"), { name: "Book", path: "/book" });
+  release(); await latest; await earlier;
   expect(sqlite.prepare("SELECT name FROM novel").get()).toEqual({ name: "Latest response" });
   expect((await listStoredNovelMetadata())[0]!.metadata.chapters).toEqual({ "1": "Latest response" });
 });

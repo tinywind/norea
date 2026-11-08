@@ -51,9 +51,9 @@ export async function contentServerRequest<T>(serverUrl: string, path: string, t
         forgetContentDeviceRegistration(serverUrl, token);
       }
       let message: string | undefined;
-      if (response.status === 409 && /^\/works\/[^/]+\/(?:finalize-migration|migration-snapshot)$/.test(path)) {
+      if (response.status === 409 && /^\/works\/[^/]+\/(?:finalize-migration|migration-snapshot|reconcile-chapter-numbers)$/.test(path)) {
         const detail = await response.json().catch(() => null) as { message?: unknown } | null;
-        if (typeof detail?.message === "string" && detail.message.startsWith("Work migration: ")) message = detail.message.slice(0, 1500);
+        if (typeof detail?.message === "string" && (detail.message.startsWith("Work migration: ") || detail.message.startsWith("Chapter number reconciliation conflict: "))) message = detail.message.slice(0, 1500);
       }
       throw new ContentServerError(response.status, message);
     }

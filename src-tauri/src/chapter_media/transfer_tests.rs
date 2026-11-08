@@ -39,6 +39,7 @@ fn chapter_storage_transfer_copies_the_complete_directory_before_finalize() {
         dir.path(),
         vec![transfer_entry("chapter-1", source, target)],
         "transfer-1",
+        false,
     )
     .expect("prepare transfer");
 
@@ -88,6 +89,7 @@ fn chapter_storage_transfer_keeps_an_existing_target_download() {
         dir.path(),
         vec![transfer_entry("chapter-1", source, target)],
         "transfer-2",
+        false,
     )
     .expect("prepare transfer");
 
@@ -119,6 +121,7 @@ fn chapter_storage_transfer_restores_an_invalid_target_on_rollback() {
         dir.path(),
         vec![transfer_entry("chapter-1", source, target)],
         "transfer-3",
+        false,
     )
     .expect("prepare transfer");
 
@@ -145,6 +148,7 @@ fn repeated_transfer_rollback_does_not_remove_a_new_target_download() {
         dir.path(),
         vec![transfer_entry("chapter-1", source, target)],
         "transfer-retry",
+        false,
     )
     .expect("prepare transfer");
 
@@ -181,6 +185,7 @@ fn chapter_storage_transfer_rejects_invalid_and_duplicate_target_paths() {
             transfer_entry("chapter-2", source_two, target),
         ],
         "transfer-4",
+        false,
     )
     .expect_err("reject duplicate target");
 
@@ -213,6 +218,7 @@ fn chapter_storage_transfer_rolls_back_prior_entries_after_copy_failure() {
             transfer_entry("chapter-2", source_two, target_two),
         ],
         "transfer-5",
+        false,
     )
     .expect_err("reject source symlink");
 
@@ -221,4 +227,174 @@ fn chapter_storage_transfer_rolls_back_prior_entries_after_copy_failure() {
     assert!(!dir.path().join(target_two).exists());
     assert!(dir.path().join(source_one).is_dir());
     assert!(dir.path().join(source_two).is_dir());
+}
+
+#[test]
+fn strict_renumber_preflights_all_targets_before_copying() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source_one = "contents/bookkor/novel/900001";
+    let source_two = "contents/bookkor/novel/900002";
+    let target_one = "contents/bookkor/novel/1";
+    let target_two = "contents/bookkor/novel/2";
+    write_downloaded_chapter(dir.path(), source_one, b"first original");
+    write_downloaded_chapter(dir.path(), source_two, b"second original");
+    write_downloaded_chapter(dir.path(), target_two, b"unrelated target");
+
+    let error = prepare_chapter_storage_transfer_at_root(
+        dir.path(),
+        vec![
+            transfer_entry("one", source_one, target_one),
+            transfer_entry("two", source_two, target_two),
+        ],
+        "renumber-target-conflict",
+        true,
+    )
+    .expect_err("an occupied target must stop the whole plan");
+
+    assert!(error.contains("target must be absent"));
+    assert!(!dir.path().join(target_one).exists());
+    assert_eq!(
+        fs::read(dir.path().join(target_two).join("content.html")).expect("existing target"),
+        b"unrelated target"
+    );
+    assert!(dir.path().join(source_one).is_dir());
+    assert!(dir.path().join(source_two).is_dir());
+}
+
+#[test]
+fn strict_renumber_preserves_unfinished_sources_before_copying() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source_one = "contents/bookkor/novel/900001";
+    let source_two = "contents/bookkor/novel/900002";
+    let target_one = "contents/bookkor/novel/1";
+    let target_two = "contents/bookkor/novel/2";
+    write_downloaded_chapter(dir.path(), source_one, b"first original");
+    fs::create_dir_all(dir.path().join(source_two)).expect("partial source directory");
+    let partial = dir
+        .path()
+        .join(source_two)
+        .join(CHAPTER_PARTIAL_CONTENT_FILE);
+    fs::write(&partial, b"irreplaceable unfinished download").expect("partial source");
+
+    let error = prepare_chapter_storage_transfer_at_root(
+        dir.path(),
+        vec![
+            transfer_entry("one", source_one, target_one),
+            transfer_entry("two", source_two, target_two),
+        ],
+        "renumber-partial-source",
+        true,
+    )
+    .expect_err("an unfinished source must not become an empty chapter");
+
+    assert!(error.contains("unfinished content"));
+    assert!(!dir.path().join(target_one).exists());
+    assert!(!dir.path().join(target_two).exists());
+    assert_eq!(
+        fs::read(partial).expect("partial source remains"),
+        b"irreplaceable unfinished download"
+    );
+}
+
+#[test]
+fn persisted_renumber_intent_recovers_without_the_native_receipt() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = "contents/bookkor/novel/900001";
+    let target = "contents/bookkor/novel/1";
+    let entry = transfer_entry("one", source, target);
+    let token = "persisted-renumber-intent";
+    write_downloaded_chapter(dir.path(), source, b"original chapter");
+
+    let receipt =
+        prepare_chapter_storage_transfer_at_root(dir.path(), vec![entry.clone()], token, true)
+            .expect("prepare with persisted token");
+    assert_eq!(receipt.token, token);
+    let intent = ChapterStorageTransferPreparation {
+        token: token.to_string(),
+        entries: vec![transfer_prepared_entry(
+            dir.path(),
+            entry,
+            ChapterStorageTransferOutcome::CopiedSource,
+            false,
+            None,
+        )
+        .expect("reconstruct rollback from durable intent")],
+    };
+
+    rollback_chapter_storage_transfer_at_root(dir.path(), &intent).expect("recover lost response");
+    assert!(dir.path().join(source).is_dir());
+    assert!(!dir.path().join(target).exists());
+    write_downloaded_chapter(dir.path(), target, b"a later unrelated download");
+    rollback_chapter_storage_transfer_at_root(dir.path(), &intent).expect("idempotent recovery");
+    assert_eq!(
+        fs::read(dir.path().join(target).join("content.html")).expect("unmarked target remains"),
+        b"a later unrelated download"
+    );
+}
+
+#[test]
+fn persisted_renumber_intent_removes_only_its_interrupted_stage() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = "contents/bookkor/novel/900001";
+    let target = "contents/bookkor/novel/1";
+    let token = "interrupted-renumber";
+    write_downloaded_chapter(dir.path(), source, b"original chapter");
+    let own_stage =
+        transfer_sibling_path(&dir.path().join(target), token, "stage").expect("stage path");
+    let other_stage = transfer_sibling_path(&dir.path().join(target), "another-operation", "stage")
+        .expect("other stage");
+    fs::create_dir_all(&own_stage).expect("interrupted stage");
+    fs::write(own_stage.join("content.html"), b"partial copy").expect("interrupted copy");
+    fs::create_dir_all(&other_stage).expect("other operation stage");
+    let intent = ChapterStorageTransferPreparation {
+        token: token.to_string(),
+        entries: vec![transfer_prepared_entry(
+            dir.path(),
+            transfer_entry("one", source, target),
+            ChapterStorageTransferOutcome::CopiedSource,
+            false,
+            None,
+        )
+        .expect("durable intent")],
+    };
+    rollback_chapter_storage_transfer_at_root(dir.path(), &intent)
+        .expect("recover interrupted copy");
+    assert!(!own_stage.exists());
+    assert!(other_stage.is_dir());
+    assert!(dir.path().join(source).is_dir());
+}
+
+#[test]
+fn strict_renumber_rejects_crossed_paths_and_retains_missing_sources() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let first = "contents/bookkor/novel/1";
+    let second = "contents/bookkor/novel/2";
+    let error = prepare_chapter_storage_transfer_at_root(
+        dir.path(),
+        vec![
+            transfer_entry("one", first, second),
+            transfer_entry("two", second, first),
+        ],
+        "renumber-cycle",
+        true,
+    )
+    .expect_err("cycles must be rejected even when both directories are absent");
+    assert!(error.contains("disjoint"));
+
+    let receipt = prepare_chapter_storage_transfer_at_root(
+        dir.path(),
+        vec![transfer_entry(
+            "one",
+            "contents/bookkor/novel/900001",
+            first,
+        )],
+        "renumber-not-downloaded",
+        true,
+    )
+    .expect("an absent source is a metadata-only chapter");
+    assert_eq!(
+        receipt.entries[0].outcome,
+        ChapterStorageTransferOutcome::SourceNotDownloaded
+    );
+    assert!(!dir.path().join(first).exists());
 }

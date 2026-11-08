@@ -674,3 +674,9 @@ describe("createShimResolver", () => {
     }
   });
 });
+
+it("reports immutable support for durable source chapter number reconciliation", () => {
+  const capabilities = createShimResolver("test-plugin")("@norea/host-capabilities");
+  expect(capabilities).toEqual({ sourceChapterNumberReconciliationVersion: 1 });
+  expect(Object.isFrozen(capabilities)).toBe(true);
+});

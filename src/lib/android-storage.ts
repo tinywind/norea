@@ -10,6 +10,7 @@ import {
 } from "./performance-budgets";
 import type {
   ChapterStorageTransferEntry,
+  ChapterStorageTransferOptions,
   ChapterStorageTransferPreparation,
 } from "./chapter-storage-transfer";
 
@@ -83,6 +84,7 @@ interface AndroidStorageBridge {
     requestId: string,
     rootUri: string,
     entriesJson: string,
+    optionsJson: string,
   ) => void;
   readBase64: (rootUri: string, relativePath: string) => string;
   readContentUriBase64: (uri: string) => string;
@@ -965,12 +967,14 @@ export async function deleteAndroidStoragePaths(
 
 export async function prepareAndroidChapterStorageTransfer(
   entries: readonly ChapterStorageTransferEntry[],
+  options: ChapterStorageTransferOptions = {},
 ): Promise<ChapterStorageTransferPreparation> {
   const response = await runAndroidChapterStorageTransfer((requestId, root) => {
     androidStorageBridge().prepareChapterStorageTransfer(
       requestId,
       root,
       JSON.stringify(entries),
+      JSON.stringify(options),
     );
   });
   if (!response.preparation) {

@@ -17,6 +17,7 @@ vi.mock("../../db/queries/installed-plugin", () => ({
 }));
 
 import { appFetchText, createPluginFetchShim } from "../http";
+import * as pluginShims from "./shims";
 import {
   deleteInstalledPlugin,
   listInstalledPlugins,
@@ -614,4 +615,34 @@ describe("PluginManager.uninstallPlugin", () => {
     );
     expect(manager.has("demo")).toBe(true);
   });
+});
+
+it("keeps an installed plugin when an older host rejects its reconciliation capability module", async () => {
+  const manager = new PluginManager();
+  mockedFetchText.mockResolvedValue(VALID_PLUGIN_SOURCE);
+  const installed = await manager.installPlugin(VALID_ITEM, REPO_URL);
+  mockedUpsertInstalledPlugin.mockClear();
+  const currentResolver = pluginShims.createShimResolver;
+  const legacy = vi.spyOn(pluginShims, "createShimResolver").mockImplementation((...args) => {
+    const resolve = currentResolver(...args);
+    return id => {
+      if (id === "@norea/host-capabilities") throw new Error("Module is not whitelisted in the plugin sandbox.");
+      return resolve(id);
+    };
+  });
+  try {
+    mockedFetchText.mockResolvedValue('const capabilities = require("@norea/host-capabilities");\n' + VALID_PLUGIN_SOURCE);
+    await expect(manager.updatePlugin("demo", { ...VALID_ITEM, version: "1.0.1" }, REPO_URL)).rejects.toThrow("not whitelisted");
+    expect(manager.getPlugin("demo")).toBe(installed);
+    expect(manager.getPlugin("demo")?.version).toBe("1.0.0");
+    expect(mockedUpsertInstalledPlugin).not.toHaveBeenCalled();
+  } finally { legacy.mockRestore(); }
+});
+
+it("loads a capability-gated plugin on a host that can preserve existing numbered storage", async () => {
+  const manager = new PluginManager();
+  mockedFetchText.mockResolvedValue('const { sourceChapterNumberReconciliationVersion } = require("@norea/host-capabilities");\n' +
+    'if (sourceChapterNumberReconciliationVersion !== 1) throw new Error("Host upgrade required");\n' + VALID_PLUGIN_SOURCE);
+  await expect(manager.installPlugin(VALID_ITEM, REPO_URL)).resolves.toMatchObject({ id: "demo" });
+  expect(mockedUpsertInstalledPlugin).toHaveBeenCalledOnce();
 });

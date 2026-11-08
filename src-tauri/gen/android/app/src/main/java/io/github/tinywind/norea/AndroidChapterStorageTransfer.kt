@@ -50,6 +50,11 @@ private fun validateAndroidChapterStorageTransferToken(token: String): String {
   return token
 }
 
+internal fun resolveAndroidChapterStorageTransferToken(
+  suppliedToken: String?,
+  generateToken: () -> String,
+): String = validateAndroidChapterStorageTransferToken(suppliedToken ?: generateToken())
+
 internal fun androidChapterStorageTransferSiblingName(
   targetName: String,
   token: String,
@@ -372,10 +377,14 @@ internal class AndroidChapterStorageTransfer(
     rootUri: String,
     entry: ChapterStorageTransferEntry,
     token: String,
+    requireEmptyTargets: Boolean,
   ): JSONObject {
     val targetSegments = validateAndroidChapterStorageRelativeDir(entry.targetRelativeDir)
     val targetName = targetSegments.last()
     storage.storageDocumentAt(rootUri, entry.targetRelativeDir)?.let { target ->
+      require(!requireEmptyTargets) {
+        "Android chapter storage transfer target must be absent: ${entry.targetRelativeDir}"
+      }
       inspectChapterStorageTransferArtifacts(target, entry.targetRelativeDir)?.let { artifacts ->
         return preparedChapterStorageTransferEntryJson(
           entry,
@@ -399,12 +408,17 @@ internal class AndroidChapterStorageTransfer(
     val sourceArtifacts = inspectChapterStorageTransferArtifacts(
       source,
       entry.sourceRelativeDir,
-    ) ?: return preparedChapterStorageTransferEntryJson(
-      entry,
-      "sourceNotDownloaded",
-      false,
-      null,
-    )
+    ) ?: run {
+      require(!requireEmptyTargets) {
+        "Android chapter storage transfer source has unfinished content: ${entry.sourceRelativeDir}"
+      }
+      return preparedChapterStorageTransferEntryJson(
+        entry,
+        "sourceNotDownloaded",
+        false,
+        null,
+      )
+    }
 
     val targetParent = ensureChapterStorageTransferParent(rootUri, targetSegments)
     val stageName = androidChapterStorageTransferSiblingName(targetName, token, "stage")
@@ -452,6 +466,9 @@ internal class AndroidChapterStorageTransfer(
       }
 
       targetParent.findFile(targetName)?.let { racedTarget ->
+        require(!requireEmptyTargets) {
+          "Android chapter storage transfer target appeared during preparation."
+        }
         inspectChapterStorageTransferArtifacts(
           racedTarget,
           entry.targetRelativeDir,
@@ -534,14 +551,57 @@ internal class AndroidChapterStorageTransfer(
     }
   }
 
-  fun prepareChapterStorageTransfer(rootUri: String, entriesJson: String): JSONObject {
+  fun prepareChapterStorageTransfer(
+    rootUri: String,
+    entriesJson: String,
+    optionsJson: String = "{}",
+  ): JSONObject {
     val entries = parseChapterStorageTransferEntries(JSONArray(entriesJson))
-    val token = validateAndroidChapterStorageTransferToken(chapterStorageTransferToken())
+    val options = JSONObject(optionsJson)
+    val suppliedToken = options.opt("token").takeUnless { it == JSONObject.NULL }
+    require(suppliedToken == null || suppliedToken is String) {
+      "Android chapter storage transfer token must be a string."
+    }
+    val strictOption = options.opt("requireEmptyTargets").takeUnless { it == JSONObject.NULL }
+    require(strictOption == null || strictOption is Boolean) {
+      "Android chapter storage transfer target policy must be a boolean."
+    }
+    val requireEmptyTargets = strictOption == true
+    val token = resolveAndroidChapterStorageTransferToken(suppliedToken as String?) {
+      chapterStorageTransferToken()
+    }
+    if (requireEmptyTargets) {
+      val sources = entries.map { it.sourceRelativeDir }.toSet()
+      for (entry in entries) {
+        require(entry.targetRelativeDir !in sources) {
+          "Android chapter storage transfer sources and targets must be disjoint."
+        }
+        require(storage.storageDocumentAt(rootUri, entry.targetRelativeDir) == null) {
+          "Android chapter storage transfer target must be absent: ${entry.targetRelativeDir}"
+        }
+        val targetSegments = validateAndroidChapterStorageRelativeDir(entry.targetRelativeDir)
+        val parent = storage.storageDocumentAt(rootUri, targetSegments.dropLast(1).joinToString("/"))
+        for (kind in listOf("stage", "backup")) {
+          val name = androidChapterStorageTransferSiblingName(targetSegments.last(), token, kind)
+          require(parent?.findFile(name) == null) {
+            "Android chapter storage transfer workspace already exists."
+          }
+        }
+        storage.storageDocumentAt(rootUri, entry.sourceRelativeDir)?.let { source ->
+          require(source.isDirectory) {
+            "Android chapter storage transfer source is not a folder: ${entry.sourceRelativeDir}"
+          }
+          require(inspectChapterStorageTransferArtifacts(source, entry.sourceRelativeDir) != null) {
+            "Android chapter storage transfer source has unfinished content: ${entry.sourceRelativeDir}"
+          }
+        }
+      }
+    }
     storage.ensureContentsNoMedia(rootUri)
     val prepared = JSONArray()
     try {
       for (entry in entries) {
-        prepared.put(prepareChapterStorageTransferEntry(rootUri, entry, token))
+        prepared.put(prepareChapterStorageTransferEntry(rootUri, entry, token, requireEmptyTargets))
       }
     } catch (error: Throwable) {
       if (prepared.length() > 0) {

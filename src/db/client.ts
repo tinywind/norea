@@ -26,6 +26,8 @@ function observationError(error: unknown): string {
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   if (isTauriRuntime()) {
+    const { recoverSourceChapterRenumbersInDb } = await import("../lib/source-chapter-renumber");
+    await recoverSourceChapterRenumbersInDb(db);
     await restoreWorkMetadataDirectories(db, false);
   }
   return db;

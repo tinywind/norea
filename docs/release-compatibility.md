@@ -638,6 +638,38 @@ Titles and host-generated hashes are excluded from directory names. The app
 caches the plugin-owned work ID in `novel.source_novel_id` and includes it in metadata,
 chapter manifests, and backup snapshots. Invalid, changed, or conflicting IDs
 are rejected. The version 1 baseline includes this cache column.
+A complete source refresh can correct chapter numbers while retaining chapter
+IDs, reading state, download state, and source paths. An optional stable
+`sourceChapterId` only resolves a unique numeric legacy placeholder outside the
+new order range. The host rejects overlapping number sets, occupied destinations,
+and ambiguous mappings. Corrections currently require positive safe integer numbers,
+at most 10000 mappings, and actual source paths of at most 4096 characters; unchanged
+zero/fractional source catalogs remain supported. It copies into empty canonical folders before publishing
+the corrected SQLite rows, directory cache, and `novel.json` catalog. Only mapped
+old catalog keys are removed; unrelated chapters are retained. Local media
+`manifest.json` files contain asset declarations, not chapter identities, and are
+kept byte for byte. Upload package identities come from the current database.
+
+The existing `content_sync_cache` stores a version 1 local reconciliation journal
+before native storage work, including a fixed transfer token and the previous
+work document. Startup rolls back uncommitted targets or finalizes committed
+copies before metadata recovery. Recovery first verifies the current work/chapter
+identities, numbers, directory cache, and uncommitted metadata baseline so a journal
+from a replaced database cannot overwrite restored data. A failed cleanup retains its journal and blocks
+chapter-folder rescanning. Storage with a partial body is retained and rejected
+rather than silently discarded. This adds no database table or schema migration.
+
+The same database commit records a pending content-server number reconciliation
+and remaps numeric chapter deletion exclusions. Ordinary server pulls and uploads
+wait for the authenticated conditional reconciliation endpoint; a saved operation
+ID and exact request are reused after ambiguous responses. A server without the
+capability is held for upgrade. Existing real chapter paths, server IDs, and
+payloads remain authoritative; normal catalog merging cannot replace this step.
+
+Number-correcting plugins require the external `@norea/host-capabilities` module
+at module initialization. Older hosts reject installation before replacing the
+previous plugin, even when both host builds use the same app version string.
+
 Runtime recovery does not import or convert earlier title-based folders or
 metadata without the plugin-owned ID. It leaves those original files untouched.
 Explicitly requested offline conversions follow the preservation and validation

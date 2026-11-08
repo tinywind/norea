@@ -325,6 +325,7 @@ internal class AndroidStorageBridge(
     requestId: String,
     rootUri: String,
     entriesJson: String,
+    optionsJson: String,
   ) {
     storageExecutors.foreground.execute {
       val response = storageResponse {
@@ -332,7 +333,7 @@ internal class AndroidStorageBridge(
           .put("ok", true)
           .put(
             "preparation",
-            chapterTransfer.prepareChapterStorageTransfer(rootUri, entriesJson),
+            chapterTransfer.prepareChapterStorageTransfer(rootUri, entriesJson, optionsJson),
           )
       }
       resolveChapterStorageTransfer(requestId, response)

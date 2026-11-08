@@ -159,6 +159,8 @@ export interface ChapterItem {
   contentType?: ChapterContentType;
   /** Stable source-owned chapter order key, unique within one novel. */
   chapterNumber: number;
+  /** Optional source identity independent of display/order numbering. */
+  sourceChapterId?: string;
   /** ISO-8601 preferred; UI does best-effort parse. */
   releaseTime?: string;
   /** Pagination cursor for `parsePage()`. */

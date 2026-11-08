@@ -679,6 +679,23 @@ when the source needs one. Without it, the host resolves paths against
 `getBaseUrl()`. Cover storage accepts absolute HTTP(S) URLs directly so media
 hosts are not accidentally prefixed with the source's base URL.
 
+`ChapterItem.sourceChapterId` is an optional stable source ID independent of the
+chapter order. It must be a nonempty string. A complete source refresh can use a
+numeric ID to resolve a unique legacy `norea-folder:<id>` placeholder whose stored
+number is outside the new catalog range. Exact source paths and placeholders at
+the current chapter number take precedence. Ambiguous IDs are rejected.
+
+A plugin that corrects already published chapter numbers must import the external
+`@norea/host-capabilities` module and require its named
+`sourceChapterNumberReconciliationVersion` export to equal `1` during module
+initialization. The host returns a frozen capability object. Keep this module
+external in the plugin bundle: older hosts reject the unknown module before
+replacing an installed plugin. App version strings and optional item fields do
+not provide that protection. Corrections require disjoint positive safe integer
+number sets, at most 10000 mappings, and actual source paths of at most 4096
+characters. Ordinary unchanged zero/fractional chapters remain supported.
+This adds no source request.
+
 `ChapterItem.chapterNumber` is a stable source-owned order key unique within a
 novel. It must be a nonnegative decimal number; fractions are supported.
 `ChapterItem.path` may be an absolute URL, relative path, or opaque

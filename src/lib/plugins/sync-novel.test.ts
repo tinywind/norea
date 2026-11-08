@@ -7,6 +7,8 @@ vi.mock("../../db/client", () => ({
   runDatabaseTransaction: vi.fn(),
 }));
 vi.mock("../../db/queries/novel-identity", () => ({ reconcileImportedNovelIdentityInDb: vi.fn(async () => null) }));
+vi.mock("./source-chapter-renumber", () => ({ withSourceChapterNumberReconciliation: (_input: unknown, publish: (journal: null) => Promise<unknown>) => publish(null) }));
+vi.mock("../source-chapter-renumber", async original => ({ ...await original<typeof import("../source-chapter-renumber")>(), readRenumberChapters: vi.fn(async () => []) }));
 
 vi.mock("../../db/queries/chapter", () => ({
   getLatestSourceChapterAnchor: vi.fn(),

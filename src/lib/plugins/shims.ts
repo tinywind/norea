@@ -656,6 +656,8 @@ export function createShimResolver(
 
   return (id) => {
     switch (id) {
+      case "@norea/host-capabilities":
+        return Object.freeze({ sourceChapterNumberReconciliationVersion: 1 });
       case "htmlparser2":
         return { Parser };
       case "cheerio":

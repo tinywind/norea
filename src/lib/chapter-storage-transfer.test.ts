@@ -125,7 +125,7 @@ describe("chapter storage transfer", () => {
     await rollbackChapterStorageTransfer(preparation);
     await removeChapterStorageDirectory(entries[0]!.sourceRelativeDir);
 
-    expect(prepareAndroidMock).toHaveBeenCalledWith(entries);
+    expect(prepareAndroidMock).toHaveBeenCalledWith(entries, {});
     expect(finalizeAndroidMock).toHaveBeenCalledWith(preparation);
     expect(rollbackAndroidMock).toHaveBeenCalledWith(preparation);
     expect(removeAndroidMock).toHaveBeenCalledWith(
@@ -159,4 +159,17 @@ describe("chapter storage transfer", () => {
       "Chapter storage transfer requires the Tauri runtime.",
     );
   });
+});
+
+it("passes the persisted token and strict destination checks to native preparation", async () => {
+  isTauriRuntimeMock.mockReturnValue(true);
+  isAndroidRuntimeMock.mockReturnValue(false);
+  invokeMock.mockResolvedValue(preparation);
+  const options = { token: preparation.token, requireEmptyTargets: true };
+  await prepareChapterStorageTransfer(entries, options);
+  expect(invokeMock).toHaveBeenCalledWith("chapter_storage_prepare_transfer", { entries, ...options });
+  isAndroidRuntimeMock.mockReturnValue(true);
+  prepareAndroidMock.mockResolvedValue(preparation);
+  await prepareChapterStorageTransfer(entries, options);
+  expect(prepareAndroidMock).toHaveBeenCalledWith(entries, options);
 });

@@ -7,6 +7,11 @@ import {
 } from "./android-storage";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
+export interface ChapterStorageTransferOptions {
+  token?: string;
+  requireEmptyTargets?: boolean;
+}
+
 export interface ChapterStorageTransferEntry {
   entryId: string;
   sourceRelativeDir: string;
@@ -131,11 +136,12 @@ function requireChapterStorageRuntime(): void {
 
 export async function prepareChapterStorageTransfer(
   entries: readonly ChapterStorageTransferEntry[],
+  options: ChapterStorageTransferOptions = {},
 ): Promise<ChapterStorageTransferPreparation> {
   requireChapterStorageRuntime();
   const preparation = isAndroidRuntime()
-    ? await prepareAndroidChapterStorageTransfer(entries)
-    : await invoke<unknown>("chapter_storage_prepare_transfer", { entries });
+    ? await prepareAndroidChapterStorageTransfer(entries, options)
+    : await invoke<unknown>("chapter_storage_prepare_transfer", { entries, ...options });
   return parseChapterStorageTransferPreparation(preparation);
 }
 

@@ -20,6 +20,8 @@ import { notifyWorkMetadataChanges, readStoredNovelMetadata } from "../work-meta
 import { isTauriRuntime } from "../tauri-runtime";
 import { isStorageId } from "../storage-id";
 import type { ChapterItem, NovelItem, Plugin, SourceNovel } from "./types";
+import { withSourceChapterNumberReconciliation } from "./source-chapter-renumber";
+import { applySourceChapterNumberChangesInDb, commitSourceChapterRenumberInDb, planSourceChapterNumberChanges, readRenumberChapters } from "../source-chapter-renumber";
 
 export interface SyncNovelFromSourceOptions {
   signal?: AbortSignal;
@@ -61,6 +63,7 @@ interface ParsedSourceNovelResult {
   detail: SourceNovel;
   duplicateChapters: SourceDuplicateChapterInfo[];
   startPosition: number;
+  fullCatalog: boolean;
 }
 
 /** A cover whose source value is unchanged is fetched again at most this often. */
@@ -148,6 +151,9 @@ function assertSourceChapters(
       );
     }
 
+    if (chapter.sourceChapterId !== undefined && (typeof chapter.sourceChapterId !== "string" || !chapter.sourceChapterId.trim())) {
+      throw new Error("Plugin returned an invalid sourceChapterId.");
+    }
     pluginChapterContentType(chapter.contentType);
 
     const keptChapter = firstByChapterNumber.get(chapterNumber);
@@ -229,6 +235,7 @@ async function parseFullNovel(
   return {
     ...parsed,
     startPosition: 1,
+    fullCatalog: true,
   };
 }
 
@@ -269,10 +276,10 @@ async function parseNovelForSync(
     return parseFullNovel(plugin, item.path, options.signal);
   }
   if (firstChapter.chapterNumber < anchor.chapterNumber) {
-    return { ...sinceResult, startPosition: 1 };
+    return { ...sinceResult, startPosition: 1, fullCatalog: true };
   }
   if (firstChapter.chapterNumber === anchor.chapterNumber) {
-    return { ...sinceResult, startPosition: anchor.position };
+    return { ...sinceResult, startPosition: anchor.position, fullCatalog: false };
   }
 
   return parseFullNovel(plugin, item.path, options.signal);
@@ -310,7 +317,7 @@ async function performNovelSourceRefresh(
   isCurrent: () => boolean,
 ): Promise<SyncNovelFromSourceResult | null> {
   options.signal?.throwIfAborted();
-  const { detail, duplicateChapters, startPosition } = await parseNovelForSync(
+  const { detail, duplicateChapters, startPosition, fullCatalog } = await parseNovelForSync(
     plugin,
     item,
     options,
@@ -333,7 +340,10 @@ async function performNovelSourceRefresh(
     }),
   );
 
-  const result = await runDatabaseTransaction(async (db) => {
+  const result = await withSourceChapterNumberReconciliation({
+    pluginId: plugin.id, path: item.path, sourceNovelId: detail.novelId,
+    chapters: detail.chapters, fullCatalog, isCurrent, signal: options.signal,
+  }, renumber => runDatabaseTransaction(async (db) => {
     options.signal?.throwIfAborted();
     if (!isCurrent()) return null;
     if (options.novelId !== undefined) {
@@ -414,6 +424,14 @@ async function performNovelSourceRefresh(
                 (SELECT COALESCE(MAX(id), 0) FROM chapter) AS maxId`, [novelId])
       : [];
 
+    if (renumber) {
+      await applySourceChapterNumberChangesInDb(db, novelId, renumber);
+    } else if (planSourceChapterNumberChanges(
+      { id: novelId, pluginId: plugin.id, sourceNovelId: detail.novelId, path: item.path },
+      await readRenumberChapters(db, novelId), detail.chapters,
+    ).length) {
+      throw new Error("Chapter numbers changed during refresh. Refresh the complete chapter list again.");
+    }
     const chapterMutation = await upsertSourceChaptersInDb(
       db,
       chapterInputs.map((chapter) => ({
@@ -428,12 +446,14 @@ async function performNovelSourceRefresh(
       : 0;
     await flushWorkMetadata(db, {
       novelId, chapters: Object.fromEntries(detail.chapters.map(chapter => [String(chapter.chapterNumber), chapter.name])),
+      ...(renumber ? { replacedChapterNumbers: renumber.changes.map(change => change.chapterNumber) } : {}),
     });
     const stored = novelResult.rowsAffected > 0 || (reconciled?.changed ?? false) || chapterMutation.rowsAffected > 0;
     // A check that changed nothing leaves the content-server upload revision alone; other refreshes
     // still republish the retained details, which can repair a conflicting work file.
     const republish = stored || !options.markFoundByCheck;
     if (republish) await markWorkMetadataRefreshed(db, { pluginId: plugin.id, novelPath: item.path });
+    if (renumber) await commitSourceChapterRenumberInDb(db, renumber);
     return {
       republish,
       changedChapters: chapterMutation.rowsAffected,
@@ -446,7 +466,7 @@ async function performNovelSourceRefresh(
       inLibrary: sqliteBoolean(novelRow.inLibrary),
       novelId,
     };
-  });
+  }));
   if (!result) return null;
   if (result.republish) notifyWorkMetadataChanges({ pluginId: plugin.id, novelPath: item.path });
 

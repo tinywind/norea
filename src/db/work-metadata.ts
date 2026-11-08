@@ -69,6 +69,9 @@ export async function applyNovelMetadataToCache(db: Database, metadata: NovelMet
 }
 
 export async function scanStoredNovelChaptersToCache(db: Database, novelId: number, directory: string, snapshot?: { chapters: StoredNovelChapter[]; downloadRevision: number; deferNativeRegistration?: boolean }): Promise<void> {
+  const [reconciliation] = await db.select<{ pending: number }[]>(
+    "SELECT EXISTS(SELECT 1 FROM content_sync_cache WHERE cache_key LIKE 'norea-source-chapter-renumber:%' AND json_extract(payload,'$.work.id')=$1) AS pending", [novelId]);
+  if (reconciliation?.pending) throw new Error("Chapter storage reconciliation is pending. Existing files were retained.");
   const downloadRevision = snapshot?.downloadRevision ?? currentChapterDownloadRevision();
   const discovered = snapshot?.chapters ?? await listStoredNovelChapters(directory);
   const [novel] = await db.select<{ pluginId: string }[]>("SELECT plugin_id AS pluginId FROM novel WHERE id=$1", [novelId]);
@@ -464,7 +467,11 @@ interface CachedNovel {
   author: string | null; artist: string | null; summary: string | null; status: string | null; genres: string | null; rating: number | null; isLocal: number;
 }
 
-interface FetchedChapterCatalog { novelId: number; chapters: NovelMetadataV1["chapters"] }
+interface FetchedChapterCatalog {
+  novelId: number;
+  chapters: NovelMetadataV1["chapters"];
+  replacedChapterNumbers?: readonly string[];
+}
 
 export async function flushWorkMetadata(db: Database, fetched?: FetchedChapterCatalog): Promise<void> {
   if (!isTauriRuntime()) return;
@@ -476,7 +483,8 @@ export async function flushWorkMetadata(db: Database, fetched?: FetchedChapterCa
       const stored = work.directory ? await readStoredNovelMetadata(work.directory) : null;
       const fields = ["name", "author", "artist", "summary", "status", "genres", "rating"] as const;
       if (!stored || fields.some(field => stored.metadata.novel[field] !== work[field]) ||
-        Object.entries(fetched.chapters).some(([number, name]) => stored.metadata.chapters[number] !== name)) {
+        Object.entries(fetched.chapters).some(([number, name]) => stored.metadata.chapters[number] !== name) ||
+        fetched.replacedChapterNumbers?.some(number => Object.hasOwn(stored.metadata.chapters, number))) {
         await db.execute(`INSERT INTO work_metadata_dirty(plugin_id,path)
           SELECT plugin_id,path FROM novel WHERE id=$1 ON CONFLICT(plugin_id,path) DO NOTHING`, [fetched.novelId]);
       }
@@ -541,7 +549,10 @@ async function flushDirtyWorkMetadata(db: Database, fetched?: FetchedChapterCata
     }
     const sourceCatalog = fileChanged
       ? Object.fromEntries(chapters.filter(chapter => chapter.chapterNumber !== null).map(chapter => [String(Number(chapter.chapterNumber)), chapter.name]))
-      : previous?.chapters;
+      : { ...previous?.chapters };
+    if (fetched?.novelId === novel.id) {
+      for (const number of fetched.replacedChapterNumbers ?? []) delete sourceCatalog[number];
+    }
     const metadata = parseNovelMetadata({ schemaVersion: 1, identity: { pluginId: novel.pluginId, novelId: novel.sourceNovelId!, novelPath: novel.path },
       novel: { name: novel.name, author: novel.author, artist: novel.artist, summary: novel.summary, status: novel.status, genres: novel.genres, rating: novel.rating, isLocal: Boolean(novel.isLocal) },
       cover, chapters: novel.isLocal

@@ -10,6 +10,7 @@ vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(asy
   contentIdentity: (plugin: string, novel: string, chapter = "") => JSON.stringify([plugin, novel, chapter]),
 }));
 vi.mock("./novel-migration", () => ({ finalizePendingNovelMigrations: vi.fn(async () => false) }));
+vi.mock("./chapter-number-reconciliation", () => ({ reconcilePendingChapterNumbers: vi.fn(async () => undefined) }));
 vi.mock("./native", () => ({
   uploadContentChapter: vi.fn(), fingerprintContentChapter: vi.fn(),
   withDownloadedContentChapter: async (input: unknown, apply: (sizes: { contentBytes: number; mediaBytes: number; mediaComplete: boolean }, install: (storageDir: string) => Promise<void>) => Promise<unknown>) => apply(await native.download(input), native.install),
@@ -30,6 +31,7 @@ import { runContentSyncOperation, syncContentServer, downloadServerChapter, down
 import { recordServerWorkDeletionExclusion, setServerChapterDeletionExclusion } from "./deletion-exclusions";
 import { syncWorkMetadata } from "./works";
 import { finalizePendingNovelMigrations } from "./novel-migration";
+import { reconcilePendingChapterNumbers } from "./chapter-number-reconciliation";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { withChapterDownloadDeletion, waitForChapterDownloadWrites } from "../chapter-download-writes";
 import { ContentServerError } from "./client";
@@ -43,6 +45,7 @@ function changed(key: string, value: null) { journal.push({ sequence: journal.le
 beforeEach(() => {
   vi.clearAllMocks(); memory.clear(); journal = [];
   vi.mocked(finalizePendingNovelMigrations).mockResolvedValue(false);
+  vi.mocked(reconcilePendingChapterNumbers).mockResolvedValue(undefined);
   vi.mocked(contentJournalHead).mockImplementation(async () => journal.length);
   vi.mocked(readContentJournal).mockImplementation(async (after, through) => journal.filter((entry) => entry.sequence > after && entry.sequence <= through));
   vi.stubGlobal("localStorage", { getItem: (key: string) => memory.get(key) ?? null, setItem: (key: string, value: string) => memory.set(key, value), removeItem: (key: string) => memory.delete(key) });
@@ -1070,4 +1073,11 @@ it("does not finalize a migration when upload failed or only metadata was reques
   expect(finalizePendingNovelMigrations).not.toHaveBeenCalled();
   await syncContentServer(false);
   expect(finalizePendingNovelMigrations).not.toHaveBeenCalled();
+});
+
+it("holds ordinary metadata and chapter uploads until number reconciliation succeeds", async () => {
+  vi.mocked(reconcilePendingChapterNumbers).mockRejectedValueOnce(new Error("Number reconciliation pending"));
+  await expect(syncContentServer()).rejects.toThrow("Number reconciliation pending");
+  expect(syncWorkMetadata).not.toHaveBeenCalled();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
 });

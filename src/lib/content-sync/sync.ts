@@ -6,6 +6,7 @@ import {
 import { hasStoredChapterContent } from "../../db/queries/chapter";
 import { useContentSyncStore } from "../../store/content-sync";
 import { finalizePendingNovelMigrations } from "./novel-migration";
+import { reconcilePendingChapterNumbers } from "./chapter-number-reconciliation";
 import { chapterStorageRelativeDir } from "../chapter-storage-path";
 import { inspectChapterPayloadInventory } from "../chapter-content/storage-platform";
 import { resolvedChapterStorageDir } from "../chapter-storage-resolution";
@@ -291,6 +292,7 @@ async function performSync(uploadContent = true, rescan = false, retryBlockedMig
   try {
     normalizeContentServerUrl(serverUrl);
     const token = await initializeDevice(serverUrl);
+    await reconcilePendingChapterNumbers(serverUrl, token, () => assertDevice(serverUrl, token), uploadContent);
     const cache = await catalogCache(serverUrl);
     assertDevice(serverUrl, token);
     if (await compactUploadedFingerprints(cache)) await saveCatalog(serverUrl, cache);
