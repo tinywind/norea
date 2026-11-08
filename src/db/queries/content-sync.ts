@@ -8,6 +8,15 @@ import type { ServerChapterSummary } from "../../lib/content-sync/chapters";
 import { LOCAL_PLUGIN_ID } from "../../lib/plugins/types";
 import { reconcileImportedNovelIdentityInDb } from "./novel-identity";
 
+function assertServerChapterNumberMatches(current: string | null | undefined, incoming: string | null | undefined): void {
+  const number = (value: string | null | undefined) => value?.trim() && Number.isFinite(Number(value)) ? String(Number(value)) : null;
+  const from = number(current);
+  const to = number(incoming);
+  if (from !== null && to !== null && from !== to) {
+    throw new Error("Synchronize the corrected work metadata before importing its chapters. Existing files were retained.");
+  }
+}
+
 export async function cacheServerChapters(novelId: number, chapters: readonly ServerChapterSummary[], signal?: AbortSignal): Promise<boolean> {
   signal?.throwIfAborted();
   const changed = await runDatabaseTransaction(async db => {
@@ -18,6 +27,7 @@ export async function cacheServerChapters(novelId: number, chapters: readonly Se
       "SELECT path,chapter_number AS chapterNumber FROM chapter WHERE novel_id=$1", [novelId]);
     if (signal?.aborted) return false;
     const paths = new Set(existing.map(chapter => chapter.path));
+    const byPath = new Map(existing.map(chapter => [chapter.path, chapter.chapterNumber]));
     const numbers = new Map<string, string[]>();
     for (const chapter of existing) {
       if (!chapter.chapterNumber?.trim() || !Number.isFinite(Number(chapter.chapterNumber))) continue;
@@ -26,7 +36,10 @@ export async function cacheServerChapters(novelId: number, chapters: readonly Se
     }
     const incoming: ServerChapterSummary[] = [];
     for (const chapter of chapters) {
-      if (paths.has(chapter.chapterPath)) continue;
+      if (paths.has(chapter.chapterPath)) {
+        assertServerChapterNumberMatches(byPath.get(chapter.chapterPath), chapter.chapterNumber);
+        continue;
+      }
       const number = novel?.pluginId !== LOCAL_PLUGIN_ID && chapter.chapterNumber?.trim() && Number.isFinite(Number(chapter.chapterNumber)) ? String(Number(chapter.chapterNumber)) : null;
       const matches = number === null ? [] : numbers.get(number) ?? [];
       if (matches.length) {
@@ -154,6 +167,9 @@ export async function importContentMetadata(manifest: PackageManifest, serverUrl
     if (!novels.length) throw new Error("Install the work metadata before downloading its chapters.");
     if (novels[0]!.sourceNovelId !== identity.novelId) throw new Error("Server chapter novel ID does not match the installed work.");
     const novelId = novels[0]!.id;
+    const [currentChapter] = await db.select<{ chapterNumber: string | null }[]>(
+      "SELECT chapter_number AS chapterNumber FROM chapter WHERE novel_id=$1 AND path=$2", [novelId, identity.chapterPath]);
+    if (currentChapter) assertServerChapterNumberMatches(currentChapter.chapterNumber, chapter.chapterNumber);
     const chapterNumber = chapter.chapterNumber?.trim();
     if (identity.pluginId !== LOCAL_PLUGIN_ID && !identity.chapterPath.startsWith("norea-folder:") && chapterNumber && Number.isFinite(Number(chapterNumber))) {
       await reconcileImportedNovelIdentityInDb(db, { pluginId: identity.pluginId, path: identity.novelPath }, [

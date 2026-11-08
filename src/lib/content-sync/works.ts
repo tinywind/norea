@@ -185,6 +185,9 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
         expectedFingerprint = await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata));
         if (!file || !matchesSyncedWork(cache, entry.id, file, expectedFingerprint)) continue;
       }
+      const reconciliation = current && Object.keys(current.metadata.chapters).some(number => !Object.hasOwn(metadata.chapters, number))
+        ? await (await import("./incoming-chapter-number-reconciliation")).prepareIncomingChapterNumberReconciliation(server, token, entry, current.metadata, assertCurrent)
+        : undefined;
       let cover: Uint8Array | null;
       try { cover = entry.hasCover ? await coverRequest(server, entry.id, token) : null; }
       catch (error) {
@@ -204,14 +207,15 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       }
       await waitForServerWorkDeletion(server, entry.id);
       if (explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) continue;
-      const installedMetadata = mergeIncomingNovelMetadata(current?.metadata, metadata);
+      const installedMetadata = mergeIncomingNovelMetadata(reconciliation?.previousMetadata ?? current?.metadata, metadata);
       assertCurrent();
       const incomingFingerprint = await workMetadataFingerprint(installedMetadata, cover);
       if (incomingFingerprint === expectedFingerprint) {
         if (file) cache.fileVersions[identity] = workMetadataFileVersion(file)!;
         continue;
       }
-      const stored = await installStoredNovelMetadata(installedMetadata, cover ?? undefined, async (latest, db) => {
+      const install = reconciliation?.install ?? installStoredNovelMetadata;
+      const stored = await install(installedMetadata, cover ?? undefined, async (latest, db) => {
         if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) return false;
         if (!isCurrent() || explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) return false;
         const latestFingerprint = latest ? await workMetadataFingerprint(latest.metadata, await readStoredNovelCover(latest.directory, latest.metadata)) : null;

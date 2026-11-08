@@ -27,6 +27,7 @@ export type WorkMetadataChange = Pick<NovelMetadataV1["identity"], "pluginId" | 
 const listeners = new Set<(identity?: WorkMetadataChange) => void>();
 let publicationSnapshots: Map<string, string | null> | null = null;
 let publicationChanges: Array<WorkMetadataChange | undefined> | null = null;
+let publicationRollbackGuards: Map<string, () => Promise<void>> | null = null;
 export function subscribeWorkMetadataChanges(listener: (identity?: WorkMetadataChange) => void): () => void {
   listeners.add(listener); return () => listeners.delete(listener);
 }
@@ -96,6 +97,7 @@ export async function withWorkMetadataRollback<T>(run: () => Promise<T>, options
   const changes: Array<WorkMetadataChange | undefined> = [];
   publicationSnapshots = snapshots;
   publicationChanges = changes;
+  publicationRollbackGuards = new Map();
   let result: T;
   try { result = await run(); }
   catch (error) {
@@ -104,6 +106,7 @@ export async function withWorkMetadataRollback<T>(run: () => Promise<T>, options
       try {
         const current = await rawWorkMetadataOperation({ operation: "read", path });
         if ((current.body ?? null) === body) continue;
+        await publicationRollbackGuards?.get(path)?.();
         await rawWorkMetadataOperation(body === null ? { operation: "remove", path } : { operation: "write", path, body });
       } catch (restoreError) { failures.push(restoreError); }
     }
@@ -113,7 +116,7 @@ export async function withWorkMetadataRollback<T>(run: () => Promise<T>, options
     }
     if (failures.length > 1) throw new AggregateError(failures, "work metadata: publication and rollback failed");
     throw error;
-  } finally { publicationSnapshots = null; publicationChanges = null; }
+  } finally { publicationSnapshots = null; publicationChanges = null; publicationRollbackGuards = null; }
   for (const identity of changes) notifyWorkMetadataChanges(identity);
   return result;
 }
@@ -252,11 +255,31 @@ export async function writeStoredNovelCover(directory: string, metadata: NovelMe
   return changed;
 }
 
+export interface StoredNovelNumberReconciliation {
+  journal: import("./source-chapter-renumber").SourceChapterRenumberJournal | null;
+  mappings: readonly import("./source-chapter-renumber").ChapterNumberMapping[];
+}
+
 export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>): Promise<InstalledNovelMetadata | null> {
+  const metadata = parseNovelMetadata(input);
+  return runWorkContentStorageOperation(metadata.identity.pluginId, metadata.identity.novelPath,
+    () => installStoredNovelMetadataInWorkOperation(metadata, coverBytes, beforeInstall));
+}
+
+/** Called only inside withServerChapterNumberReconciliation, which owns the work storage lock. */
+export async function installReconciledStoredNovelMetadata(
+  input: NovelMetadataV1,
+  coverBytes: Uint8Array | undefined,
+  beforeInstall: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>,
+  reconciliation: StoredNovelNumberReconciliation,
+): Promise<InstalledNovelMetadata | null> {
+  return installStoredNovelMetadataInWorkOperation(input, coverBytes, beforeInstall, reconciliation);
+}
+
+async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>, reconciliation?: StoredNovelNumberReconciliation): Promise<InstalledNovelMetadata | null> {
   let metadata = parseNovelMetadata(input);
   const { runDatabaseTransaction } = await import("../db/client");
   const { applyNovelMetadataToCache, knownNovelMetadataDirectory, readWorkMetadataSyncFile, rememberStoredNovelMetadata } = await import("../db/work-metadata");
-  return runWorkContentStorageOperation(metadata.identity.pluginId, metadata.identity.novelPath, async () => {
     const preferred = knownNovelMetadataDirectory(metadata.identity) ?? await availableNovelMetadataDirectory(metadata);
     const installed = await runDatabaseTransaction(async (db) => {
       const directory = knownNovelMetadataDirectory(metadata.identity) ?? preferred;
@@ -264,7 +287,41 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
       if (existing) existing.metadata.cover = await discoverStoredNovelCover(directory, existing.metadata.cover);
       if (await beforeInstall?.(existing, db) === false) return null;
       return withWorkMetadataRollback(async () => {
-        metadata = mergeIncomingNovelMetadata(existing?.metadata, metadata);
+        let previous = existing?.metadata;
+        if (reconciliation) {
+          const renumber = await import("./source-chapter-renumber");
+          renumber.assertChapterNumberMappings(reconciliation.mappings);
+          const [work] = await db.select<import("./source-chapter-renumber").RenumberWork[]>(
+            "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE plugin_id=$1 AND path=$2",
+            [metadata.identity.pluginId, metadata.identity.novelPath],
+          );
+          if (!work || work.sourceNovelId !== metadata.identity.novelId) throw new Error("Incoming chapter number identity changed.");
+          const changes = renumber.planServerChapterNumberChanges(work, await renumber.readRenumberChapters(db, work.id), reconciliation.mappings);
+          if (reconciliation.journal) {
+            if (JSON.stringify(changes) !== JSON.stringify(reconciliation.journal.changes)) {
+              throw new Error("Local chapter state changed while the server correction was prepared.");
+            }
+            await renumber.assertSourceChapterRenumberMetadataUnchanged(reconciliation.journal);
+            const journal = reconciliation.journal;
+            for (const file of journal.metadataFiles ?? []) {
+              publicationRollbackGuards?.set(file.path, () => renumber.assertSourceChapterRenumberMetadataRecoverable(journal));
+            }
+            await renumber.applySourceChapterNumberChangesInDb(db, work.id, reconciliation.journal);
+          } else if (changes.length) {
+            throw new Error("Incoming chapter numbers changed before their storage could be prepared.");
+          }
+          const chapters = { ...previous?.chapters };
+          for (const mapping of reconciliation.mappings) {
+            delete chapters[mapping.from];
+            if (Object.hasOwn(metadata.chapters, mapping.from)) throw new Error("Incoming catalog still contains a replaced chapter number.");
+          }
+          if (previous) previous = { ...previous, chapters };
+          const { reconcileImportedNovelIdentityInDb } = await import("../db/queries/novel-identity");
+          await reconcileImportedNovelIdentityInDb(db, {
+            pluginId: metadata.identity.pluginId, path: metadata.identity.novelPath,
+          }, reconciliation.mappings.map(mapping => ({ path: mapping.chapterPath, chapterNumber: mapping.to })));
+        }
+        metadata = mergeIncomingNovelMetadata(previous, metadata);
         if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);
         else metadata.cover = existing?.metadata.cover ?? null;
         const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory, { preserveMissingMetadata: true });
@@ -277,6 +334,10 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
         await rememberStoredNovelMetadata(db, directory, metadata, true);
         const syncFile = await readWorkMetadataSyncFile(metadata.identity, db);
         if (!syncFile) throw new Error("Installed work metadata is missing from the local index.");
+        if (reconciliation?.journal) {
+          const { commitSourceChapterRenumberInDb } = await import("./source-chapter-renumber");
+          await commitSourceChapterRenumberInDb(db, reconciliation.journal);
+        }
         return { novelId: installedNovelId, directory, syncFile, coverBytes: await readStoredNovelCover(directory, metadata) };
       });
     }, true);
@@ -284,7 +345,6 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
     const { notifyNovelCoverChanged } = await import("./novel-cover-storage");
     notifyNovelCoverChanged(installed.novelId, { pluginId: metadata.identity.pluginId, path: metadata.identity.novelPath });
     return { directory: installed.directory, metadata, syncFile: installed.syncFile, coverBytes: installed.coverBytes };
-  });
 }
 
 export async function removeStoredNovelCover(directory: string, cover: NovelMetadataV1["cover"], notifyChanges = true, identity?: WorkMetadataChange): Promise<void> {

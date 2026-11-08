@@ -11,11 +11,15 @@ import {
   finishSourceChapterRenumberInDb,
   parseSourceChapterRenumberJournal,
   planSourceChapterNumberChanges,
+  planServerChapterNumberChanges,
   readRenumberChapters,
   readSourceChapterRenumberJournal,
   saveSourceChapterRenumberJournal,
   validateRenumberPreparation,
   type RenumberWork,
+  type ChapterNumberMapping,
+  type ChapterRenumberCoverWrite,
+  type StoredRenumberChapter,
   type SourceChapterRenumberJournal,
 } from "../source-chapter-renumber";
 import { isTauriRuntime } from "../tauri-runtime";
@@ -38,6 +42,29 @@ export async function withSourceChapterNumberReconciliation<T>(
   input: SourceChapterReconciliationInput,
   publish: (journal: SourceChapterRenumberJournal | null) => Promise<T>,
 ): Promise<T> {
+  return withChapterNumberReconciliation(input, publish);
+}
+
+/** Work sync already owns its sync queue; do not reacquire the outer sync lock or resend a POST. */
+export async function withServerChapterNumberReconciliation<T>(
+  input: Omit<SourceChapterReconciliationInput, "chapters" | "fullCatalog"> & {
+    mappings: readonly ChapterNumberMapping[];
+    coverWrite?: ChapterRenumberCoverWrite;
+  },
+  publish: (journal: SourceChapterRenumberJournal | null) => Promise<T>,
+): Promise<T> {
+  return withChapterNumberReconciliation({ ...input, chapters: [], fullCatalog: true }, publish, input.mappings, input.coverWrite ? [input.coverWrite] : []);
+}
+
+async function withChapterNumberReconciliation<T>(
+  input: SourceChapterReconciliationInput,
+  publish: (journal: SourceChapterRenumberJournal | null) => Promise<T>,
+  serverMappings?: readonly ChapterNumberMapping[],
+  coverWrites: readonly ChapterRenumberCoverWrite[] = [],
+): Promise<T> {
+  const plan = (work: RenumberWork, chapters: readonly StoredRenumberChapter[]) => serverMappings
+    ? planServerChapterNumberChanges(work, chapters, serverMappings)
+    : planSourceChapterNumberChanges(work, chapters, input.chapters);
   const db = await getDb();
   const [work] = await db.select<RenumberWork[]>(
     "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE plugin_id=$1 AND path=$2",
@@ -52,11 +79,11 @@ export async function withSourceChapterNumberReconciliation<T>(
   const storedChapters = await readRenumberChapters(db, work.id);
   input.signal?.throwIfAborted();
   if (!input.isCurrent()) return publishNormally();
-  const changes = planSourceChapterNumberChanges(work, storedChapters, input.chapters);
+  const changes = plan(work, storedChapters);
   if (!changes.length && !pending.length) return publishNormally();
   if (!input.fullCatalog) throw new Error("Chapter numbers changed. Refresh the complete chapter list before continuing.");
 
-  return runContentSyncOperation(() => runExclusiveChapterStorageOperation(
+  const operation = () => runExclusiveChapterStorageOperation(
     { kind: "sources", sourceIds: [input.pluginId] }, input.signal, async () => {
       await cancelNovelChapterDownloadWork([work.id]);
       return runWorkContentStorageOperation(input.pluginId, input.path, async () => {
@@ -76,13 +103,13 @@ export async function withSourceChapterNumberReconciliation<T>(
           if (!current || current.pluginId !== input.pluginId || current.path !== input.path || current.sourceNovelId !== input.sourceNovelId) {
             throw new Error("The work changed before its chapter numbers could be reconciled.");
           }
-          const currentChanges = planSourceChapterNumberChanges(current, await readRenumberChapters(transaction, current.id), input.chapters);
+          const currentChanges = plan(current, await readRenumberChapters(transaction, current.id));
           if (!currentChanges.length) return null;
           // Capture the published baseline, not a file that still has queued metadata edits.
           await flushWorkMetadata(transaction);
           const configuredServer = useContentSyncStore.getState().serverUrl;
           return createSourceChapterRenumberJournal(transaction, current, currentChanges,
-            configuredServer ? normalizeContentServerUrl(configuredServer) : null);
+            !serverMappings && configuredServer ? normalizeContentServerUrl(configuredServer) : null, coverWrites);
         });
         if (!journal) return publish(null);
         const finish = () => runExclusiveDatabaseOperation(async transaction => {
@@ -112,5 +139,6 @@ export async function withSourceChapterNumberReconciliation<T>(
         return result;
       });
     },
-  ));
+  );
+  return serverMappings ? operation() : runContentSyncOperation(operation);
 }

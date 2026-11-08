@@ -54,7 +54,7 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
         const cover = entry.hasCover ? await readServerCover(server, token, id, deadline) : null;
         deadline.throwIfAborted();
         const chapters = await fetchServerChapters({ serverUrl: server, workId: id }, token, deadline);
-        return { metadata, cover, chapters };
+        return { entry, metadata, cover, chapters, token };
       }
       return null;
     }, settings.lookupTimeoutSeconds, signal);
@@ -63,11 +63,22 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
     signal?.throwIfAborted();
     const local = stored.metadata;
     const remote = result.metadata;
-    const metadata = { ...mergeIncomingNovelMetadata(local, remote), cover: result.cover ? remote.cover : local.cover };
+    const reconciliation = Object.keys(local.chapters).some(number => !Object.hasOwn(remote.chapters, number))
+      ? await (await import("./incoming-chapter-number-reconciliation")).prepareIncomingChapterNumberReconciliation(
+        server, result.token, result.entry, local, () => {
+          signal?.throwIfAborted();
+          if (isDeleted() || !canApplyMetadata()) throw new Error("The work changed before incoming chapter numbers could be applied.");
+        })
+      : undefined;
+    if (reconciliation && !mayApplyMetadata) {
+      throw new Error("Local work metadata changed before the server correction. Existing files were retained.");
+    }
+    const metadata = { ...mergeIncomingNovelMetadata(reconciliation?.previousMetadata ?? local, remote), cover: result.cover ? remote.cover : local.cover };
     const coverBytes = result.cover?.bytes ?? localCover;
     let installed = false;
     if (mayApplyMetadata && await workMetadataFingerprint(metadata, coverBytes) !== expected && canApplyMetadata()) {
-      const stored = await installStoredNovelMetadata(metadata, coverBytes ?? undefined, async (current, db) => {
+      const install = reconciliation?.install ?? installStoredNovelMetadata;
+      const stored = await install(metadata, coverBytes ?? undefined, async (current, db) => {
         if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) return false;
         if (isDeleted() || signal?.aborted || !canApplyMetadata()) return false;
         const currentFingerprint = current ? await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata)) : null;
@@ -82,6 +93,7 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
     }
     signal?.throwIfAborted();
     if (isDeleted()) return false;
+    if (reconciliation && !installed) return false;
     const chaptersChanged = await cacheServerChapters(novelId, result.chapters, signal);
     return installed || chaptersChanged;
   }), signal);

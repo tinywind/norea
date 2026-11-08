@@ -63,6 +63,7 @@ beforeEach(() => {
   });
   vi.mocked(nativeFetch).mockImplementation(async (input, init) => {
     const url = new URL(String(input));
+    if (url.pathname.endsWith("/capabilities")) return Response.json({});
     if (url.pathname.endsWith("/cover")) {
       if (init?.method === "PUT") { remoteCover = new Uint8Array(await new Response(init.body).arrayBuffer()); sequence++; return Response.json({}); }
       return remoteCover ? new Response(Uint8Array.from(remoteCover).buffer) : new Response(null, { status: 404 });

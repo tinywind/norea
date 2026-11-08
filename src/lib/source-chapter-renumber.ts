@@ -1,4 +1,6 @@
 import type Database from "@tauri-apps/plugin-sql";
+import { base64ToBytes, bytesToBase64 } from "./base64";
+import { MAX_NOVEL_COVER_BYTES } from "./work-metadata/schema";
 import { persistWorkChapterDirectories } from "../db/work-metadata";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "./chapter-storage-path";
 import {
@@ -62,8 +64,16 @@ export interface ServerChapterRenumberJob {
   };
 }
 
+export interface ChapterRenumberCoverWrite { fileName: string; sha256: string }
+export interface ChapterRenumberMetadataFile {
+  path: string;
+  body: string | null;
+  sha256: string | null;
+  nextSha256: string;
+}
+
 export interface SourceChapterRenumberJournal {
-  version: 1;
+  version: 1 | 2;
   operationId: string;
   phase: "preparing" | "committed";
   work: RenumberWork;
@@ -72,6 +82,7 @@ export interface SourceChapterRenumberJournal {
   metadataFingerprint: string | null;
   serverUrl: string | null;
   preparation?: ChapterStorageTransferPreparation;
+  metadataFiles?: ChapterRenumberMetadataFile[];
 }
 
 export function canonicalChapterNumber(value: unknown): string | null {
@@ -172,6 +183,53 @@ export function planSourceChapterNumberChanges(
   return changes;
 }
 
+/** Server proofs may bind a legacy folder only by its exact, unique old number. */
+export function assertChapterNumberMappings(mappings: readonly ChapterNumberMapping[]): void {
+  const from = new Set<string>();
+  const to = new Set<string>();
+  const paths = new Set<string>();
+  for (const mapping of mappings) {
+    if (!mapping || typeof mapping.chapterPath !== "string" ||
+        typeof mapping.from !== "string" || typeof mapping.to !== "string" ||
+        mapping.from === mapping.to || from.has(mapping.from) || to.has(mapping.to) ||
+        paths.has(mapping.chapterPath)) {
+      throw new Error("Server chapter number mapping is invalid or ambiguous.");
+    }
+    from.add(mapping.from); to.add(mapping.to); paths.add(mapping.chapterPath);
+  }
+  assertSourceChapterNumberChangesSupported(mappings.map(mapping => ({
+    chapterNumber: mapping.from, nextChapterNumber: mapping.to, nextPath: mapping.chapterPath,
+  })));
+  if ([...from].some(number => to.has(number))) throw new Error("Server chapter number mapping overlaps.");
+}
+
+export function planServerChapterNumberChanges(
+  work: RenumberWork,
+  stored: readonly StoredRenumberChapter[],
+  mappings: readonly ChapterNumberMapping[],
+): SourceChapterNumberChange[] {
+  assertChapterNumberMappings(mappings);
+  const byFrom = new Map(mappings.map(mapping => [mapping.from, mapping]));
+  const byPath = new Map(mappings.map(mapping => [mapping.chapterPath, mapping]));
+  const original = new Map(stored.map(row => [row.id, row]));
+  const translated = stored.map(row => {
+    const number = canonicalChapterNumber(row.chapterNumber);
+    const pathMapping = byPath.get(row.path);
+    if (pathMapping && number !== pathMapping.from && number !== pathMapping.to) {
+      throw new Error("Server chapter mapping does not match the stored chapter number.");
+    }
+    const mapping = number === null ? undefined : byFrom.get(number);
+    if (!mapping) return row;
+    if (row.path !== mapping.chapterPath && row.path !== "norea-folder:" + mapping.from) {
+      throw new Error("Server chapter mapping conflicts with a stored source path.");
+    }
+    return { ...row, path: mapping.chapterPath };
+  });
+  return planSourceChapterNumberChanges(work, translated, mappings.map(mapping => ({
+    path: mapping.chapterPath, chapterNumber: Number(mapping.to), sourceChapterId: mapping.from,
+  }))).map(change => ({ ...change, path: original.get(change.id)!.path }));
+}
+
 export function assertSourceChapterNumberChangesSupported(changes: readonly Pick<SourceChapterNumberChange, "chapterNumber" | "nextChapterNumber" | "nextPath">[]): void {
   if (changes.length > 10_000) throw new Error("Chapter number reconciliation supports at most 10000 mappings.");
   for (const change of changes) {
@@ -201,9 +259,73 @@ function metadataPath(work: RenumberWork): string {
   return novelStorageRelativeDir({ pluginId: work.pluginId, sourceNovelId: work.sourceNovelId }) + "/novel.json";
 }
 
+const COVER_FILE_NAME = /^cover\.(?:avif|bmp|gif|img|jpe?g|png|svg|webp)$/i;
+const SHA256 = /^[a-f0-9]{64}$/;
+
+async function bodySha256(body: string): Promise<string> {
+  const bytes = base64ToBytes(body);
+  const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
+  return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+function validateMetadataFiles(job: SourceChapterRenumberJournal): void {
+  if (job.version === 1 && job.metadataFiles !== undefined ||
+      job.version === 2 && (!Array.isArray(job.metadataFiles) || job.metadataFiles.length !== 1)) {
+    throw new Error("Stored chapter reconciliation metadata backup is invalid.");
+  }
+  const root = novelStorageRelativeDir({ pluginId: job.work.pluginId, sourceNovelId: job.work.sourceNovelId });
+  for (const file of job.metadataFiles ?? []) {
+    const name = typeof file?.path === "string" ? file.path.slice(root.length + 1) : "";
+    if (!file || file.path !== root + "/" + name || !COVER_FILE_NAME.test(name) ||
+        !SHA256.test(file.nextSha256) ||
+        file.body === null && file.sha256 !== null ||
+        file.body !== null && (typeof file.body !== "string" || typeof file.sha256 !== "string" || !SHA256.test(file.sha256))) {
+      throw new Error("Stored chapter reconciliation cover identity is invalid.");
+    }
+    if (file.body !== null) {
+      if (file.body.length > Math.ceil(MAX_NOVEL_COVER_BYTES / 3) * 4) throw new Error("Stored cover backup exceeds the byte limit.");
+      try {
+        const bytes = base64ToBytes(file.body);
+        if (bytes.length > MAX_NOVEL_COVER_BYTES || bytesToBase64(bytes) !== file.body) throw new Error("Invalid encoding");
+      } catch {
+        throw new Error("Stored cover backup encoding is invalid.");
+      }
+    }
+  }
+}
+
+async function inspectMetadataFiles(job: SourceChapterRenumberJournal, mode: "original" | "rollback" | "committed") {
+  validateMetadataFiles(job);
+  const checked: { file: ChapterRenumberMetadataFile; currentSha256: string | null }[] = [];
+  if (!isTauriRuntime()) return checked;
+  for (const file of job.metadataFiles ?? []) {
+    if (file.body !== null && await bodySha256(file.body) !== file.sha256) {
+      throw new Error("Stored cover backup does not match its digest. Existing files were retained.");
+    }
+    const current = await workMetadataOperation({ operation: "read", path: file.path });
+    if (current.body != null && current.body.length > Math.ceil(MAX_NOVEL_COVER_BYTES / 3) * 4) throw new Error("Current cover exceeds the recovery byte limit. Existing files were retained.");
+    const currentSha256 = current.body == null ? null : await bodySha256(current.body);
+    const accepted = mode === "original" ? currentSha256 === file.sha256
+      : mode === "committed" ? currentSha256 === file.nextSha256
+      : currentSha256 === file.sha256 || currentSha256 === file.nextSha256;
+    if (!accepted) throw new Error("The cover changed outside chapter reconciliation. Existing files and the recovery backup were retained.");
+    checked.push({ file, currentSha256 });
+  }
+  return checked;
+}
+
+export async function assertSourceChapterRenumberMetadataUnchanged(job: SourceChapterRenumberJournal): Promise<void> {
+  await inspectMetadataFiles(job, "original");
+}
+
+/** Guard the ordinary transaction rollback as well as durable restart recovery. */
+export async function assertSourceChapterRenumberMetadataRecoverable(job: SourceChapterRenumberJournal): Promise<void> {
+  await inspectMetadataFiles(job, "rollback");
+}
+
 export function parseSourceChapterRenumberJournal(payload: string): SourceChapterRenumberJournal {
   const job = JSON.parse(payload) as SourceChapterRenumberJournal;
-  if (job.version !== 1 || typeof job.operationId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(job.operationId) ||
+  if (![1, 2].includes(job.version) || typeof job.operationId !== "string" || !/^[a-zA-Z0-9_-]{1,128}$/.test(job.operationId) ||
       !["preparing", "committed"].includes(job.phase) || !job.work || !Number.isSafeInteger(job.work.id) || job.work.id <= 0 ||
       !isStorageId(job.work.pluginId) || !isStorageId(job.work.sourceNovelId) || typeof job.work.path !== "string" || !job.work.path ||
       !Array.isArray(job.changes) || !job.changes.length ||
@@ -212,6 +334,7 @@ export function parseSourceChapterRenumberJournal(payload: string): SourceChapte
       (job.serverUrl !== null && typeof job.serverUrl !== "string")) {
     throw new Error("Stored chapter number reconciliation is invalid; existing files were retained.");
   }
+  validateMetadataFiles(job);
   const ids = new Set<number>();
   const sources = new Set<string>();
   const targets = new Set<string>();
@@ -283,14 +406,28 @@ export async function createSourceChapterRenumberJournal(
   work: RenumberWork,
   changes: SourceChapterNumberChange[],
   serverUrl: string | null,
+  coverWrites: readonly ChapterRenumberCoverWrite[] = [],
 ): Promise<SourceChapterRenumberJournal> {
   assertSourceChapterNumberChangesSupported(changes);
+  if (coverWrites.length > 1) throw new Error("Chapter reconciliation supports one incoming cover target.");
+  const root = novelStorageRelativeDir({ pluginId: work.pluginId, sourceNovelId: work.sourceNovelId });
+  const metadataFiles: ChapterRenumberMetadataFile[] = [];
+  for (const write of coverWrites) {
+    if (!COVER_FILE_NAME.test(write.fileName) || !SHA256.test(write.sha256)) throw new Error("Incoming chapter reconciliation cover is invalid.");
+    const path = root + "/" + write.fileName;
+    const snapshot = isTauriRuntime() ? await workMetadataOperation({ operation: "read", path }) : { body: null };
+    const body = snapshot.body ?? null;
+    if (body !== null && body.length > Math.ceil(MAX_NOVEL_COVER_BYTES / 3) * 4) throw new Error("Stored cover backup exceeds the byte limit.");
+    metadataFiles.push({ path, body, sha256: body === null ? null : await bodySha256(body), nextSha256: write.sha256 });
+  }
   const metadata = isTauriRuntime() ? await workMetadataOperation({ operation: "read", path: metadataPath(work) }) : { body: null };
   const [cached] = await db.select<{ fingerprint: string }[]>("SELECT fingerprint FROM work_metadata_file_cache WHERE novel_id=$1", [work.id]);
   const job: SourceChapterRenumberJournal = {
-    version: 1, operationId: crypto.randomUUID(), phase: "preparing", work, changes,
+    version: metadataFiles.length ? 2 : 1, operationId: crypto.randomUUID(), phase: "preparing", work, changes,
     metadataBody: metadata.body ?? null, metadataFingerprint: cached?.fingerprint ?? null, serverUrl,
+    ...(metadataFiles.length ? { metadataFiles } : {}),
   };
+  validateMetadataFiles(job);
   await saveSourceChapterRenumberJournal(db, job);
   return job;
 }
@@ -384,10 +521,17 @@ export async function finishSourceChapterRenumberInDb(db: Database, job: SourceC
       throw new Error("Work metadata changed after chapter reconciliation was prepared. Existing files were retained.");
     }
   }
+  const metadataFiles = await inspectMetadataFiles(job, committed ? "committed" : "rollback");
   if (isTauriRuntime()) {
     if (job.phase === "committed") await finalizeChapterStorageTransfer(job.preparation!);
     else {
       await rollbackChapterStorageTransfer(pendingRenumberRollback(job));
+      for (const { file, currentSha256 } of metadataFiles) {
+        if (currentSha256 === file.sha256) continue;
+        await workMetadataOperation(file.body === null
+          ? { operation: "remove", path: file.path }
+          : { operation: "write", path: file.path, body: file.body });
+      }
       await workMetadataOperation(job.metadataBody === null
         ? { operation: "remove", path: metadataPath(job.work) }
         : { operation: "write", path: metadataPath(job.work), body: job.metadataBody });

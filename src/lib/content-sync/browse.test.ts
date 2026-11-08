@@ -5,7 +5,9 @@ vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(asy
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("./device", () => ({ registerContentDevice: vi.fn(async () => "device") }));
 vi.mock("./novel-source", () => ({ rememberServerNovelSource: vi.fn() }));
-vi.mock("../work-metadata", async original => ({ ...await original<typeof import("../work-metadata")>(), installStoredNovelMetadata: vi.fn() }));
+vi.mock("../work-metadata", async original => ({ ...await original<typeof import("../work-metadata")>(), installStoredNovelMetadata: vi.fn(),
+  availableNovelMetadataDirectory: vi.fn(async () => "contents/source/book"), readStoredNovelMetadata: vi.fn(async () => null),
+}));
 vi.mock("../../db/work-metadata", async original => ({
   ...await original<typeof import("../../db/work-metadata")>(),
   applyNovelMetadataToCache: vi.fn(), rememberStoredNovelMetadata: vi.fn(), scanStoredNovelChaptersToCache: vi.fn(),

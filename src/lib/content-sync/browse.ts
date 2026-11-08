@@ -1,9 +1,10 @@
+import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { findNovelBySource } from "../../db/queries/novel";
-import { applyNovelMetadataToCache, rememberStoredNovelMetadata, scanStoredNovelChaptersToCache } from "../../db/work-metadata";
+import { applyNovelMetadataToCache, knownNovelMetadataDirectory, rememberStoredNovelMetadata, scanStoredNovelChaptersToCache } from "../../db/work-metadata";
 import { useContentSyncStore } from "../../store/content-sync";
 import { bytesToBase64 } from "../base64";
-import { installStoredNovelMetadata, parseNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
+import { availableNovelMetadataDirectory, installStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
 import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
@@ -96,8 +97,17 @@ export async function refreshServerNovel(source: ServerNovelSource, requireNewWo
     await waitForServerWorkDeletion(server, source.workId);
     const isDeleted = () => excluded.has(serverWorkDeletionKey(metadata.identity));
     if (isDeleted()) throw new ContentServerError(410);
+    const current = !requireNewWork
+      ? await readStoredNovelMetadata(knownNovelMetadataDirectory(metadata.identity) ?? await availableNovelMetadataDirectory(metadata))
+      : null;
+    const reconciliation = current && Object.keys(current.metadata.chapters).some(number => !Object.hasOwn(metadata.chapters, number))
+      ? await (await import("./incoming-chapter-number-reconciliation")).prepareIncomingChapterNumberReconciliation(
+        server, token, entry, current.metadata, () => { if (isDeleted()) throw new ContentServerError(410); })
+      : undefined;
+    const incoming = reconciliation ? mergeIncomingNovelMetadata(reconciliation.previousMetadata, metadata) : metadata;
+    const install = reconciliation?.install ?? installStoredNovelMetadata;
     let retainedNovelId: number | null = null;
-    const installed = await installStoredNovelMetadata(metadata, cover?.bytes, async (current, db) => {
+    const installed = await install(incoming, cover?.bytes, async (current, db) => {
       if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) throw new ContentServerError(410);
       if (isDeleted()) return false;
       if (!requireNewWork) return;

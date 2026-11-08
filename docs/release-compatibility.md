@@ -666,6 +666,36 @@ ID and exact request are reused after ambiguous responses. A server without the
 capability is held for upgrade. Existing real chapter paths, server IDs, and
 payloads remain authoritative; normal catalog merging cannot replace this step.
 
+Incoming work synchronization, open-time refresh, and an existing-work server
+refresh read `GET /works/:id/chapter-number-mappings` before combining catalogs
+when remote keys replace local numbers. The server advertises
+`chapterNumberMappingsVersion: 1` and returns its current work, opaque revision,
+and all committed aliases, including metadata-only chapters. The client validates
+the exact identity, sequence, metadata and complete touched mapping, then rechecks
+the proof after storage preparation. A unique old folder placeholder can bind to
+the mapping's actual source path; no URL, title or chapter identity is guessed.
+A server-origin local journal uses `serverUrl: null`, so an already committed
+server correction creates no redundant outbound reconciliation request.
+
+An explicit empty mapping list retains ordinary partial-catalog union. Servers
+without either renumber capability retain their prior merge behavior; a server
+that can renumber but cannot expose proof holds the affected import for upgrade.
+Conflicts, changed proof and declined installation do not publish corrected
+catalog keys or cache their chapter identities. Direct chapter imports with a
+known same-path number mismatch wait for the work metadata correction.
+
+If the same transaction writes an incoming cover, the local journal uses version
+2 and stores a bounded backup of that work-owned cover target with its old and
+intended new SHA-256. It accepts canonical base64 and at most 10 MiB of cover
+bytes. Ordinary transaction rollback and restart recovery both check the current
+file against those digests before restoring or removing it. An unrelated
+replacement retains the file, journal and chapter copies for recovery. A committed
+journal requires the intended new cover before old chapter folders are finalized.
+A differently named prior cover is left untouched by this installer. Version 1
+source journals remain valid; earlier hosts reject version 2 rather than ignore
+its recovery fields. These internal journals add no SQL migration or content
+package format change.
+
 Number-correcting plugins require the external `@norea/host-capabilities` module
 at module initialization. Older hosts reject installation before replacing the
 previous plugin, even when both host builds use the same app version string.
