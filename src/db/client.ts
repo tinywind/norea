@@ -1,3 +1,4 @@
+import { discardUserStateNotifications, notifyUserStateCommitted } from "./user-state-core";
 import Database from "@tauri-apps/plugin-sql";
 import type { QueryResult } from "@tauri-apps/plugin-sql";
 import { startPerformanceObservation } from "../lib/observability";
@@ -71,6 +72,7 @@ function serializedDb(rawDb: Database): Database {
             return result;
           });
           if (/\b(novel|chapter|novel_chapter_composition|content_sync_journal)\b/i.test(query)) await notifyContentSyncChanges(rawDb);
+          notifyUserStateCommitted(rawDb);
           finish({ rowsAffected: result.rowsAffected });
           return result;
         } catch (error) {
@@ -78,6 +80,7 @@ function serializedDb(rawDb: Database): Database {
             await rawDb.execute("ROLLBACK").catch(() => undefined);
             await restoreWorkMetadataDirectories(rawDb, false);
           }
+          discardUserStateNotifications(rawDb);
           finish({ error: observationError(error), failed: true });
           throw error;
         }
@@ -160,6 +163,7 @@ export function startWorkMetadataRecovery(rebuild = false): void {
         }
       },
     });
+    notifyUserStateCommitted(db);
     if (controller.signal.aborted) return;
     if (!controller.signal.aborted && useStorageRecoveryStore.getState().status === "scanning") {
       useStorageRecoveryStore.setState({ status: "complete" });
@@ -183,8 +187,10 @@ export async function runExclusiveDatabaseOperation<T>(
         await flushWorkMetadata(rawDb);
         await notifyContentSyncChanges(rawDb);
       }
+      notifyUserStateCommitted(rawDb);
       return result;
     } catch (error) {
+      discardUserStateNotifications(rawDb);
       if (isTauriRuntime()) {
         await restoreWorkMetadataDirectories(rawDb, false);
       }
@@ -210,8 +216,10 @@ export async function runDatabaseTransaction<T>(
         return result;
       });
       await notifyContentSyncChanges(rawDb);
+      notifyUserStateCommitted(rawDb);
       return result;
     } catch (error) {
+      discardUserStateNotifications(rawDb);
       await rawDb.execute("ROLLBACK").catch((rollbackError: unknown) => {
         // eslint-disable-next-line no-console
         console.warn("[db] transaction rollback failed", rollbackError);

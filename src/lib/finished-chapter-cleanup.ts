@@ -4,7 +4,7 @@ import { translate } from "../i18n";
 import { useAppearanceStore } from "../store/appearance";
 import { useContentSyncStore } from "../store/content-sync";
 import { useDownloadGoalSettingsStore } from "../store/download-goals";
-import { useReaderStore } from "../store/reader";
+import { isApplyingSharedReaderResume, useReaderStore } from "../store/reader";
 import { approveChapterCleanupTargets, previewChapterCleanup, type ChapterCleanupFilters } from "./chapter-cleanup";
 import { listGoalProtectedChapterIds } from "./download-goals/goal-protection";
 import { noteDownloadDeletion } from "./download-goals/goal-service";
@@ -118,7 +118,7 @@ export function startFinishedChapterCleanup(): void {
   started = true;
   unsubscribers.push(
     useReaderStore.subscribe((state, previous) => {
-      if (state.lastReadChapterByNovel !== previous.lastReadChapterByNovel && finishedChapterCleanupFilters()) {
+      if (!isApplyingSharedReaderResume() && state.lastReadChapterByNovel !== previous.lastReadChapterByNovel && finishedChapterCleanupFilters()) {
         schedule(AFTER_PROGRESS_DELAY_MS);
       }
     }),

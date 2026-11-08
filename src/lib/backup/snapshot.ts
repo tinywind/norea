@@ -1,12 +1,14 @@
 import { parseChapterComposition } from "../chapter-composition";
 import { invoke } from "@tauri-apps/api/core";
-import { cancelWorkMetadataRecovery, getDb, runExclusiveDatabaseOperation } from "../../db/client";
+import { cancelWorkMetadataRecovery, getDb, runDatabaseTransaction, runExclusiveDatabaseOperation } from "../../db/client";
 import { restoreWorkMetadataDirectories } from "../../db/work-metadata";
 import { sqliteBoolean } from "../../db/sqlite-value";
+import { emitUserStateLedgerChanged, stableCategoryIdInDb } from "../../db/user-state-core";
 import { DOWNLOAD_GOAL_SETTINGS_KEY, useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { DOWNLOAD_RECOVERY_SETTINGS_KEY, useDownloadRecoveryStore } from "../../store/download-recovery";
 import { useReaderStore } from "../../store/reader";
 import { runContentStorageOperation } from "../content-sync/storage-operation";
+import { withUserStateRestore } from "../user-state/maintenance";
 import {
   normalizeChapterContentType,
   storedChapterContentType,
@@ -321,12 +323,13 @@ function toChapter(row: RawChapterRow): BackupChapter {
   };
 }
 
-function toCategory(row: RawCategoryRow): BackupCategory {
+function toCategory(row: RawCategoryRow, stableId: string | null): BackupCategory {
   return {
     id: row.id,
     name: row.name,
     sort: row.sort,
     isSystem: !!row.isSystem,
+    ...(stableId ? { stableId } : {}),
   };
 }
 
@@ -350,44 +353,46 @@ function toInstalledPlugin(row: RawInstalledPluginRow): BackupInstalledPlugin {
  * `packBackup`. Chapter rows carry their download flags and byte
  * counts from the database; chapter bodies and media are not read.
  */
-export async function gatherBackupSnapshot(): Promise<BackupManifest> {
-  const db = await getDb();
-  const [
-    novels,
-    chapters,
-    categories,
-    novelCategories,
-    repositories,
-    installedPlugins,
-    vpnGateServerVerdicts,
-    downloadGoals,
-  ] =
-    await Promise.all([
-      db.select<RawNovelRow[]>(SELECT_NOVELS),
-      db.select<RawChapterRow[]>(SELECT_CHAPTERS),
-      db.select<RawCategoryRow[]>(SELECT_CATEGORIES),
-      db.select<BackupNovelCategory[]>(SELECT_NOVEL_CATEGORIES),
-      db.select<RawRepositoryRow[]>(SELECT_REPOSITORIES),
-      db.select<RawInstalledPluginRow[]>(SELECT_INSTALLED_PLUGINS),
-      db.select<BackupVpnGateServerVerdict[]>(
-        SELECT_VPN_GATE_SERVER_VERDICTS,
-      ),
-      db.select<BackupNovelDownloadGoal[]>(SELECT_NOVEL_DOWNLOAD_GOALS),
-    ]);
+export function gatherBackupSnapshot(): Promise<BackupManifest> {
+  return runDatabaseTransaction(async db => {
+    const [
+      novels,
+      chapters,
+      categories,
+      novelCategories,
+      repositories,
+      installedPlugins,
+      vpnGateServerVerdicts,
+      downloadGoals,
+    ] =
+      await Promise.all([
+        db.select<RawNovelRow[]>(SELECT_NOVELS),
+        db.select<RawChapterRow[]>(SELECT_CHAPTERS),
+        db.select<RawCategoryRow[]>(SELECT_CATEGORIES),
+        db.select<BackupNovelCategory[]>(SELECT_NOVEL_CATEGORIES),
+        db.select<RawRepositoryRow[]>(SELECT_REPOSITORIES),
+        db.select<RawInstalledPluginRow[]>(SELECT_INSTALLED_PLUGINS),
+        db.select<BackupVpnGateServerVerdict[]>(
+          SELECT_VPN_GATE_SERVER_VERDICTS,
+        ),
+        db.select<BackupNovelDownloadGoal[]>(SELECT_NOVEL_DOWNLOAD_GOALS),
+      ]);
 
-  return {
-    version: BACKUP_FORMAT_VERSION,
-    exportedAt: Math.floor(Date.now() / 1000),
-    novels: novels.map(toNovel),
-    chapters: chapters.map(toChapter),
-    categories: categories.map(toCategory),
-    novelCategories,
-    repositories: repositories.map((row) => ({ ...row, enabled: sqliteBoolean(row.enabled) })),
-    installedPlugins: installedPlugins.map(toInstalledPlugin),
-    settings: readBackupSettings(),
-    vpnGateServerVerdicts,
-    downloadGoals,
-  };
+    return {
+      version: BACKUP_FORMAT_VERSION,
+      exportedAt: Math.floor(Date.now() / 1000),
+      novels: novels.map(toNovel),
+      chapters: chapters.map(toChapter),
+      categories: await Promise.all(categories.map(async row =>
+        toCategory(row, row.isSystem ? null : await stableCategoryIdInDb(db, row.id)))),
+      novelCategories,
+      repositories: repositories.map((row) => ({ ...row, enabled: sqliteBoolean(row.enabled) })),
+      installedPlugins: installedPlugins.map(toInstalledPlugin),
+      settings: readBackupSettings(),
+      vpnGateServerVerdicts,
+      downloadGoals,
+    };
+  });
 }
 
 /**
@@ -399,7 +404,7 @@ export async function gatherBackupSnapshot(): Promise<BackupManifest> {
 export function applyBackupSnapshot(
   manifest: BackupManifest,
 ): Promise<void> {
-  return runContentStorageOperation(() => restoreBackupSnapshot(manifest));
+  return withUserStateRestore(() => runContentStorageOperation(() => restoreBackupSnapshot(manifest)));
 }
 
 async function restoreBackupSnapshot(manifest: BackupManifest): Promise<void> {
@@ -412,6 +417,7 @@ async function restoreBackupSnapshot(manifest: BackupManifest): Promise<void> {
       manifestJson: encodeBackupManifest(plan.manifest),
       cacheJson: JSON.stringify(plan.cache),
     });
+    emitUserStateLedgerChanged();
     await restoreWorkMetadataDirectories(db);
   });
   clearResolvedChapterStorageDirs();

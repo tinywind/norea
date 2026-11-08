@@ -1,3 +1,6 @@
+import { remapPendingUserStateInDb } from "../user-state-migration";
+import { recordCompositionInDb, recordLibraryInDb, recordPublicNovelReadingInDb, recordChaptersInDb, recordMembershipInDb, hasUserStateSchema } from "../user-state-core";
+import { deferUserStateForNovelInDb } from "../user-state";
 import type Database from "@tauri-apps/plugin-sql";
 import type { ChapterCompositionV1 } from "../../lib/chapter-composition";
 import type { ChapterCompositionPreparedCopy } from "../../lib/chapter-composition-storage";
@@ -496,7 +499,7 @@ export async function applyNovelMergeInDb({
       ],
     );
 
-    const preferredLastReadChapterId = [...mergedReadAtByTargetId.entries()]
+    let preferredLastReadChapterId: number | null = [...mergedReadAtByTargetId.entries()]
       .filter((entry): entry is [number, number] => entry[1] != null)
       .sort((left, right) => right[1] - left[1])[0]?.[0] ?? null;
 
@@ -513,6 +516,22 @@ export async function applyNovelMergeInDb({
       });
     }
 
+    const remappedState = await remapPendingUserStateInDb(db, sourceNovelId, targetNovelId, chapterIdMap, readingStateSourcePathByTargetPath);
+    const explicitResume = remappedState.resumes.at(-1);
+    if (explicitResume) preferredLastReadChapterId = explicitResume.chapterId;
+    if (!recordIncomingMigration) {
+      await recordLibraryInDb(db, [sourceNovelId], true);
+      await recordLibraryInDb(db, [targetNovelId]);
+      await recordPublicNovelReadingInDb(db, [targetNovelId]);
+      if (await hasUserStateSchema(db)) {
+        const targetIds = await db.select<{ id: number }[]>("SELECT id FROM chapter WHERE novel_id=$1", [targetNovelId]);
+        await recordChaptersInDb(db, targetIds.map(row => row.id), "bookmark");
+        const categories = await db.select<{ id: number }[]>("SELECT category_id AS id FROM novel_category WHERE novel_id=$1", [targetNovelId]);
+        for (const category of categories) await recordMembershipInDb(db, [targetNovelId], category.id, true);
+      }
+      await recordCompositionInDb(db, targetNovelId);
+    }
+    await deferUserStateForNovelInDb(db, targetNovelId);
     await recordIncomingMigration?.(db);
 
     const deleteResult = await db.execute(

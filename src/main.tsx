@@ -18,6 +18,7 @@ import { PluginVpnProxyGate } from "./components/runtime/PluginVpnProxyGate";
 import { translate } from "./i18n";
 import { describeError } from "./lib/errors";
 import { startContentServerSync } from "./lib/content-sync/scheduler";
+import { startUserStateScheduler } from "./lib/user-state/scheduler";
 import { initializeNetworkStatus } from "./lib/network";
 import { initializeTaskNetworkState } from "./lib/tasks/network-lifecycle";
 import { initializeDownloadFailureStopPersistence } from "./lib/tasks/download-failure-stop";
@@ -139,6 +140,7 @@ function useResolvedColorScheme(): "light" | "dark" {
 
 function AppProviders() {
   useEffect(() => startContentServerSync(), []);
+  useEffect(() => startUserStateScheduler(queryClient), []);
   useEffect(() => {
     const refresh = () => {
       for (const key of ["novel", "chapter", "download-cache"]) {

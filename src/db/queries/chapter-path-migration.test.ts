@@ -9,6 +9,7 @@ let sqlite: DatabaseSync;
 const statements: string[] = [];
 const params = (values: unknown[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never;
 const db = {
+  select: async (sql: string, values: unknown[] = []) => sqlite.prepare(sql).all(params(values)),
   execute: async (sql: string, values: unknown[] = []) => {
     statements.push(sql);
     return { rowsAffected: Number(sqlite.prepare(sql).run(params(values)).changes) };

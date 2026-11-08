@@ -88,6 +88,12 @@ pub fn schema_migrations() -> Vec<Migration> {
             sql: include_str!("migrations/0010_novel_chapter_composition.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 11,
+            description: "persist cross-device personal state intents and receipts",
+            sql: include_str!("migrations/0011_user_state_journal.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

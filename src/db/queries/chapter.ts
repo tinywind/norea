@@ -1,3 +1,6 @@
+import { remapUnattemptedChapterPathsInDb } from "../user-state-migration";
+import { deferUserStateForNovelInDb } from "../user-state";
+import { hasUserStateSchema, markPrivateChapterProgressInDb, recordChaptersInDb, recordNovelChaptersInDb, recordPublicNovelReadingInDb, recordResumeClearedInDb } from "../user-state-core";
 import {
   DEFAULT_CHAPTER_CONTENT_TYPE,
   normalizeChapterContentType,
@@ -491,6 +494,11 @@ async function migrateSourceChapterPathsWithDb(
   db: DbHandle,
   chunk: readonly InsertChapterInput[],
 ): Promise<number> {
+  const before = await hasUserStateSchema(db) ? await db.select<{ id: number; novelId: number; path: string }[]>(
+    `WITH incoming(novel_id,path,chapter_number,page) AS (VALUES ${sourceChapterPathValuesSql(chunk)})
+     SELECT target.id,target.novel_id AS novelId,target.path FROM chapter target JOIN incoming
+     ON incoming.novel_id=target.novel_id AND incoming.chapter_number IS target.chapter_number AND incoming.page IS target.page
+     WHERE incoming.path IS NOT target.path`, sourceChapterPathParams(chunk)) : [];
   const result = await db.execute(
     `WITH incoming(novel_id, path, chapter_number, page) AS (
        VALUES ${sourceChapterPathValuesSql(chunk)}
@@ -533,6 +541,7 @@ async function migrateSourceChapterPathsWithDb(
         )`,
     sourceChapterPathParams(chunk),
   );
+  await remapUnattemptedChapterPathsInDb(db, before);
   return result.rowsAffected;
 }
 
@@ -588,6 +597,7 @@ async function upsertSourceChaptersWithDb(
     rowsAffected += await executeSourceChapterChunk(db, chunk);
     chunks += 1;
   }
+  for (const novelId of new Set(inputs.map(row => row.novelId))) await deferUserStateForNovelInDb(db, novelId);
   return { rowsAffected, chunks };
 }
 
@@ -742,7 +752,8 @@ export async function updateChapterProgress(
   progress: number,
   options: { recordHistory?: boolean } = {},
 ): Promise<void> {
-  const db = await getDb();
+  return runDatabaseTransaction(async (db) => {
+
   const clamped = Math.max(0, Math.min(100, Math.round(progress)));
   const recordHistory = options.recordHistory ?? true;
   if (recordHistory) {
@@ -764,9 +775,11 @@ export async function updateChapterProgress(
        )`,
       [chapterId],
     );
+    await recordChaptersInDb(db, [chapterId]);
     return;
   }
 
+  await markPrivateChapterProgressInDb(db, chapterId);
   await db.execute(
     `UPDATE chapter
      SET
@@ -776,6 +789,7 @@ export async function updateChapterProgress(
      WHERE id = $1`,
     [chapterId, clamped],
   );
+  });
 }
 
 /** A chapter's read flag and progress, as captured before a bulk read-state change. */
@@ -832,6 +846,7 @@ export async function setChaptersReadState(
       chunks += 1;
     }
 
+    await recordChaptersInDb(db, uniqueChapterIds);
     return { rowsAffected, chunks, previous };
   });
 }
@@ -876,6 +891,7 @@ export async function setNovelsReadState(
       chunks += 1;
     }
 
+    await recordNovelChaptersInDb(db, uniqueNovelIds);
     return { rowsAffected, chunks, previous };
   });
 }
@@ -914,6 +930,7 @@ export async function restoreChapterReadStates(
         chunks += 1;
       }
     }
+    await recordChaptersInDb(db, states.map(state => state.id));
     return { rowsAffected, chunks };
   });
 }
@@ -977,12 +994,19 @@ export async function setRelativeChaptersReadState(
          AND (progress <> $2 OR unread <> $3)`,
       [anchorChapterId, progress, unreadFlag],
     );
+    if (await hasUserStateSchema(db)) {
+      const targets = await db.select<{ id: number }[]>(`WITH reference AS (SELECT id,novel_id,position FROM chapter WHERE id=$1)
+        SELECT candidate.id FROM chapter candidate CROSS JOIN reference WHERE candidate.novel_id=reference.novel_id
+        AND candidate.id<>reference.id AND ${rangePredicate}`, [anchorChapterId]);
+      await recordChaptersInDb(db, targets.map(row => row.id));
+    }
     return { rowsAffected: result.rowsAffected, previous: previous.map(normalizeChapterReadState) };
   });
 }
 
 export async function markChapterOpened(chapterId: number): Promise<void> {
-  const db = await getDb();
+  return runDatabaseTransaction(async (db) => {
+
   await db.execute(
     `UPDATE chapter
      SET read_at = unixepoch(), updated_at = unixepoch()
@@ -997,10 +1021,13 @@ export async function markChapterOpened(chapterId: number): Promise<void> {
      )`,
     [chapterId],
   );
+    await recordChaptersInDb(db, [chapterId]);
+  });
 }
 
 export async function clearNovelHistory(novelId: number): Promise<void> {
-  const db = await getDb();
+  return runDatabaseTransaction(async (db) => {
+
   await db.execute(
     `UPDATE chapter
      SET read_at = NULL, updated_at = unixepoch()
@@ -1013,13 +1040,17 @@ export async function clearNovelHistory(novelId: number): Promise<void> {
      WHERE id = $1`,
     [novelId],
   );
+    await recordPublicNovelReadingInDb(db, [novelId], true);
+    await recordResumeClearedInDb(db, [novelId]);
+  });
 }
 
 export async function setChapterBookmark(
   chapterId: number,
   bookmarked: boolean,
 ): Promise<void> {
-  const db = await getDb();
+  return runDatabaseTransaction(async (db) => {
+
   const bookmarkFlag = bookmarked ? 1 : 0;
   await db.execute(
     `UPDATE chapter
@@ -1027,6 +1058,8 @@ export async function setChapterBookmark(
      WHERE id = $1`,
     [chapterId, bookmarkFlag],
   );
+    await recordChaptersInDb(db, [chapterId], "bookmark");
+  });
 }
 
 export async function saveChapterContentMetadata(

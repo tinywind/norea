@@ -1,3 +1,5 @@
+import { hasUserStateSchema, recordLibraryInDb } from "../user-state-core";
+import { deferUserStateForNovelInDb } from "../user-state";
 import { getDb, getReadOnlyDb, runDatabaseTransaction, type DatabaseReadMode } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
 import { UNCATEGORIZED_CATEGORY_ID } from "./category";
@@ -780,7 +782,8 @@ export async function setNovelInLibrary(
   id: number,
   inLibrary: boolean,
 ): Promise<void> {
-  const db = await getDb();
+  return runDatabaseTransaction(async (db) => {
+
   const inLibraryFlag = inLibrary ? 1 : 0;
   await db.execute(
     `UPDATE novel
@@ -802,6 +805,8 @@ export async function setNovelInLibrary(
     // Leaving the library ends the novel's download goal; its downloads stay.
     await db.execute("DELETE FROM novel_download_goal WHERE novel_id = $1", [id]);
   }
+    await recordLibraryInDb(db, [id]);
+  });
 }
 
 export async function countNovels(): Promise<number> {
@@ -839,6 +844,10 @@ export async function insertNovelIfAbsent(
         inLibrary,
       ],
     );
+    if (inLibrary && await hasUserStateSchema(db)) {
+      const [created] = await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [input.pluginId, input.path]);
+      if (created) await recordLibraryInDb(db, [created.id]);
+    }
   });
 }
 
@@ -1301,6 +1310,8 @@ export async function upsertLocalNovel(
       changedChapters += renumbered.rowsAffected;
     }
 
+    await recordLibraryInDb(db, [novelId]);
+    await deferUserStateForNovelInDb(db, novelId);
     return {
       changed: novelResult.rowsAffected > 0 || changedChapters > 0,
       changedChapters,

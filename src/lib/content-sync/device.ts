@@ -7,6 +7,7 @@ export interface ContentCapabilities {
   authentication: string;
   personalStateSync: boolean;
   readingStateVersion?: number;
+  userStateVersion?: number;
 }
 
 interface RegisteredDevice { id: string; deviceName: string }
@@ -49,7 +50,7 @@ export function registerContentDevice(serverUrl: string, deviceName: string, sig
     signal?.throwIfAborted();
     if (capabilities.apiVersion !== 1 || capabilities.packageVersion !== 1
       || capabilities.authentication !== "device-key"
-      || (capabilities.personalStateSync !== false && !(capabilities.personalStateSync === true && capabilities.readingStateVersion === 1))) {
+      || (capabilities.personalStateSync !== false && !(capabilities.personalStateSync === true && (capabilities.readingStateVersion === 1 || capabilities.userStateVersion === 1)))) {
       throw new Error("This content server uses an incompatible authentication or package protocol.");
     }
     // Persist before registration so a failed response cannot create a second device.

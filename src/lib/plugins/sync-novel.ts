@@ -1,3 +1,4 @@
+import { deferUserStateForNovelInDb } from "../../db/user-state";
 import { getDb, runDatabaseTransaction } from "../../db/client";
 import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "../../db/chapter-composition";
 import { compositionSourceAnchor, refreshChapterComposition } from "../chapter-composition-refresh";
@@ -483,6 +484,7 @@ async function performNovelSourceRefresh(
     const republish = stored || !options.markFoundByCheck;
     if (republish) await markWorkMetadataRefreshed(db, { pluginId: plugin.id, novelPath: item.path });
     if (renumber) await commitSourceChapterRenumberInDb(db, renumber);
+    await deferUserStateForNovelInDb(db, novelId);
     return {
       republish,
       changedChapters: chapterMutation.rowsAffected,

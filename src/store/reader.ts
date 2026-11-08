@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { isRecord } from "../lib/type-guards";
+import { parsePortableReaderAnchor, type PortableReaderAnchor } from "../lib/user-state/types";
 
 export type ReaderPresetTheme = "paper" | "sepia" | "sage" | "dark" | "amoled";
 export type ReaderTextAlign = "left" | "justify" | "center" | "right";
@@ -215,6 +216,37 @@ export interface ReaderChapterScrollAnchor extends ReaderScrollAnchor {
 
 export const READER_CHAPTER_SCROLL_ANCHOR_LIMIT = 100;
 
+export interface SharedReaderResumeInput {
+  novelId: number;
+  chapterId: number | null;
+  anchor: PortableReaderAnchor | null;
+  openedAt: number | null;
+}
+
+let applyingSharedResume = 0;
+
+export function isApplyingSharedReaderResume(): boolean {
+  return applyingSharedResume > 0;
+}
+
+/** Only document-relative fields may leave this device. */
+export function getPortableReaderAnchor(
+  anchor: ReaderChapterScrollAnchor | null | undefined,
+): PortableReaderAnchor | null {
+  if (!anchor) return null;
+  const checked = normalizeChapterScrollAnchors({ 1: anchor })[1];
+  if (!checked) return null;
+  const { segmentIndex, segmentCount, offset, mediaOrdinal, progress, savedAt } = checked;
+  try {
+    return parsePortableReaderAnchor({
+      segmentIndex, segmentCount, offset, progress, savedAt,
+      ...(mediaOrdinal === undefined ? {} : { mediaOrdinal }),
+    });
+  } catch {
+    return null;
+  }
+}
+
 interface ReaderState {
   general: ReaderGeneralSettings;
   appearance: ReaderAppearanceSettings;
@@ -271,6 +303,7 @@ interface ReaderState {
   deleteCustomTheme: (themeId: string) => void;
   applyTapZonePreset: (presetId: ReaderTapPresetId) => void;
   setLastReadChapter: (novelId: number, chapterId: number) => void;
+  applySharedResume: (input: SharedReaderResumeInput) => void;
   setNovelPageIndex: (novelId: number, pageIndex: number) => void;
   /** Saves or, with `null`, forgets the scroll anchor of one chapter. */
   setChapterScrollAnchor: (
@@ -1367,6 +1400,40 @@ export const useReaderStore = create<ReaderState>()(
             [novelId]: chapterId,
           },
         })),
+      applySharedResume: ({ novelId, chapterId, anchor }) => {
+        if (!Number.isSafeInteger(novelId) || novelId <= 0 ||
+            (chapterId !== null && (!Number.isSafeInteger(chapterId) || chapterId <= 0))) {
+          throw new Error("Shared reading position has an invalid local identity.");
+        }
+        const portable = anchor && chapterId !== null ? getPortableReaderAnchor({ ...anchor, novelId }) : null;
+        const checked = portable ? { ...portable, novelId } : undefined;
+        applyingSharedResume++;
+        try {
+          set((state) => {
+            const lastReadChapterByNovel = { ...state.lastReadChapterByNovel };
+            const novelPageIndexByNovel = { ...state.novelPageIndexByNovel };
+            const chapterScrollAnchors = { ...state.chapterScrollAnchors };
+            delete novelPageIndexByNovel[novelId];
+            if (chapterId === null) {
+              delete lastReadChapterByNovel[novelId];
+              for (const [id, value] of Object.entries(chapterScrollAnchors)) {
+                if (value.novelId === novelId) delete chapterScrollAnchors[Number(id)];
+              }
+            } else {
+              lastReadChapterByNovel[novelId] = chapterId;
+              if (checked) chapterScrollAnchors[chapterId] = checked;
+              else delete chapterScrollAnchors[chapterId];
+            }
+            return {
+              lastReadChapterByNovel,
+              novelPageIndexByNovel,
+              chapterScrollAnchors: limitChapterScrollAnchors(chapterScrollAnchors),
+            };
+          });
+        } finally {
+          applyingSharedResume--;
+        }
+      },
       setNovelPageIndex: (novelId, pageIndex) =>
         set((state) => ({
           novelPageIndexByNovel: {

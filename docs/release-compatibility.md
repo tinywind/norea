@@ -401,13 +401,14 @@ requirements must be decided explicitly before implementation.
   without automatically rebuilding metadata from unrelated external files.
 - Backups preserve unknown chapter creation times as `null`, including chapters
   recovered from metadata or storage. Restoring does not invent those timestamps.
-- Content sync shares work metadata and chapter content. Library membership
-  and reading state remain local during ordinary content sync. Settings -> Data
-  -> Device backup separately saves and restores a complete database and settings
-  snapshot, identified by device name. Restore replaces personal state rather
-  than merging it, so unread flags, removed bookmarks, and deleted history in the
-  selected snapshot also replace the current values. The app no longer exposes
-  private-key reading-history send, import, or merge controls.
+- Content sync shares work metadata and chapter content. The separate Shared user
+  changes flow merges library membership, categories, reading state, bookmarks,
+  resumes, and chapter compositions with stable source identities and server
+  revisions. It preserves explicit removals and resets, retains conflicting values,
+  and excludes device settings and credentials. Migration 11 appends its durable
+  journal without replacing user data. See [Sharing user changes](user-state.md).
+  Full-device archives remain separate recovery endpoints. The former private-key
+  reading-history data is not automatically reassigned to the shared workspace.
 - Explicit app deletions store per-server work and chapter upload exclusions in
   the existing content sync cache. They survive restart and local rescans without
   changing the database schema. Whole-device work deletion removes its reader
@@ -808,3 +809,32 @@ Metadata imports that omit composition or carry an older/equal composition times
 Portable backup manifest format 6 includes each work's optional composition and restores it in the native replacement transaction, after validating that included identities, physical numbers, names, and final order agree with the chapter rows. Existing authoritative work files supply the composition during restore, and restoration never modifies those originals. Format 5 and earlier archives are rejected under the existing current-format-only policy: accepting them as an equivalent export would silently lose provenance and user exclusions. Full-device database snapshots carry the new table and remain subject to the exact-schema migration-history policy.
 
 When the user selects the target source's body, an optional `discardSourceContent: true` chapter decision separates reading-state migration from body preservation. The A-to-B chapter mapping remains available for personal reading progress, while the corresponding server artifact mapping is `delete-source`. The server requires the explicit flag, complete source decision coverage, and a target entry in the final metadata; it rejects contradictory copy/preserve requests. A missing B body is fetched from B later. Server-only copy, migration-chain replay, and recipient-device merge paths must never substitute A's body for that choice.
+
+
+## Shared User Changes (Migration 11)
+
+Migration 11 adds the user-state journal, immutable attempted operations,
+per-workspace records/cursors/acknowledgements, category identity and alias maps,
+private-reading markers, and restore fence. Baseline SQL and migrations 1–10 keep
+their original checksums. Existing application tables and relationships remain
+intact. The server adds isolated user-state tables without modifying its original
+schema checksum or existing content, archives, private profiles, or device keys.
+
+The protocol is userStateVersion 1, independent of legacy reading-state and
+archive versions. Stable work/chapter references replace local integer IDs.
+Operation IDs are unique across the admitted-device workspace and retain their
+original authored receipt across exact retries. Different payload reuse fails.
+Cursors, tombstones, receipts, and attempted payloads are retained across restart.
+
+Portable format 6 has an optional category stableId field. Native restore validates
+it and restores only exact stable mappings; an absent field never authorizes
+numeric-ID or name-based reconnection. It sets paused/restored markers atomically
+while preserving the existing ledger. A failed restore rolls those markers back.
+The in-process sharing/restore gate aborts and awaits active sharing before native
+replacement, without holding a database transaction across network I/O.
+
+Explicit reconnection resumes existing shared records and pending commands,
+including manual edits after restoration. The permanent restored marker prevents
+snapshot values from being seeded to this or another workspace. The sharing
+screen explains that shared values may replace restored values. See
+[the full conflict and privacy contract](user-state.md).

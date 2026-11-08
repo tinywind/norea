@@ -17,8 +17,19 @@ import {
 import type { ReaderChapterRow } from "../../lib/reader-chapter";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import { useLibraryStore } from "../../store/library";
-import { useReaderStore } from "../../store/reader";
+import { getPortableReaderAnchor, isApplyingSharedReaderResume, useReaderStore } from "../../store/reader";
+import { recordUserResume } from "../../db/user-state";
+import type { PortableReaderAnchor } from "../../lib/user-state/types";
+import { describeError } from "../../lib/errors";
+import { useContentSyncStore } from "../../store/content-sync";
+import { useUserStateStore } from "../../store/user-state";
 const FINISHED_PROGRESS = 100;
+
+function reportResumeFailure(error: unknown): void {
+  const server = useContentSyncStore.getState().serverUrl;
+  if (server) useUserStateStore.getState().setRuntime(server, "error", describeError(error));
+  console.warn("[user-state] reading position could not be recorded", error);
+}
 
 interface ReaderProgressUpdate {
   chapterId: number;
@@ -50,17 +61,20 @@ export function useReaderPersistence(
       chapterId: targetChapterId,
       progress,
       recordHistory,
+      anchor,
+      openedAt,
     }: {
       chapterId: number;
       novelId: number;
       progress: number;
       recordHistory: boolean;
+      anchor: PortableReaderAnchor | null;
+      openedAt: number;
     }) =>
-      enqueueReaderWrite(() =>
-        updateChapterProgress(targetChapterId, progress, {
-          recordHistory,
-        }),
-      ),
+      enqueueReaderWrite(async () => {
+        await updateChapterProgress(targetChapterId, progress, { recordHistory });
+        if (recordHistory) await recordUserResume(targetChapterId, anchor, openedAt);
+      }),
     onMutate: ({
       chapterId: targetChapterId,
       novelId: targetNovelId,
@@ -126,11 +140,14 @@ export function useReaderPersistence(
     openedChapterRef.current = chapter.id;
     setLastReadChapter(chapter.novelId, chapter.id);
     if (!incognitoMode) {
-      void enqueueReaderWrite(() => markChapterOpened(chapter.id)).then(() => {
-        void invalidateReaderOpenedQueries(queryClient, {
-          novelId: chapter.novelId,
-        });
-      });
+      const anchor = getPortableReaderAnchor(useReaderStore.getState().chapterScrollAnchors[chapter.id]);
+      const openedAt = Math.floor(Date.now() / 1000);
+      void enqueueReaderWrite(async () => {
+        await markChapterOpened(chapter.id);
+        await recordUserResume(chapter.id, anchor, openedAt);
+      }).then(() => {
+        void invalidateReaderOpenedQueries(queryClient, { novelId: chapter.novelId });
+      }).catch(reportResumeFailure);
     }
   }, [
     chapter,
@@ -140,10 +157,26 @@ export function useReaderPersistence(
     setLastReadChapter,
   ]);
 
+  useEffect(() => {
+    if (!chapter?.id || !chapter.content) return;
+    const chapterId = chapter.id;
+    return useReaderStore.subscribe((state, previous) => {
+      if (isApplyingSharedReaderResume() || incognitoModeRef.current ||
+          state.chapterScrollAnchors[chapterId] === previous.chapterScrollAnchors[chapterId]) return;
+      const anchor = getPortableReaderAnchor(state.chapterScrollAnchors[chapterId]);
+      const prior = getPortableReaderAnchor(previous.chapterScrollAnchors[chapterId]);
+      if (JSON.stringify(anchor) === JSON.stringify(prior)) return;
+      const openedAt = Math.floor(Date.now() / 1000);
+      void enqueueReaderWrite(() => recordUserResume(chapterId, anchor, openedAt)).catch(reportResumeFailure);
+    });
+  }, [chapter?.id, chapter?.content, enqueueReaderWrite]);
+
   const persistProgress = useCallback((update: ReaderProgressUpdate) => {
     progressMutateRef.current({
       ...update,
       recordHistory: !incognitoModeRef.current,
+      anchor: getPortableReaderAnchor(useReaderStore.getState().chapterScrollAnchors[update.chapterId]),
+      openedAt: Math.floor(Date.now() / 1000),
     });
   }, []);
   return { incognitoMode, persistProgress };

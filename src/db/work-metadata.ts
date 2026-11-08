@@ -1,3 +1,4 @@
+import { deferUserStateForNovelInDb } from "./user-state";
 import { chapterCompositionCatalog } from "../lib/chapter-composition";
 import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "./chapter-composition";
 import type Database from "@tauri-apps/plugin-sql";
@@ -39,7 +40,7 @@ export async function applyNovelMetadataToCache(db: Database, metadata: NovelMet
     status=CASE WHEN $14=1 THEN COALESCE(excluded.status,novel.status) ELSE excluded.status END,
     genres=CASE WHEN $14=1 THEN COALESCE(excluded.genres,novel.genres) ELSE excluded.genres END,
     rating=CASE WHEN $14=1 THEN COALESCE(excluded.rating,novel.rating) ELSE excluded.rating END,is_local=excluded.is_local WHERE $15=0`,
-  [metadata.identity.pluginId, metadata.identity.novelPath, n.name, cover, optionalText(n.author), optionalText(n.artist), optionalText(n.summary), optionalText(n.status), optionalText(n.genres), n.rating, n.isLocal ? 1 : 0, options?.addToLibrary ? 1 : 0, options?.addToLibrary ? Date.now() : null, options?.preserveMissingMetadata ? 1 : 0, options?.preserveCachedNovel ? 1 : 0, metadata.identity.novelId]);
+  [metadata.identity.pluginId, metadata.identity.novelPath, n.name, cover, optionalText(n.author), optionalText(n.artist), optionalText(n.summary), optionalText(n.status), optionalText(n.genres), n.rating, n.isLocal ? 1 : 0, options?.addToLibrary ? 1 : 0, options?.addToLibrary ? Math.floor(Date.now() / 1000) : null, options?.preserveMissingMetadata ? 1 : 0, options?.preserveCachedNovel ? 1 : 0, metadata.identity.novelId]);
   const [row] = await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
   if (!row) throw new Error("work metadata: cache identity missing");
   const currentComposition = await getChapterComposition(db, row.id);
@@ -94,6 +95,7 @@ export async function applyNovelMetadataToCache(db: Database, metadata: NovelMet
     }
   }
   if (directory) rememberResolvedNovelStorageDir(row.id, directory);
+  await deferUserStateForNovelInDb(db, row.id);
   return row.id;
 }
 

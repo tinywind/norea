@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChapterCleanupPreview, ChapterCleanupTarget } from "./chapter-cleanup";
 
 const mocks = vi.hoisted(() => ({
@@ -12,11 +12,14 @@ vi.mock("./download-goals/goal-service", () => ({ noteDownloadDeletion: mocks.no
 vi.mock("./tasks/chapter-cleanup", () => ({ enqueueChapterCleanup: mocks.enqueue, isChapterCleanupActive: mocks.active }));
 
 import { useContentSyncStore } from "../store/content-sync";
+import { useReaderStore } from "../store/reader";
 import { normalizeDownloadGoalSettings, useDownloadGoalSettingsStore } from "../store/download-goals";
 import {
   finishedChapterCleanupFilters,
   isFinishedChapterCleanupDue,
   runFinishedChapterCleanup,
+  resetFinishedChapterCleanupForTests,
+  startFinishedChapterCleanup,
   useFinishedChapterCleanupStore,
 } from "./finished-chapter-cleanup";
 
@@ -108,4 +111,29 @@ describe("runFinishedChapterCleanup", () => {
     expect(useFinishedChapterCleanupStore.getState()).toMatchObject({ lastRemoval: null });
     expect(useFinishedChapterCleanupStore.getState().lastRunAt).not.toBeNull();
   });
+});
+
+
+afterEach(() => {
+  resetFinishedChapterCleanupForTests();
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
+
+it("does not trigger file cleanup for a shared resume but keeps normal local reading cleanup", async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal("document", { visibilityState: "visible", addEventListener() {}, removeEventListener() {} });
+  useDownloadGoalSettingsStore.getState().setFinishedChapterCleanup(5, true);
+  useFinishedChapterCleanupStore.setState({ lastRunAt: Date.now() });
+  mocks.preview.mockResolvedValue(preview([]));
+  startFinishedChapterCleanup();
+
+  useReaderStore.getState().applySharedResume({ novelId: 1, chapterId: 10, anchor: null, openedAt: 1 });
+  await vi.advanceTimersByTimeAsync(61_000);
+  expect(mocks.preview).not.toHaveBeenCalled();
+  expect(mocks.enqueue).not.toHaveBeenCalled();
+
+  useReaderStore.getState().setLastReadChapter(1, 11);
+  await vi.advanceTimersByTimeAsync(61_000);
+  expect(mocks.preview).toHaveBeenCalledTimes(1);
 });

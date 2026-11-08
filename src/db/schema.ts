@@ -499,3 +499,44 @@ export type VpnGateServerVerdict =
   typeof vpnGateServerVerdictTable.$inferSelect;
 export type VpnGateServerVerdictInsert =
   typeof vpnGateServerVerdictTable.$inferInsert;
+
+
+// Durable personal-state synchronization; local integer IDs never cross the wire.
+export const userStateWorkspaceTable = sqliteTable("user_state_workspace", {
+  serverUrl: text("server_url").primaryKey(), namespace: text("namespace").notNull().unique(),
+  workspaceId: text("workspace_id").notNull(), epoch: text("epoch").notNull(),
+  cursor: integer("cursor").notNull().default(0), readThrough: integer("read_through"), lastSuccessAt: integer("last_success_at"),
+});
+export const userStateIntentTable = sqliteTable("user_state_intent", {
+  sequence: integer("sequence").primaryKey({ autoIncrement: true }), entityKey: text("entity_key").notNull().unique(),
+  entityJson: text("entity_json").notNull(), valueJson: text("value_json").notNull(), seed: integer("seed").notNull().default(0),
+});
+export const userStateProgressTable = sqliteTable("user_state_progress", {
+  namespace: text("namespace").notNull(), entityKey: text("entity_key").notNull(),
+  localSequence: integer("local_sequence").notNull().default(0), acknowledgedSequence: integer("acknowledged_sequence").notNull().default(0),
+  baseRevision: integer("base_revision").notNull().default(0),
+}, t => ({ pk: primaryKey({ columns: [t.namespace, t.entityKey] }) }));
+export const userStateOperationTable = sqliteTable("user_state_operation", {
+  operationId: text("operation_id").primaryKey(), namespace: text("namespace").notNull(), entityKey: text("entity_key").notNull(),
+  intentSequence: integer("intent_sequence").notNull(), payload: text("payload").notNull(),
+  status: text("status").notNull().default("pending"), receipt: text("receipt"),
+}, t => ({ pendingIdx: index("user_state_operation_pending_idx").on(t.namespace, t.status, t.intentSequence) }));
+export const userStateRecordTable = sqliteTable("user_state_record", {
+  namespace: text("namespace").notNull(), entityKey: text("entity_key").notNull(), revision: integer("revision").notNull(), payload: text("payload").notNull(),
+  appliedRevision: integer("applied_revision").notNull().default(0), deletionRevision: integer("deletion_revision").notNull().default(0),
+  deferredReason: text("deferred_reason"), deferredDetail: text("deferred_detail"),
+}, t => ({ pk: primaryKey({ columns: [t.namespace, t.entityKey] }) }));
+export const userStateConflictTable = sqliteTable("user_state_conflict", {
+  id: text("id").primaryKey(), namespace: text("namespace").notNull(), entityKey: text("entity_key").notNull(), reason: text("reason").notNull(),
+}, t => ({ entityIdx: uniqueIndex("user_state_conflict_entity_idx").on(t.namespace, t.entityKey) }));
+export const userStateCategoryTable = sqliteTable("user_state_category", {
+  categoryId: text("category_id").primaryKey(), localId: integer("local_id").references(() => categoryTable.id, { onDelete: "set null" }),
+}, t => ({ localIdx: index("user_state_category_local_idx").on(t.localId) }));
+export const userStateAliasTable = sqliteTable("user_state_alias", {
+  namespace: text("namespace").notNull(), aliasId: text("alias_id").notNull(), canonicalId: text("canonical_id").notNull(),
+}, t => ({ pk: primaryKey({ columns: [t.namespace, t.aliasId] }) }));
+export const userStatePrivateTable = sqliteTable("user_state_private", { entityKey: text("entity_key").primaryKey(), publicValueJson: text("public_value_json").notNull() });
+
+export const userStateRestoreStateTable = sqliteTable("user_state_restore_state", {
+  id: integer("id").primaryKey(), paused: integer("paused").notNull().default(0), restored: integer("restored").notNull().default(0),
+}, t => ({ singleton: check("user_state_restore_state_singleton", sql`${t.id} = 1`) }));

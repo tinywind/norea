@@ -1,3 +1,4 @@
+import { hasUserStateSchema, recordCategoryInDb, recordMembershipInDb, stableCategoryIdInDb } from "../user-state-core";
 import { getDb, getReadOnlyDb, runDatabaseTransaction, type DatabaseReadMode } from "../client";
 
 export const UNCATEGORIZED_CATEGORY_ID = -1;
@@ -68,7 +69,8 @@ export interface InsertCategoryInput {
 }
 
 export async function insertCategory(input: InsertCategoryInput): Promise<void> {
-  const db = await getDb();
+  return runDatabaseTransaction(async (db) => {
+
   const name = normalizeCategoryName(input.name);
   await db.execute(
     `INSERT INTO category (name, sort, is_system)
@@ -79,6 +81,11 @@ export async function insertCategory(input: InsertCategoryInput): Promise<void> 
      )`,
     [name, input.sort ?? null],
   );
+    if (await hasUserStateSchema(db)) {
+      const [created] = await db.select<{ id: number }[]>("SELECT id FROM category WHERE name=$1", [name]);
+      if (created) await recordCategoryInDb(db, created.id, { create: true });
+    }
+  });
 }
 
 export interface UpdateCategoryInput {
@@ -90,7 +97,8 @@ export async function updateCategory(
   input: UpdateCategoryInput,
 ): Promise<void> {
   assertManualCategoryId(id);
-  const db = await getDb();
+  return runDatabaseTransaction(async (db) => {
+    await stableCategoryIdInDb(db, id);
   const name = normalizeCategoryName(input.name);
   await db.execute(
     `UPDATE category
@@ -98,14 +106,23 @@ export async function updateCategory(
      WHERE id = $1 AND is_system = 0`,
     [id, name],
   );
+    await recordCategoryInDb(db, id);
+  });
 }
 
 export async function deleteCategory(id: number): Promise<void> {
   assertManualCategoryId(id);
-  const db = await getDb();
+  return runDatabaseTransaction(async (db) => {
+    await recordCategoryInDb(db, id, { deleted: true });
+    if (await hasUserStateSchema(db)) {
+      const members = await db.select<{ id: number }[]>("SELECT novel_id AS id FROM novel_category WHERE category_id=$1", [id]);
+      await recordMembershipInDb(db, members.map(row => row.id), id, false);
+    }
   await db.execute("DELETE FROM category WHERE id = $1 AND is_system = 0", [
     id,
   ]);
+
+  });
 }
 
 export async function addNovelsToCategory(
@@ -118,7 +135,8 @@ export async function addNovelsToCategory(
   );
   if (uniqueNovelIds.length === 0) return;
 
-  const db = await getDb();
+  return runDatabaseTransaction(async (db) => {
+
   const params = uniqueNovelIds.flatMap((novelId) => [novelId, categoryId]);
   const values = uniqueNovelIds
     .map((_, index) => `($${index * 2 + 1}, $${index * 2 + 2})`)
@@ -129,6 +147,8 @@ export async function addNovelsToCategory(
      VALUES ${values}`,
     params,
   );
+    await recordMembershipInDb(db, uniqueNovelIds, categoryId, true);
+  });
 }
 
 export async function removeNovelsFromCategory(
@@ -141,13 +161,16 @@ export async function removeNovelsFromCategory(
   );
   if (uniqueNovelIds.length === 0) return;
 
-  const db = await getDb();
+  return runDatabaseTransaction(async (db) => {
+
   const params: unknown[] = [categoryId, ...uniqueNovelIds];
   const placeholders = uniqueNovelIds.map((_, index) => "$" + (index + 2)).join(", ");
   await db.execute(
     "DELETE FROM novel_category WHERE category_id = $1 AND novel_id IN (" + placeholders + ")",
     params,
   );
+    await recordMembershipInDb(db, uniqueNovelIds, categoryId, false);
+  });
 }
 
 const CATEGORY_MEMBERSHIP_CHUNK = 500;
@@ -231,6 +254,9 @@ export async function setNovelCategories(
       }
     }
 
+    const trackedCategories = await hasUserStateSchema(db)
+      ? await db.select<{ id: number }[]>("SELECT id FROM category WHERE is_system=0") : [];
+    for (const category of trackedCategories) await recordMembershipInDb(db, [novelId], category.id, uniqueCategoryIds.includes(category.id));
     await db.execute(
       `DELETE FROM novel_category
        WHERE novel_id = $1 AND category_id IN (SELECT id FROM category WHERE is_system = 0)`,

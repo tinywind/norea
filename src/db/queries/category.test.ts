@@ -33,6 +33,7 @@ beforeEach(() => {
     select: mockSelect,
     execute: mockExecute,
   } as never);
+  vi.mocked(runDatabaseTransaction).mockImplementation(async run => run({ select: mockSelect, execute: mockExecute } as never));
 });
 
 describe("listCategories", () => {

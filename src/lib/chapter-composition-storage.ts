@@ -11,7 +11,7 @@ export interface ChapterCompositionPreparedCopy {
 }
 
 function sameSource(left: ChapterSourceSnapshot, right: ChapterSourceSnapshot): boolean {
-  return left.pluginId === right.pluginId && left.novelId === right.novelId &&
+  return left.pluginId === right.pluginId && left.novelId.replace(/[A-Z]/g, character => character.toLowerCase()) === right.novelId.replace(/[A-Z]/g, character => character.toLowerCase()) &&
     (left.sourceChapterId && right.sourceChapterId
       ? left.sourceChapterId === right.sourceChapterId : left.chapterPath === right.chapterPath);
 }
@@ -20,6 +20,18 @@ function sameOwner(previous: ChapterCompositionEntry | undefined, entry: Chapter
   return Boolean(previous && previous.id === entry.id && previous.path === entry.path &&
     previous.storageChapterNumber === entry.storageChapterNumber &&
     sameSource(previous.sources[previous.primarySource], entry.sources[entry.primarySource]));
+}
+
+/** Independent devices may assign different entry UUIDs to the same original provider row. */
+function sameStoredOwner(previous: ChapterCompositionEntry | undefined, entry: ChapterCompositionEntry,
+  novel: { pluginId: string; sourceNovelId: string | null }): boolean {
+  if (sameOwner(previous, entry)) return true;
+  if (!previous || previous.path !== entry.path || previous.storageChapterNumber !== entry.storageChapterNumber ||
+    /^(?:(?:norea|local)-folder|norea-composed|norea-source):/.test(entry.path)) return false;
+  const source = entry.sources[entry.primarySource];
+  return source.pluginId === novel.pluginId && novel.sourceNovelId !== null &&
+    source.novelId.replace(/[A-Z]/g, character => character.toLowerCase()) === novel.sourceNovelId.replace(/[A-Z]/g, character => character.toLowerCase()) &&
+    source.chapterPath === entry.path && sameSource(previous.sources[previous.primarySource], source);
 }
 
 /** Read the original work file before the caller publishes its new composition. */
@@ -68,8 +80,8 @@ export async function assertChapterCompositionStorageOwnership(input: {
     const preparedCopy = copy && sameOwner(copy.entry, entry) && copy.transfer.outcome === "copiedSource" &&
       !copy.transfer.replacedTarget && copy.transfer.targetRelativeDir === targetDirectory &&
       ["content.html", "content.pdf"].some(file => copy.transfer.contentFile === `${targetDirectory}/${file}`);
-    if ((storedOwner && !sameOwner(storedOwner, entry)) || (previousOwner && !sameOwner(previousOwner, entry)) ||
-      !(sameOwner(storedOwner, entry) || sameOwner(previousOwner, entry) || originalRow || preparedCopy)) {
+    if ((storedOwner && !sameStoredOwner(storedOwner, entry, input.novel)) || (previousOwner && !sameStoredOwner(previousOwner, entry, input.novel)) ||
+      !(sameStoredOwner(storedOwner, entry, input.novel) || sameStoredOwner(previousOwner, entry, input.novel) || originalRow || preparedCopy)) {
       throw new Error("Chapter composition: existing chapter files have no matching source ownership; existing files were retained");
     }
   }

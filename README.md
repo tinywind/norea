@@ -77,9 +77,9 @@ webtoons or read manga and comics page by page.
   Browse its works under Browse -> Server, add them to your library, and
   download chapters without waiting for a full sync. Devices register
   automatically. Search and source filters remain when returning from a work.
-- Save a complete device database and settings snapshot to the content server
-  under your device name. Select any saved device backup to replace this app's
-  local database, installed plugins, and settings after confirmation.
+- Share manual library registration, category edits, progress, bookmarks, resume
+  positions, and chapter compositions across devices. Explicit removals and resets
+  are preserved; concurrent edits can be reviewed before choosing a value.
 - Export and import local backups for your library, progress, categories,
   source settings, and chapter download status.
 
@@ -207,13 +207,12 @@ as described in the [server documentation](https://github.com/tinywind/norea-con
 4. Choose Download to this device for content in the server catalog.
 
 No account or password is needed in the app. Each device uses its own registration
-key. Ordinary content sync shares work metadata and chapter files while keeping
-library membership and reading state local. The separate Settings -> Data ->
-Device backup section saves the complete app database and settings under your
-device name. It lists the server's saved device backups; selecting one and
-confirming Restore replaces the local database and settings, then reloads the app.
-This includes library membership and reading state, with no separate reading
-sync key or history merge. See [Backup](#backup) for its scope.
+key. Ordinary content sync shares work metadata and chapter files. The separate
+Settings -> Data -> Shared user changes section merges manual library edits,
+categories, progress, bookmarks, resume positions, and chapter compositions.
+It is manual by default, with an optional automatic toggle for each server.
+The sharing workspace is available to that server's admitted, unblocked devices.
+See [Sharing user changes](docs/user-state.md) for identities and conflict rules.
 
 Choose Manual only, Periodically, or When changes occur for content sync.
 Automatic sync runs while the app is visible, and later syncs use recorded
@@ -276,43 +275,22 @@ for folder import and server configuration.
 
 ## Backup
 
-### Device backup on the content server
+### Sharing manual changes
 
-Open Settings -> Data -> Device backup after configuring a content server.
-Your device name is the default backup name. Save the current snapshot to that
-name, or select a name from the server's list and restore its saved snapshot
-after confirming the overwrite.
-Every registered, unblocked device can list and restore the server's device
-backups; these are not separated by private reading sync keys.
+Configure the content server, then open Settings -> Data -> Shared user changes.
+Choose Share now or enable automatic sharing for this server. Opening the screen
+only reads local status. Pending changes, conflicts, deferred applications, and
+recent successful communication remain visible.
 
-The snapshot includes the complete SQLite database, repository URLs, installed
-plugin JavaScript, categories, library membership, reading progress, bookmarks,
-history, and all work and chapter metadata. It also includes all saved app
-settings, including server connection and device credentials, VPN settings and
-the imported OpenVPN profile, interface preferences, and the storage folder
-setting. Restoring replaces these values with the selected device's snapshot
-and reloads the app. It does not merge two devices' history.
+Different fields merge independently. A conflict on the same field keeps both
+values for review. Read/unread resets, removed bookmarks, library removals, and
+category deletions remain explicit changes. Stable source identities match data
+across devices; local database integers do not.
 
-Downloaded chapter bodies, cover files, and image or media files stay in their
-existing storage folders and are not included or overwritten. Operating-system
-folder permissions, WebView cookies, and VPN username/password values held only
-in memory are not included. A different device may need to grant access to the
-restored storage folder or select an available folder again.
-
-Only a backup with the same database schema and migration history can be
-restored. The app verifies the archive checksum and database integrity before
-replacement. Pending download and metadata publication jobs from the snapshot
-are cancelled or removed so they cannot modify original content files after
-restore. The older portable file backup remains available separately.
-
-Physical download cache flags and byte counts are reset during a full device
-restore because original chapter files are not included. Existing local files
-remain untouched and are checked again when their chapters are opened or
-downloaded; reading progress and metadata stay restored.
-
-If a preserved work is absent from the restored database, opening it from the
-server catalog rebuilds its local index from the existing files without
-replacing those files with the server response.
+This flow excludes device settings, credentials, VPN data, storage folders,
+plugins, queues, and downloaded bodies. Existing full-device archive endpoints
+and stored archives remain separate recovery facilities. They are not used by
+normal sharing. See [the complete contract](docs/user-state.md).
 
 ### Portable local file backup
 
@@ -323,8 +301,15 @@ chapter media are not packed into the backup; they stay in the chapter storage
 folder, and Norea re-checks that folder after a restore so download flags match
 the files that are actually present. This portable format excludes device
 authentication keys and preserves existing content files during restore.
-Only the current manifest format 2 is supported. It is a different format from
-the complete device snapshot stored on the content server.
+The current portable manifest is format 6. Category stable IDs are optional in
+that format and are reconnected exactly when available. This is a different
+format from the complete device archive stored on the content server.
+
+A successful portable restore pauses user-change sharing and retains the old
+ledger and pending changes. Reconnect to existing shared state explicitly in
+the sharing screen to resume them. The restored snapshot itself is never
+automatically published; shared records may replace its local values after
+reconnection. Direct edits made after restoration are shared normally.
 
 
 ## Version compatibility

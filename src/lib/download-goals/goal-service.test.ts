@@ -11,6 +11,7 @@ const mocks = vi.hoisted(() => ({
   downloadListener: null as ((event: unknown) => void) | null,
   excluded: new Set<number>(),
   stopped: new Set<number>(),
+  remoteApply: false,
 }));
 
 vi.mock("../../db/queries/chapter", () => ({
@@ -34,7 +35,7 @@ vi.mock("../../i18n", () => ({ translate: (_locale: string, key: string) => key 
 vi.mock("../../store/appearance", () => ({ useAppearanceStore: { getState: () => ({ appLocale: "en" }) } }));
 vi.mock("../../store/reader", async () => {
   const { create: createStore } = await import("zustand");
-  return { useReaderStore: createStore(() => ({ lastReadChapterByNovel: {} as Record<number, number> })) };
+  return { isApplyingSharedReaderResume: () => mocks.remoteApply, useReaderStore: createStore(() => ({ lastReadChapterByNovel: {} as Record<number, number> })) };
 });
 vi.mock("../content-sync/server-lane", () => ({
   planServerLaneJobs: async (_novel: unknown, jobs: unknown[]) => jobs,
@@ -141,6 +142,7 @@ beforeEach(() => {
   mocks.records = [];
   mocks.excluded = new Set();
   mocks.stopped = new Set();
+  mocks.remoteApply = false;
   useDownloadGoalSettingsStore.setState({ automaticGoal: { kind: "keep_ahead", count: 3 }, automaticOnMobileData: false });
   useReaderStore.setState({ lastReadChapterByNovel: {} });
   vi.clearAllMocks();
@@ -338,4 +340,22 @@ it("does not publish a stale automatic range after the global policy changes dur
   release();
   await settle();
   expect(mocks.submitted).toEqual([]);
+});
+
+
+it("does not schedule source downloads for a shared resume but follows a later local read", async () => {
+  startDownloadGoals();
+  await settle();
+  mocks.submitted = [];
+  mocks.queued = new Set([11, 13, 14]);
+  mocks.remoteApply = true;
+  useReaderStore.setState({ lastReadChapterByNovel: { 1: 11 } });
+  mocks.remoteApply = false;
+  await settle();
+  expect(mocks.submitted).toEqual([]);
+
+  useReaderStore.setState({ lastReadChapterByNovel: { 1: 13 } });
+  await settle();
+  expect(mocks.submitted.map(request => request.novelIds)).toEqual([[1]]);
+  expect((await jobsOf(0)).map(job => job.id)).toEqual([15]);
 });

@@ -168,3 +168,10 @@ it("stops before registration if persistence fails or an existing key is malform
   await expect(registerContentDevice("http://server", "Tablet")).rejects.toThrow("storage full");
   expect(vi.mocked(nativeFetch).mock.calls.every(([url]) => String(url).endsWith("/capabilities"))).toBe(true);
 });
+
+
+it("accepts a server advertising the shared user-state protocol without legacy private reading sync", async () => {
+  vi.mocked(nativeFetch).mockImplementation(async url => Response.json(String(url).endsWith("/capabilities")
+    ? { ...capabilities, personalStateSync: true, userStateVersion: 1 } : { id: "device", deviceName: "Tablet" }));
+  await expect(registerContentDevice("http://server", "Tablet")).resolves.toMatch(/^[a-f0-9]{64}$/);
+});

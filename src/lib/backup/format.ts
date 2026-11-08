@@ -72,6 +72,8 @@ export interface BackupChapter {
 
 export interface BackupCategory {
   id: number;
+  /** Shared category identity; absent in earlier version-6 files. */
+  stableId?: string;
   name: string;
   sort: number;
   isSystem: boolean;
@@ -238,7 +240,9 @@ function isCategory(value: unknown): value is BackupCategory {
     typeof value.id === "number" &&
     typeof value.name === "string" &&
     typeof value.sort === "number" &&
-    typeof value.isSystem === "boolean"
+    typeof value.isSystem === "boolean" &&
+    (value.stableId === undefined || (value.isSystem === false && typeof value.stableId === "string" &&
+      /^[A-Za-z0-9._:-]{1,128}$/.test(value.stableId)))
   );
 }
 
@@ -361,6 +365,12 @@ export function parseBackupManifest(json: string): BackupManifest {
     throw new BackupFormatError("Backup manifest lists a repository URL more than once.");
   }
 
+  const categories = asArray(parsed.categories, "categories", isCategory);
+  const stableIds = categories.flatMap(category => category.stableId ? [category.stableId] : []);
+  if (new Set(stableIds).size !== stableIds.length) {
+    throw new BackupFormatError("Backup manifest lists a shared category identity more than once.");
+  }
+
   return {
     version: BACKUP_FORMAT_VERSION,
     exportedAt: parsed.exportedAt,
@@ -370,7 +380,7 @@ export function parseBackupManifest(json: string): BackupManifest {
       "chapters",
       isChapter,
     ),
-    categories: asArray(parsed.categories, "categories", isCategory),
+    categories,
     novelCategories: asArray(
       parsed.novelCategories,
       "novelCategories",

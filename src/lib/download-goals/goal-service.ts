@@ -11,7 +11,7 @@ import {
 import { translate } from "../../i18n";
 import { useAppearanceStore } from "../../store/appearance";
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
-import { useReaderStore } from "../../store/reader";
+import { isApplyingSharedReaderResume, useReaderStore } from "../../store/reader";
 import { planServerLaneJobs } from "../content-sync/server-lane";
 import { useNetworkStore } from "../network";
 import { pluginManager } from "../plugins/manager";
@@ -322,7 +322,7 @@ export function startDownloadGoals(): void {
   unsubscribers.push(
     taskScheduler.subscribeEvents(recordChapterDownloadDuration),
     useReaderStore.subscribe((state, previous) => {
-      if (state.lastReadChapterByNovel === previous.lastReadChapterByNovel) return;
+      if (isApplyingSharedReaderResume() || state.lastReadChapterByNovel === previous.lastReadChapterByNovel) return;
       const changed = lastReadChanges(state.lastReadChapterByNovel, previous.lastReadChapterByNovel);
       if (changed.length) reconcileDownloadGoals(changed);
     }),

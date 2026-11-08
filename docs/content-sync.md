@@ -2,10 +2,11 @@
 
 The optional [Norea Content Server](https://github.com/tinywind/norea-content-server)
 stores complete chapter files for your devices. Configure it under Settings >
-Data > Content server. Ordinary content sync keeps reading positions, read flags,
-bookmarks, and library membership local. The separate Device backup section can
-save and restore a complete app database and settings snapshot. Reading continues
-when the server is unavailable.
+Data > Content server. Ordinary content sync handles work metadata and files.
+The separate Shared user changes section merges manual library edits, categories,
+reading state, bookmarks, resumes, and chapter compositions with stable source
+identities. It is off by default for each server. See [Sharing user changes](user-state.md)
+for the journal, conflict, privacy, and restore contracts. Reading remains available offline.
 
 ## Using the server
 
@@ -190,10 +191,10 @@ block. Ask the administrator to unblock the device before retrying.
 
 The app checks `/api/v1/capabilities` before device registration. It
 requires API version 1, package version 1, `authentication: "device-key"`, and
-the supported content protocol. Full device backups additionally require
-`deviceBackupVersion: 1`; a server without this capability must be updated
-before using that section. The former private reading-history capability does
-not indicate support for full device backups.
+the supported content protocol. Shared user changes additionally require
+`userStateVersion: 1`. Legacy full-device archive requests require
+`deviceBackupVersion: 1`. These capabilities are separate from the retained
+private reading-history protocol; none substitutes for another feature version.
 Registration uses `/api/v1/devices/register`;
 successful registration is reused during the app session. A changed device name
 or key requires registration again. HTTP 401 clears only this in-memory result so
@@ -407,14 +408,13 @@ or uninstall the user's existing app to work around installation or migration
 errors. See [development.md](development.md) for the targeted Android build.
 
 
-## Full device backup
+## Legacy full-device archive contract
 
-Settings -> Data -> Device backup replaces the former reading-history sync UI.
-It saves a complete SQLite database and app settings snapshot rather than
-merging individual reading-history records. The current device name is the
-default backup slot. Saving again under that name replaces its current server
-snapshot; selecting another saved device name restores that device's snapshot
-into this app after explicit overwrite confirmation.
+The normal settings screen now uses [Shared user changes](user-state.md).
+The full-device archive endpoints and stored files remain separate recovery
+facilities. They save a complete database and settings snapshot under a device
+name. Replacing a snapshot or restoring it has the explicit recovery semantics
+described below; this protocol is not used for everyday sharing.
 
 The server lists all saved device names, including each backup's update time,
 byte size, and SHA-256. Every registered, unblocked device may list and restore
@@ -431,7 +431,9 @@ device credential for these endpoints.
 | Native VPN profile | The imported `profile.ovpn`, when present |
 | Storage location | The storage root setting, without copying the folder's files or OS access grants |
 
-The ZIP contains only `manifest.json`, `norea.db`, and optional `profile.ovpn`.
+The current format-2 ZIP contains `manifest.json`, `norea.db`, optional
+`profile.ovpn`, and the retained VPN vault when present. See the current archive
+contract in [Development data policy](release-compatibility.md).
 Installed plugin source code is part of the database snapshot. Downloaded
 chapter bodies, cover files, chapter images, and other media files remain in
 their original folders and are excluded from this archive. Restore does not
@@ -463,9 +465,10 @@ database and settings together. Pending download and metadata publication jobs
 from the snapshot are cancelled or removed so startup cannot use them to
 rewrite original files.
 
-The existing Settings -> Backup portable file format is unchanged. That format
-excludes device authentication keys and inspects existing content files when
-rebuilding download state. Full device backup instead restores the entire
+Settings -> Backup uses portable format 6 with an optional stable category ID.
+It excludes device authentication keys and inspects existing content files when
+rebuilding download state. Portable restoration atomically pauses user-state
+sharing and never converts restored values into new sharing seeds. Full device backup instead restores the entire
 database and saved settings. These are separate formats and restoration paths;
 see [Development data policy](release-compatibility.md).
 

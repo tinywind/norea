@@ -126,6 +126,35 @@ const VALID_MANIFEST: BackupManifest = {
 };
 
 describe("encodeBackupManifest + parseBackupManifest", () => {
+  it("round-trips stable category IDs while accepting earlier version-6 categories", () => {
+    const categories = [
+      ...VALID_MANIFEST.categories,
+      { id: 7, name: "Favorites", sort: 1, isSystem: false, stableId: "legacy-deadbeef" },
+      { id: 8, name: "Earlier backup", sort: 2, isSystem: false },
+    ];
+    expect(parseBackupManifest(encodeBackupManifest({ ...VALID_MANIFEST, categories })).categories).toEqual(categories);
+  });
+
+  it.each(["", "space not allowed", "../category", "x".repeat(129), null])(
+    "rejects invalid portable category identity %s",
+    (stableId) => {
+      expect(() => parseBackupManifest(JSON.stringify({
+        ...VALID_MANIFEST,
+        categories: [{ id: 7, name: "Favorites", sort: 1, isSystem: false, stableId }],
+      }))).toThrow(BackupFormatError);
+    },
+  );
+
+  it("rejects duplicate stable identities and identities attached to system categories", () => {
+    const category = { id: 7, name: "Favorites", sort: 1, isSystem: false, stableId: "same-category" };
+    expect(() => parseBackupManifest(JSON.stringify({
+      ...VALID_MANIFEST, categories: [category, { ...category, id: 8, name: "Second" }],
+    }))).toThrow(BackupFormatError);
+    expect(() => parseBackupManifest(JSON.stringify({
+      ...VALID_MANIFEST, categories: [{ ...category, isSystem: true }],
+    }))).toThrow(BackupFormatError);
+  });
+
   it("round-trips a valid manifest losslessly", () => {
     const json = encodeBackupManifest(VALID_MANIFEST);
     const parsed = parseBackupManifest(json);

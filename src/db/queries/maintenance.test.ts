@@ -2,9 +2,10 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({
   getDb: vi.fn(),
+  runDatabaseTransaction: vi.fn(),
 }));
 
-import { getDb } from "../client";
+import { getDb, runDatabaseTransaction } from "../client";
 import { clearDownloadedChapterContent, clearLibraryMembership } from "./maintenance";
 
 const mockedGetDb = vi.mocked(getDb);
@@ -15,7 +16,9 @@ beforeEach(() => {
   mockExecute = vi.fn();
   mockedGetDb.mockResolvedValue({
     execute: mockExecute,
+    select: vi.fn().mockResolvedValue([]),
   } as never);
+  vi.mocked(runDatabaseTransaction).mockImplementation(async run => run(await getDb()));
 });
 
 describe("clearDownloadedChapterContent", () => {

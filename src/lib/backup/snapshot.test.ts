@@ -1,14 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../../db/client", () => {
+  const getDb = vi.fn();
   return {
-    getDb: vi.fn(),
+    getDb,
+    runDatabaseTransaction: vi.fn(async (run: (db: unknown) => Promise<unknown>) => run(await getDb())),
     cancelWorkMetadataRecovery: vi.fn(),
     runExclusiveDatabaseOperation: vi.fn(
       async (run: () => Promise<unknown>) => run(),
     ),
   };
 });
+vi.mock("../../db/user-state-core", () => ({ stableCategoryIdInDb: vi.fn(), emitUserStateLedgerChanged: vi.fn() }));
 vi.mock("../../db/work-metadata", () => ({ restoreWorkMetadataDirectories: vi.fn() }));
 vi.mock("./restore-plan", () => ({ prepareBackupRestore: vi.fn() }));
 
@@ -32,7 +35,8 @@ vi.mock("../../store/reader", () => ({ useReaderStore: {
 } }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { getDb } from "../../db/client";
+import { getDb, runDatabaseTransaction } from "../../db/client";
+import { stableCategoryIdInDb } from "../../db/user-state-core";
 import { useDownloadRecoveryStore } from "../../store/download-recovery";
 import { restoreWorkMetadataDirectories } from "../../db/work-metadata";
 import { prepareBackupRestore } from "./restore-plan";
@@ -44,6 +48,7 @@ import {
 } from "./format";
 import { applyBackupSnapshot, gatherBackupSnapshot } from "./snapshot";
 import { runContentStorageOperation } from "../content-sync/storage-operation";
+import { serializeUserStateSynchronization } from "../user-state/maintenance";
 
 const mockedGetDb = vi.mocked(getDb);
 const invokeMock = vi.mocked(invoke);
@@ -184,11 +189,11 @@ const VPN_GATE_SERVER_VERDICT = {
 };
 const DOWNLOAD_GOAL = { novelId: 1, kind: "keep_ahead", count: 3, updatedAt: 1_700_000_000 };
 
-function primeSelect(chapterRows: unknown[] = [RAW_CHAPTER]): void {
+function primeSelect(chapterRows: unknown[] = [RAW_CHAPTER], categoryRows: unknown[] = [RAW_CATEGORY]): void {
   mockSelect
     .mockResolvedValueOnce([RAW_NOVEL])
     .mockResolvedValueOnce(chapterRows)
-    .mockResolvedValueOnce([RAW_CATEGORY])
+    .mockResolvedValueOnce(categoryRows)
     .mockResolvedValueOnce([NOVEL_CATEGORY])
     .mockResolvedValueOnce([REPOSITORY])
     .mockResolvedValueOnce([INSTALLED_PLUGIN])
@@ -197,6 +202,22 @@ function primeSelect(chapterRows: unknown[] = [RAW_CHAPTER]): void {
 }
 
 describe("gatherBackupSnapshot", () => {
+  it("exports stable category identities from the same database transaction", async () => {
+    primeSelect([RAW_CHAPTER], [RAW_CATEGORY, { id: 7, name: "Favorites", sort: 2, isSystem: 0 }]);
+    vi.mocked(stableCategoryIdInDb).mockResolvedValueOnce("category:favorites");
+
+    const manifest = await gatherBackupSnapshot();
+
+    expect(manifest.categories).toEqual([
+      { ...RAW_CATEGORY, isSystem: true },
+      { id: 7, name: "Favorites", sort: 2, isSystem: false, stableId: "category:favorites" },
+    ]);
+    expect(runDatabaseTransaction).toHaveBeenCalledOnce();
+    expect(stableCategoryIdInDb).toHaveBeenCalledExactlyOnceWith(
+      { select: mockSelect, execute: mockExecute }, 7,
+    );
+  });
+
   it("coerces integer flag columns into strict booleans", async () => {
     primeSelect();
     const manifest = await gatherBackupSnapshot();
@@ -286,6 +307,8 @@ describe("gatherBackupSnapshot", () => {
       "source-filters:demo": "{\"filters\":{}}",
       unrelated: "skip",
       "norea-content-device:http://server": "device-key",
+      "norea-user-state": '{"state":{"enabledByServer":{"http://server":true}}}',
+      "user-state-ledger": "not-a-portable-setting",
     });
     primeSelect();
 
@@ -309,6 +332,26 @@ describe("applyBackupSnapshot", () => {
     primeSelect();
     return gatherBackupSnapshot();
   }
+
+  it("aborts and awaits active sharing before preparing a portable restore", async () => {
+    const manifest = await gatherForTest();
+    let release: () => void = () => undefined;
+    const active = vi.fn(() => new Promise<void>(resolve => { release = resolve; }));
+    const controller = new AbortController();
+    const cancel = vi.fn(() => controller.abort());
+    const sharing = serializeUserStateSynchronization(active, cancel, controller.signal);
+    await vi.waitFor(() => expect(active).toHaveBeenCalledOnce());
+
+    const restore = applyBackupSnapshot(manifest);
+    expect(cancel).toHaveBeenCalledOnce();
+    expect(prepareBackupRestore).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
+    release();
+    await sharing;
+    await restore;
+    expect(prepareBackupRestore).toHaveBeenCalledOnce();
+    expect(invokeMock).toHaveBeenCalledOnce();
+  });
 
   it("keeps content sync waiting until the database restore settles", async () => {
     const manifest = await gatherForTest();

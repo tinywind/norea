@@ -42,6 +42,8 @@ const localStorageHarness = vi.hoisted(() => {
 });
 
 import {
+  getPortableReaderAnchor,
+  isApplyingSharedReaderResume,
   getEffectiveReaderAppearanceSettings,
   getEffectiveReaderGeneralSettings,
   READER_APPEARANCE_DEFAULTS,
@@ -56,6 +58,7 @@ import {
 beforeEach(() => {
   localStorageHarness.values.clear();
   useReaderStore.getState().resetReaderSettings();
+  useReaderStore.getState().resetReadingProgress();
 });
 
 afterAll(() => {
@@ -635,5 +638,52 @@ describe("useReaderStore", () => {
     state = useReaderStore.getState();
     expect(state.readerSettingsByNovel).toEqual({});
     expect(state.readerSettingsBySource).toEqual({});
+  });
+});
+
+
+describe("portable shared reading positions", () => {
+  const anchor = { novelId: 7, segmentIndex: 2, mediaOrdinal: 0, offset: 0.25, segmentCount: 12, progress: 20, savedAt: 1000 };
+
+  it("projects document-relative anchors without local row identities or page indexes", () => {
+    expect(getPortableReaderAnchor({ ...anchor, novelId: 12345 })).toEqual({
+      segmentIndex: 2, mediaOrdinal: 0, offset: 0.25, segmentCount: 12, progress: 20, savedAt: 1000,
+    });
+    expect(getPortableReaderAnchor({ ...anchor, segmentIndex: 12 })).toBeNull();
+    expect(getPortableReaderAnchor({ ...anchor, offset: Number.NaN })).toBeNull();
+  });
+
+  it("maps an incoming position to destination IDs and suppresses synchronous publication", () => {
+    const state = useReaderStore.getState();
+    state.setNovelPageIndex(99, 50);
+    state.setLastReadChapter(8, 80);
+    const observed: boolean[] = [];
+    const unsubscribe = useReaderStore.subscribe(() => observed.push(isApplyingSharedReaderResume()));
+    state.applySharedResume({ novelId: 99, chapterId: 901, anchor: getPortableReaderAnchor(anchor), openedAt: 10 });
+    unsubscribe();
+    expect(observed).toEqual([true]);
+    expect(isApplyingSharedReaderResume()).toBe(false);
+    expect(useReaderStore.getState().lastReadChapterByNovel).toEqual({ 8: 80, 99: 901 });
+    expect(useReaderStore.getState().chapterScrollAnchors[901]).toEqual({ ...anchor, novelId: 99 });
+    expect(useReaderStore.getState().novelPageIndexByNovel[99]).toBeUndefined();
+  });
+
+  it("clears an obsolete anchor when shared progress has no valid anchor", () => {
+    const state = useReaderStore.getState();
+    state.setChapterScrollAnchor(70, anchor);
+    state.applySharedResume({ novelId: 7, chapterId: 70, anchor: { ...getPortableReaderAnchor(anchor)!, segmentCount: 0 }, openedAt: 10 });
+    expect(useReaderStore.getState().chapterScrollAnchors[70]).toBeUndefined();
+    expect(useReaderStore.getState().lastReadChapterByNovel[7]).toBe(70);
+  });
+
+  it("applies an explicit resume clear only to the named work", () => {
+    const state = useReaderStore.getState();
+    state.setLastReadChapter(7, 70);
+    state.setLastReadChapter(8, 80);
+    state.setChapterScrollAnchor(70, anchor);
+    state.setChapterScrollAnchor(80, { ...anchor, novelId: 8 });
+    state.applySharedResume({ novelId: 7, chapterId: null, anchor: null, openedAt: null });
+    expect(useReaderStore.getState().lastReadChapterByNovel).toEqual({ 8: 80 });
+    expect(Object.keys(useReaderStore.getState().chapterScrollAnchors)).toEqual(["80"]);
   });
 });

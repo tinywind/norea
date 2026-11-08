@@ -266,6 +266,8 @@ struct BackupRestoreChapter {
 #[serde(rename_all = "camelCase")]
 struct BackupRestoreCategory {
     id: i64,
+    #[serde(default)]
+    stable_id: Option<String>,
     name: String,
     sort: i64,
     is_system: bool,
@@ -499,6 +501,23 @@ fn validate_restore_chapter_compositions(manifest: &BackupRestoreManifest) -> Re
     Ok(())
 }
 
+fn validate_restore_category_identities(categories: &[BackupRestoreCategory]) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    for category in categories {
+        if let Some(stable_id) = &category.stable_id {
+            if category.is_system
+                || stable_id.is_empty()
+                || stable_id.len() > 128
+                || !stable_id.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+                || !seen.insert(stable_id)
+            {
+                return Err("backup_restore_snapshot: invalid or duplicate shared category identity".to_string());
+            }
+        }
+    }
+    Ok(())
+}
+
 async fn execute_restore_snapshot(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     manifest: BackupRestoreManifest,
@@ -518,7 +537,15 @@ async fn execute_restore_snapshot(
         return Err("backup_restore_snapshot: inline chapter bodies are not supported".to_string());
     }
     validate_restore_repositories(&manifest.repositories)?;
+    validate_restore_category_identities(&manifest.categories)?;
     validate_restore_chapter_compositions(&manifest)?;
+    let fenced = sqlx::query("UPDATE user_state_restore_state SET paused=1,restored=1 WHERE id=1")
+        .execute(&mut **tx)
+        .await
+        .map_err(|err| format!("backup_restore_snapshot: pause personal state sharing: {err}"))?;
+    if fenced.rows_affected() != 1 {
+        return Err("backup_restore_snapshot: personal state restore guard is missing".to_string());
+    }
     sqlx::query("DELETE FROM novel_category")
         .execute(&mut **tx)
         .await
@@ -562,6 +589,14 @@ async fn execute_restore_snapshot(
             .execute(&mut **tx)
             .await
             .map_err(|err| format!("backup_restore_snapshot: insert category: {err}"))?;
+        if let Some(stable_id) = &category.stable_id {
+            sqlx::query("INSERT INTO user_state_category(category_id,local_id) VALUES($1,$2) ON CONFLICT(category_id) DO UPDATE SET local_id=excluded.local_id")
+                .bind(stable_id)
+                .bind(category.id)
+                .execute(&mut **tx)
+                .await
+                .map_err(|err| format!("backup_restore_snapshot: restore shared category identity: {err}"))?;
+        }
     }
 
     for repository in &manifest.repositories {
@@ -1516,6 +1551,99 @@ mod tests {
         let pending: i64 = sqlx::query_scalar("SELECT revision FROM work_metadata_sync_journal WHERE plugin_id='demo' AND path='/original'")
             .fetch_one(&pool).await.expect("read original pending revision");
         assert_eq!(pending, 7);
+        assert_eq!(sqlx::query_as::<_, (i64, i64)>("SELECT paused,restored FROM user_state_restore_state WHERE id=1")
+            .fetch_one(&pool).await.expect("read rolled-back restore guard"), (0, 0));
+    }
+
+    fn category_restore_manifest(categories: serde_json::Value) -> BackupRestoreManifest {
+        serde_json::from_value(serde_json::json!({
+            "version": 6, "novels": [], "chapters": [], "categories": categories,
+            "novelCategories": [], "repositories": [], "installedPlugins": [],
+            "vpnGateServerVerdicts": [], "downloadGoals": []
+        })).expect("parse category manifest")
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_pauses_sharing_without_rewriting_pending_edits() {
+        let pool = restore_pool().await;
+        sqlx::raw_sql("INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch,cursor) VALUES('https://server.example','workspace:epoch','workspace','epoch',12);
+            INSERT INTO user_state_intent(sequence,entity_key,entity_json,value_json,seed) VALUES(41,'saved-entity','{\"kind\":\"library\"}','{\"inLibrary\":false}',0);
+            INSERT INTO user_state_progress(namespace,entity_key,local_sequence,acknowledged_sequence,base_revision) VALUES('workspace:epoch','saved-entity',41,35,12);
+            INSERT INTO user_state_operation(operation_id,namespace,entity_key,intent_sequence,payload) VALUES('already-attempted','workspace:epoch','saved-entity',41,'immutable-request');
+            INSERT INTO user_state_record(namespace,entity_key,revision,payload,applied_revision) VALUES('workspace:epoch','saved-entity',12,'shared-record',12);")
+            .execute(&pool).await.expect("seed pending personal state");
+        let mut tx = pool.begin().await.expect("begin");
+        execute_restore_snapshot(&mut tx, category_restore_manifest(serde_json::json!([])), &BackupRestoreCache::default())
+            .await.expect("restore");
+        tx.commit().await.expect("commit");
+        assert_eq!(sqlx::query_as::<_, (i64, i64)>("SELECT paused,restored FROM user_state_restore_state WHERE id=1")
+            .fetch_one(&pool).await.expect("read restore guard"), (1, 1));
+        assert_eq!(sqlx::query_as::<_, (i64, String)>("SELECT sequence,value_json FROM user_state_intent WHERE entity_key='saved-entity'")
+            .fetch_one(&pool).await.expect("read saved intent"), (41, "{\"inLibrary\":false}".to_string()));
+        assert_eq!(sqlx::query_as::<_, (String, String)>("SELECT payload,status FROM user_state_operation WHERE operation_id='already-attempted'")
+            .fetch_one(&pool).await.expect("read attempted operation"), ("immutable-request".to_string(), "pending".to_string()));
+        assert_eq!(sqlx::query_as::<_, (String, i64)>("SELECT payload,applied_revision FROM user_state_record WHERE entity_key='saved-entity'")
+            .fetch_one(&pool).await.expect("read shared record"), ("shared-record".to_string(), 12));
+        assert_eq!(sqlx::query_as::<_, (i64, i64, i64)>("SELECT local_sequence,acknowledged_sequence,base_revision FROM user_state_progress WHERE entity_key='saved-entity'")
+            .fetch_one(&pool).await.expect("read pending progress"), (41, 35, 12));
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_rebinds_categories_only_by_stable_identity() {
+        let pool = restore_pool().await;
+        sqlx::raw_sql("INSERT INTO category(id,name,sort,is_system) VALUES(7,'Unrelated',0,0),(9,'Renamed',1,0);
+            INSERT INTO user_state_category(category_id,local_id) VALUES('category-unrelated',7),('category-known',9);")
+            .execute(&pool).await.expect("seed category identities");
+        let manifest = category_restore_manifest(serde_json::json!([
+            { "id": 7, "name": "Restored name", "sort": 2, "isSystem": false, "stableId": "category-known" }
+        ]));
+        let mut tx = pool.begin().await.expect("begin");
+        execute_restore_snapshot(&mut tx, manifest, &BackupRestoreCache::default()).await.expect("restore");
+        tx.commit().await.expect("commit");
+        assert_eq!(sqlx::query_as::<_, (String, Option<i64>)>(
+            "SELECT category_id,local_id FROM user_state_category ORDER BY category_id")
+            .fetch_all(&pool).await.expect("read category identities"),
+            vec![("category-known".to_string(), Some(7)), ("category-unrelated".to_string(), None)]);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_does_not_guess_category_identity_for_older_backups() {
+        let pool = restore_pool().await;
+        sqlx::raw_sql("INSERT INTO category(id,name,sort,is_system) VALUES(7,'Same name',0,0);
+            INSERT INTO user_state_category(category_id,local_id) VALUES('category-original',7);")
+            .execute(&pool).await.expect("seed category identity");
+        let manifest = category_restore_manifest(serde_json::json!([
+            { "id": 7, "name": "Same name", "sort": 0, "isSystem": false }
+        ]));
+        let mut tx = pool.begin().await.expect("begin");
+        execute_restore_snapshot(&mut tx, manifest, &BackupRestoreCache::default()).await.expect("restore older backup");
+        tx.commit().await.expect("commit");
+        let mapped: Option<i64> = sqlx::query_scalar("SELECT local_id FROM user_state_category WHERE category_id='category-original'")
+            .fetch_one(&pool).await.expect("read category identity");
+        assert_eq!(mapped, None);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_rejects_invalid_category_identities_before_replacement() {
+        let pool = restore_pool().await;
+        sqlx::query("INSERT INTO category(id,name,sort,is_system) VALUES(7,'Original',0,0)")
+            .execute(&pool).await.expect("seed category");
+        let cases = [
+            serde_json::json!([
+                { "id": 1, "name": "First", "sort": 0, "isSystem": false, "stableId": "duplicate" },
+                { "id": 2, "name": "Second", "sort": 1, "isSystem": false, "stableId": "duplicate" }
+            ]),
+            serde_json::json!([{ "id": 1, "name": "Invalid", "sort": 0, "isSystem": false, "stableId": "../invalid" }]),
+            serde_json::json!([{ "id": 1, "name": "System", "sort": 0, "isSystem": true, "stableId": "system" }]),
+        ];
+        for categories in cases {
+            let mut tx = pool.begin().await.expect("begin");
+            assert!(execute_restore_snapshot(&mut tx, category_restore_manifest(categories), &BackupRestoreCache::default())
+                .await.unwrap_err().contains("category"));
+            assert_eq!(sqlx::query_scalar::<_, String>("SELECT name FROM category WHERE id=7")
+                .fetch_one(&mut *tx).await.expect("read original category"), "Original");
+            tx.rollback().await.expect("rollback");
+        }
     }
 
     #[tokio::test]
