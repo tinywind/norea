@@ -1,5 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("./content-sync/sync", () => ({
+  runContentSyncOperation: vi.fn(async (operation: () => Promise<unknown>) => operation()),
+  syncContentServer: vi.fn(async () => undefined),
+}));
+vi.mock("./content-sync/deletion-exclusions", () => ({ publishNovelMigrationSourceHold: vi.fn() }));
+vi.mock("./content-sync/novel-migration", () => ({ captureNovelMigrationSourceSnapshot: vi.fn(async () => undefined) }));
+vi.mock("./chapter-content/storage-platform", async original => ({
+  ...await original<typeof import("./chapter-content/storage-platform")>(), inspectChapterPayloadInventory: vi.fn(),
+}));
+
 const mergeTaskContext = vi.hoisted(() => ({
   controller: new AbortController(),
 }));
@@ -84,6 +94,11 @@ import { saveNovelCoverFromSource } from "./novel-cover-storage";
 import { runExclusiveChapterStorageOperation } from "./tasks/chapter-storage-operation";
 import { cancelNovelChapterDownloadWork } from "./tasks/download-cache-delete";
 import { executeNovelMerge } from "./novel-merge";
+import { useContentSyncStore } from "../store/content-sync";
+import { syncContentServer, runContentSyncOperation } from "./content-sync/sync";
+import { publishNovelMigrationSourceHold } from "./content-sync/deletion-exclusions";
+import { inspectChapterPayloadInventory } from "./chapter-content/storage-platform";
+import { captureNovelMigrationSourceSnapshot } from "./content-sync/novel-migration";
 
 const mockedGetNovelById = vi.mocked(getNovelById);
 const mockedListChaptersByNovel = vi.mocked(listChaptersByNovel);
@@ -184,6 +199,8 @@ const plugin = { id: "source-b", name: "Source B" };
 
 beforeEach(() => {
   vi.clearAllMocks();
+  useContentSyncStore.setState({ serverUrl: "" });
+  vi.mocked(captureNovelMigrationSourceSnapshot).mockResolvedValue(undefined);
   mergeTaskContext.controller = new AbortController();
   vi.mocked(pluginManager.loadInstalledFromDb).mockResolvedValue(undefined);
   vi.mocked(pluginManager.getPlugin).mockReturnValue(plugin as never);
@@ -759,4 +776,77 @@ describe("executeNovelMerge", () => {
     await Promise.all([merge, competing]);
     expect(competingStarted).toBe(true);
   });
+});
+
+it("captures the kept B inventory before the merge commits and schedules server transfer afterward", async () => {
+  useContentSyncStore.setState({ serverUrl: "http://server/" });
+  const baseline = { work: { id: "source-work", revision: "before-merge", identity: { pluginId: "source-a", novelId: "a-novel", novelPath: "/a-novel" } }, chapters: [] };
+  vi.mocked(captureNovelMigrationSourceSnapshot).mockResolvedValue(baseline);
+  const prepared = await mockedPrepareChapterStorageTransfer.getMockImplementation()!([]);
+  mockedPrepareChapterStorageTransfer.mockResolvedValue({ ...prepared, entries: prepared.entries.map(entry => ({ ...entry, outcome: "keptTarget" })) });
+  const inventory = { body: { sha256: "a".repeat(64), bytes: 12 }, expectedAssetKeys: [], storedAssets: [],
+    fingerprint: "inventory", payloadBytes: 12, contentBytes: 12, mediaBytes: 0, mediaComplete: true };
+  vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(inventory);
+  const result = await executeNovelMerge({
+    sourceNovelId: 1, target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+    decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+  });
+  expect(result.contentSyncPending).toBe(true);
+  expect(runContentSyncOperation).toHaveBeenCalledOnce();
+  expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(expect.objectContaining({
+    contentSyncServerUrl: "http://server",
+    contentSyncSourceSnapshot: baseline,
+    preparedDownloads: [expect.objectContaining({
+      transferredFromSource: false,
+      targetInventory: { body: inventory.body, expectedAssetKeys: [], storedAssets: [] },
+    })],
+  }));
+  expect(publishNovelMigrationSourceHold).toHaveBeenCalledWith("http://server", { pluginId: "source-a", novelId: "a-novel" });
+  expect(syncContentServer).toHaveBeenCalledOnce();
+});
+
+it("rolls back preparation when a kept B inventory is incomplete before source deletion", async () => {
+  useContentSyncStore.setState({ serverUrl: "http://server" });
+  const prepared = await mockedPrepareChapterStorageTransfer.getMockImplementation()!([]);
+  mockedPrepareChapterStorageTransfer.mockResolvedValue({ ...prepared, entries: prepared.entries.map(entry => ({ ...entry, outcome: "keptTarget" })) });
+  vi.mocked(inspectChapterPayloadInventory).mockResolvedValue({ mediaComplete: false } as never);
+  await expect(executeNovelMerge({
+    sourceNovelId: 1, target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+    decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+  })).rejects.toThrow("incomplete");
+  expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalledOnce();
+  expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
+  expect(publishNovelMigrationSourceHold).not.toHaveBeenCalled();
+  expect(syncContentServer).not.toHaveBeenCalled();
+});
+
+it("keeps local merge available when its source server baseline could not be captured", async () => {
+  useContentSyncStore.setState({ serverUrl: "http://server" });
+  vi.mocked(captureNovelMigrationSourceSnapshot).mockResolvedValue(undefined);
+  const result = await executeNovelMerge({
+    sourceNovelId: 1, target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+    decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+  });
+  expect(result.contentSyncPending).toBe(true);
+  expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(expect.objectContaining({ contentSyncServerUrl: "http://server" }));
+  expect(mockedApplyNovelMergeInDb.mock.calls[0]![0].contentSyncSourceSnapshot).toBeUndefined();
+  expect(publishNovelMigrationSourceHold).toHaveBeenCalledOnce();
+});
+
+it("does not roll prepared files back when a post-commit source-hold notification fails", async () => {
+  useContentSyncStore.setState({ serverUrl: "http://server" });
+  vi.mocked(publishNovelMigrationSourceHold).mockImplementationOnce(() => { throw new Error("Observer failed"); });
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    const result = await executeNovelMerge({
+      sourceNovelId: 1, target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+      decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+    });
+    expect(result.contentSyncPending).toBe(true);
+    expect(mockedApplyNovelMergeInDb).toHaveBeenCalledOnce();
+    expect(mockedRollbackChapterStorageTransfer).not.toHaveBeenCalled();
+    expect(mockedFinalizeChapterStorageTransfer).toHaveBeenCalledOnce();
+    expect(syncContentServer).toHaveBeenCalledOnce();
+    expect(warning).toHaveBeenCalledWith("[novel-merge] source hold notification failed", expect.any(Error));
+  } finally { warning.mockRestore(); }
 });

@@ -40,6 +40,19 @@ requirements must be decided explicitly before implementation.
 
 ## Other Formats
 
+- Novel merges store a version 1 pending content-server migration in the existing
+  `content_sync_cache` inside the same transaction that removes the source novel.
+  It records both stable work identities, every chapter mapping, the source server
+  snapshot captured before local deletion, and the verified inventory of any
+  retained target download. A missing baseline permits the local merge but blocks
+  automatic remote cleanup; a changed source snapshot requires review. Pending, failed, blocked, and completed
+  records protect the original work against automatic server reimport. Ordinary
+  synchronization uploads the target before conditional server finalization; an
+  ambiguous response reuses the persisted operation ID and exact request. Conflicts
+  preserve the original server copy. Manual sync stays manual, but startup or
+  reconnect resumes an already approved pending or failed migration once. Blocked
+  migrations require an explicit retry. This adds no SQL table or migration.
+
 - Source-access blocks and VPN plan challenge JSON accept `forbidden` for HTTP
   403. Existing CAPTCHA and Cloudflare values remain valid. A forbidden hold
   survives reopening and automatic run restoration until explicit verification

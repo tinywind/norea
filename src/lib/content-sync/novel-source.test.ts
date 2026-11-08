@@ -3,7 +3,7 @@ import type { CatalogEntry } from "./native";
 
 const cache = new Map<string, string>();
 const settings = vi.hoisted(() => ({ serverUrl: "", deviceName: "Tablet", lookupTimeoutSeconds: 3 }));
-vi.mock("../../db/queries/content-sync", () => ({
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false),
   readContentSyncCache: vi.fn(async (key: string) => cache.get(key) ?? null),
   writeContentSyncCache: vi.fn(async (key: string, value: string) => { cache.set(key, value); }),
 }));

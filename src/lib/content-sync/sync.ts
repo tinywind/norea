@@ -5,6 +5,7 @@ import {
 } from "../../db/queries/content-sync";
 import { hasStoredChapterContent } from "../../db/queries/chapter";
 import { useContentSyncStore } from "../../store/content-sync";
+import { finalizePendingNovelMigrations } from "./novel-migration";
 import { chapterStorageRelativeDir } from "../chapter-storage-path";
 import { inspectChapterPayloadInventory } from "../chapter-content/storage-platform";
 import { resolvedChapterStorageDir } from "../chapter-storage-resolution";
@@ -253,7 +254,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
 }
 
 let running: Promise<void> | null = null;
-let pendingSync: { uploadContent: boolean; rescan: boolean } | null = null;
+let pendingSync: { uploadContent: boolean; rescan: boolean; retryBlockedMigrations: boolean } | null = null;
 
 export function runContentSyncOperation<T>(operation: () => Promise<T>): Promise<T> {
   const waiting = new AbortController();
@@ -283,7 +284,7 @@ async function initializeDevice(serverUrl: string): Promise<string> {
   return deviceKey;
 }
 
-async function performSync(uploadContent = true, rescan = false): Promise<void> {
+async function performSync(uploadContent = true, rescan = false, retryBlockedMigrations = true): Promise<void> {
   const { serverUrl, uploadConflictPolicy } = useContentSyncStore.getState();
   if (!serverUrl) return;
   useContentSyncStore.setState({ status: "syncing", error: null, blocked: false, progress: null });
@@ -305,6 +306,9 @@ async function performSync(uploadContent = true, rescan = false): Promise<void> 
     }
     assertDevice(serverUrl, token);
     if (changedOutsideCache.length) throw new WorkMetadataChangedOutsideCacheError(changedOutsideCache);
+    if (uploadContent && await finalizePendingNovelMigrations(serverUrl, token, () => assertDevice(serverUrl, token), retryBlockedMigrations)) {
+      await pullCatalog(serverUrl, token, cache);
+    }
     useContentSyncStore.setState({ status: "idle" });
   } catch (error) {
     if (useContentSyncStore.getState().serverUrl === serverUrl) {
@@ -314,18 +318,19 @@ async function performSync(uploadContent = true, rescan = false): Promise<void> 
   }
 }
 
-export function syncContentServer(uploadContent = true, rescan = false): Promise<void> {
+export function syncContentServer(uploadContent = true, rescan = false, retryBlockedMigrations = true): Promise<void> {
   if (pendingSync && running) {
     pendingSync.uploadContent ||= uploadContent;
     pendingSync.rescan ||= rescan;
+    pendingSync.retryBlockedMigrations ||= retryBlockedMigrations;
     return running;
   }
-  const requested = { uploadContent, rescan };
+  const requested = { uploadContent, rescan, retryBlockedMigrations };
   pendingSync = requested;
   const previous = running ?? Promise.resolve();
   const reserved = previous.catch(() => undefined).then(() => {
     pendingSync = null;
-    return performSync(requested.uploadContent, requested.rescan);
+    return performSync(requested.uploadContent, requested.rescan, requested.retryBlockedMigrations);
   }).finally(() => {
     if (running === reserved) running = null;
   });
@@ -343,7 +348,7 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
   const token = options?.token ?? await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
   const target = options?.target ?? entry.manifest.identity;
-  const imported = options ? undefined : await importContentMetadata(entry.manifest);
+  const imported = options ? undefined : await importContentMetadata(entry.manifest, normalizeContentServerUrl(serverUrl));
   const findTarget = async () => {
     const row = (await listContentSyncChapters([contentIdentity(target.pluginId, target.novelPath, target.chapterPath)]))
       .find((item) => !imported || item.chapterId === imported.chapterId);

@@ -17,6 +17,7 @@ import { ReadingStateSettings } from "./ReadingStateSettings";
 import { showSettingsToast } from "./settings/settings-toast";
 
 function contentSyncErrorKey(error: string): TranslationKey {
+  if (error.startsWith("Server migration is pending for ")) return "contentSync.error.migrationPending";
   const key = userFacingErrorKey(error);
   if (key === "errors.network") return "contentSync.error.network";
   if (key === "errors.timeout") return "contentSync.error.timeout";

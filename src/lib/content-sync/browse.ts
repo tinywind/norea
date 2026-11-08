@@ -10,7 +10,7 @@ import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerW
 import { rememberServerNovelSource, type ServerNovelSource } from "./novel-source";
 import { contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
 import { fetchServerChapters } from "./chapters";
-import { cacheServerChapters } from "../../db/queries/content-sync";
+import { cacheServerChapters, isNovelMigrationSourceHeldInDb } from "../../db/queries/content-sync";
 
 export interface ServerWorkSummary {
   id: string;
@@ -98,6 +98,7 @@ export async function refreshServerNovel(source: ServerNovelSource, requireNewWo
     if (isDeleted()) throw new ContentServerError(410);
     let retainedNovelId: number | null = null;
     const installed = await installStoredNovelMetadata(metadata, cover?.bytes, async (current, db) => {
+      if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) throw new ContentServerError(410);
       if (isDeleted()) return false;
       if (!requireNewWork) return;
       if (!db) throw new Error("Cannot inspect the local work index outside its database transaction.");

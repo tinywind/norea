@@ -6,12 +6,12 @@ vi.mock("../work-metadata", async original => ({
   listStoredNovelMetadata: vi.fn(), readStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn(),
   installStoredNovelMetadata: vi.fn(),
 }));
-vi.mock("../../db/queries/content-sync", () => ({ readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false), readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
 vi.mock("../../db/work-metadata", async original => ({ ...await original<typeof import("../../db/work-metadata")>(), readWorkMetadataSyncFile: vi.fn(), readWorkMetadataSyncFiles: vi.fn() }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { installStoredNovelMetadata, listStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover } from "../work-metadata";
-import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
+import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint } from "../../db/work-metadata";
 import { syncWorkMetadata, contentWorkId, canPullWorkMetadata, recordInstalledWorkMetadata, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint } from "./works";
 
@@ -30,7 +30,7 @@ let remoteCover: Uint8Array | undefined;
 let sequence: number;
 let puts: number;
 beforeEach(() => {
-  vi.clearAllMocks(); memory.clear(); localCovers.clear(); revisions.clear(); local = []; remote = undefined; remoteCover = undefined; sequence = 0; puts = 0;
+  vi.clearAllMocks(); vi.mocked(listNovelMigrations).mockResolvedValue([]); memory.clear(); localCovers.clear(); revisions.clear(); local = []; remote = undefined; remoteCover = undefined; sequence = 0; puts = 0;
   vi.stubGlobal("window", new EventTarget());
   vi.mocked(readContentSyncCache).mockImplementation(async key => memory.get(key) ?? null);
   vi.mocked(writeContentSyncCache).mockImplementation(async (key, value) => { memory.set(key, value); });
@@ -768,4 +768,12 @@ it("does not install gathered history or advance the cursor after cancellation b
   })).rejects.toThrow("Content sync cancelled");
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
   expect(writeContentSyncCache).not.toHaveBeenCalled();
+});
+
+it("does not reimport a merged source whose original server copy is still pending", async () => {
+  remote = metadata(); sequence = 1;
+  vi.mocked(listNovelMigrations).mockResolvedValue([{ source: remote.identity, status: "pending" }] as never);
+  await syncWorkMetadata("http://server", "device-key", false);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(local).toEqual([]);
 });

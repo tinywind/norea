@@ -69,3 +69,23 @@ it("times out response body reads and clears the request timer", async () => {
   await Promise.all([expect(pending).rejects.toThrow("timed out"), vi.advanceTimersByTimeAsync(30_000)]);
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it("retains the server's migration conflict reason for the Details view", async () => {
+  vi.mocked(nativeFetch).mockResolvedValue(Response.json({
+    statusCode: 409, error: "Conflict", message: "Work migration: target differs from the explicitly selected copy",
+  }, { status: 409 }));
+  await expect(contentServerRequest("http://server", "/works/source/finalize-migration", "device", "POST", {}))
+    .rejects.toMatchObject({ status: 409, message: "Work migration: target differs from the explicitly selected copy" });
+});
+
+it("keeps the migration verification deadline separate from ordinary lookup deadlines", async () => {
+  vi.useFakeTimers();
+  vi.mocked(nativeFetch).mockResolvedValue(new Response(new ReadableStream(), { headers: { "Content-Type": "application/json" } }));
+  const pending = contentServerRequest("http://server", "/works/source/finalize-migration", "device", "POST", {}, undefined, 300);
+  const rejected = expect(pending).rejects.toThrow("timed out");
+  await vi.advanceTimersByTimeAsync(30_000);
+  expect(vi.mocked(nativeFetch).mock.calls.at(-1)![1]!.signal!.aborted).toBe(false);
+  await vi.advanceTimersByTimeAsync(270_000);
+  await rejected;
+  expect(vi.getTimerCount()).toBe(0);
+});

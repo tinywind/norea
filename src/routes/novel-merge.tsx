@@ -393,8 +393,8 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     onSuccess: (result) => {
       const targetName = selectedTarget?.novel.name ?? "";
       notifications.show({
-        color: "ok",
-        message: t("novelMerge.success", { target: targetName }),
+        color: result.contentSyncPending ? "warn" : "ok",
+        message: t(result.contentSyncPending ? "novelMerge.serverPending" : "novelMerge.success", { target: targetName }),
       });
       if (result.cleanupWarnings.length > 0) {
         console.warn("[novel-merge] cleanup warnings", result.cleanupWarnings);

@@ -214,6 +214,172 @@ describe("matchNovelMergeChapters", () => {
     expect(grouped).toEqual([1, 2, 3, 4, 5, 6]);
   });
 
+  it("matches displayed episodes to independent provider IDs", () => {
+    const sources = Array.from({ length: 345 }, (_, index) => source(index + 1, String(index + 1), String(index + 1) + "화"));
+    const targets = Array.from({ length: 345 }, (_, index) =>
+      target(5_700_000 + index, "전능의 뇌를 얻었다 제" + (index + 1) + "화", "/bookkor/" + (5_700_000 + index)),
+    ).reverse();
+
+    const result = matchNovelMergeChapters(sources, targets);
+
+    expect(result.matched).toHaveLength(345);
+    expect(result.matched[0]).toEqual({ sourceChapterId: 1, targetChapterPath: "/bookkor/5700000" });
+    expect(result.matched.at(-1)).toEqual({ sourceChapterId: 345, targetChapterPath: "/bookkor/5700344" });
+    expect(result.ambiguous).toEqual([]);
+    expect(result.unmatchedSourceChapterIds).toEqual([]);
+  });
+
+  it("recognizes a bare numeric title repeated after the same episode label", () => {
+    const result = matchNovelMergeChapters(
+      [source(1, "278", "278"), source(2, "279", "279")],
+      [target(346655, "278화 278", "/278"), target(346656, "279화 279", "/279")],
+    );
+    expect(result.matched).toEqual([
+      { sourceChapterId: 1, targetChapterPath: "/278" },
+      { sourceChapterId: 2, targetChapterPath: "/279" },
+    ]);
+    expect(result.ambiguous).toEqual([]);
+    expect(matchNovelMergeChapters(
+      [source(1, "278", "278")],
+      [target(278, "278화 279")],
+    ).matched).toEqual([]);
+  });
+
+  it("uses displayed episodes through gaps and shifted stored numbers", () => {
+    const result = matchNovelMergeChapters(
+      [
+        source(1, "44", "45화"),
+        source(2, "45", "46화"),
+        source(3, "46", "47화"),
+        source(4, "48", "48화"),
+        source(5, "66", "제66화"),
+      ],
+      [
+        target(44, "44화", "/episode/44"),
+        target(45, "45화", "/episode/45"),
+        target(46, "46화", "/episode/46"),
+        target(47, "47화", "/episode/47"),
+        target(48, "48화", "/episode/48"),
+        target(65, "66화", "/episode/66"),
+      ],
+    );
+
+    expect(result.matched.map(item => item.targetChapterPath)).toEqual([
+      "/episode/45", "/episode/46", "/episode/47", "/episode/48", "/episode/66",
+    ]);
+    expect(result.ambiguous).toEqual([]);
+  });
+
+  it("trusts unique explicit episodes when providers omit or replace subtitles", () => {
+    const result = matchNovelMergeChapters(
+      [source(1, "23", "24화 - The Unexpected Return"), source(2, "42", "43화 - Five minutes or 5 hours")],
+      [target(23, "A Work Title 24화"), target(42, "제43화 - A Work Title")],
+    );
+    expect(result.matched).toEqual([
+      { sourceChapterId: 1, targetChapterPath: "/target/23" },
+      { sourceChapterId: 2, targetChapterPath: "/target/42" },
+    ]);
+    expect(result.ambiguous).toEqual([]);
+  });
+
+  it("reads a leading episode label when the provider concatenates its subtitle", () => {
+    const result = matchNovelMergeChapters(
+      [source(1, "52", "52화")],
+      [target(9000, "52화자막없이이어지는부제")],
+    );
+    expect(result.matched).toEqual([{ sourceChapterId: 1, targetChapterPath: "/target/9000" }]);
+  });
+
+  it("never lets equal stored values override different displayed episodes", () => {
+    const result = matchNovelMergeChapters(
+      [source(1, "45", "46화 - The Return")],
+      [target(45, "45화 - The Return")],
+    );
+
+    expect(result.matched).toEqual([]);
+    expect(result.ambiguous).toEqual([
+      { sourceChapterId: 1, reason: "titleMismatch", candidateTargetPaths: ["/target/45"] },
+    ]);
+  });
+
+  it("distinguishes seasons, parts and side stories with repeated episode labels", () => {
+    const labels = ["시즌 1 1화", "시즌 2 1화", "2부 1화", "외전 1화", "1화"];
+    const result = matchNovelMergeChapters(
+      labels.map((name, index) => source(index + 1, String(index + 1), name)),
+      labels.map((name, index) => target(index + 700, name, "/scoped/" + index)).reverse(),
+    );
+
+    expect(result.matched.map(item => item.targetChapterPath)).toEqual([
+      "/scoped/0", "/scoped/1", "/scoped/2", "/scoped/3", "/scoped/4",
+    ]);
+    expect(result.ambiguous).toEqual([]);
+  });
+
+  it.each([
+    ["시즌 1 1화", "시즌 2 1화"],
+    ["1부 1화", "2부 1화"],
+    ["시즌 2 1화", "1화"],
+    ["외전 1화", "1화"],
+    ["특별화 1", "1화"],
+    ["Volume 2 Chapter 1", "Volume 3 Chapter 1"],
+    ["Chapter 1 - The Return (1)", "Chapter 1 - The Return (2)"],
+    ["Room 12", "Room 1-2"],
+  ])("leaves conflicting title identity manual: %s / %s", (left, right) => {
+    const result = matchNovelMergeChapters([source(1, "1", left)], [target(1, right)]);
+    expect(result.matched).toEqual([]);
+    expect(result.ambiguous).toEqual([
+      { sourceChapterId: 1, reason: "titleMismatch", candidateTargetPaths: ["/target/1"] },
+    ]);
+  });
+
+  it("matches unique exact titles without erasing meaningful numbers", () => {
+    const result = matchNovelMergeChapters(
+      [source(1, null, "입성 (1)"), source(2, "2", "입성 (2)"), source(3, "3", "Epilogue")],
+      [target(900, "입성 (2)", "/two"), target(901, "입성 (1)", "/one"), target(902, "Epilogue!", "/end")],
+    );
+    expect(result.matched).toEqual([
+      { sourceChapterId: 1, targetChapterPath: "/one" },
+      { sourceChapterId: 2, targetChapterPath: "/two" },
+      { sourceChapterId: 3, targetChapterPath: "/end" },
+    ]);
+  });
+
+  it("does not select between repeated exact titles by provider ID", () => {
+    const result = matchNovelMergeChapters(
+      [source(1, "1", "An Interlude"), source(2, "2", "An Interlude")],
+      [target(1, "An Interlude"), target(2, "An Interlude")],
+    );
+    expect(result.matched).toEqual([]);
+    expect(result.ambiguous).toHaveLength(2);
+  });
+
+  it("leaves titles containing several episode labels for manual review", () => {
+    const result = matchNovelMergeChapters(
+      [source(1, "1", "1화 - 2화")],
+      [target(1, "1화 - 2화")],
+    );
+    expect(result.matched).toEqual([]);
+    expect(result.ambiguous[0]?.reason).toBe("titleMismatch");
+  });
+
+  it("does not assign a target to two competing matching rules", () => {
+    const result = matchNovelMergeChapters(
+      [source(1, "1", "Arrival"), source(2, "900", "1화")],
+      [target(1, "Chapter 1 Arrival")],
+    );
+    expect(result.matched).toEqual([]);
+    expect(result.ambiguous).toEqual([
+      { sourceChapterId: 1, reason: "repeatedNumber", candidateTargetPaths: ["/target/1"] },
+      { sourceChapterId: 2, reason: "repeatedNumber", candidateTargetPaths: ["/target/1"] },
+    ]);
+  });
+
+  it("does not infer an episode from an empty title and stored number alone", () => {
+    const result = matchNovelMergeChapters([source(1, "1", "")], [target(1, "")]);
+    expect(result.matched).toEqual([]);
+    expect(result.ambiguous[0]?.reason).toBe("titleMismatch");
+  });
+
   it("returns empty groups for empty inputs", () => {
     expect(matchNovelMergeChapters([], [target(1)])).toEqual({
       ambiguous: [],

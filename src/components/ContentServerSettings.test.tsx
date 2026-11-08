@@ -146,3 +146,11 @@ it("uses the general sync summary for server rejections and keeps the blocked me
   mocks.state.blocked = true;
   expect(syncErrorProp()).toBe("contentSync.blocked");
 });
+
+it("explains that migration conflicts retain the original server copy", () => {
+  mocks.state.error = "Server migration is pending for 1 merged work(s). The original server copies were retained. Conflict (409).";
+  const line = syncErrorProp() as ReactElement<{ error: string }>;
+  const rendered = (line.type as (props: { error: string }) => ReactElement<ControlProps>)(line.props);
+  expect((rendered.props.children as unknown[])[0]).toBe("contentSync.error.migrationPending");
+  expect(controls(rendered).some(element => element.props.children === mocks.state.error)).toBe(true);
+});

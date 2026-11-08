@@ -31,6 +31,14 @@ import { runExclusiveChapterStorageOperation } from "./tasks/chapter-storage-ope
 import { cancelNovelChapterDownloadWork } from "./tasks/download-cache-delete";
 import { enqueueSourceTask } from "./tasks/source-tasks";
 import { markUpdatesIndexDirty } from "./updates/update-index-events";
+import { inspectChapterPayloadInventory } from "./chapter-content/storage-platform";
+import { useContentSyncStore } from "../store/content-sync";
+import { normalizeContentServerUrl } from "./content-sync/client";
+import { publishNovelMigrationSourceHold } from "./content-sync/deletion-exclusions";
+import { runContentSyncOperation, syncContentServer } from "./content-sync/sync";
+import { captureNovelMigrationSourceSnapshot } from "./content-sync/novel-migration";
+import { verifyMigrationBodyOnlyInventory } from "./content-sync/migration-inventory";
+import type { WorkMigrationSnapshot } from "./content-sync/novel-migration-types";
 
 export type { NovelMergeChapterDecision } from "../db/queries/novel-merge";
 
@@ -48,6 +56,7 @@ export interface ExecuteNovelMergeInput {
 
 export interface NovelMergeResult extends NovelMergeDatabaseResult {
   cleanupWarnings: string[];
+  contentSyncPending?: boolean;
 }
 
 interface MergeChapterResolution {
@@ -302,6 +311,8 @@ async function mergeNovelStorageAndRecords(
   sourceNovel: NovelDetailRecord,
   targetNovel: NovelDetailRecord,
   signal: AbortSignal,
+  contentSyncServerUrl?: string,
+  contentSyncSourceSnapshot?: WorkMigrationSnapshot,
 ): Promise<NovelMergeResult> {
   await cancelNovelChapterDownloadWork([sourceNovel.id, targetNovel.id]);
   throwIfNovelMergeAborted(signal);
@@ -342,8 +353,8 @@ async function mergeNovelStorageAndRecords(
     const decisionBySourceId = new Map(
       input.decisions.map((decision) => [decision.sourceChapterId, decision]),
     );
-    const preparedDownloads: PreparedNovelMergeDownload[] = preparedEntries.map(
-      (entry) => {
+    const preparedDownloads: PreparedNovelMergeDownload[] = await Promise.all(preparedEntries.map(
+      async (entry) => {
         const sourceChapterId = Number(entry.entryId);
         const source = sourceById.get(sourceChapterId);
         const decision = decisionBySourceId.get(sourceChapterId);
@@ -355,27 +366,49 @@ async function mergeNovelStorageAndRecords(
           throw new Error("Chapter storage transfer returned an unknown B chapter.");
         }
         const metadataChapter = entry.outcome === "copiedSource" ? source : target;
+        const inventory = contentSyncServerUrl && entry.outcome !== "copiedSource"
+          ? await inspectChapterPayloadInventory({
+              novel: targetNovel,
+              chapter: { ...target, contentType: storedArtifactContentType(metadataChapter, entry.contentFile) },
+            }, signal)
+          : null;
+        if (inventory && !inventory.mediaComplete) throw new Error("The retained B download is incomplete. No novels were merged.");
+        const targetInventoryBodyOnly = inventory?.expectedAssetKeys === null
+          ? await verifyMigrationBodyOnlyInventory(entry.contentFile, inventory, signal)
+          : false;
         return {
           sourceChapterId,
           contentType: storedArtifactContentType(metadataChapter, entry.contentFile),
           contentBytes: entry.contentBytes,
           mediaBytes: entry.mediaBytes,
           transferredFromSource: entry.outcome === "copiedSource",
+          ...(inventory ? { targetInventory: { body: inventory.body, expectedAssetKeys: inventory.expectedAssetKeys, storedAssets: inventory.storedAssets } } : {}),
+          ...(targetInventoryBodyOnly ? { targetInventoryBodyOnly: true } : {}),
         };
       },
-    );
+    ));
     throwIfNovelMergeAborted(signal);
     databaseResult = await applyNovelMergeInDb({
       sourceNovelId: sourceNovel.id,
       targetNovelId: targetNovel.id,
       decisions: input.decisions,
       preparedDownloads,
+      ...(contentSyncServerUrl ? { contentSyncServerUrl } : {}),
+      ...(contentSyncSourceSnapshot ? { contentSyncSourceSnapshot } : {}),
     });
   } catch (error) {
     if (preparation) return rollbackPreparation(preparation, error);
     throw error;
   }
 
+  if (contentSyncServerUrl) {
+    try {
+      publishNovelMigrationSourceHold(contentSyncServerUrl, { pluginId: sourceNovel.pluginId, novelId: sourceNovel.sourceNovelId! });
+    } catch (error) {
+      // The committed raw DB hold remains authoritative; notification cannot roll files back.
+      console.warn("[novel-merge] source hold notification failed", error);
+    }
+  }
   const cleanupWarnings: string[] = [];
   let canDeleteSourceStorage = true;
   try {
@@ -414,7 +447,7 @@ async function mergeNovelStorageAndRecords(
 
   clearResolvedChapterStorageDirs();
   markUpdatesIndexDirty("library-membership");
-  return { ...databaseResult, cleanupWarnings };
+  return { ...databaseResult, cleanupWarnings, ...(contentSyncServerUrl ? { contentSyncPending: true } : {}) };
 }
 
 async function executeNovelMergeWithPlugin(
@@ -442,7 +475,9 @@ async function executeNovelMergeWithPlugin(
     throw new Error("Source and target must be different remote novels.");
   }
 
-  return runExclusiveChapterStorageOperation(
+  const configuredServer = useContentSyncStore.getState().serverUrl;
+  const contentSyncServerUrl = configuredServer ? normalizeContentServerUrl(configuredServer) : undefined;
+  const merge = () => runExclusiveChapterStorageOperation(
     {
       kind: "sources",
       sourceIds: [sourceNovel.pluginId, targetNovel.pluginId],
@@ -471,9 +506,15 @@ async function executeNovelMergeWithPlugin(
           });
         }
       }
-      return mergeNovelStorageAndRecords(input, sourceNovel, targetNovel, signal);
+      const sourceSnapshot = contentSyncServerUrl && sourceNovel.sourceNovelId
+        ? await captureNovelMigrationSourceSnapshot(contentSyncServerUrl, {
+            pluginId: sourceNovel.pluginId, novelId: sourceNovel.sourceNovelId, novelPath: sourceNovel.path,
+          }, signal)
+        : undefined;
+      return mergeNovelStorageAndRecords(input, sourceNovel, targetNovel, signal, contentSyncServerUrl, sourceSnapshot);
     },
   );
+  return contentSyncServerUrl ? runContentSyncOperation(merge) : merge();
 }
 
 export async function executeNovelMerge(
@@ -504,5 +545,11 @@ export async function executeNovelMerge(
       return executeNovelMergeWithPlugin(input, runtimePlugin, context.signal);
     },
   });
-  return handle.promise;
+  const result = await handle.promise;
+  if (result.contentSyncPending) {
+    void syncContentServer().catch(error => {
+      console.warn("[novel-merge] server migration remains pending", error);
+    });
+  }
+  return result;
 }

@@ -1,4 +1,4 @@
-import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
+import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { novelStorageRelativeDir } from "../chapter-storage-path";
 import { normalizeContentServerUrl } from "./client";
 import type { PackageManifest } from "./native";
@@ -31,7 +31,14 @@ export function serverWorkDeletionKey(identity: Pick<PackageManifest["identity"]
 
 export async function readServerWorkDeletionExclusions(server: string): Promise<Set<string>> {
   const saved = await readContentSyncCache(workCacheKey(server));
-  return new Set(saved ? JSON.parse(saved) as string[] : []);
+  const excluded = new Set(saved ? JSON.parse(saved) as string[] : []);
+  for (const job of await listNovelMigrations(normalizeContentServerUrl(server), true)) excluded.add(serverWorkDeletionKey(job.source));
+  return excluded;
+}
+
+export function publishNovelMigrationSourceHold(server: string, identity: Pick<PackageManifest["identity"], "pluginId" | "novelId">): void {
+  const directory = serverWorkDeletionKey(identity);
+  for (const observer of workDeletionObservers.get(workCacheKey(server)) ?? []) observer.add(directory);
 }
 
 export async function withServerWorkDeletionExclusions<T>(server: string, operation: (excluded: ReadonlySet<string>) => Promise<T>): Promise<T> {

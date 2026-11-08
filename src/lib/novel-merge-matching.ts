@@ -1,4 +1,5 @@
 import type { NovelMergeChapterDecision } from "../db/queries/novel-merge";
+import { parseChapterTitle, type ChapterTitleIdentity } from "./chapter-title";
 
 export interface NovelMergeMatchSourceChapter {
   id: number;
@@ -26,14 +27,14 @@ export type NovelMergeAmbiguityReason =
 export interface NovelMergeAmbiguousChapter {
   sourceChapterId: number;
   reason: NovelMergeAmbiguityReason;
-  /** Target chapters that share the source chapter's number, in target order. */
+  /** Chapters suggested by title or number evidence, in target order. */
   candidateTargetPaths: string[];
 }
 
 export interface NovelMergeChapterMatching {
   matched: NovelMergeAutoMatch[];
   ambiguous: NovelMergeAmbiguousChapter[];
-  /** Source chapters whose number no target chapter has. */
+  /** Source chapters without a title or number candidate. */
   unmatchedSourceChapterIds: number[];
 }
 
@@ -109,75 +110,153 @@ export function chapterTitleSimilarity(left: string, right: string): number {
   return (2 * shared) / (leftTotal + rightTotal);
 }
 
+interface ChapterMatchIdentity extends ChapterTitleIdentity {
+  storedNumber: string | null;
+}
+
+function chapterMatchIdentity(
+  chapter: Pick<NovelMergeMatchSourceChapter, "name"> & {
+    chapterNumber: string | number | null;
+  },
+): ChapterMatchIdentity {
+  return {
+    ...parseChapterTitle(chapter.name),
+    storedNumber: chapterNumberKey(chapter.chapterNumber),
+  };
+}
+
+function compatibleChapterIdentities(
+  source: ChapterMatchIdentity,
+  target: ChapterMatchIdentity,
+  displayedMatch = false,
+): boolean {
+  if (
+    source.uncertain || target.uncertain ||
+    source.scope !== target.scope ||
+    source.exactTitle === null || target.exactTitle === null
+  ) return false;
+  if (source.displayNumber !== null && target.displayNumber !== null) {
+    if (source.displayNumber !== target.displayNumber) return false;
+    // A provider may omit a subtitle entirely. When both include additional
+    // numbers, keep contradictory subparts for review even under the same label.
+    return source.remainingNumbers === target.remainingNumbers ||
+      (displayedMatch && (!source.remainingNumbers || !target.remainingNumbers));
+  }
+  if (source.remainingNumbers !== target.remainingNumbers) return false;
+  // A stored value may be a provider's row ID. It cannot override a displayed
+  // episode number, even when both providers happened to reuse the same ID.
+  if (source.displayNumber !== null) return target.storedNumber === source.displayNumber;
+  if (target.displayNumber !== null) return source.storedNumber === target.displayNumber;
+  return true;
+}
+
+function groupByMatchKey<T>(
+  values: readonly T[],
+  key: (value: T) => string | null,
+): Map<string, T[]> {
+  const groups = new Map<string, T[]>();
+  for (const value of values) {
+    const matchKey = key(value);
+    if (matchKey === null) continue;
+    const group = groups.get(matchKey) ?? [];
+    group.push(value);
+    groups.set(matchKey, group);
+  }
+  return groups;
+}
+
 /**
- * Matches source chapters to target chapters by chapter number. A pair is
- * auto-matched only when its number is unique on both sides and the titles are
- * not very different; every other source chapter with a number match is
- * ambiguous, and one with no number match is unmatched.
+ * Prefer unique displayed episode labels, including season/part/story kind,
+ * then unique exact titles that retain numbers. Stored numbers are only a
+ * fallback when title evidence agrees. Conflicts and duplicates stay manual;
+ * list positions are never used as episode identities.
  */
 export function matchNovelMergeChapters(
   sourceChapters: readonly NovelMergeMatchSourceChapter[],
   targetChapters: readonly NovelMergeMatchTargetChapter[],
 ): NovelMergeChapterMatching {
-  const sourceCountByKey = new Map<string, number>();
-  for (const chapter of sourceChapters) {
-    const key = chapterNumberKey(chapter.chapterNumber);
-    if (key !== null) sourceCountByKey.set(key, (sourceCountByKey.get(key) ?? 0) + 1);
-  }
-  const targetsByKey = new Map<string, NovelMergeMatchTargetChapter[]>();
-  for (const chapter of targetChapters) {
-    const key = chapterNumberKey(chapter.chapterNumber);
-    if (key === null) continue;
-    const targets = targetsByKey.get(key) ?? [];
-    targets.push(chapter);
-    targetsByKey.set(key, targets);
+  const sources = sourceChapters.map(chapter => ({ chapter, identity: chapterMatchIdentity(chapter) }));
+  const targets = targetChapters.map(chapter => ({ chapter, identity: chapterMatchIdentity(chapter) }));
+  const sourceDisplay = groupByMatchKey(sources, item => item.identity.displayKey);
+  const targetDisplay = groupByMatchKey(targets, item => item.identity.displayKey);
+  const sourceTitles = groupByMatchKey(sources, item => item.identity.exactTitle);
+  const targetTitles = groupByMatchKey(targets, item => item.identity.exactTitle);
+  const sourceStored = groupByMatchKey(sources, item => item.identity.storedNumber);
+  const targetStored = groupByMatchKey(targets, item => item.identity.storedNumber);
+  type Outcome =
+    | { kind: "match"; targetChapterPath: string }
+    | { kind: "ambiguous"; reason: NovelMergeAmbiguityReason; candidateTargetPaths: string[] }
+    | { kind: "unmatched" };
+  const outcomes = new Map<number, Outcome>();
+  const choose = (
+    source: typeof sources[number],
+    candidates: typeof targets,
+    sourceCount: number,
+    repeatedReason: NovelMergeAmbiguityReason = "repeatedNumber",
+    displayedMatch = false,
+  ) => {
+    const candidateTargetPaths = candidates.map(item => item.chapter.path);
+    if (sourceCount > 1 || candidates.length > 1) {
+      outcomes.set(source.chapter.id, { kind: "ambiguous", reason: repeatedReason, candidateTargetPaths });
+      return;
+    }
+    const target = candidates[0]!;
+    if (
+      !compatibleChapterIdentities(source.identity, target.identity, displayedMatch) ||
+      (!displayedMatch && chapterTitleSimilarity(source.chapter.name, target.chapter.name) < CHAPTER_TITLE_SIMILARITY_THRESHOLD)
+    ) {
+      outcomes.set(source.chapter.id, { kind: "ambiguous", reason: "titleMismatch", candidateTargetPaths });
+      return;
+    }
+    outcomes.set(source.chapter.id, { kind: "match", targetChapterPath: target.chapter.path });
+  };
+
+  for (const source of sources) {
+    const { displayKey, exactTitle, storedNumber } = source.identity;
+    const displayed = displayKey === null ? [] : targetDisplay.get(displayKey) ?? [];
+    if (displayed.length) {
+      choose(source, displayed, sourceDisplay.get(displayKey!)!.length, "repeatedNumber", true);
+      continue;
+    }
+    const titled = exactTitle === null ? [] : targetTitles.get(exactTitle) ?? [];
+    if (titled.length) {
+      choose(source, titled, sourceTitles.get(exactTitle!)!.length, "titleMismatch");
+      continue;
+    }
+    if (storedNumber === null) {
+      outcomes.set(source.chapter.id, { kind: "ambiguous", reason: "missingNumber", candidateTargetPaths: [] });
+      continue;
+    }
+    const stored = targetStored.get(storedNumber) ?? [];
+    if (!stored.length) {
+      outcomes.set(source.chapter.id, { kind: "unmatched" });
+      continue;
+    }
+    choose(source, stored, sourceStored.get(storedNumber)!.length);
   }
 
+  const proposedCounts = new Map<string, number>();
+  for (const outcome of outcomes.values()) {
+    if (outcome.kind === "match") {
+      proposedCounts.set(outcome.targetChapterPath, (proposedCounts.get(outcome.targetChapterPath) ?? 0) + 1);
+    }
+  }
   const matching: NovelMergeChapterMatching = {
     matched: [],
     ambiguous: [],
     unmatchedSourceChapterIds: [],
   };
-  for (const chapter of sourceChapters) {
-    const key = chapterNumberKey(chapter.chapterNumber);
-    if (key === null) {
-      matching.ambiguous.push({
-        sourceChapterId: chapter.id,
-        reason: "missingNumber",
-        candidateTargetPaths: [],
-      });
-      continue;
+  for (const source of sources) {
+    const sourceChapterId = source.chapter.id;
+    const outcome = outcomes.get(sourceChapterId)!;
+    if (outcome.kind === "unmatched") matching.unmatchedSourceChapterIds.push(sourceChapterId);
+    else if (outcome.kind === "ambiguous") {
+      matching.ambiguous.push({ sourceChapterId, reason: outcome.reason, candidateTargetPaths: outcome.candidateTargetPaths });
+    } else if (proposedCounts.get(outcome.targetChapterPath)! > 1) {
+      matching.ambiguous.push({ sourceChapterId, reason: "repeatedNumber", candidateTargetPaths: [outcome.targetChapterPath] });
+    } else {
+      matching.matched.push({ sourceChapterId, targetChapterPath: outcome.targetChapterPath });
     }
-    const targets = targetsByKey.get(key) ?? [];
-    if (targets.length === 0) {
-      matching.unmatchedSourceChapterIds.push(chapter.id);
-      continue;
-    }
-    const candidateTargetPaths = targets.map((target) => target.path);
-    if (targets.length > 1 || sourceCountByKey.get(key)! > 1) {
-      matching.ambiguous.push({
-        sourceChapterId: chapter.id,
-        reason: "repeatedNumber",
-        candidateTargetPaths,
-      });
-      continue;
-    }
-    const target = targets[0]!;
-    if (
-      chapterTitleSimilarity(chapter.name, target.name) <
-      CHAPTER_TITLE_SIMILARITY_THRESHOLD
-    ) {
-      matching.ambiguous.push({
-        sourceChapterId: chapter.id,
-        reason: "titleMismatch",
-        candidateTargetPaths,
-      });
-      continue;
-    }
-    matching.matched.push({
-      sourceChapterId: chapter.id,
-      targetChapterPath: target.path,
-    });
   }
   return matching;
 }

@@ -2,8 +2,11 @@ import {
   isKnownChapterContentType,
   type ChapterContentType,
 } from "../../lib/chapter-content";
+import type { ChapterPayloadInventory } from "../../lib/chapter-content/inventory";
+import type { WorkMigrationSnapshot } from "../../lib/content-sync/novel-migration-types";
 import { runDatabaseTransaction } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
+import { recordPendingNovelMergeInDb } from "./content-sync";
 
 export type NovelMergeChapterDecision =
   | {
@@ -21,6 +24,8 @@ export interface ApplyNovelMergeInput {
   targetNovelId: number;
   decisions: readonly NovelMergeChapterDecision[];
   preparedDownloads: readonly PreparedNovelMergeDownload[];
+  contentSyncServerUrl?: string;
+  contentSyncSourceSnapshot?: WorkMigrationSnapshot;
 }
 
 export interface PreparedNovelMergeDownload {
@@ -29,6 +34,8 @@ export interface PreparedNovelMergeDownload {
   contentBytes: number;
   mediaBytes: number;
   transferredFromSource: boolean;
+  targetInventory?: ChapterPayloadInventory;
+  targetInventoryBodyOnly?: boolean;
 }
 
 export interface NovelMergeDatabaseResult {
@@ -124,6 +131,8 @@ function booleanParam(value: boolean): number {
 }
 
 export async function applyNovelMergeInDb({
+  contentSyncServerUrl,
+  contentSyncSourceSnapshot,
   decisions,
   preparedDownloads,
   sourceNovelId,
@@ -283,6 +292,34 @@ export async function applyNovelMergeInDb({
        WHERE novel_id = $1`,
       [sourceNovelId, targetNovelId],
     );
+    // Keep an explicit target policy, including "none"; otherwise retain the
+    // source policy so merging does not silently change automatic downloads.
+    await db.execute(
+      `INSERT OR IGNORE INTO novel_download_goal (novel_id, kind, count, updated_at)
+       SELECT $2, kind, count, updated_at
+       FROM novel_download_goal
+       WHERE novel_id = $1`,
+      [sourceNovelId, targetNovelId],
+    );
+
+    const chapterMappings = Object.entries(chapterIdMap);
+    for (let offset = 0; offset < chapterMappings.length; offset += 450) {
+      const params: number[] = [];
+      const values = chapterMappings.slice(offset, offset + 450).map(([sourceId, targetId]) => {
+        params.push(Number(sourceId), targetId);
+        return `($${params.length - 1}, $${params.length})`;
+      });
+      await db.execute(
+        `WITH chapter_mappings (source_id, target_id) AS (VALUES ${values.join(", ")})
+         INSERT OR IGNORE INTO chapter_download_goal_exclusion (chapter_id, created_at)
+         SELECT mapping.target_id, MIN(exclusion.created_at)
+         FROM chapter_mappings AS mapping
+         JOIN chapter_download_goal_exclusion AS exclusion ON exclusion.chapter_id = mapping.source_id
+         GROUP BY mapping.target_id`,
+        params,
+      );
+    }
+
     let transferredDownloads = 0;
     const mergedReadAtByTargetId = new Map<number, number | null>();
     const chapterUpdates: NovelMergeChapterUpdate[] = [];
@@ -422,6 +459,17 @@ export async function applyNovelMergeInDb({
     const preferredLastReadChapterId = [...mergedReadAtByTargetId.entries()]
       .filter((entry): entry is [number, number] => entry[1] != null)
       .sort((left, right) => right[1] - left[1])[0]?.[0] ?? null;
+
+    if (contentSyncServerUrl) {
+      await recordPendingNovelMergeInDb(db, {
+        serverUrl: contentSyncServerUrl,
+        sourceSnapshot: contentSyncSourceSnapshot,
+        sourceNovelId,
+        targetNovelId,
+        chapterIdMap,
+        preparedDownloads,
+      });
+    }
 
     const deleteResult = await db.execute(
       "DELETE FROM novel WHERE id = $1",

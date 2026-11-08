@@ -35,7 +35,7 @@ export async function withContentServerLookup<T>(run: (signal: AbortSignal) => P
   }
 }
 
-export async function contentServerRequest<T>(serverUrl: string, path: string, token?: string, method = "GET", body?: unknown, signal?: AbortSignal): Promise<T> {
+export async function contentServerRequest<T>(serverUrl: string, path: string, token?: string, method = "GET", body?: unknown, signal?: AbortSignal, timeoutSeconds = 30): Promise<T> {
   return withContentServerLookup(async deadline => {
     const response = await nativeFetch(`${normalizeContentServerUrl(serverUrl)}/api/v1${path}`, {
       method,
@@ -50,8 +50,13 @@ export async function contentServerRequest<T>(serverUrl: string, path: string, t
         const { forgetContentDeviceRegistration } = await import("./device");
         forgetContentDeviceRegistration(serverUrl, token);
       }
-      throw new ContentServerError(response.status);
+      let message: string | undefined;
+      if (response.status === 409 && /^\/works\/[^/]+\/(?:finalize-migration|migration-snapshot)$/.test(path)) {
+        const detail = await response.json().catch(() => null) as { message?: unknown } | null;
+        if (typeof detail?.message === "string" && detail.message.startsWith("Work migration: ")) message = detail.message.slice(0, 1500);
+      }
+      throw new ContentServerError(response.status, message);
     }
     return response.status === 204 ? undefined as T : response.json() as Promise<T>;
-  }, 30, signal);
+  }, timeoutSeconds, signal);
 }

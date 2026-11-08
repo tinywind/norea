@@ -1,7 +1,7 @@
 import { canonicalMetadataValue } from "../work-metadata/schema";
 import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
-import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
+import { isNovelMigrationSourceHeldInDb, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint, type WorkMetadataSyncFile } from "../../db/work-metadata";
 import { installStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type InstalledNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest, ContentServerError, normalizeContentServerUrl } from "./client";
@@ -212,6 +212,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
         continue;
       }
       const stored = await installStoredNovelMetadata(installedMetadata, cover ?? undefined, async (latest, db) => {
+        if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) return false;
         if (!isCurrent() || explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) return false;
         const latestFingerprint = latest ? await workMetadataFingerprint(latest.metadata, await readStoredNovelCover(latest.directory, latest.metadata)) : null;
         if (!isCurrent() || latestFingerprint !== expectedFingerprint) return false;

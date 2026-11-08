@@ -2,13 +2,14 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 const native = vi.hoisted(() => ({ download: vi.fn(), install: vi.fn(), stage: vi.fn() }));
 
-vi.mock("../../db/queries/content-sync", () => ({
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false),
   listContentSyncChapters: vi.fn(), listContentSyncWorkChapters: vi.fn(), importContentMetadata: vi.fn(), markContentInstalled: vi.fn(),
   readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn(),
   contentJournalHead: vi.fn(), readContentJournal: vi.fn(), canUploadContentChapter: vi.fn(),
   clearServerChapterDownloadProof: vi.fn(), rememberServerChapterDownload: vi.fn(),
   contentIdentity: (plugin: string, novel: string, chapter = "") => JSON.stringify([plugin, novel, chapter]),
 }));
+vi.mock("./novel-migration", () => ({ finalizePendingNovelMigrations: vi.fn(async () => false) }));
 vi.mock("./native", () => ({
   uploadContentChapter: vi.fn(), fingerprintContentChapter: vi.fn(),
   withDownloadedContentChapter: async (input: unknown, apply: (sizes: { contentBytes: number; mediaBytes: number; mediaComplete: boolean }, install: (storageDir: string) => Promise<void>) => Promise<unknown>) => apply(await native.download(input), native.install),
@@ -28,6 +29,7 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { runContentSyncOperation, syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
 import { recordServerWorkDeletionExclusion, setServerChapterDeletionExclusion } from "./deletion-exclusions";
 import { syncWorkMetadata } from "./works";
+import { finalizePendingNovelMigrations } from "./novel-migration";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { withChapterDownloadDeletion, waitForChapterDownloadWrites } from "../chapter-download-writes";
 import { ContentServerError } from "./client";
@@ -40,6 +42,7 @@ let journal: { sequence: number; key: string; value: null }[];
 function changed(key: string, value: null) { journal.push({ sequence: journal.length + 1, key, value }); }
 beforeEach(() => {
   vi.clearAllMocks(); memory.clear(); journal = [];
+  vi.mocked(finalizePendingNovelMigrations).mockResolvedValue(false);
   vi.mocked(contentJournalHead).mockImplementation(async () => journal.length);
   vi.mocked(readContentJournal).mockImplementation(async (after, through) => journal.filter((entry) => entry.sequence > after && entry.sequence <= through));
   vi.stubGlobal("localStorage", { getItem: (key: string) => memory.get(key) ?? null, setItem: (key: string, value: string) => memory.set(key, value), removeItem: (key: string) => memory.delete(key) });
@@ -1039,4 +1042,32 @@ it("compacts expanded fingerprints left by earlier catalogs before they are rewr
   expect(saved.downloads).toEqual(downloads);
   expect(compacted.length).toBeLessThan(legacy.length / 5);
   expect(uploadContentChapter).not.toHaveBeenCalled();
+});
+
+it("finalizes a migration only after its ordinary chapter upload has completed", async () => {
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{
+    chapterId: 811, novelId: 91, pluginId: "p", sourceNovelId: "42", novelPath: "/book/42",
+    chapterPath: "/chapter/1", novelName: "Target work", chapterName: "One",
+    chapterNumber: "1", position: 1, page: "1", contentType: "html", isDownloaded: true, mediaRepairNeeded: false,
+  }] as never);
+  vi.mocked(finalizePendingNovelMigrations).mockImplementation(async () => {
+    expect(uploadContentChapter).toHaveBeenCalledOnce();
+    return true;
+  });
+  await syncContentServer(true, true);
+  expect(finalizePendingNovelMigrations).toHaveBeenCalledOnce();
+  expect(vi.mocked(uploadContentChapter).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(finalizePendingNovelMigrations).mock.invocationCallOrder[0]!);
+});
+
+it("does not finalize a migration when upload failed or only metadata was requested", async () => {
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{
+    chapterId: 811, novelId: 91, pluginId: "p", sourceNovelId: "42", novelPath: "/book/42",
+    chapterPath: "/chapter/1", novelName: "Target work", chapterName: "One",
+    chapterNumber: "1", position: 1, page: "1", contentType: "html", isDownloaded: true, mediaRepairNeeded: false,
+  }] as never);
+  vi.mocked(uploadContentChapter).mockRejectedValue(new Error("Upload did not finish"));
+  await expect(syncContentServer(true, true)).rejects.toThrow("Upload did not finish");
+  expect(finalizePendingNovelMigrations).not.toHaveBeenCalled();
+  await syncContentServer(false);
+  expect(finalizePendingNovelMigrations).not.toHaveBeenCalled();
 });

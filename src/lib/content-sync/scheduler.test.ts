@@ -12,6 +12,7 @@ vi.mock("../../db/content-sync-journal", () => ({ subscribeContentSyncChanges: (
   harness.localChange = listener;
   return () => { harness.localChange = undefined; };
 } }));
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []) }));
 vi.mock("./sync", () => ({
   syncContentServer: vi.fn(),
   getContentSyncCursors: vi.fn(async () => ({ catalogCursor: 3, workCursor: 2 })),
@@ -21,6 +22,8 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { contentServerRequest } from "./client";
 import { syncContentServer } from "./sync";
 import { startContentServerSync } from "./scheduler";
+import { listNovelMigrations } from "../../db/queries/content-sync";
+import { PendingNovelMigrationError } from "./novel-migration";
 import { notifyChapterDownloadsSettled } from "../tasks/chapter-download-activity";
 
 let cleanup: (() => void) | undefined;
@@ -28,6 +31,7 @@ let page: EventTarget & { visibilityState: string };
 beforeEach(() => {
   vi.useFakeTimers();
   vi.clearAllMocks();
+  vi.mocked(listNovelMigrations).mockResolvedValue([]);
   vi.stubGlobal("window", new EventTarget());
   page = Object.assign(new EventTarget(), { visibilityState: "visible" });
   vi.stubGlobal("document", page);
@@ -162,4 +166,41 @@ it("backs off change-wait failures even when ordinary sync succeeds", async () =
   expect(contentServerRequest).toHaveBeenCalledTimes(2);
   await vi.advanceTimersByTimeAsync(1);
   expect(contentServerRequest).toHaveBeenCalledTimes(3);
+});
+
+it("resumes an approved unfinished migration once after restart without enabling automatic sync", async () => {
+  vi.mocked(listNovelMigrations).mockResolvedValue([{ status: "failed" }] as never);
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(syncContentServer).toHaveBeenCalledOnce();
+  expect(useContentSyncStore.getState().syncMode).toBe("manual");
+  await vi.advanceTimersByTimeAsync(60 * 60_000);
+  expect(syncContentServer).toHaveBeenCalledOnce();
+  expect(contentServerRequest).not.toHaveBeenCalled();
+});
+
+it("does not automatically retry a migration requiring conflict review", async () => {
+  vi.mocked(listNovelMigrations).mockResolvedValue([{ status: "blocked" }] as never);
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(syncContentServer).not.toHaveBeenCalled();
+});
+
+it("ignores a stale pending-migration lookup after the server changes", async () => {
+  let resolve!: (jobs: never[]) => void;
+  vi.mocked(listNovelMigrations).mockImplementationOnce(() => new Promise(done => { resolve = done; }));
+  cleanup = startContentServerSync();
+  useContentSyncStore.setState({ serverUrl: "http://other" });
+  resolve([{ status: "pending" }] as never);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(syncContentServer).not.toHaveBeenCalled();
+});
+
+it("does not repeatedly retry a blocked migration while normal change watching continues", async () => {
+  useContentSyncStore.setState({ syncMode: "changes" });
+  vi.mocked(syncContentServer).mockRejectedValue(new PendingNovelMigrationError(1, "Review the original", false));
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(syncContentServer).toHaveBeenCalledExactlyOnceWith(true, false, false);
+  expect(contentServerRequest).toHaveBeenCalledOnce();
 });

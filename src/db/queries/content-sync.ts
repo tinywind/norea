@@ -1,4 +1,7 @@
+import type Database from "@tauri-apps/plugin-sql";
 import { getDb, runDatabaseTransaction } from "../client";
+import { isChapterPayloadInventory, type ChapterPayloadInventory } from "../../lib/chapter-content/inventory";
+import type { MigrationWorkIdentity, PendingNovelMigration, WorkMigrationSnapshot } from "../../lib/content-sync/novel-migration-types";
 import { sqliteBoolean } from "../sqlite-value";
 import type { PackageManifest } from "../../lib/content-sync/native";
 import type { ServerChapterSummary } from "../../lib/content-sync/chapters";
@@ -141,9 +144,12 @@ export async function canUploadContentChapter(chapterId: number): Promise<boolea
   return sqliteBoolean(rows[0]?.ready);
 }
 
-export async function importContentMetadata(manifest: PackageManifest): Promise<{ novelId: number; chapterId: number }> {
+export async function importContentMetadata(manifest: PackageManifest, serverUrl?: string): Promise<{ novelId: number; chapterId: number }> {
   return runDatabaseTransaction(async (db) => {
     const { identity, chapter } = manifest;
+    if (serverUrl && await isNovelMigrationSourceHeldInDb(db, serverUrl, identity)) {
+      throw new Error("The original work is held while its server migration completes.");
+    }
     const novels = await db.select<{ id: number; sourceNovelId: string | null }[]>("SELECT id,source_novel_id AS sourceNovelId FROM novel WHERE plugin_id=$1 AND path=$2", [identity.pluginId, identity.novelPath]);
     if (!novels.length) throw new Error("Install the work metadata before downloading its chapters.");
     if (novels[0]!.sourceNovelId !== identity.novelId) throw new Error("Server chapter novel ID does not match the installed work.");
@@ -188,4 +194,132 @@ export async function readContentJournal(after: number, through: number): Promis
   return db.select<ContentJournalEntry[]>(`SELECT j.sequence,j.state_key AS key
     FROM content_sync_journal j JOIN (SELECT MAX(sequence) AS sequence FROM content_sync_journal
     WHERE sequence>$1 AND sequence<=$2 GROUP BY state_key) latest ON latest.sequence=j.sequence ORDER BY j.sequence`, [after, through]);
+}
+
+const NOVEL_MIGRATION_CACHE_PREFIX = "norea-content-novel-migration:";
+
+function migrationCacheKey(operationId: string): string {
+  return `${NOVEL_MIGRATION_CACHE_PREFIX}${operationId}`;
+}
+
+function validMigrationIdentity(value: MigrationWorkIdentity | undefined): value is MigrationWorkIdentity {
+  return !!value && [value.pluginId, value.novelId, value.novelPath].every(part => typeof part === "string" && part.trim().length > 0);
+}
+
+function parseNovelMigration(payload: string): PendingNovelMigration {
+  const job = JSON.parse(payload) as PendingNovelMigration;
+  if (job.version !== 1 || typeof job.operationId !== "string" || !job.operationId
+    || typeof job.serverUrl !== "string" || !validMigrationIdentity(job.source) || !validMigrationIdentity(job.target)
+    || !Array.isArray(job.chapters) || !["pending", "failed", "blocked", "completed"].includes(job.status)) {
+    throw new Error("Stored novel migration is invalid. The source work remains protected.");
+  }
+  return job;
+}
+
+/** Uses the caller's transaction so the source hold cannot outlive a rolled-back merge. */
+export async function recordPendingNovelMergeInDb(db: Database, input: {
+  serverUrl: string;
+  sourceNovelId: number;
+  targetNovelId: number;
+  chapterIdMap: Readonly<Record<number, number>>;
+  sourceSnapshot?: WorkMigrationSnapshot;
+  preparedDownloads: readonly {
+    sourceChapterId: number;
+    transferredFromSource: boolean;
+    targetInventory?: ChapterPayloadInventory;
+    targetInventoryBodyOnly?: boolean;
+  }[];
+}): Promise<string> {
+  const url = new URL(input.serverUrl);
+  if (!["http:", "https:"].includes(url.protocol) || url.username || url.password || url.search || url.hash) {
+    throw new Error("Content server URL is invalid.");
+  }
+  const serverUrl = url.toString().replace(/\/+$/, "");
+  const works = await db.select<(MigrationWorkIdentity & { id: number })[]>(
+    "SELECT id,plugin_id AS pluginId,source_novel_id AS novelId,path AS novelPath FROM novel WHERE id IN ($1,$2)",
+    [input.sourceNovelId, input.targetNovelId],
+  );
+  const source = works.find(work => work.id === input.sourceNovelId);
+  const target = works.find(work => work.id === input.targetNovelId);
+  if (!validMigrationIdentity(source) || !validMigrationIdentity(target) || source.id === target.id) {
+    throw new Error("Both merged works need stable source identities before server migration.");
+  }
+  if (input.sourceSnapshot && (!validMigrationIdentity(input.sourceSnapshot.work?.identity)
+    || input.sourceSnapshot.work.identity.pluginId !== source.pluginId
+    || input.sourceSnapshot.work.identity.novelId !== source.novelId
+    || input.sourceSnapshot.work.identity.novelPath !== source.novelPath
+    || typeof input.sourceSnapshot.work.revision !== "string" || !input.sourceSnapshot.work.revision
+    || !Array.isArray(input.sourceSnapshot.chapters))) {
+    throw new Error("The source server snapshot no longer matches the local work.");
+  }
+  const rows = await db.select<{ id: number; novelId: number; path: string; chapterNumber: string | null }[]>(
+    "SELECT id,novel_id AS novelId,path,chapter_number AS chapterNumber FROM chapter WHERE novel_id IN ($1,$2) ORDER BY id",
+    [input.sourceNovelId, input.targetNovelId],
+  );
+  const targetChapters = new Map(rows.filter(row => row.novelId === input.targetNovelId).map(row => [row.id, row]));
+  const prepared = new Map(input.preparedDownloads.map(row => [row.sourceChapterId, row]));
+  const chapters = rows.filter(row => row.novelId === input.sourceNovelId).map(row => {
+    const destinationId = input.chapterIdMap[row.id];
+    const destination = destinationId === undefined ? undefined : targetChapters.get(destinationId);
+    if (destinationId !== undefined && !destination) throw new Error("A server migration target chapter is missing.");
+    const artifact = prepared.get(row.id);
+    if (artifact && !destination) throw new Error("A server migration download is not mapped.");
+    const decision = artifact ? artifact.transferredFromSource ? "copy-source" as const : "keep-target" as const : null;
+    if (decision === "keep-target") {
+      const inventory = artifact!.targetInventory;
+      if (!isChapterPayloadInventory(inventory) || !inventory.body
+        || (inventory.expectedAssetKeys === null
+          ? artifact!.targetInventoryBodyOnly !== true || inventory.storedAssets.length !== 0
+          : inventory.expectedAssetKeys.some(key => !inventory.storedAssets.some(asset => asset.key === key)))) {
+        throw new Error("The retained B download needs a complete verified inventory before merging.");
+      }
+    }
+    return {
+      sourceChapterPath: row.path, sourceChapterNumber: row.chapterNumber,
+      targetChapterPath: destination?.path ?? null, targetChapterNumber: destination?.chapterNumber ?? null,
+      decision,
+      ...(decision === "keep-target" ? { expectedTargetInventory: artifact!.targetInventory } : {}),
+    };
+  });
+  const identity = (work: MigrationWorkIdentity): MigrationWorkIdentity => ({
+    pluginId: work.pluginId, novelId: work.novelId, novelPath: work.novelPath,
+  });
+  const now = Date.now();
+  const job: PendingNovelMigration = {
+    version: 1, operationId: crypto.randomUUID(), serverUrl,
+    source: identity(source), target: identity(target), targetLocalNovelId: target.id, chapters,
+    ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
+    status: input.sourceSnapshot ? "pending" : "blocked", attempts: 0, createdAt: now, updatedAt: now,
+    ...(!input.sourceSnapshot ? { error: "The source server snapshot was unavailable before the local merge. Review the original server work before completing its migration." } : {}),
+  };
+  await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2)", [migrationCacheKey(job.operationId), JSON.stringify(job)]);
+  return job.operationId;
+}
+
+export async function listNovelMigrations(serverUrl: string, includeCompleted = false): Promise<PendingNovelMigration[]> {
+  const db = await getDb();
+  const rows = await db.select<{ payload: string }[]>(
+    "SELECT payload FROM content_sync_cache WHERE cache_key LIKE $1 ORDER BY cache_key",
+    [`${NOVEL_MIGRATION_CACHE_PREFIX}%`],
+  );
+  return rows.map(row => parseNovelMigration(row.payload))
+    .filter(job => job.serverUrl === serverUrl && (includeCompleted || job.status !== "completed"));
+}
+
+export async function saveNovelMigration(job: PendingNovelMigration): Promise<void> {
+  await writeContentSyncCache(migrationCacheKey(job.operationId), JSON.stringify(job));
+}
+
+/** Guard imports inside their existing raw transaction, after any earlier merge has committed. */
+export async function isNovelMigrationSourceHeldInDb(
+  db: Pick<Database, "select">,
+  serverUrl: string,
+  identity: MigrationWorkIdentity,
+): Promise<boolean> {
+  const rows = await db.select<{ held: boolean }[]>(`SELECT EXISTS(
+    SELECT 1 FROM content_sync_cache WHERE cache_key LIKE $1
+    AND json_extract(payload,'$.serverUrl')=$2 AND json_extract(payload,'$.source.pluginId')=$3
+    AND (json_extract(payload,'$.source.novelPath')=$4 OR json_extract(payload,'$.source.novelId')=$5)
+  ) AS held`, [`${NOVEL_MIGRATION_CACHE_PREFIX}%`, serverUrl, identity.pluginId, identity.novelPath, identity.novelId]);
+  return sqliteBoolean(rows[0]?.held);
 }

@@ -1,4 +1,6 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { readFileSync } from "node:fs";
+import { DatabaseSync } from "node:sqlite";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({
   runDatabaseTransaction: vi.fn(),
@@ -343,5 +345,178 @@ describe("applyNovelMergeInDb", () => {
         preparedDownloads: [],
       }),
     ).rejects.toThrow("different source plugins");
+  });
+});
+
+
+describe("applyNovelMergeInDb user state transaction", () => {
+  let sqlite: DatabaseSync;
+  const params = (values: unknown[]) => Object.fromEntries(
+    values.map((value, index) => ["$" + (index + 1), value]),
+  ) as never;
+  const input = () => ({
+    sourceNovelId: 1,
+    targetNovelId: 2,
+    decisions: [
+      { sourceChapterId: 11, kind: "map" as const, targetChapterPath: "/b/1" },
+      { sourceChapterId: 12, kind: "map" as const, targetChapterPath: "/b/2" },
+      { sourceChapterId: 13, kind: "exclude" as const },
+    ],
+    preparedDownloads: [],
+  });
+
+  beforeEach(() => {
+    sqlite = new DatabaseSync(":memory:");
+    const registration = readFileSync("src-tauri/src/database.rs", "utf8");
+    for (const match of registration.matchAll(/include_str!\("([^"]+)"\)/g)) {
+      sqlite.exec(readFileSync("src-tauri/src/" + match[1], "utf8"));
+    }
+    sqlite.exec("INSERT INTO novel(id,plugin_id,path,name,in_library,library_added_at) VALUES(1,'source-a','/a','Source',1,10),(2,'source-b','/b','Target',0,NULL)");
+    sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position) VALUES(11,1,'/a/1','1화',1),(12,1,'/a/2','2화',2),(13,1,'/a/note','Note',3),(21,2,'/b/1','1화',1),(22,2,'/b/2','2화',2)");
+    sqlite.exec("UPDATE chapter SET unread=0,progress=100,bookmark=1,read_at=40 WHERE id=11");
+    sqlite.exec("UPDATE chapter SET progress=11,read_at=50 WHERE id=12");
+    sqlite.exec("UPDATE chapter SET progress=20,read_at=30 WHERE id=21");
+    sqlite.exec("UPDATE novel SET source_novel_id=CASE id WHEN 1 THEN '101' ELSE '202' END");
+    sqlite.exec("UPDATE chapter SET chapter_number=CASE WHEN novel_id=1 THEN CAST(id-10 AS TEXT) ELSE CAST(id+5980 AS TEXT) END");
+    const db = {
+      select: async (sql: string, values: unknown[] = []) => sqlite.prepare(sql).all(params(values)),
+      execute: async (sql: string, values: unknown[] = []) => ({
+        rowsAffected: Number(sqlite.prepare(sql).run(params(values)).changes),
+        lastInsertId: 0,
+      }),
+    };
+    mockedRunDatabaseTransaction.mockImplementation(async (run) => {
+      sqlite.exec("BEGIN IMMEDIATE");
+      try {
+        const result = await run(db as never);
+        sqlite.exec("COMMIT");
+        return result;
+      } catch (error) {
+        sqlite.exec("ROLLBACK");
+        throw error;
+      }
+    });
+  });
+
+  afterEach(() => { sqlite.close(); });
+
+  it.each([
+    ["entire", null],
+    ["all_remaining", null],
+    ["keep_ahead", 7],
+    ["none", null],
+  ])("retains an A %s policy when B follows the default", async (kind, count) => {
+    sqlite.prepare("INSERT INTO novel_download_goal(novel_id,kind,count,updated_at) VALUES(1,?,?,10)").run(kind, count);
+    await applyNovelMergeInDb(input());
+    expect(sqlite.prepare("SELECT * FROM novel_download_goal").all()).toEqual([
+      { novel_id: 2, kind, count, updated_at: 10 },
+    ]);
+  });
+
+  it.each([
+    ["none", null],
+    ["keep_ahead", 3],
+    ["entire", null],
+  ])("retains B's explicit %s policy over A's entire goal", async (kind, count) => {
+    sqlite.exec("INSERT INTO novel_download_goal(novel_id,kind,count,updated_at) VALUES(1,'entire',NULL,10)");
+    sqlite.prepare("INSERT INTO novel_download_goal(novel_id,kind,count,updated_at) VALUES(2,?,?,20)").run(kind, count);
+    await applyNovelMergeInDb(input());
+    expect(sqlite.prepare("SELECT * FROM novel_download_goal").all()).toEqual([
+      { novel_id: 2, kind, count, updated_at: 20 },
+    ]);
+  });
+
+  it("leaves the default policy in place when neither work has a goal", async () => {
+    await applyNovelMergeInDb(input());
+    expect(sqlite.prepare("SELECT * FROM novel_download_goal").all()).toEqual([]);
+  });
+
+  it("unions mapped exclusions with B and drops only explicitly excluded A chapters", async () => {
+    sqlite.exec("INSERT INTO chapter_download_goal_exclusion(chapter_id,created_at) VALUES(11,5),(12,6),(13,7),(22,9)");
+    await applyNovelMergeInDb(input());
+    expect(sqlite.prepare("SELECT * FROM chapter_download_goal_exclusion ORDER BY chapter_id").all()).toEqual([
+      { chapter_id: 21, created_at: 5 },
+      { chapter_id: 22, created_at: 9 },
+    ]);
+    expect(sqlite.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+  });
+
+  it("retains one exclusion when several A chapters map to the same B chapter", async () => {
+    sqlite.exec("INSERT INTO chapter_download_goal_exclusion(chapter_id,created_at) VALUES(11,10),(12,5)");
+    const merge = input();
+    merge.decisions[1] = { sourceChapterId: 12, kind: "map", targetChapterPath: "/b/1" };
+    await applyNovelMergeInDb(merge);
+    expect(sqlite.prepare("SELECT * FROM chapter_download_goal_exclusion").all()).toEqual([
+      { chapter_id: 21, created_at: 5 },
+    ]);
+  });
+
+  it("preserves read completion, partial progress, bookmarks and B identity", async () => {
+    const result = await applyNovelMergeInDb(input());
+    expect(result.chapterIdMap).toEqual({ 11: 21, 12: 22 });
+    expect(result.preferredLastReadChapterId).toBe(22);
+    expect(sqlite.prepare("SELECT id,novel_id,path,name,unread,progress,bookmark,read_at FROM chapter ORDER BY id").all()).toEqual([
+      { id: 21, novel_id: 2, path: "/b/1", name: "1화", unread: 0, progress: 100, bookmark: 1, read_at: 40 },
+      { id: 22, novel_id: 2, path: "/b/2", name: "2화", unread: 1, progress: 11, bookmark: 0, read_at: 50 },
+    ]);
+    expect(sqlite.prepare("SELECT id,plugin_id,path,in_library,library_added_at,last_read_at FROM novel").all()).toEqual([
+      { id: 2, plugin_id: "source-b", path: "/b", in_library: 1, library_added_at: 10, last_read_at: 50 },
+    ]);
+  });
+
+  it("records the server migration identity and mapping in the same commit that removes A", async () => {
+    sqlite.exec("UPDATE chapter SET is_downloaded=1,content_bytes=100 WHERE id=11");
+    await applyNovelMergeInDb({
+      ...input(),
+      contentSyncServerUrl: "https://content.example.test/",
+      contentSyncSourceSnapshot: {
+        work: { id: "source-work", revision: "source-v1", identity: { pluginId: "source-a", novelId: "101", novelPath: "/a" } },
+        chapters: [
+          { id: "source-chapter", revision: "chapter-v1", chapterPath: "/a/1", chapterNumber: "1", complete: true, available: true },
+        ],
+      },
+      preparedDownloads: [
+        { sourceChapterId: 11, contentType: "html", contentBytes: 100, mediaBytes: 0, transferredFromSource: true },
+      ],
+    });
+
+    const jobs = sqlite.prepare("SELECT payload FROM content_sync_cache WHERE cache_key LIKE 'norea-content-novel-migration:%'").all() as { payload: string }[];
+    expect(jobs).toHaveLength(1);
+    expect(JSON.parse(jobs[0]!.payload)).toMatchObject({
+      version: 1,
+      serverUrl: "https://content.example.test",
+      status: "pending",
+      source: { pluginId: "source-a", novelId: "101", novelPath: "/a" },
+      target: { pluginId: "source-b", novelId: "202", novelPath: "/b" },
+      targetLocalNovelId: 2,
+      chapters: [
+        { sourceChapterPath: "/a/1", sourceChapterNumber: "1", targetChapterPath: "/b/1", targetChapterNumber: "6001", decision: "copy-source" },
+        { sourceChapterPath: "/a/2", sourceChapterNumber: "2", targetChapterPath: "/b/2", targetChapterNumber: "6002", decision: null },
+        { sourceChapterPath: "/a/note", sourceChapterNumber: "3", targetChapterPath: null, targetChapterNumber: null, decision: null },
+      ],
+    });
+    expect(sqlite.prepare("SELECT id FROM novel ORDER BY id").all()).toEqual([{ id: 2 }]);
+  });
+
+  it("rolls back the server job, goal, exclusions and reading state if source deletion fails", async () => {
+    sqlite.exec("INSERT INTO novel_download_goal(novel_id,kind,count,updated_at) VALUES(1,'entire',NULL,10)");
+    sqlite.exec("INSERT INTO chapter_download_goal_exclusion(chapter_id,created_at) VALUES(11,5),(12,6),(13,7)");
+    sqlite.exec("CREATE TRIGGER reject_source_merge BEFORE DELETE ON novel WHEN OLD.id=1 BEGIN SELECT RAISE(ABORT,'source deletion rejected'); END");
+    const snapshot = () => ({
+      novels: sqlite.prepare("SELECT * FROM novel ORDER BY id").all(),
+      chapters: sqlite.prepare("SELECT * FROM chapter ORDER BY id").all(),
+      goals: sqlite.prepare("SELECT * FROM novel_download_goal ORDER BY novel_id").all(),
+      exclusions: sqlite.prepare("SELECT * FROM chapter_download_goal_exclusion ORDER BY chapter_id").all(),
+      syncCache: sqlite.prepare("SELECT * FROM content_sync_cache ORDER BY cache_key").all(),
+    });
+    const before = snapshot();
+
+    await expect(applyNovelMergeInDb({
+      ...input(),
+      contentSyncServerUrl: "https://content.example.test",
+    })).rejects.toThrow("source deletion rejected");
+
+    expect(snapshot()).toEqual(before);
+    expect(sqlite.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
 });

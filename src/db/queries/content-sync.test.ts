@@ -6,7 +6,7 @@ vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() })
 import { getDb, runDatabaseTransaction } from "../client";
 import { adoptStoredChapterContentMetadata, saveChapterContentMetadata } from "./chapter";
 import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, listContentSyncWorkChapters, markContentInstalled, readContentSyncCache, writeContentSyncCache, canUploadContentChapter } from "./content-sync";
-import { cacheServerChapters } from "./content-sync";
+import { cacheServerChapters, recordPendingNovelMergeInDb, listNovelMigrations, saveNovelMigration, isNovelMigrationSourceHeldInDb } from "./content-sync";
 import { applyNovelMetadataToCache } from "../work-metadata";
 import { syncNovelFromSource } from "../../lib/plugins/sync-novel";
 import type { Plugin } from "../../lib/plugins/types";
@@ -325,4 +325,61 @@ it("retains content deletion events without personal-state tombstones", async ()
   const changes = await readContentJournal(0, await contentJournalHead());
   expect(changes).toHaveLength(1);
   expect(changes[0]?.key).toBe('content:["source","/work","/chapter"]');
+});
+
+it("keeps a durable source hold scoped to the server, including after completion", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(43,'target','new-work','/new-work','Target')");
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,is_downloaded) VALUES(11,42,'/chapter','One','1',1,1),(21,43,'/new-chapter','One','9001',1,1)");
+  const db = await getDb();
+  const operationId = await recordPendingNovelMergeInDb(db, {
+    serverUrl: "http://server/", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
+    preparedDownloads: [{ sourceChapterId: 11, transferredFromSource: true }],
+  });
+  const [job] = await listNovelMigrations("http://server");
+  expect(job).toMatchObject({
+    operationId, source: { pluginId: "source", novelId: "work", novelPath: "/work" },
+    target: { pluginId: "target", novelId: "new-work", novelPath: "/new-work" },
+    chapters: [{ sourceChapterPath: "/chapter", targetChapterPath: "/new-chapter", sourceChapterNumber: "1", targetChapterNumber: "9001", decision: "copy-source" }],
+  });
+  expect(await isNovelMigrationSourceHeldInDb(db, "http://server", manifest.identity)).toBe(true);
+  expect(await isNovelMigrationSourceHeldInDb(db, "http://other", manifest.identity)).toBe(false);
+  await saveNovelMigration({ ...job!, status: "completed" });
+  expect(await listNovelMigrations("http://server")).toEqual([]);
+  expect(await listNovelMigrations("http://server", true)).toHaveLength(1);
+  expect(await isNovelMigrationSourceHeldInDb(db, "http://server", manifest.identity)).toBe(true);
+});
+
+it("blocks a held source import within its raw metadata transaction", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(43,'target','new-work','/new-work','Target')");
+  await recordPendingNovelMergeInDb(await getDb(), {
+    serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: {}, preparedDownloads: [],
+  });
+  await expect(importContentMetadata(manifest, "http://server")).rejects.toThrow("held");
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()?.count).toBe(0);
+});
+
+it("refuses retained-target migration without the actual complete inventory", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(43,'target','new-work','/new-work','Target')");
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position) VALUES(11,42,'/chapter','One',1),(21,43,'/new-chapter','One',1)");
+  await expect(recordPendingNovelMergeInDb(await getDb(), {
+    serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
+    preparedDownloads: [{ sourceChapterId: 11, transferredFromSource: false }],
+  })).rejects.toThrow("complete verified inventory");
+  expect(await listNovelMigrations("http://server")).toEqual([]);
+});
+
+it("accepts missing declarations only with explicit verified body-only proof", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(43,'target','new-work','/new-work','Target')");
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position) VALUES(11,42,'/chapter','One',1),(21,43,'/new-chapter','One',1)");
+  const inventory = { body: { sha256: "a".repeat(64), bytes: 12 }, expectedAssetKeys: null, storedAssets: [] };
+  const input = {
+    serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
+    preparedDownloads: [{ sourceChapterId: 11, transferredFromSource: false, targetInventory: inventory }],
+  };
+  await expect(recordPendingNovelMergeInDb(await getDb(), input)).rejects.toThrow("complete verified inventory");
+  await recordPendingNovelMergeInDb(await getDb(), { ...input,
+    preparedDownloads: [{ ...input.preparedDownloads[0]!, targetInventoryBodyOnly: true }],
+  });
+  const [job] = await listNovelMigrations("http://server");
+  expect(job!.chapters[0]!.expectedTargetInventory).toEqual(inventory);
 });

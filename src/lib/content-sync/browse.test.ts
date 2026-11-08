@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type Database from "@tauri-apps/plugin-sql";
 vi.mock("./chapters", () => ({ fetchServerChapters: vi.fn(async () => []) }));
-vi.mock("../../db/queries/content-sync", () => ({ cacheServerChapters: vi.fn(), readContentSyncCache: vi.fn(async () => null), writeContentSyncCache: vi.fn() }));
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false), cacheServerChapters: vi.fn(), readContentSyncCache: vi.fn(async () => null), writeContentSyncCache: vi.fn() }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("./device", () => ({ registerContentDevice: vi.fn(async () => "device") }));
 vi.mock("./novel-source", () => ({ rememberServerNovelSource: vi.fn() }));

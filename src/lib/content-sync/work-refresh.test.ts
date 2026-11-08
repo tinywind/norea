@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("./chapters", () => ({ fetchServerChapters: mocks.chapters }));
-vi.mock("../../db/queries/content-sync", () => ({ cacheServerChapters: mocks.cache, readContentSyncCache: vi.fn(async () => null), writeContentSyncCache: vi.fn() }));
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false), cacheServerChapters: mocks.cache, readContentSyncCache: vi.fn(async () => null), writeContentSyncCache: vi.fn() }));
 import type { NovelMetadataV1 } from "../work-metadata";
 
 const mocks = vi.hoisted(() => ({

@@ -1,4 +1,6 @@
 import { subscribeContentSyncChanges } from "../../db/content-sync-journal";
+import { listNovelMigrations } from "../../db/queries/content-sync";
+import { PendingNovelMigrationError } from "./novel-migration";
 import { useContentSyncStore } from "../../store/content-sync";
 import { contentServerRequest } from "./client";
 import { getContentSyncCursors, syncContentServer } from "./sync";
@@ -12,12 +14,13 @@ export function startContentServerSync(): () => void {
   let pending = false;
   let failures = 0;
   let pollFailures = 0;
+  let migrationResumePending = false;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let poll: AbortController | undefined;
 
   function active(): boolean {
     const state = useContentSyncStore.getState();
-    return !disposed && state.syncMode !== "manual" && !!state.serverUrl
+    return !disposed && (state.syncMode !== "manual" || migrationResumePending) && !!state.serverUrl
       && document.visibilityState !== "hidden" && navigator.onLine !== false;
   }
 
@@ -67,16 +70,21 @@ export function startContentServerSync(): () => void {
   async function run(): Promise<void> {
     if (!active() || syncing) return;
     const current = generation;
+    const resumedMigration = useContentSyncStore.getState().syncMode === "manual";
     syncing = true;
     pending = false;
     let failed = false;
     try {
-      await syncContentServer();
+      await syncContentServer(true, false, false);
       failures = 0;
-    } catch {
-      failed = true;
+    } catch (error) {
+      failed = !(error instanceof PendingNovelMigrationError && !error.retryable);
     } finally {
       syncing = false;
+    }
+    if (resumedMigration) {
+      migrationResumePending = false;
+      return;
     }
     if (!active()) return;
     if (current !== generation || pending) {
@@ -92,11 +100,25 @@ export function startContentServerSync(): () => void {
 
   function restart(): void {
     generation++;
+    migrationResumePending = false;
     failures = 0;
     pollFailures = 0;
     pending = false;
     cancelWait();
     if (active()) requestSync(0);
+    else {
+      const current = generation;
+      const { serverUrl, syncMode } = useContentSyncStore.getState();
+      if (disposed || syncMode !== "manual" || !serverUrl || document.visibilityState === "hidden" || navigator.onLine === false) return;
+      // Resume already approved work once; ordinary manual synchronization stays manual.
+      void listNovelMigrations(serverUrl).then(jobs => {
+        if (disposed || current !== generation || !jobs.some(job => job.status === "pending" || job.status === "failed")) return;
+        migrationResumePending = true;
+        requestSync(0);
+      }).catch(error => {
+        if (!disposed && current === generation) useContentSyncStore.setState({ status: "error", error: error instanceof Error ? error.message : String(error) });
+      });
+    }
   }
 
   const unsubscribe = useContentSyncStore.subscribe((state, previous) => {

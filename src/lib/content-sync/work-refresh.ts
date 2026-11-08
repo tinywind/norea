@@ -14,7 +14,7 @@ import { registerContentDevice } from "./device";
 import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 import { readServerNovelSource } from "./novel-source";
 import { canPullWorkMetadata, contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, workMetadataFileVersion, workMetadataFingerprint, type WorkCatalogEntry } from "./works";
-import { cacheServerChapters } from "../../db/queries/content-sync";
+import { cacheServerChapters, isNovelMigrationSourceHeldInDb } from "../../db/queries/content-sync";
 import { fetchServerChapters } from "./chapters";
 
 export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSignal, canApplyMetadata: () => boolean = () => true): Promise<boolean> {
@@ -68,6 +68,7 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
     let installed = false;
     if (mayApplyMetadata && await workMetadataFingerprint(metadata, coverBytes) !== expected && canApplyMetadata()) {
       const stored = await installStoredNovelMetadata(metadata, coverBytes ?? undefined, async (current, db) => {
+        if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) return false;
         if (isDeleted() || signal?.aborted || !canApplyMetadata()) return false;
         const currentFingerprint = current ? await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata)) : null;
         if (isDeleted() || signal?.aborted || !canApplyMetadata() || currentFingerprint !== expected) return false;

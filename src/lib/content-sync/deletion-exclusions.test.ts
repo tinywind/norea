@@ -1,11 +1,12 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
+import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readServerWorkDeletionExclusions, recordServerWorkDeletionExclusion, withServerWorkDeletionExclusions } from "./deletion-exclusions";
 
-vi.mock("../../db/queries/content-sync", () => ({ readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false), readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
 const memory = new Map<string, string>();
 beforeEach(() => {
   memory.clear(); vi.clearAllMocks();
+  vi.mocked(listNovelMigrations).mockResolvedValue([]);
   vi.mocked(readContentSyncCache).mockImplementation(async key => memory.get(key) ?? null);
   vi.mocked(writeContentSyncCache).mockImplementation(async (key, value) => { memory.set(key, value); });
 });
@@ -29,4 +30,16 @@ it("includes a deletion recorded before a new subscriber while its persistence i
 it("preserves both work exclusions when deletion responses arrive together", async () => {
   await Promise.all(["one", "two"].map(novelId => recordServerWorkDeletionExclusion("http://server", { pluginId: "source", novelId })));
   expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set(["contents/source/one", "contents/source/two"]));
+});
+
+it("includes pending and completed migration holds without removing existing deletions", async () => {
+  vi.mocked(listNovelMigrations).mockResolvedValue([
+    { source: { pluginId: "source", novelId: "pending" }, status: "pending" },
+    { source: { pluginId: "source", novelId: "complete" }, status: "completed" },
+  ] as never);
+  memory.set("norea-content-work-deletions:http://server", JSON.stringify(["contents/source/deleted"]));
+  expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set([
+    "contents/source/pending", "contents/source/complete", "contents/source/deleted",
+  ]));
+  expect(listNovelMigrations).toHaveBeenCalledWith("http://server", true);
 });
