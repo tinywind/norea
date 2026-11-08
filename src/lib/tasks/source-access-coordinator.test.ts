@@ -255,6 +255,7 @@ describe("source access persistence", () => {
     ).toBe(true);
     expect(scheduler.beginSourceAccessVerification).toHaveBeenCalledWith(
       current.scopeKey,
+      { waitForTask: true },
     );
   });
 

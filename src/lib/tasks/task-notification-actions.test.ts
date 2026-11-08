@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SourceAccessBlock, TaskRecord } from "./scheduler";
 import type { VpnDownloadPlan, VpnDownloadRangeState } from "./vpn-download-types";
-const mocks=vi.hoisted(()=>({pauseTaskGroup:vi.fn(),resumeTaskGroup:vi.fn(),getSnapshot:vi.fn(),open:vi.fn(),restored:vi.fn(),canBeginSourceAccessVerification:vi.fn(),waitForSourceTaskSettlement:vi.fn()}));
+const mocks=vi.hoisted(()=>({pauseTaskGroup:vi.fn(),resumeTaskGroup:vi.fn(),getSnapshot:vi.fn(),open:vi.fn(),restored:vi.fn(),canOpenSourceAccessBrowser:vi.fn(),waitForSourceTaskSettlement:vi.fn()}));
 vi.mock("./scheduler",()=>({taskScheduler:mocks}));
 vi.mock("./source-access-coordinator",()=>({openSourceAccessBrowser:mocks.open,sourceAccessBlockSourceNames:()=>["Source"]}));
 vi.mock("./chapter-download",()=>({waitForChapterDownloadQueueRestoration:mocks.restored}));
@@ -12,7 +12,7 @@ vi.mock("./vpn-download-runtime", () => ({
 import { applyTaskNotificationAction, resolveTaskNotificationDestination, type TaskNotificationTargetLookup } from "./task-notification-actions";
 const t=((key:string)=>key) as Parameters<typeof applyTaskNotificationAction>[2];
 const block: SourceAccessBlock={sourceId:"source-a",scopeKey:"plugin:source-a:site:source.test",revision:2,detectedAt:1,verificationRequested:false,challenge:{kind:"captcha",url:"https://source.test/trusted-chapter"}};
-beforeEach(()=>{vi.clearAllMocks();mocks.restored.mockResolvedValue(undefined);mocks.canBeginSourceAccessVerification.mockReturnValue(true);mocks.waitForSourceTaskSettlement.mockResolvedValue(undefined);mocks.getSnapshot.mockReturnValue({records:[],sourceAccessBlocks:[block]});mocks.open.mockResolvedValue(true);vpn.initialize.mockResolvedValue(undefined);vpn.open.mockResolvedValue(undefined);});
+beforeEach(()=>{vi.clearAllMocks();mocks.restored.mockResolvedValue(undefined);mocks.canOpenSourceAccessBrowser.mockReturnValue(true);mocks.waitForSourceTaskSettlement.mockResolvedValue(undefined);mocks.getSnapshot.mockReturnValue({records:[],sourceAccessBlocks:[block]});mocks.open.mockResolvedValue(true);vpn.initialize.mockResolvedValue(undefined);vpn.open.mockResolvedValue(undefined);});
 it("applies controls to the requested category without opening an activity page",async()=>{
  const openTasks=vi.fn();await applyTaskNotificationAction({type:"pause",groupKey:"libraryMetadata"},openTasks,t);
  await applyTaskNotificationAction({type:"resume",groupKey:"downloads"},openTasks,t);
@@ -42,27 +42,27 @@ const localDownload: TaskRecord = {
 };
 it("keeps a cold source tap pending while the restored download scans local content before requeuing",async()=>{
  let settle!:()=>void;mocks.waitForSourceTaskSettlement.mockReturnValue(new Promise<void>(resolve=>{settle=resolve;}));
- mocks.canBeginSourceAccessVerification.mockReturnValue(false);
+ mocks.canOpenSourceAccessBrowser.mockReturnValue(false);
  mocks.getSnapshot.mockReturnValue({records:[localDownload],sourceAccessBlocks:[block]});
  const pending=applyTaskNotificationAction({type:"verifySource",sourceId:block.sourceId,scopeKey:block.scopeKey,revision:2},vi.fn(),t);
  await vi.waitFor(()=>expect(mocks.waitForSourceTaskSettlement).toHaveBeenCalledExactlyOnceWith(localDownload.id));
  expect(mocks.open).not.toHaveBeenCalled();
  mocks.getSnapshot.mockReturnValue({records:[{...localDownload,status:"queued"}],sourceAccessBlocks:[block]});
- mocks.canBeginSourceAccessVerification.mockReturnValue(true);settle();await pending;
+ mocks.canOpenSourceAccessBrowser.mockReturnValue(true);settle();await pending;
  expect(mocks.open).toHaveBeenCalledExactlyOnceWith(block,expect.objectContaining({sourceName:"Source"}));
 });
 it("rechecks the exact source revision after a running local candidate settles",async()=>{
  let settle!:()=>void;mocks.waitForSourceTaskSettlement.mockReturnValue(new Promise<void>(resolve=>{settle=resolve;}));
- mocks.canBeginSourceAccessVerification.mockReturnValue(false);
+ mocks.canOpenSourceAccessBrowser.mockReturnValue(false);
  mocks.getSnapshot.mockReturnValue({records:[localDownload],sourceAccessBlocks:[block]});
  const pending=applyTaskNotificationAction({type:"verifySource",sourceId:block.sourceId,scopeKey:block.scopeKey,revision:2},vi.fn(),t);
  await vi.waitFor(()=>expect(mocks.waitForSourceTaskSettlement).toHaveBeenCalledOnce());
  mocks.getSnapshot.mockReturnValue({records:[{...localDownload,status:"queued"}],sourceAccessBlocks:[{...block,revision:3}]});
- mocks.canBeginSourceAccessVerification.mockReturnValue(true);settle();await pending;
+ mocks.canOpenSourceAccessBrowser.mockReturnValue(true);settle();await pending;
  expect(mocks.open).not.toHaveBeenCalled();
 });
 it("does not await a different plugin or an already open source browser",async()=>{
- mocks.canBeginSourceAccessVerification.mockReturnValue(false);
+ mocks.canOpenSourceAccessBrowser.mockReturnValue(false);
  mocks.getSnapshot.mockReturnValue({records:[{...localDownload,source:{id:"other",name:"Other"}},{...localDownload,id:"browser",kind:"source.openSite"}],sourceAccessBlocks:[block]});
  await applyTaskNotificationAction({type:"verifySource",sourceId:block.sourceId,scopeKey:block.scopeKey,revision:2},vi.fn(),t);
  expect(mocks.waitForSourceTaskSettlement).not.toHaveBeenCalled();expect(mocks.open).not.toHaveBeenCalled();
@@ -70,25 +70,25 @@ it("does not await a different plugin or an already open source browser",async()
 it.each(["openTasks","verifySource"] as const)("does not let an older local-read wait override a newer %s tap",async(type)=>{
  let settle!:()=>void;mocks.waitForSourceTaskSettlement.mockReturnValue(new Promise<void>(resolve=>{settle=resolve;}));
  const nextBlock={...block,sourceId:"source-b",scopeKey:"plugin:source-b:site:source.test",revision:3};
- mocks.canBeginSourceAccessVerification.mockImplementation((scope:string)=>scope===nextBlock.scopeKey);
+ mocks.canOpenSourceAccessBrowser.mockImplementation((scope:string)=>scope===nextBlock.scopeKey);
  mocks.getSnapshot.mockReturnValue({records:[localDownload],sourceAccessBlocks:[block,nextBlock]});
  const older=applyTaskNotificationAction({type:"verifySource",sourceId:block.sourceId,scopeKey:block.scopeKey,revision:2},vi.fn(),t);
  await vi.waitFor(()=>expect(mocks.waitForSourceTaskSettlement).toHaveBeenCalledOnce());
  await applyTaskNotificationAction(type==="openTasks"?{type}:{type,sourceId:nextBlock.sourceId,scopeKey:nextBlock.scopeKey,revision:3},vi.fn(),t);
  mocks.getSnapshot.mockReturnValue({records:[{...localDownload,status:"queued"}],sourceAccessBlocks:[block,nextBlock]});
- mocks.canBeginSourceAccessVerification.mockReturnValue(true);settle();await older;
+ mocks.canOpenSourceAccessBrowser.mockReturnValue(true);settle();await older;
  if(type==="openTasks")expect(mocks.open).not.toHaveBeenCalled();
  else expect(mocks.open).toHaveBeenCalledExactlyOnceWith(nextBlock,expect.objectContaining({sourceName:"Source"}));
 });
 it("keeps a pending verification request when a group control is tapped",async()=>{
  let settle!:()=>void;mocks.waitForSourceTaskSettlement.mockReturnValue(new Promise<void>(resolve=>{settle=resolve;}));
- mocks.canBeginSourceAccessVerification.mockReturnValue(false);
+ mocks.canOpenSourceAccessBrowser.mockReturnValue(false);
  mocks.getSnapshot.mockReturnValue({records:[localDownload],sourceAccessBlocks:[block]});
  const pending=applyTaskNotificationAction({type:"verifySource",sourceId:block.sourceId,scopeKey:block.scopeKey,revision:2},vi.fn(),t);
  await vi.waitFor(()=>expect(mocks.waitForSourceTaskSettlement).toHaveBeenCalledOnce());
  await applyTaskNotificationAction({type:"pause",groupKey:"downloads"},vi.fn(),t);
  mocks.getSnapshot.mockReturnValue({records:[{...localDownload,status:"queued"}],sourceAccessBlocks:[block]});
- mocks.canBeginSourceAccessVerification.mockReturnValue(true);settle();await pending;
+ mocks.canOpenSourceAccessBrowser.mockReturnValue(true);settle();await pending;
  expect(mocks.open).toHaveBeenCalledExactlyOnceWith(block,expect.objectContaining({sourceName:"Source"}));
 });
 it("ignores stale revisions and plugin identity mismatches",async()=>{

@@ -16,7 +16,7 @@ vi.mock("../lib/tasks/hooks", () => ({
 }));
 vi.mock("../lib/tasks/scheduler", () => ({
   taskScheduler: {
-    canBeginSourceAccessVerification: (scopeKey: string) => mocks.canVerifyByScope.get(scopeKey) ?? mocks.canVerify,
+    canOpenSourceAccessBrowser: (scopeKey: string) => mocks.canVerifyByScope.get(scopeKey) ?? mocks.canVerify,
   },
 }));
 vi.mock("../lib/tasks/source-access-coordinator", () => ({
@@ -111,7 +111,7 @@ describe("SourceAccessNotice", () => {
     mocks.blocks = [{ ...BLOCK, verificationError: "HTTP 403 from source.test" }];
     const $ = render(<SourceAccessNotice active sourceId="source-a" sourceName="Source A" />);
     expect($(".norea-source-access-banner").text()).toContain("HTTP 403 from source.test");
-    expect($(".norea-source-access-banner").text()).toContain("Start a download or open the source before verifying");
+    expect($(".norea-source-access-banner").text()).not.toContain("Start a download or open the source before verifying");
     expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeDefined();
   });
 
@@ -150,10 +150,8 @@ describe("SourceAccessNotice", () => {
     expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeUndefined();
   });
 
-  it.each([
-    { verificationRequested: true },
-    { verificationTaskId: "verification-task" },
-  ])("keeps an in-flight verification selected: %j", verificationState => {
+  it("keeps an in-flight verification selected", () => {
+    const verificationState = { verificationTaskId: "verification-task" };
     const verifying = hostBlock("verifying.test", verificationState);
     const available = hostBlock("available.test", { detectedAt: 20, revision: 8 });
     mocks.canVerify = false;
@@ -164,6 +162,27 @@ describe("SourceAccessNotice", () => {
     expect($(".norea-source-access-banner").attr("data-source-access")).toBe(verifying.scopeKey);
     expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeDefined();
     expect($(".norea-source-access-banner").text()).not.toContain("Start a download or open the source before verifying");
+  });
+
+  it("keeps a pending verification selected and lets the site be reopened", () => {
+    const waiting = hostBlock("waiting.test", { verificationRequested: true, detectedAt: 20, revision: 8 });
+    const available = hostBlock("available.test");
+    mocks.blocks = [available, waiting];
+    const $ = render(<SourceAccessNotice active sourceId="source-a" sourceName="Source A" />);
+
+    expect($(".norea-source-access-banner").attr("data-source-access")).toBe(waiting.scopeKey);
+    expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeUndefined();
+    expect($(".norea-source-access-banner").text()).toContain("Access will be checked the next time you browse or download from this source.");
+  });
+
+  it("does not let an old next-request confirmation hide a newer challenged hostname", () => {
+    const waiting = hostBlock("previous.test", { verificationRequested: true });
+    const current = hostBlock("current.test", { detectedAt: 20, revision: 8 });
+    mocks.blocks = [waiting, current];
+    const $ = render(<SourceAccessNotice active sourceId="source-a" sourceName="Source A" />);
+
+    expect($(".norea-source-access-banner").attr("data-source-access")).toBe(current.scopeKey);
+    expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeUndefined();
   });
 
   it("falls back to the latest unavailable ordinary challenge with revision breaking timestamp ties", () => {
@@ -177,7 +196,7 @@ describe("SourceAccessNotice", () => {
 
     expect($(".norea-source-access-banner").attr("data-source-access")).toBe(latest.scopeKey);
     expect($('button[aria-label="Verify Source A"]').attr("disabled")).toBeDefined();
-    expect($(".norea-source-access-banner").text()).toContain("Start a download or open the source before verifying");
+    expect($(".norea-source-access-banner").text()).not.toContain("Start a download or open the source before verifying");
     expect(mocks.blocks.map(block => block.scopeKey)).toEqual(orderBeforeRender);
   });
 

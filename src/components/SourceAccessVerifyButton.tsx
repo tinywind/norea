@@ -20,8 +20,8 @@ function selectSourceAccessBlock(
   let selectedPriority = -1;
   for (const block of blocks) {
     if (block.sourceId !== sourceId || block.rangeId) continue;
-    // Keep an in-flight verification visible when it is no longer eligible to begin again.
-    const priority = block.verificationRequested || block.verificationTaskId !== undefined
+    // Only a running check takes precedence over a newer challenge.
+    const priority = block.verificationTaskId !== undefined
       ? 2
       : canVerify(block.scopeKey) ? 1 : 0;
     if (!selected || priority > selectedPriority || (
@@ -45,7 +45,7 @@ export function useSourceAccessBlocks(
   return (pluginId) => selectSourceAccessBlock(
     blocks,
     pluginId,
-    scopeKey => taskScheduler.canBeginSourceAccessVerification(scopeKey),
+    scopeKey => taskScheduler.canOpenSourceAccessBrowser(scopeKey),
   );
 }
 
@@ -66,11 +66,11 @@ export function SourceAccessVerifyButton({
 }: SourceAccessVerifyButtonProps) {
   const { t } = useTranslation();
   const browserVisible = useSiteBrowserStore((state) => state.visible);
-  const verifying = block.verificationRequested || block.verificationTaskId !== undefined;
+  const verifying = block.verificationTaskId !== undefined;
   const disabled =
     browserVisible ||
     verifying ||
-    !taskScheduler.canBeginSourceAccessVerification(block.scopeKey);
+    !taskScheduler.canOpenSourceAccessBrowser(block.scopeKey);
   const verify = () => {
     void openSourceAccessBrowser(block, {
       sourceName,

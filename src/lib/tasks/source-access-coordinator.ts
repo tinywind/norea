@@ -28,7 +28,7 @@ interface SourceAccessPersistenceScheduler {
 }
 
 interface SourceAccessOutcomeScheduler {
-  beginSourceAccessVerification: (scopeKey: string) => boolean;
+  beginSourceAccessVerification: (scopeKey: string, options?: { waitForTask?: boolean }) => boolean;
   getSnapshot: () => Pick<TaskSnapshot, "sourceAccessBlocks">;
   keepSourceAccessBlocked: (scopeKey: string) => boolean;
 }
@@ -223,7 +223,7 @@ export function applySourceAccessBrowserOutcome(
     return scheduler.keepSourceAccessBlocked(block.scopeKey);
   }
   if (current.verificationRequested || current.verificationTaskId) return true;
-  return scheduler.beginSourceAccessVerification(block.scopeKey);
+  return scheduler.beginSourceAccessVerification(block.scopeKey, { waitForTask: true });
 }
 
 let activeSourceAccessBrowserTaskId: string | null = null;
@@ -273,8 +273,8 @@ export async function openSourceAccessBrowser(
       }
     }
     if (previousCompletion) await previousCompletion;
-    if (options.isRequestCurrent?.() === false || !taskScheduler.canBeginSourceAccessVerification(block.scopeKey)) return false;
-    const target = await taskScheduler.resolveSourceAccessVerificationUrl(
+    if (options.isRequestCurrent?.() === false || !taskScheduler.canOpenSourceAccessBrowser(block.scopeKey)) return false;
+    const target = await taskScheduler.resolveSourceAccessBrowserUrl(
       block.scopeKey,
       block.revision,
     );
@@ -293,7 +293,7 @@ export async function openSourceAccessBrowser(
       !current ||
       activeSourceAccessBrowserTaskId ||
       useSiteBrowserStore.getState().visible ||
-      !taskScheduler.canBeginSourceAccessVerification(target.scopeKey)
+      !taskScheduler.canOpenSourceAccessBrowser(target.scopeKey)
     ) {
       return false;
     }

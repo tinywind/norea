@@ -268,6 +268,7 @@ export class TaskScheduler {
   >();
   private readonly sourceCooldowns = new SourceCooldowns(() => this.drain());
   private readonly sourceAccess = new SourceAccessGate();
+  private readonly sourceAccessWaitingForTask = new Map<string, number>();
   private readonly sourceExecutors: SourceExecutorLeases;
   private readonly sourceQueueOrder: string[] = [];
   private readonly sourceQueues = new Map<string, string[]>();
@@ -830,6 +831,7 @@ export class TaskScheduler {
     }
     const scopeKey = configuredScopeKey;
 
+    this.sourceAccessWaitingForTask.delete(scopeKey);
     const { block, revokedVerificationTaskId } = this.sourceAccess.recordChallenge(
       scopeKey,
       error.challenge,
@@ -949,6 +951,10 @@ export class TaskScheduler {
         block,
       );
       if (!entry) {
+        // Only an explicit confirmation without queued work waits for a later
+        // real request. Never probe a redacted origin or retain a VPN canary.
+        if (block.rangeId === undefined && this.sourceAccessWaitingForTask.get(scopeKey) === block.revision) continue;
+        this.sourceAccessWaitingForTask.delete(scopeKey);
         this.sourceAccess.prepareVerification(scopeKey, undefined);
         this.debug("source access verification request reset", undefined, {
           scopeKey,
@@ -957,8 +963,13 @@ export class TaskScheduler {
         this.publishSnapshot();
         continue;
       }
+      if (this.backgroundExecutionSuspended ||
+        (!this.networkAvailable && this.requiresNetwork(entry)) ||
+        (this.downloadFailureStops.globalError &&
+          (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia"))) continue;
       if (entry.spec.vpnWorker && this.vpnWorkerSlotBusy(entry.spec.vpnWorker.slot)) continue;
 
+      this.sourceAccessWaitingForTask.delete(scopeKey);
       if (!entry.spec.sourceAccessScopeKey) {
         entry.spec = { ...entry.spec, sourceAccessScopeKey: scopeKey };
       }
@@ -1003,6 +1014,7 @@ export class TaskScheduler {
     // storage work. Keep the running canary pinned to its verified hostname.
     const block = this.sourceAccess.get(scopeKey);
     this.sourceAccess.clear(scopeKey);
+    this.sourceAccessWaitingForTask.delete(scopeKey);
     this.debug("source access verified", entry, {
       scopeKey,
       sourceAccessRevision: expectedRevision,
@@ -1446,6 +1458,7 @@ export class TaskScheduler {
   }
 
   hydrateSourceAccessBlocks(blocks: Iterable<SourceAccessBlock>): void {
+    this.sourceAccessWaitingForTask.clear();
     this.sourceAccess.hydrate(blocks);
     for (const entry of this.entries.values()) {
       entry.sourceAccessVerificationRevision = undefined;
@@ -1460,6 +1473,17 @@ export class TaskScheduler {
     });
     this.publishSnapshot();
     this.drain();
+  }
+
+  /** Opening the site does not require, or prove success for, a queued request. */
+  canOpenSourceAccessBrowser(scopeKey: string): boolean {
+    const block = this.sourceAccess.get(scopeKey);
+    return Boolean(
+      block &&
+        block.rangeId === undefined &&
+        block.verificationTaskId === undefined &&
+        normalizedSourceAccessUrl(block.challenge.url, scopeKey, block.sourceId),
+    );
   }
 
   canBeginSourceAccessVerification(scopeKey: string): boolean {
@@ -1552,10 +1576,42 @@ export class TaskScheduler {
     return { revision: current.revision, scopeKey, sourceId, url: resolvedUrl };
   }
 
-  beginSourceAccessVerification(scopeKey: string): boolean {
-    if (!this.canBeginSourceAccessVerification(scopeKey)) return false;
+  /** A saved origin is only a browser destination, never an authentication canary. */
+  async resolveSourceAccessBrowserUrl(
+    scopeKey: string,
+    expectedRevision: number,
+  ): Promise<{
+    revision: number;
+    scopeKey: string;
+    sourceId: string;
+    url: string;
+  } | null> {
+    if (!this.canOpenSourceAccessBrowser(scopeKey)) return null;
+    const target = await this.resolveSourceAccessVerificationUrl(scopeKey, expectedRevision);
     const block = this.sourceAccess.get(scopeKey);
-    if (!block) return false;
+    if (
+      !block ||
+      block.revision !== expectedRevision ||
+      !this.canOpenSourceAccessBrowser(scopeKey)
+    ) return null;
+    if (target) return target;
+    const url = normalizedSourceAccessUrl(block.challenge.url, scopeKey, block.sourceId);
+    return url ? { revision: block.revision, scopeKey, sourceId: block.sourceId, url } : null;
+  }
+
+  beginSourceAccessVerification(
+    scopeKey: string,
+    options: { waitForTask?: boolean } = {},
+  ): boolean {
+    const block = this.sourceAccess.get(scopeKey);
+    const waitForTask = options.waitForTask === true && block?.rangeId === undefined;
+    if (!block || !(waitForTask
+      ? this.canOpenSourceAccessBrowser(scopeKey)
+      : this.canBeginSourceAccessVerification(scopeKey))) return false;
+    if (block.verificationRequested) return waitForTask;
+    if (waitForTask && this.sourceAccessVerificationCandidates(scopeKey, block).length === 0) {
+      this.sourceAccessWaitingForTask.set(scopeKey, block.revision);
+    }
 
     downloadRecovery.resume(block.sourceId);
     this.sourceAccess.requestVerification(scopeKey);
@@ -1593,6 +1649,7 @@ export class TaskScheduler {
   cancelSourceAccessBlock(scopeKey: string, expectedRevision: number): boolean {
     const block = this.sourceAccess.get(scopeKey);
     if (!block || block.revision !== expectedRevision) return false;
+    this.sourceAccessWaitingForTask.delete(scopeKey);
 
     const taskId = block.verificationTaskId ?? block.originTaskId;
     const entry =
@@ -1631,6 +1688,7 @@ export class TaskScheduler {
   keepSourceAccessBlocked(scopeKey: string): boolean {
     const block = this.sourceAccess.get(scopeKey);
     if (!block) return false;
+    this.sourceAccessWaitingForTask.delete(scopeKey);
 
     const verificationTaskId = block.verificationTaskId;
     if (!block.verificationRequested && verificationTaskId === undefined) {

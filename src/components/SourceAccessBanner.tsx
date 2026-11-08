@@ -46,8 +46,8 @@ export function SourceAccessBannerGroup({ entries }: {
     const label = labels[index];
     const sourceLabel = labels.some((other, otherIndex) => otherIndex !== index && other === label)
       ? `${label} (${block.sourceId})` : label;
-    const verifying = block.verificationRequested || block.verificationTaskId !== undefined;
-    const canOpenVerification = taskScheduler.canBeginSourceAccessVerification(block.scopeKey);
+    const verifying = block.verificationTaskId !== undefined;
+    const canOpenVerification = taskScheduler.canOpenSourceAccessBrowser(block.scopeKey);
     return {
       block, sourceLabel, verifying, canOpenVerification,
       verifyDisabled: browserVisible || verifying || !canOpenVerification,
@@ -86,9 +86,11 @@ export function SourceAccessBannerGroup({ entries }: {
             {t("sourceAccess.verifyingSources", { sources: verifying.map(member => member.sourceLabel).join(", ") })}
           </Text>
         ) : null}
-        {verifying.length === 0 && candidates.length === 0 ? (
-          <Text c="dimmed" component="p" size="sm">{t("sourceAccess.queueTaskToVerify")}</Text>
-        ) : null}
+        {members.filter(member => member.block.verificationRequested && !member.verifying).map(member => (
+          <Text c="dimmed" component="p" key={member.block.scopeKey} size="sm">
+            {grouped ? `${member.sourceLabel} · ` : null}{t("sourceAccess.verifyNextRequest")}
+          </Text>
+        ))}
       </div>
       <div className="norea-source-access-actions">
         {candidates.length > 1 ? (

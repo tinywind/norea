@@ -132,7 +132,7 @@ export async function applyTaskNotificationAction(
     const block = snapshot.sourceAccessBlocks.find(block => block.sourceId === action.sourceId &&
       block.scopeKey === action.scopeKey && block.revision === action.revision);
     if (!block || block.rangeId !== undefined) return;
-    if (taskScheduler.canBeginSourceAccessVerification(block.scopeKey)) {
+    if (taskScheduler.canOpenSourceAccessBrowser(block.scopeKey)) {
       const opening = openSourceAccessBrowser(block, {
         isRequestCurrent: () => generation === taskNotificationNavigationGeneration,
         sourceName: sourceAccessBlockSourceNames(block, snapshot).join(", ") || block.sourceId,

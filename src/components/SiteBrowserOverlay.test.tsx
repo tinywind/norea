@@ -158,7 +158,7 @@ describe("source access browser controls", () => {
 
     expect(verify.props.disabled).toBe(false);
     verify.props.onClick!();
-    await vi.waitFor(() => expect(begin).toHaveBeenCalledWith("plugin:source-a:site:source.test"));
+    await vi.waitFor(() => expect(begin).toHaveBeenCalledWith("plugin:source-a:site:source.test", { waitForTask: true }));
     expect(begin).not.toHaveBeenCalledWith("plugin:source-a:site:source-new.test");
     expect(useSiteBrowserStore.getState()).toMatchObject({
       completion: { outcome: "verify", taskId: "browser-task", revision: 3 },

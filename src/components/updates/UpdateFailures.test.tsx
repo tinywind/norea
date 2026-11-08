@@ -18,7 +18,7 @@ vi.mock("../../lib/tasks/hooks", () => ({
   useTaskSnapshot: () => ({ sourceAccessBlocks: mocks.blocks }),
 }));
 vi.mock("../../lib/tasks/scheduler", () => ({
-  taskScheduler: { canBeginSourceAccessVerification: () => true },
+  taskScheduler: { canOpenSourceAccessBrowser: () => true },
 }));
 vi.mock("../../lib/tasks/source-access-coordinator", () => ({
   openSourceAccessBrowser: vi.fn(),

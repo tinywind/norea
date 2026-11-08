@@ -56,6 +56,7 @@ export function enqueueSourceTask<T>({
     dedupeKey,
     canCancel,
     exclusive,
+    canCompleteWithoutSourceAccess: kind === "source.clearCookies",
     sourceAccessScopeKey: sourceAccessScope,
     run:
       kind === "source.openSite" || kind === "source.clearCookies"

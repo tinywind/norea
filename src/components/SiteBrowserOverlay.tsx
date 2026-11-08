@@ -235,11 +235,11 @@ export function SiteBrowserOverlay() {
             block.scopeKey === expectedScopeKey &&
             block.revision === expectedRevision,
         );
-      // Authentication can redirect to a new hostname. Only retry the original
-      // blocked request; its successful source response releases the queue.
+      // Authentication can redirect to a new hostname. Only a real request to
+      // the blocked scope can release it; with no queued work, wait for that request.
       if (
         !currentBlock ||
-        !taskScheduler.beginSourceAccessVerification(expectedScopeKey)
+        !taskScheduler.beginSourceAccessVerification(expectedScopeKey, { waitForTask: true })
       ) {
         return false;
       }

@@ -16,7 +16,10 @@ const mocks = vi.hoisted(() => ({
   menus: [] as Parameters<typeof OverflowMenu>[0][],
 }));
 vi.mock("../lib/tasks/scheduler", () => ({
-  taskScheduler: { canBeginSourceAccessVerification: (scopeKey: string) => mocks.eligible.has(scopeKey) },
+  taskScheduler: {
+    canOpenSourceAccessBrowser: (scopeKey: string) => mocks.eligible.has(scopeKey),
+    canBeginSourceAccessVerification: () => false,
+  },
 }));
 vi.mock("../lib/tasks/source-access-coordinator", () => ({
   openSourceAccessBrowser: mocks.open,
@@ -75,14 +78,16 @@ beforeEach(() => {
 });
 
 describe("grouped source access recovery", () => {
-  it("shows both affected sources once and keeps verification disabled without a queued candidate", () => {
+  it("offers source verification without requiring a queued candidate", () => {
+    mocks.eligible.add(A.scopeKey);
+    mocks.eligible.add(B.scopeKey);
     const $ = render();
     expect($(".norea-source-access-banner")).toHaveLength(1);
     expect($("h3")).toHaveLength(1);
     expect($.text()).toContain("Sources: Source A, Source B");
-    expect($("p").filter((_, element) => $(element).text().includes("Start a download or open the source before verifying"))).toHaveLength(1);
-    expect($('button[aria-label="Verify Source A, Source B"]').attr("disabled")).toBeDefined();
-    expect(options().filter(item => !item.danger).every(item => item.disabled)).toBe(true);
+    expect($.text()).not.toContain("Start a download or open the source before verifying");
+    expect($('button[aria-label="Choose a source to verify"]').attr("disabled")).toBeUndefined();
+    expect(options().filter(item => !item.danger).every(item => !item.disabled)).toBe(true);
     expect(mocks.open).not.toHaveBeenCalled();
     expect(mocks.apply).not.toHaveBeenCalled();
     expect(mocks.cancel).not.toHaveBeenCalled();
@@ -138,10 +143,8 @@ describe("grouped source access recovery", () => {
     expect(mocks.open).not.toHaveBeenCalled();
   });
 
-  it.each([
-    { verificationRequested: true },
-    { verificationTaskId: "verification-task" },
-  ])("keeps in-flight progress and eligibility scoped to their own source: %j", state => {
+  it("keeps in-flight progress and eligibility scoped to its own source", () => {
+    const state = { verificationTaskId: "verification-task" };
     mocks.eligible.add(A.scopeKey);
     mocks.eligible.add(B.scopeKey);
     const verifyingB = { ...B, ...state };
@@ -150,6 +153,21 @@ describe("grouped source access recovery", () => {
     expect(mocks.buttons.find(button => button.label === "Verify Source A")?.disabled).toBe(false);
     expect(options().find(item => item.label.startsWith("Source B · ") && !item.danger)?.disabled).toBe(true);
     expect($.text()).not.toContain("Start a download or open the source before verifying");
+  });
+
+  it("keeps a confirmation waiting for real work visible without disabling browser access", () => {
+    mocks.eligible.add(A.scopeKey);
+    mocks.eligible.add(B.scopeKey);
+    const waitingB = { ...B, verificationRequested: true };
+    const $ = render([A, waitingB]);
+    expect($.text()).toContain("Source B · Access will be checked the next time you browse or download from this source.");
+    expect($.text()).not.toContain("Verifying: Source B");
+    const choices = mocks.menus.find(menu => menu.label === "Choose a source to verify")!.items;
+    expect(choices[1].disabled).toBe(false);
+    choices[1].onClick();
+    expect(mocks.open).toHaveBeenCalledExactlyOnceWith(waitingB, expect.objectContaining({ sourceName: "Source B" }));
+    expect(options().find(item => item.label.startsWith("Source B · ") && !item.danger)?.disabled).toBe(false);
+    expect(mocks.buttons.some(button => button.loading)).toBe(false);
   });
 
   it("identifies each source's error without discarding another member's failure", () => {
