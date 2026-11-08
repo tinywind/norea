@@ -34,7 +34,7 @@ import { useLibraryStore } from "../../store/library";
 import { ContinueReadingShelf, isContinueReadingShelfVisible } from "./ContinueReadingShelf";
 
 const reading: ContinueReadingEntry = {
-  chapterId: 11, chapterNumber: null, nextChapterId: null, nextChapterNumber: null, nextChapterPosition: null, novelCover: null, novelId: 1,
+  chapterId: 11, chapterName: "Unnumbered chapter", chapterNumber: null, nextChapterId: null, nextChapterName: null, nextChapterNumber: null, nextChapterPosition: null, novelCover: null, novelId: 1,
   novelIsLocal: false, novelName: "Reading", novelPath: "/1", pluginId: "s", position: 2,
   progress: 40, readAt: 2,
 };
@@ -114,6 +114,24 @@ it("labels a card with the chapter's number, not its list position", async () =>
 
   expect((await renderCard(cards[0]!)).some((element) => element.props.children === "history.chapterNumber:0")).toBe(true);
   expect((await renderCard(cards[1]!)).some((element) => element.props.children === "history.chapterNumber:7.5")).toBe(true);
+});
+
+
+it("shows title episodes for both a resumed chapter and the next chapter", async () => {
+  mocks.data = [
+    { ...reading, chapterName: "1화", chapterNumber: "346378" },
+    { ...finished, nextChapterName: "346화", nextChapterNumber: "5677728" },
+  ];
+  const onOpen = vi.fn();
+  const cards = (await render(onOpen)).filter(element => element.props.entry);
+  const current = await renderCard(cards[0]!);
+  const next = await renderCard(cards[1]!);
+  expect(current.some(element => element.props.children === "history.chapterNumber:1")).toBe(true);
+  expect(next.some(element => element.props.children === "history.chapterNumber:346")).toBe(true);
+  expect(current.some(element => element.props.children === "history.chapterNumber:346378")).toBe(false);
+  expect(next.some(element => element.props.children === "history.chapterNumber:5677728")).toBe(false);
+  (next[0]!.props.onClick as () => void)();
+  expect(onOpen).toHaveBeenCalledWith(21);
 });
 
 it("collapses and expands from its heading and remembers the choice", async () => {

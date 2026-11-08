@@ -86,7 +86,18 @@ describe("HistoryRow", () => {
   });
 
   it("names the chapter by its number, not its list position", () => {
-    expect(render({ entry: { ...entry, chapterNumber: "7", position: 1 } }).text()).toContain("Ch. 7 · 45% · 3h ago");
+    expect(render({ entry: { ...entry, chapterName: "Unnumbered chapter", chapterNumber: "7", position: 1 } }).text()).toContain("Ch. 7 · 45% · 3h ago");
+  });
+
+
+  it("shows explicit title episodes without exposing provider IDs", () => {
+    const current = render({ entry: { ...entry, chapterName: "1화", chapterNumber: "346378" } }).text();
+    expect(current).toContain("Ch. 1 · 45% · 3h ago");
+    expect(current).not.toContain("346378");
+    next.data = { id: 53, name: "346화", chapterNumber: "5677728", position: 346 } as ChapterListRow;
+    const finished = render({ entry: { ...entry, progress: 100 } }).text();
+    expect(finished).toContain('history.nextChapter{"number":"346"} · 3h ago');
+    expect(finished).not.toContain("5677728");
   });
 
   it("names a chapter without a known number by its title and leaves out an unstarted 0%", () => {

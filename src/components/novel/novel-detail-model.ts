@@ -1,6 +1,7 @@
 import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/chapter";
 import { type NovelDetailRecord } from "../../db/queries/novel";
 import { type TranslationKey } from "../../i18n";
+import { displayedChapterNumber } from "../../lib/chapter-title";
 import { getPluginBaseUrl } from "../../lib/plugins/base-url";
 import { pluginManager } from "../../lib/plugins/manager";
 import { NovelStatus } from "../../lib/plugins/types";
@@ -55,26 +56,29 @@ export function formatChapterPosition(position: number): string {
   return `#${String(position).padStart(2, "0")}`;
 }
 
-/** The number a reader knows the chapter by: its source number, else its position. */
-export function formatChapterNumber(
-  chapter: Pick<ChapterListRow, "chapterNumber" | "position">,
-): string {
-  return chapter.chapterNumber?.trim() || String(chapter.position);
+type ChapterNumberLabel = Pick<ChapterListRow, "chapterNumber" | "position"> & {
+  name?: string | null;
+  chapterName?: string | null;
+};
+
+/** Prefer a clear title episode; stored values and positions remain fallbacks. */
+export function formatChapterNumber(chapter: ChapterNumberLabel): string {
+  return displayedChapterNumber(chapter.name ?? chapter.chapterName)
+    ?? (chapter.chapterNumber?.trim() || String(chapter.position));
 }
 
 /** Whether the chapter name already shows its number, such as "Chapter 1895" for chapter 1895. */
 export function chapterNameShowsNumber(
   chapter: Pick<ChapterListRow, "chapterNumber" | "name" | "position">,
 ): boolean {
+  if (displayedChapterNumber(chapter.name) !== null) return true;
   const number = formatChapterNumber(chapter).replace(/^0+(?=\d)/, "");
   const escaped = number.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   return new RegExp(`(?<![\\d.])0*${escaped}(?!\\.?\\d)`).test(chapter.name);
 }
 
 /** The chapter's shown number as a value, or `null` when it is not numeric. */
-export function chapterNumberValue(
-  chapter: Pick<ChapterListRow, "chapterNumber" | "position">,
-): number | null {
+export function chapterNumberValue(chapter: ChapterNumberLabel): number | null {
   const text = formatChapterNumber(chapter);
   return /^\d+(?:\.\d+)?$/.test(text) ? Number(text) : null;
 }

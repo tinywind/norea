@@ -88,22 +88,40 @@ it("returns at most six novels in one query", async () => {
 
 it("resumes an unfinished chapter and opens the next chapter of a finished one", () => {
   const base: ContinueReadingEntry = {
-    chapterId: 11, chapterNumber: "1", nextChapterId: 12, nextChapterNumber: "2", nextChapterPosition: 3, novelCover: null, novelId: 1,
+    chapterId: 11, chapterName: "One", chapterNumber: "1", nextChapterId: 12, nextChapterName: "Two", nextChapterNumber: "2", nextChapterPosition: 3, novelCover: null, novelId: 1,
     novelIsLocal: false, novelName: "N", novelPath: "/1", pluginId: "s", position: 2,
     progress: 40, readAt: 1,
   };
 
-  expect(getContinueReadingTarget(base)).toEqual({ chapterId: 11, chapterNumber: "1", next: false, position: 2 });
+  expect(getContinueReadingTarget(base)).toEqual({ chapterId: 11, chapterName: "One", chapterNumber: "1", next: false, position: 2 });
   expect(getContinueReadingTarget({ ...base, progress: 100 })).toEqual({
     chapterId: 12,
+    chapterName: "Two",
     chapterNumber: "2",
     next: true,
     position: 3,
   });
   expect(getContinueReadingTarget({ ...base, nextChapterId: null, progress: 100 })).toEqual({
     chapterId: 11,
+    chapterName: "One",
     chapterNumber: "1",
     next: false,
     position: 2,
+  });
+});
+
+it("projects current and next titles alongside independent provider IDs", async () => {
+  seed("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'bookkor-novel','/book','Novel',1)");
+  seed("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at) VALUES(11,1,'/one','1화','346378',1,100,100),(12,1,'/latest','346화','5677728',346,0,NULL)");
+  const [entry] = await listContinueReading();
+  expect(entry).toMatchObject({
+    chapterId: 11, chapterName: "1화", chapterNumber: "346378",
+    nextChapterId: 12, nextChapterName: "346화", nextChapterNumber: "5677728",
+  });
+  expect(getContinueReadingTarget(entry!)).toEqual({
+    chapterId: 12, chapterName: "346화", chapterNumber: "5677728", next: true, position: 346,
+  });
+  expect(getContinueReadingTarget({ ...entry!, progress: 11 })).toEqual({
+    chapterId: 11, chapterName: "1화", chapterNumber: "346378", next: false, position: 1,
   });
 });

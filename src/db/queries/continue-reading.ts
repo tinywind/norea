@@ -17,11 +17,13 @@ export interface ContinueReadingEntry {
   novelPath: string;
   pluginId: string;
   chapterId: number;
+  chapterName: string;
   chapterNumber: string | null;
   position: number;
   progress: number;
   readAt: number;
   nextChapterId: number | null;
+  nextChapterName: string | null;
   nextChapterNumber: string | null;
   nextChapterPosition: number | null;
 }
@@ -34,15 +36,17 @@ interface RawContinueReadingEntry
 /** The chapter a tap resumes, following History's rule. */
 export function getContinueReadingTarget(entry: ContinueReadingEntry): {
   chapterId: number;
+  chapterName: string | null;
   chapterNumber: string | null;
   next: boolean;
   position: number;
 } {
   if (entry.progress < FINISHED_PROGRESS || entry.nextChapterId === null) {
-    return { chapterId: entry.chapterId, chapterNumber: entry.chapterNumber, next: false, position: entry.position };
+    return { chapterId: entry.chapterId, chapterName: entry.chapterName, chapterNumber: entry.chapterNumber, next: false, position: entry.position };
   }
   return {
     chapterId: entry.nextChapterId,
+    chapterName: entry.nextChapterName,
     chapterNumber: entry.nextChapterNumber,
     next: true,
     position: entry.nextChapterPosition ?? entry.position,
@@ -68,6 +72,7 @@ export async function listContinueReading(
          n.path        AS novelPath,
          n.plugin_id   AS pluginId,
          c.id          AS chapterId,
+         c.name        AS chapterName,
          c.chapter_number AS chapterNumber,
          c.position    AS position,
          c.progress    AS progress,
@@ -75,6 +80,9 @@ export async function listContinueReading(
          (SELECT nc.id FROM chapter nc
            WHERE nc.novel_id = n.id AND nc.position > c.position
            ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS nextChapterId,
+         (SELECT nc.name FROM chapter nc
+           WHERE nc.novel_id = n.id AND nc.position > c.position
+           ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS nextChapterName,
          (SELECT nc.chapter_number FROM chapter nc
            WHERE nc.novel_id = n.id AND nc.position > c.position
            ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS nextChapterNumber,

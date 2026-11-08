@@ -3,6 +3,8 @@ import type { ChapterListRow } from "../../db/queries/chapter";
 import {
   chapterIdsBetween,
   chapterNameShowsNumber,
+  chapterNumberValue,
+  formatChapterNumber,
   chapterRowClickAction,
   chapterIdsInNumberRange,
   filterChapterList,
@@ -103,10 +105,10 @@ describe("chapter ranges", () => {
 
   it("uses the source number, falls back to the position and skips text numbers", () => {
     const rows = [
-      { ...chapter(1, 1), chapterNumber: "10" },
-      { ...chapter(2, 2), chapterNumber: "10.5" },
-      { ...chapter(3, 3), chapterNumber: null },
-      { ...chapter(4, 4), chapterNumber: "Epilogue" },
+      { ...chapter(1, 1), name: "One", chapterNumber: "10" },
+      { ...chapter(2, 2), name: "Two", chapterNumber: "10.5" },
+      { ...chapter(3, 3), name: "Three", chapterNumber: null },
+      { ...chapter(4, 4), name: "Epilogue", chapterNumber: "Epilogue" },
     ];
     expect(chapterIdsInNumberRange(rows, 3, 11)).toEqual([1, 2, 3]);
   });
@@ -185,11 +187,50 @@ describe("chapterNameShowsNumber", () => {
     expect(chapterNameShowsNumber(named("Side story 1.5", "1.5"))).toBe(true);
   });
 
-  it("does not match a number inside a longer one", () => {
-    expect(chapterNameShowsNumber(named("Chapter 18950", "1895"))).toBe(false);
-    expect(chapterNameShowsNumber(named("Chapter 21", "1"))).toBe(false);
-    expect(chapterNameShowsNumber(named("Chapter 1.5", "5"))).toBe(false);
-    expect(chapterNameShowsNumber(named("Chapter 1.5", "1"))).toBe(false);
+  it("does not match a fallback number inside an unrelated numeric title", () => {
+    expect(chapterNameShowsNumber(named("Room 18950", "1895"))).toBe(false);
+    expect(chapterNameShowsNumber(named("Room 21", "1"))).toBe(false);
+    expect(chapterNameShowsNumber(named("Room 1.5", "5"))).toBe(false);
+    expect(chapterNameShowsNumber(named("Room 1.5", "1"))).toBe(false);
     expect(chapterNameShowsNumber(named("Prologue", "1"))).toBe(false);
+  });
+});
+
+describe("reader-facing episode numbers", () => {
+  it.each([
+    ["1화", "346378", "1"],
+    ["346화", "5677728", "346"],
+    ["278화 278", "346655", "278"],
+    ["Chapter 12.50", "9000", "12.5"],
+    ["시즌 2 7화", "7777", "7"],
+  ])("uses the explicit title %s instead of provider ID %s", (name, chapterNumber, expected) => {
+    const row = Object.freeze({ ...chapter(1, 1), name, chapterNumber });
+    expect(formatChapterNumber(row)).toBe(expected);
+    expect(chapterNumberValue(row)).toBe(Number(expected));
+    expect(chapterNameShowsNumber(row)).toBe(true);
+    expect(row.chapterNumber).toBe(chapterNumber);
+  });
+
+  it("accepts a chapterName projection and retains existing fallbacks", () => {
+    expect(formatChapterNumber({ chapterName: "1화", chapterNumber: "346378", position: 1 })).toBe("1");
+    expect(formatChapterNumber({ chapterNumber: "346378", position: 1 })).toBe("346378");
+    expect(formatChapterNumber({ chapterNumber: null, position: 7 })).toBe("7");
+    expect(formatChapterNumber({ name: "Prologue", chapterNumber: "0", position: 1 })).toBe("0");
+    expect(formatChapterNumber({ name: "1화 - 2화", chapterNumber: "999", position: 1 })).toBe("999");
+    expect(formatChapterNumber({ name: "시즌 1 시즌 2 3화", chapterNumber: "999", position: 1 })).toBe("999");
+    expect(chapterNumberValue({ name: "Epilogue", chapterNumber: "Epilogue", position: 3 })).toBeNull();
+  });
+
+  it("uses displayed episodes for jumps and number ranges without changing storage identity", () => {
+    const rows = [
+      { ...chapter(1, 1), name: "1화", chapterNumber: "346378" },
+      { ...chapter(346, 346), name: "346화", chapterNumber: "5677728" },
+    ];
+    expect(findChapterForJump(rows, "1")?.id).toBe(1);
+    expect(findChapterForJump(rows, "346")?.id).toBe(346);
+    expect(findChapterForJump(rows, "346378")).toBeUndefined();
+    expect(chapterIdsInNumberRange(rows, 1, 1)).toEqual([1]);
+    expect(chapterIdsInNumberRange(rows, 346, 346)).toEqual([346]);
+    expect(rows.map(row => row.chapterNumber)).toEqual(["346378", "5677728"]);
   });
 });
