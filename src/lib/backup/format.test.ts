@@ -419,3 +419,13 @@ describe("parseBackupManifest error cases", () => {
     );
   });
 });
+
+it("rejects version 5 archives rather than silently dropping chapter composition", () => {
+  expect(() => parseBackupManifest(JSON.stringify({ ...VALID_MANIFEST, version: 5 }))).toThrow(/version 5/);
+});
+it("rejects malformed chapter composition before any restore can run", () => {
+  const manifest = { ...VALID_MANIFEST, novels: [{ ...VALID_MANIFEST.novels[0], chapterComposition: {
+    version: 1, updatedAt: 1, entries: [{ id: "broken" }],
+  } }] };
+  expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(/chapter composition/);
+});

@@ -56,3 +56,12 @@ it("publishes refreshed failures and skips clearing chapters that have none", as
   expect(getChapterDownloadFailureSnapshot()).toEqual([]);
   unsubscribe();
 });
+
+it("records the original source failure while preserving the target owner's durable job", async () => {
+  queries.record.mockImplementation(async input => input);
+  const target = { ...job, pluginId: "target-b", chapterPath: "norea-composed:entry-a" };
+  await recordFailedChapterDownloadAttempt(target, new Error("HTTP 503"), 100, "original-a");
+  const input = queries.record.mock.calls[0]![0];
+  expect(input).toMatchObject({ chapterId: 7, pluginId: "original-a", now: 100 });
+  expect(JSON.parse(input.jobJson)).toEqual({ id: 7, pluginId: "target-b", chapterPath: "norea-composed:entry-a", title: "Seven" });
+});

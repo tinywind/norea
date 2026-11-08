@@ -56,21 +56,22 @@ export function formatChapterPosition(position: number): string {
   return `#${String(position).padStart(2, "0")}`;
 }
 
-type ChapterNumberLabel = Pick<ChapterListRow, "chapterNumber" | "position"> & {
+type ChapterNumberLabel = Pick<ChapterListRow, "chapterNumber" | "position" | "displayChapterNumber"> & {
   name?: string | null;
   chapterName?: string | null;
 };
 
 /** Prefer a clear title episode; stored values and positions remain fallbacks. */
 export function formatChapterNumber(chapter: ChapterNumberLabel): string {
-  return displayedChapterNumber(chapter.name ?? chapter.chapterName)
+  return chapter.displayChapterNumber ?? displayedChapterNumber(chapter.name ?? chapter.chapterName)
     ?? (chapter.chapterNumber?.trim() || String(chapter.position));
 }
 
 /** Whether the chapter name already shows its number, such as "Chapter 1895" for chapter 1895. */
 export function chapterNameShowsNumber(
-  chapter: Pick<ChapterListRow, "chapterNumber" | "name" | "position">,
+  chapter: Pick<ChapterListRow, "chapterNumber" | "name" | "position" | "displayChapterNumber">,
 ): boolean {
+  if (chapter.displayChapterNumber != null) return displayedChapterNumber(chapter.name) === chapter.displayChapterNumber;
   if (displayedChapterNumber(chapter.name) !== null) return true;
   const number = formatChapterNumber(chapter).replace(/^0+(?=\d)/, "");
   const escaped = number.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");

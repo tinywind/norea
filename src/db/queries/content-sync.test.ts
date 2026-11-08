@@ -17,7 +17,10 @@ beforeEach(() => {
   clearAuthoritativeStorageDirs();
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0005_novel_download_goals.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0006_download_goal_opt_out.sql", "utf8"));
   sqlite.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0010_novel_chapter_composition.sql", "utf8"));
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(42,'source','work','/work','A work')");
   const db = {
     select: async (sql: string, params: unknown[] = []) => sqlite.prepare(sql).all(Object.fromEntries(params.map((value, index) => [`$${index + 1}`, value])) as never),
@@ -418,4 +421,42 @@ it.each(["pending", "failed", "blocked", "completed", "inactive"] as const)("hon
   sqlite.prepare("INSERT INTO content_sync_cache(cache_key,payload) VALUES(?,?)").run(key, JSON.stringify(payload));
   expect(await isNovelMigrationSourceHeldInDb(await getDb(), "http://server", manifest.identity)).toBe(status !== "inactive");
   expect(await isNovelMigrationSourceHeldInDb(await getDb(), "http://another", manifest.identity)).toBe(false);
+});
+
+it("keeps reading-state mapping while explicitly discarding the source body for target-primary chapters", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(43,'target','new-work','/new-work','Target')");
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(11,42,'/chapter','Source','1',1),(21,43,'/new-chapter','Target','9001',1)");
+  await recordPendingNovelMergeInDb(await getDb(), {
+    serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
+    skipSourceContentChapterIds: [11], preparedDownloads: [],
+  });
+  expect((await listNovelMigrations("http://server"))[0]!.chapters[0]).toMatchObject({
+    sourceChapterPath: "/chapter", targetChapterPath: "/new-chapter", decision: null, discardSourceContent: true,
+  });
+  await expect(recordPendingNovelMergeInDb(await getDb(), {
+    serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
+    skipSourceContentChapterIds: [11], preparedDownloads: [{ sourceChapterId: 11, transferredFromSource: true }],
+  })).rejects.toThrow(/without copying/);
+});
+
+it("does not resurrect excluded chapters from server catalogs or imported packages", async () => {
+  const { materializeChapterComposition, setChapterComposition } = await import("../chapter-composition");
+  const composition = { version: 1 as const, updatedAt: 1, entries: [1, 2].map(number => ({
+    id: "entry-" + number, path: "/chapter/" + number, storageChapterNumber: String(number),
+    sources: [{ pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/raw/" + number,
+      chapterNumber: String(number), name: "Raw " + number, position: number, page: "1", contentType: "html" as const, releaseTime: null }],
+    primarySource: 0, user: { included: number === 2, order: number === 2 ? 1 : 0, name: number === 2 ? "Custom" : null, chapterNumber: number === 2 ? "1" : null },
+  })) };
+  const db = await getDb();
+  await materializeChapterComposition(db, 42, composition);
+  await setChapterComposition(db, 42, composition);
+  const summaries = [1, 2, 3].map(number => ({ id: "server-" + number, chapterPath: "/chapter/" + number,
+    name: "Server " + number, chapterNumber: String(number), position: number, page: "1", contentType: "html" as const, complete: true }));
+  expect(await cacheServerChapters(42, summaries)).toBe(false);
+  expect(sqlite.prepare("SELECT path,name,position,chapter_number FROM chapter").all())
+    .toEqual([{ path: "/chapter/2", name: "Custom", position: 1, chapter_number: "2" }]);
+  await expect(importContentMetadata({
+    ...manifest, identity: { ...manifest.identity, chapterPath: "/chapter/1" },
+    chapter: { ...manifest.chapter, chapterNumber: "1" },
+  })).rejects.toThrow(/excluded/);
 });

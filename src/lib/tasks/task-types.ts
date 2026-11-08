@@ -92,6 +92,13 @@ export interface TaskSource {
   name: string;
 }
 
+/** A composed chapter's original network route; its subject keeps the local storage owner. */
+export interface TaskSourceRoute {
+  source: TaskSource;
+  sourceAccessVerificationKey?: string;
+  sourceCooldownKey?: string;
+}
+
 export interface TaskSubject {
   batchId?: string;
   batchTitle?: string;
@@ -195,7 +202,7 @@ export interface TaskRunContext {
   setChapterDownloadPhase?: (phase: ChapterDownloadPhase) => void;
   setProgress: (progress: TaskProgress | undefined) => void;
   /** Returns false when the task must return so the scheduler can requeue it behind source gates. */
-  tryStartSourceAccess?: () => boolean;
+  tryStartSourceAccess?: (route?: TaskSourceRoute) => boolean;
 }
 
 export interface TaskRetryDecision {

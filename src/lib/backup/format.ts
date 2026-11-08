@@ -1,3 +1,4 @@
+import { parseChapterComposition, type ChapterCompositionV1 } from "../chapter-composition";
 /**
  * Backup file format.
  *
@@ -14,9 +15,10 @@
 import { isStorageId } from "../storage-id";
 import type { ChapterContentType } from "../chapter-content";
 
-export const BACKUP_FORMAT_VERSION = 5 as const;
+export const BACKUP_FORMAT_VERSION = 6 as const;
 
 export interface BackupNovel {
+  chapterComposition?: ChapterCompositionV1;
   id: number;
   sourceNovelId: string | null;
   pluginId: string;
@@ -217,8 +219,14 @@ function isChapter(value: unknown): value is BackupChapter {
 }
 
 function normalizeNovel(novel: BackupNovel): BackupNovel {
+  let chapterComposition: ChapterCompositionV1 | undefined;
+  if (novel.chapterComposition !== undefined) {
+    try { chapterComposition = parseChapterComposition(novel.chapterComposition); }
+    catch (error) { throw new BackupFormatError("novels contains an invalid chapter composition: " + String(error)); }
+  }
   return {
     ...novel,
+    ...(chapterComposition ? { chapterComposition } : {}),
     libraryAddedAt: novel.libraryAddedAt ?? null,
     lastReadAt: novel.lastReadAt ?? null,
   };

@@ -39,12 +39,13 @@ export async function recordFailedChapterDownloadAttempt(
   job: ChapterDownloadJob,
   error: unknown,
   now = Date.now(),
+  sourceId = job.pluginId,
 ): Promise<StoredChapterDownloadFailure | null> {
   const failure = classifyDownloadFailure(error);
   const { retryAt: _retryAt, ...storedJob } = job;
   const stored = await recordChapterDownloadFailure({
     chapterId: job.id,
-    pluginId: job.pluginId,
+    pluginId: sourceId,
     failureClass: failure.failureClass,
     messageSummary: failure.summary,
     ...(failure.challengeUrl ? { challengeUrl: failure.challengeUrl } : {}),

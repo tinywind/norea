@@ -38,6 +38,10 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { inpu
   return {};
 } }));
 
+import { getChapterComposition } from "./chapter-composition";
+import { applyNovelMergeInDb } from "./queries/novel-merge";
+import type { ChapterCompositionPreparedCopy } from "../lib/chapter-composition-storage";
+import { chapterCompositionCatalog, type ChapterCompositionV1 } from "../lib/chapter-composition";
 import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata, knownNovelMetadataDirectory, readWorkMetadataSyncFiles, refreshStoredNovelChapterDownloads, restoreWorkMetadataDirectories, storedNovelMetadataFingerprint } from "./work-metadata";
 import { withChapterDownloadDeletion, withChapterDownloadWrite } from "../lib/chapter-download-writes";
 import { adoptStoredChapterContentMetadata } from "./queries/chapter";
@@ -75,8 +79,11 @@ beforeEach(() => {
   storage.files.clear(); storage.chapters.clear(); storage.chapters.set(path, ["contents/source/book/1/content.html"]); storage.writes = 0; storage.fail = false; storage.failOncePath = ""; storage.failReadPath = ""; storage.lists = 0; storage.reads = 0; storage.directories = {};
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0005_novel_download_goals.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0006_download_goal_opt_out.sql", "utf8"));
   sqlite.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
   sqlite.exec(readFileSync("src-tauri/src/migrations/0008_plugin_repositories.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0010_novel_chapter_composition.sql", "utf8"));
   db = {
     select: async (query: string, params: unknown[] = []) => sqlite.prepare(query).all(Object.fromEntries(params.map((value, i) => [`$${i + 1}`, value])) as never),
     execute: async (query: string, params: unknown[] = []) => {
@@ -260,6 +267,7 @@ it("keeps refreshed work details durable when a later server document omits them
   sqlite.close();
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0010_novel_chapter_composition.sql", "utf8"));
   sqlite.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
   await initializeWorkMetadata(db);
   expect(sqlite.prepare("SELECT author,artist,summary,status,genres,rating FROM novel").get())
@@ -325,7 +333,6 @@ it("preserves a plugin novel ID through source sync, work files, upload discover
   expect(written.identity).toEqual({ pluginId: "source", novelId: "literal-42", novelPath: "/source-route?book=42" });
   expect(written.chapters).toEqual({ "1.5": "Side story" });
   expect((await listContentSyncChapters())[0]).toMatchObject({ sourceNovelId: "literal-42", novelPath: "/source-route?book=42" });
-  sqlite.exec(readFileSync("src-tauri/src/migrations/0005_novel_download_goals.sql", "utf8"));
   const backup = parseBackupManifest(encodeBackupManifest(await gatherBackupSnapshot()));
   expect(backup.novels[0]!.sourceNovelId).toBe("literal-42");
   const restored = await prepareBackupRestore(db, backup);
@@ -1730,4 +1737,267 @@ it("refuses an authoritative target cover descriptor when its bytes are absent",
   const incoming = fixture(); incoming.cover = { fileName: "cover.jpg", contentType: "image/jpeg" };
   await expect(installStoredNovelMetadata(incoming, undefined, undefined, { authoritative: true })).rejects.toThrow("cover bytes");
   expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).cover).toBeNull();
+});
+
+function composedMetadataFixture(): NovelMetadataV1 {
+  const chapterComposition: ChapterCompositionV1 = { version: 1, updatedAt: 20, entries: [1, 2, 3].map(number => ({
+    id: "entry-" + number, path: "/chapter/" + number, storageChapterNumber: String(number),
+    sources: [{ pluginId: number === 2 ? "other-source" : "source", novelId: "book", novelPath: "/book",
+      chapterPath: "/raw/" + number, chapterNumber: String(number + 10), name: "Source " + number,
+      position: number, page: "2", contentType: "html", releaseTime: null }],
+    primarySource: 0,
+    user: { included: number !== 3, order: number === 3 ? 0 : 3 - number, name: number === 2 ? "My opening" : null,
+      chapterNumber: number === 3 ? null : String(3 - number) },
+  })) };
+  return { ...fixture(), chapters: chapterCompositionCatalog(chapterComposition), chapterComposition };
+}
+
+it("recovers the composed order, source provenance and exclusions from novel.json without resurrecting files", async () => {
+  const metadata = composedMetadataFixture();
+  save(metadata);
+  const bodies = [1, 2, 3, 999].map(number => ({ path: `contents/source/book/${number}/content.html`,
+    bytes: [...new TextEncoder().encode(`<p>Original body ${number}</p>`)] }));
+  storage.chapters.set(path, bodies.map(body => body.path));
+  for (const body of bodies) storage.files.set(body.path, body.bytes);
+  await initializeWorkMetadata(db);
+  const novelId = (sqlite.prepare("SELECT id FROM novel").get() as { id: number }).id;
+  for (const body of bodies) expect(storage.files.get(body.path)).toEqual(body.bytes);
+  expect(await getChapterComposition(db, novelId)).toEqual(metadata.chapterComposition);
+  expect(sqlite.prepare("SELECT path,name,chapter_number,position,is_downloaded FROM chapter ORDER BY position").all()).toEqual([
+    { path: "/chapter/2", name: "My opening", chapter_number: "2", position: 1, is_downloaded: 1 },
+    { path: "/chapter/1", name: "Source 1", chapter_number: "1", position: 2, is_downloaded: 1 },
+  ]);
+});
+
+it("publishes the exact included storage catalog even when a fetched catalog contains excluded or renamed source chapters", async () => {
+  const metadata = composedMetadataFixture();
+  save(metadata);
+  await initializeWorkMetadata(db);
+  const novelId = (sqlite.prepare("SELECT id FROM novel").get() as { id: number }).id;
+  await flushWorkMetadata(db, { novelId, chapters: { "1": "Upstream changed", "2": "Raw source", "3": "Excluded", "999": "Unknown" } });
+  const published = JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!)));
+  expect(published.chapterComposition).toEqual(metadata.chapterComposition);
+  expect(published.chapters).toEqual({ "1": "Source 1", "2": "My opening" });
+  expect(await getChapterComposition(db, novelId)).toEqual(metadata.chapterComposition);
+});
+
+it("retains an existing composition when a metadata import has no composition extension", async () => {
+  const metadata = composedMetadataFixture();
+  save(metadata);
+  const novelId = await applyNovelMetadataToCache(db, metadata);
+  await applyNovelMetadataToCache(db, { ...fixture(), chapters: { "1": "Upstream changed", "2": "Raw source", "3": "Excluded" } });
+  expect(await getChapterComposition(db, novelId)).toEqual(metadata.chapterComposition);
+  expect(sqlite.prepare("SELECT name,position,chapter_number FROM chapter ORDER BY position").all()).toEqual([
+    { name: "My opening", position: 1, chapter_number: "2" },
+    { name: "Source 1", position: 2, chapter_number: "1" },
+  ]);
+});
+
+it("keeps source snapshots and excluded tombstones in portable backups and restore plans", async () => {
+  const metadata = composedMetadataFixture();
+  save(metadata);
+  await initializeWorkMetadata(db);
+  const backup = parseBackupManifest(encodeBackupManifest(await gatherBackupSnapshot()));
+  expect(backup.version).toBe(6);
+  expect(backup.novels[0]!.chapterComposition).toEqual(metadata.chapterComposition);
+  const restored = await prepareBackupRestore(db, backup);
+  expect(restored.manifest.novels[0]!.chapterComposition).toEqual(metadata.chapterComposition);
+  expect(restored.manifest.chapters.map(chapter => [chapter.path, chapter.position, chapter.chapterNumber]))
+    .toEqual([["/chapter/2", 1, "2"], ["/chapter/1", 2, "1"]]);
+});
+
+
+it("keeps unlisted recipient chapter files while installing the exact composed list", async () => {
+  const metadata = composedMetadataFixture();
+  save(metadata);
+  const originalPath = "contents/source/book/99/content.html";
+  const originalBody = [...new TextEncoder().encode("<p>Retained recipient body</p>")];
+  storage.files.set(originalPath, originalBody);
+  storage.chapters.set(path, [1, 2, 3, 99].map(number => "contents/source/book/" + number + "/content.html"));
+  await initializeWorkMetadata(db);
+  const novelId = (sqlite.prepare("SELECT id FROM novel").get() as { id: number }).id;
+  sqlite.prepare("INSERT INTO chapter(novel_id,path,name,chapter_number,position,progress,bookmark,unread,read_at,is_downloaded,content_bytes) " +
+    "VALUES(?,'/recipient-only','Recipient only','99',3,88,1,0,123,1,456)").run(novelId);
+
+  await installStoredNovelMetadata(metadata);
+  expect(sqlite.prepare("SELECT path FROM chapter WHERE novel_id=? ORDER BY position").all(novelId))
+    .toEqual([{ path: "/chapter/2" }, { path: "/chapter/1" }]);
+  expect(storage.files.get(originalPath)).toEqual(originalBody);
+  expect(sqlite.prepare("SELECT progress,bookmark,unread,read_at FROM work_metadata_reading_state WHERE chapter_path='/recipient-only'").get())
+    .toEqual({ progress: 88, bookmark: 1, unread: 0, read_at: 123 });
+  await initializeWorkMetadata(db, { rebuild: true });
+  expect(sqlite.prepare("SELECT path FROM chapter WHERE novel_id=? ORDER BY position").all(novelId))
+    .toEqual([{ path: "/chapter/2" }, { path: "/chapter/1" }]);
+  expect(storage.files.get(originalPath)).toEqual(originalBody);
+});
+
+it.each(["missing", "older"])("preserves the current composition during authoritative metadata installation with a %s composition", async mode => {
+  const original = composedMetadataFixture();
+  original.novel.summary = "Old summary";
+  original.cover = { fileName: "cover.jpg", contentType: "image/jpeg" };
+  save(original);
+  storage.files.set("contents/source/book/cover.jpg", [1, 2, 3]);
+  await initializeWorkMetadata(db);
+  const novelId = (sqlite.prepare("SELECT id FROM novel").get() as { id: number }).id;
+  sqlite.exec("UPDATE chapter SET progress=71,bookmark=1,unread=0,read_at=45 WHERE path='/chapter/1'");
+  const incoming = fixture();
+  incoming.novel = { ...incoming.novel, name: "Latest target", author: null, summary: null, rating: 0 };
+  incoming.chapters = { "1": "Old provider title", "3": "Excluded provider chapter" };
+  if (mode === "older") {
+    incoming.chapterComposition = structuredClone(original.chapterComposition!);
+    incoming.chapterComposition.updatedAt--;
+    incoming.chapterComposition.entries[1]!.user.name = "Older custom title";
+    incoming.chapters = chapterCompositionCatalog(incoming.chapterComposition);
+  }
+
+  const installed = await installStoredNovelMetadata(incoming, undefined, undefined, { authoritative: true });
+  const persisted = JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))) as NovelMetadataV1;
+  expect(installed!.metadata.novel).toEqual(incoming.novel);
+  expect(persisted.novel).toEqual(incoming.novel);
+  expect(persisted.cover).toBeNull();
+  expect(storage.files.has("contents/source/book/cover.jpg")).toBe(false);
+  expect(installed!.metadata.chapterComposition).toEqual(original.chapterComposition);
+  expect(persisted.chapterComposition).toEqual(original.chapterComposition);
+  expect(persisted.chapters).toEqual(original.chapters);
+  expect(await getChapterComposition(db, novelId)).toEqual(original.chapterComposition);
+  expect(sqlite.prepare("SELECT progress,bookmark,unread,read_at FROM chapter WHERE path='/chapter/1'").get())
+    .toEqual({ progress: 71, bookmark: 1, unread: 0, read_at: 45 });
+  await initializeWorkMetadata(db, { rebuild: true });
+  expect(await getChapterComposition(db, novelId)).toEqual(original.chapterComposition);
+  expect((await listStoredNovelMetadata())[0]!.metadata.chapterComposition).toEqual(original.chapterComposition);
+});
+
+
+it.each(["/recipient-only", "norea-folder:99"])("rejects an incoming composition that would adopt another source's body through %s", async existingPath => {
+  const original = fixture();
+  original.chapters = { "99": "Recipient source chapter" };
+  save(original);
+  const originalFile = [...storage.files.get(path)!];
+  const bodyPath = "contents/source/book/99/content.html";
+  const originalBody = [...new TextEncoder().encode("<p>Original recipient source body</p>")];
+  storage.files.set(bodyPath, originalBody);
+  storage.chapters.set(path, [bodyPath]);
+  await initializeWorkMetadata(db);
+  sqlite.prepare("UPDATE chapter SET path=?,progress=88,bookmark=1,unread=0,read_at=123").run(existingPath);
+  const before = sqlite.prepare("SELECT * FROM chapter").all();
+  const novelBefore = sqlite.prepare("SELECT * FROM novel").all();
+  const incoming = composedMetadataFixture();
+  incoming.novel.name = "New server target";
+  incoming.chapterComposition!.entries.push({ ...structuredClone(incoming.chapterComposition!.entries[1]!),
+    id: "different-source", path: "norea-composed:different-source", storageChapterNumber: "99",
+    user: { included: true, order: 3, name: "Other edition", chapterNumber: "3" } });
+  incoming.chapters = chapterCompositionCatalog(incoming.chapterComposition!);
+
+  await expect(installStoredNovelMetadata(incoming)).rejects.toThrow(/storage chapter number belongs to another chapter/);
+  expect(sqlite.prepare("SELECT * FROM chapter").all()).toEqual(before);
+  expect(sqlite.prepare("SELECT * FROM novel").all()).toEqual(novelBefore);
+  expect(storage.files.get(path)).toEqual(originalFile);
+  expect(storage.files.get(bodyPath)).toEqual(originalBody);
+});
+
+it("restores a numeric cache placeholder only when the persisted composition proves its source ownership", async () => {
+  const metadata = composedMetadataFixture();
+  save(metadata);
+  storage.chapters.set(path, ["contents/source/book/1/content.html"]);
+  await initializeWorkMetadata(db);
+  const novelId = (sqlite.prepare("SELECT id FROM novel").get() as { id: number }).id;
+  sqlite.exec("UPDATE chapter SET path='norea-folder:1',progress=71,bookmark=1,unread=0,read_at=45 WHERE path='/chapter/1'");
+  const before = sqlite.prepare("SELECT id,progress,bookmark,unread,read_at,is_downloaded,content_bytes,media_bytes FROM chapter WHERE path='norea-folder:1'").get();
+
+  await installStoredNovelMetadata(metadata);
+  expect(sqlite.prepare("SELECT id,progress,bookmark,unread,read_at,is_downloaded,content_bytes,media_bytes FROM chapter WHERE path='/chapter/1'").get()).toEqual(before);
+  expect(sqlite.prepare("SELECT id FROM chapter WHERE path='norea-folder:1'").get()).toBeUndefined();
+  expect(await getChapterComposition(db, novelId)).toEqual(metadata.chapterComposition);
+});
+
+
+it.each(["source refresh", "incoming metadata"])("rejects reuse of a pruned recipient body's number during %s", async mode => {
+  const metadata = composedMetadataFixture();
+  metadata.chapterComposition!.entries[1]!.storageChapterNumber = "98";
+  metadata.chapters = chapterCompositionCatalog(metadata.chapterComposition!);
+  save(metadata);
+  const bodyPath = "contents/source/book/99/content.html";
+  const originalBody = [...new TextEncoder().encode("<p>Recipient-only original body</p>")];
+  storage.files.set(bodyPath, originalBody);
+  storage.chapters.set(path, [bodyPath]);
+  await initializeWorkMetadata(db);
+  const novelId = (sqlite.prepare("SELECT id FROM novel").get() as { id: number }).id;
+  sqlite.prepare("INSERT INTO chapter(novel_id,path,name,chapter_number,position,progress,bookmark,unread,read_at,is_downloaded,content_bytes) " +
+    "VALUES(?,'/recipient-only','Recipient only','99',3,88,1,0,123,1,456)").run(novelId);
+  await installStoredNovelMetadata(metadata);
+  expect(sqlite.prepare("SELECT id FROM chapter WHERE path='/recipient-only'").get()).toBeUndefined();
+  expect(storage.files.get(bodyPath)).toEqual(originalBody);
+  const chaptersBefore = sqlite.prepare("SELECT * FROM chapter ORDER BY id").all();
+  const novelBefore = sqlite.prepare("SELECT * FROM novel").all();
+  const metadataBefore = [...storage.files.get(path)!];
+  const source = { ...metadata.chapterComposition!.entries[0]!.sources[0]!, chapterPath: "/source/new", name: "New source chapter" };
+  const update = () => {
+    if (mode === "source refresh") {
+      return syncNovelFromSource({ id: "source", parseNovel: async () => ({ novelId: "book", name: "Fresh title", path: "/book",
+        chapters: [{ path: source.chapterPath, name: source.name, chapterNumber: 4 }] }) } as unknown as Plugin,
+      { name: "Book", path: "/book" }, { novelId, chapterRefreshMode: "full" });
+    }
+    const incoming = structuredClone(metadata);
+    incoming.chapterComposition!.updatedAt++;
+    incoming.chapterComposition!.entries.push({ id: "new-source", path: source.chapterPath, storageChapterNumber: "99", sources: [source], primarySource: 0,
+      user: { included: true, order: 3, name: null, chapterNumber: "3" } });
+    incoming.chapters = chapterCompositionCatalog(incoming.chapterComposition!);
+    return installStoredNovelMetadata(incoming);
+  };
+  await expect(update()).rejects.toThrow(/existing chapter files have no matching source ownership/);
+  expect(sqlite.prepare("SELECT * FROM chapter ORDER BY id").all()).toEqual(chaptersBefore);
+  expect(sqlite.prepare("SELECT * FROM novel").all()).toEqual(novelBefore);
+  expect(await getChapterComposition(db, novelId)).toEqual(metadata.chapterComposition);
+  expect(storage.files.get(path)).toEqual(metadataBefore);
+  expect(storage.files.get(bodyPath)).toEqual(originalBody);
+  await initializeWorkMetadata(db, { rebuild: true });
+  expect(sqlite.prepare("SELECT path FROM chapter ORDER BY position").all()).toEqual([{ path: "/chapter/2" }, { path: "/chapter/1" }]);
+  expect(storage.files.get(bodyPath)).toEqual(originalBody);
+});
+
+it.each(["verified", "different source", "kept target"])("applies composition files only with the exact prepared merge copy: %s", async mode => {
+  const metadata = composedMetadataFixture();
+  save(metadata);
+  await initializeWorkMetadata(db);
+  const novelId = (sqlite.prepare("SELECT id FROM novel").get() as { id: number }).id;
+  sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library) VALUES(50,'other-source','original','/original','Original work',1)");
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,is_downloaded,stored_content_type,content_bytes,progress,bookmark,unread) " +
+    "VALUES(501,50,'/original/chapter','Original chapter','7',1,1,'html',25,68,1,0)");
+  const composition = structuredClone(metadata.chapterComposition!);
+  composition.updatedAt++;
+  const entry = { id: "prepared-source", path: "norea-composed:prepared-source", storageChapterNumber: "4",
+    sources: [{ ...composition.entries[0]!.sources[0]!, pluginId: "other-source", novelId: "original", novelPath: "/original",
+      chapterPath: "/original/chapter", chapterNumber: "7", name: "Original chapter" }], primarySource: 0,
+    user: { included: true, order: 3, name: null, chapterNumber: "3" } };
+  composition.entries.push(entry);
+  const targetDirectory = "contents/source/book/4";
+  const bodyPath = `${targetDirectory}/content.html`;
+  const body = [...new TextEncoder().encode("<p>Verified A source</p>")];
+  storage.files.set(bodyPath, body);
+  storage.chapters.set(path, [...storage.chapters.get(path)!, bodyPath]);
+  const proof: ChapterCompositionPreparedCopy = { entry: structuredClone(entry), transfer: {
+    entryId: "501", sourceRelativeDir: "contents/other-source/original/7", targetRelativeDir: targetDirectory,
+    contentFile: bodyPath, contentBytes: body.length, mediaBytes: 0, outcome: "copiedSource", replacedTarget: false,
+  } };
+  if (mode === "different source") proof.entry.sources[0]!.chapterPath = "/another/chapter";
+  if (mode === "kept target") proof.transfer.outcome = "keptTarget";
+  const merge = () => applyNovelMergeInDb({ sourceNovelId: 50, targetNovelId: novelId, composition,
+    decisions: [{ sourceChapterId: 501, kind: "map", targetChapterPath: entry.path }],
+    preparedDownloads: [{ sourceChapterId: 501, contentType: "html", contentBytes: body.length, mediaBytes: 0, transferredFromSource: true }],
+    preparedCompositionCopies: [proof] });
+  if (mode !== "verified") {
+    await expect(merge()).rejects.toThrow(/existing chapter files have no matching source ownership/);
+    expect(sqlite.prepare("SELECT path FROM chapter WHERE id=501").get()).toEqual({ path: "/original/chapter" });
+    expect(await getChapterComposition(db, novelId)).toEqual(metadata.chapterComposition);
+  } else {
+    const result = await merge();
+    expect(result.transferredDownloads).toBe(1);
+    expect(sqlite.prepare("SELECT is_downloaded,content_bytes,progress,bookmark,unread FROM chapter WHERE path=?").get(entry.path))
+      .toEqual({ is_downloaded: 1, content_bytes: body.length, progress: 68, bookmark: 1, unread: 0 });
+    await flushWorkMetadata(db);
+    expect((await listStoredNovelMetadata())[0]!.metadata.chapterComposition).toEqual(composition);
+    await initializeWorkMetadata(db, { rebuild: true });
+    expect(await getChapterComposition(db, novelId)).toEqual(composition);
+  }
+  expect(storage.files.get(bodyPath)).toEqual(body);
 });

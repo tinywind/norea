@@ -11,9 +11,10 @@ import {
 } from "../components/novel-merge/MergeChooseStep";
 import { MergeConfirmStep } from "../components/novel-merge/MergeConfirmStep";
 import { MergeMapStep } from "../components/novel-merge/MergeMapStep";
-import { summarizeNovelMergeDecisions } from "../components/novel-merge/merge-map-rows";
+import { createInitialComposition, refreshCompositionCatalog, summarizeComposition } from "../components/novel-merge/merge-composition-editor";
+import type { NovelMergeDecisionSummary } from "../components/novel-merge/merge-map-rows";
 import { useConfirm } from "../components/ui/ConfirmDialog";
-import { listChaptersByNovel } from "../db/queries/chapter";
+import { listChaptersByNovel, type ChapterListRow } from "../db/queries/chapter";
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { usePageBackNavigation } from "../lib/android-back-navigation";
@@ -36,10 +37,14 @@ import {
   type NovelMergeChapterDecision,
 } from "../lib/novel-merge";
 import {
-  findNovelMergeCopyConflicts,
   matchNovelMergeChapters,
   type NovelMergeChapterMatching,
 } from "../lib/novel-merge-matching";
+import {
+  resolveNovelMergeTargetPreview,
+  validateNovelMergeComposition,
+  type NovelMergeCompositionEntry,
+} from "../lib/novel-merge-composition";
 import { getSourceRequestTimeoutMs } from "../store/browse";
 import { useReaderStore } from "../store/reader";
 import { describeError } from "../lib/errors";
@@ -161,6 +166,7 @@ export function validateNovelMergeDecisions({
 interface SelectedMergeTarget extends MergeTargetCandidate {
   novel: SourceNovel;
   matching: NovelMergeChapterMatching;
+  sourceChapters: ChapterListRow[];
 }
 
 type MergeStep = "choose" | "map" | "confirm";
@@ -170,17 +176,6 @@ const MERGE_STEPS: readonly { id: MergeStep; label: TranslationKey }[] = [
   { id: "map", label: "novelMerge.step.map" },
   { id: "confirm", label: "novelMerge.step.confirm" },
 ];
-
-function initialDecisions(
-  matching: NovelMergeChapterMatching,
-): Record<number, NovelMergeChapterDecision> {
-  return Object.fromEntries(
-    matching.matched.map((match) => [
-      match.sourceChapterId,
-      { kind: "map", ...match } satisfies NovelMergeChapterDecision,
-    ]),
-  );
-}
 
 interface NovelMergePageProps {
   sourceNovelId: number;
@@ -199,12 +194,8 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   const [searchResults, setSearchResults] = useState<GlobalSearchResult[]>([]);
   const [selectedTarget, setSelectedTarget] =
     useState<SelectedMergeTarget | null>(null);
-  const [decisionsBySourceChapterId, setDecisionsBySourceChapterId] = useState<
-    Record<number, NovelMergeChapterDecision | undefined>
-  >({});
-  const [artifactSourceChapterIdByTargetPath, setArtifactSourceChapterIdByTargetPath] =
-    useState<Record<string, number>>({});
-  const [decisionsEdited, setDecisionsEdited] = useState(false);
+  const [composition, setComposition] = useState<NovelMergeCompositionEntry[]>([]);
+  const [compositionEdited, setCompositionEdited] = useState(false);
 
   const sourceNovelQuery = useQuery({
     meta: { errorPresentation: "inline" },
@@ -289,7 +280,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
 
   const previewTarget = useMutation({
     meta: { errorPresentation: "inline" },
-    mutationFn: async (candidate: MergeTargetCandidate) => {
+    mutationFn: async (candidate: MergeTargetCandidate & { preserveComposition?: boolean }) => {
       const task = enqueueNovelMergeTargetPreviewTask({
         item: candidate.item,
         manager: pluginManager,
@@ -298,7 +289,10 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       });
       previewTaskRef.current = task;
       try {
-        return { ...candidate, novel: await task.promise };
+        const detail = await task.promise;
+        const novel = await resolveNovelMergeTargetPreview(candidate.pluginId, { ...detail, path: candidate.item.path });
+        const sourceChapters = await listChaptersByNovel(sourceNovelId);
+        return { ...candidate, novel, sourceChapters };
       } finally {
         if (previewTaskRef.current?.id === task.id) {
           previewTaskRef.current = null;
@@ -306,76 +300,71 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       }
     },
     onSuccess: (target) => {
-      const matching = matchNovelMergeChapters(sourceChapters, target.novel.chapters);
+      const matching = matchNovelMergeChapters(target.sourceChapters, target.novel.chapters);
+      if (target.preserveComposition && selectedTarget) {
+        setComposition(current => refreshCompositionCatalog({
+          composition: current,
+          previousSourceChapterIds: selectedTarget.sourceChapters.map(chapter => chapter.id),
+          previousTargetChapterPaths: selectedTarget.novel.chapters.map(chapter => chapter.path),
+          sourceChapterIds: target.sourceChapters.map(chapter => chapter.id),
+          targetChapterPaths: target.novel.chapters.map(chapter => chapter.path),
+        }));
+        setCompositionEdited(true);
+        notifications.show({ message: t("novelMerge.catalog.reloaded") });
+      } else {
+        setComposition(createInitialComposition(target.sourceChapters, target.novel.chapters, matching));
+        setCompositionEdited(false);
+      }
       setSelectedTarget({ ...target, matching });
-      setDecisionsBySourceChapterId(initialDecisions(matching));
-      setArtifactSourceChapterIdByTargetPath({});
-      setDecisionsEdited(false);
+      mergeNovel.reset();
       setStep("map");
     },
   });
 
-  const orderedDecisions = useMemo(
-    () =>
-      sourceChapters.flatMap((chapter) => {
-        const decision = decisionsBySourceChapterId[chapter.id];
-        return decision ? [decision] : [];
-      }),
-    [decisionsBySourceChapterId, sourceChapters],
+  const reviewedSourceChapters = selectedTarget?.sourceChapters ?? sourceChapters;
+  const canConfirm = useMemo(() => {
+    if (!selectedTarget) return false;
+    try {
+      validateNovelMergeComposition(composition, reviewedSourceChapters, selectedTarget.novel.chapters);
+      return true;
+    } catch {
+      return false;
+    }
+  }, [composition, selectedTarget, reviewedSourceChapters]);
+  const compositionSummary = useMemo(
+    () => summarizeComposition(composition, reviewedSourceChapters, selectedTarget?.novel.chapters ?? []),
+    [composition, selectedTarget?.novel.chapters, reviewedSourceChapters],
   );
-  const copyConflicts = useMemo(
-    () => findNovelMergeCopyConflicts(sourceChapters, orderedDecisions),
-    [orderedDecisions, sourceChapters],
-  );
-  const artifactSelectionsForMerge = useMemo(() => {
-    const conflictSourceIds = new Map(
-      copyConflicts.map((conflict) => [
-        conflict.targetChapterPath,
-        conflict.sourceChapterIds,
-      ]),
-    );
-    return Object.fromEntries(
-      Object.entries(artifactSourceChapterIdByTargetPath).filter(
-        ([targetPath, sourceChapterId]) =>
-          conflictSourceIds.get(targetPath)?.includes(sourceChapterId) === true,
-      ),
-    );
-  }, [artifactSourceChapterIdByTargetPath, copyConflicts]);
-  const validation = useMemo(
-    () =>
-      validateNovelMergeDecisions({
-        artifactSourceChapterIdByTargetPath: artifactSelectionsForMerge,
-        decisions: orderedDecisions,
-        sourceChapters,
-        targetChapterPaths:
-          selectedTarget?.novel.chapters.map((chapter) => chapter.path) ?? [],
-      }),
-    [
-      artifactSelectionsForMerge,
-      orderedDecisions,
-      selectedTarget?.novel.chapters,
-      sourceChapters,
-    ],
-  );
-  const summary = useMemo(
-    () =>
-      summarizeNovelMergeDecisions(
-        sourceChapters,
-        decisionsBySourceChapterId,
-        copyConflicts,
-      ),
-    [copyConflicts, decisionsBySourceChapterId, sourceChapters],
-  );
+  const summary = useMemo((): NovelMergeDecisionSummary => {
+    const includedSources = new Set(composition.flatMap(entry => entry.sourceChapterIds));
+    const retained = reviewedSourceChapters.filter(chapter => includedSources.has(chapter.id));
+    const excluded = reviewedSourceChapters.filter(chapter => !includedSources.has(chapter.id));
+    const keptBodies = new Set(composition.filter(entry => entry.primary === "source").map(entry => entry.sourceChapterIds[0]));
+    const downloads = reviewedSourceChapters.filter(chapter => chapter.isDownloaded || chapter.contentBytes > 0);
+    const hasReadingState = (chapter: (typeof reviewedSourceChapters)[number]) => !chapter.unread || chapter.progress > 0;
+    return {
+      copyChoices: 0,
+      downloadsMoved: downloads.filter(chapter => keptBodies.has(chapter.id)).length,
+      downloadsRemoved: downloads.filter(chapter => !keptBodies.has(chapter.id)).length,
+      excluded: excluded.length,
+      mapped: retained.length,
+      readDropped: excluded.filter(hasReadingState).length,
+      readMoved: retained.filter(hasReadingState).length,
+    };
+  }, [composition, reviewedSourceChapters]);
 
   const mergeNovel = useMutation({
     meta: { errorPresentation: "inline" },
     mutationFn: async () => {
-      if (!selectedTarget || !validation.canConfirm) {
+      if (!selectedTarget || !canConfirm) {
         throw new Error(t("novelMerge.confirmation.incomplete"));
       }
       const result = await executeNovelMerge({
-        artifactSourceChapterIdByTargetPath: artifactSelectionsForMerge,
-        decisions: orderedDecisions,
+        composition,
+        reviewedChapterCatalog: {
+          sourceChapterIds: reviewedSourceChapters.map(chapter => chapter.id),
+          targetChapterPaths: selectedTarget.novel.chapters.map(chapter => chapter.path),
+        },
         sourceNovelId,
         target: {
           item: selectedTarget.item,
@@ -407,7 +396,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
           }),
         });
       }
-      setDecisionsEdited(false);
+      setCompositionEdited(false);
       void queryClient.invalidateQueries({ queryKey: ["novel"] });
       void queryClient.invalidateQueries({ queryKey: ["chapter"] });
       void queryClient.invalidateQueries({ queryKey: ["category"] });
@@ -420,6 +409,8 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     },
   });
 
+  const catalogChanged = mergeNovel.isError && describeError(mergeNovel.error).includes("NOVEL_MERGE_CATALOG_CHANGED");
+
   function backToSourceNovel(): void {
     void navigate({
       replace: true,
@@ -428,11 +419,11 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     });
   }
 
-  function confirmDiscardDecisions(
+  function confirmDiscardComposition(
     title: string,
     confirmLabel: string,
   ): Promise<boolean> {
-    if (!decisionsEdited || !selectedTarget) return Promise.resolve(true);
+    if (!compositionEdited || !selectedTarget) return Promise.resolve(true);
     return confirm({
       confirmLabel,
       danger: true,
@@ -442,7 +433,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   }
 
   async function leaveFlow(): Promise<void> {
-    const leave = await confirmDiscardDecisions(
+    const leave = await confirmDiscardComposition(
       t("novelMerge.discard.leaveTitle"),
       t("novelMerge.discard.leave"),
     );
@@ -486,46 +477,16 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       setStep("map");
       return;
     }
-    const change = await confirmDiscardDecisions(
+    const change = await confirmDiscardComposition(
       t("novelMerge.discard.changeTitle"),
       t("novelMerge.discard.change"),
     );
     if (change) previewTarget.mutate(candidate);
   }
 
-  function changeDecision(
-    sourceChapterId: number,
-    decision: NovelMergeChapterDecision | null,
-  ): void {
-    setDecisionsEdited(true);
-    setDecisionsBySourceChapterId((current) => {
-      const next = { ...current };
-      if (decision) next[sourceChapterId] = decision;
-      else delete next[sourceChapterId];
-      return next;
-    });
-  }
-
-  function excludeRemaining(): void {
-    setDecisionsEdited(true);
-    setDecisionsBySourceChapterId((current) => {
-      const next = { ...current };
-      for (const chapter of sourceChapters) {
-        next[chapter.id] ??= { kind: "exclude", sourceChapterId: chapter.id };
-      }
-      return next;
-    });
-  }
-
-  function changeArtifactSourceChapter(
-    targetPath: string,
-    sourceChapterId: number,
-  ): void {
-    setDecisionsEdited(true);
-    setArtifactSourceChapterIdByTargetPath((current) => ({
-      ...current,
-      [targetPath]: sourceChapterId,
-    }));
+  function changeComposition(entries: NovelMergeCompositionEntry[]): void {
+    setCompositionEdited(true);
+    setComposition(entries);
   }
 
   if (sourceNovelId <= 0) {
@@ -694,21 +655,28 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
         />
       ) : step === "map" ? (
         <MergeMapStep
-          canContinue={validation.canConfirm}
-          conflicts={copyConflicts}
-          copyChoices={artifactSourceChapterIdByTargetPath}
-          decisions={decisionsBySourceChapterId}
+          canContinue={canConfirm}
+          composition={composition}
           matching={selectedTarget.matching}
+          onCompositionChange={changeComposition}
           onContinue={() => setStep("confirm")}
-          onCopyChoiceChange={changeArtifactSourceChapter}
-          onDecisionChange={changeDecision}
-          onExcludeRemaining={excludeRemaining}
-          sourceChapters={sourceChapters}
+          sourceChapters={reviewedSourceChapters}
+          sourceName={sourceNovel.name}
+          sourcePluginName={sourceName}
           targetChapters={selectedTarget.novel.chapters}
+          targetName={selectedTarget.novel.name}
+          targetPluginName={selectedTarget.pluginName}
         />
       ) : (
         <MergeConfirmStep
-          error={mergeNovel.isError ? describeError(mergeNovel.error) : null}
+          compositionSummary={compositionSummary}
+          error={catalogChanged
+            ? [t("novelMerge.catalog.changed"), previewTarget.isError ? describeError(previewTarget.error) : null].filter(Boolean).join("\n")
+            : mergeNovel.isError ? describeError(mergeNovel.error) : null}
+          onReloadCatalog={catalogChanged ? () => {
+            if (!previewTarget.isPending) previewTarget.mutate({ ...selectedTarget, preserveComposition: true });
+          } : undefined}
+          reloadingCatalog={previewTarget.isPending}
           onConfirm={() => {
             if (!mergeNovel.isPending) mergeNovel.mutate();
           }}

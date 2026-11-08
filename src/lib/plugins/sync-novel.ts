@@ -1,4 +1,6 @@
 import { getDb, runDatabaseTransaction } from "../../db/client";
+import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "../../db/chapter-composition";
+import { compositionSourceAnchor, refreshChapterComposition } from "../chapter-composition-refresh";
 import { flushWorkMetadata, knownNovelMetadataDirectory, markWorkMetadataRefreshed } from "../../db/work-metadata";
 import { sqliteBoolean } from "../../db/sqlite-value";
 import { reconcileImportedNovelIdentityInDb } from "../../db/queries/novel-identity";
@@ -22,7 +24,7 @@ import { isStorageId } from "../storage-id";
 import type { ChapterItem, NovelItem, Plugin, SourceNovel } from "./types";
 import type { NovelMetadataV1 } from "../work-metadata/schema";
 import { withSourceChapterNumberReconciliation } from "./source-chapter-renumber";
-import { applySourceChapterNumberChangesInDb, commitSourceChapterRenumberInDb, planSourceChapterNumberChanges, readRenumberChapters } from "../source-chapter-renumber";
+import { applySourceChapterNumberChangesInDb, commitSourceChapterRenumberInDb, planSourceChapterNumberChanges, readRenumberChapters, type SourceChapterRenumberJournal } from "../source-chapter-renumber";
 
 export interface SyncNovelFromSourceOptions {
   signal?: AbortSignal;
@@ -262,7 +264,14 @@ async function parseNovelForSync(
     if (!stored || !Object.keys(stored.metadata.chapters).length) return parseFullNovel(plugin, item.path, options.signal);
   }
 
-  const anchor = await getLatestSourceChapterAnchor(existingNovelId);
+  const db = await getDb();
+  const composition = await getChapterComposition(db, existingNovelId);
+  const [storedIdentity] = composition ? await db.select<{ sourceNovelId: string }[]>(
+    "SELECT source_novel_id AS sourceNovelId FROM novel WHERE id=$1", [existingNovelId],
+  ) : [];
+  const anchor = composition && storedIdentity
+    ? compositionSourceAnchor(composition, { pluginId: plugin.id, novelId: storedIdentity.sourceNovelId })
+    : await getLatestSourceChapterAnchor(existingNovelId);
   if (!anchor) {
     return parseFullNovel(plugin, item.path, options.signal);
   }
@@ -350,10 +359,7 @@ async function performNovelSourceRefresh(
     }),
   );
 
-  const result = await withSourceChapterNumberReconciliation({
-    pluginId: plugin.id, path: item.path, sourceNovelId: detail.novelId,
-    chapters: detail.chapters, fullCatalog, isCurrent, signal: options.signal,
-  }, renumber => runDatabaseTransaction(async (db) => {
+  const publish = (renumber: SourceChapterRenumberJournal | null) => runDatabaseTransaction(async (db) => {
     options.signal?.throwIfAborted();
     if (!isCurrent()) return null;
     if (options.novelId !== undefined) {
@@ -434,6 +440,17 @@ async function performNovelSourceRefresh(
                 (SELECT COALESCE(MAX(id), 0) FROM chapter) AS maxId`, [novelId])
       : [];
 
+    const composition = await getChapterComposition(db, novelId);
+    let chapterMutation: { rowsAffected: number };
+    if (composition) {
+      if (renumber) throw new Error("A composed chapter list cannot be renumbered by a provider refresh.");
+      const updated = refreshChapterComposition(composition,
+        { pluginId: plugin.id, novelId: detail.novelId, novelPath: item.path }, detail.chapters, { startPosition });
+      const changedEntries = updated.entries.filter((entry, index) => JSON.stringify(entry) !== JSON.stringify(composition.entries[index])).length;
+      await materializeChapterComposition(db, novelId, updated);
+      await setChapterComposition(db, novelId, updated);
+      chapterMutation = { rowsAffected: changedEntries };
+    } else {
     if (renumber) {
       await applySourceChapterNumberChangesInDb(db, novelId, renumber);
     } else if (planSourceChapterNumberChanges(
@@ -442,19 +459,21 @@ async function performNovelSourceRefresh(
     ).length) {
       throw new Error("Chapter numbers changed during refresh. Refresh the complete chapter list again.");
     }
-    const chapterMutation = await upsertSourceChaptersInDb(
+    chapterMutation = await upsertSourceChaptersInDb(
       db,
       chapterInputs.map((chapter) => ({
         ...chapter,
         novelId,
       })),
     );
+    }
     // Chapter ids only grow, so rows above the previous maximum are the ones this check inserted.
     const newChapters = before && before.chapters > 0
       ? (await db.execute("UPDATE chapter SET found_by_check = 1 WHERE novel_id = $1 AND id > $2",
         [novelId, before.maxId])).rowsAffected
       : 0;
-    await flushWorkMetadata(db, {
+    if (composition) await flushWorkMetadata(db);
+    else await flushWorkMetadata(db, {
       novelId, chapters: Object.fromEntries(detail.chapters.map(chapter => [String(chapter.chapterNumber), chapter.name])),
       ...(renumber ? { replacedChapterNumbers: renumber.changes.map(change => change.chapterNumber) } : {}),
     });
@@ -476,7 +495,11 @@ async function performNovelSourceRefresh(
       inLibrary: sqliteBoolean(novelRow.inLibrary),
       novelId,
     };
-  }));
+  });
+  const result = await withSourceChapterNumberReconciliation({
+      pluginId: plugin.id, path: item.path, sourceNovelId: detail.novelId,
+      chapters: detail.chapters, fullCatalog, isCurrent, signal: options.signal,
+    }, publish);
   if (!result) return null;
   if (result.republish) notifyWorkMetadataChanges({ pluginId: plugin.id, novelPath: item.path });
 

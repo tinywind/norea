@@ -20,7 +20,7 @@ export const FINISHED_PROGRESS = 100;
 const SKELETON_ROWS = 6;
 
 /** The number the row shows, or null when the source stored 0, which plugins use for an unknown number. */
-function shownChapterNumber(entry: Pick<RecentlyReadEntry, "chapterName" | "chapterNumber" | "position">): string | null {
+function shownChapterNumber(entry: Pick<RecentlyReadEntry, "chapterName" | "chapterNumber" | "displayChapterNumber" | "position">): string | null {
   const number = formatChapterNumber(entry);
   return Number(number) === 0 ? null : number;
 }

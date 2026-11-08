@@ -231,3 +231,83 @@ it("distinguishes a prepared target from a source-absent receipt in its raw comm
   await applyIncomingNovelMigration("http://server", "device", resolved, options);
   expect(recordIncomingMigration.mock.calls[1]![1]).toBe(false);
 });
+
+it("keeps target-primary body choice on a recipient with only an A download while migrating its reading state", async () => {
+  resolved.chapterDecisions[0]!.discardSourceContent = true;
+  resolved.targetMappings = [{ source: resolved.targetMappings[0]!.source, decision: "delete-source", target: null, targetInventory: null }];
+  live.chapters = []; serverEntry = null;
+  await apply();
+  expect(files.has("contents/beta/b-work/11")).toBe(false);
+  expect(files.has("contents/alpha/a-work/1")).toBe(false);
+  expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
+  expect(sqlite.prepare("SELECT progress,bookmark,unread,is_downloaded FROM chapter WHERE path='/b/11'").get())
+    .toEqual({ progress: 100, bookmark: 1, unread: 0, is_downloaded: 0 });
+});
+
+it("preserves the composed target order during incoming replay without source-number upserts", async () => {
+  resolved.chapterDecisions[0]!.discardSourceContent = true;
+  resolved.chapterDecisions[1]!.discardSourceContent = true;
+  resolved.targetMappings = [{ source: resolved.targetMappings[0]!.source, decision: "delete-source", target: null, targetInventory: null }];
+  live.chapters = []; serverEntry = null;
+  live.work.metadata.chapterComposition = {
+    version: 1, updatedAt: 20, entries: [11, 12].map(number => ({
+      id: "entry-" + number, path: "/b/" + number, storageChapterNumber: String(number),
+      sources: [{ pluginId: "beta", novelId: "b-work", novelPath: "/new", chapterPath: "/b/" + number,
+        chapterNumber: String(number), name: number === 11 ? "Fresh first" : "Fresh second", position: number - 10,
+        page: "1", contentType: "html", releaseTime: null }],
+      primarySource: 0, user: { included: true, order: 13 - number, name: null, chapterNumber: String(13 - number) },
+    })),
+  };
+  await apply();
+  expect(sqlite.prepare("SELECT path,chapter_number,position,progress FROM chapter ORDER BY position").all()).toEqual([
+    { path: "/b/12", chapter_number: "12", position: 1, progress: 42 },
+    { path: "/b/11", chapter_number: "11", position: 2, progress: 100 },
+  ]);
+  expect(files.has("contents/beta/b-work/11")).toBe(false);
+});
+
+async function prepareCompositionReplacement() {
+  sqlite.exec("PRAGMA foreign_keys=ON");
+  await applyNovelMetadataToCache(db, resolved.targetWork.metadata);
+  const target = await findNovelBySource("beta", "/new");
+  await db.execute("UPDATE chapter SET path='/b/11',progress=72,unread=0,bookmark=1,read_at=80,is_downloaded=1,stored_content_type='html',content_bytes=10 WHERE novel_id=$1 AND chapter_number='11'", [target!.id]);
+  await db.execute("UPDATE chapter SET path='/b/12',is_downloaded=1,stored_content_type='html',content_bytes=10 WHERE novel_id=$1 AND chapter_number='12'", [target!.id]);
+  await db.execute("INSERT INTO chapter_download_goal_exclusion(chapter_id,created_at) SELECT id,123 FROM chapter WHERE novel_id=$1 AND path='/b/11'", [target!.id]);
+  sqlite.exec("UPDATE chapter SET progress=20,unread=1,bookmark=0,read_at=30 WHERE id=11");
+  files.set("contents/beta/b-work/11", payload("d"));
+  files.set("contents/beta/b-work/12", payload("e"));
+  const a = { pluginId:"alpha",novelId:"a-work",novelPath:"/old",chapterPath:"/a/1",chapterNumber:"1",name:"Old first",position:1,page:"1",contentType:"html" as const,releaseTime:null };
+  const b = { pluginId:"beta",novelId:"b-work",novelPath:"/new",chapterPath:"/b/11",chapterNumber:"11",name:"Fresh first",position:1,page:"1",contentType:"html" as const,releaseTime:null };
+  live.work.metadata.chapters = { "13":"Old first","12":"Fresh second" };
+  live.work.metadata.chapterComposition = { version:1,updatedAt:20,entries:[
+    { id:"replacement",path:"norea-composed:replacement",storageChapterNumber:"13",sources:[a,b],primarySource:0,user:{included:true,order:1,name:null,chapterNumber:"1"} },
+    { id:"retained",path:"/b/12",storageChapterNumber:"12",sources:[{...b,chapterPath:"/b/12",chapterNumber:"12",name:"Fresh second",position:2}],primarySource:0,user:{included:true,order:2,name:null,chapterNumber:"2"} },
+    { id:"old-b",path:"/b/11",storageChapterNumber:"11",sources:[b],primarySource:0,user:{included:false,order:0,name:null,chapterNumber:null} },
+  ]};
+  resolved.chapterDecisions[0]!.targetChapterPath = "norea-composed:replacement";
+  resolved.chapterDecisions[0]!.targetChapterNumber = "13";
+  resolved.chapterDecisions[1]!.discardSourceContent = true;
+  const mapping=resolved.targetMappings[0]!;
+  if(mapping.target) { mapping.target.chapterPath="norea-composed:replacement";mapping.target.chapterNumber="13";mapping.target.name="Old first"; }
+  live.chapters=resolved.targetMappings.flatMap(value=>value.target?[value.target]:[]);
+  return target!;
+}
+
+it("metadata import retains paired B reading state and automatic exclusion on new A-primary row",async()=>{
+  const target=await prepareCompositionReplacement();
+  await applyNovelMetadataToCache(db,live.work.metadata);
+  const rows=sqlite.prepare("SELECT c.path,c.progress,c.unread,c.bookmark,c.read_at,c.is_downloaded,c.content_bytes,e.created_at AS excludedAt FROM chapter c LEFT JOIN chapter_download_goal_exclusion e ON e.chapter_id=c.id WHERE c.novel_id=? ORDER BY c.position").all(target.id);
+  expect.soft(rows[0]).toMatchObject({path:"norea-composed:replacement",progress:72,unread:0,bookmark:1,read_at:80,excludedAt:123,is_downloaded:0,content_bytes:0});
+  expect.soft(rows[1]).toMatchObject({path:"/b/12",is_downloaded:1,content_bytes:10});
+  expect.soft(sqlite.prepare("SELECT id FROM chapter WHERE novel_id=? AND path='/b/11'").get(target.id)).toBeUndefined();
+});
+
+it("incoming replay merges A20 with B72 and keeps selected edition bytes separate",async()=>{
+  await prepareCompositionReplacement();
+  await apply();
+  const rows=sqlite.prepare("SELECT c.path,c.progress,c.unread,c.bookmark,c.read_at,c.is_downloaded,c.content_bytes,e.created_at AS excludedAt FROM chapter c LEFT JOIN chapter_download_goal_exclusion e ON e.chapter_id=c.id ORDER BY c.position").all();
+  expect.soft(rows[0]).toMatchObject({path:"norea-composed:replacement",progress:72,unread:0,bookmark:1,read_at:80,excludedAt:123,is_downloaded:1,content_bytes:10});
+  expect.soft(rows[1]).toMatchObject({path:"/b/12",is_downloaded:1,content_bytes:10});
+  expect.soft(files.get("contents/beta/b-work/11")?.body?.sha256).toBe("d".repeat(64));
+  expect.soft(files.get("contents/beta/b-work/13")?.body?.sha256).toBe("a".repeat(64));
+});

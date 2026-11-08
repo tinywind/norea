@@ -1,3 +1,5 @@
+import { includedChapterCompositionEntries, parseChapterComposition } from "../chapter-composition";
+import { storedChapterContentType } from "../chapter-content";
 import type Database from "@tauri-apps/plugin-sql";
 import { storedNovelMetadataFingerprint } from "../../db/work-metadata";
 import { bytesToBase64 } from "../base64";
@@ -57,6 +59,8 @@ export async function prepareBackupRestore(db: Database, snapshot: BackupManifes
     const cover = await readStoredNovelCover(directory, metadata);
     Object.assign(novel, metadata.novel, { sourceNovelId: metadata.identity.novelId, cover: cover && metadata.cover
       ? `data:${metadata.cover.contentType};base64,${bytesToBase64(cover)}` : null });
+    const composition = metadata.chapterComposition ?? novel.chapterComposition;
+    if (composition) novel.chapterComposition = parseChapterComposition(composition);
     const chapters = chaptersByNovel.get(novel.id) ?? [];
     chaptersByNovel.set(novel.id, chapters);
     const byPath = new Map(chapters.map(chapter => [chapter.path, chapter]));
@@ -78,12 +82,37 @@ export async function prepareBackupRestore(db: Database, snapshot: BackupManifes
       byNumber.set(number, [...(byNumber.get(number) ?? []), chapter]);
     };
     for (const chapter of chapters) indexChapter(chapter);
-    for (const [index, [number, name]] of Object.entries(metadata.chapters).sort(([a], [b]) => Number(a) - Number(b)).entries()) {
+    if (novel.chapterComposition) {
+      const included = includedChapterCompositionEntries(novel.chapterComposition);
+      const keep = new Set<number>();
+      for (const entry of included) {
+        const source = entry.sources[entry.primarySource];
+        const numbered = byNumber.get(Number(entry.storageChapterNumber)) ?? [];
+        let chapter = byPath.get(entry.path) ?? (numbered.length === 1 ? numbered[0] : undefined);
+        if (!chapter) chapter = addChapter(entry.path, entry.user.name ?? source.name, entry.storageChapterNumber, entry.user.order);
+        chapter.path = entry.path;
+        chapter.name = entry.user.name ?? source.name;
+        chapter.chapterNumber = entry.storageChapterNumber;
+        chapter.position = entry.user.order;
+        chapter.page = source.page;
+        chapter.sourceContentType = source.contentType;
+        chapter.contentType = storedChapterContentType(source.contentType);
+        chapter.releaseTime = source.releaseTime;
+        keep.add(chapter.id);
+      }
+      for (let index = chapters.length - 1; index >= 0; index--) if (!keep.has(chapters[index]!.id)) chapters.splice(index, 1);
+      plan.manifest.chapters = plan.manifest.chapters.filter(chapter => chapter.novelId !== novel!.id || keep.has(chapter.id));
+      byPath.clear(); byNumber.clear(); byDirectory.clear();
+      for (const chapter of chapters) { byPath.set(chapter.path, chapter); indexChapter(chapter); }
+    } else for (const [index, [number, name]] of Object.entries(metadata.chapters).sort(([a], [b]) => Number(a) - Number(b)).entries()) {
       const matches = byNumber.get(Number(number)) ?? [];
       if (matches.length === 1) { matches[0]!.name = name; matches[0]!.position = index + 1; }
       if (matches.length === 0) indexChapter(addChapter(`${metadata.novel.isLocal ? "local-folder" : "norea-folder"}:${number}`, name, number, index + 1));
     }
-    const storedChapters = await listStoredNovelChapters(directory);
+    const includedStorageNumbers = novel.chapterComposition
+      ? new Set(includedChapterCompositionEntries(novel.chapterComposition).map(entry => entry.storageChapterNumber)) : null;
+    const storedChapters = (await listStoredNovelChapters(directory))
+      .filter(chapter => !includedStorageNumbers || includedStorageNumbers.has(chapter.chapterNumber));
     const storedCounts = new Map<number, number>();
     for (const chapter of storedChapters) storedCounts.set(Number(chapter.chapterNumber), (storedCounts.get(Number(chapter.chapterNumber)) ?? 0) + 1);
     const used = new Set<number>();

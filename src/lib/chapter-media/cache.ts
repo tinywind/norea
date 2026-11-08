@@ -85,6 +85,7 @@ export async function cacheHtmlChapterMedia({
   shouldYield,
   signal,
   sourceId,
+  requestSourceId = sourceId,
   sourceAccessUrl,
 }: CacheChapterMediaOptions): Promise<CacheChapterMediaResult> {
   if (!isTauriRuntime() || typeof document === "undefined") {
@@ -302,7 +303,7 @@ export async function cacheHtmlChapterMedia({
         ...(mediaContextUrl ? { contextUrl: mediaContextUrl } : {}),
         ...(scraperExecutor ? { scraperExecutor } : {}),
         signal: mediaSignal,
-        ...(sourceId ? { sourceId } : {}),
+        ...(requestSourceId ? { sourceId: requestSourceId } : {}),
         ...(sourceAccessUrl ? { sourceAccessUrl } : {}),
       };
       let response = fetchMissingMedia
@@ -339,7 +340,7 @@ export async function cacheHtmlChapterMedia({
             error: `HTTP ${status} ${statusText}`,
             fileName: mediaFilesBySourceUrl.get(url)?.fileName,
             scraperExecutor,
-            sourceId,
+            sourceId: requestSourceId,
             status,
             url,
           });
@@ -472,7 +473,7 @@ export async function cacheHtmlChapterMedia({
             status: 404,
             fileName: mediaFilesBySourceUrl.get(url)?.fileName,
             scraperExecutor,
-            sourceId,
+            sourceId: requestSourceId,
             url,
           });
           applyRemoteMediaFallback({

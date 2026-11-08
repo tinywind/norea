@@ -57,6 +57,7 @@ beforeEach(() => {
   writer = new DatabaseSync(file);
   writer.exec("PRAGMA journal_mode=WAL");
   writer.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  writer.exec(readFileSync("src-tauri/src/migrations/0010_novel_chapter_composition.sql", "utf8"));
   writer.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Saved work',1);
     INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark) VALUES(1,1,'/chapter','Saved chapter',1,'1',0.5,1)`);
   reader = new DatabaseSync(file, { readOnly: true });

@@ -1,3 +1,4 @@
+import { chapterCompositionCatalog } from "../chapter-composition";
 import type { NovelMetadataV1 } from "./schema";
 
 export function mergeIncomingNovelMetadata(
@@ -11,9 +12,12 @@ export function mergeIncomingNovelMetadata(
     }
     novel.rating ??= current.novel.rating;
   }
+  const previous = current?.chapterComposition;
+  const next = incoming.chapterComposition;
+  const chapterComposition = next && (!previous || next.updatedAt > previous.updatedAt) ? next : previous;
   return {
-    ...incoming,
-    novel,
-    chapters: { ...current?.chapters, ...incoming.chapters },
+    ...incoming, novel,
+    ...(chapterComposition ? { chapterComposition } : {}),
+    chapters: chapterComposition ? chapterCompositionCatalog(chapterComposition) : { ...current?.chapters, ...incoming.chapters },
   };
 }

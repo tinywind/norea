@@ -1,4 +1,7 @@
 import type Database from "@tauri-apps/plugin-sql";
+import { getDb } from "../db/client";
+import { getChapterComposition } from "../db/chapter-composition";
+import { compileNovelMergeComposition, validateReviewedNovelMergeCatalog, type NovelMergeCompositionEntry, type ReviewedNovelMergeChapterCatalog } from "./novel-merge-composition";
 import { hasStoredChapterContent, listChaptersByNovel, type ChapterListRow } from "../db/queries/chapter";
 import {
   applyNovelMergeInDb,
@@ -51,8 +54,11 @@ export interface NovelMergeTarget {
 export interface ExecuteNovelMergeInput {
   sourceNovelId: number;
   target: NovelMergeTarget;
-  decisions: readonly NovelMergeChapterDecision[];
+  decisions?: readonly NovelMergeChapterDecision[];
+  composition?: readonly NovelMergeCompositionEntry[];
+  reviewedChapterCatalog?: ReviewedNovelMergeChapterCatalog;
   artifactSourceChapterIdByTargetPath?: Readonly<Record<string, number>>;
+  skipSourceContentChapterIds?: readonly number[];
 }
 
 export interface NovelMergeResult extends NovelMergeDatabaseResult {
@@ -197,6 +203,7 @@ async function buildStorageTransferEntries(
   targetNovel: NovelDetailRecord,
   resolution: MergeChapterResolution,
   selections: Readonly<Record<string, number>>,
+  skipSourceContentChapterIds: readonly number[] = [],
 ): Promise<{
   cleanupRelativeDirs: Set<string>;
   entries: ChapterStorageTransferEntry[];
@@ -215,7 +222,7 @@ async function buildStorageTransferEntries(
   for (const [targetPath, mappedSources] of resolution.sourcesByTargetPath) {
     const targetChapter = resolution.targetByPath.get(targetPath)!;
     const downloadedSources = mappedSources.filter(
-      (source) => hasStoredChapterContent(source),
+      (source) => hasStoredChapterContent(source) && !skipSourceContentChapterIds.includes(source.id),
     );
     const selectedSourceChapterId = selections[targetPath];
     if (selectedSourceChapterId === undefined && downloadedSources.length > 1) {
@@ -316,7 +323,7 @@ async function rollbackPreparation(
 }
 
 async function mergeNovelStorageAndRecords(
-  input: Pick<ExecuteNovelMergeInput, "decisions" | "artifactSourceChapterIdByTargetPath">,
+  input: Pick<ExecuteNovelMergeInput, "decisions" | "composition" | "reviewedChapterCatalog" | "artifactSourceChapterIdByTargetPath" | "skipSourceContentChapterIds">,
   sourceNovel: NovelDetailRecord,
   targetNovel: NovelDetailRecord,
   signal: AbortSignal,
@@ -327,23 +334,34 @@ async function mergeNovelStorageAndRecords(
 ): Promise<NovelMergeResult> {
   await cancelNovelChapterDownloadWork([sourceNovel.id, targetNovel.id]);
   throwIfNovelMergeAborted(signal);
-  const [sourceChapters, targetChapters] = await Promise.all([
+  const [sourceChapters, storedTargetChapters] = await Promise.all([
     listChaptersByNovel(sourceNovel.id),
     listChaptersByNovel(targetNovel.id),
   ]);
   throwIfNovelMergeAborted(signal);
+  if (input.composition) validateReviewedNovelMergeCatalog(input.reviewedChapterCatalog, sourceChapters, storedTargetChapters);
+  const db = input.composition ? await getDb() : null;
+  const compiled = input.composition ? compileNovelMergeComposition({
+    entries: input.composition, sourceNovel, targetNovel, sourceChapters,
+    targetChapters: storedTargetChapters,
+    sourceComposition: await getChapterComposition(db!, sourceNovel.id),
+    targetComposition: await getChapterComposition(db!, targetNovel.id),
+  }) : null;
+  const targetChapters = compiled?.targetChapters ?? storedTargetChapters;
+  const decisions = compiled?.decisions ?? input.decisions ?? [];
   const resolution = validateChapterDecisions(
     sourceChapters,
     targetChapters,
-    input.decisions,
+    decisions,
   );
-  const artifactSelections = input.artifactSourceChapterIdByTargetPath ?? {};
+  const artifactSelections = compiled?.artifactSourceChapterIdByTargetPath ?? input.artifactSourceChapterIdByTargetPath ?? {};
   validateArtifactSelections(resolution, artifactSelections);
   const { cleanupRelativeDirs, entries } = await buildStorageTransferEntries(
     sourceNovel,
     targetNovel,
     resolution,
     artifactSelections,
+    compiled?.skipSourceContentChapterIds ?? input.skipSourceContentChapterIds,
   );
   throwIfNovelMergeAborted(signal);
 
@@ -362,7 +380,7 @@ async function mergeNovelStorageAndRecords(
       resolution.sourceChapters.map((chapter) => [chapter.id, chapter]),
     );
     const decisionBySourceId = new Map(
-      input.decisions.map((decision) => [decision.sourceChapterId, decision]),
+      decisions.map((decision) => [decision.sourceChapterId, decision]),
     );
     const preparedDownloads: PreparedNovelMergeDownload[] = await Promise.all(preparedEntries.map(
       async (entry) => {
@@ -413,14 +431,28 @@ async function mergeNovelStorageAndRecords(
         };
       },
     ));
+    const preparedCompositionCopies = compiled ? preparedEntries.flatMap(transfer => {
+      if (transfer.outcome !== "copiedSource" || transfer.replacedTarget) return [];
+      const sourceChapterId = Number(transfer.entryId);
+      const decision = decisionBySourceId.get(sourceChapterId);
+      const entry = decision?.kind === "map" ? compiled.composition.entries.find(entry => entry.path === decision.targetChapterPath) : undefined;
+      if (!entry || compiled.artifactSourceChapterIdByTargetPath[entry.path] !== sourceChapterId ||
+        transfer.targetRelativeDir !== chapterStorageRelativeDir(targetNovel, { chapterNumber: entry.storageChapterNumber })) {
+        throw new Error("Prepared chapter copy no longer matches the approved composition.");
+      }
+      return [{ entry, transfer }];
+    }) : [];
     throwIfNovelMergeAborted(signal);
     await incoming?.beforeCommit?.();
     throwIfNovelMergeAborted(signal);
     databaseResult = await applyNovelMergeInDb({
       sourceNovelId: sourceNovel.id,
       targetNovelId: targetNovel.id,
-      decisions: input.decisions,
+      decisions,
       preparedDownloads,
+      skipSourceContentChapterIds: compiled?.skipSourceContentChapterIds ?? input.skipSourceContentChapterIds,
+      ...(compiled ? { composition: compiled.composition, preparedCompositionCopies,
+        readingStateSourcePathByTargetPath: compiled.readingStateSourcePathByTargetPath } : {}),
       ...(contentSyncServerUrl ? { contentSyncServerUrl } : {}),
       ...(contentSyncSourceSnapshot ? { contentSyncSourceSnapshot } : {}),
       ...(contentSyncTargetMetadata ? { contentSyncTargetMetadata } : {}),
@@ -541,7 +573,7 @@ async function executeNovelMergeWithPlugin(
 
 /** Applies a confirmed server migration on a recipient without contacting either plugin. */
 export async function executeNovelMergeFromServer(
-  input: Pick<ExecuteNovelMergeInput, "sourceNovelId" | "decisions" | "artifactSourceChapterIdByTargetPath"> & { targetNovelId: number },
+  input: Pick<ExecuteNovelMergeInput, "sourceNovelId" | "decisions" | "artifactSourceChapterIdByTargetPath" | "skipSourceContentChapterIds"> & { targetNovelId: number },
   options: IncomingNovelMergeOptions,
 ): Promise<NovelMergeResult> {
   throwIfNovelMergeAborted(options.signal);

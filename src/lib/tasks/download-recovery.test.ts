@@ -287,3 +287,35 @@ it("uses the 403 policy for an HTTP 403 challenge and keeps non-403 verification
   expect(decideDownloadRecovery(enabled, challenged, zero, { vpn: false, canResetSite: true }).action).toBe("retry");
   expect(decideDownloadRecovery(enabled, verification, zero, { vpn: false, canResetSite: true }).action).toBe("pause");
 });
+
+it("retargets a composed chapter's recovery without clearing its persisted hold or retry budget", async () => {
+  const storage = memoryStorage();
+  const controller = new DownloadRecoveryController(storage);
+  controller.register([job]);
+  controller.networkLost(downloadRecoveryKey(job), new Error("Original request failed"));
+  const held = controller.getSnapshot()[0]!;
+  controller.setSource({ ...job, pluginId: "original-source" });
+  expect(controller.getSnapshot()[0]).toEqual({ ...held, sourceId: "original-source" });
+  const restored = new DownloadRecoveryController(storage);
+  expect(restored.getSnapshot()[0]).toEqual({ ...held, sourceId: "original-source" });
+  const operation = vi.fn(async () => undefined);
+  await expect(restored.run({ job: { ...job, pluginId: "original-source" } }, context(), operation)).rejects.toBeInstanceOf(DownloadRecoveryHoldError);
+  expect(operation).not.toHaveBeenCalled();
+});
+
+it("forwards a composed source route through recovery and preserves a deferred held attempt", async () => {
+  const controller = new DownloadRecoveryController(memoryStorage());
+  controller.register([job]);
+  controller.networkLost(downloadRecoveryKey(job), new Error("Original request held"));
+  const route = { source: { id: "original-source", name: "Original" }, sourceCooldownKey: "chapter.download:original-source" };
+  const tryStartSourceAccess = vi.fn(() => false);
+  const operation = vi.fn(async () => undefined);
+  await controller.run({ job, beforeAttempt: async attempt => {
+    controller.setSource({ ...job, pluginId: route.source.id });
+    expect(attempt.tryStartSourceAccess!(route)).toBe(false);
+    return { handled: true, value: undefined };
+  } }, { ...context(), tryStartSourceAccess }, operation);
+  expect(tryStartSourceAccess).toHaveBeenCalledExactlyOnceWith(route);
+  expect(controller.getSnapshot()).toMatchObject([{ sourceId: "original-source", status: "held" }]);
+  expect(operation).not.toHaveBeenCalled();
+});

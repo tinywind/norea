@@ -404,3 +404,24 @@ it.each(["workMigrationLineageVersion", "workMigrationCopyVersion", "workCoverDe
   expect(contentServerRequest).toHaveBeenCalledTimes(1);
   expect(contentServerRequest).toHaveBeenCalledWith(server, "/capabilities", "test-device", "GET", undefined, undefined);
 });
+
+it("discards A's server body while retaining an explicit reading-state destination without a B body", async () => {
+  saved.chapters[0] = { ...saved.chapters[0]!, decision: null, discardSourceContent: true };
+  target.chapters = target.chapters.filter(chapter => chapter.id !== "new-one");
+  target.work.metadata!.chapters = { "9001": "Fresh first", "9002": "Fresh second" };
+  const request = buildFinalizeNovelMigrationRequest(saved, source, target);
+  expect(request.mappings[0]).toEqual({ sourceChapterId: "old-one", decision: "delete-source" });
+  expect(request.chapterDecisions?.[0]).toEqual({
+    sourceChapterPath: "/old/one", sourceChapterNumber: "1", targetChapterPath: "/new/first", targetChapterNumber: "9001",
+    discardSourceContent: true,
+  });
+  expect(await finalizePendingNovelMigrations(server, "token")).toBe(true);
+  expect(copyRequests).toEqual([]);
+  expect(saved.status).toBe("completed");
+});
+
+it("rejects a discard flag that still asks to copy source bytes", () => {
+  const job = initialJob();
+  job.chapters[0]!.discardSourceContent = true;
+  expect(() => buildFinalizeNovelMigrationRequest(job, sourceSnapshot(), targetSnapshot())).toThrow(/inconsistent/);
+});

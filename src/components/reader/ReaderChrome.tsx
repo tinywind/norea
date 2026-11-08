@@ -39,11 +39,11 @@ interface ReaderChromeFocusHandlers {
 }
 
 function getChapterLabel(
-  chapter: Pick<ChapterListRow, "chapterNumber" | "position">,
+  chapter: Pick<ChapterListRow, "chapterNumber" | "position" | "displayChapterNumber">,
   t: ReturnType<typeof useTranslation>["t"],
 ) {
   return t("history.chapterNumber", {
-    number: chapter.chapterNumber || chapter.position,
+    number: chapter.displayChapterNumber ?? chapter.chapterNumber ?? chapter.position,
   });
 }
 

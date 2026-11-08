@@ -1,5 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("../db/client", () => ({ getDb: vi.fn(async () => ({})) }));
+vi.mock("../db/chapter-composition", () => ({ getChapterComposition: vi.fn(async () => null) }));
+
 vi.mock("./content-sync/sync", () => ({
   runContentSyncOperation: vi.fn(async (operation: () => Promise<unknown>) => operation()),
   syncContentServer: vi.fn(async () => undefined),
@@ -302,6 +305,52 @@ beforeEach(() => {
 });
 
 describe("executeNovelMerge", () => {
+  it("aborts before storage transfer if unreviewed A or B chapters appear", async () => {
+    mockedListChaptersByNovel.mockImplementation(async novelId => novelId === 1 ? [sourceChapter] : [targetChapter, { ...targetChapter, id: 22, path: "/b/2", chapterNumber: "2", position: 2 }]);
+    await expect(executeNovelMerge({ sourceNovelId: 1, target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+      reviewedChapterCatalog: { sourceChapterIds: [11], targetChapterPaths: ["/b/1"] },
+      composition: [{ key: "first", sourceChapterIds: [11], targetChapterPath: "/b/1", primary: "source" }],
+    })).rejects.toThrow("NOVEL_MERGE_CATALOG_CHANGED");
+    expect(mockedPrepareChapterStorageTransfer).not.toHaveBeenCalled();
+    expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
+    expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
+  });
+
+
+  it("composes an A-primary chapter into an empty B package before committing", async () => {
+    mockedPrepareChapterStorageTransfer.mockImplementationOnce(async entries => ({
+      token: "composition-copy", entries: entries.map(entry => ({ ...entry, outcome: "copiedSource" as const,
+        contentFile: entry.targetRelativeDir + "/content.html", contentBytes: 100, mediaBytes: 20, replacedTarget: false })),
+    }));
+    await executeNovelMerge({ sourceNovelId: 1, target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+      reviewedChapterCatalog: { sourceChapterIds: [11], targetChapterPaths: ["/b/1"] },
+      composition: [{ key: "first", sourceChapterIds: [11], targetChapterPath: "/b/1", primary: "source" }] });
+    expect(mockedPrepareChapterStorageTransfer.mock.calls[0]?.[0]).toEqual([
+      { entryId: "11", sourceRelativeDir: "contents/source-a/a-novel/1", targetRelativeDir: "contents/source-b/b-novel/2" },
+    ]);
+    const committed = mockedApplyNovelMergeInDb.mock.calls[0]![0];
+    const selected = committed.composition!.entries.find(entry => entry.user.included)!;
+    expect(selected.path).toMatch(/^norea-composed:/);
+    expect(selected.storageChapterNumber).toBe("2");
+    expect(committed.readingStateSourcePathByTargetPath?.[selected.path]).toBe("/b/1");
+    expect(committed.preparedDownloads[0]).toMatchObject({ sourceChapterId: 11, transferredFromSource: true });
+    expect(committed.preparedCompositionCopies).toEqual([{ entry: selected, transfer: {
+      entryId: "11", sourceRelativeDir: "contents/source-a/a-novel/1", targetRelativeDir: "contents/source-b/b-novel/2",
+      contentFile: "contents/source-b/b-novel/2/content.html", contentBytes: 100, mediaBytes: 20, outcome: "copiedSource", replacedTarget: false,
+    } }]);
+  });
+
+  it("preserves A to B reading mapping while skipping A file transfer when B body is selected", async () => {
+    await executeNovelMerge({ sourceNovelId: 1, target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+      reviewedChapterCatalog: { sourceChapterIds: [11], targetChapterPaths: ["/b/1"] },
+      composition: [{ key: "first", sourceChapterIds: [11], targetChapterPath: "/b/1", primary: "target" }] });
+    expect(mockedPrepareChapterStorageTransfer).not.toHaveBeenCalled();
+    expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(expect.objectContaining({
+      decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+      preparedDownloads: [], skipSourceContentChapterIds: [11],
+    }));
+  });
+
   it("publishes A content under the B chapter path before deleting A state", async () => {
     const result = await executeNovelMerge({
       sourceNovelId: 1,

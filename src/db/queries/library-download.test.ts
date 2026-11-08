@@ -15,6 +15,7 @@ let sqlite: DatabaseSync;
 beforeEach(() => {
   sqlite = new DatabaseSync(":memory:");
   sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0010_novel_chapter_composition.sql", "utf8"));
   sqlite.exec(`INSERT INTO novel(id,plugin_id,path,name,is_local) VALUES
     (1,'source','/one','One',0), (2,'source','/two','Two',0),
     (3,'local','/local','Local',1);

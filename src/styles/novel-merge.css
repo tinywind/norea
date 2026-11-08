@@ -133,16 +133,6 @@
   min-width: 0;
 }
 
-.norea-merge-toolbar {
-  align-items: center;
-  border-bottom: 1px solid var(--norea-color-rule);
-  display: flex;
-  flex: 0 0 auto;
-  flex-wrap: wrap;
-  gap: var(--norea-space-2) var(--norea-space-4);
-  padding: var(--norea-space-2) var(--norea-space-4);
-}
-
 .norea-merge-virtual-viewport {
   flex: 1 1 auto;
   min-height: 0;
@@ -169,150 +159,6 @@
   box-sizing: border-box;
   flex: 1 1 auto;
   min-width: 0;
-}
-
-.norea-merge-section-header {
-  align-items: center;
-  background: var(--norea-color-bg);
-  border: 0;
-  color: var(--norea-color-ink);
-  display: flex;
-  font: inherit;
-  font-size: var(--norea-text-sm);
-  font-weight: var(--norea-weight-bold);
-  gap: var(--norea-space-2);
-  justify-content: space-between;
-  margin: 0;
-  padding: 0 var(--norea-space-4);
-  text-align: left;
-}
-
-.norea-merge-section-header[data-section="conflicts"] {
-  color: var(--norea-color-warn);
-}
-
-.norea-merge-section-toggle {
-  cursor: pointer;
-  position: relative;
-  width: 100%;
-}
-
-.norea-merge-source-row,
-.norea-merge-target-row {
-  height: 100%;
-}
-
-.norea-merge-row-status {
-  color: var(--norea-color-icon-subtle);
-  flex: 0 0 auto;
-  height: var(--norea-icon-sm);
-  width: var(--norea-icon-sm);
-}
-
-.norea-merge-source-row[data-undecided="true"] .norea-merge-row-status,
-.norea-merge-conflict-row:not([data-resolved]) .norea-merge-row-status {
-  color: var(--norea-color-warn);
-}
-
-.norea-merge-source-row .norea-list-item-subtitle,
-.norea-merge-target-row .norea-list-item-subtitle {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-/* An open conflict is tinted and marked with an icon; choosing a copy clears both. */
-.norea-merge-conflict-row {
-  background: var(--norea-color-warn-soft);
-  border-bottom: 1px solid var(--norea-color-rule);
-  display: grid;
-  gap: var(--norea-space-2);
-  padding: var(--norea-space-2) var(--norea-space-4);
-}
-
-.norea-merge-conflict-row[data-resolved="true"] {
-  background: transparent;
-}
-
-.norea-merge-conflict-title {
-  align-items: center;
-  display: flex;
-  gap: var(--norea-space-1);
-  min-width: 0;
-}
-
-.norea-merge-conflict-label {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.norea-merge-conflict-choice {
-  align-items: center;
-  display: grid;
-  gap: var(--norea-space-2);
-  grid-template-columns: auto minmax(0, 1fr);
-}
-
-.norea-merge-conflict-choice .mantine-SegmentedControl-label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.norea-merge-panes {
-  display: grid;
-  flex: 1 1 auto;
-  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-  min-height: 0;
-}
-
-.norea-merge-pane {
-  display: flex;
-  flex-direction: column;
-  min-height: 0;
-  min-width: 0;
-}
-
-.norea-merge-pane + .norea-merge-pane {
-  border-left: 1px solid var(--norea-color-rule);
-  gap: var(--norea-space-3);
-  padding: var(--norea-space-3) var(--norea-space-4) 0;
-}
-
-.norea-merge-pane-title {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.norea-merge-empty {
-  padding: var(--norea-space-4);
-}
-
-.norea-merge-picker {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: var(--norea-space-3);
-  min-height: 0;
-}
-
-.norea-merge-picker-actions {
-  display: flex;
-  flex-wrap: wrap;
-  gap: var(--norea-space-2);
-}
-
-.norea-merge-picker-list {
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-md);
-}
-
-.norea-responsive-sheet .norea-merge-picker-list {
-  flex: 0 0 auto;
-  height: max(16rem, calc(var(--norea-viewport-height) - 16rem));
 }
 
 .norea-merge-confirm-card {
@@ -352,19 +198,489 @@
   margin: 0;
 }
 
-@media (any-pointer: coarse) {
-  .norea-merge-toolbar .mantine-Switch-body {
-    min-height: var(--norea-control-md);
+.norea-compose {
+  overflow: hidden;
+}
+
+.norea-compose-intro,
+.norea-compose-link-bar {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.5rem 1rem;
+  padding: 0.625rem 1rem;
+}
+
+.norea-compose-intro {
+  justify-content: space-between;
+}
+
+.norea-compose-intro h1 {
+  font-size: var(--norea-text-lg);
+  margin: 0;
+}
+
+.norea-compose-intro p {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  margin: 0.25rem 0 0;
+}
+
+.norea-compose-history,
+.norea-compose-origin-actions {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+}
+
+.norea-compose-link-bar {
+  border-block: 1px solid var(--norea-color-rule);
+  padding-block: 0.375rem;
+}
+
+.norea-compose-link-help {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+}
+
+.norea-compose-panes {
+  display: grid;
+  flex: 1 1 auto;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  min-height: 0;
+}
+
+.norea-compose-pane {
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.norea-compose-pane + .norea-compose-pane {
+  border-left: 1px solid var(--norea-color-rule);
+}
+
+.norea-compose-pane-header {
+  align-items: center;
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0.5rem;
+  min-height: 3.625rem;
+  padding: 0.625rem 0.75rem;
+}
+
+.norea-compose-pane[data-side="final"] .norea-compose-pane-header {
+  background: var(--norea-color-accent-soft);
+}
+
+.norea-compose-pane-badge {
+  align-items: center;
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+  display: flex;
+  flex: 0 0 auto;
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-bold);
+  height: 1.625rem;
+  justify-content: center;
+  width: 1.625rem;
+}
+
+.norea-compose-pane-heading {
+  flex: 1;
+  min-width: 0;
+}
+
+.norea-compose-pane-heading h2,
+.norea-compose-pane-heading p {
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-compose-pane-heading h2 {
+  font-size: var(--norea-text-md);
+}
+
+.norea-compose-pane-heading p {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+  margin-top: 0.125rem;
+}
+
+.norea-compose-pane-count,
+.norea-compose-ordinal {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+  font-variant-numeric: tabular-nums;
+}
+
+.norea-compose-pane-tools {
+  border-bottom: 1px solid var(--norea-color-rule);
+  flex: 0 0 auto;
+  padding: 0 0.625rem 0.375rem;
+}
+
+.norea-compose-selection-tools {
+  align-items: center;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.125rem 0.375rem;
+  margin-top: 0.25rem;
+}
+
+.norea-compose-selection-tools button {
+  background: transparent;
+  border: 0;
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink);
+  cursor: pointer;
+  font: inherit;
+  font-size: var(--norea-text-xs);
+  min-height: 2rem;
+  padding: 0.25rem;
+}
+
+.norea-compose-selection-tools button[aria-pressed="true"] {
+  background: var(--norea-color-selected);
+  color: var(--norea-color-accent);
+}
+
+.norea-compose-selection-tools button:disabled {
+  cursor: default;
+  opacity: 0.4;
+}
+
+.norea-compose-selection-count {
+  color: var(--norea-color-ink-muted);
+  display: flex;
+  font-size: var(--norea-text-xs);
+  gap: 0.5rem;
+  justify-content: space-between;
+  min-height: 1rem;
+}
+
+.norea-compose-range {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.25rem 0 0.5rem;
+}
+
+.norea-compose-range label,
+.norea-compose-position {
+  display: flex;
+  flex-direction: column;
+  font-size: var(--norea-text-xs);
+  gap: 0.125rem;
+  min-width: 0;
+}
+
+.norea-compose-range input,
+.norea-compose-position input {
+  background: var(--norea-color-surface);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+  box-sizing: border-box;
+  color: var(--norea-color-ink);
+  font: inherit;
+  font-size: var(--norea-text-sm);
+  height: 2rem;
+  min-width: 0;
+  padding: 0.25rem 0.375rem;
+  width: 4.25rem;
+}
+
+.norea-compose-range small {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+  width: 100%;
+}
+
+.norea-compose-row {
+  align-items: center;
+  background: transparent;
+  border: 0;
+  border-bottom: 1px solid var(--norea-color-rule);
+  color: var(--norea-color-ink);
+  cursor: pointer;
+  display: grid;
+  font: inherit;
+  gap: 0.375rem;
+  grid-template-columns: 1rem minmax(1.375rem, max-content) minmax(0, 1fr) auto;
+  height: 100%;
+  padding: 0.5rem 0.625rem;
+  position: relative;
+  text-align: left;
+  width: 100%;
+}
+
+.norea-compose-row[aria-pressed="true"] {
+  background: var(--norea-color-selected);
+}
+
+.norea-compose-row[data-excluded="true"] .norea-compose-row-name {
+  color: var(--norea-color-ink-muted);
+}
+
+.norea-compose-check {
+  align-items: center;
+  border: 1px solid var(--norea-color-ink-muted);
+  border-radius: var(--norea-radius-sm);
+  box-sizing: border-box;
+  display: flex;
+  height: 1rem;
+  justify-content: center;
+  width: 1rem;
+}
+
+.norea-compose-row[aria-pressed="true"] .norea-compose-check {
+  background: var(--norea-color-accent);
+  border-color: var(--norea-color-accent);
+  color: var(--norea-color-on-accent);
+}
+
+.norea-compose-row-text {
+  min-width: 0;
+}
+
+.norea-compose-row-name {
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  display: -webkit-box;
+  font-size: var(--norea-text-sm);
+  line-height: 1.3;
+  overflow: hidden;
+  overflow-wrap: anywhere;
+}
+
+.norea-compose-row-detail {
+  align-items: center;
+  color: var(--norea-color-ink-muted);
+  display: block;
+  font-size: var(--norea-text-xs);
+  margin-top: 0.25rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.norea-compose-row-detail svg {
+  margin-right: 0.25rem;
+  vertical-align: -0.125rem;
+}
+
+.norea-compose-origin {
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+  padding: 0.1875rem 0.25rem;
+}
+
+.norea-compose-pane-footer {
+  border-top: 1px solid var(--norea-color-rule);
+  display: flex;
+  flex: 0 0 auto;
+  flex-wrap: wrap;
+  gap: 0.375rem;
+  padding: 0.5rem 0.625rem;
+}
+
+.norea-compose-pane-footer > button {
+  flex: 1 1 auto;
+}
+
+.norea-compose-empty {
+  align-items: center;
+  display: flex;
+  flex: 1 1 auto;
+  justify-content: center;
+  min-height: 3rem;
+  padding: 0.75rem;
+  text-align: center;
+}
+
+.norea-compose-final-actions {
+  border-bottom: 1px solid var(--norea-color-rule);
+  flex: 0 0 auto;
+  max-height: 45%;
+  overflow-y: auto;
+  padding: 0.375rem 0.625rem;
+}
+
+.norea-compose-move-controls {
+  align-items: end;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.25rem;
+}
+
+.norea-compose-entry-options {
+  font-size: var(--norea-text-xs);
+  margin-top: 0.375rem;
+}
+
+.norea-compose-entry-options summary {
+  cursor: pointer;
+  min-height: 1.5rem;
+}
+
+.norea-compose-origin-actions {
+  margin-bottom: 0.5rem;
+}
+
+.norea-compose-footer .norea-merge-footer-status {
+  display: flex;
+  flex-direction: column;
+  gap: 0.125rem;
+}
+
+.norea-compose-footer strong {
+  font-size: var(--norea-text-md);
+}
+
+.norea-compose-footer .norea-merge-footer-status > span {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-xs);
+}
+
+.norea-compose :is(button, input, summary, [tabindex]):focus-visible {
+  outline: 2px solid var(--norea-color-accent);
+  outline-offset: -2px;
+}
+
+.norea-compose-announcement {
+  clip-path: inset(50%);
+  height: 1px;
+  overflow: hidden;
+  position: absolute;
+  white-space: nowrap;
+  width: 1px;
+}
+
+@media (max-width: 39.99rem) {
+  .norea-compose {
+    overflow-y: auto;
   }
 
-  .norea-merge-conflict-choice .mantine-SegmentedControl-control {
-    min-height: var(--norea-control-md);
+  .norea-compose-panes {
+    flex: 0 0 auto;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    grid-template-rows: auto auto;
   }
 
-  .norea-merge-conflict-choice .mantine-SegmentedControl-label {
+  .norea-compose-list {
+    flex: 1 0 13.5rem;
+    height: 13.5rem;
+    min-height: 13.5rem;
+  }
+
+  .norea-compose-footer {
+    bottom: 0;
+    position: sticky;
+    z-index: 2;
+  }
+
+  .norea-compose-pane[data-side="final"] {
+    border-left: 0;
+    border-top: 1px solid var(--norea-color-rule);
+    grid-column: 1 / -1;
+  }
+
+  .norea-compose-pane[data-side="final"] .norea-compose-pane-tools {
     align-items: center;
-    display: flex;
-    height: 100%;
-    justify-content: center;
+    column-gap: 0.75rem;
+    display: grid;
+    grid-template-columns: minmax(6rem, 1fr) auto;
   }
+
+  .norea-compose-pane[data-side="final"] .norea-compose-range,
+  .norea-compose-pane[data-side="final"] .norea-compose-selection-count {
+    grid-column: 1 / -1;
+  }
+
+  .norea-compose-intro {
+    padding-block: 0.375rem;
+  }
+
+  .norea-compose-intro h1 {
+    font-size: var(--norea-text-md);
+  }
+
+  .norea-compose-intro p,
+  .norea-compose-link-help {
+    display: none;
+  }
+
+  .norea-compose-pane-header {
+    min-height: 2.875rem;
+    padding-block: 0.375rem;
+  }
+
+  .norea-compose-final-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.25rem 1rem;
+  }
+
+  .norea-compose-entry-options {
+    flex: 1 1 auto;
+  }
+}
+
+@media (max-width: 35.99rem) {
+  .norea-compose-intro,
+  .norea-compose-link-bar,
+  .norea-compose-footer {
+    padding-inline: 0.625rem;
+  }
+
+  .norea-compose-pane-header {
+    gap: 0.375rem;
+    padding-inline: 0.5rem;
+  }
+
+  .norea-compose-pane-heading h2 {
+    font-size: var(--norea-text-xs);
+  }
+
+  .norea-compose-row {
+    column-gap: 0.25rem;
+    grid-template-columns: 0.875rem minmax(1rem, max-content) minmax(0, 1fr) auto;
+    padding-inline: 0.375rem;
+  }
+
+  .norea-compose-check {
+    height: 0.875rem;
+    width: 0.875rem;
+  }
+
+  .norea-compose-row-name {
+    font-size: var(--norea-text-xs);
+  }
+
+  .norea-compose-footer {
+    padding-block: 0.375rem;
+  }
+
+  .norea-compose-footer .norea-merge-footer-status {
+    flex-basis: 8rem;
+  }
+}
+
+@media (any-pointer: coarse) {
+  .norea-compose-selection-tools button,
+  .norea-compose-range input,
+  .norea-compose-position input,
+  .norea-compose-entry-options summary {
+    min-height: var(--norea-control-md);
+  }
+
 }

@@ -82,6 +82,12 @@ pub fn schema_migrations() -> Vec<Migration> {
             sql: include_str!("migrations/0009_vpn_profile_issue_page_causes.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 10,
+            description: "preserve source chapter provenance and user composition",
+            sql: include_str!("migrations/0010_novel_chapter_composition.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

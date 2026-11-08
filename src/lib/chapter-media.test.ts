@@ -3614,3 +3614,28 @@ describe("manifest-bound local references during media repair", () => {
     } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });
+
+it("fetches composed media through the original source and stores every artifact under the target owner", async () => {
+  pluginMediaFetchMock.mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), {
+    status: 200, headers: { "content-type": "image/png" },
+  }));
+  mockChapterMediaInvoke(async (command, args) => {
+    if (command === "chapter_media_read_manifest") return null;
+    if (command === "chapter_media_archive_cache") return 3;
+    return `norea-media://reader-asset/${(args as { fileName?: string }).fileName}`;
+  });
+  const result = await cacheHtmlChapterMedia({
+    chapterId: 42, chapterNumber: "801", chapterPosition: 1, novelId: 9,
+    sourceNovelId: "target-work-b", sourceId: "target-b", requestSourceId: "original-a",
+    baseUrl: "https://original.test/work-a/chapter-7", contextUrl: "https://original.test/work-a/chapter-7",
+    sourceAccessUrl: "https://original.test/work-a/chapter-7", scraperExecutor: "pool:0",
+    html: '<img src="/page.png">',
+  });
+  const request = expect.objectContaining({ sourceId: "original-a", contextUrl: "https://original.test/work-a/chapter-7", scraperExecutor: "pool:0" });
+  expect(takeCapturedMediaHandleMock).toHaveBeenCalledWith("https://original.test/page.png", request);
+  expect(pluginMediaFetchMock).toHaveBeenCalledWith("https://original.test/page.png", request);
+  const storageCalls = invokeMock.mock.calls.filter(([command]) => command.startsWith("chapter_media_"));
+  expect(storageCalls.length).toBeGreaterThan(2);
+  for (const [, args] of storageCalls) expect(args).toMatchObject({ sourceId: "target-b", sourceNovelId: "target-work-b", chapterNumber: "801" });
+  expect(result).toMatchObject({ mediaBytes: 3, mediaFailures: [], storedMediaCount: 1 });
+});

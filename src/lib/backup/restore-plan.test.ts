@@ -35,7 +35,7 @@ function save(path: string, value: unknown) {
   storage.files.set(path, [...new TextEncoder().encode(typeof value === "string" ? value : JSON.stringify(value, null, 2))]);
 }
 function manifest(): BackupManifest {
-  return { version: 5, exportedAt: 1, novels: [{ id: 1, pluginId: "source", sourceNovelId: "book", path: "/book", name: "Stale title", cover: "data:image/png;base64,c3RhbGU=",
+  return { version: 6, exportedAt: 1, novels: [{ id: 1, pluginId: "source", sourceNovelId: "book", path: "/book", name: "Stale title", cover: "data:image/png;base64,c3RhbGU=",
     summary: "Stale summary", author: "Old author", artist: null, status: null, genres: null, inLibrary: true, isLocal: false,
     createdAt: 1, updatedAt: 1, libraryAddedAt: 42, lastReadAt: 73 }],
     chapters: [1, 2].map(number => ({ id: number, novelId: 1, path: `/chapter/${number}`, name: `Old chapter ${number}`, chapterNumber: String(number), position: number,
@@ -181,5 +181,33 @@ it("fails before native restore when originals cannot be inspected", async () =>
   storage.failPath = `${first}/novel.json`;
   await expect(prepareBackupRestore(db, manifest())).rejects.toThrow("Storage unavailable");
   expect(storage.files).toEqual(originalFiles);
+  expect(storage.mutations).toBe(0);
+});
+
+it("restores source provenance and custom order from novel.json while leaving excluded files and reading state intact", async () => {
+  const chapterComposition = { version: 1 as const, updatedAt: 20, entries: [1, 2, 3].map(number => ({
+    id: "entry-" + number, path: number === 3 ? "norea-composed:3" : "/chapter/" + number, storageChapterNumber: String(number),
+    sources: [{ pluginId: number === 3 ? "other-source" : "source", novelId: "book", novelPath: "/book",
+      chapterPath: "/raw/" + number, chapterNumber: String(number + 10), name: "Raw " + number, position: number,
+      page: "2", contentType: "text" as const, releaseTime: null }],
+    primarySource: 0,
+    user: { included: number !== 1, order: number === 1 ? 0 : number - 1, name: number === 2 ? "My opening" : null,
+      chapterNumber: number === 1 ? null : String(number - 1) },
+  })) };
+  save(first + "/novel.json", {
+    identity: { pluginId: "source", novelId: "book", novelPath: "/book" }, novel: { name: "Composed" },
+    chapters: { "2": "My opening", "3": "Raw 3" }, chapterComposition,
+  });
+  const originals = new Map(storage.files);
+  const result = await prepareBackupRestore(db, manifest());
+  expect(result.manifest.novels[0]!.chapterComposition).toEqual(chapterComposition);
+  expect(result.manifest.chapters.filter(chapter => chapter.novelId === 1).map(chapter => ({
+    path: chapter.path, name: chapter.name, number: chapter.chapterNumber, position: chapter.position, progress: chapter.progress,
+  }))).toEqual([
+    { path: "/chapter/2", name: "My opening", number: "2", position: 1, progress: 64 },
+    { path: "norea-composed:3", name: "Raw 3", number: "3", position: 2, progress: 0 },
+  ]);
+  expect(result.cache.chapters.some(chapter => chapter.directory === first + "/1")).toBe(false);
+  expect(storage.files).toEqual(originals);
   expect(storage.mutations).toBe(0);
 });

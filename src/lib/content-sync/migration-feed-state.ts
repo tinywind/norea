@@ -25,6 +25,7 @@ export interface MigrationLineageChapter {
 }
 
 export interface MigrationLineageChapterDecision {
+  discardSourceContent?: true;
   sourceChapterPath: string;
   sourceChapterNumber: string | null;
   targetChapterPath: string | null;
@@ -170,9 +171,11 @@ function decision(value: unknown): MigrationLineageChapterDecision {
   const targetChapterPath = input.targetChapterPath === null ? null : path(input.targetChapterPath);
   const targetChapterNumber = number(input.targetChapterNumber);
   if (targetChapterPath === null && targetChapterNumber !== null) return invalid("deleted chapter has a target number");
+  if (input.discardSourceContent !== undefined && (input.discardSourceContent !== true || targetChapterPath === null)) return invalid("source-content discard decision");
   return {
     sourceChapterPath: path(input.sourceChapterPath), sourceChapterNumber: number(input.sourceChapterNumber),
     targetChapterPath, targetChapterNumber,
+    ...(input.discardSourceContent === true ? { discardSourceContent: true as const } : {}),
     sourceMetadataVerified: flag(input.sourceMetadataVerified), targetMetadataVerified: flag(input.targetMetadataVerified),
   };
 }
@@ -242,8 +245,9 @@ function validateDecisions(lineage: WorkMigrationLineage): void {
     const selected = sourceDecisions.get(value.source.id);
     if (!selected) return invalid("source package has no explicit decision");
     if (value.decision === "delete-source") {
-      if (selected.targetChapterPath !== null) invalid("deletion contradicts the selected target");
-    } else if (selected.targetChapterPath === null ||
+      if (selected.targetChapterPath !== null && !selected.discardSourceContent) invalid("deletion contradicts the selected target");
+      if (selected.discardSourceContent && !selected.targetMetadataVerified) invalid("discard target is not in the final metadata");
+    } else if (selected.discardSourceContent || selected.targetChapterPath === null ||
         findChapter(targets, selected.targetChapterPath, selected.targetChapterNumber)?.id !== value.target.id) {
       invalid("mapping differs from the selected target");
     }

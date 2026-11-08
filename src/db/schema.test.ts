@@ -223,3 +223,27 @@ it("upgrades populated v7 storage to a repository list that keeps the saved repo
     expect(() => db.exec("UPDATE repository SET priority=0 WHERE id=1")).toThrow();
   } finally { db.close(); }
 });
+
+it("upgrades v9 with durable chapter composition without changing library, content or reading data", () => {
+  mkdirSync(".tmp", { recursive: true });
+  const directory = mkdtempSync(".tmp/chapter-composition-migration-");
+  const file = join(directory, "norea.db");
+  let db = new DatabaseSync(file);
+  try {
+    applyRegisteredMigrations(db, 0, 9);
+    db.exec("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/book','Book',1)");
+    db.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,bookmark,unread,is_downloaded,content_bytes,media_bytes) VALUES(1,1,'/chapter','Chapter','42',1,76,1,0,1,123,45)");
+    const novel = db.prepare("SELECT * FROM novel").get();
+    const chapter = db.prepare("SELECT * FROM chapter").get();
+    applyRegisteredMigrations(db, 9);
+    db.exec("DELETE FROM work_metadata_dirty");
+    db.prepare("INSERT INTO novel_chapter_composition(novel_id,payload) VALUES(1,?)")
+      .run(JSON.stringify({ version: 1, updatedAt: 42, entries: [] }));
+    expect(db.prepare("SELECT * FROM work_metadata_dirty").all()).toEqual([{ plugin_id: "source", path: "/book" }]);
+    db.close(); db = new DatabaseSync(file);
+    expect(db.prepare("SELECT * FROM novel").get()).toEqual(novel);
+    expect(db.prepare("SELECT * FROM chapter").get()).toEqual(chapter);
+    expect(JSON.parse((db.prepare("SELECT payload FROM novel_chapter_composition").get() as { payload: string }).payload))
+      .toEqual({ version: 1, updatedAt: 42, entries: [] });
+  } finally { db.close(); rmSync(directory, { recursive: true }); }
+});

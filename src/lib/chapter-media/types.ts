@@ -26,7 +26,9 @@ export interface CacheChapterMediaOptions {
   scraperExecutor?: ScraperExecutorId;
   shouldYield?: () => boolean;
   signal?: AbortSignal;
+  /** Storage owner. A composed chapter may fetch its media through another source. */
   sourceId?: string;
+  requestSourceId?: string;
   sourceAccessUrl?: string;
 }
 

@@ -184,13 +184,21 @@ export function buildFinalizeNovelMigrationRequest(
   target: WorkMigrationSnapshot,
 ): FinalizeWorkMigrationRequest {
   const usedTargets = new Set<string>();
-  const chapterDecisions = job.chapters.map(({ sourceChapterPath, sourceChapterNumber, targetChapterPath, targetChapterNumber }) => ({ sourceChapterPath, sourceChapterNumber, targetChapterPath, targetChapterNumber }));
+  const chapterDecisions = job.chapters.map(({ sourceChapterPath, sourceChapterNumber, targetChapterPath, targetChapterNumber, discardSourceContent }) => ({ sourceChapterPath, sourceChapterNumber, targetChapterPath, targetChapterNumber,
+    ...(discardSourceContent === true ? { discardSourceContent: true as const } : {}),
+  }));
   if (new Set(chapterDecisions.map(chapter => chapter.sourceChapterPath)).size !== chapterDecisions.length
     || chapterDecisions.some(chapter => !chapter.sourceChapterPath || (chapter.targetChapterPath === null ? chapter.targetChapterNumber !== null : !chapter.targetChapterPath))) {
     throw new MigrationReviewRequiredError("The complete migration decisions are invalid. The original server work was retained.");
   }
   const mappings: FinalizeWorkMigrationRequest["mappings"] = source.chapters.map(chapter => {
     const mapping = sourceMapping(chapter, job.chapters);
+    if (mapping?.discardSourceContent !== undefined) {
+      if (mapping.discardSourceContent !== true || mapping.decision !== null || !mapping.targetChapterPath || mapping.expectedTargetInventory !== undefined) {
+        throw new MigrationReviewRequiredError("The source-content discard decision is inconsistent. The original server work was retained.");
+      }
+      return { sourceChapterId: chapter.id, decision: "delete-source" as const };
+    }
     if (mapping?.targetChapterPath === null && mapping.targetChapterNumber === null && mapping.decision === null) {
       return { sourceChapterId: chapter.id, decision: "delete-source" as const };
     }
@@ -235,7 +243,7 @@ async function copyMissingServerMigrationChapters(
     const mapping = original && sourceMapping(original, job.chapters);
     if (!original?.available || !original.complete || request.source.revision !== source.work.revision
       || request.source.chapter.revision !== original.revision || request.target.id !== target.work.id
-      || mapping?.decision !== "copy-source" || !mapping.targetChapter
+      || mapping?.decision !== "copy-source" || mapping.discardSourceContent || !mapping.targetChapter
       || !sameMetadata(request.target.chapter, {
         chapterPath: mapping.targetChapterPath, chapterNumber: mapping.targetChapterNumber, ...mapping.targetChapter,
       })) throw new MigrationReviewRequiredError("The prepared server copy no longer matches the approved chapter mapping.");
@@ -260,7 +268,7 @@ async function copyMissingServerMigrationChapters(
   if (job.pendingCopyRequest) await performCopy(job.pendingCopyRequest);
   for (const chapter of source.chapters) {
     const mapping = sourceMapping(chapter, job.chapters);
-    if (mapping?.decision !== "copy-source" || !mapping.targetChapterPath) continue;
+    if (mapping?.decision !== "copy-source" || mapping.discardSourceContent || !mapping.targetChapterPath) continue;
     const destination = targetChapter(mapping, target.chapters);
     if (destination?.available) continue;
     if (!mapping.targetChapter || !mapping.targetChapter.name.trim()

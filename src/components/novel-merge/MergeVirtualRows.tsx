@@ -1,4 +1,5 @@
 import {
+  type KeyboardEventHandler,
   type ReactNode,
   type UIEvent,
   useEffect,
@@ -16,6 +17,7 @@ interface MergeVirtualRowsProps<T> {
   className?: string;
   itemKey: (item: T) => string;
   items: readonly T[];
+  onKeyDown?: KeyboardEventHandler<HTMLDivElement>;
   renderItem: (item: T) => ReactNode;
   /** Fixed row height in rem, so rows scale with the UI font size. */
   rowHeightRem: (item: T) => number;
@@ -49,6 +51,7 @@ export function MergeVirtualRows<T>({
   className,
   itemKey,
   items,
+  onKeyDown,
   renderItem,
   rowHeightRem,
   scrollToKey,
@@ -67,6 +70,14 @@ export function MergeVirtualRows<T>({
     return result;
   }, [items, remPx, rowHeightRem]);
   const totalHeight = offsets[offsets.length - 1]!;
+
+  useEffect(() => {
+    const element = viewportRef.current;
+    if (!element) return;
+    const maximum = Math.max(0, totalHeight - element.clientHeight);
+    if (element.scrollTop > maximum) element.scrollTop = maximum;
+    setScrollTop(element.scrollTop);
+  }, [totalHeight]);
 
   useEffect(() => {
     const element = viewportRef.current;
@@ -122,13 +133,17 @@ export function MergeVirtualRows<T>({
     <div
       aria-label={ariaLabel}
       className={`norea-merge-virtual-viewport${className ? ` ${className}` : ""}`}
+      onKeyDown={onKeyDown}
       onScroll={handleScroll}
       ref={viewportRef}
       role="list"
+      tabIndex={0}
     >
       <div className="norea-merge-virtual-spacer" style={{ height: totalHeight }}>
         {items.slice(start, end).map((item, index) => (
           <div
+            aria-posinset={start + index + 1}
+            aria-setsize={items.length}
             className="norea-merge-virtual-row"
             key={itemKey(item)}
             role="listitem"

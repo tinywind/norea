@@ -245,3 +245,14 @@ describe("incoming migration receipts", () => {
     await expect(saveIncomingMigrationCursor(server, -1)).rejects.toThrow("sequence");
   });
 });
+
+it("preserves an explicit source-body discard with a live reading-state target", () => {
+  const input = lineage();
+  input.chapterDecisions[0]!.discardSourceContent = true;
+  input.mappings = [{ source: input.mappings[0]!.source, decision: "delete-source", target: null, targetInventory: null }];
+  expect(parseWorkMigrationLineage(input).chapterDecisions[0]).toMatchObject({
+    targetChapterPath: "/target/1", discardSourceContent: true,
+  });
+  delete input.chapterDecisions[0]!.discardSourceContent;
+  expect(() => parseWorkMigrationLineage(input)).toThrow(/contradicts/);
+});

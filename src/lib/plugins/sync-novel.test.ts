@@ -2,6 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
+vi.mock("../../db/chapter-composition", async original => ({
+  ...await original<typeof import("../../db/chapter-composition")>(),
+  getChapterComposition: vi.fn(async () => null),
+}));
+
 vi.mock("../../db/client", () => ({
   getDb: vi.fn(),
   runDatabaseTransaction: vi.fn(),

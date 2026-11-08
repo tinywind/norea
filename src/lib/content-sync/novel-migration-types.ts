@@ -13,6 +13,8 @@ export interface NovelMigrationChapter {
   targetChapterPath: string | null;
   targetChapterNumber: string | null;
   decision: "copy-source" | "keep-target" | null;
+  /** Retain the reading-state mapping while explicitly discarding the source body. */
+  discardSourceContent?: true;
   expectedTargetInventory?: ChapterPayloadInventory;
   targetChapter?: { name: string; position: number; page: string };
 }
@@ -36,7 +38,7 @@ export interface WorkMigrationSnapshot {
 }
 
 export type NovelMigrationChapterDecision = Pick<NovelMigrationChapter,
-  "sourceChapterPath" | "sourceChapterNumber" | "targetChapterPath" | "targetChapterNumber">;
+  "sourceChapterPath" | "sourceChapterNumber" | "targetChapterPath" | "targetChapterNumber" | "discardSourceContent">;
 
 export interface FinalizeWorkMigrationRequest {
   operationId: string;

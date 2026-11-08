@@ -78,6 +78,7 @@ export function resolveIncomingNovelMigration(entry: WorkMigrationLineage, entri
       }
       if (!next) throw new Error("A later work migration does not explain an earlier mapped chapter.");
       return { ...decision, targetChapterPath: next.targetChapterPath, targetChapterNumber: next.targetChapterNumber,
+        discardSourceContent: next.targetChapterPath !== null && (decision.discardSourceContent || next.discardSourceContent) ? true : undefined,
         targetMetadataVerified: next.targetMetadataVerified };
     });
     chain.push(successor);

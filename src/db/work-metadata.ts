@@ -1,3 +1,5 @@
+import { chapterCompositionCatalog } from "../lib/chapter-composition";
+import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "./chapter-composition";
 import type Database from "@tauri-apps/plugin-sql";
 import { base64ToBytes, bytesToBase64 } from "../lib/base64";
 import { chapterStorageDirectoryName, chapterStorageRelativeDir } from "../lib/chapter-storage-path";
@@ -40,7 +42,34 @@ export async function applyNovelMetadataToCache(db: Database, metadata: NovelMet
   [metadata.identity.pluginId, metadata.identity.novelPath, n.name, cover, optionalText(n.author), optionalText(n.artist), optionalText(n.summary), optionalText(n.status), optionalText(n.genres), n.rating, n.isLocal ? 1 : 0, options?.addToLibrary ? 1 : 0, options?.addToLibrary ? Date.now() : null, options?.preserveMissingMetadata ? 1 : 0, options?.preserveCachedNovel ? 1 : 0, metadata.identity.novelId]);
   const [row] = await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
   if (!row) throw new Error("work metadata: cache identity missing");
-  if (!options?.preserveCachedNovel && Object.keys(metadata.chapters).length) {
+  const currentComposition = await getChapterComposition(db, row.id);
+  const incomingComposition = options?.preserveCachedNovel ? undefined : metadata.chapterComposition;
+  const composition = incomingComposition && (!currentComposition || incomingComposition.updatedAt > currentComposition.updatedAt)
+    ? incomingComposition : currentComposition;
+  if (composition) {
+    // Only an already-recorded composition can prove which source owns a numeric placeholder.
+    const recovered = await db.select<{ id: number; path: string; chapterNumber: string | null }[]>(
+      "SELECT id,path,chapter_number AS chapterNumber FROM chapter WHERE novel_id=$1", [row.id]);
+    const paths = new Set(recovered.map(chapter => chapter.path));
+    const entriesByNumber = new Map(composition.entries.map(entry => [entry.storageChapterNumber, entry]));
+    const previousEntriesByNumber = new Map(currentComposition?.entries.map(entry => [entry.storageChapterNumber, entry]) ?? []);
+    for (const chapter of recovered) {
+      const entry = chapter.chapterNumber === null ? undefined : entriesByNumber.get(chapter.chapterNumber);
+      const previous = entry && previousEntriesByNumber.get(entry.storageChapterNumber);
+      const source = entry?.sources[entry.primarySource];
+      const previousSource = previous?.sources[previous.primarySource];
+      const sameSource = source && previousSource && source.pluginId === previousSource.pluginId && source.novelId === previousSource.novelId &&
+        (source.sourceChapterId && previousSource.sourceChapterId
+          ? source.sourceChapterId === previousSource.sourceChapterId : source.chapterPath === previousSource.chapterPath);
+      if (entry && previous?.id === entry.id && previous.path === entry.path && sameSource &&
+        entry.path !== chapter.path && /^(?:norea|local)-folder:/.test(chapter.path) && !paths.has(entry.path)) {
+        await db.execute("UPDATE chapter SET path=$1 WHERE id=$2", [entry.path, chapter.id]);
+        paths.add(entry.path);
+      }
+    }
+    await materializeChapterComposition(db, row.id, composition);
+    await setChapterComposition(db, row.id, composition);
+  } else if (!options?.preserveCachedNovel && Object.keys(metadata.chapters).length) {
     const existing = await db.select<{ path: string; chapterNumber: string | null }[]>("SELECT path,chapter_number AS chapterNumber FROM chapter WHERE novel_id=$1", [row.id]);
     const pathsByNumber = new Map<string, string[]>();
     for (const chapter of existing) {
@@ -73,7 +102,11 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
     "SELECT EXISTS(SELECT 1 FROM content_sync_cache WHERE cache_key LIKE 'norea-source-chapter-renumber:%' AND json_extract(payload,'$.work.id')=$1) AS pending", [novelId]);
   if (reconciliation?.pending) throw new Error("Chapter storage reconciliation is pending. Existing files were retained.");
   const downloadRevision = snapshot?.downloadRevision ?? currentChapterDownloadRevision();
-  const discovered = snapshot?.chapters ?? await listStoredNovelChapters(directory);
+  const composition = await getChapterComposition(db, novelId);
+  const includedNumbers = composition ? new Set(composition.entries.filter(entry => entry.user.included).map(entry => entry.storageChapterNumber)) : null;
+  // The composed list is authoritative. Orphaned/excluded files stay on disk without resurrecting chapters.
+  const discovered = (snapshot?.chapters ?? await listStoredNovelChapters(directory))
+    .filter(chapter => !includedNumbers || includedNumbers.has(chapter.chapterNumber));
   const [novel] = await db.select<{ pluginId: string }[]>("SELECT plugin_id AS pluginId FROM novel WHERE id=$1", [novelId]);
   const isLocal = novel?.pluginId === LOCAL_PLUGIN_ID;
   const cached = await db.select<{ id: number; path: string; name: string; chapterNumber: string | null; position: number; directory: string | null; isDownloaded: number; storedContentType: string | null; mediaRepairNeeded: number; contentBytes: number; mediaBytes: number }[]>(
@@ -547,6 +580,7 @@ async function flushDirtyWorkMetadata(db: Database, fetched?: FetchedChapterCata
       cover = { fileName: `cover.${extension}`, contentType };
       localCoverBytes = base64ToBytes(encoded!);
     }
+    const composition = await getChapterComposition(db, novel.id);
     const sourceCatalog = fileChanged
       ? Object.fromEntries(chapters.filter(chapter => chapter.chapterNumber !== null).map(chapter => [String(Number(chapter.chapterNumber)), chapter.name]))
       : { ...previous?.chapters };
@@ -555,7 +589,8 @@ async function flushDirtyWorkMetadata(db: Database, fetched?: FetchedChapterCata
     }
     const metadata = parseNovelMetadata({ schemaVersion: 1, identity: { pluginId: novel.pluginId, novelId: novel.sourceNovelId!, novelPath: novel.path },
       novel: { name: novel.name, author: novel.author, artist: novel.artist, summary: novel.summary, status: novel.status, genres: novel.genres, rating: novel.rating, isLocal: Boolean(novel.isLocal) },
-      cover, chapters: novel.isLocal
+      ...(composition ? { chapterComposition: composition } : {}),
+      cover, chapters: composition ? chapterCompositionCatalog(composition) : novel.isLocal
         ? Object.fromEntries(chapters.map(chapter => [chapterStorageDirectoryName(chapter), chapter.name]))
         : { ...sourceCatalog, ...(fetched?.novelId === novel.id ? fetched.chapters : {}) } });
     const coverChanged = localCoverBytes ? await writeStoredNovelCover(directory, metadata, localCoverBytes) : false;

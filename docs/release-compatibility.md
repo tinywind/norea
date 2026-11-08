@@ -242,7 +242,7 @@ requirements must be decided explicitly before implementation.
   automatically and Extensions offers "Choose publisher" when a repository lists
   it. Removing a repository keeps the publisher URL of its plugins, so adding it
   again restores their updates. Full device snapshots include the columns under
-  the exact-schema policy; portable backups carry them in manifest format 5.
+  the exact-schema policy; portable backups carry them in manifest format 6.
   Automatic extension updates are an additive `autoUpdateExtensions` flag in the
   `browse-plugin-settings` entry, which both backup kinds carry; a missing or
   non-boolean value reads as off.
@@ -422,13 +422,15 @@ requirements must be decided explicitly before implementation.
 - Work sync reads the pending server change pages and applies only the latest
   record for each work. It advances the saved cursor after processing those
   records; failed processing retains completed baselines for a safe retry.
-- Portable local file backups use manifest format 5, which lifts the
-  one-repository limit of format 4 and adds `priority` and `enabled` per
+- Portable local file backups use manifest format 6. Format 5 lifted the
+  one-repository limit of format 4 and added `priority` and `enabled` per
   repository and the nullable `repositoryUrl` publisher per installed plugin.
+  Format 6 also retains each work's composed chapter list and source provenance.
   Restore rejects a repository URL listed twice and a priority below 1 before it
   replaces any row (format 4 added the per-chapter `foundByCheck` flag, format 3
-  `downloadGoals`). Format 4 and earlier archives are rejected without conversion. They exclude device authentication keys. Their restore behavior below is separate from full device
-  snapshots stored on the content server.
+  `downloadGoals`). Format 5 and earlier archives are rejected without conversion.
+  Portable backups exclude device authentication keys. Their restore behavior
+  below is separate from full device snapshots stored on the content server.
 - Automatic backup (RD15) writes the same portable archive to `backups/` in the
   storage folder as `norea-auto-backup-<yyyyMMddHHmmss>.zip`. Each archive is
   written under a temporary name and renamed into place, and only after that
@@ -790,3 +792,19 @@ unsupported.
    failure rollback. Keep earlier migration SQL unchanged.
 4. Document compatibility consequences. Never reset deployed databases or device
    data as part of a code change without explicit authorization.
+
+### Composed chapter lists and source provenance
+
+Application database migration 10 appends `novel_chapter_composition` without changing the earlier migration SQL or checksums. Its foreign key follows the owning work, and its insert/update/delete triggers publish metadata through the same dirty journal and transaction/rollback path as ordinary work edits. Existing library, chapter, download, queue, and reading rows are retained by the schema upgrade.
+
+An optional `chapterComposition` version-1 document is stored both in that table and in `novel.json`. Every entry retains all source snapshots (plugin/work/chapter identities, raw number, title, source position, page, content type, and release time), a selected primary source, and a separate user object (inclusion, final order, displayed number, and title override). Excluded entries remain as tombstones. Included orders are unique and consecutive, while entry IDs, target-local paths, and storage chapter numbers are unique and stable.
+
+A composed chapter's `chapter.chapter_number` and directory name remain physical storage keys. User reordering changes `position` and the displayed number; it does not rename directories or repoint downloaded bodies. A source-preferred chapter receives a new composed identity/storage key when retaining the old target identity would allow an unrelated body to be adopted. Normal reading, progress, bookmark, and stored-content fields survive materialization; excluded reading state is retained by the existing reading-state journal. Before materialization, occupied storage keys must match an existing source row, the previous composition, the original work file, or an exact validated native copy. Unidentified retained files cannot be adopted by a later source refresh or metadata import; a conflict aborts the transaction and retains those files.
+
+For composed works, `novel.json.chapters` must exactly equal the included entries' physical storage keys and effective titles. It is never unioned with a stale source catalog. The parser rejects contradictory documents. Full source refresh updates upstream snapshots and can append newly discovered entries without overwriting user order, names, exclusions, or existing storage keys. File recovery reconstructs target-local paths from the document; orphaned and excluded folders remain on disk without recreating list entries. Content-server imports similarly cannot reintroduce chapters absent from the included list.
+
+Metadata imports that omit composition or carry an older/equal composition timestamp retain the current composition. Content-server work upload, read, and index rebuilding preserve the optional document; source-number canonicalization is not applied to composed catalogs. Application and content-server changes must be released together; an older metadata consumer that strips unknown fields cannot preserve this feature.
+
+Portable backup manifest format 6 includes each work's optional composition and restores it in the native replacement transaction, after validating that included identities, physical numbers, names, and final order agree with the chapter rows. Existing authoritative work files supply the composition during restore, and restoration never modifies those originals. Format 5 and earlier archives are rejected under the existing current-format-only policy: accepting them as an equivalent export would silently lose provenance and user exclusions. Full-device database snapshots carry the new table and remain subject to the exact-schema migration-history policy.
+
+When the user selects the target source's body, an optional `discardSourceContent: true` chapter decision separates reading-state migration from body preservation. The A-to-B chapter mapping remains available for personal reading progress, while the corresponding server artifact mapping is `delete-source`. The server requires the explicit flag, complete source decision coverage, and a target entry in the final metadata; it rejects contradictory copy/preserve requests. A missing B body is fetched from B later. Server-only copy, migration-chain replay, and recipient-device merge paths must never substitute A's body for that choice.

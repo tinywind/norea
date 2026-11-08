@@ -1,3 +1,4 @@
+import { chapterCompositionCatalog, parseChapterComposition, type ChapterCompositionV1 } from "../chapter-composition";
 import { isStorageId } from "../storage-id";
 import { LOCAL_PLUGIN_ID } from "../plugins/types";
 
@@ -19,6 +20,7 @@ export interface NovelMetadataV1 {
   };
   cover: { fileName: string; contentType: string | null } | null;
   chapters: Record<string, string>;
+  chapterComposition?: ChapterCompositionV1;
 }
 
 export function safeMetadataChild(value: string): boolean {
@@ -63,6 +65,14 @@ export function parseNovelMetadata(raw: unknown): NovelMetadataV1 {
       chapters[number] = name as string;
     }
   }
+  const chapterComposition = value.chapterComposition === undefined ? undefined : parseChapterComposition(value.chapterComposition);
+  if (chapterComposition) {
+    const expected = chapterCompositionCatalog(chapterComposition);
+    if (Object.keys(chapters).length !== Object.keys(expected).length ||
+      Object.entries(expected).some(([number, name]) => chapters[number] !== name)) {
+      throw new Error("work metadata: chapter catalog does not match the user composition");
+    }
+  }
   let cover: NovelMetadataV1["cover"] = null;
   if (value.cover != null) {
     const input = record(value.cover);
@@ -83,6 +93,7 @@ export function parseNovelMetadata(raw: unknown): NovelMetadataV1 {
     },
     cover,
     chapters,
+    ...(chapterComposition ? { chapterComposition } : {}),
   };
 }
 

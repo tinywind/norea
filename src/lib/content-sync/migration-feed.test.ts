@@ -246,3 +246,13 @@ describe("received migration synchronization", () => {
     expect(applyIncomingNovelMigration).not.toHaveBeenCalled();
   });
 });
+
+it("preserves a later target-primary body choice through the full migration chain", () => {
+  const first = edge();
+  const second = edge("b", "c", 2);
+  second.chapterDecisions[0]!.discardSourceContent = true;
+  second.mappings = [{ source: second.mappings[0]!.source, decision: "delete-source", target: null, targetInventory: null }];
+  expect(resolveIncomingNovelMigration(first, [first, second]).chapterDecisions[0]).toMatchObject({
+    sourceChapterPath: "/a/1", targetChapterPath: "/c/1", discardSourceContent: true,
+  });
+});

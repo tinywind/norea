@@ -1,3 +1,4 @@
+import { parseChapterComposition } from "../chapter-composition";
 import { invoke } from "@tauri-apps/api/core";
 import { cancelWorkMetadataRecovery, getDb, runExclusiveDatabaseOperation } from "../../db/client";
 import { restoreWorkMetadataDirectories } from "../../db/work-metadata";
@@ -29,6 +30,7 @@ import {
   type BackupVpnGateServerVerdict,
 } from "./format";
 interface RawNovelRow {
+  chapterCompositionPayload?: string | null;
   id: number;
   sourceNovelId: string | null;
   pluginId: string;
@@ -134,7 +136,8 @@ const SELECT_NOVELS = `
     created_at     AS createdAt,
     updated_at     AS updatedAt,
     library_added_at AS libraryAddedAt,
-    last_read_at   AS lastReadAt
+    last_read_at   AS lastReadAt,
+    (SELECT payload FROM novel_chapter_composition WHERE novel_id=novel.id) AS chapterCompositionPayload
   FROM novel
   ORDER BY id
 `;
@@ -266,6 +269,7 @@ function writeBackupSettings(settings: readonly BackupSetting[]): void {
 
 function toNovel(row: RawNovelRow): BackupNovel {
   return {
+    ...(row.chapterCompositionPayload ? { chapterComposition: parseChapterComposition(JSON.parse(row.chapterCompositionPayload)) } : {}),
     id: row.id,
     pluginId: row.pluginId,
     sourceNovelId: row.sourceNovelId,

@@ -204,6 +204,8 @@ struct BackupRestoreNovel {
     updated_at: i64,
     library_added_at: Option<i64>,
     last_read_at: Option<i64>,
+    #[serde(default)]
+    chapter_composition: Option<serde_json::Value>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -407,12 +409,102 @@ fn validate_restore_repositories(repositories: &[BackupRestoreRepository]) -> Re
     Ok(())
 }
 
+fn validate_restore_chapter_compositions(manifest: &BackupRestoreManifest) -> Result<(), String> {
+    use serde_json::Value;
+    fn text(value: &Value) -> bool {
+        value.as_str().is_some_and(|value| !value.trim().is_empty() && value.chars().count() <= 4096)
+    }
+    fn nullable_text(value: &Value) -> bool { value.is_null() || text(value) }
+    fn natural(value: &Value) -> Option<u64> {
+        value.as_u64().filter(|value| *value <= 9_007_199_254_740_991)
+    }
+    fn storage_number(value: &str) -> bool {
+        value.parse::<f64>().is_ok_and(|number| number.is_finite() && number >= 0.0 && number.to_string() == value)
+    }
+    fn storage_id(value: &Value) -> bool {
+        let Some(value) = value.as_str() else { return false };
+        let lower = value.to_ascii_lowercase();
+        let reserved = lower.split('.').next().unwrap_or("");
+        !value.is_empty() && value.len() <= 240 &&
+            !value.starts_with(['.', ' ']) && !value.ends_with(['.', ' ']) &&
+            !value.chars().any(|character| character <= '\u{001f}' || "<>:\"/\\|?*".contains(character)) &&
+            !["con", "prn", "aux", "nul"].contains(&reserved) &&
+            !(reserved.len() == 4 && (reserved.starts_with("com") || reserved.starts_with("lpt")) &&
+                reserved.as_bytes()[3].is_ascii_digit()) &&
+            ![".tmp", ".bak", ".part", ".partial", ".norea-sync-backup"].iter().any(|suffix| lower.ends_with(suffix))
+    }
+    fn source_valid(value: &Value) -> bool {
+        let fields = ["pluginId", "novelId", "novelPath", "chapterPath", "name", "page"];
+        fields.iter().all(|field| text(&value[*field])) &&
+            value.get("chapterNumber").is_some_and(nullable_text) && value.get("releaseTime").is_some_and(nullable_text) &&
+            storage_id(&value["pluginId"]) && storage_id(&value["novelId"]) &&
+            value["pluginId"].as_str().is_some_and(|plugin| plugin.split('-').all(|part| !part.is_empty() &&
+                part.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()))) &&
+            value["novelPath"].as_str().is_some_and(|path| !path.starts_with("norea-folder:") &&
+                !path.starts_with("//") && !path.to_ascii_lowercase().starts_with("http://") &&
+                !path.to_ascii_lowercase().starts_with("https://")) &&
+            natural(&value["position"]).is_some() &&
+            value.get("sourceChapterId").is_none_or(text) &&
+            matches!(value["contentType"].as_str(), Some("html" | "text" | "pdf" | "markdown" | "epub"))
+    }
+    for novel in &manifest.novels {
+        let Some(value) = &novel.chapter_composition else { continue };
+        let invalid = || format!("backup_restore_snapshot: invalid chapter composition for novel {}", novel.id);
+        if value["version"].as_u64() != Some(1) || natural(&value["updatedAt"]).is_none() ||
+            value.to_string().len() > 16 * 1024 * 1024 {
+            return Err(invalid());
+        }
+        let entries = value["entries"].as_array().ok_or_else(invalid)?;
+        if entries.len() > 100_000 { return Err(invalid()); }
+        let mut by_path = std::collections::HashMap::new();
+        for chapter in manifest.chapters.iter().filter(|chapter| chapter.novel_id == novel.id) {
+            if by_path.insert(chapter.path.as_str(), chapter).is_some() { return Err(invalid()); }
+        }
+        let mut ids = HashSet::new();
+        let mut paths = HashSet::new();
+        let mut numbers = HashSet::new();
+        let mut orders = HashSet::new();
+        let mut included_paths = HashSet::new();
+        for entry in entries {
+            let id = entry["id"].as_str().filter(|_| text(&entry["id"])).ok_or_else(invalid)?;
+            let path = entry["path"].as_str().filter(|_| text(&entry["path"])).ok_or_else(invalid)?;
+            let number = entry["storageChapterNumber"].as_str().filter(|value| storage_number(value)).ok_or_else(invalid)?;
+            if !ids.insert(id) || !paths.insert(path) || !numbers.insert(number) { return Err(invalid()); }
+            let sources = entry["sources"].as_array().ok_or_else(invalid)?;
+            let primary = natural(&entry["primarySource"]).ok_or_else(invalid)? as usize;
+            if sources.is_empty() || sources.len() > 1000 || primary >= sources.len() ||
+                sources.iter().any(|source| !source_valid(source)) { return Err(invalid()); }
+            let user = &entry["user"];
+            let included = user["included"].as_bool().ok_or_else(invalid)?;
+            let order = natural(&user["order"]).ok_or_else(invalid)?;
+            if !user.get("name").is_some_and(nullable_text) || !user.get("chapterNumber").is_some_and(nullable_text) { return Err(invalid()); }
+            if included {
+                if order == 0 || !orders.insert(order) { return Err(invalid()); }
+                included_paths.insert(path);
+                let source = &sources[primary];
+                let name = user["name"].as_str().or_else(|| source["name"].as_str()).ok_or_else(invalid)?;
+                let chapter = by_path.get(path).ok_or_else(invalid)?;
+                if chapter.chapter_number.as_deref() != Some(number) ||
+                    chapter.position != order as i64 || chapter.name != name ||
+                    chapter.source_content_type != source["contentType"].as_str().unwrap_or("") {
+                    return Err(invalid());
+                }
+            }
+        }
+        if (1..=orders.len() as u64).any(|order| !orders.contains(&order)) ||
+            manifest.chapters.iter().any(|chapter| chapter.novel_id == novel.id && !included_paths.contains(chapter.path.as_str())) {
+            return Err(invalid());
+        }
+    }
+    Ok(())
+}
+
 async fn execute_restore_snapshot(
     tx: &mut sqlx::Transaction<'_, Sqlite>,
     manifest: BackupRestoreManifest,
     cache: &BackupRestoreCache,
 ) -> Result<(), String> {
-    if manifest.version != 5 {
+    if manifest.version != 6 {
         return Err(format!(
             "backup_restore_snapshot: unsupported backup version {}",
             manifest.version
@@ -426,6 +518,7 @@ async fn execute_restore_snapshot(
         return Err("backup_restore_snapshot: inline chapter bodies are not supported".to_string());
     }
     validate_restore_repositories(&manifest.repositories)?;
+    validate_restore_chapter_compositions(&manifest)?;
     sqlx::query("DELETE FROM novel_category")
         .execute(&mut **tx)
         .await
@@ -536,6 +629,14 @@ async fn execute_restore_snapshot(
         .execute(&mut **tx)
         .await
         .map_err(|err| format!("backup_restore_snapshot: insert novel: {err}"))?;
+        if let Some(composition) = &novel.chapter_composition {
+            sqlx::query("INSERT INTO novel_chapter_composition(novel_id,payload) VALUES($1,$2)")
+                .bind(novel.id)
+                .bind(composition.to_string())
+                .execute(&mut **tx)
+                .await
+                .map_err(|err| format!("backup_restore_snapshot: insert chapter composition: {err}"))?;
+        }
     }
 
     let stored_chapters: HashSet<_> = cache.chapters.iter()
@@ -1106,7 +1207,7 @@ mod tests {
     #[test]
     fn restore_manifest_rejects_an_unknown_vpn_gate_verdict() {
         let json = r#"{
-            "version": 5,
+            "version": 6,
             "installedPlugins": [],
             "downloadGoals": [],
             "novels": [],
@@ -1264,7 +1365,7 @@ mod tests {
             chapter
         }).collect();
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 5,
+            "version": 6,
             "novels": [{ "id": 1, "pluginId": "demo", "path": "/n/1", "name": "Novel",
                 "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1 }],
             "chapters": chapters, "categories": [], "novelCategories": [], "repositories": [],
@@ -1291,7 +1392,7 @@ mod tests {
         let pool = restore_pool().await;
         let json = format!(
             r#"{{
-                "version": 5,
+                "version": 6,
                 "installedPlugins": [],
                 "vpnGateServerVerdicts": [],
                 "downloadGoals": [],
@@ -1332,7 +1433,7 @@ mod tests {
         }
         let json = format!(
             r#"{{
-                "version": 5,
+                "version": 6,
                 "installedPlugins": [],
                 "vpnGateServerVerdicts": [],
                 "downloadGoals": [],
@@ -1399,7 +1500,7 @@ mod tests {
         sqlx::query("INSERT INTO work_metadata_sync_journal(plugin_id,path,revision) VALUES('demo','/original',7)")
             .execute(&pool).await.expect("seed pending revision");
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 5, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
+            "version": 6, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
             "repositories": [], "installedPlugins": [], "vpnGateServerVerdicts": [], "downloadGoals": []
         })).expect("parse manifest");
         let cache: BackupRestoreCache = serde_json::from_value(serde_json::json!({
@@ -1425,7 +1526,7 @@ mod tests {
         let novels: Vec<_> = [1, 2].into_iter().map(|id| serde_json::json!({ "id": id, "pluginId": "demo",
             "path": format!("/n/{id}"), "name": "Novel", "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1 })).collect();
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 5,
+            "version": 6,
             "novels": novels,
             "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
             "installedPlugins": [], "vpnGateServerVerdicts": [],
@@ -1440,7 +1541,7 @@ mod tests {
             [(1, "keep_ahead".to_string(), Some(3), 10), (2, "none".to_string(), None, 11)]);
 
         let invalid: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 5, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
+            "version": 6, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
             "installedPlugins": [], "vpnGateServerVerdicts": [],
             "downloadGoals": [{ "novelId": 1, "kind": "keep_ahead", "count": null, "updatedAt": 10 }]
         })).expect("parse manifest");
@@ -1450,7 +1551,7 @@ mod tests {
         assert!(serde_json::from_value::<BackupRestoreNovelDownloadGoal>(serde_json::json!({
             "novelId": 1, "kind": "next10", "count": null, "updatedAt": 1 })).is_err());
         let opt_out_with_count: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 5, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
+            "version": 6, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
             "installedPlugins": [], "vpnGateServerVerdicts": [],
             "downloadGoals": [{ "novelId": 1, "kind": "none", "count": 2, "updatedAt": 10 }]
         })).expect("parse manifest");
@@ -1471,7 +1572,7 @@ mod tests {
             "sourceCode": "code", "installedAt": 1, "repositoryUrl": repository });
         let manifest = |repositories: serde_json::Value| -> BackupRestoreManifest {
             serde_json::from_value(serde_json::json!({
-                "version": 5, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
+                "version": 6, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
                 "repositories": repositories,
                 "installedPlugins": [plugin("bound", serde_json::json!("https://first.test/plugins.json")),
                     plugin("unknown", serde_json::Value::Null)],
@@ -1522,7 +1623,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("seed category");
-        for (version, content) in [(1, None), (2, None), (3, None), (4, None), (5, Some("<p>old body</p>"))] {
+        for (version, content) in [(1, None), (2, None), (3, None), (4, None), (5, None), (6, Some("<p>old body</p>"))] {
             let json = format!(
                 r#"{{"version":{version},"novels":[],"chapters":[{}],"categories":[],"novelCategories":[],"repositories":[],"installedPlugins":[],"vpnGateServerVerdicts":[],"downloadGoals":[]}}"#,
                 restore_chapter_json(10, true, content),
@@ -1555,7 +1656,7 @@ mod tests {
             "norea-backup-20261001000000.zip", "notes.txt", "norea-auto-backup-2026.zip"] {
             fs::write(backups.join(name), b"keep?").expect("seed");
         }
-        let pruned = publish_auto_backup(&backups, r#"{"version":5}"#, "norea-auto-backup-20261103000000.zip", 2)
+        let pruned = publish_auto_backup(&backups, r#"{"version":6}"#, "norea-auto-backup-20261103000000.zip", 2)
             .expect("publish");
         assert_eq!(pruned, ["norea-auto-backup-20261101000000.zip"]);
         let mut names: Vec<String> = fs::read_dir(&backups).unwrap()
@@ -1565,7 +1666,7 @@ mod tests {
             "norea-auto-backup-20261103000000.zip", "norea-backup-20261001000000.zip", "notes.txt"]);
         let published = unpack_backup_path(backups.join("norea-auto-backup-20261103000000.zip").to_string_lossy().into_owned())
             .expect("unpack published backup");
-        assert_eq!(published.manifest_json, r#"{"version":5}"#);
+        assert_eq!(published.manifest_json, r#"{"version":6}"#);
     }
 
     #[test]
@@ -1624,7 +1725,7 @@ mod tests {
         let zip_path = dir.path().join("backup.zip");
         let zip_path_str = zip_path.to_string_lossy().to_string();
 
-        let manifest_json = r#"{"version":5,"exportedAt":1700000000}"#.to_string();
+        let manifest_json = r#"{"version":6,"exportedAt":1700000000}"#.to_string();
 
         write_backup_zip(&manifest_json, &zip_path_str).expect("pack");
 
@@ -1727,4 +1828,70 @@ mod tests {
         let err = result.unwrap_err();
         assert!(err.contains("compression ratio"), "error was: {err}");
     }
+    fn composed_restore_manifest() -> serde_json::Value {
+        let mut chapter: serde_json::Value = serde_json::from_str(&restore_chapter_json(10, false, None)).unwrap();
+        chapter["position"] = serde_json::json!(1);
+        let composition = serde_json::json!({
+            "version": 1, "updatedAt": 20,
+            "entries": [{
+                "id": "entry-10", "path": "/c/10", "storageChapterNumber": "10",
+                "sources": [{
+                    "pluginId": "demo", "novelId": "1", "novelPath": "/n/1", "chapterPath": "/raw/10",
+                    "chapterNumber": "500", "name": "Source title", "position": 500, "page": "1",
+                    "contentType": "text", "releaseTime": null
+                }], "primarySource": 0,
+                "user": { "included": true, "order": 1, "name": "Chapter 10", "chapterNumber": "1" }
+            }, {
+                "id": "entry-11", "path": "/c/11", "storageChapterNumber": "11",
+                "sources": [{
+                    "pluginId": "demo", "novelId": "1", "novelPath": "/n/1", "chapterPath": "/raw/11",
+                    "chapterNumber": "501", "name": "Excluded title", "position": 501, "page": "1",
+                    "contentType": "html", "releaseTime": null
+                }], "primarySource": 0,
+                "user": { "included": false, "order": 0, "name": null, "chapterNumber": null }
+            }]
+        });
+        serde_json::json!({
+            "version": 6,
+            "novels": [{ "id": 1, "pluginId": "demo", "path": "/n/1", "name": "Novel",
+                "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1,
+                "chapterComposition": composition }],
+            "chapters": [chapter], "categories": [], "novelCategories": [], "repositories": [],
+            "installedPlugins": [], "vpnGateServerVerdicts": [], "downloadGoals": []
+        })
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_preserves_composition_provenance_and_excluded_entries() {
+        let pool = restore_pool().await;
+        let value = composed_restore_manifest();
+        let expected = value["novels"][0]["chapterComposition"].clone();
+        let manifest: BackupRestoreManifest = serde_json::from_value(value).unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        execute_restore_snapshot(&mut tx, manifest, &BackupRestoreCache::default()).await.unwrap();
+        tx.commit().await.unwrap();
+        let payload: String = sqlx::query_scalar("SELECT payload FROM novel_chapter_composition WHERE novel_id=1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&payload).unwrap(), expected);
+        let row: (String, i64, i64) = sqlx::query_as("SELECT chapter_number,position,progress FROM chapter WHERE id=10")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(row, ("10".into(), 1, 40));
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chapter").fetch_one(&pool).await.unwrap(), 1);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_rejects_invalid_composition_before_replacing_any_rows() {
+        let pool = restore_pool().await;
+        sqlx::query("INSERT INTO novel(id,plugin_id,path,name) VALUES(99,'demo','/original','Original')")
+            .execute(&pool).await.unwrap();
+        let mut value = composed_restore_manifest();
+        value["novels"][0]["chapterComposition"]["entries"][0]["user"]["order"] = serde_json::json!(2);
+        let manifest: BackupRestoreManifest = serde_json::from_value(value).unwrap();
+        let mut tx = pool.begin().await.unwrap();
+        let error = execute_restore_snapshot(&mut tx, manifest, &BackupRestoreCache::default()).await.unwrap_err();
+        assert!(error.contains("invalid chapter composition"));
+        tx.rollback().await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, String>("SELECT name FROM novel WHERE id=99").fetch_one(&pool).await.unwrap(), "Original");
+    }
+
 }

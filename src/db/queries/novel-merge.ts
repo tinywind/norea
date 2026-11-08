@@ -1,4 +1,7 @@
 import type Database from "@tauri-apps/plugin-sql";
+import type { ChapterCompositionV1 } from "../../lib/chapter-composition";
+import type { ChapterCompositionPreparedCopy } from "../../lib/chapter-composition-storage";
+import { materializeChapterComposition, setChapterComposition } from "../chapter-composition";
 import {
   isKnownChapterContentType,
   type ChapterContentType,
@@ -25,6 +28,10 @@ export interface ApplyNovelMergeInput {
   targetNovelId: number;
   decisions: readonly NovelMergeChapterDecision[];
   preparedDownloads: readonly PreparedNovelMergeDownload[];
+  composition?: ChapterCompositionV1;
+  preparedCompositionCopies?: readonly ChapterCompositionPreparedCopy[];
+  readingStateSourcePathByTargetPath?: Readonly<Record<string, string>>;
+  skipSourceContentChapterIds?: readonly number[];
   contentSyncServerUrl?: string;
   contentSyncSourceSnapshot?: WorkMigrationSnapshot;
   contentSyncTargetMetadata?: NovelMigrationTargetMetadata;
@@ -142,6 +149,10 @@ export async function applyNovelMergeInDb({
   recordIncomingMigration,
   decisions,
   preparedDownloads,
+  composition,
+  preparedCompositionCopies,
+  readingStateSourcePathByTargetPath,
+  skipSourceContentChapterIds,
   sourceNovelId,
   targetNovelId,
 }: ApplyNovelMergeInput): Promise<NovelMergeDatabaseResult> {
@@ -175,6 +186,24 @@ export async function applyNovelMergeInDb({
     }
     if (sourceNovel.pluginId === targetNovel.pluginId) {
       throw new Error("Novel merge requires different source plugins.");
+    }
+
+    if (composition) {
+      const previous = await db.select<{ path: string; bookmark: number; unread: number; progress: number; readAt: number | null; excludedAt: number | null }[]>(
+        "SELECT path,bookmark,unread,progress,read_at AS readAt,(SELECT created_at FROM chapter_download_goal_exclusion WHERE chapter_id=chapter.id) AS excludedAt FROM chapter WHERE novel_id=$1", [targetNovelId]);
+      const previousByPath = new Map(previous.map(chapter => [chapter.path, chapter]));
+      await materializeChapterComposition(db, targetNovelId, composition, { preparedCopies: preparedCompositionCopies });
+      await setChapterComposition(db, targetNovelId, composition);
+      for (const [targetPath, previousPath] of Object.entries(readingStateSourcePathByTargetPath ?? {})) {
+        const state = previousByPath.get(previousPath);
+        if (!state) throw new Error("A destination chapter changed before its reading state could be retained.");
+        await db.execute("UPDATE chapter SET bookmark=$3,unread=$4,progress=$5,read_at=$6 WHERE novel_id=$1 AND path=$2",
+          [targetNovelId, targetPath, state.bookmark, state.unread, state.progress, state.readAt]);
+        if (state.excludedAt !== null) {
+          await db.execute("INSERT OR IGNORE INTO chapter_download_goal_exclusion(chapter_id,created_at) " +
+            "SELECT id,$3 FROM chapter WHERE novel_id=$1 AND path=$2", [targetNovelId, targetPath, state.excludedAt]);
+        }
+      }
     }
 
     const chapters = await db.select<NovelMergeChapterRow[]>(
@@ -480,6 +509,7 @@ export async function applyNovelMergeInDb({
         targetNovelId,
         chapterIdMap,
         preparedDownloads,
+        skipSourceContentChapterIds,
       });
     }
 

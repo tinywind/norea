@@ -1,11 +1,15 @@
 import { Alert, Button, Text } from "@mantine/core";
 import { useTranslation, type TranslationKey } from "../../i18n";
 import type { NovelMergeDecisionSummary } from "./merge-map-rows";
+import type { CompositionSummary } from "./merge-composition-editor";
 
 interface MergeConfirmStepProps {
+  compositionSummary?: CompositionSummary;
   error: string | null;
   onConfirm: () => void;
+  onReloadCatalog?: () => void;
   pending: boolean;
+  reloadingCatalog?: boolean;
   sourceName: string;
   sourcePluginName: string;
   summary: NovelMergeDecisionSummary;
@@ -29,9 +33,12 @@ const SUMMARY_ROWS: readonly {
 ];
 
 export function MergeConfirmStep({
+  compositionSummary,
   error,
   onConfirm,
+  onReloadCatalog,
   pending,
+  reloadingCatalog,
   sourceName,
   sourcePluginName,
   summary,
@@ -59,6 +66,15 @@ export function MergeConfirmStep({
             </div>
           </div>
           <dl className="norea-merge-confirm-counts">
+            {compositionSummary ? (
+              <>
+                <div><dt>{t("novelMerge.confirm.total")}</dt><dd>{compositionSummary.total}</dd></div>
+                <div><dt>{t("novelMerge.confirm.paired")}</dt><dd>{compositionSummary.paired}</dd></div>
+                <div><dt>{t("novelMerge.confirm.sourceOnly")}</dt><dd>{compositionSummary.sourceOnly}</dd></div>
+                <div><dt>{t("novelMerge.confirm.targetOnly")}</dt><dd>{compositionSummary.targetOnly}</dd></div>
+                <div><dt>{t("novelMerge.confirm.excludedTarget")}</dt><dd>{compositionSummary.excludedTarget}</dd></div>
+              </>
+            ) : null}
             {SUMMARY_ROWS.filter((row) => !row.optional || summary[row.key] > 0).map(
               (row) => (
                 <div key={row.key}>
@@ -68,18 +84,20 @@ export function MergeConfirmStep({
               ),
             )}
           </dl>
+          {compositionSummary ? <Text c="dimmed" size="sm">{t("novelMerge.confirm.orderPreserved")}</Text> : null}
           <Alert color="warn" variant="light">
             {t("novelMerge.confirm.warning", { source: sourceName, target: targetName })}
           </Alert>
           {error ? (
             <Alert color="danger" title={t("novelMerge.mergeFailed")}>
-              {error}
+              <Text size="sm">{error}</Text>
+              {onReloadCatalog ? <Button loading={reloadingCatalog} mt="sm" onClick={onReloadCatalog} variant="default">{t("novelMerge.catalog.reload")}</Button> : null}
             </Alert>
           ) : null}
         </section>
       </div>
       <footer className="norea-merge-footer">
-        <Button color="danger" loading={pending} onClick={onConfirm}>
+        <Button color="danger" disabled={Boolean(onReloadCatalog)} loading={pending} onClick={onConfirm}>
           {pending ? t("novelMerge.merging") : t("novelMerge.confirmation.confirm")}
         </Button>
       </footer>

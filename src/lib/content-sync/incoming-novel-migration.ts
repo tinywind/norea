@@ -174,17 +174,19 @@ export async function applyIncomingNovelMigration(
     chapterInputs.set(decision.targetChapterPath, { novelId: target.id, path: decision.targetChapterPath, chapterNumber: decision.targetChapterNumber,
       name, position: number !== null && positions.has(number) ? positions.get(number)! : mapping!.target.position, page: "1" });
   }
-  await runDatabaseTransaction(db => upsertSourceChaptersInDb(db, [...chapterInputs.values()]), true);
+  if (!live.work.metadata.chapterComposition) await runDatabaseTransaction(db => upsertSourceChaptersInDb(db, [...chapterInputs.values()]), true);
   await rememberServerNovelSource(target.id, { serverUrl: server, workId: resolved.targetWork.id });
   const targets = new Map((await listChaptersByNovel(target.id)).map(chapter => [chapter.path, chapter]));
   const decisions: NovelMergeChapterDecision[] = [];
   const expectedTargetInventories: Record<string, ChapterPayloadInventory | null> = {};
+  const skipSourceContentChapterIds: number[] = [];
   for (const { chapter, decision } of plan) {
     await check();
     if (decision.targetChapterPath === null) { decisions.push({ sourceChapterId: chapter.id, kind: "exclude" }); continue; }
     const destination = targets.get(decision.targetChapterPath);
     if (!destination || numberKey(destination.chapterNumber) !== numberKey(decision.targetChapterNumber)) review("The recipient target chapter changed during preparation.");
     decisions.push({ sourceChapterId: chapter.id, kind: "map", targetChapterPath: destination.path });
+    if (decision.discardSourceContent) { skipSourceContentChapterIds.push(chapter.id); continue; }
     const mapping = targetMapping(decision, resolved.targetMappings);
     if (!hasStoredChapterContent(chapter) && !hasStoredChapterContent(destination)) continue;
     const inspectTarget = () => inspectChapterPayloadInventory({ novel: target, chapter: destination }, signal);
@@ -222,7 +224,9 @@ export async function applyIncomingNovelMigration(
     if (!received.mediaComplete || !matchesApprovedInventory(received, expected)) review("The received body does not match the approved target inventory.");
   }
   await check();
-  const result = await executeNovelMergeFromServer({ sourceNovelId: source.id, targetNovelId: target.id, decisions }, {
+  const result = await executeNovelMergeFromServer({ sourceNovelId: source.id, targetNovelId: target.id, decisions,
+    ...(skipSourceContentChapterIds.length ? { skipSourceContentChapterIds } : {}),
+  }, {
     signal, expectedTargetInventories,
     beforeCommit: async () => {
       await check();

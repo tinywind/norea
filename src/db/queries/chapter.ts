@@ -1,4 +1,4 @@
-﻿import {
+import {
   DEFAULT_CHAPTER_CONTENT_TYPE,
   normalizeChapterContentType,
   storedChapterContentType,
@@ -18,6 +18,8 @@ import { getDb, getReadOnlyDb, runDatabaseTransaction, type DatabaseReadMode } f
 import { sqliteBoolean } from "../sqlite-value";
 import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { LOCAL_PLUGIN_ID } from "../../lib/plugins/types";
+import { parseChapterComposition, type ChapterSourceSnapshot } from "../../lib/chapter-composition";
+import type Database from "@tauri-apps/plugin-sql";
 
 export async function findLocalImportedChapter(pathKey: string): Promise<{ id: number; novelId: number } | null> {
   const db = await getDb();
@@ -35,6 +37,9 @@ export interface ChapterRow {
   path: string;
   name: string;
   chapterNumber: string | null;
+  /** User-facing number in a composed list; chapterNumber remains the package key. */
+  displayChapterNumber?: string | null;
+  compositionSource?: ChapterSourceSnapshot;
   position: number;
   page: string;
   bookmark: boolean;
@@ -131,6 +136,28 @@ function normalizeChapterRow(row: RawChapterRow): ChapterRow {
   return normalizeChapterListRow(row);
 }
 
+async function withCompositionDisplay<T extends { novelId: number; path?: string; chapterPath?: string }>(
+  db: Pick<Database, "select">, rows: T[],
+): Promise<Array<T & { displayChapterNumber?: string | null; compositionSource?: ChapterSourceSnapshot }>> {
+  if (!rows.length) return rows;
+  const novelIds = [...new Set(rows.map(row => row.novelId))];
+  const stored = await db.select<{ novelId: number; payload: string }[]>(
+    "SELECT novel_id AS novelId,payload FROM novel_chapter_composition WHERE novel_id IN (" +
+      novelIds.map((_, index) => "$" + (index + 1)).join(",") + ")", novelIds,
+  );
+  const displays = new Map<number, Map<string, { displayChapterNumber: string; compositionSource: ChapterSourceSnapshot }>>();
+  for (const record of stored) {
+    if (typeof record.payload !== "string") continue;
+    const composition = parseChapterComposition(JSON.parse(record.payload));
+    displays.set(record.novelId, new Map(composition.entries.filter(entry => entry.user.included)
+      .map(entry => [entry.path, { displayChapterNumber: entry.user.chapterNumber ?? String(entry.user.order), compositionSource: entry.sources[entry.primarySource] }])));
+  }
+  return rows.map(row => {
+    const display = displays.get(row.novelId)?.get(row.path ?? row.chapterPath ?? "");
+    return display === undefined ? row : { ...row, ...display };
+  });
+}
+
 export async function listChaptersByNovel(
   novelId: number,
   readMode: DatabaseReadMode = "queued",
@@ -143,7 +170,7 @@ export async function listChaptersByNovel(
      ORDER BY position, id`,
     [novelId],
   );
-  return rows.map(normalizeChapterListRow);
+  return withCompositionDisplay(db, rows.map(normalizeChapterListRow));
 }
 
 export interface LibraryDownloadChapter extends ChapterListRow {
@@ -164,10 +191,10 @@ export async function listLibraryDownloadChapters(
      ORDER BY position, id`,
     [novelId],
   );
-  return rows.map((row) => ({
+  return withCompositionDisplay(db, rows.map((row) => ({
     ...normalizeChapterListRow(row),
     isDownloadQueued: sqliteBoolean(row.isDownloadQueued),
-  }));
+  })));
 }
 
 /** One page, in id order, of a source novel's chapters with no stored body and no persisted download. */
@@ -185,7 +212,7 @@ export async function listUnqueuedChapterDownloads(
      ORDER BY id LIMIT $3`,
     [novelId, afterChapterId, MAX_ROUTE_QUERY_ROWS],
   );
-  return rows.map(normalizeChapterListRow);
+  return withCompositionDisplay(db, rows.map(normalizeChapterListRow));
 }
 
 export async function getChapterById(
@@ -199,7 +226,7 @@ export async function getChapterById(
      WHERE id = $1`,
     [chapterId],
   );
-  return rows[0] ? normalizeChapterRow(rows[0]) : null;
+  return rows[0] ? (await withCompositionDisplay(db, [normalizeChapterRow(rows[0])]))[0] : null;
 }
 
 export async function listExistingChapterIds(
@@ -1334,6 +1361,8 @@ export async function listLibraryUpdatesPage(
 
 /** One chapter recently read, joined with its parent novel for display. */
 export interface RecentlyReadEntry {
+  displayChapterNumber?: string | null;
+  chapterPath?: string;
   chapterId: number;
   novelId: number;
   chapterName: string;
@@ -1372,6 +1401,7 @@ export async function listRecentlyRead(
        c.novel_id        AS novelId,
        c.name            AS chapterName,
        c.chapter_number  AS chapterNumber,
+       c.path            AS chapterPath,
        c.position,
        c.read_at         AS readAt,
        c.progress,
@@ -1394,11 +1424,11 @@ export async function listRecentlyRead(
      LIMIT $1`,
     [normalizedLimit],
   );
-  return rows.map((row) => ({
+  return withCompositionDisplay(db, rows.map((row) => ({
     ...row,
     novelInLibrary: sqliteBoolean(row.novelInLibrary),
     novelIsLocal: sqliteBoolean(row.novelIsLocal),
-  }));
+  })));
 }
 
 export async function getAdjacentChapter(
@@ -1420,5 +1450,5 @@ export async function getAdjacentChapter(
          ORDER BY position DESC
          LIMIT 1`;
   const rows = await db.select<RawChapterListRow[]>(sql, [novelId, position]);
-  return rows[0] ? normalizeChapterListRow(rows[0]) : null;
+  return rows[0] ? (await withCompositionDisplay(db, [normalizeChapterListRow(rows[0])]))[0] : null;
 }

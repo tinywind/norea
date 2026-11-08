@@ -1,3 +1,5 @@
+import type { ChapterContentType } from "../../lib/chapter-content";
+import { getChapterComposition } from "../chapter-composition";
 import type Database from "@tauri-apps/plugin-sql";
 import { getDb, runDatabaseTransaction } from "../client";
 import { isChapterPayloadInventory, type ChapterPayloadInventory } from "../../lib/chapter-content/inventory";
@@ -35,8 +37,11 @@ export async function cacheServerChapters(novelId: number, chapters: readonly Se
       const number = String(Number(chapter.chapterNumber));
       numbers.set(number, [...(numbers.get(number) ?? []), chapter.path]);
     }
-    const incoming: ServerChapterSummary[] = [];
+    const composition = await getChapterComposition(db, novelId);
+    const included = composition ? new Map(composition.entries.filter(entry => entry.user.included).map(entry => [entry.path, entry])) : null;
+    const incoming: (Omit<ServerChapterSummary, "contentType"> & { contentType: ChapterContentType })[] = [];
     for (const chapter of chapters) {
+      if (included && !included.has(chapter.chapterPath)) continue;
       if (paths.has(chapter.chapterPath)) {
         assertServerChapterNumberMatches(byPath.get(chapter.chapterPath), chapter.chapterNumber);
         continue;
@@ -47,7 +52,12 @@ export async function cacheServerChapters(novelId: number, chapters: readonly Se
         if (matches.length > 1) throw new Error("Server chapter number matches multiple local chapters.");
         continue;
       }
-      incoming.push(chapter);
+      const entry = included?.get(chapter.chapterPath);
+      if (entry) {
+        assertServerChapterNumberMatches(entry.storageChapterNumber, chapter.chapterNumber);
+        const source = entry.sources[entry.primarySource];
+        incoming.push({ ...chapter, name: entry.user.name ?? source.name, position: entry.user.order, page: source.page, contentType: source.contentType });
+      } else incoming.push(chapter);
       paths.add(chapter.chapterPath);
       if (number !== null) numbers.set(number, [chapter.chapterPath]);
     }
@@ -168,11 +178,16 @@ export async function importContentMetadata(manifest: PackageManifest, serverUrl
     if (!novels.length) throw new Error("Install the work metadata before downloading its chapters.");
     if (novels[0]!.sourceNovelId !== identity.novelId) throw new Error("Server chapter novel ID does not match the installed work.");
     const novelId = novels[0]!.id;
+    const composition = await getChapterComposition(db, novelId);
+    const compositionEntry = composition?.entries.find(entry => entry.path === identity.chapterPath);
+    if (composition && (!compositionEntry?.user.included || compositionEntry.storageChapterNumber !== chapter.chapterNumber)) {
+      throw new Error("The server chapter is excluded from the final chapter list or has a different storage identity.");
+    }
     const [currentChapter] = await db.select<{ chapterNumber: string | null }[]>(
       "SELECT chapter_number AS chapterNumber FROM chapter WHERE novel_id=$1 AND path=$2", [novelId, identity.chapterPath]);
     if (currentChapter) assertServerChapterNumberMatches(currentChapter.chapterNumber, chapter.chapterNumber);
     const chapterNumber = chapter.chapterNumber?.trim();
-    if (identity.pluginId !== LOCAL_PLUGIN_ID && !identity.chapterPath.startsWith("norea-folder:") && chapterNumber && Number.isFinite(Number(chapterNumber))) {
+    if (!composition && identity.pluginId !== LOCAL_PLUGIN_ID && !identity.chapterPath.startsWith("norea-folder:") && chapterNumber && Number.isFinite(Number(chapterNumber))) {
       await reconcileImportedNovelIdentityInDb(db, { pluginId: identity.pluginId, path: identity.novelPath }, [
         { path: identity.chapterPath, chapterNumber },
       ]);
@@ -227,7 +242,9 @@ function parseNovelMigration(payload: string): PendingNovelMigration {
   const job = JSON.parse(payload) as PendingNovelMigration;
   if (job.version !== 1 || typeof job.operationId !== "string" || !job.operationId
     || typeof job.serverUrl !== "string" || !validMigrationIdentity(job.source) || !validMigrationIdentity(job.target)
-    || !Array.isArray(job.chapters) || !["pending", "failed", "blocked", "completed"].includes(job.status)
+    || !Array.isArray(job.chapters) || job.chapters.some(chapter => chapter.discardSourceContent !== undefined &&
+      (chapter.discardSourceContent !== true || chapter.decision !== null || !chapter.targetChapterPath || chapter.expectedTargetInventory !== undefined))
+    || !["pending", "failed", "blocked", "completed"].includes(job.status)
     || (job.targetCoverDeletionRevision !== undefined && (typeof job.targetCoverDeletionRevision !== "string" || !job.targetCoverDeletionRevision))) {
     throw new Error("Stored novel migration is invalid. The source work remains protected.");
   }
@@ -240,6 +257,7 @@ export async function recordPendingNovelMergeInDb(db: Database, input: {
   sourceNovelId: number;
   targetNovelId: number;
   chapterIdMap: Readonly<Record<number, number>>;
+  skipSourceContentChapterIds?: readonly number[];
   sourceSnapshot?: WorkMigrationSnapshot;
   targetMetadata?: NovelMigrationTargetMetadata;
   preparedDownloads: readonly {
@@ -297,13 +315,21 @@ export async function recordPendingNovelMergeInDb(db: Database, input: {
   );
   const targetChapters = new Map(rows.filter(row => row.novelId === input.targetNovelId).map(row => [row.id, row]));
   const prepared = new Map(input.preparedDownloads.map(row => [row.sourceChapterId, row]));
+  const skippedSourceContent = new Set(input.skipSourceContentChapterIds ?? []);
+  if ([...skippedSourceContent].some(id => !rows.some(row => row.id === id && row.novelId === input.sourceNovelId))) {
+    throw new Error("A discarded source chapter no longer exists.");
+  }
   const chapters = rows.filter(row => row.novelId === input.sourceNovelId).map(row => {
     const destinationId = input.chapterIdMap[row.id];
     const destination = destinationId === undefined ? undefined : targetChapters.get(destinationId);
     if (destinationId !== undefined && !destination) throw new Error("A server migration target chapter is missing.");
     const artifact = prepared.get(row.id);
     if (artifact && !destination) throw new Error("A server migration download is not mapped.");
-    const decision = artifact ? artifact.transferredFromSource ? "copy-source" as const : "keep-target" as const : destination ? "copy-source" as const : null;
+    const discardSourceContent = skippedSourceContent.has(row.id);
+    if (discardSourceContent && (!destination || artifact?.transferredFromSource)) {
+      throw new Error("Discarded source content must keep a target mapping without copying the source body.");
+    }
+    const decision = discardSourceContent ? null : artifact ? artifact.transferredFromSource ? "copy-source" as const : "keep-target" as const : destination ? "copy-source" as const : null;
     if (decision === "keep-target") {
       const inventory = artifact!.targetInventory;
       if (!isChapterPayloadInventory(inventory) || !inventory.body
@@ -317,6 +343,7 @@ export async function recordPendingNovelMergeInDb(db: Database, input: {
       sourceChapterPath: row.path, sourceChapterNumber: row.chapterNumber,
       targetChapterPath: destination?.path ?? null, targetChapterNumber: destination?.chapterNumber ?? null,
       decision,
+      ...(discardSourceContent ? { discardSourceContent: true as const } : {}),
       ...(destination ? { targetChapter: { name: destination.name, position: destination.position, page: destination.page } } : {}),
       ...(decision === "keep-target" ? { expectedTargetInventory: artifact!.targetInventory } : {}),
     };

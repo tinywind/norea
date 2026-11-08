@@ -1,3 +1,4 @@
+import { getChapterComposition } from "../../db/chapter-composition";
 import { getDb, runDatabaseTransaction, runExclusiveDatabaseOperation } from "../../db/client";
 import { flushWorkMetadata } from "../../db/work-metadata";
 import { useContentSyncStore } from "../../store/content-sync";
@@ -72,6 +73,8 @@ async function withChapterNumberReconciliation<T>(
   );
   const publishNormally = () => runWorkContentStorageOperation(input.pluginId, input.path, () => publish(null));
   if (!work || work.sourceNovelId !== input.sourceNovelId) return publishNormally();
+  // Provider numbers are source facts once a user composition owns the reading list.
+  if (!serverMappings && await getChapterComposition(db, work.id)) return publishNormally();
   const pending = await db.select<{ payload: string }[]>(
     "SELECT payload FROM content_sync_cache WHERE cache_key LIKE $1 AND json_extract(payload,'$.work.id')=$2",
     [SOURCE_CHAPTER_RENUMBER_PREFIX + "%", work.id],

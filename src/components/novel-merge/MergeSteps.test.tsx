@@ -26,6 +26,7 @@ vi.mock("../../lib/plugins/manager", () => ({
 import { MergeChooseStep } from "./MergeChooseStep";
 import { MergeConfirmStep } from "./MergeConfirmStep";
 import { MergeMapStep } from "./MergeMapStep";
+import { createInitialComposition } from "./merge-composition-editor";
 
 function sourceChapter(
   id: number,
@@ -68,32 +69,25 @@ function render(node: ReactElement) {
 }
 
 function renderMapStep(overrides: Partial<Parameters<typeof MergeMapStep>[0]> = {}) {
+  const sources = [sourceChapter(1, "1", { isDownloaded: true }), sourceChapter(2, "2"), sourceChapter(3, "300")];
+  const matching = {
+    ambiguous: [],
+    matched: [{ sourceChapterId: 1, targetChapterPath: "/t/1" }],
+    unmatchedSourceChapterIds: [2, 3],
+  };
   return render(
     <MergeMapStep
-      canContinue={false}
-      conflicts={[{ sourceChapterIds: [1, 2], targetChapterPath: "/t/1" }]}
-      copyChoices={{}}
-      decisions={{
-        1: { kind: "map", sourceChapterId: 1, targetChapterPath: "/t/1" },
-        2: { kind: "map", sourceChapterId: 2, targetChapterPath: "/t/1" },
-      }}
-      matching={{
-        ambiguous: [
-          { candidateTargetPaths: ["/t/1"], reason: "repeatedNumber", sourceChapterId: 2 },
-        ],
-        matched: [{ sourceChapterId: 1, targetChapterPath: "/t/1" }],
-        unmatchedSourceChapterIds: [3],
-      }}
+      canContinue
+      composition={createInitialComposition(sources, targetChapters, matching)}
+      matching={matching}
       onContinue={vi.fn()}
-      onCopyChoiceChange={vi.fn()}
-      onDecisionChange={vi.fn()}
-      onExcludeRemaining={vi.fn()}
-      sourceChapters={[
-        sourceChapter(1, "1", { isDownloaded: true }),
-        sourceChapter(2, "1", { isDownloaded: true }),
-        sourceChapter(3, "300"),
-      ]}
+      onCompositionChange={vi.fn()}
+      sourceChapters={sources}
+      sourceName="Old Home"
+      sourcePluginName="Source A"
       targetChapters={targetChapters}
+      targetName="New Home"
+      targetPluginName="Source B"
       {...overrides}
     />,
   );
@@ -104,95 +98,77 @@ beforeEach(() => {
 });
 
 describe("MergeMapStep", () => {
-  it("lists copy conflicts, unmatched and ambiguous rows, and a collapsed matched toggle", () => {
+  it("shows both complete source lists and the final composition together on small screens", () => {
     const $ = renderMapStep();
-    const list = $("[role=list][aria-label='novelMerge.map.sourceChapters']");
-
-    expect(list.find("h3").map((_, heading) => $(heading).text()).get()).toEqual([
-      "novelMerge.map.section.conflicts(1)",
-      "novelMerge.map.section.unmatched(1)",
-      "novelMerge.map.section.ambiguous(1)",
-    ]);
-    const toggle = list.find("button[aria-expanded]");
-    expect(toggle.attr("aria-expanded")).toBe("false");
-    expect(toggle.text()).toBe("novelMerge.map.section.matched(1)");
-    expect(list.text()).not.toContain("Source 1 ");
+    const panes = $(".norea-compose-panes > section");
+    expect(panes).toHaveLength(3);
+    expect(panes.map((_, pane) => $(pane).attr("data-side")).get()).toEqual(["source", "target", "final"]);
+    expect(panes.eq(0).find("button.norea-compose-row")).toHaveLength(3);
+    expect(panes.eq(1).find("button.norea-compose-row")).toHaveLength(2);
+    expect(panes.eq(2).find("button.norea-compose-row")).toHaveLength(4);
+    expect($("[aria-haspopup=dialog]")).toHaveLength(0);
+    expect($("input[type=search]")).toHaveLength(3);
+    expect(panes.eq(0).text()).toContain("Old Home");
+    expect(panes.eq(1).text()).toContain("New Home");
   });
 
-  it("asks which download to keep for each copy conflict", () => {
+  it("provides bulk selection, range selection, and batch include/exclude controls for both catalogs", () => {
     const $ = renderMapStep();
-    const choice = $(".norea-merge-conflict-row");
-
-    expect(choice.text()).toContain("novelMerge.conflict.keep");
-    expect(choice.find("input[type=radio]")).toHaveLength(2);
-    expect(choice.find("input[type=radio]:checked")).toHaveLength(0);
-  });
-
-  it("opens the target picker from each phone row as a dialog", () => {
-    const $ = renderMapStep();
-    const rows = $("button.norea-merge-source-row");
-
-    expect(rows).toHaveLength(2);
-    rows.each((_, row) => {
-      expect($(row).attr("aria-haspopup")).toBe("dialog");
-      expect($(row).attr("aria-pressed")).toBeUndefined();
+    $(".norea-compose-pane").each((_, pane) => {
+      const buttons = $(pane).find(".norea-compose-selection-tools button").map((_, button) => $(button).text()).get();
+      expect(buttons).toContain("novelMerge.compose.selectAll");
+      expect(buttons).toContain("novelMerge.compose.range");
+      expect(buttons).toContain("novelMerge.compose.clearSelection");
     });
-    expect($(".norea-merge-panes")).toHaveLength(0);
-    expect(rows.first().text()).toContain("novelMerge.map.chooseTarget");
-    expect(rows.last().text()).toContain("novelMerge.map.mappedTo");
-  });
-
-  it("marks each row's decision and each open conflict with a status icon", () => {
-    const $ = renderMapStep();
-    const rows = $("button.norea-merge-source-row");
-
-    expect(rows.first().attr("data-undecided")).toBe("true");
-    expect(rows.first().find(".norea-list-item-leading .norea-merge-row-status")).toHaveLength(1);
-    expect(rows.last().find(".norea-list-item-leading .norea-merge-row-status")).toHaveLength(1);
-    expect($(".norea-merge-conflict-row:not([data-resolved]) .norea-merge-conflict-title .norea-merge-row-status")).toHaveLength(1);
-  });
-
-  it("shows the source list and the target picker side by side on desktop", () => {
-    media.desktop = true;
-    const $ = renderMapStep();
-    const panes = $(".norea-merge-panes > section");
-
-    expect(panes).toHaveLength(2);
-    expect(panes.last().find("input[type=search]")).toHaveLength(1);
-    const targets = panes.last().find("button.norea-merge-target-row");
-    expect(targets).toHaveLength(2);
-    const active = $("button.norea-merge-source-row[aria-pressed=true]");
-    expect(active).toHaveLength(1);
-    expect(active.text()).toContain("Source 300");
-  });
-
-  it("offers to exclude remaining chapters and blocks Continue until every decision is valid", () => {
-    const $ = renderMapStep();
-    const buttons = $("button").map((_, button) => $(button).text()).get();
-
-    expect(buttons).toContain("novelMerge.map.excludeRemaining(1)");
-    expect(buttons).toContain("novelMerge.map.reviewNext");
-    const continueButton = $("button").filter((_, button) => $(button).text() === "novelMerge.continue");
-    expect(continueButton.attr("disabled")).toBeDefined();
-    expect($(".norea-merge-footer").text()).toContain("novelMerge.map.undecidedRemaining(1)");
-  });
-
-  it("virtualizes long source lists", () => {
-    const sources = Array.from({ length: 2000 }, (_, index) =>
-      sourceChapter(index + 1, String(index + 1)),
-    );
-    const $ = renderMapStep({
-      conflicts: [],
-      decisions: {},
-      matching: { ambiguous: [], matched: [], unmatchedSourceChapterIds: sources.map((s) => s.id) },
-      sourceChapters: sources,
+    $(".norea-compose-pane-footer").each((_, footer) => {
+      expect($(footer).text()).toContain("novelMerge.compose.include");
+      expect($(footer).text()).toContain("novelMerge.compose.exclude");
     });
+    expect($(".norea-compose-link-bar").text()).toContain("novelMerge.compose.pairRanges");
+    expect($(".norea-compose-history").text()).toContain("novelMerge.compose.undo");
+  });
 
-    expect($("button.norea-merge-source-row").length).toBeLessThan(60);
+  it("shows final ordinals separately from raw source chapter numbers and titles", () => {
+    const $ = renderMapStep();
+    const finalRows = $("[data-side=final] .norea-compose-row");
+    expect(finalRows.map((_, row) => $(row).find(".norea-compose-ordinal").text()).get()).toEqual(["1", "2", "3", "4"]);
+    expect(finalRows.eq(2).find(".norea-compose-row-name").text()).toBe("Source 300");
+    expect(finalRows.eq(2).find(".norea-compose-row-detail").text()).toBe("novelMerge.compose.originRow(A|300)");
+    expect(finalRows.first().attr("data-origin")).toBe("A+B");
+  });
+
+  it("shows source exclusions without hiding rows and prevents confirming an empty final list", () => {
+    const $ = renderMapStep({ composition: [] });
+    expect($("[data-side=source] .norea-compose-row[data-excluded=true]")).toHaveLength(3);
+    expect($("[data-side=target] .norea-compose-row[data-excluded=true]")).toHaveLength(2);
+    expect($("[data-side=final] .norea-compose-empty")).toHaveLength(1);
+    expect($(".norea-compose-footer button").attr("disabled")).toBeDefined();
+    expect($(".norea-compose-footer").text()).toContain("novelMerge.compose.finalCount(0)");
+  });
+
+  it("virtualizes all three 2,000-chapter lists without hiding their total sizes", () => {
+    const sources = Array.from({ length: 2000 }, (_, index) => sourceChapter(index + 1, String(index + 1)));
+    const targets = sources.map(source => ({ chapterNumber: Number(source.chapterNumber), name: `Target ${source.chapterNumber}`, path: `/t/${source.id}` }));
+    const matching = { ambiguous: [], matched: sources.map(source => ({ sourceChapterId: source.id, targetChapterPath: `/t/${source.id}` })), unmatchedSourceChapterIds: [] };
+    const $ = renderMapStep({ sourceChapters: sources, targetChapters: targets, matching, composition: createInitialComposition(sources, targets, matching) });
+    $(".norea-compose-pane").each((_, pane) => {
+      expect($(pane).find("button.norea-compose-row").length).toBeGreaterThan(0);
+      expect($(pane).find("button.norea-compose-row").length).toBeLessThan(60);
+      expect($(pane).find("[role=listitem]").first().attr("aria-setsize")).toBe("2000");
+      expect($(pane).find(".norea-compose-pane-count").text().replace(/[^0-9]/g, "")).toBe("2000");
+    });
   });
 });
 
 describe("MergeConfirmStep", () => {
+  it("offers a catalog reload and blocks migration when the reviewed list changed", () => {
+    const $ = render(<MergeConfirmStep error="Catalog changed" onConfirm={vi.fn()} onReloadCatalog={vi.fn()} pending={false}
+      sourceName="Old Home" sourcePluginName="Source A" targetName="New Home" targetPluginName="Source B"
+      summary={{ copyChoices: 0, downloadsMoved: 0, downloadsRemoved: 0, excluded: 0, mapped: 1, readDropped: 0, readMoved: 0 }} />);
+    expect($("[role=alert] button").text()).toBe("novelMerge.catalog.reload");
+    expect($(".norea-merge-footer button").attr("disabled")).toBeDefined();
+  });
+
   it("names both novels and lists the counts before execution", () => {
     const $ = render(
       <MergeConfirmStep

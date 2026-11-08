@@ -38,7 +38,7 @@ let mockExecute: ReturnType<typeof vi.fn>;
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockSelect = vi.fn();
+  mockSelect = vi.fn().mockResolvedValue([]);
   mockExecute = vi.fn();
   mockedGetDb.mockResolvedValue({
     select: mockSelect,

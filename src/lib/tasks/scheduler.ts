@@ -87,6 +87,7 @@ import type {
   TaskRecord,
   TaskRunContext,
   TaskSnapshot,
+  TaskSourceRoute,
   TaskSpec,
   TaskStatus,
   TaskSubject,
@@ -133,6 +134,7 @@ interface TaskEntry {
   resolve: (value: unknown) => void;
   sourceExecutorId?: ScraperExecutorId;
   sourceAccessDeferred?: boolean;
+  pendingSourceRoute?: TaskSourceRoute;
   sourceAccessPauseRequested?: boolean;
   sourceAccessStarted?: boolean;
   /** Local verification and repacking retain the last acquisition origin. */
@@ -2232,7 +2234,17 @@ export class TaskScheduler {
     return isUiInteraction(entry) ? 0 : this.sourceCooldowns.delay(entry.spec.sourceCooldownKey);
   }
 
-  private tryStartSourceAccess(entry: TaskEntry): boolean {
+  private tryStartSourceAccess(entry: TaskEntry, route?: TaskSourceRoute): boolean {
+    if (route && route.source.id !== entry.record.source?.id) {
+      if (entry.record.status !== "running" || entry.controller.signal.aborted) return false;
+      if (entry.sourceAccessStarted) throw new Error("A source route cannot change after source access starts.");
+      if (!route.source.id.trim()) throw new Error("A source route requires a source identity.");
+      // Do not mutate a live lease. Apply the new queue only after this run settles.
+      entry.pendingSourceRoute = { ...route, source: { ...route.source } };
+      if (entry.sourceExecutorId?.startsWith("server:")) entry.serverLaneDone = true;
+      entry.sourceAccessDeferred = true;
+      return false;
+    }
     if (entry.sourceExecutorId?.startsWith("server:")) {
       // The server lane never reaches the source; the same task continues on its source route.
       entry.serverLaneDone = true;
@@ -2330,7 +2342,7 @@ export class TaskScheduler {
       },
       ...(entry.spec.canCompleteWithoutSourceAccess === true
         ? {
-            tryStartSourceAccess: () => this.tryStartSourceAccess(entry),
+            tryStartSourceAccess: (route) => this.tryStartSourceAccess(entry, route),
           }
         : {}),
     };
@@ -2597,6 +2609,7 @@ export class TaskScheduler {
     this.revokeSourceAccessVerificationForEntry(entry);
     this.debug("paused task settled", entry);
     this.releaseActive(entry);
+    this.applyPendingSourceRoute(entry);
     if (sourceCooldownKey && !isUiInteraction(entry)) {
       this.sourceCooldowns.clear(sourceCooldownKey);
     }
@@ -2627,6 +2640,7 @@ export class TaskScheduler {
     const previousStatus = entry.record.status;
     this.debug("source access deferred", entry);
     this.releaseActive(entry);
+    this.applyPendingSourceRoute(entry);
     if (entry.dedupeKey) {
       this.activeDedupeByKey.set(entry.dedupeKey, entry.record.id);
     }
@@ -2648,6 +2662,22 @@ export class TaskScheduler {
     this.entries.set(entry.record.id, entry);
     this.publish(entry, previousStatus);
     this.drain();
+  }
+
+  private applyPendingSourceRoute(entry: TaskEntry): void {
+    const route = entry.pendingSourceRoute;
+    if (!route) return;
+    this.revokeSourceAccessVerificationForEntry(entry);
+    this.removeFromSourceQueue(entry);
+    entry.pendingSourceRoute = undefined;
+    entry.sourceAccessUrl = undefined;
+    entry.spec = { ...entry.spec, source: route.source, sourceAccessScopeKey: undefined,
+      sourceAccessVerificationKey: route.sourceAccessVerificationKey, sourceCooldownKey: route.sourceCooldownKey };
+    entry.record = { ...entry.record, source: route.source };
+    this.ensureSourceQueueOrder(route.source.id);
+    const queue = this.sourceQueues.get(route.source.id) ?? [];
+    this.insertSourceQueueEntry(queue, entry);
+    this.sourceQueues.set(route.source.id, queue);
   }
 
   private releaseActive(entry: TaskEntry): void {

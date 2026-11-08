@@ -328,7 +328,7 @@ async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1,
           }, reconciliation.mappings.map(mapping => ({ path: mapping.chapterPath, chapterNumber: mapping.to })));
         }
         const merged = mergeIncomingNovelMetadata(previous, metadata);
-        metadata = options.authoritative ? { ...metadata, chapters: merged.chapters } : merged;
+        metadata = options.authoritative ? { ...merged, novel: metadata.novel, cover: metadata.cover } : merged;
         if (options.authoritative) await removeAllStoredNovelCovers(directory, existing?.metadata.cover ?? null);
         if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);
         else if (!options.authoritative) metadata.cover = existing?.metadata.cover ?? null;

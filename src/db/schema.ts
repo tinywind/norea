@@ -96,6 +96,12 @@ export const novelTable = sqliteTable(
 );
 
 // Chapter: one readable unit, owned by a novel.
+export const novelChapterCompositionTable = sqliteTable("novel_chapter_composition", {
+  novelId: integer("novel_id").primaryKey().notNull()
+    .references(() => novelTable.id, { onDelete: "cascade" }),
+  payload: text("payload").notNull(),
+});
+
 export const chapterTable = sqliteTable(
   "chapter",
   {

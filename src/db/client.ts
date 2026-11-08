@@ -59,7 +59,7 @@ function serializedDb(rawDb: Database): Database {
         bindValueCount: bindValues?.length ?? 0,
       });
       return queueDbOperation(async () => {
-        const metadataMutation = isTauriRuntime() && /\b(novel|chapter)\b/i.test(query) && /\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(query);
+        const metadataMutation = isTauriRuntime() && /\b(novel|chapter|novel_chapter_composition)\b/i.test(query) && /\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(query);
         try {
           if (metadataMutation) await rawDb.execute("BEGIN IMMEDIATE");
           const result = await withWorkMetadataRollback(async () => {
@@ -70,7 +70,7 @@ function serializedDb(rawDb: Database): Database {
             }
             return result;
           });
-          if (/\b(novel|chapter|content_sync_journal)\b/i.test(query)) await notifyContentSyncChanges(rawDb);
+          if (/\b(novel|chapter|novel_chapter_composition|content_sync_journal)\b/i.test(query)) await notifyContentSyncChanges(rawDb);
           finish({ rowsAffected: result.rowsAffected });
           return result;
         } catch (error) {

@@ -268,6 +268,18 @@ export class DownloadRecoveryController {
     for (const listener of this.listeners) listener();
   }
 
+  /** Rebind a composed chapter's recovery to its original source without resetting its budget or hold. */
+  setSource(job: DownloadRecoveryJob): void {
+    this.assertLoaded();
+    const key = downloadRecoveryKey(job);
+    const registration = this.registrations.get(key);
+    if (!registration || registration.sourceId === job.pluginId) return;
+    registration.sourceId = job.pluginId;
+    const episode = this.episodes.get(key);
+    if (episode) episode.sourceId = job.pluginId;
+    this.persist();
+  }
+
   register(jobs: readonly DownloadRecoveryJob[], policy = getDownloadRecoveryPolicy()): void {
     this.assertLoaded();
     let changed = false;
@@ -405,8 +417,8 @@ export class DownloadRecoveryController {
     const attemptContext: TaskRunContext = { ...context, setSourceAccessUrl: url => {
       currentUrl = url;
       return originalSetUrl?.(url) ?? true;
-    }, ...(context.tryStartSourceAccess ? { tryStartSourceAccess: () => {
-      const started = context.tryStartSourceAccess!();
+    }, ...(context.tryStartSourceAccess ? { tryStartSourceAccess: route => {
+      const started = route ? context.tryStartSourceAccess!(route) : context.tryStartSourceAccess!();
       deferred ||= !started;
       return started;
     } } : {}) };

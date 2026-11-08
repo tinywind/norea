@@ -4015,3 +4015,173 @@ describe("server-first chapter requests", () => {
     expect(saveStoredChapterContent).toHaveBeenCalled();
   });
 });
+
+
+describe("composed chapter source routing", () => {
+  const original = {
+    pluginId: "source-a", novelId: "work-a", novelPath: "/original/a", chapterPath: "/original/a/chapter-7",
+    chapterNumber: "7", name: "Original seven", position: 7, page: "1", contentType: "html" as const, releaseTime: null,
+  };
+  const targetJob: ChapterDownloadJob = {
+    id: 7, novelId: 11, novelName: "Target B", novelPath: "/target/b", pluginId: "source-b", pluginName: "Target B",
+    chapterPath: "norea-composed:paired-a", chapterName: "Chosen chapter", chapterNumber: "801", title: "Chosen chapter", contentType: "html",
+  };
+  const context = () => ({ taskId: "task-1", executor: "pool:0" as const,
+    signal: new AbortController().signal, setDetail: vi.fn(), setProgress: vi.fn(),
+    setSourceAccessUrl: vi.fn(() => true), tryStartSourceAccess: vi.fn(() => true) });
+  function fixture(source = original, job = targetJob) {
+    vi.mocked(getChapterById).mockResolvedValue({ id: job.id, novelId: 11, path: job.chapterPath, name: "Chosen chapter",
+      chapterNumber: job.chapterNumber, position: 1, contentType: "html", sourceContentType: "html", isDownloaded: false,
+      compositionSource: source } as never);
+    vi.mocked(getNovelById).mockResolvedValue({ id: 11, pluginId: "source-b", sourceNovelId: "work-b", path: "/target/b", name: "Target B" } as never);
+    const plugin = (id: string) => ({ id, name: id, apiVersion: "0.2", getBaseUrl: () => id === "source-a" ? "https://original.test" : "https://target.test",
+      getChapterAcquisitionPlan: pluginMocks.getChapterAcquisitionPlan, getChapterResource: pluginMocks.getChapterResource,
+      imageRequestInit: { headers: { Referer: id === "source-a" ? "https://original.test/" : "https://target.test/" } } });
+    pluginMocks.getPlugin.mockImplementation(plugin);
+    pluginMocks.getPluginForExecutor.mockImplementation(plugin);
+    pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
+    pluginMocks.getChapterResource.mockResolvedValue(contentResource('<p>Selected body</p><img src="/page.png">'));
+  }
+  async function schedulerFixture(paused = false) {
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler({ sourceForegroundConcurrency: 1, sourceQueuesPaused: paused });
+    const handles: TaskHandle<void>[] = [];
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => {
+      const handle = scheduler.enqueueSource(spec); handles.push(handle); return handle;
+    });
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation(key => scheduler.getTaskByDedupeKey(key));
+    vi.mocked(taskScheduler.getSnapshot).mockImplementation(() => scheduler.getSnapshot());
+    vi.mocked(taskScheduler.cancel).mockImplementation(id => scheduler.cancel(id));
+    vi.mocked(taskScheduler.waitForSourceTaskSettlement).mockImplementation(id => scheduler.waitForSourceTaskSettlement(id));
+    vi.mocked(taskScheduler.resumeSourceQueue).mockImplementation(id => scheduler.resumeSourceQueue(id));
+    vi.mocked(taskScheduler.reportDownloadFailure).mockImplementation((error, id) => scheduler.reportDownloadFailure(error, id));
+    return { scheduler, handles };
+  }
+
+  it.each([
+    ["A-only", "norea-composed:a-only", "801", original],
+    ["paired A primary", "norea-composed:paired-a", "802", original],
+    ["B primary", "/target/b/chapter-3", "3", { ...original, pluginId: "source-b", novelId: "work-b", novelPath: "/target/b", chapterPath: "/target/b/chapter-3", chapterNumber: "3" }],
+  ] as const)("downloads %s from its original path while storing under B's immutable number", async (_label, path, number, source) => {
+    const job = { ...targetJob, chapterPath: path, chapterNumber: number };
+    fixture(source, job);
+    const run = context();
+    enqueueChapterDownload(job);
+    await capturedSpec!.run(run);
+    expect(tryDownloadServerChapter).toHaveBeenCalledWith(job, expect.any(AbortSignal), undefined);
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith(source.pluginId, "pool:0");
+    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(source.chapterPath, "html");
+    expect(pluginMocks.getChapterResource.mock.calls[0]![0]).toBe(source.chapterPath);
+    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(expect.objectContaining({
+      chapterId: 7, chapterNumber: number, novelId: 11, sourceNovelId: "work-b", sourceId: "source-b",
+      ...(source.pluginId === "source-a" ? { requestSourceId: "source-a" } : {}),
+      contextUrl: `${source.pluginId === "source-a" ? "https://original.test" : "https://target.test"}${source.chapterPath}`,
+    }));
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, expect.any(String), "html", expect.any(Object));
+    expect(syncNovelFromSource).not.toHaveBeenCalled();
+    if (source.pluginId === "source-a") expect(run.tryStartSourceAccess).toHaveBeenCalledWith(expect.objectContaining({ source: { id: "source-a", name: "source-a" } }));
+    else expect(run.tryStartSourceAccess).toHaveBeenCalledWith(expect.objectContaining({ source: { id: "source-b", name: "Target B" } }));
+  });
+
+  it("completes a composed server hit without loading either source or requesting a handoff", async () => {
+    fixture();
+    vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
+    pluginMocks.getPlugin.mockImplementation(() => { throw new Error("Source must not be inspected"); });
+    const run = context();
+    enqueueChapterDownload(targetJob);
+    await capturedSpec!.run({ ...run, executor: "server:0" });
+    expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(targetJob, expect.any(AbortSignal), undefined);
+    expect(run.tryStartSourceAccess).not.toHaveBeenCalled();
+    expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
+    expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+  });
+
+  it("rejects a missing composed source snapshot after the server miss before any plugin acquisition", async () => {
+    fixture();
+    const chapter = await getChapterById(7);
+    vi.mocked(getChapterById).mockResolvedValue({ ...chapter, compositionSource: undefined } as never);
+    enqueueChapterDownload(targetJob);
+    await expect(capturedSpec!.run(context())).rejects.toThrow("original source metadata is missing");
+    expect(tryDownloadServerChapter).toHaveBeenCalledOnce();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
+  });
+
+  it("restores B's durable queue and shares its handle with a reader request while acquiring A on the source executor", async () => {
+    vi.resetModules();
+    const downloads = await import("./chapter-download");
+    fixture();
+    const { scheduler, handles } = await schedulerFixture(true);
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    vi.mocked(listExistingChapterIds).mockResolvedValue([7]);
+    backendQueueValues.set(7, targetJob);
+    downloads.startChapterDownloadQueueExecutor();
+    await downloads.waitForChapterDownloadQueueRestoration();
+    const restored = handles[0]!;
+    const reader = downloads.enqueueChapterDownload({ ...targetJob, priority: "interactive" });
+    try {
+      expect(reader.id).toBe(restored.id);
+      expect(backendQueueValues.get(7)).toMatchObject({ pluginId: "source-b", chapterPath: targetJob.chapterPath, novelPath: "/target/b" });
+      scheduler.resumeSourceQueue();
+      await reader.promise;
+      await downloads.waitForChapterDownloadQueueMutations();
+      expect(scheduler.getTask(reader.id)).toMatchObject({ source: { id: "source-a" }, subject: { pluginId: "source-b", path: targetJob.chapterPath }, status: "succeeded" });
+      // Reader priority keeps the ordinary scheduler's existing interaction route.
+      expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-a", "immediate");
+      expect(backendQueueValues.has(7)).toBe(false);
+    } finally { scheduler.cancelActiveTasks({ discardQueued: true }); await Promise.allSettled([reader.promise, restored.promise]); }
+  });
+
+  it("uses the selected source type for a composed EPUB while keeping embedded files under B", async () => {
+    fixture({ ...original, contentType: "epub" } as never);
+    pluginMocks.getChapterResource.mockResolvedValue({ type: "binary", contentType: "epub", mediaType: "application/epub+zip", bytes: new Uint8Array([1, 2]), byteLength: 2 });
+    enqueueChapterDownload(targetJob);
+    await capturedSpec!.run(context());
+    expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(original.chapterPath, "epub");
+    expect(storeEmbeddedChapterMedia).toHaveBeenCalledWith(expect.objectContaining({ chapterId: 7, chapterNumber: "801", sourceId: "source-b", sourceNovelId: "work-b", novelId: 11 }));
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, expect.any(String), "epub", expect.any(Object));
+  });
+
+  it("repairs composed media against A's source URL while checking the server and storing manifests under B", async () => {
+    fixture();
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValue('<p>Stored selected body</p><img src="/page.png">');
+    vi.mocked(cacheHtmlChapterMedia).mockImplementationOnce(async options => {
+      await options.fetchMissingMedia!({ fileName: "page.png", path: "media/page.png", sourceUrl: "https://original.test/page.png", bytes: 0, status: "remote", updatedAt: 1 }, options.signal);
+      return { html: "<p>Repaired</p>", mediaBytes: 3, mediaFailures: [], storedMediaCount: 1 };
+    });
+    const run = context();
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-b", title: "Repair selected chapter" });
+    await capturedSpec!.run(run);
+    const { createServerChapterMediaFetcher } = await import("../content-sync/media-repair");
+    expect(createServerChapterMediaFetcher).toHaveBeenCalledWith(expect.objectContaining({ id: 7, pluginId: "source-b" }), expect.any(AbortSignal));
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-a", "pool:0");
+    expect(run.tryStartSourceAccess).toHaveBeenCalledWith(expect.objectContaining({ source: { id: "source-a", name: "source-a" } }));
+    expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(expect.objectContaining({ baseUrl: `https://original.test${original.chapterPath}`, requestSourceId: "source-a", sourceId: "source-b", sourceNovelId: "work-b", chapterNumber: "801" }));
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+  });
+
+  it("persists and manually resumes an A source failure while retaining B's storage job", async () => {
+    fixture();
+    const { scheduler, handles } = await schedulerFixture();
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const failure = new Error("HTTP 503 Service Unavailable");
+    pluginMocks.getChapterResource.mockRejectedValueOnce(failure);
+    const first = enqueueChapterDownload(targetJob);
+    await expect(first.promise).rejects.toBe(failure);
+    await flushMicrotasks(30); await waitForChapterDownloadQueueMutations();
+    expect(failureMocks.record).toHaveBeenCalledWith(targetJob, failure, expect.any(Number), "source-a");
+    expect(scheduler.getDownloadFailureStops().sourceErrors).toHaveProperty("source-a");
+    expect(scheduler.getDownloadFailureStops().sourceErrors).not.toHaveProperty("source-b");
+    failureMocks.snapshot.mockReturnValue([{ chapterId: 7, pluginId: "source-a", failureClass: "transient", messageSummary: failure.message,
+      attempts: 1, nextRetryAt: null, challengeUrl: null, updatedAt: 1, jobJson: JSON.stringify(targetJob) }]);
+    const { retryFailedChapterDownloads } = await import("./chapter-download");
+    expect(await retryFailedChapterDownloads([7])).toBe(1);
+    try {
+      await handles.at(-1)!.promise;
+      expect(taskScheduler.resumeSourceQueue).toHaveBeenCalledWith("source-a");
+      expect(taskScheduler.resumeSourceQueue).not.toHaveBeenCalledWith("source-b");
+      expect(tryDownloadServerChapter).toHaveBeenLastCalledWith(expect.objectContaining({ pluginId: "source-b", chapterPath: targetJob.chapterPath }), expect.any(AbortSignal), expect.any(Function));
+    } finally { scheduler.cancelActiveTasks({ discardQueued: true }); await waitForChapterDownloadQueueMutations(); }
+  });
+});
