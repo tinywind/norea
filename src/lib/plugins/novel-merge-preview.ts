@@ -4,18 +4,14 @@ import type { TaskHandle } from "../tasks/scheduler";
 import { isKnownChapterContentType } from "../chapter-content";
 import { isStorageId } from "../storage-id";
 import { isRecord } from "../type-guards";
-import {
-  NovelStatus,
-  type NovelItem,
-  type Plugin,
-  type SourceNovel,
-} from "./types";
+import type { NovelItem, Plugin, SourceNovel } from "./types";
 
 const OPTIONAL_NOVEL_STRING_FIELDS = [
   "artist",
   "author",
   "cover",
   "genres",
+  "status",
   "summary",
 ] as const;
 
@@ -67,14 +63,6 @@ export function validateNovelMergeTargetPreview(value: unknown): SourceNovel {
         `Target preview field '${field}' must be a string.`,
       );
     }
-  }
-  if (
-    value.status !== undefined &&
-    !Object.values(NovelStatus).includes(value.status as NovelStatus)
-  ) {
-    throw new NovelMergePreviewValidationError(
-      "Target preview field 'status' is unsupported.",
-    );
   }
   if (
     value.totalPages !== undefined &&

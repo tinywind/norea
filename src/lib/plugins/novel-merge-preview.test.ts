@@ -1,5 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TaskRunContext } from "../tasks/scheduler";
+import { matchNovelMergeChapters } from "../novel-merge-matching";
+import type { SourceNovel } from "./types";
 
 const enqueueSourceTask = vi.hoisted(() => vi.fn());
 
@@ -160,5 +162,129 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
         chapters: [],
       }),
     ).toThrow("cover");
+  });
+});
+
+describe("validateNovelMergeTargetPreview source contract", () => {
+  function bookkorTarget(
+    chapters: SourceNovel["chapters"] = [
+      {
+        name: "1화",
+        path: "/bookkor-target/2743-ep-5020267",
+        chapterNumber: 346378,
+        contentType: "html",
+      },
+    ],
+  ): SourceNovel {
+    return {
+      name: "Bookkor target",
+      novelId: "2743",
+      path: "/bookkor-target",
+      status: "연재중",
+      rating: 4.815,
+      chapters,
+    };
+  }
+
+  it("accepts localized status and matches 345 displayed episodes among 346 internal IDs", () => {
+    // Representative metadata shape from the Bookkor preview that failed on Y700.
+    const latestIds = [5665920, 5669668, 5672461, 5676769, 5677728];
+    const chapters = Array.from({ length: 346 }, (_, index) => ({
+      name: `${index + 1}화`,
+      path: `/bookkor-target/2743-ep-${5020267 + index}`,
+      chapterNumber: index < 341 ? 346378 + index : latestIds[index - 341]!,
+      contentType: "html" as const,
+      releaseTime: "2026-05-12",
+    }));
+    const target = bookkorTarget(chapters);
+
+    const preview = validateNovelMergeTargetPreview(target);
+
+    expect(preview).toBe(target);
+    expect(preview.status).toBe("연재중");
+    expect(preview.chapters).toHaveLength(346);
+    expect(preview.chapters[0]?.chapterNumber).toBe(346378);
+    expect(preview.chapters.at(-1)?.chapterNumber).toBe(5677728);
+    const sources = Array.from({ length: 345 }, (_, index) => ({
+      id: index + 1,
+      name: `Original novel ${index + 1}화`,
+      chapterNumber: String(index + 1),
+      isDownloaded: true,
+    }));
+
+    expect(matchNovelMergeChapters(sources, preview.chapters)).toEqual({
+      matched: sources.map((source, index) => ({
+        sourceChapterId: source.id,
+        targetChapterPath: chapters[index]!.path,
+      })),
+      ambiguous: [],
+      unmatchedSourceChapterIds: [],
+    });
+  });
+
+  it.each(["완결", "連載中", "Serializing"])(
+    "preserves source-owned status %s",
+    (status) => {
+      const target = { ...bookkorTarget(), status };
+      expect(validateNovelMergeTargetPreview(target)).toBe(target);
+    },
+  );
+
+  it.each([null, 42, {}, ["연재중"]])(
+    "rejects a non-string status without coercion: %j",
+    (status) => {
+      expect(() =>
+        validateNovelMergeTargetPreview({ ...bookkorTarget(), status }),
+      ).toThrow("field 'status' must be a string");
+    },
+  );
+
+  it("still rejects string chapter IDs, including a numeric alias of another row", () => {
+    const target = bookkorTarget();
+    expect(() =>
+      validateNovelMergeTargetPreview({
+        ...target,
+        chapters: [
+          { name: "1화", path: "/chapter/1", chapterNumber: 1 },
+          { name: "2화", path: "/chapter/2", chapterNumber: "1" },
+        ],
+      }),
+    ).toThrow("finite chapterNumber");
+  });
+
+  it("still rejects duplicate paths even when stable chapter IDs differ", () => {
+    expect(() =>
+      validateNovelMergeTargetPreview(
+        bookkorTarget([
+          { name: "1화", path: "/chapter/1", chapterNumber: 346378 },
+          { name: "2화", path: "/chapter/1", chapterNumber: 346379 },
+        ]),
+      ),
+    ).toThrow("duplicate chapter path");
+  });
+
+  it("leaves repeated displayed episodes for manual matching", () => {
+    const target = validateNovelMergeTargetPreview(
+      bookkorTarget([
+        { name: "1화", path: "/chapter/1", chapterNumber: 346378 },
+        { name: "1화", path: "/chapter/2", chapterNumber: 346379 },
+      ]),
+    );
+    expect(
+      matchNovelMergeChapters(
+        [{ id: 1, name: "1화", chapterNumber: "1", isDownloaded: true }],
+        target.chapters,
+      ),
+    ).toEqual({
+      matched: [],
+      ambiguous: [
+        {
+          sourceChapterId: 1,
+          reason: "repeatedNumber",
+          candidateTargetPaths: ["/chapter/1", "/chapter/2"],
+        },
+      ],
+      unmatchedSourceChapterIds: [],
+    });
   });
 });
