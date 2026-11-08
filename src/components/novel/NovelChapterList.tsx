@@ -23,7 +23,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { type ChapterListRow } from "../../db/queries/chapter";
+import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation, type TranslationKey } from "../../i18n";
 import { useLongPress } from "../../lib/use-long-press";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
@@ -87,7 +87,7 @@ const CHAPTER_DOWNLOAD_LABELS: Record<
   },
 };
 
-type ServerAwareChapterListRow = ChapterListRow & { serverComplete?: boolean };
+export type ServerAwareChapterListRow = ChapterListRow & { serverAvailable?: boolean; serverComplete?: boolean };
 
 interface ChapterListItemProps {
   chapter: ServerAwareChapterListRow;
@@ -165,7 +165,8 @@ function ChapterListItem({
     ...(readFill ? { "--norea-chapter-progress": readFill } : undefined),
   } as CSSProperties;
   const downloadActive = status?.kind === "queued" || status?.kind === "running";
-  const failedMessage = status?.kind === "failed" ? status.error : null;
+  const serverUnavailable = chapter.serverAvailable === false && !hasStoredChapterContent(chapter);
+  const failedMessage = !serverUnavailable && status?.kind === "failed" ? status.error : null;
   const longPress = useLongPress(reorderMode ? undefined : onExtendSelection, 450);
   const releaseTime = chapter.releaseTime
     ? normalizeDateText(chapter.releaseTime)
@@ -238,6 +239,14 @@ function ChapterListItem({
           size="lg"
         >
           {repairBusy ? <Loader size="xs" /> : <RepairIcon size="1.25rem" />}
+        </IconButton>
+      );
+    }
+    if (serverUnavailable) {
+      return (
+        <IconButton className="norea-novel-chapter-state-button" disabled
+          label={t("novel.serverUnavailable")} size="lg">
+          <DownloadIcon size="1.25rem" />
         </IconButton>
       );
     }
@@ -339,6 +348,7 @@ function ChapterListItem({
         aria-busy={downloadActive || undefined}
         aria-current={isNext ? "step" : undefined}
         aria-describedby={metaId}
+        aria-disabled={!selectionMode && serverUnavailable || undefined}
         aria-label={
           selectionMode
             ? t("novel.toggleChapterSelection", { name: chapter.name })
@@ -365,7 +375,7 @@ function ChapterListItem({
           const action = chapterRowClickAction(selectionMode, event.shiftKey);
           if (action === "select-range") onExtendSelection();
           else if (action === "toggle") onToggleSelected();
-          else onOpen();
+          else if (!serverUnavailable) onOpen();
         }}
         onContextMenu={(event) => {
           event.preventDefault();
@@ -385,6 +395,9 @@ function ChapterListItem({
             {releaseTime ? <span>{releaseTime}</span> : null}
             {partlyRead ? (
               <VisuallyHidden>{t("novel.percentRead", { progress })}</VisuallyHidden>
+            ) : null}
+            {serverUnavailable ? (
+              <span className="norea-novel-chapter-badge">{t("novel.serverUnavailable")}</span>
             ) : null}
             {chapter.serverComplete === false ? (
               <span className="norea-novel-chapter-badge">{t("novel.serverIncomplete")}</span>

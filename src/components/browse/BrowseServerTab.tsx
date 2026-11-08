@@ -119,7 +119,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
       return;
     }
     selection.exit();
-    void downloadServerWorksOnce(selectedWorks, null, t, queryClient);
+    void downloadServerWorksOnce(selectedWorks, null, t, queryClient, server);
   };
 
   const selectionBar = selection.selectionMode ? (

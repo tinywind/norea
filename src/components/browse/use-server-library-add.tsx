@@ -108,7 +108,7 @@ export function useServerLibraryAdd(server: string): {
   const confirm = () => {
     if (!prompt) return;
     const handle = startServerLibraryAdd({ categoryIds, count: prompt.count, server, works: prompt.works }, t, queryClient);
-    if (prompt.downloadChaptersOf) void downloadServerWorksOnce(prompt.downloadChaptersOf, handle.promise, t, queryClient);
+    if (prompt.downloadChaptersOf) void downloadServerWorksOnce(prompt.downloadChaptersOf, handle.promise, t, queryClient, server);
     notifications.show({ message: t("serverLibraryAdd.started", { count: prompt.count }) });
     prompt.onStarted?.();
     setPrompt(null);

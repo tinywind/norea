@@ -3,7 +3,8 @@ import type { QueryClient } from "@tanstack/react-query";
 import { findNovelBySource } from "../../db/queries/novel";
 import type { TranslationKey } from "../../i18n";
 import { isAbortError } from "../../lib/abort";
-import type { ServerWorkSummary } from "../../lib/content-sync/browse";
+import { openServerNovel, type ServerWorkSummary } from "../../lib/content-sync/browse";
+import { useContentSyncStore } from "../../store/content-sync";
 import { showErrorToast } from "../../lib/runtime/error-toast";
 import { downloadOnceNotice, queueChapterDownloadsOnce } from "../library/download-once";
 
@@ -21,6 +22,7 @@ export async function downloadServerWorksOnce(
   libraryAdd: Promise<unknown> | null,
   t: Translate,
   queryClient: QueryClient,
+  server = useContentSyncStore.getState().serverUrl,
 ): Promise<void> {
   try {
     if (libraryAdd) {
@@ -34,10 +36,13 @@ export async function downloadServerWorksOnce(
     let notAdded = 0;
     for (const work of new Map(works.map(work => [work.id, work])).values()) {
       const novel = await findNovelBySource(work.identity.pluginId, work.identity.novelPath);
-      if (novel?.inLibrary) novelIds.push(novel.id);
+      if (novel?.inLibrary) {
+        await openServerNovel(server, work);
+        novelIds.push(novel.id);
+      }
       else notAdded += 1;
     }
-    const notice = downloadOnceNotice(t, await queueChapterDownloadsOnce(novelIds, t, queryClient));
+    const notice = downloadOnceNotice(t, await queueChapterDownloadsOnce(novelIds, t, queryClient, { kind: "all" }, { serverOnly: true }));
     notifications.show(notAdded > 0
       ? { color: "warn", message: notice.message, title: t("serverLibraryAdd.downloadAllNotAdded", { count: notAdded }) }
       : notice);

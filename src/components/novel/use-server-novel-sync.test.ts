@@ -4,7 +4,7 @@ const mocks = vi.hoisted(() => ({
   effects: [] as (() => (() => void) | undefined)[],
   deps: [] as unknown[][],
   attempt: 0,
-  invalidateQueries: vi.fn(async () => undefined), server: vi.fn(), source: vi.fn(),
+  invalidateQueries: vi.fn(async () => undefined), server: vi.fn(), source: vi.fn(), binding: vi.fn(),
   setState: vi.fn(), serverUrl: "http://server",
 }));
 vi.mock("react", () => ({
@@ -20,6 +20,7 @@ vi.mock("@tanstack/react-query", () => ({ useQueryClient: () => queryClient }));
 vi.mock("../../store/content-sync", () => ({ useContentSyncStore: (selector: (state: unknown) => unknown) => selector({ serverUrl: mocks.serverUrl }) }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("../../lib/content-sync/work-refresh", () => ({ syncServerNovelOnOpen: mocks.server }));
+vi.mock("../../lib/content-sync/novel-source", () => ({ readServerNovelSource: mocks.binding }));
 vi.mock("../../lib/updates/freshness-scheduler", () => ({ checkNovelIfStale: mocks.source }));
 vi.mock("./novel-detail-model", () => ({ novelKey: (id: number) => ["novel", id], chaptersKey: (id: number) => ["novel", id, "chapters"] }));
 import { useServerNovelSync } from "./use-server-novel-sync";
@@ -28,6 +29,7 @@ beforeEach(() => {
   vi.clearAllMocks(); mocks.effects.length = 0; mocks.deps.length = 0; mocks.attempt = 0;
   mocks.server.mockReset().mockResolvedValue(true);
   mocks.source.mockReset().mockResolvedValue(true);
+  mocks.binding.mockReset().mockResolvedValue(null);
 });
 
 it("keeps rendering independent of pending work refresh, cancels the server lookup on exit and lets the source check finish", async () => {
@@ -39,6 +41,7 @@ it("keeps rendering independent of pending work refresh, cancels the server look
   const signal = mocks.server.mock.calls[0]![1] as AbortSignal;
   expect(signal.aborted).toBe(false);
   expect(mocks.invalidateQueries).not.toHaveBeenCalled();
+  await vi.waitFor(() => expect(mocks.source).toHaveBeenCalledOnce());
   cleanup(); complete(true);
   await vi.waitFor(() => expect(signal.aborted).toBe(true));
   expect(mocks.source).toHaveBeenCalledWith(42, "tasks.task.checkUpdates", expect.any(AbortSignal), { onStart: expect.any(Function) });
@@ -98,4 +101,41 @@ it("runs the server and source refresh again on retry", async () => {
   await vi.waitFor(() => expect(mocks.source).toHaveBeenCalledTimes(2));
   expect(mocks.server).toHaveBeenCalledTimes(2);
   expect(mocks.setState).toHaveBeenCalledWith(null);
+});
+
+
+it.each([false, true])("never checks the original plugin for a bound server work, including server failure (%s)", async fails => {
+  mocks.binding.mockResolvedValue({ serverUrl: "http://server", workId: "work" });
+  mocks.source.mockRejectedValue(new Error("Source parsing must not run"));
+  const failure = new Error("Server offline");
+  if (fails) mocks.server.mockRejectedValue(failure);
+  useServerNovelSync(42, true, "Book");
+  const cleanup = mocks.effects[0]!()!;
+  await vi.waitFor(() => fails
+    ? expect(mocks.setState).toHaveBeenCalledWith(failure)
+    : expect(mocks.invalidateQueries).toHaveBeenCalledWith({ queryKey: ["novel", 42], exact: true }));
+  expect(mocks.binding).toHaveBeenCalledExactlyOnceWith(42);
+  expect(mocks.source).not.toHaveBeenCalled();
+  cleanup();
+});
+
+it("does not fall back to a plugin when reading the server binding fails", async () => {
+  const failure = new Error("Binding storage unavailable");
+  mocks.binding.mockRejectedValue(failure);
+  useServerNovelSync(42, true, "Book");
+  const cleanup = mocks.effects[0]!()!;
+  await vi.waitFor(() => expect(mocks.setState).toHaveBeenCalledWith(failure));
+  expect(mocks.source).not.toHaveBeenCalled();
+  cleanup();
+});
+
+it("does not start a source check after leaving while the server binding is unresolved", async () => {
+  let finish!: (value: null) => void;
+  mocks.binding.mockImplementation(() => new Promise(resolve => { finish = resolve; }));
+  useServerNovelSync(42, true, "Book");
+  const cleanup = mocks.effects[0]!()!;
+  cleanup();
+  finish(null);
+  await Promise.resolve();
+  expect(mocks.source).not.toHaveBeenCalled();
 });

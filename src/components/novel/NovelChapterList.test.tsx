@@ -20,6 +20,14 @@ vi.mock("../IconButton", async importOriginal => {
   };
 });
 
+vi.mock("../ui/ListRow", async importOriginal => {
+  const actual = await importOriginal<typeof import("../ui/ListRow")>();
+  return { ...actual, ListRow: (props: ComponentProps<typeof actual.ListRow>) => {
+    rowClickHandlers.set(String(props["aria-label"]), () => props.onClick?.({ shiftKey: false } as never));
+    return <actual.ListRow {...props} />;
+  } };
+});
+
 const chapter: ChapterListRow = {
   id: 1,
   novelId: 1,
@@ -250,7 +258,7 @@ describe("download state", () => {
 
 describe("server chapter completeness", () => {
   it("shows a partial server copy and keeps the download action", () => {
-    const $ = renderRow({ serverComplete: false });
+    const $ = renderRow({ serverAvailable: true, serverComplete: false });
     expect(describedText($)).toContain("Partial copy on server");
     expect(siblingButtons($).attr("aria-label")).toBe("Download chapter");
   });
@@ -344,5 +352,32 @@ describe("row geometry", () => {
     expect(rendered).toBeGreaterThan(0);
     expect(rendered).toBeLessThan(40);
     expect($(`[style*='height:${500 * CHAPTER_ROW_HEIGHT}px']`)).toHaveLength(1);
+  });
+});
+
+
+describe("server chapter availability", () => {
+  it("labels metadata-only chapters and blocks reading or downloading from the original site", () => {
+    const onOpen = vi.fn();
+    const onDownload = vi.fn();
+    const $ = renderRow({ serverAvailable: false }, undefined, { onOpen, onDownload });
+    expect(describedText($)).toContain("Not stored on the content server");
+    expect(openButton($).attr("aria-disabled")).toBe("true");
+    expect(siblingButtons($).attr("aria-label")).toBe("Not stored on the content server");
+    expect(siblingButtons($).prop("disabled")).toBe(true);
+    rowClickHandlers.get("Open First chapter")?.();
+    rowClickHandlers.get("Not stored on the content server")?.();
+    expect(onOpen).not.toHaveBeenCalled();
+    expect(onDownload).not.toHaveBeenCalled();
+  });
+
+  it("keeps an existing local body readable when no server package is available", () => {
+    const onOpen = vi.fn();
+    const $ = renderRow({ serverAvailable: false, isDownloaded: true, contentBytes: 100 }, undefined, { onOpen });
+    expect(describedText($)).not.toContain("Not stored on the content server");
+    expect(openButton($).attr("aria-disabled")).toBeUndefined();
+    expect(siblingButtons($).attr("aria-label")).toBe("Downloaded");
+    rowClickHandlers.get("Open First chapter")?.();
+    expect(onOpen).toHaveBeenCalledOnce();
   });
 });

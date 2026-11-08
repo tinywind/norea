@@ -188,6 +188,7 @@ import {
   enqueueChapterDownloadBatch,
   enqueueChapterDownload,
   failedChapterDownloadJob,
+  retryFailedChapterDownloads,
   enqueueVpnDownloadChapter,
   releaseVpnDownloadPlanLocalWorkScans,
   enqueueChapterMediaRepair,
@@ -3770,5 +3771,132 @@ describe("selected recovery in chapter acquisition", () => {
       useDownloadRecoveryStore.getState().setPolicy(previousPolicy);
       vi.useRealTimers();
     }
+  });
+});
+
+
+describe("explicit content server requests", () => {
+  const job: ChapterDownloadJob = {
+    id: 7, novelId: 11, pluginId: "source-a", chapterPath: "/chapter/7", title: "Server chapter", serverOnly: true,
+  };
+  const context = () => ({
+    executor: "server:0" as ScraperExecutorId, setDetail: vi.fn(), setProgress: vi.fn(),
+    signal: new AbortController().signal, taskId: "task-1",
+  });
+
+  it("keeps server-only intent after durable failure restoration and bypasses source plugins and VPN admission", async () => {
+    installChapterDownloadBatchInterceptor({ enqueue: () => null, cancel: () => false,
+      enqueueChapter: () => { throw new Error("A server download must not enter the VPN queue"); } });
+    const restored = failedChapterDownloadJob(JSON.stringify(job));
+    expect(restored).toMatchObject({ serverOnly: true });
+    vi.mocked(tryDownloadServerChapter).mockResolvedValueOnce(true);
+    enqueueChapterDownload(restored!);
+    expect(capturedSpec).toMatchObject({ serverLane: true, serverOnly: true });
+    expect(capturedSpec?.resolveSourceAccessUrl).toBeUndefined();
+    expect(capturedSpec?.sourceAccessVerificationKey).toBeUndefined();
+    await capturedSpec!.run(context());
+    expect(tryDownloadServerChapter).toHaveBeenCalledWith(expect.objectContaining({ serverOnly: true }),
+      expect.any(AbortSignal), undefined, { requireComplete: true, serverOnly: true });
+    expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
+    expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(syncNovelFromSource).not.toHaveBeenCalled();
+  });
+
+  it("never resolves a source path when a server-only request finds no server copy", async () => {
+    vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 11, path: "norea-folder:7", chapterNumber: "7", position: 7 } as never);
+    enqueueChapterDownload({ ...job, chapterPath: "norea-folder:7" });
+    await expect(capturedSpec!.run(context())).rejects.toThrow("not stored on the content server");
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(syncNovelFromSource).not.toHaveBeenCalled();
+  });
+
+  it("can fetch a server copy despite a held source recovery episode", async () => {
+    recoveryHarness.current.register([job]);
+    recoveryHarness.current.networkLost("chapter:7", new Error("Source VPN offline"));
+    expect(recoveryHarness.current.getSnapshot()).toMatchObject([{ key: "chapter:7", status: "held" }]);
+    vi.mocked(tryDownloadServerChapter).mockResolvedValueOnce(true);
+    enqueueChapterDownload(job);
+    await capturedSpec!.run(context());
+    expect(tryDownloadServerChapter).toHaveBeenCalledOnce();
+    expect(recoveryHarness.current.getSnapshot()).toEqual([]);
+    expect(siteRecoveryMocks.reset).not.toHaveBeenCalled();
+  });
+
+  it("retries a failed server request without resuming the plugin source queue", async () => {
+    failureMocks.snapshot.mockReturnValue([{ chapterId: 7, pluginId: "source-a", failureClass: "transient", nextRetryAt: null,
+      jobJson: JSON.stringify(job) } as StoredChapterDownloadFailure]);
+    expect(await retryFailedChapterDownloads([7])).toBe(1);
+    expect(capturedSpec).toMatchObject({ serverLane: true, serverOnly: true });
+    expect(taskScheduler.resumeSourceQueue).not.toHaveBeenCalled();
+  });
+
+  it("still clears the storage hold when explicitly retrying a failed server write", async () => {
+    failureMocks.snapshot.mockReturnValue([{ chapterId: 7, pluginId: "source-a", failureClass: "storage", nextRetryAt: null,
+      jobJson: JSON.stringify(job) } as StoredChapterDownloadFailure]);
+    expect(await retryFailedChapterDownloads([7])).toBe(1);
+    expect(taskScheduler.resumeSourceQueue).toHaveBeenCalledExactlyOnceWith();
+  });
+
+  it("replaces a queued source task before persisting the strict request and keeps the new owner after cancellation", async () => {
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => scheduler.enqueueSource(spec));
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation(key => scheduler.getTaskByDedupeKey(key));
+    vi.mocked(taskScheduler.cancel).mockImplementation(id => scheduler.cancel(id));
+    const request = { ...job, id: 900061 };
+    const previous = enqueueChapterDownload({ ...request, serverOnly: undefined });
+    const previousOutcome = previous.promise.catch(error => error);
+    await waitForChapterDownloadQueueMutations();
+    pluginMocks.getPlugin.mockClear();
+    vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
+    const strict = enqueueChapterDownload(request);
+    try {
+      expect(strict.id).not.toBe(previous.id);
+      expect(await previousOutcome).toMatchObject({ cancelledByUser: true });
+      await flushMicrotasks();
+      await waitForChapterDownloadQueueMutations();
+      expect(backendQueueValues.get(request.id)).toMatchObject({ serverOnly: true });
+      expect(scheduler.getTask(strict.id)?.status).toBe("queued");
+      expect(tryDownloadServerChapter).not.toHaveBeenCalled();
+      scheduler.resumeSourceQueue();
+      await strict.promise;
+      expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ serverOnly: true }),
+        expect.any(AbortSignal), expect.any(Function), { requireComplete: true, serverOnly: true });
+      expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
+      expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    } finally {
+      scheduler.cancelActiveTasks({ discardQueued: true });
+      await strict.promise.catch(() => undefined);
+      await waitForChapterDownloadQueueMutations();
+    }
+  });
+
+  it.each(["running", "VPN-owned"])("rejects a strict request over a %s source task before changing its queue row", async route => {
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    const original = { ...job, serverOnly: undefined, title: "Existing source request" };
+    backendQueueValues.set(job.id, original);
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockReturnValue({
+      id: "existing-source", kind: "chapter.download", status: route === "running" ? "running" : "queued",
+      ...(route === "VPN-owned" ? { vpnWorker: { rangeId: "range-a", slot: 0, generation: 1 } } : {}),
+    } as never);
+    expect(() => enqueueChapterDownload(job)).toThrow("already has an active source download");
+    await waitForChapterDownloadQueueMutations();
+    expect(backendQueueValues.get(job.id)).toBe(original);
+    expect(taskScheduler.cancel).not.toHaveBeenCalled();
+    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
+    expect(tauriMocks.invoke.mock.calls.some(([command]) => command === "chapter_download_queue_enqueue")).toBe(false);
+  });
+
+  it("keeps a server-only batch out of automatic VPN admission", async () => {
+    installChapterDownloadBatchInterceptor({ enqueue: () => { throw new Error("Unexpected source VPN admission"); }, cancel: () => false });
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => {
+      capturedSpec = spec; return { id: "server-task", promise: Promise.resolve() };
+    });
+    const request = enqueueChapterDownloadBatch({ jobs: [job], title: "Server batch", materializeAllTasks: true });
+    await request.materialized;
+    await expect(request.promise).resolves.toMatchObject({ total: 1, succeeded: 1 });
+    expect(capturedSpec?.serverLane).toBe(true);
   });
 });

@@ -52,6 +52,12 @@ interface NovelMergeNovelRow {
   isLocal: unknown;
   libraryAddedAt: number | null;
   lastReadAt: number | null;
+  author: string | null;
+  artist: string | null;
+  summary: string | null;
+  status: string | null;
+  genres: string | null;
+  rating: number | null;
 }
 
 interface NovelMergeChapterRow {
@@ -152,7 +158,8 @@ export async function applyNovelMergeInDb({
          in_library AS inLibrary,
          is_local AS isLocal,
          library_added_at AS libraryAddedAt,
-         last_read_at AS lastReadAt
+         last_read_at AS lastReadAt,
+         author, artist, summary, status, genres, rating
        FROM novel
        WHERE id IN ($1, $2)`,
       [sourceNovelId, targetNovelId],
@@ -446,6 +453,12 @@ export async function applyNovelMergeInDb({
            ELSE MIN(library_added_at, $3)
          END,
          last_read_at = $4,
+         author = $5,
+         artist = $6,
+         summary = $7,
+         status = $8,
+         genres = $9,
+         rating = $10,
          updated_at = unixepoch()
        WHERE id = $1`,
       [
@@ -453,6 +466,9 @@ export async function applyNovelMergeInDb({
         booleanParam(sqliteBoolean(sourceNovel.inLibrary)),
         sourceNovel.libraryAddedAt,
         mergedLastReadAt,
+        ...(["author", "artist", "summary", "status", "genres"] as const).map(field =>
+          targetNovel[field]?.trim() ? targetNovel[field] : sourceNovel[field]?.trim() ? sourceNovel[field] : null),
+        targetNovel.rating ?? sourceNovel.rating ?? null,
       ],
     );
 

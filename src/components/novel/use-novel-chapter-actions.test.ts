@@ -16,6 +16,7 @@ const mocks = vi.hoisted(() => ({
   showNotification: vi.fn(),
   hideNotification: vi.fn(),
   offerToStopGoals: vi.fn(),
+  binding: vi.fn(),
   restoreReadStates: vi.fn(async () => ({ rowsAffected: 0, chunks: 0 })),
 }));
 
@@ -37,6 +38,7 @@ vi.mock("../../db/queries/chapter", () => ({
   setChaptersReadState: vi.fn(), setRelativeChaptersReadState: vi.fn(), restoreChapterReadStates: mocks.restoreReadStates,
 }));
 vi.mock("../../lib/reader-query-invalidation", () => ({ invalidateChapterReadStateQueries: vi.fn() }));
+vi.mock("../../lib/content-sync/novel-source", () => ({ readServerNovelSource: mocks.binding }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   enqueueChapterDownload: vi.fn(), enqueueChapterDownloadBatch: vi.fn(), enqueueChapterMediaRepair: vi.fn(),
   cancelChapterDownloadBatches: vi.fn(), resumeChapterDownloadQueueAfterFailure: vi.fn(async () => true),
@@ -63,6 +65,7 @@ beforeEach(() => {
   for (const request of getChapterDownloadRequestSnapshot()) cancelChapterDownloadRequest(request.id);
   vi.clearAllMocks();
   mocks.mutations.length = 0;
+  mocks.binding.mockReset().mockResolvedValue(null);
 });
 
 it.each([false, true])("only resumes a failure stop for an explicit row retry after queuing the current chapter path (retry: %s)", async retryAfterFailure => {
@@ -232,4 +235,42 @@ it("confirms briefly how many chosen chapters were queued, but not for a single 
   expect(mocks.showNotification).toHaveBeenCalledExactlyOnceWith({ autoClose: 3_000, color: "ok", message: "novel.downloadsQueued" });
   actions.downloadChapters([]);
   expect(mocks.showNotification).toHaveBeenCalledTimes(1);
+});
+
+
+it.each([false, true])("queues bound server chapters without resuming the source failure stop (selected: %s)", async batch => {
+  mocks.binding.mockResolvedValue({ serverUrl: "http://server", workId: "work" });
+  vi.mocked(enqueueChapterDownloadBatch).mockReturnValue({ id: "server-only", materialized: Promise.resolve(), promise: Promise.resolve({ total: 1, succeeded: 1, failed: 0, cancelled: 0 }) });
+  const chapter = { id: 7, name: "Opening", path: "/chapter/1", chapterNumber: "1", contentType: "html" } as ChapterListRow;
+  const actions = useNovelChapterActions(3, { id: 3, pluginId: "source", name: "Book", path: "/book", isLocal: false }, [chapter]);
+  if (batch) actions.downloadChapters([chapter]);
+  else actions.downloadChapter(chapter, true);
+  await vi.waitFor(() => expect(enqueueChapterDownloadBatch).toHaveBeenCalledOnce());
+  expect(vi.mocked(enqueueChapterDownloadBatch).mock.calls[0]?.[0].jobs).toEqual([
+    expect.objectContaining({ id: 7, serverOnly: true, chapterPath: "/chapter/1" }),
+  ]);
+  await vi.waitFor(() => expect(getChapterDownloadRequestSnapshot()).toEqual([]));
+  expect(resumeChapterDownloadQueueAfterFailure).not.toHaveBeenCalled();
+});
+
+it("skips metadata-only rows but queues incomplete server bodies as server-only", async () => {
+  vi.mocked(enqueueChapterDownloadBatch).mockReturnValue({ id: "partial-server", materialized: Promise.resolve(), promise: Promise.resolve({ total: 1, succeeded: 1, failed: 0, cancelled: 0 }) });
+  const chapter = { id: 7, name: "Opening", path: "/chapter/1", chapterNumber: "1", contentType: "html" } as ChapterListRow;
+  const rows = [{ ...chapter, serverAvailable: true, serverComplete: false }, { ...chapter, id: 8, serverAvailable: false }];
+  const actions = useNovelChapterActions(3, { id: 3, pluginId: "source", name: "Book", path: "/book", isLocal: false }, rows, { serverOnly: true });
+  actions.downloadChapters(rows);
+  await vi.waitFor(() => expect(enqueueChapterDownloadBatch).toHaveBeenCalledOnce());
+  expect(vi.mocked(enqueueChapterDownloadBatch).mock.calls[0]?.[0].jobs).toEqual([expect.objectContaining({ id: 7, serverOnly: true })]);
+  expect(mocks.showNotification).toHaveBeenCalledWith({ autoClose: 3_000, color: "warn", message: "downloadOnce.serverUnavailable" });
+  expect(mocks.binding).not.toHaveBeenCalled();
+});
+
+it("does not create a download request for a row absent from its content server", () => {
+  const chapter = { id: 7, name: "Opening", path: "/chapter/1", chapterNumber: "1", contentType: "html", serverAvailable: false } as ChapterListRow & { serverAvailable: false };
+  const actions = useNovelChapterActions(3, { id: 3, pluginId: "source", name: "Book", path: "/book", isLocal: false }, [chapter], { serverOnly: true });
+  actions.downloadChapter(chapter, true);
+  expect(getChapterDownloadRequestSnapshot()).toEqual([]);
+  expect(enqueueChapterDownloadBatch).not.toHaveBeenCalled();
+  expect(resumeChapterDownloadQueueAfterFailure).not.toHaveBeenCalled();
+  expect(mocks.showNotification).toHaveBeenCalledExactlyOnceWith({ autoClose: 3_000, color: "warn", message: "downloadOnce.serverUnavailable" });
 });

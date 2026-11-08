@@ -52,6 +52,22 @@ requirements must be decided explicitly before implementation.
   preserve the original server copy. Manual sync stays manual, but startup or
   reconnect resumes an already approved pending or failed migration once. Blocked
   migrations require an explicit retry. This adds no SQL table or migration.
+  A merge preserves nonempty target metadata and fills missing author, artist,
+  summary, status, genres, and rating from the source. A zero rating is retained.
+  If the target has no stored cover, the source cover is copied before the source
+  records or directory can be removed. Cover read, write, or identity failures
+  stop the merge and preserve the source; existing target covers remain preferred.
+
+- Downloads explicitly selected from a content-server work retain the optional
+  `serverOnly: true` intent in queue JSON, native persistence, retries, and restart
+  recovery. These jobs use the bound server without loading a source plugin,
+  resolving source chapter paths, acquiring a source VPN worker, or falling back
+  to the source site. Source access holds do not block them; storage holds still
+  apply. A server work opens with server metadata and availability, without an
+  automatic source refresh. Metadata-only chapters remain listed but cannot be
+  downloaded from the server; available incomplete copies remain downloadable.
+  Ordinary source downloads retain their existing server-first fallback behavior.
+  This adds no database schema or chapter package version.
 
 - Source-access blocks and VPN plan challenge JSON accept `forbidden` for HTTP
   403. Existing CAPTCHA and Cloudflare values remain valid. A forbidden hold

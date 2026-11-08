@@ -1524,6 +1524,7 @@
   "novel.repair": "복구",
   "novel.serverIncomplete": "서버에 일부 사본",
   "novel.serverComplete": "서버에 전체 사본",
+  "novel.serverUnavailable": "서버에 본문 없음",
   "novel.deleteDownload": "다운로드 삭제",
   "novel.upNext": "이어 읽기",
   "novelMerge.title": "“{name}” 옮기기",
@@ -1885,6 +1886,7 @@
   "downloadOnce.selectedWorks": "선택한 작품 {count}개에 이번 다운로드 범위를 적용합니다.",
   "downloadOnce.status": "기기에 {total}개 중 {stored}개 · 대기열 {queued}개",
   "downloadOnce.failed": "다운로드를 대기열에 넣지 못했습니다. 다시 시도해 주세요.",
+  "downloadOnce.serverUnavailable": "선택한 챕터 {count}개는 콘텐츠 서버에 저장되어 있지 않습니다.",
   "novelMerge.serverPending": "이 기기에서 {target}(으)로 옮겼습니다. 서버 이관이 대기 중이며 검증이 끝날 때까지 서버 원본을 보존합니다. 콘텐츠 서버 설정에서 다시 시도할 수 있습니다.",
   "contentSync.error.migrationPending": "서버 이관이 끝나지 않았습니다. 서버 원본은 안전하게 보존되며 서재에 자동으로 다시 들어오지 않습니다. 동기화를 다시 시도하고, 검증 충돌이 계속되면 삭제하기 전에 세부 정보를 확인하세요."
 }

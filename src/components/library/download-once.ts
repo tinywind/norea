@@ -6,7 +6,7 @@ import { isChapterDownloadQueued, type ChapterDownloadJob } from "../../lib/task
 import { submitChapterDownloadRequest } from "../../lib/tasks/chapter-download-requests";
 import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
 import { goalReadingChapterId } from "../../lib/download-goals/goal-targets";
-import { readServerNovelSource } from "../../lib/content-sync/novel-source";
+import { listServerChapterAvailability, readServerNovelSource } from "../../lib/content-sync/novel-source";
 import { useReaderStore } from "../../store/reader";
 
 type Translate = (key: TranslationKey, values?: Record<string, string | number>) => string;
@@ -30,6 +30,7 @@ export function selectDownloadChaptersOnce(
 export interface DownloadOnceOutcome {
   queued: number;
   skippedLocal: number;
+  skippedServer?: number;
 }
 
 /**
@@ -42,22 +43,34 @@ export async function queueChapterDownloadsOnce(
   t: Translate,
   queryClient: QueryClient,
   selection: DownloadOnceSelection = { kind: "all" },
+  options: { serverOnly?: boolean } = {},
 ): Promise<DownloadOnceOutcome> {
   let queued = 0;
   let skippedLocal = 0;
+  let skippedServer = 0;
   for (const novelId of new Set(novelIds)) {
     const novel = await getNovelById(novelId);
     if (!novel) continue;
-    if (novel.isLocal && !await readServerNovelSource(novel.id)) {
+    const serverSource = options.serverOnly || novel.isLocal ? await readServerNovelSource(novel.id) : null;
+    if (novel.isLocal && !serverSource) {
       skippedLocal += 1;
       continue;
     }
     // The paged source query excludes local rows, including works restored from a content server.
-    const chapters = selection.kind === "all" && !novel.isLocal
+    let chapters = selection.kind === "all" && !novel.isLocal
       ? (await listChaptersToDownloadOnce(novel.id)).filter(chapter => !isChapterDownloadQueued(chapter.id))
       : selectDownloadChaptersOnce(await listLibraryDownloadChapters(novel.id), selection,
           useReaderStore.getState().lastReadChapterByNovel[novel.id]);
     if (chapters.length === 0) continue;
+    if (options.serverOnly) {
+      if (!serverSource) throw new Error("Content server work source is unavailable. Open this work from the content server again.");
+      const available = await listServerChapterAvailability(serverSource);
+      const selected = chapters;
+      chapters = selected.filter(chapter => available.paths.has(chapter.path) ||
+        (chapter.chapterNumber != null && /^\d+(?:\.\d+)?$/.test(chapter.chapterNumber) && available.numbers.has(Number(chapter.chapterNumber))));
+      skippedServer += selected.length - chapters.length;
+      if (chapters.length === 0) continue;
+    }
     const jobs: ChapterDownloadJob[] = chapters.map((chapter) => ({
       id: chapter.id,
       pluginId: novel.pluginId,
@@ -69,11 +82,12 @@ export async function queueChapterDownloadsOnce(
       novelName: novel.name,
       novelPath: novel.path,
       priority: "user",
+      ...(options.serverOnly ? { serverOnly: true } : {}),
       title: t("tasks.task.downloadChapter", { name: chapter.name }),
     }));
     const title = t("tasks.task.downloadChapterBatch", { count: jobs.length });
     const request = submitChapterDownloadRequest({
-      key: JSON.stringify(["download-once", novel.id, jobs.map((job) => job.id)]),
+      key: JSON.stringify(["download-once", novel.id, jobs.map((job) => job.id), options.serverOnly === true]),
       title,
       novelIds: [novel.id],
       total: jobs.length,
@@ -86,23 +100,26 @@ export async function queueChapterDownloadsOnce(
     await request.materialized;
     queued += jobs.length;
   }
-  return { queued, skippedLocal };
+  return { queued, skippedLocal, ...(skippedServer > 0 ? { skippedServer } : {}) };
 }
 
-export function downloadOnceNotice(t: Translate, { queued, skippedLocal }: DownloadOnceOutcome): { color: "ok" | "warn"; message: string } {
+export function downloadOnceNotice(t: Translate, { queued, skippedLocal, skippedServer = 0 }: DownloadOnceOutcome): { color: "ok" | "warn"; message: string } {
   if (queued === 0) {
     return {
       color: "warn",
-      message: skippedLocal > 0
-        ? t("library.downloadOnce.nothingSkippedLocal", { skipped: skippedLocal })
-        : t("library.downloadOnce.nothing"),
+      message: skippedServer > 0 ? t("downloadOnce.serverUnavailable", { count: skippedServer })
+        : skippedLocal > 0
+          ? t("library.downloadOnce.nothingSkippedLocal", { skipped: skippedLocal })
+          : t("library.downloadOnce.nothing"),
     };
   }
   return {
-    color: "ok",
-    message: skippedLocal > 0
+    color: skippedServer > 0 ? "warn" : "ok",
+    message: [skippedLocal > 0
       ? t("library.downloadOnce.doneSkippedLocal", { count: queued, skipped: skippedLocal })
       : t("library.downloadOnce.done", { count: queued }),
+      skippedServer > 0 ? t("downloadOnce.serverUnavailable", { count: skippedServer }) : null,
+    ].filter(Boolean).join("\n"),
   };
 }
 

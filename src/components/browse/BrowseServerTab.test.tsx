@@ -267,5 +267,5 @@ it("downloads right away when every selected work is already in the library", ()
   expect(mocks.bulkRequest).not.toHaveBeenCalled();
   expect(mocks.selection.exit).toHaveBeenCalled();
   expect(mocks.downloadAll).toHaveBeenCalledWith(
-    [expect.objectContaining({ id: "first" }), expect.objectContaining({ id: "second" })], null, expect.any(Function), expect.anything());
+    [expect.objectContaining({ id: "first" }), expect.objectContaining({ id: "second" })], null, expect.any(Function), expect.anything(), "http://server");
 });

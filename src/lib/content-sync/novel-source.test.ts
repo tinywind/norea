@@ -302,3 +302,52 @@ it("preserves a failed content source database write as a storage error", async 
   await expect(rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" }))
     .rejects.toMatchObject({ code: "chapter-storage-failed", cause: failure });
 });
+
+
+describe("explicit server downloads", () => {
+  it("downloads a recovered chapter without loading or inspecting its broken source plugin", async () => {
+    await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
+    const folderJob = { ...job, chapterPath: "norea-folder:7" };
+    vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 3, path: folderJob.chapterPath, chapterNumber: "7", position: 7 } as never);
+    vi.mocked(pluginManager.loadInstalledFromDb).mockRejectedValue(new Error("Bookkor episode IDs do not follow the source reading order."));
+    const copy = { ...entry, complete: true, manifest: { ...entry.manifest, chapter: { chapterNumber: "7" } } } as CatalogEntry;
+    vi.mocked(contentServerRequest).mockResolvedValueOnce(copy);
+
+    expect(await tryDownloadServerChapter(folderJob, undefined, undefined, { serverOnly: true })).toBe(true);
+    expect(downloadServerChapterFromServer).toHaveBeenCalledWith(copy, "http://origin", {
+      token: "device-key", target: { ...entry.manifest.identity, chapterPath: folderJob.chapterPath },
+    });
+    expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
+    expect(pluginManager.getPlugin).not.toHaveBeenCalled();
+  });
+
+  it("reports an absent server payload instead of falling back to an installed source", async () => {
+    await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
+    vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+    const failure = new ContentServerError(404);
+    vi.mocked(contentServerRequest).mockRejectedValueOnce(failure);
+
+    await expect(tryDownloadServerChapter(job, undefined, undefined, { serverOnly: true })).rejects.toBe(failure);
+    expect(pluginManager.getPlugin).not.toHaveBeenCalled();
+    expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
+    expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
+  });
+
+  it("keeps an incomplete server body on the server route without consulting the source", async () => {
+    settings.serverUrl = "http://configured";
+    const copy = { ...entry, complete: false };
+    vi.mocked(contentServerRequest).mockResolvedValueOnce(copy);
+    expect(await tryDownloadServerChapter(job, undefined, undefined, { serverOnly: true, requireComplete: true })).toBe(true);
+    expect(downloadServerChapterFromServer).toHaveBeenCalledWith(copy, "http://configured", {
+      token: "device-key", target: entry.manifest.identity,
+    });
+    expect(pluginManager.getPlugin).not.toHaveBeenCalled();
+    expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
+  });
+
+  it("does not turn a missing server configuration into permission to use the source", async () => {
+    await expect(tryDownloadServerChapter(job, undefined, undefined, { serverOnly: true })).rejects.toThrow("Content server");
+    expect(pluginManager.getPlugin).not.toHaveBeenCalled();
+    expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
+  });
+});

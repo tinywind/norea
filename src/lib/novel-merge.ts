@@ -14,6 +14,7 @@ import { reconcileStoredChapterContent } from "./chapter-content-storage";
 import { clearResolvedChapterStorageDirs } from "./chapter-storage-resolution";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "./chapter-storage-path";
 import { saveNovelCoverFromSource } from "./novel-cover-storage";
+import { persistNovelCover, readStoredNovelCover, readStoredNovelMetadata } from "./work-metadata";
 import {
   finalizeChapterStorageTransfer,
   prepareChapterStorageTransfer,
@@ -306,6 +307,35 @@ async function rollbackPreparation(
   throw originalError;
 }
 
+async function readMergeWorkMetadata(novel: NovelDetailRecord) {
+  const stored = await readStoredNovelMetadata(novelStorageRelativeDir(novel));
+  if (stored && (
+    stored.metadata.identity.pluginId !== novel.pluginId ||
+    stored.metadata.identity.novelId !== novel.sourceNovelId ||
+    stored.metadata.identity.novelPath !== novel.path
+  )) {
+    throw new Error("Stored work metadata no longer matches the merge. Refresh the work before merging.");
+  }
+  return stored;
+}
+
+async function preserveSourceNovelCover(
+  sourceNovel: NovelDetailRecord,
+  targetNovel: NovelDetailRecord,
+  signal: AbortSignal,
+): Promise<void> {
+  const target = await readMergeWorkMetadata(targetNovel);
+  if (target?.metadata.cover) return;
+  const source = await readMergeWorkMetadata(sourceNovel);
+  if (!source?.metadata.cover) return;
+  const body = await readStoredNovelCover(source.directory, source.metadata);
+  if (!body?.length) throw new Error("The source cover could not be read. No novels were merged.");
+  throwIfNovelMergeAborted(signal);
+  await persistNovelCover(novelStorageRelativeDir(targetNovel), {
+    body, fileName: source.metadata.cover.fileName, contentType: source.metadata.cover.contentType,
+  }, { preserveExisting: true });
+}
+
 async function mergeNovelStorageAndRecords(
   input: ExecuteNovelMergeInput,
   sourceNovel: NovelDetailRecord,
@@ -387,6 +417,8 @@ async function mergeNovelStorageAndRecords(
         };
       },
     ));
+    throwIfNovelMergeAborted(signal);
+    await preserveSourceNovelCover(sourceNovel, targetNovel, signal);
     throwIfNovelMergeAborted(signal);
     databaseResult = await applyNovelMergeInDb({
       sourceNovelId: sourceNovel.id,

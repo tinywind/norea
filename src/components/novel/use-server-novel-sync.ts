@@ -2,14 +2,14 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../i18n";
 import { syncServerNovelOnOpen } from "../../lib/content-sync/work-refresh";
+import { readServerNovelSource } from "../../lib/content-sync/novel-source";
 import { checkNovelIfStale } from "../../lib/updates/freshness-scheduler";
 import { useContentSyncStore } from "../../store/content-sync";
 import { chaptersKey, novelKey } from "./novel-detail-model";
 
 /**
- * On open, looks the work up on the content server and, when its last check is older than
- * 6 hours, checks its source for new chapters in the background. The source check outlives the
- * page: cancelling it on exit recorded no outcome, so every later visit started it again.
+ * On open, refreshes content-server metadata. Only works without a server binding receive
+ * automatic source checks. A started source check outlives the page so its outcome is saved.
  */
 export function useServerNovelSync(id: number, active: boolean, name: string) {
   const queryClient = useQueryClient();
@@ -42,6 +42,7 @@ export function useServerNovelSync(id: number, active: boolean, name: string) {
     })();
     void (async () => {
       try {
+        if (await readServerNovelSource(id) || controller.signal.aborted) return;
         sourceRefreshed = await checkNovelIfStale(id, title.current, new AbortController().signal, {
           onStart: () => { if (!controller.signal.aborted) setChecking(true); },
         });

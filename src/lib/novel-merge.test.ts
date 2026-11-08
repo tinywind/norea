@@ -53,6 +53,13 @@ vi.mock("./novel-cover-storage", () => ({
   saveNovelCoverFromSource: vi.fn(),
 }));
 
+vi.mock("./work-metadata", async original => ({
+  ...await original<typeof import("./work-metadata")>(),
+  readStoredNovelMetadata: vi.fn(),
+  readStoredNovelCover: vi.fn(),
+  persistNovelCover: vi.fn(),
+}));
+
 vi.mock("./tasks/download-cache-delete", () => ({
   cancelNovelChapterDownloadWork: vi.fn(),
 }));
@@ -91,6 +98,7 @@ import { pluginManager } from "./plugins/manager";
 import { isSourceAccessRequiredError } from "./plugins/source-access";
 import { syncNovelFromSource } from "./plugins/sync-novel";
 import { saveNovelCoverFromSource } from "./novel-cover-storage";
+import { persistNovelCover, readStoredNovelCover, readStoredNovelMetadata, type NovelMetadataV1 } from "./work-metadata";
 import { runExclusiveChapterStorageOperation } from "./tasks/chapter-storage-operation";
 import { cancelNovelChapterDownloadWork } from "./tasks/download-cache-delete";
 import { executeNovelMerge } from "./novel-merge";
@@ -120,6 +128,9 @@ const mockedRemoveChapterStorageDirectory = vi.mocked(
 );
 const mockedSyncNovelFromSource = vi.mocked(syncNovelFromSource);
 const mockedSaveNovelCoverFromSource = vi.mocked(saveNovelCoverFromSource);
+const mockedReadStoredNovelMetadata = vi.mocked(readStoredNovelMetadata);
+const mockedReadStoredNovelCover = vi.mocked(readStoredNovelCover);
+const mockedPersistNovelCover = vi.mocked(persistNovelCover);
 const mockedCancelNovelChapterDownloadWork = vi.mocked(
   cancelNovelChapterDownloadWork,
 );
@@ -157,6 +168,22 @@ const targetNovel = {
   cover: "https://source-b.test/cover.jpg",
   inLibrary: false,
 };
+
+function storedMergeWork(novel: typeof sourceNovel | typeof targetNovel, cover: NovelMetadataV1["cover"] = null) {
+  return {
+    directory: `contents/${novel.pluginId}/${novel.sourceNovelId}`,
+    metadata: {
+      schemaVersion: 1 as const,
+      identity: { pluginId: novel.pluginId, novelId: novel.sourceNovelId, novelPath: novel.path },
+      novel: {
+        name: novel.name, author: novel.author, artist: novel.artist, summary: novel.summary,
+        status: novel.status, genres: novel.genres, rating: novel.rating, isLocal: novel.isLocal,
+      },
+      cover,
+      chapters: { "1": "Chapter 1" },
+    },
+  };
+}
 
 const sourceChapter = {
   id: 11,
@@ -207,6 +234,9 @@ beforeEach(() => {
   vi.mocked(pluginManager.getPluginForExecutor).mockReturnValue(plugin as never);
   mockedCancelNovelChapterDownloadWork.mockResolvedValue(undefined);
   mockedSaveNovelCoverFromSource.mockResolvedValue(undefined);
+  mockedReadStoredNovelMetadata.mockReset().mockResolvedValue(null);
+  mockedReadStoredNovelCover.mockReset().mockResolvedValue(null);
+  mockedPersistNovelCover.mockReset().mockResolvedValue(undefined);
   mockedGetNovelById.mockImplementation(async (id) =>
     id === 1 ? sourceNovel : id === 2 ? targetNovel : null,
   );
@@ -352,6 +382,103 @@ describe("executeNovelMerge", () => {
     expect(mockedRemoveChapterStorageDirectory).toHaveBeenCalledWith(
       "contents/source-a/a-novel",
     );
+  });
+
+  it.each(["missing", "unavailable"])("preserves the stored A cover when the B cover is %s", async condition => {
+    const source = storedMergeWork(sourceNovel, { fileName: "cover.jpg", contentType: "image/jpeg" });
+    const target = storedMergeWork(targetNovel);
+    const cover = new Uint8Array([255, 216, 255, 217]);
+    mockedReadStoredNovelMetadata.mockImplementation(async directory => directory === source.directory ? source : target);
+    mockedReadStoredNovelCover.mockResolvedValue(cover);
+    if (condition === "missing") {
+      mockedGetNovelById.mockImplementation(async id => id === 1 ? sourceNovel : { ...targetNovel, cover: null });
+    } else {
+      mockedSaveNovelCoverFromSource.mockRejectedValueOnce(new Error("cover unavailable"));
+    }
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await executeNovelMerge({
+        sourceNovelId: 1,
+        target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+        decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+      });
+    } finally { warn.mockRestore(); }
+
+    expect(mockedReadStoredNovelCover).toHaveBeenCalledWith(source.directory, source.metadata);
+    expect(mockedPersistNovelCover).toHaveBeenCalledWith(target.directory,
+      { body: cover, fileName: "cover.jpg", contentType: "image/jpeg" }, { preserveExisting: true });
+    expect(mockedPersistNovelCover.mock.invocationCallOrder[0]).toBeLessThan(mockedApplyNovelMergeInDb.mock.invocationCallOrder[0]!);
+    expect(mockedPersistNovelCover.mock.invocationCallOrder[0]).toBeLessThan(mockedRemoveChapterStorageDirectory.mock.invocationCallOrder[0]!);
+  });
+
+  it("keeps an existing target cover instead of copying the source cover", async () => {
+    const target = storedMergeWork(targetNovel, { fileName: "cover.png", contentType: "image/png" });
+    mockedReadStoredNovelMetadata.mockResolvedValue(target);
+
+    await executeNovelMerge({
+      sourceNovelId: 1,
+      target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+      decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+    });
+
+    expect(mockedReadStoredNovelCover).not.toHaveBeenCalled();
+    expect(mockedPersistNovelCover).not.toHaveBeenCalled();
+    expect(mockedApplyNovelMergeInDb).toHaveBeenCalled();
+  });
+
+  it("retains the source and rolls back prepared chapters when its cover cannot be preserved", async () => {
+    const source = storedMergeWork(sourceNovel, { fileName: "cover.jpg", contentType: "image/jpeg" });
+    const target = storedMergeWork(targetNovel);
+    mockedReadStoredNovelMetadata.mockImplementation(async directory => directory === source.directory ? source : target);
+    mockedReadStoredNovelCover.mockResolvedValue(new Uint8Array([255, 216, 255, 217]));
+    mockedPersistNovelCover.mockRejectedValueOnce(new Error("cover storage unavailable"));
+
+    await expect(executeNovelMerge({
+      sourceNovelId: 1,
+      target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+      decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+    })).rejects.toThrow("cover storage unavailable");
+
+    expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalled();
+    expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
+    expect(mockedFinalizeChapterStorageTransfer).not.toHaveBeenCalled();
+    expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
+  });
+
+  it.each([null, new Uint8Array()])("retains the source when a discovered source cover cannot be read (%j)", async cover => {
+    const source = storedMergeWork(sourceNovel, { fileName: "cover.jpg", contentType: "image/jpeg" });
+    const target = storedMergeWork(targetNovel);
+    mockedReadStoredNovelMetadata.mockImplementation(async directory => directory === source.directory ? source : target);
+    mockedReadStoredNovelCover.mockResolvedValue(cover);
+
+    await expect(executeNovelMerge({
+      sourceNovelId: 1,
+      target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+      decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+    })).rejects.toThrow("source cover");
+
+    expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalled();
+    expect(mockedPersistNovelCover).not.toHaveBeenCalled();
+    expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
+    expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
+  });
+
+  it.each(["source", "target"])("rejects a stored %s cover belonging to another work", async changed => {
+    const source = storedMergeWork(sourceNovel, { fileName: "cover.jpg", contentType: "image/jpeg" });
+    const target = storedMergeWork(targetNovel);
+    (changed === "source" ? source : target).metadata.identity.novelId = "unrelated-work";
+    mockedReadStoredNovelMetadata.mockImplementation(async directory => directory === source.directory ? source : target);
+
+    await expect(executeNovelMerge({
+      sourceNovelId: 1,
+      target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
+      decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+    })).rejects.toThrow("Stored work metadata no longer matches");
+
+    expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalled();
+    expect(mockedPersistNovelCover).not.toHaveBeenCalled();
+    expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
+    expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
   });
 
   it("propagates a source access challenge from target cover storage", async () => {

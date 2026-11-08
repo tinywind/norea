@@ -225,6 +225,8 @@ export interface TaskSpec<T> {
    * continues on its source route.
    */
   serverLane?: boolean;
+  /** Uses only the content server, independently of source access and source failure holds. */
+  serverOnly?: boolean;
   canCompleteWithoutSourceAccess?: boolean;
   exclusive?: boolean;
   requiresForegroundExecutor?: boolean;

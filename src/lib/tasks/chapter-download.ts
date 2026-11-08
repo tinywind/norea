@@ -22,7 +22,7 @@ import {
   recordFailedChapterDownloadAttempt,
   refreshChapterDownloadFailures,
 } from "./chapter-download-failures";
-import type { ChapterDownloadPhase } from "./task-types";
+import type { ChapterDownloadPhase, TaskRunContext } from "./task-types";
 import type { VpnDownloadWorkerRef } from "./vpn-download-types";
 import { vpnDownloadExecutor } from "./vpn-worker-context";
 import { validatePluginVpnDownloadWorker } from "../plugin-vpn-download-workers";
@@ -121,6 +121,8 @@ export interface ChapterDownloadJob {
   goal?: true;
   /** The content server listed a complete copy; try the server lane before the source. */
   serverLane?: true;
+  /** An explicit content-server download must never fall back to the source plugin. */
+  serverOnly?: true;
   title: string;
 }
 
@@ -235,7 +237,7 @@ interface BackendChapterDownloadRegistration {
 }
 const backendChapterDownloadRegistrations = new Map<number, BackendChapterDownloadRegistration>();
 const backendChapterDownloadRestorations = new Set<Set<number>>();
-const ordinaryChapterDownloadHandles = new Map<number, TaskHandle<void>>();
+const ordinaryChapterDownloadHandles = new Map<number, { handle: TaskHandle<void>; serverOnly: boolean }>();
 const chapterDownloadHandoverCohorts = new Set<Set<number>>();
 
 export interface ChapterDownloadVpnHandover {
@@ -247,7 +249,7 @@ export interface ChapterDownloadVpnHandover {
 
 export async function beginChapterDownloadVpnHandover(): Promise<ChapterDownloadVpnHandover> {
   const releaseDispatch = taskScheduler.holdOrdinaryChapterDownloads();
-  const cohort = new Set(ordinaryChapterDownloadHandles.keys());
+  const cohort = new Set([...ordinaryChapterDownloadHandles].flatMap(([id, entry]) => entry.serverOnly ? [] : [id]));
   chapterDownloadHandoverCohorts.add(cohort);
   let released = false;
   let commits: Promise<unknown> = Promise.resolve();
@@ -259,14 +261,14 @@ export async function beginChapterDownloadVpnHandover(): Promise<ChapterDownload
   };
   try {
     await waitForChapterDownloadQueueMutations();
-    const jobs = await listOrdinaryChapterDownloadJobs();
+    const jobs = (await listOrdinaryChapterDownloadJobs()).filter(row => !row.job.serverOnly);
     const remaining = new Set(jobs.map(row => row.job.id));
     for (const id of remaining) cohort.add(id);
     const registrations = new Map([...remaining].map(id => [id, backendChapterDownloadRegistrations.get(id)]));
     const ready = new Set<number>();
     const blocks = taskScheduler.getSnapshot().sourceAccessBlocks ?? [];
     const pending = jobs.flatMap(row => {
-      const handle = ordinaryChapterDownloadHandles.get(row.job.id);
+      const handle = ordinaryChapterDownloadHandles.get(row.job.id)?.handle;
       const task = taskScheduler.getTaskByDedupeKey(chapterDownloadDedupeKey(row.job.id));
       const verifying = task && blocks.some(block => block.originTaskId === task.id || block.verificationTaskId === task.id);
       if (!handle || (task?.status !== "running" && !verifying)) { ready.add(row.job.id); return []; }
@@ -621,6 +623,7 @@ function normalizeQueuedChapterDownloadJob(
     ...(readPositiveIntegerField(record, "retryAt") ? { retryAt: readPositiveIntegerField(record, "retryAt") } : {}),
     ...(record.goal === true ? { goal: true as const } : {}),
     ...(record.serverLane === true ? { serverLane: true as const } : {}),
+    ...(record.serverOnly === true ? { serverOnly: true as const } : {}),
     title,
   };
 }
@@ -1114,14 +1117,32 @@ function enqueueChapterDownloadForExecutor(
   if (!options.vpnWorker && (job.vpnBatchId || job.vpnPlanId || job.vpnRangeId)) {
     throw new Error("A VPN-owned download requires its owning worker.");
   }
-  const sourceName = resolveSourceTaskName(job.pluginId, job.pluginName);
+  if (job.serverOnly && options.vpnWorker) throw new Error("Content server downloads cannot use a source VPN worker.");
+  if (job.serverOnly) {
+    const active = taskScheduler.getTaskByDedupeKey(chapterDownloadDedupeKey(job.id));
+    const ordinary = ordinaryChapterDownloadHandles.get(job.id);
+    if ((active?.status === "queued" || active?.status === "running") &&
+        !(ordinary?.serverOnly && ordinary.handle.id === active.id)) {
+      // Replace only a source request that has not started, before changing its durable queue owner.
+      if (active.vpnWorker || active.status === "running" || !taskScheduler.cancel(active.id)) {
+        throw new Error("This chapter already has an active source download. Cancel it before downloading from the content server.");
+      }
+    }
+  }
+  const sourceName = job.serverOnly ? job.pluginName?.trim() || job.pluginId : resolveSourceTaskName(job.pluginId, job.pluginName);
   const recoveryPolicy = options.recoveryPolicy ?? getDownloadRecoveryPolicy();
   let recoveryProfile = options.recoveryProfile;
-  const recoveryPlugin = pluginManager.getPlugin(job.pluginId);
+  const recoveryPlugin = job.serverOnly ? undefined : pluginManager.getPlugin(job.pluginId);
   const recoveryUrl = recoveryPlugin ? getPluginBaseUrl(recoveryPlugin) : undefined;
   const sourceCooldownKey = options.vpnWorker?.rangeId ?? job.pluginId;
+  const runDownload = (context: TaskRunContext, operation: (context: TaskRunContext) => Promise<void>) =>
+    job.serverOnly ? operation(context) : downloadRecovery.run({
+      job, url: recoveryUrl, policy: recoveryPolicy, vpn: Boolean(options.vpnWorker),
+      ...(options.vpnWorker ? { profileId: () => recoveryProfile?.id ?? null, profileHash: () => recoveryProfile?.hash ?? null } : {}),
+    }, context, operation);
   const completeJob = async (): Promise<void> => {
     await options.onCompleted?.();
+    if (job.serverOnly) downloadRecovery.forget([downloadRecoveryKey(job)], true);
     completeChapterDownloadJob(job, queueOwnerId);
     if (isTauriRuntime()) forgetFailures([job.id]);
   };
@@ -1141,7 +1162,7 @@ function enqueueChapterDownloadForExecutor(
     kind: "chapter.download",
     ...(!options.vpnWorker ? {
       retryManually: () => {
-        downloadRecovery.resume(job.pluginId, new Set([downloadRecoveryKey(job)]));
+        if (!job.serverOnly) downloadRecovery.resume(job.pluginId, new Set([downloadRecoveryKey(job)]));
         if (isTauriRuntime()) forgetFailures([job.id]);
         return enqueueChapterDownload(explicitChapterDownloadJob(withoutRetryTime(job)));
       },
@@ -1149,7 +1170,8 @@ function enqueueChapterDownloadForExecutor(
     } : {}),
     priority: job.priority ?? "background",
     ...(job.goal && !options.vpnWorker ? { automatic: true } : {}),
-    ...(job.serverLane && !options.vpnWorker ? { serverLane: true } : {}),
+    ...((job.serverLane || job.serverOnly) && !options.vpnWorker ? { serverLane: true } : {}),
+    ...(job.serverOnly ? { serverOnly: true } : {}),
     title: job.title,
     source: { id: job.pluginId, name: sourceName },
     ...(options.vpnWorker ? { vpnWorker: options.vpnWorker } : {}),
@@ -1168,15 +1190,13 @@ function enqueueChapterDownloadForExecutor(
     },
     canCompleteWithoutSourceAccess: true,
     dedupeKey: chapterDownloadDedupeKey(job.id),
-    resolveSourceAccessUrl: () =>
-      resolveChapterDownloadSourceAccessUrl(job),
-    sourceAccessVerificationKey: `chapter.download:${job.pluginId}:${job.id}`,
-    sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
-    sourceCooldownMs: chapterDownloadCooldownMs(),
-    run: async (context) => downloadRecovery.run({
-      job, url: recoveryUrl, policy: recoveryPolicy, vpn: Boolean(options.vpnWorker),
-      ...(options.vpnWorker ? { profileId: () => recoveryProfile?.id ?? null, profileHash: () => recoveryProfile?.hash ?? null } : {}),
-    }, context, async ({
+    ...(!job.serverOnly ? {
+      resolveSourceAccessUrl: () => resolveChapterDownloadSourceAccessUrl(job),
+      sourceAccessVerificationKey: `chapter.download:${job.pluginId}:${job.id}`,
+      sourceCooldownKey: chapterDownloadCooldownKey(sourceCooldownKey),
+      sourceCooldownMs: chapterDownloadCooldownMs(),
+    } : {}),
+    run: async (context) => runDownload(context, async ({
       confirmSourceAccess,
       executor,
       setChapterDownloadPhase,
@@ -1251,7 +1271,7 @@ function enqueueChapterDownloadForExecutor(
         // On the server lane only a complete copy counts; anything else continues on the source route as before.
         const serverLane = executor?.startsWith("server:") === true;
         if (!(options.vpnWorker && sourceAccessVerification) &&
-            await tryDownloadServerChapter(sourceJob, signal, setChapterDownloadPhase, { requireComplete: serverLane })) {
+            await tryDownloadServerChapter(sourceJob, signal, setChapterDownloadPhase, { requireComplete: serverLane, ...(job.serverOnly ? { serverOnly: true } : {}) })) {
           if (signal.aborted) throw abortReason(signal);
           await completeJob();
           reportProgress(
@@ -1261,6 +1281,7 @@ function enqueueChapterDownloadForExecutor(
           return;
         }
         if (signal.aborted) throw abortReason(signal);
+        if (job.serverOnly) throw new Error("This chapter is not stored on the content server.");
         setChapterDownloadPhase?.("source-download");
         if (tryStartSourceAccess && !tryStartSourceAccess()) return;
         if (isTauriRuntime()) {
@@ -1556,7 +1577,7 @@ function enqueueChapterDownloadForExecutor(
     (error) => {
       if (isDownloadRecoveryNextProfile(error)) return;
       if (isTaskUserCancelledError(error) && !options.vpnWorker && !isTauriRuntime() &&
-          ordinaryChapterDownloadHandles.get(job.id) === handle &&
+          ordinaryChapterDownloadHandles.get(job.id)?.handle === handle &&
           (!backendChapterDownloadRegistrations.has(job.id) || backendChapterDownloadRegistrations.get(job.id)?.ownerId === queueOwnerId)) {
         try { downloadRecovery.forget([downloadRecoveryKey(job)], true); }
         catch (recoveryError) { taskScheduler.reportDownloadFailure(recoveryError); }
@@ -1574,9 +1595,9 @@ function enqueueChapterDownloadForExecutor(
     },
   );
   if (!options.vpnWorker) {
-    ordinaryChapterDownloadHandles.set(job.id, handle);
+    ordinaryChapterDownloadHandles.set(job.id, { handle, serverOnly: job.serverOnly === true });
     const clear = () => {
-      if (ordinaryChapterDownloadHandles.get(job.id) === handle) ordinaryChapterDownloadHandles.delete(job.id);
+      if (ordinaryChapterDownloadHandles.get(job.id)?.handle === handle) ordinaryChapterDownloadHandles.delete(job.id);
     };
     void handle.promise.then(clear, clear);
   }
@@ -1627,6 +1648,7 @@ async function restoreChapterDownloadFailureStops(): Promise<void> {
       .filter(block => !block.rangeId).map(block => block.sourceId));
     for (const row of getChapterDownloadFailureSnapshot()) {
       if (row.nextRetryAt === null || isHttpNotFoundError(row.messageSummary)) continue;
+      if (row.failureClass !== "storage" && failedChapterDownloadJob(row.jobJson)?.serverOnly) continue;
       if (row.failureClass !== "storage" && blockedSources.has(row.pluginId)) continue;
       const error = row.failureClass === "storage"
         ? new ChapterStorageError("Restore failed chapter", new Error(row.messageSummary))
@@ -1667,7 +1689,7 @@ export async function retryFailedChapterDownloads(chapterIds: readonly number[])
     void enqueueChapterDownload({ ...explicitChapterDownloadJob(job), priority: "user" }).promise.catch(() => undefined);
   }
   if (storageRetry) taskScheduler.resumeSourceQueue();
-  else for (const sourceId of new Set(jobs.map(job => job.pluginId))) taskScheduler.resumeSourceQueue(sourceId);
+  else for (const sourceId of new Set(jobs.filter(job => !job.serverOnly).map(job => job.pluginId))) taskScheduler.resumeSourceQueue(sourceId);
   return jobs.length;
 }
 
@@ -1677,7 +1699,7 @@ export function enqueueChapterDownload(
   if (job.vpnPlanId || job.vpnRangeId) {
     throw new Error("An enrolled VPN download requires its owning worker.");
   }
-  if (job.pluginId !== LOCAL_PLUGIN_ID && job.novelId) {
+  if (!job.serverOnly && job.pluginId !== LOCAL_PLUGIN_ID && job.novelId) {
     const intercepted = interceptChapterDownload(job);
     if (intercepted) return intercepted;
   }
@@ -1925,7 +1947,7 @@ export function enqueueChapterDownloadBatch({
   total: requestedTotal,
   windowSize: requestedWindowSize,
 }: ChapterDownloadBatchJob): ChapterDownloadBatchHandle {
-  if (persist) {
+  if (persist && !(Array.isArray(jobs) && jobs.every(job => job.serverOnly))) {
     const intercepted = interceptChapterDownloadBatch({ jobs, title, total: requestedTotal, materializeAllTasks, persist, removeBackendQueuedJobsOnCancel, windowSize: requestedWindowSize });
     if (intercepted) return intercepted;
   }

@@ -204,3 +204,22 @@ it("adopts more than one SQL chunk while preserving every selected job", async (
   expect(await queue.listPendingVpnDownloadJobs()).toHaveLength(600);
   expect(rows().every(row => row.created_at_ms === 10 && row.attempt_count === 4)).toBe(true);
 });
+
+
+it("keeps explicit server downloads out of VPN handover and rejects direct VPN admission", async () => {
+  const queue = await import("./chapter-download-queue");
+  insert(1); insert(2, { serverOnly: true });
+  const captured = await queue.listOrdinaryChapterDownloadJobs();
+  expect(captured.map(row => row.job.id)).toEqual([1]);
+  const serverJobJson = JSON.stringify({ ...job(2), serverOnly: true });
+  await expect(queue.adoptOrdinaryChapterDownloadJobs("run-a", [{
+    job: { ...job(2), serverOnly: true }, jobJson: serverJobJson, updatedAtMs: 20,
+  }])).rejects.toThrow("Content server");
+  await expect(queue.enqueuePendingVpnDownloadJobs("run-a", [{ ...job(3), serverOnly: true }]))
+    .rejects.toThrow("Content server");
+  await queue.adoptOrdinaryChapterDownloadJobs("run-a", captured);
+  expect(rows()).toMatchObject([
+    { chapter_id: 1, job_json: JSON.stringify({ ...job(1), vpnBatchId: "run-a" }) },
+    { chapter_id: 2, job_json: serverJobJson },
+  ]);
+});

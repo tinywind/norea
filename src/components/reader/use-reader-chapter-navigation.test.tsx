@@ -1,7 +1,8 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
-import { afterEach, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { readServerNovelSource } from "../../lib/content-sync/novel-source";
 import { useNetworkStore } from "../../lib/network";
 import { cancelChapterDownloadBatches, enqueueChapterDownload } from "../../lib/tasks/chapter-download";
 import { taskScheduler } from "../../lib/tasks/scheduler";
@@ -20,6 +21,7 @@ vi.mock("../../lib/android-back-navigation", () => ({ usePageBackNavigation: vi.
 vi.mock("../../db/queries/novel", () => ({
   getNovelById: vi.fn(async () => ({ id: 7, pluginId: "source", name: "Work", path: "/work" })),
 }));
+vi.mock("../../lib/content-sync/novel-source", () => ({ readServerNovelSource: vi.fn(async () => null) }));
 vi.mock("../use-reader-document", () => ({ useReaderDocument: vi.fn(() => ({ document: undefined, isCurrent: false })) }));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   subscribeChapterDownloads: vi.fn(() => () => {}),
@@ -70,6 +72,10 @@ async function render(storedChapter: NavigationChapter, nextChapter?: Navigation
   ));
 }
 
+beforeEach(() => {
+  vi.mocked(readServerNovelSource).mockResolvedValue(null);
+});
+
 afterEach(async () => {
   if (root) await act(async () => root!.unmount());
   root = undefined;
@@ -117,6 +123,7 @@ it("still schedules an interactive download when the chapter body is missing", a
   mount();
   await render({ ...chapter, contentBytes: 0 });
   expect(enqueueChapterDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 11, priority: "interactive" }));
+  expect(vi.mocked(enqueueChapterDownload).mock.calls[0][0]).not.toHaveProperty("serverOnly");
   expect(current.autoDownloadingChapterId).toBe(11);
 });
 
@@ -155,4 +162,50 @@ it("reports an offline chapter without a stored body as unavailable instead of b
   await render({ ...chapter, contentBytes: 0 });
   expect(current.chapterUnavailable).toEqual({ reason: "offline" });
   expect(current.awaitingChapterDownload).toBe(false);
+});
+
+
+it("downloads an opened content-server chapter without source fallback", async () => {
+  mount();
+  vi.mocked(readServerNovelSource).mockResolvedValue({ serverUrl: "https://content.example", workId: "work" });
+  await render({ ...chapter, contentBytes: 0 });
+  expect(readServerNovelSource).toHaveBeenCalledExactlyOnceWith(7);
+  expect(enqueueChapterDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    id: 11, priority: "interactive", serverOnly: true,
+  }));
+});
+
+it("keeps adjacent content-server chapters on the server download path", async () => {
+  mount();
+  vi.mocked(readServerNovelSource).mockResolvedValue({ serverUrl: "https://content.example", workId: "work" });
+  const nextChapter = { ...chapter, id: 12, position: 2, chapterNumber: "2", path: "/chapter/2", contentBytes: 0 };
+  await render(chapter, nextChapter);
+  await act(async () => current.openAdjacent(1));
+  expect(navigation.navigate).toHaveBeenCalledWith({ to: "/reader", search: { chapterId: 12 }, replace: true });
+  expect(enqueueChapterDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    id: 12, chapterPath: "/chapter/2", priority: "interactive", serverOnly: true,
+  }));
+});
+
+it("reports an unreadable content-server binding without starting a source download", async () => {
+  mount();
+  vi.mocked(readServerNovelSource).mockRejectedValueOnce(new Error("Stored content server novel source is invalid."));
+  await render({ ...chapter, contentBytes: 0 });
+  expect(enqueueChapterDownload).not.toHaveBeenCalled();
+  expect(current.chapterUnavailable).toEqual({ reason: "failed", message: "Stored content server novel source is invalid." });
+  expect(current.awaitingChapterDownload).toBe(false);
+});
+
+it("does not start a download when the reader closes during the server binding lookup", async () => {
+  mount();
+  let resolveSource!: (source: Awaited<ReturnType<typeof readServerNovelSource>>) => void;
+  vi.mocked(readServerNovelSource).mockReturnValueOnce(new Promise((resolve) => { resolveSource = resolve; }));
+  await act(async () => root!.render(<QueryClientProvider client={queryClient}>
+    <Probe storedChapter={{ ...chapter, contentBytes: 0 }} ready={false} />
+  </QueryClientProvider>));
+  expect(readServerNovelSource).toHaveBeenCalledExactlyOnceWith(7);
+  await act(async () => { current.handleReaderBack(); });
+  await act(async () => { resolveSource({ serverUrl: "https://content.example", workId: "work" }); });
+  expect(enqueueChapterDownload).not.toHaveBeenCalled();
+  expect(current.autoDownloadingChapterId).toBeNull();
 });

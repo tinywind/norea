@@ -405,6 +405,9 @@ export class TaskScheduler {
       const activeId = this.activeDedupeByKey.get(spec.dedupeKey);
       const activeEntry = activeId ? this.entries.get(activeId) : undefined;
       if (activeEntry) {
+        if (spec.serverOnly && !activeEntry.spec.serverOnly) {
+          throw new Error("An active source task cannot satisfy a content server-only request.");
+        }
         const owner = activeEntry.spec.vpnWorker;
         if (owner?.rangeId !== spec.vpnWorker?.rangeId || owner?.slot !== spec.vpnWorker?.slot ||
             owner?.generation !== spec.vpnWorker?.generation) {
@@ -774,15 +777,15 @@ export class TaskScheduler {
     entry: TaskEntry,
     block: SourceAccessBlockState,
   ): boolean {
-    return entry.record.source?.id === block.sourceId && entry.spec.vpnWorker?.rangeId === block.rangeId;
+    return !entry.spec.serverOnly && entry.record.source?.id === block.sourceId && entry.spec.vpnWorker?.rangeId === block.rangeId;
   }
 
   private isSourceAccessBlocked(entry: TaskEntry): boolean {
-    return this.sourceAccess.isBlocked(entry.record.source?.id, entry.spec.vpnWorker?.rangeId);
+    return !entry.spec.serverOnly && this.sourceAccess.isBlocked(entry.record.source?.id, entry.spec.vpnWorker?.rangeId);
   }
 
   private setSourceAccessUrlForEntry(entry: TaskEntry, url: string): boolean {
-    if (entry.record.status !== "running" || entry.pauseRequested) return false;
+    if (entry.spec.serverOnly || entry.record.status !== "running" || entry.pauseRequested) return false;
     const sourceId = entry.record.source?.id;
     if (!sourceId) return false;
     let scopeKey: string;
@@ -1273,7 +1276,7 @@ export class TaskScheduler {
     this.sourceAccess.replaceOriginTaskId(entry.record.id, retried.id);
     if (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia") {
       if (classifyDownloadFailure(entry.record.error).failureClass === "storage") this.resumeSourceQueue();
-      else this.resumeSourceQueue(entry.record.source?.id);
+      else if (!spec.serverOnly) this.resumeSourceQueue(entry.record.source?.id);
     }
     this.publishSnapshot();
     this.requestDrain();
@@ -1407,7 +1410,7 @@ export class TaskScheduler {
         ...this.downloadFailureStops.sourceErrors, [sourceId]: failure.summary,
       } };
       this.pauseRunningSourceTasks(sourceId, candidate => candidate.record.id !== failedTaskId &&
-        !candidate.spec.vpnWorker && (candidate.record.kind === "chapter.download" || candidate.record.kind === "chapter.repairMedia"));
+        !candidate.spec.vpnWorker && !candidate.spec.serverOnly && (candidate.record.kind === "chapter.download" || candidate.record.kind === "chapter.repairMedia"));
     } else return;
     this.publishSnapshot();
   }
@@ -2167,7 +2170,7 @@ export class TaskScheduler {
     return (
       this.sourceQueuesPaused ||
       (sourceId !== undefined && (this.pausedSourceIds.has(sourceId) ||
-        !entry.spec.vpnWorker && Object.hasOwn(this.downloadFailureStops.sourceErrors, sourceId)))
+        !entry.spec.vpnWorker && !entry.spec.serverOnly && Object.hasOwn(this.downloadFailureStops.sourceErrors, sourceId)))
     );
   }
 
@@ -2226,6 +2229,7 @@ export class TaskScheduler {
   }
 
   private tryStartSourceAccess(entry: TaskEntry): boolean {
+    if (entry.spec.serverOnly) throw new Error("Content server downloads cannot access source sites.");
     if (entry.sourceExecutorId?.startsWith("server:")) {
       // The server lane never reaches the source; the same task continues on its source route.
       entry.serverLaneDone = true;
@@ -2370,7 +2374,7 @@ export class TaskScheduler {
       })
       .catch((error) => {
         const cancelled = entry.controller.signal.aborted || isAbortError(error);
-        const sourceAccessError = classifyDownloadFailure(error).failureClass === "storage"
+        const sourceAccessError = entry.spec.serverOnly || classifyDownloadFailure(error).failureClass === "storage"
           ? null : normalizeSourceAccessRequiredError(error, entry.sourceAccessUrl);
         if (cancelled && entry.record.status === "cancelled") {
           this.finishCancelledRunningAfterSettlement(entry);
@@ -2384,7 +2388,8 @@ export class TaskScheduler {
         ) {
           return;
         }
-        if (!cancelled && (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia")) {
+        if (!cancelled && (!entry.spec.serverOnly || classifyDownloadFailure(error).failureClass === "storage") &&
+            (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia")) {
           this.reportDownloadFailure(error, entry.record.source?.id, entry.spec.vpnWorker, entry.record.id);
         }
         if (this.requiresNetwork(entry) && entry.record.status === "running" &&

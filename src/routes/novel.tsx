@@ -56,6 +56,7 @@ import { takeChapterSelectionHint } from "../components/novel/chapter-selection-
 import {
   ChapterRowsSkeleton,
   VirtualChapterList,
+  type ServerAwareChapterListRow,
 } from "../components/novel/NovelChapterList";
 import { NovelHeroSkeleton, NovelWorkspace } from "../components/novel/NovelWorkspace";
 import { NovelCategoryEditor } from "../components/novel/NovelCategoryEditor";
@@ -178,19 +179,17 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     active,
   );
 
-  const rows = useMemo(() => {
+  const rows = useMemo<ServerAwareChapterListRow[]>(() => {
     const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;
     if (!serverSourceQuery.data || !serverChaptersQuery.data) return storedRows;
     const available = serverChaptersQuery.data;
-    return storedRows.flatMap((chapter) => {
+    return storedRows.map((chapter) => {
       const serverComplete = available.paths.get(chapter.path)
         ?? (chapter.chapterNumber != null && /^\d+(?:\.\d+)?$/.test(chapter.chapterNumber)
           ? available.numbers.get(Number(chapter.chapterNumber)) : undefined);
-      return hasSourcePlugin || hasStoredChapterContent(chapter) || serverComplete !== undefined
-        ? [{ ...chapter, serverComplete }]
-        : [];
+      return { ...chapter, serverAvailable: serverComplete !== undefined, serverComplete };
     });
-  }, [chaptersQuery.data, serverChaptersQuery.data, serverSourceQuery.data, hasSourcePlugin]);
+  }, [chaptersQuery.data, serverChaptersQuery.data, serverSourceQuery.data]);
   const chapters = useMemo(
     () => (defaultChapterSort === "desc" ? [...rows].reverse() : rows),
     [defaultChapterSort, rows],
@@ -215,7 +214,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     repairMedia,
     downloadChapter,
     downloadChapters,
-  } = useNovelChapterActions(id, displayNovel, chapters);
+  } = useNovelChapterActions(id, displayNovel, chapters, { serverOnly: Boolean(serverSourceQuery.data) });
   const statuses = useNovelDownloadStatuses(id, rows, active, novelQuery.data?.pluginId);
   const chapterFiltersActive = hasChapterListFilters(chapterFilters);
   const visibleChapters = useMemo(
@@ -253,7 +252,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     [selectedChapters],
   );
   const selectedDownloadTargets = useMemo(
-    () => buildMissingChapterDownloadTargets(selectedChapters, statuses),
+    () => buildMissingChapterDownloadTargets(selectedChapters.filter(chapter => chapter.serverAvailable !== false), statuses),
     [selectedChapters, statuses],
   );
   const selectedDownloadedChapterIds = useMemo(
@@ -263,10 +262,11 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
         .map((chapter) => chapter.id),
     [selectedChapters],
   );
-  const previousDownloadTargets = useMemo(
-    () => buildPreviousChapterDownloadTargets(chapters, selectedChapterIds, statuses),
-    [chapters, selectedChapterIds, statuses],
-  );
+  const previousDownloadTargets = useMemo(() => {
+    const unavailable = new Set(rows.filter(row => row.serverAvailable === false).map(row => row.id));
+    return buildPreviousChapterDownloadTargets(chapters, selectedChapterIds, statuses)
+      .filter(chapter => !unavailable.has(chapter.id));
+  }, [chapters, rows, selectedChapterIds, statuses]);
   const selectedUnreadCount = selectedChapters.filter(
     (chapter) => chapter.unread || chapter.progress < FINISHED_PROGRESS,
   ).length;
@@ -482,6 +482,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const closeReaderSettings = () => setReaderSettingsOpen(false);
 
   function openChapter(chapter: ChapterListRow): void {
+    if (rows.find(row => row.id === chapter.id)?.serverAvailable === false && !hasStoredChapterContent(chapter)) {
+      notifications.show({ color: "warn", message: t("novel.serverUnavailable") });
+      return;
+    }
     void navigate({ to: "/reader", search: { chapterId: chapter.id } });
   }
 
@@ -999,7 +1003,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
               ) : null}
 
               <NovelCheckPausedNotice
-                active={active && novel.inLibrary && hasSourcePlugin && !serverSync.checking}
+                active={active && novel.inLibrary && hasSourcePlugin && !serverSourceQuery.data && !serverSync.checking}
                 checkNow={refreshMetadata}
                 novelId={novel.id}
               />

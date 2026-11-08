@@ -18,6 +18,7 @@ const mocks = vi.hoisted(() => ({
   fullRefreshPending: false,
   clearSelectedDownloads: vi.fn(),
   clearDownloadMutate: vi.fn(),
+  chapterActionCalls: [] as unknown[][],
   confirm: vi.fn(),
   toast: vi.fn(),
   novelQuery: { isLoading: false, error: null as unknown },
@@ -54,7 +55,10 @@ vi.mock("@mantine/core", async (importOriginal) => ({
   Modal: () => null,
 }));
 vi.mock("../components/novel/use-server-novel-sync", () => ({ useServerNovelSync: () => mocks.sync }));
-vi.mock("../components/novel/use-novel-chapter-actions", () => ({ useNovelChapterActions: () => ({ clearDownload: { mutate: mocks.clearDownloadMutate }, clearSelectedDownloads: { mutate: mocks.clearSelectedDownloads }, setSelectedChapterReadState: {}, setRelativeChapterReadState: {}, repairMedia: {} }) }));
+vi.mock("../components/novel/use-novel-chapter-actions", () => ({ useNovelChapterActions: (...args: unknown[]) => {
+  mocks.chapterActionCalls.push(args);
+  return { clearDownload: { mutate: mocks.clearDownloadMutate }, clearSelectedDownloads: { mutate: mocks.clearSelectedDownloads }, setSelectedChapterReadState: {}, setRelativeChapterReadState: {}, repairMedia: {} };
+} }));
 vi.mock("../components/ui/ConfirmDialog", () => ({ useConfirm: () => mocks.confirm }));
 vi.mock("../components/novel/use-novel-download-statuses", () => ({ useNovelDownloadStatuses: () => new Map() }));
 vi.mock("../components/novel/use-local-novel-editor", () => ({ useLocalNovelEditor: () => ({ addLocalChapters: {}, reorderLocalChapters: {} }) }));
@@ -163,6 +167,7 @@ beforeEach(() => {
   mocks.fullRefreshPending = false;
   mocks.clearSelectedDownloads.mockReset();
   mocks.clearDownloadMutate.mockReset();
+  mocks.chapterActionCalls.length = 0;
   mocks.confirm.mockReset();
   mocks.toast.mockReset();
 });
@@ -346,7 +351,7 @@ it.each(["refreshPending", "fullRefreshPending"] as const)("disables the direct 
   });
 });
 
-it("shows available packages and downloaded chapters without deleting canonical metadata chapters", () => {
+it("keeps metadata-only chapters visible with unavailable actions alongside stored server and device copies", () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   mocks.available.data = { paths: new Map([["/available", true]]), numbers: new Map() };
   mocks.chapters = [
@@ -357,7 +362,9 @@ it("shows available packages and downloaded chapters without deleting canonical 
   const text = renderPage()("button[aria-label='novel.openChapter']").text();
   expect(text).toContain("Available package");
   expect(text).toContain("Local downloaded chapter");
-  expect(text).not.toContain("Metadata without a package");
+  expect(text).toContain("Metadata without a package");
+  expect(text).toContain("novel.serverUnavailable");
+  expect(mocks.chapterActionCalls[0]?.[3]).toEqual({ serverOnly: true });
   expect(mocks.chapters).toHaveLength(3);
 });
 
@@ -412,13 +419,15 @@ it("shows a server folder chapter matching the cached source chapter number with
   expect(renderPage()("button[aria-label='novel.openChapter']").text()).toContain("Server chapter");
 });
 
-it("shows source-only chapters and source controls for a bound work with its original path and installed plugin", async () => {
+it("labels unavailable server chapters even when the original plugin is installed", async () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   mocks.novel.isLocal = false;
   mocks.installed = true;
   mocks.chapters = [{ ...chapter, name: "New source chapter" }];
   const $ = renderPage();
   expect($("button[aria-label='novel.openChapter']").text()).toContain("New source chapter");
+  expect($("button[aria-label='novel.openChapter']").attr("aria-disabled")).toBe("true");
+  expect($("button[aria-label='novel.serverUnavailable']").prop("disabled")).toBe(true);
   expect($("button[aria-label='novel.openInWebView']")).toHaveLength(1);
   expect(mocks.queries.find(query => query.queryKey[1] === "novel-chapters")?.enabled).toBe(true);
 });

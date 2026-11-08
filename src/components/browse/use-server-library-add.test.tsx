@@ -74,7 +74,7 @@ it("queues the prompted works' chapters with the confirmed add's task promise", 
   renderHook().request({ count: 1, downloadChaptersOf: [work("a"), work("b")], onStarted, works: [work("a")] });
   confirmButton(renderHook().sheet)!.props.onClick();
   expect(mocks.enqueue).toHaveBeenCalledWith({ categoryIds: [], count: 1, server: "http://server", works: [work("a")] }, t, expect.any(Function));
-  expect(mocks.downloadAll).toHaveBeenCalledWith([work("a"), work("b")], promise, t, queryClient);
+  expect(mocks.downloadAll).toHaveBeenCalledWith([work("a"), work("b")], promise, t, queryClient, "http://server");
   expect(onStarted).toHaveBeenCalled();
 });
 

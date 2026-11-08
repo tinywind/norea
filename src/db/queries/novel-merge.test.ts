@@ -464,6 +464,46 @@ describe("applyNovelMergeInDb user state transaction", () => {
     ]);
   });
 
+  it.each([0, 4.5])("preserves A details missing from B, including a rating of %s", async rating => {
+    sqlite.prepare("UPDATE novel SET author=?,artist=?,summary=?,status=?,genres=?,rating=? WHERE id=1")
+      .run("Source Author", "Source Artist", "First paragraph.\nSecond paragraph.", "Completed", "Fantasy", rating);
+    sqlite.prepare("UPDATE novel SET author=NULL,artist='',summary=' ',status=?,genres=NULL,rating=NULL WHERE id=2")
+      .run("\n\t");
+
+    await applyNovelMergeInDb(input());
+
+    expect(sqlite.prepare("SELECT id,plugin_id,source_novel_id,path,name,author,artist,summary,status,genres,rating FROM novel").all()).toEqual([{
+      id: 2, plugin_id: "source-b", source_novel_id: "202", path: "/b", name: "Target",
+      author: "Source Author", artist: "Source Artist", summary: "First paragraph.\nSecond paragraph.",
+      status: "Completed", genres: "Fantasy", rating,
+    }]);
+  });
+
+  it("keeps every nonempty B detail and its source cover URL", async () => {
+    sqlite.prepare("UPDATE novel SET author=?,artist=?,summary=?,status=?,genres=?,rating=?,cover=? WHERE id=1")
+      .run("Source Author", "Source Artist", "Source Summary", "Completed", "Fantasy", 4.5, "https://source-a.test/cover.jpg");
+    sqlite.prepare("UPDATE novel SET author=?,artist=?,summary=?,status=?,genres=?,rating=?,cover=? WHERE id=2")
+      .run("Target Author", "Target Artist", " Target Summary ", "Ongoing", "Adventure", 0, "https://source-b.test/cover.png");
+
+    await applyNovelMergeInDb(input());
+
+    expect(sqlite.prepare("SELECT author,artist,summary,status,genres,rating,cover FROM novel WHERE id=2").get()).toEqual({
+      author: "Target Author", artist: "Target Artist", summary: " Target Summary ",
+      status: "Ongoing", genres: "Adventure", rating: 0, cover: "https://source-b.test/cover.png",
+    });
+  });
+
+  it("leaves unknown fields empty when neither work has metadata", async () => {
+    sqlite.prepare("UPDATE novel SET author='',artist=NULL,summary=?,status=' ',genres='',rating=NULL WHERE id=1")
+      .run("\n\t");
+
+    await applyNovelMergeInDb(input());
+
+    expect(sqlite.prepare("SELECT author,artist,summary,status,genres,rating FROM novel WHERE id=2").get()).toEqual({
+      author: null, artist: null, summary: null, status: null, genres: null, rating: null,
+    });
+  });
+
   it("records the server migration identity and mapping in the same commit that removes A", async () => {
     sqlite.exec("UPDATE chapter SET is_downloaded=1,content_bytes=100 WHERE id=11");
     await applyNovelMergeInDb({
@@ -498,7 +538,8 @@ describe("applyNovelMergeInDb user state transaction", () => {
     expect(sqlite.prepare("SELECT id FROM novel ORDER BY id").all()).toEqual([{ id: 2 }]);
   });
 
-  it("rolls back the server job, goal, exclusions and reading state if source deletion fails", async () => {
+  it("rolls back metadata, the server job, goal, exclusions and reading state if source deletion fails", async () => {
+    sqlite.exec("UPDATE novel SET author='Source Author',summary='Source Summary',rating=4.5 WHERE id=1");
     sqlite.exec("INSERT INTO novel_download_goal(novel_id,kind,count,updated_at) VALUES(1,'entire',NULL,10)");
     sqlite.exec("INSERT INTO chapter_download_goal_exclusion(chapter_id,created_at) VALUES(11,5),(12,6),(13,7)");
     sqlite.exec("CREATE TRIGGER reject_source_merge BEFORE DELETE ON novel WHEN OLD.id=1 BEGIN SELECT RAISE(ABORT,'source deletion rejected'); END");

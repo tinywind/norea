@@ -3,9 +3,10 @@ import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-const mocks = vi.hoisted(() => ({ queue: vi.fn(), show: vi.fn() }));
+const mocks = vi.hoisted(() => ({ queue: vi.fn(), show: vi.fn(), binding: vi.fn() }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.show } }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("../../lib/content-sync/novel-source", () => ({ readServerNovelSource: mocks.binding }));
 vi.mock("../library/download-once", () => ({
   queueChapterDownloadsOnce: mocks.queue,
   downloadOnceNotice: (_t: unknown, result: { queued: number }) => ({ color: result.queued > 0 ? "ok" : "warn", message: `queued:${result.queued}` }),
@@ -19,6 +20,7 @@ function Probe() { choice = useNovelDownloadOnce({ novelId: 3, onClose }); retur
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.queue.mockResolvedValue({ queued: 2, skippedLocal: 0 });
+  mocks.binding.mockReset().mockResolvedValue(null);
   const document = { nodeType: 9, activeElement: null, body: null as unknown, documentElement: { nodeName: "HTML" }, addEventListener() {}, removeEventListener() {} };
   const container = {
     nodeType: 1, nodeName: "DIV", tagName: "DIV", namespaceURI: "http://www.w3.org/1999/xhtml",
@@ -63,4 +65,22 @@ it("waits for admission before closing and keeps a failed request available to r
   await act(async () => choice.choose({ kind: "remaining" }));
   expect(choice.error).toBeNull();
   expect(onClose).toHaveBeenCalledOnce();
+});
+
+
+it("resolves the remembered server before publishing the chosen range as server-only", async () => {
+  mocks.binding.mockResolvedValue({ serverUrl: "http://server", workId: "work" });
+  await act(async () => choice.choose({ kind: "all" }));
+  expect(mocks.binding).toHaveBeenCalledExactlyOnceWith(3);
+  expect(mocks.queue).toHaveBeenCalledExactlyOnceWith([3], expect.any(Function), expect.any(QueryClient), { kind: "all" }, { serverOnly: true });
+  expect(onClose).toHaveBeenCalledOnce();
+});
+
+it("keeps the choice open without a source fallback when the server binding cannot be read", async () => {
+  const failure = new Error("Binding read failed");
+  mocks.binding.mockRejectedValue(failure);
+  await act(async () => choice.choose({ kind: "all" }));
+  expect(mocks.queue).not.toHaveBeenCalled();
+  expect(onClose).not.toHaveBeenCalled();
+  expect(choice.error).toBe(failure);
 });

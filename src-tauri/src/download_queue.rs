@@ -59,6 +59,8 @@ pub struct ChapterDownloadQueueJob {
     goal: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     server_lane: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    server_only: Option<bool>,
     title: String,
 }
 
@@ -375,15 +377,18 @@ mod tests {
     }
 
     #[test]
-    fn goal_and_server_lane_flags_survive_json_roundtrip() {
+    fn goal_and_server_download_flags_survive_json_roundtrip() {
         let mut value = serde_json::to_value(job(8, None, None)).unwrap();
         assert!(value.get("goal").is_none());
         assert!(value.get("serverLane").is_none());
+        assert!(value.get("serverOnly").is_none());
         value["goal"] = true.into();
         value["serverLane"] = true.into();
+        value["serverOnly"] = true.into();
         let restored = serde_json::to_value(serde_json::from_value::<ChapterDownloadQueueJob>(value).unwrap()).unwrap();
         assert_eq!(restored["goal"], true);
         assert_eq!(restored["serverLane"], true);
+        assert_eq!(restored["serverOnly"], true);
     }
 
     #[tokio::test]

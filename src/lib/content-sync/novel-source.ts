@@ -59,26 +59,36 @@ export async function tryDownloadServerChapter(
   job: Pick<ChapterDownloadJob, "id" | "novelId" | "pluginId" | "chapterPath">,
   signal?: AbortSignal,
   onPhase?: (phase: ChapterDownloadPhase) => void,
-  options: { requireComplete?: boolean } = {},
+  options: { requireComplete?: boolean; serverOnly?: boolean } = {},
 ): Promise<boolean> {
   signal?.throwIfAborted();
   const chapter = await withChapterStorageOperation("load server chapter", () => getChapterById(job.id));
   const novelId = chapter?.novelId ?? job.novelId;
-  if (!novelId) return false;
+  if (!novelId) {
+    if (options.serverOnly) throw new Error("Content server chapter no longer exists locally.");
+    return false;
+  }
   const source = await readServerNovelSource(novelId);
   const settings = useContentSyncStore.getState();
   const serverUrl = source?.serverUrl ?? settings.serverUrl;
-  if (!serverUrl) return false;
+  if (!serverUrl) {
+    if (options.serverOnly) throw new Error("Content server is not configured for this work.");
+    return false;
+  }
   const novel = await withChapterStorageOperation("load server work", () => getNovelById(novelId));
   if (!chapter || !novel) throw new Error("Content server chapter no longer exists locally.");
   if (novel.pluginId !== job.pluginId || chapter.path !== job.chapterPath) {
     throw new Error("Content server download identity does not match the local chapter.");
   }
-  // A recovered folder chapter can still come from an installed source once a source refresh resolves its path.
-  const folderChapter = chapter.path.startsWith("norea-folder:");
-  if (folderChapter && !novel.isLocal && !pluginManager.getPlugin(novel.pluginId)) await pluginManager.loadInstalledFromDb();
-  const sourceResolvable = !novel.isLocal && !novel.path.startsWith("norea-folder:") && Boolean(pluginManager.getPlugin(novel.pluginId));
-  const serverRequired = (folderChapter && !sourceResolvable) || Boolean(source && novel.isLocal);
+  const canUseSourceFallback = async () => {
+    if (options.serverOnly || novel.isLocal || novel.path.startsWith("norea-folder:")) return false;
+    if (!source && !chapter.path.startsWith("norea-folder:")) return true;
+    if (!pluginManager.getPlugin(novel.pluginId)) {
+      await pluginManager.loadInstalledFromDb();
+      signal?.throwIfAborted();
+    }
+    return Boolean(pluginManager.getPlugin(novel.pluginId));
+  };
   const target = { pluginId: novel.pluginId, novelPath: novel.path, chapterPath: chapter.path };
   const number = chapter.chapterNumber ?? (chapter.position > 0 ? String(chapter.position) : undefined);
   const chapterNumber = number && /^\d+(?:\.\d+)?$/.test(number) ? number : undefined;
@@ -100,7 +110,7 @@ export async function tryDownloadServerChapter(
       throw new Error("Content server download identity does not match the requested chapter.");
     }
     // A listing can be stale; the server lane takes only a copy that is complete now.
-    if (options.requireComplete && !entry.complete && !serverRequired) return false;
+    if (options.requireComplete && !entry.complete && await canUseSourceFallback()) return false;
     signal?.throwIfAborted();
     const { downloadServerChapterFromServer } = await import("./sync");
     signal?.throwIfAborted();
@@ -109,12 +119,7 @@ export async function tryDownloadServerChapter(
   } catch (error) {
     signal?.throwIfAborted();
     if (!(error instanceof ContentServerError && error.status === 404)) throw error;
-    if (serverRequired) throw error;
-    if (source && !pluginManager.getPlugin(novel.pluginId)) {
-      await pluginManager.loadInstalledFromDb();
-      signal?.throwIfAborted();
-      if (!pluginManager.getPlugin(novel.pluginId)) throw error;
-    }
+    if (!await canUseSourceFallback()) throw error;
     return false;
   }
   return true;

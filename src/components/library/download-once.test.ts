@@ -4,7 +4,7 @@ import type { LibraryDownloadChapter } from "../../db/queries/chapter";
 
 const mocks = vi.hoisted(() => ({
   chapters: [] as unknown[], libraryChapters: vi.fn(), unqueued: vi.fn(), getNovel: vi.fn(), queued: new Set<number>(),
-  reading: {} as Record<number, number>, serverSource: vi.fn(), submit: vi.fn(), invalidate: vi.fn(async () => undefined),
+  reading: {} as Record<number, number>, serverSource: vi.fn(), available: vi.fn(), submit: vi.fn(), invalidate: vi.fn(async () => undefined),
 }));
 vi.mock("../../db/queries/chapter", async original => ({
   ...await original<typeof import("../../db/queries/chapter")>(),
@@ -12,11 +12,11 @@ vi.mock("../../db/queries/chapter", async original => ({
   listUnqueuedChapterDownloads: mocks.unqueued,
 }));
 vi.mock("../../db/queries/novel", () => ({ getNovelById: mocks.getNovel }));
-vi.mock("../../lib/content-sync/novel-source", () => ({ readServerNovelSource: mocks.serverSource }));
+vi.mock("../../lib/content-sync/novel-source", () => ({ readServerNovelSource: mocks.serverSource, listServerChapterAvailability: mocks.available }));
 vi.mock("../../lib/tasks/chapter-download", () => ({ isChapterDownloadQueued: (id: number) => mocks.queued.has(id) }));
 vi.mock("../../lib/tasks/chapter-download-requests", () => ({ submitChapterDownloadRequest: mocks.submit }));
 vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ lastReadChapterByNovel: mocks.reading }) } }));
-import { queueChapterDownloadsOnce, selectDownloadChaptersOnce } from "./download-once";
+import { downloadOnceNotice, queueChapterDownloadsOnce, selectDownloadChaptersOnce } from "./download-once";
 const chapter = (id: number, extra: Partial<LibraryDownloadChapter> = {}) => ({
   id, novelId: 1, name: `Chapter ${id}`, path: `/chapter/${id}`, chapterNumber: String(id), position: id,
   isDownloaded: false, contentBytes: 0, mediaRepairNeeded: false, isDownloadQueued: false, readAt: null, contentType: "html",
@@ -33,6 +33,7 @@ beforeEach(() => {
   mocks.libraryChapters.mockImplementation(async () => mocks.chapters);
   mocks.unqueued.mockResolvedValue([]);
   mocks.serverSource.mockResolvedValue(null);
+  mocks.available.mockReset().mockResolvedValue({ paths: new Map(), numbers: new Map() });
   mocks.submit.mockReturnValue({ id: "request", materialized: Promise.resolve(), promise: Promise.resolve() });
 });
 
@@ -86,4 +87,45 @@ it.each([{ kind: "all" } as const, { kind: "next", count: 4 } as const])("queues
   expect(batch.jobs.map((job: { id: number }) => job.id)).toEqual([5, 6]);
   expect(batch.jobs).toEqual(expect.arrayContaining([expect.objectContaining({ novelId: 1, pluginId: "source", priority: "user" })]));
   expect(batch.jobs.every((job: { goal?: boolean }) => job.goal === undefined)).toBe(true);
+});
+
+
+it("queues only published server bodies and persists server-only intent for complete and partial copies", async () => {
+  const source = { serverUrl: "https://content.example", workId: "server-work" };
+  mocks.serverSource.mockResolvedValue(source);
+  mocks.unqueued.mockResolvedValue([chapter(5), chapter(6), chapter(7)]);
+  mocks.available.mockResolvedValue({ paths: new Map([["/chapter/5", false]]), numbers: new Map([[6, true]]) });
+
+  await expect(queueChapterDownloadsOnce([1], t, client, { kind: "all" }, { serverOnly: true }))
+    .resolves.toEqual({ queued: 2, skippedLocal: 0, skippedServer: 1 });
+  expect(mocks.available).toHaveBeenCalledExactlyOnceWith(source);
+  const batch = await mocks.submit.mock.calls[0]![0].prepare();
+  expect(batch.jobs.map((job: { id: number }) => job.id)).toEqual([5, 6]);
+  expect(batch.jobs.every((job: { serverOnly?: boolean }) => job.serverOnly === true)).toBe(true);
+});
+
+it("reports metadata-only selections without queueing source downloads", async () => {
+  mocks.serverSource.mockResolvedValue({ serverUrl: "https://content.example", workId: "server-work" });
+  mocks.unqueued.mockResolvedValue([chapter(5), chapter(6)]);
+
+  const result = await queueChapterDownloadsOnce([1], t, client, { kind: "all" }, { serverOnly: true });
+  expect(result).toEqual({ queued: 0, skippedLocal: 0, skippedServer: 2 });
+  expect(downloadOnceNotice(t, result)).toEqual({ color: "warn", message: "downloadOnce.serverUnavailable" });
+  expect(mocks.submit).not.toHaveBeenCalled();
+});
+
+it("keeps server lookup errors out of the source queue", async () => {
+  mocks.serverSource.mockResolvedValue({ serverUrl: "https://content.example", workId: "server-work" });
+  mocks.unqueued.mockResolvedValue([chapter(5)]);
+  mocks.available.mockRejectedValueOnce(new Error("Server offline"));
+
+  await expect(queueChapterDownloadsOnce([1], t, client, { kind: "all" }, { serverOnly: true })).rejects.toThrow("Server offline");
+  expect(mocks.submit).not.toHaveBeenCalled();
+});
+
+it("does not filter ordinary source requests against content server availability", async () => {
+  mocks.unqueued.mockResolvedValue([chapter(5), chapter(6)]);
+  await expect(queueChapterDownloadsOnce([1], t, client)).resolves.toEqual({ queued: 2, skippedLocal: 0 });
+  expect(mocks.available).not.toHaveBeenCalled();
+  expect((await mocks.submit.mock.calls[0]![0].prepare()).jobs.every((job: { serverOnly?: boolean }) => job.serverOnly === undefined)).toBe(true);
 });
