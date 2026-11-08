@@ -81,7 +81,8 @@ export function deletedDownloadChapterIds(actions: readonly ContentDeletionActio
 
 /** Deletes the device downloads of these works, or of every work, after recording which chapters were stored. */
 function deviceDownloadsAction(id: string, name: string, title: string, novelIds?: readonly number[]): ContentDeletionAction {
-  const action: ContentDeletionAction = { id, side: "device", name, waitForSync: true, run: async () => {
+  // Targeted deletion drains its own local writes; remote sync must not block device removal.
+  const action: ContentDeletionAction = { id, side: "device", name, run: async () => {
     // A retry keeps the chapters an earlier failed attempt already removed.
     const stored = await (novelIds ? listDeletionDownloadedChapterIds(novelIds) : listDeletionDownloadedChapterIds());
     action.downloadedChapterIds = [...new Set([...action.downloadedChapterIds ?? [], ...stored])];
@@ -158,7 +159,7 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
         await deleteSelectedServerChapters(request.source, [chapter.id]);
         await setServerChapterDeletionExclusion(request.source.serverUrl, { ...identity, chapterPath: chapter.chapterPath }, chapter.chapterNumber, true);
       } });
-      if (options.local) actions.push({ id: `device:${chapter.id}`, side: "device", name: chapter.name, requires: id, waitForSync: true, run: async () => {
+      if (options.local) actions.push({ id: `device:${chapter.id}`, side: "device", name: chapter.name, requires: id, run: async () => {
         const novel = await findLocalDeletionNovel((await getWork()).metadata.identity);
         if (!novel) return;
         const localChapter = matchDeletionChapter(await listChaptersByNovel(novel.id), chapter);
@@ -183,7 +184,7 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
       const chunk = chapters.slice(index, index + DEVICE_CHAPTER_CHUNK_SIZE);
       const ids = chunk.map(chapter => chapter.id);
       const name = chunk.length === 1 ? chunk[0]!.name : `${chunk[0]!.name} – ${chunk.at(-1)!.name}`;
-      actions.push({ id: `device:chapters:${index / DEVICE_CHAPTER_CHUNK_SIZE}`, side: "device", name, waitForSync: true, downloadedChapterIds: ids, run: () => deleteLocalDownloads("chapter", ids, request.title) });
+      actions.push({ id: `device:chapters:${index / DEVICE_CHAPTER_CHUNK_SIZE}`, side: "device", name, downloadedChapterIds: ids, run: () => deleteLocalDownloads("chapter", ids, request.title) });
     }
     if (options.server) {
       const novels = new Map<number, NovelDetailRecord>();

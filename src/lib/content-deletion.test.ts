@@ -72,17 +72,66 @@ it("runs a server work deletion without waiting for the content synchronization 
   }
 });
 
-it("waits for active uploads before deleting local chapter files", async () => {
+it.each(["library", "chapter", "novel", "all"] as const)("finishes %s device removal while unrelated content synchronization is still pending", async kind => {
+  let release!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  vi.mocked(runContentSyncOperation).mockImplementation(async run => { await gate; return run(); });
+  const request = kind === "library"
+    ? { kind: "library" as const, ids: [12], title: "Remove", serverUrl: source.serverUrl }
+    : { kind: "downloads" as const, scope: kind, ids: kind === "chapter" ? [91] : [12], title: "Remove", serverUrl: source.serverUrl };
+  const actions = await prepareContentDeletion(request, { local: true, server: false });
+  let result: Awaited<ReturnType<typeof runContentDeletion>> | undefined;
+  const deletion = runContentDeletion(actions).then(value => { result = value; });
+  try {
+    await vi.waitFor(() => expect(result?.map(value => value.status)).toEqual(
+      kind === "library" ? ["succeeded", "succeeded"] : ["succeeded"],
+    ), { timeout: 150 });
+    expect(deleteDownloadCache).toHaveBeenCalledExactlyOnceWith({
+      scope: kind === "library" ? "novel" : kind,
+      targetIds: kind === "all" ? [] : kind === "chapter" ? [91] : [12],
+      title: "Remove",
+    });
+    expect(deleteServerWork).not.toHaveBeenCalled();
+    expect(deleteSelectedServerChapters).not.toHaveBeenCalled();
+    if (kind === "library") expect(setNovelInLibrary).toHaveBeenCalledExactlyOnceWith(12, false);
+  } finally {
+    release();
+    await deletion;
+    vi.mocked(runContentSyncOperation).mockReset().mockImplementation(run => run());
+  }
+});
+
+it("keeps selected server chapter deletion serialized with content synchronization", async () => {
   let release!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   vi.mocked(runContentSyncOperation).mockImplementationOnce(async run => { await gate; return run(); });
-  const actions = await prepareContentDeletion({ kind: "downloads", scope: "chapter", ids: [91], title: "Remove", serverUrl: "" }, options);
+  vi.mocked(contentServerRequest).mockResolvedValue({ id: source.workId, metadata: { identity: { pluginId: novel.pluginId, novelId: novel.sourceNovelId, novelPath: novel.path } } });
+  const actions = await prepareContentDeletion({ kind: "server-chapters", source, title: "Remove", chapters: [{ ...chapter, id: "remote", chapterPath: chapter.path }] as never }, options);
   const deletion = runContentDeletion(actions);
   try {
     await vi.waitFor(() => expect(runContentSyncOperation).toHaveBeenCalledOnce());
-    expect(deleteDownloadCache).not.toHaveBeenCalled();
+    expect(deleteSelectedServerChapters).not.toHaveBeenCalled();
   } finally { release(); await deletion; }
-  expect(deleteDownloadCache).toHaveBeenCalledOnce();
+  expect(deleteSelectedServerChapters).toHaveBeenCalledExactlyOnceWith(source, ["remote"]);
+});
+
+it("retries only failed device removal after the library step has already succeeded", async () => {
+  vi.mocked(listDeletionDownloadedChapterIds).mockResolvedValue([91]);
+  vi.mocked(deleteDownloadCache).mockRejectedValueOnce(new Error("device storage unavailable"));
+  const actions = await prepareContentDeletion({ kind: "library", ids: [12], title: "Remove", serverUrl: source.serverUrl }, { local: true, server: false });
+  const first = await runContentDeletion(actions);
+  expect(first).toEqual([
+    { id: "library:12", status: "succeeded" },
+    { id: "device:12", status: "failed", error: "device storage unavailable" },
+  ]);
+  vi.mocked(runContentSyncOperation).mockRejectedValueOnce(new Error("Timed out waiting for content synchronization. Retry after synchronization finishes."));
+  const retried = await runContentDeletion(actions, first);
+  expect(retried.map(result => result.status)).toEqual(["succeeded", "succeeded"]);
+  expect(setNovelInLibrary).toHaveBeenCalledExactlyOnceWith(12, false);
+  expect(removeDownloadGoals).toHaveBeenCalledExactlyOnceWith([12]);
+  expect(deleteDownloadCache).toHaveBeenCalledTimes(2);
+  expect(deletedDownloadChapterIds(actions, retried)).toEqual([91]);
+  vi.mocked(runContentSyncOperation).mockReset().mockImplementation(run => run());
 });
 
 it("keeps successful sides complete and retries only the failed server deletion", async () => {
