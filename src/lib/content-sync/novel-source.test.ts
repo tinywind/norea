@@ -58,15 +58,15 @@ it("checks the configured server before downloading an ordinary plugin chapter",
   expect(cache.size).toBe(0);
 });
 
-it("rechecks completeness for the server lane and leaves an incomplete copy to the source route", async () => {
+it("downloads every available server body including incomplete copies", async () => {
   settings.serverUrl = "http://configured";
   vi.mocked(contentServerRequest).mockResolvedValue({ ...entry, complete: false });
-  expect(await tryDownloadServerChapter(job, undefined, undefined, { requireComplete: true })).toBe(false);
-  expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
+  expect(await tryDownloadServerChapter(job)).toBe(true);
+  expect(downloadServerChapterFromServer).toHaveBeenCalledOnce();
   expect(await tryDownloadServerChapter(job)).toBe(true);
   vi.mocked(contentServerRequest).mockResolvedValue({ ...entry, complete: true });
-  expect(await tryDownloadServerChapter(job, undefined, undefined, { requireComplete: true })).toBe(true);
-  expect(downloadServerChapterFromServer).toHaveBeenCalledTimes(2);
+  expect(await tryDownloadServerChapter(job)).toBe(true);
+  expect(downloadServerChapterFromServer).toHaveBeenCalledTimes(3);
 });
 
 it.each([404])("falls back to the plugin when the optional server returns %i", async status => {
@@ -85,14 +85,14 @@ it("uses an installed source for new chapters absent from a bound server work", 
   expect(await tryDownloadServerChapter(job)).toBe(false);
 });
 
-it("loads installed plugin metadata before deciding a bound work cannot fall back", async () => {
+it("leaves plugin initialization to the source attempt after a bound work misses", async () => {
   await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
   vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
   vi.mocked(pluginManager.loadInstalledFromDb).mockImplementationOnce(async () => {
     vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
   });
   expect(await tryDownloadServerChapter(job)).toBe(false);
-  expect(pluginManager.loadInstalledFromDb).toHaveBeenCalledOnce();
+  expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
 });
 
 it("stops without installing mismatched content from an optional server", async () => {
@@ -184,7 +184,7 @@ describe("recovered folder chapters", () => {
       vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
     });
     expect(await tryDownloadServerChapter(folderJob)).toBe(false);
-    expect(pluginManager.loadInstalledFromDb).toHaveBeenCalledOnce();
+    expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
     // A missing chapter does not delay the next server lookup.
     vi.mocked(contentServerRequest).mockResolvedValueOnce({ ...entry, manifest: { identity: { ...entry.manifest.identity, chapterPath: "norea-folder:7" }, chapter: { chapterNumber: "7" } } } as CatalogEntry);
     expect(await tryDownloadServerChapter(folderJob)).toBe(true);
@@ -201,11 +201,11 @@ describe("recovered folder chapters", () => {
   it.each([
     ["no installed source", { id: 3, pluginId: "source-a", path: "/novel/a", name: "A work" }, undefined],
     ["a local work", { id: 3, pluginId: "source-a", path: "/novel/a", name: "A work", isLocal: true }, { id: "source-a" }],
-  ])("still reports the server miss for %s", async (_case, novel, plugin) => {
+  ])("reports an absent body without inspecting %s", async (_case, novel, plugin) => {
     vi.mocked(getNovelById).mockResolvedValue(novel as never);
     vi.mocked(pluginManager.getPlugin).mockReturnValue(plugin as never);
     vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
-    await expect(tryDownloadServerChapter(folderJob)).rejects.toThrow("Content server request failed (404)");
+    expect(await tryDownloadServerChapter(folderJob)).toBe(false);
   });
 });
 
@@ -304,7 +304,7 @@ it("preserves a failed content source database write as a storage error", async 
 });
 
 
-describe("explicit server downloads", () => {
+describe("server work downloads", () => {
   it("downloads a recovered chapter without loading or inspecting its broken source plugin", async () => {
     await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
     const folderJob = { ...job, chapterPath: "norea-folder:7" };
@@ -313,7 +313,7 @@ describe("explicit server downloads", () => {
     const copy = { ...entry, complete: true, manifest: { ...entry.manifest, chapter: { chapterNumber: "7" } } } as CatalogEntry;
     vi.mocked(contentServerRequest).mockResolvedValueOnce(copy);
 
-    expect(await tryDownloadServerChapter(folderJob, undefined, undefined, { serverOnly: true })).toBe(true);
+    expect(await tryDownloadServerChapter(folderJob)).toBe(true);
     expect(downloadServerChapterFromServer).toHaveBeenCalledWith(copy, "http://origin", {
       token: "device-key", target: { ...entry.manifest.identity, chapterPath: folderJob.chapterPath },
     });
@@ -321,13 +321,13 @@ describe("explicit server downloads", () => {
     expect(pluginManager.getPlugin).not.toHaveBeenCalled();
   });
 
-  it("reports an absent server payload instead of falling back to an installed source", async () => {
+  it("allows source fallback after confirming a bound server payload is absent", async () => {
     await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
     vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
     const failure = new ContentServerError(404);
     vi.mocked(contentServerRequest).mockRejectedValueOnce(failure);
 
-    await expect(tryDownloadServerChapter(job, undefined, undefined, { serverOnly: true })).rejects.toBe(failure);
+    expect(await tryDownloadServerChapter(job)).toBe(false);
     expect(pluginManager.getPlugin).not.toHaveBeenCalled();
     expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
     expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
@@ -337,7 +337,7 @@ describe("explicit server downloads", () => {
     settings.serverUrl = "http://configured";
     const copy = { ...entry, complete: false };
     vi.mocked(contentServerRequest).mockResolvedValueOnce(copy);
-    expect(await tryDownloadServerChapter(job, undefined, undefined, { serverOnly: true, requireComplete: true })).toBe(true);
+    expect(await tryDownloadServerChapter(job)).toBe(true);
     expect(downloadServerChapterFromServer).toHaveBeenCalledWith(copy, "http://configured", {
       token: "device-key", target: entry.manifest.identity,
     });
@@ -345,9 +345,34 @@ describe("explicit server downloads", () => {
     expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
   });
 
-  it("does not turn a missing server configuration into permission to use the source", async () => {
-    await expect(tryDownloadServerChapter(job, undefined, undefined, { serverOnly: true })).rejects.toThrow("Content server");
+  it("allows the source route when no server is configured", async () => {
+    expect(await tryDownloadServerChapter(job)).toBe(false);
     expect(pluginManager.getPlugin).not.toHaveBeenCalled();
     expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
+  });
+});
+
+describe("server-first download boundaries", () => {
+  it("uses an incomplete server body on the server lane instead of requesting the plugin", async () => {
+    settings.serverUrl = "http://configured";
+    vi.mocked(contentServerRequest).mockResolvedValue({ ...entry, complete: false });
+    expect(await tryDownloadServerChapter(job)).toBe(true);
+    expect(downloadServerChapterFromServer).toHaveBeenCalledOnce();
+    expect(pluginManager.getPlugin).not.toHaveBeenCalled();
+  });
+
+  it.each([404, 410])("does not interpret package HTTP %i after a catalog hit as an absent server body", async status => {
+    settings.serverUrl = "http://configured";
+    const failure = new ContentServerError(status);
+    vi.mocked(downloadServerChapterFromServer).mockRejectedValueOnce(failure);
+    await expect(tryDownloadServerChapter(job)).rejects.toBe(failure);
+  });
+
+  it("does not interpret registration HTTP 404 as an absent server body", async () => {
+    settings.serverUrl = "http://configured";
+    const failure = new ContentServerError(404);
+    vi.mocked(registerContentDevice).mockRejectedValueOnce(failure);
+    await expect(tryDownloadServerChapter(job)).rejects.toBe(failure);
+    expect(contentServerRequest).not.toHaveBeenCalled();
   });
 });

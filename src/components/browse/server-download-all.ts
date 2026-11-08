@@ -42,7 +42,7 @@ export async function downloadServerWorksOnce(
       }
       else notAdded += 1;
     }
-    const notice = downloadOnceNotice(t, await queueChapterDownloadsOnce(novelIds, t, queryClient, { kind: "all" }, { serverOnly: true }));
+    const notice = downloadOnceNotice(t, await queueChapterDownloadsOnce(novelIds, t, queryClient, { kind: "all" }));
     notifications.show(notAdded > 0
       ? { color: "warn", message: notice.message, title: t("serverLibraryAdd.downloadAllNotAdded", { count: notAdded }) }
       : notice);

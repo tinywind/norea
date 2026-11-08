@@ -1,3 +1,6 @@
+import { createHash } from "node:crypto";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { join } from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { load } from "cheerio";
 
@@ -3521,5 +3524,93 @@ describe("resolveLocalChapterMediaPatches", () => {
     expect(patches[1]?.attributes.style).toContain(
       'url("data:image/png;base64,page.png")',
     );
+  });
+});
+
+
+describe("manifest-bound local references during media repair", () => {
+  it.each([
+    ["source", "fileName", false], ["source", "path", false], ["server", "fileName", false], ["server", "path", false],
+    ["source", "path", true], ["server", "path", true],
+  ] as const)("fetches only missing or corrupt assets for %s repair with %s references (retry: %s)", async (route, reference, failOnce) => {
+    vi.stubGlobal("navigator", { userAgent: "Android" });
+    await mkdir(join(process.cwd(), ".tmp"), { recursive: true });
+    const directory = await mkdtemp(join(process.cwd(), ".tmp", "media-repair-assets-"));
+    const original = new Uint8Array([1, 2, 3, 4]);
+    const repaired = new Uint8Array([5, 6, 7, 8]);
+    const bodyText = "<p>Preserved chapter body</p>";
+    const files = ["good.png", "corrupt.png", "missing.png"].map(fileName => ({
+      bytes: 4, fileName, path: "media/" + fileName, sourceUrl: "https://cdn.test/" + fileName,
+      status: "stored" as const, updatedAt: 1,
+    }));
+    let manifest = JSON.stringify({ version: 1, complete: false, updatedAt: 1, media: { files } });
+    const networkRequests: string[] = [];
+    const storedNames = new Set(["good.png"]);
+    let failurePending = failOnce;
+    const response = (url: string) => {
+      const fail = failurePending && url.endsWith("corrupt.png");
+      if (fail) failurePending = false;
+      return new Response(repaired, { status: fail ? 404 : 200, headers: { "content-type": "image/png" } });
+    };
+    const localRef = (fileName: string) => reference === "path" ? "media/" + fileName : fileName;
+    try {
+      await writeFile(join(directory, "good.png"), original);
+      await writeFile(join(directory, "corrupt.png"), new Uint8Array([0, 0, 0, 0]));
+      const originalHash = createHash("sha256").update(await readFile(join(directory, "good.png"))).digest("hex");
+      androidStorageMocks.readAndroidStorageText.mockImplementation(async () => manifest);
+      androidStorageMocks.prepareAndroidChapterMediaRepair.mockImplementation(async () =>
+        new Map(await Promise.all([...storedNames].map(async fileName =>
+          [fileName, (await readFile(join(directory, fileName))).length] as const))));
+      androidStorageMocks.writeAndroidStorageBytes.mockImplementation(async (path: string, bytes: Uint8Array) => {
+        const fileName = path.split("/").at(-1)!;
+        await writeFile(join(directory, fileName), bytes);
+        storedNames.add(fileName);
+      });
+      androidStorageMocks.writeAndroidStorageText.mockImplementation(async (_path: string, text: string) => { manifest = text; });
+      androidStorageMocks.archiveAndroidStorageDirectory.mockResolvedValue(12);
+      pluginMediaFetchMock.mockImplementation(async url => {
+        networkRequests.push(String(url));
+        return response(String(url));
+      });
+      const fetchMissingMedia = route === "server" ? vi.fn(async (file: { sourceUrl: string }) => {
+        networkRequests.push(file.sourceUrl);
+        return response(file.sourceUrl);
+      }) : undefined;
+      const options = {
+        ...(route === "source" ? { baseUrl: "https://source.test/chapter/1" } : {}),
+        chapterId: 42, chapterName: "Chapter", chapterNumber: "1", chapterPosition: 1,
+        novelId: 7, novelName: "Novel", sourceNovelId: "novel", sourceId: "source-a",
+        html: bodyText + '<img src="' + localRef("good.png") + '"><img src="' + localRef("corrupt.png") +
+          '"><img src="' + localRef("missing.png") + '"><img srcset="' + localRef("good.png") +
+          ' 1x, ' + localRef("missing.png") + ' 2x"><div style="background-image:url(\'' +
+          localRef("corrupt.png") + '\')"></div>',
+        repair: true, requireComplete: true, fetchMissingMedia,
+      };
+      if (failOnce) {
+        await expect(cacheHtmlChapterMedia(options)).rejects.toMatchObject({ code: "chapter-media-incomplete" });
+        expect(networkRequests).toEqual(["https://cdn.test/corrupt.png", "https://cdn.test/missing.png"]);
+        expect(createHash("sha256").update(await readFile(join(directory, "good.png"))).digest("hex")).toBe(originalHash);
+        expect(await readFile(join(directory, "missing.png"))).toEqual(Buffer.from(repaired));
+        networkRequests.length = 0;
+      }
+      const result = await cacheHtmlChapterMedia(options);
+      expect(networkRequests).toEqual(failOnce ? ["https://cdn.test/corrupt.png"] : ["https://cdn.test/corrupt.png", "https://cdn.test/missing.png"]);
+      expect(createHash("sha256").update(await readFile(join(directory, "good.png"))).digest("hex")).toBe(originalHash);
+      expect(await readFile(join(directory, "corrupt.png"))).toEqual(Buffer.from(repaired));
+      expect(await readFile(join(directory, "missing.png"))).toEqual(Buffer.from(repaired));
+      expect(result.storedMediaCount).toBe(failOnce ? 1 : 2);
+      expect(result.html).toContain(bodyText);
+      expect(JSON.parse(manifest).media.files).toHaveLength(3);
+      expect(androidStorageMocks.deleteAndroidStoragePaths).not.toHaveBeenCalled();
+      if (route === "server") {
+        expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+        expect(takeCapturedMediaHandleMock).not.toHaveBeenCalled();
+      }
+      networkRequests.length = 0;
+      const alreadyValid = await cacheHtmlChapterMedia({ ...options, html: result.html });
+      expect(networkRequests).toEqual([]);
+      expect(alreadyValid.storedMediaCount).toBe(0);
+      expect(createHash("sha256").update(await readFile(join(directory, "good.png"))).digest("hex")).toBe(originalHash);
+    } finally { await rm(directory, { recursive: true, force: true }); }
   });
 });

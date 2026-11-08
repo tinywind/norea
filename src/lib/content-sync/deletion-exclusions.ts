@@ -2,6 +2,7 @@ import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from
 import { novelStorageRelativeDir } from "../chapter-storage-path";
 import { normalizeContentServerUrl } from "./client";
 import type { PackageManifest } from "./native";
+import { listIncomingMigrations } from "./migration-feed-state";
 
 const cacheKey = (server: string) => `norea-content-deletions:${normalizeContentServerUrl(server)}`;
 const workCacheKey = (server: string) => `norea-content-work-deletions:${normalizeContentServerUrl(server)}`;
@@ -33,6 +34,26 @@ export async function readServerWorkDeletionExclusions(server: string): Promise<
   const saved = await readContentSyncCache(workCacheKey(server));
   const excluded = new Set(saved ? JSON.parse(saved) as string[] : []);
   for (const job of await listNovelMigrations(normalizeContentServerUrl(server), true)) excluded.add(serverWorkDeletionKey(job.source));
+  const incoming = await listIncomingMigrations(server, true);
+  const bySource = new Map<string, typeof incoming>();
+  for (const record of incoming) {
+    if (record.status === "inactive") continue;
+    excluded.add(serverWorkDeletionKey(record.source));
+    const successors = bySource.get(record.lineage.sourceWork.id) ?? [];
+    successors.push(record);
+    bySource.set(record.lineage.sourceWork.id, successors);
+  }
+  // Pending recipients must not upload their old target metadata or payloads before replay succeeds.
+  // Follow every reachable target even when a conflicting or incomplete chain needs review.
+  const targets = incoming.filter(record => record.status !== "completed" && record.status !== "inactive").map(record => record.lineage.targetWork);
+  const visited = new Set<string>();
+  while (targets.length) {
+    const target = targets.pop()!;
+    if (visited.has(target.id)) continue;
+    visited.add(target.id);
+    excluded.add(serverWorkDeletionKey(target.identity));
+    for (const successor of bySource.get(target.id) ?? []) targets.push(successor.lineage.targetWork);
+  }
   return excluded;
 }
 
@@ -62,7 +83,8 @@ export async function recordServerWorkDeletionExclusion(server: string, identity
   const directory = serverWorkDeletionKey(identity);
   for (const observer of workDeletionObservers.get(key) ?? []) observer.add(directory);
   const pending = (workDeletionWrites.get(key) ?? Promise.resolve()).catch(() => undefined).then(async () => {
-    const exclusions = await readServerWorkDeletionExclusions(server);
+    const saved = await readContentSyncCache(key);
+    const exclusions = new Set(saved ? JSON.parse(saved) as string[] : []);
     if (exclusions.has(directory)) return;
     exclusions.add(directory);
     await writeContentSyncCache(key, JSON.stringify([...exclusions]));

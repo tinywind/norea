@@ -10,6 +10,11 @@ vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(asy
   contentIdentity: (plugin: string, novel: string, chapter = "") => JSON.stringify([plugin, novel, chapter]),
 }));
 vi.mock("./novel-migration", () => ({ finalizePendingNovelMigrations: vi.fn(async () => false) }));
+vi.mock("./migration-feed", async (original) => ({
+  ...await original<typeof import("./migration-feed")>(),
+  syncIncomingNovelMigrations: vi.fn(async () => ({ applied: 0, pending: 0 })),
+}));
+vi.mock("./migration-feed-state", () => ({ listIncomingMigrations: vi.fn(async () => []) }));
 vi.mock("./chapter-number-reconciliation", () => ({ reconcilePendingChapterNumbers: vi.fn(async () => undefined) }));
 vi.mock("./native", () => ({
   uploadContentChapter: vi.fn(), fingerprintContentChapter: vi.fn(),
@@ -27,10 +32,11 @@ import { fetch as appFetch } from "@tauri-apps/plugin-http";
 import { contentJournalHead, readContentJournal, listContentSyncChapters, listContentSyncWorkChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled, canUploadContentChapter, clearServerChapterDownloadProof, rememberServerChapterDownload } from "../../db/queries/content-sync";
 import { uploadContentChapter, fingerprintContentChapter, type CatalogEntry } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
-import { runContentSyncOperation, syncContentServer, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
+import { runContentSyncOperation, syncContentServer, syncReceivedWorkMigrations, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
 import { recordServerWorkDeletionExclusion, setServerChapterDeletionExclusion } from "./deletion-exclusions";
 import { syncWorkMetadata } from "./works";
 import { finalizePendingNovelMigrations } from "./novel-migration";
+import { syncIncomingNovelMigrations } from "./migration-feed";
 import { reconcilePendingChapterNumbers } from "./chapter-number-reconciliation";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { withChapterDownloadDeletion, waitForChapterDownloadWrites } from "../chapter-download-writes";
@@ -45,6 +51,7 @@ function changed(key: string, value: null) { journal.push({ sequence: journal.le
 beforeEach(() => {
   vi.clearAllMocks(); memory.clear(); journal = [];
   vi.mocked(finalizePendingNovelMigrations).mockResolvedValue(false);
+  vi.mocked(syncIncomingNovelMigrations).mockReset().mockResolvedValue({ applied: 0, pending: 0 });
   vi.mocked(reconcilePendingChapterNumbers).mockResolvedValue(undefined);
   vi.mocked(contentJournalHead).mockImplementation(async () => journal.length);
   vi.mocked(readContentJournal).mockImplementation(async (after, through) => journal.filter((entry) => entry.sequence > after && entry.sequence <= through));
@@ -1080,4 +1087,58 @@ it("holds ordinary metadata and chapter uploads until number reconciliation succ
   await expect(syncContentServer()).rejects.toThrow("Number reconciliation pending");
   expect(syncWorkMetadata).not.toHaveBeenCalled();
   expect(uploadContentChapter).not.toHaveBeenCalled();
+});
+
+it("receives migrations before chapter reconciliation and any local metadata upload", async () => {
+  await syncContentServer();
+  expect(vi.mocked(syncIncomingNovelMigrations).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(reconcilePendingChapterNumbers).mock.invocationCallOrder[0]!);
+  expect(vi.mocked(syncIncomingNovelMigrations).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(syncWorkMetadata).mock.invocationCallOrder[0]!);
+});
+
+it("surfaces a received conflict after synchronizing unrelated work", async () => {
+  vi.mocked(syncIncomingNovelMigrations).mockResolvedValue({ applied: 0, pending: 1, error: "Unmapped local chapter" });
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{
+    chapterId: 1, novelId: 1, pluginId: "other", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter/1",
+    chapterNumber: "1", position: 1, novelName: "Unrelated work", chapterName: "One", isDownloaded: true, mediaRepairNeeded: false,
+  }] as never);
+  await expect(syncContentServer(true, true)).rejects.toThrow("Unmapped local chapter");
+  expect(uploadContentChapter).toHaveBeenCalledOnce();
+  expect(useContentSyncStore.getState().status).toBe("error");
+});
+
+it("receives its own published migration immediately after server finalization", async () => {
+  vi.mocked(finalizePendingNovelMigrations).mockResolvedValue(true);
+  await syncContentServer();
+  expect(syncIncomingNovelMigrations).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(syncIncomingNovelMigrations).mock.invocationCallOrder[1]).toBeGreaterThan(vi.mocked(finalizePendingNovelMigrations).mock.invocationCallOrder[0]!);
+});
+
+it("checks a migration target again under its storage lock before installing downloaded content", async () => {
+  const target = { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: "/chapter/1" };
+  const entry = { id: "chapter", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as CatalogEntry;
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "/work", chapterPath: "/chapter/1",
+    chapterNumber: "1", position: 1, novelName: "Work", chapterName: "One", isLocal: false }] as never);
+  native.download.mockResolvedValue({ contentBytes: 100, mediaBytes: 0, mediaComplete: true });
+  const beforeInstall = vi.fn(async () => { throw new Error("Target changed while downloading"); });
+  await expect(downloadServerChapterFromServer(entry, "http://localhost:7788", { token: "token", target, beforeInstall })).rejects.toThrow("Target changed while downloading");
+  expect(beforeInstall).toHaveBeenCalledOnce();
+  expect(native.install).not.toHaveBeenCalled();
+  expect(markContentInstalled).not.toHaveBeenCalled();
+});
+
+it("receives approved migrations without running ordinary manual content uploads", async () => {
+  const controller = new AbortController();
+  expect(await syncReceivedWorkMigrations(controller.signal)).toEqual({ applied: 0, pending: 0 });
+  expect(syncIncomingNovelMigrations).toHaveBeenCalledWith("http://localhost:7788", expect.any(String), expect.any(Function), false, controller.signal);
+  expect(syncWorkMetadata).not.toHaveBeenCalled();
+  expect(reconcilePendingChapterNumbers).not.toHaveBeenCalled();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  expect(finalizePendingNovelMigrations).not.toHaveBeenCalled();
+});
+
+it("does not begin migration-only reception after the caller was cancelled", async () => {
+  const controller = new AbortController(); controller.abort();
+  await expect(syncReceivedWorkMigrations(controller.signal)).rejects.toMatchObject({ name: "AbortError" });
+  expect(syncIncomingNovelMigrations).not.toHaveBeenCalled();
+  expect(syncWorkMetadata).not.toHaveBeenCalled();
 });

@@ -5,7 +5,7 @@ import type { SourceAccessBlock } from "./source-access-gate";
 import { sourceAccessScopeKey } from "../plugins/source-access";
 
 const boundary = vi.hoisted(() => ({
-  plans: new Map<string, VpnDownloadPlan>(), jobs: [] as ChapterDownloadJob[],
+  plans: new Map<string, VpnDownloadPlan>(), jobs: [] as ChapterDownloadJob[], serverDownload: vi.fn(),
   issues: [] as VpnDownloadProfileIssue[],
   blocks: [] as SourceAccessBlock[], listeners: new Set<() => void>(),
   effects: [] as string[], complete: new Map<number, () => void>(), reject: new Map<number, (error: Error) => void>(),
@@ -31,6 +31,7 @@ vi.mock("../content-sync/client", () => ({
   contentServerRequest: async () => ({ apiVersion: 1, packageVersion: 1, authentication: "device-key", deviceBackupVersion: 1 }),
 }));
 vi.mock("../content-sync/device", () => ({ registerContentDevice: async () => "device-token" }));
+vi.mock("../content-sync/novel-source", () => ({ tryDownloadServerChapter: boundary.serverDownload }));
 vi.mock("../content-sync/sync", () => ({
   runContentSyncOperation: async (run: () => Promise<unknown>) => { boundary.restoreEffects.push("sync-lock"); return run(); },
 }));
@@ -202,6 +203,7 @@ beforeEach(async () => {
   boundary.restoreEffects = []; boundary.issues = []; boundary.blocks = []; boundary.listeners.clear();
   boundary.pendingJobs.clear();
   boundary.recoveryStopped.mockReset().mockReturnValue(false);
+  boundary.serverDownload.mockReset().mockResolvedValue(false);
   boundary.handover.mockReset().mockResolvedValue({ jobs: [], pending: [], commitReady: async () => [], release: vi.fn() });
   boundary.cancelOrdinary.mockReset().mockResolvedValue(undefined);
   boundary.discardOrdinary.mockReset();
@@ -280,6 +282,23 @@ describe("automatic VPN run admission", () => {
     expect(interceptChapterDownloadBatch({ jobs, title: "Ordinary request" })).toBeNull();
     expect(boundary.catalog).not.toHaveBeenCalled();
     expect(boundary.pendingJobs.size).toBe(0);
+  });
+
+  it("downloads an admitted chapter from the server without connecting or preparing the source WebView", async () => {
+    boundary.serverDownload.mockResolvedValue(true);
+    boundary.profiles.mockResolvedValue({ limit: 20, profiles: [], cleanupError: null });
+    const runtime = await import("./vpn-download-runtime");
+    await runtime.startVpnDownloadRun(options);
+    const interceptor = await import("./chapter-download-batch-interceptor");
+    const handle = interceptor.interceptChapterDownload({ ...jobs[0]!, priority: "interactive" })!;
+    try {
+      await handle.promise;
+      expect(boundary.serverDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 8, priority: "interactive" }), expect.any(AbortSignal));
+      expect(boundary.connect).not.toHaveBeenCalled();
+      expect(boundary.configure).not.toHaveBeenCalled();
+      expect(boundary.enqueue).not.toHaveBeenCalled();
+      expect(boundary.effects).toContain("settle:8");
+    } finally { await runtime.cancelVpnDownloadRun(); }
   });
 
   it("admits a new direct chapter during a run and preserves its interactive priority", async () => {

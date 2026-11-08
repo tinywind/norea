@@ -1,9 +1,10 @@
 import { subscribeContentSyncChanges } from "../../db/content-sync-journal";
 import { listNovelMigrations } from "../../db/queries/content-sync";
 import { PendingNovelMigrationError } from "./novel-migration";
+import { PendingIncomingMigrationError } from "./migration-feed";
 import { useContentSyncStore } from "../../store/content-sync";
-import { contentServerRequest } from "./client";
-import { getContentSyncCursors, syncContentServer } from "./sync";
+import { ContentServerError, contentServerRequest } from "./client";
+import { getContentSyncCursors, syncContentServer, syncReceivedWorkMigrations } from "./sync";
 import { subscribeWorkMetadataChanges } from "../work-metadata";
 import { subscribeChapterDownloadsSettled } from "../tasks/chapter-download-activity";
 
@@ -15,12 +16,14 @@ export function startContentServerSync(): () => void {
   let failures = 0;
   let pollFailures = 0;
   let migrationResumePending = false;
+  let migrationLookupPending = false;
+  let incomingError: { serverUrl: string; message: string } | undefined;
   let timer: ReturnType<typeof setTimeout> | undefined;
   let poll: AbortController | undefined;
 
   function active(): boolean {
     const state = useContentSyncStore.getState();
-    return !disposed && (state.syncMode !== "manual" || migrationResumePending) && !!state.serverUrl
+    return !disposed && !!state.serverUrl
       && document.visibilityState !== "hidden" && navigator.onLine !== false;
   }
 
@@ -35,8 +38,26 @@ export function startContentServerSync(): () => void {
     return Math.min(60_000, 2000 * 2 ** Math.min(count, 5));
   }
 
+  function reportIncomingError(error: unknown): void {
+    const state = useContentSyncStore.getState();
+    if (state.status === "syncing" || (state.error && (incomingError?.serverUrl !== state.serverUrl || incomingError.message !== state.error))) return;
+    const message = error instanceof Error ? error.message : String(error);
+    incomingError = { serverUrl: state.serverUrl, message };
+    if (state.status !== "error" || state.error !== message) {
+      useContentSyncStore.setState({ status: "error", error: message, blocked: error instanceof ContentServerError && error.status === 403 });
+    }
+  }
+
+  function clearIncomingError(): void {
+    const state = useContentSyncStore.getState();
+    if (incomingError?.serverUrl === state.serverUrl && state.status === "error" && state.error === incomingError.message) {
+      useContentSyncStore.setState({ status: "idle", error: null, blocked: false });
+    }
+    incomingError = undefined;
+  }
+
   function requestSync(delay = 1500): void {
-    if (!active()) return;
+    if (!active() || migrationLookupPending) return;
     pending = true;
     cancelWait();
     if (!syncing) timer = setTimeout(() => { timer = undefined; void run(); }, delay);
@@ -68,27 +89,49 @@ export function startContentServerSync(): () => void {
   }
 
   async function run(): Promise<void> {
-    if (!active() || syncing) return;
+    if (!active() || syncing || migrationLookupPending) return;
     const current = generation;
-    const resumedMigration = useContentSyncStore.getState().syncMode === "manual";
+    const manual = useContentSyncStore.getState().syncMode === "manual";
+    const resumedMigration = manual && migrationResumePending;
+    const receiveOnly = manual && !resumedMigration;
+    const controller = receiveOnly ? new AbortController() : undefined;
+    if (controller) poll = controller;
     syncing = true;
     pending = false;
     let failed = false;
     try {
-      await syncContentServer(true, false, false);
-      failures = 0;
+      if (receiveOnly) {
+        const result = await syncReceivedWorkMigrations(controller!.signal);
+        if (!controller!.signal.aborted && current === generation && active()) {
+          if (result.pending) {
+            reportIncomingError(new PendingIncomingMigrationError(result.pending, result.error, result.retryable));
+            failed = result.retryable === true;
+          } else clearIncomingError();
+          if (!failed) failures = 0;
+        }
+      } else {
+        await syncContentServer(true, false, false);
+        failures = 0;
+      }
     } catch (error) {
-      failed = !(error instanceof PendingNovelMigrationError && !error.retryable);
+      if (!controller?.signal.aborted && current === generation && active()) {
+        failed = !((error instanceof PendingNovelMigrationError || error instanceof PendingIncomingMigrationError) && !error.retryable);
+        if (receiveOnly) reportIncomingError(error);
+        if (!failed) failures = 0;
+      }
     } finally {
       syncing = false;
-    }
-    if (resumedMigration) {
-      migrationResumePending = false;
-      return;
+      if (controller && poll === controller) poll = undefined;
     }
     if (!active()) return;
     if (current !== generation || pending) {
-      requestSync();
+      requestSync(current !== generation ? 0 : 1500);
+    } else if (resumedMigration) {
+      // An approved outgoing operation runs once; manual clients then receive only migration events.
+      migrationResumePending = false;
+      requestSync(0);
+    } else if (receiveOnly) {
+      requestSync(failed ? retryDelay(failures++) : 30_000);
     } else if (useContentSyncStore.getState().syncMode === "periodic") {
       requestSync(useContentSyncStore.getState().syncIntervalMinutes * 60_000);
     } else if (failed) {
@@ -101,24 +144,31 @@ export function startContentServerSync(): () => void {
   function restart(): void {
     generation++;
     migrationResumePending = false;
+    migrationLookupPending = false;
     failures = 0;
     pollFailures = 0;
     pending = false;
     cancelWait();
-    if (active()) requestSync(0);
-    else {
-      const current = generation;
-      const { serverUrl, syncMode } = useContentSyncStore.getState();
-      if (disposed || syncMode !== "manual" || !serverUrl || document.visibilityState === "hidden" || navigator.onLine === false) return;
-      // Resume already approved work once; ordinary manual synchronization stays manual.
-      void listNovelMigrations(serverUrl).then(jobs => {
-        if (disposed || current !== generation || !jobs.some(job => job.status === "pending" || job.status === "failed")) return;
-        migrationResumePending = true;
-        requestSync(0);
-      }).catch(error => {
-        if (!disposed && current === generation) useContentSyncStore.setState({ status: "error", error: error instanceof Error ? error.message : String(error) });
-      });
+    if (!active()) return;
+    if (useContentSyncStore.getState().syncMode !== "manual") {
+      requestSync(0);
+      return;
     }
+    const current = generation;
+    const { serverUrl } = useContentSyncStore.getState();
+    migrationLookupPending = true;
+    // Discover previously approved outgoing work before starting the receive-only loop.
+    void listNovelMigrations(serverUrl).then(jobs => {
+      if (disposed || current !== generation || !active()) return;
+      migrationLookupPending = false;
+      migrationResumePending = jobs.some(job => job.status === "pending" || job.status === "failed");
+      requestSync(0);
+    }).catch(error => {
+      if (disposed || current !== generation || !active()) return;
+      migrationLookupPending = false;
+      reportIncomingError(error);
+      requestSync(0);
+    });
   }
 
   const unsubscribe = useContentSyncStore.subscribe((state, previous) => {

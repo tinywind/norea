@@ -6,6 +6,7 @@ import {
 import { hasStoredChapterContent } from "../../db/queries/chapter";
 import { useContentSyncStore } from "../../store/content-sync";
 import { finalizePendingNovelMigrations } from "./novel-migration";
+import { syncIncomingNovelMigrations, PendingIncomingMigrationError, type IncomingMigrationSyncResult } from "./migration-feed";
 import { reconcilePendingChapterNumbers } from "./chapter-number-reconciliation";
 import { chapterStorageRelativeDir } from "../chapter-storage-path";
 import { inspectChapterPayloadInventory } from "../chapter-content/storage-platform";
@@ -278,8 +279,10 @@ export function runContentSyncOperation<T>(operation: () => Promise<T>): Promise
   return Promise.race([result, interrupted]);
 }
 
-async function initializeDevice(serverUrl: string): Promise<string> {
-  const deviceKey = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
+async function initializeDevice(serverUrl: string, signal?: AbortSignal): Promise<string> {
+  signal?.throwIfAborted();
+  const deviceKey = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName, signal);
+  signal?.throwIfAborted();
   if (useContentSyncStore.getState().serverUrl !== serverUrl) throw new Error("Content server changed during device registration.");
   useContentSyncStore.setState({ deviceKey });
   return deviceKey;
@@ -292,6 +295,7 @@ async function performSync(uploadContent = true, rescan = false, retryBlockedMig
   try {
     normalizeContentServerUrl(serverUrl);
     const token = await initializeDevice(serverUrl);
+    let incoming = await syncIncomingNovelMigrations(serverUrl, token, () => assertDevice(serverUrl, token), retryBlockedMigrations);
     await reconcilePendingChapterNumbers(serverUrl, token, () => assertDevice(serverUrl, token), uploadContent);
     const cache = await catalogCache(serverUrl);
     assertDevice(serverUrl, token);
@@ -309,8 +313,10 @@ async function performSync(uploadContent = true, rescan = false, retryBlockedMig
     assertDevice(serverUrl, token);
     if (changedOutsideCache.length) throw new WorkMetadataChangedOutsideCacheError(changedOutsideCache);
     if (uploadContent && await finalizePendingNovelMigrations(serverUrl, token, () => assertDevice(serverUrl, token), retryBlockedMigrations)) {
+      incoming = await syncIncomingNovelMigrations(serverUrl, token, () => assertDevice(serverUrl, token), retryBlockedMigrations);
       await pullCatalog(serverUrl, token, cache);
     }
+    if (incoming.pending) throw new PendingIncomingMigrationError(incoming.pending, incoming.error, incoming.retryable);
     useContentSyncStore.setState({ status: "idle" });
   } catch (error) {
     if (useContentSyncStore.getState().serverUrl === serverUrl) {
@@ -318,6 +324,22 @@ async function performSync(uploadContent = true, rescan = false, retryBlockedMig
     }
     throw error;
   }
+}
+
+/** Receive server-approved work moves while ordinary manual content synchronization stays manual. */
+export function syncReceivedWorkMigrations(signal = new AbortController().signal): Promise<IncomingMigrationSyncResult> {
+  const { serverUrl } = useContentSyncStore.getState();
+  if (!serverUrl) return Promise.resolve({ applied: 0, pending: 0 });
+  return runContentSyncOperation(async () => {
+    signal.throwIfAborted();
+    if (useContentSyncStore.getState().serverUrl !== serverUrl) throw new Error("Content server changed before receiving work migrations.");
+    const token = await initializeDevice(serverUrl, signal);
+    const result = await syncIncomingNovelMigrations(serverUrl, token, () => {
+      signal.throwIfAborted(); assertDevice(serverUrl, token);
+    }, false, signal);
+    signal.throwIfAborted(); assertDevice(serverUrl, token);
+    return result;
+  });
 }
 
 export function syncContentServer(uploadContent = true, rescan = false, retryBlockedMigrations = true): Promise<void> {
@@ -344,7 +366,7 @@ export async function downloadServerChapter(entry: CatalogEntry): Promise<{ nove
   return downloadServerChapterFromServer(entry, useContentSyncStore.getState().serverUrl);
 }
 
-export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity; signal?: AbortSignal }): Promise<{ novelId: number; chapterId: number }> {
+export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity; signal?: AbortSignal; beforeInstall?: () => Promise<void> }): Promise<{ novelId: number; chapterId: number }> {
   options?.signal?.throwIfAborted();
   const downloadRevision = currentChapterDownloadRevision();
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
@@ -368,6 +390,8 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
         if (current.chapterId !== row.chapterId) throw new Error("Downloaded chapter identity changed during transfer.");
         options?.signal?.throwIfAborted();
         if (current.isLocal) await clearServerChapterDownloadProof(current.chapterId);
+        await options?.beforeInstall?.();
+        options?.signal?.throwIfAborted();
         await install(storageDir(current));
         await markContentInstalled(current.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes, result.mediaComplete);
         if (current.isLocal) {

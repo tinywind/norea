@@ -351,7 +351,7 @@ it.each(["refreshPending", "fullRefreshPending"] as const)("disables the direct 
   });
 });
 
-it("keeps metadata-only chapters visible with unavailable actions alongside stored server and device copies", () => {
+it("keeps metadata-only chapters visible and downloadable alongside stored server and device copies", () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   mocks.available.data = { paths: new Map([["/available", true]]), numbers: new Map() };
   mocks.chapters = [
@@ -363,8 +363,8 @@ it("keeps metadata-only chapters visible with unavailable actions alongside stor
   expect(text).toContain("Available package");
   expect(text).toContain("Local downloaded chapter");
   expect(text).toContain("Metadata without a package");
-  expect(text).toContain("novel.serverUnavailable");
-  expect(mocks.chapterActionCalls[0]?.[3]).toEqual({ serverOnly: true });
+  expect(text).not.toContain("novel.serverUnavailable");
+  expect(mocks.chapterActionCalls[0]).toHaveLength(3);
   expect(mocks.chapters).toHaveLength(3);
 });
 
@@ -419,15 +419,15 @@ it("shows a server folder chapter matching the cached source chapter number with
   expect(renderPage()("button[aria-label='novel.openChapter']").text()).toContain("Server chapter");
 });
 
-it("labels unavailable server chapters even when the original plugin is installed", async () => {
+it("allows source fallback for chapters absent from the server", async () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   mocks.novel.isLocal = false;
   mocks.installed = true;
   mocks.chapters = [{ ...chapter, name: "New source chapter" }];
   const $ = renderPage();
   expect($("button[aria-label='novel.openChapter']").text()).toContain("New source chapter");
-  expect($("button[aria-label='novel.openChapter']").attr("aria-disabled")).toBe("true");
-  expect($("button[aria-label='novel.serverUnavailable']").prop("disabled")).toBe(true);
+  expect($("button[aria-label='novel.openChapter']").attr("aria-disabled")).toBeUndefined();
+  expect($("button[aria-label='novel.downloadChapter']").prop("disabled")).toBe(false);
   expect($("button[aria-label='novel.openInWebView']")).toHaveLength(1);
   expect(mocks.queries.find(query => query.queryKey[1] === "novel-chapters")?.enabled).toBe(true);
 });

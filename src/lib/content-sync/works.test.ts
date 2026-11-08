@@ -1,4 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
+import type Database from "@tauri-apps/plugin-sql";
+vi.mock("./migration-feed-state", () => ({ listIncomingMigrations: vi.fn(async () => []) }));
 import type { NovelMetadataV1 } from "../work-metadata";
 
 vi.mock("../work-metadata", async original => ({
@@ -13,7 +15,7 @@ import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { installStoredNovelMetadata, listStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover } from "../work-metadata";
 import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint } from "../../db/work-metadata";
-import { syncWorkMetadata, contentWorkId, canPullWorkMetadata, recordInstalledWorkMetadata, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint } from "./works";
+import { syncWorkMetadata, contentWorkId, canPullWorkMetadata, recordInstalledWorkMetadata, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint, releaseMigratedTargetMetadataInDb } from "./works";
 
 const metadata = (name = "Book"): NovelMetadataV1 => ({
   schemaVersion: 1, identity: { pluginId: "example", novelId: "book", novelPath: "/book" },
@@ -777,4 +779,17 @@ it("does not reimport a merged source whose original server copy is still pendin
   await syncWorkMetadata("http://server", "device-key", false);
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
   expect(local).toEqual([]);
+});
+
+it("releases a committed migration target in the caller transaction without losing other cache entries", async () => {
+  const identity = metadata().identity;
+  const id = await contentWorkId(identity);
+  const cache = { cursor: 42, deleted: { [id]: true, other: true }, fingerprints: { [id]: "old", other: "kept" }, fileVersions: { [JSON.stringify([identity.pluginId, identity.novelPath])]: "old", unrelated: "kept" } };
+  const execute = vi.fn(async (_query: string, _values: unknown[]) => ({ rowsAffected: 1 }));
+  const raw = { select: vi.fn(async () => [{ payload: JSON.stringify(cache) }]), execute } as unknown as Database;
+  await releaseMigratedTargetMetadataInDb(raw, "http://server/", identity);
+  expect(raw.select).toHaveBeenCalledWith(expect.any(String), ["norea-content-works:http://server"]);
+  const stored = JSON.parse(vi.mocked(execute).mock.calls[0]![1]![0] as string);
+  expect(stored).toEqual({ cursor: 42, deleted: { other: true }, fingerprints: { other: "kept" }, fileVersions: { unrelated: "kept" } });
+  expect(writeContentSyncCache).not.toHaveBeenCalled();
 });

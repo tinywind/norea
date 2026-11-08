@@ -68,19 +68,19 @@ it("waits for admission before closing and keeps a failed request available to r
 });
 
 
-it("resolves the remembered server before publishing the chosen range as server-only", async () => {
+it("uses the common download path for a work remembered from the server", async () => {
   mocks.binding.mockResolvedValue({ serverUrl: "http://server", workId: "work" });
   await act(async () => choice.choose({ kind: "all" }));
-  expect(mocks.binding).toHaveBeenCalledExactlyOnceWith(3);
-  expect(mocks.queue).toHaveBeenCalledExactlyOnceWith([3], expect.any(Function), expect.any(QueryClient), { kind: "all" }, { serverOnly: true });
+  expect(mocks.binding).not.toHaveBeenCalled();
+  expect(mocks.queue).toHaveBeenCalledExactlyOnceWith([3], expect.any(Function), expect.any(QueryClient), { kind: "all" });
   expect(onClose).toHaveBeenCalledOnce();
 });
 
-it("keeps the choice open without a source fallback when the server binding cannot be read", async () => {
-  const failure = new Error("Binding read failed");
-  mocks.binding.mockRejectedValue(failure);
+it("leaves server resolution to the common downloader instead of blocking queue admission", async () => {
+  mocks.binding.mockRejectedValue(new Error("Binding read failed"));
   await act(async () => choice.choose({ kind: "all" }));
-  expect(mocks.queue).not.toHaveBeenCalled();
-  expect(onClose).not.toHaveBeenCalled();
-  expect(choice.error).toBe(failure);
+  expect(mocks.binding).not.toHaveBeenCalled();
+  expect(mocks.queue).toHaveBeenCalledExactlyOnceWith([3], expect.any(Function), expect.any(QueryClient), { kind: "all" });
+  expect(onClose).toHaveBeenCalledOnce();
+  expect(choice.error).toBeNull();
 });

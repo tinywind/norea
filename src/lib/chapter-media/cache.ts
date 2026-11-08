@@ -25,6 +25,7 @@ import {
   fileNameFromLocalMediaSrc,
   localChapterMediaSources,
   normalizeLocalChapterMediaOutput,
+  normalizeStoredMediaReferences,
   tagCollectedMediaTargets,
 } from "./html";
 import { emptyChapterMediaManifest } from "./manifest";
@@ -95,8 +96,20 @@ export async function cacheHtmlChapterMedia({
     };
   }
 
+  const storageContext: ChapterMediaStorageContext = {
+    chapterId,
+    chapterName,
+    chapterNumber,
+    chapterPosition,
+    novelId,
+    novelName,
+    sourceNovelId,
+    sourceId,
+  };
   const template = document.createElement("template");
   template.innerHTML = html;
+  let previousManifest = repair ? await readChapterMediaManifest(storageContext, true) : undefined;
+  if (previousManifest) normalizeStoredMediaReferences(template.content, previousManifest.media.files);
   const { srcTargets, srcsetTargets, styleTargets, urls } = collectMediaTargets(
     template.content,
     baseUrl,
@@ -111,19 +124,9 @@ export async function cacheHtmlChapterMedia({
     };
   }
 
-  const storageContext: ChapterMediaStorageContext = {
-    chapterId,
-    chapterName,
-    chapterNumber,
-    chapterPosition,
-    novelId,
-    novelName,
-    sourceNovelId,
-    sourceId,
-  };
   const mediaContextUrl = contextUrl ?? baseUrl ?? undefined;
   const mediaFailures: ChapterMediaFailure[] = [];
-  let previousManifest = await readChapterMediaManifest(storageContext, true);
+  previousManifest ??= await readChapterMediaManifest(storageContext, true);
   let storedFileBytes: Map<string, number> | null = repair
     ? await withChapterDownloadWrite(chapterId, signal, () => prepareChapterMediaWorkspace(storageContext, true))
     : null;
@@ -143,7 +146,7 @@ export async function cacheHtmlChapterMedia({
   const missingManifestSources = new Map<string, string>();
   if (repair) {
     const names = new Set(previousManifest.media.files.map((file) => file.fileName));
-    for (const src of localChapterMediaSources(html, storageContext)) {
+    for (const src of localChapterMediaSources(template.innerHTML, storageContext)) {
       const name = fileNameFromLocalMediaSrc(src, chapterId);
       if (name && !names.has(name)) throw new Error(`Chapter media manifest is missing asset: ${name}`);
     }

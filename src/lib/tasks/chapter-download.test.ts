@@ -112,9 +112,9 @@ vi.mock("../plugins/chapter-acquisition", () => acquisitionMocks);
 vi.mock("../tauri-runtime", () => ({
   isTauriRuntime: vi.fn(() => false),
 }));
-const serverMediaMocks = vi.hoisted(() => ({ fetch: vi.fn(async () => null as Response | null) }));
+const serverMediaMocks = vi.hoisted(() => ({ fetch: vi.fn(async () => null as Response | null), hasServerChapter: vi.fn(async () => false) }));
 vi.mock("../content-sync/media-repair", () => ({
-  createServerChapterMediaFetcher: vi.fn(() => serverMediaMocks.fetch),
+  createServerChapterMediaFetcher: vi.fn(() => Object.assign(serverMediaMocks.fetch, { hasServerChapter: serverMediaMocks.hasServerChapter })),
 }));
 vi.mock("../content-sync/novel-source", () => ({
   tryDownloadServerChapter: vi.fn(async () => false),
@@ -188,7 +188,6 @@ import {
   enqueueChapterDownloadBatch,
   enqueueChapterDownload,
   failedChapterDownloadJob,
-  retryFailedChapterDownloads,
   enqueueVpnDownloadChapter,
   releaseVpnDownloadPlanLocalWorkScans,
   enqueueChapterMediaRepair,
@@ -261,6 +260,8 @@ beforeEach(() => {
     setItem: (key, value) => { recoveryValues.set(key, value); },
   });
   vi.clearAllMocks();
+  serverMediaMocks.hasServerChapter.mockReset().mockResolvedValue(false);
+  serverMediaMocks.fetch.mockReset().mockResolvedValue(null);
   installChapterDownloadBatchInterceptor({ enqueue: () => null, cancel: () => false });
   vi.mocked(taskScheduler.getTaskByDedupeKey).mockReset();
   vi.mocked(taskScheduler.getSnapshot).mockReset().mockReturnValue({ records: [], sourceAccessBlocks: [] } as never);
@@ -425,7 +426,7 @@ describe("ordinary to VPN handover", () => {
     const finish = createDeferred<boolean>();
     vi.mocked(tryDownloadServerChapter).mockImplementation(async value => value.id === 900061 ? finish.promise : true);
     const active = enqueueChapterDownload(job(900061));
-    const queued = enqueueChapterDownload(job(900062));
+    const queued = enqueueChapterDownload({ ...job(900062), retryAt: Date.now() + 60_000 });
     void active.promise.catch(() => undefined); void queued.promise.catch(() => undefined);
     await vi.waitFor(() => expect(tryDownloadServerChapter).toHaveBeenCalled());
     const { beginChapterDownloadVpnHandover } = await import("./chapter-download");
@@ -532,7 +533,7 @@ describe("VPN range chapter acquisition", () => {
       ? Promise.resolve(connected) : invoke(command, args));
   });
 
-  it("waits for authoritative lease validation at execution time before reading or acquiring a chapter", async () => {
+  it("checks the content server before validating the VPN lease and waits for validation before source access", async () => {
     const validation = createDeferred<PluginVpnDownloadWorkerStatus>();
     tauriMocks.invoke.mockImplementationOnce(() => validation.promise);
     let completed = false;
@@ -543,8 +544,8 @@ describe("VPN range chapter acquisition", () => {
     await flushMicrotasks();
     try {
       expect(tauriMocks.invoke).toHaveBeenCalledExactlyOnceWith("plugin_vpn_download_worker_validate", { worker });
-      expect(getChapterById).not.toHaveBeenCalled();
-      expect(tryDownloadServerChapter).not.toHaveBeenCalled();
+      expect(getChapterById).toHaveBeenCalledWith(7);
+      expect(tryDownloadServerChapter).toHaveBeenCalledOnce();
       expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
       expect(saveStoredChapterContent).not.toHaveBeenCalled();
       expect(completed).toBe(false);
@@ -655,8 +656,8 @@ describe("VPN range chapter acquisition", () => {
     enqueueVpnDownloadChapter(job, worker, async () => { completed = true; });
     await expect(capturedSpec!.run({ executor: "vpn:0:8", setDetail: vi.fn(), setProgress: vi.fn(),
       signal: new AbortController().signal, taskId: "task-1" })).rejects.toThrow(/VPN worker/i);
-    expect(getChapterById).not.toHaveBeenCalled();
-    expect(tryDownloadServerChapter).not.toHaveBeenCalled();
+    expect(getChapterById).toHaveBeenCalledWith(7);
+    expect(tryDownloadServerChapter).toHaveBeenCalledOnce();
     expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
     expect(saveStoredChapterContent).not.toHaveBeenCalled();
     expect(completed).toBe(false);
@@ -777,13 +778,16 @@ describe("VPN range chapter acquisition", () => {
     });
   });
 
-  it("verifies the real source rather than satisfying a VPN canary from a content server", async () => {
+  it("uses an available server body during VPN verification without confirming or contacting the source", async () => {
     vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
     let settled = false;
     enqueueVpnDownloadChapter(job, worker, async () => { settled = true; });
-    await capturedSpec!.run({ executor: "vpn:0:8", sourceAccessVerification: true, confirmSourceAccess: () => true,
+    const confirmSourceAccess = vi.fn(() => true);
+    await capturedSpec!.run({ executor: "vpn:0:8", sourceAccessVerification: true, confirmSourceAccess,
       setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1" });
-    expect(pluginMocks.getChapterResource).toHaveBeenCalledWith("/chapter/7", "text");
+    expect(tryDownloadServerChapter).toHaveBeenCalledOnce();
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    expect(confirmSourceAccess).not.toHaveBeenCalled();
     expect(settled).toBe(true);
   });
 
@@ -1717,7 +1721,7 @@ describe("startChapterDownloadQueueExecutor", () => {
     expect(rows[0]).toMatchObject({ chapterId: 7, attempts: 2, messageSummary: "HTTP 503 Service Unavailable" });
   });
 
-  it("restores every verification candidate after storage operations and deletion checks", async () => {
+  it("restores every server-first candidate after storage operations and deletion checks before source verification", async () => {
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
     const restoredScheduler = new TaskScheduler();
@@ -1815,7 +1819,7 @@ describe("startChapterDownloadQueueExecutor", () => {
 
     try {
       await waitForChapterDownloadQueueRestoration();
-      expect(restoredScheduler.canBeginSourceAccessVerification(verificationScope)).toBe(true);
+      expect(restoredScheduler.canBeginSourceAccessVerification(verificationScope)).toBe(false);
       expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(restoredJobCount - 3);
       await vi.waitFor(() => {
         expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(
@@ -1834,9 +1838,7 @@ describe("startChapterDownloadQueueExecutor", () => {
       expect(restoredSpecs.map((spec) => spec.subject?.chapterId)).toEqual(
         jobs.slice(3).map((job) => job.id),
       );
-      expect(restoredSpecs.every((spec) => spec.priority === "background")).toBe(
-        true,
-      );
+      expect(restoredSpecs.every((spec) => spec.priority === "background" && spec.serverLane)).toBe(true);
       expect([...backendQueueValues.keys()]).toEqual(
         jobs.slice(3).map((job) => job.id),
       );
@@ -2519,7 +2521,7 @@ describe("enqueueChapterDownload", () => {
     expect(getChapterById).toHaveBeenCalledWith(7);
     expect(reconcileStoredChapterContent).not.toHaveBeenCalled();
     expect(tryStartSourceAccess).toHaveBeenCalledOnce();
-    expect(setChapterDownloadPhase.mock.calls).toEqual([["local"], ["server-lookup"], ["source-download"]]);
+    expect(setChapterDownloadPhase.mock.calls).toEqual([["local"], ["server-lookup"]]);
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
     expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
     expect(pluginMocks.getChapterAcquisitionPlan).not.toHaveBeenCalled();
@@ -3606,6 +3608,124 @@ describe("explicit retries after a failed chapter download", () => {
 });
 
 describe("enqueueChapterMediaRepair", () => {
+  it.each(["missing", "forbidden", "transport", "cancelled"] as const)("keeps real cache %s failures on the server without a source hold", async failureKind => {
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const { cacheHtmlChapterMedia: actualCache } = await import("../chapter-media/cache");
+    const storage = await import("../chapter-media/storage");
+    const { ContentServerError, ContentServerTransportError } = await import("../content-sync/client");
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    const reportFailure = vi.spyOn(scheduler, "reportDownloadFailure");
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) =>
+      scheduler.enqueueSource({ ...spec, sourceCooldownMs: 0 }));
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation(key => scheduler.getTaskByDedupeKey(key));
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    Object.defineProperty(document, "createElement", {
+      configurable: true,
+      // This fixture has only a paragraph; its missing asset is declared in the manifest.
+      value: () => ({ innerHTML: "", content: { querySelectorAll: () => [] } }),
+    });
+    const file = {
+      bytes: 3, fileName: "missing.png", path: "media/missing.png",
+      sourceUrl: "https://source.test/missing.png", status: "remote" as const, updatedAt: 1,
+    };
+    const storageSpies = [
+      vi.spyOn(storage, "readChapterMediaManifest").mockResolvedValue({
+        version: 1, complete: false, updatedAt: 1, media: { files: [file] },
+      }),
+      vi.spyOn(storage, "prepareChapterMediaWorkspace").mockResolvedValue(new Map()),
+      vi.spyOn(storage, "writeChapterMediaManifest").mockResolvedValue(undefined),
+      vi.spyOn(storage, "archiveChapterMediaCache").mockResolvedValue(0),
+    ];
+    const failure = failureKind === "missing" ? new ContentServerError(404)
+      : failureKind === "forbidden" ? new ContentServerError(403)
+      : failureKind === "transport" ? new ContentServerTransportError("Server connection dropped", { cause: new TypeError("Failed to fetch") })
+      : new DOMException("Native request cancelled", "AbortError");
+    serverMediaMocks.hasServerChapter.mockResolvedValue(true);
+    serverMediaMocks.fetch.mockRejectedValue(failure);
+    vi.mocked(getChapterById).mockResolvedValue({
+      id: 7, novelId: 11, path: "/chapter/7", name: "Chapter 7", position: 7,
+      chapterNumber: "7", contentType: "html", sourceContentType: "html", isDownloaded: false,
+    } as never);
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValue("<p>Stored body</p>");
+    vi.mocked(cacheHtmlChapterMedia).mockImplementationOnce(actualCache);
+    const task = enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Repair" });
+    try {
+      if (failureKind === "missing") {
+        await expect(task.promise).rejects.toMatchObject({
+          code: "chapter-media-incomplete", failures: [{ fileName: "missing.png", status: 404 }],
+        });
+        expect(storage.archiveChapterMediaCache).toHaveBeenCalledOnce();
+      } else {
+        await expect(task.promise).rejects.toBe(failure);
+      }
+      expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+      expect(scheduler.getTask(task.id)).toMatchObject({
+        status: failureKind === "cancelled" ? "cancelled" : "failed",
+        chapterDownloadPhase: "server-download",
+      });
+      expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+      expect(scheduler.getSnapshot().pausedSourceIds).not.toContain("source-a");
+      expect(reportFailure).not.toHaveBeenCalled();
+      expect(serverMediaMocks.fetch).toHaveBeenCalledOnce();
+      expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+      expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+      expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
+      expect(siteRecoveryMocks.reset).not.toHaveBeenCalled();
+    } finally {
+      scheduler.cancelActiveTasks({ discardQueued: true });
+      for (const spy of storageSpies) spy.mockRestore();
+      reportFailure.mockRestore();
+    }
+  });
+
+  it.each([false, true])("shows local verification without a download phase when all assets are intact (server: %s)", async serverAvailable => {
+    serverMediaMocks.hasServerChapter.mockResolvedValue(serverAvailable);
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValue("<p>Original body</p>");
+    const phases: string[] = [];
+    vi.mocked(cacheHtmlChapterMedia).mockImplementationOnce(async () => {
+      expect(phases).toContain("local");
+      expect(phases).not.toContain("source-download");
+      expect(phases).not.toContain("server-download");
+      return { html: "<p>Original body</p>", mediaBytes: 8, mediaFailures: [], storedMediaCount: 0 };
+    });
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Repair" });
+    await capturedSpec!.run({
+      setDetail: vi.fn(), setProgress: vi.fn(), setChapterDownloadPhase: phase => { phases.push(phase); },
+      signal: new AbortController().signal, taskId: "repair-local",
+    });
+    expect(phases).not.toContain("source-download");
+    expect(phases).not.toContain("server-download");
+    expect(serverMediaMocks.fetch).not.toHaveBeenCalled();
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    expect(acquisitionMocks.captureChapterPage).not.toHaveBeenCalled();
+  });
+
+  it.each([false, true])("shows download only while a missing asset is transferred (server: %s)", async serverAvailable => {
+    serverMediaMocks.hasServerChapter.mockResolvedValue(serverAvailable);
+    serverMediaMocks.fetch.mockResolvedValue(serverAvailable ? new Response(new Uint8Array([1])) : null);
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValue("<p>Original body</p>");
+    const phases: string[] = [];
+    vi.mocked(cacheHtmlChapterMedia).mockImplementationOnce(async options => {
+      expect(phases.at(-1)).toBe("local");
+      await options.fetchMissingMedia!({
+        bytes: 1, fileName: "missing.png", path: "media/missing.png",
+        sourceUrl: "https://source.test/missing.png", status: "remote", updatedAt: 1,
+      });
+      expect(phases.at(-1)).toBe(serverAvailable ? "server-download" : "source-download");
+      options.onProgress?.({ current: 1, total: 1 });
+      expect(phases.at(-1)).toBe("local");
+      return { html: "<p>Original body</p>", mediaBytes: 8, mediaFailures: [], storedMediaCount: 1 };
+    });
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Repair" });
+    await capturedSpec!.run({
+      setDetail: vi.fn(), setProgress: vi.fn(), setChapterDownloadPhase: phase => { phases.push(phase); },
+      signal: new AbortController().signal, taskId: "repair-transfer", tryStartSourceAccess: () => true,
+    });
+    expect(serverMediaMocks.fetch).toHaveBeenCalledOnce();
+    expect(pluginMocks.getChapterResource).not.toHaveBeenCalled();
+    if (serverAvailable) expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+  });
+
   it("keeps repair cooldowns separate for plugins sharing a hostname", () => {
     pluginMocks.getPlugin.mockImplementation((id: string) => ({
       id, name: id, getBaseUrl: () => "https://source.test",
@@ -3775,43 +3895,53 @@ describe("selected recovery in chapter acquisition", () => {
 });
 
 
-describe("explicit content server requests", () => {
+describe("server-first chapter requests", () => {
   const job: ChapterDownloadJob = {
-    id: 7, novelId: 11, pluginId: "source-a", chapterPath: "/chapter/7", title: "Server chapter", serverOnly: true,
+    id: 7, novelId: 11, pluginId: "source-a", chapterPath: "/chapter/7", title: "Server chapter",
   };
   const context = () => ({
     executor: "server:0" as ScraperExecutorId, setDetail: vi.fn(), setProgress: vi.fn(),
     signal: new AbortController().signal, taskId: "task-1",
   });
 
-  it("keeps server-only intent after durable failure restoration and bypasses source plugins and VPN admission", async () => {
-    installChapterDownloadBatchInterceptor({ enqueue: () => null, cancel: () => false,
-      enqueueChapter: () => { throw new Error("A server download must not enter the VPN queue"); } });
-    const restored = failedChapterDownloadJob(JSON.stringify(job));
-    expect(restored).toMatchObject({ serverOnly: true });
+  it("downloads an ordinary server hit without loading or inspecting its source plugin", async () => {
+    pluginMocks.getPlugin.mockImplementation(() => { throw new Error("Broken source plugin"); });
     vi.mocked(tryDownloadServerChapter).mockResolvedValueOnce(true);
-    enqueueChapterDownload(restored!);
-    expect(capturedSpec).toMatchObject({ serverLane: true, serverOnly: true });
-    expect(capturedSpec?.resolveSourceAccessUrl).toBeUndefined();
-    expect(capturedSpec?.sourceAccessVerificationKey).toBeUndefined();
+    enqueueChapterDownload(job);
+    expect(capturedSpec).toMatchObject({ serverLane: true });
     await capturedSpec!.run(context());
-    expect(tryDownloadServerChapter).toHaveBeenCalledWith(expect.objectContaining({ serverOnly: true }),
-      expect.any(AbortSignal), undefined, { requireComplete: true, serverOnly: true });
+    expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(job, expect.any(AbortSignal), undefined);
     expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
     expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
     expect(syncNovelFromSource).not.toHaveBeenCalled();
   });
 
-  it("never resolves a source path when a server-only request finds no server copy", async () => {
-    vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 11, path: "norea-folder:7", chapterNumber: "7", position: 7 } as never);
-    enqueueChapterDownload({ ...job, chapterPath: "norea-folder:7" });
-    await expect(capturedSpec!.run(context())).rejects.toThrow("not stored on the content server");
-    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
-    expect(syncNovelFromSource).not.toHaveBeenCalled();
+  it("ignores retired server-only intent after failure restoration and permits the source after a server miss", async () => {
+    const restored = failedChapterDownloadJob(JSON.stringify({ ...job, serverOnly: true }));
+    expect(restored).toMatchObject(job);
+    expect(restored).not.toHaveProperty("serverOnly");
+    enqueueChapterDownload(restored!);
+    await capturedSpec!.run({ ...context(), executor: "pool:0" });
+    expect(tryDownloadServerChapter).toHaveBeenCalledOnce();
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledExactlyOnceWith("source-a", "pool:0");
+    expect(saveStoredChapterContent).toHaveBeenCalled();
   });
 
-  it("can fetch a server copy despite a held source recovery episode", async () => {
+  it("checks a VPN verification attempt against the server before validating or opening its source worker", async () => {
+    const worker = { rangeId: "range-a", slot: 0 as const, generation: 8 };
+    const completed = vi.fn(async () => undefined);
+    vi.mocked(tryDownloadServerChapter).mockResolvedValueOnce(true);
+    enqueueVpnDownloadChapter({ ...job, vpnPlanId: "plan-a", vpnRangeId: worker.rangeId }, worker, completed);
+    await capturedSpec!.run({ ...context(), executor: "vpn:0:8", sourceAccessVerification: true });
+    expect(tryDownloadServerChapter).toHaveBeenCalledOnce();
+    expect(completed).toHaveBeenCalledOnce();
+    expect(tauriMocks.invoke.mock.calls.some(([command]) => command === "plugin_vpn_download_worker_validate")).toBe(false);
+    expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+  });
+
+  it("can fetch a server copy before a held source recovery episode", async () => {
     recoveryHarness.current.register([job]);
     recoveryHarness.current.networkLost("chapter:7", new Error("Source VPN offline"));
     expect(recoveryHarness.current.getSnapshot()).toMatchObject([{ key: "chapter:7", status: "held" }]);
@@ -3823,80 +3953,65 @@ describe("explicit content server requests", () => {
     expect(siteRecoveryMocks.reset).not.toHaveBeenCalled();
   });
 
-  it("retries a failed server request without resuming the plugin source queue", async () => {
-    failureMocks.snapshot.mockReturnValue([{ chapterId: 7, pluginId: "source-a", failureClass: "transient", nextRetryAt: null,
-      jobJson: JSON.stringify(job) } as StoredChapterDownloadFailure]);
-    expect(await retryFailedChapterDownloads([7])).toBe(1);
-    expect(capturedSpec).toMatchObject({ serverLane: true, serverOnly: true });
-    expect(taskScheduler.resumeSourceQueue).not.toHaveBeenCalled();
+  it("does not use source recovery or the plugin when server lookup fails", async () => {
+    const failure = new Error("Content server lookup timed out.");
+    vi.mocked(tryDownloadServerChapter).mockRejectedValueOnce(failure);
+    enqueueChapterDownload(job);
+    await expect(capturedSpec!.run(context())).rejects.toBe(failure);
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(siteRecoveryMocks.reset).not.toHaveBeenCalled();
+    expect(recoveryHarness.current.getSnapshot()).toEqual([]);
   });
 
-  it("still clears the storage hold when explicitly retrying a failed server write", async () => {
-    failureMocks.snapshot.mockReturnValue([{ chapterId: 7, pluginId: "source-a", failureClass: "storage", nextRetryAt: null,
-      jobJson: JSON.stringify(job) } as StoredChapterDownloadFailure]);
-    expect(await retryFailedChapterDownloads([7])).toBe(1);
-    expect(taskScheduler.resumeSourceQueue).toHaveBeenCalledExactlyOnceWith();
+  it("retains the source handoff when the server lane confirms a missing body", async () => {
+    const tryStartSourceAccess = vi.fn(() => false);
+    enqueueChapterDownload(job);
+    await capturedSpec!.run({ ...context(), tryStartSourceAccess });
+    expect(tryDownloadServerChapter).toHaveBeenCalledOnce();
+    expect(tryStartSourceAccess).toHaveBeenCalledOnce();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 
-  it("replaces a queued source task before persisting the strict request and keeps the new owner after cancellation", async () => {
+  it("shares the existing server-first task with a restored reader request without changing ownership", async () => {
     const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
     const scheduler = new TaskScheduler({ sourceQueuesPaused: true });
     vi.mocked(isTauriRuntime).mockReturnValue(true);
     schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => scheduler.enqueueSource(spec));
     vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation(key => scheduler.getTaskByDedupeKey(key));
-    vi.mocked(taskScheduler.cancel).mockImplementation(id => scheduler.cancel(id));
     const request = { ...job, id: 900061 };
-    const previous = enqueueChapterDownload({ ...request, serverOnly: undefined });
-    const previousOutcome = previous.promise.catch(error => error);
+    const first = enqueueChapterDownload(request);
     await waitForChapterDownloadQueueMutations();
-    pluginMocks.getPlugin.mockClear();
-    vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
-    const strict = enqueueChapterDownload(request);
+    const second = enqueueChapterDownload(failedChapterDownloadJob(JSON.stringify({ ...request, serverOnly: true }))!);
     try {
-      expect(strict.id).not.toBe(previous.id);
-      expect(await previousOutcome).toMatchObject({ cancelledByUser: true });
-      await flushMicrotasks();
-      await waitForChapterDownloadQueueMutations();
-      expect(backendQueueValues.get(request.id)).toMatchObject({ serverOnly: true });
-      expect(scheduler.getTask(strict.id)?.status).toBe("queued");
-      expect(tryDownloadServerChapter).not.toHaveBeenCalled();
+      expect(second.id).toBe(first.id);
+      expect(backendQueueValues.get(request.id)).toMatchObject(request);
+      expect(backendQueueValues.get(request.id)).not.toHaveProperty("serverOnly");
+      vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
       scheduler.resumeSourceQueue();
-      await strict.promise;
-      expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ serverOnly: true }),
-        expect.any(AbortSignal), expect.any(Function), { requireComplete: true, serverOnly: true });
-      expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
+      await second.promise;
+      expect(tryDownloadServerChapter).toHaveBeenCalledOnce();
       expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
     } finally {
       scheduler.cancelActiveTasks({ discardQueued: true });
-      await strict.promise.catch(() => undefined);
+      await Promise.allSettled([first.promise, second.promise]);
       await waitForChapterDownloadQueueMutations();
     }
   });
 
-  it.each(["running", "VPN-owned"])("rejects a strict request over a %s source task before changing its queue row", async route => {
-    vi.mocked(isTauriRuntime).mockReturnValue(true);
-    const original = { ...job, serverOnly: undefined, title: "Existing source request" };
-    backendQueueValues.set(job.id, original);
-    vi.mocked(taskScheduler.getTaskByDedupeKey).mockReturnValue({
-      id: "existing-source", kind: "chapter.download", status: route === "running" ? "running" : "queued",
-      ...(route === "VPN-owned" ? { vpnWorker: { rangeId: "range-a", slot: 0, generation: 1 } } : {}),
-    } as never);
-    expect(() => enqueueChapterDownload(job)).toThrow("already has an active source download");
-    await waitForChapterDownloadQueueMutations();
-    expect(backendQueueValues.get(job.id)).toBe(original);
-    expect(taskScheduler.cancel).not.toHaveBeenCalled();
-    expect(schedulerMocks.enqueueSource).not.toHaveBeenCalled();
-    expect(tauriMocks.invoke.mock.calls.some(([command]) => command === "chapter_download_queue_enqueue")).toBe(false);
-  });
-
-  it("keeps a server-only batch out of automatic VPN admission", async () => {
-    installChapterDownloadBatchInterceptor({ enqueue: () => { throw new Error("Unexpected source VPN admission"); }, cancel: () => false });
-    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => {
-      capturedSpec = spec; return { id: "server-task", promise: Promise.resolve() };
-    });
-    const request = enqueueChapterDownloadBatch({ jobs: [job], title: "Server batch", materializeAllTasks: true });
-    await request.materialized;
-    await expect(request.promise).resolves.toMatchObject({ total: 1, succeeded: 1 });
-    expect(capturedSpec?.serverLane).toBe(true);
+  it("repairs a server body's assets without loading a source plugin or using its recovery hold", async () => {
+    serverMediaMocks.hasServerChapter.mockResolvedValue(true);
+    pluginMocks.getPlugin.mockImplementation(() => { throw new Error("Broken source plugin"); });
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValue("<p>Stored body</p>");
+    recoveryHarness.current.register([job]);
+    recoveryHarness.current.networkLost("chapter:7", new Error("Source VPN offline"));
+    enqueueChapterMediaRepair({ id: job.id, pluginId: job.pluginId, title: "Repair" });
+    await capturedSpec!.run(context());
+    expect(serverMediaMocks.hasServerChapter).toHaveBeenCalledOnce();
+    expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
+    expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
+    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    expect(siteRecoveryMocks.reset).not.toHaveBeenCalled();
+    expect(saveStoredChapterContent).toHaveBeenCalled();
   });
 });

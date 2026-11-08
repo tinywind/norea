@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { ChapterMediaFinalizationError, ChapterMediaHttpRetryError, ChapterMediaIncompleteError } from "../chapter-media/errors";
 import { cloudflareAccessError } from "../http/response";
 import { SourceAccessRequiredError } from "../plugins/source-access";
+import { ContentServerError, ContentServerTransportError } from "../content-sync/client";
 import { automaticRetryDelayMs, classifyDownloadFailure, isSourceForbiddenFailure } from "./download-failure";
 
 const cdnChallenge = cloudflareAccessError(
@@ -110,4 +111,22 @@ describe("automaticRetryDelayMs", () => {
       expect(automaticRetryDelayMs({failureClass, retryAfterMs:900_000}, attempts)).toBeNull();
     }
   });
+});
+
+it.each([401, 403, 404, 429, 500, 503])("keeps content server HTTP %i separate from source access failures", status => {
+  const error = new ContentServerError(status, `Content server request failed (HTTP ${status}) at https://server.test/chapter`);
+  const failure = classifyDownloadFailure(error);
+  expect(failure.failureClass).toBe(status >= 500 || status === 429 ? "transient" : "content");
+  expect(failure.challengeUrl).toBeUndefined();
+  expect(isSourceForbiddenFailure(error)).toBe(false);
+});
+
+it.each([
+  "Content server transport failed (HTTP 403).",
+  "External resource at content.test requires Cloudflare verification.",
+])("keeps retryable server transport details separate from source challenge policies", message => {
+  const error = new ContentServerTransportError(message);
+  expect(classifyDownloadFailure(error)).toMatchObject({ failureClass: "transient", retryAfterMs: 0 });
+  expect(classifyDownloadFailure(error).challengeUrl).toBeUndefined();
+  expect(isSourceForbiddenFailure(error)).toBe(false);
 });

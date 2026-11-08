@@ -77,6 +77,7 @@ class Runtime implements VpnDownloadRuntime {
   switchAllowed = true;
   recoveryProfile?: VpnDownloadRuntime["recoveryProfile"];
   networkRecovery?: VpnDownloadRuntime["networkRecovery"];
+  tryServerChapter?: (job: ChapterDownloadJob, signal: AbortSignal) => Promise<boolean>;
   nativeGeneration = 0;
   holdCleanup = false;
   writesActive = 0;
@@ -2821,4 +2822,112 @@ describe("VPN download coordinator", () => {
     }
   });
 
+});
+
+
+describe("content server before VPN source access", () => {
+  it("downloads server bodies without profiles or a free source browser and clears only completed chapter failures", async () => {
+    const runtime = new Runtime(); runtime.profiles = []; runtime.switchAllowed = false;
+    runtime.storedChapterFailures.set(9, { failureClass: "content", nextRetryAt: null });
+    runtime.storedChapterFailures.set(99, { failureClass: "content", nextRetryAt: null });
+    runtime.tryServerChapter = vi.fn(async job => { runtime.events.push(`server:${job.id}`); return true; });
+    const profiles = vi.spyOn(runtime, "listProfiles");
+    const coordinator = new VpnDownloadCoordinator(runtime); const value = plan([range("a", "a", [9, 2])]);
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(current(coordinator, "a").phase).toBe("completed"));
+      expect(runtime.events).toEqual(["server:9", "settle:a:9", "server:2", "settle:a:2"]);
+      expect(profiles).not.toHaveBeenCalled();
+      expect(runtime.tasks.size).toBe(0); expect(runtime.native.size).toBe(0);
+      expect(runtime.storedChapterFailures.has(9)).toBe(false);
+      expect(runtime.storedChapterFailures.has(99)).toBe(true);
+      expect(runtime.issues).toEqual([]);
+    } finally { await coordinator.cancelPlan("plan"); }
+  });
+
+  it("uses the source only for a confirmed server miss in a mixed range", async () => {
+    const runtime = new Runtime();
+    runtime.tryServerChapter = vi.fn(async job => { runtime.events.push(`server:${job.id}`); return job.id !== 2; });
+    const coordinator = new VpnDownloadCoordinator(runtime); const value = plan();
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.task("a")?.[1].job.id).toBe(2));
+      expect(runtime.events.slice(0, 3)).toEqual(["server:9", "settle:a:9", "server:2"]);
+      runtime.succeed("a");
+      await until(() => expect(current(coordinator, "a").phase).toBe("completed"));
+      expect([...runtime.tasks.values()].map(task => task.job.id)).toEqual([2]);
+      expect(runtime.events.filter(event => event.startsWith("server:"))).toEqual(["server:9", "server:2", "server:7"]);
+      expect(runtime.issues).toEqual([]);
+    } finally { await coordinator.cancelPlan("plan"); }
+  });
+
+  it("pauses a server error without connecting, verifying or excluding a source profile", async () => {
+    const runtime = new Runtime();
+    const failure = Object.assign(new Error("Content server unavailable"), { code: "content-server-request-failed", status: 503 });
+    runtime.tryServerChapter = vi.fn(async () => { throw failure; });
+    const coordinator = new VpnDownloadCoordinator(runtime); const value = plan([range("a", "a", [9])]);
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(current(coordinator, "a").pauseReason).toBe("chapter-failed"));
+      expect(current(coordinator, "a").checkpoint).toBe(0);
+      expect(runtime.events.some(event => event.startsWith("connect:"))).toBe(false);
+      expect(runtime.tasks.size).toBe(0); expect(runtime.verifications).toEqual([]); expect(runtime.issues).toEqual([]);
+      expect(runtime.chapterFailures).toEqual([{ chapterId: 9, error: failure }]);
+    } finally { await coordinator.cancelPlan("plan"); }
+  });
+
+  it("aborts a paused server transfer and resumes with a new check without a stale checkpoint", async () => {
+    const runtime = new Runtime(); const pending = deferred<boolean>(); let signal!: AbortSignal;
+    const server = vi.fn().mockImplementationOnce(async (_job: ChapterDownloadJob, nextSignal: AbortSignal) => {
+      signal = nextSignal;
+      signal.addEventListener("abort", () => pending.reject(new DOMException("Cancelled", "AbortError")), { once: true });
+      return pending.promise;
+    }).mockResolvedValue(true);
+    runtime.tryServerChapter = server;
+    const coordinator = new VpnDownloadCoordinator(runtime); const value = plan([range("a", "a", [9])]);
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(server).toHaveBeenCalledOnce());
+      await coordinator.pauseRange("plan", "a");
+      expect(signal.aborted).toBe(true); expect(current(coordinator, "a").checkpoint).toBe(0);
+      expect(runtime.tasks.size).toBe(0); expect(runtime.chapterFailures).toEqual([]);
+      await coordinator.resumeRange("plan", "a");
+      await until(() => expect(current(coordinator, "a").phase).toBe("completed"));
+      expect(server).toHaveBeenCalledTimes(2); expect(runtime.native.size).toBe(0);
+    } finally { await coordinator.cancelPlan("plan"); }
+  });
+
+  it("checks once while the source browser is busy and waits to use the source after a miss", async () => {
+    const runtime = new Runtime(); runtime.switchAllowed = false;
+    runtime.tryServerChapter = vi.fn(async () => false);
+    const coordinator = new VpnDownloadCoordinator(runtime); const value = plan([range("a", "a", [9])]);
+    try {
+      await coordinator.start(value, jobsFor(value));
+      await until(() => expect(runtime.tryServerChapter).toHaveBeenCalledOnce());
+      coordinator.browserActivityChanged();
+      await Promise.resolve(); await Promise.resolve();
+      expect(runtime.tryServerChapter).toHaveBeenCalledOnce(); expect(runtime.tasks.size).toBe(0);
+      runtime.switchAllowed = true; coordinator.browserActivityChanged();
+      await until(() => expect(runtime.task("a")?.[1].job.id).toBe(9));
+      runtime.succeed("a");
+      await until(() => expect(current(coordinator, "a").phase).toBe("completed"));
+    } finally { await coordinator.cancelPlan("plan"); }
+  });
+});
+
+
+it("does not skip a server transfer 404 after a VPN worker rechecks the server", async () => {
+  const runtime = new Runtime(); runtime.tryServerChapter = async () => false;
+  const coordinator = new VpnDownloadCoordinator(runtime); const value = plan([range("a", "a", [9])]);
+  try {
+    await coordinator.start(value, jobsFor(value));
+    await until(() => expect(runtime.task("a")?.[1].job.id).toBe(9));
+    const [, task] = runtime.task("a");
+    task.result.reject(Object.assign(new Error("Content server request failed (404)."), { code: "content-server-request-failed", status: 404 }));
+    task.cleanup.resolve(undefined);
+    await until(() => expect(current(coordinator, "a").pauseReason).toBe("chapter-failed"));
+    expect(current(coordinator, "a").checkpoint).toBe(0);
+    expect(runtime.events.some(event => event.startsWith("settle:"))).toBe(false);
+    expect(runtime.issues).toEqual([]);
+  } finally { await coordinator.cancelPlan("plan"); }
 });

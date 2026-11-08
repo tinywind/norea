@@ -220,13 +220,11 @@ export interface TaskSpec<T> {
   /** Download-goal work; an explicit request for the same task clears it. */
   automatic?: boolean;
   /**
-   * The content server is known to hold this chapter, so the task first runs on the
-   * server lane without source cooldown; if that transfer cannot finish, the same task
-   * continues on its source route.
+   * Check and download content-server bodies before entering a source executor.
+   * Only a confirmed missing body may move the same task to its source route;
+   * server errors remain failures and never authorize source access.
    */
   serverLane?: boolean;
-  /** Uses only the content server, independently of source access and source failure holds. */
-  serverOnly?: boolean;
   canCompleteWithoutSourceAccess?: boolean;
   exclusive?: boolean;
   requiresForegroundExecutor?: boolean;

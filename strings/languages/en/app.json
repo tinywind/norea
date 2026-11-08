@@ -1524,7 +1524,6 @@
   "novel.repair": "Repair",
   "novel.serverIncomplete": "Partial copy on server",
   "novel.serverComplete": "Full copy on server",
-  "novel.serverUnavailable": "Not stored on the content server",
   "novel.deleteDownload": "Delete download",
   "novel.upNext": "Up next",
   "novelMerge.title": "Migrate “{name}”",
@@ -1886,7 +1885,6 @@
   "downloadOnce.selectedWorks": "Apply this request to {count} selected works.",
   "downloadOnce.status": "On this device: {stored} of {total} chapters · In queue: {queued}",
   "downloadOnce.failed": "Could not queue the download. Try again.",
-  "downloadOnce.serverUnavailable": "{count} selected chapters are not stored on the content server.",
   "novelMerge.serverPending": "Moved to {target} on this device. Server transfer is pending; the original server copy will stay until the transfer is verified. You can retry in Content server settings.",
   "contentSync.error.migrationPending": "The server transfer is not complete. The original server copy is safe and will not automatically reappear in the library. Retry synchronization; if verification conflicts remain, review Details before removing anything."
 }

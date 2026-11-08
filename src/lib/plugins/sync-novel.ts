@@ -20,6 +20,7 @@ import { notifyWorkMetadataChanges, readStoredNovelMetadata } from "../work-meta
 import { isTauriRuntime } from "../tauri-runtime";
 import { isStorageId } from "../storage-id";
 import type { ChapterItem, NovelItem, Plugin, SourceNovel } from "./types";
+import type { NovelMetadataV1 } from "../work-metadata/schema";
 import { withSourceChapterNumberReconciliation } from "./source-chapter-renumber";
 import { applySourceChapterNumberChangesInDb, commitSourceChapterRenumberInDb, planSourceChapterNumberChanges, readRenumberChapters } from "../source-chapter-renumber";
 
@@ -52,6 +53,7 @@ export interface SyncNovelFromSourceResult {
   novelId: number;
   chapterCount: number;
   duplicateChapters: SourceDuplicateChapterInfo[];
+  authoritativeMetadata?: Pick<NovelMetadataV1, "identity" | "novel"> & { coverUrl: string | null };
 }
 
 interface SourceChapterListResult {
@@ -325,8 +327,16 @@ async function performNovelSourceRefresh(
   options.signal?.throwIfAborted();
   if (!isCurrent()) return null;
   const preserveMissingMetadata = options.preserveMissingMetadata ?? true;
-  const cover = optionalText(detail.cover) ?? optionalText(item.cover);
-  const novelName = detail.name || item.name;
+  const cover = optionalText(detail.cover) ?? (preserveMissingMetadata ? optionalText(item.cover) : null);
+  const novelName = preserveMissingMetadata ? detail.name || item.name : detail.name;
+  if (!optionalText(novelName)) throw new Error(`Plugin '${plugin.id}' returned an empty novel name.`);
+  const authoritativeMetadata: SyncNovelFromSourceResult["authoritativeMetadata"] = !preserveMissingMetadata ? {
+    identity: { pluginId: plugin.id, novelId: detail.novelId, novelPath: item.path },
+    novel: { name: novelName, author: optionalText(detail.author), artist: optionalText(detail.artist),
+      summary: optionalText(detail.summary), status: optionalText(detail.status == null ? null : String(detail.status)),
+      genres: optionalText(detail.genres), rating: detail.rating ?? null, isLocal: false },
+    coverUrl: cover,
+  } : undefined;
   const chapterInputs: InsertChapterInput[] = detail.chapters.map(
     (chapter, index) => ({
       novelId: 0,
@@ -458,7 +468,7 @@ async function performNovelSourceRefresh(
       republish,
       changedChapters: chapterMutation.rowsAffected,
       newChapters,
-      cover: optionalText(novelRow.cover) ?? cover,
+      cover: preserveMissingMetadata ? optionalText(novelRow.cover) ?? cover : cover,
       coverChanged: optionalText(storedIdentity?.previousCover) !== null &&
         optionalText(storedIdentity?.previousCover) !== optionalText(novelRow.cover),
       coverFetchedAt: storedIdentity?.coverFetchedAt ?? null,
@@ -479,11 +489,11 @@ async function performNovelSourceRefresh(
   }
   if (superseded) return null;
 
-  if (result.inLibrary || options.refreshCover) {
+  if (result.inLibrary || options.refreshCover || !preserveMissingMetadata) {
     // Covers are fetched again when the source value changes, on an explicit rebuild, or after
     // 30 days for an unchanged value, since sites sometimes replace the image behind a URL.
     const nowSeconds = Math.floor(Date.now() / 1000);
-    const refresh = options.refreshCover === true || result.coverChanged ||
+    const refresh = options.refreshCover === true || !preserveMissingMetadata || result.coverChanged ||
       (result.coverFetchedAt !== null && nowSeconds - result.coverFetchedAt >= COVER_REFRESH_SECONDS);
     try {
       await saveNovelCoverFromSource(
@@ -495,12 +505,13 @@ async function performNovelSourceRefresh(
           pluginId: plugin.id,
         },
         result.cover,
-        { refresh },
+        { refresh, ...(!preserveMissingMetadata ? { clearMissing: true } : {}) },
       );
       if (refresh || result.coverFetchedAt === null) await recordNovelCoverFetched(result.novelId, nowSeconds);
     } catch (error) {
       const sourceAccessError = normalizeSourceAccessRequiredError(error);
       if (sourceAccessError) throw sourceAccessError;
+      if (!preserveMissingMetadata) throw error;
       console.warn("[sync-novel] failed to store novel cover", {
         error,
         novelId: result.novelId,
@@ -516,5 +527,6 @@ async function performNovelSourceRefresh(
     novelId: result.novelId,
     chapterCount: detail.chapters.length,
     duplicateChapters,
+    ...(authoritativeMetadata ? { authoritativeMetadata } : {}),
   };
 }

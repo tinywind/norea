@@ -9,7 +9,6 @@ import {
 } from "../../db/queries/chapter";
 import { type NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
-import { readServerNovelSource } from "../../lib/content-sync/novel-source";
 import { prepareContentDeletion, runContentDeletion } from "../../lib/content-deletion";
 import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invalidation";
 import { showErrorToast } from "../../lib/runtime/error-toast";
@@ -25,7 +24,6 @@ import { showReadStateUndoToast } from "../read-state-undo-toast";
 import { BRIEF_TOAST_AUTO_CLOSE_MS } from "../ui/AppToasts";
 import { useStopDownloadGoalsOffer } from "../use-stop-download-goals-offer";
 import { chaptersKey } from "./novel-detail-model";
-import type { ServerAwareChapterListRow } from "./NovelChapterList";
 
 type NovelDownloadSource = Pick<
   NovelDetailRecord,
@@ -36,7 +34,6 @@ export function useNovelChapterActions(
   id: number,
   novel: NovelDownloadSource | null | undefined,
   chapters: readonly Pick<ChapterListRow, "id" | "name">[],
-  options: { serverOnly?: boolean } = {},
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
@@ -172,34 +169,25 @@ export function useNovelChapterActions(
     });
   }
 
-  function downloadChapter(chapter: ServerAwareChapterListRow, retryAfterFailure = false): void {
+  function downloadChapter(chapter: ChapterListRow, retryAfterFailure = false): void {
     queueChapterDownloads([chapter], retryAfterFailure);
   }
 
   /** Downloads several chapters the user chose and confirms how many were queued. */
-  function downloadChapters(chaptersToDownload: ServerAwareChapterListRow[]): void {
-    const queued = queueChapterDownloads(chaptersToDownload);
-    if (queued === 0) return;
+  function downloadChapters(chaptersToDownload: ChapterListRow[]): void {
+    if (!queueChapterDownloads(chaptersToDownload)) return;
     notifications.show({
       autoClose: BRIEF_TOAST_AUTO_CLOSE_MS,
       color: "ok",
-      message: t("novel.downloadsQueued", { count: queued }),
+      message: t("novel.downloadsQueued", { count: chaptersToDownload.length }),
     });
   }
 
-  /** Queues available chosen chapters ahead of automatic goal work and returns the admitted count. */
-  function queueChapterDownloads(chaptersToDownload: ServerAwareChapterListRow[], retryAfterFailure = false): number {
-    if (!novel || chaptersToDownload.length === 0) return 0;
-    const selected = options.serverOnly
-      ? chaptersToDownload.filter(chapter => chapter.serverAvailable !== false)
-      : chaptersToDownload;
-    const skipped = chaptersToDownload.length - selected.length;
-    if (skipped > 0) notifications.show({ autoClose: BRIEF_TOAST_AUTO_CLOSE_MS, color: "warn",
-      message: t("downloadOnce.serverUnavailable", { count: skipped }) });
-    if (selected.length === 0) return 0;
+  /** Queues chapters the user chose, ahead of automatic goal work; false when there was nothing to queue. */
+  function queueChapterDownloads(chaptersToDownload: ChapterListRow[], retryAfterFailure = false): boolean {
+    if (!novel || chaptersToDownload.length === 0) return false;
     const batchNovel = novel;
-    let serverOnly = options.serverOnly === true;
-    const chapterDownloadJobs = selected.map((chapter) => ({
+    const chapterDownloadJobs = chaptersToDownload.map((chapter) => ({
       id: chapter.id,
       pluginId: batchNovel.pluginId,
       chapterPath: chapter.path,
@@ -212,26 +200,20 @@ export function useNovelChapterActions(
       priority: "user" as const,
       title: t("tasks.task.downloadChapter", { name: chapter.name }),
     }));
-    const title = t("tasks.task.downloadChapterBatch", { count: selected.length });
+    const title = t("tasks.task.downloadChapterBatch", { count: chaptersToDownload.length });
     const request = submitChapterDownloadRequest({
-      key: JSON.stringify([batchNovel.pluginId, batchNovel.id, serverOnly, chapterDownloadJobs.map(job => job.id).sort((left, right) => left - right)]),
+      key: JSON.stringify([batchNovel.pluginId, batchNovel.id, chapterDownloadJobs.map(job => job.id).sort((left, right) => left - right)]),
       title,
       novelIds: [batchNovel.id],
-      total: selected.length,
-      prepare: async () => {
-        serverOnly ||= Boolean(await readServerNovelSource(batchNovel.id));
-        return { jobs: chapterDownloadJobs.map(job => ({ ...job, ...(serverOnly ? { serverOnly: true as const } : {}) })),
-          materializeAllTasks: true, title, total: selected.length };
-      },
+      total: chaptersToDownload.length,
+      prepare: async () => ({ jobs: chapterDownloadJobs, materializeAllTasks: true, title, total: chaptersToDownload.length }),
     });
     if (retryAfterFailure) {
       // Publish the current chapter path before acknowledging its source's failure stop.
-      void request.materialized.then(() => {
-        if (!serverOnly) return resumeChapterDownloadQueueAfterFailure(batchNovel.pluginId);
-      }).catch(() => undefined);
+      void request.materialized.then(() => resumeChapterDownloadQueueAfterFailure(batchNovel.pluginId)).catch(() => undefined);
     }
     void request.promise.finally(() => queryClient.invalidateQueries({ queryKey: chaptersKey(id), exact: true })).catch(() => undefined);
-    return selected.length;
+    return true;
   }
 
   return {

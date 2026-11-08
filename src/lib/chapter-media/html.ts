@@ -10,6 +10,7 @@ import {
 import {
   type CacheChapterMediaOptions,
   type ChapterMediaElementPatch,
+  type ChapterMediaManifestFile,
   type ChapterMediaStorageContext,
   type MediaSrcTarget,
   type MediaSrcsetTarget,
@@ -317,6 +318,49 @@ export function normalizeLocalChapterMediaOutput(html: string): string {
     const parsed = parseLocalChapterMediaSrc(src);
     return parsed ? localChapterMediaOutputSrc(parsed.fileName) : src;
   });
+}
+
+/** Keep manifest-declared local references from being resolved against a source website during repair. */
+export function normalizeStoredMediaReferences(
+  root: DocumentFragment,
+  files: readonly ChapterMediaManifestFile[],
+): void {
+  const references = new Map<string, string>();
+  for (const file of files) {
+    const source = localChapterMediaOutputSrc(file.fileName);
+    references.set(file.fileName, source);
+    references.set(file.path, source);
+  }
+  const normalize = (value: string): string =>
+    references.get(value.trim()) ?? value;
+  for (const element of root.querySelectorAll<Element>(MEDIA_SOURCE_SELECTOR)) {
+    for (const attribute of MEDIA_SRC_ATTRIBUTES) {
+      if (!shouldCollectMediaAttribute(element, attribute)) continue;
+      const value = element.getAttribute(attribute);
+      if (value === null) continue;
+      const normalized = normalize(value);
+      if (normalized !== value) element.setAttribute(attribute, normalized);
+    }
+    const srcset = element.getAttribute("srcset");
+    if (!srcset) continue;
+    let changed = false;
+    const candidates = parseSrcset(srcset).map(candidate => {
+      const source = normalize(candidate.source);
+      changed ||= source !== candidate.source;
+      return { ...candidate, source };
+    });
+    if (changed) element.setAttribute("srcset", formatSrcset(candidates));
+  }
+  for (const element of root.querySelectorAll<Element>(MEDIA_STYLE_SELECTOR)) {
+    const style = element.getAttribute("style");
+    if (!style) continue;
+    const normalized = style.replace(STYLE_URL_PATTERN, (match, quoted, singleQuoted, unquoted) => {
+      const source = String(quoted ?? singleQuoted ?? unquoted ?? "").trim();
+      const local = references.get(source);
+      return local ? 'url("' + local + '")' : match;
+    });
+    if (normalized !== style) element.setAttribute("style", normalized);
+  }
 }
 
 export function collectMediaTargets(

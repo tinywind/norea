@@ -50,7 +50,7 @@ it("does no work until an asset is missing and resolves the server chapter once 
   const requests = vi.mocked(nativeFetch).mock.calls;
   expect(requests.filter(([url]) => String(url).includes("/catalog/chapter?"))).toHaveLength(1);
   expect(requests[0]![0]).toContain("http://origin/api/v1/catalog/chapter?");
-  expect(requests[0]![0]).toContain("includeUnavailable=true");
+  expect(requests[0]![0]).not.toContain("includeUnavailable=true");
   const assetUrl = new URL(String(requests[1]![0]));
   expect(assetUrl.pathname).toBe(`/api/v1/chapters/${"a".repeat(64)}/media`);
   expect(Object.fromEntries(assetUrl.searchParams)).toEqual({ revision: "b".repeat(64), fileName: "page.png", sourceUrl: "epub/images/page.png" });
@@ -76,11 +76,14 @@ it("returns null when no server is configured", async () => {
   expect(nativeFetch).not.toHaveBeenCalled();
 });
 
-it("falls back only when an installed plugin can fetch the missing HTTP asset", async () => {
+it("returns a source fallback only after the chapter lookup confirms the body is absent", async () => {
   vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
-  vi.mocked(nativeFetch).mockImplementation(async url => String(url).includes("/catalog/chapter?") ? Response.json(entry) : new Response(null, { status: 404 }));
-  await expect(createServerChapterMediaFetcher(job)({ ...file, sourceUrl: "https://source.test/page.png" })).resolves.toBeNull();
-  await expect(createServerChapterMediaFetcher(job)(file)).rejects.toThrow("404");
+  vi.mocked(nativeFetch).mockResolvedValue(new Response(null, { status: 404 }));
+  const fetchAsset = createServerChapterMediaFetcher(job);
+  expect(await fetchAsset.hasServerChapter()).toBe(false);
+  await expect(fetchAsset({ ...file, sourceUrl: "https://source.test/page.png" })).resolves.toBeNull();
+  expect(nativeFetch).toHaveBeenCalledOnce();
+  expect(pluginManager.getPlugin).not.toHaveBeenCalled();
 });
 
 it.each([401, 403, 410, 429, 500, 503])("propagates server media HTTP %i even when the source plugin is installed", async status => {
@@ -164,4 +167,10 @@ it.each(["chapter", "work"] as const)("preserves media repair %s database failur
   await expect(createServerChapterMediaFetcher(job)(file)).rejects.toMatchObject({ code: "chapter-storage-failed", cause: failure });
   expect(registerContentDevice).not.toHaveBeenCalled();
   expect(nativeFetch).not.toHaveBeenCalled();
+});
+
+it("does not request a source asset when the server has the body but the asset returns 404", async () => {
+  vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+  vi.mocked(nativeFetch).mockImplementation(async url => String(url).includes("/catalog/chapter?") ? Response.json(entry) : new Response(null, { status: 404 }));
+  await expect(createServerChapterMediaFetcher(job)({ ...file, sourceUrl: "https://source.test/page.png" })).rejects.toMatchObject({ status: 404 });
 });

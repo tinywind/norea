@@ -16,7 +16,6 @@ import {
 import { getNovelById } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { usePageBackNavigation } from "../../lib/android-back-navigation";
-import { readServerNovelSource } from "../../lib/content-sync/novel-source";
 import {
   findPreviousAppHistoryEntry,
   trimAppNavigationHistoryTo,
@@ -163,8 +162,6 @@ export function useReaderChapterNavigation({
             queryFn: () => getNovelById(targetChapter.novelId),
           });
           if (!novel || openRequestRef.current !== requestId) return;
-          const serverOnly = Boolean(await readServerNovelSource(novel.id));
-          if (openRequestRef.current !== requestId) return;
 
           const handle = enqueueChapterDownload({
             id: targetChapter.id,
@@ -177,7 +174,6 @@ export function useReaderChapterNavigation({
             novelName: novel.name,
             novelPath: novel.path,
             priority: "interactive",
-            ...(serverOnly ? { serverOnly: true } : {}),
             title: t("tasks.task.downloadChapter", {
               name: targetChapter.name,
             }),

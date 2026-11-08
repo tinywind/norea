@@ -6,7 +6,6 @@ import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/c
 import { type NovelDetailRecord } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { describeError } from "../../lib/errors";
-import { readServerNovelSource } from "../../lib/content-sync/novel-source";
 import { DEFAULT_CHAPTER_SORT_LABEL_KEYS } from "../../lib/library-settings-options";
 import { pluginManager } from "../../lib/plugins/manager";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
@@ -41,7 +40,7 @@ export function NovelDownloadSheet({ onClose, opened, ...props }: NovelDownloadS
 }
 
 /** Keeps the sheet open when queue publication fails and closes only after the chosen request is admitted. */
-export function useNovelDownloadOnce({ novelId, onClose, serverOnly = false }: { novelId: number; onClose: () => void; serverOnly?: boolean }) {
+export function useNovelDownloadOnce({ novelId, onClose }: { novelId: number; onClose: () => void }) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const [saving, setSaving] = useState(false);
@@ -51,10 +50,7 @@ export function useNovelDownloadOnce({ novelId, onClose, serverOnly = false }: {
     setSaving(true);
     setError(null);
     try {
-      const fromServer = serverOnly || Boolean(await readServerNovelSource(novelId));
-      const result = fromServer
-        ? await queueChapterDownloadsOnce([novelId], t, queryClient, selection, { serverOnly: true })
-        : await queueChapterDownloadsOnce([novelId], t, queryClient, selection);
+      const result = await queueChapterDownloadsOnce([novelId], t, queryClient, selection);
       onClose();
       notifications.show({ autoClose: BRIEF_TOAST_AUTO_CLOSE_MS, ...downloadOnceNotice(t, result) });
     } catch (caught) {
@@ -68,7 +64,7 @@ export function useNovelDownloadOnce({ novelId, onClose, serverOnly = false }: {
 
 function NovelDownloadChoices({ chapters, downloadStatuses, novel, hasServerSource = false, onClose, onSelectChapters }: Omit<NovelDownloadSheetProps, "opened">) {
   const { t } = useTranslation();
-  const { choose, error, saving } = useNovelDownloadOnce({ novelId: novel.id, onClose, serverOnly: hasServerSource });
+  const { choose, error, saving } = useNovelDownloadOnce({ novelId: novel.id, onClose });
   const stored = chapters.filter(hasStoredChapterContent).length;
   const queued = chapters.filter(chapter => {
     const kind = downloadStatuses.get(chapter.id)?.kind;

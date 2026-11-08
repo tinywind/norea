@@ -19,6 +19,7 @@ import { androidCloseVpnDownloadWorker, androidConfigureVpnDownloadWorker, andro
 import { describeError } from "../errors";
 import { isAbortError } from "../abort";
 import { ChapterStorageError } from "../chapter-storage-error";
+import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { getChapterDownloadFailure } from "../../db/queries/chapter-download-failure";
 import { pluginManager } from "../plugins/manager";
 import { releaseVpnDownloadPlanLocalWorkScans } from "./chapter-download";
@@ -312,6 +313,7 @@ const adapter: VpnDownloadRuntime = {
     if (!session || session.closing) throw new Error("VPN chapter has no active connection session.");
     return enqueueVpnDownloadChapter(job, worker, async () => undefined, { id: session.profileId, hash: session.profileHash });
   },
+  tryServerChapter: (job, signal) => tryDownloadServerChapter(job, signal),
   recordChapterFailure: async (job, error) => {
     const stored = await persistVpnDownload("saving a chapter failure", () => recordFailedChapterDownloadAttempt(job, error));
     return { failureClass: stored?.failureClass ?? "transient", nextRetryAt: stored?.nextRetryAt ?? null };

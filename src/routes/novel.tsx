@@ -214,7 +214,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     repairMedia,
     downloadChapter,
     downloadChapters,
-  } = useNovelChapterActions(id, displayNovel, chapters, { serverOnly: Boolean(serverSourceQuery.data) });
+  } = useNovelChapterActions(id, displayNovel, chapters);
   const statuses = useNovelDownloadStatuses(id, rows, active, novelQuery.data?.pluginId);
   const chapterFiltersActive = hasChapterListFilters(chapterFilters);
   const visibleChapters = useMemo(
@@ -252,7 +252,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     [selectedChapters],
   );
   const selectedDownloadTargets = useMemo(
-    () => buildMissingChapterDownloadTargets(selectedChapters.filter(chapter => chapter.serverAvailable !== false), statuses),
+    () => buildMissingChapterDownloadTargets(selectedChapters, statuses),
     [selectedChapters, statuses],
   );
   const selectedDownloadedChapterIds = useMemo(
@@ -262,11 +262,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
         .map((chapter) => chapter.id),
     [selectedChapters],
   );
-  const previousDownloadTargets = useMemo(() => {
-    const unavailable = new Set(rows.filter(row => row.serverAvailable === false).map(row => row.id));
-    return buildPreviousChapterDownloadTargets(chapters, selectedChapterIds, statuses)
-      .filter(chapter => !unavailable.has(chapter.id));
-  }, [chapters, rows, selectedChapterIds, statuses]);
+  const previousDownloadTargets = useMemo(
+    () => buildPreviousChapterDownloadTargets(chapters, selectedChapterIds, statuses),
+    [chapters, selectedChapterIds, statuses],
+  );
   const selectedUnreadCount = selectedChapters.filter(
     (chapter) => chapter.unread || chapter.progress < FINISHED_PROGRESS,
   ).length;
@@ -482,10 +481,6 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const closeReaderSettings = () => setReaderSettingsOpen(false);
 
   function openChapter(chapter: ChapterListRow): void {
-    if (rows.find(row => row.id === chapter.id)?.serverAvailable === false && !hasStoredChapterContent(chapter)) {
-      notifications.show({ color: "warn", message: t("novel.serverUnavailable") });
-      return;
-    }
     void navigate({ to: "/reader", search: { chapterId: chapter.id } });
   }
 

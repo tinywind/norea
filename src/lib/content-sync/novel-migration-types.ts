@@ -1,4 +1,5 @@
 import type { ChapterPayloadInventory } from "../chapter-content/inventory";
+import type { NovelMetadataV1 } from "../work-metadata/schema";
 
 export interface MigrationWorkIdentity {
   pluginId: string;
@@ -13,10 +14,17 @@ export interface NovelMigrationChapter {
   targetChapterNumber: string | null;
   decision: "copy-source" | "keep-target" | null;
   expectedTargetInventory?: ChapterPayloadInventory;
+  targetChapter?: { name: string; position: number; page: string };
+}
+
+export interface NovelMigrationTargetMetadata {
+  novel: NovelMetadataV1["novel"];
+  cover: NovelMetadataV1["cover"];
+  coverSha256: string | null;
 }
 
 export interface WorkMigrationSnapshot {
-  work: { id: string; revision: string; identity: MigrationWorkIdentity };
+  work: { id: string; revision: string; identity: MigrationWorkIdentity; metadata?: NovelMetadataV1; coverSha256?: string | null };
   chapters: {
     id: string;
     revision: string;
@@ -27,17 +35,31 @@ export interface WorkMigrationSnapshot {
   }[];
 }
 
+export type NovelMigrationChapterDecision = Pick<NovelMigrationChapter,
+  "sourceChapterPath" | "sourceChapterNumber" | "targetChapterPath" | "targetChapterNumber">;
+
 export interface FinalizeWorkMigrationRequest {
   operationId: string;
   source: { revision: string; chapters: { id: string; revision: string }[] };
   target: { id: string; revision: string };
-  mappings: {
+  chapterDecisions?: NovelMigrationChapterDecision[];
+  mappings: ({
     sourceChapterId: string;
     targetChapterId: string;
     targetRevision: string;
     decision: "copy-source" | "keep-target";
     expectedTargetInventory?: ChapterPayloadInventory;
-  }[];
+  } | { sourceChapterId: string; decision: "delete-source" })[];
+}
+
+export interface CopyWorkMigrationChapterRequest {
+  decision: "copy-source";
+  source: { revision: string; chapter: { id: string; revision: string } };
+  target: {
+    id: string; revision: string;
+    chapter: { chapterPath: string; chapterNumber: string | null; name: string; position: number; page: string };
+    expectedChapter: { id: string; revision: string } | null;
+  };
 }
 
 export interface PendingNovelMigration {
@@ -49,6 +71,9 @@ export interface PendingNovelMigration {
   targetLocalNovelId: number;
   chapters: NovelMigrationChapter[];
   sourceSnapshot?: WorkMigrationSnapshot;
+  targetMetadata?: NovelMigrationTargetMetadata;
+  targetCoverDeletionRevision?: string;
+  pendingCopyRequest?: CopyWorkMigrationChapterRequest;
   status: "pending" | "failed" | "blocked" | "completed";
   createdAt: number;
   updatedAt: number;

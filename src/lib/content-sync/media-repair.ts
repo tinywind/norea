@@ -2,10 +2,8 @@ import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { useContentSyncStore } from "../../store/content-sync";
-import { isAbortError } from "../abort";
 import { withChapterStorageOperation } from "../chapter-storage-error";
 import type { ChapterMediaManifestFile } from "../chapter-media/types";
-import { pluginManager } from "../plugins/manager";
 import type { ChapterMediaRepairJob } from "../tasks/chapter-download";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { forgetContentDeviceRegistration, registerContentDevice } from "./device";
@@ -18,10 +16,15 @@ interface ServerChapterMediaSource {
   entry: CatalogEntry;
 }
 
+export interface ServerChapterMediaFetcher {
+  (file: ChapterMediaManifestFile, requestSignal?: AbortSignal): Promise<Response | null>;
+  hasServerChapter(): Promise<boolean>;
+}
+
 export function createServerChapterMediaFetcher(
   job: Pick<ChapterMediaRepairJob, "id" | "pluginId">,
   ownerSignal?: AbortSignal,
-): (file: ChapterMediaManifestFile, requestSignal?: AbortSignal) => Promise<Response | null> {
+): ServerChapterMediaFetcher {
   let lookup: Promise<ServerChapterMediaSource | null> | undefined;
   const resolveChapter = async (signal?: AbortSignal): Promise<ServerChapterMediaSource | null> => {
     signal?.throwIfAborted();
@@ -36,11 +39,18 @@ export function createServerChapterMediaFetcher(
     const number = chapter.chapterNumber ?? (chapter.position > 0 ? String(chapter.position) : undefined);
     const chapterNumber = number && /^\d+(?:\.\d+)?$/.test(number) ? number : undefined;
     const query = new URLSearchParams({ pluginId: novel.pluginId, novelPath: novel.path, chapterPath: chapter.path,
-      includeUnavailable: "true", ...(chapterNumber ? { chapterNumber } : {}) });
+      ...(chapterNumber ? { chapterNumber } : {}) });
     return withContentServerLookup(async deadline => {
       const token = await registerContentDevice(serverUrl, settings.deviceName, deadline);
       deadline.throwIfAborted();
-      const entry = await contentServerRequest<CatalogEntry>(serverUrl, `/catalog/chapter?${query}`, token, "GET", undefined, deadline);
+      let entry: CatalogEntry;
+      try {
+        entry = await contentServerRequest<CatalogEntry>(serverUrl, `/catalog/chapter?${query}`, token, "GET", undefined, deadline);
+      } catch (error) {
+        deadline.throwIfAborted();
+        if (error instanceof ContentServerError && error.status === 404) return null;
+        throw error;
+      }
       deadline.throwIfAborted();
       const identity = entry.manifest.identity;
       const sameChapter = identity.chapterPath === chapter.path || (chapterNumber && entry.manifest.chapter.chapterNumber != null
@@ -53,41 +63,36 @@ export function createServerChapterMediaFetcher(
     }, settings.lookupTimeoutSeconds ?? 3, signal);
   };
 
-  return async (file, requestSignal) => {
+  const fetchAsset = async (file: ChapterMediaManifestFile, requestSignal?: AbortSignal): Promise<Response | null> => {
     const signal = ownerSignal && requestSignal
       ? AbortSignal.any([ownerSignal, requestSignal])
       : requestSignal ?? ownerSignal;
     signal?.throwIfAborted();
-    try {
-      const source = await (lookup ??= resolveChapter(signal));
-      signal?.throwIfAborted();
-      if (!source) return null;
-      return await withContentServerLookup(async deadline => {
-        const query = new URLSearchParams({ revision: source.entry.revision, fileName: file.fileName, sourceUrl: file.sourceUrl });
-        const response = await nativeFetch(`${normalizeContentServerUrl(source.serverUrl)}/api/v1/chapters/${encodeURIComponent(source.entry.id)}/media?${query}`, {
-          headers: { Authorization: `Bearer ${source.token}` }, connectTimeout: 10_000,
-          maxRedirections: 0, signal: deadline,
-        });
-        deadline.throwIfAborted();
-        if (!response.ok) {
-          if (response.status === 401) forgetContentDeviceRegistration(source.serverUrl, source.token);
-          throw new ContentServerError(response.status);
-        }
-        const expectedBytes = Number(response.headers.get("Content-Length"));
-        if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > 256 * 1024 ** 2) {
-          throw new Error("Content server media response size is invalid.");
-        }
-        const body = await response.arrayBuffer();
-        deadline.throwIfAborted();
-        if (body.byteLength !== expectedBytes) throw new Error("Content server media response size does not match its body.");
-        return new Response(body, { status: response.status, headers: response.headers });
-      }, 30, signal);
-    } catch (error) {
-      signal?.throwIfAborted();
-      if (isAbortError(error)) throw error;
-      if (error instanceof ContentServerError && error.status === 404
-        && /^https?:\/\//i.test(file.sourceUrl) && pluginManager.getPlugin(job.pluginId)) return null;
-      throw error;
-    }
+    const source = await (lookup ??= resolveChapter(signal));
+    signal?.throwIfAborted();
+    if (!source) return null;
+    return await withContentServerLookup(async deadline => {
+      const query = new URLSearchParams({ revision: source.entry.revision, fileName: file.fileName, sourceUrl: file.sourceUrl });
+      const response = await nativeFetch(`${normalizeContentServerUrl(source.serverUrl)}/api/v1/chapters/${encodeURIComponent(source.entry.id)}/media?${query}`, {
+        headers: { Authorization: `Bearer ${source.token}` }, connectTimeout: 10_000,
+        maxRedirections: 0, signal: deadline,
+      });
+      deadline.throwIfAborted();
+      if (!response.ok) {
+        if (response.status === 401) forgetContentDeviceRegistration(source.serverUrl, source.token);
+        throw new ContentServerError(response.status);
+      }
+      const expectedBytes = Number(response.headers.get("Content-Length"));
+      if (!Number.isSafeInteger(expectedBytes) || expectedBytes <= 0 || expectedBytes > 256 * 1024 ** 2) {
+        throw new Error("Content server media response size is invalid.");
+      }
+      const body = await response.arrayBuffer();
+      deadline.throwIfAborted();
+      if (body.byteLength !== expectedBytes) throw new Error("Content server media response size does not match its body.");
+      return new Response(body, { status: response.status, headers: response.headers });
+    }, 30, signal);
   };
+  return Object.assign(fetchAsset, {
+    hasServerChapter: async () => (await (lookup ??= resolveChapter(ownerSignal))) !== null,
+  });
 }

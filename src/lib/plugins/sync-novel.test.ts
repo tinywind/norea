@@ -168,6 +168,40 @@ describe("syncNovelFromSource", () => {
     });
   });
 
+  it("replaces absent source metadata without reviving the stale browse cover", async () => {
+    await syncNovelFromSource(makePlugin(), {
+      name: "Novel", path: "/novel", cover: "https://source.test/stale-browse.jpg",
+    }, { preserveMissingMetadata: false, refreshCover: true });
+    expect(applyCapturedNovelUpsert().row).toEqual({
+      name: "Novel", cover: null, summary: null, author: null, artist: null,
+      status: null, genres: null, rating: null,
+    });
+    expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledExactlyOnceWith(
+      expect.objectContaining({ id: "demo" }), expect.objectContaining({ id: 7 }), null,
+      { refresh: true, clearMissing: true },
+    );
+  });
+
+  it("fetches the authoritative cover exactly once even for a work outside the library", async () => {
+    const plugin = makePlugin({ parseNovel: async () => ({ ...makeDetail([1]), cover: "/fresh.jpg" }) });
+    await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, {
+      preserveMissingMetadata: false, refreshCover: true,
+    });
+    expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledExactlyOnceWith(
+      plugin, expect.objectContaining({ id: 7 }), "/fresh.jpg", { refresh: true, clearMissing: true },
+    );
+  });
+
+  it("fails an authoritative refresh when the new cover cannot be stored", async () => {
+    mockedSaveNovelCoverFromSource.mockRejectedValueOnce(new Error("New cover unavailable"));
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    try {
+      await expect(syncNovelFromSource(makePlugin({ parseNovel: async () => ({ ...makeDetail([1]), cover: "/fresh.jpg" }) }),
+        { name: "Novel", path: "/novel" }, { preserveMissingMetadata: false, refreshCover: true }))
+        .rejects.toThrow("New cover unavailable");
+    } finally { warn.mockRestore(); }
+  });
+
   it("queues unchanged source metadata for upload and notifies after commit", async () => {
     mockedUpsertSourceChaptersInDb.mockResolvedValue({ chunks: 1, rowsAffected: 0 });
     let committed = false;

@@ -1,5 +1,8 @@
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import { ContentServerError } from "../content-sync/client";
+import { SourceAccessRequiredError } from "../plugins/source-access";
+import { ChapterStorageError } from "../chapter-storage-error";
+import { ChapterMediaIncompleteError } from "../chapter-media/errors";
+import { ContentServerError, ContentServerTransportError } from "../content-sync/client";
 import { TaskScheduler, type SourceTaskSpec } from "./scheduler";
 
 const source = { id: "source-a", name: "Source A" };
@@ -7,7 +10,12 @@ let scheduler: TaskScheduler;
 const settle = () => vi.advanceTimersByTimeAsync(0);
 const server = (run: SourceTaskSpec<void>["run"]): SourceTaskSpec<void> => ({
   kind: "chapter.download", title: "Server chapter", source, serverLane: true,
-  serverOnly: true, canCompleteWithoutSourceAccess: true, run,
+  canCompleteWithoutSourceAccess: true,
+  run: async context => {
+    context.setChapterDownloadPhase?.("server-lookup");
+    await run(context);
+    context.setChapterDownloadPhase?.("server-download");
+  },
 });
 
 beforeEach(() => {
@@ -62,7 +70,7 @@ it.each([403, 404, 503])("reports server HTTP %i without creating a source failu
   expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
 });
 
-it("does not offer a server-only download as a source verification candidate", async () => {
+it("does not offer a server-first download as a source verification candidate", async () => {
   const scopeKey = "plugin:source-a:site:source.test";
   scheduler.hydrateSourceAccessBlocks([{
     sourceId: source.id, scopeKey, revision: 7, detectedAt: 10,
@@ -83,15 +91,16 @@ it("does not offer a server-only download as a source verification candidate", a
   expect(scheduler.getSourceAccessBlock(scopeKey)?.verificationTaskId).toBeUndefined();
 });
 
-it("rejects attempts to enter source access from a server-only task", async () => {
-  const copy = scheduler.enqueueSource(server(async context => { context.tryStartSourceAccess!(); }));
-  const outcome = copy.promise.catch(error => error);
-  await settle();
-  expect(await outcome).toMatchObject({ message: "Content server downloads cannot access source sites." });
-  expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+it("defers a missing server body to the existing source route before allowing source access", async () => {
+  const attempts: Array<{ executor?: string; started: boolean }> = [];
+  const copy = scheduler.enqueueSource(server(async context => {
+    attempts.push({ executor: context.executor, started: context.tryStartSourceAccess!() });
+  }));
+  await settle(); await copy.promise;
+  expect(attempts).toEqual([{ executor: "server:0", started: false }, { executor: "pool:0", started: true }]);
 });
 
-it.each(["manual", "storage"])("retains the %s pause for server-only downloads", async kind => {
+it.each(["manual", "storage"])("retains the %s pause for server-first downloads", async kind => {
   if (kind === "manual") scheduler.pauseSourceQueue(source.id);
   else scheduler.hydrateDownloadFailureStops({ globalError: "Storage is unavailable", sourceErrors: {} });
   const run = vi.fn(async () => undefined);
@@ -122,18 +131,167 @@ it("retries a server task from the task panel without releasing an unrelated sou
   expect(scheduler.getDownloadFailureStops().sourceErrors).toEqual({ "source-a": "Source parser failed" });
 });
 
-it.each(["queued", "running"])("does not deduplicate a strict request onto a %s source-capable task", async status => {
+it.each(["queued", "running"])("shares a %s server-first chapter task without creating another route", async status => {
   let finish!: () => void;
   scheduler.setBackgroundExecutionSuspended(status === "queued");
-  const sourceRun = vi.fn(async () => new Promise<void>(resolve => { finish = resolve; }));
-  const original = scheduler.enqueueSource({ kind: "chapter.download", title: "Source chapter", source,
-    dedupeKey: "chapter.download:7", run: sourceRun });
+  const run = vi.fn(async () => new Promise<void>(resolve => { finish = resolve; }));
+  const original = scheduler.enqueueSource({ ...server(run), dedupeKey: "chapter.download:7" });
   void original.promise.catch(() => undefined);
   await settle();
-  const serverRun = vi.fn(async () => undefined);
-  expect(() => scheduler.enqueueSource({ ...server(serverRun), dedupeKey: "chapter.download:7" }))
-    .toThrow("An active source task cannot satisfy a content server-only request.");
+  const replacementRun = vi.fn(async () => undefined);
+  const duplicate = scheduler.enqueueSource({ ...server(replacementRun), dedupeKey: "chapter.download:7" });
+  expect(duplicate.id).toBe(original.id);
   expect(scheduler.getTask(original.id)?.status).toBe(status);
-  expect(serverRun).not.toHaveBeenCalled();
+  expect(replacementRun).not.toHaveBeenCalled();
   if (status === "running") { finish(); await settle(); await original.promise; }
+});
+
+it("finishes a server hit during source verification without confirming the source challenge", async () => {
+  const scopeKey = "plugin:source-a:site:source.test";
+  scheduler.hydrateSourceAccessBlocks([{ sourceId: source.id, scopeKey, revision: 7, detectedAt: 10,
+    challenge: { kind: "forbidden", url: "https://source.test" }, verificationRequested: false }]);
+  let attempts = 0;
+  const copy = scheduler.enqueueSource({ ...server(async context => {
+    attempts++;
+    if (attempts === 1) context.tryStartSourceAccess!();
+    else expect(context.sourceAccessVerification).toBe(true);
+  }), sourceAccessScopeKey: scopeKey });
+  await settle();
+  expect(scheduler.getTask(copy.id)?.status).toBe("queued");
+  expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+  await settle(); await copy.promise;
+  expect(attempts).toBe(2);
+  expect(scheduler.getSourceAccessBlock(scopeKey)?.challenge.kind).toBe("forbidden");
+  expect(scheduler.getSourceAccessBlock(scopeKey)?.verificationTaskId).toBeUndefined();
+});
+
+it.each(["chapter.download", "chapter.repairMedia"] as const)(
+  "finishes %s local verification after a server hit without consuming a source challenge",
+  async kind => {
+    const scopeKey = "plugin:source-a:site:source.test";
+    let attempts = 0;
+    let serverAvailable = false;
+    const copy = scheduler.enqueueSource({
+      kind, title: "Local server verification", source, serverLane: true,
+      canCompleteWithoutSourceAccess: true, sourceAccessScopeKey: scopeKey,
+      run: async context => {
+        attempts++;
+        context.setChapterDownloadPhase?.("server-lookup");
+        if (!serverAvailable) {
+          if (!context.tryStartSourceAccess?.()) return;
+          context.setChapterDownloadPhase?.("source-download");
+          throw new SourceAccessRequiredError("Complete source verification.", {
+            kind: "forbidden", url: "https://source.test/chapter",
+          });
+        }
+        expect(context.sourceAccessVerification).toBe(true);
+        context.setChapterDownloadPhase?.("local");
+      },
+    });
+    void copy.promise.catch(() => undefined);
+    await settle();
+    expect(scheduler.getTask(copy.id)?.status).toBe("queued");
+    expect(scheduler.getSourceAccessBlock(scopeKey)?.originTaskId).toBe(copy.id);
+    const previousAttempts = attempts;
+    serverAvailable = true;
+    expect(scheduler.beginSourceAccessVerification(scopeKey)).toBe(true);
+    await settle();
+    expect(attempts).toBe(previousAttempts + 1);
+    expect(scheduler.getTask(copy.id)).toMatchObject({ status: "succeeded", chapterDownloadPhase: "local" });
+    expect(scheduler.getSourceAccessBlock(scopeKey)?.challenge.kind).toBe("forbidden");
+    expect(scheduler.getSourceAccessBlock(scopeKey)?.verificationTaskId).toBeUndefined();
+    expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+  },
+);
+
+it.each([
+  new ContentServerError(500),
+  new ContentServerTransportError(),
+  new ChapterMediaIncompleteError([{ status: 404, message: "Content server asset missing (HTTP 404).", url: "https://content.test/asset" }]),
+])("keeps a server-origin failure outside source holds after local finalization", async failure => {
+  const report = vi.spyOn(scheduler, "reportDownloadFailure");
+  const copy = scheduler.enqueueSource({
+    kind: "chapter.repairMedia", title: "Server media repair", source, serverLane: true,
+    canCompleteWithoutSourceAccess: true,
+    run: async context => {
+      context.setChapterDownloadPhase?.("server-lookup");
+      context.setChapterDownloadPhase?.("server-download");
+      context.setChapterDownloadPhase?.("local");
+      throw failure;
+    },
+  });
+  const outcome = copy.promise.catch(error => error);
+  await settle();
+  expect(await outcome).toBe(failure);
+  expect(scheduler.getTask(copy.id)?.status).toBe("failed");
+  expect(report).not.toHaveBeenCalled();
+  expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+  expect(scheduler.getSnapshot().sourceAccessBlocks).toEqual([]);
+});
+
+it("keeps global storage failure protection during local server finalization", async () => {
+  const failure = new ChapterStorageError("Finalize media", new Error("Disk is full"));
+  const copy = scheduler.enqueueSource({
+    kind: "chapter.repairMedia", title: "Server media repair", source, serverLane: true,
+    canCompleteWithoutSourceAccess: true,
+    run: async context => {
+      context.setChapterDownloadPhase?.("server-download");
+      context.setChapterDownloadPhase?.("local");
+      throw failure;
+    },
+  });
+  const outcome = copy.promise.catch(error => error);
+  await settle();
+  expect(await outcome).toBe(failure);
+  expect(scheduler.getDownloadFailureStops()).toMatchObject({
+    globalError: expect.stringContaining("Disk is full"), sourceErrors: {},
+  });
+});
+
+it.each([false, true])("keeps source failures after actual source admission (display phase: %s)", async displaySource => {
+  const failure = new Error("Source parsing failed");
+  let attempts = 0;
+  const copy = scheduler.enqueueSource({
+    kind: "chapter.download", title: "Source fallback", source, serverLane: true,
+    canCompleteWithoutSourceAccess: true,
+    run: async context => {
+      attempts++;
+      context.setChapterDownloadPhase?.("server-lookup");
+      if (!context.tryStartSourceAccess?.()) return;
+      if (displaySource) context.setChapterDownloadPhase?.("source-download");
+      context.setChapterDownloadPhase?.("local");
+      throw failure;
+    },
+  });
+  const outcome = copy.promise.catch(error => error);
+  await settle();
+  expect(attempts).toBe(2);
+  expect(await outcome).toBe(failure);
+  expect(scheduler.getDownloadFailureStops().sourceErrors).toEqual({ "source-a": "Source parsing failed" });
+});
+
+it("replaces an earlier source attempt origin when a retry finds server content", async () => {
+  const failure = new ContentServerTransportError("Server transfer interrupted after retry");
+  const report = vi.spyOn(scheduler, "reportDownloadFailure");
+  let attempts = 0;
+  const copy = scheduler.enqueueSource({
+    kind: "chapter.download", title: "Server content after retry", source, serverLane: true,
+    canCompleteWithoutSourceAccess: true,
+    run: async context => {
+      attempts++;
+      context.setChapterDownloadPhase?.("server-lookup");
+      if (!context.tryStartSourceAccess?.()) return;
+      context.setChapterDownloadPhase?.("source-download");
+      context.setChapterDownloadPhase?.("server-lookup");
+      context.setChapterDownloadPhase?.("server-download");
+      context.setChapterDownloadPhase?.("local");
+      throw failure;
+    },
+  });
+  const outcome = copy.promise.catch(error => error);
+  await settle();
+  expect(attempts).toBe(2);
+  expect(await outcome).toBe(failure);
+  expect(report).not.toHaveBeenCalled();
+  expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
 });

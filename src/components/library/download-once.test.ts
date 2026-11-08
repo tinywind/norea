@@ -16,7 +16,7 @@ vi.mock("../../lib/content-sync/novel-source", () => ({ readServerNovelSource: m
 vi.mock("../../lib/tasks/chapter-download", () => ({ isChapterDownloadQueued: (id: number) => mocks.queued.has(id) }));
 vi.mock("../../lib/tasks/chapter-download-requests", () => ({ submitChapterDownloadRequest: mocks.submit }));
 vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ lastReadChapterByNovel: mocks.reading }) } }));
-import { downloadOnceNotice, queueChapterDownloadsOnce, selectDownloadChaptersOnce } from "./download-once";
+import { queueChapterDownloadsOnce, selectDownloadChaptersOnce } from "./download-once";
 const chapter = (id: number, extra: Partial<LibraryDownloadChapter> = {}) => ({
   id, novelId: 1, name: `Chapter ${id}`, path: `/chapter/${id}`, chapterNumber: String(id), position: id,
   isDownloaded: false, contentBytes: 0, mediaRepairNeeded: false, isDownloadQueued: false, readAt: null, contentType: "html",
@@ -90,42 +90,14 @@ it.each([{ kind: "all" } as const, { kind: "next", count: 4 } as const])("queues
 });
 
 
-it("queues only published server bodies and persists server-only intent for complete and partial copies", async () => {
-  const source = { serverUrl: "https://content.example", workId: "server-work" };
-  mocks.serverSource.mockResolvedValue(source);
+it("queues server-bound works without filtering missing or partial server bodies", async () => {
+  mocks.serverSource.mockResolvedValue({ serverUrl: "https://content.example", workId: "server-work" });
   mocks.unqueued.mockResolvedValue([chapter(5), chapter(6), chapter(7)]);
   mocks.available.mockResolvedValue({ paths: new Map([["/chapter/5", false]]), numbers: new Map([[6, true]]) });
-
-  await expect(queueChapterDownloadsOnce([1], t, client, { kind: "all" }, { serverOnly: true }))
-    .resolves.toEqual({ queued: 2, skippedLocal: 0, skippedServer: 1 });
-  expect(mocks.available).toHaveBeenCalledExactlyOnceWith(source);
+  await expect(queueChapterDownloadsOnce([1], t, client, { kind: "all" }))
+    .resolves.toEqual({ queued: 3, skippedLocal: 0 });
   const batch = await mocks.submit.mock.calls[0]![0].prepare();
-  expect(batch.jobs.map((job: { id: number }) => job.id)).toEqual([5, 6]);
-  expect(batch.jobs.every((job: { serverOnly?: boolean }) => job.serverOnly === true)).toBe(true);
-});
-
-it("reports metadata-only selections without queueing source downloads", async () => {
-  mocks.serverSource.mockResolvedValue({ serverUrl: "https://content.example", workId: "server-work" });
-  mocks.unqueued.mockResolvedValue([chapter(5), chapter(6)]);
-
-  const result = await queueChapterDownloadsOnce([1], t, client, { kind: "all" }, { serverOnly: true });
-  expect(result).toEqual({ queued: 0, skippedLocal: 0, skippedServer: 2 });
-  expect(downloadOnceNotice(t, result)).toEqual({ color: "warn", message: "downloadOnce.serverUnavailable" });
-  expect(mocks.submit).not.toHaveBeenCalled();
-});
-
-it("keeps server lookup errors out of the source queue", async () => {
-  mocks.serverSource.mockResolvedValue({ serverUrl: "https://content.example", workId: "server-work" });
-  mocks.unqueued.mockResolvedValue([chapter(5)]);
-  mocks.available.mockRejectedValueOnce(new Error("Server offline"));
-
-  await expect(queueChapterDownloadsOnce([1], t, client, { kind: "all" }, { serverOnly: true })).rejects.toThrow("Server offline");
-  expect(mocks.submit).not.toHaveBeenCalled();
-});
-
-it("does not filter ordinary source requests against content server availability", async () => {
-  mocks.unqueued.mockResolvedValue([chapter(5), chapter(6)]);
-  await expect(queueChapterDownloadsOnce([1], t, client)).resolves.toEqual({ queued: 2, skippedLocal: 0 });
+  expect(batch.jobs.map((job: { id: number }) => job.id)).toEqual([5, 6, 7]);
+  expect(batch.jobs.every((job: { serverOnly?: boolean }) => job.serverOnly === undefined)).toBe(true);
   expect(mocks.available).not.toHaveBeenCalled();
-  expect((await mocks.submit.mock.calls[0]![0].prepare()).jobs.every((job: { serverOnly?: boolean }) => job.serverOnly === undefined)).toBe(true);
 });

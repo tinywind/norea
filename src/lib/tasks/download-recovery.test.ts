@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeDownloadRecoveryPolicy, useDownloadRecoveryStore } from "../../store/download-recovery";
+import { ContentServerTransportError } from "../content-sync/client";
 import { ChapterStorageError } from "../chapter-storage-error";
 import { ChapterMediaIncompleteError } from "../chapter-media/errors";
 import { HttpStatusError } from "../http/status-error";
@@ -63,6 +64,47 @@ describe("recovery decisions", () => {
 });
 
 describe("durable recovery execution", () => {
+
+  it("does not recover the source or choose a VPN profile after a server transport failure", async () => {
+    const controller = new DownloadRecoveryController(memoryStorage());
+    const transport = new ContentServerTransportError("Content server connection failed (HTTP 403).");
+    const operation = vi.fn(async () => "source body");
+    const resetSite = vi.fn(async () => undefined);
+    const profileId = vi.fn(() => "vpn-a");
+    await expect(controller.run({
+      job, url, vpn: true, resetSite, profileId,
+      policy: policy({ forbiddenAction: "resetSite", transientAction: "nextProfile" }),
+      beforeAttempt: async () => { throw transport; },
+    }, context(), operation)).rejects.toBe(transport);
+    expect(operation).not.toHaveBeenCalled();
+    expect(resetSite).not.toHaveBeenCalled();
+    expect(profileId).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toEqual([]);
+  });
+
+  it.each(["resetSite", "nextProfile"] as const)("rechecks the server after a retry delay before %s touches the source", async action => {
+    const controller = new DownloadRecoveryController(memoryStorage());
+    let serverAvailable = false;
+    const resetSite = vi.fn(async () => undefined);
+    const operation = vi.fn(async () => { throw action === "resetSite" ? forbidden() : failure(); });
+    const beforeAttempt = vi.fn(async () => serverAvailable
+      ? { handled: true as const, value: "server copy" }
+      : { handled: false as const });
+    const result = controller.run<string>({ job, url, beforeAttempt, resetSite, vpn: true,
+      profileId: () => "vpn-a", policy: policy({ forbiddenAction: "resetSite", transientAction: "nextProfile" }),
+    }, context(), operation).catch((error: unknown) => error);
+    await tick(0);
+    expect(operation).toHaveBeenCalledOnce();
+    expect(controller.getSnapshot()).toMatchObject([{ action, status: "waiting" }]);
+    expect(resetSite).not.toHaveBeenCalled();
+    serverAvailable = true;
+    await tick();
+    expect(await result).toBe("server copy");
+    expect(operation).toHaveBeenCalledOnce();
+    expect(resetSite).not.toHaveBeenCalled();
+    expect(controller.getSnapshot()).toEqual([]);
+  });
+
   it("limits automatic retries and retains the terminal episode", async () => {
     const controller = new DownloadRecoveryController(memoryStorage());
     const operation = vi.fn(async () => { throw failure(); });

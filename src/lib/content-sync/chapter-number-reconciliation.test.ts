@@ -3,6 +3,8 @@ vi.mock("../../db/client", () => ({ getDb: vi.fn() }));
 vi.mock("../../db/queries/content-sync", () => ({ writeContentSyncCache: vi.fn() }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("./works", () => ({ contentWorkId: async () => "work-id" }));
+vi.mock("./deletion-exclusions", () => ({ readServerWorkDeletionExclusions: vi.fn(async () => new Set<string>()), serverWorkDeletionKey: (identity: {pluginId:string;novelId:string}) => `contents/${identity.pluginId}/${identity.novelId}` }));
+import { readServerWorkDeletionExclusions } from "./deletion-exclusions";
 
 import { getDb } from "../../db/client";
 import { writeContentSyncCache } from "../../db/queries/content-sync";
@@ -26,6 +28,7 @@ const receipt = { operationId, work: { id: "work-id", metadata: { identity } }, 
 
 beforeEach(() => {
   vi.clearAllMocks(); memory.clear(); memory.set(key, JSON.stringify(initial()));
+  vi.mocked(readServerWorkDeletionExclusions).mockResolvedValue(new Set());
   vi.mocked(getDb).mockResolvedValue({ select: async () => [...memory.values()].filter(payload => JSON.parse(payload).status === "pending").map(payload => ({ payload })) } as never);
   vi.mocked(writeContentSyncCache).mockImplementation(async (cacheKey, payload) => { memory.set(cacheKey, payload); });
   vi.mocked(contentServerRequest).mockImplementation(async (_server, path, _token, method, body) => {
@@ -122,4 +125,14 @@ it("refuses a stored mapping that would merge distinct old chapter numbers", asy
   ] }));
   await expect(reconcilePendingChapterNumbers(server, "device")).rejects.toThrow("mapping is invalid");
   expect(contentServerRequest).not.toHaveBeenCalled();
+});
+
+it("does not renumber a retired source or a target still awaiting an incoming migration", async () => {
+  vi.mocked(readServerWorkDeletionExclusions).mockResolvedValue(new Set(["contents/source/book"]));
+  await reconcilePendingChapterNumbers(server, "device", undefined, false);
+  expect(contentServerRequest).not.toHaveBeenCalled();
+  expect(saved().status).toBe("pending");
+  vi.mocked(readServerWorkDeletionExclusions).mockResolvedValue(new Set());
+  await reconcilePendingChapterNumbers(server, "device");
+  expect(saved().status).toBe("completed");
 });

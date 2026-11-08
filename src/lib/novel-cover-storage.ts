@@ -80,6 +80,8 @@ export interface NovelCoverDisplayCacheOptions {
 
 export interface NovelCoverSaveOptions {
   refresh?: boolean;
+  /** A complete source result explicitly has no cover. */
+  clearMissing?: boolean;
 }
 
 export function subscribeNovelCoverChanges(
@@ -345,7 +347,12 @@ export async function saveNovelCoverFromSource(
   if (!isTauriRuntime()) return;
 
   const sourceUrl = absolutePluginCoverUrl(plugin, cover);
-  if (!sourceUrl) return;
+  if (!sourceUrl) {
+    if (!options.clearMissing) return;
+    if (cover?.trim()) throw new Error("novel cover: source returned an invalid cover URL");
+    await enqueueNovelCoverSave(plugin, novel, null, true);
+    return;
+  }
 
   await enqueueNovelCoverSave(plugin, novel, sourceUrl, options.refresh ?? false);
 }
@@ -353,7 +360,7 @@ export async function saveNovelCoverFromSource(
 async function enqueueNovelCoverSave(
   plugin: Plugin,
   novel: NovelCoverStorageInput,
-  sourceUrl: string,
+  sourceUrl: string | null,
   refresh: boolean,
   fetched?: { body: Blob; contentType: string | null },
 ): Promise<void> {
@@ -434,10 +441,14 @@ function novelCoverSaveQueueKey(novel: NovelCoverStorageInput): string {
 async function storeNovelCoverFromSource(
   plugin: Plugin,
   novel: NovelCoverStorageInput,
-  sourceUrl: string,
+  sourceUrl: string | null,
   refresh: boolean,
   fetched?: { body: Blob; contentType: string | null },
 ): Promise<boolean> {
+  if (sourceUrl === null) {
+    await storeNovelCover(novel, null);
+    return true;
+  }
   if (!refresh && (peekCachedNovelCoverSrc({ ...novel, cover: sourceUrl }) || await readStoredNovelCover(novel))) return false;
 
   const image = fetched ?? await fetchNovelCoverForStorage(plugin, sourceUrl, refresh);
@@ -527,7 +538,7 @@ async function readStoredNovelCover(
 
 async function storeNovelCover(
   novel: NovelCoverStorageInput,
-  input: { body: Uint8Array; contentType: string | null; fileName: string },
+  input: { body: Uint8Array; contentType: string | null; fileName: string } | null,
   preserveExisting = false,
 ): Promise<void> {
   const metadataDirectory = resolvedNovelStorageDir(novel.id);

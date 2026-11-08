@@ -89,3 +89,65 @@ it("keeps the migration verification deadline separate from ordinary lookup dead
   await rejected;
   expect(vi.getTimerCount()).toBe(0);
 });
+
+it.each([
+  new TypeError("Failed to fetch"),
+  "error sending request for url (http://content.test/api/v1/works)",
+])("marks native connection failures as retryable content server transport errors", async cause => {
+  vi.mocked(nativeFetch).mockRejectedValue(cause);
+  await expect(contentServerRequest("http://content.test", "/works")).rejects.toMatchObject({
+    name: "ContentServerTransportError", code: "content-server-request-failed", retryable: true, cause,
+  });
+});
+
+it("marks only its own lookup deadline as a retryable transport failure", async () => {
+  vi.useFakeTimers();
+  const pending = withContentServerLookup(() => new Promise(() => {}), 2);
+  const rejected = expect(pending).rejects.toMatchObject({
+    name: "ContentServerTransportError", code: "content-server-request-failed", retryable: true,
+    message: "Content server lookup timed out.",
+  });
+  await vi.advanceTimersByTimeAsync(2_000);
+  await rejected;
+  expect(vi.getTimerCount()).toBe(0);
+});
+
+it("keeps the caller cancellation reason when native fetch reports its own cancellation", async () => {
+  const controller = new AbortController();
+  vi.mocked(nativeFetch).mockImplementation(async (_url, init) => new Promise((_resolve, reject) => {
+    init!.signal!.addEventListener("abort", () => reject(new Error("Request cancelled")), { once: true });
+  }));
+  const pending = contentServerRequest("http://content.test", "/works", undefined, "GET", undefined, controller.signal);
+  const reason = new Error("The user cancelled this migration.");
+  const rejected = expect(pending).rejects.toBe(reason);
+  controller.abort(reason);
+  await rejected;
+});
+
+it("keeps malformed JSON separate from a retryable transport failure", async () => {
+  vi.mocked(nativeFetch).mockResolvedValue(new Response("{invalid", { headers: { "Content-Type": "application/json" } }));
+  const error = await contentServerRequest("http://content.test", "/works").catch((value: unknown) => value);
+  expect(error).toBeInstanceOf(SyntaxError);
+  expect(error).not.toHaveProperty("retryable");
+});
+
+it("does not classify lookup validation failures as transport errors", async () => {
+  const invalid = new Error("The server work identity does not match its metadata.");
+  await expect(withContentServerLookup(async () => { throw invalid; }, 30)).rejects.toBe(invalid);
+  expect(invalid).not.toHaveProperty("retryable");
+});
+
+it("validates HTTP request headers before entering the native transport", async () => {
+  vi.mocked(nativeFetch).mockResolvedValue(Response.json({}));
+  const error = await contentServerRequest("http://content.test", "/works", "invalid\nheader").catch((value: unknown) => value);
+  expect(error).toBeInstanceOf(TypeError);
+  expect(error).not.toHaveProperty("retryable");
+  expect(nativeFetch).not.toHaveBeenCalled();
+});
+
+it("rejects an unsupported protocol without entering the native transport", async () => {
+  const error = await contentServerRequest("file:///content", "/works").catch((value: unknown) => value);
+  expect(error).toBeInstanceOf(Error);
+  expect(error).not.toHaveProperty("retryable");
+  expect(nativeFetch).not.toHaveBeenCalled();
+});

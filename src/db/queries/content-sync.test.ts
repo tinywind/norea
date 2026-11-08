@@ -383,3 +383,39 @@ it("accepts missing declarations only with explicit verified body-only proof", a
   const [job] = await listNovelMigrations("http://server");
   expect(job!.chapters[0]!.expectedTargetInventory).toEqual(inventory);
 });
+
+
+it("stores the captured target metadata independently of later caller or database changes", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,author,rating) VALUES(43,'target','new-work','/new-work','Target','Fresh author',0)");
+  const targetMetadata = {
+    novel: { name: "Target", author: "Fresh author", artist: null, summary: null, status: null, genres: null, rating: 0, isLocal: false },
+    cover: null, coverSha256: null,
+  };
+  await recordPendingNovelMergeInDb(await getDb(), {
+    serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: {}, preparedDownloads: [], targetMetadata,
+  });
+  targetMetadata.novel.author = "Changed caller";
+  sqlite.exec("UPDATE novel SET author='Changed later' WHERE id=43");
+  const [job] = await listNovelMigrations("http://server");
+  expect(job!.targetMetadata).toEqual({ ...targetMetadata, novel: { ...targetMetadata.novel, author: "Fresh author" } });
+});
+
+it("refuses to record target metadata that changed before the merge transaction", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,author) VALUES(43,'target','new-work','/new-work','Target','Changed author')");
+  await expect(recordPendingNovelMergeInDb(await getDb(), {
+    serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: {}, preparedDownloads: [],
+    targetMetadata: {
+      novel: { name: "Target", author: "Fresh author", artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+      cover: null, coverSha256: null,
+    },
+  })).rejects.toThrow("target metadata changed");
+  expect(await listNovelMigrations("http://server")).toEqual([]);
+});
+
+it.each(["pending", "failed", "blocked", "completed", "inactive"] as const)("honors incoming migration holds while the durable state is %s", async status => {
+  const key = "norea-content-incoming-migration:" + JSON.stringify(["http://server", "incoming-op"]);
+  const payload = { version: 1, serverUrl: "http://server", operationId: "incoming-op", status, source: { pluginId: "source", novelId: "work", novelPath: "/work" } };
+  sqlite.prepare("INSERT INTO content_sync_cache(cache_key,payload) VALUES(?,?)").run(key, JSON.stringify(payload));
+  expect(await isNovelMigrationSourceHeldInDb(await getDb(), "http://server", manifest.identity)).toBe(status !== "inactive");
+  expect(await isNovelMigrationSourceHeldInDb(await getDb(), "http://another", manifest.identity)).toBe(false);
+});

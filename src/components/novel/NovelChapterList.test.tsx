@@ -357,18 +357,17 @@ describe("row geometry", () => {
 
 
 describe("server chapter availability", () => {
-  it("labels metadata-only chapters and blocks reading or downloading from the original site", () => {
+  it("allows reading and downloading a chapter absent from the server through the common downloader", () => {
     const onOpen = vi.fn();
     const onDownload = vi.fn();
     const $ = renderRow({ serverAvailable: false }, undefined, { onOpen, onDownload });
-    expect(describedText($)).toContain("Not stored on the content server");
-    expect(openButton($).attr("aria-disabled")).toBe("true");
-    expect(siblingButtons($).attr("aria-label")).toBe("Not stored on the content server");
-    expect(siblingButtons($).prop("disabled")).toBe(true);
+    expect(openButton($).attr("aria-disabled")).toBeUndefined();
+    expect(siblingButtons($).attr("aria-label")).toBe("Download chapter");
+    expect(siblingButtons($).prop("disabled")).toBe(false);
     rowClickHandlers.get("Open First chapter")?.();
-    rowClickHandlers.get("Not stored on the content server")?.();
-    expect(onOpen).not.toHaveBeenCalled();
-    expect(onDownload).not.toHaveBeenCalled();
+    rowClickHandlers.get("Download chapter")?.();
+    expect(onOpen).toHaveBeenCalledOnce();
+    expect(onDownload).toHaveBeenCalledOnce();
   });
 
   it("keeps an existing local body readable when no server package is available", () => {

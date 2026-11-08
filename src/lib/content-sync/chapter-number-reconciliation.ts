@@ -9,6 +9,7 @@ import {
 import { ContentServerError, contentServerRequest } from "./client";
 import type { WorkMigrationSnapshot } from "./novel-migration-types";
 import { contentWorkId, type WorkCatalogEntry } from "./works";
+import { readServerWorkDeletionExclusions, serverWorkDeletionKey } from "./deletion-exclusions";
 
 function parseJob(payload: string): ServerChapterRenumberJob {
   const job = JSON.parse(payload) as ServerChapterRenumberJob;
@@ -65,7 +66,10 @@ export async function reconcilePendingChapterNumbers(
   assertCurrent: () => void = () => undefined,
   uploadContent = true,
 ): Promise<void> {
-  const jobs = await listPendingChapterNumberReconciliations(server);
+  const pending = await listPendingChapterNumberReconciliations(server);
+  if (!pending.length) return;
+  const held = await readServerWorkDeletionExclusions(server);
+  const jobs = pending.filter(job => !held.has(serverWorkDeletionKey(job.identity)));
   if (!jobs.length) return;
   if (!uploadContent) throw new Error("Chapter number reconciliation is pending. Run a full content synchronization before importing this work.");
   for (const job of jobs) {

@@ -260,10 +260,15 @@ export interface StoredNovelNumberReconciliation {
   mappings: readonly import("./source-chapter-renumber").ChapterNumberMapping[];
 }
 
-export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>): Promise<InstalledNovelMetadata | null> {
+export interface InstallStoredNovelMetadataOptions {
+  /** A migration target snapshot owns every novel field, including explicit absence. */
+  authoritative?: boolean;
+}
+
+export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>, options: InstallStoredNovelMetadataOptions = {}): Promise<InstalledNovelMetadata | null> {
   const metadata = parseNovelMetadata(input);
   return runWorkContentStorageOperation(metadata.identity.pluginId, metadata.identity.novelPath,
-    () => installStoredNovelMetadataInWorkOperation(metadata, coverBytes, beforeInstall));
+    () => installStoredNovelMetadataInWorkOperation(metadata, coverBytes, beforeInstall, undefined, options));
 }
 
 /** Called only inside withServerChapterNumberReconciliation, which owns the work storage lock. */
@@ -276,8 +281,9 @@ export async function installReconciledStoredNovelMetadata(
   return installStoredNovelMetadataInWorkOperation(input, coverBytes, beforeInstall, reconciliation);
 }
 
-async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>, reconciliation?: StoredNovelNumberReconciliation): Promise<InstalledNovelMetadata | null> {
+async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>, reconciliation?: StoredNovelNumberReconciliation, options: InstallStoredNovelMetadataOptions = {}): Promise<InstalledNovelMetadata | null> {
   let metadata = parseNovelMetadata(input);
+  if (options.authoritative && metadata.cover && !coverBytes?.length) throw new Error("A migration target cover requires verified cover bytes.");
   const { runDatabaseTransaction } = await import("../db/client");
   const { applyNovelMetadataToCache, knownNovelMetadataDirectory, readWorkMetadataSyncFile, rememberStoredNovelMetadata } = await import("../db/work-metadata");
     const preferred = knownNovelMetadataDirectory(metadata.identity) ?? await availableNovelMetadataDirectory(metadata);
@@ -321,10 +327,13 @@ async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1,
             pluginId: metadata.identity.pluginId, path: metadata.identity.novelPath,
           }, reconciliation.mappings.map(mapping => ({ path: mapping.chapterPath, chapterNumber: mapping.to })));
         }
-        metadata = mergeIncomingNovelMetadata(previous, metadata);
+        const merged = mergeIncomingNovelMetadata(previous, metadata);
+        metadata = options.authoritative ? { ...metadata, chapters: merged.chapters } : merged;
+        if (options.authoritative) await removeAllStoredNovelCovers(directory, existing?.metadata.cover ?? null);
         if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);
-        else metadata.cover = existing?.metadata.cover ?? null;
-        const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory, { preserveMissingMetadata: true });
+        else if (!options.authoritative) metadata.cover = existing?.metadata.cover ?? null;
+        const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory, { preserveMissingMetadata: !options.authoritative });
+        if (options.authoritative && !metadata.novel.isLocal) await db.execute("UPDATE novel SET cover=NULL WHERE id=$1", [installedNovelId]);
         const [cached] = await db.select<Pick<NovelMetadataV1["novel"], "author" | "artist" | "summary" | "status" | "genres" | "rating">[]>(
           "SELECT author,artist,summary,status,genres,rating FROM novel WHERE id=$1", [installedNovelId]);
         if (!cached) throw new Error("Installed work metadata is missing from the local cache.");
@@ -356,7 +365,18 @@ export async function removeStoredNovelCover(directory: string, cover: NovelMeta
   }
 }
 
-export async function persistNovelCover(directory: string, cover: { body: Uint8Array; fileName: string; contentType: string | null }, options: { preserveExisting?: boolean } = {}): Promise<void> {
+async function removeAllStoredNovelCovers(directory: string, preferred: NovelMetadataV1["cover"]): Promise<void> {
+  let cover = await discoverStoredNovelCover(directory, preferred);
+  const removed = new Set<string>();
+  while (cover) {
+    if (removed.has(cover.fileName)) throw new Error("work metadata: cleared cover is still present");
+    removed.add(cover.fileName);
+    await removeStoredNovelCover(directory, cover, false);
+    cover = await discoverStoredNovelCover(directory);
+  }
+}
+
+export async function persistNovelCover(directory: string, cover: { body: Uint8Array; fileName: string; contentType: string | null } | null, options: { preserveExisting?: boolean } = {}): Promise<void> {
   const { runDatabaseTransaction } = await import("../db/client");
   const { hasWorkMetadataConflict, rememberStoredNovelMetadata } = await import("../db/work-metadata");
   const identity = await runDatabaseTransaction((db) => withWorkMetadataRollback(async () => {
@@ -369,10 +389,22 @@ export async function persistNovelCover(directory: string, cover: { body: Uint8A
     const metadata = parseNovelMetadata(JSON.parse(new TextDecoder().decode(base64ToBytes(body))));
     metadata.cover = await discoverStoredNovelCover(directory, metadata.cover);
     if (await hasWorkMetadataConflict(directory, metadata)) throw new Error("work metadata: file changed outside the cache; refresh from the source before editing");
-    const previousCover = metadata.cover;
-    metadata.cover = { fileName: cover.fileName, contentType: cover.contentType };
-    const coverChanged = await writeStoredNovelCover(directory, metadata, cover.body, false);
-    if (previousCover && previousCover.fileName !== cover.fileName) await removeStoredNovelCover(directory, previousCover, false);
+    let coverChanged = false;
+    if (cover) {
+      const previousCover = metadata.cover;
+      metadata.cover = { fileName: cover.fileName, contentType: cover.contentType };
+      coverChanged = await writeStoredNovelCover(directory, metadata, cover.body, false);
+      if (previousCover && previousCover.fileName !== cover.fileName) await removeStoredNovelCover(directory, previousCover, false);
+    } else {
+      const removed = new Set<string>();
+      while (metadata.cover) {
+        if (removed.has(metadata.cover.fileName)) throw new Error("work metadata: cleared cover is still present");
+        removed.add(metadata.cover.fileName);
+        await removeStoredNovelCover(directory, metadata.cover, false);
+        coverChanged = true;
+        metadata.cover = await discoverStoredNovelCover(directory);
+      }
+    }
     await writeStoredNovelMetadata(directory, metadata, false);
     await rememberStoredNovelMetadata(db, directory, metadata, coverChanged);
     return metadata.identity;

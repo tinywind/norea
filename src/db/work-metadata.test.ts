@@ -1054,6 +1054,77 @@ it("tracks changed cover bytes even when the metadata descriptor is unchanged", 
   expect(await readWorkMetadataSyncFiles()).toEqual([after]);
 });
 
+it.each([true, false])("publishes fresh migration metadata and preserves reading and body files (new cover: %s)", async hasCover => {
+  const metadata = fixture();
+  metadata.novel = { ...metadata.novel, author: "Old author", artist: "Old artist", summary: "Old summary", status: "Old status", genres: "Old genre", rating: 4.5 };
+  metadata.cover = { fileName: "cover.png", contentType: "image/png" };
+  metadata.chapters = { "1": "Old chapter" };
+  save(metadata);
+  storage.files.set("contents/source/book/cover.png", [1, 2]);
+  storage.files.set("contents/source/book/1/content.html", [3, 4, 5]);
+  await initializeWorkMetadata(db);
+  sqlite.exec("UPDATE novel SET cover='https://source.test/cover.png'; UPDATE chapter SET progress=100,unread=0,bookmark=1,read_at=123");
+  await flushWorkMetadata(db);
+  const reading = sqlite.prepare("SELECT id,progress,unread,bookmark,read_at,is_downloaded,content_bytes FROM chapter").all();
+  const fetch = vi.spyOn(http, "pluginMediaFetch").mockImplementation(async () =>
+    new Response(new Uint8Array([8, 9]), { headers: { "content-type": "image/png" } }));
+  try {
+    await syncNovelFromSource({
+      id: "source", getBaseUrl: () => "https://source.test/", parseNovel: async () => ({
+        novelId: "book", name: "Fresh title", path: "/book", summary: "Fresh summary", rating: 0,
+        ...(hasCover ? { cover: "https://source.test/cover.png" } : {}),
+        chapters: [{ chapterNumber: 1, name: "Fresh chapter", path: "/chapter/1" }],
+      }),
+    } as unknown as Plugin, { name: "Stale search title", path: "/book", cover: "https://source.test/stale-search.jpg" }, {
+      preserveMissingMetadata: false, refreshCover: true,
+    });
+    const expected = { name: "Fresh title", author: null, artist: null, summary: "Fresh summary", status: null, genres: null, rating: 0 };
+    expect(sqlite.prepare("SELECT name,author,artist,summary,status,genres,rating FROM novel").get()).toEqual(expected);
+    const [stored] = await listStoredNovelMetadata();
+    expect(stored!.metadata.novel).toEqual({ ...expected, isLocal: false });
+    expect(stored!.metadata.chapters).toEqual({ "1": "Fresh chapter" });
+    expect(stored!.metadata.cover).toEqual(hasCover ? { fileName: "cover.png", contentType: "image/png" } : null);
+    expect(fetch).toHaveBeenCalledTimes(hasCover ? 1 : 0);
+    expect(storage.files.get("contents/source/book/cover.png")).toEqual(hasCover ? [8, 9] : undefined);
+    expect(storage.files.get("contents/source/book/1/content.html")).toEqual([3, 4, 5]);
+    expect(sqlite.prepare("SELECT id,progress,unread,bookmark,read_at,is_downloaded,content_bytes FROM chapter").all()).toEqual(reading);
+    expect((await readWorkMetadataSyncFiles())[0]!.fingerprint).toBe(await storedNovelMetadataFingerprint(stored!.metadata));
+  } finally { fetch.mockRestore(); }
+});
+
+it("clears all stored cover variants and publishes a matching coverless work", async () => {
+  const metadata = fixture(); metadata.cover = { fileName: "cover.png", contentType: "image/png" };
+  save(metadata);
+  storage.files.set("contents/source/book/cover.png", [1, 2]);
+  storage.files.set("contents/source/book/cover.jpg", [3, 4]);
+  storage.files.set("contents/source/book/1/content.html", [5, 6]);
+  await initializeWorkMetadata(db);
+  const [before] = await readWorkMetadataSyncFiles();
+  await persistNovelCover("contents/source/book", null);
+  expect(storage.files.has("contents/source/book/cover.png")).toBe(false);
+  expect(storage.files.has("contents/source/book/cover.jpg")).toBe(false);
+  expect(storage.files.get("contents/source/book/1/content.html")).toEqual([5, 6]);
+  const [stored] = await listStoredNovelMetadata();
+  expect(stored!.metadata.cover).toBeNull();
+  const [after] = await readWorkMetadataSyncFiles();
+  expect(after!.revision).toBeGreaterThan(before!.revision);
+  expect(after!.fingerprint).toBe(await storedNovelMetadataFingerprint(stored!.metadata));
+});
+
+it("restores the cover files and sync revision when clearing their descriptor fails", async () => {
+  const metadata = fixture(); metadata.cover = { fileName: "cover.png", contentType: "image/png" };
+  save(metadata);
+  storage.files.set("contents/source/book/cover.png", [1, 2]);
+  storage.files.set("contents/source/book/cover.jpg", [3, 4]);
+  await initializeWorkMetadata(db);
+  const before = await readWorkMetadataSyncFiles();
+  const original = new Map(storage.files);
+  storage.failOncePath = path;
+  await expect(persistNovelCover("contents/source/book", null)).rejects.toThrow("disk full");
+  expect(storage.files).toEqual(original);
+  expect(await readWorkMetadataSyncFiles()).toEqual(before);
+});
+
 it("preserves existing cover bytes and metadata when recovering a display fallback", async () => {
   save(fixture());
   await initializeWorkMetadata(db);
@@ -1637,4 +1708,26 @@ it("keeps recovered DB metadata through sparse server installation and reopening
   expect(readFields()).toEqual({
     name: "Disk title", author: null, artist: null, summary: null, status: null, genres: null, rating: null,
   });
+});
+
+it("installs a migration target authoritatively without reviving old null fields or covers", async () => {
+  const original = fixture(); original.novel.summary = "Old summary"; original.cover = { fileName: "cover.jpg", contentType: "image/jpeg" };
+  save(original); storage.files.set("contents/source/book/cover.jpg", [1, 2]); storage.files.set("contents/source/book/cover.png", [3, 4]);
+  await initializeWorkMetadata(db);
+  sqlite.exec("UPDATE novel SET in_library=1,author='Stale author',cover='https://old.example/cover.jpg'; UPDATE chapter SET progress=71,unread=0,bookmark=1");
+  const incoming = fixture(); incoming.novel.name = "Latest target"; incoming.novel.author = null; incoming.novel.rating = 0;
+  const result = await installStoredNovelMetadata(incoming, undefined, undefined, { authoritative: true });
+  expect(result!.metadata.novel).toEqual(incoming.novel);
+  expect(result!.metadata.cover).toBeNull();
+  expect(sqlite.prepare("SELECT name,author,summary,rating,in_library FROM novel").get()).toEqual({ name: "Latest target", author: null, summary: null, rating: 0, in_library: 1 });
+  expect(storage.files.has("contents/source/book/cover.jpg")).toBe(false);
+  expect(storage.files.has("contents/source/book/cover.png")).toBe(false);
+  expect(sqlite.prepare("SELECT cover FROM novel").get()).toEqual({ cover: null });
+  expect(sqlite.prepare("SELECT progress,unread,bookmark FROM chapter").get()).toEqual({ progress: 71, unread: 0, bookmark: 1 });
+});
+it("refuses an authoritative target cover descriptor when its bytes are absent", async () => {
+  const original = fixture(); save(original); await initializeWorkMetadata(db);
+  const incoming = fixture(); incoming.cover = { fileName: "cover.jpg", contentType: "image/jpeg" };
+  await expect(installStoredNovelMetadata(incoming, undefined, undefined, { authoritative: true })).rejects.toThrow("cover bytes");
+  expect(JSON.parse(new TextDecoder().decode(new Uint8Array(storage.files.get(path)!))).cover).toBeNull();
 });

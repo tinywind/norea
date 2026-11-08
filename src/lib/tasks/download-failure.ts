@@ -67,6 +67,7 @@ function isTransientMediaFailure(failure: ChapterMediaFailure): boolean {
 
 /** An HTTP 403 access refusal, including the source-access hold created for it. */
 export function isSourceForbiddenFailure(error: unknown): boolean {
+  if (errorCode(error) === "content-server-request-failed") return false;
   const access = normalizeSourceAccessRequiredError(error);
   return access ? access.challenge.kind === "forbidden" : errorHttpStatus(error) === 403;
 }
@@ -82,6 +83,11 @@ export function classifyDownloadFailure(error: unknown): DownloadFailure {
     ({ failureClass, summary, retryAfterMs: 0, ...extra });
 
   if (errorCode(error) === "chapter-storage-failed" || errorCode(error) === "chapter-media-finalization-failed") return failure("storage");
+  if (errorCode(error) === "content-server-request-failed") {
+    if ((error as { retryable?: unknown }).retryable === true) return failure("transient");
+    const status = errorHttpStatus(error);
+    return failure(status !== undefined && status < 500 && status !== 408 && status !== 429 ? "content" : "transient");
+  }
   const sourceAccess = normalizeSourceAccessRequiredError(error);
   if (sourceAccess) return failure("challenge", { challengeUrl: sourceAccess.challenge.url });
   const externalChallenge = externalChallengeUrl(message);

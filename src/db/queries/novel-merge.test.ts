@@ -127,6 +127,7 @@ describe("applyNovelMergeInDb", () => {
       "html",
       125,
       35,
+      1,
     ]);
 
     const deleteSourceCall = mockExecute.mock.calls.find(([sql]) =>
@@ -260,7 +261,7 @@ describe("applyNovelMergeInDb", () => {
       String(sql).includes("UPDATE chapter") && String(sql).includes("merge_updates"),
     );
     expect(chapterUpdateCalls).toHaveLength(1);
-    expect(chapterUpdateCalls[0]?.[1]).toHaveLength(18);
+    expect(chapterUpdateCalls[0]?.[1]).toHaveLength(20);
   });
 
   it("requires an explicit decision for every A chapter", async () => {
@@ -464,22 +465,20 @@ describe("applyNovelMergeInDb user state transaction", () => {
     ]);
   });
 
-  it.each([0, 4.5])("preserves A details missing from B, including a rating of %s", async rating => {
+  it.each([0, 4.5])("does not fill freshly absent B metadata from A, including a rating of %s", async rating => {
     sqlite.prepare("UPDATE novel SET author=?,artist=?,summary=?,status=?,genres=?,rating=? WHERE id=1")
       .run("Source Author", "Source Artist", "First paragraph.\nSecond paragraph.", "Completed", "Fantasy", rating);
-    sqlite.prepare("UPDATE novel SET author=NULL,artist='',summary=' ',status=?,genres=NULL,rating=NULL WHERE id=2")
-      .run("\n\t");
+    sqlite.exec("UPDATE novel SET author=NULL,artist=NULL,summary=NULL,status=NULL,genres=NULL,rating=NULL WHERE id=2");
 
     await applyNovelMergeInDb(input());
 
     expect(sqlite.prepare("SELECT id,plugin_id,source_novel_id,path,name,author,artist,summary,status,genres,rating FROM novel").all()).toEqual([{
       id: 2, plugin_id: "source-b", source_novel_id: "202", path: "/b", name: "Target",
-      author: "Source Author", artist: "Source Artist", summary: "First paragraph.\nSecond paragraph.",
-      status: "Completed", genres: "Fantasy", rating,
+      author: null, artist: null, summary: null, status: null, genres: null, rating: null,
     }]);
   });
 
-  it("keeps every nonempty B detail and its source cover URL", async () => {
+  it("keeps the freshly parsed B details and cover URL independent of A", async () => {
     sqlite.prepare("UPDATE novel SET author=?,artist=?,summary=?,status=?,genres=?,rating=?,cover=? WHERE id=1")
       .run("Source Author", "Source Artist", "Source Summary", "Completed", "Fantasy", 4.5, "https://source-a.test/cover.jpg");
     sqlite.prepare("UPDATE novel SET author=?,artist=?,summary=?,status=?,genres=?,rating=?,cover=? WHERE id=2")
@@ -531,7 +530,7 @@ describe("applyNovelMergeInDb user state transaction", () => {
       targetLocalNovelId: 2,
       chapters: [
         { sourceChapterPath: "/a/1", sourceChapterNumber: "1", targetChapterPath: "/b/1", targetChapterNumber: "6001", decision: "copy-source" },
-        { sourceChapterPath: "/a/2", sourceChapterNumber: "2", targetChapterPath: "/b/2", targetChapterNumber: "6002", decision: null },
+        { sourceChapterPath: "/a/2", sourceChapterNumber: "2", targetChapterPath: "/b/2", targetChapterNumber: "6002", decision: "copy-source" },
         { sourceChapterPath: "/a/note", sourceChapterNumber: "3", targetChapterPath: null, targetChapterNumber: null, decision: null },
       ],
     });
@@ -560,4 +559,24 @@ describe("applyNovelMergeInDb user state transaction", () => {
     expect(snapshot()).toEqual(before);
     expect(sqlite.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
+  it("records a recipient receipt in the same transaction as local reading-state migration", async () => {
+    await applyNovelMergeInDb({ ...input(), recordIncomingMigration: async db => {
+      expect(sqlite.prepare("SELECT id FROM novel WHERE id=1").get()).toEqual({ id: 1 });
+      await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2)", ["norea-content-incoming-migration:receipt", JSON.stringify({ status: "completed" })]);
+    } });
+    expect(sqlite.prepare("SELECT id FROM novel ORDER BY id").all()).toEqual([{ id: 2 }]);
+    expect(sqlite.prepare("SELECT unread,progress,bookmark FROM chapter WHERE id=21").get()).toEqual({ unread: 0, progress: 100, bookmark: 1 });
+    expect(sqlite.prepare("SELECT cache_key FROM content_sync_cache").all()).toEqual([{ cache_key: "norea-content-incoming-migration:receipt" }]);
+  });
+  it("rolls recipient receipt and reading state back when the source cannot be removed", async () => {
+    sqlite.exec("CREATE TRIGGER reject_incoming_merge BEFORE DELETE ON novel WHEN OLD.id=1 BEGIN SELECT RAISE(ABORT,'incoming deletion rejected'); END");
+    const before = sqlite.prepare("SELECT * FROM chapter ORDER BY id").all();
+    await expect(applyNovelMergeInDb({ ...input(), recordIncomingMigration: async db => {
+      await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2)", ["norea-content-incoming-migration:receipt", JSON.stringify({ status: "completed" })]);
+    } })).rejects.toThrow("incoming deletion rejected");
+    expect(sqlite.prepare("SELECT id FROM novel ORDER BY id").all()).toEqual([{ id: 1 }, { id: 2 }]);
+    expect(sqlite.prepare("SELECT * FROM chapter ORDER BY id").all()).toEqual(before);
+    expect(sqlite.prepare("SELECT * FROM content_sync_cache").all()).toEqual([]);
+  });
+
 });

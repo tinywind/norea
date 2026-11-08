@@ -1,9 +1,10 @@
+import type Database from "@tauri-apps/plugin-sql";
 import {
   isKnownChapterContentType,
   type ChapterContentType,
 } from "../../lib/chapter-content";
 import type { ChapterPayloadInventory } from "../../lib/chapter-content/inventory";
-import type { WorkMigrationSnapshot } from "../../lib/content-sync/novel-migration-types";
+import type { NovelMigrationTargetMetadata, WorkMigrationSnapshot } from "../../lib/content-sync/novel-migration-types";
 import { runDatabaseTransaction } from "../client";
 import { sqliteBoolean } from "../sqlite-value";
 import { recordPendingNovelMergeInDb } from "./content-sync";
@@ -26,6 +27,8 @@ export interface ApplyNovelMergeInput {
   preparedDownloads: readonly PreparedNovelMergeDownload[];
   contentSyncServerUrl?: string;
   contentSyncSourceSnapshot?: WorkMigrationSnapshot;
+  contentSyncTargetMetadata?: NovelMigrationTargetMetadata;
+  recordIncomingMigration?: (db: Database) => Promise<void>;
 }
 
 export interface PreparedNovelMergeDownload {
@@ -34,6 +37,7 @@ export interface PreparedNovelMergeDownload {
   contentBytes: number;
   mediaBytes: number;
   transferredFromSource: boolean;
+  mediaComplete?: boolean;
   targetInventory?: ChapterPayloadInventory;
   targetInventoryBodyOnly?: boolean;
 }
@@ -52,12 +56,6 @@ interface NovelMergeNovelRow {
   isLocal: unknown;
   libraryAddedAt: number | null;
   lastReadAt: number | null;
-  author: string | null;
-  artist: string | null;
-  summary: string | null;
-  status: string | null;
-  genres: string | null;
-  rating: number | null;
 }
 
 interface NovelMergeChapterRow {
@@ -91,13 +89,14 @@ interface NovelMergeChapterUpdate {
   contentType: ChapterContentType | null;
   id: number;
   mediaBytes: number;
+  mediaComplete: number;
   progress: number;
   readAt: number | null;
   unread: number;
 }
 
 const SQLITE_BIND_PARAMETER_BUDGET = 900;
-const NOVEL_MERGE_UPDATE_PARAM_COUNT = 9;
+const NOVEL_MERGE_UPDATE_PARAM_COUNT = 10;
 const NOVEL_MERGE_UPDATE_CHUNK_SIZE = Math.floor(
   SQLITE_BIND_PARAMETER_BUDGET / NOVEL_MERGE_UPDATE_PARAM_COUNT,
 );
@@ -139,11 +138,14 @@ function booleanParam(value: boolean): number {
 export async function applyNovelMergeInDb({
   contentSyncServerUrl,
   contentSyncSourceSnapshot,
+  contentSyncTargetMetadata,
+  recordIncomingMigration,
   decisions,
   preparedDownloads,
   sourceNovelId,
   targetNovelId,
 }: ApplyNovelMergeInput): Promise<NovelMergeDatabaseResult> {
+  if (recordIncomingMigration && contentSyncServerUrl) throw new Error("An incoming migration cannot create an outgoing migration.");
   assertPositiveId(sourceNovelId, "Source novel id");
   assertPositiveId(targetNovelId, "Target novel id");
   if (sourceNovelId === targetNovelId) {
@@ -158,8 +160,7 @@ export async function applyNovelMergeInDb({
          in_library AS inLibrary,
          is_local AS isLocal,
          library_added_at AS libraryAddedAt,
-         last_read_at AS lastReadAt,
-         author, artist, summary, status, genres, rating
+         last_read_at AS lastReadAt
        FROM novel
        WHERE id IN ($1, $2)`,
       [sourceNovelId, targetNovelId],
@@ -255,7 +256,7 @@ export async function applyNovelMergeInDb({
       if (!isKnownChapterContentType(prepared.contentType)) {
         throw new Error("Prepared download content type is unsupported.");
       }
-      if (typeof prepared.transferredFromSource !== "boolean") {
+      if (typeof prepared.transferredFromSource !== "boolean" || prepared.mediaComplete !== undefined && typeof prepared.mediaComplete !== "boolean") {
         throw new Error("Prepared download origin is invalid.");
       }
       if (
@@ -273,7 +274,7 @@ export async function applyNovelMergeInDb({
       }
       if (
         prepared.transferredFromSource &&
-        !sqliteBoolean(source.isDownloaded)
+        !sqliteBoolean(source.isDownloaded) && source.contentBytes <= 0
       ) {
         throw new Error("Transferred content must belong to a downloaded source chapter.");
       }
@@ -349,6 +350,7 @@ export async function applyNovelMergeInDb({
         contentType: preparedDownload?.contentType ?? null,
         id: target.id,
         mediaBytes: preparedDownload?.mediaBytes ?? 0,
+        mediaComplete: booleanParam(preparedDownload?.mediaComplete !== false),
         progress: mergedState.progress,
         readAt: mergedState.readAt,
         unread: booleanParam(mergedState.unread),
@@ -377,6 +379,7 @@ export async function applyNovelMergeInDb({
           update.contentType,
           update.contentBytes,
           update.mediaBytes,
+          update.mediaComplete,
         ];
         return `(${row
           .map((value) => {
@@ -395,7 +398,8 @@ export async function applyNovelMergeInDb({
            apply_download_metadata,
            stored_content_type,
            content_bytes,
-           media_bytes
+           media_bytes,
+           media_complete
          ) AS (VALUES ${values.join(", ")})
          UPDATE chapter
          SET
@@ -420,7 +424,7 @@ export async function applyNovelMergeInDb({
            END,
            media_repair_needed = CASE
              WHEN (SELECT apply_download_metadata FROM merge_updates WHERE target_id = chapter.id) = 1
-             THEN 0
+             THEN 1 - (SELECT media_complete FROM merge_updates WHERE target_id = chapter.id)
              ELSE media_repair_needed
            END,
            media_bytes_checked_at = CASE
@@ -430,7 +434,7 @@ export async function applyNovelMergeInDb({
            END,
            is_downloaded = CASE
              WHEN (SELECT apply_download_metadata FROM merge_updates WHERE target_id = chapter.id) = 1
-             THEN 1
+             THEN (SELECT media_complete FROM merge_updates WHERE target_id = chapter.id)
              ELSE is_downloaded
            END,
            updated_at = unixepoch()
@@ -453,12 +457,6 @@ export async function applyNovelMergeInDb({
            ELSE MIN(library_added_at, $3)
          END,
          last_read_at = $4,
-         author = $5,
-         artist = $6,
-         summary = $7,
-         status = $8,
-         genres = $9,
-         rating = $10,
          updated_at = unixepoch()
        WHERE id = $1`,
       [
@@ -466,9 +464,6 @@ export async function applyNovelMergeInDb({
         booleanParam(sqliteBoolean(sourceNovel.inLibrary)),
         sourceNovel.libraryAddedAt,
         mergedLastReadAt,
-        ...(["author", "artist", "summary", "status", "genres"] as const).map(field =>
-          targetNovel[field]?.trim() ? targetNovel[field] : sourceNovel[field]?.trim() ? sourceNovel[field] : null),
-        targetNovel.rating ?? sourceNovel.rating ?? null,
       ],
     );
 
@@ -480,12 +475,15 @@ export async function applyNovelMergeInDb({
       await recordPendingNovelMergeInDb(db, {
         serverUrl: contentSyncServerUrl,
         sourceSnapshot: contentSyncSourceSnapshot,
+        targetMetadata: contentSyncTargetMetadata,
         sourceNovelId,
         targetNovelId,
         chapterIdMap,
         preparedDownloads,
       });
     }
+
+    await recordIncomingMigration?.(db);
 
     const deleteResult = await db.execute(
       "DELETE FROM novel WHERE id = $1",

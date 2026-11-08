@@ -35,7 +35,6 @@ export async function listOrdinaryChapterDownloadJobs(): Promise<StoredQueuedCha
     `SELECT q.chapter_id AS chapterId,q.job_json AS jobJson,q.updated_at_ms AS updatedAtMs
      FROM chapter_download_queue q JOIN chapter c ON c.id=q.chapter_id JOIN novel n ON n.id=c.novel_id
      WHERE n.is_local=0 AND n.id=json_extract(q.job_json,'$.novelId') AND n.plugin_id=json_extract(q.job_json,'$.pluginId')
-       AND json_extract(q.job_json,'$.serverOnly') IS NOT 1
        AND json_extract(q.job_json,'$.vpnBatchId') IS NULL
        AND json_extract(q.job_json,'$.vpnPlanId') IS NULL AND json_extract(q.job_json,'$.vpnRangeId') IS NULL
      ORDER BY q.created_at_ms,q.chapter_id`,
@@ -57,7 +56,6 @@ export async function listPendingVpnDownloadJobs(): Promise<StoredQueuedChapterD
 export async function enqueuePendingVpnDownloadJobs(batchId: string, jobs: readonly ChapterDownloadJob[]): Promise<void> {
   requireBatchId(batchId);
   const captured = jobs.map(job => {
-    if (job.serverOnly) throw new Error("Content server downloads cannot enter the source VPN queue.");
     if (job.vpnPlanId != null || job.vpnRangeId != null || (job.vpnBatchId != null && job.vpnBatchId !== batchId)) {
       throw new Error(`Chapter ${job.id} already has another VPN owner.`);
     }
@@ -91,7 +89,6 @@ export async function adoptOrdinaryChapterDownloadJobs(
   requireBatchId(batchId);
   const captured = expected.map(row => {
     const job = parseStoredChapterDownloadJob({ chapterId: row.job.id, jobJson: row.jobJson });
-    if (job.serverOnly) throw new Error("Content server downloads cannot enter the source VPN queue.");
     if (job.vpnBatchId != null || job.vpnPlanId != null || job.vpnRangeId != null) {
       throw new Error(`Chapter ${job.id} no longer has ordinary ownership.`);
     }
@@ -103,7 +100,6 @@ export async function adoptOrdinaryChapterDownloadJobs(
       const result = await db.execute(
         `UPDATE chapter_download_queue SET job_json=$1,updated_at_ms=$2,leased_at_ms=NULL
          WHERE chapter_id=$3 AND job_json=$4 AND updated_at_ms=$5
-           AND json_extract(job_json,'$.serverOnly') IS NOT 1
            AND json_extract(job_json,'$.vpnBatchId') IS NULL
            AND json_extract(job_json,'$.vpnPlanId') IS NULL AND json_extract(job_json,'$.vpnRangeId') IS NULL
            AND EXISTS(SELECT 1 FROM chapter c JOIN novel n ON n.id=c.novel_id

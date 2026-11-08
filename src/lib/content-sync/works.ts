@@ -1,3 +1,4 @@
+import type Database from "@tauri-apps/plugin-sql";
 import { canonicalMetadataValue } from "../work-metadata/schema";
 import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
@@ -67,6 +68,20 @@ export async function recordDeletedWorkMetadata(server: string, entry: WorkCatal
     throw new Error("Server work deletion does not match its metadata.");
   }
   await recordServerWorkDeletionExclusion(server, metadata.identity);
+}
+
+/** Release only this verified target inside the same transaction that commits its local migration.
+ * If post-commit fingerprint indexing fails, ordinary synchronization can still publish its current file. */
+export async function releaseMigratedTargetMetadataInDb(db: Database, server: string, identity: NovelMetadataV1["identity"]): Promise<void> {
+  const key = cacheKey(normalizeContentServerUrl(server));
+  const rows = await db.select<{ payload: string }[]>("SELECT payload FROM content_sync_cache WHERE cache_key=$1", [key]);
+  if (!rows[0]) return;
+  const cache = JSON.parse(rows[0].payload) as WorkSyncCache;
+  const id = await contentWorkId(identity);
+  delete cache.deleted[id];
+  delete cache.fingerprints[id];
+  delete cache.fileVersions[identityKey(identity)];
+  await db.execute("UPDATE content_sync_cache SET payload=$1 WHERE cache_key=$2", [JSON.stringify(cache), key]);
 }
 
 async function rememberInstalledWork(cache: WorkSyncCache, stored: InstalledNovelMetadata, hasServerCover: boolean): Promise<void> {

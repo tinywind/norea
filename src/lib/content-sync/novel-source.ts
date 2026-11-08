@@ -5,7 +5,6 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { withChapterStorageOperation } from "../chapter-storage-error";
 import type { ChapterDownloadJob } from "../tasks/chapter-download";
 import type { ChapterDownloadPhase } from "../tasks/task-types";
-import { pluginManager } from "../plugins/manager";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
 import type { CatalogEntry } from "./native";
@@ -55,72 +54,58 @@ export async function listServerChapterAvailability(source: ServerNovelSource, s
   }, settings.lookupTimeoutSeconds, signal);
 }
 
+/** Returns false only when no server is configured or the exact chapter lookup confirms its body is absent. */
 export async function tryDownloadServerChapter(
   job: Pick<ChapterDownloadJob, "id" | "novelId" | "pluginId" | "chapterPath">,
   signal?: AbortSignal,
   onPhase?: (phase: ChapterDownloadPhase) => void,
-  options: { requireComplete?: boolean; serverOnly?: boolean } = {},
 ): Promise<boolean> {
   signal?.throwIfAborted();
   const chapter = await withChapterStorageOperation("load server chapter", () => getChapterById(job.id));
   const novelId = chapter?.novelId ?? job.novelId;
-  if (!novelId) {
-    if (options.serverOnly) throw new Error("Content server chapter no longer exists locally.");
-    return false;
-  }
+  if (!novelId) return false;
   const source = await readServerNovelSource(novelId);
   const settings = useContentSyncStore.getState();
   const serverUrl = source?.serverUrl ?? settings.serverUrl;
-  if (!serverUrl) {
-    if (options.serverOnly) throw new Error("Content server is not configured for this work.");
-    return false;
-  }
+  if (!serverUrl) return false;
   const novel = await withChapterStorageOperation("load server work", () => getNovelById(novelId));
   if (!chapter || !novel) throw new Error("Content server chapter no longer exists locally.");
   if (novel.pluginId !== job.pluginId || chapter.path !== job.chapterPath) {
     throw new Error("Content server download identity does not match the local chapter.");
   }
-  const canUseSourceFallback = async () => {
-    if (options.serverOnly || novel.isLocal || novel.path.startsWith("norea-folder:")) return false;
-    if (!source && !chapter.path.startsWith("norea-folder:")) return true;
-    if (!pluginManager.getPlugin(novel.pluginId)) {
-      await pluginManager.loadInstalledFromDb();
-      signal?.throwIfAborted();
-    }
-    return Boolean(pluginManager.getPlugin(novel.pluginId));
-  };
   const target = { pluginId: novel.pluginId, novelPath: novel.path, chapterPath: chapter.path };
   const number = chapter.chapterNumber ?? (chapter.position > 0 ? String(chapter.position) : undefined);
   const chapterNumber = number && /^\d+(?:\.\d+)?$/.test(number) ? number : undefined;
   const query = new URLSearchParams({ ...target, ...(chapterNumber ? { chapterNumber } : {}) });
-  try {
-    signal?.throwIfAborted();
-    onPhase?.("server-lookup");
-    const { entry, token } = await withContentServerLookup(async deadline => {
-      const token = await registerContentDevice(serverUrl, settings.deviceName, deadline);
+  signal?.throwIfAborted();
+  onPhase?.("server-lookup");
+  const found = await withContentServerLookup(async deadline => {
+    const token = await registerContentDevice(serverUrl, settings.deviceName, deadline);
+    deadline.throwIfAborted();
+    let entry: CatalogEntry;
+    try {
+      entry = await contentServerRequest<CatalogEntry>(serverUrl, `/catalog/chapter?${query}`, token, "GET", undefined, deadline);
+    } catch (error) {
       deadline.throwIfAborted();
-      const entry = await contentServerRequest<CatalogEntry>(serverUrl, `/catalog/chapter?${query}`, token, "GET", undefined, deadline);
-      deadline.throwIfAborted();
-      return { entry, token };
-    }, settings.lookupTimeoutSeconds ?? 3, signal);
-    const identity = entry.manifest.identity;
-    const sameWork = identity.novelPath === novel.path;
-    const sameChapter = identity.chapterPath === chapter.path || (chapterNumber && entry.manifest.chapter?.chapterNumber != null && Number(entry.manifest.chapter.chapterNumber) === Number(chapterNumber));
-    if (entry.deleted || identity.pluginId !== novel.pluginId || !sameWork || !sameChapter) {
-      throw new Error("Content server download identity does not match the requested chapter.");
+      if (error instanceof ContentServerError && error.status === 404) return null;
+      throw error;
     }
-    // A listing can be stale; the server lane takes only a copy that is complete now.
-    if (options.requireComplete && !entry.complete && await canUseSourceFallback()) return false;
-    signal?.throwIfAborted();
-    const { downloadServerChapterFromServer } = await import("./sync");
-    signal?.throwIfAborted();
-    onPhase?.("server-download");
-    await downloadServerChapterFromServer(entry, serverUrl, { token, target, ...(signal ? { signal } : {}) });
-  } catch (error) {
-    signal?.throwIfAborted();
-    if (!(error instanceof ContentServerError && error.status === 404)) throw error;
-    if (!await canUseSourceFallback()) throw error;
-    return false;
+    deadline.throwIfAborted();
+    return { entry, token };
+  }, settings.lookupTimeoutSeconds ?? 3, signal);
+  if (!found) return false;
+  const { entry, token } = found;
+  const identity = entry.manifest.identity;
+  const sameWork = identity.novelPath === novel.path;
+  const sameChapter = identity.chapterPath === chapter.path || (chapterNumber && entry.manifest.chapter?.chapterNumber != null && Number(entry.manifest.chapter.chapterNumber) === Number(chapterNumber));
+  if (entry.deleted || identity.pluginId !== novel.pluginId || !sameWork || !sameChapter) {
+    throw new Error("Content server download identity does not match the requested chapter.");
   }
+  signal?.throwIfAborted();
+  const { downloadServerChapterFromServer } = await import("./sync");
+  signal?.throwIfAborted();
+  onPhase?.("server-download");
+  // A body remains a server hit even when some media are missing or its transfer later fails.
+  await downloadServerChapterFromServer(entry, serverUrl, { token, target, ...(signal ? { signal } : {}) });
   return true;
 }

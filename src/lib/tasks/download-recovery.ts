@@ -393,6 +393,8 @@ export class DownloadRecoveryController {
     retainOnSuccess?: boolean;
     policy?: DownloadRecoveryPolicy;
     resetSite?: (sourceId: string, url: string) => Promise<void>;
+    /** Runs before source recovery or traffic on every attempt; server/local work may finish without source access. */
+    beforeAttempt?: (context: TaskRunContext) => Promise<{ handled: false } | { handled: true; value: T }>;
   }, context: TaskRunContext, operation: (context: TaskRunContext) => Promise<T>): Promise<T> {
     const key = downloadRecoveryKey(options.job);
     this.register([options.job], options.policy);
@@ -408,10 +410,19 @@ export class DownloadRecoveryController {
       deferred ||= !started;
       return started;
     } } : {}) };
+    const prepare = async () => {
+      context.signal.throwIfAborted();
+      deferred = false;
+      const result = await options.beforeAttempt?.(attemptContext);
+      context.signal.throwIfAborted();
+      if (result?.handled && !deferred && !options.retainOnSuccess) this.forget([key], true);
+      return result;
+    };
     let recovering = false;
     const execute = async (): Promise<T> => {
       for (;;) {
-        context.signal.throwIfAborted();
+        const prepared = await prepare();
+        if (prepared?.handled) return prepared.value;
         let episode = this.episodes.get(key);
         if (episode?.status === "held") throw new DownloadRecoveryHoldError(episode.error);
         if (episode && !recovering) {
@@ -424,6 +435,10 @@ export class DownloadRecoveryController {
           context.setDetail(episode.action === "nextProfile" ? "Waiting for the next VPN profile." : "Waiting for download recovery.");
           await waitUntil(episode.nextRetryAt, context.signal);
           context.signal.throwIfAborted();
+          // A server copy may have arrived while recovery waited. Check again before
+          // resetting source state, changing its VPN route, or making another request.
+          const rechecked = await prepare();
+          if (rechecked?.handled) return rechecked.value;
           if (episode.action !== "nextProfile" && options.vpn && episode.currentProfileId) {
             const profile = await options.profileId?.();
             const hash = options.profileHash?.();

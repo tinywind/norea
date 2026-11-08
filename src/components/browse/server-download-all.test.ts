@@ -44,7 +44,7 @@ it("queues chapters of new and existing works only after the library add settles
   mocks.inLibrary.set("/new", 2);
   finishAdd();
   await done;
-  expect(mocks.queue).toHaveBeenCalledWith([1, 2], t, queryClient, { kind: "all" }, { serverOnly: true });
+  expect(mocks.queue).toHaveBeenCalledWith([1, 2], t, queryClient, { kind: "all" });
   expect(mocks.open).toHaveBeenCalledWith("http://configured", work("existing"));
   expect(mocks.open).toHaveBeenCalledWith("http://configured", work("new"));
   expect(mocks.show).toHaveBeenCalledWith({ color: "ok", message: "queued:7" });
@@ -54,7 +54,7 @@ it("skips and reports works the add failed to add", async () => {
   mocks.inLibrary.set("/added", 3);
   const add = Promise.reject(new ServerLibraryAddError("partial", { added: 1, failed: [{ error: "offline", work: work("failed") }], pending: [], skipped: 0 }));
   await downloadServerWorksOnce([work("added"), work("failed")], add, t, queryClient);
-  expect(mocks.queue).toHaveBeenCalledWith([3], t, queryClient, { kind: "all" }, { serverOnly: true });
+  expect(mocks.queue).toHaveBeenCalledWith([3], t, queryClient, { kind: "all" });
   expect(mocks.show).toHaveBeenCalledWith({ color: "warn", message: "queued:7", title: "serverLibraryAdd.downloadAllNotAdded:1" });
 });
 
@@ -69,6 +69,6 @@ it("queues right away without an add and toasts a failure to queue", async () =>
   mocks.inLibrary.set("/existing", 1);
   mocks.queue.mockRejectedValueOnce(new Error("db closed"));
   await downloadServerWorksOnce([work("existing")], null, t, queryClient);
-  expect(mocks.queue).toHaveBeenCalledWith([1], t, queryClient, { kind: "all" }, { serverOnly: true });
+  expect(mocks.queue).toHaveBeenCalledWith([1], t, queryClient, { kind: "all" });
   expect(mocks.errorToast).toHaveBeenCalledWith("serverLibraryAdd.downloadAll", expect.any(Error));
 });

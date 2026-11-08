@@ -44,30 +44,88 @@ requirements must be decided explicitly before implementation.
   `content_sync_cache` inside the same transaction that removes the source novel.
   It records both stable work identities, every chapter mapping, the source server
   snapshot captured before local deletion, and the verified inventory of any
-  retained target download. A missing baseline permits the local merge but blocks
-  automatic remote cleanup; a changed source snapshot requires review. Pending, failed, blocked, and completed
+  retained target download. A newly requested merge with a configured server must
+  first verify its supported migration capabilities and source snapshot. Missing
+  registration, unavailable server evidence, or an unsupported server stops the
+  local merge before source removal. Older pending records without a baseline
+  remain blocked without inventing historical evidence; a changed source snapshot
+  requires review. Pending, failed, blocked, and completed
   records protect the original work against automatic server reimport. Ordinary
   synchronization uploads the target before conditional server finalization; an
   ambiguous response reuses the persisted operation ID and exact request. Conflicts
   preserve the original server copy. Manual sync stays manual, but startup or
   reconnect resumes an already approved pending or failed migration once. Blocked
   migrations require an explicit retry. This adds no SQL table or migration.
-  A merge preserves nonempty target metadata and fills missing author, artist,
-  summary, status, genres, and rating from the source. A zero rating is retained.
-  If the target has no stored cover, the source cover is copied before the source
-  records or directory can be removed. Cover read, write, or identity failures
-  stop the merge and preserve the source; existing target covers remain preferred.
+  A merge uses the target plugin's freshly fetched metadata, including empty
+  values, instead of retaining old target fields or filling them from the source.
+  It refreshes the target cover through the plugin fetch path; an explicitly
+  absent cover removes the stale target cover. Cover read, write, or removal
+  failures stop the merge and preserve the source. Downloaded bodies, chapter
+  identities, and reading state keep their existing merge preservation rules.
+  Server-only source bodies are copied through a revision-checked server staging
+  endpoint before finalization. Explicit exclusions become `delete-source`
+  decisions; omitting a body decision never authorizes deletion. The finalization
+  request contains the complete source chapter decisions, including chapters
+  without stored bodies. Exact pending copy/finalize requests survive retries.
 
-- Downloads explicitly selected from a content-server work retain the optional
-  `serverOnly: true` intent in queue JSON, native persistence, retries, and restart
-  recovery. These jobs use the bound server without loading a source plugin,
-  resolving source chapter paths, acquiring a source VPN worker, or falling back
-  to the source site. Source access holds do not block them; storage holds still
-  apply. A server work opens with server metadata and availability, without an
-  automatic source refresh. Metadata-only chapters remain listed but cannot be
-  downloaded from the server; available incomplete copies remain downloadable.
-  Ordinary source downloads retain their existing server-first fallback behavior.
+- A connected work migration publishes durable source and target metadata,
+  chapter mappings, deletion decisions, and verified target inventories. The
+  server stores lineage and active/revoked events in additive tables alongside
+  the original receipt and source retirement transaction; existing database
+  versions, checksums, credentials, metadata, and packages are retained. Restoring
+  an original work appends an inactive event rather than rewriting its history.
+  Existing receipts without the new evidence are not expanded into invented
+  historical mappings.
+  Apps save the server-scoped incoming cursor and receipts in `content_sync_cache`
+  before ordinary synchronization. A connected, online, visible app receives
+  confirmed migrations at startup/reconnect and every 30 seconds even in manual
+  mode; this receiver does not run ordinary content uploads. Changed connections,
+  hidden windows, and shutdown cancel the receiver. Automatic modes retain their
+  existing change-watch or periodic synchronization schedule. Apps apply received
+  decisions before any metadata/body upload, preserve library membership, categories, reading state
+  and bookmarks, and resolve active A-to-B-to-C histories to the final target.
+  The latest verified target metadata is authoritative; an old lineage snapshot
+  cannot overwrite a newer server author, cover, or chapter catalog. Existing
+  conflicting target bodies, unknown recipient chapters, changed proof, and
+  ambiguous numbering preserve the original and require review. Completed source
+  holds prevent retired-work reuploads; pending target holds prevent stale target
+  uploads until local replay completes. A newer revocation releases only dynamic
+  migration holds. Receipt completion and source row removal share a transaction,
+  so restart or feed replay cannot repeat a committed migration. The same commit
+  releases the target metadata cache hold, so a post-commit indexing failure does
+  not permanently hide the migrated target from ordinary synchronization.
+  Transport failures remain retryable and never become source-access blocks.
+  This adds no app
+  SQL migration. A server with `workMigrationLineageVersion: 1`,
+  `workMigrationCopyVersion: 1`, and `workCoverDeletionVersion: 1` is required for
+  these operations; receiving apps must run a version that understands the feed.
+
+- Every chapter download checks its bound or configured content server before
+  source access. A server body is used even when its media inventory is incomplete;
+  a hit does not load a source plugin, resolve source chapter paths, acquire a VPN
+  connection, or repair missing media from the source site. A confirmed missing
+  server body, or no configured server, continues through the existing source
+  plugin path. Registration, authorization, lookup, and transfer errors remain
+  server failures and do not mark a source or VPN profile as blocked.
+  The same order applies to explicit, automatic, reader, restored, retried, and
+  VPN-owned downloads. Existing `serverOnly` queue fields do not disable source
+  fallback. Source holds apply only after a server miss; storage holds and user
+  pauses remain effective. Metadata-only chapters remain listed and downloadable.
+  A server work opens with server metadata without an automatic source refresh.
   This adds no database schema or chapter package version.
+
+- Media repair resolves only manifest-declared local file names and paths before
+  collecting remote URLs from HTML attributes, `srcset`, and CSS. Existing assets
+  that pass native size/hash validation are retained; only missing or corrupt
+  assets are fetched. Retrying a partial repair requests only its remaining
+  failures and cannot duplicate manifest entries for local references. The
+  download phase starts only during an actual asset transfer; local ZIP
+  validation and repacking remain local work. The scheduler tracks the actual
+  server/source origin separately from this display phase, so local repacking
+  cannot turn a server completion or error into source verification or a source
+  failure hold. Server-body presence still governs
+  the existing server-first/source-fallback choice. This changes no stored media
+  manifest, chapter package, or database version.
 
 - Source-access blocks and VPN plan challenge JSON accept `forbidden` for HTTP
   403. Existing CAPTCHA and Cloudflare values remain valid. A forbidden hold

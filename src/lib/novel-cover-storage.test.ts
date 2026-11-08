@@ -108,6 +108,23 @@ describe("saveNovelCoverFromSource", () => {
     expect(peekCachedNovelCoverSrc(displayNovel)).toBe(src);
     expect(persistNovelCover).not.toHaveBeenCalled();
   });
+  it("clears a stored cover only when its absence is explicit", async () => {
+    workMetadataMock.mockResolvedValue(desktopCoverResult(""));
+    await saveNovelCoverFromSource(makePlugin(), novel, null, { refresh: true });
+    expect(persistNovelCover).not.toHaveBeenCalled();
+    await saveNovelCoverFromSource(makePlugin(), novel, null, { refresh: true, clearMissing: true });
+    expect(persistNovelCover).toHaveBeenCalledExactlyOnceWith(directory, null);
+    expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects an invalid authoritative cover URL without clearing the stored cover", async () => {
+    await expect(saveNovelCoverFromSource(makePlugin(), novel, "javascript:invalid", {
+      refresh: true, clearMissing: true,
+    })).rejects.toThrow("cover URL");
+    expect(persistNovelCover).not.toHaveBeenCalled();
+    expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+  });
+
   it("does not let automatic cover storage supersede an explicit refresh", async () => {
     workMetadataMock.mockResolvedValue(desktopCoverResult(""));
     await Promise.all([

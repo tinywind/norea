@@ -58,6 +58,8 @@ export interface VpnDownloadRuntime {
   disconnectWorker(worker: VpnDownloadWorkerRef): Promise<void>;
   showWorker(worker: VpnDownloadWorkerRef, url: string): Promise<void>;
   enqueueChapter(job: ChapterDownloadJob, worker: VpnDownloadWorkerRef, planId: string): TaskHandle<unknown>;
+  /** Completes a server body before source access; false authorizes the existing source path. */
+  tryServerChapter?(job: ChapterDownloadJob, signal: AbortSignal): Promise<boolean>;
   /** Reads the persisted failure before dispatch so reopening cannot retry a failed chapter. */
   loadChapterFailure(job: ChapterDownloadJob): Promise<VpnDownloadChapterFailure | undefined>;
   /** Persists a failed chapter attempt without scheduling another attempt. */
@@ -105,6 +107,8 @@ interface RangeRuntime {
   worker?: WorkerLease;
   task?: EnrolledChapter;
   run?: { epoch: number };
+  serverCheck?: { abort: AbortController; settled: Promise<void> };
+  serverMiss?: { chapterId: number; epoch: number };
   transition: Promise<void>;
   /** Leased candidates this range waits for; empty while it waits for discovery. */
   waitingProfiles?: string[];
@@ -654,12 +658,18 @@ export class VpnDownloadCoordinator {
       this.scheduled = false;
       const ranges = [...this.ranges.values()];
       let budget = this.freeSlots() - ranges.filter(range => range.dispatching).length;
+      let serverBudget = this.workerLimit - ranges.filter(range => range.run?.epoch === range.epoch && !range.worker).length;
       for (const range of this.dispatchOrder()) {
         if (!this.canWork(range, range.epoch) || range.run?.epoch === range.epoch) continue;
         if (!range.worker) {
-          if (this.runtime.canSwitchProfile?.() === false) continue;
-          if (range.waitingProfiles?.every(id => this.profileReserved(range, id))) continue;
-          if (budget <= 0 || !this.availableSlot(range)) continue;
+          if (this.needsServerCheck(range)) {
+            if (serverBudget <= 0) continue;
+            serverBudget--;
+          } else {
+            if (this.runtime.canSwitchProfile?.() === false) continue;
+            if (range.waitingProfiles?.every(id => this.profileReserved(range, id))) continue;
+            if (budget <= 0 || !this.availableSlot(range)) continue;
+          }
           budget--;
           range.dispatching = true;
         }
@@ -865,6 +875,49 @@ export class VpnDownloadCoordinator {
     if (failure && range.transition === transition) range.transition = Promise.resolve();
   }
 
+  private needsServerCheck(range: RangeRuntime): boolean {
+    const state = this.state(range);
+    const chapterId = state.selectedChapterIds[state.checkpoint];
+    return Boolean(this.runtime.tryServerChapter) && chapterId !== undefined &&
+      (range.serverMiss?.chapterId !== chapterId || range.serverMiss.epoch !== range.epoch);
+  }
+
+  private async tryServerChapter(range: RangeRuntime, epoch: number, job: ChapterDownloadJob): Promise<boolean> {
+    const state = this.state(range);
+    const abort = new AbortController();
+    const result = Promise.resolve().then(() => this.runtime.tryServerChapter!(clone(job), abort.signal));
+    const check = { abort, settled: result.then(() => undefined, () => undefined) };
+    range.serverCheck = check;
+    let downloaded: boolean;
+    try {
+      downloaded = await result;
+    } catch (error) {
+      if (range.serverCheck === check) range.serverCheck = undefined;
+      if (!this.canWork(range, epoch)) return true;
+      await this.recordChapterFailure(job, error);
+      if (this.canWork(range, epoch)) await this.fail(range, epoch, "chapter-failed", error);
+      return true;
+    } finally {
+      if (range.serverCheck === check) range.serverCheck = undefined;
+    }
+    if (!this.canWork(range, epoch)) return true;
+    if (!downloaded) {
+      range.serverMiss = { chapterId: job.id, epoch };
+      return false;
+    }
+    await this.runtime.clearChapterFailure(job.id);
+    await this.serialize(range.planId, async () => {
+      if (!this.canWork(range, epoch)) return;
+      this.install(await this.runtime.settleChapter(range.planId, range.rangeId, job.id, state.generation));
+      range.jobs!.delete(job.id);
+    });
+    if (this.isEpoch(range, epoch) && terminal(this.state(range))) {
+      range.intent = false;
+      if (range.worker) await this.closeLease(range.worker);
+    }
+    return true;
+  }
+
   private async drive(range: RangeRuntime, epoch: number): Promise<void> {
     await range.transition;
     if (!this.canWork(range, epoch)) return;
@@ -876,6 +929,14 @@ export class VpnDownloadCoordinator {
     while (this.canWork(range, epoch)) {
       const pendingId = this.state(range).selectedChapterIds[this.state(range).checkpoint];
       const pendingJob = pendingId === undefined ? undefined : range.jobs.get(pendingId);
+      if (pendingId !== undefined) {
+        const plan = this.plans.get(range.planId)!;
+        if (!pendingJob || pendingJob.pluginId !== plan.pluginId || pendingJob.novelId !== plan.novelId) {
+          throw new Error("VPN range is missing its next owned chapter job.");
+        }
+        if (this.needsServerCheck(range) && await this.tryServerChapter(range, epoch, pendingJob)) continue;
+        if (!this.canWork(range, epoch)) return;
+      }
       if (pendingJob) {
         const failure = await this.runtime.loadChapterFailure(clone(pendingJob));
         if (!this.canWork(range, epoch)) return;
@@ -944,7 +1005,10 @@ export class VpnDownloadCoordinator {
           await this.closeLease(lease);
           continue;
         }
-        if (!isHttpNotFoundError(outcome.error) || isDownloadRecoveryHold(outcome.error)) range.failureReason = isSourceForbiddenFailure(outcome.error) ? "site-forbidden" : "chapter-failed";
+        const serverFailure = outcome.error !== null && typeof outcome.error === "object" &&
+          "code" in outcome.error && outcome.error.code === "content-server-request-failed";
+        const sourceMissing = isHttpNotFoundError(outcome.error) && !serverFailure && !isDownloadRecoveryHold(outcome.error);
+        if (!sourceMissing) range.failureReason = isSourceForbiddenFailure(outcome.error) ? "site-forbidden" : "chapter-failed";
         if (isSourceForbiddenFailure(outcome.error)) {
           await this.excludeProfile(range, lease, "site-forbidden");
           await this.fail(range, epoch, "site-forbidden", outcome.error);
@@ -952,7 +1016,7 @@ export class VpnDownloadCoordinator {
         }
         await this.recordChapterFailure(job, outcome.error);
         if (!this.owns(range, epoch, lease)) return;
-        if (!isHttpNotFoundError(outcome.error) || isDownloadRecoveryHold(outcome.error)) {
+        if (!sourceMissing) {
           if (isPluginVpnUnavailableError(outcome.error)) {
             this.recordProfileResult(lease.profile, false);
             await this.excludeProfile(range, lease, "tunnel-lost");
@@ -1124,13 +1188,15 @@ export class VpnDownloadCoordinator {
     const lease = range.worker;
     if (lease && !lease.connected) lease.abort.abort();
     const cancellation = this.cancelEnrolled(range, range.task);
+    const serverCheck = range.serverCheck;
+    serverCheck?.abort.abort();
     const operation = (async () => {
       await Promise.all([this.updateRange(range, next => {
         if (terminal(next)) return;
         next.phase = "paused";
         next.pauseReason = pauseReason;
         next.userPaused = userPaused;
-      }, epoch), previous, cancellation]);
+      }, epoch), previous, cancellation, serverCheck?.settled]);
       if (disconnect && lease) await this.closeLease(lease);
     })();
     range.transition = operation;

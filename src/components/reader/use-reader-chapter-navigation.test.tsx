@@ -2,6 +2,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { getNovelById } from "../../db/queries/novel";
 import { readServerNovelSource } from "../../lib/content-sync/novel-source";
 import { useNetworkStore } from "../../lib/network";
 import { cancelChapterDownloadBatches, enqueueChapterDownload } from "../../lib/tasks/chapter-download";
@@ -165,47 +166,36 @@ it("reports an offline chapter without a stored body as unavailable instead of b
 });
 
 
-it("downloads an opened content-server chapter without source fallback", async () => {
+it("uses the common downloader for an opened content-server chapter", async () => {
   mount();
   vi.mocked(readServerNovelSource).mockResolvedValue({ serverUrl: "https://content.example", workId: "work" });
   await render({ ...chapter, contentBytes: 0 });
-  expect(readServerNovelSource).toHaveBeenCalledExactlyOnceWith(7);
-  expect(enqueueChapterDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-    id: 11, priority: "interactive", serverOnly: true,
-  }));
+  expect(enqueueChapterDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 11, priority: "interactive" }));
+  expect(vi.mocked(enqueueChapterDownload).mock.calls[0][0]).not.toHaveProperty("serverOnly");
+  expect(readServerNovelSource).not.toHaveBeenCalled();
 });
 
-it("keeps adjacent content-server chapters on the server download path", async () => {
+it("uses the common downloader for an adjacent content-server chapter", async () => {
   mount();
   vi.mocked(readServerNovelSource).mockResolvedValue({ serverUrl: "https://content.example", workId: "work" });
   const nextChapter = { ...chapter, id: 12, position: 2, chapterNumber: "2", path: "/chapter/2", contentBytes: 0 };
   await render(chapter, nextChapter);
   await act(async () => current.openAdjacent(1));
   expect(navigation.navigate).toHaveBeenCalledWith({ to: "/reader", search: { chapterId: 12 }, replace: true });
-  expect(enqueueChapterDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
-    id: 12, chapterPath: "/chapter/2", priority: "interactive", serverOnly: true,
-  }));
+  expect(enqueueChapterDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 12, chapterPath: "/chapter/2", priority: "interactive" }));
+  expect(vi.mocked(enqueueChapterDownload).mock.calls[0][0]).not.toHaveProperty("serverOnly");
 });
 
-it("reports an unreadable content-server binding without starting a source download", async () => {
+it("does not start a download when the reader closes while loading its work", async () => {
   mount();
-  vi.mocked(readServerNovelSource).mockRejectedValueOnce(new Error("Stored content server novel source is invalid."));
-  await render({ ...chapter, contentBytes: 0 });
-  expect(enqueueChapterDownload).not.toHaveBeenCalled();
-  expect(current.chapterUnavailable).toEqual({ reason: "failed", message: "Stored content server novel source is invalid." });
-  expect(current.awaitingChapterDownload).toBe(false);
-});
-
-it("does not start a download when the reader closes during the server binding lookup", async () => {
-  mount();
-  let resolveSource!: (source: Awaited<ReturnType<typeof readServerNovelSource>>) => void;
-  vi.mocked(readServerNovelSource).mockReturnValueOnce(new Promise((resolve) => { resolveSource = resolve; }));
+  const novel = await getNovelById(7);
+  let resolveNovel!: (novel: Awaited<ReturnType<typeof getNovelById>>) => void;
+  vi.mocked(getNovelById).mockReturnValueOnce(new Promise(resolve => { resolveNovel = resolve; }));
   await act(async () => root!.render(<QueryClientProvider client={queryClient}>
     <Probe storedChapter={{ ...chapter, contentBytes: 0 }} ready={false} />
   </QueryClientProvider>));
-  expect(readServerNovelSource).toHaveBeenCalledExactlyOnceWith(7);
   await act(async () => { current.handleReaderBack(); });
-  await act(async () => { resolveSource({ serverUrl: "https://content.example", workId: "work" }); });
+  await act(async () => { resolveNovel(novel); });
   expect(enqueueChapterDownload).not.toHaveBeenCalled();
   expect(current.autoDownloadingChapterId).toBeNull();
 });

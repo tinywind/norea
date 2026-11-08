@@ -1,4 +1,5 @@
-import { listChaptersByNovel, type ChapterListRow } from "../db/queries/chapter";
+import type Database from "@tauri-apps/plugin-sql";
+import { hasStoredChapterContent, listChaptersByNovel, type ChapterListRow } from "../db/queries/chapter";
 import {
   applyNovelMergeInDb,
   type NovelMergeChapterDecision,
@@ -11,10 +12,10 @@ import {
   type ChapterContentType,
 } from "./chapter-content";
 import { reconcileStoredChapterContent } from "./chapter-content-storage";
+import { compareChapterInventories, isChapterPayloadInventory, type ChapterPayloadInventory } from "./chapter-content/inventory";
+import { canonicalMetadataValue } from "./work-metadata/schema";
 import { clearResolvedChapterStorageDirs } from "./chapter-storage-resolution";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "./chapter-storage-path";
-import { saveNovelCoverFromSource } from "./novel-cover-storage";
-import { persistNovelCover, readStoredNovelCover, readStoredNovelMetadata } from "./work-metadata";
 import {
   finalizeChapterStorageTransfer,
   prepareChapterStorageTransfer,
@@ -25,7 +26,6 @@ import {
   type ChapterStorageTransferPreparation,
 } from "./chapter-storage-transfer";
 import { pluginManager } from "./plugins/manager";
-import { normalizeSourceAccessRequiredError } from "./plugins/source-access";
 import { syncNovelFromSource } from "./plugins/sync-novel";
 import type { NovelItem, Plugin } from "./plugins/types";
 import { runExclusiveChapterStorageOperation } from "./tasks/chapter-storage-operation";
@@ -37,9 +37,9 @@ import { useContentSyncStore } from "../store/content-sync";
 import { normalizeContentServerUrl } from "./content-sync/client";
 import { publishNovelMigrationSourceHold } from "./content-sync/deletion-exclusions";
 import { runContentSyncOperation, syncContentServer } from "./content-sync/sync";
-import { captureNovelMigrationSourceSnapshot } from "./content-sync/novel-migration";
+import { captureNovelMigrationSourceSnapshot, captureNovelMigrationTargetMetadata } from "./content-sync/novel-migration";
 import { verifyMigrationBodyOnlyInventory } from "./content-sync/migration-inventory";
-import type { WorkMigrationSnapshot } from "./content-sync/novel-migration-types";
+import type { NovelMigrationTargetMetadata, WorkMigrationSnapshot } from "./content-sync/novel-migration-types";
 
 export type { NovelMergeChapterDecision } from "../db/queries/novel-merge";
 
@@ -58,6 +58,14 @@ export interface ExecuteNovelMergeInput {
 export interface NovelMergeResult extends NovelMergeDatabaseResult {
   cleanupWarnings: string[];
   contentSyncPending?: boolean;
+}
+
+export interface IncomingNovelMergeOptions {
+  signal: AbortSignal;
+  recordIncomingMigration: (db: Database) => Promise<void>;
+  beforeCommit?: () => Promise<void>;
+  /** null means the server explicitly has no target body; an absent key has no proof. */
+  expectedTargetInventories: Readonly<Record<string, ChapterPayloadInventory | null>>;
 }
 
 interface MergeChapterResolution {
@@ -142,7 +150,7 @@ function validateArtifactSelections(
     if (!source) {
       throw new Error("A download selection must reference a chapter mapped to its target.");
     }
-    if (!source.isDownloaded) {
+    if (!hasStoredChapterContent(source)) {
       throw new Error("A download selection must reference a downloaded source chapter.");
     }
   }
@@ -156,7 +164,7 @@ async function collectSourceArtifacts(
     Awaited<ReturnType<typeof reconcileStoredChapterContent>>
   >();
   const downloadedChapters = sourceChapters.filter(
-    (chapter) => chapter.isDownloaded,
+    (chapter) => hasStoredChapterContent(chapter),
   );
   for (
     let offset = 0;
@@ -207,7 +215,7 @@ async function buildStorageTransferEntries(
   for (const [targetPath, mappedSources] of resolution.sourcesByTargetPath) {
     const targetChapter = resolution.targetByPath.get(targetPath)!;
     const downloadedSources = mappedSources.filter(
-      (source) => source.isDownloaded,
+      (source) => hasStoredChapterContent(source),
     );
     const selectedSourceChapterId = selections[targetPath];
     if (selectedSourceChapterId === undefined && downloadedSources.length > 1) {
@@ -307,42 +315,15 @@ async function rollbackPreparation(
   throw originalError;
 }
 
-async function readMergeWorkMetadata(novel: NovelDetailRecord) {
-  const stored = await readStoredNovelMetadata(novelStorageRelativeDir(novel));
-  if (stored && (
-    stored.metadata.identity.pluginId !== novel.pluginId ||
-    stored.metadata.identity.novelId !== novel.sourceNovelId ||
-    stored.metadata.identity.novelPath !== novel.path
-  )) {
-    throw new Error("Stored work metadata no longer matches the merge. Refresh the work before merging.");
-  }
-  return stored;
-}
-
-async function preserveSourceNovelCover(
-  sourceNovel: NovelDetailRecord,
-  targetNovel: NovelDetailRecord,
-  signal: AbortSignal,
-): Promise<void> {
-  const target = await readMergeWorkMetadata(targetNovel);
-  if (target?.metadata.cover) return;
-  const source = await readMergeWorkMetadata(sourceNovel);
-  if (!source?.metadata.cover) return;
-  const body = await readStoredNovelCover(source.directory, source.metadata);
-  if (!body?.length) throw new Error("The source cover could not be read. No novels were merged.");
-  throwIfNovelMergeAborted(signal);
-  await persistNovelCover(novelStorageRelativeDir(targetNovel), {
-    body, fileName: source.metadata.cover.fileName, contentType: source.metadata.cover.contentType,
-  }, { preserveExisting: true });
-}
-
 async function mergeNovelStorageAndRecords(
-  input: ExecuteNovelMergeInput,
+  input: Pick<ExecuteNovelMergeInput, "decisions" | "artifactSourceChapterIdByTargetPath">,
   sourceNovel: NovelDetailRecord,
   targetNovel: NovelDetailRecord,
   signal: AbortSignal,
   contentSyncServerUrl?: string,
   contentSyncSourceSnapshot?: WorkMigrationSnapshot,
+  contentSyncTargetMetadata?: NovelMigrationTargetMetadata,
+  incoming?: IncomingNovelMergeOptions,
 ): Promise<NovelMergeResult> {
   await cancelNovelChapterDownloadWork([sourceNovel.id, targetNovel.id]);
   throwIfNovelMergeAborted(signal);
@@ -396,13 +377,27 @@ async function mergeNovelStorageAndRecords(
           throw new Error("Chapter storage transfer returned an unknown B chapter.");
         }
         const metadataChapter = entry.outcome === "copiedSource" ? source : target;
-        const inventory = contentSyncServerUrl && entry.outcome !== "copiedSource"
+        const inventory = (incoming || contentSyncServerUrl && entry.outcome !== "copiedSource" || !metadataChapter.isDownloaded || metadataChapter.mediaRepairNeeded)
           ? await inspectChapterPayloadInventory({
               novel: targetNovel,
               chapter: { ...target, contentType: storedArtifactContentType(metadataChapter, entry.contentFile) },
             }, signal)
           : null;
-        if (inventory && !inventory.mediaComplete) throw new Error("The retained B download is incomplete. No novels were merged.");
+        if (contentSyncServerUrl && entry.outcome !== "copiedSource" && inventory && !inventory.mediaComplete) throw new Error("The retained B download is incomplete. No novels were merged.");
+        if (incoming) {
+          const expected = incoming.expectedTargetInventories[decision.targetChapterPath];
+          const actual = inventory && { body: inventory.body, expectedAssetKeys: inventory.expectedAssetKeys, storedAssets: inventory.storedAssets };
+          const compared = expected && actual ? compareChapterInventories(actual, expected) : null;
+          const sameBodyOnly = expected && actual && expected.expectedAssetKeys === null && actual.expectedAssetKeys === null
+            && expected.storedAssets.length === 0 && actual.storedAssets.length === 0
+            && JSON.stringify(expected.body) === JSON.stringify(actual.body);
+          const matches = expected === null
+            ? entry.outcome === "copiedSource" && !entry.replacedTarget
+            : isChapterPayloadInventory(expected) && (sameBodyOnly || compared?.containsLocal && compared.coverageEligible);
+          if (!inventory?.body || !matches) {
+            throw new Error("The recipient download does not match the approved server target. The original was retained.");
+          }
+        }
         const targetInventoryBodyOnly = inventory?.expectedAssetKeys === null
           ? await verifyMigrationBodyOnlyInventory(entry.contentFile, inventory, signal)
           : false;
@@ -412,13 +407,14 @@ async function mergeNovelStorageAndRecords(
           contentBytes: entry.contentBytes,
           mediaBytes: entry.mediaBytes,
           transferredFromSource: entry.outcome === "copiedSource",
+          ...(inventory && !inventory.mediaComplete ? { mediaComplete: false } : {}),
           ...(inventory ? { targetInventory: { body: inventory.body, expectedAssetKeys: inventory.expectedAssetKeys, storedAssets: inventory.storedAssets } } : {}),
           ...(targetInventoryBodyOnly ? { targetInventoryBodyOnly: true } : {}),
         };
       },
     ));
     throwIfNovelMergeAborted(signal);
-    await preserveSourceNovelCover(sourceNovel, targetNovel, signal);
+    await incoming?.beforeCommit?.();
     throwIfNovelMergeAborted(signal);
     databaseResult = await applyNovelMergeInDb({
       sourceNovelId: sourceNovel.id,
@@ -427,6 +423,8 @@ async function mergeNovelStorageAndRecords(
       preparedDownloads,
       ...(contentSyncServerUrl ? { contentSyncServerUrl } : {}),
       ...(contentSyncSourceSnapshot ? { contentSyncSourceSnapshot } : {}),
+      ...(contentSyncTargetMetadata ? { contentSyncTargetMetadata } : {}),
+      ...(incoming ? { recordIncomingMigration: incoming.recordIncomingMigration } : {}),
     });
   } catch (error) {
     if (preparation) return rollbackPreparation(preparation, error);
@@ -498,13 +496,21 @@ async function executeNovelMergeWithPlugin(
   }
 
   const targetSync = await syncNovelFromSource(targetPlugin, input.target.item, {
-    chapterRefreshMode: "full",
+    chapterRefreshMode: "full", preserveMissingMetadata: false, refreshCover: true, signal,
   });
   throwIfNovelMergeAborted(signal);
   const targetNovel = await getNovelById(targetSync.novelId);
   if (!targetNovel) throw new Error("Target novel could not be stored.");
   if (targetNovel.id === sourceNovel.id || targetNovel.isLocal) {
     throw new Error("Source and target must be different remote novels.");
+  }
+  const fresh = targetSync.authoritativeMetadata;
+  const currentFields = { name: targetNovel.name, author: targetNovel.author, artist: targetNovel.artist,
+    summary: targetNovel.summary, status: targetNovel.status, genres: targetNovel.genres, rating: targetNovel.rating, isLocal: targetNovel.isLocal };
+  if (!fresh || fresh.identity.pluginId !== targetNovel.pluginId || fresh.identity.novelId !== targetNovel.sourceNovelId
+    || fresh.identity.novelPath !== targetNovel.path || fresh.coverUrl !== targetNovel.cover
+    || JSON.stringify(canonicalMetadataValue(fresh.novel)) !== JSON.stringify(canonicalMetadataValue(currentFields))) {
+    throw new Error("The target metadata changed after its source refresh. No novels were merged.");
   }
 
   const configuredServer = useContentSyncStore.getState().serverUrl;
@@ -516,37 +522,36 @@ async function executeNovelMergeWithPlugin(
     },
     signal,
     async () => {
-      if (sourceNovel.inLibrary || targetNovel.inLibrary) {
-        try {
-          await saveNovelCoverFromSource(
-            targetPlugin,
-            {
-              id: targetNovel.id,
-              name: targetNovel.name,
-              path: targetNovel.path,
-              pluginId: targetNovel.pluginId,
-            },
-            targetNovel.cover,
-          );
-        } catch (error) {
-          const sourceAccessError = normalizeSourceAccessRequiredError(error);
-          if (sourceAccessError) throw sourceAccessError;
-          console.warn("[novel-merge] failed to store target cover", {
-            error,
-            novelId: targetNovel.id,
-            pluginId: targetNovel.pluginId,
-          });
-        }
-      }
+      const targetMetadata = contentSyncServerUrl
+        ? await captureNovelMigrationTargetMetadata(targetNovel, signal)
+        : undefined;
       const sourceSnapshot = contentSyncServerUrl && sourceNovel.sourceNovelId
         ? await captureNovelMigrationSourceSnapshot(contentSyncServerUrl, {
             pluginId: sourceNovel.pluginId, novelId: sourceNovel.sourceNovelId, novelPath: sourceNovel.path,
           }, signal)
         : undefined;
-      return mergeNovelStorageAndRecords(input, sourceNovel, targetNovel, signal, contentSyncServerUrl, sourceSnapshot);
+      if (contentSyncServerUrl && !sourceSnapshot) {
+        throw new Error("The original work could not be verified on the content server. Synchronize the original work with the server, then retry. No novels were merged.");
+      }
+      return mergeNovelStorageAndRecords(input, sourceNovel, targetNovel, signal, contentSyncServerUrl, sourceSnapshot, targetMetadata);
     },
   );
   return contentSyncServerUrl ? runContentSyncOperation(merge) : merge();
+}
+
+/** Applies a confirmed server migration on a recipient without contacting either plugin. */
+export async function executeNovelMergeFromServer(
+  input: Pick<ExecuteNovelMergeInput, "sourceNovelId" | "decisions" | "artifactSourceChapterIdByTargetPath"> & { targetNovelId: number },
+  options: IncomingNovelMergeOptions,
+): Promise<NovelMergeResult> {
+  throwIfNovelMergeAborted(options.signal);
+  const [sourceNovel, targetNovel] = await Promise.all([getNovelById(input.sourceNovelId), getNovelById(input.targetNovelId)]);
+  if (!sourceNovel || !targetNovel) throw new Error("A received migration work no longer exists locally.");
+  if (sourceNovel.id === targetNovel.id || sourceNovel.isLocal || targetNovel.isLocal || sourceNovel.pluginId === targetNovel.pluginId) {
+    throw new Error("A received migration requires different remote source works.");
+  }
+  return runExclusiveChapterStorageOperation({ kind: "sources", sourceIds: [sourceNovel.pluginId, targetNovel.pluginId] }, options.signal,
+    () => mergeNovelStorageAndRecords(input, sourceNovel, targetNovel, options.signal, undefined, undefined, undefined, options));
 }
 
 export async function executeNovelMerge(
