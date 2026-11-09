@@ -38,12 +38,12 @@ export async function withContentChapterStage<T>(input: { storageDir: string; id
   const stagePath = await invoke<string>("content_sync_create_stage");
   try {
     input.signal?.throwIfAborted();
-    if (isAndroidRuntime()) await snapshotAndroidContentChapter(input.storageDir, stagePath);
-    else await runWorkContentStorageOperation(input.identity.pluginId, input.identity.novelPath,
-      () => {
-        input.signal?.throwIfAborted();
-        return invoke("content_sync_snapshot", { storageDir: input.storageDir, stagePath });
-      });
+    await runWorkContentStorageOperation(input.identity.pluginId, input.identity.novelPath, () => {
+      input.signal?.throwIfAborted();
+      return isAndroidRuntime()
+        ? snapshotAndroidContentChapter(input.storageDir, stagePath)
+        : invoke("content_sync_snapshot", { storageDir: input.storageDir, stagePath });
+    });
     input.signal?.throwIfAborted();
     return await run(stagePath);
   } finally {

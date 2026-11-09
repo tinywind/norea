@@ -1,7 +1,7 @@
 import { getDb, runDatabaseTransaction } from "./client";
 import {
   assertUserStateAvailableInDb, chapterReference, chapterWork, emitUserStateApplied, hasUserStateSchema,
-  recordUserStateChangesInDb, recordResumeClearedInDb, requireBinding, workspaceRows,
+  recordUserStateChangesInDb, recordResumeClearedInDb, requestUserStateDeferredApply, requireBinding, workspaceRows,
   USER_CHAPTER_SELECT, userStateRestorePausedInDb, type UserChapterRow, type UserStateDb,
 } from "./user-state-core";
 import {
@@ -59,6 +59,8 @@ export async function listUserStateDeferred(binding: UserStateBinding): Promise<
   return listUserStateDeferredInDb(await getDb(), binding);
 }
 
+const USER_STATE_PROJECTION_CHUNK = 16;
+
 function projectionPriority(record: UserStateRecord): number {
   switch (record.entity.kind) {
     case "category": return 0;
@@ -75,10 +77,23 @@ async function projectUserStateRecordsInDb(
   await assertUserStateAvailableInDb(db);
   const effects: UserStateApplyEffects = { resumes: [] };
   const records = raws.map(parseUserStateRecord).sort((a, b) => projectionPriority(a) - projectionPriority(b) || a.revision - b.revision);
+  if (!records.length) return effects;
+
+  const dirtyBefore = await db.select<{ pluginId: string; path: string }[]>(
+    "SELECT plugin_id AS pluginId,path FROM work_metadata_dirty ORDER BY plugin_id,path",
+  );
+  const identities = records.map(record => ({ entityKey: userStateEntityKey(record.entity), revision: record.revision }));
+  const stored = await db.select<{ entityKey: string; revision: number; appliedRevision: number }[]>(`
+    SELECT r.entity_key AS entityKey,r.revision,r.applied_revision AS appliedRevision
+    FROM user_state_record r JOIN json_each($2) incoming
+      ON r.entity_key=json_extract(incoming.value,'$.entityKey')
+    WHERE r.namespace=$1`, [namespace, JSON.stringify(identities)]);
+  const state = new Map(stored.map(row => [row.entityKey, row]));
+
   for (const record of records) {
     const key = userStateEntityKey(record.entity);
-    const [latest] = await db.select<{ revision: number }[]>("SELECT revision FROM user_state_record WHERE namespace=$1 AND entity_key=$2", [namespace, key]);
-    if (latest?.revision !== record.revision) continue;
+    const current = state.get(key);
+    if (!current || current.revision !== record.revision || current.appliedRevision >= record.revision) continue;
     if (await hasPendingUserStateForRecordInDb(db, namespace, record)) continue;
     try {
       const next = await materializeUserStateRecordInDb(db, namespace, record);
@@ -89,19 +104,45 @@ async function projectUserStateRecordsInDb(
       // Projection is optional. The durable user_state_record remains the source of
       // truth even when matching local content is absent or temporarily inconsistent.
       // A later metadata mutation may make this exact record projectable.
-      await db.execute("UPDATE user_state_record SET deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
+      await db.execute("UPDATE user_state_record SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
         [namespace, key, record.revision]);
       if (!(error instanceof DeferredUserState)) {
         console.warn("[user-state] stored shared state but could not project it into local content", error);
       }
     }
   }
+
+  // Personal state is independent of content metadata files. Composition/library
+  // projections may trip generic metadata-dirty triggers, but those files must not
+  // be rewritten merely because shared user state arrived.
+  await db.execute("DELETE FROM work_metadata_dirty");
+  if (dirtyBefore.length) {
+    await db.execute(`INSERT INTO work_metadata_dirty(plugin_id,path)
+      SELECT json_extract(value,'$.pluginId'),json_extract(value,'$.path') FROM json_each($1) WHERE true
+      ON CONFLICT(plugin_id,path) DO NOTHING`, [JSON.stringify(dirtyBefore)]);
+  }
   return effects;
+}
+
+async function yieldUserStateProjection(): Promise<void> {
+  // Projection is a convenience view over durable user-state records. Yield a
+  // frame between small write transactions so library queries, cover reads and
+  // other native bridge work stay responsive while a large history catches up.
+  await new Promise<void>(resolve => setTimeout(resolve, 16));
 }
 
 async function projectUserStateRecords(binding: UserStateBinding, records: readonly UserStateRecord[]): Promise<UserStateApplyEffects> {
   if (!records.length) return { resumes: [] };
-  const effects = await runDatabaseTransaction(db => projectUserStateRecordsInDb(db, binding, records), true);
+  const effects: UserStateApplyEffects = { resumes: [] };
+  for (let start = 0; start < records.length; start += USER_STATE_PROJECTION_CHUNK) {
+    await yieldUserStateProjection();
+    const next = await runDatabaseTransaction(
+      db => projectUserStateRecordsInDb(db, binding, records.slice(start, start + USER_STATE_PROJECTION_CHUNK)),
+      true,
+      { publishMetadata: false, notifyContentSync: false },
+    );
+    effects.resumes.push(...next.resumes);
+  }
   emitUserStateApplied(effects);
   emitUserStateLedgerChanged();
   return effects;
@@ -128,19 +169,28 @@ export async function materializePendingUserState(binding: UserStateBinding): Pr
   return projectUserStateRecords(binding, rows.map(row => parseUserStateRecord(JSON.parse(row.payload))));
 }
 export async function applyUserStateReadPage(binding: UserStateBinding, page: UserStateReadResponse): Promise<UserStateApplyEffects> {
-  await runDatabaseTransaction(db => applyUserStateReadPageInDb(db, binding, page));
+  await runDatabaseTransaction(async db => {
+    await applyUserStateReadPageInDb(db, binding, page);
+    requestUserStateDeferredApply(db);
+  });
   emitUserStateLedgerChanged();
-  return projectUserStateRecords(binding, page.records);
+  return { resumes: [] };
 }
 export async function acknowledgeUserStateOperations(binding: UserStateBinding, results: UserStateMergeResult[]): Promise<UserStateApplyEffects> {
-  await runDatabaseTransaction(db => acknowledgeUserStateOperationsInDb(db, binding, results));
+  await runDatabaseTransaction(async db => {
+    await acknowledgeUserStateOperationsInDb(db, binding, results);
+    requestUserStateDeferredApply(db);
+  });
   emitUserStateLedgerChanged();
-  return projectUserStateRecords(binding, results.flatMap(result => result.current ? [result.current] : []));
+  return { resumes: [] };
 }
 export async function resolveUserStateLedgerConflict(binding: UserStateBinding, input: { id: string; version: string; choice: "local" | "shared"; categoryName?: string }): Promise<UserStateApplyEffects> {
-  await runDatabaseTransaction(db => resolveUserStateLedgerConflictInDb(db, binding, input));
+  await runDatabaseTransaction(async db => {
+    await resolveUserStateLedgerConflictInDb(db, binding, input);
+    requestUserStateDeferredApply(db);
+  });
   emitUserStateLedgerChanged();
-  return materializePendingUserState(binding);
+  return { resumes: [] };
 }
 
 export async function recordUserResume(chapterId: number, anchor: PortableReaderAnchor | null, openedAt: number): Promise<void> {
@@ -170,7 +220,6 @@ export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: numbe
   const [work] = await db.select<{ pluginId: string; sourceNovelId: string | null }[]>("SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId FROM novel WHERE id=$1", [novelId]);
   if (work?.sourceNovelId) await db.execute(`UPDATE user_state_record SET applied_revision=0 WHERE
     json_extract(payload,'$.entity.work.pluginId')=$1 AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)`, [work.pluginId, work.sourceNovelId]);
-  const { requestUserStateDeferredApply } = await import("./user-state-core");
   requestUserStateDeferredApply(db);
 }
 export async function applyDeferredUserState(): Promise<void> {

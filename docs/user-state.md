@@ -97,6 +97,20 @@ Composition conflicts retain both complete arrangements. Applying one keeps the
 existing file-ownership and rollback checks. User order, labels, exclusions,
 primary source decisions, and physical storage identities remain explicit.
 
+## Local projection and foreground responsiveness
+
+Receiving and acknowledging shared user state ends at the durable user-state
+ledger. Synchronization does not wait for the convenience projection into the
+novel, chapter, or category tables. That projection runs separately in small
+background transactions and yields between them so library queries, stored-cover
+reads, image decoding, and other foreground/native bridge work remain responsive.
+
+A projection that cannot find matching local content is considered parked, not a
+failed synchronization item. The durable user-state record remains authoritative.
+When metadata for that work changes later, only that work is marked for projection
+again; the client does not repeatedly rescan every unrelated stored user-state
+record.
+
 ## Automatic timing
 
 Automatic sharing is intentionally split by change type:

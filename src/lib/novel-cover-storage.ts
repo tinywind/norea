@@ -5,6 +5,7 @@ import type { Plugin } from "./plugins/types";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 import { resolvedNovelStorageDir } from "./chapter-storage-resolution";
 import { coverContentType } from "./work-metadata/schema";
+import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
 
 const NOVEL_COVER_BASENAME = "cover";
 const DEFAULT_COVER_EXTENSION = "img";
@@ -502,7 +503,9 @@ export async function resolveStoredNovelCoverSrc(
 ): Promise<string | null> {
   if (!isTauriRuntime()) return null;
 
-  const stored = await readStoredNovelCover(novel);
+  const stored = await runWorkContentStorageOperation(
+    novel.pluginId, novel.path, () => readStoredNovelCover(novel),
+  );
   if (!stored) return null;
 
   return storedNovelCoverSrc(stored, novel.id);
