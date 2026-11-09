@@ -811,30 +811,51 @@ Portable backup manifest format 6 includes each work's optional composition and 
 When the user selects the target source's body, an optional `discardSourceContent: true` chapter decision separates reading-state migration from body preservation. The A-to-B chapter mapping remains available for personal reading progress, while the corresponding server artifact mapping is `delete-source`. The server requires the explicit flag, complete source decision coverage, and a target entry in the final metadata; it rejects contradictory copy/preserve requests. A missing B body is fetched from B later. Server-only copy, migration-chain replay, and recipient-device merge paths must never substitute A's body for that choice.
 
 
-## Shared User Changes (Migration 11)
+## Shared User State (Migration 11, Current Protocol 2)
 
-Migration 11 adds the user-state journal, immutable attempted operations,
-per-workspace records/cursors/acknowledgements, category identity and alias maps,
-private-reading markers, and restore fence. Baseline SQL and migrations 1–10 keep
-their original checksums. Existing application tables and relationships remain
-intact. The server adds isolated user-state tables without modifying its original
-schema checksum or existing content, archives, private profiles, or device keys.
+Migration 11 remains unchanged. Its journal, operations, records, category maps,
+private-reading markers and restore fence retain their data and checksums.
+Current sharing now reads public SQLite values in bulk and exchanges a version-2
+current-state JSON snapshot. It no longer seeds or drains the event journal.
+No additional app SQL migration or portable backup format change is required.
 
-The protocol is userStateVersion 1, independent of legacy reading-state and
-archive versions. Stable work/chapter references replace local integer IDs.
-Operation IDs are unique across the admitted-device workspace and retain their
-original authored receipt across exact retries. Different payload reuse fails.
-Cursors, tombstones, receipts, and attempted payloads are retained across restart.
+The server advertises userStateVersion 2 and userStateCurrentVersion 2, adds
+isolated current-state tables and imports supported positive V1 current values.
+Existing server records, receipts, content, archives and device credentials remain
+intact. Old event read/merge routes require an app upgrade so two incompatible
+sharing models cannot silently diverge. App and server must be released together.
 
-Portable format 6 has an optional category stableId field. Native restore validates
-it and restores only exact stable mappings; an absent field never authorizes
-numeric-ID or name-based reconnection. It sets paused/restored markers atomically
-while preserving the existing ledger. A failed restore rolls those markers back.
-The in-process sharing/restore gate aborts and awaits active sharing before native
-replacement, without holding a database transaction across network I/O.
+Missing records never authorize receiver deletion. Library works, categories,
+memberships and bookmarks are additive; public reading and resume values merge
+by their saved time, and composed chapter lists retain their source provenance,
+physical storage keys and user order. The existing portable restore fence still
+requires explicit reconnection; that action now merges current public values.
+See [current sharing rules and privacy](user-state.md).
 
-Explicit reconnection resumes existing shared records and pending commands,
-including manual edits after restoration. The permanent restored marker prevents
-snapshot values from being seeded to this or another workspace. The sharing
-screen explains that shared values may replace restored values. See
-[the full conflict and privacy contract](user-state.md).
+Recovered source chapters may use an opaque `norea-stored:` current-state chapter
+reference containing the canonical physical folder key and content SHA-256.
+It is scoped by the existing stable work identity. Applying it requires one local
+owner of the physical key and freshly inspected matching nonempty body and all
+declared media. Missing or incomplete inventories remain pending. Numeric keys,
+titles, and displayed order alone never authorize an update. Local chapter paths,
+original files, private-reading keys, and database migrations remain unchanged.
+The current server already preserves these opaque references without a schema or
+endpoint change. Apps that do not resolve them retain them as unmatched current
+values until updated. Ordinary provider paths and content-hash local imports keep
+their existing identities; raw folder placeholders are still not shared.
+
+### Reconciliation of completed work migrations
+
+Completed local migrations resolve retired server entries to their exact current
+destination. Opening or adding an old entry refreshes the destination's current
+metadata and connection while retaining local composition and downloaded data.
+It never reapplies an obsolete saved target chapter number.
+
+The workMigrationReconcileVersion 1 capability accepts an unchanged legacy
+receipt request plus a separate conditional request against current snapshots.
+The server verifies existing copy/keep decisions and inventories before retiring
+an accidentally restored source. New lineage carries its explicit legacy operation
+reference so a later deliberate revocation also releases the old local relation.
+Retries reuse the exact saved request. Ordinary rescan restore flags cannot revive
+a source retired by migration; deliberate restoration must name its operation.
+This uses existing app content_sync_cache storage and preserves prior SQL schemas.

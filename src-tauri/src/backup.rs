@@ -984,6 +984,7 @@ fn publish_auto_backup(
         let prefix = match err.kind() {
             std::io::ErrorKind::NotFound
             | std::io::ErrorKind::NotADirectory
+            | std::io::ErrorKind::AlreadyExists
             | std::io::ErrorKind::PermissionDenied => AUTO_BACKUP_FOLDER_UNAVAILABLE,
             _ => "backup_publish_auto",
         };
@@ -1818,14 +1819,16 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let not_a_folder = dir.path().join("storage");
         fs::write(&not_a_folder, b"file").expect("seed file");
-        let error = publish_auto_backup(
-            &not_a_folder.join(AUTO_BACKUP_DIR),
-            "{}",
-            "norea-auto-backup-20261103000000.zip",
-            1,
-        )
-        .expect_err("a file in place of the storage folder");
-        assert!(error.starts_with(AUTO_BACKUP_FOLDER_UNAVAILABLE), "{error}");
+        for backups in [not_a_folder.clone(), not_a_folder.join(AUTO_BACKUP_DIR)] {
+            let error = publish_auto_backup(
+                &backups,
+                "{}",
+                "norea-auto-backup-20261103000000.zip",
+                1,
+            )
+            .expect_err("a file in place of the storage folder");
+            assert!(error.starts_with(AUTO_BACKUP_FOLDER_UNAVAILABLE), "{error}");
+        }
     }
 
     fn test_limits() -> BackupArchiveLimits {

@@ -114,6 +114,12 @@ jobs:
         if: matrix.language == 'java-kotlin'
         run: pnpm install --frozen-lockfile
 
+      - name: Prepare verified Gradle distribution
+        if: matrix.language == 'java-kotlin'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/prepare-gradle-cache.mjs
+
       - name: Build Android debug APK for Java and Kotlin extraction
         if: matrix.language == 'java-kotlin'
         env:

@@ -8,10 +8,14 @@ const mocks = vi.hoisted(() => ({
   enqueueMain: vi.fn(),
   findNovelBySource: vi.fn(),
   listAllServerWorks: vi.fn(),
+  openServerNovel: vi.fn(),
+  resolveServerNovelTarget: vi.fn(),
 }));
 vi.mock("../../db/queries/category", () => ({ addNovelsToCategory: mocks.addNovelsToCategory }));
 vi.mock("../../db/queries/novel", () => ({ findNovelBySource: mocks.findNovelBySource }));
-vi.mock("../../lib/content-sync/browse", () => ({ listAllServerWorks: mocks.listAllServerWorks }));
+vi.mock("../../lib/content-sync/browse", () => ({
+  listAllServerWorks: mocks.listAllServerWorks, openServerNovel: mocks.openServerNovel, resolveServerNovelTarget: mocks.resolveServerNovelTarget,
+}));
 vi.mock("../../lib/content-sync/device", () => ({ registerContentDevice: vi.fn(async () => "device") }));
 vi.mock("../../lib/tasks/scheduler", () => ({ taskScheduler: { enqueueMain: mocks.enqueueMain } }));
 vi.mock("../../store/content-sync", () => ({ useContentSyncStore: { getState: () => ({ deviceName: "Phone" }) } }));
@@ -35,6 +39,10 @@ beforeEach(() => {
   vi.clearAllMocks();
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   mocks.findNovelBySource.mockResolvedValue(null);
+  mocks.resolveServerNovelTarget.mockImplementation(async (_server: string, selected: ServerWorkSummary) => ({
+    novel: await mocks.findNovelBySource(selected.identity.pluginId, selected.identity.novelPath), migrated: false,
+  }));
+  mocks.openServerNovel.mockResolvedValue(900);
   let nextId = 100;
   mocks.addToLibrary.mockImplementation(async () => nextId++);
 });
@@ -144,4 +152,34 @@ it("resumes a cancelled run with the works it did not reach", async () => {
   await expect(spec.run(context(controller.signal))).rejects.toBeDefined();
   spec.retryManually!();
   expect(retry).toHaveBeenCalledWith([work("d")]);
+});
+
+it("counts a retired source whose exact migration target is already in the library as skipped after refreshing that target", async () => {
+  const retired = work("retired-source");
+  mocks.resolveServerNovelTarget.mockResolvedValue({ novel: { id: 900, inLibrary: true }, migrated: true });
+  const result = await run([retired], undefined, [7]);
+  expect(result).toEqual({ added: 0, failed: [], pending: [], skipped: 1 });
+  expect(mocks.openServerNovel).toHaveBeenCalledWith("http://server", retired);
+  expect(mocks.addToLibrary).not.toHaveBeenCalled();
+  expect(mocks.addNovelsToCategory).not.toHaveBeenCalled();
+});
+
+it("adds an out-of-library migration target through the normal server quick-add path and categorizes the returned target ID", async () => {
+  const retired = work("retired-source");
+  mocks.resolveServerNovelTarget.mockResolvedValue({ novel: { id: 902, inLibrary: false }, migrated: true });
+  mocks.addToLibrary.mockResolvedValue(902);
+  const result = await run([retired], undefined, [7]);
+  expect(result).toEqual({ added: 1, failed: [], pending: [], skipped: 0 });
+  expect(mocks.addToLibrary).toHaveBeenCalledWith({ kind: "server", server: "http://server", work: retired }, "Add");
+  expect(mocks.addNovelsToCategory).toHaveBeenCalledWith([902], 7);
+});
+
+it("reports an ambiguous migration without marking the source as added or mutating library categories", async () => {
+  const retired = work("retired-source");
+  mocks.resolveServerNovelTarget.mockRejectedValue(new Error("The saved work migration history has conflicting targets."));
+  const result = await run([retired], undefined, [7]);
+  expect(result).toMatchObject({ added: 0, skipped: 0, pending: [], failed: [{ work: retired }] });
+  expect(mocks.openServerNovel).not.toHaveBeenCalled();
+  expect(mocks.addToLibrary).not.toHaveBeenCalled();
+  expect(mocks.addNovelsToCategory).not.toHaveBeenCalled();
 });

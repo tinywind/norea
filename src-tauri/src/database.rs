@@ -428,6 +428,7 @@ mod tests {
         sqlx::query("INSERT INTO chapter_download_queue VALUES(1,?1,10,20,30,4)").bind(job)
             .execute(&pool).await.unwrap();
         pool.close().await;
+        let expected_versions: Vec<_> = migrations.iter().map(|migration| migration.version).collect();
         for _ in 0..2 {
             let pool = bootstrap(&path, &migrations).await.unwrap();
             assert_eq!(sqlx::query_as::<_, (i64, String, i64, i64, i64)>(
@@ -439,7 +440,7 @@ mod tests {
             assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM vpn_download_plan")
                 .fetch_one(&pool).await.unwrap(), 0);
             assert_eq!(sqlx::query_scalar::<_, i64>("SELECT version FROM _sqlx_migrations ORDER BY version")
-                .fetch_all(&pool).await.unwrap(), vec![1,2,3,4,5,6,7,8,9]);
+                .fetch_all(&pool).await.unwrap(), expected_versions);
             pool.close().await;
         }
     }

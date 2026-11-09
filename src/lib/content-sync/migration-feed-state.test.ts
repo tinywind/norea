@@ -89,6 +89,7 @@ describe("incoming work migration validation", () => {
     ["local identity", (value: WorkMigrationLineage) => { value.sourceWork.metadata.novel.isLocal = true; }],
     ["same source and target", (value: WorkMigrationLineage) => { value.targetWork = structuredClone(value.sourceWork); }],
     ["invalid operation", (value: WorkMigrationLineage) => { value.operationId = "../other"; }],
+    ["invalid legacy operation", (value: WorkMigrationLineage) => { value.legacyOperationId = "../other"; }],
     ["invalid sequence", (value: WorkMigrationLineage) => { value.sequence = 1.5; }],
     ["retirement mismatch", (value: WorkMigrationLineage) => { value.deletedSource.revision = hash("f"); }],
     ["unavailable source body", (value: WorkMigrationLineage) => { value.mappings[0]!.source.available = false; }],
@@ -123,6 +124,17 @@ describe("incoming work migration validation", () => {
 });
 
 describe("incoming migration events", () => {
+  it("retains an explicit legacy operation binding through persistence and revocation", () => {
+    const input = { ...lineage(), legacyOperationId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" };
+    expect(parseWorkMigrationLineage(input)).toEqual(input);
+    const previous = JSON.parse(JSON.stringify(incomingMigrationFromLineage(server, input))) as IncomingMigration;
+    const revoked = incomingMigrationFromLineage(server, { ...input, sequence: 18, active: false }, previous);
+    expect(revoked).toMatchObject({ status: "inactive", lineage: { legacyOperationId: input.legacyOperationId } });
+    expect(() => incomingMigrationFromLineage(server, {
+      ...input, sequence: 19, legacyOperationId: "99999999-bbbb-cccc-dddd-eeeeeeeeeeee",
+    }, revoked)).toThrow("immutable lineage");
+  });
+
   it("preserves completed receipts across identical replays and newer active events", () => {
     const completed = { ...incomingMigrationFromLineage(server + "/", lineage()), status: "completed" as const };
     expect(completed.serverUrl).toBe(server);

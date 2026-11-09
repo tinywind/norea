@@ -161,6 +161,10 @@ fn inspect_chapter_media_with_io_failure(
     source: &Path,
     io_failure: &impl Fn(&dyn std::fmt::Display) -> String,
 ) -> Result<bool, String> {
+    let metadata = fs::symlink_metadata(source).map_err(|error| io_failure(&error))?;
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(failure("invalid chapter directory"));
+    }
     let artifact_exists = |name| {
         match fs::symlink_metadata(source.join(name)) {
             Ok(metadata) if !metadata.is_file() || metadata.file_type().is_symlink() => {
@@ -880,10 +884,22 @@ mod tests {
     fn download_media_inspection_separates_local_io_from_invalid_server_packages() {
         let root = workspace();
         let io_failure = |error: &dyn std::fmt::Display| chapter_storage_failure("inspect downloaded media", error);
+        assert!(inspect_chapter_media_with_io_failure(root.path(), &io_failure).unwrap());
         let blocked = root.path().join("blocked");
         fs::write(&blocked, "file").unwrap();
-        let error = inspect_chapter_media_with_io_failure(&blocked.join("child"), &io_failure).unwrap_err();
-        assert!(error.starts_with("chapter-storage-failed:"), "{error}");
+        for unavailable in [root.path().join("missing"), blocked.join("child")] {
+            let error = inspect_chapter_media_with_io_failure(&unavailable, &io_failure).unwrap_err();
+            assert!(error.starts_with("chapter-storage-failed:"), "{error}");
+        }
+        let error = inspect_chapter_media_with_io_failure(&blocked, &io_failure).unwrap_err();
+        assert_eq!(error, failure("invalid chapter directory"));
+        #[cfg(unix)]
+        {
+            let linked = root.path().join("linked");
+            std::os::unix::fs::symlink(root.path(), &linked).unwrap();
+            let error = inspect_chapter_media_with_io_failure(&linked, &io_failure).unwrap_err();
+            assert_eq!(error, failure("invalid chapter directory"));
+        }
         fs::write(root.path().join("manifest.json"), "{broken").unwrap();
         let error = inspect_chapter_media_with_io_failure(root.path(), &io_failure).unwrap_err();
         assert!(!error.starts_with("chapter-storage-failed:"), "{error}");

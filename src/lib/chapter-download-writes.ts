@@ -3,6 +3,7 @@ import { ChapterStorageError, isChapterStorageError } from "./chapter-storage-er
 
 const activeWrites = new Map<number, Set<Promise<void>>>();
 const activeDeletions = new Map<number, Set<Promise<void>>>();
+const activeSnapshotReads = new Map<number, Set<Promise<void>>>();
 const downloadRevisions = new Map<number, number>();
 let downloadRevision = 0;
 
@@ -15,6 +16,36 @@ export function canAdoptChapterDownloadSnapshot(chapterId: number, revision: num
     && (downloadRevisions.get(chapterId) ?? 0) <= revision;
 }
 
+export type HoldChapterDownloadSnapshot = (chapterId: number) => boolean;
+
+/** Hold verified files through a database commit; skip busy chapters without waiting inside SQLite. */
+export async function withChapterDownloadSnapshotReads<T>(
+  read: (hold: HoldChapterDownloadSnapshot) => Promise<T>,
+): Promise<T> {
+  const held = new Set<number>();
+  let settle!: () => void;
+  const settled = new Promise<void>(resolve => { settle = resolve; });
+  const hold: HoldChapterDownloadSnapshot = chapterId => {
+    if (held.has(chapterId)) return true;
+    if (activeWrites.has(chapterId) || activeDeletions.has(chapterId)) return false;
+    const reads = activeSnapshotReads.get(chapterId) ?? new Set<Promise<void>>();
+    activeSnapshotReads.set(chapterId, reads);
+    reads.add(settled);
+    held.add(chapterId);
+    return true;
+  };
+  try {
+    return await read(hold);
+  } finally {
+    for (const chapterId of held) {
+      const reads = activeSnapshotReads.get(chapterId)!;
+      reads.delete(settled);
+      if (!reads.size) activeSnapshotReads.delete(chapterId);
+    }
+    settle();
+  }
+}
+
 /** Tracks local filesystem or database writes; keep network waits outside. */
 export async function withChapterDownloadWrite<T>(
   chapterId: number,
@@ -24,9 +55,9 @@ export async function withChapterDownloadWrite<T>(
 ): Promise<T> {
   throwIfAborted(signal, "Chapter download was cancelled.");
   for (;;) {
-    const deletions = activeDeletions.get(chapterId);
-    if (!deletions) break;
-    await Promise.all(deletions);
+    const pending = [...(activeDeletions.get(chapterId) ?? []), ...(activeSnapshotReads.get(chapterId) ?? [])];
+    if (!pending.length) break;
+    await Promise.all(pending);
     throwIfAborted(signal, "Chapter download was cancelled.");
   }
   if (expectedRevision !== undefined && (activeWrites.has(chapterId) || (downloadRevisions.get(chapterId) ?? 0) > expectedRevision)) {
@@ -72,6 +103,8 @@ export async function withChapterDownloadDeletion<T>(
     deletions.add(settled);
   }
   try {
+    const reads = [...selectedChapterIds].flatMap(chapterId => [...(activeSnapshotReads.get(chapterId) ?? [])]);
+    if (reads.length) await Promise.all(reads);
     return await remove();
   } finally {
     for (const chapterId of selectedChapterIds) {

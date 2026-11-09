@@ -9,6 +9,7 @@ vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(asy
   clearServerChapterDownloadProof: vi.fn(), rememberServerChapterDownload: vi.fn(),
   contentIdentity: (plugin: string, novel: string, chapter = "") => JSON.stringify([plugin, novel, chapter]),
 }));
+vi.mock("./completed-novel-migration", () => ({ reconcileCompletedNovelMigrations: vi.fn(async () => 0) }));
 vi.mock("./novel-migration", () => ({ finalizePendingNovelMigrations: vi.fn(async () => false) }));
 vi.mock("./migration-feed", async (original) => ({
   ...await original<typeof import("./migration-feed")>(),

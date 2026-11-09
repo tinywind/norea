@@ -17,15 +17,18 @@ vi.mock("../../db/queries/novel", () => ({ findNovelBySource: vi.fn(async () => 
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 vi.mock("./works", async original => ({ ...await original<typeof import("./works")>(), recordInstalledWorkMetadata: vi.fn() }));
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
-import { installStoredNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
+import { installStoredNovelMetadata, readStoredNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest } from "./client";
-import { listAllServerWorks, listServerWorks, openServerNovel, refreshServerNovel, serverCoverSource } from "./browse";
+import { listAllServerWorks, listServerWorks, openServerNovel, refreshServerNovel, resolveServerNovelTarget, serverCoverSource, type ServerWorkSummary } from "./browse";
 import { rememberServerNovelSource } from "./novel-source";
 import { contentWorkId, recordInstalledWorkMetadata } from "./works";
 import { findNovelBySource } from "../../db/queries/novel";
 import { applyNovelMetadataToCache, rememberStoredNovelMetadata, scanStoredNovelChaptersToCache } from "../../db/work-metadata";
 import { fetchServerChapters } from "./chapters";
-import { cacheServerChapters } from "../../db/queries/content-sync";
+import { cacheServerChapters, listNovelMigrations } from "../../db/queries/content-sync";
+import { listIncomingMigrations, type IncomingMigration } from "./migration-feed-state";
+import type { PendingNovelMigration } from "./novel-migration-types";
+import { chapterCompositionCatalog, type ChapterCompositionV1 } from "../chapter-composition";
 import { recordServerWorkDeletionExclusion } from "./deletion-exclusions";
 
 const metadata: NovelMetadataV1 = {
@@ -44,6 +47,10 @@ const rawDb = { select: rawSelect, execute: rawExecute } as unknown as Database;
 beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal("window", new EventTarget());
   vi.mocked(installStoredNovelMetadata).mockReset().mockResolvedValue(installed);
+  vi.mocked(listNovelMigrations).mockReset().mockResolvedValue([]);
+  vi.mocked(listIncomingMigrations).mockReset().mockResolvedValue([]);
+  vi.mocked(readStoredNovelMetadata).mockReset().mockResolvedValue(null);
+  vi.mocked(fetchServerChapters).mockReset().mockResolvedValue([]);
   vi.mocked(findNovelBySource).mockReset().mockResolvedValue({ id: 42 } as Awaited<ReturnType<typeof findNovelBySource>>);
   vi.mocked(applyNovelMetadataToCache).mockReset().mockResolvedValue(42);
   vi.mocked(scanStoredNovelChaptersToCache).mockReset().mockResolvedValue(undefined);
@@ -243,4 +250,189 @@ it("reads server covers with a caller signal on WebViews without AbortSignal.any
   } finally {
     Object.defineProperty(AbortSignal, "any", original);
   }
+});
+
+const migratedMetadata: NovelMetadataV1 = {
+  ...metadata,
+  identity: { pluginId: "target-source", novelId: "target-book", novelPath: "/target-book" },
+  novel: { ...metadata.novel, name: "Current target title" },
+  chapters: { "1": "Current chapter" },
+};
+const selectedWork = (): Promise<ServerWorkSummary> => contentWorkId(metadata.identity).then(id => ({
+  id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: false, chapterCount: 1,
+}));
+const completedMigration = (
+  source = metadata.identity, target = migratedMetadata.identity, operationId = "legacy-migration",
+): PendingNovelMigration => ({
+  version: 1, serverUrl: "http://server", operationId, source, target,
+  targetLocalNovelId: 900, status: "completed", createdAt: 1, updatedAt: 2, attempts: 1,
+  chapters: [{
+    sourceChapterPath: "/old/chapter/1", sourceChapterNumber: "1",
+    targetChapterPath: "/target/chapter/1", targetChapterNumber: "346378", decision: "copy-source",
+  }],
+  request: {
+    operationId, source: { revision: "saved-source-revision", chapters: [] },
+    target: { id: "saved-target-id", revision: "saved-target-revision" }, mappings: [],
+  },
+});
+
+async function prepareMigratedOpen(current?: NovelMetadataV1, received = migratedMetadata) {
+  const job = completedMigration();
+  const target = {
+    id: 900, sourceNovelId: migratedMetadata.identity.novelId, pluginId: migratedMetadata.identity.pluginId,
+    path: migratedMetadata.identity.novelPath, inLibrary: true, isLocal: false,
+  } as NonNullable<Awaited<ReturnType<typeof findNovelBySource>>>;
+  vi.mocked(listNovelMigrations).mockResolvedValue([job]);
+  vi.mocked(findNovelBySource).mockImplementation(async (pluginId, path) =>
+    pluginId === target.pluginId && path === target.path ? target : null);
+  rawSelect.mockResolvedValue([{ id: target.id, sourceNovelId: target.sourceNovelId }]);
+  const targetId = await contentWorkId(migratedMetadata.identity);
+  vi.mocked(contentServerRequest).mockResolvedValue({ id: targetId, metadata: received, hasCover: false });
+  if (current) vi.mocked(readStoredNovelMetadata).mockResolvedValue({ metadata: current, directory: "contents/target-source/target-book" });
+  const committed = vi.fn();
+  vi.mocked(installStoredNovelMetadata).mockImplementation(async (input, _cover, guard) => {
+    await guard?.(current ? { metadata: current, directory: "contents/target-source/target-book" } : null, rawDb);
+    committed();
+    return { ...installed, metadata: input };
+  });
+  return { target, targetId, job, committed, work: await selectedWork() };
+}
+
+it("reuses a completed legacy migration target and refreshes its current metadata without replaying stale chapter numbers", async () => {
+  const { work, targetId, job } = await prepareMigratedOpen();
+  const chapters = [{
+    id: "current-chapter", chapterPath: "/target/chapter/1", chapterNumber: "1",
+    name: "Current chapter", position: 1, page: "1", contentType: "html" as const, complete: true,
+  }];
+  vi.mocked(fetchServerChapters).mockResolvedValue(chapters);
+  expect(job.targetMetadata).toBeUndefined();
+  expect(job.request?.chapterDecisions).toBeUndefined();
+  await expect(openServerNovel("http://server", work)).resolves.toBe(900);
+  expect(listNovelMigrations).toHaveBeenCalledWith("http://server", true);
+  expect(listIncomingMigrations).toHaveBeenCalledWith("http://server", true);
+  expect(findNovelBySource).toHaveBeenCalledWith("target-source", "/target-book");
+  expect(findNovelBySource).not.toHaveBeenCalledWith("source", "/book");
+  expect(contentServerRequest).toHaveBeenCalledExactlyOnceWith("http://server", "/works/" + targetId, "device");
+  expect(installStoredNovelMetadata).toHaveBeenCalledWith(migratedMetadata, undefined, expect.any(Function));
+  expect(cacheServerChapters).toHaveBeenCalledWith(900, chapters);
+  expect(rememberServerNovelSource).toHaveBeenCalledWith(900, { serverUrl: "http://server", workId: targetId });
+  expect(nativeFetch).not.toHaveBeenCalled();
+  expect(job.chapters[0]!.targetChapterNumber).toBe("346378");
+});
+
+it("preserves a migrated target's manual order, exclusions, names and storage numbers while refreshing source metadata", async () => {
+  const composition: ChapterCompositionV1 = {
+    version: 1, updatedAt: 20,
+    entries: [1, 2, 3].map(number => ({
+      id: "entry-" + number, path: "/target/chapter/" + number, storageChapterNumber: String(number),
+      sources: [{
+        ...migratedMetadata.identity, chapterPath: "/target/chapter/" + number,
+        sourceChapterId: "source-" + number, chapterNumber: String(346377 + number),
+        name: "Source " + number, position: number, page: "1", contentType: "html", releaseTime: null,
+      }],
+      primarySource: 0,
+      user: { included: number !== 3, order: number === 3 ? 0 : 3 - number, name: "My " + number, chapterNumber: number === 3 ? null : String(3 - number) },
+    })),
+  };
+  const current = { ...migratedMetadata, chapterComposition: composition, chapters: chapterCompositionCatalog(composition) };
+  const remoteComposition = structuredClone(composition);
+  remoteComposition.updatedAt = 999;
+  remoteComposition.entries[0]!.user.name = "Unrelated remote title";
+  const received = { ...migratedMetadata, chapterComposition: remoteComposition, chapters: chapterCompositionCatalog(remoteComposition) };
+  const { work } = await prepareMigratedOpen(current, received);
+  await expect(openServerNovel("http://server", work)).resolves.toBe(900);
+  const input = vi.mocked(installStoredNovelMetadata).mock.calls[0]![0];
+  expect(input.chapterComposition).toEqual(composition);
+  expect(input.chapters).toEqual({ "1": "My 1", "2": "My 2" });
+  expect(input.chapterComposition!.entries[0]).toMatchObject({
+    storageChapterNumber: "1", sources: [{ chapterNumber: "346378" }],
+    user: { order: 2, chapterNumber: "2", name: "My 1" },
+  });
+  expect(input.novel.name).toBe("Current target title");
+});
+
+it("follows an exact completed outgoing and incoming migration chain to its final target", async () => {
+  const finalIdentity = { pluginId: "final-source", novelId: "final-book", novelPath: "/final-book" };
+  vi.mocked(listNovelMigrations).mockResolvedValue([completedMigration()]);
+  vi.mocked(listIncomingMigrations).mockResolvedValue([{
+    operationId: "next-migration", source: migratedMetadata.identity, target: finalIdentity,
+    status: "completed", lineage: { active: true },
+  } as IncomingMigration]);
+  vi.mocked(findNovelBySource).mockResolvedValue({ id: 902, sourceNovelId: "final-book", isLocal: false } as never);
+  const target = await resolveServerNovelTarget("http://server", await selectedWork());
+  expect(target).toMatchObject({ migrated: true, identity: finalIdentity, novel: { id: 902 } });
+  expect(target.source.workId).toBe(await contentWorkId(finalIdentity));
+  expect(contentServerRequest).not.toHaveBeenCalled();
+});
+
+it.each(["pending", "failed", "blocked"] as const)("does not redirect an unfinished %s migration", async status => {
+  vi.mocked(listNovelMigrations).mockResolvedValue([{ ...completedMigration(), status }]);
+  const target = await resolveServerNovelTarget("http://server", await selectedWork());
+  expect(target.migrated).toBe(false);
+  expect(target.identity).toEqual(metadata.identity);
+});
+
+it("honors a saved revocation instead of reviving an older completed outgoing redirect", async () => {
+  const job = completedMigration();
+  vi.mocked(listNovelMigrations).mockResolvedValue([job]);
+  vi.mocked(listIncomingMigrations).mockResolvedValue([{
+    operationId: job.operationId, source: job.source, target: job.target,
+    status: "inactive", lineage: { active: false },
+  } as IncomingMigration]);
+  expect((await resolveServerNovelTarget("http://server", await selectedWork())).migrated).toBe(false);
+  expect(contentServerRequest).not.toHaveBeenCalled();
+});
+
+it.each(["branch", "cycle"] as const)("rejects a saved %s before refreshing any work", async kind => {
+  const other = { pluginId: "other-source", novelId: "other-book", novelPath: "/other-book" };
+  vi.mocked(listNovelMigrations).mockResolvedValue([
+    completedMigration(),
+    kind === "branch" ? completedMigration(metadata.identity, other, "second") : completedMigration(migratedMetadata.identity, metadata.identity, "second"),
+  ]);
+  await expect(openServerNovel("http://server", await selectedWork())).rejects.toThrow(kind === "branch" ? "conflicting targets" : "cycle");
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(contentServerRequest).not.toHaveBeenCalled();
+});
+
+it("does not substitute a work with a different stable source ID even when its path is the same", async () => {
+  vi.mocked(listNovelMigrations).mockResolvedValue([completedMigration({ ...metadata.identity, novelId: "another-book" })]);
+  expect((await resolveServerNovelTarget("http://server", await selectedWork())).migrated).toBe(false);
+});
+
+it("rejects a reused local target row before fetching metadata", async () => {
+  const { work } = await prepareMigratedOpen();
+  vi.mocked(findNovelBySource).mockResolvedValue({ id: 900, sourceNovelId: "different-work", isLocal: false } as never);
+  await expect(openServerNovel("http://server", work)).rejects.toThrow("no longer matches");
+  expect(contentServerRequest).not.toHaveBeenCalled();
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+});
+
+it("stops before publishing when the resolved local target changes during the request", async () => {
+  const { work, committed } = await prepareMigratedOpen();
+  rawSelect.mockResolvedValue([{ id: 999, sourceNovelId: migratedMetadata.identity.novelId }]);
+  await expect(openServerNovel("http://server", work)).rejects.toThrow("local migration target changed");
+  expect(committed).not.toHaveBeenCalled();
+  expect(cacheServerChapters).not.toHaveBeenCalled();
+  expect(rememberServerNovelSource).not.toHaveBeenCalled();
+});
+
+it("honors a reconciliation revocation through its explicit legacy operation binding", async () => {
+  const { job, work } = await prepareMigratedOpen();
+  vi.mocked(listIncomingMigrations).mockResolvedValue([{
+    operationId: "new-reconciliation", source: job.source, target: job.target,
+    status: "inactive", lineage: { active: false, legacyOperationId: job.operationId },
+  } as IncomingMigration]);
+  const target = await resolveServerNovelTarget("http://server", work);
+  expect(target.migrated).toBe(false);
+  expect(target.identity).toEqual(metadata.identity);
+  expect(contentServerRequest).not.toHaveBeenCalled();
+});
+
+it("does not infer a legacy revocation from shared work identities without an operation binding", async () => {
+  const { job, work } = await prepareMigratedOpen();
+  vi.mocked(listIncomingMigrations).mockResolvedValue([{
+    operationId: "unrelated-revocation", source: job.source, target: job.target,
+    status: "inactive", lineage: { active: false, legacyOperationId: "another-legacy-operation" },
+  } as IncomingMigration]);
+  expect((await resolveServerNovelTarget("http://server", work)).migrated).toBe(true);
 });
