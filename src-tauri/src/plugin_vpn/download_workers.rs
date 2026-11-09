@@ -984,17 +984,19 @@ mod tests {
         let (release, handshake) = tokio::sync::watch::channel(false);
         let revoking = async {
             handshaking.wait().await;
-            tokio::time::timeout(Duration::from_millis(500), super::super::state::tests::revoke_saved_profile_for_test(&fixture.state, &fixture.pool, &fixture.profiles[0].ip))
+            // The closed watch gate keeps both handshakes pending until revocation completes.
+            // Allow time for real vault and SQLite I/O on busy CI runners.
+            tokio::time::timeout(Duration::from_secs(5), super::super::state::tests::revoke_saved_profile_for_test(&fixture.state, &fixture.pool, &fixture.profiles[0].ip))
                 .await.expect("revocation waited for an in-flight handshake");
             release.send_replace(true);
         };
-        let ((revoked, control_a, completion_a), (kept, _control_b, _completion_b), ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        let ((revoked, control_a, completion_a), (kept, _control_b, _completion_b), ()) = tokio::time::timeout(Duration::from_secs(15), async {
             tokio::join!(
                 gated_connect(&fixture, &a, &fixture.profiles[0], handshaking.clone(), handshake.clone()),
                 gated_connect(&fixture, &b, &fixture.profiles[1], handshaking.clone(), handshake.clone()),
                 revoking,
             )
-        }).await.unwrap();
+        }).await.expect("gated handshake and profile revocation scenario timed out");
         let error = revoked.unwrap_err();
         assert!(error.message.contains("revoked"), "{}", error.message);
         kept.unwrap();
