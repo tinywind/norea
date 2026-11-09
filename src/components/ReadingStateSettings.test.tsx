@@ -5,7 +5,7 @@ import type { UserStateConflict, UserStateStatus } from "../lib/user-state/types
 const mocks = vi.hoisted(() => ({
   sync: vi.fn(), resume: vi.fn(), resolve: vi.fn(), refetch: vi.fn(), setEnabled: vi.fn(),
   categoryName: undefined as string | undefined,
-  status: { workspaceId: "workspace", epoch: "epoch", pending: 2, conflicts: [], deferred: [], lastSuccessAt: null } as UserStateStatus,
+  status: { workspaceId: "workspace", epoch: "epoch", pending: 2, conflicts: [], lastSuccessAt: null } as UserStateStatus,
   store: { enabledByServer: {} as Record<string, true>, runtimeByServer: {} },
 }));
 vi.mock("react", async original => ({
@@ -72,7 +72,7 @@ const categoryConflict = (): UserStateConflict => ({
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.categoryName = undefined;
-  mocks.status = { workspaceId: "workspace", epoch: "epoch", pending: 2, conflicts: [], deferred: [], lastSuccessAt: null };
+  mocks.status = { workspaceId: "workspace", epoch: "epoch", pending: 2, conflicts: [], lastSuccessAt: null };
   mocks.store.enabledByServer = {};
   mocks.sync.mockResolvedValue(undefined);
   mocks.resume.mockResolvedValue(undefined);
@@ -165,9 +165,8 @@ it("labels category restoration before including a work in a deleted category", 
   }));
 });
 
-it("retains a visible waiting explanation for unresolved exact chapter identities", () => {
-  mocks.status.deferred = [{ id: "deferred-1", entity: { kind: "reading", work, chapter: { chapterPath: "/chapter/1", name: "Chapter one" } }, reason: "chapter-missing" }];
+it("shows only synchronization work, not local content projection backlog", () => {
   const elements = view();
-  expect(elements.some(item => item.props.children === "Changes waiting to be applied")).toBe(true);
-  expect(elements.some(item => typeof item.props.children === "string" && item.props.children.includes("Original chapter files stay untouched"))).toBe(true);
+  expect(elements.some(item => item.props.children === "Changes waiting to be applied")).toBe(false);
+  expect(elements.some(item => item.props.children === "Pending: 2 · Conflicts: 0")).toBe(true);
 });

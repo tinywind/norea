@@ -1968,7 +1968,7 @@
   "userState.lastSuccess": "Last shared: {time}",
   "userState.never": "No successful sharing session yet",
   "userState.status": "Sharing status",
-  "userState.counts": "Pending: {pending} · Conflicts: {conflicts} · Waiting to apply: {deferred}",
+  "userState.counts": "Pending: {pending} · Conflicts: {conflicts}",
   "userState.conflictsDescription": "Compare both saved edits and choose the value to keep. Each choice applies only to the version shown.",
   "userState.local": "This device's edit",
   "userState.shared": "Shared edit",

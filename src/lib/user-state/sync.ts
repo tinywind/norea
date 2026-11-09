@@ -1,6 +1,6 @@
 import {
   acknowledgeUserStateOperations, applyUserStateReadPage, assertUserStateAvailable, bindUserStateWorkspace, getUserStateBinding,
-  getUserStateLedgerStatus, listUserStateConflicts, listUserStateDeferred, prepareUserStateOperations,
+  getUserStateLedgerStatus, listUserStateConflicts, prepareUserStateOperations,
   resolveUserStateLedgerConflict, resumeUserStateAfterRestore as resumeRestoredLedger, setUserStateActiveServer,
 } from "../../db/user-state";
 import { useContentSyncStore } from "../../store/content-sync";
@@ -14,7 +14,7 @@ import { forgetContentDeviceRegistration, registerContentDevice, type ContentCap
 import {
   canonicalUserStateJson, parseUserStateMergeResponse, parseUserStateOperation, parseUserStateReadResponse,
   parseUserStateWorkspace, userStateEntityKey, userStateJsonBytes, UserStateProtocolError,
-  USER_STATE_CLIENT_BATCH_BYTES, USER_STATE_MAX_BATCH, USER_STATE_MAX_BYTES, USER_STATE_VERSION,
+  USER_STATE_CLIENT_BATCH_BYTES, USER_STATE_LEGACY_MAX_BATCH, USER_STATE_MAX_BYTES, USER_STATE_VERSION,
   type ResolveUserStateConflictInput, type UserStateBinding, type UserStateMergeResponse, type UserStateOperation,
   type UserStateReadResponse, type UserStateStatus, type UserStateWorkspace,
 } from "./types";
@@ -156,13 +156,11 @@ export async function getUserStateStatus(): Promise<UserStateStatus> {
   const serverUrl = selectedServer();
   const binding = serverUrl ? await getUserStateBinding(serverUrl) : null;
   const status = await getUserStateLedgerStatus(binding ?? null);
-  const [conflicts, deferred] = binding ? await Promise.all([
-    listUserStateConflicts(binding), listUserStateDeferred(binding),
-  ]) : [[], []];
+  const conflicts = binding ? await listUserStateConflicts(binding) : [];
   return {
     workspaceId: binding?.workspaceId ?? null, epoch: binding?.epoch ?? null,
-    pending: status.pending, conflicts, deferred, lastSuccessAt: status.lastSuccessAt,
-    pausedAfterRestore: status.pausedAfterRestore === true,
+    pending: status.pending, conflicts,
+    lastSuccessAt: status.lastSuccessAt, pausedAfterRestore: status.pausedAfterRestore === true,
   };
 }
 
@@ -186,6 +184,7 @@ async function runSynchronization(serverUrl: string, controller: AbortController
     if (capabilities.userStateVersion !== USER_STATE_VERSION) {
       throw new Error("This content server does not support shared user changes. Update the server before sharing.");
     }
+    const bulk = capabilities.userStateBulkVersion === 1;
     const token = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName, signal);
     check();
     const workspace = parseUserStateWorkspace(await request(serverUrl, "/user-state", token, signal));
@@ -204,7 +203,8 @@ async function runSynchronization(serverUrl: string, controller: AbortController
       for (;;) {
         const through = status.through ?? target;
         const page = parseUserStateReadResponse(await request(serverUrl, "/user-state/read", token, signal, {
-          workspaceId: binding.workspaceId, epoch: binding.epoch, after: status.cursor, through, limit: USER_STATE_MAX_BATCH,
+          workspaceId: binding.workspaceId, epoch: binding.epoch, after: status.cursor, through,
+          ...(bulk ? {} : { limit: USER_STATE_LEGACY_MAX_BATCH }),
         }));
         check();
         validateUserStatePage(page, binding, status.cursor, through);
@@ -249,7 +249,8 @@ async function runSynchronization(serverUrl: string, controller: AbortController
     for (;;) {
       check();
       const operations = (await prepareUserStateOperations(binding, {
-        limit: USER_STATE_MAX_BATCH, maxBytes: USER_STATE_CLIENT_BATCH_BYTES - 2048,
+        ...(bulk ? {} : { limit: USER_STATE_LEGACY_MAX_BATCH }),
+        maxBytes: USER_STATE_CLIENT_BATCH_BYTES - 2048,
       })).map(parseUserStateOperation);
       check();
       if (!operations.length) break;

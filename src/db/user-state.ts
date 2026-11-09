@@ -1,7 +1,7 @@
 import { getDb, runDatabaseTransaction } from "./client";
 import {
   assertUserStateAvailableInDb, chapterReference, chapterWork, emitUserStateApplied, hasUserStateSchema,
-  namespaceFor, recordUserStateChangesInDb, recordResumeClearedInDb, requireBinding, workspaceRows,
+  recordUserStateChangesInDb, recordResumeClearedInDb, requireBinding, workspaceRows,
   USER_CHAPTER_SELECT, userStateRestorePausedInDb, type UserChapterRow, type UserStateDb,
 } from "./user-state-core";
 import {
@@ -11,9 +11,9 @@ import {
 } from "./user-state-ledger";
 import { DeferredUserState, materializeUserStateRecordInDb, hasPendingUserStateForRecordInDb, refreshUnattemptedUserStateIdentitiesInDb } from "./user-state-materialize";
 import {
-  parsePortableReaderAnchor, parseUserStateRecord,
+  parsePortableReaderAnchor, parseUserStateRecord, userStateEntityKey,
   type PortableReaderAnchor, type UserStateApplyEffects, type UserStateBinding, type UserStateConflict,
-  type UserStateDeferred, type UserStateMergeResult, type UserStateOperation, type UserStateReadResponse,
+  type UserStateDeferred, type UserStateMergeResult, type UserStateOperation, type UserStateReadResponse, type UserStateRecord,
 } from "../lib/user-state/types";
 
 export { subscribeUserStateApplied, subscribeUserStateChanges, subscribeUserStateLedgerChanges } from "./user-state-core";
@@ -59,58 +59,83 @@ export async function listUserStateDeferred(binding: UserStateBinding): Promise<
   return listUserStateDeferredInDb(await getDb(), binding);
 }
 
+function projectionPriority(record: UserStateRecord): number {
+  switch (record.entity.kind) {
+    case "category": return 0;
+    case "library": return 1;
+    case "composition": return 2;
+    default: return 3;
+  }
+}
+
+async function projectUserStateRecordsInDb(
+  db: UserStateDb, binding: UserStateBinding, raws: readonly UserStateRecord[],
+): Promise<UserStateApplyEffects> {
+  const { namespace } = await requireBinding(db, binding);
+  await assertUserStateAvailableInDb(db);
+  const effects: UserStateApplyEffects = { resumes: [] };
+  const records = raws.map(parseUserStateRecord).sort((a, b) => projectionPriority(a) - projectionPriority(b) || a.revision - b.revision);
+  for (const record of records) {
+    const key = userStateEntityKey(record.entity);
+    const [latest] = await db.select<{ revision: number }[]>("SELECT revision FROM user_state_record WHERE namespace=$1 AND entity_key=$2", [namespace, key]);
+    if (latest?.revision !== record.revision) continue;
+    if (await hasPendingUserStateForRecordInDb(db, namespace, record)) continue;
+    try {
+      const next = await materializeUserStateRecordInDb(db, namespace, record);
+      effects.resumes.push(...next.resumes);
+      await db.execute("UPDATE user_state_record SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
+        [namespace, key, record.revision]);
+    } catch (error) {
+      // Projection is optional. The durable user_state_record remains the source of
+      // truth even when matching local content is absent or temporarily inconsistent.
+      // A later metadata mutation may make this exact record projectable.
+      await db.execute("UPDATE user_state_record SET deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
+        [namespace, key, record.revision]);
+      if (!(error instanceof DeferredUserState)) {
+        console.warn("[user-state] stored shared state but could not project it into local content", error);
+      }
+    }
+  }
+  return effects;
+}
+
+async function projectUserStateRecords(binding: UserStateBinding, records: readonly UserStateRecord[]): Promise<UserStateApplyEffects> {
+  if (!records.length) return { resumes: [] };
+  const effects = await runDatabaseTransaction(db => projectUserStateRecordsInDb(db, binding, records), true);
+  emitUserStateApplied(effects);
+  emitUserStateLedgerChanged();
+  return effects;
+}
+
 export async function materializePendingUserState(binding: UserStateBinding): Promise<UserStateApplyEffects> {
   const generation = activeGeneration;
   const allowed = () => activeGeneration === generation && (activeServer === null || activeServer === binding.serverUrl);
+  if (!allowed()) return { resumes: [] };
   const db = await getDb();
-  await requireBinding(db, binding);
+  const { namespace } = await requireBinding(db, binding);
   await assertUserStateAvailableInDb(db);
-  const namespace = namespaceFor(binding);
-  const candidates = await db.select<{ entityKey: string; payload: string }[]>(`SELECT entity_key AS entityKey,payload FROM user_state_record
-    WHERE namespace=$1 AND (applied_revision<revision OR deferred_reason IS NOT NULL OR json_extract(payload,'$.entity.kind')='resume')
+  const rows = await db.select<{ payload: string }[]>(`SELECT payload FROM user_state_record r
+    WHERE namespace=$1 AND applied_revision<revision AND (
+      json_extract(payload,'$.entity.kind') IN ('category','library')
+      OR EXISTS (
+        SELECT 1 FROM novel n
+        WHERE n.plugin_id=json_extract(r.payload,'$.entity.work.pluginId')
+          AND lower(n.source_novel_id)=lower(json_extract(r.payload,'$.entity.work.sourceNovelId'))
+      )
+    )
     ORDER BY CASE json_extract(payload,'$.entity.kind') WHEN 'category' THEN 0 WHEN 'library' THEN 1 WHEN 'composition' THEN 2 ELSE 3 END,revision`, [namespace]);
-  const effects: UserStateApplyEffects = { resumes: [] };
-  for (const candidate of candidates) {
-    if (!allowed()) break;
-    const record = parseUserStateRecord(JSON.parse(candidate.payload));
-    try {
-      const next = await runDatabaseTransaction(async transaction => {
-        await requireBinding(transaction, binding);
-        await assertUserStateAvailableInDb(transaction);
-        if (!allowed()) return { resumes: [] };
-        const [latest] = await transaction.select<{ revision: number }[]>("SELECT revision FROM user_state_record WHERE namespace=$1 AND entity_key=$2", [namespace, candidate.entityKey]);
-        if (latest?.revision !== record.revision) return { resumes: [] };
-        if (await hasPendingUserStateForRecordInDb(transaction, namespace, record)) throw new DeferredUserState("pending-local-change");
-        const result = await materializeUserStateRecordInDb(transaction, namespace, record);
-        await transaction.execute("UPDATE user_state_record SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
-          [namespace, candidate.entityKey, record.revision]);
-        return result;
-      }, true);
-      effects.resumes.push(...next.resumes);
-    } catch (error) {
-      if (!allowed()) break;
-      await runDatabaseTransaction(async transaction => {
-        await requireBinding(transaction, binding);
-        await assertUserStateAvailableInDb(transaction);
-        if (!allowed()) return;
-        await transaction.execute("UPDATE user_state_record SET deferred_reason=$4,deferred_detail=$5 WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
-          [namespace, candidate.entityKey, record.revision, error instanceof DeferredUserState ? error.reason : "application-failed",
-            error instanceof Error ? error.message : String(error)]);
-      });
-    }
-  }
-  if (allowed()) { emitUserStateApplied(effects); emitUserStateLedgerChanged(); }
-  return effects;
+  if (!allowed()) return { resumes: [] };
+  return projectUserStateRecords(binding, rows.map(row => parseUserStateRecord(JSON.parse(row.payload))));
 }
 export async function applyUserStateReadPage(binding: UserStateBinding, page: UserStateReadResponse): Promise<UserStateApplyEffects> {
   await runDatabaseTransaction(db => applyUserStateReadPageInDb(db, binding, page));
   emitUserStateLedgerChanged();
-  return materializePendingUserState(binding);
+  return projectUserStateRecords(binding, page.records);
 }
 export async function acknowledgeUserStateOperations(binding: UserStateBinding, results: UserStateMergeResult[]): Promise<UserStateApplyEffects> {
   await runDatabaseTransaction(db => acknowledgeUserStateOperationsInDb(db, binding, results));
   emitUserStateLedgerChanged();
-  return materializePendingUserState(binding);
+  return projectUserStateRecords(binding, results.flatMap(result => result.current ? [result.current] : []));
 }
 export async function resolveUserStateLedgerConflict(binding: UserStateBinding, input: { id: string; version: string; choice: "local" | "shared"; categoryName?: string }): Promise<UserStateApplyEffects> {
   await runDatabaseTransaction(db => resolveUserStateLedgerConflictInDb(db, binding, input));

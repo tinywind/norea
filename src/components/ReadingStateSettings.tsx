@@ -284,24 +284,13 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
         <SettingsFieldRow label={t("userState.status")} layout="stacked">
           <Stack gap="sm">
             <Text size="sm" role="status">{t("userState.counts", {
-              pending: data.pending, conflicts: data.conflicts.length, deferred: data.deferred.length,
+              pending: data.pending, conflicts: data.conflicts.length,
             })}</Text>
             {data.conflicts.length ? <Text size="sm">{t("userState.conflictsDescription")}</Text> : null}
             {data.conflicts.map(conflict => (
               <UserStateConflictCard key={conflict.id + ":" + conflict.version} conflict={conflict} busy={working || pausedAfterRestore}
                 onResolve={input => { void run(() => resolveUserStateConflict(input)); }} />
             ))}
-            {data.deferred.length ? (
-              <Paper withBorder p="sm">
-                <Stack gap="xs">
-                  <Text fw="var(--norea-weight-bold)" size="sm">{t("userState.deferredTitle")}</Text>
-                  <Text size="sm">{t("userState.deferredDescription")}</Text>
-                  {data.deferred.map(item => (
-                    <Text key={item.id + ":" + item.reason} size="sm">{[userStateEntityLabel(item.entity, t), item.categoryName, reasonLabel(item.reason, true, t)].filter(Boolean).join(" · ")}</Text>
-                  ))}
-                </Stack>
-              </Paper>
-            ) : null}
           </Stack>
         </SettingsFieldRow>
       ) : null}

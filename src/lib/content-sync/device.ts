@@ -8,6 +8,7 @@ export interface ContentCapabilities {
   personalStateSync: boolean;
   readingStateVersion?: number;
   userStateVersion?: number;
+  userStateBulkVersion?: number;
   userStateCurrentVersion?: number;
 }
 

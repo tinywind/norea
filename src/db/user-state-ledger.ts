@@ -1,6 +1,6 @@
 import {
   canonicalUserStateJson, parseUserStateMergeResult, parseUserStateOperation, parseUserStateReadResponse, parseUserStateRecord,
-  USER_STATE_CLIENT_BATCH_BYTES, USER_STATE_MAX_BATCH, userStateEntityKey, userStateJsonBytes,
+  USER_STATE_CLIENT_BATCH_BYTES, userStateEntityKey, userStateJsonBytes,
   type UserStateBinding, type UserStateConflict, type UserStateDeferred, type UserStateEntity,
   type UserStateMergeResult, type UserStateOperation, type UserStateReadResponse, type UserStateRecord, type UserStateValueMap,
 } from "../lib/user-state/types";
@@ -50,20 +50,20 @@ export async function prepareUserStateOperationsInDb(
 ): Promise<UserStateOperation[]> {
   await assertUserStateAvailableInDb(db);
   const { namespace } = await requireBinding(db, binding);
-  const limit = Math.max(1, Math.min(USER_STATE_MAX_BATCH, limits.limit ?? USER_STATE_MAX_BATCH));
+  const limit = limits.limit === undefined ? null : Math.max(1, Math.floor(limits.limit));
   const maxBytes = Math.min(USER_STATE_CLIENT_BATCH_BYTES, limits.maxBytes ?? USER_STATE_CLIENT_BATCH_BYTES);
   const result: UserStateOperation[] = [];
   let bytes = userStateJsonBytes({ workspaceId: binding.workspaceId, epoch: binding.epoch, operations: [] });
   const include = (operation: UserStateOperation): boolean => {
     const size = userStateJsonBytes(operation) + 1;
-    if (result.length >= limit || bytes + size > maxBytes) return false;
+    if ((limit !== null && result.length >= limit) || bytes + size > maxBytes) return false;
     result.push(operation); bytes += size; return true;
   };
   const retries = await db.select<OperationRow[]>("SELECT operation_id AS operationId,entity_key AS entityKey,intent_sequence AS intentSequence,payload,status,receipt FROM user_state_operation WHERE namespace=$1 AND status='pending' ORDER BY intent_sequence,operation_id", [namespace]);
   for (const row of retries) {
     if (!include(parseUserStateOperation(JSON.parse(row.payload)))) return result;
   }
-  const intents = await db.select<PendingRow[]>(`SELECT i.sequence,i.entity_key AS entityKey,i.entity_json AS entityJson,i.value_json AS valueJson,i.seed,
+  const intentSql = `SELECT i.sequence,i.entity_key AS entityKey,i.entity_json AS entityJson,i.value_json AS valueJson,i.seed,
     p.base_revision AS baseRevision,p.acknowledged_sequence AS acknowledgedSequence
     FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1
     WHERE i.sequence>p.acknowledged_sequence
@@ -72,7 +72,9 @@ export async function prepareUserStateOperationsInDb(
       AND (json_type(i.entity_json,'$.work') IS NULL OR json_extract(i.entity_json,'$.work.sourceNovelId') IS NOT NULL)
       AND COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') NOT LIKE 'norea-folder:%'
       AND COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') NOT LIKE 'local-folder:%'
-    ORDER BY CASE json_extract(i.entity_json,'$.kind') WHEN 'category' THEN 0 ELSE 1 END,i.sequence LIMIT $2`, [namespace, limit]);
+    ORDER BY CASE json_extract(i.entity_json,'$.kind') WHEN 'category' THEN 0 ELSE 1 END,i.sequence` +
+    (limit === null ? "" : " LIMIT $2");
+  const intents = await db.select<PendingRow[]>(intentSql, limit === null ? [namespace] : [namespace, limit]);
   for (const row of intents) {
     const intent = intentFromRow(row);
     if (unresolvedIntent(intent.entity, intent.value)) continue;
@@ -134,7 +136,6 @@ async function rememberAlias(db: UserStateDb, namespace: string, alias: { from: 
 export async function acknowledgeUserStateOperationsInDb(db: UserStateDb, binding: UserStateBinding, raws: readonly UserStateMergeResult[]): Promise<void> {
   await assertUserStateAvailableInDb(db);
   const { namespace } = await requireBinding(db, binding);
-  if (raws.length > USER_STATE_MAX_BATCH) throw new Error("Too many personal state acknowledgements.");
   const results = raws.map(parseUserStateMergeResult);
   if (new Set(results.map(result => result.operationId)).size !== results.length) throw new Error("Duplicate personal state acknowledgements.");
   for (const result of results) {
@@ -197,27 +198,22 @@ export async function listUserStateConflictsInDb(db: UserStateDb, binding: UserS
 }
 export async function listUserStateDeferredInDb(db: UserStateDb, binding: UserStateBinding): Promise<UserStateDeferred[]> {
   const { namespace } = await requireBinding(db, binding);
-  const rows = await db.select<{ entityKey: string; payload: string; reason: string; detail: string | null }[]>(
-    "SELECT entity_key AS entityKey,payload,deferred_reason AS reason,deferred_detail AS detail FROM user_state_record WHERE namespace=$1 AND deferred_reason IS NOT NULL", [namespace]);
-  const result: UserStateDeferred[] = rows.map(row => ({ id: row.entityKey, entity: parseUserStateRecord(JSON.parse(row.payload)).entity, reason: row.reason, ...(row.detail ? { detail: row.detail } : {}) }));
   const intents = await db.select<IntentRow[]>("SELECT i.sequence,i.entity_key AS entityKey,i.entity_json AS entityJson,i.value_json AS valueJson,i.seed FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key WHERE p.namespace=$1 AND i.sequence>p.acknowledged_sequence", [namespace]);
+  const result: UserStateDeferred[] = [];
   for (const row of intents) {
     const intent = intentFromRow(row);
     const reason = unresolvedIntent(intent.entity, intent.value);
     if (reason) result.push({ id: row.entityKey, entity: intent.entity, reason });
-  }
-  for (const item of result) {
-    const name = await categoryNameInDb(db, namespace, item.entity);
-    if (name) item.categoryName = name;
   }
   return result;
 }
 export async function getUserStateLedgerStatusInDb(db: UserStateDb, binding: UserStateBinding): Promise<UserStateLedgerStatus> {
   const workspace = await requireBinding(db, binding);
   const [count] = await db.select<{ pending: number }[]>("SELECT COUNT(*) AS pending FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key WHERE p.namespace=$1 AND i.sequence>p.acknowledged_sequence", [workspace.namespace]);
+  const [held] = await db.select<{ deferred: number }[]>("SELECT COUNT(*) AS deferred FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1 WHERE i.sequence>p.acknowledged_sequence AND ((json_type(i.entity_json,'$.work')='object' AND json_extract(i.entity_json,'$.work.sourceNovelId') IS NULL) OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'norea-folder:%' OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'local-folder:%')", [workspace.namespace]);
   return { cursor: workspace.cursor, through: workspace.through, pending: count?.pending ?? 0,
     conflicts: (await listUserStateConflictsInDb(db, binding)).length,
-    deferred: (await listUserStateDeferredInDb(db, binding)).length, lastSuccessAt: workspace.lastSuccessAt, pausedAfterRestore: await userStateRestorePausedInDb(db) };
+    deferred: held?.deferred ?? 0, lastSuccessAt: workspace.lastSuccessAt, pausedAfterRestore: await userStateRestorePausedInDb(db) };
 }
 
 export async function resolveUserStateLedgerConflictInDb(db: UserStateDb, binding: UserStateBinding, input: { id: string; version: string; choice: "local" | "shared"; categoryName?: string }): Promise<void> {

@@ -1,7 +1,7 @@
 import { parseChapterComposition, type ChapterCompositionV1 } from "../chapter-composition";
 
 export const USER_STATE_VERSION = 1 as const;
-export const USER_STATE_MAX_BATCH = 200;
+export const USER_STATE_LEGACY_MAX_BATCH = 200;
 export const USER_STATE_MAX_BYTES = 32 * 1024 * 1024;
 export const USER_STATE_CLIENT_BATCH_BYTES = 30 * 1024 * 1024;
 
@@ -106,7 +106,6 @@ export interface UserStateStatus {
   epoch: string | null;
   pending: number;
   conflicts: UserStateConflict[];
-  deferred: UserStateDeferred[];
   lastSuccessAt: number | null;
 }
 export interface ResolveUserStateConflictInput {
@@ -322,7 +321,7 @@ export function parseUserStateReadResponse(value: unknown): UserStateReadRespons
   const nextCursor = integer(row.nextCursor, "next cursor");
   const hasMore = bool(row.hasMore, "has more flag");
   if (through > workspace.headRevision || nextCursor > through || (!hasMore && nextCursor !== through)) fail("inconsistent read cursors");
-  if (!Array.isArray(row.records) || row.records.length > USER_STATE_MAX_BATCH) fail("invalid record page");
+  if (!Array.isArray(row.records)) fail("invalid record page");
   const records = row.records.map(parseUserStateRecord);
   if (hasMore && (!records.length || nextCursor >= through)) fail("a continuing page must make progress");
   for (let index = 0; index < records.length; index++) {
@@ -355,7 +354,7 @@ export function parseUserStateMergeResult(value: unknown): UserStateMergeResult 
 export function parseUserStateMergeResponse(value: unknown): UserStateMergeResponse {
   const row = object(value, ["version", "workspaceId", "epoch", "headRevision", "results"], "merge response");
   const workspace = workspaceFields(row);
-  if (!Array.isArray(row.results) || row.results.length > USER_STATE_MAX_BATCH) fail("invalid merge result batch");
+  if (!Array.isArray(row.results)) fail("invalid merge result batch");
   const results = row.results.map(parseUserStateMergeResult);
   if (new Set(results.map(result => result.operationId)).size !== results.length) fail("duplicate operation acknowledgement");
   if (results.some(result => result.current && result.current.revision > workspace.headRevision)) fail("record exceeds the acknowledged head");
