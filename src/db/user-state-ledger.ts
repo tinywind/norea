@@ -12,6 +12,22 @@ import {
 
 interface PendingRow extends IntentRow { baseRevision: number; acknowledgedSequence: number }
 interface OperationRow { operationId: string; entityKey: string; intentSequence: number; payload: string; status: string; receipt: string | null }
+interface StoredRecordRow { entityKey: string; revision: number; payload: string; deletionRevision: number }
+const USER_STATE_DB_BATCH_BYTES = 8 * 1024 * 1024;
+
+function jsonBatches<T>(rows: readonly T[], size: (row: T) => number): T[][] {
+  const batches: T[][] = [];
+  let batch: T[] = [], bytes = 2;
+  for (const row of rows) {
+    const rowBytes = size(row) + 1;
+    if (batch.length && bytes + rowBytes > USER_STATE_DB_BATCH_BYTES) {
+      batches.push(batch); batch = []; bytes = 2;
+    }
+    batch.push(row); bytes += rowBytes;
+  }
+  if (batch.length) batches.push(batch);
+  return batches;
+}
 export interface UserStateLedgerStatus { cursor: number; through: number | null; pending: number; conflicts: number; deferred: number; lastSuccessAt: number | null; pausedAfterRestore: boolean }
 
 export async function bindUserStateWorkspaceInDb(db: UserStateDb, binding: UserStateBinding): Promise<void> {
@@ -53,6 +69,7 @@ export async function prepareUserStateOperationsInDb(
   const limit = limits.limit === undefined ? null : Math.max(1, Math.floor(limits.limit));
   const maxBytes = Math.min(USER_STATE_CLIENT_BATCH_BYTES, limits.maxBytes ?? USER_STATE_CLIENT_BATCH_BYTES);
   const result: UserStateOperation[] = [];
+  const newAttempts: { operationId: string; entityKey: string; intentSequence: number; payload: string }[] = [];
   let bytes = userStateJsonBytes({ workspaceId: binding.workspaceId, epoch: binding.epoch, operations: [] });
   const include = (operation: UserStateOperation): boolean => {
     const size = userStateJsonBytes(operation) + 1;
@@ -83,23 +100,50 @@ export async function prepareUserStateOperationsInDb(
       value: intent.value, baseRevision: row.seed ? 0 : row.baseRevision, ...(row.seed ? { seed: true } : {}),
     });
     if (!include(operation)) break;
-    await db.execute("INSERT INTO user_state_operation(operation_id,namespace,entity_key,intent_sequence,payload) VALUES($1,$2,$3,$4,$5)",
-      [operation.operationId, namespace, row.entityKey, row.sequence, canonicalUserStateJson(operation)]);
+    newAttempts.push({ operationId: operation.operationId, entityKey: row.entityKey, intentSequence: row.sequence,
+      payload: canonicalUserStateJson(operation) });
+  }
+  for (const batch of jsonBatches(newAttempts, row => row.payload.length + row.entityKey.length + 128)) {
+    await db.execute(`INSERT INTO user_state_operation(operation_id,namespace,entity_key,intent_sequence,payload)
+      SELECT json_extract(value,'$.operationId'),$1,json_extract(value,'$.entityKey'),
+        json_extract(value,'$.intentSequence'),json_extract(value,'$.payload')
+      FROM json_each($2)`, [namespace, JSON.stringify(batch)]);
   }
   return result;
 }
 
+export async function storeUserStateRecordsInDb(db: UserStateDb, namespace: string, raws: readonly UserStateRecord[]): Promise<void> {
+  const rows: StoredRecordRow[] = raws.map(raw => {
+    const record = parseUserStateRecord(raw);
+    const payload = canonicalUserStateJson(record);
+    return {
+      entityKey: userStateEntityKey(record.entity), revision: record.revision, payload,
+      deletionRevision: record.entity.kind === "category" && (record.value as UserStateValueMap["category"]).deleted ? record.revision : 0,
+    };
+  });
+  for (const batch of jsonBatches(rows, row => row.payload.length + row.entityKey.length + 96)) {
+    const encoded = JSON.stringify(batch);
+    const existing = await db.select<{ entityKey: string; revision: number; payload: string }[]>(`
+      SELECT r.entity_key AS entityKey,r.revision,r.payload
+      FROM user_state_record r JOIN json_each($2) incoming
+        ON r.entity_key=json_extract(incoming.value,'$.entityKey')
+      WHERE r.namespace=$1`, [namespace, encoded]);
+    const incoming = new Map(batch.map(row => [JSON.stringify([row.entityKey, row.revision]), row.payload]));
+    for (const row of existing) {
+      const payload = incoming.get(JSON.stringify([row.entityKey, row.revision]));
+      if (payload !== undefined && payload !== row.payload) throw new Error("The shared state revision changed its contents.");
+    }
+    await db.execute(`INSERT INTO user_state_record(namespace,entity_key,revision,payload,deletion_revision)
+      SELECT $1,json_extract(value,'$.entityKey'),json_extract(value,'$.revision'),
+        json_extract(value,'$.payload'),json_extract(value,'$.deletionRevision')
+      FROM json_each($2) WHERE true
+      ON CONFLICT(namespace,entity_key) DO UPDATE SET revision=excluded.revision,payload=excluded.payload,
+        deletion_revision=MAX(user_state_record.deletion_revision,excluded.deletion_revision),deferred_reason=NULL,deferred_detail=NULL
+      WHERE excluded.revision>user_state_record.revision`, [namespace, encoded]);
+  }
+}
 export async function storeUserStateRecordInDb(db: UserStateDb, namespace: string, raw: UserStateRecord): Promise<void> {
-  const record = parseUserStateRecord(raw);
-  const key = userStateEntityKey(record.entity);
-  const [existing] = await db.select<{ revision: number; payload: string }[]>("SELECT revision,payload FROM user_state_record WHERE namespace=$1 AND entity_key=$2", [namespace, key]);
-  const payload = canonicalUserStateJson(record);
-  if (existing?.revision === record.revision && existing.payload !== payload) throw new Error("The shared state revision changed its contents.");
-  const deleted = record.entity.kind === "category" && (record.value as UserStateValueMap["category"]).deleted;
-  await db.execute(`INSERT INTO user_state_record(namespace,entity_key,revision,payload,deletion_revision)
-    VALUES($1,$2,$3,$4,$5) ON CONFLICT(namespace,entity_key) DO UPDATE SET revision=excluded.revision,payload=excluded.payload,
-    deletion_revision=MAX(deletion_revision,excluded.deletion_revision),deferred_reason=NULL,deferred_detail=NULL
-    WHERE excluded.revision>revision`, [namespace, key, record.revision, payload, deleted ? record.revision : 0]);
+  await storeUserStateRecordsInDb(db, namespace, [raw]);
 }
 
 export async function applyUserStateReadPageInDb(db: UserStateDb, binding: UserStateBinding, raw: UserStateReadResponse): Promise<void> {
@@ -111,7 +155,7 @@ export async function applyUserStateReadPageInDb(db: UserStateDb, binding: UserS
       page.records.some(record => record.revision <= workspace.cursor)) {
     throw new Error("The personal state page does not continue this workspace cursor.");
   }
-  for (const record of page.records) await storeUserStateRecordInDb(db, workspace.namespace, record);
+  await storeUserStateRecordsInDb(db, workspace.namespace, page.records);
   await db.execute("UPDATE user_state_workspace SET cursor=$2,read_through=$3,last_success_at=$4 WHERE namespace=$1",
     [workspace.namespace, page.nextCursor, page.hasMore ? page.through : null, Date.now()]);
 }
@@ -138,9 +182,24 @@ export async function acknowledgeUserStateOperationsInDb(db: UserStateDb, bindin
   const { namespace } = await requireBinding(db, binding);
   const results = raws.map(parseUserStateMergeResult);
   if (new Set(results.map(result => result.operationId)).size !== results.length) throw new Error("Duplicate personal state acknowledgements.");
+
+  const attempts = new Map<string, OperationRow>();
+  for (const batch of jsonBatches(results.map(result => result.operationId), value => value.length + 4)) {
+    const rows = await db.select<OperationRow[]>(`SELECT operation_id AS operationId,entity_key AS entityKey,
+      intent_sequence AS intentSequence,payload,status,receipt FROM user_state_operation
+      WHERE namespace=$1 AND operation_id IN (SELECT value FROM json_each($2))`, [namespace, JSON.stringify(batch)]);
+    for (const row of rows) attempts.set(row.operationId, row);
+  }
+  if (attempts.size !== results.length) throw new Error("The personal state receipt does not belong to a pending operation.");
+
+  type PendingAck = {
+    result: UserStateMergeResult; attempt: OperationRow; operation: UserStateOperation;
+    receipt: string; effectiveKey: string; equivalentAlias: boolean;
+  };
+  const pending: PendingAck[] = [];
+  const currentRecords: UserStateRecord[] = [];
   for (const result of results) {
-    const [attempt] = await db.select<OperationRow[]>("SELECT operation_id AS operationId,entity_key AS entityKey,intent_sequence AS intentSequence,payload,status,receipt FROM user_state_operation WHERE namespace=$1 AND operation_id=$2", [namespace, result.operationId]);
-    if (!attempt) throw new Error("The personal state receipt does not belong to a pending operation.");
+    const attempt = attempts.get(result.operationId)!;
     const receipt = canonicalUserStateJson(result);
     if (attempt.receipt) {
       if (attempt.receipt !== receipt) throw new Error("The personal state receipt changed after acknowledgement.");
@@ -148,26 +207,81 @@ export async function acknowledgeUserStateOperationsInDb(db: UserStateDb, bindin
     }
     const operation = parseUserStateOperation(JSON.parse(attempt.payload));
     if (result.categoryAlias) {
-      if (!("categoryId" in operation.entity) || result.categoryAlias.from !== operation.entity.categoryId) throw new Error("The category alias does not match its operation.");
+      if (!("categoryId" in operation.entity) || result.categoryAlias.from !== operation.entity.categoryId) {
+        throw new Error("The category alias does not match its operation.");
+      }
       await rememberAlias(db, namespace, result.categoryAlias);
     }
     const effective = await canonicalEntity(db, namespace, operation.entity);
-    if (result.current && userStateEntityKey(result.current.entity) !== userStateEntityKey(effective)) throw new Error("The receipt has a different personal state identity.");
-    if (result.current) await storeUserStateRecordInDb(db, namespace, result.current);
-    await db.execute("UPDATE user_state_operation SET status=$2,receipt=$3 WHERE operation_id=$1",
-      [attempt.operationId, result.status === "conflict" ? "conflict" : "acknowledged", receipt]);
-    if (result.status === "conflict") {
-      await db.execute("INSERT INTO user_state_conflict(id,namespace,entity_key,reason) VALUES($1,$2,$3,$4) ON CONFLICT(namespace,entity_key) DO UPDATE SET id=excluded.id,reason=excluded.reason",
-        [attempt.operationId, namespace, attempt.entityKey, result.reason ?? "revision-mismatch"]);
-      continue;
+    const effectiveKey = userStateEntityKey(effective);
+    if (result.current && userStateEntityKey(result.current.entity) !== effectiveKey) {
+      throw new Error("The receipt has a different personal state identity.");
     }
-    const [latest] = await db.select<{ revision: number }[]>("SELECT revision FROM user_state_record WHERE namespace=$1 AND entity_key=$2", [namespace, userStateEntityKey(effective)]);
-    const equivalentAlias = result.status !== "aliased" || result.current &&
-      canonicalUserStateJson(operation.value) === canonicalUserStateJson(result.current.value);
-    const canRebase = result.status !== "seed-skipped" && equivalentAlias && result.current && (latest?.revision ?? 0) <= result.current.revision;
-    await db.execute(`UPDATE user_state_progress SET acknowledged_sequence=MAX(acknowledged_sequence,$3),
-      base_revision=CASE WHEN $4 IS NULL THEN base_revision ELSE $4 END WHERE namespace=$1 AND entity_key=$2`,
-    [namespace, attempt.entityKey, attempt.intentSequence, canRebase ? result.current!.revision : null]);
+    if (result.current) currentRecords.push(result.current);
+    pending.push({
+      result, attempt, operation, receipt, effectiveKey,
+      equivalentAlias: result.status !== "aliased" || !!result.current &&
+        canonicalUserStateJson(operation.value) === canonicalUserStateJson(result.current.value),
+    });
+  }
+
+  await storeUserStateRecordsInDb(db, namespace, currentRecords);
+
+  const revisions = new Map<string, number>();
+  const keys = [...new Set(pending.map(row => row.effectiveKey))];
+  for (const batch of jsonBatches(keys, value => value.length + 4)) {
+    const rows = await db.select<{ entityKey: string; revision: number }[]>(`SELECT entity_key AS entityKey,revision
+      FROM user_state_record WHERE namespace=$1 AND entity_key IN (SELECT value FROM json_each($2))`,
+    [namespace, JSON.stringify(batch)]);
+    for (const row of rows) revisions.set(row.entityKey, row.revision);
+  }
+
+  const operationUpdates = pending.map(row => ({
+    operationId: row.attempt.operationId,
+    status: row.result.status === "conflict" ? "conflict" : "acknowledged",
+    receipt: row.receipt,
+  }));
+  for (const batch of jsonBatches(operationUpdates, row => row.receipt.length + row.operationId.length + 64)) {
+    await db.execute(`WITH incoming AS (
+      SELECT json_extract(value,'$.operationId') AS operation_id,
+        json_extract(value,'$.status') AS status,json_extract(value,'$.receipt') AS receipt
+      FROM json_each($1)
+    )
+    UPDATE user_state_operation AS operation SET status=incoming.status,receipt=incoming.receipt
+    FROM incoming WHERE operation.operation_id=incoming.operation_id`, [JSON.stringify(batch)]);
+  }
+
+  const conflicts = pending.filter(row => row.result.status === "conflict").map(row => ({
+    id: row.attempt.operationId, entityKey: row.attempt.entityKey, reason: row.result.reason ?? "revision-mismatch",
+  }));
+  for (const batch of jsonBatches(conflicts, row => row.id.length + row.entityKey.length + row.reason.length + 64)) {
+    await db.execute(`INSERT INTO user_state_conflict(id,namespace,entity_key,reason)
+      SELECT json_extract(value,'$.id'),$1,json_extract(value,'$.entityKey'),json_extract(value,'$.reason')
+      FROM json_each($2) WHERE true
+      ON CONFLICT(namespace,entity_key) DO UPDATE SET id=excluded.id,reason=excluded.reason`,
+    [namespace, JSON.stringify(batch)]);
+  }
+
+  const progress = pending.filter(row => row.result.status !== "conflict").map(row => {
+    const current = row.result.current;
+    const canRebase = row.result.status !== "seed-skipped" && row.equivalentAlias && current &&
+      (revisions.get(row.effectiveKey) ?? 0) <= current.revision;
+    return {
+      entityKey: row.attempt.entityKey, intentSequence: row.attempt.intentSequence,
+      baseRevision: canRebase ? current!.revision : null,
+    };
+  });
+  for (const batch of jsonBatches(progress, row => row.entityKey.length + 80)) {
+    await db.execute(`WITH incoming AS (
+      SELECT json_extract(value,'$.entityKey') AS entity_key,
+        json_extract(value,'$.intentSequence') AS intent_sequence,
+        json_extract(value,'$.baseRevision') AS base_revision FROM json_each($2)
+    )
+    UPDATE user_state_progress AS progress SET
+      acknowledged_sequence=MAX(progress.acknowledged_sequence,incoming.intent_sequence),
+      base_revision=CASE WHEN incoming.base_revision IS NULL THEN progress.base_revision ELSE incoming.base_revision END
+    FROM incoming WHERE progress.namespace=$1 AND progress.entity_key=incoming.entity_key`,
+    [namespace, JSON.stringify(batch)]);
   }
   await db.execute("UPDATE user_state_workspace SET last_success_at=$2 WHERE namespace=$1", [namespace, Date.now()]);
 }

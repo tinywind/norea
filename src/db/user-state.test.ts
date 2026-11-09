@@ -97,6 +97,27 @@ describe("durable personal-state ledger", () => {
     expect(recipient.sql.prepare("SELECT count(*) AS count FROM user_state_intent").get()).toEqual({ count: 0 });
   });
 
+  it("stores five thousand received records with a bounded number of SQLite bridge calls", async () => {
+    await bind();
+    let selects = 0, executes = 0;
+    const counted = {
+      select: async (query: string, values: unknown[] = []) => { selects++; return active.db.select(query, values); },
+      execute: async (query: string, values: unknown[] = []) => { executes++; return active.db.execute(query, values); },
+    } as Database;
+    const records = Array.from({ length: 5000 }, (_, index) => shared(
+      { kind: "category", categoryId: "received-" + index },
+      { name: "Received " + index, sort: index, deleted: false },
+      index + 1,
+    ));
+    await applyUserStateReadPageInDb(counted, binding, {
+      version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: records.length, through: records.length, nextCursor: records.length, hasMore: false, records,
+    });
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_record").get()).toEqual({ count: 5000 });
+    expect(selects).toBeLessThan(10);
+    expect(executes).toBeLessThan(10);
+  });
+
   it("migrates a current-snapshot workspace into the delta outbox exactly once", async () => {
     const namespace = canonicalUserStateJson([binding.serverUrl, binding.workspaceId, binding.epoch]);
     active.sql.prepare("INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch) VALUES(?,?,?,?)")
@@ -133,6 +154,33 @@ describe("durable personal-state ledger", () => {
     await tx(active, db => recordUserStateChangesInDb(db, entries));
     const operations = await prepareUserStateOperationsInDb(active.db, binding, { maxBytes: 30 * 1024 * 1024 });
     expect(operations).toHaveLength(1681);
+  });
+
+  it("acknowledges 1681 receipts with bounded SQLite bridge calls", async () => {
+    await bind();
+    const entries = Array.from({ length: 1681 }, (_, index) => ({
+      entity: { kind: "reading" as const, work, chapter: { chapterPath: "/bulk/" + index, name: "Bulk " + index } },
+      value: readingValue(index % 101),
+    }));
+    await tx(active, db => recordUserStateChangesInDb(db, entries));
+    const operations = await tx(active, db => prepareUserStateOperationsInDb(db, binding, { maxBytes: 30 * 1024 * 1024 }));
+    expect(operations).toHaveLength(1681);
+    const results = operations.map((operation, index) => ({
+      operationId: operation.operationId, status: "applied" as const,
+      current: shared(operation.entity, operation.value, index + 1, operation.operationId),
+    }));
+    let selects = 0, executes = 0;
+    const counted = {
+      select: async (query: string, values: unknown[] = []) => { selects++; return active.db.select(query, values); },
+      execute: async (query: string, values: unknown[] = []) => { executes++; return active.db.execute(query, values); },
+    } as Database;
+    await acknowledgeUserStateOperationsInDb(counted, binding, results);
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_operation WHERE status='acknowledged'").get())
+      .toEqual({ count: 1681 });
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_progress WHERE acknowledged_sequence=local_sequence").get())
+      .toEqual({ count: 1681 });
+    expect(selects).toBeLessThan(12);
+    expect(executes).toBeLessThan(12);
   });
 
   it("freezes attempted bytes across retries and preserves a newer edit while acknowledging its ancestor", async () => {
