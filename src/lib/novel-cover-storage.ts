@@ -1,4 +1,4 @@
-import type { ChapterStorageNovelPathInput } from "./chapter-storage-path";
+import { novelStorageRelativeDir, type ChapterStorageNovelPathInput } from "./chapter-storage-path";
 import { pluginMediaFetch } from "./http";
 import { getPluginBaseUrl } from "./plugins/base-url";
 import type { Plugin } from "./plugins/types";
@@ -527,12 +527,32 @@ async function readStoredNovelCover(
   novel: NovelCoverStorageInput,
 ): Promise<StoredNovelCover | null> {
   let metadataDirectory = resolvedNovelStorageDir(novel.id);
-  if (novel.id <= 0) {
-    const { knownNovelMetadataDirectory } = await import("../db/work-metadata");
-    metadataDirectory = knownNovelMetadataDirectory({ pluginId: novel.pluginId, novelPath: novel.path }) ?? null;
-    // Browse results only inspect indexed work paths; recovery belongs to work discovery.
-    if (!metadataDirectory) return null;
+  if (!metadataDirectory) {
+    const { knownNovelMetadataDirectory, readWorkMetadataSyncFile } = await import("../db/work-metadata");
+    const identity = { pluginId: novel.pluginId, novelPath: novel.path };
+    metadataDirectory = knownNovelMetadataDirectory(identity)
+      ?? (await readWorkMetadataSyncFile(identity))?.directory
+      ?? null;
   }
+  if (!metadataDirectory && novel.sourceNovelId) {
+    // The normal plugin-owned directory is deterministic. If an interrupted
+    // recovery lost only the DB index, inspect that one exact folder and accept
+    // it only when all portable identity fields match. Never scan or guess by title.
+    try {
+      const directory = novelStorageRelativeDir(novel);
+      const { readStoredNovelMetadata } = await import("./work-metadata");
+      const stored = await readStoredNovelMetadata(directory);
+      if (stored &&
+          stored.metadata.identity.pluginId === novel.pluginId &&
+          stored.metadata.identity.novelId.toLowerCase() === novel.sourceNovelId.toLowerCase() &&
+          stored.metadata.identity.novelPath === novel.path) {
+        metadataDirectory = directory;
+      }
+    } catch {
+      // Missing/unindexable storage falls through to source cover recovery.
+    }
+  }
+  // Cover display may consult exact indexed/deterministic paths, but never scans storage.
   if (!metadataDirectory) return null;
   const { workMetadataOperation } = await import("./work-metadata");
   const { cover } = await workMetadataOperation({ operation: "cover", path: `${metadataDirectory}/novel.json` });

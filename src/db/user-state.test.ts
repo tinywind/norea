@@ -260,6 +260,71 @@ describe("durable personal-state ledger", () => {
     expect(next.baseRevision).toBe(8); expect(next.value).toEqual(readingValue(20));
   });
 
+  it("publishes unresolved work and recovered chapter identities only when the server advertises opaque retention", async () => {
+    await bind();
+    const opaqueWork = { ...work, sourceNovelId: null };
+    const opaqueReading: UserStateEntity = {
+      kind: "reading", work: opaqueWork, chapter: { chapterPath: "norea-folder:1", name: "Recovered one" },
+    };
+    const opaqueResume: UserStateEntity = { kind: "resume", work: opaqueWork };
+    await tx(active, db => recordUserStateChangesInDb(db, [
+      { entity: opaqueReading, value: readingValue(63, false) },
+      { entity: opaqueResume, value: { chapter: { chapterPath: "local-folder:7", name: "Recovered local" }, anchor: null, openedAt: 77 } },
+    ]));
+    expect(await prepare()).toEqual([]);
+    const operations = await tx(active, db => prepareUserStateOperationsInDb(db, binding, { allowOpaqueIdentity: true }));
+    expect(operations).toHaveLength(2);
+    expect(operations).toEqual(expect.arrayContaining([
+      expect.objectContaining({ entity: opaqueReading, value: readingValue(63, false) }),
+      expect.objectContaining({ entity: opaqueResume, value: { chapter: { chapterPath: "local-folder:7", name: "Recovered local" }, anchor: null, openedAt: 77 } }),
+    ]));
+  });
+
+  it("projects an opaque work only through the same plugin and exact work path", async () => {
+    active.sql.exec("UPDATE novel SET source_novel_id=NULL WHERE id=1");
+    await bind();
+    const opaqueWork = { ...work, sourceNovelId: null };
+    const opaque: UserStateEntity = { kind: "reading", work: opaqueWork, chapter: { chapterPath: "/chapter/1", name: "One" } };
+    await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false, records: [shared(opaque, readingValue(54, false), 1)] });
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT progress,unread FROM chapter WHERE id=11").get()).toEqual({ progress: 54, unread: 0 });
+  });
+
+  it("never creates a content row from a shared library record, even with a resolved source ID", async () => {
+    await bind();
+    active.sql.exec("DELETE FROM chapter; DELETE FROM novel");
+    await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false,
+      records: [shared({ kind: "library", work }, { inLibrary: true, addedAt: 3 }, 1)] });
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM novel").get()).toEqual({ count: 0 });
+    expect(active.sql.prepare("SELECT revision,applied_revision FROM user_state_record").get()).toEqual({ revision: 1, applied_revision: 1 });
+  });
+
+  it("stores opaque library and recovered-chapter state without inventing missing content or matching by number", async () => {
+    await bind();
+    active.sql.exec("DELETE FROM chapter; DELETE FROM novel");
+    const opaqueWork = { ...work, sourceNovelId: null };
+    const library: UserStateEntity = { kind: "library", work: opaqueWork };
+    await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false,
+      records: [shared(library, { inLibrary: true, addedAt: 3 }, 1)] });
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM novel").get()).toEqual({ count: 0 });
+    expect(active.sql.prepare("SELECT revision,applied_revision FROM user_state_record").get()).toEqual({ revision: 1, applied_revision: 1 });
+
+    addWork(active, 1, 11, work);
+    active.sql.exec("UPDATE chapter SET path='norea-folder:1'");
+    const recovered: UserStateEntity = { kind: "reading", work, chapter: { chapterPath: "norea-folder:1", name: "Recovered" } };
+    await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 2, through: 2, nextCursor: 2, hasMore: false,
+      records: [shared(recovered, readingValue(88, false), 2)] });
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=11").get()).toEqual({ progress: 0 });
+    expect(active.sql.prepare("SELECT revision,applied_revision FROM user_state_record WHERE revision=2").get()).toEqual({ revision: 2, applied_revision: 2 });
+  });
+
   it("holds unknown work identity without attempting it, then resolves only the exact imported work", async () => {
     active.sql.exec("UPDATE novel SET source_novel_id=NULL");
     await bind(); await setChapterBookmark(11, true);

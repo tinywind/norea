@@ -53,7 +53,7 @@ beforeEach(() => {
   mocks.register.mockResolvedValue("device-token");
   mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
     const path = new URL(url).pathname;
-    if (path.endsWith("/capabilities")) return Response.json({ apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true, userStateVersion: 1, userStateBulkVersion: 1 });
+    if (path.endsWith("/capabilities")) return Response.json({ apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true, userStateVersion: 1, userStateBulkVersion: 1, userStateOpaqueIdentityVersion: 1 });
     if (path.endsWith("/user-state")) return Response.json({ version: 1, ...binding, serverUrl: undefined, headRevision: head });
     const body = JSON.parse(init?.body as string);
     if (path.endsWith("/read")) {
@@ -95,7 +95,7 @@ describe("user state transport", () => {
 
   it("uses one byte-bounded bulk request when supported and preserves the 200-item fallback for old servers", async () => {
     await synchronizeUserState();
-    expect(mocks.prepare.mock.calls[0][1]).toEqual({ maxBytes: 30 * 1024 * 1024 - 2048 });
+    expect(mocks.prepare.mock.calls[0][1]).toEqual({ maxBytes: 30 * 1024 * 1024 - 2048, allowOpaqueIdentity: true });
     const bulkRead = mocks.fetch.mock.calls.find(([url]) => String(url).endsWith("/read"))!;
     expect(JSON.parse(bulkRead[1].body)).not.toHaveProperty("limit");
 
@@ -121,7 +121,7 @@ describe("user state transport", () => {
       throw new Error("Unexpected network endpoint: " + path);
     });
     await synchronizeUserState();
-    expect(mocks.prepare.mock.calls[0][1]).toEqual({ limit: 200, maxBytes: 30 * 1024 * 1024 - 2048 });
+    expect(mocks.prepare.mock.calls[0][1]).toEqual({ limit: 200, maxBytes: 30 * 1024 * 1024 - 2048, allowOpaqueIdentity: false });
     const legacyRead = mocks.fetch.mock.calls.find(([url]) => String(url).endsWith("/read"))!;
     expect(JSON.parse(legacyRead[1].body).limit).toBe(200);
   });

@@ -265,38 +265,27 @@ export function userStateEntityKey(entity: UserStateEntity): string {
   if (entity.kind === "reading" || entity.kind === "bookmark") return JSON.stringify([entity.kind, work, entity.chapter.chapterPath]);
   return JSON.stringify([entity.kind, work]);
 }
-function requirePortableEntity(entity: UserStateEntity): void {
-  if ("work" in entity && entity.work.sourceNovelId === null) fail("missing stable source work identity");
-  if ((entity.kind === "reading" || entity.kind === "bookmark") &&
-      /^(?:(?:norea|local)-folder):/.test(entity.chapter.chapterPath)) fail("unresolved recovered chapter identity");
-}
-function portableValue(entity: UserStateEntity, raw: unknown): UserStateValue {
-  const value = parseUserStateValue(entity.kind, raw);
-  if (entity.kind === "resume") {
-    const chapter = (value as UserStateValueMap["resume"]).chapter;
-    if (chapter && /^(?:(?:norea|local)-folder):/.test(chapter.chapterPath)) fail("unresolved recovered chapter identity");
-  }
-  return value;
+function wireValue(entity: UserStateEntity, raw: unknown): UserStateValue {
+  // Opaque identities are user data to preserve, not permission to guess a content match.
+  return parseUserStateValue(entity.kind, raw);
 }
 export function parseUserStateOperation(value: unknown): UserStateOperation {
   const row = object(value, ["operationId", "entity", "baseRevision", "value", "seed"], "operation");
   const entity = parseUserStateEntity(row.entity);
-  requirePortableEntity(entity);
   if (row.seed !== undefined && row.seed !== true) fail("invalid seed flag");
   const baseRevision = integer(row.baseRevision, "base revision");
   if (row.seed === true && baseRevision !== 0) fail("a seed must have no prior revision");
   return {
     operationId: identifier(row.operationId, "operation ID"), entity, baseRevision,
-    value: portableValue(entity, row.value),
+    value: wireValue(entity, row.value),
     ...(row.seed === true ? { seed: true } : {}),
   };
 }
 export function parseUserStateRecord(value: unknown): UserStateRecord {
   const row = object(value, ["entity", "value", "revision", "operationId", "updatedAt", "deviceId", "deviceName"], "record");
   const entity = parseUserStateEntity(row.entity);
-  requirePortableEntity(entity);
   return {
-    entity, value: portableValue(entity, row.value), revision: integer(row.revision, "record revision", 1),
+    entity, value: wireValue(entity, row.value), revision: integer(row.revision, "record revision", 1),
     operationId: identifier(row.operationId, "operation ID"), updatedAt: integer(row.updatedAt, "server update time"),
     deviceId: textValue(row.deviceId, "author device ID", 256, false, true),
     deviceName: textValue(row.deviceName, "author device name", 256, true),

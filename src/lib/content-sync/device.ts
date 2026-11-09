@@ -9,6 +9,7 @@ export interface ContentCapabilities {
   readingStateVersion?: number;
   userStateVersion?: number;
   userStateBulkVersion?: number;
+  userStateOpaqueIdentityVersion?: number;
   userStateCurrentVersion?: number;
 }
 
