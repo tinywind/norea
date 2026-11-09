@@ -1,7 +1,8 @@
 import type { QueryInvalidator } from "../reader-query-invalidation";
 import {
-  setUserStateActiveServer, subscribeUserStateApplied, subscribeUserStateChanges,
+  subscribeUserStateApplied, subscribeUserStateChanges,
 } from "../../db/user-state";
+import { setUserStateCurrentServer } from "../../db/user-state-current";
 import { useContentSyncStore } from "../../store/content-sync";
 import { useReaderStore } from "../../store/reader";
 import { useUserStateStore } from "../../store/user-state";
@@ -47,7 +48,7 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
       await synchronizeUserState({ signal: nextController.signal });
       if (current === generation) { failures = 0; retryNotBefore = 0; }
     } catch (error) {
-      // The service retains its outbox and exposes the error without generating replacement operations.
+      // The service retains local current values and retries the same additive exchange.
       failed = !nextController.signal.aborted && !isAbortError(error);
       if (failed && current === generation) {
         failures++;
@@ -69,7 +70,7 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
     pending = false;
     clearTimer();
     controller?.abort(requestAbortedError());
-    setUserStateActiveServer(useContentSyncStore.getState().serverUrl || null);
+    setUserStateCurrentServer(useContentSyncStore.getState().serverUrl || null);
     schedule(0);
   }
 
@@ -105,7 +106,7 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
     unsubscribeEnabled();
     unsubscribeChanges();
     unsubscribeApplied();
-    setUserStateActiveServer(null);
+    setUserStateCurrentServer(null);
     window.removeEventListener("online", restart);
     window.removeEventListener("offline", restart);
     document.removeEventListener("visibilitychange", restart);

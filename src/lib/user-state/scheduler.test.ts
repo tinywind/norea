@@ -8,10 +8,10 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("./sync", () => ({ synchronizeUserState: mocks.sync }));
 vi.mock("../../db/user-state", () => ({
-  setUserStateActiveServer: mocks.active,
   subscribeUserStateChanges: (listener: () => void) => { mocks.localListener = listener; return () => { mocks.localListener = undefined; }; },
   subscribeUserStateApplied: (listener: (effects: UserStateApplyEffects) => void) => { mocks.appliedListener = listener; return () => { mocks.appliedListener = undefined; }; },
 }));
+vi.mock("../../db/user-state-current", () => ({ setUserStateCurrentServer: mocks.active }));
 vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ applySharedResume: mocks.applyResume }) } }));
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";

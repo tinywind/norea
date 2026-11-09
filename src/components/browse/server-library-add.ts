@@ -1,7 +1,6 @@
 import { addNovelsToCategory } from "../../db/queries/category";
-import { findNovelBySource } from "../../db/queries/novel";
 import type { TranslationKey } from "../../i18n";
-import { listAllServerWorks, type ServerWorkSummary } from "../../lib/content-sync/browse";
+import { listAllServerWorks, openServerNovel, resolveServerNovelTarget, type ServerWorkSummary } from "../../lib/content-sync/browse";
 import { registerContentDevice } from "../../lib/content-sync/device";
 import { describeError } from "../../lib/errors";
 import { taskScheduler, type TaskHandle } from "../../lib/tasks/scheduler";
@@ -79,8 +78,9 @@ export async function addServerWorksToLibrary({
     while (!signal.aborted && next < queue.length) {
       const work = queue[next++]!;
       try {
-        const existing = await findNovelBySource(work.identity.pluginId, work.identity.novelPath);
-        if (existing?.inLibrary) {
+        const target = await resolveServerNovelTarget(server, work);
+        if (target.novel?.inLibrary) {
+          if (target.migrated) await openServerNovel(server, work);
           skipped += 1;
         } else {
           const novelId = await addQuickAddTargetToLibrary({ kind: "server", server, work }, taskTitle);
