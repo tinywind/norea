@@ -11,9 +11,10 @@ export interface UserStateIntent { entity: UserStateEntity; value: UserStateValu
 export interface IntentRow { sequence: number; entityKey: string; entityJson: string; valueJson: string; seed: number }
 export interface WorkspaceRow extends UserStateBinding { namespace: string; cursor: number; through: number | null; lastSuccessAt: number | null }
 const schemas = new WeakMap<object, boolean>();
-const changed = new WeakSet<object>();
+export type UserStateChangePriority = "reading" | "normal";
+const changed = new WeakMap<object, UserStateChangePriority>();
 const ready = new WeakSet<object>();
-const changes = new Set<() => void>();
+const changes = new Set<(priority: UserStateChangePriority) => void>();
 const ledgerChanges = new Set<() => void>();
 export function subscribeUserStateLedgerChanges(listener: () => void): () => void { ledgerChanges.add(listener); return () => ledgerChanges.delete(listener); }
 export function emitUserStateLedgerChanged(): void { for (const listener of ledgerChanges) listener(); }
@@ -29,14 +30,19 @@ export const intentFromRow = (row: IntentRow): UserStateIntent => ({
   entity: parseUserStateEntity(JSON.parse(row.entityJson)),
   value: parseUserStateValue(JSON.parse(row.entityJson).kind, JSON.parse(row.valueJson)),
 });
-export function subscribeUserStateChanges(listener: () => void): () => void { changes.add(listener); return () => changes.delete(listener); }
+export function subscribeUserStateChanges(listener: (priority: UserStateChangePriority) => void): () => void { changes.add(listener); return () => changes.delete(listener); }
 export function subscribeUserStateApplied(listener: (effects: UserStateApplyEffects) => void): () => void { applied.add(listener); return () => applied.delete(listener); }
 export function emitUserStateApplied(effects: UserStateApplyEffects): void { for (const listener of applied) listener(effects); }
 export function installUserStateDeferredRunner(run: () => Promise<void>): void { deferredRunner = run; }
 export function requestUserStateDeferredApply(db: UserStateDb): void { ready.add(db); }
 export function discardUserStateNotifications(db: UserStateDb): void { changed.delete(db); ready.delete(db); }
 export function notifyUserStateCommitted(db: UserStateDb): void {
-  if (changed.delete(db)) { for (const listener of changes) listener(); emitUserStateLedgerChanged(); }
+  const priority = changed.get(db);
+  if (priority) {
+    changed.delete(db);
+    for (const listener of changes) listener(priority);
+    emitUserStateLedgerChanged();
+  }
   if (!ready.delete(db) || runningDeferred) return;
   runningDeferred = true;
   // The writer queue must be released before a deferred record starts its own transaction.
@@ -126,7 +132,9 @@ export async function recordUserStateChangesInDb(db: UserStateDb, input: readonl
         base_revision=CASE WHEN acknowledged_sequence>=local_sequence THEN excluded.base_revision ELSE base_revision END`, params);
     }
   }
-  changed.add(db);
+  const priority: UserStateChangePriority = entries.every(({ entity }) => entity.kind === "reading" || entity.kind === "resume")
+    ? "reading" : "normal";
+  if (changed.get(db) !== "normal") changed.set(db, priority);
 }
 
 export async function workReferenceInDb(db: UserStateDb, novelId: number): Promise<UserStateWorkReference | null> {

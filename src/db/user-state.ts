@@ -18,6 +18,7 @@ import {
 
 export { subscribeUserStateApplied, subscribeUserStateChanges, subscribeUserStateLedgerChanges } from "./user-state-core";
 export type { UserStateLedgerStatus } from "./user-state-ledger";
+export type { UserStateChangePriority } from "./user-state-core";
 import { emitUserStateLedgerChanged } from "./user-state-core";
 let activeServer: string | null = null;
 let activeGeneration = 0;

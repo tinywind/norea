@@ -811,38 +811,39 @@ Portable backup manifest format 6 includes each work's optional composition and 
 When the user selects the target source's body, an optional `discardSourceContent: true` chapter decision separates reading-state migration from body preservation. The A-to-B chapter mapping remains available for personal reading progress, while the corresponding server artifact mapping is `delete-source`. The server requires the explicit flag, complete source decision coverage, and a target entry in the final metadata; it rejects contradictory copy/preserve requests. A missing B body is fetched from B later. Server-only copy, migration-chain replay, and recipient-device merge paths must never substitute A's body for that choice.
 
 
-## Shared User State (Migration 11, Current Protocol 2)
+## Shared User State (Migration 11, Delta Protocol 1)
 
-Migration 11 remains unchanged. Its journal, operations, records, category maps,
-private-reading markers and restore fence retain their data and checksums.
-Current sharing now reads public SQLite values in bulk and exchanges a version-2
-current-state JSON snapshot. It no longer seeds or drains the event journal.
-No additional app SQL migration or portable backup format change is required.
+Migration 11 remains unchanged. Its durable intent journal, attempted operations,
+per-workspace progress, received records, category mappings, private-reading
+markers, and restore fence are active again. The app uploads only dirty entities
+and reads only server revisions after its saved cursor; it does not rebuild or
+exchange the accumulated current-state snapshot during normal synchronization.
 
-The server advertises userStateVersion 2 and userStateCurrentVersion 2, adds
-isolated current-state tables and imports supported positive V1 current values.
-Existing server records, receipts, content, archives and device credentials remain
-intact. Old event read/merge routes require an app upgrade so two incompatible
-sharing models cannot silently diverge. App and server must be released together.
+The server advertises `userStateVersion: 1` and temporarily retains
+`userStateCurrentVersion: 2` for deployed older clients. The first upgraded start
+copies existing current rows once into the indexed delta tables in the same
+additive database transaction. The compatibility current endpoint bridges older
+positive snapshots into those records while explicit delta tombstones remain
+protected. Content, credentials, workspace identity, old rows, and receipts are
+preserved.
 
-Missing records never authorize receiver deletion. Library works, categories,
-memberships and bookmarks are additive; public reading and resume values merge
-by their saved time, and composed chapter lists retain their source provenance,
-physical storage keys and user order. The existing portable restore fence still
-requires explicit reconnection; that action now merges current public values.
-See [current sharing rules and privacy](user-state.md).
+Server merge work is proportional to submitted operations. Current entity values
+use primary-key upserts, changes use increasing revision rows, and category
+memberships have dedicated indexed columns. Category deletion touches only the
+memberships that must receive explicit false revisions. A returning device reads
+only revisions after its cursor; the one-time initial catch-up remains bounded and
+paged.
 
-Recovered source chapters may use an opaque `norea-stored:` current-state chapter
-reference containing the canonical physical folder key and content SHA-256.
-It is scoped by the existing stable work identity. Applying it requires one local
-owner of the physical key and freshly inspected matching nonempty body and all
-declared media. Missing or incomplete inventories remain pending. Numeric keys,
-titles, and displayed order alone never authorize an update. Local chapter paths,
-original files, private-reading keys, and database migrations remain unchanged.
-The current server already preserves these opaque references without a schema or
-endpoint change. Apps that do not resolve them retain them as unmatched current
-values until updated. Ordinary provider paths and content-hash local imports keep
-their existing identities; raw folder placeholders are still not shared.
+Reading/resume writes debounce for 20 seconds. Commands debounce for 1.5 seconds.
+Chapter transitions flush after queued reader writes, backgrounding persists the
+latest progress and makes a best-effort immediate pass, and visible online clients
+poll every 60 seconds. Failures retain immutable operations and exponential
+backoff. See [delta sharing rules, timing, and privacy](user-state.md).
+
+Recovered source chapters retain their opaque `norea-stored:` identity and exact
+body/media verification. Raw folder numbers, titles, and display order never
+authorize an update. Missing or ambiguous ownership remains deferred without
+altering original files or private-reading state.
 
 ### Reconciliation of completed work migrations
 

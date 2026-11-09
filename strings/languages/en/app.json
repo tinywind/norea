@@ -1961,7 +1961,7 @@
   "userState.connected": "Connected to this server's shared workspace",
   "userState.notConnected": "Sync now connects and merges the current library and reading information.",
   "userState.automatic": "Share automatically",
-  "userState.automaticDescription": "Shares the current library and reading state while the app is visible. Chapter files sync separately.",
+  "userState.automaticDescription": "Sends only changes. Reading positions wait 20 seconds; chapter changes and backgrounding sync immediately.",
   "userState.offDescription": "Turning this off keeps your library and reading state on this device. You can still sync manually.",
   "userState.syncNow": "Sync now",
   "userState.syncing": "Sharing library and reading information…",

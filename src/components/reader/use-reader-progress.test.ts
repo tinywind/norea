@@ -165,6 +165,10 @@ const SAVED_ANCHOR: ReaderScrollAnchor = {
   segmentCount: 10,
 };
 
+let browserWindow: EventTarget;
+let documentTarget: EventTarget;
+let visibilityState: "visible" | "hidden";
+
 beforeEach(() => {
   vi.useFakeTimers({
     toFake: [
@@ -175,7 +179,10 @@ beforeEach(() => {
       "performance",
     ],
   });
-  vi.stubGlobal("window", {
+  browserWindow = new EventTarget();
+  documentTarget = new EventTarget();
+  visibilityState = "visible";
+  vi.stubGlobal("window", Object.assign(browserWindow, {
     setTimeout: (...args: Parameters<typeof setTimeout>) => setTimeout(...args),
     clearTimeout: (id: number) => clearTimeout(id),
     setInterval: (...args: Parameters<typeof setInterval>) => setInterval(...args),
@@ -183,9 +190,9 @@ beforeEach(() => {
     requestAnimationFrame: (callback: FrameRequestCallback) =>
       setTimeout(() => callback(performance.now()), 16),
     cancelAnimationFrame: (id: number) => clearTimeout(id),
-    addEventListener: () => undefined,
-    removeEventListener: () => undefined,
-  });
+  }));
+  Object.defineProperty(documentTarget, "visibilityState", { configurable: true, get: () => visibilityState });
+  vi.stubGlobal("document", documentTarget);
 });
 
 afterEach(() => {
@@ -222,6 +229,27 @@ describe("useReaderProgress scroll restore", () => {
     reader.updateProgressFromScroll();
     vi.advanceTimersByTime(400);
 
+    expect(onProgressChange).toHaveBeenCalledExactlyOnceWith(60);
+    expect(onScrollAnchorChange).toHaveBeenCalledExactlyOnceWith({
+      ...SAVED_ANCHOR,
+      offset: 0.75,
+      progress: 60,
+    });
+  });
+
+  it("flushes the latest progress and anchor before the app is suspended", () => {
+    const { viewport, content, reader, onProgressChange, onScrollAnchorChange } =
+      openReader({ initialProgress: 48, initialScrollAnchor: SAVED_ANCHOR });
+    content.loadImages();
+    vi.advanceTimersByTime(1_000);
+
+    viewport.dispatchEvent(new Event("touchstart"));
+    viewport.scrollTop = 5 * 2400 + 1800;
+    reader.updateProgressFromScroll();
+    expect(onProgressChange).not.toHaveBeenCalled();
+
+    visibilityState = "hidden";
+    documentTarget.dispatchEvent(new Event("visibilitychange"));
     expect(onProgressChange).toHaveBeenCalledExactlyOnceWith(60);
     expect(onScrollAnchorChange).toHaveBeenCalledExactlyOnceWith({
       ...SAVED_ANCHOR,

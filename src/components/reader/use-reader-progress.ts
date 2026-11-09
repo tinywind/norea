@@ -189,6 +189,27 @@ export function useReaderProgress({
     [flushProgress, persistScrollAnchor],
   );
 
+  useEffect(() => {
+    const persistBeforeSuspension = () => {
+      if (progressTimerRef.current !== null) {
+        window.clearTimeout(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+      pendingProgressSaveRef.current = null;
+      flushProgress(latestProgressRef.current);
+      persistScrollAnchor();
+    };
+    const onVisibilityChange = () => {
+      if (document.visibilityState === "hidden") persistBeforeSuspension();
+    };
+    document.addEventListener("visibilitychange", onVisibilityChange);
+    window.addEventListener("pagehide", persistBeforeSuspension);
+    return () => {
+      document.removeEventListener("visibilitychange", onVisibilityChange);
+      window.removeEventListener("pagehide", persistBeforeSuspension);
+    };
+  }, [flushProgress, persistScrollAnchor]);
+
   const applyPageInfo = useCallback(
     (nextPageInfo: PageInfo) => {
       const current = latestPageInfoRef.current;

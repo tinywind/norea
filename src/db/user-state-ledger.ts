@@ -17,13 +17,23 @@ export interface UserStateLedgerStatus { cursor: number; through: number | null;
 export async function bindUserStateWorkspaceInDb(db: UserStateDb, binding: UserStateBinding): Promise<void> {
   await assertUserStateAvailableInDb(db);
   if (!binding.serverUrl || !binding.workspaceId || !binding.epoch) throw new Error("A complete personal state workspace is required.");
+  const namespace = namespaceFor(binding);
   const existing = (await workspaceRows(db)).find(row => row.serverUrl === binding.serverUrl);
-  if (existing) { await requireBinding(db, binding); return; }
-  await db.execute("INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch) VALUES($1,$2,$3,$4)",
-    [binding.serverUrl, namespaceFor(binding), binding.workspaceId, binding.epoch]);
+  if (existing) await requireBinding(db, binding);
+  else await db.execute("INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch) VALUES($1,$2,$3,$4)",
+    [binding.serverUrl, namespace, binding.workspaceId, binding.epoch]);
+
+  // Current-snapshot clients created only the workspace row. Seed the durable delta
+  // outbox once when such a database upgrades, then use record-level intents only.
+  const readyKey = "user-state-delta-ready:" + namespace;
+  const [ready] = await db.select<{ ready: number }[]>(
+    "SELECT COUNT(*) AS ready FROM content_sync_cache WHERE cache_key=$1", [readyKey]);
+  if (ready?.ready) return;
   await seedUserStateInDb(db);
   await db.execute(`INSERT INTO user_state_progress(namespace,entity_key,local_sequence)
-    SELECT $1,entity_key,sequence FROM user_state_intent WHERE true ON CONFLICT(namespace,entity_key) DO NOTHING`, [namespaceFor(binding)]);
+    SELECT $1,entity_key,sequence FROM user_state_intent WHERE true ON CONFLICT(namespace,entity_key) DO NOTHING`, [namespace]);
+  await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO NOTHING",
+    [readyKey, JSON.stringify({ version: 1 })]);
 }
 
 export function unresolvedIntent(entity: UserStateEntity, value?: unknown): string | null {
