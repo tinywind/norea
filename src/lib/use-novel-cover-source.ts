@@ -2,12 +2,14 @@ import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 import {
   getNovelCoverSnapshot,
   acquireCachedNovelCoverSource,
+  clearNovelCoverDisplayCache,
   peekCachedNovelCoverSrc,
   persistCachedNovelCoverSource,
   subscribeNovelCoverChanges,
   type NovelCoverStorageInput,
 } from "./novel-cover-storage";
 import { pluginManager } from "./plugins/manager";
+import { subscribeWorkMetadataChanges } from "./work-metadata";
 import type { Plugin } from "./plugins/types";
 
 export interface NovelCoverSourceInput extends NovelCoverStorageInput {
@@ -28,6 +30,7 @@ export function useNovelCoverSource(
   const [source, setSource] = useState<string | null>(() =>
     initialNovelCoverSource(novel, options),
   );
+  const [metadataRevision, setMetadataRevision] = useState(0);
   const subscribeToCover = useCallback(
     (onStoreChange: () => void) =>
       subscribeNovelCoverChanges((changedNovelId) => {
@@ -46,6 +49,17 @@ export function useNovelCoverSource(
     getCoverSnapshot,
     getCoverSnapshot,
   );
+
+  useEffect(() => subscribeWorkMetadataChanges((identity) => {
+    const exact = identity?.pluginId === novel.pluginId && identity.novelPath === novel.path;
+    if (identity && !exact) return;
+    // A global recovery event is frequent while the library storage index rebuilds.
+    // Retry placeholders only; already displayed covers stay stable. An exact work
+    // event always invalidates because that work's cover bytes/directory may change.
+    if (!exact && source !== null) return;
+    clearNovelCoverDisplayCache(novel.id, { pluginId: novel.pluginId, path: novel.path });
+    setMetadataRevision(revision => revision + 1);
+  }), [novel.id, novel.path, novel.pluginId, source]);
 
   useEffect(() => {
     let cancelled = false;
@@ -113,6 +127,7 @@ export function useNovelCoverSource(
     novel.isLocal,
     novel.inLibrary,
     novel.name,
+    metadataRevision,
     novel.path,
     novel.pluginId,
     options.allowSourceFallback,

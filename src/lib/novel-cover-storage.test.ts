@@ -1,8 +1,8 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("./http", () => ({ pluginMediaFetch: vi.fn() }));
-vi.mock("../db/work-metadata", () => ({ knownNovelMetadataDirectory: vi.fn() }));
-vi.mock("./work-metadata", () => ({ workMetadataOperation: vi.fn(), persistNovelCover: vi.fn() }));
+vi.mock("../db/work-metadata", () => ({ knownNovelMetadataDirectory: vi.fn(), readWorkMetadataSyncFile: vi.fn() }));
+vi.mock("./work-metadata", () => ({ workMetadataOperation: vi.fn(), persistNovelCover: vi.fn(), readStoredNovelMetadata: vi.fn() }));
 vi.mock("./chapter-storage-resolution", () => ({ resolvedNovelStorageDir: vi.fn() }));
 vi.mock("./tauri-runtime", () => ({ isAndroidRuntime: vi.fn(), isTauriRuntime: vi.fn() }));
 
@@ -17,8 +17,8 @@ import {
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 import type { Plugin } from "./plugins/types";
 import { runWithScraperExecutor } from "./tasks/scraper-queue";
-import { knownNovelMetadataDirectory } from "../db/work-metadata";
-import { workMetadataOperation, persistNovelCover } from "./work-metadata";
+import { knownNovelMetadataDirectory, readWorkMetadataSyncFile } from "../db/work-metadata";
+import { workMetadataOperation, persistNovelCover, readStoredNovelMetadata } from "./work-metadata";
 import { resolvedNovelStorageDir } from "./chapter-storage-resolution";
 
 const workMetadataMock = vi.mocked(workMetadataOperation);
@@ -62,9 +62,11 @@ beforeEach(() => {
   isAndroidRuntimeMock.mockReturnValue(false);
   isTauriRuntimeMock.mockReturnValue(true);
   vi.mocked(knownNovelMetadataDirectory).mockReturnValue(undefined);
+  vi.mocked(readWorkMetadataSyncFile).mockResolvedValue(null);
   vi.mocked(resolvedNovelStorageDir).mockImplementation(id => (id ?? 0) > 0 ? directory : null);
   workMetadataMock.mockReset().mockResolvedValue({ cover: null });
   vi.mocked(persistNovelCover).mockReset().mockResolvedValue(undefined);
+  vi.mocked(readStoredNovelMetadata).mockReset().mockResolvedValue(null);
   pluginMediaFetchMock.mockImplementation(async () => new Response(new Uint8Array([1, 2, 3]), {
     headers: { "content-type": "image/jpeg" }, status: 200,
   }));
@@ -183,6 +185,52 @@ describe("stored cover discovery", () => {
   it("does not derive an unindexed work location from its title", async () => {
     vi.mocked(resolvedNovelStorageDir).mockReturnValue(null);
     expect(await resolveStoredNovelCoverSrc(novel)).toBeNull();
+    expect(workMetadataMock).not.toHaveBeenCalled();
+  });
+
+  it("uses the durable metadata file index when the novel-id storage map has not caught up", async () => {
+    vi.mocked(resolvedNovelStorageDir).mockReturnValue(null);
+    vi.mocked(readWorkMetadataSyncFile).mockResolvedValue({
+      pluginId: novel.pluginId, path: novel.path, directory, fingerprint: "f".repeat(64), revision: 1,
+    });
+    workMetadataMock.mockResolvedValue(desktopCoverResult(""));
+    const src = await resolveStoredNovelCoverSrc(novel);
+    expect(src).toContain("/cover.jpg?v=");
+    expect(workMetadataMock).toHaveBeenCalledExactlyOnceWith({ operation: "cover", path: directory + "/novel.json" });
+  });
+
+  it("recovers an unindexed local cover from only the exact deterministic source directory", async () => {
+    vi.mocked(resolvedNovelStorageDir).mockReturnValue(null);
+    vi.mocked(readWorkMetadataSyncFile).mockResolvedValue(null);
+    vi.mocked(readStoredNovelMetadata).mockResolvedValue({
+      directory,
+      metadata: {
+        schemaVersion: 1,
+        identity: { pluginId: novel.pluginId, novelId: novel.sourceNovelId, novelPath: novel.path },
+        novel: { name: novel.name, author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+        cover: { fileName: "cover.jpg", contentType: "image/jpeg" },
+        chapters: {},
+      },
+    });
+    workMetadataMock.mockResolvedValue(desktopCoverResult(""));
+    await expect(resolveStoredNovelCoverSrc(novel)).resolves.toContain("/cover.jpg?v=");
+    expect(readStoredNovelMetadata).toHaveBeenCalledExactlyOnceWith(directory);
+  });
+
+  it("does not use a deterministic directory whose stored identity belongs to another work", async () => {
+    vi.mocked(resolvedNovelStorageDir).mockReturnValue(null);
+    vi.mocked(readWorkMetadataSyncFile).mockResolvedValue(null);
+    vi.mocked(readStoredNovelMetadata).mockResolvedValue({
+      directory,
+      metadata: {
+        schemaVersion: 1,
+        identity: { pluginId: novel.pluginId, novelId: novel.sourceNovelId, novelPath: "/other" },
+        novel: { name: novel.name, author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+        cover: { fileName: "cover.jpg", contentType: "image/jpeg" },
+        chapters: {},
+      },
+    });
+    await expect(resolveStoredNovelCoverSrc(novel)).resolves.toBeNull();
     expect(workMetadataMock).not.toHaveBeenCalled();
   });
 });
