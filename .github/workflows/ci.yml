@@ -53,4 +53,4 @@ jobs:
         run: pnpm test
 
       - name: Build tool preparation tests
-        run: node --test scripts/prepare-wix.node-test.mjs
+        run: node --test scripts/*.node-test.mjs

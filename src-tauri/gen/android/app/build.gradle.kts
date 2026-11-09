@@ -66,7 +66,7 @@ val rustlsPlatformVerifierAndroid by lazy {
 
 repositories {
     maven {
-        url = uri("https://github.com/rustls/rustls-platform-verifier/raw/maven-archive/android-release-support/maven/")
+        url = uri("https://raw.githubusercontent.com/rustls/rustls-platform-verifier/maven-archive/android-release-support/maven/")
         content {
             includeGroup("org.rustls")
         }
