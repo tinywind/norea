@@ -196,9 +196,9 @@ jobs:
         with:
           category: /language:${{ matrix.language }}
           output: .tmp/codeql-results/${{ matrix.language }}
-          upload: ${{ vars.NOREA_ADVANCED_CODEQL_ENABLED == 'true' && 'always' || 'never' }}
+          upload: always
 
-      - name: Retain analysis evidence before the reviewed setup transition
+      - name: Retain CodeQL analysis evidence
         if: always() && steps.analyze.outputs.sarif-output != ''
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
