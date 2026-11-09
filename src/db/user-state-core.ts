@@ -21,6 +21,7 @@ export function emitUserStateLedgerChanged(): void { for (const listener of ledg
 const applied = new Set<(effects: UserStateApplyEffects) => void>();
 let deferredRunner: (() => Promise<void>) | undefined;
 let runningDeferred = false;
+let deferredRequestedWhileRunning = false;
 let deferredTask: Promise<void> | null = null;
 export async function waitForUserStateDeferredApply(): Promise<void> { await deferredTask; }
 
@@ -43,12 +44,27 @@ export function notifyUserStateCommitted(db: UserStateDb): void {
     for (const listener of changes) listener(priority);
     emitUserStateLedgerChanged();
   }
-  if (!ready.delete(db) || runningDeferred) return;
+  if (!ready.delete(db)) return;
+  if (runningDeferred) {
+    deferredRequestedWhileRunning = true;
+    return;
+  }
   runningDeferred = true;
-  // The writer queue must be released before a deferred record starts its own transaction.
-  deferredTask = Promise.resolve().then(deferredRunner ?? (() => import("./user-state").then(module => module.applyDeferredUserState()))).catch(error => {
+  // The writer queue must be released before projection starts. If another
+  // transaction requests projection while this run is active, loop once more
+  // rather than dropping that request.
+  deferredTask = Promise.resolve().then(async () => {
+    do {
+      deferredRequestedWhileRunning = false;
+      await (deferredRunner ?? (() => import("./user-state").then(module => module.applyDeferredUserState())))();
+    } while (deferredRequestedWhileRunning);
+  }).catch(error => {
     console.warn("[user-state] deferred state could not be applied", error);
-  }).finally(() => { runningDeferred = false; deferredTask = null; });
+  }).finally(() => {
+    runningDeferred = false;
+    deferredRequestedWhileRunning = false;
+    deferredTask = null;
+  });
 }
 
 /** Old fixture databases and interrupted bootstrap do not pretend to support the new protocol. */

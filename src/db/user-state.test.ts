@@ -15,7 +15,7 @@ import {
 } from "./user-state-core";
 import { materializeUserStateRecordInDb, refreshUnattemptedUserStateIdentitiesInDb } from "./user-state-materialize";
 import {
-  applyUserStateReadPage, materializePendingUserState, recordUserResume, resumeUserStateAfterRestore, setUserStateActiveServer,
+  applyUserStateReadPage, deferUserStateForNovelInDb, materializePendingUserState, recordUserResume, resumeUserStateAfterRestore, setUserStateActiveServer,
 } from "./user-state";
 import { applyNovelMergeInDb } from "./queries/novel-merge";
 import { deleteLocalNovelRecords } from "./queries/content-deletion";
@@ -93,8 +93,23 @@ describe("durable personal-state ledger", () => {
     await bind(recipient); active = recipient;
     await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
       headRevision: 1, through: 1, nextCursor: 1, hasMore: false, records: [shared(operation.entity, operation.value, 1)] });
+    expect(recipient.sql.prepare("SELECT id,progress FROM chapter ORDER BY id").all()).toEqual([{ id: 11, progress: 0 }, { id: 88, progress: 0 }]);
+    await waitForUserStateDeferredApply();
     expect(recipient.sql.prepare("SELECT id,progress FROM chapter ORDER BY id").all()).toEqual([{ id: 11, progress: 0 }, { id: 88, progress: 73 }]);
     expect(recipient.sql.prepare("SELECT count(*) AS count FROM user_state_intent").get()).toEqual({ count: 0 });
+  });
+
+  it("does not lose a projection request that arrives while the background runner is active", async () => {
+    await bind();
+    active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(12,1,'/chapter/2','Two','2',2)");
+    const secondEntity: UserStateEntity = { kind: "reading", work, chapter: { chapterPath: "/chapter/2", name: "Two" } };
+    await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false, records: [shared(reading, readingValue(31), 1)] });
+    await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 2, through: 2, nextCursor: 2, hasMore: false, records: [shared(secondEntity, readingValue(47), 2)] });
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT id,progress FROM chapter WHERE id IN (11,12) ORDER BY id").all())
+      .toEqual([{ id: 11, progress: 31 }, { id: 12, progress: 47 }]);
   });
 
   it("stores five thousand received records with a bounded number of SQLite bridge calls", async () => {
@@ -181,7 +196,7 @@ describe("durable personal-state ledger", () => {
       .toEqual({ count: 1681 });
     expect(selects).toBeLessThan(12);
     expect(executes).toBeLessThan(12);
-  });
+  }, 15_000);
 
   it("marks equivalent acknowledgements as already projected so the following pull does not rewrite local state", async () => {
     await bind(); await capture(readingValue(61));
@@ -256,16 +271,18 @@ describe("durable personal-state ledger", () => {
     expect(operation.entity).toMatchObject({ kind: "bookmark", work: { sourceNovelId: "book" } });
   });
 
-  it("stores shared state independently of missing content, then projects it when metadata arrives without echo", async () => {
+  it("stores shared state independently of missing content, then projects only after that content changes", async () => {
     active.sql.exec("DELETE FROM chapter"); await bind();
     await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
       headRevision: 1, through: 1, nextCursor: 1, hasMore: false, records: [shared(reading, readingValue(87), 1)] });
+    await waitForUserStateDeferredApply();
     expect(await listUserStateDeferredInDb(active.db, binding)).toEqual([]);
     expect(active.sql.prepare("SELECT revision,applied_revision,payload FROM user_state_record").get()).toMatchObject({
-      revision: 1, applied_revision: 0,
+      revision: 1, applied_revision: 1,
     });
     active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(44,1,'/chapter/1','One','1',1)");
-    await materializePendingUserState(binding);
+    await tx(active, db => deferUserStateForNovelInDb(db, 1));
+    await waitForUserStateDeferredApply();
     expect(active.sql.prepare("SELECT progress FROM chapter").get()).toEqual({ progress: 87 });
     expect(await prepare()).toEqual([]);
     expect(await listUserStateDeferredInDb(active.db, binding)).toEqual([]);
@@ -572,6 +589,7 @@ describe("source changes after settled personal state", () => {
     await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
       headRevision: 1, through: 1, nextCursor: 1, hasMore: false,
       records: [shared({ kind: "composition", work }, { composition }, 1)] });
+    await waitForUserStateDeferredApply();
     expect(active.sql.prepare("SELECT * FROM work_metadata_dirty").all()).toEqual([]);
     expect(active.sql.prepare("SELECT applied_revision FROM user_state_record").get()).toEqual({ applied_revision: 1 });
   });
@@ -586,8 +604,11 @@ describe("source changes after settled personal state", () => {
     await setChapterComposition(active.db, 1, composition);
     active.sql.exec("INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,unread,read_at) VALUES('source','/book','/old-path',100,1,0,90)");
     await bind();
-    const readPage = async (record: UserStateRecord) => applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
-      headRevision: record.revision, through: record.revision, nextCursor: record.revision, hasMore: false, records: [record] });
+    const readPage = async (record: UserStateRecord) => {
+      await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+        headRevision: record.revision, through: record.revision, nextCursor: record.revision, hasMore: false, records: [record] });
+      await waitForUserStateDeferredApply();
+    };
     await readPage(shared(reading, readingValue(0, true), 1));
     const excluded = structuredClone(composition); excluded.updatedAt = 2; excluded.entries[0].user = { included: false, order: 0, name: null, chapterNumber: null };
     await readPage(shared({ kind: "composition", work }, { composition: excluded }, 2));
