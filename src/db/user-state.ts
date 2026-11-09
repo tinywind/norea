@@ -36,7 +36,7 @@ export async function bindUserStateWorkspace(binding: UserStateBinding): Promise
   await runDatabaseTransaction(db => bindUserStateWorkspaceInDb(db, binding));
   emitUserStateLedgerChanged();
 }
-export async function prepareUserStateOperations(binding: UserStateBinding, limits?: { limit?: number; maxBytes?: number }): Promise<UserStateOperation[]> {
+export async function prepareUserStateOperations(binding: UserStateBinding, limits?: { limit?: number; maxBytes?: number; allowOpaqueIdentity?: boolean }): Promise<UserStateOperation[]> {
   const result = await runDatabaseTransaction(async db => {
     await refreshUnattemptedUserStateIdentitiesInDb(db);
     return prepareUserStateOperationsInDb(db, binding, limits);
@@ -161,7 +161,9 @@ export async function materializePendingUserState(binding: UserStateBinding): Pr
       OR EXISTS (
         SELECT 1 FROM novel n
         WHERE n.plugin_id=json_extract(r.payload,'$.entity.work.pluginId')
-          AND lower(n.source_novel_id)=lower(json_extract(r.payload,'$.entity.work.sourceNovelId'))
+          AND (CASE WHEN json_extract(r.payload,'$.entity.work.sourceNovelId') IS NULL
+            THEN n.path=json_extract(r.payload,'$.entity.work.novelPath')
+            ELSE lower(n.source_novel_id)=lower(json_extract(r.payload,'$.entity.work.sourceNovelId')) END)
       )
     )
     ORDER BY CASE json_extract(payload,'$.entity.kind') WHEN 'category' THEN 0 WHEN 'library' THEN 1 WHEN 'composition' THEN 2 ELSE 3 END,revision`, [namespace]);
@@ -217,9 +219,13 @@ export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: numbe
     return;
   }
   await refreshUnattemptedUserStateIdentitiesInDb(db, novelId);
-  const [work] = await db.select<{ pluginId: string; sourceNovelId: string | null }[]>("SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId FROM novel WHERE id=$1", [novelId]);
-  if (work?.sourceNovelId) await db.execute(`UPDATE user_state_record SET applied_revision=0 WHERE
-    json_extract(payload,'$.entity.work.pluginId')=$1 AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)`, [work.pluginId, work.sourceNovelId]);
+  const [work] = await db.select<{ pluginId: string; sourceNovelId: string | null; novelPath: string }[]>(
+    "SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath FROM novel WHERE id=$1", [novelId]);
+  if (work) await db.execute(`UPDATE user_state_record SET applied_revision=0 WHERE
+    json_extract(payload,'$.entity.work.pluginId')=$1 AND
+    (json_extract(payload,'$.entity.work.novelPath')=$3 OR
+      ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))`,
+    [work.pluginId, work.sourceNovelId, work.novelPath]);
   requestUserStateDeferredApply(db);
 }
 export async function applyDeferredUserState(): Promise<void> {

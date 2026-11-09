@@ -14,10 +14,13 @@ export class DeferredUserState extends Error {
 }
 interface LocalWork { id: number; pluginId: string; sourceNovelId: string | null; path: string }
 export async function findUserStateWorkInDb(db: UserStateDb, work: UserStateWorkReference): Promise<LocalWork | null> {
-  if (!work.sourceNovelId) return null;
-  const rows = await db.select<LocalWork[]>(
-    "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE plugin_id=$1 AND lower(source_novel_id)=lower($2)",
-    [work.pluginId, work.sourceNovelId]);
+  const rows = work.sourceNovelId === null
+    ? await db.select<LocalWork[]>(
+      "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE plugin_id=$1 AND path=$2",
+      [work.pluginId, work.novelPath])
+    : await db.select<LocalWork[]>(
+      "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE plugin_id=$1 AND lower(source_novel_id)=lower($2)",
+      [work.pluginId, work.sourceNovelId]);
   if (rows.length > 1) throw new DeferredUserState("ambiguous-work-identity");
   return rows[0] ?? null;
 }
@@ -104,16 +107,12 @@ export async function materializeUserStateRecordInDb(db: UserStateDb, namespace:
     }
     return effects;
   }
-  let work = await findUserStateWorkInDb(db, entity.work);
-  if (!work && entity.kind === "library" && (record.value as UserStateValueMap["library"]).inLibrary) {
-    const [collision] = await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [entity.work.pluginId, entity.work.novelPath]);
-    if (collision) throw new DeferredUserState("work-identity-mismatch");
-    await db.execute("INSERT INTO novel(plugin_id,source_novel_id,path,name,in_library,is_local) VALUES($1,$2,$3,$4,0,$5)",
-      [entity.work.pluginId, entity.work.sourceNovelId, entity.work.novelPath, entity.work.name, entity.work.pluginId === "local" ? 1 : 0]);
-    work = await findUserStateWorkInDb(db, entity.work);
-  }
-  if (!work && entity.kind === "library" && !(record.value as UserStateValueMap["library"]).inLibrary) return effects;
-  if (!work) throw new DeferredUserState("missing-work");
+  const work = await findUserStateWorkInDb(db, entity.work);
+  // Shared user state is authoritative user data, not a content catalog. Never
+  // invent a local novel/chapter just to project it. The durable record remains
+  // stored and deferUserStateForNovelInDb() re-opens this projection when exact
+  // content metadata later appears.
+  if (!work) return effects;
   switch (entity.kind) {
     case "library": {
       const value = record.value as UserStateValueMap["library"];

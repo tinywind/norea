@@ -62,12 +62,13 @@ export function unresolvedIntent(entity: UserStateEntity, value?: unknown): stri
   return null;
 }
 export async function prepareUserStateOperationsInDb(
-  db: UserStateDb, binding: UserStateBinding, limits: { limit?: number; maxBytes?: number } = {},
+  db: UserStateDb, binding: UserStateBinding, limits: { limit?: number; maxBytes?: number; allowOpaqueIdentity?: boolean } = {},
 ): Promise<UserStateOperation[]> {
   await assertUserStateAvailableInDb(db);
   const { namespace } = await requireBinding(db, binding);
   const limit = limits.limit === undefined ? null : Math.max(1, Math.floor(limits.limit));
   const maxBytes = Math.min(USER_STATE_CLIENT_BATCH_BYTES, limits.maxBytes ?? USER_STATE_CLIENT_BATCH_BYTES);
+  const allowOpaqueIdentity = limits.allowOpaqueIdentity === true;
   const result: UserStateOperation[] = [];
   const newAttempts: { operationId: string; entityKey: string; intentSequence: number; payload: string }[] = [];
   let bytes = userStateJsonBytes({ workspaceId: binding.workspaceId, epoch: binding.epoch, operations: [] });
@@ -78,23 +79,27 @@ export async function prepareUserStateOperationsInDb(
   };
   const retries = await db.select<OperationRow[]>("SELECT operation_id AS operationId,entity_key AS entityKey,intent_sequence AS intentSequence,payload,status,receipt FROM user_state_operation WHERE namespace=$1 AND status='pending' ORDER BY intent_sequence,operation_id", [namespace]);
   for (const row of retries) {
-    if (!include(parseUserStateOperation(JSON.parse(row.payload)))) return result;
+    const operation = parseUserStateOperation(JSON.parse(row.payload));
+    if (!allowOpaqueIdentity && unresolvedIntent(operation.entity, operation.value)) continue;
+    if (!include(operation)) return result;
   }
+  const opaqueFilter = allowOpaqueIdentity ? "" : `
+      AND (json_type(i.entity_json,'$.work') IS NULL OR json_extract(i.entity_json,'$.work.sourceNovelId') IS NOT NULL)
+      AND COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') NOT LIKE 'norea-folder:%'
+      AND COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') NOT LIKE 'local-folder:%'`;
   const intentSql = `SELECT i.sequence,i.entity_key AS entityKey,i.entity_json AS entityJson,i.value_json AS valueJson,i.seed,
     p.base_revision AS baseRevision,p.acknowledged_sequence AS acknowledgedSequence
     FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1
     WHERE i.sequence>p.acknowledged_sequence
       AND NOT EXISTS(SELECT 1 FROM user_state_operation o WHERE o.namespace=$1 AND o.entity_key=i.entity_key AND o.status='pending')
-      AND NOT EXISTS(SELECT 1 FROM user_state_conflict c WHERE c.namespace=$1 AND c.entity_key=i.entity_key)
-      AND (json_type(i.entity_json,'$.work') IS NULL OR json_extract(i.entity_json,'$.work.sourceNovelId') IS NOT NULL)
-      AND COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') NOT LIKE 'norea-folder:%'
-      AND COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') NOT LIKE 'local-folder:%'
-    ORDER BY CASE json_extract(i.entity_json,'$.kind') WHEN 'category' THEN 0 ELSE 1 END,i.sequence` +
+      AND NOT EXISTS(SELECT 1 FROM user_state_conflict c WHERE c.namespace=$1 AND c.entity_key=i.entity_key)` +
+    opaqueFilter +
+    ` ORDER BY CASE json_extract(i.entity_json,'$.kind') WHEN 'category' THEN 0 ELSE 1 END,i.sequence` +
     (limit === null ? "" : " LIMIT $2");
   const intents = await db.select<PendingRow[]>(intentSql, limit === null ? [namespace] : [namespace, limit]);
   for (const row of intents) {
     const intent = intentFromRow(row);
-    if (unresolvedIntent(intent.entity, intent.value)) continue;
+    if (!allowOpaqueIdentity && unresolvedIntent(intent.entity, intent.value)) continue;
     const operation = parseUserStateOperation({
       operationId: crypto.randomUUID(), entity: await canonicalEntity(db, namespace, intent.entity),
       value: intent.value, baseRevision: row.seed ? 0 : row.baseRevision, ...(row.seed ? { seed: true } : {}),

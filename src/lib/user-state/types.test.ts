@@ -38,17 +38,19 @@ describe("portable user state protocol", () => {
     expect(() => parseUserStateOperation({ ...operation, value: { ...operation.value, ...extra } })).toThrow("unexpected field");
   });
 
-  it("keeps unknown work identities locally but refuses to publish them", () => {
+  it("retains unknown work identities on the wire without guessing a content match", () => {
     const local = { ...entity, work: { ...work, sourceNovelId: null } };
     expect(parseUserStateEntity(local)).toEqual(local);
-    expect(() => parseUserStateOperation({ ...operation, entity: local })).toThrow("stable source work identity");
-    expect(() => parseUserStateRecord({ ...record, entity: local })).toThrow("stable source work identity");
+    expect(parseUserStateOperation({ ...operation, entity: local }).entity).toEqual(local);
+    expect(parseUserStateRecord({ ...record, entity: local }).entity).toEqual(local);
   });
 
-  it.each(["norea-folder:2", "local-folder:2"])("defers unresolved numeric chapter identities in %s", chapterPath => {
-    expect(() => parseUserStateOperation({ ...operation, entity: { ...entity, chapter: { chapterPath } } })).toThrow("recovered chapter identity");
-    expect(() => parseUserStateOperation({ ...operation, entity: { kind: "resume", work },
-      value: { chapter: { chapterPath }, anchor: null, openedAt: null } })).toThrow("recovered chapter identity");
+  it.each(["norea-folder:2", "local-folder:2"])("retains unresolved numeric chapter identities in %s", chapterPath => {
+    expect(parseUserStateOperation({ ...operation, entity: { ...entity, chapter: { chapterPath } } }).entity)
+      .toEqual({ ...entity, chapter: { chapterPath } });
+    expect(parseUserStateOperation({ ...operation, entity: { kind: "resume", work },
+      value: { chapter: { chapterPath }, anchor: null, openedAt: null } }).value)
+      .toEqual({ chapter: { chapterPath }, anchor: null, openedAt: null });
   });
 
   it("uses a content hash chapter path within the shared local-files work", () => {

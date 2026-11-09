@@ -185,6 +185,7 @@ async function runSynchronization(serverUrl: string, controller: AbortController
       throw new Error("This content server does not support shared user changes. Update the server before sharing.");
     }
     const bulk = capabilities.userStateBulkVersion === 1;
+    const opaqueIdentity = capabilities.userStateOpaqueIdentityVersion === 1;
     const token = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName, signal);
     check();
     const workspace = parseUserStateWorkspace(await request(serverUrl, "/user-state", token, signal));
@@ -251,6 +252,7 @@ async function runSynchronization(serverUrl: string, controller: AbortController
       const operations = (await prepareUserStateOperations(binding, {
         ...(bulk ? {} : { limit: USER_STATE_LEGACY_MAX_BATCH }),
         maxBytes: USER_STATE_CLIENT_BATCH_BYTES - 2048,
+        allowOpaqueIdentity: opaqueIdentity,
       })).map(parseUserStateOperation);
       check();
       if (!operations.length) break;

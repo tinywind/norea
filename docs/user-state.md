@@ -57,6 +57,23 @@ later runs process only changes since the cursor. Category deletion is
 intentionally proportional to the affected included memberships because each one
 must receive an explicit negative revision.
 
+## Opaque identity retention
+
+On servers advertising userStateOpaqueIdentityVersion 1, unresolved content
+identity no longer blocks the outbox. A work with no source ID is retained by its
+plugin plus source path. Recovered norea-folder or local-folder chapter references
+are also sent as opaque user-state records.
+
+Opaque means preserved, not guessed. The client may project a null-source-ID work
+only when the same plugin and exact work path exists locally. Numeric recovered
+chapter references are stored but are not treated as proof that another device's
+chapter with the same number is identical. A later normal edit with a resolved
+identity creates the newer normal record; the opaque record remains recovery
+history instead of disappearing.
+
+Older servers do not advertise this capability, so the client keeps the old
+filter for compatibility rather than sending a request they will reject.
+
 ## Content-independent user state
 
 The durable shared record is the user data. It is stored by portable entity
