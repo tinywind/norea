@@ -51,3 +51,6 @@ jobs:
 
       - name: Unit tests
         run: pnpm test
+
+      - name: Build tool preparation tests
+        run: node --test scripts/prepare-wix.node-test.mjs

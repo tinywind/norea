@@ -11,7 +11,9 @@ import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerW
 import { rememberServerNovelSource, type ServerNovelSource } from "./novel-source";
 import { contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
 import { fetchServerChapters } from "./chapters";
-import { cacheServerChapters, isNovelMigrationSourceHeldInDb } from "../../db/queries/content-sync";
+import { cacheServerChapters, isNovelMigrationSourceHeldInDb, listNovelMigrations } from "../../db/queries/content-sync";
+import { listIncomingMigrations } from "./migration-feed-state";
+import type { MigrationWorkIdentity } from "./novel-migration-types";
 
 export interface ServerWorkSummary {
   id: string;
@@ -76,22 +78,76 @@ export async function serverCoverSource(server: string, token: string, id: strin
   return `data:${cover.contentType === "application/octet-stream" ? "image/jpeg" : cover.contentType};base64,${bytesToBase64(cover.bytes)}`;
 }
 
-export async function openServerNovel(server: string, work: ServerWorkSummary): Promise<number> {
-  const source = { serverUrl: normalizeContentServerUrl(server), workId: work.id };
+const migrationIdentityKey = (identity: MigrationWorkIdentity) =>
+  JSON.stringify([identity.pluginId, identity.novelId, identity.novelPath]);
+
+/** Resolve only saved completed migrations; chapter numbers and titles are never identity evidence. */
+export async function resolveServerNovelTarget(serverUrl: string, work: ServerWorkSummary) {
+  const server = normalizeContentServerUrl(serverUrl);
   if (await contentWorkId(work.identity) !== work.id) throw new Error("Server work identity does not match its metadata.");
-  const existing = await findNovelBySource(work.identity.pluginId, work.identity.novelPath);
-  if (!existing) return refreshServerNovel(source, true);
-  await rememberServerNovelSource(existing.id, source);
-  return existing.id;
+  const [outgoing, incoming] = await Promise.all([
+    listNovelMigrations(server, true), listIncomingMigrations(server, true),
+  ]);
+  const revoked = new Set(incoming.filter(receipt => receipt.status === "inactive").flatMap(receipt =>
+    [receipt.operationId, ...(receipt.lineage.legacyOperationId ? [receipt.lineage.legacyOperationId] : [])]));
+  const edges = new Map<string, Map<string, MigrationWorkIdentity>>();
+  const remember = (source: MigrationWorkIdentity, target: MigrationWorkIdentity) => {
+    const key = migrationIdentityKey(source);
+    const targets = edges.get(key) ?? new Map<string, MigrationWorkIdentity>();
+    targets.set(migrationIdentityKey(target), target);
+    edges.set(key, targets);
+  };
+  for (const job of outgoing) {
+    if (job.status === "completed" && !revoked.has(job.operationId)) remember(job.source, job.target);
+  }
+  for (const receipt of incoming) {
+    if (receipt.status === "completed" && receipt.lineage.active && !revoked.has(receipt.operationId) &&
+        (!receipt.lineage.legacyOperationId || !revoked.has(receipt.lineage.legacyOperationId))) remember(receipt.source, receipt.target);
+  }
+  let identity: MigrationWorkIdentity = work.identity;
+  const seen = new Set<string>();
+  for (;;) {
+    const key = migrationIdentityKey(identity);
+    if (seen.has(key)) throw new Error("The saved work migration history contains a cycle.");
+    seen.add(key);
+    const targets = edges.get(key);
+    if (!targets?.size) break;
+    if (targets.size !== 1) throw new Error("The saved work migration history has conflicting targets.");
+    identity = targets.values().next().value!;
+  }
+  const migrated = migrationIdentityKey(identity) !== migrationIdentityKey(work.identity);
+  const novel = await findNovelBySource(identity.pluginId, identity.novelPath);
+  if (migrated && novel && (novel.isLocal || novel.sourceNovelId !== identity.novelId)) {
+    throw new Error("The saved migration target no longer matches the local work.");
+  }
+  return {
+    identity, novel, migrated,
+    source: { serverUrl: server, workId: migrated ? await contentWorkId(identity) : work.id },
+  };
 }
 
-export async function refreshServerNovel(source: ServerNovelSource, requireNewWork = false): Promise<number> {
+export async function openServerNovel(server: string, work: ServerWorkSummary): Promise<number> {
+  const target = await resolveServerNovelTarget(server, work);
+  if (!target.novel) return refreshServerNovel(target.source, true);
+  if (target.migrated) return refreshServerNovel(target.source, false, { id: target.novel.id, identity: target.identity });
+  await rememberServerNovelSource(target.novel.id, target.source);
+  return target.novel.id;
+}
+
+export async function refreshServerNovel(
+  source: ServerNovelSource,
+  requireNewWork = false,
+  expectedNovel?: { id: number; identity: MigrationWorkIdentity },
+): Promise<number> {
   const server = normalizeContentServerUrl(source.serverUrl);
   return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, async excluded => {
     const token = await registerContentDevice(server, useContentSyncStore.getState().deviceName);
     const entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${encodeURIComponent(source.workId)}`, token);
     const metadata = parseNovelMetadata(entry.metadata);
     if (entry.id !== source.workId || await contentWorkId(metadata.identity) !== source.workId) throw new Error("Server work identity does not match its metadata.");
+    if (expectedNovel && migrationIdentityKey(metadata.identity) !== migrationIdentityKey(expectedNovel.identity)) {
+      throw new Error("The server migration target identity changed before refresh.");
+    }
     const cover = entry.hasCover ? await readServerCover(server, token, source.workId) : null;
     const chapters = await fetchServerChapters({ serverUrl: server, workId: source.workId }, token);
     await waitForServerWorkDeletion(server, source.workId);
@@ -104,13 +160,17 @@ export async function refreshServerNovel(source: ServerNovelSource, requireNewWo
       ? await (await import("./incoming-chapter-number-reconciliation")).prepareIncomingChapterNumberReconciliation(
         server, token, entry, current.metadata, () => { if (isDeleted()) throw new ContentServerError(410); })
       : undefined;
-    const incoming = reconciliation ? mergeIncomingNovelMetadata(reconciliation.previousMetadata, metadata) : metadata;
+    const previous = reconciliation?.previousMetadata ?? current?.metadata;
+    // Opening a retired source refreshes the destination's source metadata, not its manual composition.
+    const received = expectedNovel && previous?.chapterComposition
+      ? { ...metadata, chapterComposition: previous.chapterComposition } : metadata;
+    const incoming = previous ? mergeIncomingNovelMetadata(previous, received) : received;
     const install = reconciliation?.install ?? installStoredNovelMetadata;
     let retainedNovelId: number | null = null;
     const installed = await install(incoming, cover?.bytes, async (current, db) => {
       if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) throw new ContentServerError(410);
       if (isDeleted()) return false;
-      if (!requireNewWork) return;
+      if (!requireNewWork && !expectedNovel) return;
       if (!db) throw new Error("Cannot inspect the local work index outside its database transaction.");
       // This callback already owns the work storage lock and raw DB transaction.
       // A serialized query here would wait on our own transaction indefinitely.
@@ -119,6 +179,12 @@ export async function refreshServerNovel(source: ServerNovelSource, requireNewWo
         [metadata.identity.pluginId, metadata.identity.novelPath],
       );
       if (isDeleted()) throw new ContentServerError(410);
+      if (expectedNovel) {
+        if (indexed?.id !== expectedNovel.id || indexed.sourceNovelId !== expectedNovel.identity.novelId) {
+          throw new Error("The local migration target changed while refreshing its metadata.");
+        }
+        return;
+      }
       if (indexed) {
         if (indexed.sourceNovelId && indexed.sourceNovelId !== metadata.identity.novelId) {
           throw new Error("Local work identity does not match the server metadata.");
