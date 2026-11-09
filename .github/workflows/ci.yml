@@ -1,6 +1,6 @@
 # CI for Norea.
 #
-# Fast quality gate for TypeScript, unit tests, and drizzle migration drift.
+# Fast quality gate for TypeScript and unit tests, including the registered migration/schema contract.
 # Release artifact workflows perform the platform-specific Tauri builds.
 
 name: CI
@@ -39,17 +39,7 @@ jobs:
       - name: Type check
         run: pnpm tsc
 
-      - name: Generate DB migrations (drift check)
-        run: pnpm db:generate
-      - name: Fail if drizzle migrations drifted
-        run: |
-          if ! git diff --exit-code drizzle/; then
-            echo "::error::drizzle migrations are out of sync with schema.ts."
-            echo "Run 'pnpm db:generate' locally and commit the result."
-            exit 1
-          fi
-
-      - name: Unit tests
+      - name: Unit and registered migration/schema contract tests
         run: pnpm test
 
       - name: Build tool preparation tests
