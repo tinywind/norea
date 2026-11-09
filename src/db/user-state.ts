@@ -59,6 +59,8 @@ export async function listUserStateDeferred(binding: UserStateBinding): Promise<
   return listUserStateDeferredInDb(await getDb(), binding);
 }
 
+const USER_STATE_PROJECTION_CHUNK = 64;
+
 function projectionPriority(record: UserStateRecord): number {
   switch (record.entity.kind) {
     case "category": return 0;
@@ -75,10 +77,23 @@ async function projectUserStateRecordsInDb(
   await assertUserStateAvailableInDb(db);
   const effects: UserStateApplyEffects = { resumes: [] };
   const records = raws.map(parseUserStateRecord).sort((a, b) => projectionPriority(a) - projectionPriority(b) || a.revision - b.revision);
+  if (!records.length) return effects;
+
+  const dirtyBefore = await db.select<{ pluginId: string; path: string }[]>(
+    "SELECT plugin_id AS pluginId,path FROM work_metadata_dirty ORDER BY plugin_id,path",
+  );
+  const identities = records.map(record => ({ entityKey: userStateEntityKey(record.entity), revision: record.revision }));
+  const stored = await db.select<{ entityKey: string; revision: number; appliedRevision: number }[]>(`
+    SELECT r.entity_key AS entityKey,r.revision,r.applied_revision AS appliedRevision
+    FROM user_state_record r JOIN json_each($2) incoming
+      ON r.entity_key=json_extract(incoming.value,'$.entityKey')
+    WHERE r.namespace=$1`, [namespace, JSON.stringify(identities)]);
+  const state = new Map(stored.map(row => [row.entityKey, row]));
+
   for (const record of records) {
     const key = userStateEntityKey(record.entity);
-    const [latest] = await db.select<{ revision: number }[]>("SELECT revision FROM user_state_record WHERE namespace=$1 AND entity_key=$2", [namespace, key]);
-    if (latest?.revision !== record.revision) continue;
+    const current = state.get(key);
+    if (!current || current.revision !== record.revision || current.appliedRevision >= record.revision) continue;
     if (await hasPendingUserStateForRecordInDb(db, namespace, record)) continue;
     try {
       const next = await materializeUserStateRecordInDb(db, namespace, record);
@@ -96,12 +111,35 @@ async function projectUserStateRecordsInDb(
       }
     }
   }
+
+  // Personal state is independent of content metadata files. Composition/library
+  // projections may trip generic metadata-dirty triggers, but those files must not
+  // be rewritten merely because shared user state arrived.
+  await db.execute("DELETE FROM work_metadata_dirty");
+  if (dirtyBefore.length) {
+    await db.execute(`INSERT INTO work_metadata_dirty(plugin_id,path)
+      SELECT json_extract(value,'$.pluginId'),json_extract(value,'$.path') FROM json_each($1) WHERE true
+      ON CONFLICT(plugin_id,path) DO NOTHING`, [JSON.stringify(dirtyBefore)]);
+  }
   return effects;
+}
+
+async function yieldUserStateProjection(): Promise<void> {
+  await new Promise<void>(resolve => setTimeout(resolve, 0));
 }
 
 async function projectUserStateRecords(binding: UserStateBinding, records: readonly UserStateRecord[]): Promise<UserStateApplyEffects> {
   if (!records.length) return { resumes: [] };
-  const effects = await runDatabaseTransaction(db => projectUserStateRecordsInDb(db, binding, records), true);
+  const effects: UserStateApplyEffects = { resumes: [] };
+  for (let start = 0; start < records.length; start += USER_STATE_PROJECTION_CHUNK) {
+    const next = await runDatabaseTransaction(
+      db => projectUserStateRecordsInDb(db, binding, records.slice(start, start + USER_STATE_PROJECTION_CHUNK)),
+      true,
+      { publishMetadata: false, notifyContentSync: false },
+    );
+    effects.resumes.push(...next.resumes);
+    if (start + USER_STATE_PROJECTION_CHUNK < records.length) await yieldUserStateProjection();
+  }
   emitUserStateApplied(effects);
   emitUserStateLedgerChanged();
   return effects;

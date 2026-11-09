@@ -83,6 +83,26 @@ describe("runDatabaseTransaction", () => {
     ]);
   });
 
+  it("can commit a remote projection without publishing metadata or content-sync notifications", async () => {
+    const rawDb = makeRawDb();
+    const { getDb, runDatabaseTransaction } = await loadClient(rawDb);
+    await getDb();
+    rawDb.execute.mockClear();
+
+    await expect(runDatabaseTransaction(async db => {
+      await db.execute("UPDATE chapter SET progress = $1", [73]);
+      return "done";
+    }, true, { publishMetadata: false, notifyContentSync: false })).resolves.toBe("done");
+
+    expect(rawDb.execute.mock.calls.map(([sql]) => sql)).toEqual([
+      "BEGIN IMMEDIATE",
+      "UPDATE content_sync_origin SET remote=1 WHERE id=1",
+      "UPDATE chapter SET progress = $1",
+      "UPDATE content_sync_origin SET remote=0 WHERE id=1",
+      "COMMIT",
+    ]);
+  });
+
   it("rolls back when transactional work fails", async () => {
     const rawDb = makeRawDb();
     const { getDb, runDatabaseTransaction } = await loadClient(rawDb);

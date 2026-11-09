@@ -30,6 +30,25 @@ beforeEach(() => {
   });
 });
 
+it("serializes an Android snapshot with same-work foreground storage access", async () => {
+  let release!: () => void;
+  const started = new Promise<void>(resolve => {
+    vi.mocked(snapshotAndroidContentChapter).mockImplementationOnce(async () => {
+      resolve();
+      await new Promise<void>(done => { release = done; });
+    });
+  });
+  const stage = withContentChapterStage({ storageDir: "contents/source/book/1", identity }, async () => undefined);
+  await started;
+  let foreground = false;
+  const read = runWorkContentStorageOperation(identity.pluginId, identity.novelPath, async () => { foreground = true; });
+  await Promise.resolve();
+  expect(foreground).toBe(false);
+  release();
+  await Promise.all([stage, read]);
+  expect(foreground).toBe(true);
+});
+
 it("fingerprints and uploads one Android snapshot instead of copying the chapter twice", async () => {
   const storageDir = "contents/source/book/1";
   await withContentChapterStage({ storageDir, identity }, async stagePath => {

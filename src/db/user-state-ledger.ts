@@ -227,6 +227,25 @@ export async function acknowledgeUserStateOperationsInDb(db: UserStateDb, bindin
 
   await storeUserStateRecordsInDb(db, namespace, currentRecords);
 
+  const alreadyProjected = pending.flatMap(row => {
+    const current = row.result.current;
+    if (!current || row.result.status === "conflict" ||
+        canonicalUserStateJson(row.operation.value) !== canonicalUserStateJson(current.value)) return [];
+    return [{ entityKey: row.effectiveKey, revision: current.revision }];
+  });
+  for (const batch of jsonBatches(alreadyProjected, row => row.entityKey.length + 48)) {
+    await db.execute(`WITH incoming AS (
+      SELECT json_extract(value,'$.entityKey') AS entity_key,
+        json_extract(value,'$.revision') AS revision FROM json_each($2)
+    )
+    UPDATE user_state_record AS record SET
+      applied_revision=MAX(record.applied_revision,incoming.revision),
+      deferred_reason=NULL,deferred_detail=NULL
+    FROM incoming
+    WHERE record.namespace=$1 AND record.entity_key=incoming.entity_key AND record.revision=incoming.revision`,
+    [namespace, JSON.stringify(batch)]);
+  }
+
   const revisions = new Map<string, number>();
   const keys = [...new Set(pending.map(row => row.effectiveKey))];
   for (const batch of jsonBatches(keys, value => value.length + 4)) {

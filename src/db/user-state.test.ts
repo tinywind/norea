@@ -183,6 +183,19 @@ describe("durable personal-state ledger", () => {
     expect(executes).toBeLessThan(12);
   });
 
+  it("marks equivalent acknowledgements as already projected so the following pull does not rewrite local state", async () => {
+    await bind(); await capture(readingValue(61));
+    const [operation] = await prepare();
+    await ack(operation, 7);
+    expect(active.sql.prepare("SELECT revision,applied_revision FROM user_state_record").get())
+      .toEqual({ revision: 7, applied_revision: 7 });
+    active.sql.prepare("UPDATE chapter SET progress=62 WHERE id=11").run();
+    await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 7, through: 7, nextCursor: 7, hasMore: false,
+      records: [shared(operation.entity, operation.value, 7, operation.operationId)] });
+    expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=11").get()).toEqual({ progress: 62 });
+  });
+
   it("freezes attempted bytes across retries and preserves a newer edit while acknowledging its ancestor", async () => {
     await bind(); await capture(readingValue(60));
     const [first] = await prepare();
@@ -545,6 +558,22 @@ describe("source changes after settled personal state", () => {
     expect(current.entity).toMatchObject({ kind: "reading", chapter: { chapterPath: "/chapter/new" } });
     expect(current.value).toMatchObject({ progress: 45 }); expect(current.baseRevision).toBe(0);
     expect(active.sql.prepare("SELECT payload FROM user_state_operation WHERE operation_id=?").get(old.operationId)).toEqual({ payload: canonicalUserStateJson(old) });
+  });
+
+  it("projects shared composition without publishing work metadata files", async () => {
+    await bind();
+    active.sql.exec("DELETE FROM work_metadata_dirty");
+    const composition: ChapterCompositionV1 = { version: 1, updatedAt: 2, entries: [{
+      id: "entry-1", path: "/chapter/1", storageChapterNumber: "1", primarySource: 0,
+      user: { included: true, order: 1, name: null, chapterNumber: "1" },
+      sources: [{ pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/chapter/1",
+        chapterNumber: "1", name: "One", position: 1, page: "1", contentType: "text", releaseTime: null }],
+    }] };
+    await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false,
+      records: [shared({ kind: "composition", work }, { composition }, 1)] });
+    expect(active.sql.prepare("SELECT * FROM work_metadata_dirty").all()).toEqual([]);
+    expect(active.sql.prepare("SELECT applied_revision FROM user_state_record").get()).toEqual({ applied_revision: 1 });
   });
 
   it("reapplies the latest explicit reset when shared composition reincludes a chapter with older positive provenance", async () => {

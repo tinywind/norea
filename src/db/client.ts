@@ -199,9 +199,15 @@ export async function runExclusiveDatabaseOperation<T>(
   });
 }
 
+export interface DatabaseTransactionOptions {
+  publishMetadata?: boolean;
+  notifyContentSync?: boolean;
+}
+
 export async function runDatabaseTransaction<T>(
   run: (db: Database) => Promise<T>,
   remoteContentSync = false,
+  options: DatabaseTransactionOptions = {},
 ): Promise<T> {
   const rawDb = await getRawDb();
   return queueDbOperation(async () => {
@@ -210,12 +216,12 @@ export async function runDatabaseTransaction<T>(
       const result = await withWorkMetadataRollback(async () => {
         if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=1 WHERE id=1");
         const result = await run(rawDb);
-        await flushWorkMetadata(rawDb);
+        if (options.publishMetadata !== false) await flushWorkMetadata(rawDb);
         if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=0 WHERE id=1");
         await rawDb.execute("COMMIT");
         return result;
       });
-      await notifyContentSyncChanges(rawDb);
+      if (options.notifyContentSync !== false) await notifyContentSyncChanges(rawDb);
       notifyUserStateCommitted(rawDb);
       return result;
     } catch (error) {
