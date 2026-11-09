@@ -87,6 +87,9 @@ mutation preconditions that must wait for earlier queued writes.
 
 Rust-side checks:
 
+The Windows dependency workflow also runs for Rust source changes. Its x64 job
+executes the native unit tests; its ARM64 job verifies cross-compilation.
+
 ```bash
 cd src-tauri
 cargo check
@@ -152,6 +155,16 @@ artifact names and release-upload behavior used by maintainers.
 Pushes to `0.2` create workflow artifacts retained for 30 days and refresh the
 `dev-0.2` prerelease. Version tags matching `v*` upload collected bundles to the
 matching GitHub Release.
+
+The Android release and Java/Kotlin analysis jobs run
+`node scripts/prepare-gradle-cache.mjs` before invoking the Gradle wrapper.
+Windows release jobs run `node scripts/prepare-wix.mjs` before bundling.
+These scripts download from the upstream GitHub release asset API and verify
+pinned SHA-256 checksums before populating the tools' normal caches. This avoids
+browser-download redirect failures while retaining the same Gradle and WiX
+versions and all release formats. `GH_TOKEN` is scoped to each preparation step;
+local runs can use an authenticated GitHub CLI. When updating either build tool,
+update its verified checksum together with the pinned version.
 
 ## Manual Smoke Test
 
