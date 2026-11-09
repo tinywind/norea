@@ -23,6 +23,7 @@ import type { PortableReaderAnchor } from "../../lib/user-state/types";
 import { describeError } from "../../lib/errors";
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
+import { requestUserStateFlush } from "../../lib/user-state/events";
 const FINISHED_PROGRESS = 100;
 
 function reportResumeFailure(error: unknown): void {
@@ -146,6 +147,7 @@ export function useReaderPersistence(
         await markChapterOpened(chapter.id);
         await recordUserResume(chapter.id, anchor, openedAt);
       }).then(() => {
+        requestUserStateFlush();
         void invalidateReaderOpenedQueries(queryClient, { novelId: chapter.novelId });
       }).catch(reportResumeFailure);
     }

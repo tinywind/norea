@@ -97,6 +97,22 @@ describe("durable personal-state ledger", () => {
     expect(recipient.sql.prepare("SELECT count(*) AS count FROM user_state_intent").get()).toEqual({ count: 0 });
   });
 
+  it("migrates a current-snapshot workspace into the delta outbox exactly once", async () => {
+    const namespace = canonicalUserStateJson([binding.serverUrl, binding.workspaceId, binding.epoch]);
+    active.sql.prepare("INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch) VALUES(?,?,?,?)")
+      .run(binding.serverUrl, namespace, binding.workspaceId, binding.epoch);
+    active.sql.exec("UPDATE chapter SET bookmark=1,progress=64,unread=0,read_at=10");
+    await bind();
+    const first = await prepare();
+    expect(first.map(operation => operation.entity.kind).sort()).toEqual(["bookmark", "reading", "resume"]);
+    expect(first.every(operation => operation.seed && operation.baseRevision === 0)).toBe(true);
+    const before = active.sql.prepare("SELECT sequence,entity_key FROM user_state_intent ORDER BY sequence").all();
+    await bind();
+    expect(active.sql.prepare("SELECT sequence,entity_key FROM user_state_intent ORDER BY sequence").all()).toEqual(before);
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM content_sync_cache WHERE cache_key=?")
+      .get("user-state-delta-ready:" + namespace)).toEqual({ count: 1 });
+  });
+
   it("seeds only positive state and never fabricates default resets", async () => {
     await bind();
     expect(await prepare()).toEqual([]);
@@ -182,6 +198,21 @@ describe("durable personal-state ledger", () => {
 });
 
 describe("explicit command boundaries", () => {
+  it("classifies reading-position commits separately from user commands", async () => {
+    await bind();
+    const onChange = vi.fn(); const unsubscribe = subscribeUserStateChanges(onChange);
+    await capture(readingValue(12));
+    expect(onChange).toHaveBeenLastCalledWith("reading");
+    await setChapterBookmark(11, true);
+    expect(onChange).toHaveBeenLastCalledWith("normal");
+    await tx(active, db => recordUserStateChangesInDb(db, [
+      { entity: reading, value: readingValue(13) },
+      { entity: { kind: "bookmark", work, chapter: reading.chapter }, value: { bookmarked: false } },
+    ]));
+    expect(onChange).toHaveBeenLastCalledWith("normal");
+    unsubscribe();
+  });
+
   it("records default no-op unread, bookmark removal and library removal as explicit changes", async () => {
     await bind(); await setChaptersReadState([11], true); await setChapterBookmark(11, false); await setNovelInLibrary(1, false);
     const operations = await prepare();

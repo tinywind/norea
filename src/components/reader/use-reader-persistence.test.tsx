@@ -15,6 +15,7 @@ vi.mock("../../lib/reader-query-invalidation", () => ({
   invalidateReaderProgressQueries: vi.fn(async () => undefined),
 }));
 vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
+vi.mock("../../lib/user-state/events", () => ({ requestUserStateFlush: vi.fn() }));
 
 const saved = new Map<string, string>();
 const storage = {
@@ -29,6 +30,7 @@ const { useReaderStore } = await import("../../store/reader");
 const { useLibraryStore } = await import("../../store/library");
 const { markChapterOpened, updateChapterProgress } = await import("../../db/queries/chapter");
 const { recordUserResume } = await import("../../db/user-state");
+const { requestUserStateFlush } = await import("../../lib/user-state/events");
 
 let root: Root | undefined;
 let queryClient: QueryClient;
@@ -79,6 +81,7 @@ it("records a normal open and portable scroll anchor through the ledger API", as
   await render();
   await vi.waitFor(() => expect(recordUserResume).toHaveBeenCalledWith(71, null, expect.any(Number)));
   expect(markChapterOpened).toHaveBeenCalledWith(71);
+  expect(requestUserStateFlush).toHaveBeenCalledTimes(1);
   vi.mocked(recordUserResume).mockClear();
   await act(async () => useReaderStore.getState().setChapterScrollAnchor(71, {
     novelId: 7, segmentIndex: 2, segmentCount: 20, offset: 0.5, progress: 15,
