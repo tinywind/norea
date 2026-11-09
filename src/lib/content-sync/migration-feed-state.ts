@@ -47,6 +47,7 @@ export type MigrationLineageMapping = { source: MigrationLineageChapter } & ({
 export interface WorkMigrationLineage {
   sequence: number;
   operationId: string;
+  legacyOperationId?: string;
   sourceWork: MigrationLineageWork;
   targetWork: MigrationLineageWork;
   deletedSource: { revision: string; sequence: number };
@@ -259,6 +260,8 @@ export function parseWorkMigrationLineage(raw: unknown): WorkMigrationLineage {
   const input = object(raw);
   const operationId = text(input.operationId, "operation ID", 36);
   if (!UUID.test(operationId)) return invalid("operation ID");
+  const legacyOperationId = input.legacyOperationId === undefined ? undefined : text(input.legacyOperationId, "legacy operation ID", 36);
+  if (legacyOperationId !== undefined && !UUID.test(legacyOperationId)) return invalid("legacy operation ID");
   const sourceWork = work(input.sourceWork);
   const targetWork = work(input.targetWork);
   if (sourceWork.id === targetWork.id || sourceWork.identity.pluginId === targetWork.identity.pluginId) return invalid("source and target work identities");
@@ -272,6 +275,7 @@ export function parseWorkMigrationLineage(raw: unknown): WorkMigrationLineage {
   unique(mappings.flatMap(value => value.target ? [value.target.chapterPath] : []), "target package path");
   const parsed: WorkMigrationLineage = {
     sequence: sequence(input.sequence), operationId, sourceWork, targetWork, deletedSource, mappings,
+    ...(legacyOperationId === undefined ? {} : { legacyOperationId }),
     chapterDecisions: array(input.chapterDecisions).map(decision), fullDecisionCoverage: flag(input.fullDecisionCoverage), active: flag(input.active),
   };
   validateDecisions(parsed);

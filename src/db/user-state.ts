@@ -135,6 +135,11 @@ export async function recordUserResumeCleared(novelId: number): Promise<void> {
 /** Metadata/import callers use this inside their existing transaction. */
 export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: number): Promise<void> {
   if (!await hasUserStateSchema(db)) return;
+  const current = await import("./user-state-current");
+  if (current.isUserStateCurrentMode()) {
+    current.deferUserStateCurrentForNovelInDb(db, novelId);
+    return;
+  }
   await refreshUnattemptedUserStateIdentitiesInDb(db, novelId);
   const [work] = await db.select<{ pluginId: string; sourceNovelId: string | null }[]>("SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId FROM novel WHERE id=$1", [novelId]);
   if (work?.sourceNovelId) await db.execute(`UPDATE user_state_record SET applied_revision=0 WHERE
@@ -143,6 +148,11 @@ export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: numbe
   requestUserStateDeferredApply(db);
 }
 export async function applyDeferredUserState(): Promise<void> {
+  const current = await import("./user-state-current");
+  if (current.isUserStateCurrentMode()) {
+    if (!await getUserStateRestorePaused()) await current.applyDeferredUserStateCurrent();
+    return;
+  }
   const server = activeServer;
   const generation = activeGeneration;
   if (server === null) return;
