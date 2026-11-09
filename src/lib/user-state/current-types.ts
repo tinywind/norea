@@ -2,6 +2,7 @@ import {
   canonicalUserStateJson, parseUserStateEntity, parseUserStateValue, UserStateProtocolError, userStateJsonBytes, userStateEntityKey,
   type UserStateApplyEffects, type UserStateEntity, type UserStateValue, type UserStateValueMap,
 } from "./types";
+import { parseStoredChapterPath, STORED_CHAPTER_PREFIX } from "./stored-chapter";
 
 export const USER_STATE_CURRENT_VERSION = 2 as const;
 export const USER_STATE_CURRENT_MAX_ITEMS = 100_000;
@@ -47,7 +48,8 @@ export function parseUserStateCurrentItem(raw: unknown): UserStateCurrentItem {
   const chapter = entity.kind === "reading" || entity.kind === "bookmark" ? entity.chapter :
     entity.kind === "resume" ? (value as UserStateValueMap["resume"]).chapter : null;
   if (chapter && (/^(?:norea|local)-folder:/.test(chapter.chapterPath) ||
-      /^norea-(?:composed|source):/.test(chapter.chapterPath) && !chapter.compositionEntryId))
+      /^norea-(?:composed|source):/.test(chapter.chapterPath) && !chapter.compositionEntryId ||
+      chapter.chapterPath.startsWith(STORED_CHAPTER_PREFIX) && !parseStoredChapterPath(chapter.chapterPath)))
     throw new UserStateProtocolError("unresolved current chapter identity");
   if (entity.kind === "library" && !(value as UserStateValueMap["library"]).inLibrary ||
       entity.kind === "bookmark" && !(value as UserStateValueMap["bookmark"]).bookmarked ||

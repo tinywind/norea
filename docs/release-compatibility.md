@@ -832,6 +832,18 @@ physical storage keys and user order. The existing portable restore fence still
 requires explicit reconnection; that action now merges current public values.
 See [current sharing rules and privacy](user-state.md).
 
+Recovered source chapters may use an opaque `norea-stored:` current-state chapter
+reference containing the canonical physical folder key and content SHA-256.
+It is scoped by the existing stable work identity. Applying it requires one local
+owner of the physical key and freshly inspected matching nonempty body and all
+declared media. Missing or incomplete inventories remain pending. Numeric keys,
+titles, and displayed order alone never authorize an update. Local chapter paths,
+original files, private-reading keys, and database migrations remain unchanged.
+The current server already preserves these opaque references without a schema or
+endpoint change. Apps that do not resolve them retain them as unmatched current
+values until updated. Ordinary provider paths and content-hash local imports keep
+their existing identities; raw folder placeholders are still not shared.
+
 ### Reconciliation of completed work migrations
 
 Completed local migrations resolve retired server entries to their exact current

@@ -40,6 +40,23 @@ path within that work; synthetic composed chapters also require the composition
 entry ID. Local integer IDs, titles, and coincident chapter numbers are not
 portable identities. Local file chapters use their content hash identities.
 
+Recovered source chapters with a `norea-folder:` placeholder can share state
+without guessing a provider path. Their wire reference is
+`norea-stored:<content-sha256>:<encoded-folder-path>`, scoped to the same stable work.
+The physical storage number only selects candidates: exactly one local chapter
+must own that number. Its nonempty body and every declared media asset must match
+the content SHA-256; identical HTML with different images is a different chapter.
+Missing declarations or incomplete media remain pending. File timestamps and
+undeclared leftovers are excluded from the digest. The receiver rechecks content
+before applying reading, bookmarks, or resume
+positions. Missing, inaccessible, different, or ambiguous bodies stay pending.
+The local chapter path, storage files, user order, and private-reading baseline
+are unchanged. A later provider-path recovery can accept the old reference when
+the same physical storage key and content still prove ownership. Raw folder paths
+remain invalid on the wire, and unresolved `local-folder:` imports stay pending.
+Only these recovered references need local body inspection; the ordinary bulk
+SQLite path and single JSON exchange do not add source or server requests.
+
 Private-reading markers prevent incognito progress, history, and resume positions
 from entering a later bulk export. Only documented public fields are exported.
 The payload excludes credentials, VPN profiles, localStorage, storage locations,

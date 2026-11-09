@@ -18,6 +18,10 @@ const readerStorage = vi.hoisted(() => {
 });
 
 vi.mock("./client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
+vi.mock("../lib/chapter-content/storage-platform", async importOriginal => ({
+  ...await importOriginal<typeof import("../lib/chapter-content/storage-platform")>(),
+  inspectChapterPayloadInventory: vi.fn(),
+}));
 import { getDb, getReadOnlyDb, runDatabaseTransaction } from "./client";
 import {
   applyUserStateCurrentSnapshot, bindUserStateCurrentWorkspace, exportUserStateCurrentSnapshot,
@@ -31,6 +35,10 @@ import { userStateEntityKey, type UserStateBinding, type UserStateValueMap, type
 import { type UserStateCurrentItem, type UserStateCurrentSnapshot } from "../lib/user-state/current-types";
 import type { ChapterCompositionV1 } from "../lib/chapter-composition";
 import { useReaderStore } from "../store/reader";
+import { inspectChapterPayloadInventory } from "../lib/chapter-content/storage-platform";
+import type { ChapterPayloadSnapshot } from "../lib/chapter-content/inventory";
+import { storedChapterDigest, storedChapterPath } from "../lib/user-state/stored-chapter";
+import { withChapterDownloadWrite } from "../lib/chapter-download-writes";
 
 interface Fixture { sql: DatabaseSync; db: Database; calls: number; delayMs: number }
 const fixtures: Fixture[] = [];
@@ -70,6 +78,7 @@ async function tx<T>(target: Fixture, run: (db: Database) => Promise<T>): Promis
   catch (error) { target.sql.exec("ROLLBACK"); discardUserStateNotifications(target.db); throw error; }
 }
 beforeEach(() => {
+  vi.mocked(inspectChapterPayloadInventory).mockReset().mockRejectedValue(new Error("No stored payload in this fixture."));
   readerStorage.values.clear();
   useReaderStore.getState().resetReadingProgress();
   active = fixture(); addWork();
@@ -103,6 +112,18 @@ function savedReaderPosition(chapterId = 11) {
 function currentReaderPosition() {
   const { lastReadChapterByNovel, novelPageIndexByNovel, chapterScrollAnchors } = useReaderStore.getState();
   return { lastReadChapterByNovel, novelPageIndexByNovel, chapterScrollAnchors };
+}
+
+const storedBodySha256 = "a".repeat(64);
+const storedAlias = (number = "19", sha256 = storedBodySha256): string => storedChapterPath(number, sha256)!;
+function storedPayload(body: ChapterPayloadSnapshot["body"] = { sha256: storedBodySha256, bytes: 123 }): ChapterPayloadSnapshot {
+  return {
+    body, expectedAssetKeys: [], storedAssets: [], fingerprint: "fixture-payload",
+    payloadBytes: body?.bytes ?? 0, contentBytes: body?.bytes ?? 0, mediaBytes: 0, mediaComplete: true,
+  };
+}
+function prepareStoredChapter(path = "norea-folder:19"): void {
+  active.sql.prepare("UPDATE chapter SET path=?,chapter_number='19',position=7,is_downloaded=1,stored_content_type='html',content_bytes=123 WHERE id=11").run(path);
 }
 
 describe("bulk current personal state", () => {
@@ -547,6 +568,265 @@ describe("bulk current personal state", () => {
       entity: { chapter: { chapterPath: "/chapter/confirmed" } }, value: { progress: 42 },
     });
     expect((await getUserStateCurrentStatus(binding.serverUrl)).missingMetadataCount).toBe(0);
+  });
+
+  it("exports verified stored reading, bookmarks and resumes without rewriting the local chapter identity", async () => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter();
+    active.sql.exec("UPDATE chapter SET progress=100,unread=0,bookmark=1,read_at=20");
+    vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(storedPayload());
+    const exported = await exportUserStateCurrentSnapshot(binding);
+    const chapterPath = storedAlias();
+    expect(chapterPath).toBe("norea-stored:" + storedBodySha256 + ":norea-folder%3A19");
+    expect(exported.items.find(item => item.entity.kind === "reading")).toMatchObject({
+      entity: { work, chapter: { chapterPath } }, value: readingValue(100, 20),
+    });
+    expect(exported.items.find(item => item.entity.kind === "bookmark")).toMatchObject({
+      entity: { work, chapter: { chapterPath } }, value: { bookmarked: true },
+    });
+    expect(exported.items.find(item => item.entity.kind === "resume")?.value).toMatchObject({
+      chapter: { chapterPath }, openedAt: 20,
+    });
+    expect((await getUserStateCurrentStatus(binding.serverUrl)).missingMetadataCount).toBe(0);
+    expect(active.sql.prepare("SELECT id,path,chapter_number,position,content_bytes,progress,bookmark FROM chapter").get()).toEqual({
+      id: 11, path: "norea-folder:19", chapter_number: "19", position: 7, content_bytes: 123, progress: 100, bookmark: 1,
+    });
+  });
+
+  it.each(["norea-folder:19", "/chapter/provider-restored"])("applies a stored alias only to the matching work and body across different local IDs (%s)", async path => {
+    const recipient = fixture();
+    addWork(recipient, 1, 11, { ...work, sourceNovelId: "other", novelPath: "/other" });
+    addWork(recipient, 99, 88, { ...work, sourceNovelId: "BOOK", novelPath: "/redirected" });
+    recipient.sql.prepare("UPDATE chapter SET path=?,chapter_number='19',position=7,is_downloaded=1,content_bytes=123").run(path);
+    active = recipient;
+    await bindUserStateCurrentWorkspace(binding);
+    vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(storedPayload());
+    const chapterPath = storedAlias();
+    const result = await applyUserStateCurrentSnapshot(binding, snapshot([
+      reading(chapterPath, 73, work, 20),
+      { entity: { kind: "bookmark", work, chapter: { chapterPath } }, value: { bookmarked: true } },
+      { entity: { kind: "resume", work }, value: { chapter: { chapterPath }, anchor: null, openedAt: 20 } },
+    ]));
+    expect(result.missingMetadataCount).toBe(0);
+    expect(result.resumes).toEqual([{ novelId: 99, chapterId: 88, anchor: null, openedAt: 20 }]);
+    expect(active.sql.prepare("SELECT id,novel_id,path,chapter_number,position,progress,bookmark FROM chapter ORDER BY id").all()).toEqual([
+      { id: 11, novel_id: 1, path, chapter_number: "19", position: 7, progress: 0, bookmark: 0 },
+      { id: 88, novel_id: 99, path, chapter_number: "19", position: 7, progress: 73, bookmark: 1 },
+    ]);
+  });
+
+  it.each(["missing", "empty", "malformed", "unreadable", "local"])("does not export an unverified or device-local stored chapter (%s)", async failure => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter(failure === "local" ? "local-folder:19" : "norea-folder:19");
+    active.sql.exec("UPDATE chapter SET progress=42,bookmark=1,read_at=20");
+    if (failure !== "unreadable") vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(storedPayload(
+      failure === "missing" ? null : { sha256: failure === "malformed" ? "invalid-digest" : storedBodySha256, bytes: failure === "empty" ? 0 : 123 },
+    ));
+    const exported = await exportUserStateCurrentSnapshot(binding);
+    expect(exported.items.filter(item => ["reading", "bookmark", "resume"].includes(item.entity.kind))).toEqual([]);
+    expect((await getUserStateCurrentStatus(binding.serverUrl)).missingMetadataCount).toBeGreaterThan(0);
+    expect(active.sql.prepare("SELECT progress,bookmark,read_at FROM chapter").get()).toEqual({ progress: 42, bookmark: 1, read_at: 20 });
+  });
+
+  it.each(["missing", "empty", "malformed", "different", "unreadable", "local"])("defers a stored alias when the receiver cannot prove the same body (%s)", async failure => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter(failure === "local" ? "local-folder:19" : "norea-folder:19");
+    if (failure !== "unreadable") vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(storedPayload(
+      failure === "missing" ? null : {
+        sha256: failure === "malformed" ? "invalid-digest" : failure === "different" ? "b".repeat(64) : storedBodySha256,
+        bytes: failure === "empty" ? 0 : 123,
+      },
+    ));
+    const incoming = snapshot([reading(storedAlias(), 80, work, 20)]);
+    const result = await applyUserStateCurrentSnapshot(binding, incoming);
+    expect(result.missingMetadataCount).toBe(1);
+    expect(result.resumes).toEqual([]);
+    expect(active.sql.prepare("SELECT progress,read_at FROM chapter").get()).toEqual({ progress: 0, read_at: null });
+    const cached = active.sql.prepare("SELECT payload FROM content_sync_cache WHERE cache_key=?").get(currentCacheKey(binding)) as { payload: string };
+    expect(JSON.parse(cached.payload).snapshot).toEqual(incoming);
+  });
+
+  it("rejects an unqualified folder path even when the receiver has a matching stored body", async () => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter();
+    vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(storedPayload());
+    await expect(applyUserStateCurrentSnapshot(binding, snapshot([reading("norea-folder:19", 80)])))
+      .rejects.toThrow("unresolved current chapter identity");
+    expect(active.sql.prepare("SELECT path,progress FROM chapter").get()).toEqual({ path: "norea-folder:19", progress: 0 });
+  });
+
+  it("defers identical HTML with different declared media instead of sharing its reading progress", async () => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter();
+    const localPayload: ChapterPayloadSnapshot = {
+      ...storedPayload(), expectedAssetKeys: ["media/panel.webp"],
+      storedAssets: [{ key: "media/panel.webp", sha256: "c".repeat(64), bytes: 321 }],
+      mediaBytes: 321, payloadBytes: 444,
+    };
+    const remotePayload: ChapterPayloadSnapshot = {
+      ...localPayload, storedAssets: [{ ...localPayload.storedAssets[0]!, sha256: "d".repeat(64) }],
+    };
+    const remoteDigest = await storedChapterDigest(remotePayload);
+    expect(remoteDigest).not.toBeNull();
+    expect(localPayload.body).toEqual(remotePayload.body);
+    expect(await storedChapterDigest(localPayload)).not.toBe(remoteDigest);
+    vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(localPayload);
+    const result = await applyUserStateCurrentSnapshot(binding, snapshot([reading(storedAlias("19", remoteDigest!), 80, work, 20)]));
+    expect(result.missingMetadataCount).toBe(1);
+    expect(result.resumes).toEqual([]);
+    expect(active.sql.prepare("SELECT path,progress,read_at FROM chapter").get())
+      .toEqual({ path: "norea-folder:19", progress: 0, read_at: null });
+  });
+
+  it("does not select a chapter by body hash when the physical chapter number is ambiguous", async () => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter();
+    active.sql.exec("UPDATE chapter SET progress=42; INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,is_downloaded,content_bytes) VALUES(12,1,'/chapter/different','Another body','19',8,1,123)");
+    vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(storedPayload());
+    const exported = await exportUserStateCurrentSnapshot(binding);
+    expect(exported.items.some(item => item.entity.kind === "reading")).toBe(false);
+    const result = await applyUserStateCurrentSnapshot(binding, snapshot([reading(storedAlias(), 80)]));
+    expect(result.missingMetadataCount).toBe(1);
+    expect(active.sql.prepare("SELECT id,progress FROM chapter ORDER BY id").all()).toEqual([{ id: 11, progress: 42 }, { id: 12, progress: 0 }]);
+  });
+
+  it("uses the original local path for a stored chapter's public baseline and leaves incognito progress untouched", async () => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter();
+    active.sql.exec("UPDATE chapter SET progress=95,read_at=99");
+    vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(storedPayload());
+    const key = userStateEntityKey(reading("norea-folder:19", 0).entity);
+    active.sql.prepare("INSERT INTO user_state_private(entity_key,public_value_json) VALUES(?,?)").run(key, JSON.stringify(readingValue(35, 10)));
+    let exported = await exportUserStateCurrentSnapshot(binding);
+    expect(exported.items.find(item => item.entity.kind === "reading")).toMatchObject({
+      entity: { chapter: { chapterPath: storedAlias() } }, value: readingValue(35, 10),
+    });
+    expect(exported.items.some(item => item.entity.kind === "resume")).toBe(false);
+    await applyUserStateCurrentSnapshot(binding, snapshot([reading(storedAlias(), 50, work, 20)]));
+    expect(active.sql.prepare("SELECT path,progress,read_at FROM chapter").get()).toEqual({ path: "norea-folder:19", progress: 95, read_at: 99 });
+    const privateRows = active.sql.prepare("SELECT entity_key,public_value_json FROM user_state_private").all() as { entity_key: string; public_value_json: string }[];
+    expect(privateRows).toHaveLength(1);
+    expect(privateRows[0]!.entity_key).toBe(key);
+    expect(JSON.parse(privateRows[0]!.public_value_json)).toEqual(readingValue(50, 20));
+    exported = await exportUserStateCurrentSnapshot(binding);
+    expect(exported.items.find(item => item.entity.kind === "reading")?.value).toEqual(readingValue(50, 20));
+  });
+
+  it.each([false, true])("preserves precise reader positions when a stored resume is echoed (captured: %s)", async captured => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter();
+    active.sql.exec("UPDATE chapter SET progress=35,read_at=10");
+    vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(storedPayload());
+    const saved = savedReaderPosition();
+    if (captured) {
+      const entity = { kind: "resume" as const, work };
+      const { novelId: _novelId, ...anchor } = saved.chapterScrollAnchors[11];
+      active.sql.prepare("INSERT INTO user_state_intent(entity_key,entity_json,value_json,seed) VALUES(?,?,?,0)").run(
+        userStateEntityKey(entity), JSON.stringify(entity), JSON.stringify({ chapter: { chapterPath: "norea-folder:19" }, anchor, openedAt: 10 }),
+      );
+    }
+    const exported = await exportUserStateCurrentSnapshot(binding);
+    const resume = exported.items.find(item => item.entity.kind === "resume")!;
+    expect(resume.value).toMatchObject({ chapter: { chapterPath: storedAlias() }, openedAt: 10 });
+    if (captured) expect((resume.value as UserStateValueMap["resume"]).anchor).toMatchObject({ segmentIndex: 2, segmentCount: 10, offset: 0.25, progress: 35 });
+    const unsubscribe = subscribeUserStateApplied(effects => {
+      for (const effect of effects.resumes) useReaderStore.getState().applySharedResume(effect);
+    });
+    try {
+      const result = await applyUserStateCurrentSnapshot(binding, exported);
+      expect(result.resumes).toEqual([]);
+      expect(currentReaderPosition()).toEqual(saved);
+      expect(active.sql.prepare("SELECT path FROM chapter").get()).toEqual({ path: "norea-folder:19" });
+    } finally { unsubscribe(); }
+  });
+
+  it("retries a cached stored reading after its matching body becomes available", async () => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter();
+    expect((await applyUserStateCurrentSnapshot(binding, snapshot([reading(storedAlias(), 75)]))).missingMetadataCount).toBe(1);
+    vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(storedPayload());
+    await tx(active, db => deferUserStateForNovelInDb(db, 1));
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT id,path,progress FROM chapter").get()).toEqual({ id: 11, path: "norea-folder:19", progress: 75 });
+    expect((await getUserStateCurrentStatus(binding.serverUrl)).missingMetadataCount).toBe(0);
+  });
+
+  it.each([false, true])("keeps an unresolved local resume out of the shared cache without losing its intent (incoming state: %s)", async withIncoming => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter();
+    active.sql.exec("UPDATE chapter SET progress=35,read_at=10; INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(12,1,'/chapter/2','Two','2',2)");
+    const entity = { kind: "resume" as const, work };
+    const value: UserStateValueMap["resume"] = { chapter: { chapterPath: "norea-folder:19" }, anchor: null, openedAt: 10 };
+    active.sql.prepare("INSERT INTO user_state_intent(entity_key,entity_json,value_json,seed) VALUES(?,?,?,0)")
+      .run(userStateEntityKey(entity), JSON.stringify(entity), JSON.stringify(value));
+    const incoming = snapshot(withIncoming ? [reading("/chapter/2", 50, work, 20)] : []);
+    await applyUserStateCurrentSnapshot(binding, incoming);
+    const statusCache = active.sql.prepare("SELECT payload FROM content_sync_cache WHERE cache_key=?").get(currentStatusKey(binding)) as { payload: string };
+    expect(JSON.stringify(JSON.parse(statusCache.payload).resumes)).not.toContain("norea-folder:");
+    const currentCache = active.sql.prepare("SELECT payload FROM content_sync_cache WHERE cache_key=?").get(currentCacheKey(binding)) as { payload: string };
+    expect(JSON.parse(currentCache.payload).snapshot).toEqual(incoming);
+    const exported = await exportUserStateCurrentSnapshot(binding);
+    expect(JSON.stringify(exported)).not.toContain("norea-folder:");
+    expect((await getUserStateCurrentStatus(binding.serverUrl)).missingMetadataCount).toBeGreaterThan(0);
+    const intent = active.sql.prepare("SELECT value_json FROM user_state_intent WHERE entity_key=?").get(userStateEntityKey(entity)) as { value_json: string };
+    expect(JSON.parse(intent.value_json)).toEqual(value);
+    expect(active.sql.prepare("SELECT path,progress,read_at FROM chapter WHERE id=11").get())
+      .toEqual({ path: "norea-folder:19", progress: 35, read_at: 10 });
+  });
+
+  it.each([false, true])("holds inspected chapter content through transaction completion and releases it after rollback (failed commit: %s)", async failCommit => {
+    await bindUserStateCurrentWorkspace(binding);
+    prepareStoredChapter();
+    active.sql.exec("UPDATE chapter SET progress=42");
+    vi.mocked(inspectChapterPayloadInventory).mockResolvedValue(storedPayload());
+    const commitError = new Error("Snapshot commit failed");
+    const events: string[] = [];
+    let reachedCommit!: () => void;
+    let finishCommit!: () => void;
+    const beforeCommit = new Promise<void>(resolve => { reachedCommit = resolve; });
+    const commitAllowed = new Promise<void>(resolve => { finishCommit = resolve; });
+    vi.mocked(runDatabaseTransaction).mockImplementationOnce(async <T>(run: (db: Database) => Promise<T>): Promise<T> => {
+      active.sql.exec("BEGIN IMMEDIATE");
+      try {
+        const result = await run(active.db);
+        reachedCommit();
+        await commitAllowed;
+        if (failCommit) throw commitError;
+        active.sql.exec("COMMIT");
+        events.push("commit");
+        notifyUserStateCommitted(active.db);
+        return result;
+      } catch (error) {
+        active.sql.exec("ROLLBACK");
+        events.push("rollback");
+        discardUserStateNotifications(active.db);
+        throw error;
+      }
+    });
+    const completed = exportUserStateCurrentSnapshot(binding).then(value => ({ value, error: null }), error => ({ value: null, error }));
+    let writing: Promise<void> | undefined;
+    try {
+      await beforeCommit;
+      const write = vi.fn(async () => { events.push("write"); });
+      writing = withChapterDownloadWrite(11, undefined, write);
+      expect(write).not.toHaveBeenCalled();
+      expect(events).toEqual([]);
+      finishCommit();
+      const result = await completed;
+      await writing;
+      if (failCommit) expect(result.error).toBe(commitError);
+      else {
+        expect(result.error).toBeNull();
+        expect(result.value?.items.find(item => item.entity.kind === "reading")).toMatchObject({
+          entity: { chapter: { chapterPath: storedAlias() } }, value: readingValue(42),
+        });
+      }
+      expect(events).toEqual([failCommit ? "rollback" : "commit", "write"]);
+    } finally {
+      finishCommit();
+      await completed;
+      if (writing) await writing;
+    }
   });
 
   it("uses a bounded number of actual SQLite bridge calls for ten thousand states with delayed bridge responses", async () => {

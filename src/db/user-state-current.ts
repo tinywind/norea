@@ -1,4 +1,6 @@
 import { getDb, runDatabaseTransaction } from "./client";
+import { runContentStorageOperation } from "../lib/content-sync/storage-operation";
+import { withChapterDownloadSnapshotReads } from "../lib/chapter-download-writes";
 import { materializeChapterComposition, setChapterComposition } from "./chapter-composition";
 import { getChapterComposition } from "./chapter-composition";
 import {
@@ -7,14 +9,14 @@ import {
 } from "./user-state-core";
 import { setUserStateActiveServer } from "./user-state";
 import {
-  buildCurrentSnapshotInDb, currentCacheKey, currentExportKey, currentPublicResumeValues, currentStatusKey,
+  buildCurrentSnapshotInDb, currentCacheKey, currentExportKey, currentPublicResumeValues, currentResumeValue, currentStatusKey,
   currentWorkReference, isCurrentWorkHeld, loadCurrentDataInDb, loadCurrentHeldSourcesInDb, loadCurrentWorksInDb, matchingCurrentChapter, privateValueForChapter, sameCurrentResumePosition, sameCurrentValue,
   type CurrentCategory, type CurrentHeldSources, type CurrentWork,
 } from "./user-state-current-data";
 import { mergeUserStateComposition } from "../lib/user-state/composition";
 import type { ChapterSourceSnapshot } from "../lib/chapter-composition";
 import {
-  mergeUserStateCurrentReading, mergeUserStateCurrentResume, parseUserStateCurrentSnapshot,
+  mergeUserStateCurrentReading, mergeUserStateCurrentResume, parseUserStateCurrentItem, parseUserStateCurrentSnapshot,
   type UserStateCurrentApplyResult, type UserStateCurrentItem, type UserStateCurrentSnapshot, type UserStateCurrentStatus,
 } from "../lib/user-state/current-types";
 import {
@@ -65,15 +67,15 @@ export async function getUserStateCurrentStatus(serverUrl?: string): Promise<Use
   return row ? { workspaceId: row.workspaceId, epoch: row.epoch, lastSuccessAt: row.lastSuccessAt, pausedAfterRestore: !!row.paused, missingMetadataCount: row.missingMetadataCount } : empty;
 }
 export async function exportUserStateCurrentSnapshot(binding: UserStateBinding): Promise<UserStateCurrentSnapshot> {
-  return runDatabaseTransaction(async db => {
+  return withChapterDownloadSnapshotReads(hold => runContentStorageOperation(() => runDatabaseTransaction(async db => {
     await assertUserStateAvailableInDb(db);
     await requireBinding(db, binding);
-    const result = await buildCurrentSnapshotInDb(db, binding, await loadCurrentDataInDb(db, binding));
+    const result = await buildCurrentSnapshotInDb(db, binding, await loadCurrentDataInDb(db, binding, hold));
     const snapshot = parseUserStateCurrentSnapshot(result.snapshot);
     await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload",
       [currentExportKey(binding), JSON.stringify({ missingMetadataCount: result.missingMetadataCount })]);
     return snapshot;
-  });
+  })));
 }
 const minimumTime = (left: number | null, right: number | null): number | null => left === null ? right : right === null ? left : Math.min(left, right);
 
@@ -242,9 +244,10 @@ async function applyCurrentSnapshot(
       console.warn("[user-state] current composition is waiting for its original metadata", error);
     }
   }
-  const result = await runDatabaseTransaction(async db => {
+  // Take the file barrier before SQLite; nonblocking read leases also cover source/media writes through commit.
+  const result = await withChapterDownloadSnapshotReads(hold => runContentStorageOperation(() => runDatabaseTransaction(async db => {
     check(); await requireBinding(db, binding); await assertUserStateAvailableInDb(db);
-    const data = await loadCurrentDataInDb(db, binding, items);
+    const data = await loadCurrentDataInDb(db, binding, hold, items);
     const works = new Map(data.works.filter(work => work.sourceNovelId).map(work => [userStateWorkKey(work), work]));
     const chapters = new Map(data.chapters.map(chapter => [JSON.stringify([chapter.novelId, chapter.path]), chapter]));
     const updates = new Map<number, { id: number; progress: number; unread: number; readAt: number | null; bookmark: number }>();
@@ -299,7 +302,8 @@ async function applyCurrentSnapshot(
       if (item.entity.kind === "resume") {
         const key = userStateWorkKey(work);
         const previous = resumes.get(key);
-        const value = previous ? mergeUserStateCurrentResume(previous.value as UserStateValueMap["resume"], item.value as UserStateValueMap["resume"]) : item.value as UserStateValueMap["resume"];
+        const incoming = currentResumeValue(data, work, item.value as UserStateValueMap["resume"], chapters);
+        const value = previous ? mergeUserStateCurrentResume(previous.value as UserStateValueMap["resume"], incoming) : incoming;
         const target = value.chapter ? matchingCurrentChapter(data, work, value.chapter, chapters) : null;
         const targetKey = target ? JSON.stringify([work.id, target.path]) : "";
         const nextEntry = target && changedCompositionNovels.has(work.id)
@@ -352,15 +356,19 @@ async function applyCurrentSnapshot(
     if (affectedNovels.size) await db.execute(`UPDATE novel SET last_read_at=(SELECT MAX(read_at) FROM chapter WHERE novel_id=novel.id)
       WHERE id IN (SELECT value FROM json_each($1))`, [JSON.stringify([...affectedNovels])]);
     const handled = new Set(items.map(item => userStateEntityKey(item.entity)));
+    const currentResumes = [...resumes.values()].filter(item => {
+      if (!(item.value as UserStateValueMap["resume"]).chapter) return false;
+      try { parseUserStateCurrentItem(item); return true; }
+      catch { missing.add(userStateEntityKey(item.entity)); return false; }
+    });
     const missingKeys = [...new Set([...(retry?.previousMissing ?? []).filter(key => !handled.has(key)), ...missing])];
     effects.missingMetadataCount = missingKeys.length;
-    const currentResumes = [...resumes.values()].filter(item => (item.value as UserStateValueMap["resume"]).chapter !== null);
     await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2),($3,$4) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload",
       [currentCacheKey(binding), JSON.stringify({ snapshot, missingKeys }),
         currentStatusKey(binding), JSON.stringify({ resumes: currentResumes, missingMetadataCount: missingKeys.length })]);
     if (!retry) await db.execute("UPDATE user_state_workspace SET last_success_at=$2 WHERE server_url=$1", [binding.serverUrl, Date.now()]);
     return effects;
-  }, true);
+  }, true)));
   check();
   if (result.changed) emitUserStateApplied(result);
   emitUserStateLedgerChanged();

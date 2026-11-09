@@ -1,4 +1,7 @@
 import { parseChapterComposition, type ChapterCompositionV1 } from "../lib/chapter-composition";
+import type { ChapterContentType } from "../lib/chapter-content";
+import type { HoldChapterDownloadSnapshot } from "../lib/chapter-download-writes";
+import { parseStoredChapterPath, storedChapterDigest, storedChapterNumber, storedChapterPath } from "../lib/user-state/stored-chapter";
 import {
   canonicalUserStateJson, parseUserStateEntity, parseUserStateValue, userStateEntityKey, userStateWorkKey,
   type UserStateBinding, type UserStateChapterReference, type UserStateValueMap, type UserStateWorkReference,
@@ -14,6 +17,7 @@ export interface CurrentWork extends UserStateWorkReference {
 }
 export interface CurrentChapter {
   id: number; novelId: number; path: string; name: string; progress: number; unread: number; readAt: number | null; bookmark: number;
+  chapterNumber: string | null; position: number; contentType: ChapterContentType;
 }
 export interface CurrentCategory { id: number; name: string; sort: number; isSystem: number }
 export interface CurrentPrivateValue { entityKey: string; value: UserStateValueMap["reading"] }
@@ -28,6 +32,7 @@ export interface CurrentData {
   compositions: Map<number, ChapterCompositionV1>;
   resumes: UserStateCurrentItem[];
   appliedResumes: UserStateCurrentItem[];
+  storedChapterPaths: Map<number, string>;
 }
 export const currentCacheKey = (binding: UserStateBinding): string => "user-state-current:" + namespaceFor(binding);
 export const currentStatusKey = (binding: UserStateBinding): string => "user-state-current-status:" + namespaceFor(binding);
@@ -74,7 +79,7 @@ export async function loadCurrentWorksInDb(db: UserStateDb): Promise<CurrentWork
   return db.select<CurrentWork[]>("SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name,in_library AS inLibrary,library_added_at AS addedAt FROM novel");
 }
 export async function loadCurrentDataInDb(
-  db: UserStateDb, binding: UserStateBinding, requested?: readonly UserStateCurrentItem[],
+  db: UserStateDb, binding: UserStateBinding, hold: HoldChapterDownloadSnapshot, requested?: readonly UserStateCurrentItem[],
 ): Promise<CurrentData> {
   const works = await loadCurrentWorksInDb(db);
   const heldSources = await loadCurrentHeldSourcesInDb(db, binding.serverUrl);
@@ -101,10 +106,14 @@ export async function loadCurrentDataInDb(
     if (!("work" in item.entity)) return [];
     const chapter = item.entity.kind === "reading" || item.entity.kind === "bookmark" ? item.entity.chapter :
       item.entity.kind === "resume" ? (item.value as UserStateValueMap["resume"]).chapter : null;
-    return chapter ? [{ pluginId: item.entity.work.pluginId, sourceNovelId: item.entity.work.sourceNovelId, path: chapter.chapterPath }] : [];
+    const stored = chapter ? parseStoredChapterPath(chapter.chapterPath) : null;
+    return chapter ? [{ pluginId: item.entity.work.pluginId, sourceNovelId: item.entity.work.sourceNovelId,
+      path: stored?.folderPath ?? chapter.chapterPath, storageNumber: stored?.chapterNumber ?? null }] : [];
   });
-  const columns = "c.id,c.novel_id AS novelId,c.path,c.name,c.progress,c.unread,c.read_at AS readAt,c.bookmark";
-  const requestedChapters = "SELECT " + columns + " FROM json_each($1) r JOIN novel n ON json_extract(r.value,'$.pluginId')=n.plugin_id AND lower(json_extract(r.value,'$.sourceNovelId'))=lower(n.source_novel_id) JOIN chapter c ON c.novel_id=n.id AND json_extract(r.value,'$.path')=c.path";
+  const columns = "c.id,c.novel_id AS novelId,c.path,c.name,c.progress,c.unread,c.read_at AS readAt,c.bookmark,c.chapter_number AS chapterNumber,c.position,COALESCE(c.stored_content_type,c.content_type) AS contentType";
+  const requestedFrom = " FROM json_each($1) r JOIN novel n ON json_extract(r.value,'$.pluginId')=n.plugin_id AND lower(json_extract(r.value,'$.sourceNovelId'))=lower(n.source_novel_id) JOIN chapter c ON c.novel_id=n.id";
+  const requestedChapters = "SELECT " + columns + requestedFrom + " AND json_extract(r.value,'$.path')=c.path" +
+    " UNION SELECT " + columns + requestedFrom + " AND CAST(json_extract(r.value,'$.storageNumber') AS REAL)=CAST(c.chapter_number AS REAL) WHERE json_extract(r.value,'$.storageNumber') IS NOT NULL";
   const positive = "c.progress>0 OR c.unread=0 OR c.read_at IS NOT NULL OR c.bookmark=1 OR EXISTS(SELECT 1 FROM user_state_private p WHERE p.entity_key=json_array('reading',(CASE WHEN n.source_novel_id IS NULL THEN json_array(n.plugin_id,'path',n.path) ELSE json_array(n.plugin_id,'id',lower(n.source_novel_id)) END)||'',c.path) OR p.entity_key=json_array('reading',json_array(n.plugin_id,'path',n.path)||'',c.path))";
   const resumeWorks = new Set(requested?.flatMap(item =>
     item.entity.kind === "resume" ? [userStateWorkKey(item.entity.work)] : []) ?? []);
@@ -113,7 +122,49 @@ export async function loadCurrentDataInDb(
     " UNION SELECT " + columns + " FROM chapter c WHERE c.novel_id IN (SELECT value FROM json_each($2)) AND c.read_at IS NOT NULL" :
     "SELECT " + columns + " FROM chapter c JOIN novel n ON n.id=c.novel_id WHERE " + positive + " UNION " + requestedChapters,
   requested ? [JSON.stringify(chapterRefs), JSON.stringify(resumeNovelIds)] : [JSON.stringify(chapterRefs)]);
-  return { works, heldSources, chapters, categories, memberships, categoryIdentities, privateValues, compositions, resumes, appliedResumes };
+  const data: CurrentData = { works, heldSources, chapters, categories, memberships, categoryIdentities, privateValues,
+    compositions, resumes, appliedResumes, storedChapterPaths: new Map() };
+  const storedRequests = new Set(chapterRefs.filter(row => row.storageNumber !== null).map(row =>
+    JSON.stringify([row.pluginId, row.sourceNovelId?.toLowerCase(), row.storageNumber])));
+  await loadStoredChapterPathsInDb(db, data, storedRequests, hold);
+  return data;
+}
+
+async function loadStoredChapterPathsInDb(db: UserStateDb, data: CurrentData, requested: Set<string>, hold: HoldChapterDownloadSnapshot): Promise<void> {
+  const works = new Map(data.works.map(work => [work.id, work]));
+  const candidates = data.chapters.flatMap(chapter => {
+    const work = works.get(chapter.novelId);
+    const number = storedChapterNumber(chapter.chapterNumber);
+    if (!work?.sourceNovelId || work.pluginId === "local" || number === null || data.compositions.has(work.id) ||
+        /^(?:local-folder|norea-composed|norea-source|norea-stored):/.test(chapter.path) ||
+        isCurrentWorkHeld(data.heldSources, work)) return [];
+    const folder = chapter.path.startsWith("norea-folder:");
+    if (folder && storedChapterNumber(chapter.path.slice("norea-folder:".length)) !== number) return [];
+    if (!folder && !requested.has(JSON.stringify([work.pluginId, work.sourceNovelId.toLowerCase(), number]))) return [];
+    return [{ chapter, work, number }];
+  });
+  if (!candidates.length) return;
+  const targets = new Map(candidates.map(({ work, number }) => [JSON.stringify([work.id, number]), { novelId: work.id, number }]));
+  // Include unread/unexported rows when checking ownership of a physical directory.
+  const counts = await db.select<{ novelId: number; number: string; count: number }[]>(`SELECT
+    json_extract(t.value,'$.novelId') AS novelId,json_extract(t.value,'$.number') AS number,COUNT(*) AS count
+    FROM json_each($1) t JOIN chapter c ON c.novel_id=json_extract(t.value,'$.novelId')
+      AND CAST(c.chapter_number AS REAL)=CAST(json_extract(t.value,'$.number') AS REAL)
+    GROUP BY t.value`, [JSON.stringify([...targets.values()])]);
+  const unique = new Set(counts.filter(row => row.count === 1).map(row => JSON.stringify([row.novelId, row.number])));
+  for (const { chapter, work, number } of candidates) {
+    if (!unique.has(JSON.stringify([work.id, number])) || !hold(chapter.id)) continue;
+    try {
+      const { inspectChapterPayloadInventory } = await import("../lib/chapter-content/storage-platform");
+      const inventory = await inspectChapterPayloadInventory({ novel: { ...work, path: work.novelPath }, chapter });
+      const digest = await storedChapterDigest(inventory);
+      if (!digest) continue;
+      const path = storedChapterPath(number, digest);
+      if (path) data.storedChapterPaths.set(chapter.id, path);
+    } catch {
+      // Missing, inaccessible or invalid storage keeps the original state pending.
+    }
+  }
 }
 export function privateValueForChapter(data: CurrentData, work: CurrentWork, chapter: CurrentChapter): CurrentPrivateValue | undefined {
   const reference = currentWorkReference(work);
@@ -125,7 +176,11 @@ export function currentReadingValue(data: CurrentData, work: CurrentWork, chapte
 }
 const compositionEntryIds = new WeakMap<CurrentData, Map<string, string>>();
 export function currentChapterReference(data: CurrentData, chapter: CurrentChapter): UserStateChapterReference | null {
-  if (/^(?:norea|local)-folder:/.test(chapter.path)) return null;
+  if (chapter.path.startsWith("local-folder:")) return null;
+  if (chapter.path.startsWith("norea-folder:")) {
+    const chapterPath = data.storedChapterPaths.get(chapter.id);
+    return chapterPath ? { chapterPath, name: chapter.name } : null;
+  }
   if (/^norea-(?:composed|source):/.test(chapter.path)) {
     let entries = compositionEntryIds.get(data);
     if (!entries) {
@@ -139,14 +194,37 @@ export function currentChapterReference(data: CurrentData, chapter: CurrentChapt
   }
   return { chapterPath: chapter.path, name: chapter.name };
 }
+const storedChapterIndexes = new WeakMap<CurrentData, Map<string, CurrentChapter | null>>();
 export function matchingCurrentChapter(
   data: CurrentData, work: CurrentWork, reference: UserStateChapterReference,
   chapters: Map<string, CurrentChapter>,
 ): CurrentChapter | null {
+  if (parseStoredChapterPath(reference.chapterPath)) {
+    let index = storedChapterIndexes.get(data);
+    if (!index) {
+      index = new Map();
+      for (const chapter of data.chapters) {
+        const path = data.storedChapterPaths.get(chapter.id);
+        if (!path) continue;
+        const key = JSON.stringify([chapter.novelId, path]);
+        index.set(key, index.has(key) ? null : chapter);
+      }
+      storedChapterIndexes.set(data, index);
+    }
+    return index.get(JSON.stringify([work.id, reference.chapterPath])) ?? null;
+  }
   const chapter = chapters.get(JSON.stringify([work.id, reference.chapterPath]));
   if (!chapter) return null;
   const local = currentChapterReference(data, chapter);
   return local && (!local.compositionEntryId || local.compositionEntryId === reference.compositionEntryId) ? chapter : null;
+}
+
+export function currentResumeValue(
+  data: CurrentData, work: CurrentWork, value: UserStateValueMap["resume"], chapters: Map<string, CurrentChapter>,
+): UserStateValueMap["resume"] {
+  const chapter = value.chapter ? matchingCurrentChapter(data, work, value.chapter, chapters) : null;
+  const reference = chapter ? currentChapterReference(data, chapter) : null;
+  return reference && reference.chapterPath !== value.chapter?.chapterPath ? { ...value, chapter: reference } : value;
 }
 export function currentResumeValues(data: Pick<CurrentData, "resumes" | "appliedResumes">): Map<string, UserStateCurrentItem> {
   const result = new Map<string, UserStateCurrentItem>();
@@ -164,7 +242,14 @@ export function currentResumeValues(data: Pick<CurrentData, "resumes" | "applied
 
 /** The same public DB position is the baseline for export and for recognizing its incoming echo. */
 export function currentPublicResumeValues(data: CurrentData): Map<string, UserStateCurrentItem> {
-  const result = currentResumeValues(data);
+  const chapters = new Map(data.chapters.map(chapter => [JSON.stringify([chapter.novelId, chapter.path]), chapter]));
+  const byKey = new Map(data.works.map(work => [userStateWorkKey(work), work]));
+  const normalize = (item: UserStateCurrentItem): UserStateCurrentItem => {
+    if (item.entity.kind !== "resume") return item;
+    const work = byKey.get(userStateWorkKey(item.entity.work));
+    return work ? { ...item, value: currentResumeValue(data, work, item.value as UserStateValueMap["resume"], chapters) } : item;
+  };
+  const result = currentResumeValues({ resumes: data.resumes.map(normalize), appliedResumes: data.appliedResumes.map(normalize) });
   const works = new Map(data.works.map(work => [work.id, work]));
   for (const chapter of data.chapters) {
     const work = works.get(chapter.novelId);
