@@ -46,10 +46,24 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Set up Node for analysis tools
+        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+        with:
+          node-version: 24
+          package-manager-cache: false
+
+      - name: Prepare verified CodeQL bundle
+        id: prepare-codeql
+        env:
+          CODEQL_LANGUAGE: ${{ matrix.language }}
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/prepare-codeql.mjs
+
       - name: Initialize CodeQL
         uses: github/codeql-action/init@9b3254085494b55a0f7c4c2b3d2d52cc712ce370 # v4
         with:
           languages: ${{ matrix.language }}
+          tools: ${{ steps.prepare-codeql.outputs.tools }}
           build-mode: ${{ matrix.build-mode }}
           queries: security-extended
 

@@ -158,13 +158,20 @@ matching GitHub Release.
 
 The Android release and Java/Kotlin analysis jobs run
 `node scripts/prepare-gradle-cache.mjs` before invoking the Gradle wrapper.
-Windows release jobs run `node scripts/prepare-wix.mjs` before bundling.
+Windows release jobs run `node scripts/prepare-windows-tools.mjs` before bundling.
 These scripts download from the upstream GitHub release asset API and verify
 pinned SHA-256 checksums before populating the tools' normal caches. This avoids
-browser-download redirect failures while retaining the same Gradle and WiX
+browser-download redirect failures while retaining the same Gradle, WiX, and NSIS
 versions and all release formats. `GH_TOKEN` is scoped to each preparation step;
 local runs can use an authenticated GitHub CLI. When updating either build tool,
 update its verified checksum together with the pinned version.
+
+Advanced CodeQL jobs prepare a verified language-specific CLI archive with
+`node scripts/prepare-codeql.mjs` before initialization. The script pins CLI
+2.27.4 and official asset hashes, and passes the local archive through the
+action's `tools` input. Update those pins when intentionally updating the CLI.
+Android plugin dependencies prefer Maven Central in `buildSrc` plugin
+management, and the rustls Maven archive uses its canonical upstream raw host.
 
 ## Manual Smoke Test
 
