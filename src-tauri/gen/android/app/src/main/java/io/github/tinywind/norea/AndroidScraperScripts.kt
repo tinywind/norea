@@ -33,7 +33,7 @@ internal class AndroidScraperScripts(resources: Resources) {
       ),
     )
 
-  fun extractStart(id: String, nonce: String, beforeScript: String, appUrl: String?): String =
+  fun extractStart(id: String, nonce: String, beforeScript: String, appUrl: String?, targetUrl: String): String =
     fillScriptTemplate(
       extractStartTemplate,
       mapOf(
@@ -41,6 +41,7 @@ internal class AndroidScraperScripts(resources: Resources) {
         "__NOREA_REQUEST_NONCE_JSON__" to JSONObject.quote(nonce),
         "__NOREA_BEFORE_SCRIPT__" to beforeScript,
         "__NOREA_APP_ORIGIN_JSON__" to appOriginJson(appUrl),
+        "__NOREA_TARGET_ORIGIN_JSON__" to appOriginJson(targetUrl),
       ),
     )
 }

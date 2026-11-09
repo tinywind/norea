@@ -1,12 +1,12 @@
 (function () {
   if (window.top !== window) return;
   var appOrigin = __NOREA_APP_ORIGIN_JSON__;
-  if (!/^https?:$/.test(location.protocol) || !appOrigin ||
+  var targetOrigin = __NOREA_TARGET_ORIGIN_JSON__;
+  if (!/^https?:$/.test(location.protocol) || !appOrigin || !targetOrigin ||
+      location.origin !== targetOrigin ||
       /^(?:tauri|asset|norea-media)\.localhost$/i.test(location.hostname) ||
-      location.origin === appOrigin) {
-    if ((window.name || "").indexOf("__norea_script__=") === 0) window.name = "";
-    return;
-  }
+      location.origin === appOrigin) return;
+
   window.ReactNativeWebView = window.ReactNativeWebView || {};
   window.ReactNativeWebView.postMessage = function (payload) {
     try {
