@@ -1649,18 +1649,11 @@ class AndroidScraperBridge(
     val timeoutMs = payload.optLong("timeoutMs", 30_000L)
     val resultNonce = beforeScript?.let { bridgeSession.newNonce() }
     val webView = scraper(state, payloadUserAgent(payload))
-    // Page CSP applies to the eval fallback in norea_scraper_init.js but not to embedder
-    // document-start scripts. Keep this per-request script across redirects;
-    // its wrapper admits only top-level HTTP(S) documents.
-    val useDocumentStartScript = beforeScript != null && state.documentStartScriptEnabled && isHttpUrl(url)
-    val targetUrl = if (beforeScript != null && !useDocumentStartScript) {
-      val base = url.substringBefore("#")
-      "$base#__norea_script__=${Uri.encode(beforeScript)}" +
-        "&__norea_request_id__=${Uri.encode(id)}" +
-        "&__norea_nonce__=${Uri.encode(resultNonce.orEmpty())}"
-    } else {
-      url
-    }
+    // Request-provided JavaScript is admitted only through the embedder's
+    // document-start API. URL fragments, window.name and page-side eval are not
+    // execution channels.
+    val useDocumentStartScript = beforeScript != null
+    val targetUrl = url
 
     state.activeExtractId = id
     state.retainExtractDocument = navigationScript.isNotBlank()
@@ -1671,13 +1664,22 @@ class AndroidScraperBridge(
         "documentStartScript=$useDocumentStartScript",
       url,
     )
+    if (beforeScript != null && (!isHttpUrl(url) || !state.documentStartScriptEnabled)) {
+      finishError(
+        state,
+        id,
+        "webview_extract: beforeScript requires an up-to-date Android System WebView with document-start script support",
+      )
+      return
+    }
     setTimeout(state, id, timeoutMs, "webview_extract: timeout after ${timeoutMs}ms")
     clearExtractScript(state)
-    if (beforeScript != null && useDocumentStartScript) {
+    if (beforeScript != null) {
+      val targetOrigin = checkNotNull(originUrl(Uri.parse(url)))
       state.activeExtractScript = WebViewCompat.addDocumentStartJavaScript(
         webView,
-        scripts.extractStart(id, resultNonce.orEmpty(), beforeScript, scriptAppUrl),
-        setOf("*"),
+        scripts.extractStart(id, resultNonce.orEmpty(), beforeScript, scriptAppUrl, url),
+        setOf(targetOrigin),
       )
     }
     val loadTarget = {
@@ -1693,7 +1695,7 @@ class AndroidScraperBridge(
           )
           if (reuseDocument) {
             val prepareCapture = scripts.extractStart(
-              id, resultNonce.orEmpty(), beforeScript.orEmpty(), scriptAppUrl,
+              id, resultNonce.orEmpty(), beforeScript.orEmpty(), scriptAppUrl, url,
             )
             webView.evaluateJavascript("($navigationScript)(function () { $prepareCapture })") { followed ->
               if (state.activeExtractId == id && followed == "true") logState(state, "followed chapter link id=$id", targetUrl)

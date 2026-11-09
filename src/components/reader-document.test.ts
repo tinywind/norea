@@ -22,6 +22,20 @@ describe("prepareReaderDocument", () => {
     expect($("p").text()).toBe("<img src=x onerror=run()>\nAfter");
   });
 
+  it("parses tag-shaped text structurally instead of stripping it with regexes", () => {
+    const prepared = prepareReaderDocument(
+      '<article class="reader-text-content"><p>Before<br><span title=">">&lt;unsafe&gt;</span><br/>After</p></article>',
+      false,
+    );
+    const $ = load(
+      prepared.virtualDocument.segments.map((segment) => segment.html).join(""),
+      {},
+      false,
+    );
+    expect($("script, img, unsafe")).toHaveLength(0);
+    expect($("p").text()).toBe("Before\n<unsafe>\nAfter");
+  });
+
   it("keeps upstream HTML sanitization intact through large-document segmentation", () => {
     const html = sanitizeReaderHtml(
       [
@@ -202,6 +216,25 @@ describe("prepareReaderDocument", () => {
         (segment, index) => segment.index === index && segment.estimatedHeight > 0,
       ),
     ).toBe(true);
+  });
+
+  it("extracts large-document style blocks with quoted angle brackets and mixed case", () => {
+    const body = "<p>Large content.</p>".repeat(20_000);
+    const style = '<STYLE media="screen and (width > 1px)">p::before { content: ">"; }</STYLE>';
+    const prepared = prepareReaderDocument(
+      `<article class="reader-content imported">${style}${body}</article>`,
+      false,
+    );
+    expect(prepared.virtualDocument.staticHtml).toBe(style);
+    expect(
+      prepared.virtualDocument.segments.some((segment) => /<style/i.test(segment.html)),
+    ).toBe(false);
+    const $ = load(
+      prepared.virtualDocument.segments.map((segment) => segment.html).join(""),
+      {},
+      false,
+    );
+    expect($("p")).toHaveLength(20_000);
   });
 
   it("keeps the bounded large-document path and static styles intact", () => {

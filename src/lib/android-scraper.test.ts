@@ -427,46 +427,20 @@ describe("Android scraper bridge init script", () => {
     `#__norea_script__=${encodeURIComponent(script)}` +
     "&__norea_request_id__=android-scraper-7&__norea_nonce__=nonce-7";
 
-  it("arms the request from the URL hash and keeps it for later same-site documents", () => {
-    const first = loadBridgeDocument({ hash });
-
-    expect(first.evaluated).toEqual(["/novel/1"]);
-    expect(first.posts).toEqual([
-      { id: "android-scraper-7", nonce: "nonce-7", payload: "result:/novel/1" },
-    ]);
-    expect(first.replacedUrls).toEqual(["/novel/1?p=2"]);
-    expect(String(first.window.name)).toMatch(/^__norea_script__=/);
-    expect(String(first.window.name)).toContain(
-      `&__norea_origin__=${encodeURIComponent("https://source.test")}`,
-    );
-
-    const second = loadBridgeDocument({ name: String(first.window.name) });
-
-    expect(second.evaluated).toEqual(["/novel/1"]);
-    expect(second.posts).toEqual([
-      { id: "android-scraper-7", nonce: "nonce-7", payload: "result:/novel/1" },
-    ]);
-    expect(second.replacedUrls).toEqual([]);
-    expect(second.window.name).toBe(first.window.name);
+  it("treats legacy URL and window-name script payloads as inert text", () => {
+    for (const document of [
+      loadBridgeDocument({ hash }),
+      loadBridgeDocument({ name: `__norea_script__=${encodeURIComponent(script)}` }),
+    ]) {
+      expect(document.evaluated).toEqual([]);
+      expect(document.posts).toEqual([]);
+      expect(document.replacedUrls).toEqual([]);
+      document.postMessage("native-result");
+      expect(document.legacyPosts).toEqual(["native-result"]);
+    }
   });
 
-  it("drops the armed request before a foreign-origin document can use it", () => {
-    const armed = loadBridgeDocument({ hash });
-
-    const foreign = loadBridgeDocument({
-      name: String(armed.window.name),
-      origin: "https://evil.test",
-    });
-
-    expect(foreign.evaluated).toEqual([]);
-    expect(foreign.posts).toEqual([]);
-    expect(foreign.window.name).toBe("");
-    foreign.postMessage("forged");
-    expect(foreign.posts).toEqual([]);
-    expect(foreign.legacyPosts).toEqual(["forged"]);
-  });
-
-  it("ignores unrelated window names and falls back to the legacy result bridge", () => {
+  it("keeps unrelated window names and exposes only the static native result bridge", () => {
     const document = loadBridgeDocument({ name: "adframe" });
 
     expect(document.evaluated).toEqual([]);
@@ -476,8 +450,8 @@ describe("Android scraper bridge init script", () => {
     expect(document.legacyPosts).toEqual(["late"]);
   });
 
-  it("clears only bridge-owned window names when an extract finishes", () => {
-    const armed: Record<string, unknown> = { name: "__norea_script__=abc&__norea_request_id__=x" };
+  it("clears only bridge-owned opaque request names when an extract finishes", () => {
+    const armed: Record<string, unknown> = { name: "__norea_request__=request-x" };
     runInNewContext(androidBridgeScript("norea_scraper_clear_extract"), { window: armed });
     expect(armed.name).toBe("");
 

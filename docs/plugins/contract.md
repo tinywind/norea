@@ -185,6 +185,11 @@ The host arms the new capture before clicking. This supports full document
 navigation and pages that update their URL and content without reloading. For
 these client-side navigations, `documentStartScript` runs in the existing document
 before the click; it runs again at document start if the click loads a new one.
+Windows and Android install request scripts through the native WebView
+document-start API and restrict them to the exact requested HTTP(S) origin.
+Executable plugin text is never transported in a URL fragment, `window.name`, or
+a page-side `eval`. Android WebViews without document-start support fail the
+capture explicitly instead of falling back to page-controlled code execution.
 Plugins opting in must make that script repeatable, dispose earlier hooks, and
 make `readySelector` identify content for the requested chapter. Old chapter
 content must never satisfy readiness. The host waits for the requested URL and

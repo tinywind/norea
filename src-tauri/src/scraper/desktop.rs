@@ -22,11 +22,14 @@ use tokio::sync::{oneshot, Mutex as AsyncMutex};
 use tokio::time::timeout;
 #[cfg(target_os = "windows")]
 use webview2_com::Microsoft::Web::WebView2::Win32::{
-    ICoreWebView2Profile2, ICoreWebView2_13, ICoreWebView2_2,
+    ICoreWebView2, ICoreWebView2Profile2, ICoreWebView2_13, ICoreWebView2_2,
     COREWEBVIEW2_BROWSING_DATA_KINDS_DISK_CACHE,
 };
 #[cfg(target_os = "windows")]
-use webview2_com::{take_pwstr, ClearBrowsingDataCompletedHandler, GetCookiesCompletedHandler};
+use webview2_com::{
+    take_pwstr, AddScriptToExecuteOnDocumentCreatedCompletedHandler,
+    ClearBrowsingDataCompletedHandler, CoTaskMemPWSTR, GetCookiesCompletedHandler,
+};
 #[cfg(target_os = "windows")]
 use windows::core::{Interface, HSTRING, PCWSTR, PWSTR};
 
@@ -47,19 +50,10 @@ const SCRAPER_HIDE_BLANK_TIMEOUT: Duration = Duration::from_secs(5);
 const SCRAPER_HOMEPAGE_PATH: &str = "scraper.html";
 static FETCH_SEQUENCE: AtomicU64 = AtomicU64::new(1);
 
-/// Polyfill + before-content hook injected at scraper webview creation.
-/// The script runs before any page script in every navigation, so
-/// callers (e.g. `webview_extract`) can pass an arbitrary
-/// before-content script via `window.name` and receive results
-/// asynchronously via `window.ReactNativeWebView.postMessage`.
-///
-/// Bridge wiring:
-/// - `window.name=__norea_script__=ENCODED` or the legacy
-///   `__norea_script__=ENCODED` fragment: decoded + eval'd before any
-///   page script runs (e.g. patches `Element.prototype.attachShadow`).
-/// - `ReactNativeWebView.postMessage(payload)` polyfill: stores the
-///   payload in page state and also mirrors it to `location.hash` as a
-///   fallback marker for older WebView hosts.
+/// Static result bridge injected at scraper webview creation. Request-provided
+/// executable code is never read from URL fragments or `window.name`. On Windows
+/// a per-request WebView2 document-start script is registered through the native
+/// API; other desktop platforms transport only an opaque request id.
 
 type ScraperWebview = Webview<tauri::Wry>;
 
@@ -495,8 +489,8 @@ fn scraper_label_from_key(key: &str) -> String {
 }
 
 fn scraper_initialization_script(app_url: Option<&Url>) -> String {
-    let app_origin_json = serde_json::json!(app_url.map(|url| url.origin().ascii_serialization()))
-        .to_string();
+    let app_origin_json =
+        serde_json::json!(app_url.map(|url| url.origin().ascii_serialization())).to_string();
     SCRAPER_INIT_SCRIPT.replace("__NOREA_APP_ORIGIN_JSON__", &app_origin_json)
 }
 
@@ -1074,43 +1068,11 @@ fn browser_http_origin(url: &Url) -> Option<String> {
     matches!(url.scheme(), "http" | "https").then(|| url.origin().ascii_serialization())
 }
 
-fn scraper_url_for_log(value: &str) -> String {
-    if let Ok(parsed) = Url::parse(value) {
-        if matches!(parsed.scheme(), "http" | "https") {
-            return parsed.origin().ascii_serialization();
-        }
-        return format!("<{}-url>", parsed.scheme());
-    }
-    if value.split_once("://").is_some_and(|(scheme, _)| {
-        scheme.eq_ignore_ascii_case("http") || scheme.eq_ignore_ascii_case("https")
-    }) {
-        return "<http-url>".to_string();
-    }
-
-    let secret_boundary = [value.find('?'), value.find('#')]
-        .into_iter()
-        .flatten()
-        .min()
-        .unwrap_or(value.len());
-    let without_secrets = &value[..secret_boundary];
-    let Some(scheme_end) = without_secrets.find("://") else {
-        return without_secrets.to_string();
-    };
-    let authority_start = scheme_end + 3;
-    let authority_and_path = &without_secrets[authority_start..];
-    let authority_end = authority_and_path
-        .find('/')
-        .unwrap_or(authority_and_path.len());
-    let authority = &authority_and_path[..authority_end];
-    let Some(userinfo_end) = authority.rfind('@') else {
-        return without_secrets.to_string();
-    };
-    format!(
-        "{}{}{}",
-        &without_secrets[..authority_start],
-        &authority[userinfo_end + 1..],
-        &authority_and_path[authority_end..]
-    )
+fn scraper_url_for_log(_value: &str) -> String {
+    // Never derive log output from an address. Request and queue identifiers in
+    // adjacent fields provide correlation without retaining host, path, query,
+    // fragment, credentials, malformed input, or a reversible digest.
+    "<redacted-url>".to_string()
 }
 
 fn redact_urls_for_log(value: &str) -> String {
@@ -1416,8 +1378,10 @@ pub async fn scraper_clear_cache(
 
 #[cfg(any(target_os = "windows", test))]
 fn is_vpn_challenge_cookie(name: &str) -> bool {
-    matches!(name, "cf_clearance" | "__cf_bm" | "__cfwaitingroom" | "_cfuvid")
-        || name.starts_with("cf_chl_")
+    matches!(
+        name,
+        "cf_clearance" | "__cf_bm" | "__cfwaitingroom" | "_cfuvid"
+    ) || name.starts_with("cf_chl_")
         || name.starts_with("__cf_chl_")
 }
 
@@ -2088,8 +2052,13 @@ fn browser_challenge_url(scraper: &ScraperWebview, fallback: &str) -> String {
 }
 
 fn clean_challenge_url(value: &str) -> String {
-    let Ok(mut url) = Url::parse(value) else { return value.to_string(); };
-    if url.fragment().is_some_and(|fragment| fragment.starts_with("__norea_result__=")) {
+    let Ok(mut url) = Url::parse(value) else {
+        return value.to_string();
+    };
+    if url
+        .fragment()
+        .is_some_and(|fragment| fragment.starts_with("__norea_result__="))
+    {
         url.set_fragment(None);
     }
     url.to_string()
@@ -2427,7 +2396,9 @@ fn fetch_context_urls(
         }
     }
     let mut contexts = vec![origin_url(&request_url)];
-    let method = init.and_then(|init| init.method.as_deref()).unwrap_or("GET");
+    let method = init
+        .and_then(|init| init.method.as_deref())
+        .unwrap_or("GET");
     // API and image hosts may have no usable root document. Keep the request's
     // own origin available before falling back to a cross-origin source page.
     if (method.is_empty()
@@ -2467,48 +2438,216 @@ async fn take_webview_extract_result(scraper: &ScraperWebview, request_id: &str)
     let request_id_json = serde_json::to_string(request_id).ok()?;
     eval_json::<Option<String>>(
         scraper,
-        format!(r#"(function () {{
+        format!(
+            r#"(function () {{
   if (window.__noreaExtractRequestId !== {request_id_json}) return null;
   if (typeof window.__noreaExtractResult !== "string") return null;
   var result = window.__noreaExtractResult;
   window.__noreaExtractResult = null;
   return result;
-}})()"#),
+}})()"#
+        ),
     )
     .await
     .ok()
     .flatten()
 }
 
-fn install_webview_extract_before_script(
-    scraper: &ScraperWebview,
+fn extract_document_start_script(
     before_script: Option<&str>,
     request_id: &str,
+    target_origin: &str,
+    app_origin: Option<&str>,
 ) -> Result<String, String> {
     let request_id_json = serde_json::to_string(request_id)
         .map_err(|err| format!("webview_extract: serialize extract request id: {err}"))?;
-    // The id-setter runs on the destination document via the SCRAPER_INIT_SCRIPT
-    // bridge, so the page's postMessage polyfill can navigate to the result
-    // sentinel and wake the awaiting extract for this request id.
-    let id_script = format!("window.__noreaExtractRequestId = {request_id_json};");
-    let combined = match before_script {
-        Some(before_script) => format!("{id_script}\n{before_script}"),
-        None => id_script,
-    };
-    let combined_json = serde_json::to_string(&combined)
-        .map_err(|err| format!("webview_extract: serialize before script: {err}"))?;
-    let script = format!(
-        r#"(function () {{
-  try {{ window.__noreaExtractResult = null; }} catch (error) {{}}
+    let target_origin_json = serde_json::to_string(target_origin)
+        .map_err(|err| format!("webview_extract: serialize target origin: {err}"))?;
+    let app_origin_json = serde_json::to_string(&app_origin)
+        .map_err(|err| format!("webview_extract: serialize app origin: {err}"))?;
+    let before_script = before_script.unwrap_or_default();
+    Ok(format!(
+        r##"(function () {{
+  if (window.top !== window) return;
+  var targetOrigin = {target_origin_json};
+  var appOrigin = {app_origin_json};
+  var protectedHost = /^(?:tauri|asset|norea-media)\.localhost$/i.test(location.hostname);
+  if (!/^https?:$/.test(location.protocol) || protectedHost ||
+      location.origin !== targetOrigin || (appOrigin && location.origin === appOrigin)) return;
+  window.__noreaExtractRequestId = {request_id_json};
+  window.__noreaExtractResult = null;
+  window.ReactNativeWebView = window.ReactNativeWebView || {{}};
+  window.ReactNativeWebView.postMessage = function (payload) {{
+    try {{
+      window.__noreaExtractResult = String(payload);
+      var encoded = encodeURIComponent(String(payload));
+      var marker = "#__norea_result__=" + encoded;
+      try {{ history.replaceState(null, "", location.pathname + location.search + marker); }}
+      catch (error) {{ location.hash = marker; }}
+      location.href = "https://norea.localhost/__norea_scraper_result__/" +
+        encodeURIComponent({request_id_json});
+    }} catch (error) {{}}
+  }};
   try {{
-    window.name = "__norea_script__=" + encodeURIComponent({combined_json});
-  }} catch (error) {{}}
-}})();"#
-    );
+    {before_script}
+  }} catch (error) {{
+    try {{
+      window.ReactNativeWebView.postMessage(JSON.stringify({{
+        ok: false,
+        error: "before-script error: " + ((error && error.message) || String(error))
+      }}));
+    }} catch (ignored) {{}}
+  }}
+}})();"##
+    ))
+}
+
+#[cfg(target_os = "windows")]
+fn remove_webview2_document_script(
+    core: &ICoreWebView2,
+    script_id: &str,
+) -> windows::core::Result<()> {
+    let script_id = CoTaskMemPWSTR::from(script_id);
+    unsafe {
+        core.RemoveScriptToExecuteOnDocumentCreated(*script_id.as_ref().as_pcwstr())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+struct ExtractDocumentScriptGuard {
+    webview: ScraperWebview,
+    script_id: Option<String>,
+}
+
+#[cfg(target_os = "windows")]
+impl Drop for ExtractDocumentScriptGuard {
+    fn drop(&mut self) {
+        let Some(script_id) = self.script_id.take() else {
+            return;
+        };
+        let result = self.webview.with_webview(move |platform_webview| {
+            let remove = (|| -> windows::core::Result<()> {
+                let core = unsafe { platform_webview.controller().CoreWebView2()? };
+                remove_webview2_document_script(&core, &script_id)
+            })();
+            if let Err(error) = remove {
+                log::warn!("[scraper:extract] remove WebView2 document-start script: {error}");
+            }
+        });
+        if let Err(error) = result {
+            log::warn!("[scraper:extract] dispatch document-start script removal: {error}");
+        }
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+struct ExtractDocumentScriptGuard;
+
+struct ExtractDocumentScript {
+    guard: ExtractDocumentScriptGuard,
+    existing_document_script: String,
+    activation_script: String,
+}
+
+#[cfg(target_os = "windows")]
+async fn install_webview_extract_before_script(
+    scraper: &ScraperWebview,
+    before_script: Option<&str>,
+    request_id: &str,
+    target_origin: &str,
+    app_origin: Option<&str>,
+) -> Result<ExtractDocumentScript, String> {
+    let document_script =
+        extract_document_start_script(before_script, request_id, target_origin, app_origin)?;
+    let existing_document_script = document_script.clone();
+    let (sender, receiver) = oneshot::channel::<Result<String, String>>();
+    let sender = Arc::new(Mutex::new(Some(sender)));
+    let sender_for_start = Arc::clone(&sender);
     scraper
-        .eval(script)
-        .map_err(|err| format!("webview_extract: install before script: {err}"))?;
-    Ok(combined)
+        .with_webview(move |platform_webview| {
+            let sender_for_callback = Arc::clone(&sender_for_start);
+            let start_result = (|| -> windows::core::Result<()> {
+                let core = unsafe { platform_webview.controller().CoreWebView2()? };
+                let core_for_callback = core.clone();
+                let handler = AddScriptToExecuteOnDocumentCreatedCompletedHandler::create(
+                    Box::new(move |error_code, script_id| {
+                        let result = error_code.map(|_| script_id).map_err(|error| {
+                            format!(
+                                "webview_extract: WebView2 document-start callback failed: {error}"
+                            )
+                        });
+                        let undelivered = match sender_for_callback.lock() {
+                            Ok(mut slot) => match slot.take() {
+                                Some(sender) => sender.send(result).err(),
+                                None => Some(result),
+                            },
+                            Err(_) => Some(result),
+                        };
+                        if let Some(Ok(script_id)) = undelivered {
+                            let _ = remove_webview2_document_script(&core_for_callback, &script_id);
+                        }
+                        Ok(())
+                    }),
+                );
+                let javascript = CoTaskMemPWSTR::from(document_script.as_str());
+                unsafe {
+                    core.AddScriptToExecuteOnDocumentCreated(
+                        *javascript.as_ref().as_pcwstr(),
+                        &handler,
+                    )?;
+                }
+                Ok(())
+            })();
+            if let Err(error) = start_result {
+                if let Ok(mut sender) = sender_for_start.lock() {
+                    if let Some(sender) = sender.take() {
+                        let _ = sender.send(Err(format!(
+                            "webview_extract: install WebView2 document-start script: {error}"
+                        )));
+                    }
+                }
+            }
+        })
+        .map_err(|error| format!("webview_extract: dispatch document-start script: {error}"))?;
+    let script_id = timeout(Duration::from_secs(5), receiver)
+        .await
+        .map_err(|_| "webview_extract: WebView2 document-start callback timed out".to_string())?
+        .map_err(|_| "webview_extract: WebView2 document-start callback dropped".to_string())??;
+    Ok(ExtractDocumentScript {
+        guard: ExtractDocumentScriptGuard {
+            webview: scraper.clone(),
+            script_id: Some(script_id),
+        },
+        existing_document_script,
+        activation_script: String::new(),
+    })
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn install_webview_extract_before_script(
+    _scraper: &ScraperWebview,
+    before_script: Option<&str>,
+    request_id: &str,
+    _target_origin: &str,
+    _app_origin: Option<&str>,
+) -> Result<ExtractDocumentScript, String> {
+    if before_script.is_some() {
+        return Err(
+            "webview_extract: secure beforeScript injection is currently available on Windows and Android only"
+                .to_string(),
+        );
+    }
+    let request_id_json = serde_json::to_string(request_id)
+        .map_err(|err| format!("webview_extract: serialize extract request id: {err}"))?;
+    let activation_script = format!(
+        r#"try {{ window.__noreaExtractResult = null; window.__noreaExtractRequestId = {request_id_json}; window.name = "__norea_request__=" + encodeURIComponent({request_id_json}); }} catch (error) {{}}"#,
+    );
+    Ok(ExtractDocumentScript {
+        guard: ExtractDocumentScriptGuard,
+        existing_document_script: activation_script.clone(),
+        activation_script,
+    })
 }
 
 fn clear_webview_extract_result(scraper: &ScraperWebview, current_url: Option<&str>) {
@@ -2522,7 +2661,7 @@ fn clear_webview_extract_result(scraper: &ScraperWebview, current_url: Option<&s
     window.__noreaChapterCaptureObserver = null;
   } catch (error) {}
   try {
-    if ((window.name || "").indexOf("__norea_script__=") === 0) {
+    if ((window.name || "").indexOf("__norea_request__=") === 0) {
       window.name = "";
     }
   } catch (error) {}
@@ -2935,9 +3074,8 @@ fn decode_uri_component(input: &str) -> Result<String, String> {
     String::from_utf8(out).map_err(|err| format!("invalid utf-8 in payload: {err}"))
 }
 
-/// Navigate the scraper WebView to `url`, run the optional
-/// `before_script` before any page script via the
-/// `SCRAPER_INIT_SCRIPT` bridge, and resolve with whatever the page
+/// Navigate the scraper WebView to `url`, register the optional
+/// `before_script` with the native document-start API, and resolve with whatever the page
 /// (or the injected script) emits via
 /// `window.ReactNativeWebView.postMessage`.
 ///
@@ -3010,6 +3148,16 @@ pub async fn webview_extract(
     let parsed: Url = target_url_str
         .parse()
         .map_err(|err| format!("webview_extract: invalid url '{target_url_for_log}': {err}"))?;
+    if !matches!(parsed.scheme(), "http" | "https") || parsed.host_str().is_none() {
+        return Err("webview_extract: expected an HTTP(S) target".to_string());
+    }
+    let target_origin = parsed.origin().ascii_serialization();
+    let app_origin = app
+        .config()
+        .build
+        .dev_url
+        .as_ref()
+        .map(|url| url.origin().ascii_serialization());
 
     let timeout = Duration::from_millis(timeout_ms.unwrap_or(30_000));
     let result_marker = "#__norea_result__=";
@@ -3027,42 +3175,78 @@ pub async fn webview_extract(
     let mut signaled = false;
 
     for attempt in 1..=max_attempts {
+        let document_script = install_webview_extract_before_script(
+            &scraper,
+            before_script,
+            &request_id,
+            &target_origin,
+            app_origin.as_deref(),
+        )
+        .await?;
+        let _document_script_guard = document_script.guard;
+        let existing_document_script = document_script.existing_document_script;
+        let activation_script = document_script.activation_script;
         let can_follow_link = attempt == 1 && document_browser_challenge(&scraper).await.is_none();
         clear_webview_extract_result(&scraper, None);
         let mut capture_id = None;
         let mut followed_link = false;
         if can_follow_link {
             if let Some(script) = chapter_navigation_script.as_deref() {
-                let capture_script = install_webview_extract_before_script(&scraper, before_script, &request_id)?;
                 capture_id = capture_resources
                     .then(|| begin_navigation_resource_capture(&state, &queue, &source_id));
                 followed_link = eval_json::<bool>(
-                    &scraper, format!("({script})(function () {{ {capture_script} }})"),
-                ).await.unwrap_or(false);
+                    &scraper,
+                    format!("({script})(function () {{ {existing_document_script} }})"),
+                )
+                .await
+                .unwrap_or(false);
                 ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
             }
         }
         if followed_link {
             log::debug!("[scraper:extract] followed chapter link queue={queue} url={url_for_log}");
         } else {
-            if let Some(id) = capture_id.take() { state.captured_resources.finish(&queue, id); }
+            if let Some(id) = capture_id.take() {
+                state.captured_resources.finish(&queue, id);
+            }
             let extract_target = prepare_extract_context(
-                &scraper, &parsed, &generation, expected_generation, &queue,
-            ).await?;
+                &scraper,
+                &parsed,
+                &generation,
+                expected_generation,
+                &queue,
+            )
+            .await?;
             if let Some(kind) = document_browser_challenge(&scraper).await {
                 clear_webview_extract_result(&scraper, None);
                 ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
-                return Ok(browser_challenge_envelope(&kind, &browser_challenge_url(&scraper, &url)));
+                return Ok(browser_challenge_envelope(
+                    &kind,
+                    &browser_challenge_url(&scraper, &url),
+                ));
             }
             let _ = wait_for_scraper_bridge_ready(
-                &scraper, "extract", Duration::from_secs(5), &generation, expected_generation, &queue,
-            ).await?;
+                &scraper,
+                "extract",
+                Duration::from_secs(5),
+                &generation,
+                expected_generation,
+                &queue,
+            )
+            .await?;
             ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
-            install_webview_extract_before_script(&scraper, before_script, &request_id)?;
+            if !activation_script.is_empty() {
+                scraper
+                    .eval(activation_script.clone())
+                    .map_err(|err| format!("webview_extract: activate request bridge: {err}"))?;
+            }
             capture_id = capture_resources
                 .then(|| begin_navigation_resource_capture(&state, &queue, &source_id));
             navigate_prepared_extract_target(&scraper, &extract_target).map_err(|err| {
-                format!("webview_extract: navigate prepared target: {}", redact_urls_for_log(&err.to_string()))
+                format!(
+                    "webview_extract: navigate prepared target: {}",
+                    redact_urls_for_log(&err.to_string())
+                )
             })?;
         }
 
@@ -3088,11 +3272,16 @@ pub async fn webview_extract(
             poll_interval = next_poll_backoff(poll_interval, Duration::from_millis(600));
             ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
             if let Some(kind) = document_browser_challenge(&scraper).await {
-                if let Some(id) = capture_id.take() { state.captured_resources.finish(&queue, id); }
+                if let Some(id) = capture_id.take() {
+                    state.captured_resources.finish(&queue, id);
+                }
                 clear_webview_extract_result(&scraper, None);
                 log::debug!("[scraper:extract] {kind} requires manual action queue={queue} url={url_for_log}");
                 ensure_executor_generation(&generation, expected_generation, "extract", &queue)?;
-                return Ok(browser_challenge_envelope(&kind, &browser_challenge_url(&scraper, &url)));
+                return Ok(browser_challenge_envelope(
+                    &kind,
+                    &browser_challenge_url(&scraper, &url),
+                ));
             }
             let mut extract_result = take_webview_extract_result(&scraper, &request_id)
                 .await
@@ -3234,16 +3423,28 @@ mod tests {
     #[test]
     fn search_executor_ids_are_distinct_from_download_and_immediate_executors() {
         for executor in ["immediate", "pool:0", "search:0", "search:2"] {
-            assert_eq!(normalize_scraper_executor(Some(executor)).unwrap(), executor);
+            assert_eq!(
+                normalize_scraper_executor(Some(executor)).unwrap(),
+                executor
+            );
         }
         for executor in ["search:", "search:-1", "search:other"] {
             assert!(normalize_scraper_executor(Some(executor)).is_err());
         }
         let state = ScraperState::default();
         let search = scraper_executor_lock(&state, "search:0");
-        assert!(Arc::ptr_eq(&search, &scraper_executor_lock(&state, "search:0")));
-        assert!(!Arc::ptr_eq(&search, &scraper_executor_lock(&state, "pool:0")));
-        assert!(!Arc::ptr_eq(&search, &scraper_executor_lock(&state, "immediate")));
+        assert!(Arc::ptr_eq(
+            &search,
+            &scraper_executor_lock(&state, "search:0")
+        ));
+        assert!(!Arc::ptr_eq(
+            &search,
+            &scraper_executor_lock(&state, "pool:0")
+        ));
+        assert!(!Arc::ptr_eq(
+            &search,
+            &scraper_executor_lock(&state, "immediate")
+        ));
     }
 
     #[test]
@@ -3777,7 +3978,12 @@ mod tests {
         .expect("test app URL");
         let script = scraper_initialization_script(Some(&app_url));
         assert!(script.contains("\"https://dev.norea.test\""));
-        for secret in ["probe-user", "probe-password", "private-path", "probe-token"] {
+        for secret in [
+            "probe-user",
+            "probe-password",
+            "private-path",
+            "probe-token",
+        ] {
             assert!(!script.contains(secret));
         }
     }
@@ -3836,21 +4042,33 @@ mod tests {
     }
 
     #[test]
-    fn scraper_url_log_redaction_keeps_only_the_http_origin() {
-        assert_eq!(
-            scraper_url_for_log(
-                "https://user:password@Source.Test:8443/signed/path-token?token=secret#proof"
-            ),
-            "https://source.test:8443"
-        );
-        assert_eq!(
-            scraper_url_for_log("not a url?token=secret#proof"),
-            "not a url"
-        );
-        assert_eq!(
-            scraper_url_for_log("https://%zz/signed-path?token=secret"),
-            "<http-url>"
-        );
+    fn extract_document_start_script_is_top_level_and_origin_scoped() {
+        let script = extract_document_start_script(
+            Some("window.__noreaProbe = true;"),
+            "request-7",
+            "https://source.test:8443",
+            Some("https://app.test"),
+        )
+        .unwrap();
+
+        assert!(script.contains("window.top !== window"));
+        assert!(script.contains("location.origin !== targetOrigin"));
+        assert!(script.contains("https://source.test:8443"));
+        assert!(script.contains("window.__noreaProbe = true;"));
+        assert!(!script.contains("__norea_script__"));
+        assert!(!script.contains("eval("));
+    }
+
+    #[test]
+    fn scraper_url_log_redaction_is_independent_of_the_input() {
+        for value in [
+            "https://user:password@Source.Test:8443/signed/path-token?token=secret#proof",
+            "not a url?token=secret#proof",
+            "https://%zz/signed-path?token=secret",
+            "file:///private/path",
+        ] {
+            assert_eq!(scraper_url_for_log(value), "<redacted-url>");
+        }
     }
 
     #[test]
@@ -3859,10 +4077,17 @@ mod tests {
             "request https://source.test/signed-path-one?token=first#proof failed via http://user:pass@fallback.test/signed-path-two?token=second",
         );
 
-        assert_eq!(
-            message,
-            "request https://source.test failed via http://fallback.test"
-        );
+        assert_eq!(message, "request <redacted-url> failed via <redacted-url>");
+        for secret in [
+            "source.test",
+            "signed-path-one",
+            "first",
+            "fallback.test",
+            "pass",
+            "second",
+        ] {
+            assert!(!message.contains(secret));
+        }
     }
 
     #[cfg(target_os = "windows")]
@@ -3912,10 +4137,16 @@ mod tests {
 
     #[test]
     fn challenge_urls_exclude_internal_capture_results() {
-        assert_eq!(clean_challenge_url("https://source.test/chapter/16?token=one#__norea_result__=payload"),
-            "https://source.test/chapter/16?token=one");
-        assert_eq!(clean_challenge_url("https://source.test/chapter/16#reader"),
-            "https://source.test/chapter/16#reader");
+        assert_eq!(
+            clean_challenge_url(
+                "https://source.test/chapter/16?token=one#__norea_result__=payload"
+            ),
+            "https://source.test/chapter/16?token=one"
+        );
+        assert_eq!(
+            clean_challenge_url("https://source.test/chapter/16#reader"),
+            "https://source.test/chapter/16#reader"
+        );
     }
 
     fn fetch_context_navigation(request: &str) -> FetchContextNavigation {
@@ -3991,8 +4222,12 @@ mod tests {
         let source = "https://api.example/session/start?scope=books";
 
         assert_eq!(
-            fetch_context_urls("https://api.example/articles?titleId=42", Some(source), None)
-                .unwrap(),
+            fetch_context_urls(
+                "https://api.example/articles?titleId=42",
+                Some(source),
+                None
+            )
+            .unwrap(),
             vec![source]
         );
     }
@@ -4288,5 +4523,4 @@ mod tests {
                 .contains("callback dropped")
         );
     }
-
 }

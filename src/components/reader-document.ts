@@ -206,28 +206,11 @@ function escapeReaderHtmlText(value: string): string {
     .replace(/'/g, "&#39;");
 }
 
-function decodeReaderHtmlText(value: string): string {
-  return value.replace(
-    /&(?:amp|lt|gt|quot|#39|#x27|#(\d+)|#x([\da-f]+));/gi,
-    (entity, decimal, hex) => {
-      const normalized = entity.toLowerCase();
-      if (normalized === "&amp;") return "&";
-      if (normalized === "&lt;") return "<";
-      if (normalized === "&gt;") return ">";
-      if (normalized === "&quot;") return '"';
-      if (normalized === "&#39;" || normalized === "&#x27;") return "'";
-      const codePoint = decimal
-        ? Number.parseInt(decimal, 10)
-        : Number.parseInt(hex, 16);
-      return Number.isFinite(codePoint)
-        ? String.fromCodePoint(codePoint)
-        : entity;
-    },
-  );
-}
-
-function stripReaderTextTags(value: string): string {
-  return value.replace(/<br\s*\/?>/gi, "\n").replace(/<[^>]*>/g, "");
+function readerHtmlFragmentText(html: string): string {
+  const $ = load(`<div data-norea-reader-text-root>${html}</div>`, {}, false);
+  const root = $("[data-norea-reader-text-root]").first();
+  root.find("br").replaceWith("\n");
+  return root.text();
 }
 
 function readerTextParagraphText(html: string): string {
@@ -235,10 +218,9 @@ function readerTextParagraphText(html: string): string {
   let match: RegExpExecArray | null;
   READER_TEXT_LINE_PATTERN.lastIndex = 0;
   while ((match = READER_TEXT_LINE_PATTERN.exec(html)) !== null) {
-    lines.push(decodeReaderHtmlText(match[1] ?? ""));
+    lines.push(readerHtmlFragmentText(match[1] ?? ""));
   }
-  if (lines.length > 0) return lines.join("\n");
-  return decodeReaderHtmlText(stripReaderTextTags(html));
+  return lines.length > 0 ? lines.join("\n") : readerHtmlFragmentText(html);
 }
 
 function estimateTextSegmentHeight(textLength: number): number {
@@ -396,15 +378,66 @@ function pushLargeHtmlSegment(
   });
 }
 
+function htmlTagEnd(html: string, start: number): number {
+  let quote: "\"" | "'" | null = null;
+  for (let index = start; index < html.length; index += 1) {
+    const character = html[index];
+    if (quote) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+    } else if (character === ">") {
+      return index + 1;
+    }
+  }
+  return -1;
+}
+
+function htmlTagBoundary(character: string | undefined): boolean {
+  return character === undefined || character === ">" || character === "/" || /\s/.test(character);
+}
+
+function splitReaderStyleBlocks(html: string): {
+  contentHtml: string;
+  staticHtml: string;
+} {
+  const lower = html.toLowerCase();
+  const content: string[] = [];
+  const styles: string[] = [];
+  let cursor = 0;
+  let searchFrom = 0;
+
+  while (searchFrom < html.length) {
+    let open = lower.indexOf("<style", searchFrom);
+    while (open >= 0 && !htmlTagBoundary(lower[open + 6])) {
+      open = lower.indexOf("<style", open + 6);
+    }
+    if (open < 0) break;
+    const openEnd = htmlTagEnd(html, open + 6);
+    if (openEnd < 0) break;
+
+    let close = lower.indexOf("</style", openEnd);
+    while (close >= 0 && !htmlTagBoundary(lower[close + 7])) {
+      close = lower.indexOf("</style", close + 7);
+    }
+    if (close < 0) break;
+    const closeEnd = htmlTagEnd(html, close + 7);
+    if (closeEnd < 0) break;
+
+    content.push(html.slice(cursor, open));
+    styles.push(html.slice(open, closeEnd));
+    cursor = closeEnd;
+    searchFrom = closeEnd;
+  }
+  content.push(html.slice(cursor));
+  return { contentHtml: content.join(""), staticHtml: styles.join("") };
+}
+
 function buildLargeReaderVirtualDocument(html: string): ReaderVirtualDocument {
-  const staticHtmlParts: string[] = [];
-  const withoutStyles = html.replace(
-    /<style\b[^>]*>[\s\S]*?<\/style>/gi,
-    (style) => {
-      staticHtmlParts.push(style);
-      return "";
-    },
-  );
+  const styleBlocks = splitReaderStyleBlocks(html);
+  const withoutStyles = styleBlocks.contentHtml;
   const stripped = stripSingleReaderContentWrapper(withoutStyles);
   const segments: ReaderVirtualSegment[] = [];
   const boundaryPattern =
@@ -452,7 +485,7 @@ function buildLargeReaderVirtualDocument(html: string): ReaderVirtualDocument {
       ? { contentLanguage: stripped.contentLanguage }
       : {}),
     segments,
-    staticHtml: staticHtmlParts.join(""),
+    staticHtml: styleBlocks.staticHtml,
   };
 }
 
