@@ -53,7 +53,7 @@ beforeEach(() => {
   mocks.register.mockResolvedValue("device-token");
   mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
     const path = new URL(url).pathname;
-    if (path.endsWith("/capabilities")) return Response.json({ apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true, userStateVersion: 1 });
+    if (path.endsWith("/capabilities")) return Response.json({ apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true, userStateVersion: 1, userStateBulkVersion: 1 });
     if (path.endsWith("/user-state")) return Response.json({ version: 1, ...binding, serverUrl: undefined, headRevision: head });
     const body = JSON.parse(init?.body as string);
     if (path.endsWith("/read")) {
@@ -91,6 +91,39 @@ describe("user state transport", () => {
     expect(paths).toEqual(["/api/v1/capabilities", "/api/v1/user-state", "/api/v1/user-state/read", "/api/v1/user-state/merge", "/api/v1/user-state/read"]);
     const merge = mocks.fetch.mock.calls.find(([url]) => String(url).endsWith("/merge"))!;
     expect(JSON.parse(merge[1].body).operations).toEqual([operation]);
+  });
+
+  it("uses one byte-bounded bulk request when supported and preserves the 200-item fallback for old servers", async () => {
+    await synchronizeUserState();
+    expect(mocks.prepare.mock.calls[0][1]).toEqual({ maxBytes: 30 * 1024 * 1024 - 2048 });
+    const bulkRead = mocks.fetch.mock.calls.find(([url]) => String(url).endsWith("/read"))!;
+    expect(JSON.parse(bulkRead[1].body)).not.toHaveProperty("limit");
+
+    vi.clearAllMocks();
+    cursor = 0; through = null; head = 0; outbox = [operation]; records = [];
+    mocks.available.mockResolvedValue(undefined); mocks.getBinding.mockResolvedValue(binding); mocks.bind.mockResolvedValue(undefined);
+    mocks.status.mockImplementation(async () => ({ cursor, through, pending: outbox.length, conflicts: 0, deferred: 0, lastSuccessAt: null }));
+    mocks.prepare.mockImplementation(async () => outbox);
+    mocks.apply.mockImplementation(async (_binding, page: UserStateReadResponse) => { cursor = page.nextCursor; through = page.hasMore ? page.through : null; return { resumes: [] }; });
+    mocks.ack.mockImplementation(async (_binding, results: { operationId: string }[]) => { outbox = outbox.filter(item => !results.some(result => result.operationId === item.operationId)); return { resumes: [] }; });
+    mocks.conflicts.mockResolvedValue([]); mocks.register.mockResolvedValue("device-token");
+    mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/capabilities")) return Response.json({ apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true, userStateVersion: 1 });
+      if (path.endsWith("/user-state")) return Response.json({ version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: head });
+      const body = JSON.parse(init?.body as string);
+      if (path.endsWith("/read")) return Response.json({ version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: head, through: body.through, nextCursor: body.through, hasMore: false, records: [] });
+      if (path.endsWith("/merge")) {
+        head = 1; records = [published];
+        return Response.json({ version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: head,
+          results: [{ operationId: operation.operationId, status: "applied", current: published }] });
+      }
+      throw new Error("Unexpected network endpoint: " + path);
+    });
+    await synchronizeUserState();
+    expect(mocks.prepare.mock.calls[0][1]).toEqual({ limit: 200, maxBytes: 30 * 1024 * 1024 - 2048 });
+    const legacyRead = mocks.fetch.mock.calls.find(([url]) => String(url).endsWith("/read"))!;
+    expect(JSON.parse(legacyRead[1].body).limit).toBe(200);
   });
 
   it("retains the attempted payload after a lost response and retries it exactly", async () => {

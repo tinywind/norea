@@ -46,12 +46,30 @@ one SQL upsert for each submitted operation. Category membership columns are
 materialized and indexed, so deleting a category touches only memberships in that
 category instead of scanning every personal-state record.
 
-A device uploads only pending local operations, in batches of at most 200 and
-within the 30 MiB client request budget. It downloads only revision rows after its
-saved cursor. The first connection or an interrupted catch-up may read existing
-history once; later runs process only changes since the cursor. Category deletion
-is intentionally proportional to the affected included memberships because each
-one must receive an explicit negative revision.
+A device uploads all pending local operations that fit within the 30 MiB client
+request budget. There is no item-count batch limit on bulk-capable servers: one
+change and ten thousand changes use the same message shape, and the client splits
+only when the encoded byte budget or the server's response budget requires it. It
+downloads revision rows after its saved cursor up to the 32 MiB response budget.
+Older servers without the bulk capability retain the legacy 200-item fallback.
+The first connection or an interrupted catch-up may read existing history once;
+later runs process only changes since the cursor. Category deletion is
+intentionally proportional to the affected included memberships because each one
+must receive an explicit negative revision.
+
+## Content-independent user state
+
+The durable shared record is the user data. It is stored by portable entity
+identity even when this device has no matching novel or chapter row. Missing local
+content never blocks cursor advancement, never makes synchronization incomplete,
+and never deletes the saved state. Local novel/chapter columns are only a
+projection used by existing reader/library queries.
+
+When a matching local work or chapter exists, the received record is projected
+into those convenience columns. If it does not exist, the record simply remains
+stored. A later metadata mutation may project that exact record without requiring
+another server download. Projection failures are not shown as a synchronization
+backlog and are never allowed to discard the durable shared value.
 
 ## Merge rules
 
@@ -153,10 +171,12 @@ An operation contains `operationId`, `entity`, `baseRevision`, `value`, and opti
 and authenticated author ID/name. Receipt statuses are `applied`, `unchanged`,
 `seed-skipped`, `conflict`, and `aliased`.
 
-Pages and batches contain at most 200 records or operations. Server requests and
-responses are limited to 32 MiB; composition documents retain their 16 MiB limit.
-If response receipts exceed the budget, the transaction rolls back and the client
-retries the same immutable operations in smaller halves.
+Bulk-capable servers bound pages and merge batches by bytes, not by item count.
+Server requests and responses are limited to 32 MiB and the client targets 30 MiB;
+composition documents retain their 16 MiB limit. If response receipts exceed the
+budget, the transaction rolls back and the client retries the same immutable
+operations in smaller halves. Legacy servers remain compatible through a 200-item
+fallback.
 
 ## Portable backup restoration
 

@@ -124,6 +124,17 @@ describe("durable personal-state ledger", () => {
     expect(operations.every(operation => operation.seed && operation.baseRevision === 0)).toBe(true);
   });
 
+  it("prepares every pending operation that fits the byte budget instead of stopping at 200 items", async () => {
+    await bind();
+    const entries = Array.from({ length: 1681 }, (_, index) => ({
+      entity: { kind: "category" as const, categoryId: "bulk-" + index },
+      value: { name: "Bulk " + index, sort: index, deleted: false },
+    }));
+    await tx(active, db => recordUserStateChangesInDb(db, entries));
+    const operations = await prepareUserStateOperationsInDb(active.db, binding, { maxBytes: 30 * 1024 * 1024 });
+    expect(operations).toHaveLength(1681);
+  });
+
   it("freezes attempted bytes across retries and preserves a newer edit while acknowledging its ancestor", async () => {
     await bind(); await capture(readingValue(60));
     const [first] = await prepare();
@@ -184,11 +195,14 @@ describe("durable personal-state ledger", () => {
     expect(operation.entity).toMatchObject({ kind: "bookmark", work: { sourceNovelId: "book" } });
   });
 
-  it("durably defers missing chapters, then applies after exact metadata arrives without echo", async () => {
+  it("stores shared state independently of missing content, then projects it when metadata arrives without echo", async () => {
     active.sql.exec("DELETE FROM chapter"); await bind();
     await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
       headRevision: 1, through: 1, nextCursor: 1, hasMore: false, records: [shared(reading, readingValue(87), 1)] });
-    expect(await listUserStateDeferredInDb(active.db, binding)).toEqual([expect.objectContaining({ reason: "missing-chapter" })]);
+    expect(await listUserStateDeferredInDb(active.db, binding)).toEqual([]);
+    expect(active.sql.prepare("SELECT revision,applied_revision,payload FROM user_state_record").get()).toMatchObject({
+      revision: 1, applied_revision: 0,
+    });
     active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(44,1,'/chapter/1','One','1',1)");
     await materializePendingUserState(binding);
     expect(active.sql.prepare("SELECT progress FROM chapter").get()).toEqual({ progress: 87 });
