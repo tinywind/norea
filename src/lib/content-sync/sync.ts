@@ -6,6 +6,7 @@ import {
 import { hasStoredChapterContent } from "../../db/queries/chapter";
 import { useContentSyncStore } from "../../store/content-sync";
 import { finalizePendingNovelMigrations } from "./novel-migration";
+import { reconcileCompletedNovelMigrations } from "./completed-novel-migration";
 import { syncIncomingNovelMigrations, PendingIncomingMigrationError, type IncomingMigrationSyncResult } from "./migration-feed";
 import { reconcilePendingChapterNumbers } from "./chapter-number-reconciliation";
 import { chapterStorageRelativeDir } from "../chapter-storage-path";
@@ -295,6 +296,7 @@ async function performSync(uploadContent = true, rescan = false, retryBlockedMig
   try {
     normalizeContentServerUrl(serverUrl);
     const token = await initializeDevice(serverUrl);
+    await reconcileCompletedNovelMigrations(serverUrl, token, () => assertDevice(serverUrl, token));
     let incoming = await syncIncomingNovelMigrations(serverUrl, token, () => assertDevice(serverUrl, token), retryBlockedMigrations);
     await reconcilePendingChapterNumbers(serverUrl, token, () => assertDevice(serverUrl, token), uploadContent);
     const cache = await catalogCache(serverUrl);
@@ -334,6 +336,9 @@ export function syncReceivedWorkMigrations(signal = new AbortController().signal
     signal.throwIfAborted();
     if (useContentSyncStore.getState().serverUrl !== serverUrl) throw new Error("Content server changed before receiving work migrations.");
     const token = await initializeDevice(serverUrl, signal);
+    await reconcileCompletedNovelMigrations(serverUrl, token, () => {
+      signal.throwIfAborted(); assertDevice(serverUrl, token);
+    }, signal);
     const result = await syncIncomingNovelMigrations(serverUrl, token, () => {
       signal.throwIfAborted(); assertDevice(serverUrl, token);
     }, false, signal);

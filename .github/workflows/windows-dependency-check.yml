@@ -10,12 +10,16 @@ on:
       - "pnpm-lock.yaml"
       - "src-tauri/Cargo.toml"
       - "src-tauri/Cargo.lock"
+      - "src-tauri/src/**"
       - "src-tauri/gen/android/**"
   push:
     branches: ["0.2"]
     paths:
       - ".github/dependabot.yml"
       - ".github/workflows/windows-dependency-check.yml"
+      - "src-tauri/Cargo.toml"
+      - "src-tauri/Cargo.lock"
+      - "src-tauri/src/**"
   workflow_dispatch:
 
 permissions:

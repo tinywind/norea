@@ -1,179 +1,129 @@
-# Sharing user changes across devices
+# Sharing current user state across devices
 
-Settings > Data > Shared user changes exchanges manual library edits with the
-configured content server. It has its own manual action and automatic toggle.
-Automatic sharing is off by default for each server. Opening settings reads
-local status only. Ordinary content sync continues to share work metadata and
-chapter bodies; portable file backups remain an explicit recovery operation.
+Settings > Backup and sync shares current library state with the configured
+content server. Automatic sharing remains opt-in per server. Opening settings
+reads a small local summary and does not enumerate chapter diagnostics or send
+data. Content metadata, chapter bodies, and explicit backup restoration retain
+their separate workflows.
 
-## Scope and identities
+## Current values and additive merge
 
-| Shared field | Unit of conflict |
+The app reads SQLite in bulk and exchanges one JSON snapshot. It does not replay
+library/category transitions, deletion events, or a chapter operation journal.
+
+| Current value | Receiver behavior |
 | --- | --- |
-| Library registration or removal | One work |
-| Category name, saved order, or deletion | One stable category |
-| Inclusion or removal from a category | One work/category pair |
-| Progress, read/unread, and history time | One atomic chapter reading tuple |
-| Bookmark or bookmark removal | One chapter bookmark |
-| Resume chapter, document anchor, or explicit clear | One work resume |
-| Chapter composition, including exclusions and source provenance | One complete composition document |
+| Library works | Add received works to the library without removing unrelated works |
+| Manual categories | Reuse an exact trimmed name or add the category |
+| Category membership | Add the received work/category relation |
+| Public chapter reading tuple | Prefer the newer read time; equal/absent times use greater progress and retain read completion |
+| Bookmarks | Add received bookmarks |
+| Resume location | Prefer the newer opened time and document anchor |
+| Chapter composition | Apply the newer complete composition using the existing file ownership and rollback checks |
 
-Admitted, unblocked devices share the server's user-state workspace. Device
-names label authors, not separate accounts or snapshots. The server generates
-and retains a workspace UUID and epoch. Existing private reading-state profiles
-are not inferred, imported, or reassigned.
+Absence from a snapshot does not delete receiver data. Category names identify
+additive categories: the canonical ID is `name-` plus the SHA-256 of the exact
+trimmed UTF-8 name. A renamed category does not force another device to rename or
+delete its existing category. Library and category removals, cleared bookmarks,
+and historical transitions are not sent as commands.
 
-Works use plugin IDs and provider-owned work IDs. ASCII case folding follows
-SQLite's identity lookup. Local integer IDs, titles, display numbers, and storage
-directories are not portable identities. Chapters use an exact source path
-scoped to their work; synthetic composed chapters also carry the composition
-entry ID. Imported local files use content-hash chapter paths in the local-files
-work.
+Composition contains separate source snapshots, physical storage keys, and user
+order/display numbers. Sharing never treats a displayed number as a chapter
+identity or renames a downloaded chapter folder merely to change its order.
+The whole composition retains explicit user exclusions within that current
+document.
 
-Missing source IDs remain pending locally until legitimate metadata supplies
-them. Numeric recovery placeholders are not published. Missing works or chapters
-and ambiguous file ownership remain visible as deferred applications instead
-of being matched by title or number.
+## Stable identities and privacy
 
-## Merge rules
+Works use a plugin ID and provider-owned work ID. Chapters use their exact source
+path within that work; synthetic composed chapters also require the composition
+entry ID. Local integer IDs, titles, and coincident chapter numbers are not
+portable identities. Local file chapters use their content hash identities.
 
-The server assigns increasing revisions. Each explicit edit has an observed base
-revision and a fresh operation UUID. Independent fields merge independently.
-A differing edit to the same field at an unseen revision becomes a conflict,
-retaining local and shared values for a deliberate choice. Wall-clock timestamps
-never choose between manual edits.
+Recovered source chapters with a `norea-folder:` placeholder can share state
+without guessing a provider path. Their wire reference is
+`norea-stored:<content-sha256>:<encoded-folder-path>`, scoped to the same stable work.
+The physical storage number only selects candidates: exactly one local chapter
+must own that number. Its nonempty body and every declared media asset must match
+the content SHA-256; identical HTML with different images is a different chapter.
+Missing declarations or incomplete media remain pending. File timestamps and
+undeclared leftovers are excluded from the digest. The receiver rechecks content
+before applying reading, bookmarks, or resume
+positions. Missing, inaccessible, different, or ambiguous bodies stay pending.
+The local chapter path, storage files, user order, and private-reading baseline
+are unchanged. A later provider-path recovery can accept the old reference when
+the same physical storage key and content still prove ownership. Raw folder paths
+remain invalid on the wire, and unresolved `local-folder:` imports stay pending.
+Only these recovered references need local body inspection; the ordinary bulk
+SQLite path and single JSON exchange do not add source or server requests.
 
-Zero progress, unread, bookmark removal, library removal, category removal, and
-resume clears are actual values. No maximum-progress or boolean accumulation
-rule overrides them. Repeated commands that change no SQL row still record intent.
+Private-reading markers prevent incognito progress, history, and resume positions
+from entering a later bulk export. Only documented public fields are exported.
+The payload excludes credentials, VPN profiles, localStorage, storage locations,
+plugin code, download queues, cache flags, and device viewport page indices.
+Existing private server reading profiles are not imported into the shared
+workspace.
 
-On first connection, meaningful existing positive state can fill absent server
-fields as soft seeds. Seeds never overwrite an existing record or deletion.
-Historical removals and renames from before the journal existed cannot be inferred.
+A receiver retains unmatched current values in one cached snapshot until exact
+work/chapter metadata is available. A metadata update retries its affected work.
+Settings shows overall progress, last success, and errors; it never renders one
+paragraph per deferred chapter. No source-provider request or download is started
+by this merge.
 
-New categories receive random stable IDs. Existing categories initially receive
-an exact-name-derived legacy ID. A new category with an already active exact name
-can alias its ID to the shared category. Renaming an existing category into another
-active name creates a resolvable conflict. Deleting a category emits false
-memberships for all known included works in the same transaction. A stale offline
-inclusion cannot resurrect it. Choosing local inclusion against a deleted category
-explicitly restores that category before inclusion.
+## Wire contract and durability
 
-Composition conflicts show both complete arrangements. A chosen shared document
-owns user labels, display numbers, inclusion, order, primary sources, and retained
-entry/file identities. Later source snapshots can refresh exact source facts and
-append unedited newly discovered chapters owned by the target work. They cannot
-restore an excluded origin or import an older manual addition from another source.
-Ambiguous physical keys defer application while retaining original files.
-Different entry UUIDs are accepted only for the same original provider path,
-physical key, and proven primary source. Synthetic entries and prepared native
-copies retain strict identity checks.
-
-## Durability and privacy
-
-Migration 11 appends the intent journal, attempted operations, per-workspace
-acknowledgements and cursors, received records, stable category mappings,
-private-reading markers, and portable-restore fence. Earlier migrations remain
-unchanged.
-
-A manual edit and its journal entry commit together. Never-attempted changes may
-coalesce; attempted payloads remain immutable until the exact receipt arrives.
-An edit made while a request is outstanding survives its older acknowledgement.
-A descendant advances from its own acknowledged ancestor, without silently
-rebasing onto an unrelated newer record.
-
-Operation IDs are idempotent across the server workspace, including replay by
-another admitted device after recovery. Identical payloads return the original
-receipt and author. Reusing an ID with different content fails. Receipts, changes,
-and tombstones have no arbitrary expiry.
-
-Each read page and its cursor commit atomically. The frozen upper revision is
-durable so an interrupted read resumes the same bounded sequence. Applying records
-to the local cache is separate and can be deferred. Wrong namespaces, changed
-epochs, and cursors ahead of the server fail without resetting pending work.
-
-Only documented field values and stable references enter this protocol.
-SQLite snapshots, localStorage, credentials, VPN profiles and passwords, storage
-roots, plugin code, download queues, cache flags, statistics, and viewport page
-indices are excluded.
-
-Incognito reading does not publish progress, history, or resume events.
-Private markers also prevent later initial scans and history-only actions from
-publishing previously private values. Applying a shared resume neither echoes
-a local edit nor starts provider downloads or finished-file cleanup.
-
-## Portable backup restoration
-
-Portable format 6 includes an optional category stable ID. Native restoration
-reconnects that exact ID to the newly created local category inside its existing
-transaction. Missing IDs never reconnect categories by reused integers or a guessed
-name. Portable files do not carry the sharing ledger or device credentials.
-
-Before restoration starts, the app aborts active sharing and waits for settlement.
-This serializes sharing and restore in the application; it does not hold a SQLite
-transaction during a network request. Native restoration then sets a durable
-sharing fence in the same transaction as the restored data. Failure rolls the
-fence back with the restoration.
-
-Pending changes, attempted payloads, received records, and cursors are retained.
-Settings explains that sharing is paused. **Reconnect to existing shared state**
-resumes existing shared records and pending changes, including direct edits made
-after restoration. Current restored values can change to those shared values.
-
-The snapshot is never automatically converted into new seeds. The restored marker
-remains after reconnection and also applies when connecting to a different server
-workspace. To share a restored value deliberately, edit that field normally after
-restoration. The selected backup file remains the recovery copy of the snapshot.
-
-Old full-device archive endpoints and stored archives remain available under their
-separate recovery contract. The normal sharing screen does not replace the
-database, clear localStorage, or reload the app.
-
-## Wire contract
-
-The server advertises userStateVersion: 1 in /api/v1/capabilities, separately
-from legacy reading-state and device-backup versions. Requests use the existing
-registered-device bearer credential.
+The server advertises `userStateVersion: 2` and
+`userStateCurrentVersion: 2`. The existing registered-device credential
+authorizes both endpoints:
 
 | Endpoint | Contract |
 | --- | --- |
-| GET /api/v1/user-state | Version, workspace UUID, epoch, current head revision |
-| POST /api/v1/user-state/read | Workspace/epoch, after, frozen through and limit; returns ordered records and next cursor |
-| POST /api/v1/user-state/merge | Workspace/epoch and immutable operations; exactly one receipt per submitted operation |
+| GET /api/v1/user-state/current | Current workspace, epoch, and snapshot |
+| POST /api/v1/user-state/current | Merge the submitted snapshot and return current shared values |
 
-An operation contains operationId, entity, baseRevision, value, and optional
-seed: true. A record contains entity/value, revision, server timestamp,
-operation ID, and authenticated author ID/name. Receipt statuses are applied,
-unchanged, seed-skipped, conflict, and aliased. Aliases identify the submitted
-and canonical category IDs explicitly. Library addedAt, reading readAt, and
-resume openedAt are Unix seconds; anchor savedAt, composition updatedAt, and
-server record updatedAt are milliseconds.
+A snapshot is
+`{version:2,workspaceId,epoch,items:[{entity,value}]}`.
+It has no operation IDs, base revisions, per-item receipts, or event history.
+A repeated exchange after a lost response is an additive merge. Requests and
+responses are limited to 32 MiB and 100,000 items; the app reserves a 30 MiB
+upload budget. A composition retains its 16 MiB limit. The app rejects oversized
+state clearly rather than silently falling back to thousands of small requests.
 
-A batch/page has at most 200 operations/records. Requests and responses are
-bounded to 32 MiB on the server; the client uses a 30 MiB request budget.
-Composition documents retain their 16 MiB limit. If conflict records make a
-response too large, the server rolls the transaction back with HTTP 413.
-The client retries exact immutable halves until receipts fit, preserving IDs.
+The server imports supported positive values from existing V1 current records.
+V1 tables, receipts, and app journals remain intact for preservation; they are
+not used by the new exchange. Old event read/merge endpoints require an app
+upgrade. Existing SQL migrations and their checksums remain unchanged.
 
-Before acknowledgement the client verifies schemas, byte counts, workspace,
-epoch, requested page bounds, revision ordering, operation completeness, exact
-acknowledged values, category alias provenance, and supplied chapter ownership.
-It checks the selected server after asynchronous work. Changing the address aborts
-the previous run, including an away-and-back switch.
+Scalar values use bulk SQL in one transaction. Composition changes retain their
+existing guarded file publication transactions; chapter values apply after their
+composition is established. The app rechecks its selected server after
+asynchronous work. Changing the server cancels the old run, including switching
+away and back. Concurrent sync requests coalesce.
 
-Automatic sharing debounces manual changes and checks for other-device edits
-once per minute while visible and online. Failures retain the outbox and back off
-to at most one retry per minute. Manual synchronization uses the same drain with
-automatic sharing disabled. It contacts only the configured content server.
+Automatic sharing debounces local changes and runs while visible and online.
+It retries failures with backoff and retains the current SQLite data throughout.
+Manual sharing uses the same exchange.
 
-## Regression coverage
+## Backup restoration
 
-Real SQLite tests cover colliding local IDs, explicit negative/no-op edits,
-rollback, seeds, aliases, deletion, incognito protection, lost acknowledgements,
-new edits during requests, frozen cursors, source migration, deferred application,
-and composition refresh. Transport tests cover response validation, cancellation,
-response-budget splitting, and restore serialization. Server tests use real HTTP
-and SQLite, including persistent restart and upgrades from the previous schema.
-Native restore SQL tests run against exact production source and registered
-migrations in an isolated harness. Published-image and actual-device verification
-are recorded separately after release.
+Restoration aborts and awaits active sharing before replacing local state.
+The existing durable restore fence is preserved. Explicit reconnection resumes
+current-state merging; restored public values can then be exported and merged
+with the shared current values. Unrelated receiver data remain intact.
+Portable backups do not carry device credentials or the old sharing journal.
+
+## Completed work migrations
+
+A completed source-to-target migration is resolved by exact saved identities
+when a server work is opened or added. An existing destination is refreshed and
+relinked rather than reporting the retired source as an add failure. Its current
+composition and downloaded bodies are retained.
+
+A legacy completed move whose source was accidentally restored can be reported
+through the server migration reconciliation capability. The app supplies its
+unchanged original request and a separately persisted request against current
+source/target snapshots. Exact chapter paths select current storage numbers;
+old plugin numbers and user display order are never substituted for those keys.
+The server verifies every stored body/asset decision before retiring the source
+and records the active relation. A lost response reuses the saved request.
+Explicitly revoked moves are not automatically retired again.

@@ -8,6 +8,7 @@ on:
       - "v*"
     paths:
       - ".github/workflows/android.yml"
+      - "scripts/prepare-gradle-cache.mjs"
       - "package.json"
       - "pnpm-lock.yaml"
       - "src/**"
@@ -111,6 +112,11 @@ jobs:
           if [ ! -d src-tauri/gen/android ]; then
             pnpm tauri android init --ci --skip-targets-install
           fi
+
+      - name: Prepare verified Gradle distribution
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/prepare-gradle-cache.mjs
 
       - name: Configure Android release signing secrets
         env:

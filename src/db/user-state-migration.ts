@@ -2,6 +2,8 @@ import {
   chapterReference, chapterWork, hasUserStateSchema, intentFromRow, recordUserStateChangesInDb,
   USER_CHAPTER_SELECT, workReferenceInDb, type IntentRow, type UserChapterRow, type UserStateDb, type UserStateIntent,
 } from "./user-state-core";
+import { currentResumeValues } from "./user-state-current-data";
+import { mergeUserStateCurrentResume, parseUserStateCurrentItem } from "../lib/user-state/current-types";
 import { DeferredUserState, materializeUserStateRecordInDb } from "./user-state-materialize";
 import { userStateEntityKey, userStateWorkKey, type UserStateApplyEffects, type UserStateValueMap } from "../lib/user-state/types";
 
@@ -43,6 +45,46 @@ export async function remapPendingUserStateInDb(db: UserStateDb, sourceNovelId: 
   }
   const sourceKey = userStateWorkKey(source);
   const targetKey = userStateWorkKey(target);
+  if ((await import("./user-state-current")).isUserStateCurrentMode()) {
+    const local = await db.select<IntentRow[]>("SELECT sequence,entity_key AS entityKey,entity_json AS entityJson,value_json AS valueJson,seed FROM user_state_intent WHERE json_extract(entity_json,'$.kind')='resume'");
+    const shared = await db.select<{ resumes: string | null }[]>("SELECT json_extract(payload,'$.resumes') AS resumes FROM content_sync_cache WHERE cache_key LIKE 'user-state-current-status:%'");
+    const publicResumes = currentResumeValues({
+      resumes: local.map(row => {
+        const intent = intentFromRow(row);
+        if (intent.entity.kind === "resume" && intent.entity.work.sourceNovelId === null) {
+          const previousWork = intent.entity.work;
+          const owner = [source, target].find(work => work.pluginId === previousWork.pluginId && work.novelPath === previousWork.novelPath);
+          if (owner) return { ...intent, entity: { kind: "resume" as const, work: owner } };
+        }
+        return intent;
+      }),
+      appliedResumes: shared.flatMap(row => row.resumes ? (JSON.parse(row.resumes) as unknown[]).map(parseUserStateCurrentItem) : []),
+    });
+    let selected: { chapter: UserChapterRow; value: UserStateValueMap["resume"] } | null = null;
+    for (const [key, isSource] of [[targetKey, false], [sourceKey, true]] as const) {
+      const item = publicResumes.get(key);
+      if (!item) continue;
+      const value = item.value as UserStateValueMap["resume"];
+      if (!value.chapter) continue;
+      const original = isSource ? bySourcePath.get(value.chapter.chapterPath) : null;
+      const originalReference = original && chapterReference(original);
+      if (originalReference?.compositionEntryId && originalReference.compositionEntryId !== value.chapter.compositionEntryId) continue;
+      const mapped = isSource ? remapChapter(value.chapter.chapterPath) :
+        targetByPath.get(targetPathsByOldPath.get(value.chapter.chapterPath) ?? value.chapter.chapterPath);
+      if (!mapped) continue;
+      const reference = chapterReference(mapped);
+      const unchangedPath = !isSource && reference.chapterPath === value.chapter.chapterPath;
+      if (unchangedPath && reference.compositionEntryId && reference.compositionEntryId !== value.chapter.compositionEntryId) continue;
+      // Chapter correspondence alone does not prove that A and B retained the same body.
+      const next = { ...value, chapter: reference, anchor: isSource ? null : value.anchor };
+      if (!selected || mergeUserStateCurrentResume(selected.value, next) === next) selected = { chapter: mapped, value: next };
+    }
+    if (selected) {
+      await recordUserStateChangesInDb(db, [{ entity: { kind: "resume", work: target }, value: selected.value }]);
+      effects.resumes.push({ novelId: targetNovelId, chapterId: selected.chapter.id, anchor: selected.value.anchor, openedAt: selected.value.openedAt });
+    }
+    return effects;
+  }
   const latest = new Map<string, { intent: UserStateIntent; sequence: number; from: string | null; rewrite: boolean }>();
   for (const row of await pendingIntents(db)) {
     const intent = intentFromRow(row);

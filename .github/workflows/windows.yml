@@ -8,6 +8,7 @@ on:
       - "v*"
     paths:
       - ".github/workflows/windows.yml"
+      - "scripts/prepare-wix*.mjs"
       - "package.json"
       - "pnpm-lock.yaml"
       - "src/**"
@@ -100,6 +101,11 @@ jobs:
 
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Prepare verified WiX toolset
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: node scripts/prepare-wix.mjs
 
       - name: Stamp build metadata
         shell: pwsh
