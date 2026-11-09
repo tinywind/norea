@@ -7,11 +7,12 @@ import {
 } from "./user-state-core";
 import { setUserStateActiveServer } from "./user-state";
 import {
-  buildCurrentSnapshotInDb, currentCacheKey, currentExportKey, currentResumeValues, currentStatusKey,
-  currentWorkReference, isCurrentWorkHeld, loadCurrentDataInDb, loadCurrentHeldSourcesInDb, loadCurrentWorksInDb, matchingCurrentChapter, privateValueForChapter, sameCurrentValue,
+  buildCurrentSnapshotInDb, currentCacheKey, currentExportKey, currentPublicResumeValues, currentStatusKey,
+  currentWorkReference, isCurrentWorkHeld, loadCurrentDataInDb, loadCurrentHeldSourcesInDb, loadCurrentWorksInDb, matchingCurrentChapter, privateValueForChapter, sameCurrentResumePosition, sameCurrentValue,
   type CurrentCategory, type CurrentHeldSources, type CurrentWork,
 } from "./user-state-current-data";
 import { mergeUserStateComposition } from "../lib/user-state/composition";
+import type { ChapterSourceSnapshot } from "../lib/chapter-composition";
 import {
   mergeUserStateCurrentReading, mergeUserStateCurrentResume, parseUserStateCurrentSnapshot,
   type UserStateCurrentApplyResult, type UserStateCurrentItem, type UserStateCurrentSnapshot, type UserStateCurrentStatus,
@@ -174,6 +175,13 @@ async function installCurrentStructureInDb(
   return { works, heldSources, missing, changed };
 }
 
+type ResumeBodyOwner = Pick<ChapterSourceSnapshot, "pluginId" | "novelId" | "chapterPath" | "sourceChapterId">;
+function sameResumeBodyOwner(left: ResumeBodyOwner, right: ResumeBodyOwner): boolean {
+  const fold = (id: string) => id.replace(/[A-Z]/g, letter => letter.toLowerCase());
+  return left.pluginId === right.pluginId && fold(left.novelId) === fold(right.novelId) &&
+    (left.sourceChapterId && right.sourceChapterId ? left.sourceChapterId === right.sourceChapterId : left.chapterPath === right.chapterPath);
+}
+
 async function applyCurrentSnapshot(
   binding: UserStateBinding, snapshot: UserStateCurrentSnapshot, retry?: { keys: Set<string>; previousMissing: string[] },
 ): Promise<UserStateCurrentApplyResult> {
@@ -184,7 +192,20 @@ async function applyCurrentSnapshot(
   check();
   const items = retry ? snapshot.items.filter(item => item.entity.kind === "category" ||
     "work" in item.entity && retry.keys.has(userStateWorkKey(item.entity.work))) : snapshot.items;
-  const structure = await runDatabaseTransaction(async db => { check(); return installCurrentStructureInDb(db, binding, items); }, true);
+  const compositionKeys = new Set(items.flatMap(item => item.entity.kind === "composition" ? [userStateWorkKey(item.entity.work)] : []));
+  const structure = await runDatabaseTransaction(async db => {
+    check();
+    const result = await installCurrentStructureInDb(db, binding, items);
+    const novelIds = result.works.filter(work => compositionKeys.has(userStateWorkKey(work))).map(work => work.id);
+    const chapters = novelIds.length ? await db.select<{ id: number; novelId: number; path: string }[]>(
+      "SELECT id,novel_id AS novelId,path FROM chapter WHERE novel_id IN (SELECT value FROM json_each($1))", [JSON.stringify(novelIds)],
+    ) : [];
+    return { ...result, chapters };
+  }, true);
+  const previousChapterIds = new Map(structure.chapters.map(chapter => [JSON.stringify([chapter.novelId, chapter.path]), chapter.id]));
+  const previousCompositionEntryIds = new Map<string, string>();
+  const previousCompositionOwners = new Map<string, ResumeBodyOwner>();
+  const changedCompositionNovels = new Set<number>();
   const byKey = new Map(structure.works.filter(work => work.sourceNovelId).map(work => [userStateWorkKey(work), work]));
   const missing = structure.missing;
   let changed = structure.changed;
@@ -204,11 +225,17 @@ async function applyCurrentSnapshot(
         if (!incomingWins) return false;
         const composition = mergeUserStateComposition(shared, current, { pluginId: work.pluginId, sourceNovelId: work.sourceNovelId! });
         if (sameCurrentValue(current, composition)) return false;
+        for (const entry of current?.entries ?? []) {
+          const key = JSON.stringify([work.id, entry.path]);
+          previousCompositionEntryIds.set(key, entry.id);
+          previousCompositionOwners.set(key, entry.sources[entry.primarySource]);
+        }
         await materializeChapterComposition(db, work.id, composition);
         await setChapterComposition(db, work.id, composition);
         return true;
       }, true);
       changed ||= applied;
+      if (applied) changedCompositionNovels.add(work.id);
     } catch (error) {
       check();
       missing.add(userStateEntityKey(item.entity));
@@ -223,7 +250,43 @@ async function applyCurrentSnapshot(
     const updates = new Map<number, { id: number; progress: number; unread: number; readAt: number | null; bookmark: number }>();
     const privateUpdates = new Map<string, UserStateValueMap["reading"]>();
     const affectedNovels = new Set<number>();
-    const resumes = currentResumeValues(data);
+    const changedBodyPaths = new Set<string>();
+    for (const novelId of changedCompositionNovels) {
+      const work = data.works.find(work => work.id === novelId)!;
+      for (const entry of data.compositions.get(novelId)?.entries ?? []) {
+        const key = JSON.stringify([novelId, entry.path]);
+        const previousOwner = previousCompositionOwners.get(key) ??
+          { pluginId: work.pluginId, novelId: work.sourceNovelId!, chapterPath: entry.path };
+        if (!sameResumeBodyOwner(previousOwner, entry.sources[entry.primarySource]))
+          changedBodyPaths.add(JSON.stringify([userStateWorkKey(work), entry.path]));
+      }
+    }
+    const clearedResumeReferences = new Map<string, { entityKey: string; chapterPath: string }>();
+    const localResumeItems = new Set(data.resumes);
+    for (const item of [...data.appliedResumes, ...data.resumes]) {
+      if (item.entity.kind !== "resume") continue;
+      const value = item.value as UserStateValueMap["resume"];
+      if (!value.chapter || !value.anchor || !changedBodyPaths.has(JSON.stringify([userStateWorkKey(item.entity.work), value.chapter.chapterPath]))) continue;
+      item.value = { ...value, anchor: null };
+      if (localResumeItems.has(item)) {
+        for (const entityKey of [userStateEntityKey(item.entity),
+          userStateEntityKey({ ...item.entity, work: { ...item.entity.work, sourceNovelId: null } })]) {
+          const reference = { entityKey, chapterPath: value.chapter.chapterPath };
+          clearedResumeReferences.set(JSON.stringify(reference), reference);
+        }
+      }
+    }
+    // This mutable current leaf must not reintroduce the old body's anchor on the next export.
+    if (clearedResumeReferences.size) await db.execute(
+      `UPDATE user_state_intent SET value_json=json_set(value_json,'$.anchor',NULL)
+        WHERE json_extract(entity_json,'$.kind')='resume'
+          AND entity_key IN (SELECT json_extract(value,'$.entityKey') FROM json_each($1))
+          AND EXISTS (SELECT 1 FROM json_each($1) changed
+            WHERE user_state_intent.entity_key=json_extract(changed.value,'$.entityKey')
+              AND json_extract(user_state_intent.value_json,'$.chapter.chapterPath')=json_extract(changed.value,'$.chapterPath'))`,
+      [JSON.stringify([...clearedResumeReferences.values()])],
+    );
+    const resumes = currentPublicResumeValues(data);
     const effects: UserStateCurrentApplyResult = { resumes: [], changed, missingMetadataCount: 0 };
     for (const item of items) {
       if (item.entity.kind !== "reading" && item.entity.kind !== "bookmark" && item.entity.kind !== "resume") continue;
@@ -237,8 +300,18 @@ async function applyCurrentSnapshot(
         const key = userStateWorkKey(work);
         const previous = resumes.get(key);
         const value = previous ? mergeUserStateCurrentResume(previous.value as UserStateValueMap["resume"], item.value as UserStateValueMap["resume"]) : item.value as UserStateValueMap["resume"];
-        if (!previous || !sameCurrentValue(previous.value, value)) {
-          const target = value.chapter ? matchingCurrentChapter(data, work, value.chapter, chapters) : null;
+        const target = value.chapter ? matchingCurrentChapter(data, work, value.chapter, chapters) : null;
+        const targetKey = target ? JSON.stringify([work.id, target.path]) : "";
+        const nextEntry = target && changedCompositionNovels.has(work.id)
+          ? data.compositions.get(work.id)?.entries.find(entry => entry.path === target.path) : undefined;
+        const previousOwner = previousCompositionOwners.get(targetKey) ??
+          { pluginId: work.pluginId, novelId: work.sourceNovelId!, chapterPath: target?.path ?? "" };
+        // Inherited reading state on a replacement row/body is not an echo of the old reader destination.
+        const retargeted = target && changedCompositionNovels.has(work.id) &&
+          (previousChapterIds.get(targetKey) !== target.id || /^norea-(?:composed|source):/.test(target.path) &&
+            previousCompositionEntryIds.get(targetKey) !== value.chapter?.compositionEntryId ||
+            nextEntry && !sameResumeBodyOwner(previousOwner, nextEntry.sources[nextEntry.primarySource]));
+        if (!previous || !sameCurrentResumePosition(previous.value as UserStateValueMap["resume"], value) || retargeted) {
           if (!target) { missing.add(userStateEntityKey(item.entity)); continue; }
           effects.resumes.push({ novelId: work.id, chapterId: target.id, anchor: value.anchor, openedAt: value.openedAt });
           effects.changed = true;

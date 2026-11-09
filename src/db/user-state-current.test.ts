@@ -1,7 +1,21 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import type Database from "@tauri-apps/plugin-sql";
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const readerStorage = vi.hoisted(() => {
+  const original = Object.getOwnPropertyDescriptor(globalThis, "localStorage");
+  const originalWindow = Object.getOwnPropertyDescriptor(globalThis, "window");
+  const values = new Map<string, string>();
+  const storage = {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  };
+  Object.defineProperty(globalThis, "localStorage", { configurable: true, value: storage });
+  Object.defineProperty(globalThis, "window", { configurable: true, value: { localStorage: storage } });
+  return { original, originalWindow, values };
+});
 
 vi.mock("./client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 import { getDb, getReadOnlyDb, runDatabaseTransaction } from "./client";
@@ -12,10 +26,11 @@ import {
 import { currentCacheKey, currentCategoryId, currentStatusKey } from "./user-state-current-data";
 import { deferUserStateForNovelInDb, resumeUserStateAfterRestore } from "./user-state";
 import { remapPendingUserStateInDb } from "./user-state-migration";
-import { discardUserStateNotifications, notifyUserStateCommitted, waitForUserStateDeferredApply } from "./user-state-core";
+import { discardUserStateNotifications, notifyUserStateCommitted, subscribeUserStateApplied, waitForUserStateDeferredApply } from "./user-state-core";
 import { userStateEntityKey, type UserStateBinding, type UserStateValueMap, type UserStateWorkReference } from "../lib/user-state/types";
 import { type UserStateCurrentItem, type UserStateCurrentSnapshot } from "../lib/user-state/current-types";
 import type { ChapterCompositionV1 } from "../lib/chapter-composition";
+import { useReaderStore } from "../store/reader";
 
 interface Fixture { sql: DatabaseSync; db: Database; calls: number; delayMs: number }
 const fixtures: Fixture[] = [];
@@ -55,6 +70,8 @@ async function tx<T>(target: Fixture, run: (db: Database) => Promise<T>): Promis
   catch (error) { target.sql.exec("ROLLBACK"); discardUserStateNotifications(target.db); throw error; }
 }
 beforeEach(() => {
+  readerStorage.values.clear();
+  useReaderStore.getState().resetReadingProgress();
   active = fixture(); addWork();
   vi.mocked(getDb).mockImplementation(async () => active.db);
   vi.mocked(getReadOnlyDb).mockImplementation(async () => active.db);
@@ -66,6 +83,27 @@ afterEach(async () => {
   await waitForUserStateDeferredApply();
   while (fixtures.length) fixtures.pop()!.sql.close();
 });
+
+afterAll(() => {
+  if (readerStorage.original) Object.defineProperty(globalThis, "localStorage", readerStorage.original);
+  else delete (globalThis as { localStorage?: Storage }).localStorage;
+  if (readerStorage.originalWindow) Object.defineProperty(globalThis, "window", readerStorage.originalWindow);
+  else delete (globalThis as { window?: Window }).window;
+});
+
+function savedReaderPosition(chapterId = 11) {
+  const position = {
+    lastReadChapterByNovel: { 1: chapterId },
+    novelPageIndexByNovel: { 1: 7 },
+    chapterScrollAnchors: { [chapterId]: { novelId: 1, segmentIndex: 2, segmentCount: 10, offset: 0.25, progress: 35, savedAt: 10_000 } },
+  };
+  useReaderStore.setState(position);
+  return position;
+}
+function currentReaderPosition() {
+  const { lastReadChapterByNovel, novelPageIndexByNovel, chapterScrollAnchors } = useReaderStore.getState();
+  return { lastReadChapterByNovel, novelPageIndexByNovel, chapterScrollAnchors };
+}
 
 describe("bulk current personal state", () => {
   it("exports the present database once without replaying older commands or sending omitted removals", async () => {
@@ -83,6 +121,212 @@ describe("bulk current personal state", () => {
     expect(JSON.stringify(exported)).not.toMatch(/operationId|baseRevision|acknowledged|sequence/);
     expect(active.sql.prepare("SELECT count(*) AS count FROM user_state_operation").get()).toEqual({ count: 0 });
     expect(active.sql.prepare("SELECT count(*) AS count FROM user_state_intent").get()).toEqual({ count: 1 });
+  });
+
+  it.each([false, true])("preserves precise local reader positions when the first DB fallback returns unchanged (renamed: %s)", async renamed => {
+    await bindUserStateCurrentWorkspace(binding);
+    active.sql.exec("UPDATE chapter SET progress=35,read_at=10");
+    const saved = savedReaderPosition();
+    const exported = await exportUserStateCurrentSnapshot(binding);
+    const resume = exported.items.find(item => item.entity.kind === "resume")!;
+    expect(resume.value).toEqual({ chapter: { chapterPath: "/chapter/1", name: "One" }, anchor: null, openedAt: 10 });
+    if (renamed) (resume.value as UserStateValueMap["resume"]).chapter!.name = "A renamed chapter";
+    const applyToReader = vi.fn((effects: { resumes: Parameters<ReturnType<typeof useReaderStore.getState>["applySharedResume"]>[0][] }) => {
+      for (const effect of effects.resumes) useReaderStore.getState().applySharedResume(effect);
+    });
+    const unsubscribe = subscribeUserStateApplied(applyToReader);
+    try {
+      const result = await applyUserStateCurrentSnapshot(binding, exported);
+      expect(result.resumes).toEqual([]);
+      expect(result.changed).toBe(false);
+      expect(applyToReader).not.toHaveBeenCalled();
+      expect(currentReaderPosition()).toEqual(saved);
+      const persisted = JSON.parse(readerStorage.values.get("reader-settings")!) as { state: typeof saved };
+      expect(persisted.state).toMatchObject(saved);
+    } finally { unsubscribe(); }
+  });
+
+  it.each([20, 40])("compares an incoming resume with all public local chapters and only applies a newer position (%s)", async openedAt => {
+    await bindUserStateCurrentWorkspace(binding);
+    active.sql.exec("UPDATE chapter SET progress=35,read_at=10; INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at) VALUES(12,1,'/chapter/2','Two','2',2,50,30)");
+    const saved = savedReaderPosition(12);
+    const unsubscribe = subscribeUserStateApplied(effects => {
+      for (const effect of effects.resumes) useReaderStore.getState().applySharedResume(effect);
+    });
+    try {
+      const result = await applyUserStateCurrentSnapshot(binding, snapshot([{
+        entity: { kind: "resume", work },
+        value: { chapter: { chapterPath: "/chapter/1" }, anchor: null, openedAt },
+      }]));
+      if (openedAt < 30) {
+        expect(result.resumes).toEqual([]);
+        expect(currentReaderPosition()).toEqual(saved);
+        const exported = await exportUserStateCurrentSnapshot(binding);
+        expect(exported.items.find(item => item.entity.kind === "resume")?.value).toMatchObject({
+          chapter: { chapterPath: "/chapter/2" }, openedAt: 30,
+        });
+      } else {
+        expect(result.resumes).toEqual([{ novelId: 1, chapterId: 11, anchor: null, openedAt: 40 }]);
+        expect(useReaderStore.getState().lastReadChapterByNovel[1]).toBe(11);
+        expect(useReaderStore.getState().novelPageIndexByNovel[1]).toBeUndefined();
+        expect(useReaderStore.getState().chapterScrollAnchors[11]).toBeUndefined();
+      }
+    } finally { unsubscribe(); }
+  });
+
+  it("does not revive an explicit cleared resume from stale DB history", async () => {
+    await bindUserStateCurrentWorkspace(binding);
+    active.sql.exec("UPDATE chapter SET progress=35,read_at=10");
+    const entity = { kind: "resume" as const, work };
+    const value = { chapter: null, anchor: null, openedAt: null };
+    active.sql.prepare("INSERT INTO user_state_intent(entity_key,entity_json,value_json,seed) VALUES(?,?,?,0)")
+      .run(userStateEntityKey(entity), JSON.stringify(entity), JSON.stringify(value));
+    const exported = await exportUserStateCurrentSnapshot(binding);
+    expect(exported.items.some(item => item.entity.kind === "resume")).toBe(false);
+    expect((await applyUserStateCurrentSnapshot(binding, exported)).resumes).toEqual([]);
+    expect(active.sql.prepare("SELECT value_json FROM user_state_intent WHERE entity_key=?").get(userStateEntityKey(entity)))
+      .toEqual({ value_json: JSON.stringify(value) });
+  });
+
+  it("does not publish or compare a newer private DB chapter as a public resume", async () => {
+    await bindUserStateCurrentWorkspace(binding);
+    active.sql.exec("UPDATE chapter SET progress=35,read_at=10; INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at) VALUES(12,1,'/chapter/2','Two','2',2,95,99)");
+    const key = userStateEntityKey(reading("/chapter/2", 0).entity);
+    active.sql.prepare("INSERT INTO user_state_private(entity_key,public_value_json) VALUES(?,?)").run(key, JSON.stringify(readingValue(0)));
+    const exported = await exportUserStateCurrentSnapshot(binding);
+    expect(exported.items.find(item => item.entity.kind === "resume")?.value).toMatchObject({
+      chapter: { chapterPath: "/chapter/1" }, openedAt: 10,
+    });
+    const result = await applyUserStateCurrentSnapshot(binding, snapshot([{
+      entity: { kind: "resume", work }, value: { chapter: { chapterPath: "/chapter/1" }, anchor: null, openedAt: 20 },
+    }]));
+    expect(result.resumes).toEqual([{ novelId: 1, chapterId: 11, anchor: null, openedAt: 20 }]);
+    expect(active.sql.prepare("SELECT progress,read_at FROM chapter WHERE id=12").get()).toEqual({ progress: 95, read_at: 99 });
+  });
+
+  it.each([false, true])("keeps a retained composition row's anchor but retargets a genuinely replaced chapter (replacement: %s)", async replacement => {
+    await bindUserStateCurrentWorkspace(binding);
+    active.sql.exec("UPDATE chapter SET progress=35,read_at=10");
+    const saved = savedReaderPosition();
+    const path = replacement ? "norea-composed:entry-1" : "/chapter/1";
+    const composition: ChapterCompositionV1 = { version: 1, updatedAt: 10, entries: [{
+      id: "entry-1", path, storageChapterNumber: replacement ? "2" : "1", primarySource: 0,
+      user: { included: true, order: 1, name: "Renamed", chapterNumber: null },
+      sources: [{ pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/chapter/1",
+        chapterNumber: "1", name: "One", position: 1, page: "1", contentType: "html", releaseTime: null }],
+    }] };
+    const unsubscribe = subscribeUserStateApplied(effects => {
+      for (const effect of effects.resumes) useReaderStore.getState().applySharedResume(effect);
+    });
+    try {
+      const result = await applyUserStateCurrentSnapshot(binding, snapshot([
+        { entity: { kind: "composition", work }, value: { composition } },
+        { entity: { kind: "resume", work }, value: {
+          chapter: { chapterPath: path, name: "Renamed", ...(replacement ? { compositionEntryId: "entry-1" } : {}) },
+          anchor: null, openedAt: 10,
+        } },
+      ]));
+      expect(result.missingMetadataCount).toBe(0);
+      const chapter = active.sql.prepare("SELECT id,progress,read_at FROM chapter WHERE path=?").get(path) as { id: number; progress: number; read_at: number };
+      expect(chapter).toMatchObject({ progress: 35, read_at: 10 });
+      if (replacement) {
+        expect(chapter.id).not.toBe(11);
+        expect(result.resumes).toEqual([{ novelId: 1, chapterId: chapter.id, anchor: null, openedAt: 10 }]);
+        expect(useReaderStore.getState().lastReadChapterByNovel[1]).toBe(chapter.id);
+        expect(useReaderStore.getState().novelPageIndexByNovel[1]).toBeUndefined();
+        expect(useReaderStore.getState().chapterScrollAnchors[chapter.id]).toBeUndefined();
+      } else {
+        expect(chapter.id).toBe(11);
+        expect(result.resumes).toEqual([]);
+        expect(currentReaderPosition()).toEqual(saved);
+      }
+    } finally { unsubscribe(); }
+  });
+
+  it.each([false, true])("clears an old body's precise anchor when a retained synthetic row selects a different primary source (captured: %s)", async captured => {
+    await bindUserStateCurrentWorkspace(binding);
+    const path = "norea-composed:entry-1";
+    active.sql.prepare("UPDATE chapter SET path=?,progress=35,read_at=10").run(path);
+    const saved = savedReaderPosition();
+    const composition: ChapterCompositionV1 = { version: 1, updatedAt: 10, entries: [{
+      id: "entry-1", path, storageChapterNumber: "1", primarySource: 0,
+      user: { included: true, order: 1, name: null, chapterNumber: null },
+      sources: ["/source/body-a", "/source/body-b"].map(chapterPath => ({
+        pluginId: "source", novelId: "book", novelPath: "/book", chapterPath,
+        chapterNumber: "1", name: "One", position: 1, page: "1", contentType: "html", releaseTime: null,
+      })),
+    }] };
+    active.sql.prepare("INSERT INTO novel_chapter_composition(novel_id,payload) VALUES(?,?)").run(1, JSON.stringify(composition));
+    if (captured) {
+      const entity = { kind: "resume" as const, work };
+      const { novelId: _novelId, ...anchor } = saved.chapterScrollAnchors[11];
+      active.sql.prepare("INSERT INTO user_state_intent(entity_key,entity_json,value_json,seed) VALUES(?,?,?,0)")
+        .run(userStateEntityKey(entity), JSON.stringify(entity), JSON.stringify({
+          chapter: { chapterPath: path, compositionEntryId: "entry-1" }, anchor, openedAt: 10,
+        }));
+    }
+    composition.updatedAt = 20;
+    composition.entries[0].primarySource = 1;
+    const unsubscribe = subscribeUserStateApplied(effects => {
+      for (const effect of effects.resumes) useReaderStore.getState().applySharedResume(effect);
+    });
+    try {
+      const result = await applyUserStateCurrentSnapshot(binding, snapshot([
+        { entity: { kind: "composition", work }, value: { composition } },
+        { entity: { kind: "resume", work }, value: {
+          chapter: { chapterPath: path, compositionEntryId: "entry-1", name: "One" }, anchor: null, openedAt: 10,
+        } },
+      ]));
+      expect(result.missingMetadataCount).toBe(0);
+      expect(active.sql.prepare("SELECT id,path FROM chapter").get()).toEqual({ id: 11, path });
+      expect(result.resumes).toEqual([{ novelId: 1, chapterId: 11, anchor: null, openedAt: 10 }]);
+      expect(useReaderStore.getState().lastReadChapterByNovel).toEqual(saved.lastReadChapterByNovel);
+      expect(useReaderStore.getState().novelPageIndexByNovel[1]).toBeUndefined();
+      expect(useReaderStore.getState().chapterScrollAnchors[11]).toBeUndefined();
+      const exported = await exportUserStateCurrentSnapshot(binding);
+      expect((exported.items.find(item => item.entity.kind === "resume")?.value as UserStateValueMap["resume"]).anchor).toBeNull();
+      expect(active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_operation").get()).toEqual({ count: 0 });
+    } finally { unsubscribe(); }
+  });
+
+  it("only clears the changed chapter's legacy resume leaf when a newer stable-ID leaf points elsewhere", async () => {
+    await bindUserStateCurrentWorkspace(binding);
+    const path = "norea-composed:entry-1";
+    active.sql.prepare("UPDATE chapter SET path=?,progress=35,read_at=10").run(path);
+    active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at) VALUES(12,1,'/chapter/2','Two','2',2,50,20)");
+    const source = (chapterPath: string) => ({
+      pluginId: "source", novelId: "book", novelPath: "/book", chapterPath,
+      chapterNumber: "1", name: "One", position: 1, page: "1", contentType: "html" as const, releaseTime: null,
+    });
+    const composition: ChapterCompositionV1 = { version: 1, updatedAt: 10, entries: [
+      { id: "entry-1", path, storageChapterNumber: "1", primarySource: 0,
+        user: { included: true, order: 1, name: null, chapterNumber: null }, sources: [source("/body/a"), source("/body/b")] },
+      { id: "entry-2", path: "/chapter/2", storageChapterNumber: "2", primarySource: 0,
+        user: { included: true, order: 2, name: null, chapterNumber: null }, sources: [source("/chapter/2")] },
+    ] };
+    active.sql.prepare("INSERT INTO novel_chapter_composition(novel_id,payload) VALUES(?,?)").run(1, JSON.stringify(composition));
+    const legacyEntity = { kind: "resume" as const, work: { ...work, sourceNovelId: null } };
+    const currentEntity = { kind: "resume" as const, work };
+    const anchor = { segmentIndex: 2, segmentCount: 10, offset: 0.25, progress: 35, savedAt: 10_000 };
+    const legacyValue = { chapter: { chapterPath: path, compositionEntryId: "entry-1" }, anchor, openedAt: 10 };
+    const currentValue = { chapter: { chapterPath: "/chapter/2" }, anchor: { ...anchor, savedAt: 20_000 }, openedAt: 20 };
+    for (const [entity, value] of [[legacyEntity, legacyValue], [currentEntity, currentValue]] as const) {
+      active.sql.prepare("INSERT INTO user_state_intent(entity_key,entity_json,value_json,seed) VALUES(?,?,?,0)")
+        .run(userStateEntityKey(entity), JSON.stringify(entity), JSON.stringify(value));
+    }
+    composition.updatedAt = 20;
+    composition.entries[0].primarySource = 1;
+    const result = await applyUserStateCurrentSnapshot(binding, snapshot([
+      { entity: { kind: "composition", work }, value: { composition } },
+      { entity: currentEntity, value: { ...legacyValue, anchor: null } },
+    ]));
+    expect(result.resumes).toEqual([]);
+    expect(active.sql.prepare("SELECT value_json FROM user_state_intent WHERE entity_key=?").get(userStateEntityKey(currentEntity)))
+      .toEqual({ value_json: JSON.stringify(currentValue) });
+    const legacy = active.sql.prepare("SELECT value_json FROM user_state_intent WHERE entity_key=?").get(userStateEntityKey(legacyEntity)) as { value_json: string };
+    expect(JSON.parse(legacy.value_json)).toEqual({ ...legacyValue, anchor: null });
+    const exported = await exportUserStateCurrentSnapshot(binding);
+    expect(exported.items.find(item => item.entity.kind === "resume")?.value).toEqual(currentValue);
   });
 
   it("maps exact portable identities across colliding integer IDs and keeps unrelated categories and data", async () => {
