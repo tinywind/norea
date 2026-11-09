@@ -51,7 +51,7 @@ export async function addQuickAddTargetToLibrary(
     if (novel?.cover && !novel.isLocal) {
       void saveNovelCoverFromSource(
         target.plugin,
-        { id: novel.id, name: novel.name, path: novel.path, pluginId: novel.pluginId },
+        { id: novel.id, name: novel.name, path: novel.path, pluginId: novel.pluginId, sourceNovelId: novel.sourceNovelId },
         novel.cover,
       ).catch((error: unknown) => {
         console.warn("[quick-add] failed to store novel cover", { error, novelId });

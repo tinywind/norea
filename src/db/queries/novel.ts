@@ -32,6 +32,7 @@ export interface LibraryNovel {
   id: number;
   pluginId: string;
   pluginName?: string | null;
+  sourceNovelId: string | null;
   path: string;
   name: string;
   cover: string | null;
@@ -363,6 +364,7 @@ function libraryRowsCte(conditions: readonly string[]): string {
       n.id,
       n.plugin_id    AS pluginId,
       ip.name        AS pluginName,
+      n.source_novel_id AS sourceNovelId,
       n.path,
       n.name,
       n.cover,
@@ -461,6 +463,7 @@ async function selectLibraryNovels(
       id,
       pluginId,
       pluginName,
+      sourceNovelId,
       path,
       name,
       cover,

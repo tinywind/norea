@@ -24,7 +24,7 @@ import {
 
 type NovelMetadataSource = Pick<
   NovelDetailRecord,
-  "id" | "name" | "path" | "pluginId" | "cover" | "isLocal" | "inLibrary"
+  "id" | "name" | "path" | "pluginId" | "sourceNovelId" | "cover" | "isLocal" | "inLibrary"
 >;
 
 export function useNovelMetadata(
@@ -98,6 +98,7 @@ export function useNovelMetadata(
           name: result.novel.name,
           path: result.novel.path,
           pluginId: result.novel.pluginId,
+          sourceNovelId: result.novel.sourceNovelId,
         },
         result.novel.cover,
       ).catch((error) => {

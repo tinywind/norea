@@ -26,6 +26,7 @@ export interface DownloadCacheNovel {
   novelCover: string | null;
   novelPath: string;
   pluginId: string;
+  sourceNovelId: string | null;
   pluginName?: string | null;
   inLibrary: boolean;
   chaptersDownloaded: number;
@@ -108,6 +109,7 @@ export async function listDownloadCacheNovels(): Promise<DownloadCacheNovel[]> {
        n.cover          AS novelCover,
        n.path           AS novelPath,
        n.plugin_id      AS pluginId,
+       n.source_novel_id AS sourceNovelId,
        ip.name          AS pluginName,
        n.in_library     AS inLibrary,
        COUNT(c.id)      AS chaptersDownloaded,

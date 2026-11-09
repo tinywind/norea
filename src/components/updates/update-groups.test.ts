@@ -24,6 +24,7 @@ function entry(
     novelName: `Novel ${novelId}`,
     novelPath: `/n/${novelId}`,
     pluginId: "source",
+    novelSourceNovelId: "book-" + novelId,
     position,
   };
 }

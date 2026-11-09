@@ -25,7 +25,7 @@ vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: mocks.c
 
 import { useNovelMetadata } from "./use-novel-metadata";
 
-const novel = { id: 3, name: "Novel", path: "/novel", pluginId: "source-a", cover: "https://source/cover.jpg", isLocal: false, inLibrary: false };
+const novel = { id: 3, name: "Novel", path: "/novel", pluginId: "source-a", sourceNovelId: "novel-a", cover: "https://source/cover.jpg", isLocal: false, inLibrary: false };
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.mutations.length = 0;

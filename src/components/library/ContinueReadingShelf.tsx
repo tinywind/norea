@@ -57,6 +57,7 @@ function ContinueReadingCard({
       name: entry.novelName,
       path: entry.novelPath,
       pluginId: entry.pluginId,
+      sourceNovelId: entry.novelSourceNovelId,
     },
     { allowSourceFallback: Boolean(plugin), plugin },
   );

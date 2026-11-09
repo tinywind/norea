@@ -44,6 +44,7 @@ const entry: RecentlyReadEntry = {
   novelName: "Novel Title",
   novelPath: "/n/4",
   pluginId: "source",
+  novelSourceNovelId: "book-4",
   position: 52,
   progress: 45,
   readAt: 1,
