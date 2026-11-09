@@ -528,6 +528,7 @@ async function performNovelSourceRefresh(
           name: novelName,
           path: item.path,
           pluginId: plugin.id,
+          sourceNovelId: detail.novelId,
         },
         result.cover,
         { refresh, ...(!preserveMissingMetadata ? { clearMissing: true } : {}) },

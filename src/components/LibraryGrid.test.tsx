@@ -18,7 +18,7 @@ vi.mock("../lib/use-novel-cover-source", () => ({
 import { LibraryGrid, LibraryGridSkeleton } from "./LibraryGrid";
 
 const novel: LibraryNovel = {
-  id: 7, pluginId: "demo", path: "/book", name: "Book", cover: "/landscape-cover.png",
+  id: 7, pluginId: "demo", sourceNovelId: "book", path: "/book", name: "Book", cover: "/landscape-cover.png",
   author: "Author", inLibrary: true, isLocal: false, totalChapters: 10,
   chaptersDownloaded: 2, chaptersUnread: 8, readingProgress: 2,
   lastReadAt: null, lastUpdatedAt: 1,

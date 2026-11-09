@@ -35,7 +35,7 @@ import { ContinueReadingShelf, isContinueReadingShelfVisible } from "./ContinueR
 
 const reading: ContinueReadingEntry = {
   chapterId: 11, chapterName: "Unnumbered chapter", chapterNumber: null, nextChapterId: null, nextChapterName: null, nextChapterNumber: null, nextChapterPosition: null, novelCover: null, novelId: 1,
-  novelIsLocal: false, novelName: "Reading", novelPath: "/1", pluginId: "s", position: 2,
+  novelIsLocal: false, novelName: "Reading", novelPath: "/1", pluginId: "s", novelSourceNovelId: "1", position: 2,
   progress: 40, readAt: 2,
 };
 const finished: ContinueReadingEntry = {

@@ -91,6 +91,7 @@ describe("listLibraryNovels", () => {
       {
         id: 1,
         pluginId: "local",
+        sourceNovelId: "book-1",
         path: "p1",
         name: "Sample A",
         cover: null,
@@ -114,6 +115,7 @@ describe("listLibraryNovels", () => {
     expect(sql).toContain("LEFT JOIN novel_stats s ON s.novel_id = n.id");
     expect(sql).not.toContain("LEFT JOIN chapter");
     expect(sql).toContain("n.in_library = 1");
+    expect(sql).toContain("n.source_novel_id AS sourceNovelId");
     expect(sql).toContain("AS readingProgress");
     expect(sql).toContain("ORDER BY");
     expect(sql).toContain("last_read_at");
@@ -122,6 +124,7 @@ describe("listLibraryNovels", () => {
       {
         id: 1,
         pluginId: "local",
+        sourceNovelId: "book-1",
         path: "p1",
         name: "Sample A",
         cover: null,

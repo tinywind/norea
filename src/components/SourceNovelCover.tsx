@@ -30,6 +30,7 @@ export function SourceNovelCover({
       name: item.name,
       path: item.path,
       pluginId: plugin?.id ?? "",
+      sourceNovelId: null,
     },
     {
       allowSourceFallback: Boolean(plugin),

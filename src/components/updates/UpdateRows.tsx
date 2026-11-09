@@ -32,6 +32,7 @@ function UpdateCover({
     name: entry.novelName,
     path: entry.novelPath,
     pluginId: entry.pluginId,
+    sourceNovelId: entry.novelSourceNovelId,
   });
 
   return (

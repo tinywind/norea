@@ -16,6 +16,7 @@ export interface ContinueReadingEntry {
   novelIsLocal: boolean;
   novelPath: string;
   pluginId: string;
+  novelSourceNovelId: string | null;
   chapterId: number;
   chapterName: string;
   chapterNumber: string | null;
@@ -71,6 +72,7 @@ export async function listContinueReading(
          n.is_local    AS novelIsLocal,
          n.path        AS novelPath,
          n.plugin_id   AS pluginId,
+         n.source_novel_id AS novelSourceNovelId,
          c.id          AS chapterId,
          c.name        AS chapterName,
          c.chapter_number AS chapterNumber,

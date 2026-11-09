@@ -1189,7 +1189,7 @@ it("keeps a recovered cover visible when its real publication is rolled back", a
   await initializeWorkMetadata(db);
   clearNovelCoverDisplayCache();
   const metadata = [...storage.files.get(path)!];
-  const displayNovel = { id: 1, pluginId: "source", path: "/book", name: "Disk title", cover: "https://source.test/cover.jpg" };
+  const displayNovel = { id: 1, pluginId: "source", sourceNovelId: "book", path: "/book", name: "Disk title", cover: "https://source.test/cover.jpg" };
   const plugin = { id: "source", version: "1.0.0", url: "https://source.test/plugin.js", getBaseUrl: () => "https://source.test/" } as Plugin;
   const options = { allowSourceFallback: true, plugin };
   const fetch = vi.spyOn(http, "pluginMediaFetch").mockResolvedValue(new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/jpeg" } }));

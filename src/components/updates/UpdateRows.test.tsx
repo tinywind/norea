@@ -30,6 +30,7 @@ const entry: LibraryUpdateEntry = {
   novelName: "Novel A",
   novelPath: "/n/3",
   pluginId: "source-foo",
+  novelSourceNovelId: "book-3",
   pluginName: "Source Foo",
   position: 120,
 };

@@ -683,6 +683,7 @@ describe("listLibraryUpdates", () => {
     expect(sql).toContain("c.unread = 1");
     expect(sql).toContain("c.path");
     expect(sql).toContain("n.is_local        AS novelIsLocal");
+    expect(sql).toContain("n.source_novel_id AS novelSourceNovelId");
     expect(sql).toContain(
       "COALESCE(c.stored_content_type, c.content_type) AS contentType",
     );
@@ -699,6 +700,7 @@ describe("listLibraryUpdates", () => {
         chapterPath: "/c/1",
         novelId: 1,
         pluginId: "source-a",
+        novelSourceNovelId: "book-1",
         chapterName: "Ch1",
         contentType: "text",
         position: 1,
@@ -714,6 +716,7 @@ describe("listLibraryUpdates", () => {
     expect(rows[0]?.isDownloaded).toBe(true);
     expect(rows[0]?.novelIsLocal).toBe(true);
     expect(rows[0]?.contentType).toBe("text");
+    expect(rows[0]?.novelSourceNovelId).toBe("book-1");
   });
 
   it("clamps limit to a minimum of 1", async () => {
@@ -785,6 +788,7 @@ describe("listRecentlyRead", () => {
     expect(sql).toContain("FROM chapter c");
     expect(sql).toContain("JOIN novel n");
     expect(sql).toContain("n.plugin_id       AS pluginId");
+    expect(sql).toContain("n.source_novel_id AS novelSourceNovelId");
     expect(sql).toContain("n.path            AS novelPath");
     expect(sql).toContain("n.in_library      AS novelInLibrary");
     expect(sql).toContain("n.is_local        AS novelIsLocal");
@@ -808,6 +812,7 @@ describe("listRecentlyRead", () => {
         novelName: "Novel",
         novelPath: "/novel",
         pluginId: "local",
+        novelSourceNovelId: "book-2",
         position: 1,
         progress: 25,
         readAt: 1_700_000_000,
@@ -818,6 +823,7 @@ describe("listRecentlyRead", () => {
 
     expect(rows[0]?.novelInLibrary).toBe(false);
     expect(rows[0]?.novelIsLocal).toBe(true);
+    expect(rows[0]?.novelSourceNovelId).toBe("book-2");
   });
 
   it("clamps limit to a minimum of 1 and floors fractional input", async () => {

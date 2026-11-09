@@ -17,7 +17,7 @@ import { DownloadsStorageView, downloadedChapterToRead } from "./downloads-stora
 
 function novel(patch: Partial<DownloadCacheNovel> = {}): DownloadCacheNovel {
   return {
-    novelId: 1, novelName: "Novel", novelCover: null, novelPath: "/novel", pluginId: "source", pluginName: "Source",
+    novelId: 1, novelName: "Novel", novelCover: null, novelPath: "/novel", pluginId: "source", sourceNovelId: "book", pluginName: "Source",
     inLibrary: true, chaptersDownloaded: 120, totalChapters: 300, unreadDownloaded: 20, readDownloaded: 100,
     mediaRepairNeededChapters: 0, totalBytes: 340 * 1024 * 1024, lastDownloadedAt: null, ...patch,
   };

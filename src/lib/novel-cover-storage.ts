@@ -62,6 +62,7 @@ export interface NovelCoverStorageInput extends ChapterStorageNovelPathInput {
   name: string;
   path: string;
   pluginId: string;
+  sourceNovelId: string | null;
 }
 
 export interface NovelCoverDisplayInput extends NovelCoverStorageInput {

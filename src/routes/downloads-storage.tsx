@@ -365,6 +365,7 @@ function DownloadCacheNovelCard({
       name: novel.novelName,
       path: novel.novelPath,
       pluginId: novel.pluginId,
+      sourceNovelId: novel.sourceNovelId,
     },
     {
       allowSourceFallback: Boolean(plugin),

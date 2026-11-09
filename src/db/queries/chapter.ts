@@ -1235,6 +1235,7 @@ export interface LibraryUpdateEntry {
   novelId: number;
   pluginId: string;
   pluginName?: string | null;
+  novelSourceNovelId: string | null;
   novelPath: string;
   chapterName: string;
   contentType: ChapterContentType;
@@ -1329,6 +1330,7 @@ export async function listLibraryUpdates(
        c.novel_id        AS novelId,
        n.plugin_id       AS pluginId,
        ip.name           AS pluginName,
+       n.source_novel_id AS novelSourceNovelId,
        n.path            AS novelPath,
        c.name            AS chapterName,
        COALESCE(c.stored_content_type, c.content_type) AS contentType,
@@ -1404,6 +1406,7 @@ export interface RecentlyReadEntry {
   readAt: number;
   progress: number;
   pluginId: string;
+  novelSourceNovelId: string | null;
   novelName: string;
   novelCover: string | null;
   novelInLibrary: boolean;
@@ -1439,6 +1442,7 @@ export async function listRecentlyRead(
        c.read_at         AS readAt,
        c.progress,
        n.plugin_id       AS pluginId,
+       n.source_novel_id AS novelSourceNovelId,
        n.name            AS novelName,
        n.cover           AS novelCover,
        n.in_library      AS novelInLibrary,
