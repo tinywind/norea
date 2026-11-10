@@ -135,18 +135,7 @@ pub async fn chapter_download_queue_enqueue(
     }
 
     let pool = queue_pool(db_instances.inner()).await?;
-    let now = now_ms();
-    let mut tx = pool
-        .begin()
-        .await
-        .map_err(|err| format!("download queue: begin enqueue: {err}"))?;
-    for job in &jobs {
-        insert_queue_job(&mut *tx, job, now, now).await?;
-    }
-    tx.commit()
-        .await
-        .map_err(|err| format!("download queue: commit enqueue: {err}"))?;
-    Ok(())
+    enqueue_queue_jobs(&pool, &jobs, now_ms()).await
 }
 
 #[tauri::command]
@@ -164,13 +153,14 @@ pub async fn chapter_download_queue_remove(
 
 /// Bound IDs per statement; SQLite builds can cap bound variables as low as 999.
 const QUEUE_ID_CHUNK: usize = 500;
-const QUEUE_BUSY_RETRIES: usize = 3;
+const QUEUE_BUSY_RETRIES: usize = 10;
 const QUEUE_BUSY_RETRY_DELAY_MS: u64 = 100;
 
 fn is_sqlite_busy_message(message: &str) -> bool {
     let message = message.to_ascii_lowercase();
     message.contains("database is locked")
         || message.contains("database is busy")
+        || message.contains("cannot start a transaction within a transaction")
         || message.contains("(code: 5)")
         || message.contains("(code: 6)")
         || message.contains("sqlite_busy")
@@ -181,35 +171,82 @@ fn is_sqlite_busy_error(error: &sqlx::Error) -> bool {
     is_sqlite_busy_message(&error.to_string())
 }
 
-async fn remove_queue_chunk(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(), String> {
+async fn enqueue_queue_jobs_once(
+    pool: &SqlitePool,
+    jobs: &[ChapterDownloadQueueJob],
+    now: u64,
+) -> Result<(), String> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|err| format!("download queue: begin enqueue: {err}"))?;
+    for job in jobs {
+        insert_queue_job(&mut *tx, job, now, now).await?;
+    }
+    tx.commit()
+        .await
+        .map_err(|err| format!("download queue: commit enqueue: {err}"))
+}
+
+async fn enqueue_queue_jobs(
+    pool: &SqlitePool,
+    jobs: &[ChapterDownloadQueueJob],
+    now: u64,
+) -> Result<(), String> {
     for attempt in 0..=QUEUE_BUSY_RETRIES {
-        let mut query =
-            QueryBuilder::<Sqlite>::new("DELETE FROM chapter_download_queue WHERE chapter_id IN (");
-        let mut separated = query.separated(", ");
-        for chapter_id in chapter_ids {
-            separated.push_bind(chapter_id);
-        }
-        separated.push_unseparated(")");
-        query.push(" AND json_extract(job_json, '$.vpnPlanId') IS NULL AND json_extract(job_json, '$.vpnRangeId') IS NULL AND json_extract(job_json, '$.vpnBatchId') IS NULL");
-        match query.build().execute(pool).await {
-            Ok(_) => return Ok(()),
-            Err(error) if is_sqlite_busy_error(&error) && attempt < QUEUE_BUSY_RETRIES => {
+        match enqueue_queue_jobs_once(pool, jobs, now).await {
+            Ok(()) => return Ok(()),
+            Err(error) if is_sqlite_busy_message(&error) && attempt < QUEUE_BUSY_RETRIES => {
                 tokio::time::sleep(Duration::from_millis(
                     QUEUE_BUSY_RETRY_DELAY_MS * (attempt as u64 + 1),
                 ))
                 .await;
             }
-            Err(error) => return Err(format!("download queue: remove jobs: {error}")),
+            Err(error) => return Err(error),
         }
     }
-    unreachable!("queue busy retry loop always returns")
+    unreachable!("queue enqueue busy retry loop always returns")
+}
+
+async fn remove_queue_jobs_once(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(), String> {
+    let mut tx = pool
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|err| format!("download queue: begin remove jobs: {err}"))?;
+    for chunk in chapter_ids.chunks(QUEUE_ID_CHUNK) {
+        let mut query =
+            QueryBuilder::<Sqlite>::new("DELETE FROM chapter_download_queue WHERE chapter_id IN (");
+        let mut separated = query.separated(", ");
+        for chapter_id in chunk {
+            separated.push_bind(chapter_id);
+        }
+        separated.push_unseparated(")");
+        query.push(" AND json_extract(job_json, '$.vpnPlanId') IS NULL AND json_extract(job_json, '$.vpnRangeId') IS NULL AND json_extract(job_json, '$.vpnBatchId') IS NULL");
+        query
+            .build()
+            .execute(&mut *tx)
+            .await
+            .map_err(|err| format!("download queue: remove jobs: {err}"))?;
+    }
+    tx.commit()
+        .await
+        .map_err(|err| format!("download queue: commit remove jobs: {err}"))
 }
 
 async fn remove_queue_jobs(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(), String> {
-    for chunk in chapter_ids.chunks(QUEUE_ID_CHUNK) {
-        remove_queue_chunk(pool, chunk).await?;
+    for attempt in 0..=QUEUE_BUSY_RETRIES {
+        match remove_queue_jobs_once(pool, chapter_ids).await {
+            Ok(()) => return Ok(()),
+            Err(error) if is_sqlite_busy_message(&error) && attempt < QUEUE_BUSY_RETRIES => {
+                tokio::time::sleep(Duration::from_millis(
+                    QUEUE_BUSY_RETRY_DELAY_MS * (attempt as u64 + 1),
+                ))
+                .await;
+            }
+            Err(error) => return Err(error),
+        }
     }
-    Ok(())
+    unreachable!("queue remove busy retry loop always returns")
 }
 
 #[tauri::command]
@@ -346,6 +383,9 @@ mod tests {
         assert!(is_sqlite_busy_error(&sqlx::Error::Protocol(
             "database is locked".into(),
         )));
+        assert!(is_sqlite_busy_error(&sqlx::Error::Protocol(
+            "cannot start a transaction within a transaction".into(),
+        )));
         assert!(!is_sqlite_busy_error(&sqlx::Error::Protocol(
             "database disk image is malformed".into(),
         )));
@@ -438,6 +478,38 @@ mod tests {
         assert_eq!(restored["goal"], true);
         assert_eq!(restored["serverLane"], true);
         assert!(restored.get("serverOnly").is_none());
+    }
+
+    #[tokio::test]
+    async fn queue_mutations_wait_for_a_frontend_style_open_transaction() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        ensure_queue_schema(&pool).await.unwrap();
+        insert_queue_job(&pool, &job(31, None, None), 1, 1)
+            .await
+            .unwrap();
+
+        sqlx::query("BEGIN IMMEDIATE").execute(&pool).await.unwrap();
+        let removing = tokio::spawn({
+            let pool = pool.clone();
+            async move { remove_queue_jobs(&pool, &[31]).await }
+        });
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(!removing.is_finished(), "queue mutation must wait for the frontend transaction");
+        sqlx::query("COMMIT").execute(&pool).await.unwrap();
+
+        removing.await.unwrap().unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM chapter_download_queue")
+                .fetch_one(&pool)
+                .await
+                .unwrap(),
+            0,
+        );
+        pool.close().await;
     }
 
     #[tokio::test]
