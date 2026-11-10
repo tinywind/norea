@@ -251,6 +251,52 @@ it("discovers an unjournaled stored chapter once when upgrading the local discov
   expect(uploadContentChapter).toHaveBeenCalledTimes(1);
 });
 
+it("reconciles only untracked chapters during a discovery upgrade without dropping retries", async () => {
+  const key = "norea-content-catalog:http://localhost:7788";
+  const known = '["p","n","known"]';
+  const retry = '["p","n","retry"]';
+  memory.set(key, JSON.stringify({
+    cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete",
+    includesIncompleteChapters: true, tombstones: {}, uploaded: {},
+    downloads: { [known]: true, [retry]: true }, excluded: [], pendingUploads: [retry],
+  }));
+  const rows = ["known", "untracked", "retry"].map((chapterPath, index) => ({
+    chapterId: index + 1, novelId: 1, pluginId: "p", sourceNovelId: "n",
+    novelPath: "n", chapterPath, chapterNumber: String(index + 1), position: index + 1,
+    novelName: "Novel", chapterName: chapterPath, contentType: "html",
+    isDownloaded: true, mediaRepairNeeded: false, contentBytes: 12,
+  }));
+  vi.mocked(listContentSyncChapters).mockImplementation(async requested =>
+    requested === undefined ? rows as never : []);
+
+  await syncContentServer();
+
+  expect(uploadContentChapter).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(uploadContentChapter).mock.calls.map(call => call[0].chapterId).sort()).toEqual([2, 3]);
+  expect(JSON.parse(memory.get(key)!)).toMatchObject({ localDiscoveryVersion: 1, pendingUploads: [] });
+  vi.mocked(uploadContentChapter).mockClear();
+  await syncContentServer();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+});
+
+it("keeps explicit full rescans independent from discovery caching", async () => {
+  const key = "norea-content-catalog:http://localhost:7788";
+  memory.set(key, JSON.stringify({
+    cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true,
+    localDiscoveryVersion: 1, tombstones: {}, uploaded: {}, downloads: { '["p","n","known"]': true },
+    excluded: [], pendingUploads: [],
+  }));
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{
+    chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "n",
+    chapterPath: "known", chapterNumber: "1", position: 1, novelName: "Novel", chapterName: "Known",
+    contentType: "html", isDownloaded: true, mediaRepairNeeded: false, contentBytes: 12,
+  }] as never);
+
+  await syncContentServer(true, true);
+
+  expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ chapterId: 1 }));
+});
+
 it("uploads a complete local chapter over an incomplete server copy when preferring complete chapters", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;

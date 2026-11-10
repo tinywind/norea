@@ -150,11 +150,21 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     const changedIds = changes?.filter((entry) => entry.key.startsWith("content:")).map((entry) => entry.key.slice(8));
     const requested = changedIds ? [...new Set([...changedIds, ...cache.pendingUploads])] : undefined;
     const changedRows = await listContentSyncChapters(requested, requested === undefined);
+    // An upgrade needs to discover unjournaled local chapters, not revalidate every
+    // chapter whose server presence was already recorded. Explicit rescans, changed
+    // policies, older cache layouts, pending uploads, and deletion rechecks still run.
+    const discoveryOnly = needsLocalDiscovery && !rescan && cache.includesIncompleteChapters &&
+      cache.localCursor !== undefined && cache.uploadConflictPolicy === conflictPolicy;
+    const existingPending = new Set(cache.pendingUploads);
+    const discoveredRows = discoveryOnly ? changedRows.filter(row => {
+      const id = identity(row);
+      return !cache.downloads[id] || existingPending.has(id);
+    }) : changedRows;
     const deletedIds = Object.keys(cache.tombstones);
     // Deletion deltas omit chapter numbers, so recheck the work to resolve folder aliases.
     const recheckWorks = [...new Set(deletedIds.map(id => JSON.stringify((JSON.parse(id) as string[]).slice(0, 2))))];
     const recheckRows = recheckWorks.length ? await listContentSyncWorkChapters(recheckWorks) : [];
-    const rows = [...changedRows, ...recheckRows];
+    const rows = [...discoveredRows, ...recheckRows];
     const rowsByIdentity = new Map(rows.map(row => [identity(row), row]));
     const deletedLocalWorks = new Set<string>();
     if (deletedWorks.size) {
