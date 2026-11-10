@@ -206,10 +206,12 @@ export async function acknowledgeUserStateOperationsInDb(db: UserStateDb, bindin
   for (const result of results) {
     const attempt = attempts.get(result.operationId)!;
     const receipt = canonicalUserStateJson(result);
-    if (attempt.receipt) {
-      if (attempt.receipt !== receipt) throw new Error("The personal state receipt changed after acknowledgement.");
-      continue;
+    if (attempt.receipt && attempt.receipt !== receipt) {
+      throw new Error("The personal state receipt changed after acknowledgement.");
     }
+    // A previous non-transactional ACK may have stored the immutable receipt before
+    // it advanced user_state_progress. Replaying the same receipt is intentional:
+    // every following write is idempotent and completes the interrupted ACK.
     const operation = parseUserStateOperation(JSON.parse(attempt.payload));
     if (result.categoryAlias) {
       if (!("categoryId" in operation.entity) || result.categoryAlias.from !== operation.entity.categoryId) {

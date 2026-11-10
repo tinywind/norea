@@ -3,8 +3,10 @@ import { DatabaseSync } from "node:sqlite";
 import type Database from "@tauri-apps/plugin-sql";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("./client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
-import { getDb, getReadOnlyDb, runDatabaseTransaction } from "./client";
+vi.mock("./client", () => ({
+  getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn(), runExclusiveDatabaseOperation: vi.fn(),
+}));
+import { getDb, getReadOnlyDb, runDatabaseTransaction, runExclusiveDatabaseOperation } from "./client";
 import {
   acknowledgeUserStateOperationsInDb, applyUserStateReadPageInDb, bindUserStateWorkspaceInDb,
   listUserStateConflictsInDb, listUserStateDeferredInDb, prepareUserStateOperationsInDb, resolveUserStateLedgerConflictInDb,
@@ -80,6 +82,7 @@ beforeEach(() => {
   vi.mocked(getDb).mockImplementation(async () => active.db);
   vi.mocked(getReadOnlyDb).mockImplementation(async () => active.db);
   vi.mocked(runDatabaseTransaction).mockImplementation(run => tx(active, run));
+  vi.mocked(runExclusiveDatabaseOperation).mockImplementation(async run => run(active.db));
   setUserStateActiveServer(binding.serverUrl);
 });
 afterEach(async () => { setUserStateActiveServer(null); await waitForUserStateDeferredApply(); while (fixtures.length) fixtures.pop()!.sql.close(); });
@@ -197,6 +200,27 @@ describe("durable personal-state ledger", () => {
     expect(selects).toBeLessThan(12);
     expect(executes).toBeLessThan(12);
   }, 15_000);
+
+  it("replays a matching stored receipt to finish progress after an interrupted acknowledgement", async () => {
+    await bind(); await capture(readingValue(61));
+    const [operation] = await prepare();
+    const result = {
+      operationId: operation.operationId, status: "applied" as const,
+      current: shared(operation.entity, operation.value, 7, operation.operationId),
+    };
+    active.sql.prepare("UPDATE user_state_operation SET status='acknowledged',receipt=? WHERE operation_id=?")
+      .run(canonicalUserStateJson(result), operation.operationId);
+    expect(active.sql.prepare("SELECT acknowledged_sequence,local_sequence FROM user_state_progress").get())
+      .toEqual({ acknowledged_sequence: 0, local_sequence: 1 });
+
+    await acknowledgeUserStateOperationsInDb(active.db, binding, [result]);
+
+    expect(active.sql.prepare("SELECT status,receipt IS NOT NULL AS hasReceipt FROM user_state_operation").get())
+      .toEqual({ status: "acknowledged", hasReceipt: 1 });
+    expect(active.sql.prepare("SELECT acknowledged_sequence,local_sequence FROM user_state_progress").get())
+      .toEqual({ acknowledged_sequence: 1, local_sequence: 1 });
+    expect((await prepareUserStateOperationsInDb(active.db, binding))).toEqual([]);
+  });
 
   it("marks equivalent acknowledgements as already projected so the following pull does not rewrite local state", async () => {
     await bind(); await capture(readingValue(61));
