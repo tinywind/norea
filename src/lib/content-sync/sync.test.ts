@@ -217,6 +217,40 @@ it("discovers previously skipped incomplete chapters once when upgrading a saved
   expect(uploadContentChapter).toHaveBeenCalledOnce();
 });
 
+it("discovers an unjournaled stored chapter once when upgrading the local discovery version", async () => {
+  const key = "norea-content-catalog:http://localhost:7788";
+  const row = {
+    chapterId: 404, novelId: 40, pluginId: "bookkor-novel", sourceNovelId: "2743",
+    novelPath: "/book/2743", chapterPath: "/chapter/340", chapterNumber: "340", position: 340,
+    novelName: "Recovered work", chapterName: "340", contentType: "html", isDownloaded: true,
+    mediaRepairNeeded: false, contentBytes: 12,
+  };
+  // This is the broken-device state: the delta cursor already reached the journal
+  // head, but the durable downloaded chapter predates (or bypassed) that journal.
+  memory.set(key, JSON.stringify({
+    cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete",
+    includesIncompleteChapters: true, tombstones: {}, uploaded: {}, downloads: {},
+    excluded: [], pendingUploads: [],
+  }));
+  vi.mocked(listContentSyncChapters).mockImplementation(async requested =>
+    requested === undefined ? [row] as never : []);
+  vi.mocked(contentJournalHead).mockResolvedValue(0);
+
+  await syncContentServer();
+
+  expect(listContentSyncChapters).toHaveBeenLastCalledWith(undefined, true);
+  expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ chapterId: 404 }));
+  expect(JSON.parse(memory.get(key)!)).toMatchObject({
+    localCursor: 0, localDiscoveryVersion: 1, pendingUploads: [],
+  });
+
+  vi.mocked(listContentSyncChapters).mockClear();
+  await syncContentServer();
+
+  expect(listContentSyncChapters).toHaveBeenLastCalledWith([], false);
+  expect(uploadContentChapter).toHaveBeenCalledTimes(1);
+});
+
 it("uploads a complete local chapter over an incomplete server copy when preferring complete chapters", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
@@ -351,7 +385,7 @@ it("rechecks persisted completion and queue state after preparing the upload sna
 
 it("rechecks a persisted server deletion without a rescan or a new local journal entry", async () => {
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
-  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: { '["p","n","c"]': true }, uploaded: { '["p","n","c"]': "old" }, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, localDiscoveryVersion: 1, tombstones: { '["p","n","c"]': true }, uploaded: { '["p","n","c"]': "old" }, downloads: {}, excluded: [], pendingUploads: [] }));
   await syncContentServer();
   expect(listContentSyncChapters).toHaveBeenCalledWith([], false);
   expect(listContentSyncWorkChapters).toHaveBeenCalledExactlyOnceWith(['["p","n"]']);
@@ -402,7 +436,7 @@ it.each([false, true])("handles a deletion discovered only in the final catalog 
   const key = "norea-content-catalog:http://localhost:7788";
   const row = { chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c",
     novelName: "Novel", chapterName: "One", isDownloaded: true, mediaRepairNeeded: false };
-  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, localDiscoveryVersion: 1, tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([row] as never);
   let catalogRequests = 0;
   const original = vi.mocked(appFetch).getMockImplementation()!;

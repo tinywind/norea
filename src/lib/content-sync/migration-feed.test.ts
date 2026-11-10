@@ -166,6 +166,19 @@ describe("received migration synchronization", () => {
     expect(await syncIncomingNovelMigrations(server, "token")).toEqual({ applied: 1, pending: 0 });
   });
 
+  it("retries a blocked receipt after the server backfills its legacy operation binding", async () => {
+    vi.mocked(applyIncomingNovelMigration).mockRejectedValueOnce(new Error("Old blocked receipt"));
+    expect(await syncIncomingNovelMigrations(server, "token")).toMatchObject({ applied: 0, pending: 1 });
+    const blocked = (await listIncomingMigrations(server))[0]!;
+    expect(blocked.status).toBe("blocked");
+    expect(blocked.lineage.legacyOperationId).toBeUndefined();
+    remote[0] = { ...remote[0]!, legacyOperationId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" };
+    expect(await syncIncomingNovelMigrations(server, "token")).toEqual({ applied: 1, pending: 0 });
+    expect((await listIncomingMigrations(server, true))[0]).toMatchObject({
+      status: "completed", lineage: { legacyOperationId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" },
+    });
+  });
+
   it("reconsiders a blocked predecessor automatically when a later migration arrives", async () => {
     vi.mocked(applyIncomingNovelMigration).mockRejectedValueOnce(new ContentServerError(404));
     expect(await syncIncomingNovelMigrations(server, "token")).toMatchObject({ pending: 1 });
