@@ -80,6 +80,13 @@ export async function listUserStateDeferred(binding: UserStateBinding): Promise<
   return listUserStateDeferredInDb(await getDb(), binding);
 }
 
+const USER_STATE_LOCAL_ACK_CHUNK = 128;
+const USER_STATE_LOCAL_ACK_YIELD_MS = 0;
+
+async function yieldUserStateAck(): Promise<void> {
+  await new Promise<void>(resolve => setTimeout(resolve, USER_STATE_LOCAL_ACK_YIELD_MS));
+}
+
 const USER_STATE_PROJECTION_CHUNK = 16;
 
 function projectionPriority(record: UserStateRecord): number {
@@ -200,15 +207,21 @@ export async function applyUserStateReadPage(binding: UserStateBinding, page: Us
   return { resumes: [] };
 }
 export async function acknowledgeUserStateOperations(binding: UserStateBinding, results: UserStateMergeResult[]): Promise<UserStateApplyEffects> {
-  // Server receipts are immutable and every ACK write below is idempotent/monotonic.
-  // Do not hold a manual BEGIN/COMMIT across many plugin-sql calls: Android's pooled
-  // bridge can otherwise return "cannot commit - no transaction is active" after
-  // another native writer is scheduled. If a write is interrupted, replay the exact
-  // receipts and finish the remaining progress updates.
-  await retryUserStateExclusive(() => runExclusiveDatabaseOperation(async db => {
-    await acknowledgeUserStateOperationsInDb(db, binding, results);
-    requestUserStateDeferredApply(db);
-  }, { publishMetadata: false }));
+  // Network merge requests remain byte-bounded bulk messages. Only local receipt
+  // application is chunked so a large replay cannot monopolize Android's SQLite
+  // bridge for tens of seconds and starve library/cover reads.
+  //
+  // Server receipts are immutable and all ACK writes are idempotent/monotonic, so
+  // a crash between chunks is safe: the next synchronization replays the exact
+  // receipts and resumes at the remaining local progress rows.
+  for (let start = 0; start < results.length; start += USER_STATE_LOCAL_ACK_CHUNK) {
+    if (start > 0) await yieldUserStateAck();
+    const batch = results.slice(start, start + USER_STATE_LOCAL_ACK_CHUNK);
+    await retryUserStateExclusive(() => runExclusiveDatabaseOperation(async db => {
+      await acknowledgeUserStateOperationsInDb(db, binding, batch);
+      requestUserStateDeferredApply(db);
+    }, { publishMetadata: false }));
+  }
   emitUserStateLedgerChanged();
   return { resumes: [] };
 }

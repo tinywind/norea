@@ -299,7 +299,10 @@ function parseIncoming(raw: unknown): IncomingMigration {
 }
 
 function immutable(lineage: WorkMigrationLineage): string {
-  const { sequence: _sequence, active: _active, ...proof } = lineage;
+  // Event sequence/active state evolves through the migration feed. legacyOperationId
+  // is compatibility metadata that older servers did not publish initially and may
+  // be backfilled later; the actual source/target/mapping proof remains immutable.
+  const { sequence: _sequence, active: _active, legacyOperationId: _legacyOperationId, ...proof } = lineage;
   return canonical(proof);
 }
 
@@ -307,8 +310,12 @@ export function incomingMigrationFromLineage(server: string, entry: WorkMigratio
   const serverUrl = normalizeContentServerUrl(server);
   const lineage = parseWorkMigrationLineage(entry);
   const current = previous && parseIncoming(previous);
+  const previousLegacyOperationId = current?.lineage.legacyOperationId;
   if (current && (current.serverUrl !== serverUrl || current.operationId !== lineage.operationId ||
-      immutable(current.lineage) !== immutable(lineage))) invalid("immutable lineage changed");
+      immutable(current.lineage) !== immutable(lineage) ||
+      (previousLegacyOperationId !== undefined && previousLegacyOperationId !== lineage.legacyOperationId))) {
+    invalid("immutable lineage changed");
+  }
   if (current && lineage.sequence < current.sequence) return current;
   if (current && lineage.sequence === current.sequence && lineage.active !== current.lineage.active) invalid("event state changed without a new sequence");
   return {

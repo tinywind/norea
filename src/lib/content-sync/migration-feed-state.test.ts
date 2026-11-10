@@ -124,6 +124,19 @@ describe("incoming work migration validation", () => {
 });
 
 describe("incoming migration events", () => {
+  it("accepts a legacy operation binding backfilled after the immutable migration proof was first stored", () => {
+    const first = incomingMigrationFromLineage(server, lineage());
+    const legacyOperationId = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee";
+    const backfilled = incomingMigrationFromLineage(server, {
+      ...lineage(), legacyOperationId,
+    }, first);
+    expect(backfilled).toMatchObject({
+      operationId: first.operationId,
+      status: "pending",
+      lineage: { legacyOperationId },
+    });
+  });
+
   it("retains an explicit legacy operation binding through persistence and revocation", () => {
     const input = { ...lineage(), legacyOperationId: "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee" };
     expect(parseWorkMigrationLineage(input)).toEqual(input);

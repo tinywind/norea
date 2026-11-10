@@ -17,7 +17,7 @@ import {
 } from "./user-state-core";
 import { materializeUserStateRecordInDb, refreshUnattemptedUserStateIdentitiesInDb } from "./user-state-materialize";
 import {
-  applyUserStateReadPage, deferUserStateForNovelInDb, materializePendingUserState, recordUserResume, resumeUserStateAfterRestore, setUserStateActiveServer,
+  acknowledgeUserStateOperations, applyUserStateReadPage, deferUserStateForNovelInDb, materializePendingUserState, recordUserResume, resumeUserStateAfterRestore, setUserStateActiveServer,
 } from "./user-state";
 import { applyNovelMergeInDb } from "./queries/novel-merge";
 import { deleteLocalNovelRecords } from "./queries/content-deletion";
@@ -200,6 +200,30 @@ describe("durable personal-state ledger", () => {
     expect(selects).toBeLessThan(12);
     expect(executes).toBeLessThan(12);
   }, 15_000);
+
+  it("applies a large server receipt set in separate local exclusive chunks without changing bulk network semantics", async () => {
+    await bind();
+    const entries = Array.from({ length: 385 }, (_, index) => ({
+      entity: { kind: "reading" as const, work, chapter: { chapterPath: "/local-ack/" + index, name: "Local ACK " + index } },
+      value: readingValue(index % 101),
+    }));
+    await tx(active, db => recordUserStateChangesInDb(db, entries));
+    const operations = await tx(active, db => prepareUserStateOperationsInDb(db, binding, { maxBytes: 30 * 1024 * 1024 }));
+    const results = operations.map((operation, index) => ({
+      operationId: operation.operationId, status: "applied" as const,
+      current: shared(operation.entity, operation.value, index + 1, operation.operationId),
+    }));
+    const exclusive = vi.mocked(runExclusiveDatabaseOperation);
+    exclusive.mockClear();
+
+    await acknowledgeUserStateOperations(binding, results);
+
+    expect(exclusive).toHaveBeenCalledTimes(4);
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_progress WHERE acknowledged_sequence=local_sequence").get())
+      .toEqual({ count: 385 });
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_operation WHERE status='acknowledged'").get())
+      .toEqual({ count: 385 });
+  });
 
   it("replays a matching stored receipt to finish progress after an interrupted acknowledgement", async () => {
     await bind(); await capture(readingValue(61));
