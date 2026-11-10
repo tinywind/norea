@@ -1,19 +1,9 @@
-use std::{
-    fs,
-    path::PathBuf,
-    time::{Duration, SystemTime, UNIX_EPOCH},
-};
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
-use sqlx::{
-    QueryBuilder, Row, Sqlite, SqlitePool,
-    sqlite::{SqliteConnectOptions, SqlitePoolOptions},
-};
-use tauri::{AppHandle, Manager, State};
-use tokio::sync::Mutex;
-
-const DB_FILE: &str = "norea.db";
-const DB_BUSY_TIMEOUT_MS: u64 = 5000;
+use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
+use tauri::State;
+use tauri_plugin_sql::{DbInstances, DbPool};
 
 const CREATE_DOWNLOAD_QUEUE_TABLE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS chapter_download_queue (
@@ -62,24 +52,11 @@ pub struct ChapterDownloadQueueJob {
     title: String,
 }
 
-#[derive(Debug, Default)]
-pub struct DownloadQueueState {
-    pool: Mutex<Option<SqlitePool>>,
-}
-
 fn now_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().min(u128::from(u64::MAX)) as u64)
         .unwrap_or(0)
-}
-
-fn db_path(app: &AppHandle) -> Result<PathBuf, String> {
-    Ok(app
-        .path()
-        .app_config_dir()
-        .map_err(|err| format!("download queue: app config dir: {err}"))?
-        .join(DB_FILE))
 }
 
 async fn ensure_queue_schema(pool: &SqlitePool) -> Result<(), String> {
@@ -140,42 +117,24 @@ async fn insert_queue_job(
     .map_err(|err| format!("download queue: insert job: {err}"))
 }
 
-async fn queue_pool(app: &AppHandle, state: &DownloadQueueState) -> Result<SqlitePool, String> {
-    let mut guard = state.pool.lock().await;
-    if let Some(pool) = guard.as_ref() {
-        return Ok(pool.clone());
+async fn queue_pool(db_instances: &DbInstances) -> Result<SqlitePool, String> {
+    let instances = db_instances.0.read().await;
+    match instances.get("sqlite:norea.db") {
+        Some(DbPool::Sqlite(pool)) => Ok(pool.clone()),
+        _ => Err("download queue: app database is not initialized".to_string()),
     }
-
-    let path = db_path(app)?;
-    if let Some(parent) = path.parent() {
-        fs::create_dir_all(parent)
-            .map_err(|err| format!("download queue: create db dir: {err}"))?;
-    }
-    let options = SqliteConnectOptions::new()
-        .filename(path)
-        .create_if_missing(true)
-        .busy_timeout(Duration::from_millis(DB_BUSY_TIMEOUT_MS));
-    let pool = SqlitePoolOptions::new()
-        .max_connections(1)
-        .connect_with(options)
-        .await
-        .map_err(|err| format!("download queue: open sqlite queue db: {err}"))?;
-    ensure_queue_schema(&pool).await?;
-    *guard = Some(pool.clone());
-    Ok(pool)
 }
 
 #[tauri::command]
 pub async fn chapter_download_queue_enqueue(
-    app: AppHandle,
-    state: State<'_, DownloadQueueState>,
+    db_instances: State<'_, DbInstances>,
     jobs: Vec<ChapterDownloadQueueJob>,
 ) -> Result<(), String> {
     if jobs.is_empty() {
         return Ok(());
     }
 
-    let pool = queue_pool(&app, state.inner()).await?;
+    let pool = queue_pool(db_instances.inner()).await?;
     let now = now_ms();
     let mut tx = pool
         .begin()
@@ -192,15 +151,14 @@ pub async fn chapter_download_queue_enqueue(
 
 #[tauri::command]
 pub async fn chapter_download_queue_remove(
-    app: AppHandle,
-    state: State<'_, DownloadQueueState>,
+    db_instances: State<'_, DbInstances>,
     chapter_ids: Vec<i64>,
 ) -> Result<(), String> {
     if chapter_ids.is_empty() {
         return Ok(());
     }
 
-    let pool = queue_pool(&app, state.inner()).await?;
+    let pool = queue_pool(db_instances.inner()).await?;
     remove_queue_jobs(&pool, &chapter_ids).await
 }
 
@@ -256,11 +214,10 @@ async fn remove_queue_jobs(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(),
 
 #[tauri::command]
 pub async fn chapter_download_queue_lease(
-    app: AppHandle,
-    state: State<'_, DownloadQueueState>,
+    db_instances: State<'_, DbInstances>,
     limit: Option<usize>,
 ) -> Result<Vec<ChapterDownloadQueueJob>, String> {
-    let pool = queue_pool(&app, state.inner()).await?;
+    let pool = queue_pool(db_instances.inner()).await?;
     lease_queue_jobs(&pool, limit).await
 }
 
@@ -374,6 +331,8 @@ async fn lease_queue_jobs_once(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
+    use std::collections::HashMap;
 
     fn job(id: i64, plan: Option<&str>, range: Option<&str>) -> ChapterDownloadQueueJob {
         serde_json::from_value(serde_json::json!({
@@ -390,6 +349,35 @@ mod tests {
         assert!(!is_sqlite_busy_error(&sqlx::Error::Protocol(
             "database disk image is malformed".into(),
         )));
+    }
+
+    #[tokio::test]
+    async fn queue_pool_reuses_the_registered_app_writer() {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        ensure_queue_schema(&pool).await.unwrap();
+        insert_queue_job(&pool, &job(41, None, None), 1, 1)
+            .await
+            .unwrap();
+
+        let mut dbs = HashMap::new();
+        dbs.insert("sqlite:norea.db".to_string(), DbPool::Sqlite(pool.clone()));
+        let instances = DbInstances(tokio::sync::RwLock::new(dbs));
+
+        let shared = queue_pool(&instances).await.unwrap();
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT COUNT(*) FROM chapter_download_queue WHERE chapter_id=41",
+            )
+            .fetch_one(&shared)
+            .await
+            .unwrap(),
+            1,
+        );
+        shared.close().await;
     }
 
     #[test]

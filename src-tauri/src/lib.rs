@@ -143,7 +143,6 @@ pub fn run() {
         )
         .manage(android_file_open::AndroidOpenFileState::default())
         .manage(desktop_open_files)
-        .manage(download_queue::DownloadQueueState::default())
         .manage(native_stream::NativeStreamState::default())
         .manage(task_notifications::TaskNotificationState::default())
         .manage(plugin_vpn)
