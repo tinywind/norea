@@ -1,7 +1,7 @@
 import type { ChapterContentType } from "../../lib/chapter-content";
 import { getChapterComposition } from "../chapter-composition";
 import type Database from "@tauri-apps/plugin-sql";
-import { getDb, runDatabaseTransaction } from "../client";
+import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../client";
 import { isChapterPayloadInventory, type ChapterPayloadInventory } from "../../lib/chapter-content/inventory";
 import type { MigrationWorkIdentity, NovelMigrationTargetMetadata, PendingNovelMigration, WorkMigrationSnapshot } from "../../lib/content-sync/novel-migration-types";
 import { sqliteBoolean } from "../sqlite-value";
@@ -130,6 +130,39 @@ export async function listContentSyncChapters(identities?: string[], downloadedO
 
 export async function listContentSyncWorkChapters(workIdentities: string[]): Promise<ContentSyncChapter[]> {
   return selectContentSyncChapters(workIdentities, true, true);
+}
+
+/**
+ * Returns durable local chapter payloads which this server has never recorded as
+ * downloaded. The cache JSON is expanded once inside SQLite so large libraries
+ * do not cross the native bridge merely to discard already-known chapters.
+ */
+export async function listUntrackedContentSyncChapters(serverUrl: string): Promise<ContentSyncChapter[]> {
+  const db = await getReadOnlyDb();
+  const rows = await db.select<ContentSyncChapter[]>(`WITH known(key) AS MATERIALIZED (
+      SELECT entry.key
+      FROM content_sync_cache cache, json_each(cache.payload,'$.downloads') entry
+      WHERE cache.cache_key=$1
+    )
+    SELECT
+      c.id AS chapterId, n.id AS novelId, n.plugin_id AS pluginId, n.path AS novelPath, n.source_novel_id AS sourceNovelId,
+      c.path AS chapterPath, n.name AS novelName, n.author, n.summary,
+      n.is_local AS isLocal,
+      c.name AS chapterName, c.chapter_number AS chapterNumber, c.position, c.page,
+      COALESCE(c.stored_content_type,c.content_type) AS contentType,
+      c.is_downloaded AS isDownloaded, c.media_repair_needed AS mediaRepairNeeded,
+      c.content_bytes AS contentBytes, c.media_bytes AS mediaBytes,
+      EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id=c.id) AS isDownloadQueued
+    FROM chapter c
+    JOIN novel n ON n.id=c.novel_id
+    LEFT JOIN known ON known.key=json_array(n.plugin_id,n.path,c.path)
+    WHERE n.source_novel_id IS NOT NULL
+      AND (c.is_downloaded=1 OR c.content_bytes>0)
+      AND known.key IS NULL
+    ORDER BY n.id,c.position,c.id`, ["norea-content-catalog:" + serverUrl]);
+  return rows.map((row) => ({ ...row, isLocal: sqliteBoolean(row.isLocal),
+    isDownloaded: sqliteBoolean(row.isDownloaded), mediaRepairNeeded: sqliteBoolean(row.mediaRepairNeeded),
+    isDownloadQueued: sqliteBoolean(row.isDownloadQueued) }));
 }
 
 async function selectContentSyncChapters(identities: string[] | undefined, downloadedOnly: boolean, matchWorks: boolean): Promise<ContentSyncChapter[]> {

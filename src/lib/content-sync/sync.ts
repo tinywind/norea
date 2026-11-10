@@ -1,5 +1,5 @@
 import {
-  contentIdentity, importContentMetadata, listContentSyncChapters, listContentSyncWorkChapters,
+  contentIdentity, importContentMetadata, listContentSyncChapters, listContentSyncWorkChapters, listUntrackedContentSyncChapters,
   markContentInstalled, readContentSyncCache, writeContentSyncCache, type ContentSyncChapter,
   contentJournalHead, readContentJournal, canUploadContentChapter, clearServerChapterDownloadProof, rememberServerChapterDownload,
 } from "../../db/queries/content-sync";
@@ -144,22 +144,25 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     // row at all. Each discovery-version bump performs one full, byte-independent local
     // reconciliation, then returns to journal-only discovery on subsequent syncs.
     const needsLocalDiscovery = cache.localDiscoveryVersion !== LOCAL_CONTENT_DISCOVERY_VERSION;
-    const changes = !cache.includesIncompleteChapters || cache.localCursor === undefined || rescan ||
-      cache.uploadConflictPolicy !== conflictPolicy || needsLocalDiscovery ? null
-      : await readContentJournal(cache.localCursor, head);
+    const canUseJournal = cache.includesIncompleteChapters && cache.localCursor !== undefined &&
+      !rescan && cache.uploadConflictPolicy === conflictPolicy;
+    const changes = canUseJournal ? await readContentJournal(cache.localCursor!, head) : null;
     const changedIds = changes?.filter((entry) => entry.key.startsWith("content:")).map((entry) => entry.key.slice(8));
     const requested = changedIds ? [...new Set([...changedIds, ...cache.pendingUploads])] : undefined;
-    const changedRows = await listContentSyncChapters(requested, requested === undefined);
-    // An upgrade needs to discover unjournaled local chapters, not revalidate every
-    // chapter whose server presence was already recorded. Explicit rescans, changed
-    // policies, older cache layouts, pending uploads, and deletion rechecks still run.
-    const discoveryOnly = needsLocalDiscovery && !rescan && cache.includesIncompleteChapters &&
-      cache.localCursor !== undefined && cache.uploadConflictPolicy === conflictPolicy;
-    const existingPending = new Set(cache.pendingUploads);
-    const discoveredRows = discoveryOnly ? changedRows.filter(row => {
-      const id = identity(row);
-      return !cache.downloads[id] || existingPending.has(id);
-    }) : changedRows;
+    // A local discovery-version upgrade only needs chapters absent from this
+    // server's durable download cache. Resolve that set in SQLite: on a large
+    // library this avoids serializing tens of thousands of already-known rows
+    // over the native bridge before discarding them in JavaScript. Journal
+    // changes and durable retries are still loaded explicitly so an upgrade
+    // cannot hide a fresh mutation of an already-known chapter.
+    const discoveryOnly = needsLocalDiscovery && canUseJournal;
+    const changedRows = discoveryOnly
+      ? await listUntrackedContentSyncChapters(server)
+      : await listContentSyncChapters(requested, requested === undefined);
+    const targetedRows = discoveryOnly && requested?.length
+      ? await listContentSyncChapters(requested)
+      : [];
+    const discoveredRows = [...new Map([...changedRows, ...targetedRows].map(row => [identity(row), row])).values()];
     const deletedIds = Object.keys(cache.tombstones);
     // Deletion deltas omit chapter numbers, so recheck the work to resolve folder aliases.
     const recheckWorks = [...new Set(deletedIds.map(id => JSON.stringify((JSON.parse(id) as string[]).slice(0, 2))))];
@@ -172,7 +175,11 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         if (deletedWorks.has(await contentWorkId({ pluginId: row.pluginId, novelPath: row.novelPath }))) deletedLocalWorks.add(JSON.stringify([row.pluginId, row.novelPath]));
       }
     }
-    const pending = new Set([...cache.pendingUploads, ...(requested ?? rowsByIdentity.keys()), ...recheckRows.map(identity)]);
+    const pending = new Set([
+      ...cache.pendingUploads,
+      ...(discoveryOnly ? discoveredRows.map(identity) : (requested ?? rowsByIdentity.keys())),
+      ...recheckRows.map(identity),
+    ]);
     if (!pending.size && cache.includesIncompleteChapters && cache.localCursor === head && !deletedIds.length) {
       if (needsLocalDiscovery) {
         cache.localDiscoveryVersion = LOCAL_CONTENT_DISCOVERY_VERSION;

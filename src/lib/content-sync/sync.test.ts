@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 const native = vi.hoisted(() => ({ download: vi.fn(), install: vi.fn(), stage: vi.fn() }));
 
 vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false),
-  listContentSyncChapters: vi.fn(), listContentSyncWorkChapters: vi.fn(), importContentMetadata: vi.fn(), markContentInstalled: vi.fn(),
+  listContentSyncChapters: vi.fn(), listContentSyncWorkChapters: vi.fn(), listUntrackedContentSyncChapters: vi.fn(), importContentMetadata: vi.fn(), markContentInstalled: vi.fn(),
   readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn(),
   contentJournalHead: vi.fn(), readContentJournal: vi.fn(), canUploadContentChapter: vi.fn(),
   clearServerChapterDownloadProof: vi.fn(), rememberServerChapterDownload: vi.fn(),
@@ -30,7 +30,7 @@ vi.mock("./works", () => ({ WorkMetadataChangedOutsideCacheError: class extends 
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn(async () => "Test device") }));
 import { fetch as appFetch } from "@tauri-apps/plugin-http";
-import { contentJournalHead, readContentJournal, listContentSyncChapters, listContentSyncWorkChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled, canUploadContentChapter, clearServerChapterDownloadProof, rememberServerChapterDownload } from "../../db/queries/content-sync";
+import { contentJournalHead, readContentJournal, listContentSyncChapters, listContentSyncWorkChapters, listUntrackedContentSyncChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled, canUploadContentChapter, clearServerChapterDownloadProof, rememberServerChapterDownload } from "../../db/queries/content-sync";
 import { uploadContentChapter, fingerprintContentChapter, type CatalogEntry } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
 import { runContentSyncOperation, syncContentServer, syncReceivedWorkMigrations, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
@@ -63,6 +63,7 @@ beforeEach(() => {
   useContentSyncStore.setState({ ...useContentSyncStore.getInitialState(), serverUrl: "http://localhost:7788" });
   vi.mocked(listContentSyncChapters).mockResolvedValue([]);
   vi.mocked(listContentSyncWorkChapters).mockReset().mockResolvedValue([]);
+  vi.mocked(listUntrackedContentSyncChapters).mockReset().mockResolvedValue([]);
   vi.mocked(canUploadContentChapter).mockReset().mockResolvedValue(true);
   vi.mocked(syncWorkMetadata).mockResolvedValue({ deletedWorks: new Set(), changedOutsideCache: [] });
   vi.mocked(uploadContentChapter).mockReset();
@@ -232,21 +233,23 @@ it("discovers an unjournaled stored chapter once when upgrading the local discov
     includesIncompleteChapters: true, tombstones: {}, uploaded: {}, downloads: {},
     excluded: [], pendingUploads: [],
   }));
-  vi.mocked(listContentSyncChapters).mockImplementation(async requested =>
-    requested === undefined ? [row] as never : []);
+  vi.mocked(listUntrackedContentSyncChapters).mockResolvedValue([row] as never);
   vi.mocked(contentJournalHead).mockResolvedValue(0);
 
   await syncContentServer();
 
-  expect(listContentSyncChapters).toHaveBeenLastCalledWith(undefined, true);
+  expect(listUntrackedContentSyncChapters).toHaveBeenCalledExactlyOnceWith("http://localhost:7788");
+  expect(listContentSyncChapters).not.toHaveBeenCalled();
   expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ chapterId: 404 }));
   expect(JSON.parse(memory.get(key)!)).toMatchObject({
     localCursor: 0, localDiscoveryVersion: 1, pendingUploads: [],
   });
 
   vi.mocked(listContentSyncChapters).mockClear();
+  vi.mocked(listUntrackedContentSyncChapters).mockClear();
   await syncContentServer();
 
+  expect(listUntrackedContentSyncChapters).not.toHaveBeenCalled();
   expect(listContentSyncChapters).toHaveBeenLastCalledWith([], false);
   expect(uploadContentChapter).toHaveBeenCalledTimes(1);
 });
@@ -266,11 +269,14 @@ it("reconciles only untracked chapters during a discovery upgrade without droppi
     novelName: "Novel", chapterName: chapterPath, contentType: "html",
     isDownloaded: true, mediaRepairNeeded: false, contentBytes: 12,
   }));
+  vi.mocked(listUntrackedContentSyncChapters).mockResolvedValue([rows[1]!] as never);
   vi.mocked(listContentSyncChapters).mockImplementation(async requested =>
-    requested === undefined ? rows as never : []);
+    requested?.includes(retry) ? [rows[2]!] as never : []);
 
   await syncContentServer();
 
+  expect(listUntrackedContentSyncChapters).toHaveBeenCalledExactlyOnceWith("http://localhost:7788");
+  expect(listContentSyncChapters).toHaveBeenCalledExactlyOnceWith([retry]);
   expect(uploadContentChapter).toHaveBeenCalledTimes(2);
   expect(vi.mocked(uploadContentChapter).mock.calls.map(call => call[0].chapterId).sort()).toEqual([2, 3]);
   expect(JSON.parse(memory.get(key)!)).toMatchObject({ localDiscoveryVersion: 1, pendingUploads: [] });
@@ -287,14 +293,12 @@ it("persists a discovery upgrade with no untracked chapters so subsequent syncs 
     includesIncompleteChapters: true, tombstones: {}, uploaded: {},
     downloads: { [known]: true }, excluded: [], pendingUploads: [],
   }));
-  vi.mocked(listContentSyncChapters).mockResolvedValue([{
-    chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "n",
-    chapterPath: "known", chapterNumber: "1", position: 1, novelName: "Novel", chapterName: "Known",
-    contentType: "html", isDownloaded: true, mediaRepairNeeded: false, contentBytes: 12,
-  }] as never);
+  vi.mocked(listUntrackedContentSyncChapters).mockResolvedValue([]);
 
   await syncContentServer();
 
+  expect(listUntrackedContentSyncChapters).toHaveBeenCalledExactlyOnceWith("http://localhost:7788");
+  expect(listContentSyncChapters).not.toHaveBeenCalled();
   expect(uploadContentChapter).not.toHaveBeenCalled();
   expect(JSON.parse(memory.get(key)!)).toMatchObject({ localDiscoveryVersion: 1, pendingUploads: [] });
   vi.mocked(listContentSyncChapters).mockClear();
