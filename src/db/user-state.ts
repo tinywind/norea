@@ -1,4 +1,4 @@
-import { getDb, runDatabaseTransaction } from "./client";
+import { getDb, runDatabaseTransaction, runExclusiveDatabaseOperation } from "./client";
 import {
   assertUserStateAvailableInDb, chapterReference, chapterWork, emitUserStateApplied, hasUserStateSchema,
   recordUserStateChangesInDb, recordResumeClearedInDb, requestUserStateDeferredApply, requireBinding, workspaceRows,
@@ -22,6 +22,27 @@ export type { UserStateChangePriority } from "./user-state-core";
 import { emitUserStateLedgerChanged } from "./user-state-core";
 let activeServer: string | null = null;
 let activeGeneration = 0;
+const USER_STATE_BUSY_RETRIES = 3;
+const USER_STATE_LEDGER_TX_OPTIONS = {
+  publishMetadata: false,
+  notifyContentSync: false,
+  busyBeginRetries: USER_STATE_BUSY_RETRIES,
+} as const;
+
+function isUserStateDatabaseBusy(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:code:\s*(?:5|6)\b|database is (?:locked|busy)|SQLITE_(?:BUSY|LOCKED))/i.test(message);
+}
+
+async function retryUserStateExclusive<T>(run: () => Promise<T>): Promise<T> {
+  for (let attempt = 0; ; attempt += 1) {
+    try { return await run(); }
+    catch (error) {
+      if (!isUserStateDatabaseBusy(error) || attempt >= USER_STATE_BUSY_RETRIES) throw error;
+      await new Promise<void>(resolve => setTimeout(resolve, 100 * (attempt + 1)));
+    }
+  }
+}
 export function setUserStateActiveServer(serverUrl: string | null): void {
   if (activeServer !== serverUrl) { activeServer = serverUrl; activeGeneration++; }
 }
@@ -33,14 +54,14 @@ export async function getUserStateBinding(serverUrl?: string): Promise<UserState
   return row ? { serverUrl: row.serverUrl, workspaceId: row.workspaceId, epoch: row.epoch } : null;
 }
 export async function bindUserStateWorkspace(binding: UserStateBinding): Promise<void> {
-  await runDatabaseTransaction(db => bindUserStateWorkspaceInDb(db, binding));
+  await runDatabaseTransaction(db => bindUserStateWorkspaceInDb(db, binding), false, USER_STATE_LEDGER_TX_OPTIONS);
   emitUserStateLedgerChanged();
 }
 export async function prepareUserStateOperations(binding: UserStateBinding, limits?: { limit?: number; maxBytes?: number; allowOpaqueIdentity?: boolean }): Promise<UserStateOperation[]> {
   const result = await runDatabaseTransaction(async db => {
     await refreshUnattemptedUserStateIdentitiesInDb(db);
     return prepareUserStateOperationsInDb(db, binding, limits);
-  });
+  }, false, USER_STATE_LEDGER_TX_OPTIONS);
   emitUserStateLedgerChanged();
   return result;
 }
@@ -174,15 +195,20 @@ export async function applyUserStateReadPage(binding: UserStateBinding, page: Us
   await runDatabaseTransaction(async db => {
     await applyUserStateReadPageInDb(db, binding, page);
     requestUserStateDeferredApply(db);
-  }, false, { busyBeginRetries: 3 });
+  }, false, USER_STATE_LEDGER_TX_OPTIONS);
   emitUserStateLedgerChanged();
   return { resumes: [] };
 }
 export async function acknowledgeUserStateOperations(binding: UserStateBinding, results: UserStateMergeResult[]): Promise<UserStateApplyEffects> {
-  await runDatabaseTransaction(async db => {
+  // Server receipts are immutable and every ACK write below is idempotent/monotonic.
+  // Do not hold a manual BEGIN/COMMIT across many plugin-sql calls: Android's pooled
+  // bridge can otherwise return "cannot commit - no transaction is active" after
+  // another native writer is scheduled. If a write is interrupted, replay the exact
+  // receipts and finish the remaining progress updates.
+  await retryUserStateExclusive(() => runExclusiveDatabaseOperation(async db => {
     await acknowledgeUserStateOperationsInDb(db, binding, results);
     requestUserStateDeferredApply(db);
-  }, false, { busyBeginRetries: 3 });
+  }, { publishMetadata: false }));
   emitUserStateLedgerChanged();
   return { resumes: [] };
 }
@@ -190,7 +216,7 @@ export async function resolveUserStateLedgerConflict(binding: UserStateBinding, 
   await runDatabaseTransaction(async db => {
     await resolveUserStateLedgerConflictInDb(db, binding, input);
     requestUserStateDeferredApply(db);
-  }, false, { busyBeginRetries: 3 });
+  }, false, USER_STATE_LEDGER_TX_OPTIONS);
   emitUserStateLedgerChanged();
   return { resumes: [] };
 }
@@ -204,10 +230,10 @@ export async function recordUserResume(chapterId: number, anchor: PortableReader
     if (!row) return;
     await recordUserStateChangesInDb(db, [{ entity: { kind: "resume", work: chapterWork(row) },
       value: { chapter: chapterReference(row), anchor: portable, openedAt } }]);
-  });
+  }, false, USER_STATE_LEDGER_TX_OPTIONS);
 }
 export async function recordUserResumeCleared(novelId: number): Promise<void> {
-  await runDatabaseTransaction(db => recordResumeClearedInDb(db, [novelId]));
+  await runDatabaseTransaction(db => recordResumeClearedInDb(db, [novelId]), false, USER_STATE_LEDGER_TX_OPTIONS);
 }
 
 /** Metadata/import callers use this inside their existing transaction. */
@@ -249,6 +275,6 @@ export async function resumeUserStateAfterRestore(): Promise<void> {
   await runDatabaseTransaction(async db => {
     await db.execute("UPDATE user_state_restore_state SET paused=0 WHERE id=1");
     await db.execute("UPDATE user_state_record SET applied_revision=0");
-  });
+  }, false, USER_STATE_LEDGER_TX_OPTIONS);
   emitUserStateLedgerChanged();
 }
