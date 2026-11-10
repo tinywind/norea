@@ -4,6 +4,7 @@ import type { UserStateOperation, UserStateReadResponse, UserStateRecord } from 
 const mocks = vi.hoisted(() => ({
   available: vi.fn(), resumeRestored: vi.fn(), getBinding: vi.fn(), status: vi.fn(), bind: vi.fn(), prepare: vi.fn(), apply: vi.fn(), ack: vi.fn(),
   conflicts: vi.fn(), deferred: vi.fn(), resolve: vi.fn(), active: vi.fn(), register: vi.fn(), forget: vi.fn(), fetch: vi.fn(),
+  currentSet: vi.fn(), currentBind: vi.fn(), currentExport: vi.fn(), currentApply: vi.fn(),
 }));
 vi.mock("../../db/user-state", () => ({
   assertUserStateAvailable: mocks.available, resumeUserStateAfterRestore: mocks.resumeRestored,
@@ -11,6 +12,12 @@ vi.mock("../../db/user-state", () => ({
   prepareUserStateOperations: mocks.prepare, applyUserStateReadPage: mocks.apply, acknowledgeUserStateOperations: mocks.ack,
   listUserStateConflicts: mocks.conflicts, listUserStateDeferred: mocks.deferred, resolveUserStateLedgerConflict: mocks.resolve,
   setUserStateActiveServer: mocks.active,
+}));
+vi.mock("../../db/user-state-current", () => ({
+  setUserStateCurrentServer: mocks.currentSet,
+  bindUserStateCurrentWorkspace: mocks.currentBind,
+  exportUserStateCurrentSnapshot: mocks.currentExport,
+  applyUserStateCurrentSnapshot: mocks.currentApply,
 }));
 vi.mock("../content-sync/device", () => ({ registerContentDevice: mocks.register, forgetContentDeviceRegistration: mocks.forget }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: mocks.fetch }));
@@ -50,6 +57,9 @@ beforeEach(() => {
     return { resumes: [] };
   });
   mocks.conflicts.mockResolvedValue([]); mocks.deferred.mockResolvedValue([]);
+  mocks.currentBind.mockResolvedValue(undefined);
+  mocks.currentExport.mockResolvedValue({ version: 2, workspaceId: binding.workspaceId, epoch: binding.epoch, items: [] });
+  mocks.currentApply.mockResolvedValue({ resumes: [], changed: false, missingMetadataCount: 0 });
   mocks.register.mockResolvedValue("device-token");
   mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
     const path = new URL(url).pathname;
@@ -91,6 +101,40 @@ describe("user state transport", () => {
     expect(paths).toEqual(["/api/v1/capabilities", "/api/v1/user-state", "/api/v1/user-state/read", "/api/v1/user-state/merge", "/api/v1/user-state/read"]);
     const merge = mocks.fetch.mock.calls.find(([url]) => String(url).endsWith("/merge"))!;
     expect(JSON.parse(merge[1].body).operations).toEqual([operation]);
+  });
+
+  it("adds one current-v2 exchange after the durable delta drain when the server supports it", async () => {
+    outbox = [];
+    const current = {
+      version: 2 as const, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      items: [{ entity: { kind: "library" as const, work }, value: { inLibrary: true, addedAt: 10 } }],
+    };
+    mocks.currentExport.mockResolvedValue(current);
+    const original = mocks.fetch.getMockImplementation()!;
+    mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+      const path = new URL(url).pathname;
+      if (path.endsWith("/capabilities")) {
+        return Response.json({
+          apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true,
+          userStateVersion: 1, userStateBulkVersion: 1, userStateOpaqueIdentityVersion: 1, userStateCurrentVersion: 2,
+        });
+      }
+      if (path.endsWith("/user-state/current")) {
+        expect(init?.method).toBe("POST");
+        expect(JSON.parse(init?.body as string)).toEqual(current);
+        return Response.json(current);
+      }
+      return original(url, init);
+    });
+
+    await synchronizeUserState();
+
+    expect(mocks.currentSet).toHaveBeenCalledExactlyOnceWith("http://server");
+    expect(mocks.currentBind).toHaveBeenCalledExactlyOnceWith(binding);
+    expect(mocks.currentExport).toHaveBeenCalledExactlyOnceWith(binding);
+    expect(mocks.currentApply).toHaveBeenCalledExactlyOnceWith(binding, current);
+    const paths = mocks.fetch.mock.calls.map(([url]) => new URL(url).pathname);
+    expect(paths.filter(path => path.endsWith("/user-state/current"))).toEqual(["/api/v1/user-state/current"]);
   });
 
   it("uses one byte-bounded bulk request when supported and preserves the 200-item fallback for old servers", async () => {

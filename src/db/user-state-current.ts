@@ -39,8 +39,8 @@ async function serializeCurrentApply<T>(run: () => Promise<T>): Promise<T> {
 
 export function isUserStateCurrentMode(): boolean { return currentMode; }
 export function setUserStateCurrentServer(serverUrl: string | null): void {
-  currentMode = true;
-  setUserStateActiveServer(null);
+  currentMode = serverUrl !== null;
+  if (currentMode) setUserStateActiveServer(null);
   if (serverUrl !== currentServer) { currentServer = serverUrl; generation++; pendingNovelIds.clear(); }
 }
 export async function bindUserStateCurrentWorkspace(binding: UserStateBinding): Promise<void> {
