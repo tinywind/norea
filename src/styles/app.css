@@ -809,7 +809,7 @@ html[data-norea-keyboard="open"] .norea-mobile-nav {
 }
 
 /*
- * D10 button emphasis (docs/superpowers/plans/2026-11-03-ui-ux-overhaul.md).
+ * Button emphasis hierarchy.
  * IconButton is always borderless: it shows only the shared state layer, and
  * `active` or the accent tone add a soft fill, never a box. TextButton takes
  * its look from its Mantine variant: `default` is the outline secondary

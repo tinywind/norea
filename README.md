@@ -1,11 +1,11 @@
 # Norea
 
-Norea is a local-first reader for light novels, webtoons, and manga on Windows
-and Android.
-It keeps your reading sources, library, downloads, and progress in one app.
+Norea is a local-first reader for light novels, webtoons, manga, and local files on
+Windows and Android. Your library and downloaded content stay usable without a
+server; optional sync services add cross-device content and user-state sharing.
 
-Norea is inspired by [lnreader/lnreader](https://github.com/lnreader/lnreader),
-but it is a separate app with its own data, backup, and source system.
+Norea is inspired by lnreader/lnreader, but uses its own data model, plugin
+contract, storage layout, and backup formats.
 
 ## Screenshots
 
@@ -19,321 +19,123 @@ but it is a separate app with its own data, backup, and source system.
   <img src="docs/screenshots/reader-settings-xs.png" alt="Reader settings panel over the reading view" width="25%">
 </p>
 
-### Webtoon and manga reading
+## Features
 
-Norea supports image-based chapters as well as text. Scroll through long-strip
-webtoons or read manga and comics page by page.
+- Browse and search installed source plugins.
+- Organize works with a library, categories, filters, sorting, and selection tools.
+- Read text, Markdown, HTML, EPUB, PDF, webtoon, manga, and locally imported files.
+- Download chapters and media for offline reading, including incomplete-media repair.
+- Track progress, unread state, history, bookmarks, resume positions, and compositions.
+- Check sources for updates and continue recent reading from History.
+- Use source-specific VPN routing on Windows and Android when configured.
+- Recover downloaded content from filesystem metadata without contacting source sites.
+- Share work metadata and chapter files through the optional Norea Content Server.
+- Share library edits, categories, reading state, bookmarks, resumes, and
+  compositions between admitted devices through explicit user-state sync.
+- Export and restore portable local backups without bundling downloaded chapter bodies.
 
-<p align="center">
-  <img src="docs/screenshots/reader-webtoon-xl.png" alt="A long-strip webtoon chapter in Norea's scrolling reader" width="48%">
-  <img src="docs/screenshots/reader-manga-xl.png" alt="A page-based manga chapter in Norea's reader" width="48%">
-</p>
+## Supported builds
 
-## What you can do
+Tester builds are published from the 0.2 branch in the
+[dev-0.2 prerelease](https://github.com/tinywind/norea/releases/tag/dev-0.2).
 
-- Browse and search installed reading sources. Search runs across every
-  installed source, only pinned ones, or a custom set, and collapses sources
-  without results; Sources lists them pinned first and by language. Manage
-  plugins under Browse -> Extensions, which lists available updates.
-- Add novels to your library and organize them with categories. Add or remove
-  category assignments for selected works, or edit them from the category chips
-  on the work page or the "Change category" action shown after adding a work.
-- Choose the category shown when entering the library, with All as the default.
-- Filter by unread, downloaded, local, completed, and needs-repair works and by
-  one source. Unread and Downloaded are one-tap chips on every width; View
-  options holds every filter beside sort and display choices. In selection
-  mode, Select all includes filtered works beyond the currently loaded page.
-- Sort your library by undownloaded chapter count, from fewest or most first.
-- Import local plain text, HTML, Markdown, EPUB, and PDF files.
-- Open TXT, Markdown, EPUB, and PDF files with installed Windows or Android builds,
-  add them as chapters of the shared `local` work, and open the selected file in the reader.
-- Cache rendered chapter media for offline reading.
-- Route source-plugin requests through an app-local OpenVPN tunnel on Windows
-  and Android, using an imported `.ovpn` profile or the built-in VPN Gate server
-  finder. Connecting another profile disconnects the current tunnel first.
-  The finder hides servers you marked X by default, with an option to show them.
-  Reopening the finder reuses the fetched list; Refresh fetches it again.
-- Keep local files in one work on Windows and Android, reorder its chapters, and
-  manage local metadata with locally uploaded cover images.
-- Read text, webtoon, and manga chapters in paged or scrolling mode.
-- Change themes, font size, text color, tap zones, and keyboard navigation.
-- Track reading progress, history, unread chapters, and downloaded chapters.
-- Check library sources for new chapters from Updates, with progress and
-  Cancel while checking. New chapters are grouped by day, and more than three
-  from one work on one day collapse into one row. Failed sources show Verify or
-  Retry in place, or a "sources failed" chip with each source's reason.
-- Continue a recent work from History with one tap: an unfinished chapter
-  resumes and a finished one opens the next chapter. Filter by progress, search,
-  and remove one work or clear all history after confirmation.
-- Download chapters for later reading. On the work page, Download offers all,
-  unread, next 10, or next 30 missing chapters, and each chapter row shows its
-  download state with Retry after a failure, Repair for missing media, and
-  Delete download for a downloaded chapter.
-  Library batch downloads remain available whenever selected works have
-  undownloaded chapters outside the current download queue. Select one or more
-  chapters to download missing chapters before the lowest selected chapter
-  position, regardless of the displayed sort order.
-- Share complete chapters through an optional [content server](docs/content-sync.md).
-  Browse its works under Browse -> Server, add them to your library, and
-  download chapters without waiting for a full sync. Devices register
-  automatically. Search and source filters remain when returning from a work.
-- Share manual library registration, category edits, progress, bookmarks, resume
-  positions, and chapter compositions across devices. Explicit removals and resets
-  are preserved; concurrent edits can be reviewed before choosing a value.
-- Export and import local backups for your library, progress, categories,
-  source settings, and chapter download status.
-
-## Current state
-
-Norea is usable for testing, but it is not a polished app-store release yet.
-
-Current limits:
-
-- macOS and iOS are not planned right now.
-- Linux builds are no longer produced or supported.
-- Some protected sources may ask you to open the in-app site browser once before
-  search or downloads work.
-- Android background downloads still need more device testing.
-- There is no automatic updater yet. Use Settings -> About to check and
-  download newer builds manually.
-
-## Download
-
-Norea currently publishes tester builds from the `0.2` branch. Download them from
-the [dev-0.2 GitHub prerelease](https://github.com/tinywind/norea/releases/tag/dev-0.2).
-There is no stable release yet.
-Successful platform workflows refresh its installers, packages, APKs, update
-metadata, and checksums.
-
-Workflow artifacts remain available as a fallback while the prerelease is being
-refreshed:
-
-1. Open the latest successful workflow run for your platform:
-   [Windows](https://github.com/tinywind/norea/actions/workflows/windows.yml?query=branch%3A0.2+is%3Asuccess) or
-   [Android](https://github.com/tinywind/norea/actions/workflows/android.yml?query=branch%3A0.2+is%3Asuccess).
-2. Open the run and scroll to Artifacts.
-3. Download the matching artifact:
-
-| Platform | What to download |
+| Platform | Package |
 | --- | --- |
-| Windows x64 | `norea-windows-x64-nsis` or `norea-windows-x64-msi` |
-| Windows ARM64 | `norea-windows-arm64-nsis` or `norea-windows-arm64-msi` |
-| Android phone or tablet | `norea-arm64.apk` |
-| Android emulator or WSA | `norea-x86_64.apk` |
-| Android device diagnostics | `norea-arm64-tracing.apk` or `norea-x86_64-tracing.apk` (debuggable, installs over the release) |
+| Windows x64 | NSIS or MSI |
+| Windows ARM64 | NSIS or MSI |
+| Android ARM64 | norea-arm64.apk |
+| Android x86_64 | norea-x86_64.apk |
+| Android diagnostics | tracing APK |
 
-Workflow artifacts are kept for 30 days. If an artifact is expired, use a newer
-successful run or the dev-0.2 prerelease.
+Tracing APKs are debuggable and install over the matching release build without
+clearing app data when the signing key matches.
+
+Norea does not publish Linux, macOS, or iOS builds. Android background behavior
+varies by firmware, and protected source sites may require the in-app site browser
+before automated access succeeds. Updates are installed manually from Settings -> About.
 
 ## First run
 
 1. Install and open Norea.
-2. Add a reading source list from Browse -> Extensions.
+2. Open Browse -> Extensions and add a plugin repository.
 3. Install one or more sources.
-4. Search a source, open a novel, and add it to your library.
-5. Open a chapter to read. Download chapters you want available later.
+4. Search a source, open a work, and add it to the library.
+5. Open or download chapters as needed.
 
-## Add reading sources
+The sample plugin repository is maintained at
+[tinywind/norea-plugins](https://github.com/tinywind/norea-plugins). Add this URL:
 
-Reading sources are installed separately from the app. The sample source list is
-maintained at [tinywind/norea-plugins](https://github.com/tinywind/norea-plugins)
-and focuses on public-domain, open-license, official-API, and user-owned
-self-hosted examples.
+    https://raw.githubusercontent.com/tinywind/norea-plugins/dist/0.2/.dist/plugins.json
 
-To add the sample source list:
+Only install and use sources you are allowed to access.
 
-1. Open Browse -> Extensions.
-2. Choose the repository row (No repository configured). With repositories
-   already listed, open the list and choose Add repository.
-3. Paste this URL:
+## Content storage and recovery
 
-   ```text
-   https://raw.githubusercontent.com/tinywind/norea-plugins/dist/0.2/.dist/plugins.json
-   ```
+Downloaded content is stored as readable work/chapter files. Work metadata and
+covers are stored beside content and can rebuild local indexes after app-data loss.
+SQLite is a browsing and state index, not the sole copy of downloaded content.
 
-4. Choose Add.
-5. Install sources from the Available section.
-
-Only install and use sources you are allowed to access in your country and under
-the source site's terms.
+The current filesystem contract is documented in
+[docs/filesystem-metadata-v1.md](docs/filesystem-metadata-v1.md).
 
 ## Optional content server
 
-[Norea Content Server](https://github.com/tinywind/norea-content-server) stores
-complete chapter files so you can upload content from one device and download
-it on another. An archived copy remains available when the original source site
-is offline or removes a work.
+The [Norea Content Server](https://github.com/tinywind/norea-content-server)
+keeps a secondary copy of work metadata, covers, and chapter files. Norea remains
+usable when that server is unavailable.
 
-The server is an optional shadow backup. Library navigation, saved work details,
-and locally downloaded reading must remain usable immediately, even while the
-server is slow or unavailable. Automatic server lookups, transfers, and refreshes
-run in the background and must never add blocking loaders, error banners, or
-other interruptions to normal use. Actions you explicitly request, such as a
-server download or manual sync, still report failures that prevent completion.
+Content sync and user-state sync are separate:
 
-### Start with Docker
+- **Content sync** shares work metadata, covers, and downloaded chapter files.
+- **Shared user changes** merges library membership, categories, reading state,
+  bookmarks, resume positions, and chapter compositions.
 
-The public [Docker image](https://hub.docker.com/r/tinywind0/norea-content-server)
-for the `0.2` app series targets `linux/amd64`, including Linux containers on
-Docker Desktop. To start a compatible server with persistent storage:
+Devices register with per-server device keys. No account password is required in
+the app. Content sync can run manually, periodically, or when changes occur.
+User-state sharing is explicitly enabled per server.
 
-```sh
-docker volume create norea-content-data
-docker run -d --name norea-content-server --restart unless-stopped -p 0.0.0.0:8080:8787 -v norea-content-data:/data tinywind0/norea-content-server:0.2
-```
+See [content synchronization](docs/content-sync.md) and
+[user-state synchronization](docs/user-state.md) for the current contracts.
 
-Open `http://localhost:8080/admin/` on the host. The administration console and
-content API share port 8080; there is no separate console port. First startup
-creates the console password in the data volume. Read it privately with:
+### Quick Docker server
 
-```sh
-docker exec norea-content-server cat /data/admin-password.hash
-```
+    docker volume create norea-content-data
+    docker run -d --name norea-content-server --restart unless-stopped \
+      -p 0.0.0.0:8080:8787 \
+      -v norea-content-data:/data \
+      tinywind0/norea-content-server:0.2
 
-Keep the data volume across container replacements: it contains the catalog,
-chapter files, and console password. The command publishes port 8080 on all
-host interfaces. Devices on your network can use `http://<server-LAN-IP>:8080`
-when the host firewall permits access. New devices register automatically and
-downloads are anonymous by default, so anyone who can reach the server can
-register a device. Use a trusted network or configure restricted remote access
-as described in the [server documentation](https://github.com/tinywind/norea-content-server#run-locally).
+The administration console is at http://localhost:8080/admin/. First startup
+creates the console credential inside the data volume:
 
-### Connect Norea
+    docker exec norea-content-server cat /data/admin-password.hash
 
-1. Open Settings -> Data -> Content server.
-2. Save the server URL and a device name. On a phone or tablet, use the server's
-   LAN address; `localhost` refers to that phone or tablet.
-3. Choose Sync now to register the device and upload complete local chapters.
-4. Choose Download to this device for content in the server catalog.
-
-No account or password is needed in the app. Each device uses its own registration
-key. Ordinary content sync shares work metadata and chapter files. The separate
-Settings -> Data -> Shared user changes section merges manual library edits,
-categories, progress, bookmarks, resume positions, and chapter compositions.
-It is manual by default, with an optional automatic toggle for each server.
-The sharing workspace is available to that server's admitted, unblocked devices.
-See [Sharing user changes](docs/user-state.md) for identities and conflict rules.
-
-Choose Manual only, Periodically, or When changes occur for content sync.
-Automatic sync runs while the app is visible, and later syncs use recorded
-content changes.
-
-Complete chapters upload as multipart requests containing the original
-`content.html` or `content.pdf`, plus `manifest.json` and `media.zip` when present.
-The app sends these files byte for byte, without creating an extra ZIP, rewriting
-HTML or media references, or recompressing media. The server publishes a revision
-only after every listed file arrives with its declared size. Transfers check
-file names, sizes, and completion without computing or comparing chapter-file
-SHA-256 hashes. Downloads support only the current original-file format.
-Deleting a local download leaves the server copy intact unless its confirmation
-also selects server deletion. The server keeps one copy per chapter and records
-whether its ZIP contains every asset declared in the media manifest.
-Under Settings > Data > Content server > Upload conflicts, choose whether to
-prefer complete chapters, keep server data, or replace it with app data.
-Then use Sync now to apply the selected policy. Deletion confirmations let you
-also remove matching data from the other side; additional options start unchecked.
-Deleting one chapter's download from its row removes it from this device only.
-Removing library membership can also delete device downloads or, for works the
-server holds, the whole server work. Delete work from server in the work page's Manage server
-data removes server metadata, the cover, and all chapters, with an option to
-remove the whole device work and its reading state. Chapter download deletion
-keeps work information and reading progress. Explicit server deletions made in
-the app stay excluded from uploads after restart and local rescans.
-
-Work metadata and covers sync independently of chapter downloads. Each work's
-`novel.json` stores its details and a `chapters` map of source chapter numbers to
-titles beside its cover. Source metadata fetches update the catalog; downloading
-or deleting chapter files does not change it. No source cover URL is stored.
-The plugin ID, source path, and work name are the only required fields. A local
-rescan restores the catalog and marks chapters downloaded only when their completed
-files are found. The same catalog is backed up to the content server.
-Downloaded chapters are discovered from their existing folders and files.
-These files are authoritative; the app keeps metadata in SQLite for browsing and
-search, including works with no downloaded chapters. Opening saved works does not
-require fetching their metadata from the source site again.
-
-After app data is cleared, selecting an existing content folder restores its
-works to the library in the background. The library and storage settings show
-inspected folders, recovered works and chapters, and skipped folders. Each recovered work becomes available immediately; library and plugin
-repository queries do not wait for the scan. Recovery reads local files without
-rewriting them or contacting the content server or source sites.
-
-The web console manages devices, server copies, scan jobs, and multiple
-plugin repository indexes. The server uses its configured data directory for
-content storage and scanning; the console does not select additional folders.
-Scanning requires valid `novel.json` work metadata and discovers chapters from
-their folders and files without contacting source sites or requiring installed
-plugins. Incomplete chapters are recorded but excluded from downloads;
-unsupported files are skipped. Original files are
-preserved. Works and their covers remain
-available even when none of their chapters can be imported. The console offers
-cover grids, a list view, and full metadata inspection.
-
-See [content-server integration](docs/content-sync.md) for sync behavior and
-current limits, and the [server's administration guide](https://github.com/tinywind/norea-content-server#administration-console)
-for folder import and server configuration.
+Expose the server only on a network you trust or place it behind appropriate
+access controls. Server deployment and security details live in the server repository.
 
 ## Backup
 
-### Sharing manual changes
+Portable backups include library state, progress, categories, source settings,
+installed sources, and download metadata. Downloaded chapter bodies and cached
+media remain in the content folder and are re-indexed after restore.
 
-Configure the content server, then open Settings -> Data -> Shared user changes.
-Choose Share now or enable automatic sharing for this server. Opening the screen
-only reads local status. Pending changes, conflicts, deferred applications, and
-recent successful communication remain visible.
+Device credentials, VPN secrets, and server authentication keys are not portable
+backup data. Restoring a backup does not automatically publish the restored
+snapshot into shared user state.
 
-Different fields merge independently. A conflict on the same field keeps both
-values for review. Read/unread resets, removed bookmarks, library removals, and
-category deletions remain explicit changes. Stable source identities match data
-across devices; local database integers do not.
+## Documentation
 
-This flow excludes device settings, credentials, VPN data, storage folders,
-plugins, queues, and downloaded bodies. Existing full-device archive endpoints
-and stored archives remain separate recovery facilities. They are not used by
-normal sharing. See [the complete contract](docs/user-state.md).
+- [Content sync](docs/content-sync.md)
+- [Shared user changes](docs/user-state.md)
+- [Filesystem metadata](docs/filesystem-metadata-v1.md)
+- [Plugin contract](docs/plugins/contract.md)
+- [Shared site browser](docs/shared-site-browser.md)
+- [Release and data compatibility](docs/release-compatibility.md)
+- [Development guide](docs/development.md)
 
-### Portable local file backup
-
-Use Settings -> Backup to export or import your local library data. Backups
-include your library, reading progress, categories, source settings, installed
-sources, and chapter download status. Downloaded chapter bodies and cached
-chapter media are not packed into the backup; they stay in the chapter storage
-folder, and Norea re-checks that folder after a restore so download flags match
-the files that are actually present. This portable format excludes device
-authentication keys and preserves existing content files during restore.
-The current portable manifest is format 6. Category stable IDs are optional in
-that format and are reconnected exactly when available. This is a different
-format from the complete device archive stored on the content server.
-
-A successful portable restore pauses user-change sharing and retains the old
-ledger and pending changes. Reconnect to existing shared state explicitly in
-the sharing screen to resume them. The restored snapshot itself is never
-automatically published; shared records may replace its local values after
-reconnection. Direct edits made after restoration are shared normally.
-
-
-## Version compatibility
-
-Database schema changes increment the version and migrate existing app data,
-including development builds. Registered migration SQL remains immutable.
-Unknown versions, changed checksums, and failed migrations stop database opening
-without deleting existing data.
-
-Settings, metadata, backups, and the content-server API currently support only
-their current formats. Use current app and server builds together.
-
-Maintainer details live in
-[docs/release-compatibility.md](./docs/release-compatibility.md).
-
-## For developers
-
-Developer setup, local plugin testing, release artifact details, and
-contribution rules live in [docs/development.md](./docs/development.md).
-
-Optional content-server setup and current integration limits are documented in
-[docs/content-sync.md](./docs/content-sync.md).
+Historical implementation plans and one-off device verification reports are kept
+in Git history rather than the current documentation tree.
 
 ## License
 
-MIT. Upstream assets and translation seeds remain MIT-compatible and are
-credited in the app where relevant.
+MIT. Third-party notices are in [public/THIRD_PARTY_NOTICES.md](public/THIRD_PARTY_NOTICES.md).

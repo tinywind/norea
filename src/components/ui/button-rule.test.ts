@@ -3,7 +3,7 @@ import { describe, expect, it } from "vitest";
 import en from "../../../strings/languages/en/app.json";
 
 /*
- * D10 button rule (docs/superpowers/plans/2026-11-03-ui-ux-overhaul.md):
+ * Button hierarchy rule:
  * filled = the one primary action, `default` = outline secondary action,
  * `subtle` = borderless bar/row control or text link, `light` = pressed toggle
  * only; chips are ChipButtons. Icon-only buttons are borderless and named; sheet

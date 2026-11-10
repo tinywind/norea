@@ -13,10 +13,8 @@ workflow in one place.
 - `docs/release-compatibility.md` defines app data and backup compatibility
   policy.
 - `docs/plugins/contract.md` defines the source plugin compatibility contract.
-- `docs/test-support/fixture-plugin-smoke.md` defines manual fixture coverage
-  for HTML, plain text, PDF, and chapter media downloads.
-- [Content folder recovery](./test-support/storage-folder-recovery.md) describes
-  fresh database recovery checks for the server and Waydroid app.
+- This guide contains the fixture-plugin smoke path and content-folder recovery
+  checks used for manual integration testing.
 
 ## Build and Test Environment
 
@@ -270,3 +268,54 @@ HTML/manifest/recovery logic from platform storage. Generic request data uses
 - Keep documentation and source comments in English.
 - Do not add mock data, partial features, or speculative options.
 - Update tests or smoke-test notes when behavior changes.
+
+## Fixture Plugin Smoke
+
+Use a sibling `../norea-plugins` checkout and its development fixture rather than
+adding fixtures to this repository.
+
+1. Build the fixture plugin and serve its development manifest/content host.
+2. Install the fixture through the local repository flow. Android emulators use
+   `10.0.2.2`; physical devices use the development machine's LAN address.
+3. Download the fixture HTML, text, and PDF chapters and wait for the task queue
+   to finish without failures.
+4. Verify the SQLite rows have non-zero stored bytes and the expected content
+   types. HTML media references must be rewritten to local Norea media URLs.
+5. Stop the fixture server and reopen the downloaded chapters. HTML media, text,
+   and PDF content must remain readable offline.
+6. Delete one chapter, then clear downloaded fixture content. The database and
+   local media cache must reflect the deletion.
+
+## Content Folder Recovery
+
+Use a disposable app profile and a separate content-server state directory.
+Never test recovery by mutating the user's only content copy.
+
+The active layout is:
+
+```text
+<root>/contents/<pluginId>/<novelId>/novel.json
+<root>/contents/<pluginId>/<novelId>/cover.<ext>
+<root>/contents/<pluginId>/<novelId>/<chapterNumber>/content.html|content.pdf
+<root>/contents/<pluginId>/<novelId>/<chapterNumber>/manifest.json
+<root>/contents/<pluginId>/<novelId>/<chapterNumber>/media.zip
+```
+
+For a recovery check:
+
+1. Inventory work identities, chapter numbers/titles, metadata files, and media
+   archives before recovery.
+2. Start the content server with fresh SQLite state and scan the real current
+   format. A fully converted tree should produce no unexpected skips or failures.
+3. In Waydroid or another disposable Android profile, select the same storage
+   root with an empty app database and wait for background recovery.
+4. Compare recovered work/plugin/source identities, chapter numbers, titles,
+   storage directories, downloaded flags, and media-repair flags against the
+   inventory. Inspect SQLite directly; card counts are not sufficient evidence.
+5. Cold-start and repeat the comparison. Open representative text and media
+   chapters with the source and server unavailable.
+6. Recheck source metadata hashes to prove recovery did not rewrite unrelated
+   files.
+
+Runtime recovery accepts the current storage format only. Offline conversion of
+older title-based folders must be an explicit, separately backed-up operation.

@@ -780,7 +780,7 @@ previous plugin, even when both host builds use the same app version string.
 Runtime recovery does not import or convert earlier title-based folders or
 metadata without the plugin-owned ID. It leaves those original files untouched.
 Explicitly requested offline conversions follow the preservation and validation
-checks in [Content folder recovery](./test-support/storage-folder-recovery.md).
+checks in the **Content Folder Recovery** section of [development.md](development.md).
 Use current plugins, app, and server together; earlier development backups are
 unsupported.
 

@@ -87,7 +87,6 @@ norea/
     development.md
     release-compatibility.md
     plugins/contract.md
-    test-support/
   src/
   src-tauri/
   assets/
