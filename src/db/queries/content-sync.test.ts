@@ -2,10 +2,10 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 
-vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
-import { getDb, runDatabaseTransaction } from "../client";
+vi.mock("../client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
+import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../client";
 import { adoptStoredChapterContentMetadata, saveChapterContentMetadata } from "./chapter";
-import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, listContentSyncWorkChapters, markContentInstalled, readContentSyncCache, writeContentSyncCache, canUploadContentChapter } from "./content-sync";
+import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, listContentSyncWorkChapters, listUntrackedContentSyncChapters, markContentInstalled, readContentSyncCache, writeContentSyncCache, canUploadContentChapter } from "./content-sync";
 import { cacheServerChapters, recordPendingNovelMergeInDb, listNovelMigrations, saveNovelMigration, isNovelMigrationSourceHeldInDb } from "./content-sync";
 import { applyNovelMetadataToCache } from "../work-metadata";
 import { syncNovelFromSource } from "../../lib/plugins/sync-novel";
@@ -30,6 +30,7 @@ beforeEach(() => {
     },
   };
   vi.mocked(getDb).mockResolvedValue(db as never);
+  vi.mocked(getReadOnlyDb).mockResolvedValue(db as never);
   vi.mocked(runDatabaseTransaction).mockImplementation(async (run, remote) => {
     sqlite.exec("BEGIN IMMEDIATE");
     try {
@@ -51,6 +52,26 @@ const manifest = {
   chapter: { name: "Opening", position: 1, contentType: "html" as const, complete: true, page: "1" },
   bodyPath: "content.html", files: [],
 };
+
+it("selects only stored chapters missing from one server's durable download cache", async () => {
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,content_bytes,media_repair_needed) VALUES " +
+    "(1,42,'/known','Known',1,1,10,0)," +
+    "(2,42,'/untracked','Untracked',2,1,20,0)," +
+    "(3,42,'/unstored','Unstored',3,0,0,0)," +
+    "(4,42,'/repair','Repair',4,0,30,1)");
+  await writeContentSyncCache("norea-content-catalog:https://content.example", JSON.stringify({
+    downloads: { [JSON.stringify(["source", "/work", "/known"])]: true },
+    uploaded: {}, pendingUploads: [],
+  }));
+
+  const rows = await listUntrackedContentSyncChapters("https://content.example");
+
+  expect(rows.map(row => row.chapterId)).toEqual([2, 4]);
+  expect(rows).toMatchObject([
+    { chapterPath: "/untracked", isDownloaded: true, contentBytes: 20, mediaRepairNeeded: false },
+    { chapterPath: "/repair", isDownloaded: false, contentBytes: 30, mediaRepairNeeded: true },
+  ]);
+});
 
 it("keeps persisted and leased downloads out of upload readiness even before scheduler restoration", async () => {
   sqlite.exec(`INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,media_repair_needed) VALUES
