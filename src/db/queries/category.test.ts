@@ -205,6 +205,11 @@ describe("work category assignments", () => {
     await setNovelCategories(1, [13, 13, 11]);
     expect(await getNovelCategoryIds(1)).toEqual([11, 13]);
     expect(await getNovelCategoryIds(2)).toEqual([11, 13]);
+    expect(vi.mocked(runDatabaseTransaction)).toHaveBeenLastCalledWith(
+      expect.any(Function),
+      false,
+      { publishMetadata: false, notifyContentSync: false, busyBeginRetries: 3 },
+    );
   });
 
   it("journals only actual membership deltas instead of every category", async () => {

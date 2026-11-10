@@ -3,6 +3,12 @@ import { getDb, getReadOnlyDb, runDatabaseTransaction, type DatabaseReadMode } f
 
 export const UNCATEGORIZED_CATEGORY_ID = -1;
 
+const CATEGORY_TX_OPTIONS = {
+  publishMetadata: false,
+  notifyContentSync: false,
+  busyBeginRetries: 3,
+} as const;
+
 export interface LibraryCategory {
   id: number;
   name: string;
@@ -85,7 +91,7 @@ export async function insertCategory(input: InsertCategoryInput): Promise<void> 
       const [created] = await db.select<{ id: number }[]>("SELECT id FROM category WHERE name=$1", [name]);
       if (created) await recordCategoryInDb(db, created.id, { create: true });
     }
-  });
+  }, false, CATEGORY_TX_OPTIONS);
 }
 
 export interface UpdateCategoryInput {
@@ -107,7 +113,7 @@ export async function updateCategory(
     [id, name],
   );
     await recordCategoryInDb(db, id);
-  });
+  }, false, CATEGORY_TX_OPTIONS);
 }
 
 export async function deleteCategory(id: number): Promise<void> {
@@ -122,7 +128,7 @@ export async function deleteCategory(id: number): Promise<void> {
     id,
   ]);
 
-  });
+  }, false, CATEGORY_TX_OPTIONS);
 }
 
 export async function addNovelsToCategory(
@@ -148,7 +154,7 @@ export async function addNovelsToCategory(
     params,
   );
     await recordMembershipInDb(db, uniqueNovelIds, categoryId, true);
-  });
+  }, false, CATEGORY_TX_OPTIONS);
 }
 
 export async function removeNovelsFromCategory(
@@ -170,7 +176,7 @@ export async function removeNovelsFromCategory(
     params,
   );
     await recordMembershipInDb(db, uniqueNovelIds, categoryId, false);
-  });
+  }, false, CATEGORY_TX_OPTIONS);
 }
 
 const CATEGORY_MEMBERSHIP_CHUNK = 500;
@@ -285,7 +291,7 @@ export async function setNovelCategories(
         [novelId, ...added],
       );
     }
-  });
+  }, false, CATEGORY_TX_OPTIONS);
 }
 
 function normalizeCategoryName(name: string): string {
