@@ -1,10 +1,7 @@
 package io.github.tinywind.norea
 
 import android.content.Context
-import android.content.Intent
-import android.content.pm.PackageManager
 import android.net.Uri
-import android.os.Process
 import android.provider.OpenableColumns
 import android.util.Base64
 import io.github.tinywind.norea.AppLog as Log
@@ -31,8 +28,7 @@ internal class AndroidContentUriFiles(
   fun writeContentUriBytes(uri: String, base64: String, mimeType: String): JSONObject =
     run {
       val bytes = Base64.decode(base64, Base64.DEFAULT)
-      val contentUri = validatedContentUri(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-      contentResolver.openOutputStream(contentUri, "wt")?.use { output ->
+      contentResolver.openOutputStream(Uri.parse(uri), "wt")?.use { output ->
         output.write(bytes)
       } ?: throw IllegalStateException("Cannot open selected file for writing.")
       JSONObject()
@@ -55,8 +51,7 @@ internal class AndroidContentUriFiles(
       "Selected backup temp file exceeds the $limit byte limit."
     }
     val bytes = inputFile.inputStream().use { input ->
-      val contentUri = validatedContentUri(uri, Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-      contentResolver.openOutputStream(contentUri, "wt")?.use { output ->
+      contentResolver.openOutputStream(Uri.parse(uri), "wt")?.use { output ->
         storage.copyToWithLimit(input, output, limit)
       } ?: throw IllegalStateException("Cannot open selected file for writing.")
     }
@@ -67,11 +62,7 @@ internal class AndroidContentUriFiles(
   }
 
   fun describeContentUri(uri: String): JSONObject = run {
-    val contentUri = validatedContentUri(
-      uri,
-      Intent.FLAG_GRANT_READ_URI_PERMISSION,
-      Intent.FLAG_GRANT_WRITE_URI_PERMISSION,
-    )
+    val contentUri = Uri.parse(uri)
     val metadata = contentUriMetadata(contentUri)
     val mimeType = contentUriMimeType(contentUri)
     JSONObject()
@@ -83,7 +74,7 @@ internal class AndroidContentUriFiles(
 
   fun readContentUriFile(uri: String, maxBytes: String): JSONObject = run {
     val limit = parseStorageByteLimit(maxBytes)
-    val contentUri = validatedContentUri(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
+    val contentUri = Uri.parse(uri)
     val metadata = contentUriMetadata(contentUri)
     val mimeType = contentUriMimeType(contentUri)
     val tempFile = createStorageTempFile()
@@ -130,31 +121,13 @@ internal class AndroidContentUriFiles(
   }
 
   fun readContentUriBase64(uri: String): JSONObject = run {
-    val contentUri = validatedContentUri(uri, Intent.FLAG_GRANT_READ_URI_PERMISSION)
-    val bytes = contentResolver.openInputStream(contentUri)?.use { input ->
+    val bytes = contentResolver.openInputStream(Uri.parse(uri))?.use { input ->
       input.readBytes()
     } ?: throw IllegalStateException("Cannot open selected file for reading.")
     JSONObject()
       .put("ok", true)
       .put("base64", Base64.encodeToString(bytes, Base64.NO_WRAP))
-      .put("mimeType", storage.mimeTypeForPath(contentUri.toString(), "application/octet-stream"))
-  }
-
-  private fun validatedContentUri(raw: String, vararg acceptedPermissions: Int): Uri {
-    val uri = Uri.parse(raw).normalizeScheme()
-    require(uri.scheme == "content" && !uri.authority.isNullOrBlank()) {
-      "Selected Android file URI is invalid."
-    }
-    require(uri.userInfo.isNullOrBlank() && uri.fragment.isNullOrBlank()) {
-      "Selected Android file URI contains unsupported components."
-    }
-    require(acceptedPermissions.isNotEmpty()) { "Android content URI permission is required." }
-    val granted = acceptedPermissions.any { permission ->
-      context.checkUriPermission(uri, Process.myPid(), Process.myUid(), permission) ==
-        PackageManager.PERMISSION_GRANTED
-    }
-    require(granted) { "Selected Android file permission is unavailable." }
-    return uri
+      .put("mimeType", storage.mimeTypeForPath(uri, "application/octet-stream"))
   }
 
   private fun parseStorageByteLimit(raw: String): Long {
