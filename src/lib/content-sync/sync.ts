@@ -23,6 +23,8 @@ import { runWorkContentStorageOperation } from "./storage-operation";
 import { contentWorkId, getWorkSyncCursor, syncWorkMetadata, WorkMetadataChangedOutsideCacheError } from "./works";
 import { readServerChapterDeletionExclusions, serverChapterDeletionKey, serverWorkDeletionKey, setServerChapterDeletionExclusion, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 
+const LOCAL_CONTENT_DISCOVERY_VERSION = 1;
+
 interface CatalogCache {
   cursor: number;
   tombstones: Record<string, boolean>;
@@ -33,6 +35,7 @@ interface CatalogCache {
   localCursor?: number;
   uploadConflictPolicy?: UploadConflictPolicy;
   includesIncompleteChapters?: boolean;
+  localDiscoveryVersion?: number;
 }
 interface CatalogChangesPage { items: { identity: ContentIdentity; deleted: boolean; complete: boolean; sequence: number }[]; cursor: number; hasMore: boolean }
 function saveCache(key: string, value: unknown): Promise<void> { return writeContentSyncCache(key, JSON.stringify(value)); }
@@ -135,7 +138,14 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     const isDeletedWork = (row: ContentSyncChapter) => row.sourceNovelId != null && deletedDirectories.has(serverWorkDeletionKey({ pluginId: row.pluginId, novelId: row.sourceNovelId }));
     const deletions = await readServerChapterDeletionExclusions(server);
     const head = await contentJournalHead();
-    const changes = !cache.includesIncompleteChapters || cache.localCursor === undefined || rescan || cache.uploadConflictPolicy !== conflictPolicy ? null
+    // Delta journaling can only see mutations that happened after the journal existed
+    // and while its triggers were enabled. Older installs, recovered storage, and past
+    // remote-origin repairs may therefore contain durable chapter files with no journal
+    // row at all. Each discovery-version bump performs one full, byte-independent local
+    // reconciliation, then returns to journal-only discovery on subsequent syncs.
+    const needsLocalDiscovery = cache.localDiscoveryVersion !== LOCAL_CONTENT_DISCOVERY_VERSION;
+    const changes = !cache.includesIncompleteChapters || cache.localCursor === undefined || rescan ||
+      cache.uploadConflictPolicy !== conflictPolicy || needsLocalDiscovery ? null
       : await readContentJournal(cache.localCursor, head);
     const changedIds = changes?.filter((entry) => entry.key.startsWith("content:")).map((entry) => entry.key.slice(8));
     const requested = changedIds ? [...new Set([...changedIds, ...cache.pendingUploads])] : undefined;
@@ -158,6 +168,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     cache.localCursor = head;
     cache.uploadConflictPolicy = conflictPolicy;
     cache.includesIncompleteChapters = true;
+    cache.localDiscoveryVersion = LOCAL_CONTENT_DISCOVERY_VERSION;
     cache.tombstones = {};
     await saveCatalog(server, cache);
     let processed = 0;
