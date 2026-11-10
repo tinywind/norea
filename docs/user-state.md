@@ -90,10 +90,12 @@ backlog and are never allowed to discard the durable shared value.
 
 ## Merge rules
 
-Each explicit edit carries the base revision it observed. Independent fields merge
-independently. A different edit to the same field at an unseen revision becomes a
-conflict and retains both local and shared values for a deliberate choice.
-Wall-clock timestamps never choose between competing manual commands.
+Each explicit edit carries the base revision it observed for diagnostics and
+idempotent receipts. The workspace represents one person across devices, so
+normal edits never require manual conflict resolution: the server commits edits
+in arrival order, assigns a monotonically increasing revision, and the later
+revision for that entity wins. Independent entities remain independent.
+Wall-clock timestamps never choose between manual commands.
 
 Zero progress, unread, bookmark removal, library removal, membership removal,
 category deletion, and resume clearing are real values. They are not inferred from
@@ -106,13 +108,16 @@ tombstone. Historical removals that occurred before the journal existed cannot b
 inferred.
 
 Categories have stable IDs. Exact-name creation may alias a new local ID to an
-existing shared category. Renaming into another active name creates a conflict.
-Deleting a category writes false membership revisions for known included works;
-a stale offline inclusion cannot resurrect the deleted category.
+existing shared category. An invalid rename into another active name is rejected
+atomically rather than becoming a user conflict. Deleting a category writes false
+membership revisions for known included works; a later explicit membership add
+restores that category and then wins by its newer server revision.
 
-Composition conflicts retain both complete arrangements. Applying one keeps the
-existing file-ownership and rollback checks. User order, labels, exclusions,
-primary source decisions, and physical storage identities remain explicit.
+Composition edits use the same server-revision ordering. File ownership and
+chapter-identity mismatches are metadata-reconciliation failures, not competing
+user choices; they fail closed instead of guessing. User order, labels,
+exclusions, primary source decisions, and physical storage identities remain
+explicit.
 
 ## Local projection and foreground responsiveness
 
@@ -199,8 +204,10 @@ Requests use the existing registered-device bearer credential.
 
 An operation contains `operationId`, `entity`, `baseRevision`, `value`, and optional
 `seed: true`. A record contains entity/value, revision, operation ID, server time,
-and authenticated author ID/name. Receipt statuses are `applied`, `unchanged`,
-`seed-skipped`, `conflict`, and `aliased`.
+and authenticated author ID/name. Current servers normally return `applied`,
+`unchanged`, `seed-skipped`, or `aliased`; the parser retains the older
+`conflict` receipt shape only for protocol compatibility with already-recorded
+receipts.
 
 Bulk-capable servers bound pages and merge batches by bytes, not by item count.
 Server requests and responses are limited to 32 MiB and the client targets 30 MiB;

@@ -88,6 +88,22 @@ beforeEach(() => {
 afterEach(async () => { setUserStateActiveServer(null); await waitForUserStateDeferredApply(); while (fixtures.length) fixtures.pop()!.sql.close(); });
 
 describe("durable personal-state ledger", () => {
+  it("clears legacy CAS conflicts on bind so the latest explicit intent can retry", async () => {
+    await bind();
+    await capture(readingValue(42));
+    const key = userStateEntityKey(reading);
+    active.sql.prepare("INSERT INTO user_state_conflict(id,namespace,entity_key,reason) VALUES('old-conflict',?,?,?)")
+      .run('["https://state.example","workspace-1","epoch-1"]', key, "revision-mismatch");
+    expect(await prepare()).toEqual([]);
+
+    await bind();
+
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_conflict").get()).toEqual({ count: 0 });
+    const [operation] = await prepare();
+    expect(operation.entity).toEqual(reading);
+    expect(operation.value).toEqual(readingValue(42));
+  });
+
   it("uses stable identities when two devices have colliding local integer IDs", async () => {
     const recipient = fixture();
     addWork(recipient, 1, 11, { ...work, sourceNovelId: "unrelated", novelPath: "/other" });

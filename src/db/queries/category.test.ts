@@ -207,6 +207,25 @@ describe("work category assignments", () => {
     expect(await getNovelCategoryIds(2)).toEqual([11, 13]);
   });
 
+  it("journals only actual membership deltas instead of every category", async () => {
+    sqlite.exec(readFileSync("src-tauri/src/migrations/0011_user_state_journal.sql", "utf8"));
+    sqlite.exec("INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch) VALUES('https://state.example','ns','workspace','epoch')");
+
+    await setNovelCategories(1, [11, 13]);
+
+    const rows = sqlite.prepare(
+      "SELECT m.local_id AS localId, json_extract(i.value_json,'$.included') AS included " +
+      "FROM user_state_intent i " +
+      "JOIN user_state_category m ON m.category_id=json_extract(i.entity_json,'$.categoryId') " +
+      "WHERE json_extract(i.entity_json,'$.kind')='membership' ORDER BY m.local_id",
+    ).all();
+    expect(rows).toEqual([
+      { localId: 12, included: 0 },
+      { localId: 13, included: 1 },
+    ]);
+    expect(await getNovelCategoryIds(1)).toEqual([11, 13]);
+  });
+
   it("clears all manual assignments while preserving works, categories and system assignments", async () => {
     sqlite.exec("INSERT INTO novel_category (novel_id, category_id) VALUES (1, 14)");
     await setNovelCategories(1, []);

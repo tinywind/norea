@@ -3,9 +3,7 @@ import {
   getUserStateLedgerStatus, listUserStateConflicts, prepareUserStateOperations,
   resolveUserStateLedgerConflict, resumeUserStateAfterRestore as resumeRestoredLedger, setUserStateActiveServer,
 } from "../../db/user-state";
-import {
-  applyUserStateCurrentSnapshot, bindUserStateCurrentWorkspace, exportUserStateCurrentSnapshot, setUserStateCurrentServer,
-} from "../../db/user-state-current";
+import { setUserStateCurrentServer } from "../../db/user-state-current";
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
 import { isAbortError, requestAbortedError } from "../abort";
@@ -14,9 +12,6 @@ import {
   ContentServerError, contentServerFetch, contentServerRequest, normalizeContentServerUrl, withContentServerLookup,
 } from "../content-sync/client";
 import { forgetContentDeviceRegistration, registerContentDevice, type ContentCapabilities } from "../content-sync/device";
-import {
-  parseUserStateCurrentSnapshot, USER_STATE_CURRENT_MAX_BYTES, USER_STATE_CURRENT_VERSION,
-} from "./current-types";
 import {
   canonicalUserStateJson, parseUserStateMergeResponse, parseUserStateOperation, parseUserStateReadResponse,
   parseUserStateWorkspace, userStateEntityKey, userStateJsonBytes, UserStateProtocolError,
@@ -95,50 +90,6 @@ async function request(serverUrl: string, path: string, token: string, signal: A
     deadline.throwIfAborted();
     return result;
   }, 60, signal);
-}
-
-async function requestCurrent(
-  serverUrl: string, token: string, signal: AbortSignal, body: unknown,
-): Promise<unknown> {
-  if (userStateJsonBytes(body) > USER_STATE_CURRENT_MAX_BYTES) {
-    throw new UserStateProtocolError("current snapshot request exceeds the size limit");
-  }
-  return withContentServerLookup(async deadline => {
-    const response = await contentServerFetch(serverUrl + "/api/v1/user-state/current", {
-      method: "POST",
-      headers: { Authorization: "Bearer " + token, "Content-Type": "application/json" },
-      body: JSON.stringify(body),
-      signal: deadline, connectTimeout: 10_000, maxRedirections: 0,
-    });
-    if (!response.ok) {
-      if (response.status === 401) forgetContentDeviceRegistration(serverUrl, token);
-      await response.body?.cancel();
-      throw new ContentServerError(response.status, response.status === 409
-        ? "User state: the current workspace changed. Local state was retained."
-        : undefined);
-    }
-    const result = await readUserStateResponse(response, USER_STATE_CURRENT_MAX_BYTES);
-    deadline.throwIfAborted();
-    return result;
-  }, 60, signal);
-}
-
-async function exchangeCurrentUserState(
-  serverUrl: string, token: string, binding: UserStateBinding, signal: AbortSignal, check: () => void,
-): Promise<void> {
-  setUserStateCurrentServer(serverUrl);
-  await bindUserStateCurrentWorkspace(binding);
-  check();
-  const local = await exportUserStateCurrentSnapshot(binding);
-  check();
-  const merged = parseUserStateCurrentSnapshot(await requestCurrent(serverUrl, token, signal, local));
-  check();
-  if (merged.version !== USER_STATE_CURRENT_VERSION ||
-      merged.workspaceId !== binding.workspaceId || merged.epoch !== binding.epoch) {
-    throw new UserStateProtocolError("the current personal state workspace changed");
-  }
-  await applyUserStateCurrentSnapshot(binding, merged);
-  check();
 }
 
 export function validateUserStatePage(
@@ -223,6 +174,9 @@ async function runSynchronization(serverUrl: string, controller: AbortController
   const unsubscribe = useContentSyncStore.subscribe((state, previous) => {
     if (state.serverUrl !== previous.serverUrl) controller.abort(requestAbortedError());
   });
+  // Current snapshot v2 is compatibility-only. New clients keep the delta ledger
+  // active so normal sync cost is proportional to changed revisions.
+  setUserStateCurrentServer(null);
   setUserStateActiveServer(serverUrl);
   useUserStateStore.getState().setRuntime(serverUrl, "syncing");
   try {
@@ -276,8 +230,9 @@ async function runSynchronization(serverUrl: string, controller: AbortController
         }));
       } catch (error) {
         check();
-        // A small request can conflict with several large retained documents. The server
-        // rolls back a batch whose response is too large; exact immutable sub-batches are safe.
+        // A small request can still return several large retained documents (for example
+        // seed receipts). The server rolls back an oversized response; exact immutable
+        // sub-batches are safe.
         if (error instanceof ContentServerError && error.status === 413 && operations.length > 1) {
           const middle = Math.ceil(operations.length / 2);
           await sendOperations(operations.slice(0, middle));
@@ -307,10 +262,6 @@ async function runSynchronization(serverUrl: string, controller: AbortController
       check();
       if (!operations.length) break;
       await sendOperations(operations);
-    }
-    check();
-    if (capabilities.userStateCurrentVersion === USER_STATE_CURRENT_VERSION) {
-      await exchangeCurrentUserState(serverUrl, token, binding, signal, check);
     }
     check();
     useUserStateStore.getState().setRuntime(serverUrl, "idle");

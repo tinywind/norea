@@ -254,21 +254,37 @@ export async function setNovelCategories(
       }
     }
 
-    const trackedCategories = await hasUserStateSchema(db)
-      ? await db.select<{ id: number }[]>("SELECT id FROM category WHERE is_system=0") : [];
-    for (const category of trackedCategories) await recordMembershipInDb(db, [novelId], category.id, uniqueCategoryIds.includes(category.id));
-    await db.execute(
-      `DELETE FROM novel_category
-       WHERE novel_id = $1 AND category_id IN (SELECT id FROM category WHERE is_system = 0)`,
+    const currentRows = await db.select<{ id: number }[]>(
+      `SELECT nc.category_id AS id
+       FROM novel_category nc
+       JOIN category c ON c.id=nc.category_id
+       WHERE nc.novel_id=$1 AND c.is_system=0`,
       [novelId],
     );
-    if (uniqueCategoryIds.length === 0) return;
+    const currentIds = new Set(currentRows.map(row => row.id));
+    const targetIds = new Set(uniqueCategoryIds);
+    const removed = [...currentIds].filter(id => !targetIds.has(id));
+    const added = uniqueCategoryIds.filter(id => !currentIds.has(id));
 
-    const values = uniqueCategoryIds.map((_, index) => `($1, $${index + 2})`).join(", ");
-    await db.execute(
-      `INSERT INTO novel_category (novel_id, category_id) VALUES ${values}`,
-      [novelId, ...uniqueCategoryIds],
-    );
+    if (await hasUserStateSchema(db)) {
+      for (const id of removed) await recordMembershipInDb(db, [novelId], id, false);
+      for (const id of added) await recordMembershipInDb(db, [novelId], id, true);
+    }
+
+    if (removed.length) {
+      const placeholders = removed.map((_, index) => `$${index + 2}`).join(", ");
+      await db.execute(
+        `DELETE FROM novel_category WHERE novel_id=$1 AND category_id IN (${placeholders})`,
+        [novelId, ...removed],
+      );
+    }
+    if (added.length) {
+      const values = added.map((_, index) => `($1, $${index + 2})`).join(", ");
+      await db.execute(
+        `INSERT OR IGNORE INTO novel_category (novel_id, category_id) VALUES ${values}`,
+        [novelId, ...added],
+      );
+    }
   });
 }
 

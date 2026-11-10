@@ -39,6 +39,10 @@ export async function bindUserStateWorkspaceInDb(db: UserStateDb, binding: UserS
   else await db.execute("INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch) VALUES($1,$2,$3,$4)",
     [binding.serverUrl, namespace, binding.workspaceId, binding.epoch]);
 
+  // Pre-LWW clients could leave compare-and-swap conflicts that permanently block
+  // the next explicit edit. The workspace is single-user now, so retry those intents.
+  await db.execute("DELETE FROM user_state_conflict WHERE namespace=$1", [namespace]);
+
   // Current-snapshot clients created only the workspace row. Seed the durable delta
   // outbox once when such a database upgrades, then use record-level intents only.
   const readyKey = "user-state-delta-ready:" + namespace;
