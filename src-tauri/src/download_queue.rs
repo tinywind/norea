@@ -206,22 +206,46 @@ pub async fn chapter_download_queue_remove(
 
 /// Bound IDs per statement; SQLite builds can cap bound variables as low as 999.
 const QUEUE_ID_CHUNK: usize = 500;
+const QUEUE_BUSY_RETRIES: usize = 3;
+const QUEUE_BUSY_RETRY_DELAY_MS: u64 = 100;
 
-async fn remove_queue_jobs(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(), String> {
-    for chunk in chapter_ids.chunks(QUEUE_ID_CHUNK) {
+fn is_sqlite_busy_error(error: &sqlx::Error) -> bool {
+    let message = error.to_string().to_ascii_lowercase();
+    message.contains("database is locked")
+        || message.contains("database is busy")
+        || message.contains("(code: 5)")
+        || message.contains("(code: 6)")
+        || message.contains("sqlite_busy")
+        || message.contains("sqlite_locked")
+}
+
+async fn remove_queue_chunk(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(), String> {
+    for attempt in 0..=QUEUE_BUSY_RETRIES {
         let mut query =
             QueryBuilder::<Sqlite>::new("DELETE FROM chapter_download_queue WHERE chapter_id IN (");
         let mut separated = query.separated(", ");
-        for chapter_id in chunk {
+        for chapter_id in chapter_ids {
             separated.push_bind(chapter_id);
         }
         separated.push_unseparated(")");
         query.push(" AND json_extract(job_json, '$.vpnPlanId') IS NULL AND json_extract(job_json, '$.vpnRangeId') IS NULL AND json_extract(job_json, '$.vpnBatchId') IS NULL");
-        query
-            .build()
-            .execute(pool)
-            .await
-            .map_err(|err| format!("download queue: remove jobs: {err}"))?;
+        match query.build().execute(pool).await {
+            Ok(_) => return Ok(()),
+            Err(error) if is_sqlite_busy_error(&error) && attempt < QUEUE_BUSY_RETRIES => {
+                tokio::time::sleep(Duration::from_millis(
+                    QUEUE_BUSY_RETRY_DELAY_MS * (attempt as u64 + 1),
+                ))
+                .await;
+            }
+            Err(error) => return Err(format!("download queue: remove jobs: {error}")),
+        }
+    }
+    unreachable!("queue busy retry loop always returns")
+}
+
+async fn remove_queue_jobs(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(), String> {
+    for chunk in chapter_ids.chunks(QUEUE_ID_CHUNK) {
+        remove_queue_chunk(pool, chunk).await?;
     }
     Ok(())
 }
@@ -327,6 +351,16 @@ mod tests {
             "id": id, "pluginId": "source", "chapterPath": format!("/{id}"), "title": "Chapter",
             "vpnPlanId": plan, "vpnRangeId": range,
         })).unwrap()
+    }
+
+    #[test]
+    fn recognizes_locked_sqlite_errors_for_queue_removal_retry() {
+        assert!(is_sqlite_busy_error(&sqlx::Error::Protocol(
+            "database is locked".into(),
+        )));
+        assert!(!is_sqlite_busy_error(&sqlx::Error::Protocol(
+            "database disk image is malformed".into(),
+        )));
     }
 
     #[test]

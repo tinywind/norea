@@ -5,7 +5,10 @@ const downloadQueue = vi.hoisted(() => ({
   discardQueuedChapterDownloads: vi.fn(),
   waitForChapterDownloadQueueMutations: vi.fn(),
 }));
-const queries = vi.hoisted(() => ({ listNonLocalDownloadCacheDeleteChapters: vi.fn() }));
+const queries = vi.hoisted(() => ({
+  listNonLocalDownloadCacheDeleteChapters: vi.fn(),
+  listNonLocalOrdinaryQueuedDownloadChapterIds: vi.fn(),
+}));
 const scheduler = vi.hoisted(() => ({
   cancel: vi.fn(),
   getSnapshot: vi.fn(),
@@ -16,6 +19,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
 vi.mock("../../db/queries/chapter", () => ({ getChapterById: vi.fn() }));
 vi.mock("../../db/queries/download-cache", () => ({
   listNonLocalDownloadCacheDeleteChapters: queries.listNonLocalDownloadCacheDeleteChapters,
+  listNonLocalOrdinaryQueuedDownloadChapterIds: queries.listNonLocalOrdinaryQueuedDownloadChapterIds,
 }));
 vi.mock("../../db/queries/novel", () => ({ getNovelById: vi.fn() }));
 vi.mock("../android-storage", () => ({
@@ -71,6 +75,7 @@ beforeEach(() => {
     id: 7, contentBytes: 128, isDownloaded: true, path: "/chapter/7",
     pluginId: "source-a", sourceContentType: "html",
   }]);
+  queries.listNonLocalOrdinaryQueuedDownloadChapterIds.mockResolvedValue([]);
   vi.mocked(getChapterById).mockResolvedValue(null);
   vi.mocked(getNovelById).mockResolvedValue(null);
   vi.mocked(isAndroidRuntime).mockReturnValue(false);
@@ -126,6 +131,21 @@ describe("deleteDownloadCache", () => {
     expect(downloadQueue.waitForChapterDownloadQueueMutations).not.toHaveBeenCalled();
     expect(native.invoke).toHaveBeenCalledWith("chapter_download_queue_remove", { chapterIds: [7] });
     expect(native.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", { workId: "work-1", clearFiles: true });
+  });
+
+  it("removes queued work without probing storage for an unstored chapter", async () => {
+    vi.mocked(isAndroidRuntime).mockReturnValue(true);
+    queries.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([]);
+    queries.listNonLocalOrdinaryQueuedDownloadChapterIds.mockResolvedValue([77]);
+
+    await expect(deleteDownloadCache({
+      scope: "novel", targetIds: [3], title: "Delete novel", workId: "work-1",
+    })).resolves.toEqual(deleted);
+
+    expect(native.invoke).toHaveBeenCalledWith("chapter_download_queue_remove", { chapterIds: [77] });
+    expect(getChapterById).not.toHaveBeenCalled();
+    expect(listAndroidChapterStorageDirs).not.toHaveBeenCalled();
+    expect(deleteAndroidStoragePath).not.toHaveBeenCalled();
   });
 
   it("clears the record for a missing known folder without searching other works", async () => {

@@ -809,7 +809,7 @@ export async function setNovelInLibrary(
     await db.execute("DELETE FROM novel_download_goal WHERE novel_id = $1", [id]);
   }
     await recordLibraryInDb(db, [id]);
-  });
+  }, false, { busyBeginRetries: 3 });
 }
 
 export async function countNovels(): Promise<number> {

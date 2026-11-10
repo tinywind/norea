@@ -1058,5 +1058,10 @@ describe("setNovelInLibrary", () => {
     expect(params).toEqual([7, 0]);
     expect(db.execute.mock.calls[1]).toEqual(["DELETE FROM novel_download_goal WHERE novel_id = $1", [7]]);
     expect(db.execute).toHaveBeenCalledTimes(2);
+    expect(mockedRunDatabaseTransaction).toHaveBeenCalledWith(
+      expect.any(Function),
+      false,
+      { busyBeginRetries: 3 },
+    );
   });
 });

@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { getChapterById } from "../../db/queries/chapter";
 import {
   listNonLocalDownloadCacheDeleteChapters,
+  listNonLocalOrdinaryQueuedDownloadChapterIds,
   type DownloadCacheDeleteChapterCandidate,
 } from "../../db/queries/download-cache";
 import { getNovelById } from "../../db/queries/novel";
@@ -114,7 +115,11 @@ async function cancelConflictingDownloads(
 ): Promise<DownloadCacheDeleteChapterCandidate[]> {
   const targetIdSet = new Set(targetIds);
   const chapters = await chaptersForDownloadCacheScope(scope, targetIds);
-  const chapterIds = chapters.map((chapter) => chapter.id);
+  const queuedChapterIds = await queuedChapterIdsForDownloadCacheScope(scope, targetIds);
+  const chapterIds = [...new Set([
+    ...chapters.map((chapter) => chapter.id),
+    ...queuedChapterIds,
+  ])];
   const chapterIdSet = new Set(chapterIds);
   const cancelledChapterIds = new Set<number>(chapterIds);
   await waitForChapterDownloadQueueMutations();
@@ -186,6 +191,21 @@ function throwIfDownloadCacheDeleteAborted(signal: AbortSignal): void {
     signal.reason ??
     new DOMException("Download cache deletion was cancelled.", "AbortError")
   );
+}
+
+async function queuedChapterIdsForDownloadCacheScope(
+  scope: DownloadCacheDeleteScope,
+  targetIds: readonly number[],
+): Promise<number[]> {
+  if (scope === "chapter") {
+    return listNonLocalOrdinaryQueuedDownloadChapterIds({
+      chapterIds: targetIds,
+    });
+  }
+  if (scope === "novel") {
+    return listNonLocalOrdinaryQueuedDownloadChapterIds({ novelIds: targetIds });
+  }
+  return listNonLocalOrdinaryQueuedDownloadChapterIds();
 }
 
 async function chaptersForDownloadCacheScope(
@@ -311,9 +331,16 @@ export async function deleteDownloadCache({
     try {
       throwIfDownloadCacheDeleteAborted(signal);
       const chapters = await chaptersForDownloadCacheScope(resolvedScope, targetIds);
+      const queuedChapterIds = await queuedChapterIdsForDownloadCacheScope(
+        resolvedScope,
+        targetIds,
+      );
       throwIfDownloadCacheDeleteAborted(signal);
       const targetIdSet = new Set(targetIds);
-      const chapterIds = new Set(chapters.map((chapter) => chapter.id));
+      const chapterIds = new Set([
+        ...chapters.map((chapter) => chapter.id),
+        ...queuedChapterIds,
+      ]);
       if (resolvedScope === "chapter") {
         for (const chapterId of targetIds) chapterIds.add(chapterId);
       }

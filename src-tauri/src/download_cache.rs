@@ -283,6 +283,7 @@ async fn select_target_chapters(
         FROM chapter c
         JOIN novel n ON n.id = c.novel_id
         WHERE n.is_local = 0
+          AND (c.is_downloaded = 1 OR c.content_bytes > 0 OR c.media_repair_needed = 1)
         "#,
     );
     push_target_filter(&mut query, &work.scope, &work.target_ids)?;
@@ -906,7 +907,11 @@ mod tests {
             sqlx::query(
                 r#"
                 UPDATE chapter
-                SET is_downloaded = 0
+                SET
+                  is_downloaded = 0,
+                  content_bytes = 0,
+                  media_bytes = 0,
+                  media_repair_needed = 0
                 WHERE id = 120
                 "#,
             )
@@ -924,8 +929,10 @@ mod tests {
                 .expect("app data dir")
                 .join("chapter-media");
             let (legacy_file, content_file) = seed_cache_files(&media_root, 120);
+            let unstored_content_file = content_chapter_dir(&media_root, 120).join("content.html");
             assert!(legacy_file.exists(), "fixture legacy cache should exist");
             assert!(content_file.exists(), "fixture content mirror should exist");
+            assert!(unstored_content_file.exists(), "unstored fixture file should exist");
 
             let work = download_cache_delete_work_enqueue(
                 app.state::<DbInstances>(),
@@ -948,12 +955,13 @@ mod tests {
             .await
             .expect("run delete work");
 
-            assert_eq!(result.total, 120);
-            assert_eq!(result.deleted, 120);
+            assert_eq!(result.total, 119);
+            assert_eq!(result.deleted, 119);
             assert_eq!(result.failed, 0);
             assert!(!result.cancelled);
             assert!(legacy_file.exists(), "unsupported folders must remain untouched");
             assert!(!content_file.exists(), "content mirror should be removed");
+            assert!(unstored_content_file.exists(), "unstored chapter files must not be scanned or deleted");
 
             let downloaded_count: i64 =
                 sqlx::query_scalar("SELECT count(*) FROM chapter WHERE is_downloaded = 1")
@@ -984,8 +992,8 @@ mod tests {
                 .await
                 .expect("load completed work");
             assert_eq!(completed_work.status, "succeeded");
-            assert_eq!(completed_work.total, 120);
-            assert_eq!(completed_work.completed, 120);
+            assert_eq!(completed_work.total, 119);
+            assert_eq!(completed_work.completed, 119);
             assert_eq!(completed_work.failed, 0);
             assert!(completed_work.finished_at_ms.is_some());
         });

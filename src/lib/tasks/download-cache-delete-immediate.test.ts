@@ -14,6 +14,7 @@ vi.mock("../../db/queries/download-cache", () => ({
     pluginId: "source-a",
     sourceContentType: "html",
   }]),
+  listNonLocalOrdinaryQueuedDownloadChapterIds: vi.fn(async () => []),
 }));
 vi.mock("../android-storage", () => ({
   deleteAndroidStoragePath: vi.fn(),

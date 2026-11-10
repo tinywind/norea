@@ -14,6 +14,7 @@ import {
   listDownloadCacheMediaBackfillCandidates,
   listDownloadCacheNovels,
   listNonLocalDownloadCacheDeleteChapters,
+  listNonLocalOrdinaryQueuedDownloadChapterIds,
   updateDownloadCacheChapterMediaBytes,
 } from "./download-cache";
 
@@ -89,6 +90,7 @@ describe("listNonLocalDownloadCacheDeleteChapters", () => {
     expect(sql).toContain("c.content_bytes AS contentBytes");
     expect(sql).toContain("c.content_type AS sourceContentType");
     expect(sql).toContain("n.plugin_id AS pluginId");
+    expect(sql).toContain("AND (c.is_downloaded = 1 OR c.content_bytes > 0 OR c.media_repair_needed = 1)");
     expect(sql).toContain("c.id IN ($1)");
     expect(params).toEqual([7]);
     expect(chapters).toEqual([
@@ -101,6 +103,25 @@ describe("listNonLocalDownloadCacheDeleteChapters", () => {
         sourceContentType: "html",
       },
     ]);
+  });
+});
+
+describe("listNonLocalOrdinaryQueuedDownloadChapterIds", () => {
+  it("loads only ordinary queued jobs in the requested novel scope", async () => {
+    mockSelect.mockResolvedValueOnce([{ id: 7 }, { id: 9 }]);
+
+    await expect(listNonLocalOrdinaryQueuedDownloadChapterIds({
+      novelIds: [3],
+    })).resolves.toEqual([7, 9]);
+
+    const [sql, params] = mockSelect.mock.calls[0]!;
+    expect(sql).toContain("FROM chapter_download_queue q");
+    expect(sql).toContain("JOIN chapter c ON c.id = q.chapter_id");
+    expect(sql).toContain("json_extract(q.job_json, '$.vpnPlanId') IS NULL");
+    expect(sql).toContain("json_extract(q.job_json, '$.vpnRangeId') IS NULL");
+    expect(sql).toContain("json_extract(q.job_json, '$.vpnBatchId') IS NULL");
+    expect(sql).toContain("c.novel_id IN ($1)");
+    expect(params).toEqual([3]);
   });
 });
 

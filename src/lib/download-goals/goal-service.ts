@@ -253,6 +253,11 @@ export async function removeDownloadGoals(novelIds: readonly number[]): Promise<
   await withdrawGoalWork(novelIds);
 }
 
+/** Cancels queued automatic work after another transaction already cleared the persisted goal. */
+export async function withdrawDownloadGoalWork(novelIds: readonly number[]): Promise<void> {
+  await withdrawGoalWork(novelIds);
+}
+
 /** Queued goal chapters for the novels, from this session's submissions and restored automatic tasks. */
 function queuedGoalChapterIds(novelIds: readonly number[]): number[] {
   const wanted = new Set(novelIds);

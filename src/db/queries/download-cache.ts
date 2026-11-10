@@ -15,6 +15,8 @@ import {
  */
 const STORED_CHAPTER_SQL = "(c.is_downloaded = 1 OR c.content_bytes > 0)";
 const STORED_CHAPTER_UNALIASED_SQL = "(is_downloaded = 1 OR content_bytes > 0)";
+const DELETE_CANDIDATE_CHAPTER_SQL =
+  "(c.is_downloaded = 1 OR c.content_bytes > 0 OR c.media_repair_needed = 1)";
 
 export interface DownloadCacheResult {
   rowsAffected: number;
@@ -212,6 +214,7 @@ export async function listNonLocalDownloadCacheDeleteChapters(
      FROM chapter c
      JOIN novel n ON n.id = c.novel_id
      WHERE n.is_local = 0
+       AND ${DELETE_CANDIDATE_CHAPTER_SQL}
        ${targetFilter}
      ORDER BY c.novel_id, c.position, c.id`,
     targetIds,
@@ -221,6 +224,43 @@ export async function listNonLocalDownloadCacheDeleteChapters(
     isDownloaded: sqliteBoolean(row.isDownloaded),
     sourceContentType: normalizeChapterContentType(row.sourceContentType),
   }));
+}
+
+export async function listNonLocalOrdinaryQueuedDownloadChapterIds(
+  filter: DownloadCacheDeleteChapterIdFilter = {},
+): Promise<number[]> {
+  const db = await getDb();
+  const requestedIds = filter.chapterIds ?? filter.novelIds;
+  if (requestedIds?.length === 0) return [];
+
+  const targetIds = requestedIds
+    ? [...new Set(requestedIds.filter((id) => Number.isInteger(id) && id > 0))]
+        .sort((left, right) => left - right)
+    : [];
+  if (requestedIds && targetIds.length === 0) return [];
+
+  const targetColumn = filter.chapterIds
+    ? "q.chapter_id"
+    : filter.novelIds
+      ? "c.novel_id"
+      : null;
+  const targetFilter = targetColumn
+    ? `AND ${targetColumn} IN (${targetIds.map((_, index) => `$${index + 1}`).join(", ")})`
+    : "";
+  const rows = await db.select<Array<{ id: number }>>(
+    `SELECT q.chapter_id AS id
+     FROM chapter_download_queue q
+     JOIN chapter c ON c.id = q.chapter_id
+     JOIN novel n ON n.id = c.novel_id
+     WHERE n.is_local = 0
+       AND json_extract(q.job_json, '$.vpnPlanId') IS NULL
+       AND json_extract(q.job_json, '$.vpnRangeId') IS NULL
+       AND json_extract(q.job_json, '$.vpnBatchId') IS NULL
+       ${targetFilter}
+     ORDER BY c.novel_id, c.position, c.id`,
+    targetIds,
+  );
+  return rows.map((row) => row.id);
 }
 
 export async function deleteDownloadCacheChapter(

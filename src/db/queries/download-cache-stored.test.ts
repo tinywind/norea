@@ -65,7 +65,7 @@ it("lists the partial chapter among a work's stored chapters with its missing me
 it("includes partial chapters in the deletion scope so the stored count drops to zero", async () => {
   expect(await listDeletionDownloadedChapterIds([1, 3])).toEqual([1, 2, 4, 6]);
   expect((await listNonLocalDownloadCacheDeleteChapters({ novelIds: [1] })).map((chapter) => chapter.id))
-    .toEqual([1, 2, 3, 4]);
+    .toEqual([1, 2, 4]);
 
   await expect(deleteDownloadCacheChapter(6)).resolves.toEqual({ rowsAffected: 1 });
   await expect(deleteDownloadCacheNovel(1)).resolves.toEqual({ rowsAffected: 2 });
