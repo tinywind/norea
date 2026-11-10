@@ -174,6 +174,16 @@ internal class AndroidVpnDownloadWorkers(
     send(worker, ticket, json.toString())
   }
 
+  private fun checkedWorkerSlot(slot: Int): Int {
+    require(slot in workers.indices) { "VPN worker slot is invalid." }
+    require(slot in lastConfigurations.indices && slot in lastGenerations.indices) {
+      "VPN worker slot state is invalid."
+    }
+    return slot
+  }
+
+  private fun workerAt(slot: Int): Worker? = workers.getOrNull(checkedWorkerSlot(slot))
+
   private fun configure(ticket: Long, id: String, json: JSONObject, restoring: Boolean = false) {
     val configuration = androidVpnWorkerConfiguration(
       json.opt("slot"), json.opt("generation"),
@@ -181,10 +191,11 @@ internal class AndroidVpnDownloadWorkers(
       json.optString("profileHash"), json.optBoolean("rotateFingerprintOnVpnChange", false),
     )
     json.put("_appOrigin", androidVpnWorkerAppOrigin(webView.url))
-    check(workers.indices.none { it != configuration.slot && workers[it] != null }) { "Only one shared-profile browser worker may run at a time." }
-    var previous = workers[configuration.slot]
+    val slot = checkedWorkerSlot(configuration.slot)
+    check(workers.indices.none { it != slot && workers.getOrNull(it) != null }) { "Only one shared-profile browser worker may run at a time." }
+    var previous = workerAt(slot)
     if (restoring) {
-      require(lastConfigurations[configuration.slot]?.copy(rotateFingerprintOnVpnChange = configuration.rotateFingerprintOnVpnChange) == configuration) { "VPN worker recovery route is stale." }
+      require(lastConfigurations.getOrNull(slot)?.copy(rotateFingerprintOnVpnChange = configuration.rotateFingerprintOnVpnChange) == configuration) { "VPN worker recovery route is stale." }
       if (previous?.remote?.binder?.isBinderAlive == false) {
         failWorker(previous, "VPN worker process disconnected.")
         previous = null
@@ -196,14 +207,14 @@ internal class AndroidVpnDownloadWorkers(
       check(previous == null) { "VPN worker configuration is still pending." }
       json.put("method", "configureWorker")
     } else {
-      require(configuration.generation > lastGenerations[configuration.slot]) { "VPN worker generation is stale." }
+      require(configuration.generation > (lastGenerations.getOrNull(slot) ?: Long.MIN_VALUE)) { "VPN worker generation is stale." }
     }
     check(previous?.manualOpen != true) { "VPN worker manual browser must close before replacing its IP." }
     require(pending.values.none { it.id == id && it.worker !== previous }) { "VPN worker request id is duplicated." }
-    val worker = previous ?: Worker(configuration).also { workers[configuration.slot] = it }
+    val worker = previous ?: Worker(configuration).also { workers[slot] = it }
     cancelPending(worker, "VPN worker reconfigured.")
-    lastGenerations[configuration.slot] = configuration.generation
-    lastConfigurations[configuration.slot] = configuration
+    lastGenerations[slot] = configuration.generation
+    lastConfigurations[slot] = configuration
     worker.configuration = configuration
     worker.executionBootstrap = AndroidVpnWorkerExecutionBootstrap()
     worker.manualState.beginGeneration(configuration.generation)
@@ -240,12 +251,12 @@ internal class AndroidVpnDownloadWorkers(
   private fun send(worker: Worker, ticket: Long, payload: String) {
     val remote = worker.remote ?: return
     transport.send(remote, VPN_WORKER_REQUEST, ticket, payload, VPN_WORKER_REQUEST_LIMIT, worker.receiver) { error ->
-      if (workers[worker.configuration.slot] === worker) failWorker(worker, error.message ?: "VPN worker transfer failed.")
+      if (workers.getOrNull(checkedWorkerSlot(worker.configuration.slot)) === worker) failWorker(worker, error.message ?: "VPN worker transfer failed.")
     }
   }
 
   private fun receive(worker: Worker, message: Message) {
-    if (message.sendingUid != Process.myUid() || closed || workers[worker.configuration.slot] !== worker) {
+    if (message.sendingUid != Process.myUid() || closed || workers.getOrNull(checkedWorkerSlot(worker.configuration.slot)) !== worker) {
       discardPayload(message)
       return
     }
@@ -355,7 +366,7 @@ internal class AndroidVpnDownloadWorkers(
     worker.remote = null
     worker.deferredConfiguration = null
     cancelPending(worker, message)
-    if (workers[worker.configuration.slot] === worker) workers[worker.configuration.slot] = null
+    if (workers.getOrNull(checkedWorkerSlot(worker.configuration.slot)) === worker) workers[checkedWorkerSlot(worker.configuration.slot)] = null
     unbind(worker)
   }
 

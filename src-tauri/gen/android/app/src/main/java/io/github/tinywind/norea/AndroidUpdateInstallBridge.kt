@@ -4,6 +4,10 @@ import android.content.ClipData
 import android.content.Context
 import android.content.Intent
 import android.net.Uri
+import android.os.Build
+import android.content.pm.PackageInfo
+import android.content.pm.PackageManager
+import android.content.pm.Signature
 import android.webkit.JavascriptInterface
 import androidx.core.content.FileProvider
 import org.json.JSONObject
@@ -34,17 +38,16 @@ internal class AndroidUpdateInstallBridge(
   fun openApk(path: String): String =
     runCatching {
       val request = parseUpdateOpenRequest(path)
-      val authority = bridgeSession.validate(
+      bridgeSession.validateAuthenticated(
         BridgeCapabilities.UPDATE_OPEN_APK,
         request.authority,
       )
-      require(authority.legacy || request.integrity != null) {
+      val integrity = requireNotNull(request.integrity) {
         "Update integrity metadata is missing."
       }
       val apk = allowedUpdateApk(request.path)
-      request.integrity?.let { integrity ->
-        verifyUpdateApkIntegrity(apk, integrity)
-      }
+      verifyUpdateApkIntegrity(apk, integrity)
+      verifyUpdateApkIdentity(apk)
 
       val uri = FileProvider.getUriForFile(
         context,
@@ -137,6 +140,75 @@ internal class AndroidUpdateInstallBridge(
       "Update file SHA-256 does not match metadata."
     }
   }
+
+  private fun verifyUpdateApkIdentity(apk: File) {
+    val packageManager = context.packageManager
+    val archive = packageInfo(packageManager, apk.absolutePath)
+      ?: throw IllegalArgumentException("Update APK package information is unavailable.")
+    require(archive.packageName == context.packageName) {
+      "Update APK package name does not match this app."
+    }
+    val installed = installedPackageInfo(packageManager)
+    val installedCurrent = currentSignerDigests(installed)
+    val archiveCurrent = currentSignerDigests(archive)
+    val archiveHistory = signerHistoryDigests(archive)
+    require(installedCurrent.isNotEmpty() && archiveCurrent.isNotEmpty()) {
+      "Update APK signing information is unavailable."
+    }
+    val signerMatches = if (installedCurrent.size > 1) {
+      archiveCurrent == installedCurrent
+    } else {
+      archiveHistory.containsAll(installedCurrent)
+    }
+    require(signerMatches) {
+      "Update APK signing certificate does not match this app."
+    }
+  }
+
+  @Suppress("DEPRECATION")
+  private fun packageInfo(packageManager: PackageManager, path: String): PackageInfo? =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      packageManager.getPackageArchiveInfo(path, PackageManager.GET_SIGNING_CERTIFICATES)
+    } else {
+      packageManager.getPackageArchiveInfo(path, PackageManager.GET_SIGNATURES)
+    }
+
+  @Suppress("DEPRECATION")
+  private fun installedPackageInfo(packageManager: PackageManager): PackageInfo =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNING_CERTIFICATES)
+    } else {
+      packageManager.getPackageInfo(context.packageName, PackageManager.GET_SIGNATURES)
+    }
+
+  @Suppress("DEPRECATION")
+  private fun currentSigners(info: PackageInfo): List<Signature> =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      info.signingInfo?.apkContentsSigners?.toList().orEmpty()
+    } else {
+      info.signatures?.toList().orEmpty()
+    }
+
+  @Suppress("DEPRECATION")
+  private fun signerHistory(info: PackageInfo): List<Signature> =
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+      info.signingInfo?.signingCertificateHistory?.toList().orEmpty()
+    } else {
+      info.signatures?.toList().orEmpty()
+    }
+
+  private fun signatureDigest(signature: Signature): String {
+    val digest = MessageDigest.getInstance("SHA-256").digest(signature.toByteArray())
+    return digest.joinToString(separator = "") { byte ->
+      (byte.toInt() and 0xff).toString(16).padStart(2, '0')
+    }
+  }
+
+  private fun currentSignerDigests(info: PackageInfo): Set<String> =
+    currentSigners(info).mapTo(linkedSetOf(), ::signatureDigest)
+
+  private fun signerHistoryDigests(info: PackageInfo): Set<String> =
+    signerHistory(info).mapTo(linkedSetOf(), ::signatureDigest)
 
   private fun sha256Hex(file: File): String {
     val digest = MessageDigest.getInstance("SHA-256")

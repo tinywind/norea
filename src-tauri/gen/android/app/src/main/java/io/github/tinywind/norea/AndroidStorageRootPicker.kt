@@ -3,6 +3,7 @@ package io.github.tinywind.norea
 import android.app.Activity
 import android.content.Intent
 import android.webkit.WebView
+import io.github.tinywind.norea.AppLog as Log
 import org.json.JSONObject
 
 private const val REQUEST_MEDIA_STORAGE_ROOT = 1001
@@ -37,11 +38,12 @@ internal class AndroidStorageRootPicker(
         activity.startActivityForResult(intent, REQUEST_MEDIA_STORAGE_ROOT)
       }.onFailure { error ->
         pendingStorageRootRequestId = null
+        Log.w("NoreaStorage", singleLineLogMessage("Storage folder picker failed. " + error.stackTraceToString()))
         resolveStorageRootPick(
           requestId,
           JSONObject()
             .put("ok", false)
-            .put("error", error.message ?: error.toString()),
+            .put("error", "Storage folder picker could not be opened."),
         )
       }
     }
@@ -89,20 +91,22 @@ internal class AndroidStorageRootPicker(
         )
       },
       onFailure = { error ->
+        Log.w("NoreaStorage", singleLineLogMessage("Storage folder permission failed. " + error.stackTraceToString()))
         resolveStorageRootPick(
           requestId,
           JSONObject()
             .put("ok", false)
-            .put("error", error.message ?: error.toString()),
+            .put("error", "Storage folder permission could not be retained."),
         )
       },
     )
   }
 
   private fun resolveStorageRootPick(requestId: String, payload: JSONObject) {
+    val encodedPayload = JSONObject.quote(payload.toString())
     val script =
       "window.__noreaResolveAndroidStoragePick && window.__noreaResolveAndroidStoragePick(" +
-        "${JSONObject.quote(requestId)}, $payload);"
+        "${JSONObject.quote(requestId)}, JSON.parse($encodedPayload));"
     mainWebView()?.post {
       mainWebView()?.evaluateJavascript(script, null)
     }
