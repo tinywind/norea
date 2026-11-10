@@ -36,9 +36,11 @@ zip = { version = "9.1.0", default-features = false, features = ["deflate"] }
 sqlx = { version = "0.8.6", features = ["sqlite", "runtime-tokio"] }
 reqwest = { version = "0.13.3", default-features = false, features = ["rustls", "blocking", "multipart"] }
 
+[target.'cfg(unix)'.dependencies]
+libc = "0.2.191"
+
 [target.'cfg(target_os = "android")'.dependencies]
 jni = "0.22.4"
-libc = "0.2.191"
 rustls-platform-verifier = "=0.7.1"
 
 [target.'cfg(target_os = "windows")'.dependencies]

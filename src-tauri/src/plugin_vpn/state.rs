@@ -1216,14 +1216,34 @@ async fn release_profile(state: &PluginVpnState) -> Result<PluginVpnStatus, Stri
     Ok(state.status_from_runtime(&runtime))
 }
 
+#[cfg(not(any(target_os = "android", target_os = "windows")))]
 async fn disconnect(
     state: &PluginVpnState,
     preserve_block: Option<bool>,
 ) -> Result<PluginVpnStatus, String> {
-    #[cfg(not(any(target_os = "android", target_os = "windows")))]
-    let _ = preserve_block;
+    let _foreground = state.shared.foreground.lock().await;
+    let _operation = state.shared.operation.lock().await;
+    let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
+    runtime.generation = runtime.generation.wrapping_add(1);
+    if let Some(preserve_block) = preserve_block {
+        runtime.connection_requested = preserve_block;
+    }
+    if !runtime.connection_requested {
+        runtime.error = None;
+    }
+    runtime.phase = PluginVpnPhase::Disabled;
+    runtime.connecting_cancellation = None;
+    #[cfg(test)]
+    state.set_disconnected_proxy(runtime.connection_requested);
+    drop(runtime);
+    Ok(state.status())
+}
 
-    #[cfg(any(target_os = "android", target_os = "windows"))]
+#[cfg(any(target_os = "android", target_os = "windows"))]
+async fn disconnect(
+    state: &PluginVpnState,
+    preserve_block: Option<bool>,
+) -> Result<PluginVpnStatus, String> {
     let (request_generation, cancellation) = {
         let mut runtime = state.shared.state.lock().expect("plugin VPN state lock");
         if preserve_block.is_none() {

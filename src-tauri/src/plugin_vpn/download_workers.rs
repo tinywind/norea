@@ -386,16 +386,24 @@ pub(crate) async fn plugin_vpn_download_workers_stop(workers: State<'_, Download
 
 #[tauri::command]
 pub(crate) async fn plugin_vpn_download_worker_connect(worker: DownloadVpnWorkerRef, profile_id: String, expected_hash: String, app: AppHandle, workers: State<'_, DownloadVpnWorkers>, state: State<'_, PluginVpnState>) -> Result<DownloadVpnWorkerStatus, DownloadVpnWorkerError> {
-    if !cfg!(target_os = "android") { return Err("Isolated VPN download workers are supported only on Android".into()); }
-    let slot = workers.worker_slot(&worker)?;
-    let cancellation = slot.request_connect(&worker, crate::network::network_status().revision)?;
-    let _operation = slot.operation.lock().await;
-    cleanup_locked(&slot, state.inner()).await?;
-    if !slot.is_requested(&worker) { return Err("VPN download connection was cancelled".into()); }
-    let result = connect_locked(&slot, &worker, &profile_id, &expected_hash, &app, state.inner(), cancellation).await;
-    if let Err(error) = &result { slot.fail(&worker, error.clone()); cleanup_locked(&slot, state.inner()).await?; }
-    result?;
-    slot.snapshot(&worker).map_err(Into::into)
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (worker, profile_id, expected_hash, app, workers, state);
+        return Err("Isolated VPN download workers are supported only on Android".into());
+    }
+
+    #[cfg(target_os = "android")]
+    {
+        let slot = workers.worker_slot(&worker)?;
+        let cancellation = slot.request_connect(&worker, crate::network::network_status().revision)?;
+        let _operation = slot.operation.lock().await;
+        cleanup_locked(&slot, state.inner()).await?;
+        if !slot.is_requested(&worker) { return Err("VPN download connection was cancelled".into()); }
+        let result = connect_locked(&slot, &worker, &profile_id, &expected_hash, &app, state.inner(), cancellation).await;
+        if let Err(error) = &result { slot.fail(&worker, error.clone()); cleanup_locked(&slot, state.inner()).await?; }
+        result?;
+        slot.snapshot(&worker).map_err(Into::into)
+    }
 }
 
 /// Reserves the profile and reads its bytes. The global operation lock is held only inside these

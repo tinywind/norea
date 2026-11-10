@@ -3998,11 +3998,16 @@ mod tests {
             .build()
             .expect("test WebView");
 
-        for (url, allowed) in [
-            ("https://source.test/chapter", false),
+        let mut cases = vec![("https://source.test/chapter", false)];
+        #[cfg(any(target_os = "windows", target_os = "android"))]
+        cases.extend([
             ("http://tauri.localhost/scraper.html", true),
             ("https://tauri.localhost/scraper.html", true),
-        ] {
+        ]);
+        #[cfg(not(any(target_os = "windows", target_os = "android")))]
+        cases.push(("tauri://localhost/scraper.html", true));
+
+        for (url, allowed) in cases {
             let response = tauri::test::get_ipc_response(
                 &webview,
                 tauri::webview::InvokeRequest {
