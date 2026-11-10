@@ -173,7 +173,13 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
       }
     }
     const pending = new Set([...cache.pendingUploads, ...(requested ?? rowsByIdentity.keys()), ...recheckRows.map(identity)]);
-    if (!pending.size && cache.includesIncompleteChapters && cache.localCursor === head && !deletedIds.length) return;
+    if (!pending.size && cache.includesIncompleteChapters && cache.localCursor === head && !deletedIds.length) {
+      if (needsLocalDiscovery) {
+        cache.localDiscoveryVersion = LOCAL_CONTENT_DISCOVERY_VERSION;
+        await saveCatalog(server, cache);
+      }
+      return;
+    }
     cache.pendingUploads = [...pending];
     cache.localCursor = head;
     cache.uploadConflictPolicy = conflictPolicy;

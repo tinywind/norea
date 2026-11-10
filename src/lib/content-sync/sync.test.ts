@@ -279,6 +279,29 @@ it("reconciles only untracked chapters during a discovery upgrade without droppi
   expect(uploadContentChapter).not.toHaveBeenCalled();
 });
 
+it("persists a discovery upgrade with no untracked chapters so subsequent syncs stay incremental", async () => {
+  const key = "norea-content-catalog:http://localhost:7788";
+  const known = '["p","n","known"]';
+  memory.set(key, JSON.stringify({
+    cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete",
+    includesIncompleteChapters: true, tombstones: {}, uploaded: {},
+    downloads: { [known]: true }, excluded: [], pendingUploads: [],
+  }));
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{
+    chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "n",
+    chapterPath: "known", chapterNumber: "1", position: 1, novelName: "Novel", chapterName: "Known",
+    contentType: "html", isDownloaded: true, mediaRepairNeeded: false, contentBytes: 12,
+  }] as never);
+
+  await syncContentServer();
+
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  expect(JSON.parse(memory.get(key)!)).toMatchObject({ localDiscoveryVersion: 1, pendingUploads: [] });
+  vi.mocked(listContentSyncChapters).mockClear();
+  await syncContentServer();
+  expect(listContentSyncChapters).toHaveBeenLastCalledWith([], false);
+});
+
 it("keeps explicit full rescans independent from discovery caching", async () => {
   const key = "norea-content-catalog:http://localhost:7788";
   memory.set(key, JSON.stringify({
