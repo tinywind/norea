@@ -209,14 +209,18 @@ const QUEUE_ID_CHUNK: usize = 500;
 const QUEUE_BUSY_RETRIES: usize = 3;
 const QUEUE_BUSY_RETRY_DELAY_MS: u64 = 100;
 
-fn is_sqlite_busy_error(error: &sqlx::Error) -> bool {
-    let message = error.to_string().to_ascii_lowercase();
+fn is_sqlite_busy_message(message: &str) -> bool {
+    let message = message.to_ascii_lowercase();
     message.contains("database is locked")
         || message.contains("database is busy")
         || message.contains("(code: 5)")
         || message.contains("(code: 6)")
         || message.contains("sqlite_busy")
         || message.contains("sqlite_locked")
+}
+
+fn is_sqlite_busy_error(error: &sqlx::Error) -> bool {
+    is_sqlite_busy_message(&error.to_string())
 }
 
 async fn remove_queue_chunk(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(), String> {
@@ -264,8 +268,33 @@ async fn lease_queue_jobs(
     pool: &SqlitePool,
     limit: Option<usize>,
 ) -> Result<Vec<ChapterDownloadQueueJob>, String> {
+    for attempt in 0..=QUEUE_BUSY_RETRIES {
+        match lease_queue_jobs_once(pool, limit).await {
+            Ok(jobs) => return Ok(jobs),
+            Err(error)
+                if is_sqlite_busy_message(&error) && attempt < QUEUE_BUSY_RETRIES =>
+            {
+                tokio::time::sleep(Duration::from_millis(
+                    QUEUE_BUSY_RETRY_DELAY_MS * (attempt as u64 + 1),
+                ))
+                .await;
+            }
+            Err(error) => return Err(error),
+        }
+    }
+    unreachable!("queue lease busy retry loop always returns")
+}
+
+async fn lease_queue_jobs_once(
+    pool: &SqlitePool,
+    limit: Option<usize>,
+) -> Result<Vec<ChapterDownloadQueueJob>, String> {
+    // This transaction reads candidate jobs and then marks them leased. Starting
+    // deferred lets another writer commit after the SELECT, making SQLite reject
+    // the read-to-write upgrade with SQLITE_BUSY even when busy_timeout is set.
+    // Reserve the writer slot before the read instead.
     let mut tx = pool
-        .begin()
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|err| format!("download queue: begin lease: {err}"))?;
     let rows = match limit.filter(|value| *value > 0) {
@@ -421,6 +450,60 @@ mod tests {
         assert_eq!(restored["goal"], true);
         assert_eq!(restored["serverLane"], true);
         assert!(restored.get("serverOnly").is_none());
+    }
+
+    #[tokio::test]
+    async fn lease_waits_for_a_concurrent_writer_instead_of_failing_the_read_write_upgrade() {
+        let directory = tempfile::tempdir().unwrap();
+        let path = directory.path().join("queue.db");
+        let options = || {
+            SqliteConnectOptions::new()
+                .filename(&path)
+                .create_if_missing(true)
+                .busy_timeout(Duration::from_secs(2))
+        };
+        let writer = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options())
+            .await
+            .unwrap();
+        let leaser = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect_with(options())
+            .await
+            .unwrap();
+        ensure_queue_schema(&writer).await.unwrap();
+        insert_queue_job(&writer, &job(11, None, None), 1, 1)
+            .await
+            .unwrap();
+
+        let mut held = writer.begin_with("BEGIN IMMEDIATE").await.unwrap();
+        sqlx::query("UPDATE chapter_download_queue SET updated_at_ms = 2 WHERE chapter_id = 11")
+            .execute(&mut *held)
+            .await
+            .unwrap();
+
+        let leasing = tokio::spawn({
+            let leaser = leaser.clone();
+            async move { lease_queue_jobs(&leaser, Some(1)).await }
+        });
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        assert!(!leasing.is_finished(), "lease should wait for the active writer");
+        held.commit().await.unwrap();
+
+        let leased = leasing.await.unwrap().unwrap();
+        assert_eq!(leased.iter().map(|job| job.id).collect::<Vec<_>>(), vec![11]);
+        assert_eq!(
+            sqlx::query_scalar::<_, i64>(
+                "SELECT attempt_count FROM chapter_download_queue WHERE chapter_id=11",
+            )
+            .fetch_one(&leaser)
+            .await
+            .unwrap(),
+            1,
+        );
+        writer.close().await;
+        leaser.close().await;
     }
 
     #[tokio::test]
