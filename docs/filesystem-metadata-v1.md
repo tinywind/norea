@@ -6,14 +6,15 @@
 of a work, including its saved chapter catalog. Recovery caches the catalog in
 SQLite and matches completed chapter files by their source chapter numbers.
 The app database retains queryable metadata as a rebuildable cache. Files win
-when cache and disk differ. Reading progress, bookmarks, library membership,
-and other device preferences stay local and are not sent to the content server.
-The app currently registers database schema v1. Later app schema changes must
-increment the version and preserve existing rows through ordered migrations.
+when cache and disk differ. Ordinary content synchronization does not embed
+reading progress, bookmarks, or library membership in work metadata. Those fields
+remain local unless the separate Shared user changes feature is explicitly enabled.
+Database changes use ordered migrations and preserve existing rows.
 A version/checksum error preserves the database and stops opening it.
 Both applications use metadata schema v1 and API/package version 1 without
-previous-format readers. The server requires a fresh state volume for an
-incompatible server schema. The independent source-plugin API remains 0.2.
+previous-format readers. The server upgrades supported additive extension tables
+in place and rejects an incompatible base schema rather than rewriting it. The
+independent source-plugin API remains 0.2.
 
 The work identity stores the plugin ID, the plugin-owned `novelId`, and its source path without the base URL,
 for example `/novel/123456`. Absolute HTTP URLs, protocol-relative URLs, and
@@ -139,8 +140,9 @@ Metadata and covers are stored in plugin-owned ID folders. SQLite indexes these
 files and keeps durable change cursors; the files can rebuild the work catalog.
 Metadata-only works are valid. Covers update the work change cursor as well.
 The sync client records local metadata/cover fingerprints and its remote work
-cursor. It never sends personal reading state. Conflict handling preserves
-pending local edits instead of overwriting them with an earlier remote snapshot.
+cursor. Content sync never sends personal reading state; the separate user-state
+protocol owns that data. Conflict handling preserves pending local edits instead
+of overwriting them with an earlier remote snapshot.
 Chapter catalog pages update the package index without rewriting work files.
 Full work metadata comes from the work catalog. A work must be installed before
 its chapter packages; a package cannot reconstruct missing work metadata.
@@ -165,12 +167,3 @@ with file availability for each catalog chapter. Available copies have Inspect
 and Delete actions; missing copies show Not backed up. Metadata is shown as readable fields plus its full JSON;
 missing covers have a stable placeholder. Image requests use console auth without
 putting session tokens in URLs. Existing console styles and accessibility apply.
-
-## Verification
-
-Test file-only import, cover round trips, metadata-only works, DB cache rebuild,
-file precedence, chapter identity fidelity, invalid metadata, unsafe paths,
-interrupted writes, work/cover change cursors, and local reading-state isolation.
-Run app TypeScript tests/typecheck and relevant Rust checks, server tests/build,
-and console browser checks at desktop and mobile widths. All real existing Norea
-content is a read-only test input; writable fixtures live under project `.tmp`.

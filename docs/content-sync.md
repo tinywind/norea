@@ -361,15 +361,14 @@ A sync request arriving during an active pass queues another pass. Waiting reque
 coalesce and preserve upload and rescan requests, so a metadata refresh after the
 active work phase is processed before the requesting caller completes.
 
-The app database uses an immutable v1 baseline. Later schema changes increment
-the version and migrate existing records, including sync exclusions and cursors.
-Version/checksum errors preserve the database and stop opening it. An incompatible
-server schema still requires a fresh state volume; server format conversion is
-outside this app migration policy. Sync cursors and device keys remain outside
-portable file backups. Full device snapshots include the entire database and
-saved settings, including those values. Shared content sync does not upload or
-restore device backups automatically. Device backup is a separate, explicit
-operation described below.
+The app database uses an immutable v1 baseline plus ordered migrations.
+Version/checksum errors preserve the database and stop opening it. The server
+keeps an immutable base-schema checksum and upgrades supported additive extension
+tables in place; an incompatible base schema is rejected instead of rewritten.
+Sync cursors and device keys remain outside portable file backups. Full device
+snapshots include the entire database and saved settings, including those values.
+Shared content sync does not upload or restore device backups automatically.
+Device backup is a separate, explicit operation described below.
 
 Local content installation is serialized per work. Network transfers use private
 staging directories and do not hold a work lock. Upload fingerprinting and transfer
@@ -385,8 +384,9 @@ completed chapter files are marked downloaded and eligible for upload.
 
 ## Current limits
 
-Automatic per-work download policies are not implemented. Downloads restart after
-interruption; the app does not resume partial chapter files or legacy ZIP transfers.
+Download goals can keep selected works ahead, download all remaining chapters,
+or keep an entire work available. Transfers that are interrupted restart the
+chapter transfer; partial chapter-file and legacy ZIP resume are not supported.
 Local imports and completed downloads enter the local change record and follow
 the selected sync mode.
 
