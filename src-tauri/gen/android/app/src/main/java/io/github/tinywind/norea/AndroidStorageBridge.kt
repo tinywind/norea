@@ -36,9 +36,9 @@ internal class AndroidStorageBridge(
 
   @JavascriptInterface
   fun workMetadataOperation(requestId: String, rootUri: String, input: String) {
-    val scanning = runCatching { JSONObject(input).getString("operation") in setOf("list", "chapters") }.getOrDefault(false)
-    submitStorageOperation(requestId, if (scanning) storageExecutors.scans else storageExecutors.foreground) {
-      workMetadata.operate(rootUri, JSONObject(input))
+    val request = JSONObject(input)
+    submitStorageOperation(requestId, storageExecutors.workMetadata(request.getString("operation"))) {
+      workMetadata.operate(rootUri, request)
     }
   }
 

@@ -83,6 +83,50 @@ describe("runDatabaseTransaction", () => {
     ]);
   });
 
+  it("retries only BEGIN IMMEDIATE when a native writer temporarily holds SQLite", async () => {
+    const rawDb = makeRawDb();
+    const { getDb, runDatabaseTransaction } = await loadClient(rawDb);
+    await getDb();
+    rawDb.execute.mockClear();
+    let beginAttempts = 0;
+    rawDb.execute.mockImplementation(async (sql: string) => {
+      if (sql === "BEGIN IMMEDIATE" && beginAttempts++ < 2) {
+        throw new Error("error returned from database: (code: 5) database is locked");
+      }
+      return { rowsAffected: 0 };
+    });
+    const work = vi.fn(async (db: { execute: (sql: string) => Promise<unknown> }) => {
+      await db.execute("UPDATE user_state_operation SET status='acknowledged'");
+      return "done";
+    });
+
+    await expect(runDatabaseTransaction(work as never, false, { busyBeginRetries: 3 })).resolves.toBe("done");
+
+    expect(work).toHaveBeenCalledOnce();
+    expect(rawDb.execute.mock.calls.map(([sql]) => sql)).toEqual([
+      "BEGIN IMMEDIATE",
+      "BEGIN IMMEDIATE",
+      "BEGIN IMMEDIATE",
+      "UPDATE user_state_operation SET status='acknowledged'",
+      "COMMIT",
+    ]);
+  });
+
+  it("does not retry a non-locking BEGIN failure", async () => {
+    const rawDb = makeRawDb();
+    const { getDb, runDatabaseTransaction } = await loadClient(rawDb);
+    await getDb();
+    rawDb.execute.mockClear();
+    rawDb.execute.mockRejectedValueOnce(new Error("database disk image is malformed"));
+    const work = vi.fn();
+
+    await expect(runDatabaseTransaction(work, false, { busyBeginRetries: 3 })).rejects.toThrow("database disk image is malformed");
+
+    expect(work).not.toHaveBeenCalled();
+    expect(rawDb.execute).toHaveBeenCalledTimes(1);
+    expect(rawDb.execute).toHaveBeenCalledWith("BEGIN IMMEDIATE");
+  });
+
   it("can commit a remote projection without publishing metadata or content-sync notifications", async () => {
     const rawDb = makeRawDb();
     const { getDb, runDatabaseTransaction } = await loadClient(rawDb);

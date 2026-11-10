@@ -14,6 +14,7 @@ export type DatabaseReadMode = "queued" | "committed";
 const DB_URL = "sqlite:norea.db";
 const READ_DB_URL = "sqlite:norea-readonly.db";
 const DB_BUSY_TIMEOUT_MS = 5000;
+const DB_BEGIN_RETRY_DELAY_MS = 100;
 
 let dbPromise: Promise<Database> | null = null;
 let rawDbPromise: Promise<Database> | null = null;
@@ -202,6 +203,26 @@ export async function runExclusiveDatabaseOperation<T>(
 export interface DatabaseTransactionOptions {
   publishMetadata?: boolean;
   notifyContentSync?: boolean;
+  /** Extra attempts to acquire BEGIN IMMEDIATE after SQLite reports BUSY/LOCKED. */
+  busyBeginRetries?: number;
+}
+
+function isDatabaseBusyError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:code:\s*(?:5|6)|database is (?:locked|busy)|SQLITE_(?:BUSY|LOCKED))/i.test(message);
+}
+
+async function beginImmediate(db: Database, retries: number): Promise<void> {
+  const attempts = Math.max(0, Math.floor(retries)) + 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await db.execute("BEGIN IMMEDIATE");
+      return;
+    } catch (error) {
+      if (!isDatabaseBusyError(error) || attempt + 1 >= attempts) throw error;
+      await new Promise<void>(resolve => setTimeout(resolve, DB_BEGIN_RETRY_DELAY_MS * (attempt + 1)));
+    }
+  }
 }
 
 export async function runDatabaseTransaction<T>(
@@ -211,7 +232,7 @@ export async function runDatabaseTransaction<T>(
 ): Promise<T> {
   const rawDb = await getRawDb();
   return queueDbOperation(async () => {
-    await rawDb.execute("BEGIN IMMEDIATE");
+    await beginImmediate(rawDb, options.busyBeginRetries ?? 0);
     try {
       const result = await withWorkMetadataRollback(async () => {
         if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=1 WHERE id=1");

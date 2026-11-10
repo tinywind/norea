@@ -174,7 +174,7 @@ export async function applyUserStateReadPage(binding: UserStateBinding, page: Us
   await runDatabaseTransaction(async db => {
     await applyUserStateReadPageInDb(db, binding, page);
     requestUserStateDeferredApply(db);
-  });
+  }, false, { busyBeginRetries: 3 });
   emitUserStateLedgerChanged();
   return { resumes: [] };
 }
@@ -182,7 +182,7 @@ export async function acknowledgeUserStateOperations(binding: UserStateBinding, 
   await runDatabaseTransaction(async db => {
     await acknowledgeUserStateOperationsInDb(db, binding, results);
     requestUserStateDeferredApply(db);
-  });
+  }, false, { busyBeginRetries: 3 });
   emitUserStateLedgerChanged();
   return { resumes: [] };
 }
@@ -190,7 +190,7 @@ export async function resolveUserStateLedgerConflict(binding: UserStateBinding, 
   await runDatabaseTransaction(async db => {
     await resolveUserStateLedgerConflictInDb(db, binding, input);
     requestUserStateDeferredApply(db);
-  });
+  }, false, { busyBeginRetries: 3 });
   emitUserStateLedgerChanged();
   return { resumes: [] };
 }
