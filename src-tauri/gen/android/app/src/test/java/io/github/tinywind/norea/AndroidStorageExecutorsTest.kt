@@ -31,6 +31,44 @@ class AndroidStorageExecutorsTest {
     }
   }
 
+
+  @Test
+  fun fourCoverReadsRunTogetherWithoutBlockingForegroundStorage() {
+    val executors = AndroidStorageExecutors()
+    val started = CountDownLatch(4)
+    val release = CountDownLatch(1)
+    try {
+      val covers = (1..4).map {
+        executors.covers.submit { started.countDown(); release.await() }
+      }
+      assertTrue(started.await(2, TimeUnit.SECONDS))
+      val waiting = executors.covers.submit<String> { "fifth" }
+      assertTrue(!waiting.isDone)
+      assertEquals("write", executors.foreground.submit<String> { "write" }.get(1, TimeUnit.SECONDS))
+      release.countDown()
+      covers.forEach { it.get(5, TimeUnit.SECONDS) }
+      assertEquals("fifth", waiting.get(5, TimeUnit.SECONDS))
+    } finally {
+      release.countDown()
+      executors.destroy()
+    }
+  }
+
+  @Test
+  fun workMetadataRoutesOnlyCoverLookupsToTheCoverPool() {
+    val executors = AndroidStorageExecutors()
+    try {
+      assertTrue(executors.workMetadata("cover") === executors.covers)
+      assertTrue(executors.workMetadata("list") === executors.scans)
+      assertTrue(executors.workMetadata("chapters") === executors.scans)
+      assertTrue(executors.workMetadata("read") === executors.foreground)
+      assertTrue(executors.workMetadata("write") === executors.foreground)
+      assertTrue(executors.workMetadata("remove") === executors.foreground)
+    } finally {
+      executors.destroy()
+    }
+  }
+
   @Test
   fun foregroundStorageCompletesWhileFolderScanIsBlocked() {
     val executors = AndroidStorageExecutors()
@@ -101,8 +139,8 @@ class AndroidStorageExecutorsTest {
   @Test
   fun destroyInterruptsAllWorkersAndRejectsNewOperations() {
     val executors = AndroidStorageExecutors()
-    val operationsStarted = CountDownLatch(3)
-    val operationsInterrupted = CountDownLatch(3)
+    val operationsStarted = CountDownLatch(4)
+    val operationsInterrupted = CountDownLatch(4)
     val releaseOperations = CountDownLatch(1)
     val operation = Runnable {
       operationsStarted.countDown()
@@ -116,6 +154,7 @@ class AndroidStorageExecutorsTest {
       executors.foreground.execute(operation)
       executors.snapshots.execute(operation)
       executors.scans.execute(operation)
+      executors.covers.execute(operation)
       assertTrue(operationsStarted.await(5, TimeUnit.SECONDS))
 
       executors.destroy()
@@ -128,6 +167,9 @@ class AndroidStorageExecutorsTest {
       }
       assertThrows(RejectedExecutionException::class.java) {
         executors.scans.execute { }
+      }
+      assertThrows(RejectedExecutionException::class.java) {
+        executors.covers.execute { }
       }
     } finally {
       releaseOperations.countDown()

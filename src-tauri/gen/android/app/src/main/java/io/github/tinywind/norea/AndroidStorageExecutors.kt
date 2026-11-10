@@ -1,6 +1,7 @@
 package io.github.tinywind.norea
 
 import java.util.concurrent.ArrayBlockingQueue
+import java.util.concurrent.Executor
 import java.util.concurrent.Executors
 import java.util.concurrent.ThreadPoolExecutor
 import java.util.concurrent.TimeUnit
@@ -13,6 +14,12 @@ internal class AndroidStorageExecutors {
     Thread(runnable, "NoreaStorageScan").apply {
       isDaemon = true
       priority = Thread.MIN_PRIORITY
+    }
+  }
+  val covers = Executors.newFixedThreadPool(4) { runnable ->
+    Thread(runnable, "NoreaCoverRead").apply {
+      isDaemon = true
+      priority = Thread.NORM_PRIORITY
     }
   }
   val snapshots = ThreadPoolExecutor(
@@ -29,9 +36,16 @@ internal class AndroidStorageExecutors {
     },
   )
 
+  fun workMetadata(operation: String): Executor = when (operation) {
+    "list", "chapters" -> scans
+    "cover" -> covers
+    else -> foreground
+  }
+
   fun destroy() {
     foreground.shutdownNow()
     scans.shutdownNow()
+    covers.shutdownNow()
     snapshots.shutdownNow()
   }
 }
