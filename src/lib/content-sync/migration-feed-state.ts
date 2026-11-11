@@ -264,7 +264,11 @@ export function parseWorkMigrationLineage(raw: unknown): WorkMigrationLineage {
   if (legacyOperationId !== undefined && !UUID.test(legacyOperationId)) return invalid("legacy operation ID");
   const sourceWork = work(input.sourceWork);
   const targetWork = work(input.targetWork);
-  if (sourceWork.id === targetWork.id || sourceWork.identity.pluginId === targetWork.identity.pluginId) return invalid("source and target work identities");
+  if (sourceWork.id === targetWork.id ||
+      sourceWork.identity.pluginId === targetWork.identity.pluginId &&
+      sourceWork.identity.novelId === targetWork.identity.novelId) {
+    return invalid("source and target work identities");
+  }
   const deleted = object(input.deletedSource);
   const deletedSource = { revision: hash(deleted.revision), sequence: sequence(deleted.sequence) };
   if (deletedSource.revision !== sourceWork.revision) return invalid("source retirement revision");

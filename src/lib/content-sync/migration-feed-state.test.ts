@@ -49,6 +49,24 @@ describe("incoming work migration validation", () => {
     expect(parsed.mappings[0]!.source.chapterPath).toBe("/source/1");
   });
 
+  it("accepts different work IDs from Bookkor while rejecting self-migration within the same plugin", () => {
+    const input = lineage();
+    input.sourceWork.identity = { pluginId: "bookkor-novel", novelId: "6579", novelPath: "/work-2" };
+    input.targetWork.identity = { pluginId: "bookkor-novel", novelId: "6157", novelPath: "/work" };
+    input.sourceWork.metadata.identity = { ...input.sourceWork.identity };
+    input.targetWork.metadata.identity = { ...input.targetWork.identity };
+    expect(parseWorkMigrationLineage(input)).toEqual(input);
+    expect(incomingMigrationFromLineage(server, input)).toMatchObject({
+      source: { pluginId: "bookkor-novel", novelId: "6579" },
+      target: { pluginId: "bookkor-novel", novelId: "6157" },
+      status: "pending",
+    });
+    const sameProviderId = structuredClone(input);
+    sameProviderId.targetWork.identity.novelId = "6579";
+    sameProviderId.targetWork.metadata.identity.novelId = "6579";
+    expect(() => parseWorkMigrationLineage(sameProviderId)).toThrow("source and target work identities");
+  });
+
   it("accepts explicit deletion of a missing source body without inventing a target payload", () => {
     const input = lineage();
     input.mappings = [{ source: { ...input.mappings[0]!.source, available: false }, decision: "delete-source", target: null, targetInventory: null }];
