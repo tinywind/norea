@@ -187,9 +187,7 @@ export async function applyNovelMergeInDb({
     if (sqliteBoolean(sourceNovel.isLocal) || sqliteBoolean(targetNovel.isLocal)) {
       throw new Error("Novel merge supports remote novels only.");
     }
-    if (sourceNovel.pluginId === targetNovel.pluginId) {
-      throw new Error("Novel merge requires different source plugins.");
-    }
+
 
     if (composition) {
       const previous = await db.select<{ path: string; bookmark: number; unread: number; progress: number; readAt: number | null; excludedAt: number | null }[]>(

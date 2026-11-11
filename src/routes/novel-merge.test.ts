@@ -5,6 +5,7 @@ vi.mock("../components/PdfReaderContent", () => ({
 }));
 
 import {
+  filterMergeTargetSearchResult,
   validateNovelMergeDecisions,
   type NovelMergeChapterDecision,
   type NovelMergeDecisionSourceChapter,
@@ -28,6 +29,18 @@ function validate(
     targetChapterPaths,
   });
 }
+
+describe("same-plugin migration candidates", () => {
+  it("filters only the exact source edition, keeping a distinct ID from the same source", () => {
+    const source = { pluginId: "bookkor-novel", path: "/work/6579" };
+    const result = {
+      pluginId: "bookkor-novel", pluginName: "Bookkor",
+      novels: [{ name: "Self", path: "/work/6579" }, { name: "Other edition", path: "/work/6157" }],
+    };
+    expect(filterMergeTargetSearchResult(source, result).novels).toEqual([{ name: "Other edition", path: "/work/6157" }]);
+    expect(filterMergeTargetSearchResult({ ...source, pluginId: "another-source" }, result).novels).toHaveLength(2);
+  });
+});
 
 describe("validateNovelMergeDecisions", () => {
   it("keeps every source chapter undecided until the user explicitly decides", () => {

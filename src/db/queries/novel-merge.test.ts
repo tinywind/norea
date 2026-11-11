@@ -320,7 +320,7 @@ describe("applyNovelMergeInDb", () => {
     ).toBe(true);
   });
 
-  it("rejects local novels and same-plugin targets", async () => {
+  it("rejects local novels but accepts different works under the same source plugin", async () => {
     mockSelect.mockReset().mockResolvedValueOnce([
       { ...sourceNovel, isLocal: 1 },
       targetNovel,
@@ -334,18 +334,17 @@ describe("applyNovelMergeInDb", () => {
       }),
     ).rejects.toThrow("remote novels only");
 
-    mockSelect.mockReset().mockResolvedValueOnce([
-      sourceNovel,
-      { ...targetNovel, pluginId: sourceNovel.pluginId },
-    ]);
-    await expect(
-      applyNovelMergeInDb({
-        sourceNovelId: 1,
-        targetNovelId: 2,
-        decisions: [{ sourceChapterId: 11, kind: "exclude" }],
-        preparedDownloads: [],
-      }),
-    ).rejects.toThrow("different source plugins");
+    mockSelect.mockReset()
+      .mockResolvedValueOnce([sourceNovel, { ...targetNovel, pluginId: sourceNovel.pluginId }])
+      .mockResolvedValueOnce([sourceChapter(), targetChapter()]);
+    const result = await applyNovelMergeInDb({
+      sourceNovelId: 1,
+      targetNovelId: 2,
+      decisions: [{ sourceChapterId: 11, kind: "exclude" }],
+      preparedDownloads: [],
+    });
+    expect(result.targetNovelId).toBe(2);
+    expect(mockExecute.mock.calls.some(([sql]) => String(sql).includes("DELETE FROM novel"))).toBe(true);
   });
 });
 

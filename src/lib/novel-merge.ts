@@ -523,8 +523,8 @@ async function executeNovelMergeWithPlugin(
   if (sourceNovel.isLocal) {
     throw new Error("Novel merge supports remote novels only.");
   }
-  if (sourceNovel.pluginId === targetPlugin.id) {
-    throw new Error("Choose a target from a different source plugin.");
+  if (sourceNovel.pluginId === targetPlugin.id && sourceNovel.path === input.target.item.path) {
+    throw new Error("Source and target must have different work identities.");
   }
 
   const targetSync = await syncNovelFromSource(targetPlugin, input.target.item, {
@@ -533,7 +533,8 @@ async function executeNovelMergeWithPlugin(
   throwIfNovelMergeAborted(signal);
   const targetNovel = await getNovelById(targetSync.novelId);
   if (!targetNovel) throw new Error("Target novel could not be stored.");
-  if (targetNovel.id === sourceNovel.id || targetNovel.isLocal) {
+  if (targetNovel.id === sourceNovel.id || targetNovel.isLocal ||
+    sourceNovel.pluginId === targetNovel.pluginId && sourceNovel.sourceNovelId === targetNovel.sourceNovelId) {
     throw new Error("Source and target must be different remote novels.");
   }
   const fresh = targetSync.authoritativeMetadata;
@@ -579,7 +580,8 @@ export async function executeNovelMergeFromServer(
   throwIfNovelMergeAborted(options.signal);
   const [sourceNovel, targetNovel] = await Promise.all([getNovelById(input.sourceNovelId), getNovelById(input.targetNovelId)]);
   if (!sourceNovel || !targetNovel) throw new Error("A received migration work no longer exists locally.");
-  if (sourceNovel.id === targetNovel.id || sourceNovel.isLocal || targetNovel.isLocal || sourceNovel.pluginId === targetNovel.pluginId) {
+  if (sourceNovel.id === targetNovel.id || sourceNovel.isLocal || targetNovel.isLocal ||
+    sourceNovel.pluginId === targetNovel.pluginId && sourceNovel.sourceNovelId === targetNovel.sourceNovelId) {
     throw new Error("A received migration requires different remote source works.");
   }
   return runExclusiveChapterStorageOperation({ kind: "sources", sourceIds: [sourceNovel.pluginId, targetNovel.pluginId] }, options.signal,

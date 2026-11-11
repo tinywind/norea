@@ -163,6 +163,16 @@ export function validateNovelMergeDecisions({
 }
 
 
+/** A plugin may provide multiple work IDs. Exclude only the exact source work. */
+export function filterMergeTargetSearchResult(
+  source: { pluginId: string; path: string } | null,
+  result: GlobalSearchResult,
+): GlobalSearchResult {
+  return source?.pluginId === result.pluginId
+    ? { ...result, novels: result.novels.filter(item => item.path !== source.path) }
+    : result;
+}
+
 interface SelectedMergeTarget extends MergeTargetCandidate {
   novel: SourceNovel;
   matching: NovelMergeChapterMatching;
@@ -225,10 +235,9 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   );
   const targetPlugins = useMemo(
     () =>
-      (installedPluginsQuery.data ?? [])
-        .filter((plugin) => plugin.id !== sourceNovel?.pluginId)
+      [...(installedPluginsQuery.data ?? [])]
         .sort((a, b) => a.name.localeCompare(b.name)),
-    [installedPluginsQuery.data, sourceNovel?.pluginId],
+    [installedPluginsQuery.data],
   );
 
   useEffect(
@@ -247,10 +256,12 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       const controller = new AbortController();
       searchAbortRef.current = controller;
       return globalSearch(pluginManager, query, {
-        onResult: (result) =>
+        onResult: (result) => {
           setSearchResults((current) =>
-            [...current, result].sort((a, b) => a.pluginName.localeCompare(b.pluginName)),
-          ),
+            [...current, filterMergeTargetSearchResult(sourceNovel, result)]
+              .sort((a, b) => a.pluginName.localeCompare(b.pluginName)),
+          );
+        },
         plugins: targetPlugins,
         signal: controller.signal,
         timeoutMs: getSourceRequestTimeoutMs(),
@@ -281,6 +292,9 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
   const previewTarget = useMutation({
     meta: { errorPresentation: "inline" },
     mutationFn: async (candidate: MergeTargetCandidate & { preserveComposition?: boolean }) => {
+      if (sourceNovel?.pluginId === candidate.pluginId && sourceNovel.path === candidate.item.path) {
+        throw new Error("The target must have a different work identity.");
+      }
       const task = enqueueNovelMergeTargetPreviewTask({
         item: candidate.item,
         manager: pluginManager,
@@ -291,6 +305,10 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
       try {
         const detail = await task.promise;
         const novel = await resolveNovelMergeTargetPreview(candidate.pluginId, { ...detail, path: candidate.item.path });
+        if (sourceNovel?.pluginId === candidate.pluginId &&
+          sourceNovel.sourceNovelId && sourceNovel.sourceNovelId === novel.novelId) {
+          throw new Error("The source and target have the same work identity.");
+        }
         const sourceChapters = await listChaptersByNovel(sourceNovelId);
         return { ...candidate, novel, sourceChapters };
       } finally {

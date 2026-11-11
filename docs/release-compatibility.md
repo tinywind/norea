@@ -122,7 +122,9 @@ composition documents are durable state. Restart and retry reuse the recorded
 operation identity rather than creating a new semantic operation.
 
 Composition and migration state use portable source identities; local row IDs are
-never cross-device identities.
+never cross-device identities. Source and target must be different remote works:
+they may use different plugins or distinct provider-owned work IDs under the
+same plugin. Self-migration is rejected before any source work is retired.
 
 ## Plugin-owned storage IDs
 
