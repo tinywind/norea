@@ -242,10 +242,31 @@ export async function recordCategoryInDb(db: UserStateDb, id: number, options: {
   if (!categoryId) return;
   const [row] = await db.select<{ name: string; sort: number }[]>("SELECT name,sort FROM category WHERE id=$1 AND is_system=0", [id]);
   if (row) await recordUserStateChangesInDb(db, [{ entity: { kind: "category", categoryId }, value: { ...row, deleted: !!options.deleted } }], options.seed);
+  if (!options.seed && !options.create) {
+    await db.execute("UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE deferred_reason IN ('category-name-conflict','missing-category')");
+    requestUserStateDeferredApply(db);
+  }
 }
 export async function recordMembershipInDb(db: UserStateDb, novelIds: readonly number[], categoryId: number, included: boolean, seed = false): Promise<void> {
   const stableId = await stableCategoryIdInDb(db, categoryId);
   if (!stableId) return;
+  if (!seed && included) {
+    const categoryKey = userStateEntityKey({ kind: "category", categoryId: stableId });
+    const [intent] = await db.select<{ present: number }[]>("SELECT 1 AS present FROM user_state_intent WHERE entity_key=$1 LIMIT 1", [categoryKey]);
+    if (!intent) {
+      const workspaces = await workspaceRows(db);
+      let knownEverywhere = workspaces.length > 0;
+      for (const workspace of workspaces) {
+        const canonicalCategoryId = await resolveCategoryAlias(db, workspace.namespace, stableId);
+        const [record] = await db.select<{ present: number }[]>(
+          "SELECT 1 AS present FROM user_state_record WHERE namespace=$1 AND entity_key=$2 LIMIT 1",
+          [workspace.namespace, userStateEntityKey({ kind: "category", categoryId: canonicalCategoryId })],
+        );
+        if (!record) { knownEverywhere = false; break; }
+      }
+      if (!knownEverywhere) await recordCategoryInDb(db, categoryId);
+    }
+  }
   for (let start = 0; start < novelIds.length; start += 400) {
     const ids = novelIds.slice(start, start + 400);
     const works = await db.select<UserStateWorkReference[]>("SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name FROM novel WHERE id IN (" + ids.map((_, index) => "$" + (index + 1)).join(",") + ")", [...ids]);

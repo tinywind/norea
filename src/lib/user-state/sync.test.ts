@@ -322,3 +322,37 @@ it("does not make a network request while a restored snapshot is fenced", async 
   expect(mocks.prepare).not.toHaveBeenCalled();
   expect(outbox).toEqual([operation]);
 });
+
+it("keeps a shared sync alive when one caller aborts its signal while another caller awaits, and preserves server 409 messages", async () => {
+  let releaseMerge!: () => void;
+  const mergeGate = new Promise<void>(resolve => { releaseMerge = resolve; });
+  const original = mocks.fetch.getMockImplementation()!;
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url.endsWith("/merge")) await mergeGate;
+    return original(url, init);
+  });
+
+  const abortController = new AbortController();
+  const abortableCaller = synchronizeUserState({ signal: abortController.signal });
+  const sharedCaller = synchronizeUserState();
+  await vi.waitFor(() => expect(mocks.fetch.mock.calls.some(([url]) => String(url).endsWith("/merge"))).toBe(true));
+
+  abortController.abort(new DOMException("Caller cancelled", "AbortError"));
+  await expect(abortableCaller).rejects.toMatchObject({ name: "AbortError" });
+
+  releaseMerge();
+  await expect(sharedCaller).resolves.toBeUndefined();
+  expect(outbox).toEqual([]);
+
+  outbox = [operation];
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (url.endsWith("/merge")) {
+      return Response.json({ message: "Specific workspace epoch mismatch" }, { status: 409 });
+    }
+    return original(url, init);
+  });
+  await expect(synchronizeUserState()).rejects.toMatchObject({
+    status: 409,
+    message: "Specific workspace epoch mismatch",
+  });
+});

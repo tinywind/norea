@@ -901,3 +901,222 @@ it("remaps B's own pending reset when an approved merge replaces its path with a
   expect(operation.entity).toMatchObject({ chapter: { chapterPath: "norea-composed:new-target", compositionEntryId: "new-target" } });
   expect(operation.value).toMatchObject({ progress: 0, unread: true });
 });
+
+it("records a missing category creation intent before membership when assigning to a restored category", async () => {
+  active.sql.exec("UPDATE novel SET in_library=1 WHERE id=1");
+  await bind();
+  for (const op of await prepare()) await ack(op, 1);
+  active.sql.exec("INSERT INTO category(id,name,sort,is_system) VALUES(9,'Restored Shelf',2,0)");
+  await setNovelCategories(1, [9]);
+  const operations = await prepare();
+  expect(operations.map(item => item.entity.kind)).toEqual(["category", "membership"]);
+  expect(operations[0]!.value).toEqual({ name: "Restored Shelf", sort: 2, deleted: false });
+  expect(operations[1]!.value).toEqual({ included: true });
+});
+
+it("retains structural conflicts across rebinding and resolves category-name-exists, category-missing, and chapter-ownership-conflict", async () => {
+  await insertCategory({ name: "Original" });
+  const { id: categoryId } = active.sql.prepare("SELECT id FROM category WHERE name='Original'").get() as { id: number };
+  await bind();
+  const [createdCategory] = await prepare();
+  await ack(createdCategory, 1);
+
+  await updateCategory(categoryId, { name: "Taken" });
+  const [renameAttempt] = await prepare();
+  await tx(active, db => acknowledgeUserStateOperationsInDb(db, binding, [{
+    operationId: renameAttempt.operationId,
+    status: "conflict",
+    reason: "category-name-exists",
+    current: shared(renameAttempt.entity, { name: "Original", sort: 0, deleted: false }, 1, createdCategory.operationId),
+  }]));
+  await bind();
+  expect(await prepare()).toEqual([]);
+  const [nameConflict] = await listUserStateConflictsInDb(active.db, binding);
+  expect(nameConflict.reason).toBe("category-name-exists");
+  await tx(active, db => resolveUserStateLedgerConflictInDb(db, binding, {
+    id: nameConflict.id, version: nameConflict.version, choice: "local", categoryName: "Distinct Name",
+  }));
+  expect(active.sql.prepare("SELECT name FROM category WHERE id=?").get(categoryId)).toEqual({ name: "Distinct Name" });
+  const [renamedRetry] = await prepare();
+  expect(renamedRetry.value).toEqual({ name: "Distinct Name", sort: 0, deleted: false });
+  await ack(renamedRetry, 2);
+
+  const missingCategoryEntity: UserStateEntity = { kind: "membership", work, categoryId: "missing-cat" };
+  await capture({ included: true }, missingCategoryEntity);
+  const [membershipAttempt] = await prepare();
+  await tx(active, db => acknowledgeUserStateOperationsInDb(db, binding, [{
+    operationId: membershipAttempt.operationId,
+    status: "conflict",
+    reason: "category-missing",
+    current: null,
+  }]));
+  await bind();
+  const [missingConflict] = await listUserStateConflictsInDb(active.db, binding);
+  await tx(active, db => resolveUserStateLedgerConflictInDb(db, binding, {
+    id: missingConflict.id, version: missingConflict.version, choice: "local", categoryName: "Recreated",
+  }));
+  const recreatedBatch = await prepare();
+  expect(recreatedBatch.map(item => item.entity.kind)).toEqual(["category", "membership"]);
+  expect(recreatedBatch[0]!.value).toEqual({ name: "Recreated", sort: 0, deleted: false });
+  for (const op of recreatedBatch) await ack(op, 3);
+
+  const composition: ChapterCompositionV1 = {
+    version: 1, updatedAt: 1, entries: [{
+      id: "entry-new", path: "norea-composed:entry-new", storageChapterNumber: "1", primarySource: 0,
+      user: { included: true, order: 1, name: null, chapterNumber: "1" },
+      sources: [{ pluginId: work.pluginId, novelId: work.sourceNovelId!, novelPath: work.novelPath, chapterPath: "/chapter/1",
+        chapterNumber: "1", name: "One", position: 1, page: "1", contentType: "text", releaseTime: null }],
+    }],
+  };
+  await setChapterComposition(active.db, 1, composition);
+  active.sql.exec("UPDATE chapter SET path='norea-composed:entry-new' WHERE id=11");
+  const staleOwnedEntity: UserStateEntity = {
+    kind: "reading", work, chapter: { chapterPath: "norea-composed:entry-new", name: "One", compositionEntryId: "entry-old" },
+  };
+  await capture(readingValue(55, false), staleOwnedEntity);
+  const [ownershipAttempt] = await prepare();
+  const sharedOwnedEntity: UserStateEntity = {
+    kind: "reading", work, chapter: { chapterPath: "norea-composed:entry-new", name: "One", compositionEntryId: "entry-new" },
+  };
+  await tx(active, db => acknowledgeUserStateOperationsInDb(db, binding, [{
+    operationId: ownershipAttempt.operationId,
+    status: "conflict",
+    reason: "chapter-ownership-conflict",
+    current: shared(sharedOwnedEntity, readingValue(10, false), 5),
+  }]));
+  const [ownershipConflict] = await listUserStateConflictsInDb(active.db, binding);
+  await tx(active, db => resolveUserStateLedgerConflictInDb(db, binding, {
+    id: ownershipConflict.id, version: ownershipConflict.version, choice: "local",
+  }));
+  const [ownershipRetry] = await prepare();
+  expect(ownershipRetry.baseRevision).toBe(5);
+  expect(ownershipRetry.entity).toMatchObject({ chapter: { compositionEntryId: "entry-new" } });
+});
+
+it("preserves transitive user_state_category local_id mappings when rememberAlias deletes a duplicate category", async () => {
+  active.sql.exec(`INSERT INTO category(id,name,sort,is_system) VALUES(7,'Shared',0,0),(8,'Duplicate',1,0);
+    INSERT INTO user_state_category(category_id,local_id) VALUES('canonical-cat',7),('older-alias',8),('pending-cat',8)`);
+  await bind();
+  for (const op of await prepare()) await ack(op, 1);
+  await capture({ name: "Shared", sort: 1, deleted: false }, { kind: "category", categoryId: "pending-cat" });
+  const [attempt] = await tx(active, async db => {
+    await db.execute("UPDATE user_state_progress SET base_revision=0 WHERE entity_key=$1", [userStateEntityKey({ kind: "category", categoryId: "pending-cat" })]);
+    return prepareUserStateOperationsInDb(db, binding);
+  });
+  await tx(active, db => acknowledgeUserStateOperationsInDb(db, binding, [{
+    operationId: attempt.operationId,
+    status: "aliased",
+    categoryAlias: { from: "pending-cat", to: "canonical-cat" },
+    current: shared({ kind: "category", categoryId: "canonical-cat" }, { name: "Shared", sort: 1, deleted: false }, 4),
+  }]));
+  expect(active.sql.prepare("SELECT id FROM category WHERE id=8").get()).toBeUndefined();
+  expect(active.sql.prepare("SELECT category_id AS id,local_id AS localId FROM user_state_category ORDER BY category_id").all()).toEqual([
+    { id: "canonical-cat", localId: 7 },
+    { id: "older-alias", localId: 7 },
+    { id: "pending-cat", localId: 7 },
+  ]);
+});
+
+it("clears cross-work resume anchors, merges N:1 source chapter intents, and transfers settled source resume on manual merge", async () => {
+  const targetWork = { ...work, pluginId: "target", sourceNovelId: "target-book", novelPath: "/target", name: "Target" };
+  addWork(active, 2, 21, targetWork);
+  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(12,1,'/chapter/2','Two','2',2)");
+  await bind();
+
+  await updateChapterProgress(11, 40);
+  await updateChapterProgress(12, 85);
+  await recordUserResume(12, { segmentIndex: 2, segmentCount: 8, offset: 0.4, progress: 85, savedAt: 1000 }, 200);
+  await tx(active, db => remapPendingUserStateInDb(db, 1, 2, { 11: 21, 12: 21 }));
+  const remapped = await prepare();
+  expect(remapped.filter(item => item.entity.kind === "reading" && item.entity.work.pluginId === "source")).toEqual([]);
+  const targetReading = remapped.find(item => item.entity.kind === "reading" && item.entity.work.pluginId === "target")!;
+  expect(targetReading.value).toMatchObject({ progress: 85 });
+  const targetResume = remapped.find(item => item.entity.kind === "resume" && item.entity.work.pluginId === "target")!;
+  expect(targetResume.value).toEqual({
+    chapter: { chapterPath: "/chapter/1", name: "One" },
+    anchor: null,
+    openedAt: 200,
+  });
+  for (const op of remapped) await ack(op, 10);
+
+  const secondSource = { pluginId: "settled-src", sourceNovelId: "settled-1", novelPath: "/settled", name: "Settled" };
+  addWork(active, 3, 31, secondSource);
+  active.sql.exec("UPDATE novel SET in_library=1,last_read_at=500 WHERE id=3");
+  active.sql.exec("UPDATE chapter SET progress=70,unread=0,read_at=500 WHERE id=31");
+  await recordUserResume(31, { segmentIndex: 1, segmentCount: 4, offset: 0.2, progress: 70, savedAt: 500 }, 500);
+  for (const op of await prepare()) await ack(op, 11);
+  const sourceRef = (reference: UserStateWorkReference, chapterPath = "/chapter/1") => ({
+    pluginId: reference.pluginId, novelId: reference.sourceNovelId!, novelPath: reference.novelPath,
+    chapterPath, chapterNumber: "1", name: "One", position: 1, page: "1", contentType: "text" as const, releaseTime: null,
+  });
+  const composition: ChapterCompositionV1 = {
+    version: 1, updatedAt: 2, entries: [{
+      id: "merged-1", path: "/chapter/1", storageChapterNumber: "1",
+      sources: [sourceRef(targetWork), sourceRef(secondSource)], primarySource: 0,
+      user: { included: true, order: 1, name: null, chapterNumber: "1" },
+    }],
+  };
+  await applyNovelMergeInDb({
+    sourceNovelId: 3, targetNovelId: 2, composition,
+    decisions: [{ kind: "map", sourceChapterId: 31, targetChapterPath: "/chapter/1" }],
+    preparedDownloads: [],
+    readingStateSourcePathByTargetPath: { "/chapter/1": "/chapter/1" },
+  });
+  const postMergeOps = await prepare();
+  expect(postMergeOps).toEqual(expect.arrayContaining([
+    expect.objectContaining({
+      entity: { kind: "resume", work: secondSource },
+      value: { chapter: null, anchor: null, openedAt: null },
+    }),
+    expect.objectContaining({
+      entity: { kind: "resume", work: targetWork },
+      value: { chapter: { chapterPath: "/chapter/1", name: "One" }, anchor: null, openedAt: 500 },
+    }),
+  ]));
+});
+
+it("reopens parked category-name-conflict shared records when resolving a category-name-exists conflict", async () => {
+  await bind();
+  for (const op of await prepare()) await ack(op, 1);
+  await insertCategory({ name: "Drama" });
+  const localDrama = (active.sql.prepare("SELECT id FROM category WHERE name='Drama'").get() as { id: number }).id;
+  const [createOp] = await prepare();
+  await ack(createOp, 2);
+
+  // Another device created "SciFi" at revision 3 while this device renamed "Drama" -> "SciFi".
+  await updateCategory(localDrama, { name: "SciFi" });
+  await applyUserStateReadPage(binding, {
+    version: 1,
+    workspaceId: binding.workspaceId,
+    epoch: binding.epoch,
+    through: 3,
+    records: [shared({ kind: "category", categoryId: "remote-scifi" }, { name: "SciFi", sort: 1, deleted: false }, 3)],
+    nextCursor: 3,
+    hasMore: false,
+    headRevision: 3,
+  });
+  await materializePendingUserState(binding);
+  expect(active.sql.prepare("SELECT deferred_reason AS reason FROM user_state_record WHERE json_extract(payload,'$.entity.categoryId')='remote-scifi'").get())
+    .toEqual({ reason: "category-name-conflict" });
+
+  const [renameOp] = await prepare();
+  await acknowledgeUserStateOperations(binding, [{
+    operationId: renameOp.operationId,
+    status: "conflict",
+    reason: "category-name-exists",
+    current: shared(renameOp.entity, createOp.value, 2, createOp.operationId),
+  }]);
+  const [conflict] = await listUserStateConflictsInDb(active.db, binding);
+  await tx(active, db => resolveUserStateLedgerConflictInDb(db, binding, {
+    id: conflict.id,
+    version: conflict.version,
+    choice: "local",
+    categoryName: "SciFi (Tablet)",
+  }));
+  await materializePendingUserState(binding);
+
+  expect(active.sql.prepare("SELECT name FROM category WHERE is_system=0 ORDER BY name").all()).toEqual([
+    { name: "SciFi" },
+    { name: "SciFi (Tablet)" },
+  ]);
+});

@@ -78,7 +78,7 @@ export function userStateValueSummary(kind: UserStateKind, value: UserStateValue
 function reasonLabel(reason: string, deferred: boolean, t: Translate): string {
   if (/category.*(?:name|collision)|name.*(?:conflict|collision)/i.test(reason)) return t("userState.reason.categoryName");
   if (/category.*(?:deleted|missing)/i.test(reason)) return t("userState.reason.categoryDeleted");
-  if (/storage|ownership|body|composition/i.test(reason) && deferred) return t("userState.reason.storage");
+  if (/ownership/i.test(reason) || (/storage|body|composition/i.test(reason) && deferred)) return t("userState.reason.storage");
   if (/chapter|catalog|metadata|work.*(?:missing|unknown)|unresolved/i.test(reason) && deferred) return t("userState.reason.metadata");
   return t(deferred ? "userState.reason.deferred" : "userState.reason.conflict");
 }
@@ -151,8 +151,13 @@ function UserStateConflictCard({ conflict, busy, onResolve }: {
   const nameCollision = /category.*(?:name|collision)|name.*(?:conflict|collision)/i.test(conflict.reason);
   const restoringCategory = (sharedCategory?.deleted === true || /category.*(?:deleted|missing)/i.test(conflict.reason)) && category?.deleted !== true;
   const nameRequired = needsCategory && category?.deleted !== true;
+  const collidingCategoryName = conflict.shared?.entity.kind === "category"
+    && conflict.entity.kind === "category"
+    && conflict.shared.entity.categoryId !== conflict.entity.categoryId
+    ? sharedCategory?.name
+    : category?.name;
   const validName = !nameRequired || (categoryName.trim().length > 0 &&
-    (!nameCollision || categoryName.trim() !== (sharedCategory?.name ?? category?.name)));
+    (!nameCollision || categoryName.trim() !== collidingCategoryName));
   const choose = (choice: "local" | "shared") => onResolve({
     conflictId: conflict.id, version: conflict.version, choice,
     ...(choice === "local" && nameRequired ? { categoryName: categoryName.trim() } : {}),

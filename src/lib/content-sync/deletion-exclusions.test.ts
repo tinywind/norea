@@ -2,7 +2,13 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { listIncomingMigrations } from "./migration-feed-state";
 vi.mock("./migration-feed-state", () => ({ listIncomingMigrations: vi.fn(async () => []) }));
 import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
-import { readServerWorkDeletionExclusions, recordServerWorkDeletionExclusion, withServerWorkDeletionExclusions } from "./deletion-exclusions";
+import {
+  readServerChapterDeletionExclusions,
+  readServerWorkDeletionExclusions,
+  recordServerWorkDeletionExclusion,
+  setServerChapterDeletionExclusion,
+  withServerWorkDeletionExclusions,
+} from "./deletion-exclusions";
 
 vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false), readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
 const memory = new Map<string, string>();
@@ -81,4 +87,16 @@ it("persists an explicit deletion without copying unrelated received holds", asy
   await recordServerWorkDeletionExclusion("http://server", source);
   vi.mocked(listIncomingMigrations).mockResolvedValue([]);
   expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set(["contents/other/work", "contents/source/work"]));
+});
+
+it("preserves concurrent chapter deletion exclusions on the same server", async () => {
+  await Promise.all([
+    setServerChapterDeletionExclusion("http://server", { pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/ch/1" }, "1", true),
+    setServerChapterDeletionExclusion("http://server/", { pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/prologue" }, null, true),
+  ]);
+  const excluded = await readServerChapterDeletionExclusions("http://server");
+  expect(excluded).toEqual(new Set([
+    '["source","book",["number",1]]',
+    '["source","book",["path","/prologue"]]',
+  ]));
 });

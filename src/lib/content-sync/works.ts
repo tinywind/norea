@@ -13,7 +13,7 @@ interface WorkCatalogPage { items: WorkCatalogEntry[]; cursor: number; hasMore: 
 interface WorkSyncCache { cursor: number; fingerprints: Record<string, string>; fileVersions: Record<string, string>; deleted: Record<string, boolean> }
 const MAX_COVER_BYTES = 10 * 1024 * 1024;
 const workSyncQueues = new Map<string, Promise<unknown>>();
-const cacheKey = (server: string) => `norea-content-works:${server}`;
+const cacheKey = (server: string) => `norea-content-works:${normalizeContentServerUrl(server)}`;
 const identityKey = (identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">) => JSON.stringify([identity.pluginId, identity.novelPath]);
 export const workMetadataFileVersion = (file: WorkMetadataSyncFile | null | undefined): string | null => file ? JSON.stringify([file.directory, file.fingerprint, file.revision]) : null;
 
@@ -271,12 +271,18 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       assertCurrent();
       await waitForServerWorkDeletion(server, id);
       if (explicitDeletions.has(file.directory)) continue;
+      let savedEntry: WorkCatalogEntry | null = null;
+      let uploadMetadata = metadata;
+      const seenEntry = latestById.get(id);
+      if (seenEntry && !seenEntry.deleted) {
+        uploadMetadata = mergeIncomingNovelMetadata(parseNovelMetadata(seenEntry.metadata), metadata);
+      }
       try {
-        await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}${rescan && cache.deleted[id] ? "?restore=true" : ""}`, token, "PUT", metadata);
+        savedEntry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}${rescan && cache.deleted[id] ? "?restore=true" : ""}`, token, "PUT", uploadMetadata);
         assertCurrent();
         await waitForServerWorkDeletion(server, id);
         if (explicitDeletions.has(file.directory)) continue;
-        if (cover) await coverRequest(server, id, token, cover, metadata.cover?.contentType);
+        if (cover) await coverRequest(server, id, token, cover, uploadMetadata.cover?.contentType);
       } catch (error) {
         await waitForServerWorkDeletion(server, id);
         if (explicitDeletions.has(file.directory) || (error instanceof ContentServerError && error.status === 410)) { cache.deleted[id] = true; dirty = true; continue; }
@@ -285,6 +291,45 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       assertCurrent();
       await waitForServerWorkDeletion(server, id);
       if (explicitDeletions.has(file.directory)) continue;
+      const hasServerCover = Boolean(cover || savedEntry?.hasCover || seenEntry?.hasCover);
+      let finalCover = cover;
+      if (!finalCover && (savedEntry?.hasCover || seenEntry?.hasCover)) {
+        try { finalCover = await coverRequest(server, id, token); }
+        catch (error) {
+          if (!(error instanceof ContentServerError && error.status === 404)) throw error;
+        }
+        assertCurrent();
+        await waitForServerWorkDeletion(server, id);
+        if (explicitDeletions.has(file.directory)) continue;
+      }
+      const savedMetadata = savedEntry && typeof savedEntry === "object" && "metadata" in savedEntry && savedEntry.metadata
+        ? parseNovelMetadata(savedEntry.metadata)
+        : uploadMetadata;
+      const finalMetadata: NovelMetadataV1 = {
+        ...savedMetadata,
+        cover: cover ? metadata.cover : (finalCover ? savedMetadata.cover : null),
+      };
+      const finalFingerprint = await workMetadataFingerprint(finalMetadata, finalCover);
+      if (finalFingerprint !== current) {
+        const stored = await installStoredNovelMetadata(finalMetadata, finalCover ?? undefined, async (latestLocal, db) => {
+          if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) return false;
+          if (!isCurrent() || explicitDeletions.has(file.directory)) return false;
+          const latestFingerprint = latestLocal ? await workMetadataFingerprint(latestLocal.metadata, await readStoredNovelCover(latestLocal.directory, latestLocal.metadata)) : null;
+          if (!isCurrent() || latestFingerprint !== current) return false;
+          const latestFile = await readWorkMetadataSyncFile(metadata.identity, db);
+          if (!isCurrent() || explicitDeletions.has(file.directory) || workMetadataFileVersion(latestFile) !== version) return false;
+        });
+        assertCurrent();
+        delete cache.deleted[id];
+        dirty = true;
+        if (stored) {
+          byIdentity.set(identity, stored.syncFile);
+          await rememberInstalledWork(cache, stored, hasServerCover);
+          installed = true;
+        }
+        if (++uploaded % 25 === 0) await checkpoint();
+        continue;
+      }
       cache.fingerprints[id] = current;
       delete cache.deleted[id];
       cache.fileVersions[identity] = version;

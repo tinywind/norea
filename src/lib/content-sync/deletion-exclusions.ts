@@ -98,14 +98,24 @@ export function serverChapterDeletionKey(identity: Pick<PackageManifest["identit
   return JSON.stringify([identity.pluginId, identity.novelId, chapter]);
 }
 
+const chapterDeletionWrites = new Map<string, Promise<void>>();
+
 export async function readServerChapterDeletionExclusions(server: string): Promise<Set<string>> {
-  const saved = await readContentSyncCache(cacheKey(server));
+  const key = cacheKey(server);
+  await chapterDeletionWrites.get(key);
+  const saved = await readContentSyncCache(key);
   return new Set(saved ? JSON.parse(saved) as string[] : []);
 }
 
 export async function setServerChapterDeletionExclusion(server: string, identity: PackageManifest["identity"], chapterNumber: string | null | undefined, deleted: boolean): Promise<void> {
-  const exclusions = await readServerChapterDeletionExclusions(server);
-  const key = serverChapterDeletionKey(identity, chapterNumber);
-  if (deleted) exclusions.add(key); else exclusions.delete(key);
-  await writeContentSyncCache(cacheKey(server), JSON.stringify([...exclusions]));
+  const key = cacheKey(server);
+  const chapterKey = serverChapterDeletionKey(identity, chapterNumber);
+  const pending = (chapterDeletionWrites.get(key) ?? Promise.resolve()).catch(() => undefined).then(async () => {
+    const saved = await readContentSyncCache(key);
+    const exclusions = new Set(saved ? JSON.parse(saved) as string[] : []);
+    if (deleted) exclusions.add(chapterKey); else exclusions.delete(chapterKey);
+    await writeContentSyncCache(key, JSON.stringify([...exclusions]));
+  }).finally(() => { if (chapterDeletionWrites.get(key) === pending) chapterDeletionWrites.delete(key); });
+  chapterDeletionWrites.set(key, pending);
+  await pending;
 }

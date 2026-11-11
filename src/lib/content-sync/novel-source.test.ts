@@ -375,4 +375,19 @@ describe("server-first download boundaries", () => {
     await expect(tryDownloadServerChapter(job)).rejects.toBe(failure);
     expect(contentServerRequest).not.toHaveBeenCalled();
   });
+
+  it("omits chapterNumber when looking up an unnumbered chapter with a numeric position", async () => {
+    settings.serverUrl = "http://configured";
+    const unnumberedJob = { ...job, chapterPath: "/prologue" };
+    vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 3, path: "/prologue", chapterNumber: null, position: 1 } as never);
+    vi.mocked(contentServerRequest).mockResolvedValueOnce({
+      ...entry,
+      manifest: { identity: { ...entry.manifest.identity, chapterPath: "/prologue" }, chapter: { chapterNumber: null } },
+    } as CatalogEntry);
+
+    expect(await tryDownloadServerChapter(unnumberedJob)).toBe(true);
+    const requestedPath = vi.mocked(contentServerRequest).mock.calls[0]?.[1] ?? "";
+    expect(requestedPath).toContain("chapterPath=%2Fprologue");
+    expect(requestedPath).not.toContain("chapterNumber=");
+  });
 });

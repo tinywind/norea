@@ -132,7 +132,7 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
       const { novel, directory, chapterIds } = local;
       await cancelNovelChapterDownloadWork([novel.id]);
       await runWorkContentStorageOperation(novel.pluginId, novel.path, async () => {
-        await deleteLocalNovelRecords(novel);
+        await deleteLocalNovelRecords(novel, { recordUserStateRemoval: true });
         useReaderStore.getState().removeNovelReaderState(novel.id);
         forgetNovelStorageDirs(novel.id, chapterIds);
         clearNovelCoverDisplayCache(novel.id, { pluginId: novel.pluginId, path: novel.path });

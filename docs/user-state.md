@@ -115,8 +115,11 @@ and their receipts are never rewritten. Historical removals that occurred before
 the journal existed cannot be inferred.
 
 Categories have stable IDs. Exact-name creation may alias a new local ID to an
-existing shared category. An invalid rename into another active name is rejected
-atomically rather than becoming a user conflict. Deleting a category writes false
+existing shared category. An invalid rename into another active name, a
+membership edit for an unknown category, or a chapter ownership mismatch returns
+a per-operation conflict receipt (`category-name-exists`, `category-missing`, or
+`chapter-ownership-conflict`) so independent operations in the same batch still
+commit. Deleting a category writes false
 membership revisions for known included works; a later explicit membership add
 restores that category and then wins by its newer server revision.
 
@@ -215,10 +218,9 @@ Requests use the existing registered-device bearer credential.
 
 An operation contains `operationId`, `entity`, `baseRevision`, `value`, and optional
 `seed: true`. A record contains entity/value, revision, operation ID, server time,
-and authenticated author ID/name. Current servers normally return `applied`,
-`unchanged`, `seed-skipped`, or `aliased`; the parser retains the older
-`conflict` receipt shape only for protocol compatibility with already-recorded
-receipts.
+and authenticated author ID/name. Servers return `applied`, `unchanged`,
+`seed-skipped`, `aliased`, or per-operation `conflict` receipts so entity-level
+invariant mismatches remain isolated from unrelated operations in the batch.
 
 Bulk-capable servers bound pages and merge batches by bytes, not by item count.
 Server requests and responses are limited to 32 MiB and the client targets 30 MiB;

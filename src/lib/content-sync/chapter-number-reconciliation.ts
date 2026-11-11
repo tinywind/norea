@@ -6,7 +6,7 @@ import {
   assertSourceChapterNumberChangesSupported,
   type ServerChapterRenumberJob,
 } from "../source-chapter-renumber";
-import { ContentServerError, contentServerRequest } from "./client";
+import { ContentServerError, contentServerRequest, normalizeContentServerUrl } from "./client";
 import type { WorkMigrationSnapshot } from "./novel-migration-types";
 import { contentWorkId, type WorkCatalogEntry } from "./works";
 import { readServerWorkDeletionExclusions, serverWorkDeletionKey } from "./deletion-exclusions";
@@ -42,13 +42,15 @@ function parseJob(payload: string): ServerChapterRenumberJob {
 }
 
 export async function listPendingChapterNumberReconciliations(server: string): Promise<ServerChapterRenumberJob[]> {
+  if (!server.trim()) return [];
+  const normalizedServer = normalizeContentServerUrl(server);
   const db = await getDb();
   const rows = await db.select<{ payload: string }[]>(
-    "SELECT payload FROM content_sync_cache WHERE cache_key LIKE $1 AND json_extract(payload,'$.serverUrl')=$2 " +
-    "AND json_extract(payload,'$.status')='pending' ORDER BY json_extract(payload,'$.createdAt'),cache_key",
-    [SERVER_CHAPTER_RENUMBER_PREFIX + "%", server],
+    "SELECT payload FROM content_sync_cache WHERE cache_key LIKE $1 AND json_extract(payload,'$.status')='pending' " +
+    "ORDER BY json_extract(payload,'$.createdAt'),cache_key",
+    [SERVER_CHAPTER_RENUMBER_PREFIX + "%"],
   );
-  return rows.map(row => parseJob(row.payload));
+  return rows.map(row => parseJob(row.payload)).filter(job => normalizeContentServerUrl(job.serverUrl) === normalizedServer);
 }
 
 async function saveJob(job: ServerChapterRenumberJob): Promise<void> {

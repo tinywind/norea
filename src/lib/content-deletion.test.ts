@@ -196,6 +196,7 @@ it("preserves local work when server deletion fails and retains its directory fo
   expect(deleteLocalNovelRecords).not.toHaveBeenCalled();
   const second = await runContentDeletion(plan, first);
   expect(second.map(result => result.status)).toEqual(["succeeded", "failed"]);
+  expect(deleteLocalNovelRecords).toHaveBeenCalledExactlyOnceWith(novel, { recordUserStateRemoval: true });
   vi.mocked(findLocalDeletionNovel).mockResolvedValue(null);
   expect((await runContentDeletion(plan, second)).every(result => result.status === "succeeded")).toBe(true);
   expect(deleteServerWork).toHaveBeenCalledTimes(2);

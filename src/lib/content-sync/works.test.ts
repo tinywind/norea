@@ -793,3 +793,24 @@ it("releases a committed migration target in the caller transaction without losi
   expect(stored).toEqual({ cursor: 42, deleted: { other: true }, fingerprints: { other: "kept" }, fileVersions: { unrelated: "kept" } });
   expect(writeContentSyncCache).not.toHaveBeenCalled();
 });
+
+it("shares the work metadata cache across trailing-slash server URLs and preserves server chapters and cover during local upload", async () => {
+  const directory = "contents/example/book";
+  remote = { ...metadata("Server title"), chapters: { "1": "Server one", "2": "Server two" } };
+  remoteCover = new Uint8Array([9, 9]);
+  sequence = 1;
+  local = [{
+    directory,
+    metadata: { ...metadata("Edited locally"), cover: null, chapters: { "1": "Local one" } },
+  }];
+  localCovers.set(directory, null);
+  revisions.set(directory, 2);
+
+  await syncWorkMetadata("http://server/", "device", true);
+
+  expect([...memory.keys()]).toEqual(["norea-content-works:http://server"]);
+  expect(remote?.novel.name).toBe("Edited locally");
+  expect(remote?.chapters).toEqual({ "1": "Local one", "2": "Server two" });
+  expect(local[0]!.metadata.chapters).toEqual({ "1": "Local one", "2": "Server two" });
+  expect(localCovers.get(directory)).toEqual(new Uint8Array([9, 9]));
+});

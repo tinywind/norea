@@ -19,7 +19,7 @@ The SQLite schema is persistent user data.
 - Runtime startup may rebuild caches from authoritative files, but schema changes
   never use opportunistic runtime DDL.
 
-The current migration set extends through 0011_user_state_journal.sql.
+The current migration set extends through 0012_content_sync_journal_triggers.sql.
 
 ## Filesystem metadata
 

@@ -4,6 +4,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 import { getDb, runDatabaseTransaction } from "../client";
+import { userStateEntityKey } from "../../lib/user-state/types";
 import { deleteLocalNovelRecords, findLocalDeletionNovel, listDeletionDownloadedChapterIds } from "./content-deletion";
 
 let sqlite: DatabaseSync;
@@ -73,4 +74,51 @@ it("lists the stored chapters a device download deletion removes, skipping local
   expect(await listDeletionDownloadedChapterIds([12, 13, 14])).toEqual([93, 94, 95, 97]);
   expect(await listDeletionDownloadedChapterIds()).toEqual([93, 94, 95, 97]);
   expect(await listDeletionDownloadedChapterIds([])).toEqual([]);
+});
+
+it("records library, category, resume, and public chapter user-state removals when requested", async () => {
+  const registration = readFileSync("src-tauri/src/database.rs", "utf8");
+  for (const match of registration.matchAll(/version:\s*(\d+),\s*description:[\s\S]*?sql:\s*include_str!\("([^"]+)"\)/g)) {
+    if (Number(match[1]) > 1) sqlite.exec(readFileSync(`src-tauri/src/${match[2]}`, "utf8"));
+  }
+  sqlite.exec(`INSERT INTO category(id,name,sort,is_system) VALUES(5,'Shelf',1,0);
+    INSERT INTO novel_category(novel_id,category_id) VALUES(12,5);
+    UPDATE novel SET last_read_at=100 WHERE id=12;
+    UPDATE chapter SET unread=0,read_at=100 WHERE id=91;
+    INSERT INTO chapter(id,novel_id,path,name,position,progress,unread,read_at,bookmark)
+    VALUES(99,12,'/private','Private',2,80,0,120,0)`);
+  const privateKey = userStateEntityKey({
+    kind: "reading",
+    work: { pluginId: "source", sourceNovelId: "42", novelPath: "/book", name: "Book" },
+    chapter: { chapterPath: "/private", name: "Private" },
+  });
+  sqlite.prepare("INSERT INTO user_state_private(entity_key,public_value_json) VALUES(?,?)")
+    .run(privateKey, '{"progress":0,"unread":true,"readAt":null}');
+
+  await deleteLocalNovelRecords(identity, { recordUserStateRemoval: true });
+
+  const intents = sqlite.prepare("SELECT entity_json AS entity,value_json AS value FROM user_state_intent ORDER BY sequence").all()
+    .map(row => ({ entity: JSON.parse(String(row.entity)), value: JSON.parse(String(row.value)) }));
+  expect(intents).toEqual([
+    {
+      entity: expect.objectContaining({ kind: "membership", work: expect.objectContaining({ pluginId: "source", sourceNovelId: "42" }) }),
+      value: { included: false },
+    },
+    {
+      entity: { kind: "library", work: { name: "Book", novelPath: "/book", pluginId: "source", sourceNovelId: "42" } },
+      value: { addedAt: null, inLibrary: false },
+    },
+    {
+      entity: { kind: "resume", work: { name: "Book", novelPath: "/book", pluginId: "source", sourceNovelId: "42" } },
+      value: { anchor: null, chapter: null, openedAt: null },
+    },
+    {
+      entity: { chapter: { chapterPath: "/chapter", name: "One" }, kind: "reading", work: { name: "Book", novelPath: "/book", pluginId: "source", sourceNovelId: "42" } },
+      value: { progress: 0, readAt: null, unread: true },
+    },
+    {
+      entity: { chapter: { chapterPath: "/chapter", name: "One" }, kind: "bookmark", work: { name: "Book", novelPath: "/book", pluginId: "source", sourceNovelId: "42" } },
+      value: { bookmarked: false },
+    },
+  ]);
 });

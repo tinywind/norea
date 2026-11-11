@@ -5,9 +5,9 @@ import {
   type UserStateMergeResult, type UserStateOperation, type UserStateReadResponse, type UserStateRecord, type UserStateValueMap,
 } from "../lib/user-state/types";
 import {
-  assertUserStateAvailableInDb, canonicalEntity, intentFromRow, namespaceFor, recordUserStateChangesInDb, requireBinding,
-  resolveCategoryAlias, seedUserStateInDb, USER_STATE_PRELINK_BASE_REVISION, userStateRestorePausedInDb, workspaceRows,
-  type IntentRow, type UserStateDb,
+  assertUserStateAvailableInDb, canonicalEntity, chapterReference, chapterWork, intentFromRow, namespaceFor, recordUserStateChangesInDb, requireBinding,
+  resolveCategoryAlias, seedUserStateInDb, USER_CHAPTER_SELECT, USER_STATE_PRELINK_BASE_REVISION, userStateRestorePausedInDb, workspaceRows,
+  type IntentRow, type UserChapterRow, type UserStateDb,
 } from "./user-state-core";
 import { portableStoredUserStateIntentInDb } from "./user-state-stored-chapter";
 
@@ -44,7 +44,7 @@ export async function bindUserStateWorkspaceInDb(db: UserStateDb, binding: UserS
 
   // Pre-LWW clients could leave compare-and-swap conflicts that permanently block
   // the next explicit edit. The workspace is single-user now, so retry those intents.
-  await db.execute("DELETE FROM user_state_conflict WHERE namespace=$1", [namespace]);
+  await db.execute("DELETE FROM user_state_conflict WHERE namespace=$1 AND reason='revision-mismatch'", [namespace]);
 
   // Current-snapshot clients created only the workspace row. Seed the durable delta
   // outbox once when such a database upgrades, then use record-level intents only.
@@ -90,7 +90,11 @@ export async function prepareUserStateOperationsInDb(
     if ((limit !== null && result.length >= limit) || bytes + size > maxBytes) return false;
     result.push(operation); bytes += size; return true;
   };
-  const retries = await db.select<OperationRow[]>("SELECT operation_id AS operationId,entity_key AS entityKey,intent_sequence AS intentSequence,payload,status,receipt FROM user_state_operation WHERE namespace=$1 AND status='pending' ORDER BY intent_sequence,operation_id", [namespace]);
+  const retries = await db.select<OperationRow[]>(
+    "SELECT operation_id AS operationId,entity_key AS entityKey,intent_sequence AS intentSequence,payload,status,receipt FROM user_state_operation " +
+    "WHERE namespace=$1 AND status='pending' ORDER BY CASE json_extract(payload,'$.entity.kind') WHEN 'category' THEN 0 ELSE 1 END,intent_sequence,operation_id",
+    [namespace],
+  );
   for (const row of retries) {
     const operation = parseUserStateOperation(JSON.parse(row.payload));
     if (!allowOpaqueIdentity && unresolvedIntent(operation.entity, operation.value)) continue;
@@ -191,8 +195,8 @@ async function rememberAlias(db: UserStateDb, namespace: string, alias: { from: 
     const [target] = await db.select<{ localId: number | null }[]>("SELECT local_id AS localId FROM user_state_category WHERE category_id=$1", [canonical]);
     if (target?.localId && target.localId !== local.localId) {
       await db.execute("INSERT OR IGNORE INTO novel_category(novel_id,category_id) SELECT novel_id,$2 FROM novel_category WHERE category_id=$1", [local.localId, target.localId]);
+      await db.execute("UPDATE user_state_category SET local_id=$2 WHERE local_id=$1 OR category_id=$3", [local.localId, target.localId, alias.from]);
       await db.execute("DELETE FROM category WHERE id=$1", [local.localId]);
-      await db.execute("UPDATE user_state_category SET local_id=$2 WHERE category_id=$1", [alias.from, target.localId]);
     } else await db.execute("INSERT INTO user_state_category(category_id,local_id) VALUES($1,$2) ON CONFLICT(category_id) DO UPDATE SET local_id=excluded.local_id", [canonical, local.localId]);
   }
 }
@@ -413,9 +417,22 @@ export async function resolveUserStateLedgerConflictInDb(db: UserStateDb, bindin
   if (!conflict || conflict.version !== input.version) throw new Error("This conflict changed. Review its current values before resolving it.");
   const key = userStateEntityKey(conflict.entity);
   if (input.choice === "local") {
-    const value = conflict.entity.kind === "category" && input.categoryName !== undefined
-      ? { ...conflict.local as UserStateValueMap["category"], name: input.categoryName.trim() } : conflict.local;
-    if (conflict.entity.kind === "membership" && conflict.reason === "category-deleted") {
+    const trimmedCategoryName = conflict.entity.kind === "category" && input.categoryName !== undefined
+      ? input.categoryName.trim()
+      : undefined;
+    if (trimmedCategoryName !== undefined && !trimmedCategoryName) {
+      throw new Error("Provide a category name before resolving this conflict.");
+    }
+    const value = trimmedCategoryName !== undefined
+      ? { ...conflict.local as UserStateValueMap["category"], name: trimmedCategoryName } : conflict.local;
+    let entity = conflict.entity;
+    if (conflict.entity.kind === "category" && trimmedCategoryName !== undefined) {
+      const categoryId = await resolveCategoryAlias(db, namespace, conflict.entity.categoryId);
+      await db.execute(
+        "UPDATE category SET name=$2 WHERE is_system=0 AND id=(SELECT local_id FROM user_state_category WHERE category_id IN ($1,$3) ORDER BY rowid LIMIT 1) AND NOT EXISTS(SELECT 1 FROM category existing WHERE lower(existing.name)=lower($2) AND existing.id<>category.id)",
+        [categoryId, trimmedCategoryName, conflict.entity.categoryId],
+      );
+    } else if (conflict.entity.kind === "membership" && conflict.reason === "category-deleted") {
       const categoryId = await resolveCategoryAlias(db, namespace, conflict.entity.categoryId);
       const categoryKey = userStateEntityKey({ kind: "category", categoryId });
       const [category] = await db.select<{ payload: string }[]>("SELECT payload FROM user_state_record WHERE namespace=$1 AND entity_key=$2", [namespace, categoryKey]);
@@ -423,12 +440,48 @@ export async function resolveUserStateLedgerConflictInDb(db: UserStateDb, bindin
       const record = parseUserStateRecord(JSON.parse(category.payload));
       await recordUserStateChangesInDb(db, [{ entity: record.entity, value: { ...record.value as UserStateValueMap["category"], ...(input.categoryName === undefined ? {} : { name: input.categoryName.trim() }), deleted: false } }]);
       await db.execute("UPDATE user_state_progress SET base_revision=$3 WHERE namespace=$1 AND entity_key=$2", [namespace, categoryKey, record.revision]);
+    } else if (conflict.entity.kind === "membership" && conflict.reason === "category-missing") {
+      const categoryId = await resolveCategoryAlias(db, namespace, conflict.entity.categoryId);
+      const [localCategory] = await db.select<{ name: string; sort: number }[]>(
+        "SELECT c.name,c.sort FROM category c JOIN user_state_category m ON m.local_id=c.id WHERE m.category_id IN ($1,$2) ORDER BY m.rowid LIMIT 1",
+        [categoryId, conflict.entity.categoryId],
+      );
+      const name = (input.categoryName ?? localCategory?.name ?? conflict.categoryName ?? "").trim();
+      if (!name) throw new Error("Provide a category name before recreating the missing category.");
+      const categoryEntity: UserStateEntity = { kind: "category", categoryId };
+      await recordUserStateChangesInDb(db, [{ entity: categoryEntity, value: { name, sort: localCategory?.sort ?? 0, deleted: false } }]);
+      await db.execute("UPDATE user_state_progress SET base_revision=0 WHERE namespace=$1 AND entity_key=$2", [namespace, userStateEntityKey(categoryEntity)]);
+    } else if ((conflict.entity.kind === "reading" || conflict.entity.kind === "bookmark") && conflict.reason === "chapter-ownership-conflict") {
+      const [localChapter] = await db.select<UserChapterRow[]>(
+        USER_CHAPTER_SELECT + " WHERE n.plugin_id=$1 AND (CASE WHEN $2 IS NULL THEN n.path=$3 ELSE lower(n.source_novel_id)=lower($2) END) AND c.path=$4 LIMIT 1",
+        [conflict.entity.work.pluginId, conflict.entity.work.sourceNovelId, conflict.entity.work.novelPath, conflict.entity.chapter.chapterPath],
+      );
+      if (localChapter) {
+        entity = { ...conflict.entity, work: chapterWork(localChapter), chapter: chapterReference(localChapter) };
+      } else if (conflict.shared && (conflict.shared.entity.kind === "reading" || conflict.shared.entity.kind === "bookmark")) {
+        entity = { ...conflict.entity, chapter: conflict.shared.entity.chapter };
+      }
     }
-    await recordUserStateChangesInDb(db, [{ entity: conflict.entity, value }]);
-    await db.execute("UPDATE user_state_progress SET base_revision=$3 WHERE namespace=$1 AND entity_key=$2", [namespace, key, conflict.shared?.revision ?? 0]);
+    await recordUserStateChangesInDb(db, [{ entity, value }]);
+    await db.execute("UPDATE user_state_progress SET base_revision=$3 WHERE namespace=$1 AND entity_key=$2", [namespace, userStateEntityKey(entity), conflict.shared?.revision ?? 0]);
   } else {
+    if (conflict.entity.kind === "category" && conflict.shared?.entity.kind === "category") {
+      const categoryId = await resolveCategoryAlias(db, namespace, conflict.entity.categoryId);
+      const sharedValue = conflict.shared.value as UserStateValueMap["category"];
+      if (sharedValue.deleted) {
+        await db.execute("DELETE FROM category WHERE is_system=0 AND id=(SELECT local_id FROM user_state_category WHERE category_id IN ($1,$2) ORDER BY rowid LIMIT 1)", [categoryId, conflict.entity.categoryId]);
+      } else {
+        await db.execute(
+          "UPDATE category SET name=$2,sort=$3 WHERE is_system=0 AND id=(SELECT local_id FROM user_state_category WHERE category_id IN ($1,$4) ORDER BY rowid LIMIT 1) AND NOT EXISTS(SELECT 1 FROM category existing WHERE lower(existing.name)=lower($2) AND existing.id<>category.id)",
+          [categoryId, sharedValue.name, sharedValue.sort, conflict.entity.categoryId],
+        );
+      }
+    }
     await db.execute("UPDATE user_state_progress SET acknowledged_sequence=local_sequence,base_revision=$3 WHERE namespace=$1 AND entity_key=$2", [namespace, key, conflict.shared?.revision ?? 0]);
-    if (conflict.shared) await db.execute("UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL WHERE namespace=$1 AND entity_key=$2", [namespace, userStateEntityKey(conflict.shared.entity)]);
+    if (conflict.shared) await db.execute("UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2", [namespace, userStateEntityKey(conflict.shared.entity)]);
+  }
+  if (conflict.entity.kind === "category" || conflict.entity.kind === "membership") {
+    await db.execute("UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND deferred_reason IN ('category-name-conflict','missing-category')", [namespace]);
   }
   await db.execute("DELETE FROM user_state_conflict WHERE namespace=$1 AND id=$2", [namespace, input.id]);
 }

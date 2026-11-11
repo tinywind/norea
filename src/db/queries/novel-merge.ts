@@ -1,4 +1,4 @@
-import { remapPendingUserStateInDb } from "../user-state-migration";
+import { remapPendingUserStateInDb, transferSettledNovelMergeResumeInDb } from "../user-state-migration";
 import { recordCompositionInDb, recordLibraryInDb, recordPublicNovelReadingInDb, recordChaptersInDb, recordMembershipInDb, hasUserStateSchema } from "../user-state-core";
 import { deferUserStateForNovelInDb } from "../user-state";
 import type Database from "@tauri-apps/plugin-sql";
@@ -518,6 +518,14 @@ export async function applyNovelMergeInDb({
     const explicitResume = remappedState.resumes.at(-1);
     if (explicitResume) preferredLastReadChapterId = explicitResume.chapterId;
     if (!recordIncomingMigration) {
+      const settledResume = await transferSettledNovelMergeResumeInDb(
+        db,
+        sourceNovelId,
+        targetNovelId,
+        chapterIdMap,
+        Boolean(explicitResume),
+      );
+      if (settledResume) preferredLastReadChapterId = settledResume.chapterId;
       await recordLibraryInDb(db, [sourceNovelId], true);
       await recordLibraryInDb(db, [targetNovelId]);
       await recordPublicNovelReadingInDb(db, [targetNovelId]);

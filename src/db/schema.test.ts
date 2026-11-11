@@ -247,3 +247,41 @@ it("upgrades v9 with durable chapter composition without changing library, conte
       .toEqual({ version: 1, updatedAt: 42, entries: [] });
   } finally { db.close(); rmSync(directory, { recursive: true }); }
 });
+
+it("upgrades v11 content-sync journal triggers to record incomplete-media bodies and chapter path renames", () => {
+  const db = new DatabaseSync(":memory:");
+  try {
+    applyRegisteredMigrations(db, 0, 11);
+    db.exec(`INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(1,'source','work-1','/work','Work');
+      INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,content_bytes,media_repair_needed)
+      VALUES(1,1,'/incomplete','Incomplete',1,0,120,1),(2,1,'/empty','Empty',2,0,0,0)`);
+    db.exec("DELETE FROM content_sync_journal");
+
+    applyRegisteredMigrations(db, 11, 12);
+    expect(db.prepare("SELECT state_key FROM content_sync_journal").all()).toEqual([
+      { state_key: 'content:["source","/work","/incomplete"]' },
+    ]);
+
+    db.exec("DELETE FROM content_sync_journal");
+    db.exec("INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,content_bytes) VALUES(3,1,'/body-only','Body',3,0,80)");
+    expect(db.prepare("SELECT state_key FROM content_sync_journal").all()).toEqual([
+      { state_key: 'content:["source","/work","/body-only"]' },
+    ]);
+
+    db.exec("DELETE FROM content_sync_journal");
+    db.exec("UPDATE chapter SET path='/renamed' WHERE id=3");
+    expect(db.prepare("SELECT state_key FROM content_sync_journal ORDER BY state_key").all()).toEqual([
+      { state_key: 'content:["source","/work","/body-only"]' },
+      { state_key: 'content:["source","/work","/renamed"]' },
+    ]);
+
+    db.exec("DELETE FROM content_sync_journal");
+    db.exec("UPDATE novel SET name='Renamed Work' WHERE id=1");
+    expect(db.prepare("SELECT state_key FROM content_sync_journal ORDER BY state_key").all()).toEqual([
+      { state_key: 'content:["source","/work","/incomplete"]' },
+      { state_key: 'content:["source","/work","/renamed"]' },
+    ]);
+  } finally {
+    db.close();
+  }
+});

@@ -94,6 +94,12 @@ pub fn schema_migrations() -> Vec<Migration> {
             sql: include_str!("migrations/0011_user_state_journal.sql"),
             kind: MigrationKind::Up,
         },
+        Migration {
+            version: 12,
+            description: "journal chapter path rewrites and incomplete media bodies for content sync",
+            sql: include_str!("migrations/0012_content_sync_journal_triggers.sql"),
+            kind: MigrationKind::Up,
+        },
     ]
 }
 

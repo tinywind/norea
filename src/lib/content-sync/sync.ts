@@ -291,7 +291,12 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
 }
 
 let running: Promise<void> | null = null;
-let pendingSync: { uploadContent: boolean; rescan: boolean; retryBlockedMigrations: boolean } | null = null;
+let pendingSync: {
+  uploadContent: boolean;
+  rescan: boolean;
+  retryBlockedMigrations: boolean;
+  promise: Promise<void>;
+} | null = null;
 
 export function runContentSyncOperation<T>(operation: () => Promise<T>): Promise<T> {
   const waiting = new AbortController();
@@ -382,23 +387,30 @@ export function syncReceivedWorkMigrations(signal = new AbortController().signal
 }
 
 export function syncContentServer(uploadContent = true, rescan = false, retryBlockedMigrations = true): Promise<void> {
-  if (pendingSync && running) {
+  if (pendingSync) {
     pendingSync.uploadContent ||= uploadContent;
     pendingSync.rescan ||= rescan;
     pendingSync.retryBlockedMigrations ||= retryBlockedMigrations;
-    return running;
+    return pendingSync.promise;
   }
-  const requested = { uploadContent, rescan, retryBlockedMigrations };
-  pendingSync = requested;
   const previous = running ?? Promise.resolve();
-  const reserved = previous.catch(() => undefined).then(() => {
-    pendingSync = null;
+  const requested = {
+    uploadContent,
+    rescan,
+    retryBlockedMigrations,
+    promise: Promise.resolve(),
+  };
+  const promise = previous.catch(() => undefined).then(() => {
+    if (pendingSync === requested) pendingSync = null;
     return performSync(requested.uploadContent, requested.rescan, requested.retryBlockedMigrations);
-  }).finally(() => {
+  });
+  requested.promise = promise;
+  pendingSync = requested;
+  const reserved = promise.then(() => undefined, () => undefined).finally(() => {
     if (running === reserved) running = null;
   });
   running = reserved;
-  return reserved;
+  return promise;
 }
 
 export async function downloadServerChapter(entry: CatalogEntry): Promise<{ novelId: number; chapterId: number }> {

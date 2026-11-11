@@ -74,7 +74,8 @@ export async function tryDownloadServerChapter(
     throw new Error("Content server download identity does not match the local chapter.");
   }
   const target = { pluginId: novel.pluginId, novelPath: novel.path, chapterPath: chapter.path };
-  const number = chapter.chapterNumber ?? (chapter.position > 0 ? String(chapter.position) : undefined);
+  const recoveredNumber = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(chapter.path)?.[1];
+  const number = chapter.chapterNumber ?? recoveredNumber;
   const chapterNumber = number && /^\d+(?:\.\d+)?$/.test(number) ? number : undefined;
   const query = new URLSearchParams({ ...target, ...(chapterNumber ? { chapterNumber } : {}) });
   signal?.throwIfAborted();
@@ -97,7 +98,10 @@ export async function tryDownloadServerChapter(
   const { entry, token } = found;
   const identity = entry.manifest.identity;
   const sameWork = identity.novelPath === novel.path;
-  const sameChapter = identity.chapterPath === chapter.path || (chapterNumber && entry.manifest.chapter?.chapterNumber != null && Number(entry.manifest.chapter.chapterNumber) === Number(chapterNumber));
+  const entryFolderNumber = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(identity.chapterPath)?.[1];
+  const rawEntryNumber = entry.manifest.chapter?.chapterNumber;
+  const entryChapterNumber = rawEntryNumber != null && /^\d+(?:\.\d+)?$/.test(rawEntryNumber) ? rawEntryNumber : entryFolderNumber;
+  const sameChapter = identity.chapterPath === chapter.path || Boolean(chapterNumber && entryChapterNumber && Number(entryChapterNumber) === Number(chapterNumber));
   if (entry.deleted || identity.pluginId !== novel.pluginId || !sameWork || !sameChapter) {
     throw new Error("Content server download identity does not match the requested chapter.");
   }

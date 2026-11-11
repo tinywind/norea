@@ -6,6 +6,7 @@ import { isChapterPayloadInventory, type ChapterPayloadInventory } from "../../l
 import type { MigrationWorkIdentity, NovelMigrationTargetMetadata, PendingNovelMigration, WorkMigrationSnapshot } from "../../lib/content-sync/novel-migration-types";
 import { sqliteBoolean } from "../sqlite-value";
 import { canonicalMetadataValue, parseNovelMetadata, type NovelMetadataV1 } from "../../lib/work-metadata/schema";
+import { normalizeContentServerUrl } from "../../lib/content-sync/client";
 import type { PackageManifest } from "../../lib/content-sync/native";
 import type { ServerChapterSummary } from "../../lib/content-sync/chapters";
 import { LOCAL_PLUGIN_ID } from "../../lib/plugins/types";
@@ -384,9 +385,10 @@ export async function recordPendingNovelMergeInDb(db: Database, input: {
   const identity = (work: MigrationWorkIdentity): MigrationWorkIdentity => ({
     pluginId: work.pluginId, novelId: work.novelId, novelPath: work.novelPath,
   });
+  const normalizedServerUrl = normalizeContentServerUrl(serverUrl);
   const now = Date.now();
   const job: PendingNovelMigration = {
-    version: 1, operationId: crypto.randomUUID(), serverUrl,
+    version: 1, operationId: crypto.randomUUID(), serverUrl: normalizedServerUrl,
     source: identity(source), target: identity(target), targetLocalNovelId: target.id, chapters,
     ...(input.sourceSnapshot ? { sourceSnapshot: input.sourceSnapshot } : {}),
     ...(input.targetMetadata ? { targetMetadata: input.targetMetadata } : {}),
@@ -398,17 +400,19 @@ export async function recordPendingNovelMergeInDb(db: Database, input: {
 }
 
 export async function listNovelMigrations(serverUrl: string, includeCompleted = false): Promise<PendingNovelMigration[]> {
+  if (!serverUrl.trim()) return [];
+  const normalizedServerUrl = normalizeContentServerUrl(serverUrl);
   const db = await getDb();
   const rows = await db.select<{ payload: string }[]>(
     "SELECT payload FROM content_sync_cache WHERE cache_key LIKE $1 ORDER BY cache_key",
     [`${NOVEL_MIGRATION_CACHE_PREFIX}%`],
   );
   return rows.map(row => parseNovelMigration(row.payload))
-    .filter(job => job.serverUrl === serverUrl && (includeCompleted || job.status !== "completed"));
+    .filter(job => normalizeContentServerUrl(job.serverUrl) === normalizedServerUrl && (includeCompleted || job.status !== "completed"));
 }
 
 export async function saveNovelMigration(job: PendingNovelMigration): Promise<void> {
-  await writeContentSyncCache(migrationCacheKey(job.operationId), JSON.stringify(job));
+  await writeContentSyncCache(migrationCacheKey(job.operationId), JSON.stringify({ ...job, serverUrl: normalizeContentServerUrl(job.serverUrl) }));
 }
 
 /** Guard imports inside their existing raw transaction, after any earlier merge has committed. */
@@ -417,20 +421,22 @@ export async function isNovelMigrationSourceHeldInDb(
   serverUrl: string,
   identity: MigrationWorkIdentity,
 ): Promise<boolean> {
+  if (!serverUrl.trim()) return false;
+  const normalizedServerUrl = normalizeContentServerUrl(serverUrl);
   const rows = await db.select<{ held: boolean }[]>(`SELECT EXISTS(
     SELECT 1 FROM content_sync_cache WHERE cache_key LIKE $1
-    AND json_extract(payload,'$.serverUrl')=$2 AND json_extract(payload,'$.source.pluginId')=$3
+    AND rtrim(json_extract(payload,'$.serverUrl'),'/') IN ($2,$6) AND json_extract(payload,'$.source.pluginId')=$3
     AND (json_extract(payload,'$.source.novelPath')=$4 OR json_extract(payload,'$.source.novelId')=$5)
     UNION ALL
     SELECT 1 FROM content_sync_cache WHERE cache_key LIKE 'norea-content-incoming-migration:%'
-    AND json_extract(payload,'$.serverUrl')=$2 AND json_extract(payload,'$.status')<>'inactive'
+    AND rtrim(json_extract(payload,'$.serverUrl'),'/') IN ($2,$6) AND json_extract(payload,'$.status')<>'inactive'
     AND json_extract(payload,'$.source.pluginId')=$3
     AND (json_extract(payload,'$.source.novelPath')=$4 OR json_extract(payload,'$.source.novelId')=$5)
     UNION ALL
     SELECT 1 FROM content_sync_cache WHERE cache_key LIKE 'norea-content-chapter-number-reconciliation:%'
-    AND json_extract(payload,'$.serverUrl')=$2 AND json_extract(payload,'$.status')='pending'
+    AND rtrim(json_extract(payload,'$.serverUrl'),'/') IN ($2,$6) AND json_extract(payload,'$.status')='pending'
     AND json_extract(payload,'$.identity.pluginId')=$3
     AND (json_extract(payload,'$.identity.novelPath')=$4 OR json_extract(payload,'$.identity.novelId')=$5)
-  ) AS held`, [`${NOVEL_MIGRATION_CACHE_PREFIX}%`, serverUrl, identity.pluginId, identity.novelPath, identity.novelId]);
+  ) AS held`, [`${NOVEL_MIGRATION_CACHE_PREFIX}%`, normalizedServerUrl, identity.pluginId, identity.novelPath, identity.novelId, serverUrl.trim().replace(/\/+$/, "")]);
   return sqliteBoolean(rows[0]?.held);
 }

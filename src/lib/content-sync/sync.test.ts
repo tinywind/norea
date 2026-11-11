@@ -1250,3 +1250,29 @@ it("does not begin migration-only reception after the caller was cancelled", asy
   expect(syncIncomingNovelMigrations).not.toHaveBeenCalled();
   expect(syncWorkMetadata).not.toHaveBeenCalled();
 });
+
+it("propagates a queued sync failure to coalesced callers even when an operation joins the queue", async () => {
+  let releaseFirst!: () => void;
+  const firstGate = new Promise<void>(resolve => { releaseFirst = resolve; });
+  let calls = 0;
+  vi.mocked(syncWorkMetadata).mockImplementation(async () => {
+    calls++;
+    if (calls === 1) {
+      await firstGate;
+      return { deletedWorks: new Set(), changedOutsideCache: [] };
+    }
+    throw new Error("Coalesced sync failed");
+  });
+
+  const first = syncContentServer();
+  await vi.waitFor(() => expect(calls).toBe(1));
+  const queuedSync = syncContentServer(true);
+  const sideOperation = runContentSyncOperation(async () => "ok");
+  const joinedSync = syncContentServer();
+
+  releaseFirst();
+  await first;
+  await expect(sideOperation).resolves.toBe("ok");
+  await expect(queuedSync).rejects.toThrow("Coalesced sync failed");
+  await expect(joinedSync).rejects.toThrow("Coalesced sync failed");
+});

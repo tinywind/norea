@@ -21,7 +21,12 @@ import {
   type UserStateReadResponse, type UserStateStatus, type UserStateWorkspace,
 } from "./types";
 
-interface Synchronization { promise: Promise<void>; controller: AbortController }
+interface Synchronization {
+  promise: Promise<void>;
+  controller: AbortController;
+  unconditionalWaiters: number;
+  signalWaiters: number;
+}
 const running = new Map<string, Synchronization>();
 
 function selectedServer(): string {
@@ -82,10 +87,18 @@ async function request(serverUrl: string, path: string, token: string, signal: A
     });
     if (!response.ok) {
       if (response.status === 401) forgetContentDeviceRegistration(serverUrl, token);
-      await response.body?.cancel();
-      throw new ContentServerError(response.status, response.status === 409
+      let serverMessage: string | undefined;
+      try {
+        const payload = await readUserStateResponse(response, 64 * 1024);
+        if (payload && typeof payload === "object" && "message" in payload && typeof payload.message === "string" && payload.message.trim()) {
+          serverMessage = payload.message.trim();
+        }
+      } catch {
+        await response.body?.cancel().catch(() => undefined);
+      }
+      throw new ContentServerError(response.status, serverMessage ?? (response.status === 409
         ? "User state: the workspace or retained cursor changed. Pending changes were retained."
-        : undefined);
+        : undefined));
     }
     const result = await readUserStateResponse(response);
     deadline.throwIfAborted();
@@ -252,6 +265,7 @@ async function runSynchronization(serverUrl: string, controller: AbortController
       check();
       // This also receives deletion cascades and other changes committed before this receipt.
       await pullThrough(response.headRevision);
+      check();
     }
 
     await pullThrough(workspace.headRevision);
@@ -270,6 +284,7 @@ async function runSynchronization(serverUrl: string, controller: AbortController
     if (projection.projectionPending || projection.projectionFailed) {
       throw new Error("Received personal state could not finish its applicable local projection. Pending edits were retained.");
     }
+    let sentBatch = false;
     for (;;) {
       check();
       const operations = (await prepareUserStateOperations(binding, {
@@ -279,7 +294,12 @@ async function runSynchronization(serverUrl: string, controller: AbortController
       })).map(parseUserStateOperation);
       check();
       if (!operations.length) break;
+      if (sentBatch) {
+        await waitForUserStateDeferredApply();
+        check();
+      }
       await sendOperations(operations);
+      sentBatch = true;
     }
     check();
     useUserStateStore.getState().setRuntime(serverUrl, "idle");
@@ -297,20 +317,48 @@ export function synchronizeUserState(options: { signal?: AbortSignal } = {}): Pr
   const serverUrl = selectedServer();
   if (!serverUrl) return Promise.reject(new Error("Configure the content server before sharing user changes."));
   if (options.signal?.aborted) return Promise.reject(options.signal.reason);
-  const existing = running.get(serverUrl);
-  if (existing && !existing.controller.signal.aborted) return existing.promise;
-  const controller = new AbortController();
-  const abort = () => controller.abort(options.signal?.reason ?? requestAbortedError());
-  options.signal?.addEventListener("abort", abort, { once: true });
-  const current: Synchronization = { controller, promise: Promise.resolve() };
-  // Defer one microtask so synchronous store subscribers can join this exact run.
-  current.promise = serializeUserStateSynchronization(() => runSynchronization(serverUrl, controller),
-    () => controller.abort(requestAbortedError()), controller.signal).finally(() => {
-    options.signal?.removeEventListener("abort", abort);
-    if (running.get(serverUrl) === current) running.delete(serverUrl);
+  let current = running.get(serverUrl);
+  if (!current || current.controller.signal.aborted) {
+    const controller = new AbortController();
+    const created: Synchronization = { controller, promise: Promise.resolve(), unconditionalWaiters: 0, signalWaiters: 0 };
+    // Defer one microtask so synchronous store subscribers can join this exact run.
+    created.promise = serializeUserStateSynchronization(() => runSynchronization(serverUrl, controller),
+      () => controller.abort(requestAbortedError()), controller.signal).finally(() => {
+      if (running.get(serverUrl) === created) running.delete(serverUrl);
+    });
+    running.set(serverUrl, created);
+    current = created;
+  }
+  const signal = options.signal;
+  if (!signal) {
+    current.unconditionalWaiters++;
+    return current.promise;
+  }
+  current.signalWaiters++;
+  return new Promise<void>((resolve, reject) => {
+    let released = false;
+    const release = () => {
+      if (released) return;
+      released = true;
+      current.signalWaiters = Math.max(0, current.signalWaiters - 1);
+    };
+    const abort = () => {
+      release();
+      const reason = signal.reason ?? requestAbortedError();
+      if (current.unconditionalWaiters === 0 && current.signalWaiters === 0) current.controller.abort(reason);
+      reject(reason);
+    };
+    signal.addEventListener("abort", abort, { once: true });
+    if (signal.aborted) {
+      signal.removeEventListener("abort", abort);
+      abort();
+      return;
+    }
+    current.promise.then(
+      () => { signal.removeEventListener("abort", abort); release(); resolve(); },
+      error => { signal.removeEventListener("abort", abort); release(); reject(error); },
+    );
   });
-  running.set(serverUrl, current);
-  return current.promise;
 }
 
 export async function resolveUserStateConflict(input: ResolveUserStateConflictInput): Promise<void> {

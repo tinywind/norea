@@ -1,11 +1,11 @@
 import {
-  chapterReference, chapterWork, hasUserStateSchema, intentFromRow, recordUserStateChangesInDb,
+  chapterReference, chapterWork, hasUserStateSchema, intentFromRow, recordResumeClearedInDb, recordUserStateChangesInDb,
   USER_CHAPTER_SELECT, workReferenceInDb, type IntentRow, type UserChapterRow, type UserStateDb, type UserStateIntent,
 } from "./user-state-core";
 import { currentResumeValues } from "./user-state-current-data";
 import { mergeUserStateCurrentResume, parseUserStateCurrentItem } from "../lib/user-state/current-types";
 import { DeferredUserState, materializeUserStateRecordInDb } from "./user-state-materialize";
-import { userStateEntityKey, userStateWorkKey, type UserStateApplyEffects, type UserStateValueMap } from "../lib/user-state/types";
+import { parseUserStateRecord, userStateEntityKey, userStateWorkKey, type UserStateApplyEffects, type UserStateResumeEffect, type UserStateValueMap } from "../lib/user-state/types";
 
 async function pendingIntents(db: UserStateDb): Promise<IntentRow[]> {
   return db.select<IntentRow[]>(`SELECT i.sequence,i.entity_key AS entityKey,i.entity_json AS entityJson,i.value_json AS valueJson,i.seed FROM user_state_intent i
@@ -85,7 +85,7 @@ export async function remapPendingUserStateInDb(db: UserStateDb, sourceNovelId: 
     }
     return effects;
   }
-  const latest = new Map<string, { intent: UserStateIntent; sequence: number; from: string | null; rewrite: boolean }>();
+  const latest = new Map<string, { intent: UserStateIntent; sequence: number; fromSource: boolean; fromKeys: Set<string>; rewrite: boolean }>();
   for (const row of await pendingIntents(db)) {
     const intent = intentFromRow(row);
     if (!("work" in intent.entity)) continue;
@@ -93,7 +93,8 @@ export async function remapPendingUserStateInDb(db: UserStateDb, sourceNovelId: 
     if (workKey !== sourceKey && workKey !== targetKey) continue;
     if (intent.entity.kind === "composition") continue;
     let mapped = intent;
-    if (workKey === sourceKey) {
+    const fromSource = workKey === sourceKey;
+    if (fromSource) {
       if (intent.entity.kind === "reading" || intent.entity.kind === "bookmark") {
         const chapter = remapChapter(intent.entity.chapter.chapterPath);
         if (!chapter) continue; // A genuinely unmapped change remains in the ledger.
@@ -102,7 +103,7 @@ export async function remapPendingUserStateInDb(db: UserStateDb, sourceNovelId: 
         const value = intent.value as UserStateValueMap["resume"];
         const chapter = value.chapter ? remapChapter(value.chapter.chapterPath) : null;
         if (value.chapter && !chapter) continue;
-        mapped = { entity: { kind: "resume", work: target }, value: { ...value, chapter: chapter ? chapterReference(chapter) : null } };
+        mapped = { entity: { kind: "resume", work: target }, value: { ...value, chapter: chapter ? chapterReference(chapter) : null, anchor: null } };
       } else mapped = { ...intent, entity: { ...intent.entity, work: target } };
     } else if (intent.entity.kind === "reading" || intent.entity.kind === "bookmark") {
       const path = targetPathsByOldPath.get(intent.entity.chapter.chapterPath);
@@ -114,7 +115,41 @@ export async function remapPendingUserStateInDb(db: UserStateDb, sourceNovelId: 
     }
     const key = userStateEntityKey(mapped.entity);
     const previous = latest.get(key);
-    if (!previous || previous.sequence < row.sequence) latest.set(key, { intent: mapped, sequence: row.sequence, from: key === row.entityKey ? null : row.entityKey, rewrite: mapped !== intent });
+    const fromKeys = previous ? new Set(previous.fromKeys) : new Set<string>();
+    if (key !== row.entityKey) fromKeys.add(row.entityKey);
+    if (previous && previous.fromSource && fromSource) {
+      let mergedIntent = mapped;
+      if (previous.intent.entity.kind === "reading" && mapped.entity.kind === "reading") {
+        const left = previous.intent.value as UserStateValueMap["reading"];
+        const right = mapped.value as UserStateValueMap["reading"];
+        const anyPositive = left.progress > 0 || !left.unread || left.readAt !== null || right.progress > 0 || !right.unread || right.readAt !== null;
+        mergedIntent = {
+          entity: mapped.entity,
+          value: anyPositive
+            ? {
+                progress: Math.max(left.progress, right.progress),
+                unread: left.unread && right.unread,
+                readAt: left.readAt === null ? right.readAt : right.readAt === null ? left.readAt : Math.max(left.readAt, right.readAt),
+              }
+            : { progress: 0, unread: true, readAt: null },
+        };
+      } else if (previous.intent.entity.kind === "bookmark" && mapped.entity.kind === "bookmark") {
+        const left = previous.intent.value as UserStateValueMap["bookmark"];
+        const right = mapped.value as UserStateValueMap["bookmark"];
+        mergedIntent = { entity: mapped.entity, value: { bookmarked: left.bookmarked || right.bookmarked } };
+      }
+      latest.set(key, {
+        intent: mergedIntent,
+        sequence: Math.max(previous.sequence, row.sequence),
+        fromSource: true,
+        fromKeys,
+        rewrite: true,
+      });
+    } else if (!previous || previous.sequence < row.sequence) {
+      latest.set(key, { intent: mapped, sequence: row.sequence, fromSource, fromKeys, rewrite: mapped !== intent || previous !== undefined });
+    } else {
+      previous.fromKeys = fromKeys;
+    }
   }
   for (const item of latest.values()) {
     // Replay the actual pending value after the legacy preservation MAX/OR merge.
@@ -130,9 +165,64 @@ export async function remapPendingUserStateInDb(db: UserStateDb, sourceNovelId: 
     if (item.intent.entity.kind === "reading") await db.execute("DELETE FROM user_state_private WHERE entity_key=$1", [userStateEntityKey(item.intent.entity)]);
     if (item.rewrite) await recordUserStateChangesInDb(db, [item.intent]);
     // Frozen operations remain retryable under their original IDs and payloads.
-    if (item.from) await db.execute("DELETE FROM user_state_intent WHERE entity_key=$1", [item.from]);
+    for (const fromKey of item.fromKeys) await db.execute("DELETE FROM user_state_intent WHERE entity_key=$1", [fromKey]);
   }
   return effects;
+}
+
+export async function transferSettledNovelMergeResumeInDb(
+  db: UserStateDb,
+  sourceNovelId: number,
+  targetNovelId: number,
+  chapterIdMap: Record<number, number>,
+  alreadyTransferredResume: boolean,
+): Promise<UserStateResumeEffect | null> {
+  if (!await hasUserStateSchema(db)) return null;
+  const source = await workReferenceInDb(db, sourceNovelId);
+  const target = await workReferenceInDb(db, targetNovelId);
+  if (!source || !target) return null;
+  const sourceResumeKey = userStateEntityKey({ kind: "resume", work: source });
+  const targetResumeKey = userStateEntityKey({ kind: "resume", work: target });
+  const readLatestResume = async (resumeKey: string): Promise<UserStateValueMap["resume"] | null> => {
+    const [intentRow] = await db.select<IntentRow[]>(
+      "SELECT sequence,entity_key AS entityKey,entity_json AS entityJson,value_json AS valueJson,seed FROM user_state_intent WHERE entity_key=$1",
+      [resumeKey],
+    );
+    if (intentRow && intentRow.seed === 0) return intentFromRow(intentRow).value as UserStateValueMap["resume"];
+    const recordRows = await db.select<{ payload: string }[]>(
+      "SELECT payload FROM user_state_record WHERE entity_key=$1 ORDER BY revision DESC",
+      [resumeKey],
+    );
+    for (const row of recordRows) {
+      const parsed = parseUserStateRecord(JSON.parse(row.payload));
+      if (parsed.entity.kind === "resume") return parsed.value as UserStateValueMap["resume"];
+    }
+    return intentRow ? intentFromRow(intentRow).value as UserStateValueMap["resume"] : null;
+  };
+  const sourceResume = await readLatestResume(sourceResumeKey);
+  if (sourceResume?.chapter) {
+    await recordResumeClearedInDb(db, [sourceNovelId]);
+  }
+  if (alreadyTransferredResume || !sourceResume?.chapter) return null;
+  const chapters = await db.select<UserChapterRow[]>(USER_CHAPTER_SELECT + " WHERE c.novel_id IN ($1,$2)", [sourceNovelId, targetNovelId]);
+  const byId = new Map(chapters.map(row => [row.id, row]));
+  const original = chapters.find(row => row.novelId === sourceNovelId && row.chapterPath === sourceResume.chapter!.chapterPath);
+  if (!original) return null;
+  const originalRef = chapterReference(original);
+  if (originalRef.compositionEntryId && originalRef.compositionEntryId !== sourceResume.chapter.compositionEntryId) return null;
+  const mapped = byId.get(chapterIdMap[original.id]);
+  if (!mapped) return null;
+  const nextValue: UserStateValueMap["resume"] = {
+    chapter: chapterReference(mapped),
+    anchor: null,
+    openedAt: sourceResume.openedAt,
+  };
+  const targetResume = await readLatestResume(targetResumeKey);
+  if (targetResume?.chapter && mergeUserStateCurrentResume(targetResume, nextValue) !== nextValue) {
+    return null;
+  }
+  await recordUserStateChangesInDb(db, [{ entity: { kind: "resume", work: target }, value: nextValue }]);
+  return { novelId: targetNovelId, chapterId: mapped.id, anchor: null, openedAt: nextValue.openedAt };
 }
 
 export interface UserStateChapterPathBefore { id: number; novelId: number; path: string }
