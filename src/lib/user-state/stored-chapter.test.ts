@@ -28,6 +28,16 @@ describe("recovered stored chapter references", () => {
       expectedAssetKeys: media.expectedAssetKeys.slice().reverse(), storedAssets: media.storedAssets.slice().reverse() }));
   });
 
+  it("accepts manifest-less text only when native inspection proves there is no media", async () => {
+    const legacyText = { ...inventory(), expectedAssetKeys: null, mediaComplete: true };
+    expect(await storedChapterDigest(legacyText)).toBe(hash);
+    expect(await storedChapterDigest({ ...legacyText, mediaComplete: false })).toBeNull();
+    expect(await storedChapterDigest({
+      ...legacyText,
+      storedAssets: [{ key: "media/orphan.jpg", sha256: "b".repeat(64), bytes: 12 }],
+    })).toBeNull();
+  });
+
   it("requires nonempty valid content and complete unambiguous media declarations", async () => {
     for (const invalid of [
       { ...inventory(), body: null }, { ...inventory(), body: { sha256: hash, bytes: 0 } },

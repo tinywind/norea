@@ -1,4 +1,4 @@
-import { isChapterPayloadInventory, type ChapterPayloadInventory } from "../chapter-content/inventory";
+import { isChapterPayloadInventory, type ChapterPayloadInventory, type ChapterPayloadSnapshot } from "../chapter-content/inventory";
 
 export const STORED_CHAPTER_PREFIX = "norea-stored:";
 
@@ -10,10 +10,15 @@ export function storedChapterNumber(value: string | null): string | null {
 }
 
 /** Ignore file timestamps and undeclared leftovers; bind all content the reader consumes. */
-export async function storedChapterDigest(inventory: ChapterPayloadInventory): Promise<string | null> {
-  if (!isChapterPayloadInventory(inventory) || !inventory.body || inventory.body.bytes <= 0 || inventory.expectedAssetKeys === null) return null;
+export async function storedChapterDigest(
+  inventory: ChapterPayloadInventory & Partial<Pick<ChapterPayloadSnapshot, "mediaComplete">>,
+): Promise<string | null> {
+  if (!isChapterPayloadInventory(inventory) || !inventory.body || inventory.body.bytes <= 0) return null;
   const assets = new Map(inventory.storedAssets.map(asset => [asset.key, asset]));
-  const declared = inventory.expectedAssetKeys.slice().sort();
+  const declared = inventory.expectedAssetKeys === null
+    ? inventory.mediaComplete === true && inventory.storedAssets.length === 0 ? [] : null
+    : inventory.expectedAssetKeys.slice().sort();
+  if (declared === null) return null;
   if (declared.some(key => !assets.has(key))) return null;
   if (!declared.length) return inventory.body.sha256;
   const content = JSON.stringify(["norea-stored-v1", [inventory.body.sha256, inventory.body.bytes],

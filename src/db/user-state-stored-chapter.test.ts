@@ -80,6 +80,24 @@ describe("delta stored chapter identity", () => {
     expect(mocks.inspect).toHaveBeenCalledTimes(2);
   });
 
+
+
+  it("upgrades a real Android text-only inventory without a media manifest", async () => {
+    mocks.inspect.mockResolvedValue({
+      body: { sha256: hash, bytes: 100 },
+      expectedAssetKeys: null,
+      storedAssets: [],
+      fingerprint: "legacy-text",
+      payloadBytes: 100,
+      contentBytes: 100,
+      mediaBytes: 0,
+      mediaComplete: true,
+    });
+    expect(await portableStoredChapterReferenceInDb(db, work, {
+      chapterPath: "norea-folder:1", name: "One",
+    })).toEqual({ chapterPath: storedChapterPath("1", hash), name: "One" });
+  });
+
   it("upgrades reading and resume wire values without rewriting unrelated intent fields", async () => {
     const reading = await portableStoredUserStateIntentInDb(db, {
       entity: { kind: "reading", work, chapter: { chapterPath: "norea-folder:1", name: "One" } },
