@@ -9,6 +9,7 @@ import {
   resolveCategoryAlias, seedUserStateInDb, userStateRestorePausedInDb, workspaceRows,
   type IntentRow, type UserStateDb,
 } from "./user-state-core";
+import { portableStoredUserStateIntentInDb } from "./user-state-stored-chapter";
 
 interface PendingRow extends IntentRow { baseRevision: number; acknowledgedSequence: number }
 interface OperationRow { operationId: string; entityKey: string; intentSequence: number; payload: string; status: string; receipt: string | null }
@@ -102,7 +103,8 @@ export async function prepareUserStateOperationsInDb(
     (limit === null ? "" : " LIMIT $2");
   const intents = await db.select<PendingRow[]>(intentSql, limit === null ? [namespace] : [namespace, limit]);
   for (const row of intents) {
-    const intent = intentFromRow(row);
+    const localIntent = intentFromRow(row);
+    const intent = await portableStoredUserStateIntentInDb(db, localIntent);
     if (!allowOpaqueIdentity && unresolvedIntent(intent.entity, intent.value)) continue;
     const operation = parseUserStateOperation({
       operationId: crypto.randomUUID(), entity: await canonicalEntity(db, namespace, intent.entity),

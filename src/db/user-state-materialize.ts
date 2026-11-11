@@ -7,6 +7,8 @@ import {
   type UserStateRecord, type UserStateValueMap, type UserStateWorkReference,
 } from "../lib/user-state/types";
 import { mergeUserStateComposition } from "../lib/user-state/composition";
+import { parseStoredChapterPath } from "../lib/user-state/stored-chapter";
+import { resolveStoredChapterReferenceInDb } from "./user-state-stored-chapter";
 import type { ChapterCompositionV1 } from "../lib/chapter-composition";
 
 export class DeferredUserState extends Error {
@@ -25,6 +27,11 @@ export async function findUserStateWorkInDb(db: UserStateDb, work: UserStateWork
   return rows[0] ?? null;
 }
 async function findChapter(db: UserStateDb, novelId: number, chapter: UserStateChapterReference): Promise<number> {
+  if (parseStoredChapterPath(chapter.chapterPath)) {
+    const id = await resolveStoredChapterReferenceInDb(db, novelId, chapter);
+    if (id === null) throw new DeferredUserState("stored-chapter-mismatch");
+    return id;
+  }
   if (/^(?:norea|local)-folder:/.test(chapter.chapterPath)) throw new DeferredUserState("missing-chapter-identity");
   const [row] = await db.select<{ id: number }[]>("SELECT id FROM chapter WHERE novel_id=$1 AND path=$2", [novelId, chapter.chapterPath]);
   if (!row) throw new DeferredUserState("missing-chapter");
