@@ -92,7 +92,7 @@ describe("user state transport", () => {
     expect(cursor).toBe(1);
     expect(useUserStateStore.getState().runtimeByServer["http://server"].phase).toBe("idle");
     const paths = mocks.fetch.mock.calls.map(([url]) => new URL(url).pathname);
-    expect(paths).toEqual(["/api/v1/capabilities", "/api/v1/user-state", "/api/v1/user-state/read", "/api/v1/user-state/merge", "/api/v1/user-state/read"]);
+    expect(paths).toEqual(["/api/v1/capabilities", "/api/v1/user-state", "/api/v1/user-state/merge", "/api/v1/user-state/read"]);
     const merge = mocks.fetch.mock.calls.find(([url]) => String(url).endsWith("/merge"))!;
     expect(JSON.parse(merge[1].body).operations).toEqual([operation]);
   });
@@ -116,17 +116,19 @@ describe("user state transport", () => {
     expect(mocks.currentSet).toHaveBeenCalledWith(null);
     const paths = mocks.fetch.mock.calls.map(([url]) => new URL(url).pathname);
     expect(paths.some(path => path.endsWith("/user-state/current"))).toBe(false);
-    expect(paths).toEqual(["/api/v1/capabilities", "/api/v1/user-state", "/api/v1/user-state/read"]);
+    expect(paths).toEqual(["/api/v1/capabilities", "/api/v1/user-state"]);
   });
 
   it("uses one byte-bounded bulk request when supported and preserves the 200-item fallback for old servers", async () => {
+    head = 1;
+    records = [{ ...published, revision: 1 }];
     await synchronizeUserState();
     expect(mocks.prepare.mock.calls[0][1]).toEqual({ maxBytes: 30 * 1024 * 1024 - 2048, allowOpaqueIdentity: true });
     const bulkRead = mocks.fetch.mock.calls.find(([url]) => String(url).endsWith("/read"))!;
     expect(JSON.parse(bulkRead[1].body)).not.toHaveProperty("limit");
 
     vi.clearAllMocks();
-    cursor = 0; through = null; head = 0; outbox = [operation]; records = [];
+    cursor = 0; through = null; head = 1; outbox = [operation]; records = [{ ...published, revision: 1 }];
     mocks.available.mockResolvedValue(undefined); mocks.getBinding.mockResolvedValue(binding); mocks.bind.mockResolvedValue(undefined);
     mocks.status.mockImplementation(async () => ({ cursor, through, pending: outbox.length, conflicts: 0, deferred: 0, lastSuccessAt: null }));
     mocks.prepare.mockImplementation(async () => outbox);
@@ -180,6 +182,8 @@ describe("user state transport", () => {
   });
 
   it("does not apply a late read after the selected server changes, even if it changes back", async () => {
+    head = 1;
+    records = [{ ...published, revision: 1 }];
     const original = mocks.fetch.getMockImplementation()!;
     mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
       const result = await original(url, init);

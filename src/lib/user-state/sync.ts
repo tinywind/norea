@@ -202,6 +202,7 @@ async function runSynchronization(serverUrl: string, controller: AbortController
     async function pullThrough(target: number): Promise<void> {
       let status = await getUserStateLedgerStatus(binding);
       check();
+      if (status.cursor === target && status.through === null) return;
       if (status.cursor > target || (status.through !== null && status.through > target)) {
         throw new UserStateProtocolError("the retained cursor is ahead of this server; it was not reset");
       }
