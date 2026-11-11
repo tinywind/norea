@@ -1,6 +1,7 @@
 import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "./chapter-composition";
 import {
-  canonicalEntity, intentFromRow, resolveCategoryAlias, type IntentRow, type UserStateDb, promotePrivateWorkIdentitiesInDb,
+  canonicalEntity, intentFromRow, resolveCategoryAlias, USER_STATE_PRELINK_BASE_REVISION,
+  type IntentRow, type UserStateDb, promotePrivateWorkIdentitiesInDb,
 } from "./user-state-core";
 import {
   parseUserStateRecord, userStateEntityKey, type UserStateApplyEffects, type UserStateChapterReference,
@@ -59,12 +60,14 @@ export async function hasPendingUserStateForRecordInDb(db: UserStateDb, namespac
   const key = userStateEntityKey(record.entity);
   const [direct] = await db.select<{ present: number }[]>(`SELECT 1 AS present FROM user_state_intent i
     JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1
-    WHERE i.entity_key=$2 AND i.seed=0 AND i.sequence>p.acknowledged_sequence`, [namespace, key]);
+    WHERE i.entity_key=$2 AND i.seed=0 AND p.base_revision<>$3
+      AND i.sequence>p.acknowledged_sequence`, [namespace, key, USER_STATE_PRELINK_BASE_REVISION]);
   if (direct) return true;
   if (!("categoryId" in record.entity)) return false;
   const rows = await db.select<IntentRow[]>(`SELECT i.sequence,i.entity_key AS entityKey,i.entity_json AS entityJson,i.value_json AS valueJson,i.seed
     FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1
-    WHERE i.seed=0 AND i.sequence>p.acknowledged_sequence AND json_extract(i.entity_json,'$.kind')=$2`, [namespace, record.entity.kind]);
+    WHERE i.seed=0 AND p.base_revision<>$3 AND i.sequence>p.acknowledged_sequence
+      AND json_extract(i.entity_json,'$.kind')=$2`, [namespace, record.entity.kind, USER_STATE_PRELINK_BASE_REVISION]);
   for (const row of rows) if (userStateEntityKey(await canonicalEntity(db, namespace, intentFromRow(row).entity)) === key) return true;
   return false;
 }
@@ -119,7 +122,7 @@ export async function materializeUserStateRecordInDb(db: UserStateDb, namespace:
   // invent a local novel/chapter just to project it. The durable record remains
   // stored and deferUserStateForNovelInDb() re-opens this projection when exact
   // content metadata later appears.
-  if (!work) return effects;
+  if (!work) throw new DeferredUserState("missing-work");
   switch (entity.kind) {
     case "library": {
       const value = record.value as UserStateValueMap["library"];

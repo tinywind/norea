@@ -4,15 +4,17 @@ import type { UserStateOperation, UserStateReadResponse, UserStateRecord } from 
 const mocks = vi.hoisted(() => ({
   available: vi.fn(), resumeRestored: vi.fn(), getBinding: vi.fn(), status: vi.fn(), bind: vi.fn(), prepare: vi.fn(), apply: vi.fn(), ack: vi.fn(),
   conflicts: vi.fn(), deferred: vi.fn(), resolve: vi.fn(), active: vi.fn(), register: vi.fn(), forget: vi.fn(), fetch: vi.fn(),
-  currentSet: vi.fn(),
+  currentSet: vi.fn(), projection: vi.fn(), recoverProjection: vi.fn(),
 }));
 vi.mock("../../db/user-state", () => ({
   assertUserStateAvailable: mocks.available, resumeUserStateAfterRestore: mocks.resumeRestored,
   getUserStateBinding: mocks.getBinding, getUserStateLedgerStatus: mocks.status, bindUserStateWorkspace: mocks.bind,
   prepareUserStateOperations: mocks.prepare, applyUserStateReadPage: mocks.apply, acknowledgeUserStateOperations: mocks.ack,
+  materializePendingUserState: mocks.recoverProjection,
   listUserStateConflicts: mocks.conflicts, listUserStateDeferred: mocks.deferred, resolveUserStateLedgerConflict: mocks.resolve,
   setUserStateActiveServer: mocks.active,
 }));
+vi.mock("../../db/user-state-core", () => ({ waitForUserStateDeferredApply: mocks.projection }));
 vi.mock("../../db/user-state-current", () => ({
   setUserStateCurrentServer: mocks.currentSet,
 }));
@@ -41,6 +43,8 @@ beforeEach(() => {
   useUserStateStore.setState({ enabledByServer: {}, runtimeByServer: {} });
   cursor = 0; through = null; head = 0; outbox = [operation]; records = [];
   mocks.available.mockResolvedValue(undefined); mocks.resumeRestored.mockResolvedValue(undefined);
+  mocks.projection.mockResolvedValue(undefined);
+  mocks.recoverProjection.mockResolvedValue({ resumes: [] });
   mocks.getBinding.mockResolvedValue(binding);
   mocks.status.mockImplementation(async () => ({ cursor, through, pending: outbox.length, conflicts: 0, deferred: 0, lastSuccessAt: null }));
   mocks.bind.mockResolvedValue(undefined);
@@ -80,6 +84,52 @@ describe("user state transport", () => {
     expect(await getUserStateStatus()).toMatchObject({ workspaceId: "workspace", pending: 1 });
     expect(mocks.fetch).not.toHaveBeenCalled();
     expect(mocks.register).not.toHaveBeenCalled();
+  });
+
+  it("waits for received local projection before sending even an already queued edit", async () => {
+    let finish!: () => void;
+    mocks.projection.mockImplementation(() => new Promise<void>(resolve => { finish = resolve; }));
+    const run = synchronizeUserState();
+    await vi.waitFor(() => expect(mocks.projection).toHaveBeenCalled());
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(mocks.fetch.mock.calls.some(([url]) => String(url).endsWith("/merge"))).toBe(false);
+    finish();
+    await run;
+    expect(mocks.prepare).toHaveBeenCalled();
+  });
+
+  it("recovers an interrupted applicable projection left behind a committed cursor before upload", async () => {
+    let waiting = 1;
+    mocks.status.mockImplementation(async () => ({
+      cursor, through, pending: outbox.length, conflicts: 0, deferred: 0,
+      projectionPending: waiting, projectionParked: 0, projectionFailed: 0, lastSuccessAt: null,
+    }));
+    mocks.recoverProjection.mockImplementation(async () => { waiting = 0; return { resumes: [] }; });
+    await synchronizeUserState();
+    expect(mocks.recoverProjection).toHaveBeenCalledExactlyOnceWith(binding);
+    expect(mocks.recoverProjection.mock.invocationCallOrder[0]).toBeLessThan(mocks.prepare.mock.invocationCallOrder[0]!);
+    expect(outbox).toEqual([]);
+  });
+
+  it("retains pending edits if recovery still cannot complete an applicable projection", async () => {
+    mocks.status.mockImplementation(async () => ({
+      cursor, through, pending: outbox.length, conflicts: 0, deferred: 0,
+      projectionPending: 1, projectionParked: 0, projectionFailed: 0, lastSuccessAt: null,
+    }));
+    await expect(synchronizeUserState()).rejects.toThrow(/projection/);
+    expect(mocks.recoverProjection).toHaveBeenCalledOnce();
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(outbox).toEqual([operation]);
+  });
+
+  it("preserves queued edits when a received applicable projection has failed", async () => {
+    mocks.status.mockImplementation(async () => ({
+      cursor, through, pending: outbox.length, conflicts: 0, deferred: 0,
+      projectionPending: 0, projectionParked: 0, projectionFailed: 1, lastSuccessAt: null,
+    }));
+    await expect(synchronizeUserState()).rejects.toThrow(/projection/);
+    expect(mocks.prepare).not.toHaveBeenCalled();
+    expect(outbox).toEqual([operation]);
   });
 
   it("coalesces simultaneous calls, drains exact operations, and only contacts user-state endpoints", async () => {

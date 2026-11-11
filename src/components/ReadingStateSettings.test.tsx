@@ -111,6 +111,12 @@ it("only changes the selected server's automatic sharing preference", () => {
   for (const control of view("").filter(item => item.props.label === "Sync now" && item.props.onClick)) expect(control.props.disabled).toBe(true);
 });
 
+it("shows outstanding local projection, missing-content parking and failures separately from uploads", () => {
+  mocks.status = { ...mocks.status, pending: 0, projectionPending: 2, projectionParked: 3, projectionFailed: 1 };
+  const elements = view();
+  expect(elements.some(item => item.props.children === "Local projection: 2 pending · 3 waiting for content · 1 failed")).toBe(true);
+});
+
 it("keeps negative reading and bookmark edits readable instead of hiding them as absent values", () => {
   const { t } = useTranslation();
   expect(userStateValueSummary("reading", { progress: 0, unread: true, readAt: null }, t, "en")).toBe("0% · Unread · No reading history");

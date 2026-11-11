@@ -1969,6 +1969,7 @@
   "userState.never": "No successful sharing session yet",
   "userState.status": "Sharing status",
   "userState.counts": "Pending: {pending} · Conflicts: {conflicts}",
+  "userState.projectionCounts": "Local projection: {pending} pending · {parked} waiting for content · {failed} failed",
   "userState.conflictsDescription": "Compare both saved edits and choose the value to keep. Each choice applies only to the version shown.",
   "userState.local": "This device's edit",
   "userState.shared": "Shared edit",

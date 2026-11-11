@@ -83,10 +83,13 @@ and never deletes the saved state. Local novel/chapter columns are only a
 projection used by existing reader/library queries.
 
 When a matching local work or chapter exists, the received record is projected
-into those convenience columns. If it does not exist, the record simply remains
-stored. A later metadata mutation may project that exact record without requiring
-another server download. Projection failures are not shown as a synchronization
-backlog and are never allowed to discard the durable shared value.
+into those convenience columns. If it does not exist, the record remains stored
+and parked until a later metadata mutation makes it projectable. Unexpected local
+projection errors remain retryable instead of being marked applied. The sharing
+status reports outbound intent backlog, applicable projection backlog, parked
+missing-content records, and projection errors separately. A failed applicable
+projection blocks the following outbound pass without losing local intents or
+durable received records.
 
 ## Merge rules
 
@@ -103,9 +106,13 @@ absence and cannot be silently replaced by maximum-progress or boolean-union rul
 Repeated commands that leave the visible SQL row unchanged still record intent.
 
 On first delta connection, meaningful existing positive local state can fill
-absent server fields as soft seeds. Seeds never replace an existing record or
-tombstone. Historical removals that occurred before the journal existed cannot be
-inferred.
+absent server fields as soft seeds. Local explicit intents made **before the first
+workspace binding** are also sent as soft seeds: a pre-link local snapshot is not
+a later server-ordered edit. Seeds never replace an existing record or tombstone.
+The first actual command after binding, and intentional offline edits from an
+already-bound device, remain explicit LWW operations. Frozen attempted operations
+and their receipts are never rewritten. Historical removals that occurred before
+the journal existed cannot be inferred.
 
 Categories have stable IDs. Exact-name creation may alias a new local ID to an
 existing shared category. An invalid rename into another active name is rejected
@@ -121,11 +128,15 @@ explicit.
 
 ## Local projection and foreground responsiveness
 
-Receiving and acknowledging shared user state ends at the durable user-state
-ledger. Synchronization does not wait for the convenience projection into the
-novel, chapter, or category tables. That projection runs separately in small
-background transactions and yields between them so library queries, stored-cover
-reads, image decoding, and other foreground/native bridge work remain responsive.
+Receiving shared user state first commits the durable ledger and schedules a
+separate convenience projection into the novel, chapter, and category tables.
+Before uploading local operations, synchronization waits for the applicable
+incoming projection already scheduled by this pull. The projection uses small
+background transactions and yields between them so foreground reads remain
+responsive. Missing-content records stay durably retained without blocking
+outbound sharing. When an interrupted process left an applicable projection
+pending behind a committed cursor, the next sync retries that projection before
+publishing any queued local edits.
 
 A projection that cannot find matching local content is considered parked, not a
 failed synchronization item. The durable user-state record remains authoritative.

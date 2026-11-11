@@ -1,8 +1,9 @@
 import {
   acknowledgeUserStateOperations, applyUserStateReadPage, assertUserStateAvailable, bindUserStateWorkspace, getUserStateBinding,
-  getUserStateLedgerStatus, listUserStateConflicts, prepareUserStateOperations,
+  getUserStateLedgerStatus, listUserStateConflicts, materializePendingUserState, prepareUserStateOperations,
   resolveUserStateLedgerConflict, resumeUserStateAfterRestore as resumeRestoredLedger, setUserStateActiveServer,
 } from "../../db/user-state";
+import { waitForUserStateDeferredApply } from "../../db/user-state-core";
 import { setUserStateCurrentServer } from "../../db/user-state-current";
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
@@ -161,6 +162,7 @@ export async function getUserStateStatus(): Promise<UserStateStatus> {
   return {
     workspaceId: binding?.workspaceId ?? null, epoch: binding?.epoch ?? null,
     pending: status.pending, conflicts,
+    projectionPending: status.projectionPending, projectionParked: status.projectionParked, projectionFailed: status.projectionFailed,
     lastSuccessAt: status.lastSuccessAt, pausedAfterRestore: status.pausedAfterRestore === true,
   };
 }
@@ -253,6 +255,21 @@ async function runSynchronization(serverUrl: string, controller: AbortController
     }
 
     await pullThrough(workspace.headRevision);
+    // The received ledger is durable before its convenience tables are updated.
+    // Drain applicable projections before any queued local edit is published.
+    await waitForUserStateDeferredApply();
+    check();
+    let projection = await getUserStateLedgerStatus(binding);
+    if (projection.projectionPending) {
+      // A previous process may have stopped after saving the pull cursor but
+      // before running its deferred projection. Recover it before any upload.
+      await materializePendingUserState(binding);
+      check();
+      projection = await getUserStateLedgerStatus(binding);
+    }
+    if (projection.projectionPending || projection.projectionFailed) {
+      throw new Error("Received personal state could not finish its applicable local projection. Pending edits were retained.");
+    }
     for (;;) {
       check();
       const operations = (await prepareUserStateOperations(binding, {

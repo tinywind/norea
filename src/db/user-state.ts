@@ -69,9 +69,13 @@ export async function getUserStateLedgerStatus(binding?: UserStateBinding | null
   const db = await getDb();
   const current = binding === undefined ? await getUserStateBinding() : binding;
   if (current) return getUserStateLedgerStatusInDb(db, current);
-  if (!await hasUserStateSchema(db)) return { cursor: 0, through: null, pending: 0, conflicts: 0, deferred: 0, lastSuccessAt: null, pausedAfterRestore: await userStateRestorePausedInDb(db) };
+  if (!await hasUserStateSchema(db)) return { cursor: 0, through: null, pending: 0, conflicts: 0, deferred: 0,
+    projectionPending: 0, projectionParked: 0, projectionFailed: 0,
+    lastSuccessAt: null, pausedAfterRestore: await userStateRestorePausedInDb(db) };
   const [row] = await db.select<{ pending: number }[]>("SELECT COUNT(*) AS pending FROM user_state_intent");
-  return { cursor: 0, through: null, pending: row?.pending ?? 0, conflicts: 0, deferred: 0, lastSuccessAt: null, pausedAfterRestore: await userStateRestorePausedInDb(db) };
+  return { cursor: 0, through: null, pending: row?.pending ?? 0, conflicts: 0, deferred: 0,
+    projectionPending: 0, projectionParked: 0, projectionFailed: 0,
+    lastSuccessAt: null, pausedAfterRestore: await userStateRestorePausedInDb(db) };
 }
 export async function listUserStateConflicts(binding: UserStateBinding): Promise<UserStateConflict[]> {
   return listUserStateConflictsInDb(await getDb(), binding);
@@ -129,12 +133,14 @@ async function projectUserStateRecordsInDb(
       await db.execute("UPDATE user_state_record SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
         [namespace, key, record.revision]);
     } catch (error) {
-      // Projection is optional. The durable user_state_record remains the source of
-      // truth even when matching local content is absent or temporarily inconsistent.
-      // A later metadata mutation may make this exact record projectable.
-      await db.execute("UPDATE user_state_record SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
-        [namespace, key, record.revision]);
-      if (!(error instanceof DeferredUserState)) {
+      // Missing content is parked until its metadata changes. Real projection
+      // failures remain retryable and visible; neither loses the shared value.
+      if (error instanceof DeferredUserState) {
+        await db.execute("UPDATE user_state_record SET applied_revision=revision,deferred_reason=$4,deferred_detail=$5 WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
+          [namespace, key, record.revision, error.reason, error.message.slice(0, 500)]);
+      } else {
+        await db.execute("UPDATE user_state_record SET deferred_reason='projection-error',deferred_detail=$4 WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
+          [namespace, key, record.revision, String(error).slice(0, 500)]);
         console.warn("[user-state] stored shared state but could not project it into local content", error);
       }
     }
@@ -184,7 +190,7 @@ export async function materializePendingUserState(binding: UserStateBinding): Pr
   const { namespace } = await requireBinding(db, binding);
   await assertUserStateAvailableInDb(db);
   const rows = await db.select<{ payload: string }[]>(`SELECT payload FROM user_state_record r
-    WHERE namespace=$1 AND applied_revision<revision AND (
+    WHERE namespace=$1 AND applied_revision<revision AND deferred_reason IS NULL AND (
       json_extract(payload,'$.entity.kind') IN ('category','library')
       OR EXISTS (
         SELECT 1 FROM novel n
@@ -260,7 +266,7 @@ export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: numbe
   await refreshUnattemptedUserStateIdentitiesInDb(db, novelId);
   const [work] = await db.select<{ pluginId: string; sourceNovelId: string | null; novelPath: string }[]>(
     "SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath FROM novel WHERE id=$1", [novelId]);
-  if (work) await db.execute(`UPDATE user_state_record SET applied_revision=0 WHERE
+  if (work) await db.execute(`UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE
     json_extract(payload,'$.entity.work.pluginId')=$1 AND
     (json_extract(payload,'$.entity.work.novelPath')=$3 OR
       ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))`,
@@ -287,7 +293,7 @@ export async function assertUserStateAvailable(): Promise<void> { await assertUs
 export async function resumeUserStateAfterRestore(): Promise<void> {
   await runDatabaseTransaction(async db => {
     await db.execute("UPDATE user_state_restore_state SET paused=0 WHERE id=1");
-    await db.execute("UPDATE user_state_record SET applied_revision=0");
+    await db.execute("UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL");
   }, false, USER_STATE_LEDGER_TX_OPTIONS);
   emitUserStateLedgerChanged();
 }

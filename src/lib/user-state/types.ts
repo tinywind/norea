@@ -106,6 +106,9 @@ export interface UserStateStatus {
   epoch: string | null;
   pending: number;
   conflicts: UserStateConflict[];
+  projectionPending?: number;
+  projectionParked?: number;
+  projectionFailed?: number;
   lastSuccessAt: number | null;
 }
 export interface ResolveUserStateConflictInput {

@@ -11,6 +11,8 @@ export interface UserStateIntent { entity: UserStateEntity; value: UserStateValu
 export interface IntentRow { sequence: number; entityKey: string; entityJson: string; valueJson: string; seed: number }
 export interface WorkspaceRow extends UserStateBinding { namespace: string; cursor: number; through: number | null; lastSuccessAt: number | null }
 const schemas = new WeakMap<object, boolean>();
+/** Pre-link local edits are a baseline, not server-ordered offline commands. */
+export const USER_STATE_PRELINK_BASE_REVISION = -1;
 export type UserStateChangePriority = "reading" | "normal";
 const changed = new WeakMap<object, UserStateChangePriority>();
 const ready = new WeakSet<object>();
@@ -145,7 +147,8 @@ export async function recordUserStateChangesInDb(db: UserStateDb, input: readonl
         JOIN user_state_intent i ON i.entity_key=k.local_key
         LEFT JOIN user_state_record r ON r.namespace=$1 AND r.entity_key=k.record_key WHERE true
         ON CONFLICT(namespace,entity_key) DO UPDATE SET local_sequence=excluded.local_sequence,
-        base_revision=CASE WHEN acknowledged_sequence>=local_sequence THEN excluded.base_revision ELSE base_revision END`, params);
+        base_revision=CASE WHEN ${seed ? "0" : "user_state_progress.base_revision=-1"} THEN excluded.base_revision
+          WHEN acknowledged_sequence>=local_sequence THEN excluded.base_revision ELSE base_revision END`, params);
     }
   }
   const priority: UserStateChangePriority = entries.every(({ entity }) => entity.kind === "reading" || entity.kind === "resume")

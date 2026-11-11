@@ -1969,6 +1969,7 @@
   "userState.never": "아직 공유를 완료하지 않았습니다",
   "userState.status": "공유 상태",
   "userState.counts": "전송 대기 {pending} · 충돌 {conflicts}",
+  "userState.projectionCounts": "로컬 반영: 대기 {pending} · 작품/챕터 확인 대기 {parked} · 오류 {failed}",
   "userState.conflictsDescription": "양쪽에 저장된 편집을 비교하고 유지할 값을 선택하세요. 선택은 지금 표시된 버전에만 적용됩니다.",
   "userState.local": "이 기기의 편집",
   "userState.shared": "공유된 편집",

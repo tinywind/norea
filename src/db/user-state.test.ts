@@ -9,7 +9,7 @@ vi.mock("./client", () => ({
 import { getDb, getReadOnlyDb, runDatabaseTransaction, runExclusiveDatabaseOperation } from "./client";
 import {
   acknowledgeUserStateOperationsInDb, applyUserStateReadPageInDb, bindUserStateWorkspaceInDb,
-  listUserStateConflictsInDb, listUserStateDeferredInDb, prepareUserStateOperationsInDb, resolveUserStateLedgerConflictInDb,
+  getUserStateLedgerStatusInDb, listUserStateConflictsInDb, listUserStateDeferredInDb, prepareUserStateOperationsInDb, resolveUserStateLedgerConflictInDb,
 } from "./user-state-ledger";
 import {
   discardUserStateNotifications, notifyUserStateCommitted,
@@ -88,6 +88,128 @@ beforeEach(() => {
 afterEach(async () => { setUserStateActiveServer(null); await waitForUserStateDeferredApply(); while (fixtures.length) fixtures.pop()!.sql.close(); });
 
 describe("durable personal-state ledger", () => {
+  it("accepts pre-link reading, library and category edits only as soft seeds, then projects the shared deletions", async () => {
+    const library: UserStateEntity = { kind: "library", work };
+    const resume: UserStateEntity = { kind: "resume", work };
+    const category: UserStateEntity = { kind: "category", categoryId: "local-prelink" };
+    const membership: UserStateEntity = { kind: "membership", work, categoryId: "local-prelink" };
+    active.sql.exec("INSERT INTO category(id,name,sort,is_system) VALUES(80,'Pinned',1,0)");
+    active.sql.exec("INSERT INTO user_state_category(category_id,local_id) VALUES('local-prelink',80)");
+    active.sql.exec("INSERT INTO novel_category(novel_id,category_id) VALUES(1,80)");
+    active.sql.exec("UPDATE novel SET in_library=1; UPDATE chapter SET progress=100,unread=0");
+    await tx(active, db => recordUserStateChangesInDb(db, [
+      { entity: reading, value: readingValue(100, false) },
+      { entity: library, value: { inLibrary: true, addedAt: 20 } },
+      { entity: resume, value: { chapter: reading.chapter, anchor: null, openedAt: 20 } },
+      { entity: category, value: { name: "Pinned", sort: 1, deleted: false } },
+      { entity: membership, value: { included: true } },
+    ]));
+    await bind();
+    const baseline = await prepare();
+    expect(baseline).toHaveLength(5);
+    expect(baseline.every(item => item.seed === true && item.baseRevision === 0)).toBe(true);
+    const remote = [
+      shared(category, { name: "Pinned", sort: 1, deleted: true }, 1),
+      shared(library, { inLibrary: false, addedAt: null }, 2),
+      shared(membership, { included: false }, 3),
+      shared(reading, readingValue(0, true), 4),
+      shared(resume, { chapter: null, anchor: null, openedAt: null }, 5),
+    ];
+    await applyUserStateReadPage(binding, {
+      version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 5, through: 5, nextCursor: 5, hasMore: false, records: remote,
+    });
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT progress,unread FROM chapter WHERE id=11").get()).toEqual({ progress: 0, unread: 1 });
+    expect(active.sql.prepare("SELECT in_library FROM novel WHERE id=1").get()).toEqual({ in_library: 0 });
+    expect(active.sql.prepare("SELECT COUNT(*) count FROM category WHERE id=80").get()).toEqual({ count: 0 });
+    await tx(active, db => acknowledgeUserStateOperationsInDb(db, binding, baseline.map(operation => ({
+      operationId: operation.operationId, status: "seed-skipped" as const,
+      current: remote.find(row => userStateEntityKey(row.entity) === userStateEntityKey(operation.entity))!,
+    }))));
+    expect(await prepare()).toEqual([]);
+    expect(active.sql.prepare("SELECT cursor FROM user_state_workspace").get()).toEqual({ cursor: 5 });
+  });
+
+  it("keeps the first actual command after binding explicit even when a pre-link baseline is unsent", async () => {
+    await capture(readingValue(100, false));
+    await bind();
+    await capture(readingValue(0, true));
+    const [operation] = await prepare();
+    expect(operation.seed).toBeUndefined();
+    expect(operation.baseRevision).toBe(0);
+    expect(operation.value).toEqual(readingValue(0, true));
+  });
+
+  it("keeps genuine offline edits explicit after an acknowledged workspace sync", async () => {
+    await bind();
+    await applyUserStateReadPage(binding, {
+      version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false,
+      records: [shared(reading, readingValue(40), 1)],
+    });
+    await waitForUserStateDeferredApply();
+    await setChaptersReadState([11], false);
+    await applyUserStateReadPage(binding, {
+      version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 2, through: 2, nextCursor: 2, hasMore: false,
+      records: [shared(reading, readingValue(20), 2)],
+    });
+    await waitForUserStateDeferredApply();
+    expect(await getUserStateLedgerStatusInDb(active.db, binding)).toMatchObject({
+      pending: 1, projectionPending: 0, projectionFailed: 0,
+    });
+    const [operation] = await prepare();
+    expect(operation.seed).toBeUndefined();
+    expect(operation.value).toMatchObject({ progress: 100, unread: false });
+    expect(operation.baseRevision).toBe(1);
+    expect(active.sql.prepare("SELECT progress,unread FROM chapter WHERE id=11").get()).toEqual({ progress: 100, unread: 0 });
+  });
+
+  it("parks a received chapter with no local content and reprojects when the work appears", async () => {
+    await bind();
+    const other = { ...work, sourceNovelId: "not-installed", novelPath: "/not-installed" };
+    const entity: UserStateEntity = { kind: "reading", work: other, chapter: reading.chapter };
+    await applyUserStateReadPage(binding, {
+      version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false,
+      records: [shared(entity, readingValue(74), 1)],
+    });
+    await waitForUserStateDeferredApply();
+    const first = await getUserStateLedgerStatusInDb(active.db, binding);
+    expect(first).toMatchObject({ projectionPending: 0, projectionParked: 1, projectionFailed: 0 });
+    addWork(active, 3, 33, other);
+    await tx(active, db => deferUserStateForNovelInDb(db, 3));
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=33").get()).toEqual({ progress: 74 });
+    expect(await getUserStateLedgerStatusInDb(active.db, binding)).toMatchObject({
+      projectionPending: 0, projectionParked: 0, projectionFailed: 0,
+    });
+  });
+
+  it("surfaces a local projection error without discarding the received record or an outbound edit", async () => {
+    await bind();
+    await capture({ bookmarked: true }, { kind: "bookmark", work, chapter: reading.chapter });
+    active.sql.exec("CREATE TRIGGER fail_projection BEFORE UPDATE OF progress ON chapter BEGIN SELECT RAISE(ABORT,'injected projection failure'); END");
+    await applyUserStateReadPage(binding, {
+      version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false,
+      records: [shared(reading, readingValue(87), 1)],
+    });
+    await waitForUserStateDeferredApply();
+    const failed = await getUserStateLedgerStatusInDb(active.db, binding);
+    expect(failed).toMatchObject({ pending: 1, projectionPending: 0, projectionParked: 0, projectionFailed: 1 });
+    expect(active.sql.prepare("SELECT revision,applied_revision,deferred_reason FROM user_state_record").get())
+      .toEqual({ revision: 1, applied_revision: 0, deferred_reason: "projection-error" });
+    active.sql.exec("DROP TRIGGER fail_projection");
+    await tx(active, db => deferUserStateForNovelInDb(db, 1));
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=11").get()).toEqual({ progress: 87 });
+    expect(await getUserStateLedgerStatusInDb(active.db, binding)).toMatchObject({
+      pending: 1, projectionPending: 0, projectionParked: 0, projectionFailed: 0,
+    });
+  });
+
   it("clears legacy CAS conflicts on bind so the latest explicit intent can retry", async () => {
     await bind();
     await capture(readingValue(42));

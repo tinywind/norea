@@ -286,6 +286,11 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
             <Text size="sm" role="status">{t("userState.counts", {
               pending: data.pending, conflicts: data.conflicts.length,
             })}</Text>
+            <Text size="sm" c={data.projectionFailed ? "danger" : "dimmed"}>
+              {t("userState.projectionCounts", {
+                pending: data.projectionPending ?? 0, parked: data.projectionParked ?? 0, failed: data.projectionFailed ?? 0,
+              })}
+            </Text>
             {data.conflicts.length ? <Text size="sm">{t("userState.conflictsDescription")}</Text> : null}
             {data.conflicts.map(conflict => (
               <UserStateConflictCard key={conflict.id + ":" + conflict.version} conflict={conflict} busy={working || pausedAfterRestore}

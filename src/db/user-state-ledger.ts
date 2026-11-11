@@ -1,12 +1,12 @@
 import {
-  canonicalUserStateJson, parseUserStateMergeResult, parseUserStateOperation, parseUserStateReadResponse, parseUserStateRecord,
+  canonicalUserStateJson, parseUserStateEntity, parseUserStateMergeResult, parseUserStateOperation, parseUserStateReadResponse, parseUserStateRecord,
   USER_STATE_CLIENT_BATCH_BYTES, userStateEntityKey, userStateJsonBytes,
   type UserStateBinding, type UserStateConflict, type UserStateDeferred, type UserStateEntity,
   type UserStateMergeResult, type UserStateOperation, type UserStateReadResponse, type UserStateRecord, type UserStateValueMap,
 } from "../lib/user-state/types";
 import {
   assertUserStateAvailableInDb, canonicalEntity, intentFromRow, namespaceFor, recordUserStateChangesInDb, requireBinding,
-  resolveCategoryAlias, seedUserStateInDb, userStateRestorePausedInDb, workspaceRows,
+  resolveCategoryAlias, seedUserStateInDb, USER_STATE_PRELINK_BASE_REVISION, userStateRestorePausedInDb, workspaceRows,
   type IntentRow, type UserStateDb,
 } from "./user-state-core";
 import { portableStoredUserStateIntentInDb } from "./user-state-stored-chapter";
@@ -29,7 +29,9 @@ function jsonBatches<T>(rows: readonly T[], size: (row: T) => number): T[][] {
   if (batch.length) batches.push(batch);
   return batches;
 }
-export interface UserStateLedgerStatus { cursor: number; through: number | null; pending: number; conflicts: number; deferred: number; lastSuccessAt: number | null; pausedAfterRestore: boolean }
+export interface UserStateLedgerStatus { cursor: number; through: number | null; pending: number; conflicts: number; deferred: number;
+  projectionPending: number; projectionParked: number; projectionFailed: number;
+  lastSuccessAt: number | null; pausedAfterRestore: boolean }
 
 export async function bindUserStateWorkspaceInDb(db: UserStateDb, binding: UserStateBinding): Promise<void> {
   await assertUserStateAvailableInDb(db);
@@ -50,9 +52,15 @@ export async function bindUserStateWorkspaceInDb(db: UserStateDb, binding: UserS
   const [ready] = await db.select<{ ready: number }[]>(
     "SELECT COUNT(*) AS ready FROM content_sync_cache WHERE cache_key=$1", [readyKey]);
   if (ready?.ready) return;
+  // Local explicit intents predating the first workspace binding have no server
+  // order. Treat them as soft baselines; later offline edits remain explicit.
+  await db.execute(`INSERT INTO user_state_progress(namespace,entity_key,local_sequence,base_revision)
+    SELECT $1,entity_key,sequence,$2 FROM user_state_intent WHERE seed=0 AND true
+    ON CONFLICT(namespace,entity_key) DO NOTHING`, [namespace, USER_STATE_PRELINK_BASE_REVISION]);
   await seedUserStateInDb(db);
-  await db.execute(`INSERT INTO user_state_progress(namespace,entity_key,local_sequence)
-    SELECT $1,entity_key,sequence FROM user_state_intent WHERE true ON CONFLICT(namespace,entity_key) DO NOTHING`, [namespace]);
+  await db.execute(`INSERT INTO user_state_progress(namespace,entity_key,local_sequence,base_revision)
+    SELECT $1,entity_key,sequence,CASE WHEN seed=0 THEN $2 ELSE 0 END
+    FROM user_state_intent WHERE true ON CONFLICT(namespace,entity_key) DO NOTHING`, [namespace, USER_STATE_PRELINK_BASE_REVISION]);
   await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO NOTHING",
     [readyKey, JSON.stringify({ version: 1 })]);
 }
@@ -106,9 +114,10 @@ export async function prepareUserStateOperationsInDb(
     const localIntent = intentFromRow(row);
     const intent = await portableStoredUserStateIntentInDb(db, localIntent);
     if (!allowOpaqueIdentity && unresolvedIntent(intent.entity, intent.value)) continue;
+    const baseline = row.seed === 1 || row.baseRevision === USER_STATE_PRELINK_BASE_REVISION;
     const operation = parseUserStateOperation({
       operationId: crypto.randomUUID(), entity: await canonicalEntity(db, namespace, intent.entity),
-      value: intent.value, baseRevision: row.seed ? 0 : row.baseRevision, ...(row.seed ? { seed: true } : {}),
+      value: intent.value, baseRevision: baseline ? 0 : row.baseRevision, ...(baseline ? { seed: true } : {}),
     });
     if (!include(operation)) break;
     newAttempts.push({ operationId: operation.operationId, entityKey: row.entityKey, intentSequence: row.sequence,
@@ -224,6 +233,9 @@ export async function acknowledgeUserStateOperationsInDb(db: UserStateDb, bindin
         throw new Error("The category alias does not match its operation.");
       }
       await rememberAlias(db, namespace, result.categoryAlias);
+      const categoryId = await resolveCategoryAlias(db, namespace, result.categoryAlias.to);
+      await db.execute("UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2",
+        [namespace, userStateEntityKey({ kind: "category", categoryId })]);
     }
     const effective = await canonicalEntity(db, namespace, operation.entity);
     const effectiveKey = userStateEntityKey(effective);
@@ -357,9 +369,41 @@ export async function getUserStateLedgerStatusInDb(db: UserStateDb, binding: Use
   const workspace = await requireBinding(db, binding);
   const [count] = await db.select<{ pending: number }[]>("SELECT COUNT(*) AS pending FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key WHERE p.namespace=$1 AND i.sequence>p.acknowledged_sequence", [workspace.namespace]);
   const [held] = await db.select<{ deferred: number }[]>("SELECT COUNT(*) AS deferred FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1 WHERE i.sequence>p.acknowledged_sequence AND ((json_type(i.entity_json,'$.work')='object' AND json_extract(i.entity_json,'$.work.sourceNovelId') IS NULL) OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'norea-folder:%' OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'local-folder:%')", [workspace.namespace]);
+  const heldIntents = await db.select<{ entityKey: string; entityJson: string }[]>(`SELECT i.entity_key AS entityKey,i.entity_json AS entityJson
+    FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1
+    WHERE i.seed=0 AND p.base_revision<>$2 AND i.sequence>p.acknowledged_sequence`,
+    [workspace.namespace, USER_STATE_PRELINK_BASE_REVISION]);
+  const heldKeys = new Set<string>();
+  for (const row of heldIntents) {
+    const entity = parseUserStateEntity(JSON.parse(row.entityJson));
+    heldKeys.add(userStateEntityKey(await canonicalEntity(db, workspace.namespace, entity)));
+  }
+  const [projection] = await db.select<{ waiting: number; parked: number; failed: number }[]>(`WITH current AS (
+    SELECT entity_key,applied_revision<revision AS waiting,deferred_reason,
+      json_extract(payload,'$.entity.kind') AS kind,
+      json_extract(payload,'$.entity.work.pluginId') AS plugin_id,
+      json_extract(payload,'$.entity.work.sourceNovelId') AS novel_id,
+      json_extract(payload,'$.entity.work.novelPath') AS novel_path
+    FROM user_state_record WHERE namespace=$1 AND (applied_revision<revision OR deferred_reason IS NOT NULL)
+  ), classified AS (
+    SELECT entity_key,waiting,deferred_reason,
+      (kind='category' OR EXISTS (
+        SELECT 1 FROM novel n WHERE n.plugin_id=current.plugin_id
+          AND (CASE WHEN current.novel_id IS NULL THEN n.path=current.novel_path
+            ELSE lower(n.source_novel_id)=lower(current.novel_id) END)
+      )) AS applicable FROM current
+  ) SELECT
+    COALESCE(SUM(CASE WHEN waiting AND deferred_reason IS NULL AND applicable
+      AND entity_key NOT IN (SELECT value FROM json_each($2)) THEN 1 ELSE 0 END),0) AS waiting,
+    COALESCE(SUM(CASE WHEN deferred_reason IS NOT NULL AND deferred_reason<>'projection-error'
+      OR (waiting AND deferred_reason IS NULL AND NOT applicable) THEN 1 ELSE 0 END),0) AS parked,
+    COALESCE(SUM(CASE WHEN deferred_reason='projection-error' THEN 1 ELSE 0 END),0) AS failed
+    FROM classified`, [workspace.namespace, JSON.stringify([...heldKeys])]);
   return { cursor: workspace.cursor, through: workspace.through, pending: count?.pending ?? 0,
     conflicts: (await listUserStateConflictsInDb(db, binding)).length,
-    deferred: held?.deferred ?? 0, lastSuccessAt: workspace.lastSuccessAt, pausedAfterRestore: await userStateRestorePausedInDb(db) };
+    deferred: held?.deferred ?? 0,
+    projectionPending: projection?.waiting ?? 0, projectionParked: projection?.parked ?? 0, projectionFailed: projection?.failed ?? 0,
+    lastSuccessAt: workspace.lastSuccessAt, pausedAfterRestore: await userStateRestorePausedInDb(db) };
 }
 
 export async function resolveUserStateLedgerConflictInDb(db: UserStateDb, binding: UserStateBinding, input: { id: string; version: string; choice: "local" | "shared"; categoryName?: string }): Promise<void> {
