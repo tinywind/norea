@@ -6,11 +6,9 @@ pub(crate) mod download_workers;
 pub(crate) mod saved_profiles;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod netstack;
-#[cfg(any(target_os = "android", target_os = "windows", test))]
 mod proxy;
 pub(crate) mod state;
 mod transport;
-#[cfg(any(target_os = "android", target_os = "windows", test))]
 mod tls_client_hello;
 #[cfg(any(target_os = "android", target_os = "windows", test))]
 mod tunnel_config;
