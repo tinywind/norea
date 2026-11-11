@@ -8,6 +8,7 @@ mod backup;
 mod chapter_media;
 mod content_sync;
 mod database;
+mod database_transaction;
 mod device_backup;
 mod desktop_file_open;
 mod device;
@@ -144,6 +145,7 @@ pub fn run() {
         .manage(android_file_open::AndroidOpenFileState::default())
         .manage(desktop_open_files)
         .manage(native_stream::NativeStreamState::default())
+        .manage(database_transaction::DatabaseTransactionState::default())
         .manage(task_notifications::TaskNotificationState::default())
         .manage(plugin_vpn)
         .manage(download_vpn_workers)
@@ -169,6 +171,12 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             device::get_default_device_name,
+            database_transaction::database_transaction_begin,
+            database_transaction::database_transaction_execute,
+            database_transaction::database_transaction_select,
+            database_transaction::database_transaction_commit,
+            database_transaction::database_transaction_rollback,
+            database_transaction::database_transaction_reset,
             content_sync::content_sync_create_stage,
             content_sync::content_sync_snapshot,
             content_sync::content_sync_fingerprint,

@@ -6,6 +6,7 @@ const storage = vi.hoisted(() => ({
   root: "old", files: new Map<string, Map<string, number[]>>(),
   gates: new Map<string, Promise<void>>(), release: [] as (() => void)[],
   calls: [] as string[], writes: 0, failRead: false, active: 0,
+  transactionId: null as string | null,
 }));
 vi.mock("../lib/chapter-content/storage-platform", () => ({ inspectChapterContentArtifacts: async (input: { preferredChapterDir: string; preferredContentFileName: string }) => ({
   status: "present", contentFile: `${input.preferredChapterDir}/${input.preferredContentFileName}`, contentBytes: 1, mediaBytes: 0, mediaComplete: true,
@@ -16,7 +17,47 @@ vi.mock("@tauri-apps/plugin-sql", () => ({ default: sql }));
 vi.mock("../lib/tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
 vi.mock("../lib/observability", () => ({ startPerformanceObservation: () => () => undefined, recordPerformanceObservation: () => undefined }));
 vi.mock("../lib/novel-cover-storage", () => ({ notifyNovelCoverChanged: covers.changed, invalidateAllNovelCoverSources: covers.invalidated }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: { root?: string; input?: { operation: string; path?: string; body?: number[] } }) => {
+vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: {
+  root?: string;
+  input?: { operation: string; path?: string; body?: number[] };
+  transactionId?: string;
+  query?: string;
+  values?: unknown[];
+} = {}) => {
+  const params = (values: unknown[] = []) =>
+    Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never;
+  if (command === "database_transaction_reset") {
+    if (sqlite?.isTransaction) sqlite.exec("ROLLBACK");
+    storage.transactionId = null;
+    return;
+  }
+  if (command === "database_transaction_begin") {
+    if (sqlite.isTransaction) throw new Error("database transaction: another frontend transaction is active");
+    sqlite.exec("BEGIN IMMEDIATE");
+    storage.transactionId = args.transactionId!;
+    return;
+  }
+  if (command === "database_transaction_execute") {
+    if (!sqlite.isTransaction || storage.transactionId !== args.transactionId) throw new Error("database transaction: transaction is not active");
+    const result = sqlite.prepare(args.query!).run(params(args.values));
+    return { rowsAffected: Number(result.changes), lastInsertId: Number(result.lastInsertRowid) };
+  }
+  if (command === "database_transaction_select") {
+    if (!sqlite.isTransaction || storage.transactionId !== args.transactionId) throw new Error("database transaction: transaction is not active");
+    return sqlite.prepare(args.query!).all(params(args.values));
+  }
+  if (command === "database_transaction_commit") {
+    if (!sqlite.isTransaction || storage.transactionId !== args.transactionId) throw new Error("database transaction: transaction is not active");
+    sqlite.exec("COMMIT");
+    storage.transactionId = null;
+    return;
+  }
+  if (command === "database_transaction_rollback") {
+    if (!sqlite.isTransaction || storage.transactionId !== args.transactionId) throw new Error("database transaction: transaction is not active");
+    sqlite.exec("ROLLBACK");
+    storage.transactionId = null;
+    return;
+  }
   if (command === "chapter_media_set_storage_root") { storage.root = args.root!; return args.root; }
   const input = args.input!;
   const root = storage.root;
@@ -69,7 +110,7 @@ beforeEach(async () => {
   vi.resetModules();
   covers.changed.mockClear(); covers.invalidated.mockClear();
   storage.root = "old"; storage.files.clear(); storage.gates.clear(); storage.release = [];
-  storage.calls = []; storage.writes = 0; storage.failRead = false; storage.active = 0;
+  storage.calls = []; storage.writes = 0; storage.failRead = false; storage.active = 0; storage.transactionId = null;
   addWork("old", first, "First");
   sqlite = new DatabaseSync(":memory:");
   const registration = readFileSync("src-tauri/src/database.rs", "utf8");

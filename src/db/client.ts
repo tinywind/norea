@@ -1,5 +1,6 @@
 import { discardUserStateNotifications, notifyUserStateCommitted } from "./user-state-core";
 import Database from "@tauri-apps/plugin-sql";
+import { invoke } from "@tauri-apps/api/core";
 import type { QueryResult } from "@tauri-apps/plugin-sql";
 import { startPerformanceObservation } from "../lib/observability";
 import { notifyContentSyncChanges } from "./content-sync-journal";
@@ -35,6 +36,15 @@ async function configureDb(db: Database): Promise<Database> {
   return db;
 }
 
+async function openRawDb(): Promise<Database> {
+  if (isTauriRuntime()) {
+    // The native process can survive a WebView reload. Roll back any abandoned
+    // frontend transaction before this frontend lifetime starts using SQLite.
+    await invoke("database_transaction_reset");
+  }
+  return configureDb(Database.get(DB_URL));
+}
+
 async function queueDbOperation<T>(run: () => Promise<T>): Promise<T> {
   let releaseQueue: () => void = () => undefined;
   const previousQueue = dbOperationQueue;
@@ -61,27 +71,27 @@ function serializedDb(rawDb: Database): Database {
         bindValueCount: bindValues?.length ?? 0,
       });
       return queueDbOperation(async () => {
-        const metadataMutation = isTauriRuntime() && /\b(novel|chapter|novel_chapter_composition)\b/i.test(query) && /\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(query);
+        const metadataMutation = isTauriRuntime() &&
+          /\b(novel|chapter|novel_chapter_composition)\b/i.test(query) &&
+          /\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(query);
         try {
-          if (metadataMutation) await rawDb.execute("BEGIN IMMEDIATE");
-          const result = await withWorkMetadataRollback(async () => {
-            const result = await rawDb.execute(query, bindValues);
-            if (metadataMutation) {
-              await flushWorkMetadata(rawDb);
-              await rawDb.execute("COMMIT");
-            }
-            return result;
-          });
-          if (/\b(novel|chapter|novel_chapter_composition|content_sync_journal)\b/i.test(query)) await notifyContentSyncChanges(rawDb);
-          notifyUserStateCommitted(rawDb);
+          const result = metadataMutation
+            ? await runDatabaseTransactionOnQueue(
+                rawDb,
+                db => db.execute(query, bindValues),
+              )
+            : await withWorkMetadataRollback(async () => {
+                const result = await rawDb.execute(query, bindValues);
+                if (/\b(novel|chapter|novel_chapter_composition|content_sync_journal)\b/i.test(query)) {
+                  await notifyContentSyncChanges(rawDb);
+                }
+                notifyUserStateCommitted(rawDb);
+                return result;
+              });
           finish({ rowsAffected: result.rowsAffected });
           return result;
         } catch (error) {
-          if (metadataMutation) {
-            await rawDb.execute("ROLLBACK").catch(() => undefined);
-            await restoreWorkMetadataDirectories(rawDb, false);
-          }
-          discardUserStateNotifications(rawDb);
+          if (!metadataMutation) discardUserStateNotifications(rawDb);
           finish({ error: observationError(error), failed: true });
           throw error;
         }
@@ -112,7 +122,7 @@ function serializedDb(rawDb: Database): Database {
 
 function getRawDb(): Promise<Database> {
   if (!rawDbPromise) {
-    rawDbPromise = configureDb(Database.get(DB_URL));
+    rawDbPromise = openRawDb();
   }
   return rawDbPromise;
 }
@@ -220,8 +230,132 @@ async function beginImmediate(db: Database, retries: number): Promise<void> {
       return;
     } catch (error) {
       if (!isDatabaseBusyError(error) || attempt + 1 >= attempts) throw error;
-      await new Promise<void>(resolve => setTimeout(resolve, DB_BEGIN_RETRY_DELAY_MS * (attempt + 1)));
+      await new Promise<void>(resolve =>
+        setTimeout(resolve, DB_BEGIN_RETRY_DELAY_MS * (attempt + 1)),
+      );
     }
+  }
+}
+
+interface DatabaseTransactionHandle {
+  db: Database;
+  commit: () => Promise<void>;
+  rollback: () => Promise<void>;
+}
+
+function nativeTransactionDatabase(transactionId: string): Database {
+  return {
+    path: DB_URL,
+    execute(query: string, bindValues?: unknown[]): Promise<QueryResult> {
+      return invoke<QueryResult>("database_transaction_execute", {
+        transactionId,
+        query,
+        values: bindValues ?? [],
+      });
+    },
+    select<T>(query: string, bindValues?: unknown[]): Promise<T> {
+      return invoke<T>("database_transaction_select", {
+        transactionId,
+        query,
+        values: bindValues ?? [],
+      });
+    },
+    close(): Promise<boolean> {
+      return Promise.reject(
+        new Error("Cannot close a database through an active transaction."),
+      );
+    },
+  } as Database;
+}
+
+async function openDatabaseTransaction(
+  rawDb: Database,
+  retries: number,
+): Promise<DatabaseTransactionHandle> {
+  if (!isTauriRuntime()) {
+    await beginImmediate(rawDb, retries);
+    return {
+      db: rawDb,
+      commit: async () => {
+        await rawDb.execute("COMMIT");
+      },
+      rollback: async () => {
+        await rawDb.execute("ROLLBACK");
+      },
+    };
+  }
+
+  const transactionId = crypto.randomUUID();
+  const attempts = Math.max(0, Math.floor(retries)) + 1;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      await invoke("database_transaction_begin", { transactionId });
+      return {
+        db: nativeTransactionDatabase(transactionId),
+        commit: () =>
+          invoke("database_transaction_commit", { transactionId }),
+        rollback: () =>
+          invoke("database_transaction_rollback", { transactionId }),
+      };
+    } catch (error) {
+      if (!isDatabaseBusyError(error) || attempt + 1 >= attempts) throw error;
+      await new Promise<void>(resolve =>
+        setTimeout(resolve, DB_BEGIN_RETRY_DELAY_MS * (attempt + 1)),
+      );
+    }
+  }
+  throw new Error("Database transaction could not be started.");
+}
+
+async function runDatabaseTransactionOnQueue<T>(
+  rawDb: Database,
+  run: (db: Database) => Promise<T>,
+  remoteContentSync = false,
+  options: DatabaseTransactionOptions = {},
+): Promise<T> {
+  const transaction = await openDatabaseTransaction(
+    rawDb,
+    options.busyBeginRetries ?? 0,
+  );
+  const transactionDb = transaction.db;
+  let committed = false;
+  try {
+    const result = await withWorkMetadataRollback(async () => {
+      if (remoteContentSync) {
+        await transactionDb.execute(
+          "UPDATE content_sync_origin SET remote=1 WHERE id=1",
+        );
+      }
+      const value = await run(transactionDb);
+      if (options.publishMetadata !== false) {
+        await flushWorkMetadata(transactionDb);
+      }
+      if (remoteContentSync) {
+        await transactionDb.execute(
+          "UPDATE content_sync_origin SET remote=0 WHERE id=1",
+        );
+      }
+      await transaction.commit();
+      committed = true;
+      return value;
+    });
+    notifyUserStateCommitted(transactionDb);
+    if (options.notifyContentSync !== false) {
+      await notifyContentSyncChanges(rawDb);
+    }
+    return result;
+  } catch (error) {
+    if (!committed) {
+      discardUserStateNotifications(transactionDb);
+      await transaction.rollback().catch((rollbackError: unknown) => {
+        // eslint-disable-next-line no-console
+        console.warn("[db] transaction rollback failed", rollbackError);
+      });
+      if (isTauriRuntime()) {
+        await restoreWorkMetadataDirectories(rawDb, false);
+      }
+    }
+    throw error;
   }
 }
 
@@ -231,30 +365,12 @@ export async function runDatabaseTransaction<T>(
   options: DatabaseTransactionOptions = {},
 ): Promise<T> {
   const rawDb = await getRawDb();
-  return queueDbOperation(async () => {
-    await beginImmediate(rawDb, options.busyBeginRetries ?? 0);
-    try {
-      const result = await withWorkMetadataRollback(async () => {
-        if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=1 WHERE id=1");
-        const result = await run(rawDb);
-        if (options.publishMetadata !== false) await flushWorkMetadata(rawDb);
-        if (remoteContentSync) await rawDb.execute("UPDATE content_sync_origin SET remote=0 WHERE id=1");
-        await rawDb.execute("COMMIT");
-        return result;
-      });
-      if (options.notifyContentSync !== false) await notifyContentSyncChanges(rawDb);
-      notifyUserStateCommitted(rawDb);
-      return result;
-    } catch (error) {
-      discardUserStateNotifications(rawDb);
-      await rawDb.execute("ROLLBACK").catch((rollbackError: unknown) => {
-        // eslint-disable-next-line no-console
-        console.warn("[db] transaction rollback failed", rollbackError);
-      });
-      if (isTauriRuntime()) {
-        await restoreWorkMetadataDirectories(rawDb, false);
-      }
-      throw error;
-    }
-  });
+  return queueDbOperation(() =>
+    runDatabaseTransactionOnQueue(
+      rawDb,
+      run,
+      remoteContentSync,
+      options,
+    ),
+  );
 }
