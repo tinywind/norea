@@ -77,7 +77,7 @@ export async function assertChapterCompositionStorageOwnership(input: {
       source.pluginId === input.novel.pluginId && source.novelId === input.novel.sourceNovelId && source.chapterPath === chapter.path;
     const copy = copies.get(entry.path);
     const targetDirectory = `${directory}/${entry.storageChapterNumber}`;
-    const preparedCopy = copy && sameOwner(copy.entry, entry) && copy.transfer.outcome === "copiedSource" &&
+    const preparedCopy = copy && sameOwner(copy.entry, entry) && (copy.transfer.outcome === "copiedSource" || copy.transfer.outcome === "movedSource") &&
       !copy.transfer.replacedTarget && copy.transfer.targetRelativeDir === targetDirectory &&
       ["content.html", "content.pdf"].some(file => copy.transfer.contentFile === `${targetDirectory}/${file}`);
     if ((storedOwner && !sameStoredOwner(storedOwner, entry, input.novel)) || (previousOwner && !sameStoredOwner(previousOwner, entry, input.novel)) ||

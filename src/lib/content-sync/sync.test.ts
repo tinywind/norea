@@ -1221,19 +1221,6 @@ it("receives its own published migration immediately after server finalization",
   expect(vi.mocked(syncIncomingNovelMigrations).mock.invocationCallOrder[1]).toBeGreaterThan(vi.mocked(finalizePendingNovelMigrations).mock.invocationCallOrder[0]!);
 });
 
-it("checks a migration target again under its storage lock before installing downloaded content", async () => {
-  const target = { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: "/chapter/1" };
-  const entry = { id: "chapter", deleted: false, complete: true, manifest: { identity: target, chapter: { contentType: "html" } } } as CatalogEntry;
-  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "/work", chapterPath: "/chapter/1",
-    chapterNumber: "1", position: 1, novelName: "Work", chapterName: "One", isLocal: false }] as never);
-  native.download.mockResolvedValue({ contentBytes: 100, mediaBytes: 0, mediaComplete: true });
-  const beforeInstall = vi.fn(async () => { throw new Error("Target changed while downloading"); });
-  await expect(downloadServerChapterFromServer(entry, "http://localhost:7788", { token: "token", target, beforeInstall })).rejects.toThrow("Target changed while downloading");
-  expect(beforeInstall).toHaveBeenCalledOnce();
-  expect(native.install).not.toHaveBeenCalled();
-  expect(markContentInstalled).not.toHaveBeenCalled();
-});
-
 it("receives approved migrations without running ordinary manual content uploads", async () => {
   const controller = new AbortController();
   expect(await syncReceivedWorkMigrations(controller.signal)).toEqual({ applied: 0, pending: 0 });

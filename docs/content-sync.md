@@ -44,11 +44,16 @@ refreshes run in the background without blocking navigation or adding error
 banners to normal pages. Saved work details and local reading stay usable when
 the server is slow or unavailable. Explicit server actions still report failures
 that prevent completion. Sync does not refresh plugin repositories.
-A work becomes visible after its metadata and cover are installed.
+Server-only works are available in Browse > Server. Opening a selected work can install its metadata and cover.
 Sync preserves existing library membership; add server works to the library
 from Browse > Server or a work's detail page. Sync now uploads stored local
 chapters and updates the remote catalog independently of browsing or selected
-chapter downloads.
+chapter downloads. Scheduled and manual content sync read catalog changes and
+upload local files. A received work migration reads its mapping and moves the
+chapters already stored on this device. Missing chapters stay missing. Different
+local copies at the source and destination block the move and remain available
+for review. Shared user-state sync exchanges library and reading records without
+sending or fetching chapter files.
 
 Settings > Data > Content server includes **Upload conflicts**:
 

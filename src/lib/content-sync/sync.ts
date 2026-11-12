@@ -417,7 +417,7 @@ export async function downloadServerChapter(entry: CatalogEntry): Promise<{ nove
   return downloadServerChapterFromServer(entry, useContentSyncStore.getState().serverUrl);
 }
 
-export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity; signal?: AbortSignal; beforeInstall?: () => Promise<void> }): Promise<{ novelId: number; chapterId: number }> {
+export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity; signal?: AbortSignal }): Promise<{ novelId: number; chapterId: number }> {
   options?.signal?.throwIfAborted();
   const downloadRevision = currentChapterDownloadRevision();
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
@@ -441,7 +441,6 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
         if (current.chapterId !== row.chapterId) throw new Error("Downloaded chapter identity changed during transfer.");
         options?.signal?.throwIfAborted();
         if (current.isLocal) await clearServerChapterDownloadProof(current.chapterId);
-        await options?.beforeInstall?.();
         options?.signal?.throwIfAborted();
         await install(storageDir(current));
         await markContentInstalled(current.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes, result.mediaComplete);

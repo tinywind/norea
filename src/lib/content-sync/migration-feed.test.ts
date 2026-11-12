@@ -1,3 +1,4 @@
+import { isApplyingSharedReaderResume, useReaderStore } from "../../store/reader";
 import type Database from "@tauri-apps/plugin-sql";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -13,7 +14,6 @@ vi.mock("./client", async original => ({ ...await original<typeof import("./clie
 vi.mock("./deletion-exclusions", () => ({ publishNovelMigrationSourceHold: vi.fn() }));
 vi.mock("./incoming-novel-migration", () => ({ applyIncomingNovelMigration: vi.fn(), IncomingNovelMigrationRetryableError: class extends Error {} }));
 vi.mock("./works", () => ({ recordInstalledWorkMetadata: vi.fn(), releaseMigratedTargetMetadataInDb: vi.fn() }));
-vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ mergeNovelReaderState: vi.fn() }) } }));
 
 const server = "https://content.test";
 const hash = (value: string) => value.repeat(64);
@@ -125,6 +125,20 @@ describe("received migration synchronization", () => {
     });
   });
   afterEach(() => { for (const database of databases.splice(0)) database.close(); });
+
+  it("applies the received reader mapping without reporting a local reading action to subscribers", async () => {
+    useReaderStore.setState({ lastReadChapterByNovel: { 5: 51 } });
+    const observed: boolean[] = [];
+    const unsubscribe = useReaderStore.subscribe(() => observed.push(isApplyingSharedReaderResume()));
+    vi.mocked(applyIncomingNovelMigration).mockResolvedValueOnce({ sourceNovelId: 5, targetNovelId: 6,
+      chapterIdMap: { 51: 61 }, preferredLastReadChapterId: 61, transferredDownloads: 0, cleanupWarnings: [] });
+    try {
+      expect((await syncIncomingNovelMigrations(server, "token")).applied).toBe(1);
+      expect(useReaderStore.getState().lastReadChapterByNovel).toEqual({ 6: 61 });
+      expect(observed).toEqual([true]);
+      expect(isApplyingSharedReaderResume()).toBe(false);
+    } finally { unsubscribe(); }
+  });
 
   it("persists source holds and cursor before applying, then skips completed replay after restart", async () => {
     const actual = vi.mocked(applyIncomingNovelMigration).getMockImplementation()!;

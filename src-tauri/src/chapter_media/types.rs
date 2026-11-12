@@ -35,6 +35,7 @@ pub struct ChapterStorageTransferEntry {
 #[serde(rename_all = "camelCase")]
 pub enum ChapterStorageTransferOutcome {
     CopiedSource,
+    MovedSource,
     KeptTarget,
     SourceNotDownloaded,
 }

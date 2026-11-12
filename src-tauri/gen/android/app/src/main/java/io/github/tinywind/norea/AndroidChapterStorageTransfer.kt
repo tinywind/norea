@@ -1,7 +1,9 @@
 package io.github.tinywind.norea
 
 import android.content.ContentResolver
+import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
+import java.io.File
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -154,6 +156,7 @@ internal class AndroidChapterStorageTransfer(
       val outcome = prepared.getString("outcome")
       require(
         outcome == "copiedSource" ||
+          outcome == "movedSource" ||
           outcome == "keptTarget" ||
           outcome == "sourceNotDownloaded",
       ) {
@@ -197,7 +200,7 @@ internal class AndroidChapterStorageTransfer(
     }
     val content = listOf("content.html", "content.pdf")
       .firstNotNullOfOrNull { name ->
-        directory.findFile(name)?.also { candidate ->
+        storage.findStorageChildWithoutRecovery(directory, name)?.also { candidate ->
           require(candidate.isFile) {
             "Android chapter storage content path is not a file: $relativeDir/$name"
           }
@@ -208,13 +211,13 @@ internal class AndroidChapterStorageTransfer(
       } ?: return null
     val contentName = content.name
       ?: throw IllegalStateException("Android chapter storage content name is unavailable.")
-    val mediaDirectoryBytes = directory.findFile("media")?.let { media ->
+    val mediaDirectoryBytes = storage.findStorageChildWithoutRecovery(directory, "media")?.let { media ->
       require(media.isDirectory) {
         "Android chapter storage media path is not a folder: $relativeDir/media"
       }
       storage.storageDocumentSize(media)
     } ?: 0L
-    val mediaArchiveBytes = directory.findFile("media.zip")?.let { archive ->
+    val mediaArchiveBytes = storage.findStorageChildWithoutRecovery(directory, "media.zip")?.let { archive ->
       require(archive.isFile) {
         "Android chapter storage media archive is not a file: $relativeDir/media.zip"
       }
@@ -264,7 +267,7 @@ internal class AndroidChapterStorageTransfer(
     require(source.isDirectory && source.canRead()) {
       "Android chapter storage transfer source is not a readable folder."
     }
-    require(targetParent.findFile(targetName) == null) {
+    require(storage.findStorageChildWithoutRecovery(targetParent, targetName) == null) {
       "Android chapter storage transfer stage already exists."
     }
     val target = targetParent.createDirectory(targetName)
@@ -363,14 +366,132 @@ internal class AndroidChapterStorageTransfer(
     newName: String,
     context: String,
   ): DocumentFile {
-    require(parent.findFile(newName) == null) {
+    require(storage.findStorageChildWithoutRecovery(parent, newName) == null) {
       "Android chapter storage transfer target already exists: $newName"
     }
     if (!document.renameTo(newName)) {
       throw IllegalStateException(context)
     }
-    return parent.findFile(newName)
+    return storage.findStorageChildWithoutRecovery(parent, newName)
       ?: throw IllegalStateException("Android chapter storage renamed path is inaccessible: $newName")
+  }
+
+  private val moveMarker = "{\"mode\":\"move\"}".toByteArray(Charsets.UTF_8)
+
+  private fun isMovedChapter(document: DocumentFile, token: String): Boolean {
+    val marker = storage.findStorageChildWithoutRecovery(document, androidChapterStorageTransferMarkerName(token)) ?: return false
+    return contentResolver.openInputStream(marker.uri)?.use { input ->
+      val bytes = ByteArray(moveMarker.size)
+      var offset = 0
+      while (offset < bytes.size) {
+        val count = input.read(bytes, offset, bytes.size - offset)
+        if (count <= 0) return@use false
+        offset += count
+      }
+      bytes.contentEquals(moveMarker) && input.read() == -1
+    } ?: throw IllegalStateException("Cannot read Android chapter move marker.")
+  }
+
+  private fun moveChapterStorageDocument(parent: DocumentFile, document: DocumentFile, targetParent: DocumentFile): DocumentFile {
+    val name = requireAndroidStorageEntryName(document.name)
+    require(storage.findStorageChildWithoutRecovery(targetParent, name) == null) { "Android chapter move target is occupied: $name" }
+    if (document.uri.scheme == ContentResolver.SCHEME_FILE) {
+      check(File(document.uri.path!!).renameTo(File(targetParent.uri.path!!, name))) { "Cannot move Android chapter folder." }
+    } else {
+      checkNotNull(DocumentsContract.moveDocument(contentResolver, document.uri, parent.uri, targetParent.uri)) {
+        "Cannot move Android chapter folder."
+      }
+    }
+    return storage.findStorageChildWithoutRecovery(targetParent, name)
+      ?: throw IllegalStateException("Moved Android chapter folder is inaccessible: $name")
+  }
+
+  private fun restoreChapterStorageCandidate(
+    rootUri: String, entry: ChapterStorageTransferEntry, token: String, parent: DocumentFile, candidate: DocumentFile,
+  ) {
+    val markerName = androidChapterStorageTransferMarkerName(token)
+    val marker = storage.findStorageChildWithoutRecovery(candidate, markerName) ?: return
+    val source = storage.storageDocumentAt(rootUri, entry.sourceRelativeDir)
+    if (source?.uri == candidate.uri) {
+      deleteChapterStorageDocument(marker, "Cannot remove restored Android chapter move marker.")
+      return
+    }
+    if (!isMovedChapter(candidate, token)) {
+      deleteChapterStorageDocument(candidate, "Cannot remove rolled back Android chapter copy.")
+      return
+    }
+    val sourceSegments = validateAndroidChapterStorageRelativeDir(entry.sourceRelativeDir)
+    require(source == null) { "Cannot restore a moved Android chapter over an occupied source." }
+    val sourceParent = ensureChapterStorageTransferParent(rootUri, sourceSegments)
+    var restored = candidate
+    if (parent.uri != sourceParent.uri) {
+      val stageName = androidChapterStorageTransferSiblingName(entry.targetRelativeDir.substringAfterLast('/'), token, "stage")
+      if (restored.name != stageName) restored = renameChapterStorageDocument(parent, restored, stageName, "Cannot stage Android chapter move rollback.")
+      restored = moveChapterStorageDocument(parent, restored, sourceParent)
+    }
+    if (restored.name != sourceSegments.last()) {
+      restored = renameChapterStorageDocument(sourceParent, restored, sourceSegments.last(), "Cannot restore Android chapter move source name.")
+    }
+    storage.findStorageChildWithoutRecovery(restored, markerName)?.let {
+      deleteChapterStorageDocument(it, "Cannot remove restored Android chapter move marker.")
+    }
+  }
+
+  private fun rollbackChapterStorageEntry(rootUri: String, entry: ChapterStorageTransferEntry, token: String) {
+    val targetSegments = validateAndroidChapterStorageRelativeDir(entry.targetRelativeDir)
+    val targetParent = storage.storageDocumentAt(rootUri, targetSegments.dropLast(1).joinToString("/"))
+    val stageName = androidChapterStorageTransferSiblingName(targetSegments.last(), token, "stage")
+    if (targetParent != null) {
+      storage.findStorageChildWithoutRecovery(targetParent, targetSegments.last())?.let {
+        restoreChapterStorageCandidate(rootUri, entry, token, targetParent, it)
+      }
+      storage.findStorageChildWithoutRecovery(targetParent, stageName)?.let {
+        restoreChapterStorageCandidate(rootUri, entry, token, targetParent, it)
+      }
+      storage.findStorageChildWithoutRecovery(targetParent, stageName)?.let {
+        deleteChapterStorageDocument(it, "Cannot remove rolled back Android chapter storage stage.")
+      }
+      val backupName = androidChapterStorageTransferSiblingName(targetSegments.last(), token, "backup")
+      storage.findStorageChildWithoutRecovery(targetParent, backupName)?.let {
+        renameChapterStorageDocument(targetParent, it, targetSegments.last(), "Cannot restore Android chapter storage backup.")
+      }
+    }
+    val sourceSegments = validateAndroidChapterStorageRelativeDir(entry.sourceRelativeDir)
+    val sourceParent = storage.storageDocumentAt(rootUri, sourceSegments.dropLast(1).joinToString("/"))
+    sourceParent?.let { parent ->
+      storage.findStorageChildWithoutRecovery(parent, stageName)?.let { restoreChapterStorageCandidate(rootUri, entry, token, parent, it) }
+      storage.findStorageChildWithoutRecovery(parent, sourceSegments.last())?.let {
+        restoreChapterStorageCandidate(rootUri, entry, token, parent, it)
+      }
+    }
+  }
+
+  private fun moveChapterStorageDirectory(rootUri: String, entry: ChapterStorageTransferEntry, targetParent: DocumentFile, token: String): DocumentFile? {
+    val source = storage.storageDocumentAt(rootUri, entry.sourceRelativeDir) ?: error("Android chapter move source disappeared.")
+    if (source.uri.authority != targetParent.uri.authority) return null
+    if (source.uri.scheme != ContentResolver.SCHEME_FILE) {
+      val supported = contentResolver.query(source.uri, arrayOf(DocumentsContract.Document.COLUMN_FLAGS), null, null, null)?.use {
+        it.moveToFirst() && it.getLong(0) and DocumentsContract.Document.FLAG_SUPPORTS_MOVE.toLong() != 0L
+      } ?: false
+      if (!supported) return null
+    }
+    val markerName = androidChapterStorageTransferMarkerName(token)
+    require(storage.findStorageChildWithoutRecovery(source, markerName) == null) { "Android chapter move marker already exists." }
+    val marker = checkNotNull(storage.createStorageFile(source, "application/octet-stream", markerName)) { "Cannot create Android chapter move marker." }
+    storage.requireExactCreatedStorageName(marker, markerName, "file", "Android chapter move marker is inaccessible.")
+    checkNotNull(contentResolver.openOutputStream(marker.uri, "wt")).use { it.write(moveMarker) }
+    check(isMovedChapter(source, token)) { "Android chapter move marker could not be verified." }
+    try {
+      val sourceParent = checkNotNull(storage.storageDocumentAt(rootUri, entry.sourceRelativeDir.substringBeforeLast('/')))
+      val stageName = androidChapterStorageTransferSiblingName(entry.targetRelativeDir.substringAfterLast('/'), token, "stage")
+      val staged = renameChapterStorageDocument(sourceParent, source, stageName, "Cannot stage Android chapter folder move.")
+      return moveChapterStorageDocument(sourceParent, staged, targetParent)
+    } catch (error: Throwable) {
+      try { rollbackChapterStorageEntry(rootUri, entry, token) }
+      catch (recovery: Throwable) { error.addSuppressed(recovery); throw error }
+      if (error is UnsupportedOperationException) return null
+      throw error
+    }
   }
 
   private fun prepareChapterStorageTransferEntry(
@@ -378,6 +499,7 @@ internal class AndroidChapterStorageTransfer(
     entry: ChapterStorageTransferEntry,
     token: String,
     requireEmptyTargets: Boolean,
+    moveSource: Boolean,
   ): JSONObject {
     val targetSegments = validateAndroidChapterStorageRelativeDir(entry.targetRelativeDir)
     val targetName = targetSegments.last()
@@ -423,24 +545,25 @@ internal class AndroidChapterStorageTransfer(
     val targetParent = ensureChapterStorageTransferParent(rootUri, targetSegments)
     val stageName = androidChapterStorageTransferSiblingName(targetName, token, "stage")
     val backupName = androidChapterStorageTransferSiblingName(targetName, token, "backup")
-    require(targetParent.findFile(stageName) == null && targetParent.findFile(backupName) == null) {
+    require(storage.findStorageChildWithoutRecovery(targetParent, stageName) == null && storage.findStorageChildWithoutRecovery(targetParent, backupName) == null) {
       "Android chapter storage transfer workspace already exists."
     }
 
     var replacedTarget = false
-    var publishedTarget = false
     try {
-      val stage = copyChapterStorageDirectory(
-        source,
+      val moved = if (moveSource) moveChapterStorageDirectory(rootUri, entry, targetParent, token) else null
+      val stage = moved ?: copyChapterStorageDirectory(
+        storage.storageDocumentAt(rootUri, entry.sourceRelativeDir) ?: error("Android chapter transfer source disappeared."),
         targetParent,
         stageName,
         entry.targetRelativeDir,
       )
       val markerName = androidChapterStorageTransferMarkerName(token)
-      require(stage.findFile(markerName) == null) {
+      require(moved != null || storage.findStorageChildWithoutRecovery(stage, markerName) == null) {
         "Android chapter storage transfer marker already exists in copied source."
       }
-      storage.createStorageFile(stage, "application/octet-stream", markerName)
+      if (moved == null) {
+        storage.createStorageFile(stage, "application/octet-stream", markerName)
         ?.let { marker ->
           storage.requireExactCreatedStorageName(
             marker,
@@ -452,6 +575,7 @@ internal class AndroidChapterStorageTransfer(
         ?: throw IllegalStateException(
           "Cannot create Android chapter storage transfer marker.",
         )
+      }
       val stagedArtifacts = inspectChapterStorageTransferArtifacts(
         stage,
         "${targetSegments.dropLast(1).joinToString("/")}/$stageName",
@@ -465,7 +589,7 @@ internal class AndroidChapterStorageTransfer(
         "Android copied chapter storage transfer failed artifact verification."
       }
 
-      targetParent.findFile(targetName)?.let { racedTarget ->
+      storage.findStorageChildWithoutRecovery(targetParent, targetName)?.let { racedTarget ->
         require(!requireEmptyTargets) {
           "Android chapter storage transfer target appeared during preparation."
         }
@@ -473,10 +597,8 @@ internal class AndroidChapterStorageTransfer(
           racedTarget,
           entry.targetRelativeDir,
         )?.let { targetArtifacts ->
-          deleteChapterStorageDocument(
-            stage,
-            "Cannot remove superseded Android chapter storage transfer stage.",
-          )
+          if (moved != null) restoreChapterStorageCandidate(rootUri, entry, token, targetParent, stage)
+          else deleteChapterStorageDocument(stage, "Cannot remove superseded Android chapter storage transfer stage.")
           return preparedChapterStorageTransferEntryJson(
             entry,
             "keptTarget",
@@ -499,8 +621,7 @@ internal class AndroidChapterStorageTransfer(
         targetName,
         "Cannot publish Android chapter storage transfer.",
       )
-      publishedTarget = true
-      val published = targetParent.findFile(targetName)
+      val published = storage.findStorageChildWithoutRecovery(targetParent, targetName)
         ?: throw IllegalStateException("Published Android chapter storage transfer is missing.")
       val publishedArtifacts = inspectChapterStorageTransferArtifacts(
         published,
@@ -510,43 +631,12 @@ internal class AndroidChapterStorageTransfer(
       )
       return preparedChapterStorageTransferEntryJson(
         entry,
-        "copiedSource",
+        if (moved != null) "movedSource" else "copiedSource",
         replacedTarget,
         publishedArtifacts,
       )
     } catch (error: Throwable) {
-      if (publishedTarget) {
-        targetParent.findFile(targetName)?.let { target ->
-          runCatching {
-            deleteChapterStorageDocument(
-              target,
-              "Cannot remove failed Android chapter storage transfer target.",
-            )
-          }.exceptionOrNull()?.let(error::addSuppressed)
-        }
-      }
-      if (replacedTarget) {
-        targetParent.findFile(backupName)?.let { backup ->
-          runCatching {
-            if (targetParent.findFile(targetName) == null) {
-              renameChapterStorageDocument(
-                targetParent,
-                backup,
-                targetName,
-                "Cannot restore failed Android chapter storage transfer target.",
-              )
-            }
-          }.exceptionOrNull()?.let(error::addSuppressed)
-        }
-      }
-      targetParent.findFile(stageName)?.let { stage ->
-        runCatching {
-          deleteChapterStorageDocument(
-            stage,
-            "Cannot remove failed Android chapter storage transfer stage.",
-          )
-        }.exceptionOrNull()?.let(error::addSuppressed)
-      }
+      runCatching { rollbackChapterStorageEntry(rootUri, entry, token) }.exceptionOrNull()?.let(error::addSuppressed)
       throw error
     }
   }
@@ -567,23 +657,26 @@ internal class AndroidChapterStorageTransfer(
       "Android chapter storage transfer target policy must be a boolean."
     }
     val requireEmptyTargets = strictOption == true
+    val moveOption = options.opt("moveSource").takeUnless { it == JSONObject.NULL }
+    require(moveOption == null || moveOption is Boolean) { "Android chapter storage move policy must be a boolean." }
+    val moveSource = moveOption == true
     val token = resolveAndroidChapterStorageTransferToken(suppliedToken as String?) {
       chapterStorageTransferToken()
     }
-    if (requireEmptyTargets) {
+    if (requireEmptyTargets || moveSource) {
       val sources = entries.map { it.sourceRelativeDir }.toSet()
       for (entry in entries) {
         require(entry.targetRelativeDir !in sources) {
           "Android chapter storage transfer sources and targets must be disjoint."
         }
-        require(storage.storageDocumentAt(rootUri, entry.targetRelativeDir) == null) {
+        require(!requireEmptyTargets || storage.storageDocumentAt(rootUri, entry.targetRelativeDir) == null) {
           "Android chapter storage transfer target must be absent: ${entry.targetRelativeDir}"
         }
         val targetSegments = validateAndroidChapterStorageRelativeDir(entry.targetRelativeDir)
         val parent = storage.storageDocumentAt(rootUri, targetSegments.dropLast(1).joinToString("/"))
         for (kind in listOf("stage", "backup")) {
           val name = androidChapterStorageTransferSiblingName(targetSegments.last(), token, kind)
-          require(parent?.findFile(name) == null) {
+          require(parent?.let { storage.findStorageChildWithoutRecovery(it, name) } == null) {
             "Android chapter storage transfer workspace already exists."
           }
         }
@@ -601,7 +694,7 @@ internal class AndroidChapterStorageTransfer(
     val prepared = JSONArray()
     try {
       for (entry in entries) {
-        prepared.put(prepareChapterStorageTransferEntry(rootUri, entry, token, requireEmptyTargets))
+        prepared.put(prepareChapterStorageTransferEntry(rootUri, entry, token, requireEmptyTargets, moveSource))
       }
     } catch (error: Throwable) {
       if (prepared.length() > 0) {
@@ -645,16 +738,8 @@ internal class AndroidChapterStorageTransfer(
       val targetName = targetSegments.last()
       val parentPath = targetSegments.dropLast(1).joinToString("/")
       val parent = storage.storageDocumentAt(rootUri, parentPath)
-      parent?.findFile(
-        androidChapterStorageTransferSiblingName(targetName, preparation.token, "stage"),
-      )?.let { stage ->
-        deleteChapterStorageDocument(
-          stage,
-          "Cannot remove finalized Android chapter storage transfer stage.",
-        )
-      }
-      if (prepared.outcome == "copiedSource") {
-        val target = parent?.findFile(targetName)
+      if (prepared.outcome == "copiedSource" || prepared.outcome == "movedSource") {
+        val target = parent?.let { storage.findStorageChildWithoutRecovery(it, targetName) }
           ?: throw IllegalStateException(
             "Cannot finalize Android chapter storage transfer without its target.",
           )
@@ -665,11 +750,11 @@ internal class AndroidChapterStorageTransfer(
         }
         val markerName = androidChapterStorageTransferMarkerName(preparation.token)
         val source = storage.storageDocumentAt(rootUri, entry.sourceRelativeDir)
-        if (source != null) {
+        if (prepared.outcome == "copiedSource" && source != null) {
           require(source.isDirectory) {
             "Android chapter storage transfer source is not a folder."
           }
-          val marker = target.findFile(markerName)
+          val marker = storage.findStorageChildWithoutRecovery(target, markerName)
           require(marker?.isFile == true) {
             "Cannot finalize an unmarked Android chapter storage transfer target."
           }
@@ -678,7 +763,7 @@ internal class AndroidChapterStorageTransfer(
             "Cannot remove finalized Android chapter storage transfer source.",
           )
         }
-        target.findFile(markerName)?.let { marker ->
+        storage.findStorageChildWithoutRecovery(target, markerName)?.let { marker ->
           require(marker.isFile) {
             "Android chapter storage transfer marker is not a file."
           }
@@ -688,9 +773,10 @@ internal class AndroidChapterStorageTransfer(
           )
         }
       }
-      parent?.findFile(
-        androidChapterStorageTransferSiblingName(targetName, preparation.token, "backup"),
-      )?.let { backup ->
+      parent?.let { storage.findStorageChildWithoutRecovery(it, androidChapterStorageTransferSiblingName(targetName, preparation.token, "stage")) }?.let { stage ->
+        deleteChapterStorageDocument(stage, "Cannot remove finalized Android chapter storage transfer stage.")
+      }
+      parent?.let { storage.findStorageChildWithoutRecovery(it, androidChapterStorageTransferSiblingName(targetName, preparation.token, "backup")) }?.let { backup ->
         deleteChapterStorageDocument(
           backup,
           "Cannot remove finalized Android chapter storage transfer backup.",
@@ -712,59 +798,8 @@ internal class AndroidChapterStorageTransfer(
   ) {
     validateAndroidChapterStorageTransferToken(preparation.token)
     for (prepared in preparation.entries.asReversed()) {
-      val entry = prepared.entry
-      val targetSegments = validateAndroidChapterStorageRelativeDir(entry.targetRelativeDir)
-      val targetName = targetSegments.last()
-      val parentPath = targetSegments.dropLast(1).joinToString("/")
-      val parent = storage.storageDocumentAt(rootUri, parentPath) ?: continue
-      val stageName = androidChapterStorageTransferSiblingName(
-        targetName,
-        preparation.token,
-        "stage",
-      )
-      parent.findFile(stageName)?.let { stage ->
-        deleteChapterStorageDocument(
-          stage,
-          "Cannot remove rolled back Android chapter storage transfer stage.",
-        )
-      }
-      if (prepared.outcome != "copiedSource") continue
-      val backupName = androidChapterStorageTransferSiblingName(
-        targetName,
-        preparation.token,
-        "backup",
-      )
-      val markerName = androidChapterStorageTransferMarkerName(preparation.token)
-      if (prepared.replacedTarget) {
-        parent.findFile(backupName)?.let { backup ->
-          parent.findFile(targetName)?.let { target ->
-            val marker = target.findFile(markerName)
-            if (marker?.isFile == true) {
-              deleteChapterStorageDocument(
-                target,
-                "Cannot remove rolled back Android chapter storage transfer target.",
-              )
-            }
-          }
-          require(parent.findFile(targetName) == null) {
-            "Cannot restore an Android chapter storage transfer backup over an unmarked target."
-          }
-          renameChapterStorageDocument(
-            parent,
-            backup,
-            targetName,
-            "Cannot restore rolled back Android chapter storage transfer target.",
-          )
-        }
-      } else {
-        parent.findFile(targetName)?.let { target ->
-          if (target.findFile(markerName)?.isFile == true) {
-            deleteChapterStorageDocument(
-              target,
-              "Cannot remove rolled back Android chapter storage transfer target.",
-            )
-          }
-        }
+      if (prepared.outcome == "copiedSource" || prepared.outcome == "movedSource") {
+        rollbackChapterStorageEntry(rootUri, prepared.entry, preparation.token)
       }
     }
   }

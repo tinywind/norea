@@ -21,11 +21,11 @@ class AndroidChapterPayloadInventoryTest {
   @Test
   fun missingDirectoriesAreDistinctFromListingFailures() {
     val directories = mapOf("root" to mapOf("work" to "work"), "work" to emptyMap())
-    assertEquals(null, resolveAndroidChapterDirectory("root", listOf("work", "chapter")) { directories.getValue(it) })
+    assertEquals(null, resolveAndroidChapterDirectory("root", listOf("work", "chapter")) { parent, name -> directories.getValue(parent)[name] })
     try {
-      resolveAndroidChapterDirectory("root", listOf("work", "chapter")) {
-        if (it == "work") throw SecurityException("Access denied")
-        directories.getValue(it)
+      resolveAndroidChapterDirectory("root", listOf("work", "chapter")) { parent, name ->
+        if (parent == "work") throw SecurityException("Access denied")
+        directories.getValue(parent)[name]
       }
       throw AssertionError("Expected directory access failure")
     } catch (_: SecurityException) { }
@@ -34,11 +34,22 @@ class AndroidChapterPayloadInventoryTest {
   @Test
   fun interruptedInstallBackupIsNotIgnored() {
     try {
-      resolveAndroidChapterDirectory("root", listOf("chapter")) {
-        mapOf("chapter" to "published", ".chapter.norea-sync-backup" to "backup")
+      resolveAndroidChapterDirectory("root", listOf("chapter")) { _, name ->
+        mapOf("chapter" to "published", ".chapter.norea-sync-backup" to "backup")[name]
       }
       throw AssertionError("Expected an interrupted installation to be rejected")
     } catch (_: IllegalStateException) { }
+  }
+
+  @Test
+  fun resolvesOnlyTheRequestedNamesWithoutEnumeratingSiblingChapters() {
+    val names = mutableListOf<String>()
+    val result = resolveAndroidChapterDirectory("root", listOf("work", "chapter")) { parent, name ->
+      names.add("$parent/$name")
+      when ("$parent/$name") { "root/work" -> "work"; "work/chapter" -> "chapter"; else -> null }
+    }
+    assertEquals("chapter", result)
+    assertEquals(listOf("root/.work.norea-sync-backup", "root/work", "work/.chapter.norea-sync-backup", "work/chapter"), names)
   }
 
   @Test

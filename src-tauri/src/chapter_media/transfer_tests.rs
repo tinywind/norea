@@ -29,6 +29,91 @@ fn write_downloaded_chapter(root: &Path, relative_dir: &str, body: &[u8]) {
 }
 
 #[test]
+fn chapter_storage_move_restores_the_original_directory_on_rollback() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = "contents/source-a/a/1";
+    let target = "contents/source-b/b/2";
+    write_downloaded_chapter(dir.path(), source, b"source body");
+    let preparation = prepare_chapter_storage_transfer_at_root(
+        dir.path(), vec![transfer_entry("1", source, target)], "move-1", false, true,
+    ).expect("prepare move");
+    assert!(!dir.path().join(source).exists(), "moves must not retain a byte copy");
+    assert_eq!(fs::read(dir.path().join(target).join("content.html")).unwrap(), b"source body");
+    rollback_chapter_storage_transfer_at_root(dir.path(), &preparation).expect("rollback move");
+    rollback_chapter_storage_transfer_at_root(dir.path(), &preparation).expect("repeat rollback");
+    assert_eq!(fs::read(dir.path().join(source).join("content.html")).unwrap(), b"source body");
+    assert!(!dir.path().join(target).exists());
+}
+
+#[test]
+fn interrupted_move_recovers_from_the_plan_without_a_native_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "contents/source-a/a/1";
+    let target = "contents/source-b/b/2";
+    let entry = transfer_entry("1", source, target);
+    write_downloaded_chapter(dir.path(), source, b"only body");
+    fs::create_dir_all(dir.path().join(target).parent().unwrap()).unwrap();
+    fs::write(transfer_marker_path(&dir.path().join(source), "interrupted").unwrap(), MOVE_MARKER).unwrap();
+    let stage = transfer_sibling_path(&dir.path().join(target), "interrupted", "stage").unwrap();
+    fs::rename(dir.path().join(source), &stage).unwrap();
+    rollback_transfer_entry(dir.path(), &entry, "interrupted").unwrap();
+    rollback_transfer_entry(dir.path(), &entry, "interrupted").unwrap();
+    assert_eq!(fs::read(dir.path().join(source).join("content.html")).unwrap(), b"only body");
+    assert!(!stage.exists());
+}
+
+#[test]
+fn moved_chapter_rollback_preserves_both_bodies_when_source_is_occupied() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "contents/source-a/a/1";
+    let target = "contents/source-b/b/2";
+    write_downloaded_chapter(dir.path(), source, b"moved body");
+    let preparation = prepare_chapter_storage_transfer_at_root(dir.path(), vec![transfer_entry("1", source, target)], "occupied", false, true).unwrap();
+    write_downloaded_chapter(dir.path(), source, b"new source body");
+    assert!(rollback_chapter_storage_transfer_at_root(dir.path(), &preparation).unwrap_err().contains("occupied source"));
+    assert_eq!(fs::read(dir.path().join(source).join("content.html")).unwrap(), b"new source body");
+    assert_eq!(fs::read(dir.path().join(target).join("content.html")).unwrap(), b"moved body");
+}
+
+#[test]
+fn move_rollback_removes_an_incomplete_marker_without_deleting_the_source() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "contents/source-a/a/1";
+    let entry = transfer_entry("1", source, "contents/source-b/b/2");
+    write_downloaded_chapter(dir.path(), source, b"original body");
+    fs::write(transfer_marker_path(&dir.path().join(source), "marker").unwrap(), b"{").unwrap();
+    rollback_transfer_entry(dir.path(), &entry, "marker").unwrap();
+    assert_eq!(fs::read(dir.path().join(source).join("content.html")).unwrap(), b"original body");
+}
+
+#[test]
+fn moved_chapter_finalization_keeps_the_only_body_and_clears_its_marker() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "contents/source-a/a/1";
+    let target = "contents/source-b/b/2";
+    write_downloaded_chapter(dir.path(), source, b"moved body");
+    let preparation = prepare_chapter_storage_transfer_at_root(dir.path(), vec![transfer_entry("1", source, target)], "final", false, true).unwrap();
+    finalize_chapter_storage_transfer_at_root(dir.path(), &preparation).unwrap();
+    finalize_chapter_storage_transfer_at_root(dir.path(), &preparation).unwrap();
+    assert!(!dir.path().join(source).exists());
+    assert!(!has_transfer_marker(&dir.path().join(target), "final").unwrap());
+    assert_eq!(fs::read(dir.path().join(target).join("content.html")).unwrap(), b"moved body");
+}
+
+#[test]
+fn finalization_retains_a_move_stage_when_the_final_target_is_missing() {
+    let dir = tempfile::tempdir().unwrap();
+    let source = "contents/source-a/a/1";
+    let target = "contents/source-b/b/2";
+    write_downloaded_chapter(dir.path(), source, b"only body");
+    let preparation = prepare_chapter_storage_transfer_at_root(dir.path(), vec![transfer_entry("1", source, target)], "stage", false, true).unwrap();
+    let stage = transfer_sibling_path(&dir.path().join(target), "stage", "stage").unwrap();
+    fs::rename(dir.path().join(target), &stage).unwrap();
+    assert!(finalize_chapter_storage_transfer_at_root(dir.path(), &preparation).is_err());
+    assert_eq!(fs::read(stage.join("content.html")).unwrap(), b"only body");
+}
+
+#[test]
 fn chapter_storage_transfer_copies_the_complete_directory_before_finalize() {
     let dir = tempfile::tempdir().expect("tempdir");
     let source = "contents/source-a/novel-a/1";
@@ -39,6 +124,7 @@ fn chapter_storage_transfer_copies_the_complete_directory_before_finalize() {
         dir.path(),
         vec![transfer_entry("chapter-1", source, target)],
         "transfer-1",
+        false,
         false,
     )
     .expect("prepare transfer");
@@ -90,6 +176,7 @@ fn chapter_storage_transfer_keeps_an_existing_target_download() {
         vec![transfer_entry("chapter-1", source, target)],
         "transfer-2",
         false,
+        false,
     )
     .expect("prepare transfer");
 
@@ -122,6 +209,7 @@ fn chapter_storage_transfer_restores_an_invalid_target_on_rollback() {
         vec![transfer_entry("chapter-1", source, target)],
         "transfer-3",
         false,
+        false,
     )
     .expect("prepare transfer");
 
@@ -148,6 +236,7 @@ fn repeated_transfer_rollback_does_not_remove_a_new_target_download() {
         dir.path(),
         vec![transfer_entry("chapter-1", source, target)],
         "transfer-retry",
+        false,
         false,
     )
     .expect("prepare transfer");
@@ -186,6 +275,7 @@ fn chapter_storage_transfer_rejects_invalid_and_duplicate_target_paths() {
         ],
         "transfer-4",
         false,
+        false,
     )
     .expect_err("reject duplicate target");
 
@@ -219,6 +309,7 @@ fn chapter_storage_transfer_rolls_back_prior_entries_after_copy_failure() {
         ],
         "transfer-5",
         false,
+        false,
     )
     .expect_err("reject source symlink");
 
@@ -248,6 +339,7 @@ fn strict_renumber_preflights_all_targets_before_copying() {
         ],
         "renumber-target-conflict",
         true,
+        false,
     )
     .expect_err("an occupied target must stop the whole plan");
 
@@ -284,6 +376,7 @@ fn strict_renumber_preserves_unfinished_sources_before_copying() {
         ],
         "renumber-partial-source",
         true,
+        false,
     )
     .expect_err("an unfinished source must not become an empty chapter");
 
@@ -306,7 +399,7 @@ fn persisted_renumber_intent_recovers_without_the_native_receipt() {
     write_downloaded_chapter(dir.path(), source, b"original chapter");
 
     let receipt =
-        prepare_chapter_storage_transfer_at_root(dir.path(), vec![entry.clone()], token, true)
+        prepare_chapter_storage_transfer_at_root(dir.path(), vec![entry.clone()], token, true, false)
             .expect("prepare with persisted token");
     assert_eq!(receipt.token, token);
     let intent = ChapterStorageTransferPreparation {
@@ -377,6 +470,7 @@ fn strict_renumber_rejects_crossed_paths_and_retains_missing_sources() {
         ],
         "renumber-cycle",
         true,
+        false,
     )
     .expect_err("cycles must be rejected even when both directories are absent");
     assert!(error.contains("disjoint"));
@@ -390,6 +484,7 @@ fn strict_renumber_rejects_crossed_paths_and_retains_missing_sources() {
         )],
         "renumber-not-downloaded",
         true,
+        false,
     )
     .expect("an absent source is a metadata-only chapter");
     assert_eq!(

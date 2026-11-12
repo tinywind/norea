@@ -10,6 +10,7 @@ import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 export interface ChapterStorageTransferOptions {
   token?: string;
   requireEmptyTargets?: boolean;
+  moveSource?: boolean;
 }
 
 export interface ChapterStorageTransferEntry {
@@ -20,6 +21,7 @@ export interface ChapterStorageTransferEntry {
 
 export type ChapterStorageTransferOutcome =
   | "copiedSource"
+  | "movedSource"
   | "keptTarget"
   | "sourceNotDownloaded";
 
@@ -79,6 +81,7 @@ function parseChapterStorageTransferPreparation(
       const outcome = entry.outcome;
       if (
         outcome !== "copiedSource" &&
+        outcome !== "movedSource" &&
         outcome !== "keptTarget" &&
         outcome !== "sourceNotDownloaded"
       ) {

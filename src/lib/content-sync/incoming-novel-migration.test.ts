@@ -8,7 +8,7 @@ import type { NovelMetadataV1, StoredNovelMetadata } from "../work-metadata";
 
 vi.mock("../../db/client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("../../db/work-metadata", async original => ({ ...await original<typeof import("../../db/work-metadata")>(), readWorkMetadataSyncFile: vi.fn() }));
-vi.mock("../work-metadata", async original => ({ ...await original<typeof import("../work-metadata")>(), installStoredNovelMetadata: vi.fn(), readStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn() }));
+vi.mock("../work-metadata", async original => ({ ...await original<typeof import("../work-metadata")>(), installStoredNovelMetadata: vi.fn(), readStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn(), workMetadataOperation: vi.fn() }));
 vi.mock("../chapter-content/storage-platform", () => ({ inspectChapterPayloadInventory: vi.fn() }));
 vi.mock("../chapter-content-storage", () => ({ reconcileStoredChapterContent: vi.fn() }));
 vi.mock("../chapter-storage-transfer", () => ({ prepareChapterStorageTransfer: vi.fn(), rollbackChapterStorageTransfer: vi.fn(), finalizeChapterStorageTransfer: vi.fn(), removeChapterStorageDirectory: vi.fn() }));
@@ -28,7 +28,7 @@ import { getDb, runDatabaseTransaction } from "../../db/client";
 import { applyNovelMetadataToCache, readWorkMetadataSyncFile } from "../../db/work-metadata";
 import { findNovelBySource, getNovelById } from "../../db/queries/novel";
 import { getChapterById } from "../../db/queries/chapter";
-import { installStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover } from "../work-metadata";
+import { installStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, workMetadataOperation } from "../work-metadata";
 import { inspectChapterPayloadInventory } from "../chapter-content/storage-platform";
 import { reconcileStoredChapterContent } from "../chapter-content-storage";
 import { prepareChapterStorageTransfer, rollbackChapterStorageTransfer, finalizeChapterStorageTransfer, removeChapterStorageDirectory } from "../chapter-storage-transfer";
@@ -36,12 +36,11 @@ import { chapterStorageRelativeDir } from "../chapter-storage-path";
 import { pluginManager } from "../plugins/manager";
 import { syncNovelFromSource } from "../plugins/sync-novel";
 import { enqueueSourceTask } from "../tasks/source-tasks";
-import { ContentServerError, contentServerRequest } from "./client";
+import { contentServerRequest } from "./client";
 import { downloadServerChapterFromServer } from "./sync";
 import { recordInstalledWorkMetadata } from "./works";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { applyIncomingNovelMigration, IncomingNovelMigrationRetryableError, type ResolvedIncomingNovelMigration } from "./incoming-novel-migration";
-import type { CatalogEntry } from "./native";
 import type { WorkMigrationLineage } from "./migration-feed-state";
 
 let sqlite: DatabaseSync;
@@ -50,7 +49,6 @@ const files = new Map<string, ChapterPayloadSnapshot>();
 const metadataFiles = new Map<string, StoredNovelMetadata>();
 let live: { work: WorkMigrationLineage["targetWork"]; chapters: WorkMigrationLineage["mappings"][number]["source"][] };
 let resolved: ResolvedIncomingNovelMigration;
-let serverEntry: CatalogEntry | null;
 let afterPrepare: (() => void) | undefined;
 const revision = "2".repeat(64);
 const firstInventory = { body: { sha256: "a".repeat(64), bytes: 10 }, expectedAssetKeys: [], storedAssets: [] };
@@ -100,12 +98,8 @@ function initializeDevice(idOffset = 0) {
 beforeEach(() => {
   vi.clearAllMocks(); initializeDevice(); resolved=fixture(); afterPrepare=undefined;
   live={work:structuredClone(resolved.targetWork),chapters:resolved.targetMappings.flatMap(mapping=>mapping.target?[mapping.target]:[])};
-  serverEntry={id:"5".repeat(64),revision:"6".repeat(64),fileBytes:10,complete:true,deleted:false,sequence:1,
-    manifest:{packageVersion:1,layout:"chapter-files",identity:{...resolved.targetWork.identity,chapterPath:"/b/11"},novel:{name:"Fresh target",isLocal:false},chapter:{name:"Fresh first",chapterNumber:"11",position:1,page:"1",contentType:"html"},bodyPath:"content.html",files:[]}};
   vi.mocked(contentServerRequest).mockImplementation(async (_server,path) => {
     if(path.endsWith("/migration-snapshot"))return structuredClone(live) as never;
-    if(path.startsWith("/catalog/chapter?")){if(!serverEntry)throw new ContentServerError(404);return structuredClone(serverEntry) as never;}
-    if(path.includes("/storage-inventory?"))return {revision:serverEntry!.revision,identity:serverEntry!.manifest.identity,inventory:firstInventory} as never;
     throw Error("Unexpected endpoint "+path);
   });
   vi.mocked(installStoredNovelMetadata).mockImplementation(async (input,cover,before,options) => {
@@ -118,15 +112,22 @@ beforeEach(() => {
   vi.mocked(readWorkMetadataSyncFile).mockImplementation(async identity=>{const stored=[...metadataFiles.values()].find(value=>value.metadata.identity.pluginId===identity.pluginId&&value.metadata.identity.novelPath===identity.novelPath);return stored?{directory:stored.directory,fingerprint:"latest",revision:7,pluginId:identity.pluginId,path:identity.novelPath}:null;});
   vi.mocked(readStoredNovelMetadata).mockImplementation(async directory=>metadataFiles.get(directory)??null);
   vi.mocked(readStoredNovelCover).mockResolvedValue(null);
+  vi.mocked(workMetadataOperation).mockImplementation(async input => {
+    const directory = input.path!.slice(0, -"/novel.json".length);
+    if (input.operation === "chapters") return { paths: [...files.keys()].filter(path => path.startsWith(directory + "/")).map(path => path + "/content.html") };
+    if (input.operation === "remove") metadataFiles.delete(directory);
+    if (input.operation === "write") metadataFiles.set(directory, { directory, metadata: JSON.parse(Buffer.from(input.body!, "base64").toString("utf8")) });
+    const stored = metadataFiles.get(directory);
+    return { body: stored ? Buffer.from(JSON.stringify(stored.metadata)).toString("base64") : null };
+  });
   vi.mocked(inspectChapterPayloadInventory).mockImplementation(async identity=>structuredClone(files.get(chapterStorageRelativeDir(identity.novel,identity.chapter))??{...payload(),body:null,mediaComplete:false,contentBytes:0,payloadBytes:0}));
   vi.mocked(reconcileStoredChapterContent).mockImplementation(async id=>{const chapter=await getChapterById(id);const novel=await getNovelById(chapter!.novelId);const directory=chapterStorageRelativeDir(novel!,chapter!);return files.has(directory)?{status:"present",mediaComplete:true,contentFile:directory+"/content.html",contentBytes:10,mediaBytes:0}:{status:"missing",contentFile:null,contentBytes:0,mediaBytes:0};});
-  vi.mocked(prepareChapterStorageTransfer).mockImplementation(async entries=>{
-    const result={token:"incoming-prepare",entries:entries.map(entry=>{const existing=files.has(entry.targetRelativeDir);const source=files.get(entry.sourceRelativeDir);if(!existing&&source)files.set(entry.targetRelativeDir,structuredClone(source));return {...entry,outcome:existing?"keptTarget" as const:source?"copiedSource" as const:"sourceNotDownloaded" as const,contentFile:existing||source?entry.targetRelativeDir+"/content.html":null,contentBytes:10,mediaBytes:0,replacedTarget:false};})};afterPrepare?.();return result;
+  vi.mocked(prepareChapterStorageTransfer).mockImplementation(async (entries,options)=>{
+    const result={token:options!.token!,entries:entries.map(entry=>{const existing=files.has(entry.targetRelativeDir);const source=files.get(entry.sourceRelativeDir);if(!existing&&source){files.set(entry.targetRelativeDir,structuredClone(source));files.delete(entry.sourceRelativeDir);}return {...entry,outcome:existing?"keptTarget" as const:source?"movedSource" as const:"sourceNotDownloaded" as const,contentFile:existing||source?entry.targetRelativeDir+"/content.html":null,contentBytes:10,mediaBytes:0,replacedTarget:false};})};afterPrepare?.();return result;
   });
-  vi.mocked(rollbackChapterStorageTransfer).mockImplementation(async preparation=>{for(const entry of preparation.entries)if(entry.outcome==="copiedSource")files.delete(entry.targetRelativeDir);});
+  vi.mocked(rollbackChapterStorageTransfer).mockImplementation(async preparation=>{for(const entry of preparation.entries)if(entry.outcome==="movedSource"){const body=files.get(entry.targetRelativeDir);if(body)files.set(entry.sourceRelativeDir,body);files.delete(entry.targetRelativeDir);}else if(entry.outcome==="copiedSource")files.delete(entry.targetRelativeDir);});
   vi.mocked(finalizeChapterStorageTransfer).mockResolvedValue(undefined);
   vi.mocked(removeChapterStorageDirectory).mockImplementation(async directory=>{for(const key of files.keys())if(key===directory||key.startsWith(directory+"/"))files.delete(key);});
-  vi.mocked(downloadServerChapterFromServer).mockImplementation(async (_entry,_server,options)=>{await options?.beforeInstall?.();const novel=await findNovelBySource(options!.target.pluginId,options!.target.novelPath);const [chapter]=await db.select<{id:number}[]>("SELECT id FROM chapter WHERE novel_id=$1 AND path=$2",[novel!.id,options!.target.chapterPath]);files.set("contents/beta/b-work/11",payload());await db.execute("UPDATE chapter SET is_downloaded=1,stored_content_type='html',content_bytes=10 WHERE id=$1",[chapter!.id]);return {novelId:novel!.id,chapterId:chapter!.id};});
   vi.mocked(nativeFetch).mockResolvedValue(new Response(new Uint8Array([42]),{headers:{"content-type":"image/png"}}));
 });
 afterEach(()=>sqlite.close());
@@ -155,18 +156,46 @@ it("keeps every source record when a recipient-only chapter lacks an approved de
   sqlite.exec("INSERT INTO chapter(novel_id,path,name,chapter_number,position) VALUES(1,'/a/extra','Extra','4',4)");
   await expect(apply()).rejects.toThrow("no unambiguous approved");expect(await findNovelBySource("alpha","/old")).not.toBeNull();expect(installStoredNovelMetadata).not.toHaveBeenCalled();
 });
-it("refuses a recipient target download that conflicts with the approved server bytes",async()=>{
-  await applyNovelMetadataToCache(db,resolved.targetWork.metadata);const target=await findNovelBySource("beta","/new");
-  await db.execute("UPDATE chapter SET is_downloaded=1 WHERE novel_id=$1 AND chapter_number='11'",[target!.id]);files.set("contents/beta/b-work/11",payload("d"));
-  await expect(apply()).rejects.toThrow("conflicts with the approved server");expect(await findNovelBySource("alpha","/old")).not.toBeNull();expect(files.get("contents/beta/b-work/11")!.body!.sha256).toBe("d".repeat(64));expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
+it("retains both local bodies when the destination already contains a different download", async () => {
+  files.set("contents/beta/b-work/11", payload("d"));
+  await expect(apply()).rejects.toThrow("different local chapter files");
+  expect(await findNovelBySource("alpha", "/old")).not.toBeNull();
+  expect(files.get("contents/alpha/a-work/1")).toEqual(payload());
+  expect(files.get("contents/beta/b-work/11")).toEqual(payload("d"));
+  expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();
+  expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
 });
-it("downloads the approved server target before migrating a different local source body",async()=>{
-  files.set("contents/alpha/a-work/1",payload("c"));await apply();expect(downloadServerChapterFromServer).toHaveBeenCalledOnce();expect(files.get("contents/beta/b-work/11")!.body!.sha256).toBe("a".repeat(64));
+
+it("moves only two local bodies for ten mapped chapters, regardless of server bytes and stale download flags", async () => {
+  files.set("contents/alpha/a-work/1", payload("c"));
+  files.set("contents/alpha/a-work/2", payload("e"));
+  for (let i = 4; i <= 11; i++) {
+    const n = i + 10;
+    live.work.metadata.chapters[String(n)] = "Target " + n;
+    await db.execute("INSERT INTO chapter(novel_id,path,name,chapter_number,position,is_downloaded) VALUES(1,$1,$2,$3,$4,$5)",
+      ["/a/" + i, "Old " + i, String(i), i, i === 4 ? 1 : 0]);
+    resolved.chapterDecisions.push({ sourceChapterPath: "/a/" + i, sourceChapterNumber: String(i), targetChapterPath: "/b/" + n,
+      targetChapterNumber: String(n), sourceMetadataVerified: true, targetMetadataVerified: true });
+  }
+  await apply();
+  expect([...files.entries()].sort()).toEqual([["contents/beta/b-work/11", payload("c")], ["contents/beta/b-work/12", payload("e")]]);
+  expect(sqlite.prepare("SELECT COUNT(*) AS total,SUM(is_downloaded) AS stored FROM chapter").get()).toEqual({ total: 10, stored: 2 });
+  expect(prepareChapterStorageTransfer).toHaveBeenCalledOnce();
+  expect(vi.mocked(prepareChapterStorageTransfer).mock.calls[0]![1]?.moveSource).toBe(true);
+  expect(await apply()).toBeNull();
+  expect(prepareChapterStorageTransfer).toHaveBeenCalledOnce();
+  expect(vi.mocked(contentServerRequest).mock.calls.every(([, path]) => path.endsWith("/migration-snapshot"))).toBe(true);
+  expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
+  expect(enqueueSourceTask).not.toHaveBeenCalled();
 });
-it("moves a recipient-only body only after the target server lookup confirms absence",async()=>{
-  resolved.targetMappings=[];live.chapters=[];serverEntry=null;await apply();expect(files.has("contents/beta/b-work/11")).toBe(true);expect(downloadServerChapterFromServer).not.toHaveBeenCalled();expect(contentServerRequest).toHaveBeenCalledWith("http://server",expect.stringContaining("/catalog/chapter?"),"device","GET",undefined,expect.any(AbortSignal));
+
+it("moves a recipient-only body using the approved mapping without requesting a server inventory", async () => {
+  resolved.targetMappings = []; live.chapters = [];
+  await apply();
+  expect(files.get("contents/beta/b-work/11")).toEqual(payload());
+  expect(vi.mocked(contentServerRequest).mock.calls.every(([, path]) => path.endsWith("/migration-snapshot"))).toBe(true);
 });
-it("rolls back copied files, reading state and receipt if the server target changes before commit",async()=>{
+it("rolls back moved files, reading state and receipt if the server target changes before commit",async()=>{
   afterPrepare=()=>{live.work.revision="8".repeat(64);};
   await expect(apply()).rejects.toBeInstanceOf(IncomingNovelMigrationRetryableError);
   expect(await findNovelBySource("alpha","/old")).not.toBeNull();expect(files.has("contents/alpha/a-work/1")).toBe(true);expect(files.has("contents/beta/b-work/11")).toBe(false);expect(sqlite.prepare("SELECT * FROM content_sync_cache WHERE cache_key='incoming-receipt'").all()).toEqual([]);
@@ -174,10 +203,14 @@ it("rolls back copied files, reading state and receipt if the server target chan
 it("records an idempotent no-op when this recipient already has no original work",async()=>{
   sqlite.exec("DELETE FROM novel WHERE id=1");expect(await apply()).toBeNull();expect(installStoredNovelMetadata).not.toHaveBeenCalled();expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();expect(sqlite.prepare("SELECT payload FROM content_sync_cache WHERE cache_key='incoming-receipt'").get()).toEqual({payload:'{"status":"completed"}'});
 });
-it("does not install a changed target cover or remove the original",async()=>{
-  live.work.metadata.cover={fileName:"cover.png",contentType:"image/png"};live.work.coverSha256=createHash("sha256").update(new Uint8Array([99])).digest("hex");
-  await expect(apply()).rejects.toThrow("target cover changed");expect(installStoredNovelMetadata).not.toHaveBeenCalled();expect(await findNovelBySource("alpha","/old")).not.toBeNull();
+it("receives a mapping for a work with a server cover without fetching the cover", async () => {
+  live.work.metadata.cover = { fileName: "cover.png", contentType: "image/png" };
+  live.work.coverSha256 = "a".repeat(64);
+  await apply();
+  expect(nativeFetch).not.toHaveBeenCalled();
+  expect(installStoredNovelMetadata).toHaveBeenCalledWith(live.work.metadata, undefined, undefined, { authoritative: true, preserveLocalCover: true });
 });
+
 it("returns the committed mapping even if the subsequent metadata cache notification fails",async()=>{
   vi.mocked(recordInstalledWorkMetadata).mockRejectedValueOnce(new Error("cache unavailable"));const result=await apply();
   expect(result!.sourceNovelId).toBe(1);expect(result!.cleanupWarnings[0]).toContain("migration committed");expect(result!.installedTargetMetadata!.metadata.novel.name).toBe("Fresh target");expect(await findNovelBySource("alpha","/old")).toBeNull();
@@ -191,6 +224,7 @@ it.each(["source", "target"] as const)("preserves a partial %s body and missing-
     sqlite.exec("UPDATE chapter SET is_downloaded=0,media_repair_needed=1,content_bytes=10 WHERE id=11");
     files.set("contents/alpha/a-work/1", incomplete);
   } else {
+    files.delete("contents/alpha/a-work/1");
     await applyNovelMetadataToCache(db, resolved.targetWork.metadata);
     const target = await findNovelBySource("beta", "/new");
     await db.execute("UPDATE chapter SET is_downloaded=0,media_repair_needed=1,content_bytes=10 WHERE novel_id=$1 AND chapter_number='11'", [target!.id]);
@@ -235,7 +269,7 @@ it("distinguishes a prepared target from a source-absent receipt in its raw comm
 it("keeps target-primary body choice on a recipient with only an A download while migrating its reading state", async () => {
   resolved.chapterDecisions[0]!.discardSourceContent = true;
   resolved.targetMappings = [{ source: resolved.targetMappings[0]!.source, decision: "delete-source", target: null, targetInventory: null }];
-  live.chapters = []; serverEntry = null;
+  live.chapters = [];
   await apply();
   expect(files.has("contents/beta/b-work/11")).toBe(false);
   expect(files.has("contents/alpha/a-work/1")).toBe(false);
@@ -248,7 +282,7 @@ it("preserves the composed target order during incoming replay without source-nu
   resolved.chapterDecisions[0]!.discardSourceContent = true;
   resolved.chapterDecisions[1]!.discardSourceContent = true;
   resolved.targetMappings = [{ source: resolved.targetMappings[0]!.source, decision: "delete-source", target: null, targetInventory: null }];
-  live.chapters = []; serverEntry = null;
+  live.chapters = [];
   live.work.metadata.chapterComposition = {
     version: 1, updatedAt: 20, entries: [11, 12].map(number => ({
       id: "entry-" + number, path: "/b/" + number, storageChapterNumber: String(number),

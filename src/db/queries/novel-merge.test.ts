@@ -400,6 +400,21 @@ describe("applyNovelMergeInDb user state transaction", () => {
 
   afterEach(() => { sqlite.close(); });
 
+  it("commits the folder move journal atomically with source retirement", async () => {
+    sqlite.exec(`INSERT INTO content_sync_cache VALUES('norea-novel-merge-storage:move-1','{"phase":"preparing"}')`);
+    await applyNovelMergeInDb({ ...input(), storageTransferToken: "move-1" });
+    expect(sqlite.prepare("SELECT json_extract(payload,'$.phase') AS phase FROM content_sync_cache WHERE cache_key='norea-novel-merge-storage:move-1'").get())
+      .toEqual({ phase: "committed" });
+  });
+
+  it("rolls the folder move journal back with a rejected source deletion", async () => {
+    sqlite.exec(`INSERT INTO content_sync_cache VALUES('norea-novel-merge-storage:move-1','{"phase":"preparing"}');
+      CREATE TRIGGER reject_move BEFORE DELETE ON novel WHEN OLD.id=1 BEGIN SELECT RAISE(ABORT,'source busy'); END;`);
+    await expect(applyNovelMergeInDb({ ...input(), storageTransferToken: "move-1" })).rejects.toThrow("source busy");
+    expect(sqlite.prepare("SELECT json_extract(payload,'$.phase') AS phase FROM content_sync_cache WHERE cache_key='norea-novel-merge-storage:move-1'").get())
+      .toEqual({ phase: "preparing" });
+  });
+
   it.each([
     ["entire", null],
     ["all_remaining", null],

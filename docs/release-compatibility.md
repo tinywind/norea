@@ -126,6 +126,12 @@ never cross-device identities. Source and target must be different remote works:
 they may use different plugins or distinct provider-owned work IDs under the
 same plugin. Self-migration is rejected before any source work is retired.
 
+Work merges save their storage plan and metadata baseline before moving chapter
+folders. The merge transaction also commits the storage journal. On restart,
+uncommitted moves return to their source paths; committed moves finish cleanup.
+Unexpected source files or metadata changes stop recovery without overwriting
+them. Providers without folder-move support retain the copy-and-delete path.
+
 ## Plugin-owned storage IDs
 
 Source plugins own stable novel IDs used as storage directory names. IDs must be

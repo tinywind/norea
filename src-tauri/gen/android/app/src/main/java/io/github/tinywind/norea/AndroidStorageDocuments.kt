@@ -8,6 +8,9 @@ import android.os.Build
 import android.os.Environment
 import android.provider.DocumentsContract
 import android.provider.MediaStore
+import android.system.Os
+import android.system.OsConstants
+import android.system.ErrnoException
 import io.github.tinywind.norea.AppLog as Log
 import android.webkit.MimeTypeMap
 import androidx.documentfile.provider.DocumentFile
@@ -70,6 +73,16 @@ internal fun isAndroidStorageAccessDenied(error: Throwable): Boolean =
   generateSequence(error) { it.cause }.take(8).any { cause ->
     cause is SecurityException ||
       cause.message?.let(storageAccessDeniedErrno::containsMatchIn) == true
+  }
+
+// SAF wraps an absent external-storage tree child in an IllegalArgumentException.
+internal fun isAndroidMissingStorageDocument(error: Throwable, documentId: String): Boolean =
+  generateSequence(error) { it.cause }.take(8).any { cause ->
+    val message = cause.message.orEmpty()
+    val missing = "Missing file for $documentId"
+    (cause is java.io.FileNotFoundException && (message == missing || message.startsWith("$missing at "))) ||
+      (cause is IllegalArgumentException && message.startsWith("Failed to determine if ") &&
+        message.contains("java.io.FileNotFoundException: $missing at "))
   }
 
 /**
@@ -240,13 +253,31 @@ internal class AndroidStorageDocuments(private val context: Context) {
    * storage provider uses path-shaped document ids, so its children resolve
    * with a single existence query; other providers fall back to one listing.
    */
-  private fun findStorageChildWithoutRecovery(parent: DocumentFile, name: String): DocumentFile? {
-    if (parent.uri.scheme == ContentResolver.SCHEME_FILE) return parent.findFile(name)
-    if (isExternalStorageTreeDocument(parent.uri)) {
-      return treeChildDocument(parent, "${DocumentsContract.getDocumentId(parent.uri)}/$name")
-        ?.takeIf { it.exists() }
+  fun findStorageChildWithoutRecovery(parent: DocumentFile, name: String): DocumentFile? {
+    require(parent.isDirectory && parent.canRead()) { "Android storage directory is not readable." }
+    if (parent.uri.scheme == ContentResolver.SCHEME_FILE) {
+      val child = File(parent.uri.path!!, name)
+      try { Os.lstat(child.path) }
+      catch (error: ErrnoException) {
+        if (error.errno == OsConstants.ENOENT) return null
+        throw IOException("Cannot inspect Android storage child: $name", error)
+      }
+      return DocumentFile.fromFile(child)
     }
-    val child = listStorageChildren(parent).firstOrNull { it.name == name } ?: return null
+    if (isExternalStorageTreeDocument(parent.uri)) {
+      val child = treeChildDocument(parent, "${DocumentsContract.getDocumentId(parent.uri)}/$name") ?: return null
+      val exists = try {
+        contentResolver.query(child.uri, arrayOf(DocumentsContract.Document.COLUMN_DOCUMENT_ID), null, null, null)?.use { it.moveToFirst() }
+      } catch (error: Exception) {
+        if (isAndroidMissingStorageDocument(error, DocumentsContract.getDocumentId(child.uri))) false else throw error
+      }
+      if (exists == true) return child
+      require(parent.canRead()) { "Android storage directory became unavailable during lookup." }
+      return null
+    }
+    val matches = listStorageChildren(parent).filter { it.name == name }
+    require(matches.size <= 1) { "Ambiguous Android storage entry: $name" }
+    val child = matches.firstOrNull() ?: return null
     return storageChildDocumentFile(child)
   }
 

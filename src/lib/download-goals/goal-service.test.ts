@@ -11,7 +11,6 @@ const mocks = vi.hoisted(() => ({
   downloadListener: null as ((event: unknown) => void) | null,
   excluded: new Set<number>(),
   stopped: new Set<number>(),
-  remoteApply: false,
 }));
 
 vi.mock("../../db/queries/chapter", () => ({
@@ -33,10 +32,6 @@ vi.mock("../../db/queries/novel-download-goal", () => ({
 }));
 vi.mock("../../i18n", () => ({ translate: (_locale: string, key: string) => key }));
 vi.mock("../../store/appearance", () => ({ useAppearanceStore: { getState: () => ({ appLocale: "en" }) } }));
-vi.mock("../../store/reader", async () => {
-  const { create: createStore } = await import("zustand");
-  return { isApplyingSharedReaderResume: () => mocks.remoteApply, useReaderStore: createStore(() => ({ lastReadChapterByNovel: {} as Record<number, number> })) };
-});
 vi.mock("../content-sync/server-lane", () => ({
   planServerLaneJobs: async (_novel: unknown, jobs: unknown[]) => jobs,
 }));
@@ -84,7 +79,7 @@ vi.mock("./budget", async (importOriginal) => ({
 import { listLibraryDownloadChapters } from "../../db/queries/chapter";
 import { listGoalNovelIdsForDownloadScope, resumeStoppedNovelDownloadGoal, setNovelDownloadGoal } from "../../db/queries/novel-download-goal";
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
-import { useReaderStore } from "../../store/reader";
+import { applySharedReaderState, useReaderStore } from "../../store/reader";
 import { cancelChapterDownloadTasks, discardQueuedChapterDownloads } from "../tasks/chapter-download";
 import { taskScheduler } from "../tasks/scheduler";
 import { cancelChapterDownloadRequest } from "../tasks/chapter-download-requests";
@@ -142,7 +137,6 @@ beforeEach(() => {
   mocks.records = [];
   mocks.excluded = new Set();
   mocks.stopped = new Set();
-  mocks.remoteApply = false;
   useDownloadGoalSettingsStore.setState({ automaticGoal: { kind: "keep_ahead", count: 3 }, automaticOnMobileData: false });
   useReaderStore.setState({ lastReadChapterByNovel: {} });
   vi.clearAllMocks();
@@ -343,14 +337,18 @@ it("does not publish a stale automatic range after the global policy changes dur
 });
 
 
-it("does not schedule source downloads for a shared resume but follows a later local read", async () => {
+it.each(["resume", "migration"])("keeps an active download goal idle during a shared %s and follows a later local read", async kind => {
   startDownloadGoals();
   await settle();
   mocks.submitted = [];
   mocks.queued = new Set([11, 13, 14]);
-  mocks.remoteApply = true;
-  useReaderStore.setState({ lastReadChapterByNovel: { 1: 11 } });
-  mocks.remoteApply = false;
+  const reader = useReaderStore.getState();
+  if (kind === "resume") {
+    reader.applySharedResume({ novelId: 1, chapterId: 11, anchor: null, openedAt: 1 });
+  } else {
+    applySharedReaderState(() => reader.mergeNovelReaderState({ sourceNovelId: 2, targetNovelId: 1,
+      chapterIdMap: { 21: 11 }, preferredLastReadChapterId: 11 }));
+  }
   await settle();
   expect(mocks.submitted).toEqual([]);
 

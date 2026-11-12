@@ -8,6 +8,18 @@ import java.io.FileNotFoundException
 import java.io.IOException
 
 class AndroidStorageDirectReadPolicyTest {
+  @org.junit.Test
+  fun distinguishesMissingSafChildrenFromAccessAndProviderFailures() {
+    val id = "primary:Norea/contents/source/work/225"
+    org.junit.Assert.assertTrue(isAndroidMissingStorageDocument(
+      IllegalArgumentException("Failed to determine if $id is child of primary:Norea: java.io.FileNotFoundException: Missing file for $id at /storage/emulated/0/Norea"), id))
+    org.junit.Assert.assertTrue(isAndroidMissingStorageDocument(java.io.FileNotFoundException("Missing file for $id at /storage/emulated/0/Norea"), id))
+    org.junit.Assert.assertFalse(isAndroidMissingStorageDocument(SecurityException("Permission Denial"), id))
+    org.junit.Assert.assertFalse(isAndroidMissingStorageDocument(java.io.FileNotFoundException("open failed: EACCES (Permission denied)"), id))
+    org.junit.Assert.assertFalse(isAndroidMissingStorageDocument(java.io.IOException("Storage disconnected"), id))
+    org.junit.Assert.assertFalse(isAndroidMissingStorageDocument(
+      IllegalArgumentException("Failed to determine if another is child of primary:Norea: java.io.FileNotFoundException: Missing file for another at /storage"), id))
+  }
   private val rootA = "content://com.android.externalstorage.documents/tree/primary%3ANorea"
   private val rootB = "content://com.android.externalstorage.documents/tree/primary%3AOther"
   private val denied = FileNotFoundException(

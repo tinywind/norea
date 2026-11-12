@@ -263,6 +263,7 @@ export interface StoredNovelNumberReconciliation {
 export interface InstallStoredNovelMetadataOptions {
   /** A migration target snapshot owns every novel field, including explicit absence. */
   authoritative?: boolean;
+  preserveLocalCover?: boolean;
 }
 
 export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>, options: InstallStoredNovelMetadataOptions = {}): Promise<InstalledNovelMetadata | null> {
@@ -283,7 +284,7 @@ export async function installReconciledStoredNovelMetadata(
 
 async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>, reconciliation?: StoredNovelNumberReconciliation, options: InstallStoredNovelMetadataOptions = {}): Promise<InstalledNovelMetadata | null> {
   let metadata = parseNovelMetadata(input);
-  if (options.authoritative && metadata.cover && !coverBytes?.length) throw new Error("A migration target cover requires verified cover bytes.");
+  if (options.authoritative && !options.preserveLocalCover && metadata.cover && !coverBytes?.length) throw new Error("A migration target cover requires verified cover bytes.");
   const { runDatabaseTransaction } = await import("../db/client");
   const { applyNovelMetadataToCache, knownNovelMetadataDirectory, readWorkMetadataSyncFile, rememberStoredNovelMetadata } = await import("../db/work-metadata");
     const preferred = knownNovelMetadataDirectory(metadata.identity) ?? await availableNovelMetadataDirectory(metadata);
@@ -329,11 +330,11 @@ async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1,
         }
         const merged = mergeIncomingNovelMetadata(previous, metadata);
         metadata = options.authoritative ? { ...merged, novel: metadata.novel, cover: metadata.cover } : merged;
-        if (options.authoritative) await removeAllStoredNovelCovers(directory, existing?.metadata.cover ?? null);
+        if (options.authoritative && !options.preserveLocalCover) await removeAllStoredNovelCovers(directory, existing?.metadata.cover ?? null);
         if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);
-        else if (!options.authoritative) metadata.cover = existing?.metadata.cover ?? null;
+        else if (!options.authoritative || options.preserveLocalCover) metadata.cover = existing?.metadata.cover ?? null;
         const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory, { preserveMissingMetadata: !options.authoritative });
-        if (options.authoritative && !metadata.novel.isLocal) await db.execute("UPDATE novel SET cover=NULL WHERE id=$1", [installedNovelId]);
+        if (options.authoritative && !options.preserveLocalCover && !metadata.novel.isLocal) await db.execute("UPDATE novel SET cover=NULL WHERE id=$1", [installedNovelId]);
         const [cached] = await db.select<Pick<NovelMetadataV1["novel"], "author" | "artist" | "summary" | "status" | "genres" | "rating">[]>(
           "SELECT author,artist,summary,status,genres,rating FROM novel WHERE id=$1", [installedNovelId]);
         if (!cached) throw new Error("Installed work metadata is missing from the local cache.");

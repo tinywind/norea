@@ -225,6 +225,11 @@ export interface SharedReaderResumeInput {
 
 let applyingSharedResume = 0;
 
+export function applySharedReaderState(update: () => void): void {
+  applyingSharedResume++;
+  try { update(); } finally { applyingSharedResume--; }
+}
+
 export function isApplyingSharedReaderResume(): boolean {
   return applyingSharedResume > 0;
 }
@@ -1407,8 +1412,7 @@ export const useReaderStore = create<ReaderState>()(
         }
         const portable = anchor && chapterId !== null ? getPortableReaderAnchor({ ...anchor, novelId }) : null;
         const checked = portable ? { ...portable, novelId } : undefined;
-        applyingSharedResume++;
-        try {
+        applySharedReaderState(() => {
           set((state) => {
             const lastReadChapterByNovel = { ...state.lastReadChapterByNovel };
             const novelPageIndexByNovel = { ...state.novelPageIndexByNovel };
@@ -1430,9 +1434,7 @@ export const useReaderStore = create<ReaderState>()(
               chapterScrollAnchors: limitChapterScrollAnchors(chapterScrollAnchors),
             };
           });
-        } finally {
-          applyingSharedResume--;
-        }
+        });
       },
       setNovelPageIndex: (novelId, pageIndex) =>
         set((state) => ({

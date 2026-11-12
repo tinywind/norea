@@ -31,6 +31,8 @@ async function configureDb(db: Database): Promise<Database> {
   if (isTauriRuntime()) {
     const { recoverSourceChapterRenumbersInDb } = await import("../lib/source-chapter-renumber");
     await recoverSourceChapterRenumbersInDb(db);
+    const { recoverNovelMergeStorageInDb } = await import("../lib/novel-merge-storage");
+    await recoverNovelMergeStorageInDb(db);
     await restoreWorkMetadataDirectories(db, false);
   }
   return db;

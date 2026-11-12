@@ -1732,6 +1732,17 @@ it("installs a migration target authoritatively without reviving old null fields
   expect(sqlite.prepare("SELECT cover FROM novel").get()).toEqual({ cover: null });
   expect(sqlite.prepare("SELECT progress,unread,bookmark FROM chapter").get()).toEqual({ progress: 71, unread: 0, bookmark: 1 });
 });
+it("keeps the local target cover while applying a received mapping with a different server cover", async () => {
+  const original = fixture(); original.cover = { fileName: "cover.jpg", contentType: "image/jpeg" };
+  save(original); storage.files.set("contents/source/book/cover.jpg", [4, 5]);
+  await initializeWorkMetadata(db);
+  const incoming = fixture(); incoming.cover = { fileName: "cover.png", contentType: "image/png" };
+  const result = await installStoredNovelMetadata(incoming, undefined, undefined, { authoritative: true, preserveLocalCover: true });
+  expect(result?.metadata.cover).toEqual(original.cover);
+  expect(storage.files.get("contents/source/book/cover.jpg")).toEqual([4, 5]);
+  expect(storage.files.has("contents/source/book/cover.png")).toBe(false);
+});
+
 it("refuses an authoritative target cover descriptor when its bytes are absent", async () => {
   const original = fixture(); save(original); await initializeWorkMetadata(db);
   const incoming = fixture(); incoming.cover = { fileName: "cover.jpg", contentType: "image/jpeg" };

@@ -1,5 +1,6 @@
 import type Database from "@tauri-apps/plugin-sql";
-import { getDb } from "../db/client";
+import { getDb, runDatabaseTransaction } from "../db/client";
+import { createNovelMergeStorageJournal, finishNovelMergeStorageInDb, recoverNovelMergeStorageInDb, saveNovelMergeStoragePreparation } from "./novel-merge-storage";
 import { getChapterComposition } from "../db/chapter-composition";
 import { compileNovelMergeComposition, validateReviewedNovelMergeCatalog, type NovelMergeCompositionEntry, type ReviewedNovelMergeChapterCatalog } from "./novel-merge-composition";
 import { hasStoredChapterContent, listChaptersByNovel, type ChapterListRow } from "../db/queries/chapter";
@@ -15,15 +16,14 @@ import {
   type ChapterContentType,
 } from "./chapter-content";
 import { reconcileStoredChapterContent } from "./chapter-content-storage";
-import { compareChapterInventories, isChapterPayloadInventory, type ChapterPayloadInventory } from "./chapter-content/inventory";
+import { isChapterPayloadInventory, type ChapterPayloadInventory } from "./chapter-content/inventory";
+import { workMetadataOperation } from "./work-metadata";
 import { canonicalMetadataValue } from "./work-metadata/schema";
 import { clearResolvedChapterStorageDirs } from "./chapter-storage-resolution";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "./chapter-storage-path";
 import {
-  finalizeChapterStorageTransfer,
   prepareChapterStorageTransfer,
   removeChapterStorageDirectory,
-  rollbackChapterStorageTransfer,
   type ChapterStorageTransferEntry,
   type ChapterStorageTransferPreparedEntry,
   type ChapterStorageTransferPreparation,
@@ -70,8 +70,7 @@ export interface IncomingNovelMergeOptions {
   signal: AbortSignal;
   recordIncomingMigration: (db: Database) => Promise<void>;
   beforeCommit?: () => Promise<void>;
-  /** null means the server explicitly has no target body; an absent key has no proof. */
-  expectedTargetInventories: Readonly<Record<string, ChapterPayloadInventory | null>>;
+
 }
 
 interface MergeChapterResolution {
@@ -252,6 +251,53 @@ async function buildStorageTransferEntries(
   return { cleanupRelativeDirs, entries };
 }
 
+function sameLocalPayload(left: ChapterPayloadInventory, right: ChapterPayloadInventory): boolean {
+  if (!left.body || !right.body || !isChapterPayloadInventory(left) || !isChapterPayloadInventory(right)) return false;
+  const contents = (value: ChapterPayloadInventory) => JSON.stringify([
+    value.body!.sha256, value.body!.bytes, value.expectedAssetKeys && [...value.expectedAssetKeys].sort(),
+    [...value.storedAssets].sort((a, b) => a.key.localeCompare(b.key)).map(asset => [asset.key, asset.sha256, asset.bytes]),
+  ]);
+  return contents(left) === contents(right);
+}
+
+async function incomingStorageEntries(
+  source: NovelDetailRecord, target: NovelDetailRecord, resolution: MergeChapterResolution,
+  skipped: readonly number[], signal: AbortSignal,
+) {
+  const directory = novelStorageRelativeDir(source);
+  const { paths } = await workMetadataOperation({ operation: "chapters", path: directory + "/novel.json" });
+  if (!paths) throw new Error("Cannot inspect the original work's stored chapters.");
+  const occupied = new Set(paths.map(parentRelativePath));
+  const owners = new Map<string, number>();
+  for (const chapter of resolution.sourceChapters) {
+    const folder = chapterStorageRelativeDir(source, chapter);
+    if (!occupied.has(folder)) continue;
+    if (owners.has(folder)) throw new Error("A stored source chapter has ambiguous ownership. Existing files were retained.");
+    owners.set(folder, chapter.id);
+  }
+  if (owners.size !== occupied.size) throw new Error("A stored source chapter has no local mapping. Existing files were retained.");
+  const entries: ChapterStorageTransferEntry[] = [];
+  const expected = new Map<string, ChapterPayloadInventory>();
+  const excluded = new Set(skipped);
+  for (const [path, chapters] of resolution.sourcesByTargetPath) {
+    const destination = resolution.targetByPath.get(path)!;
+    for (const chapter of chapters) {
+      const sourceRelativeDir = chapterStorageRelativeDir(source, chapter);
+      if (!occupied.has(sourceRelativeDir) || excluded.has(chapter.id)) continue;
+      if (expected.has(path)) throw new Error("Multiple stored source chapters map to one destination. Existing files were retained.");
+      const original = await inspectChapterPayloadInventory({ novel: source, chapter }, signal);
+      if (!original.body || !isChapterPayloadInventory(original)) throw new Error("The stored source chapter could not be verified. Existing files were retained.");
+      const existing = await inspectChapterPayloadInventory({ novel: target, chapter: destination }, signal);
+      if ((existing.body || existing.storedAssets.length) && !sameLocalPayload(original, existing)) {
+        throw new Error("The destination contains different local chapter files. Existing files were retained.");
+      }
+      expected.set(path, original);
+      entries.push({ entryId: String(chapter.id), sourceRelativeDir, targetRelativeDir: chapterStorageRelativeDir(target, destination) });
+    }
+  }
+  return { entries, expected, cleanupRelativeDirs: new Set<string>([directory]) };
+}
+
 function validateStoragePreparation(
   requestedEntries: readonly ChapterStorageTransferEntry[],
   preparation: ChapterStorageTransferPreparation,
@@ -307,20 +353,6 @@ function storedArtifactContentType(
   return storedChapterContentType(chapter.contentType);
 }
 
-async function rollbackPreparation(
-  preparation: ChapterStorageTransferPreparation,
-  originalError: unknown,
-): Promise<never> {
-  try {
-    await rollbackChapterStorageTransfer(preparation);
-  } catch (rollbackError) {
-    throw new Error(
-      `${errorMessage(originalError)} Storage rollback also failed: ${errorMessage(rollbackError)}`,
-      { cause: originalError },
-    );
-  }
-  throw originalError;
-}
 
 async function mergeNovelStorageAndRecords(
   input: Pick<ExecuteNovelMergeInput, "decisions" | "composition" | "reviewedChapterCatalog" | "artifactSourceChapterIdByTargetPath" | "skipSourceContentChapterIds">,
@@ -332,6 +364,7 @@ async function mergeNovelStorageAndRecords(
   contentSyncTargetMetadata?: NovelMigrationTargetMetadata,
   incoming?: IncomingNovelMergeOptions,
 ): Promise<NovelMergeResult> {
+  await recoverNovelMergeStorageInDb(await getDb(), [sourceNovel.id, targetNovel.id]);
   await cancelNovelChapterDownloadWork([sourceNovel.id, targetNovel.id]);
   throwIfNovelMergeAborted(signal);
   const [sourceChapters, storedTargetChapters] = await Promise.all([
@@ -356,22 +389,25 @@ async function mergeNovelStorageAndRecords(
   );
   const artifactSelections = compiled?.artifactSourceChapterIdByTargetPath ?? input.artifactSourceChapterIdByTargetPath ?? {};
   validateArtifactSelections(resolution, artifactSelections);
-  const { cleanupRelativeDirs, entries } = await buildStorageTransferEntries(
-    sourceNovel,
-    targetNovel,
-    resolution,
-    artifactSelections,
-    compiled?.skipSourceContentChapterIds ?? input.skipSourceContentChapterIds,
+  const skipped = compiled?.skipSourceContentChapterIds ?? input.skipSourceContentChapterIds ?? [];
+  const localTransfer = incoming ? await incomingStorageEntries(sourceNovel, targetNovel, resolution, skipped, signal) : undefined;
+  const { cleanupRelativeDirs, entries } = localTransfer ?? await buildStorageTransferEntries(
+    sourceNovel, targetNovel, resolution, artifactSelections, skipped,
   );
   throwIfNovelMergeAborted(signal);
 
+  const storageJournal = entries.length ? await runDatabaseTransaction(db => createNovelMergeStorageJournal(
+    db, sourceNovel, targetNovel, entries, [...cleanupRelativeDirs, novelStorageRelativeDir(sourceNovel)],
+    compiled?.composition,
+  )) : null;
   let preparation: ChapterStorageTransferPreparation | null = null;
-  if (entries.length > 0) {
-    preparation = await prepareChapterStorageTransfer(entries);
-  }
-
   let databaseResult: NovelMergeDatabaseResult;
   try {
+    if (storageJournal) {
+      preparation = await prepareChapterStorageTransfer(entries, { token: storageJournal.token, moveSource: true });
+      validateStoragePreparation(entries, preparation);
+      await runDatabaseTransaction(db => saveNovelMergeStoragePreparation(db, storageJournal, preparation!));
+    }
     throwIfNovelMergeAborted(signal);
     const preparedEntries = preparation
       ? validateStoragePreparation(entries, preparation)
@@ -394,29 +430,22 @@ async function mergeNovelStorageAndRecords(
         if (!target) {
           throw new Error("Chapter storage transfer returned an unknown B chapter.");
         }
-        const metadataChapter = entry.outcome === "copiedSource" ? source : target;
-        const inventory = (incoming || contentSyncServerUrl && entry.outcome !== "copiedSource" || !metadataChapter.isDownloaded || metadataChapter.mediaRepairNeeded)
+        const transferredFromSource = entry.outcome === "copiedSource" || entry.outcome === "movedSource";
+        const metadataChapter = transferredFromSource ? source : target;
+        const inventory = (incoming || contentSyncServerUrl && !transferredFromSource || !metadataChapter.isDownloaded || metadataChapter.mediaRepairNeeded)
           ? await inspectChapterPayloadInventory({
               novel: targetNovel,
               chapter: { ...target, contentType: storedArtifactContentType(metadataChapter, entry.contentFile) },
             }, signal)
           : null;
-        if (contentSyncServerUrl && entry.outcome !== "copiedSource" && inventory && !inventory.mediaComplete) throw new Error("The retained B download is incomplete. No novels were merged.");
-        if (incoming) {
-          const expected = incoming.expectedTargetInventories[decision.targetChapterPath];
-          const actual = inventory && { body: inventory.body, expectedAssetKeys: inventory.expectedAssetKeys, storedAssets: inventory.storedAssets };
-          const compared = expected && actual ? compareChapterInventories(actual, expected) : null;
-          const sameBodyOnly = expected && actual && expected.expectedAssetKeys === null && actual.expectedAssetKeys === null
-            && expected.storedAssets.length === 0 && actual.storedAssets.length === 0
-            && JSON.stringify(expected.body) === JSON.stringify(actual.body);
-          const matches = expected === null
-            ? entry.outcome === "copiedSource" && !entry.replacedTarget
-            : isChapterPayloadInventory(expected) && (sameBodyOnly || compared?.containsLocal && compared.coverageEligible);
-          if (!inventory?.body || !matches) {
-            throw new Error("The recipient download does not match the approved server target. The original was retained.");
+        if (contentSyncServerUrl && !transferredFromSource && inventory && !inventory.mediaComplete) throw new Error("The retained B download is incomplete. No novels were merged.");
+        if (localTransfer) {
+          const expected = localTransfer.expected.get(decision.targetChapterPath);
+          if (entry.replacedTarget || !expected || !inventory || !sameLocalPayload(inventory, expected)) {
+            throw new Error("The local chapter files changed during the move. The original was retained.");
           }
         }
-        const targetInventoryBodyOnly = inventory?.expectedAssetKeys === null
+        const targetInventoryBodyOnly = contentSyncServerUrl && inventory?.expectedAssetKeys === null
           ? await verifyMigrationBodyOnlyInventory(entry.contentFile, inventory, signal)
           : false;
         return {
@@ -424,7 +453,7 @@ async function mergeNovelStorageAndRecords(
           contentType: storedArtifactContentType(metadataChapter, entry.contentFile),
           contentBytes: entry.contentBytes,
           mediaBytes: entry.mediaBytes,
-          transferredFromSource: entry.outcome === "copiedSource",
+          transferredFromSource,
           ...(inventory && !inventory.mediaComplete ? { mediaComplete: false } : {}),
           ...(inventory ? { targetInventory: { body: inventory.body, expectedAssetKeys: inventory.expectedAssetKeys, storedAssets: inventory.storedAssets } } : {}),
           ...(targetInventoryBodyOnly ? { targetInventoryBodyOnly: true } : {}),
@@ -432,7 +461,7 @@ async function mergeNovelStorageAndRecords(
       },
     ));
     const preparedCompositionCopies = compiled ? preparedEntries.flatMap(transfer => {
-      if (transfer.outcome !== "copiedSource" || transfer.replacedTarget) return [];
+      if (transfer.outcome !== "copiedSource" && transfer.outcome !== "movedSource" || transfer.replacedTarget) return [];
       const sourceChapterId = Number(transfer.entryId);
       const decision = decisionBySourceId.get(sourceChapterId);
       const entry = decision?.kind === "map" ? compiled.composition.entries.find(entry => entry.path === decision.targetChapterPath) : undefined;
@@ -457,9 +486,14 @@ async function mergeNovelStorageAndRecords(
       ...(contentSyncSourceSnapshot ? { contentSyncSourceSnapshot } : {}),
       ...(contentSyncTargetMetadata ? { contentSyncTargetMetadata } : {}),
       ...(incoming ? { recordIncomingMigration: incoming.recordIncomingMigration } : {}),
+      ...(storageJournal ? { storageTransferToken: storageJournal.token } : {}),
     });
   } catch (error) {
-    if (preparation) return rollbackPreparation(preparation, error);
+    if (storageJournal) {
+      try { await finishNovelMergeStorageInDb(await getDb(), storageJournal.token); }
+      catch (recoveryError) { throw new AggregateError([error, recoveryError], "Work merge failed and storage recovery is pending. Existing files were retained."); }
+      throw error;
+    }
     throw error;
   }
 
@@ -481,23 +515,19 @@ async function mergeNovelStorageAndRecords(
       `A download work could not be settled; A files were retained: ${errorMessage(error)}`,
     );
   }
-  if (preparation && canDeleteSourceStorage) {
+  if (storageJournal && canDeleteSourceStorage) {
     try {
-      await finalizeChapterStorageTransfer(preparation);
+      await finishNovelMergeStorageInDb(await getDb(), storageJournal.token);
     } catch (error) {
-      canDeleteSourceStorage = false;
-      cleanupWarnings.push(
-        `Storage finalization failed; A files were retained: ${errorMessage(error)}`,
-      );
+      cleanupWarnings.push(`Storage finalization needs recovery: ${errorMessage(error)}`);
     }
+    canDeleteSourceStorage = false;
   }
 
   if (canDeleteSourceStorage) {
     const sourceNovelRelativeDir = novelStorageRelativeDir(sourceNovel);
     cleanupRelativeDirs.add(sourceNovelRelativeDir);
-    const cleanupDirs = [...cleanupRelativeDirs].sort(
-      (left, right) => right.split("/").length - left.split("/").length,
-    );
+    const cleanupDirs = [...new Set([...cleanupRelativeDirs].map(path => path.split("/").slice(0, 3).join("/")))];
     for (const relativeDir of cleanupDirs) {
       try {
         await removeChapterStorageDirectory(relativeDir);

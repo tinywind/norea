@@ -1,6 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../db/client", () => ({ getDb: vi.fn(async () => ({})) }));
+vi.mock("../db/client", () => ({ getDb: vi.fn(async () => ({})), runDatabaseTransaction: vi.fn(async run => run({})) }));
+vi.mock("./novel-merge-storage", () => ({
+  createNovelMergeStorageJournal: vi.fn(async () => ({ token: "transfer-1" })),
+  saveNovelMergeStoragePreparation: vi.fn(),
+  finishNovelMergeStorageInDb: vi.fn(),
+  recoverNovelMergeStorageInDb: vi.fn(),
+}));
 vi.mock("../db/chapter-composition", () => ({ getChapterComposition: vi.fn(async () => null) }));
 
 vi.mock("./content-sync/sync", () => ({
@@ -61,6 +67,7 @@ vi.mock("./work-metadata", async original => ({
   readStoredNovelMetadata: vi.fn(),
   readStoredNovelCover: vi.fn(),
   persistNovelCover: vi.fn(),
+  workMetadataOperation: vi.fn(async () => ({ paths: ["contents/source-a/a-novel/1/content.html"] })),
 }));
 
 vi.mock("./tasks/download-cache-delete", () => ({
@@ -92,10 +99,8 @@ import { applyNovelMergeInDb } from "../db/queries/novel-merge";
 import { getNovelById } from "../db/queries/novel";
 import { reconcileStoredChapterContent } from "./chapter-content-storage";
 import {
-  finalizeChapterStorageTransfer,
   prepareChapterStorageTransfer,
   removeChapterStorageDirectory,
-  rollbackChapterStorageTransfer,
 } from "./chapter-storage-transfer";
 import { pluginManager } from "./plugins/manager";
 import { syncNovelFromSource } from "./plugins/sync-novel";
@@ -104,6 +109,7 @@ import { persistNovelCover, readStoredNovelCover, readStoredNovelMetadata, type 
 import { runExclusiveChapterStorageOperation } from "./tasks/chapter-storage-operation";
 import { cancelNovelChapterDownloadWork } from "./tasks/download-cache-delete";
 import { executeNovelMerge, executeNovelMergeFromServer } from "./novel-merge";
+import { finishNovelMergeStorageInDb } from "./novel-merge-storage";
 import { useContentSyncStore } from "../store/content-sync";
 import { syncContentServer, runContentSyncOperation } from "./content-sync/sync";
 import { publishNovelMigrationSourceHold } from "./content-sync/deletion-exclusions";
@@ -119,12 +125,7 @@ const mockedReconcileStoredChapterContent = vi.mocked(
 const mockedPrepareChapterStorageTransfer = vi.mocked(
   prepareChapterStorageTransfer,
 );
-const mockedFinalizeChapterStorageTransfer = vi.mocked(
-  finalizeChapterStorageTransfer,
-);
-const mockedRollbackChapterStorageTransfer = vi.mocked(
-  rollbackChapterStorageTransfer,
-);
+const mockedFinishStorage = vi.mocked(finishNovelMergeStorageInDb);
 const mockedRemoveChapterStorageDirectory = vi.mocked(
   removeChapterStorageDirectory,
 );
@@ -299,8 +300,7 @@ beforeEach(() => {
     preferredLastReadChapterId: 21,
     transferredDownloads: 1,
   });
-  mockedFinalizeChapterStorageTransfer.mockResolvedValue(undefined);
-  mockedRollbackChapterStorageTransfer.mockResolvedValue(undefined);
+  mockedFinishStorage.mockReset().mockResolvedValue(undefined);
   mockedRemoveChapterStorageDirectory.mockResolvedValue(undefined);
 });
 
@@ -319,7 +319,7 @@ describe("executeNovelMerge", () => {
 
   it("composes an A-primary chapter into an empty B package before committing", async () => {
     mockedPrepareChapterStorageTransfer.mockImplementationOnce(async entries => ({
-      token: "composition-copy", entries: entries.map(entry => ({ ...entry, outcome: "copiedSource" as const,
+      token: "transfer-1", entries: entries.map(entry => ({ ...entry, outcome: "copiedSource" as const,
         contentFile: entry.targetRelativeDir + "/content.html", contentBytes: 100, mediaBytes: 20, replacedTarget: false })),
     }));
     await executeNovelMerge({ sourceNovelId: 1, target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
@@ -372,7 +372,7 @@ describe("executeNovelMerge", () => {
         targetRelativeDir:
           "contents/source-b/b-novel/1",
       },
-    ]);
+    ], { token: "transfer-1", moveSource: true });
     expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceNovelId: 1,
@@ -395,10 +395,8 @@ describe("executeNovelMerge", () => {
     expect(mockedSaveNovelCoverFromSource).not.toHaveBeenCalled();
     expect(mockedSyncNovelFromSource.mock.invocationCallOrder[0])
       .toBeLessThan(mockedApplyNovelMergeInDb.mock.invocationCallOrder[0]!);
-    expect(mockedFinalizeChapterStorageTransfer).toHaveBeenCalled();
-    expect(mockedRemoveChapterStorageDirectory).toHaveBeenCalledWith(
-      "contents/source-a/a-novel",
-    );
+    expect(mockedFinishStorage).toHaveBeenCalled();
+    expect(mockedFinishStorage).toHaveBeenCalledWith(expect.anything(), "transfer-1");
     expect(result).toMatchObject({ targetNovelId: 2, chapterIdMap: { 11: 21 } });
   });
 
@@ -529,7 +527,7 @@ describe("executeNovelMerge", () => {
       }),
     ).rejects.toThrow("invalid B content path");
 
-    expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalled();
+    expect(mockedFinishStorage).toHaveBeenCalled();
     expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
     expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
   });
@@ -578,7 +576,7 @@ describe("executeNovelMerge", () => {
         sourceRelativeDir:
           "contents/source-a/a-novel/1",
       }),
-    ]);
+    ], { token: "transfer-1", moveSource: true });
     expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(
       expect.objectContaining({
         preparedDownloads: [
@@ -609,10 +607,9 @@ describe("executeNovelMerge", () => {
       }),
     ).rejects.toThrow("DB failed");
 
-    expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalledWith(
-      expect.objectContaining({ token: "transfer-1" }),
+    expect(mockedFinishStorage).toHaveBeenCalledWith(
+      expect.anything(), "transfer-1",
     );
-    expect(mockedFinalizeChapterStorageTransfer).not.toHaveBeenCalled();
     expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
   });
 
@@ -651,7 +648,7 @@ describe("executeNovelMerge", () => {
       }),
     ).rejects.toMatchObject({ name: "AbortError" });
 
-    expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalled();
+    expect(mockedFinishStorage).toHaveBeenCalled();
     expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
   });
 
@@ -688,13 +685,13 @@ describe("executeNovelMerge", () => {
       }),
     ).rejects.toThrow("disappeared");
 
-    expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalled();
+    expect(mockedFinishStorage).toHaveBeenCalled();
     expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
     expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
   });
 
-  it("retains A storage when transfer finalization fails after the DB merge", async () => {
-    mockedFinalizeChapterStorageTransfer.mockRejectedValueOnce(
+  it("retains committed recovery state when finalization fails after the DB merge", async () => {
+    mockedFinishStorage.mockRejectedValueOnce(
       new Error("verification failed"),
     );
 
@@ -711,7 +708,7 @@ describe("executeNovelMerge", () => {
     });
 
     expect(result.cleanupWarnings).toEqual([
-      expect.stringContaining("A files were retained"),
+      expect.stringContaining("needs recovery"),
     ]);
     expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
   });
@@ -806,7 +803,7 @@ describe("executeNovelMerge", () => {
     const cleanupStartedPromise = new Promise<void>((resolve) => {
       cleanupStarted = resolve;
     });
-    mockedRemoveChapterStorageDirectory.mockImplementationOnce(
+    mockedFinishStorage.mockImplementationOnce(
       () =>
         new Promise<void>((resolve) => {
           finishCleanup = resolve;
@@ -884,7 +881,7 @@ it("rolls back preparation when a kept B inventory is incomplete before source d
     sourceNovelId: 1, target: { pluginId: "source-b", item: { name: "Novel B", path: "/b-novel" } },
     decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
   })).rejects.toThrow("incomplete");
-  expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalledOnce();
+  expect(mockedFinishStorage).toHaveBeenCalledOnce();
   expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
   expect(publishNovelMigrationSourceHold).not.toHaveBeenCalled();
   expect(syncContentServer).not.toHaveBeenCalled();
@@ -915,8 +912,7 @@ it("does not roll prepared files back when a post-commit source-hold notificatio
     });
     expect(result.contentSyncPending).toBe(true);
     expect(mockedApplyNovelMergeInDb).toHaveBeenCalledOnce();
-    expect(mockedRollbackChapterStorageTransfer).not.toHaveBeenCalled();
-    expect(mockedFinalizeChapterStorageTransfer).toHaveBeenCalledOnce();
+    expect(mockedFinishStorage).toHaveBeenCalledOnce();
     expect(syncContentServer).toHaveBeenCalledOnce();
     expect(warning).toHaveBeenCalledWith("[novel-merge] source hold notification failed", expect.any(Error));
   } finally { warning.mockRestore(); }
@@ -943,7 +939,7 @@ it("applies a received migration without plugins or an outgoing server operation
   const result = await executeNovelMergeFromServer({
     sourceNovelId: 1, targetNovelId: 2,
     decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
-  }, { signal: new AbortController().signal, recordIncomingMigration, expectedTargetInventories: { "/b/1": incomingInventory } });
+  }, { signal: new AbortController().signal, recordIncomingMigration });
   expect(result.targetNovelId).toBe(2);
   expect(result.contentSyncPending).toBeUndefined();
   expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(expect.objectContaining({ recordIncomingMigration }));
@@ -954,42 +950,27 @@ it("applies a received migration without plugins or an outgoing server operation
   expect(captureNovelMigrationSourceSnapshot).not.toHaveBeenCalled();
   expect(syncContentServer).not.toHaveBeenCalled();
 });
-it("rolls back an incoming copy whose bytes differ from the approved server target", async () => {
-  vi.mocked(inspectChapterPayloadInventory).mockResolvedValue({ ...incomingInventory, body: { sha256: "b".repeat(64), bytes: 100 }, fingerprint: "different", payloadBytes: 100, contentBytes: 100, mediaBytes: 0, mediaComplete: true });
+it("rolls back an incoming move when the destination bytes differ from the original local snapshot", async () => {
+  const snapshot = { ...incomingInventory, fingerprint: "inventory", payloadBytes: 100, contentBytes: 100, mediaBytes: 0, mediaComplete: true };
+  vi.mocked(inspectChapterPayloadInventory).mockResolvedValueOnce(snapshot).mockResolvedValueOnce({ ...snapshot, body: null })
+    .mockResolvedValueOnce({ ...snapshot, body: { sha256: "b".repeat(64), bytes: 100 } });
   await expect(executeNovelMergeFromServer({
-    sourceNovelId: 1, targetNovelId: 2,
-    decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
-  }, { signal: new AbortController().signal, recordIncomingMigration: vi.fn(), expectedTargetInventories: { "/b/1": incomingInventory } })).rejects.toThrow("approved server target");
+    sourceNovelId: 1, targetNovelId: 2, decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
+  }, { signal: new AbortController().signal, recordIncomingMigration: vi.fn() })).rejects.toThrow("changed during the move");
   expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
-  expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalledOnce();
+  expect(mockedFinishStorage).toHaveBeenCalledOnce();
   expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
 });
-it("does not discard a recipient download absent from the server migration proof", async () => {
-  vi.mocked(inspectChapterPayloadInventory).mockResolvedValue({ ...incomingInventory, fingerprint: "inventory", payloadBytes: 100, contentBytes: 100, mediaBytes: 0, mediaComplete: true });
-  await expect(executeNovelMergeFromServer({
-    sourceNovelId: 1, targetNovelId: 2,
-    decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
-  }, { signal: new AbortController().signal, recordIncomingMigration: vi.fn(), expectedTargetInventories: {} })).rejects.toThrow("approved server target");
-  expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
-  expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalledOnce();
-});
 
-it("moves a recipient-only download when the server explicitly has no target body", async () => {
-  vi.mocked(inspectChapterPayloadInventory).mockResolvedValue({ ...incomingInventory, fingerprint: "inventory", payloadBytes: 100, contentBytes: 100, mediaBytes: 0, mediaComplete: true });
-  await executeNovelMergeFromServer({ sourceNovelId: 1, targetNovelId: 2,
-    decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
-  }, { signal: new AbortController().signal, recordIncomingMigration: vi.fn(), expectedTargetInventories: { "/b/1": null } });
-  expect(mockedApplyNovelMergeInDb).toHaveBeenCalledOnce();
-});
-it("preserves conflicting recipient target files when the server has no body proof", async () => {
+it("preserves an occupied directory detected during native preparation", async () => {
   vi.mocked(inspectChapterPayloadInventory).mockResolvedValue({ ...incomingInventory, fingerprint: "inventory", payloadBytes: 100, contentBytes: 100, mediaBytes: 0, mediaComplete: true });
   const original = await mockedPrepareChapterStorageTransfer.getMockImplementation()!([]);
   mockedPrepareChapterStorageTransfer.mockResolvedValue({ ...original, entries: original.entries.map(entry => ({ ...entry, replacedTarget: true })) });
   await expect(executeNovelMergeFromServer({ sourceNovelId: 1, targetNovelId: 2,
     decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
-  }, { signal: new AbortController().signal, recordIncomingMigration: vi.fn(), expectedTargetInventories: { "/b/1": null } })).rejects.toThrow("approved server target");
+  }, { signal: new AbortController().signal, recordIncomingMigration: vi.fn() })).rejects.toThrow("changed during the move");
   expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
-  expect(mockedRollbackChapterStorageTransfer).toHaveBeenCalledOnce();
+  expect(mockedFinishStorage).toHaveBeenCalledOnce();
 });
 
 it("retains the original when another refresh replaces the confirmed plugin metadata", async () => {

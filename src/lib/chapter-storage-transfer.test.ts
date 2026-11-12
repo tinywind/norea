@@ -74,6 +74,12 @@ beforeEach(() => {
 });
 
 describe("chapter storage transfer", () => {
+  it("accepts a moved source receipt for rollback and finalization", async () => {
+    const moved = { ...preparation, entries: preparation.entries.map(entry => ({ ...entry, outcome: "movedSource" })) };
+    invokeMock.mockResolvedValue(moved);
+    await expect(prepareChapterStorageTransfer(entries, { token: "move-1", moveSource: true })).resolves.toEqual(moved);
+  });
+
   it("uses the desktop prepare IPC contract", async () => {
     invokeMock.mockResolvedValue(preparation);
 

@@ -1,6 +1,6 @@
 import { runDatabaseTransaction } from "../../db/client";
 import { isAbortError } from "../abort";
-import { useReaderStore } from "../../store/reader";
+import { applySharedReaderState, useReaderStore } from "../../store/reader";
 import { recordInstalledWorkMetadata, releaseMigratedTargetMetadataInDb } from "./works";
 import type { InstalledNovelMetadata } from "../work-metadata";
 import { contentServerRequest, ContentServerError, ContentServerTransportError, normalizeContentServerUrl } from "./client";
@@ -227,10 +227,10 @@ export async function syncIncomingNovelMigrations(
         },
       });
       if (result) {
-        useReaderStore.getState().mergeNovelReaderState({
+        applySharedReaderState(() => useReaderStore.getState().mergeNovelReaderState({
           sourceNovelId: result.sourceNovelId, targetNovelId: result.targetNovelId,
           chapterIdMap: result.chapterIdMap, preferredLastReadChapterId: result.preferredLastReadChapterId,
-        });
+        }));
         if (result.installedTargetMetadata) installedTargets.set(resolved.targetWork.id, result.installedTargetMetadata);
       }
       applied++;

@@ -271,6 +271,53 @@ fn has_transfer_marker(target: &Path, token: &str) -> Result<bool, String> {
     }
 }
 
+const MOVE_MARKER: &[u8] = b"{\"mode\":\"move\"}";
+
+fn restore_transfer_candidate(source: &Path, candidate: &Path, token: &str) -> Result<(), String> {
+    if !has_transfer_marker(candidate, token)? {
+        return Ok(());
+    }
+    let marker = transfer_marker_path(candidate, token)?;
+    if candidate == source {
+        return remove_transfer_path(&marker, "chapter media: remove source move marker");
+    }
+    if fs::read(&marker).map_err(|error| format!("chapter media: read transfer marker: {error}"))? == MOVE_MARKER {
+        if candidate != source {
+            if storage_metadata(source, "chapter media: inspect move rollback source")?.is_some() {
+                return Err("chapter media: cannot restore a moved chapter over an occupied source".into());
+            }
+            fs::rename(candidate, source).map_err(|error| format!("chapter media: restore moved chapter: {error}"))?;
+        }
+        remove_transfer_path(&transfer_marker_path(source, token)?, "chapter media: remove restored move marker")
+    } else {
+        remove_transfer_path(candidate, "chapter media: remove rolled back transfer copy")
+    }
+}
+
+fn rollback_transfer_entry(root: &Path, entry: &ChapterStorageTransferEntry, token: &str) -> Result<(), String> {
+    let source_relative = safe_chapter_storage_relative_dir(&entry.source_relative_dir)?;
+    let target_relative = safe_chapter_storage_relative_dir(&entry.target_relative_dir)?;
+    validate_storage_path_ancestors(root, &source_relative)?;
+    validate_storage_path_ancestors(root, &target_relative)?;
+    let source = root.join(source_relative);
+    let target = root.join(target_relative);
+    let stage = transfer_sibling_path(&target, token, "stage")?;
+    let backup = transfer_sibling_path(&target, token, "backup")?;
+    restore_transfer_candidate(&source, &target, token)?;
+    restore_transfer_candidate(&source, &stage, token)?;
+    remove_transfer_path(&stage, "chapter media: remove rolled back transfer stage")?;
+    if storage_metadata(&backup, "chapter media: inspect transfer backup")?.is_some() {
+        if storage_metadata(&target, "chapter media: inspect rollback target")?.is_some() {
+            return Err("chapter media: cannot restore transfer backup over an unmarked target".into());
+        }
+        fs::rename(&backup, &target).map_err(|error| format!("chapter media: restore transfer target: {error}"))?;
+    }
+    if has_transfer_marker(&source, token)? {
+        restore_transfer_candidate(&source, &source, token)?;
+    }
+    Ok(())
+}
+
 fn transfer_prepared_entry(
     root: &Path,
     entry: ChapterStorageTransferEntry,
@@ -304,6 +351,7 @@ fn prepare_chapter_storage_transfer_entry_at_root(
     entry: ChapterStorageTransferEntry,
     token: &str,
     require_empty_targets: bool,
+    move_source: bool,
 ) -> Result<ChapterStorageTransferPreparedEntry, String> {
     let source_relative = safe_chapter_storage_relative_dir(&entry.source_relative_dir)?;
     let target_relative = safe_chapter_storage_relative_dir(&entry.target_relative_dir)?;
@@ -370,17 +418,35 @@ fn prepare_chapter_storage_transfer_entry_at_root(
     }
 
     let mut replaced_target = false;
-    let mut published_target = false;
+    let mut moved_source = false;
     let result = (|| -> Result<ChapterStorageTransferPreparedEntry, String> {
-        copy_storage_tree(&source, &stage)?;
+        if move_source {
+            validate_storage_tree_without_symlinks(&source)?;
+            let source_marker = transfer_marker_path(&source, token)?;
+            fs::OpenOptions::new().write(true).create_new(true).open(&source_marker)
+                .and_then(|mut file| std::io::Write::write_all(&mut file, MOVE_MARKER))
+                .map_err(|error| format!("chapter media: write source move marker: {error}"))?;
+            match fs::rename(&source, &stage) {
+                Ok(()) => moved_source = true,
+                Err(error) => {
+                    remove_transfer_path(&source_marker, "chapter media: remove unsupported move marker")?;
+                    if error.kind() != ErrorKind::CrossesDevices {
+                        return Err(format!("chapter media: move transfer directory: {error}"));
+                    }
+                }
+            }
+        }
+        if !moved_source { copy_storage_tree(&source, &stage)?; }
         let marker = transfer_marker_path(&stage, token)?;
-        if storage_metadata(&marker, "chapter media: inspect transfer marker")?.is_some() {
+        if !moved_source && storage_metadata(&marker, "chapter media: inspect transfer marker")?.is_some() {
             return Err(
                 "chapter media: transfer marker already exists in copied source".to_string(),
             );
         }
-        fs::write(&marker, token)
-            .map_err(|err| format!("chapter media: write transfer marker: {err}"))?;
+        if !moved_source {
+            fs::write(&marker, token)
+                .map_err(|err| format!("chapter media: write transfer marker: {err}"))?;
+        }
         let staged_artifacts = inspect_transfer_artifacts(&stage)?.ok_or_else(|| {
             "chapter media: copied transfer stage has no final content".to_string()
         })?;
@@ -398,6 +464,7 @@ fn prepare_chapter_storage_transfer_entry_at_root(
             return Err("chapter media: transfer target appeared during preparation".to_string());
         }
         if let Some(target_artifacts) = inspect_transfer_artifacts(&target)? {
+            if moved_source { restore_transfer_candidate(&source, &stage, token)?; }
             remove_transfer_path(&stage, "chapter media: remove superseded transfer stage")?;
             return transfer_prepared_entry(
                 root,
@@ -419,14 +486,13 @@ fn prepare_chapter_storage_transfer_entry_at_root(
         }
         fs::rename(&stage, &target)
             .map_err(|err| format!("chapter media: publish chapter storage transfer: {err}"))?;
-        published_target = true;
         let target_artifacts = inspect_transfer_artifacts(&target)?.ok_or_else(|| {
             "chapter media: published transfer target has no final content".to_string()
         })?;
         transfer_prepared_entry(
             root,
             entry.clone(),
-            ChapterStorageTransferOutcome::CopiedSource,
+            if moved_source { ChapterStorageTransferOutcome::MovedSource } else { ChapterStorageTransferOutcome::CopiedSource },
             replaced_target,
             Some(target_artifacts),
         )
@@ -434,42 +500,9 @@ fn prepare_chapter_storage_transfer_entry_at_root(
     match result {
         Ok(prepared) => Ok(prepared),
         Err(error) => {
-            let mut recovery_errors = Vec::new();
-            if published_target {
-                if let Err(recovery_error) = remove_transfer_path(
-                    &target,
-                    "chapter media: remove failed published transfer target",
-                ) {
-                    recovery_errors.push(recovery_error);
-                }
-            }
-            if replaced_target {
-                match storage_metadata(&backup, "chapter media: inspect transfer backup") {
-                    Ok(Some(_)) => {
-                        if let Err(restore_error) = fs::rename(&backup, &target) {
-                            recovery_errors.push(format!(
-                                "chapter media: restore failed transfer target: {restore_error}"
-                            ));
-                        }
-                    }
-                    Ok(None) => recovery_errors.push(
-                        "chapter media: transfer backup is missing during recovery".to_string(),
-                    ),
-                    Err(inspect_error) => recovery_errors.push(inspect_error),
-                }
-            }
-            if let Err(recovery_error) =
-                remove_transfer_path(&stage, "chapter media: remove failed transfer stage")
-            {
-                recovery_errors.push(recovery_error);
-            }
-            if recovery_errors.is_empty() {
-                Err(error)
-            } else {
-                Err(format!(
-                    "{error}; chapter storage transfer entry recovery failed: {}",
-                    recovery_errors.join("; ")
-                ))
+            match rollback_transfer_entry(root, &entry, token) {
+                Ok(()) => Err(error),
+                Err(recovery_error) => Err(format!("{error}; chapter storage transfer entry recovery failed: {recovery_error}")),
             }
         }
     }
@@ -506,12 +539,13 @@ fn prepare_chapter_storage_transfer_at_root(
     entries: Vec<ChapterStorageTransferEntry>,
     token: &str,
     require_empty_targets: bool,
+    move_source: bool,
 ) -> Result<ChapterStorageTransferPreparation, String> {
     validate_transfer_token(token)?;
     validate_transfer_entries(&entries)?;
     fs::create_dir_all(root)
         .map_err(|err| format!("chapter media: create storage root for transfer: {err}"))?;
-    if require_empty_targets {
+    if require_empty_targets || move_source {
         let sources = entries
             .iter()
             .map(|entry| safe_chapter_storage_relative_dir(&entry.source_relative_dir))
@@ -528,7 +562,7 @@ fn prepare_chapter_storage_transfer_at_root(
             validate_storage_path_ancestors(root, &target_relative)?;
             let source = root.join(&source_relative);
             let target = root.join(&target_relative);
-            if storage_metadata(&target, "chapter media: inspect transfer target")?.is_some() {
+            if require_empty_targets && storage_metadata(&target, "chapter media: inspect transfer target")?.is_some() {
                 return Err("chapter media: transfer target must be absent".to_string());
             }
             for kind in ["stage", "backup"] {
@@ -566,6 +600,7 @@ fn prepare_chapter_storage_transfer_at_root(
             entry,
             token,
             require_empty_targets,
+            move_source,
         ) {
             Ok(prepared) => preparation.entries.push(prepared),
             Err(error) => {
@@ -610,8 +645,7 @@ fn finalize_chapter_storage_transfer_at_root(
         let target = root.join(target_relative);
         let stage = transfer_sibling_path(&target, &preparation.token, "stage")?;
         let backup = transfer_sibling_path(&target, &preparation.token, "backup")?;
-        remove_transfer_path(&stage, "chapter media: remove finalized transfer stage")?;
-        if entry.outcome == ChapterStorageTransferOutcome::CopiedSource {
+        if matches!(entry.outcome, ChapterStorageTransferOutcome::CopiedSource | ChapterStorageTransferOutcome::MovedSource) {
             if inspect_transfer_artifacts(&target)?.is_none() {
                 return Err(
                     "chapter media: cannot finalize transfer without final target content"
@@ -622,12 +656,12 @@ fn finalize_chapter_storage_transfer_at_root(
             let source_exists =
                 storage_metadata(&source, "chapter media: inspect finalized transfer source")?
                     .is_some();
-            if source_exists && !has_transfer_marker(&target, &preparation.token)? {
+            if entry.outcome == ChapterStorageTransferOutcome::CopiedSource && source_exists && !has_transfer_marker(&target, &preparation.token)? {
                 return Err(
                     "chapter media: cannot finalize an unmarked transfer target".to_string()
                 );
             }
-            if source_exists {
+            if entry.outcome == ChapterStorageTransferOutcome::CopiedSource && source_exists {
                 remove_transfer_path(&source, "chapter media: remove finalized transfer source")?;
             }
             remove_transfer_path(
@@ -635,6 +669,7 @@ fn finalize_chapter_storage_transfer_at_root(
                 "chapter media: remove finalized transfer marker",
             )?;
         }
+        remove_transfer_path(&stage, "chapter media: remove finalized transfer stage")?;
         remove_transfer_path(&backup, "chapter media: remove finalized transfer backup")?;
     }
     Ok(())
@@ -646,35 +681,10 @@ fn rollback_chapter_storage_transfer_at_root(
 ) -> Result<(), String> {
     validate_transfer_preparation(preparation)?;
     for entry in preparation.entries.iter().rev() {
-        let target_relative = safe_chapter_storage_relative_dir(&entry.target_relative_dir)?;
-        validate_storage_path_ancestors(root, &target_relative)?;
-        let target = root.join(target_relative);
-        let stage = transfer_sibling_path(&target, &preparation.token, "stage")?;
-        let backup = transfer_sibling_path(&target, &preparation.token, "backup")?;
-        remove_transfer_path(&stage, "chapter media: remove rolled back transfer stage")?;
-        if entry.outcome != ChapterStorageTransferOutcome::CopiedSource {
-            continue;
-        }
-        if entry.replaced_target {
-            if storage_metadata(&backup, "chapter media: inspect transfer backup")?.is_some() {
-                if has_transfer_marker(&target, &preparation.token)? {
-                    remove_transfer_path(
-                        &target,
-                        "chapter media: remove rolled back transfer target",
-                    )?;
-                }
-                if storage_metadata(&target, "chapter media: inspect rollback target")?.is_some() {
-                    return Err(
-                        "chapter media: cannot restore transfer backup over an unmarked target"
-                            .to_string(),
-                    );
-                }
-                fs::rename(&backup, &target)
-                    .map_err(|err| format!("chapter media: restore transfer target: {err}"))?;
-            }
-        } else if has_transfer_marker(&target, &preparation.token)? {
-            remove_transfer_path(&target, "chapter media: remove rolled back transfer target")?;
-        }
+        if !matches!(entry.outcome, ChapterStorageTransferOutcome::CopiedSource | ChapterStorageTransferOutcome::MovedSource) { continue; }
+        rollback_transfer_entry(root, &ChapterStorageTransferEntry {
+            entry_id: entry.entry_id.clone(), source_relative_dir: entry.source_relative_dir.clone(), target_relative_dir: entry.target_relative_dir.clone(),
+        }, &preparation.token)?;
     }
     Ok(())
 }
@@ -685,6 +695,7 @@ pub async fn chapter_storage_prepare_transfer(
     entries: Vec<ChapterStorageTransferEntry>,
     token: Option<String>,
     require_empty_targets: Option<bool>,
+    move_source: Option<bool>,
 ) -> Result<ChapterStorageTransferPreparation, String> {
     chapter_media_blocking("prepare chapter storage transfer", move || {
         let root = media_root(&app)?;
@@ -694,6 +705,7 @@ pub async fn chapter_storage_prepare_transfer(
             entries,
             &token,
             require_empty_targets.unwrap_or(false),
+            move_source.unwrap_or(false),
         )?;
         Ok(preparation)
     })

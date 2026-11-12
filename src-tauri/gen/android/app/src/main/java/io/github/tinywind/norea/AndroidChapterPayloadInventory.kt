@@ -35,13 +35,12 @@ internal fun hashAndroidChapterPayload(input: InputStream, limit: Long): Android
 internal fun <T> resolveAndroidChapterDirectory(
   root: T,
   segments: List<String>,
-  children: (T) -> Map<String, T>,
+  child: (T, String) -> T?,
 ): T? {
   var current = root
   for (segment in segments) {
-    val entries = children(current)
-    check(".$segment.norea-sync-backup" !in entries) { "Interrupted chapter storage installation requires recovery." }
-    current = entries[segment] ?: return null
+    check(child(current, ".$segment.norea-sync-backup") == null) { "Interrupted chapter storage installation requires recovery." }
+    current = child(current, segment) ?: return null
   }
   return current
 }
@@ -96,7 +95,7 @@ internal class AndroidChapterPayloadInventory(
   private fun directory(rootUri: String, path: String): DocumentFile? {
     val segments = storage.safeStorageSegments(path)
     require(segments.joinToString("/") == path) { "Chapter storage path is not canonical." }
-    val current = resolveAndroidChapterDirectory(storage.storageRoot(rootUri), segments, ::children) ?: return null
+    val current = resolveAndroidChapterDirectory(storage.storageRoot(rootUri), segments, storage::findStorageChildWithoutRecovery) ?: return null
     require(current.isDirectory && current.canRead()) { "Chapter storage directory is not readable: $path" }
     return current
   }

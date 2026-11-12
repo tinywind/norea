@@ -2,6 +2,7 @@ import { remapPendingUserStateInDb, transferSettledNovelMergeResumeInDb } from "
 import { recordCompositionInDb, recordLibraryInDb, recordPublicNovelReadingInDb, recordChaptersInDb, recordMembershipInDb, hasUserStateSchema } from "../user-state-core";
 import { deferUserStateForNovelInDb } from "../user-state";
 import type Database from "@tauri-apps/plugin-sql";
+import { commitNovelMergeStorageInDb } from "../../lib/novel-merge-storage";
 import type { ChapterCompositionV1 } from "../../lib/chapter-composition";
 import type { ChapterCompositionPreparedCopy } from "../../lib/chapter-composition-storage";
 import { materializeChapterComposition, setChapterComposition } from "../chapter-composition";
@@ -39,6 +40,7 @@ export interface ApplyNovelMergeInput {
   contentSyncSourceSnapshot?: WorkMigrationSnapshot;
   contentSyncTargetMetadata?: NovelMigrationTargetMetadata;
   recordIncomingMigration?: (db: Database) => Promise<void>;
+  storageTransferToken?: string;
 }
 
 export interface PreparedNovelMergeDownload {
@@ -150,6 +152,7 @@ export async function applyNovelMergeInDb({
   contentSyncSourceSnapshot,
   contentSyncTargetMetadata,
   recordIncomingMigration,
+  storageTransferToken,
   decisions,
   preparedDownloads,
   composition,
@@ -304,7 +307,8 @@ export async function applyNovelMergeInDb({
       }
       if (
         prepared.transferredFromSource &&
-        !sqliteBoolean(source.isDownloaded) && source.contentBytes <= 0
+        !sqliteBoolean(source.isDownloaded) && source.contentBytes <= 0 &&
+        !(recordIncomingMigration && storageTransferToken && prepared.targetInventory?.body)
       ) {
         throw new Error("Transferred content must belong to a downloaded source chapter.");
       }
@@ -539,6 +543,7 @@ export async function applyNovelMergeInDb({
     }
     await deferUserStateForNovelInDb(db, targetNovelId);
     await recordIncomingMigration?.(db);
+    if (storageTransferToken) await commitNovelMergeStorageInDb(db, storageTransferToken);
 
     const deleteResult = await db.execute(
       "DELETE FROM novel WHERE id = $1",
