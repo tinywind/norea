@@ -158,10 +158,18 @@ function sourceMapping(
 ): NovelMigrationChapter | undefined {
   const exact = mappings.filter(mapping => mapping.sourceChapterPath === chapter.chapterPath);
   if (exact.length === 1) return exact[0];
-  if (exact.length || !chapter.chapterPath.startsWith("norea-folder:")) return undefined;
+  if (exact.length) return undefined;
   const number = numberKey(chapter.chapterNumber);
   if (number === null) return undefined;
-  const aliases = mappings.filter(mapping => numberKey(mapping.sourceChapterNumber) === number);
+  // The same pre-existing server package can have a concrete source URL while
+  // the local catalog only knows its recovered norea-folder:<ordinal> alias.
+  // Permit that one narrowly defined pairing by its unique chapter number.
+  // Unrelated concrete URL paths must never be paired on ordinal alone.
+  const aliases = mappings.filter(mapping =>
+    numberKey(mapping.sourceChapterNumber) === number
+      && (chapter.chapterPath.startsWith("norea-folder:")
+        || (mapping.sourceChapterPath.startsWith("norea-folder:")
+          && numberKey(mapping.sourceChapterPath.slice("norea-folder:".length)) === number)));
   return aliases.length === 1 ? aliases[0] : undefined;
 }
 

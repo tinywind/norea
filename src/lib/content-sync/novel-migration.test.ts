@@ -185,6 +185,34 @@ it("resolves only an unambiguous recovered-folder alias and never guesses from t
   expect(() => buildFinalizeNovelMigrationRequest(saved, source, target)).toThrow("not transferred");
 });
 
+it("resolves a concrete server chapter URL against a unique local recovered-folder alias", async () => {
+  source.chapters[0]!.chapterPath = "/novel/58860/5976001";
+  saved.chapters[0]!.sourceChapterPath = "norea-folder:1";
+  saved.sourceSnapshot = structuredClone(source);
+  expect(buildFinalizeNovelMigrationRequest(saved, source, target).mappings[0]).toMatchObject({
+    sourceChapterId: "old-one", targetChapterId: "new-one", decision: "copy-source",
+  });
+  await finalizePendingNovelMigrations(server, "test-device");
+  expect(saved.status).toBe("completed");
+  expect(posts[0]).toMatchObject({ mappings: [
+    { sourceChapterId: "old-one", targetChapterId: "new-one", decision: "copy-source" },
+    { sourceChapterId: "old-two", targetChapterId: "new-two", decision: "keep-target" },
+  ] });
+});
+
+it("rejects ordinal-only guesses between two unrelated concrete chapter URLs", () => {
+  source.chapters[0]!.chapterPath = "/novel/58860/5976001";
+  saved.chapters[0]!.sourceChapterPath = "/novel/different/other-id";
+  expect(() => buildFinalizeNovelMigrationRequest(saved, source, target)).toThrow("not transferred");
+});
+
+it("rejects ambiguous recovered-folder mappings for a concrete server URL", () => {
+  source.chapters[0]!.chapterPath = "/novel/58860/5976001";
+  saved.chapters[0]!.sourceChapterPath = "norea-folder:1";
+  saved.chapters.push({ ...saved.chapters[0]!, sourceChapterPath: "norea-folder:01" });
+  expect(() => buildFinalizeNovelMigrationRequest(saved, source, target)).toThrow("not transferred");
+});
+
 it("rejects a mismatched or partial snapshot before any destructive endpoint", async () => {
   target.work.identity = { ...targetIdentity, novelId: "another-work" };
   await expect(finalizePendingNovelMigrations(server, "test-device")).rejects.toThrow("does not match");
