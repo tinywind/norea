@@ -149,7 +149,7 @@ export async function storeUserStateRecordsInDb(db: UserStateDb, namespace: stri
     const encoded = JSON.stringify(batch);
     const existing = await db.select<{ entityKey: string; revision: number; payload: string }[]>(`
       SELECT r.entity_key AS entityKey,r.revision,r.payload
-      FROM user_state_record r JOIN json_each($2) incoming
+      FROM json_each($2) incoming CROSS JOIN user_state_record r
         ON r.entity_key=json_extract(incoming.value,'$.entityKey')
       WHERE r.namespace=$1`, [namespace, encoded]);
     const incoming = new Map(batch.map(row => [JSON.stringify([row.entityKey, row.revision]), row.payload]));

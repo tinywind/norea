@@ -203,3 +203,31 @@ it("keeps excluded entries' storage numbers reserved after their chapter rows ar
   expect(await getChapterComposition(db, 1)).toEqual(fixture());
   expect(sqlite.prepare("SELECT path FROM chapter ORDER BY position").all()).toEqual([{ path: "/chapter/2" }, { path: "/chapter/1" }]);
 });
+
+
+it("binds an empty recovered catalog row to its verified provider origin without losing its ID or reading state", async () => {
+  sqlite.exec("UPDATE chapter SET path='norea-folder:1',is_downloaded=0,content_bytes=0,media_bytes=0 WHERE id=11");
+  const next = fixture();
+  next.entries[0]!.sources[0] = { ...next.entries[0]!.sources[0]!, chapterPath: '/chapter/1', chapterNumber: '1' };
+  await materializeChapterComposition(db, 1, next);
+  expect(sqlite.prepare("SELECT id,path,progress,bookmark FROM chapter WHERE id=11").get())
+    .toEqual({ id: 11, path: '/chapter/1', progress: 67, bookmark: 1 });
+});
+
+it("keeps a recovered row with downloaded content protected from alias adoption", async () => {
+  sqlite.exec("UPDATE chapter SET path='norea-folder:1' WHERE id=11");
+  const next = fixture();
+  next.entries[0]!.sources[0] = { ...next.entries[0]!.sources[0]!, chapterPath: '/chapter/1', chapterNumber: '1' };
+  await expect(materializeChapterComposition(db, 1, next)).rejects.toThrow(/belongs to another chapter/);
+  expect(sqlite.prepare("SELECT path FROM chapter WHERE id=11").get()).toEqual({ path: 'norea-folder:1' });
+});
+
+it.each(["foreign source", "ambiguous number"])("rejects recovered alias adoption with %s", async kind => {
+  sqlite.exec("UPDATE chapter SET path='norea-folder:1',is_downloaded=0,content_bytes=0,media_bytes=0 WHERE id=11");
+  const next = fixture();
+  next.entries[0]!.sources[0] = { ...next.entries[0]!.sources[0]!, chapterPath: '/chapter/1', chapterNumber: '1' };
+  if (kind === 'foreign source') next.entries[0]!.sources[0]!.novelId = 'another-book';
+  else sqlite.exec("INSERT INTO chapter(novel_id,path,name,chapter_number,position) VALUES(1,'/different','Other','1',4)");
+  await expect(materializeChapterComposition(db, 1, next)).rejects.toThrow(/belongs to another chapter/);
+  expect(sqlite.prepare("SELECT path FROM chapter WHERE id=11").get()).toEqual({ path: 'norea-folder:1' });
+});

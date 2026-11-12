@@ -46,11 +46,34 @@ export async function materializeChapterComposition(
   if (!novel) throw new Error("Chapter composition: target work no longer exists");
   const previousComposition = await getChapterComposition(db, novelId);
   type ReadingState = { progress: number; bookmark: number; unread: number; readAt: number | null; excludedAt?: number | null };
-  const existing = await db.select<(ReadingState & { path: string; chapterNumber: string | null; position: number })[]>(
+  const existing = await db.select<(ReadingState & { path: string; chapterNumber: string | null; position: number; isDownloaded: number; contentBytes: number; mediaBytes: number; mediaRepairNeeded: number })[]>(
     "SELECT path,chapter_number AS chapterNumber,position,progress,bookmark,unread,read_at AS readAt," +
+    "is_downloaded AS isDownloaded,content_bytes AS contentBytes,media_bytes AS mediaBytes,media_repair_needed AS mediaRepairNeeded," +
     "(SELECT created_at FROM chapter_download_goal_exclusion WHERE chapter_id=chapter.id) AS excludedAt " +
     "FROM chapter WHERE novel_id=$1", [novelId],
   );
+  const originalExisting = existing.map(row => ({ ...row }));
+  const aliases = new Map<string, string>();
+  const paths = new Set(existing.map(row => row.path));
+  const counts = new Map<string | null, number>();
+  for (const row of existing) {
+    const number = canonicalChapterNumber(row.chapterNumber ?? row.position);
+    counts.set(number, (counts.get(number) ?? 0) + 1);
+  }
+  const entriesByNumber = new Map(composition.entries.map(entry => [entry.storageChapterNumber, entry]));
+  for (const row of existing) {
+    const number = canonicalChapterNumber(row.chapterNumber ?? row.position);
+    if (row.path !== `norea-folder:${number}` || row.isDownloaded || row.contentBytes || row.mediaBytes || row.mediaRepairNeeded) continue;
+    if (counts.get(number) !== 1) continue;
+    const entry = number === null ? undefined : entriesByNumber.get(number);
+    if (!entry || paths.has(entry.path)) continue;
+    const source = entry.sources[entry.primarySource];
+    if (source.pluginId !== novel.pluginId || source.novelId !== novel.sourceNovelId || source.chapterPath !== entry.path ||
+        canonicalChapterNumber(source.chapterNumber) !== number) continue;
+    aliases.set(row.path, entry.path);
+    paths.add(entry.path);
+    row.path = entry.path;
+  }
   const byPath = new Map(existing.map(row => [row.path, row]));
   const storageOwners = new Map<string, Set<string>>();
   const rememberStorageOwner = (number: string | null, path: string) => {
@@ -74,8 +97,15 @@ export async function materializeChapterComposition(
     }
   }
   await assertChapterCompositionStorageOwnership({
-    novel: { ...novel, id: novelId }, composition, previousComposition, existing, preparedCopies: options.preparedCopies,
+    novel: { ...novel, id: novelId }, composition, previousComposition, existing: originalExisting, preparedCopies: options.preparedCopies,
   });
+  const aliasEntries = [...aliases];
+  for (let start = 0; start < aliasEntries.length; start += 100) {
+    await db.execute(`WITH aliases AS (
+      SELECT json_extract(value,'$[0]') AS old_path,json_extract(value,'$[1]') AS new_path FROM json_each($1)
+    ) UPDATE chapter SET path=(SELECT new_path FROM aliases WHERE old_path=chapter.path)
+      WHERE novel_id=$2 AND path IN (SELECT old_path FROM aliases)`, [JSON.stringify(aliasEntries.slice(start, start + 100)), novelId]);
+  }
   const reading = await db.select<{
     path: string; progress: number; bookmark: number; unread: number; readAt: number | null;
   }[]>("SELECT chapter_path AS path,progress,bookmark,unread,read_at AS readAt " +

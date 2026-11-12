@@ -88,6 +88,24 @@ beforeEach(() => {
 afterEach(async () => { setUserStateActiveServer(null); await waitForUserStateDeferredApply(); while (fixtures.length) fixtures.pop()!.sql.close(); });
 
 describe("durable personal-state ledger", () => {
+  it("looks up incoming records by both namespace and entity key", async () => {
+    await bind();
+    const select = vi.spyOn(active.db, "select");
+    await applyUserStateReadPage(binding, {
+      version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false,
+      records: [shared(reading, readingValue(87), 1)],
+    });
+    await waitForUserStateDeferredApply();
+    const lookups = select.mock.calls.filter(([query]) => query.includes("r.entity_key AS entityKey") && query.includes("json_each($2)"));
+    expect(lookups.length).toBeGreaterThanOrEqual(2);
+    for (const [query, values = []] of lookups) {
+      const plan = active.sql.prepare("EXPLAIN QUERY PLAN " + query).all(
+        Object.fromEntries(values.map((value, index) => ["$" + (index + 1), value])) as never);
+      expect(plan.some(row => String(row.detail).includes("namespace=? AND entity_key=?"))).toBe(true);
+    }
+  });
+
   it("accepts pre-link reading, library and category edits only as soft seeds, then projects the shared deletions", async () => {
     const library: UserStateEntity = { kind: "library", work };
     const resume: UserStateEntity = { kind: "resume", work };
@@ -202,7 +220,7 @@ describe("durable personal-state ledger", () => {
     expect(active.sql.prepare("SELECT revision,applied_revision,deferred_reason FROM user_state_record").get())
       .toEqual({ revision: 1, applied_revision: 0, deferred_reason: "projection-error" });
     active.sql.exec("DROP TRIGGER fail_projection");
-    await tx(active, db => deferUserStateForNovelInDb(db, 1));
+    await materializePendingUserState(binding);
     await waitForUserStateDeferredApply();
     expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=11").get()).toEqual({ progress: 87 });
     expect(await getUserStateLedgerStatusInDb(active.db, binding)).toMatchObject({

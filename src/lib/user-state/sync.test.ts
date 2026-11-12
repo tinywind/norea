@@ -132,6 +132,22 @@ describe("user state transport", () => {
     expect(outbox).toEqual([operation]);
   });
 
+  it("retries a failed projection and acknowledges the retained edit without a chapter transfer", async () => {
+    let failing = true;
+    mocks.status.mockImplementation(async () => ({
+      cursor, through, pending: outbox.length, conflicts: 0, deferred: 0,
+      projectionPending: 0, projectionParked: 0, projectionFailed: Number(failing), lastSuccessAt: null,
+    }));
+    await expect(synchronizeUserState()).rejects.toThrow(/projection/);
+    expect(outbox).toEqual([operation]);
+    mocks.recoverProjection.mockImplementationOnce(async () => { failing = false; return { resumes: [] }; });
+    await synchronizeUserState();
+    expect(outbox).toEqual([]);
+    expect(mocks.ack).toHaveBeenCalledOnce();
+    const paths = mocks.fetch.mock.calls.map(([url]) => new URL(url).pathname);
+    expect(new Set(paths)).toEqual(new Set(["/api/v1/capabilities", "/api/v1/user-state", "/api/v1/user-state/merge", "/api/v1/user-state/read"]));
+  });
+
   it("coalesces simultaneous calls, drains exact operations, and only contacts user-state endpoints", async () => {
     const first = synchronizeUserState();
     expect(synchronizeUserState()).toBe(first);

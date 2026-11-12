@@ -274,7 +274,7 @@ async function runSynchronization(serverUrl: string, controller: AbortController
     await waitForUserStateDeferredApply();
     check();
     let projection = await getUserStateLedgerStatus(binding);
-    if (projection.projectionPending) {
+    if (projection.projectionPending || projection.projectionFailed) {
       // A previous process may have stopped after saving the pull cursor but
       // before running its deferred projection. Recover it before any upload.
       await materializePendingUserState(binding);

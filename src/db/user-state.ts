@@ -117,7 +117,7 @@ async function projectUserStateRecordsInDb(
   const identities = records.map(record => ({ entityKey: userStateEntityKey(record.entity), revision: record.revision }));
   const stored = await db.select<{ entityKey: string; revision: number; appliedRevision: number }[]>(`
     SELECT r.entity_key AS entityKey,r.revision,r.applied_revision AS appliedRevision
-    FROM user_state_record r JOIN json_each($2) incoming
+    FROM json_each($2) incoming CROSS JOIN user_state_record r
       ON r.entity_key=json_extract(incoming.value,'$.entityKey')
     WHERE r.namespace=$1`, [namespace, JSON.stringify(identities)]);
   const state = new Map(stored.map(row => [row.entityKey, row]));
@@ -190,7 +190,7 @@ export async function materializePendingUserState(binding: UserStateBinding): Pr
   const { namespace } = await requireBinding(db, binding);
   await assertUserStateAvailableInDb(db);
   const rows = await db.select<{ payload: string }[]>(`SELECT payload FROM user_state_record r
-    WHERE namespace=$1 AND applied_revision<revision AND deferred_reason IS NULL AND (
+    WHERE namespace=$1 AND applied_revision<revision AND (deferred_reason IS NULL OR deferred_reason='projection-error') AND (
       json_extract(payload,'$.entity.kind') IN ('category','library')
       OR EXISTS (
         SELECT 1 FROM novel n
