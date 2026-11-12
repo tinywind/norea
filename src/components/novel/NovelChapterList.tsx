@@ -87,7 +87,7 @@ const CHAPTER_DOWNLOAD_LABELS: Record<
   },
 };
 
-export type ServerAwareChapterListRow = ChapterListRow & { serverAvailable?: boolean; serverComplete?: boolean };
+export type ServerAwareChapterListRow = ChapterListRow & { serverAvailable?: boolean; serverComplete?: boolean; serverDifferent?: boolean };
 
 interface ChapterListItemProps {
   chapter: ServerAwareChapterListRow;
@@ -386,6 +386,7 @@ function ChapterListItem({
             {partlyRead ? (
               <VisuallyHidden>{t("novel.percentRead", { progress })}</VisuallyHidden>
             ) : null}
+            {chapter.serverDifferent ? <span className="norea-novel-chapter-badge">{t("chapterDifference.rowBadge")}</span> : null}
             {chapter.serverComplete === false ? (
               <span className="norea-novel-chapter-badge">{t("novel.serverIncomplete")}</span>
             ) : null}

@@ -1310,3 +1310,18 @@ it("does not recreate retired source work after server-side migration recovery a
   expect(savedCatalog.cursor).toBe(1);
   expect(savedCatalog.tombstones[JSON.stringify(["bookkor-novel", recoveredTarget.novelPath, "/bookkor/6951-ep-5856724"])]).toBeUndefined();
 });
+
+it("preserves a device body edited since the chapter difference comparison", async () => {
+  const target = { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" };
+  const row = { chapterId: 7091, novelId: 3, pluginId: "source", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter",
+    novelName: "Book", chapterName: "One", chapterNumber: "1", position: 1, page: "1", contentType: "html" };
+  vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
+  vi.mocked(inspectChapterPayloadInventory).mockResolvedValue({ fingerprint: "edited" } as never);
+  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
+  const entry = { id: "one", deleted: false, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  await expect(downloadServerChapterFromServer(entry, "http://server", {
+    token: "registered", target, expectedLocalFingerprint: "compared",
+  })).rejects.toThrow("Device chapter changed");
+  expect(native.install).not.toHaveBeenCalled();
+  expect(markContentInstalled).not.toHaveBeenCalled();
+});

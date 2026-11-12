@@ -7,6 +7,7 @@ import type { NovelDetailRecord } from "../db/queries/novel";
 
 const mocks = vi.hoisted(() => ({
   navigate: vi.fn(),
+  differences: { data: { differences: [], errors: [], checked: 0 }, isFetching: false, error: null },
   source: { data: null as null | { serverUrl: string; workId: string }, isPending: false, isFetching: false, error: null as unknown },
   available: { data: { paths: new Map<string, boolean>(), numbers: new Map<number, boolean>() } as { paths: Map<string, boolean>; numbers: Map<number, boolean> } | undefined, isLoading: false, error: null as unknown },
   sync: { serverError: null as unknown, sourceError: null as unknown, retry: vi.fn() },
@@ -33,6 +34,7 @@ const mocks = vi.hoisted(() => ({
 }));
 vi.mock("@tanstack/react-query", () => ({ useQuery: (options: { queryKey: unknown[]; enabled?: boolean }) => {
   mocks.queries.push(options);
+  if (options.queryKey[1] === "chapter-differences") return mocks.differences;
   return options.queryKey[0] === "content-server"
   ? options.queryKey[1] === "novel-chapters" ? mocks.available : mocks.source
   : options.queryKey.includes("chapters")

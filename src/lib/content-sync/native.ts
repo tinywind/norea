@@ -33,13 +33,14 @@ export interface CatalogEntry {
   sequence: number;
 }
 
-export async function withContentChapterStage<T>(input: { storageDir: string; identity: Pick<ContentIdentity, "pluginId" | "novelPath">; signal?: AbortSignal }, run: (stagePath: string) => Promise<T>): Promise<T> {
+export async function withContentChapterStage<T>(input: { storageDir: string; identity: Pick<ContentIdentity, "pluginId" | "novelPath">; signal?: AbortSignal; verifySource?: () => Promise<void> }, run: (stagePath: string) => Promise<T>): Promise<T> {
   input.signal?.throwIfAborted();
   const stagePath = await invoke<string>("content_sync_create_stage");
   try {
     input.signal?.throwIfAborted();
-    await runWorkContentStorageOperation(input.identity.pluginId, input.identity.novelPath, () => {
+    await runWorkContentStorageOperation(input.identity.pluginId, input.identity.novelPath, async () => {
       input.signal?.throwIfAborted();
+      await input.verifySource?.();
       return isAndroidRuntime()
         ? snapshotAndroidContentChapter(input.storageDir, stagePath)
         : invoke("content_sync_snapshot", { storageDir: input.storageDir, stagePath });

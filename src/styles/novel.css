@@ -643,3 +643,84 @@
 .norea-novel-chapter-sort-button[data-sort-direction="asc"] svg {
   transform: rotate(180deg);
 }
+
+.norea-difference-sheet {
+  display: flex;
+  flex-direction: column;
+  height: calc(100dvh - 6rem);
+  overflow: hidden;
+}
+
+.norea-difference-sheet .norea-responsive-sheet-body {
+  display: flex;
+  flex: 1;
+  flex-direction: column;
+  min-height: 0;
+  overflow-y: auto;
+}
+
+.norea-chapter-differences {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+}
+
+.norea-chapter-differences > * {
+  flex-shrink: 0;
+}
+
+.norea-difference-assign {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--norea-space-3);
+}
+
+.norea-difference-list {
+  flex: 1;
+  flex-shrink: 1;
+  min-height: 8rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  border-block: 1px solid var(--mantine-color-default-border);
+}
+
+.norea-difference-row {
+  display: grid;
+  grid-template-columns: 1.25rem minmax(0, 1fr) minmax(10rem, 15rem);
+  align-items: center;
+  gap: var(--norea-space-3);
+  padding-block: var(--norea-space-3);
+  border-bottom: 1px solid var(--mantine-color-default-border);
+}
+
+.norea-difference-identity {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-variant-numeric: tabular-nums;
+}
+
+.norea-difference-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: var(--norea-space-3);
+  padding-block: var(--norea-space-3);
+  background: var(--mantine-color-body);
+}
+
+@media (max-width: 47.999em) {
+  .norea-difference-sheet {
+    height: 100dvh;
+  }
+
+  .norea-difference-row {
+    grid-template-columns: 1.25rem minmax(0, 1fr);
+  }
+
+  .norea-difference-action {
+    grid-column: 2;
+  }
+}

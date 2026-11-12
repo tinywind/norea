@@ -417,7 +417,7 @@ export async function downloadServerChapter(entry: CatalogEntry): Promise<{ nove
   return downloadServerChapterFromServer(entry, useContentSyncStore.getState().serverUrl);
 }
 
-export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity; signal?: AbortSignal }): Promise<{ novelId: number; chapterId: number }> {
+export async function downloadServerChapterFromServer(entry: CatalogEntry, serverUrl: string, options?: { token: string; target: ContentIdentity; signal?: AbortSignal; expectedLocalFingerprint?: string }): Promise<{ novelId: number; chapterId: number }> {
   options?.signal?.throwIfAborted();
   const downloadRevision = currentChapterDownloadRevision();
   if (entry.deleted) throw new Error("Deleted server chapters cannot be downloaded.");
@@ -439,6 +439,13 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
         options?.signal?.throwIfAborted();
         const current = await findTarget();
         if (current.chapterId !== row.chapterId) throw new Error("Downloaded chapter identity changed during transfer.");
+        if (options?.expectedLocalFingerprint !== undefined) {
+          const snapshot = await inspectChapterPayloadInventory({
+            novel: { id: current.novelId, pluginId: current.pluginId, sourceNovelId: current.sourceNovelId, path: current.novelPath, name: current.novelName },
+            chapter: { id: current.chapterId, chapterNumber: current.chapterNumber, position: current.position, name: current.chapterName, contentType: current.contentType },
+          });
+          if (snapshot.fingerprint !== options.expectedLocalFingerprint) throw new Error("Device chapter changed during transfer. Compare again.");
+        }
         options?.signal?.throwIfAborted();
         if (current.isLocal) await clearServerChapterDownloadProof(current.chapterId);
         options?.signal?.throwIfAborted();

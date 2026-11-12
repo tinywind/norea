@@ -58,6 +58,8 @@ import {
   VirtualChapterList,
   type ServerAwareChapterListRow,
 } from "../components/novel/NovelChapterList";
+import { ChapterDifferenceManager } from "../components/novel/ChapterDifferenceManager";
+import { useChapterDifferences } from "../components/novel/use-chapter-differences";
 import { NovelHeroSkeleton, NovelWorkspace } from "../components/novel/NovelWorkspace";
 import { NovelCategoryEditor } from "../components/novel/NovelCategoryEditor";
 import {
@@ -110,6 +112,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const lastReadChapterId = useReaderStore(
     (state) => state.lastReadChapterByNovel[id],
   );
+  const [differenceManagerOpen, setDifferenceManagerOpen] = useState(false);
   const [readerSettingsOpen, setReaderSettingsOpen] = useState(false);
   const [serverManagerSource, setServerManagerSource] =
     useState<ServerNovelSource | null>(null);
@@ -179,17 +182,20 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     active,
   );
 
+  const differenceQuery = useChapterDifferences(novelQuery.data ?? undefined, chaptersQuery.data, managedServerWork, active);
+  const differentIds = useMemo(() => new Set(differenceQuery.data?.differences.map(row => row.chapter.chapterId)), [differenceQuery.data]);
+
   const rows = useMemo<ServerAwareChapterListRow[]>(() => {
     const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;
-    if (!serverSourceQuery.data || !serverChaptersQuery.data) return storedRows;
+    if (!serverSourceQuery.data || !serverChaptersQuery.data) return storedRows.map(chapter => ({ ...chapter, serverDifferent: differentIds.has(chapter.id) }));
     const available = serverChaptersQuery.data;
     return storedRows.map((chapter) => {
       const serverComplete = available.paths.get(chapter.path)
         ?? (chapter.chapterNumber != null && /^\d+(?:\.\d+)?$/.test(chapter.chapterNumber)
           ? available.numbers.get(Number(chapter.chapterNumber)) : undefined);
-      return { ...chapter, serverAvailable: serverComplete !== undefined, serverComplete };
+      return { ...chapter, serverAvailable: serverComplete !== undefined, serverComplete, serverDifferent: differentIds.has(chapter.id) };
     });
-  }, [chaptersQuery.data, serverChaptersQuery.data, serverSourceQuery.data]);
+  }, [chaptersQuery.data, serverChaptersQuery.data, serverSourceQuery.data, differentIds]);
   const chapters = useMemo(
     () => (defaultChapterSort === "desc" ? [...rows].reverse() : rows),
     [defaultChapterSort, rows],
@@ -882,6 +888,15 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                         unread: chapterStats.unread,
                       })}
                 </h2>
+                {managedServerWork && (differenceQuery.isFetching || differenceQuery.error || differentIds.size > 0 || (differenceQuery.data?.errors.length ?? 0) > 0) ? <ChipButton
+                  disabled={differenceQuery.isFetching && !differenceQuery.data}
+                  onClick={() => setDifferenceManagerOpen(true)}
+                >{differenceQuery.isFetching && !differenceQuery.data
+                    ? t("chapterDifference.checking", differenceQuery.progress)
+                    : differenceQuery.error ? t("chapterDifference.checkFailed")
+                    : differentIds.size > 0 ? t("chapterDifference.manage", { count: differentIds.size })
+                    : differenceQuery.data?.errors.length ? t("chapterDifference.unchecked", { count: differenceQuery.data.errors.length })
+                    : t("chapterDifference.none")}</ChipButton> : null}
                 {reorderMode ? (
                   <IconButton
                     label={t("novel.local.finishReorder")}
@@ -1087,6 +1102,14 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
           </div>
         </PageFrame>
       </div>
+
+      {differenceManagerOpen && managedServerWork ? <ChapterDifferenceManager
+        key={`${id}:${managedServerWork.serverUrl}:${managedServerWork.workId}`}
+        novelId={id} source={managedServerWork} differences={differenceQuery.data?.differences ?? []}
+        onClose={() => setDifferenceManagerOpen(false)} onRefresh={() => { void differenceQuery.refetch(); }}
+        refreshing={differenceQuery.isFetching} scanErrors={differenceQuery.data?.errors.length ?? 0}
+        scanError={differenceQuery.error}
+      /> : null}
 
       <ChapterRangeSheet
         chapters={visibleChapters}
