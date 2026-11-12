@@ -604,3 +604,9 @@ async function flushDirtyWorkMetadata(db: Database, fetched?: FetchedChapterCata
   }
   if (dirty.length) await db.execute("DELETE FROM work_metadata_dirty");
 }
+
+
+/** Forget the authoritative file after an explicit whole-work folder deletion. */
+export function forgetNovelMetadataFile(pluginId: string, novelPath: string): void {
+  knownFiles.delete(keyFor(pluginId, novelPath));
+}

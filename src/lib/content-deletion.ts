@@ -1,3 +1,4 @@
+import { deleteUnshelvedNovelDownloads } from "./tasks/unshelved-novel-download-delete";
 import { getChapterById, listChaptersByNovel, type ChapterListRow, type ChapterRow } from "../db/queries/chapter";
 import { deleteLocalNovelRecords, findLocalDeletionNovel, listDeletionDownloadedChapterIds, listStoredDeletionNovelIds } from "../db/queries/content-deletion";
 import { getNovelById, setNovelInLibrary, type NovelDetailRecord } from "../db/queries/novel";
@@ -204,7 +205,11 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
     const novel = await getNovelById(id);
     if (!novel) continue;
     if (request.kind === "library") actions.push({ id: `library:${id}`, side: "library", name: novel.name, run: async () => { await setNovelInLibrary(id, false); await withdrawDownloadGoalWork([id]); } });
-    if (!allDownloads && (request.kind === "downloads" || options.local)) actions.push(deviceDownloadsAction(`device:${id}`, novel.name, request.title, [id]));
+    if (request.kind === "library" && options.local) {
+      actions.push({ id: `device:${id}`, side: "device", name: novel.name, run: () => deleteUnshelvedNovelDownloads(novel) });
+    } else if (!allDownloads && request.kind === "downloads") {
+      actions.push(deviceDownloadsAction(`device:${id}`, novel.name, request.title, [id]));
+    }
     if (options.server && request.kind === "library") {
       let deleted: WorkCatalogEntry | undefined;
       const action: ContentDeletionAction = { id: `server:${id}`, side: "server", name: novel.name, run: async () => {

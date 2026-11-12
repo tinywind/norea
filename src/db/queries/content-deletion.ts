@@ -105,3 +105,36 @@ export async function deleteLocalNovelRecords(
     await db.execute("DELETE FROM content_sync_cache WHERE cache_key=$1", [`norea-content-source:${novel.id}`]);
   });
 }
+
+
+/** Remove a source work's files and cached download state without changing reading history. */
+export async function clearNovelDownloadFiles(
+  novel: Pick<NovelDetailRecord, "id" | "pluginId" | "sourceNovelId" | "path">,
+  removeDirectory: () => Promise<void>,
+): Promise<void> {
+  const readIdentity = (db: Awaited<ReturnType<typeof getDb>>) => db.select<{
+    pluginId: string; sourceNovelId: string | null; path: string; isLocal: number;
+  }[]>("SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path,is_local AS isLocal FROM novel WHERE id=$1", [novel.id]);
+  const matches = (current: { pluginId: string; sourceNovelId: string | null; path: string; isLocal: number }) =>
+    current.pluginId === novel.pluginId && current.sourceNovelId === novel.sourceNovelId && current.path === novel.path && !current.isLocal;
+  const [before] = await readIdentity(await getDb());
+  if (!before) return;
+  if (!matches(before)) throw new Error("Local work identity changed before download deletion.");
+  await removeDirectory();
+  await runDatabaseTransaction(async db => {
+    const [current] = await readIdentity(db);
+    if (!current) return;
+    if (!matches(current)) throw new Error("Local work identity changed during download deletion.");
+    await db.execute(`UPDATE chapter SET is_downloaded=0,content_bytes=0,media_bytes=0,media_repair_needed=0,
+      media_bytes_checked_at=NULL,updated_at=unixepoch() WHERE novel_id=$1`, [novel.id]);
+    await db.execute("DELETE FROM work_metadata_directory_cache WHERE novel_id=$1", [novel.id]);
+    for (const table of ["work_metadata_file_cache", "work_metadata_sync_journal", "work_metadata_dirty"]) {
+      await db.execute(`DELETE FROM ${table} WHERE plugin_id=$1 AND path=$2`, [novel.pluginId, novel.path]);
+    }
+  }, false, { publishMetadata: false });
+}
+
+export async function listNovelDeletionChapterIds(novelId: number): Promise<number[]> {
+  const db = await getDb();
+  return (await db.select<{ id: number }[]>("SELECT id FROM chapter WHERE novel_id=$1", [novelId])).map(row => row.id);
+}

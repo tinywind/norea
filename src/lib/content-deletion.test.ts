@@ -1,8 +1,10 @@
+import { deleteUnshelvedNovelDownloads } from "./tasks/unshelved-novel-download-delete";
 import { beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../db/queries/novel", () => ({ getNovelById: vi.fn(), setNovelInLibrary: vi.fn() }));
 vi.mock("../db/queries/chapter", () => ({ getChapterById: vi.fn(), listChaptersByNovel: vi.fn() }));
 vi.mock("../db/queries/content-deletion", () => ({ findLocalDeletionNovel: vi.fn(), deleteLocalNovelRecords: vi.fn(), listStoredDeletionNovelIds: vi.fn(), listDeletionDownloadedChapterIds: vi.fn(async () => []) }));
+vi.mock("./tasks/unshelved-novel-download-delete", () => ({ deleteUnshelvedNovelDownloads: vi.fn() }));
 vi.mock("./tasks/download-cache-delete", () => ({ deleteDownloadCache: vi.fn(), cancelNovelChapterDownloadWork: vi.fn() }));
 vi.mock("./content-sync/management", () => ({ findServerWork: vi.fn(), deleteServerWork: vi.fn(), deleteSelectedServerChapters: vi.fn() }));
 vi.mock("./content-sync/sync", () => ({ runContentSyncOperation: vi.fn((run: () => Promise<unknown>) => run()) }));
@@ -86,8 +88,11 @@ it.each(["library", "chapter", "novel", "all"] as const)("finishes %s device rem
     await vi.waitFor(() => expect(result?.map(value => value.status)).toEqual(
       kind === "library" ? ["succeeded", "succeeded"] : ["succeeded"],
     ), { timeout: 150 });
-    expect(deleteDownloadCache).toHaveBeenCalledExactlyOnceWith({
-      scope: kind === "library" ? "novel" : kind,
+    if (kind === "library") {
+      expect(deleteUnshelvedNovelDownloads).toHaveBeenCalledExactlyOnceWith(novel);
+      expect(deleteDownloadCache).not.toHaveBeenCalled();
+    } else expect(deleteDownloadCache).toHaveBeenCalledExactlyOnceWith({
+      scope: kind,
       targetIds: kind === "all" ? [] : kind === "chapter" ? [91] : [12],
       title: "Remove",
     });
@@ -116,8 +121,7 @@ it("keeps selected server chapter deletion serialized with content synchronizati
 });
 
 it("retries only failed device removal after the library step has already succeeded", async () => {
-  vi.mocked(listDeletionDownloadedChapterIds).mockResolvedValue([91]);
-  vi.mocked(deleteDownloadCache).mockRejectedValueOnce(new Error("device storage unavailable"));
+  vi.mocked(deleteUnshelvedNovelDownloads).mockRejectedValueOnce(new Error("device storage unavailable"));
   const actions = await prepareContentDeletion({ kind: "library", ids: [12], title: "Remove", serverUrl: source.serverUrl }, { local: true, server: false });
   const first = await runContentDeletion(actions);
   expect(first).toEqual([
@@ -129,8 +133,8 @@ it("retries only failed device removal after the library step has already succee
   expect(retried.map(result => result.status)).toEqual(["succeeded", "succeeded"]);
   expect(setNovelInLibrary).toHaveBeenCalledExactlyOnceWith(12, false);
   expect(withdrawDownloadGoalWork).toHaveBeenCalledExactlyOnceWith([12]);
-  expect(deleteDownloadCache).toHaveBeenCalledTimes(2);
-  expect(deletedDownloadChapterIds(actions, retried)).toEqual([91]);
+  expect(deleteUnshelvedNovelDownloads).toHaveBeenCalledTimes(2);
+  expect(deletedDownloadChapterIds(actions, retried)).toEqual([]);
   vi.mocked(runContentSyncOperation).mockReset().mockImplementation(run => run());
 });
 
@@ -142,7 +146,7 @@ it("keeps successful sides complete and retries only the failed server deletion"
   const second = await runContentDeletion(plan, first);
   expect(second.every(result => result.status === "succeeded")).toBe(true);
   expect(setNovelInLibrary).toHaveBeenCalledOnce();
-  expect(deleteDownloadCache).toHaveBeenCalledOnce();
+  expect(deleteUnshelvedNovelDownloads).toHaveBeenCalledOnce();
   expect(deleteServerWork).toHaveBeenCalledTimes(2);
 });
 

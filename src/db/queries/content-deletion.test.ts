@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 import { getDb, runDatabaseTransaction } from "../client";
 import { userStateEntityKey } from "../../lib/user-state/types";
-import { deleteLocalNovelRecords, findLocalDeletionNovel, listDeletionDownloadedChapterIds } from "./content-deletion";
+import { deleteLocalNovelRecords, findLocalDeletionNovel, listDeletionDownloadedChapterIds, clearNovelDownloadFiles } from "./content-deletion";
 
 let sqlite: DatabaseSync;
 const identity = { id: 12, pluginId: "source", sourceNovelId: "42", path: "/book" };
@@ -121,4 +121,38 @@ it("records library, category, resume, and public chapter user-state removals wh
       value: { bookmarked: false },
     },
   ]);
+});
+
+
+it("clears 1500 chapter downloads after one folder removal while preserving reading state", async () => {
+  for (let index = 0; index < 1500; index++) sqlite.prepare("INSERT INTO chapter(novel_id,path,name,position,is_downloaded,content_bytes) VALUES(12,?,?,?,1,100)").run(`/bulk/${index}`, "Chapter", index + 2);
+  sqlite.exec("INSERT INTO work_metadata_file_cache VALUES('source','/book',12,'contents/source/42','fingerprint'); INSERT INTO work_metadata_directory_cache VALUES(91,12,'contents/source/42/1')");
+  const remove = vi.fn(async () => {
+    expect(sqlite.isTransaction).toBe(false);
+    expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter WHERE is_downloaded=1").get()).toEqual({ count: 1500 });
+  });
+  await clearNovelDownloadFiles(identity, remove);
+  expect(remove).toHaveBeenCalledOnce();
+  expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter WHERE is_downloaded=1 OR content_bytes>0").get()).toEqual({ count: 0 });
+  expect(sqlite.prepare("SELECT progress,bookmark FROM chapter WHERE id=91").get()).toEqual({ progress: 75, bookmark: 1 });
+  expect(sqlite.prepare("SELECT progress,bookmark FROM chapter WHERE id=92").get()).toEqual({ progress: 50, bookmark: 1 });
+  expect(sqlite.prepare("SELECT * FROM work_metadata_file_cache").all()).toEqual([]);
+  expect(sqlite.prepare("SELECT * FROM work_metadata_directory_cache").all()).toEqual([]);
+  expect(sqlite.prepare("SELECT * FROM work_metadata_dirty WHERE plugin_id='source'").all()).toEqual([]);
+  expect(sqlite.prepare("SELECT progress FROM work_metadata_reading_state WHERE plugin_id='source'").get()).toEqual({ progress: 50 });
+});
+
+it("keeps download records when folder removal fails and allows a retry", async () => {
+  sqlite.exec("UPDATE chapter SET is_downloaded=1,content_bytes=100 WHERE id=91");
+  await expect(clearNovelDownloadFiles(identity, async () => { throw new Error("Cannot remove folder"); })).rejects.toThrow("Cannot remove folder");
+  expect(sqlite.prepare("SELECT is_downloaded FROM chapter WHERE id=91").get()).toEqual({ is_downloaded: 1 });
+  await clearNovelDownloadFiles(identity, async () => undefined);
+  expect(sqlite.prepare("SELECT is_downloaded FROM chapter WHERE id=91").get()).toEqual({ is_downloaded: 0 });
+});
+
+it("refuses folder removal when the work identity has changed", async () => {
+  sqlite.exec("UPDATE novel SET source_novel_id='changed' WHERE id=12");
+  const remove = vi.fn();
+  await expect(clearNovelDownloadFiles(identity, remove)).rejects.toThrow("identity changed");
+  expect(remove).not.toHaveBeenCalled();
 });
