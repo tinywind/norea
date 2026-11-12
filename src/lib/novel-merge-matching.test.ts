@@ -387,6 +387,42 @@ describe("matchNovelMergeChapters", () => {
       unmatchedSourceChapterIds: [],
     });
   });
+
+  it("does not auto-match chapters merely because the final chapter number matches when the episode identity differs", () => {
+    const sources = [
+      ...Array.from({ length: 9 }, (_, i) => source(i + 1, String(i + 1), `${i + 1}화`)),
+      source(10, "10", "외전 1화"),
+    ];
+    const targets = Array.from({ length: 10 }, (_, i) => target(i + 1, `${i + 1}화`, `/target/${i + 1}`));
+    const result = matchNovelMergeChapters(sources, targets);
+    expect(result.matched).toHaveLength(9);
+    expect(result.matched.some(item => item.sourceChapterId === 10)).toBe(false);
+    expect(result.ambiguous).toEqual([
+      { sourceChapterId: 10, reason: "titleMismatch", candidateTargetPaths: ["/target/10"] },
+    ]);
+  });
+
+  it("keeps standalone Korean prologue unmerged while shifting subsequent episodes accurately", () => {
+    const sources = [
+      source(1, "1", "[서장]"),
+      ...Array.from({ length: 10 }, (_, i) => source(i + 2, String(i + 2), `${i + 1}화`)),
+    ];
+    const targets = Array.from({ length: 10 }, (_, i) => target(i + 1, `${i + 1}화`, `/target/${i + 1}`));
+    const result = matchNovelMergeChapters(sources, targets);
+    expect(result.ambiguous).toEqual([
+      { sourceChapterId: 1, reason: "titleMismatch", candidateTargetPaths: ["/target/1"] },
+    ]);
+    expect(result.matched).toEqual(
+      Array.from({ length: 10 }, (_, i) => ({ sourceChapterId: i + 2, targetChapterPath: `/target/${i + 1}` })),
+    );
+
+    // Ensure a numbered episode with a bracketed prologue subtitle still matches episode 1.
+    const numberedSubtitle = matchNovelMergeChapters(
+      [source(1, "1", "각성자 김극 - [서장]")],
+      [target(1, "1화 각성자 김극 - [서장]", "/bookkor/6951-ep-1")],
+    );
+    expect(numberedSubtitle.matched).toEqual([{ sourceChapterId: 1, targetChapterPath: "/bookkor/6951-ep-1" }]);
+  });
 });
 
 describe("findNovelMergeCopyConflicts", () => {

@@ -3,7 +3,7 @@ import { getChapterComposition } from "../chapter-composition";
 import type Database from "@tauri-apps/plugin-sql";
 import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../client";
 import { isChapterPayloadInventory, type ChapterPayloadInventory } from "../../lib/chapter-content/inventory";
-import type { MigrationWorkIdentity, NovelMigrationTargetMetadata, PendingNovelMigration, WorkMigrationSnapshot } from "../../lib/content-sync/novel-migration-types";
+import type { ExplicitSourceContentDiscard, MigrationWorkIdentity, NovelMigrationTargetMetadata, PendingNovelMigration, WorkMigrationSnapshot } from "../../lib/content-sync/novel-migration-types";
 import { sqliteBoolean } from "../sqlite-value";
 import { canonicalMetadataValue, parseNovelMetadata, type NovelMetadataV1 } from "../../lib/work-metadata/schema";
 import { normalizeContentServerUrl } from "../../lib/content-sync/client";
@@ -276,8 +276,12 @@ function parseNovelMigration(payload: string): PendingNovelMigration {
   const job = JSON.parse(payload) as PendingNovelMigration;
   if (job.version !== 1 || typeof job.operationId !== "string" || !job.operationId
     || typeof job.serverUrl !== "string" || !validMigrationIdentity(job.source) || !validMigrationIdentity(job.target)
-    || !Array.isArray(job.chapters) || job.chapters.some(chapter => chapter.discardSourceContent !== undefined &&
-      (chapter.discardSourceContent !== true || chapter.decision !== null || !chapter.targetChapterPath || chapter.expectedTargetInventory !== undefined))
+    || !Array.isArray(job.chapters) || job.chapters.some(chapter =>
+      (chapter.discardSourceContent !== undefined &&
+        (chapter.discardSourceContent !== true || chapter.decision !== null || !chapter.targetChapterPath || chapter.expectedTargetInventory !== undefined))
+      || (chapter.explicitSourceDiscard !== undefined &&
+        (chapter.explicitSourceDiscard.approvedByUser !== true || !isChapterPayloadInventory(chapter.explicitSourceDiscard.expectedSourceInventory) || !chapter.explicitSourceDiscard.expectedSourceInventory.body))
+      || (chapter.requiresTargetUpload !== undefined && (chapter.requiresTargetUpload !== true || chapter.decision !== "copy-source" || !chapter.targetChapterPath)))
     || !["pending", "failed", "blocked", "completed"].includes(job.status)
     || (job.targetCoverDeletionRevision !== undefined && (typeof job.targetCoverDeletionRevision !== "string" || !job.targetCoverDeletionRevision))) {
     throw new Error("Stored novel migration is invalid. The source work remains protected.");
@@ -292,6 +296,7 @@ export async function recordPendingNovelMergeInDb(db: Database, input: {
   targetNovelId: number;
   chapterIdMap: Readonly<Record<number, number>>;
   skipSourceContentChapterIds?: readonly number[];
+  explicitServerDiscardBySourceId?: Readonly<Record<number, ExplicitSourceContentDiscard>>;
   sourceSnapshot?: WorkMigrationSnapshot;
   targetMetadata?: NovelMigrationTargetMetadata;
   preparedDownloads: readonly {
@@ -350,8 +355,11 @@ export async function recordPendingNovelMergeInDb(db: Database, input: {
   const targetChapters = new Map(rows.filter(row => row.novelId === input.targetNovelId).map(row => [row.id, row]));
   const prepared = new Map(input.preparedDownloads.map(row => [row.sourceChapterId, row]));
   const skippedSourceContent = new Set(input.skipSourceContentChapterIds ?? []);
-  if ([...skippedSourceContent].some(id => !rows.some(row => row.id === id && row.novelId === input.sourceNovelId))) {
-    throw new Error("A discarded source chapter no longer exists.");
+  const explicitDiscards = input.explicitServerDiscardBySourceId ?? {};
+  const validSourceIds = new Set(rows.filter(row => row.novelId === input.sourceNovelId).map(row => row.id));
+  if ([...skippedSourceContent].some(id => !validSourceIds.has(id))
+    || Object.keys(explicitDiscards).some(id => !validSourceIds.has(Number(id)))) {
+    throw new Error("A skipped or discarded source chapter no longer exists.");
   }
   const chapters = rows.filter(row => row.novelId === input.sourceNovelId).map(row => {
     const destinationId = input.chapterIdMap[row.id];
@@ -359,11 +367,27 @@ export async function recordPendingNovelMergeInDb(db: Database, input: {
     if (destinationId !== undefined && !destination) throw new Error("A server migration target chapter is missing.");
     const artifact = prepared.get(row.id);
     if (artifact && !destination) throw new Error("A server migration download is not mapped.");
-    const discardSourceContent = skippedSourceContent.has(row.id);
-    if (discardSourceContent && (!destination || artifact?.transferredFromSource)) {
-      throw new Error("Discarded source content must keep a target mapping without copying the source body.");
+    if (skippedSourceContent.has(row.id) && (!destination || artifact?.transferredFromSource)) {
+      throw new Error("Skipped local source content must keep a target mapping without copying the source body.");
     }
-    const decision = discardSourceContent ? null : artifact ? artifact.transferredFromSource ? "copy-source" as const : "keep-target" as const : destination ? "copy-source" as const : null;
+    const explicitDiscard = explicitDiscards[row.id];
+    if (explicitDiscard !== undefined) {
+      if (explicitDiscard.approvedByUser !== true
+        || !isChapterPayloadInventory(explicitDiscard.expectedSourceInventory)
+        || !explicitDiscard.expectedSourceInventory.body
+        || artifact?.transferredFromSource) {
+        throw new Error("Explicit server content discard requires a verified source inventory without copying the source body.");
+      }
+      return {
+        sourceChapterPath: row.path, sourceChapterNumber: row.chapterNumber,
+        targetChapterPath: destination?.path ?? null, targetChapterNumber: destination?.chapterNumber ?? null,
+        decision: null,
+        ...(destination ? { discardSourceContent: true as const } : {}),
+        explicitSourceDiscard: explicitDiscard,
+        ...(destination ? { targetChapter: { name: destination.name, position: destination.position, page: destination.page } } : {}),
+      };
+    }
+    const decision = artifact ? artifact.transferredFromSource ? "copy-source" as const : "keep-target" as const : destination ? "copy-source" as const : null;
     if (decision === "keep-target") {
       const inventory = artifact!.targetInventory;
       if (!isChapterPayloadInventory(inventory) || !inventory.body
@@ -377,7 +401,7 @@ export async function recordPendingNovelMergeInDb(db: Database, input: {
       sourceChapterPath: row.path, sourceChapterNumber: row.chapterNumber,
       targetChapterPath: destination?.path ?? null, targetChapterNumber: destination?.chapterNumber ?? null,
       decision,
-      ...(discardSourceContent ? { discardSourceContent: true as const } : {}),
+      ...(artifact?.transferredFromSource ? { requiresTargetUpload: true as const } : {}),
       ...(destination ? { targetChapter: { name: destination.name, position: destination.position, page: destination.page } } : {}),
       ...(decision === "keep-target" ? { expectedTargetInventory: artifact!.targetInventory } : {}),
     };

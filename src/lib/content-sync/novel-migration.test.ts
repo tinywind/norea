@@ -405,12 +405,28 @@ it.each(["workMigrationLineageVersion", "workMigrationCopyVersion", "workCoverDe
   expect(contentServerRequest).toHaveBeenCalledWith(server, "/capabilities", "test-device", "GET", undefined, undefined);
 });
 
-it("discards A's server body while retaining an explicit reading-state destination without a B body", async () => {
+it("blocks unapproved discardSourceContent on an available server chapter and only forwards inventory-bound explicit discards", async () => {
   saved.chapters[0] = { ...saved.chapters[0]!, decision: null, discardSourceContent: true };
   target.chapters = target.chapters.filter(chapter => chapter.id !== "new-one");
   target.work.metadata!.chapters = { "9001": "Fresh first", "9002": "Fresh second" };
+  expect(() => buildFinalizeNovelMigrationRequest(saved, source, target)).toThrow(/explicit inventory-bound user approval/);
+  await expect(finalizePendingNovelMigrations(server, "token")).rejects.toThrow("pending");
+  expect(posts).toEqual([]);
+  expect(saved.status).toBe("blocked");
+
+  saved = initialJob();
+  saved.chapters[0] = {
+    ...saved.chapters[0]!,
+    decision: null,
+    discardSourceContent: true,
+    explicitSourceDiscard: { approvedByUser: true, expectedSourceInventory: inventory },
+  };
   const request = buildFinalizeNovelMigrationRequest(saved, source, target);
-  expect(request.mappings[0]).toEqual({ sourceChapterId: "old-one", decision: "delete-source" });
+  expect(request.mappings[0]).toEqual({
+    sourceChapterId: "old-one",
+    decision: "delete-source",
+    explicitSourceDiscard: { approvedByUser: true, expectedSourceInventory: inventory },
+  });
   expect(request.chapterDecisions?.[0]).toEqual({
     sourceChapterPath: "/old/one", sourceChapterNumber: "1", targetChapterPath: "/new/first", targetChapterNumber: "9001",
     discardSourceContent: true,
@@ -424,4 +440,257 @@ it("rejects a discard flag that still asks to copy source bytes", () => {
   const job = initialJob();
   job.chapters[0]!.discardSourceContent = true;
   expect(() => buildFinalizeNovelMigrationRequest(job, sourceSnapshot(), targetSnapshot())).toThrow(/inconsistent/);
+});
+
+it("preserves all 10 server-only chapters when local downloads are 0 or 2 out of 10", async () => {
+  for (const localDownloadedCount of [0, 2]) {
+    copyRequests.length = 0;
+    posts.length = 0;
+    const chaptersMap = Object.fromEntries(Array.from({ length: 10 }, (_, idx) => [String(9001 + idx), `Fresh ${idx + 1}`]));
+    source = {
+      work: { id: "source-work", revision: "src-rev-10", identity: sourceIdentity },
+      chapters: Array.from({ length: 10 }, (_, idx) => ({
+        id: `src-${idx + 1}`, revision: `src-r-${idx + 1}`, chapterPath: `norea-folder:${idx + 1}`,
+        chapterNumber: String(idx + 1), available: true, complete: true,
+      })),
+    };
+    target = {
+      work: {
+        id: "target-work", revision: "dst-rev-0", identity: targetIdentity,
+        metadata: { schemaVersion: 1, identity: targetIdentity, novel: targetMetadata().novel, cover: targetMetadata().cover, chapters: chaptersMap },
+        coverSha256: targetMetadata().coverSha256,
+      },
+      // Locally downloaded chapters (0 or 2) were uploaded before finalizePendingNovelMigrations ran; remaining (10 or 8) exist ONLY on server source.
+      chapters: Array.from({ length: localDownloadedCount }, (_, idx) => ({
+        id: `uploaded-${idx + 1}`, revision: `up-r-${idx + 1}`, chapterPath: `/new/ep-${idx + 1}`,
+        chapterNumber: String(9001 + idx), available: true, complete: true,
+      })),
+    };
+    saved = {
+      ...initialJob(),
+      sourceSnapshot: structuredClone(source),
+      chapters: Array.from({ length: 10 }, (_, idx) => ({
+        sourceChapterPath: `norea-folder:${idx + 1}`,
+        sourceChapterNumber: String(idx + 1),
+        targetChapterPath: `/new/ep-${idx + 1}`,
+        targetChapterNumber: String(9001 + idx),
+        decision: "copy-source" as const,
+        ...(idx < localDownloadedCount ? { requiresTargetUpload: true as const } : {}),
+        targetChapter: { name: `Fresh ${idx + 1}`, position: idx + 1, page: "1" },
+      })),
+    };
+    vi.mocked(contentServerRequest).mockImplementation(async (_srv, path, _tok, method, body) => {
+      if (method === "POST" && path === "/works/source-work/migration-copy") {
+        const req = body as CopyWorkMigrationChapterRequest;
+        copyRequests.push(structuredClone(req));
+        const copied = {
+          id: `copied-${req.target.chapter.chapterNumber}`,
+          revision: `copied-r-${req.target.chapter.chapterNumber}`,
+          chapterPath: req.target.chapter.chapterPath,
+          chapterNumber: req.target.chapter.chapterNumber,
+          available: true,
+          complete: true,
+        };
+        target.chapters.push(copied);
+        target.work.revision = `after-copy-${copyRequests.length}`;
+        return { entry: { id: copied.id } } as never;
+      }
+      if (method === "POST" && path === "/works/source-work/finalize-migration") {
+        posts.push(structuredClone(body));
+        return { operationId: saved.operationId, deletedWork: { id: "source-work", deleted: true, metadata: { identity: sourceIdentity } } } as never;
+      }
+      if (path === "/capabilities") return { workMigrationVersion: 1, workCoverDeletionVersion: 1, workMigrationLineageVersion: 1, workMigrationCopyVersion: 1 } as never;
+      if (path === "/works/source-work/migration-snapshot") return structuredClone(source) as never;
+      if (path === "/works/target-work/migration-snapshot") return structuredClone(target) as never;
+      throw new Error(`Unexpected endpoint ${path}`);
+    });
+
+    expect(await finalizePendingNovelMigrations(server, "test-device")).toBe(true);
+    expect(copyRequests).toHaveLength(10 - localDownloadedCount);
+    expect(target.chapters).toHaveLength(10);
+    expect(saved.request!.mappings).toHaveLength(10);
+    expect(saved.request!.mappings.every(m => m.decision === "copy-source")).toBe(true);
+    expect(saved.status).toBe("completed");
+  }
+});
+
+it("blocks source deletion on partial copy failure and resumes on retry without duplicating already copied chapters", async () => {
+  const chaptersMap = Object.fromEntries(Array.from({ length: 6 }, (_, idx) => [String(9001 + idx), `Fresh ${idx + 1}`]));
+  source = {
+    work: { id: "source-work", revision: "src-rev-6", identity: sourceIdentity },
+    chapters: Array.from({ length: 6 }, (_, idx) => ({
+      id: `src-${idx + 1}`, revision: `src-r-${idx + 1}`, chapterPath: `norea-folder:${idx + 1}`,
+      chapterNumber: String(idx + 1), available: true, complete: true,
+    })),
+  };
+  target = {
+    work: {
+      id: "target-work", revision: "dst-rev-0", identity: targetIdentity,
+      metadata: { schemaVersion: 1, identity: targetIdentity, novel: targetMetadata().novel, cover: targetMetadata().cover, chapters: chaptersMap },
+      coverSha256: targetMetadata().coverSha256,
+    },
+    chapters: [],
+  };
+  saved = {
+    ...initialJob(),
+    sourceSnapshot: structuredClone(source),
+    chapters: Array.from({ length: 6 }, (_, idx) => ({
+      sourceChapterPath: `norea-folder:${idx + 1}`,
+      sourceChapterNumber: String(idx + 1),
+      targetChapterPath: `/new/ep-${idx + 1}`,
+      targetChapterNumber: String(9001 + idx),
+      decision: "copy-source" as const,
+      targetChapter: { name: `Fresh ${idx + 1}`, position: idx + 1, page: "1" },
+    })),
+  };
+  let shouldFailOnFourth = true;
+  vi.mocked(contentServerRequest).mockImplementation(async (_srv, path, _tok, method, body) => {
+    if (method === "POST" && path === "/works/source-work/migration-copy") {
+      const req = body as CopyWorkMigrationChapterRequest;
+      copyRequests.push(structuredClone(req));
+      if (shouldFailOnFourth && req.target.chapter.chapterNumber === "9004") {
+        throw new Error("Network failure on chapter 4");
+      }
+      let existing = target.chapters.find(c => c.chapterPath === req.target.chapter.chapterPath);
+      if (!existing) {
+        existing = {
+          id: `copied-${req.target.chapter.chapterNumber}`,
+          revision: `copied-r-${req.target.chapter.chapterNumber}`,
+          chapterPath: req.target.chapter.chapterPath,
+          chapterNumber: req.target.chapter.chapterNumber,
+          available: true,
+          complete: true,
+        };
+        target.chapters.push(existing);
+        target.work.revision = `after-copy-${target.chapters.length}`;
+      }
+      return { entry: { id: existing.id } } as never;
+    }
+    if (method === "POST" && path === "/works/source-work/finalize-migration") {
+      posts.push(structuredClone(body));
+      return { operationId: saved.operationId, deletedWork: { id: "source-work", deleted: true, metadata: { identity: sourceIdentity } } } as never;
+    }
+    if (path === "/capabilities") return { workMigrationVersion: 1, workCoverDeletionVersion: 1, workMigrationLineageVersion: 1, workMigrationCopyVersion: 1 } as never;
+    if (path === "/works/source-work/migration-snapshot") return structuredClone(source) as never;
+    if (path === "/works/target-work/migration-snapshot") return structuredClone(target) as never;
+    throw new Error(`Unexpected endpoint ${path}`);
+  });
+
+  await expect(finalizePendingNovelMigrations(server, "test-device")).rejects.toThrow("Network failure on chapter 4");
+  expect(posts).toEqual([]);
+  expect(target.chapters).toHaveLength(3);
+  expect(saved.status).toBe("failed");
+
+  // Retry succeeds without re-copying chapters 1..3 or creating duplicates
+  shouldFailOnFourth = false;
+  expect(await finalizePendingNovelMigrations(server, "test-device")).toBe(true);
+  expect(target.chapters).toHaveLength(6);
+  expect(new Set(target.chapters.map(c => c.id)).size).toBe(6);
+  expect(posts).toHaveLength(1);
+  expect(saved.status).toBe("completed");
+});
+
+it("blocks unverified overwrite when server target has different content and requires local upload when server source had 0 chapters", async () => {
+  // 1. Server target already has a chapter at the mapped path with different content -> never calls migration-copy, blocks on 409
+  postFailure = new ContentServerError(409, "Work migration: target does not preserve the source body and stored assets");
+  await expect(finalizePendingNovelMigrations(server, "test-device")).rejects.toThrow("target does not preserve");
+  expect(copyRequests).toEqual([]);
+  expect(saved.status).toBe("blocked");
+
+  // 2. Waydroid had local body (requiresTargetUpload: true), Server A had 0 chapters, Server B has 0 chapters -> blocks until uploaded!
+  postFailure = undefined;
+  posts.length = 0;
+  source.chapters = [];
+  target.chapters = [];
+  saved = {
+    ...initialJob(),
+    sourceSnapshot: structuredClone(source),
+    chapters: [{
+      sourceChapterPath: "/old/one", sourceChapterNumber: "1",
+      targetChapterPath: "/new/first", targetChapterNumber: "9001",
+      decision: "copy-source", requiresTargetUpload: true,
+      targetChapter: { name: "Fresh first", position: 1, page: "1" },
+    }],
+  };
+  await expect(finalizePendingNovelMigrations(server, "test-device")).rejects.toThrow("locally transferred chapter is not complete");
+  expect(posts).toEqual([]);
+  expect(saved.status).toBe("blocked");
+
+  // Once Waydroid's upload completes on Server B, finalization succeeds
+  target.chapters = [{ id: "uploaded-first", revision: "up-r1", chapterPath: "/new/first", chapterNumber: "9001", available: true, complete: true }];
+  expect(await finalizePendingNovelMigrations(server, "test-device")).toBe(true);
+  expect(saved.status).toBe("completed");
+});
+
+it("protects existing composed (6579->6157) and pre-existing identical-body (57768->6439) migrations without duplicating target chapters", async () => {
+  // 1. Composed migration shape (6579 -> 6157): 5 stored chapters preserved via norea-composed target paths
+  const composedMap = Object.fromEntries(Array.from({ length: 5 }, (_, i) => [String(i + 1), `Composed ${i + 1}`]));
+  source = {
+    work: { id: "source-work", revision: "src-6579", identity: sourceIdentity },
+    chapters: Array.from({ length: 5 }, (_, i) => ({
+      id: `src-6579-${i + 1}`, revision: `sr-${i + 1}`, chapterPath: `/bookkor/6579-ep-${i + 1}`, chapterNumber: String(i + 1), available: true, complete: true,
+    })),
+  };
+  target = {
+    work: {
+      id: "target-work", revision: "dst-6157", identity: targetIdentity,
+      metadata: { schemaVersion: 1, identity: targetIdentity, novel: targetMetadata().novel, cover: targetMetadata().cover, chapters: composedMap },
+      coverSha256: targetMetadata().coverSha256,
+    },
+    chapters: Array.from({ length: 5 }, (_, i) => ({
+      id: `dst-6157-${i + 1}`, revision: `dr-${i + 1}`, chapterPath: `norea-composed:entry-${i + 1}`, chapterNumber: String(i + 1), available: true, complete: true,
+    })),
+  };
+  saved = {
+    ...initialJob(),
+    operationId: "b3e0c51c-741c-4bf4-9604-95346368957b",
+    sourceSnapshot: structuredClone(source),
+    chapters: Array.from({ length: 5 }, (_, i) => ({
+      sourceChapterPath: `/bookkor/6579-ep-${i + 1}`, sourceChapterNumber: String(i + 1),
+      targetChapterPath: `norea-composed:entry-${i + 1}`, targetChapterNumber: String(i + 1),
+      decision: "copy-source" as const, requiresTargetUpload: true as const,
+      targetChapter: { name: `Composed ${i + 1}`, position: i + 1, page: "1" },
+    })),
+  };
+  expect(await finalizePendingNovelMigrations(server, "test-device")).toBe(true);
+  expect(copyRequests).toEqual([]);
+  expect(target.chapters).toHaveLength(5);
+  expect(saved.status).toBe("completed");
+
+  // 2. Pre-existing identical target bodies (57768 -> 6439): 271 mapped chapters where identical bodies already exist on both source & target
+  copyRequests.length = 0;
+  posts.length = 0;
+  const map271 = Object.fromEntries(Array.from({ length: 271 }, (_, i) => [String(i + 1), `Episode ${i + 1}`]));
+  source = {
+    work: { id: "source-work", revision: "src-57768", identity: sourceIdentity },
+    chapters: Array.from({ length: 271 }, (_, i) => ({
+      id: `nt-${i + 1}`, revision: `ntr-${i + 1}`, chapterPath: `/nt/${i + 1}`, chapterNumber: String(i + 1), available: true, complete: true,
+    })),
+  };
+  target = {
+    work: {
+      id: "target-work", revision: "dst-6439", identity: targetIdentity,
+      metadata: { schemaVersion: 1, identity: targetIdentity, novel: targetMetadata().novel, cover: targetMetadata().cover, chapters: map271 },
+      coverSha256: targetMetadata().coverSha256,
+    },
+    chapters: Array.from({ length: 271 }, (_, i) => ({
+      id: `bk-${i + 1}`, revision: `bkr-${i + 1}`, chapterPath: `/bk/6439-ep-${i + 1}`, chapterNumber: String(i + 1), available: true, complete: true,
+    })),
+  };
+  saved = {
+    ...initialJob(),
+    operationId: "18e4f18d-9870-486e-8789-b7021c569ad6",
+    sourceSnapshot: structuredClone(source),
+    chapters: Array.from({ length: 271 }, (_, i) => ({
+      sourceChapterPath: `/nt/${i + 1}`, sourceChapterNumber: String(i + 1),
+      targetChapterPath: `/bk/6439-ep-${i + 1}`, targetChapterNumber: String(i + 1),
+      decision: "copy-source" as const,
+      targetChapter: { name: `Episode ${i + 1}`, position: i + 1, page: "1" },
+    })),
+  };
+  expect(await finalizePendingNovelMigrations(server, "test-device")).toBe(true);
+  expect(copyRequests).toEqual([]);
+  expect(target.chapters).toHaveLength(271);
+  expect(posts).toHaveLength(1);
+  expect(saved.status).toBe("completed");
 });

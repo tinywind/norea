@@ -61,13 +61,16 @@ export function parseChapterTitle(name: string): ChapterTitleIdentity {
     remaining = taken.remaining;
   }
   const taken = takeLabelNumbers(remaining, DISPLAY_NUMBER_PATTERNS);
+  const standalonePrologue = kinds.length === 0 && taken.numbers.length === 0 &&
+    /^(?:[\[\(<「『]?\s*(?:서장|서막|여는\s*글)\s*[\]\)>」』]?)$/u.test(remaining.trim());
+  const effectiveKinds = standalonePrologue ? [["prologue", /./u] as const] : kinds;
   const numericRemainder = taken.remaining.trim().match(/^#?\s*(\d+(?:\.\d+)?)\.?$/u)?.[1];
   const bareNumber = taken.numbers.length === 0 ? numericRemainder : undefined;
   const numbers = bareNumber === undefined ? taken.numbers : [String(Number(bareNumber))];
   uncertain ||= numbers.length > 1;
   const displayNumber = numbers.length === 1 ? numbers[0]! : null;
   uncertain ||= numericRemainder !== undefined && displayNumber !== String(Number(numericRemainder));
-  const scope = JSON.stringify([kinds[0]?.[0] ?? "main", ...scopeNumbers]);
+  const scope = JSON.stringify([effectiveKinds[0]?.[0] ?? "main", ...scopeNumbers]);
   return {
     displayNumber,
     displayKey: displayNumber === null || uncertain ? null : JSON.stringify([scope, displayNumber]),

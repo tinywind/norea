@@ -50,7 +50,7 @@ describe("compiled chapter compositions", () => {
     expect(included[1].sources[0]).toMatchObject({ pluginId: "source-a", novelId: "work-a", chapterPath: "/a/1", chapterNumber: "1" });
     expect(result.composition.entries.filter(row => !row.user.included).flatMap(row => row.sources.map(source => source.chapterPath)).sort()).toEqual(["/a/3", "/b/2"]);
     expect(result.decisions.find(row => row.sourceChapterId === 10003)).toEqual({ sourceChapterId: 10003, kind: "exclude" });
-    expect(result.skipSourceContentChapterIds).toEqual([10002]);
+    expect(result.skipSourceContentChapterIds).toEqual([]);
   });
 
   it("allocates a clean A package even when the paired B chapter is downloaded", () => {
@@ -72,6 +72,31 @@ describe("compiled chapter compositions", () => {
     expect(result.artifactSourceChapterIdByTargetPath).toEqual({});
     expect(result.skipSourceContentChapterIds).toEqual([10001]);
     expect(result.composition.entries[0].sources[result.composition.entries[0].primarySource].pluginId).toBe("source-b");
+  });
+
+  it("never marks undownloaded source chapters as skipped when 0 or 2 of 10 chapters are downloaded locally", async () => {
+    const { createInitialComposition } = await import("../components/novel-merge/merge-composition-editor");
+    const matching = {
+      matched: Array.from({ length: 10 }, (_, idx) => ({ sourceChapterId: 10_001 + idx, targetChapterPath: `/b/${idx + 1}` })),
+      ambiguous: [],
+      unmatchedSourceChapterIds: [],
+    };
+    const targets = Array.from({ length: 10 }, (_, idx) => chapter("b", idx + 1));
+
+    // Case 1: 0 local downloads on Waydroid -> 0 skipped source chapters, 10 clean native target paths
+    const zeroLocalSources = Array.from({ length: 10 }, (_, idx) => chapter("a", idx + 1, false));
+    const zeroInitial = createInitialComposition(zeroLocalSources, targets, matching);
+    const zeroCompiled = compile(zeroInitial, zeroLocalSources, targets);
+    expect(zeroCompiled.skipSourceContentChapterIds).toEqual([]);
+    expect(includedChapterCompositionEntries(zeroCompiled.composition).map(e => e.path)).toEqual(targets.map(t => t.path));
+
+    // Case 2: 2 local downloads + 8 server-only chapters -> 2 local transfers, 0 skipped server-only chapters
+    const twoLocalSources = Array.from({ length: 10 }, (_, idx) => chapter("a", idx + 1, idx < 2));
+    const twoInitial = createInitialComposition(twoLocalSources, targets, matching);
+    const twoCompiled = compile(twoInitial, twoLocalSources, targets);
+    expect(twoCompiled.skipSourceContentChapterIds).toEqual([]);
+    expect(Object.values(twoCompiled.artifactSourceChapterIdByTargetPath)).toEqual([10_001, 10_002]);
+    expect(twoCompiled.decisions.filter(d => d.kind === "map")).toHaveLength(10);
   });
 
   it("rejects duplicated source chapters and destination chapters before storage changes", () => {

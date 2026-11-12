@@ -7,6 +7,11 @@ export interface MigrationWorkIdentity {
   novelPath: string;
 }
 
+export interface ExplicitSourceContentDiscard {
+  approvedByUser: true;
+  expectedSourceInventory: ChapterPayloadInventory;
+}
+
 export interface NovelMigrationChapter {
   sourceChapterPath: string;
   sourceChapterNumber: string | null;
@@ -15,6 +20,10 @@ export interface NovelMigrationChapter {
   decision: "copy-source" | "keep-target" | null;
   /** Retain the reading-state mapping while explicitly discarding the source body. */
   discardSourceContent?: true;
+  /** Required when discarding a stored server chapter so local file absence never deletes server content. */
+  explicitSourceDiscard?: ExplicitSourceContentDiscard;
+  /** Set when a local device body was transferred to B and must be uploaded before retiring A on the server. */
+  requiresTargetUpload?: true;
   expectedTargetInventory?: ChapterPayloadInventory;
   targetChapter?: { name: string; position: number; page: string };
 }
@@ -51,7 +60,11 @@ export interface FinalizeWorkMigrationRequest {
     targetRevision: string;
     decision: "copy-source" | "keep-target";
     expectedTargetInventory?: ChapterPayloadInventory;
-  } | { sourceChapterId: string; decision: "delete-source" })[];
+  } | {
+    sourceChapterId: string;
+    decision: "delete-source";
+    explicitSourceDiscard?: ExplicitSourceContentDiscard;
+  })[];
 }
 
 export interface CopyWorkMigrationChapterRequest {

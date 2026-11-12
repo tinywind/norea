@@ -1276,3 +1276,50 @@ it("propagates a queued sync failure to coalesced callers even when an operation
   await expect(queuedSync).rejects.toThrow("Coalesced sync failed");
   await expect(joinedSync).rejects.toThrow("Coalesced sync failed");
 });
+
+it("does not recreate retired source work after server-side migration recovery and simulated app restart", async () => {
+  const retiredSource = { pluginId: "newtoki-novel", novelId: "58656", novelPath: "/novel/58656" };
+  const recoveredTarget = { pluginId: "bookkor-novel", novelId: "6951", novelPath: "/bookkor/6951" };
+  await recordServerWorkDeletionExclusion("http://localhost:7788", retiredSource);
+
+  // Simulate app restart by resetting in-memory store while keeping persisted cache in `memory`
+  useContentSyncStore.setState({ ...useContentSyncStore.getInitialState(), serverUrl: "http://localhost:7788" });
+
+  // Even if stale local rows or catalog changes arrive after recovery, retired source is never uploaded or recreated
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{
+    chapterId: 501, novelId: 50, pluginId: retiredSource.pluginId, sourceNovelId: retiredSource.novelId,
+    novelPath: retiredSource.novelPath, chapterPath: "/novel/58656/1", chapterNumber: "1", position: 1,
+    novelName: "A-Rank Hunter", chapterName: "Chapter 1", contentType: "html", isDownloaded: true, mediaRepairNeeded: false,
+  }] as never);
+
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation(async (input, init) => {
+    const url = String(input);
+    if (url.includes("/catalog/changes?")) {
+      const after = new URL(url).searchParams.get("after");
+      const entryIdentity = { ...recoveredTarget, chapterPath: "/bookkor/6951-ep-5856724" };
+      return Response.json({
+        items: after === "0" ? [{
+          sequence: 1, id: "recovered-ch-1", revision: "rev-1", deleted: false, complete: true,
+          identity: entryIdentity,
+          manifest: {
+            version: 1,
+            identity: entryIdentity,
+            novel: { name: "A-Rank Hunter" },
+            chapter: { name: "Episode 1 - [Prologue]", chapterNumber: "1", position: 0, contentType: "html" },
+          },
+        }] : [],
+        cursor: 1,
+        hasMore: false,
+      });
+    }
+    return original(input, init);
+  });
+
+  await syncContentServer(true, true);
+
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  const savedCatalog = JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!);
+  expect(savedCatalog.cursor).toBe(1);
+  expect(savedCatalog.tombstones[JSON.stringify(["bookkor-novel", recoveredTarget.novelPath, "/bookkor/6951-ep-5856724"])]).toBeUndefined();
+});

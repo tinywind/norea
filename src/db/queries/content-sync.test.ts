@@ -444,20 +444,36 @@ it.each(["pending", "failed", "blocked", "completed", "inactive"] as const)("hon
   expect(await isNovelMigrationSourceHeldInDb(await getDb(), "http://another", manifest.identity)).toBe(false);
 });
 
-it("keeps reading-state mapping while explicitly discarding the source body for target-primary chapters", async () => {
+it("never converts local skipSourceContentChapterIds into server discardSourceContent and requires explicit inventory-bound discard approval", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(43,'target','new-work','/new-work','Target')");
   sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(11,42,'/chapter','Source','1',1),(21,43,'/new-chapter','Target','9001',1)");
   await recordPendingNovelMergeInDb(await getDb(), {
     serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
     skipSourceContentChapterIds: [11], preparedDownloads: [],
   });
-  expect((await listNovelMigrations("http://server"))[0]!.chapters[0]).toMatchObject({
-    sourceChapterPath: "/chapter", targetChapterPath: "/new-chapter", decision: null, discardSourceContent: true,
+  const preservedJob = (await listNovelMigrations("http://server"))[0]!;
+  expect(preservedJob.chapters[0]).toMatchObject({
+    sourceChapterPath: "/chapter", targetChapterPath: "/new-chapter", decision: "copy-source",
   });
+  expect(preservedJob.chapters[0]!.discardSourceContent).toBeUndefined();
+
   await expect(recordPendingNovelMergeInDb(await getDb(), {
     serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
     skipSourceContentChapterIds: [11], preparedDownloads: [{ sourceChapterId: 11, transferredFromSource: true }],
   })).rejects.toThrow(/without copying/);
+
+  sqlite.exec("DELETE FROM content_sync_cache");
+  const sourceInv = { body: { sha256: "a".repeat(64), bytes: 50 }, expectedAssetKeys: null, storedAssets: [] };
+  await recordPendingNovelMergeInDb(await getDb(), {
+    serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
+    explicitServerDiscardBySourceId: { 11: { approvedByUser: true, expectedSourceInventory: sourceInv } },
+    preparedDownloads: [],
+  });
+  const explicitJob = (await listNovelMigrations("http://server"))[0]!;
+  expect(explicitJob.chapters[0]).toMatchObject({
+    sourceChapterPath: "/chapter", targetChapterPath: "/new-chapter", decision: null, discardSourceContent: true,
+    explicitSourceDiscard: { approvedByUser: true, expectedSourceInventory: sourceInv },
+  });
 });
 
 it("does not resurrect excluded chapters from server catalogs or imported packages", async () => {

@@ -191,15 +191,46 @@ export function buildFinalizeNovelMigrationRequest(
     || chapterDecisions.some(chapter => !chapter.sourceChapterPath || (chapter.targetChapterPath === null ? chapter.targetChapterNumber !== null : !chapter.targetChapterPath))) {
     throw new MigrationReviewRequiredError("The complete migration decisions are invalid. The original server work was retained.");
   }
+  for (const mapping of job.chapters) {
+    if (!mapping.requiresTargetUpload) continue;
+    const destination = targetChapter(mapping, target.chapters);
+    if (!destination?.available || !destination.complete) {
+      throw new MigrationReviewRequiredError("A locally transferred chapter is not complete on the server. Its original server work was retained.");
+    }
+  }
   const mappings: FinalizeWorkMigrationRequest["mappings"] = source.chapters.map(chapter => {
     const mapping = sourceMapping(chapter, job.chapters);
     if (mapping?.discardSourceContent !== undefined) {
       if (mapping.discardSourceContent !== true || mapping.decision !== null || !mapping.targetChapterPath || mapping.expectedTargetInventory !== undefined) {
         throw new MigrationReviewRequiredError("The source-content discard decision is inconsistent. The original server work was retained.");
       }
+      if (chapter.available) {
+        if (mapping.explicitSourceDiscard?.approvedByUser !== true
+          || !isChapterPayloadInventory(mapping.explicitSourceDiscard.expectedSourceInventory)
+          || !mapping.explicitSourceDiscard.expectedSourceInventory.body) {
+          throw new MigrationReviewRequiredError("A stored server chapter cannot be discarded without explicit inventory-bound user approval. The original server work was retained.");
+        }
+        return {
+          sourceChapterId: chapter.id,
+          decision: "delete-source" as const,
+          explicitSourceDiscard: mapping.explicitSourceDiscard,
+        };
+      }
       return { sourceChapterId: chapter.id, decision: "delete-source" as const };
     }
     if (mapping?.targetChapterPath === null && mapping.targetChapterNumber === null && mapping.decision === null) {
+      if (chapter.available) {
+        if (mapping.explicitSourceDiscard?.approvedByUser !== true
+          || !isChapterPayloadInventory(mapping.explicitSourceDiscard.expectedSourceInventory)
+          || !mapping.explicitSourceDiscard.expectedSourceInventory.body) {
+          throw new MigrationReviewRequiredError("An excluded chapter still has stored content on the server. Review or explicitly approve discarding it before removing the original work.");
+        }
+        return {
+          sourceChapterId: chapter.id,
+          decision: "delete-source" as const,
+          explicitSourceDiscard: mapping.explicitSourceDiscard,
+        };
+      }
       return { sourceChapterId: chapter.id, decision: "delete-source" as const };
     }
     if (!mapping?.targetChapterPath || !mapping.decision) {

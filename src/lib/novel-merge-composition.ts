@@ -198,7 +198,9 @@ export function compileNovelMergeComposition(input: {
     for (const source of originalChapters) {
       usedSources.add(source.id);
       decisions.push({ sourceChapterId: source.id, kind: "map", targetChapterPath: path });
-      if (choice.primary === "target") skipSourceContentChapterIds.push(source.id);
+      if (choice.primary === "target" && (source.isDownloaded || source.contentBytes > 0)) {
+        skipSourceContentChapterIds.push(source.id);
+      }
     }
     const downloaded = originalChapters.filter(chapter => chapter.isDownloaded || chapter.contentBytes > 0);
     if (downloaded.length && choice.primary === "source") {
