@@ -122,7 +122,7 @@ it("uploads metadata and cover without any downloaded chapter and skips unchange
   expect(changed).not.toHaveBeenCalled();
   local = []; memory.clear(); revisions.clear(); localCovers.clear();
   await syncWorkMetadata("http://server", "device", false);
-  expect(local[0]?.metadata.chapters).toEqual(chapters);
+  expect(local).toEqual([]);
 });
 
 it("does not upload an old file over the last indexed metadata and names it instead of failing the sync", async () => {
@@ -149,17 +149,9 @@ it("retains populated local fields during a sparse server catalog update", async
   };
   sequence++;
   await syncWorkMetadata("http://server", "device", false);
-  expect(local[0].metadata).toEqual({
-    ...saved, novel: { ...saved.novel, name: "New title" },
-    chapters: { "1": "Opening", "2": "Second" },
-  });
-  expect(saved.novel.name).toBe("Book");
+  expect(local[0].metadata).toEqual(saved);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
   expect(remote.novel.summary).toBeNull();
-
-  remote = { ...remote, novel: { ...remote.novel, summary: "Updated summary", rating: 0 } };
-  sequence++;
-  await syncWorkMetadata("http://server", "device", false);
-  expect(local[0].metadata.novel).toEqual({ ...saved.novel, name: "New title", summary: "Updated summary", rating: 0 });
 });
 
 it("keeps local metadata after server work deletion and restores only on explicit rescan", async () => {
@@ -268,7 +260,7 @@ it("rejects invalid work deletion responses without changing the sync cache", as
   expect(writeContentSyncCache).not.toHaveBeenCalled();
 });
 
-it("advances past an in-flight work record whose cover and work were deleted", async () => {
+it("tracks a remote work without requesting its advertised cover", async () => {
   const id = await contentWorkId(metadata().identity);
   vi.mocked(nativeFetch).mockImplementation(async input => {
     const url = new URL(String(input));
@@ -276,9 +268,10 @@ it("advances past an in-flight work record whose cover and work were deleted", a
     return new Response(null, { status: 404 });
   });
   const { deletedWorks } = await syncWorkMetadata("http://server", "device", true);
-  expect(deletedWorks.has(id)).toBe(true);
+  expect(deletedWorks.has(id)).toBe(false);
+  expect(nativeFetch).toHaveBeenCalledOnce();
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
-  expect(JSON.parse([...memory.values()][0])).toMatchObject({ cursor: 1, deleted: { [id]: true } });
+  expect(JSON.parse([...memory.values()][0])).toMatchObject({ cursor: 1, deleted: {} });
 });
 
 it("does not grant restore permission to active works during a rescan", async () => {
@@ -438,7 +431,7 @@ it("reads authoritative files and covers on an explicit rescan", async () => {
   expect(remoteCover).toEqual(new Uint8Array([9]));
 });
 
-it("does not reread or upload a remotely installed work in the next unchanged sync", async () => {
+it("does not read local files or upload a server-only work in the next unchanged sync", async () => {
   remote = metadata(); remoteCover = new Uint8Array([4, 5, 6]); sequence = 2;
   await syncWorkMetadata("http://server", "device", false);
   vi.mocked(readStoredNovelMetadata).mockClear();
@@ -450,16 +443,16 @@ it("does not reread or upload a remotely installed work in the next unchanged sy
   expect(puts).toBe(0);
 });
 
-it("acknowledges the actual revision when a removed work retains its old sync journal", async () => {
+it("keeps a removed work absent even when its old sync journal remains", async () => {
   remote = metadata(); remoteCover = new Uint8Array([4]); sequence = 2;
   revisions.set("contents/example/book", 40);
   await syncWorkMetadata("http://server", "device", false);
-  expect(revisions.get("contents/example/book")).toBe(41);
+  expect(revisions.get("contents/example/book")).toBe(40);
   await syncWorkMetadata("http://server", "device", true);
   expect(puts).toBe(0);
 });
 
-it("accepts a later server revision after an opened work records its remote installation", async () => {
+it("retains the version explicitly opened when ordinary sync sees a newer server revision", async () => {
   local = [{ directory: "contents/example/book", metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   const opened = metadata("Opened server revision");
@@ -469,7 +462,7 @@ it("accepts a later server revision after an opened work records its remote inst
   });
   remote = metadata("Newest server revision"); sequence++;
   await syncWorkMetadata("http://server", "device", true);
-  expect(local[0].metadata.novel.name).toBe("Newest server revision");
+  expect(local[0].metadata.novel.name).toBe("Opened server revision");
   expect(remote.novel.name).toBe("Newest server revision");
   expect(puts).toBe(1);
 });
@@ -492,48 +485,25 @@ it("cancels a queued work lookup before the active metadata transfer finishes", 
 
 it("retains a cover-only local edit immediately after remote installation", async () => {
   remote = metadata(); remoteCover = new Uint8Array([4]); sequence = 2;
-  const install = vi.mocked(installStoredNovelMetadata).getMockImplementation()!;
-  vi.mocked(installStoredNovelMetadata).mockImplementationOnce(async (...args) => {
-    const stored = await install(...args);
-    if (stored) {
-      localCovers.set(stored.directory, new Uint8Array([9]));
-      revisions.set(stored.directory, (revisions.get(stored.directory) ?? 0) + 1);
-    }
-    return stored;
-  });
-  await syncWorkMetadata("http://server", "device", false);
+  const stored = (await installStoredNovelMetadata(remote, remoteCover))!;
+  await recordInstalledWorkMetadata("http://server", stored, true);
+  localCovers.set(stored.directory, new Uint8Array([9]));
+  revisions.set(stored.directory, stored.syncFile.revision + 1);
   await syncWorkMetadata("http://server", "device", true);
   expect(localCovers.get(local[0].directory)).toEqual(new Uint8Array([9]));
   expect(remoteCover).toEqual(new Uint8Array([9]));
   expect(puts).toBe(1);
 });
 
-it("rejects a changed server selection outside the work installation transaction", async () => {
-  remote = metadata(); sequence = 1;
-  let changed = false;
-  let transactionFailed = false;
-  const install = vi.mocked(installStoredNovelMetadata).getMockImplementation()!;
-  vi.mocked(installStoredNovelMetadata).mockImplementation(async (...args) => {
-    changed = true;
-    try { return await install(...args); }
-    catch (error) { transactionFailed = true; throw error; }
-  });
-  await expect(syncWorkMetadata("http://server", "device", true, () => {
-    if (changed) throw new Error("Content server changed");
-  })).rejects.toThrow("Content server changed");
-  expect(transactionFailed).toBe(false);
-  expect(local).toEqual([]);
-  expect(listStoredNovelMetadata).not.toHaveBeenCalled();
-});
-
-it("installs a server work and cover before any chapter download", async () => {
+it.each([true, false])("keeps server-only works and covers off the device during sync (upload: %s)", async upload => {
   remote = metadata(); remoteCover = new Uint8Array([4, 5, 6]); sequence = 2;
   const changed = vi.fn(); window.addEventListener("norea-content-state-changed", changed);
-  await syncWorkMetadata("http://server", "device", false);
-  expect(local[0].metadata.novel.name).toBe("Book");
-  expect(installStoredNovelMetadata).toHaveBeenCalledWith(remote, remoteCover, expect.any(Function));
-  expect(puts).toBe(0);
-  expect(changed).toHaveBeenCalledTimes(1);
+  await syncWorkMetadata("http://server", "device", upload);
+  expect(local).toEqual([]);
+  expect(localCovers.size).toBe(0);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(vi.mocked(nativeFetch).mock.calls.map(([url]) => new URL(String(url)).pathname)).toEqual(["/api/v1/works"]);
+  expect(changed).not.toHaveBeenCalled();
 });
 
 it("rejects inferred work identities instead of merging folder-name aliases", async () => {
@@ -544,6 +514,7 @@ it("rejects inferred work identities instead of merging folder-name aliases", as
 });
 
 it("preserves a local metadata edit when an older remote update arrives", async () => {
+  local = [{ directory: "contents/example/book", metadata: metadata() }];
   remote = metadata(); sequence = 1;
   await syncWorkMetadata("http://server", "device", true);
   local[0].metadata.novel.name = "Locally edited";
@@ -567,66 +538,16 @@ it("protects a refreshed local document until its newer metadata is uploaded", a
   expect(await canPullWorkMetadata("http://server", await readWorkMetadataSyncFile(local[0].metadata.identity), fingerprint)).toBe(true);
 });
 
-it("keeps an unchanged source refresh that completed during a remote cover download", async () => {
-  const directory = "contents/example/book";
-  local = [{ directory, metadata: metadata() }];
-  await syncWorkMetadata("http://server", "device", true);
-  remote = metadata("Remote edit"); sequence++;
-  const request = vi.mocked(nativeFetch).getMockImplementation()!;
-  vi.mocked(nativeFetch).mockImplementation((input, init) => {
-    if (String(input).endsWith("/cover") && init?.method === "GET") revisions.set(directory, 2);
-    return request(input, init);
-  });
-  await syncWorkMetadata("http://server", "device", false);
-  expect(local[0].metadata.novel.name).toBe("Book");
-  await syncWorkMetadata("http://server", "device", true);
-  expect(remote?.novel.name).toBe("Book");
-  expect(puts).toBe(2);
-});
-
-it("does not advance the cursor or install metadata when its cover download fails", async () => {
+it("continues past an unavailable remote cover without installing a work or acknowledging a local upload", async () => {
   remote = metadata(); remoteCover = new Uint8Array([4]); sequence = 1;
   const request = vi.mocked(nativeFetch).getMockImplementation()!;
   vi.mocked(nativeFetch).mockImplementation((input, init) => String(input).endsWith("/cover") ? Promise.resolve(new Response(null, { status: 503 })) : request(input, init));
-  await expect(syncWorkMetadata("http://server", "device", false)).rejects.toThrow("503");
-  expect(local).toEqual([]);
-  expect([...memory.values()].some(value => JSON.parse(value).cursor > 0)).toBe(false);
-});
-
-it("preserves edits made while the remote cover is downloading", async () => {
-  local = [{ directory: "contents/example/book", metadata: metadata() }];
-  await syncWorkMetadata("http://server", "device", true);
-  remote = metadata("Remote edit"); sequence++;
-  const request = vi.mocked(nativeFetch).getMockImplementation()!;
-  vi.mocked(nativeFetch).mockImplementation(async (input, init) => {
-    if (String(input).endsWith("/cover") && init?.method === "GET") local[0].metadata.novel.name = "Edited during download";
-    return request(input, init);
-  });
   await syncWorkMetadata("http://server", "device", false);
-  expect(local[0].metadata.novel.name).toBe("Edited during download");
+  expect(local).toEqual([]);
+  expect(JSON.parse([...memory.values()][0])).toMatchObject({ cursor: 1, fingerprints: {}, fileVersions: {} });
 });
 
-it("saves each installed baseline before a later item in the page fails", async () => {
-  const first = metadata();
-  const second = metadata("Second"); second.identity.novelPath = "/second"; second.identity.novelId = "second";
-  const firstId = await contentWorkId(first.identity);
-  vi.mocked(nativeFetch).mockImplementation(async input => {
-    const url = String(input);
-    if (url.endsWith(`/works/${firstId}/cover`)) return new Response(new Uint8Array([1, 2, 3]));
-    if (url.endsWith("/cover")) return new Response(null, { status: 503 });
-    return Response.json({ items: [
-      { id: firstId, sequence: 1, metadata: first, hasCover: true },
-      { id: await contentWorkId(second.identity), sequence: 2, metadata: second, hasCover: true },
-    ], cursor: 2, hasMore: false });
-  });
-  await expect(syncWorkMetadata("http://server", "device", false)).rejects.toThrow("503");
-  const saved = JSON.parse([...memory.values()][0]);
-  expect(saved.cursor).toBe(0);
-  expect(saved.fingerprints[firstId]).toEqual(expect.any(String));
-  expect(local[0].metadata).toEqual(first);
-});
-
-it("uses the local file index and checkpoints a work page instead of every installed work", async () => {
+it("uses the local file index and checkpoints a work page without installing remote works", async () => {
   const entries = await Promise.all(Array.from({ length: 100 }, async (_, index) => {
     const value = metadata(`Book ${index}`); value.identity.novelPath = `/book-${index}`; value.identity.novelId = `book-${index}`;
     return { id: await contentWorkId(value.identity), sequence: index + 1, metadata: value, hasCover: false };
@@ -634,14 +555,14 @@ it("uses the local file index and checkpoints a work page instead of every insta
   vi.mocked(nativeFetch).mockResolvedValue(Response.json({ items: entries, cursor: 100, hasMore: false }));
   await syncWorkMetadata("http://server", "device", false);
   expect(listStoredNovelMetadata).not.toHaveBeenCalled();
-  expect(installStoredNovelMetadata).toHaveBeenCalledTimes(100);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
   expect(writeContentSyncCache).toHaveBeenCalledTimes(1);
   const saved = JSON.parse([...memory.values()][0]);
   expect(Object.keys(saved).sort()).toEqual(["cursor", "deleted", "fileVersions", "fingerprints"]);
-  expect(Object.keys(saved.fingerprints)).toHaveLength(100);
+  expect(saved.fingerprints).toEqual({});
 });
 
-it.each([false, true])("installs only the latest metadata and cover revision of each work (separate pages: %s)", async (separatePages) => {
+it.each([false, true])("advances past repeated remote revisions without installing files (separate pages: %s)", async (separatePages) => {
   const first = metadata();
   const latest = metadata("Latest revision");
   const id = await contentWorkId(first.identity);
@@ -660,11 +581,9 @@ it.each([false, true])("installs only the latest metadata and cover revision of 
     return Response.json({ items, cursor, hasMore: cursor < 3 });
   });
   await syncWorkMetadata("http://server", "device", false);
-  expect(local).toHaveLength(1);
-  expect(local[0].metadata).toEqual(latest);
-  expect(localCovers.get(local[0].directory)).toEqual(cover);
-  expect(installStoredNovelMetadata).toHaveBeenCalledOnce();
-  expect(vi.mocked(nativeFetch).mock.calls.filter(([input]) => String(input).endsWith("/cover"))).toHaveLength(1);
+  expect(local).toEqual([]);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(vi.mocked(nativeFetch).mock.calls.some(([input]) => String(input).endsWith("/cover"))).toBe(false);
   expect(listStoredNovelMetadata).not.toHaveBeenCalled();
   expect(JSON.parse([...memory.values()][0]).cursor).toBe(3);
   await syncWorkMetadata("http://server", "device", true);
@@ -691,12 +610,11 @@ it.each([false, true])("does not replay an old missing-cover revision over an ac
     return Response.json({ items, cursor, hasMore: cursor < 3 });
   });
   await syncWorkMetadata("http://server", "device", false);
-  expect(local[0].metadata).toEqual(latest);
-  expect(installStoredNovelMetadata).toHaveBeenCalledOnce();
-  expect(vi.mocked(nativeFetch).mock.calls.filter(([input]) => String(input).endsWith("/cover"))).toHaveLength(1);
-  expect(Object.keys(JSON.parse([...memory.values()][0]).fileVersions)).toHaveLength(1);
+  expect(local[0].metadata).toEqual(metadata());
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(vi.mocked(nativeFetch).mock.calls.some(([input]) => String(input).endsWith("/cover"))).toBe(false);
   expect(await canPullWorkMetadata("http://server", await readWorkMetadataSyncFile(latest.identity),
-    await workMetadataFingerprint(latest, new Uint8Array([1, 2, 3])))).toBe(true);
+    await workMetadataFingerprint(metadata(), new Uint8Array([1, 2, 3])))).toBe(true);
   await syncWorkMetadata("http://server", "device", true);
   expect(vi.mocked(nativeFetch).mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
 });
@@ -721,40 +639,21 @@ it("retains a source refresh completed while later history pages are loading", a
   expect(JSON.parse([...memory.values()][0]).cursor).toBe(2);
 });
 
-it("keeps the previous cursor after an installation fails across gathered pages and retries unfinished works", async () => {
+it("retries a failed second catalog page without advancing the cursor or installing the first page", async () => {
   const first = metadata();
-  const second = metadata("Second"); second.identity.novelPath = "/second"; second.identity.novelId = "second";
-  const firstId = await contentWorkId(first.identity);
-  const secondId = await contentWorkId(second.identity);
-  const entries = [
-    { id: firstId, sequence: 1, metadata: first, hasCover: true },
-    { id: secondId, sequence: 2, metadata: second, hasCover: true },
-  ];
-  let failSecondCover = true;
+  const id = await contentWorkId(first.identity);
+  let fail = true;
   vi.mocked(nativeFetch).mockImplementation(async input => {
-    const url = new URL(String(input));
-    if (url.pathname.endsWith("/cover")) {
-      return failSecondCover && url.pathname.includes(secondId)
-        ? new Response(null, { status: 503 }) : new Response(new Uint8Array([1, 2, 3]));
-    }
-    const after = Number(url.searchParams.get("after"));
-    const items = entries.filter(entry => entry.sequence > after).slice(0, 1);
-    const cursor = items.at(-1)?.sequence ?? after;
-    return Response.json({ items, cursor, hasMore: cursor < 2 });
+    const after = Number(new URL(String(input)).searchParams.get("after"));
+    if (!after) return Response.json({ items: [{ id, sequence: 1, metadata: first, hasCover: true }], cursor: 1, hasMore: true });
+    return fail ? new Response(null, { status: 503 }) : Response.json({ items: [], cursor: 2, hasMore: false });
   });
   await expect(syncWorkMetadata("http://server", "device", false)).rejects.toThrow("503");
-  expect(local).toHaveLength(1);
-  const incomplete = JSON.parse([...memory.values()][0]);
-  expect(incomplete.cursor).toBe(0);
-  expect(incomplete.fingerprints[firstId]).toEqual(expect.any(String));
-  expect(incomplete.fileVersions[JSON.stringify([first.identity.pluginId, first.identity.novelPath])]).toEqual(expect.any(String));
-
-  failSecondCover = false;
-  vi.mocked(installStoredNovelMetadata).mockClear();
+  expect(writeContentSyncCache).not.toHaveBeenCalled();
+  fail = false;
   await syncWorkMetadata("http://server", "device", false);
-  expect(local).toHaveLength(2);
-  expect(installStoredNovelMetadata).toHaveBeenCalledExactlyOnceWith(second, new Uint8Array([1, 2, 3]), expect.any(Function));
   expect(JSON.parse([...memory.values()][0]).cursor).toBe(2);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
 });
 
 it("does not install gathered history or advance the cursor after cancellation between pages", async () => {
@@ -811,6 +710,8 @@ it("shares the work metadata cache across trailing-slash server URLs and preserv
   expect([...memory.keys()]).toEqual(["norea-content-works:http://server"]);
   expect(remote?.novel.name).toBe("Edited locally");
   expect(remote?.chapters).toEqual({ "1": "Local one", "2": "Server two" });
-  expect(local[0]!.metadata.chapters).toEqual({ "1": "Local one", "2": "Server two" });
-  expect(localCovers.get(directory)).toEqual(new Uint8Array([9, 9]));
+  expect(local[0]!.metadata.chapters).toEqual({ "1": "Local one" });
+  expect(localCovers.get(directory)).toBeNull();
+  expect(remote?.cover).toEqual(metadata().cover);
+  expect(remoteCover).toEqual(new Uint8Array([9, 9]));
 });

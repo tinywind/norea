@@ -27,6 +27,7 @@ interface MappingSnapshot {
 
 export interface IncomingChapterNumberReconciliation {
   previousMetadata: NovelMetadataV1;
+  renumberedLocalMetadata: NovelMetadataV1;
   install: (
     metadata: NovelMetadataV1,
     cover: Uint8Array | undefined,
@@ -118,6 +119,10 @@ export async function prepareIncomingChapterNumberReconciliation(
   const chapters = { ...current.chapters };
   for (const mapping of proof.mappings) delete chapters[mapping.from];
   const previousMetadata = { ...current, chapters };
+  const renumberedChapters = { ...chapters };
+  for (const mapping of proof.mappings) {
+    if (Object.hasOwn(current.chapters, mapping.from)) renumberedChapters[mapping.to] = current.chapters[mapping.from]!;
+  }
   const isCurrent = () => {
     try { assertCurrent(); return true; }
     catch { return false; }
@@ -125,6 +130,7 @@ export async function prepareIncomingChapterNumberReconciliation(
 
   return {
     previousMetadata,
+    renumberedLocalMetadata: { ...current, chapters: renumberedChapters },
     install: async (metadata, cover, beforeInstall) => {
       const coverWrite = cover && metadata.cover ? {
         fileName: metadata.cover.fileName,

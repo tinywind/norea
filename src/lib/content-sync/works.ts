@@ -4,7 +4,7 @@ import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { isNovelMigrationSourceHeldInDb, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint, type WorkMetadataSyncFile } from "../../db/work-metadata";
-import { installStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type InstalledNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
+import { parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type InstalledNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest, ContentServerError, normalizeContentServerUrl } from "./client";
 import { readServerWorkDeletionExclusions, recordServerWorkDeletionExclusion, serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 
@@ -100,20 +100,13 @@ export async function recordInstalledWorkMetadata(server: string, stored: Instal
   await saveCache(server, cache);
 }
 
-async function coverRequest(server: string, id: string, token: string, body?: Uint8Array, contentType?: string | null): Promise<Uint8Array | null> {
-  if (body && body.byteLength > MAX_COVER_BYTES) throw new Error("Work cover exceeds the 10 MiB limit.");
+async function uploadWorkCover(server: string, id: string, token: string, body: Uint8Array, contentType?: string | null): Promise<void> {
+  if (body.byteLength > MAX_COVER_BYTES) throw new Error("Work cover exceeds the 10 MiB limit.");
   const response = await nativeFetch(`${normalizeContentServerUrl(server)}/api/v1/works/${encodeURIComponent(id)}/cover`, {
-    method: body ? "PUT" : "GET",
-    headers: { Authorization: `Bearer ${token}`, ...(body ? { "Content-Type": contentType || "application/octet-stream" } : {}) },
-    ...(body ? { body: Uint8Array.from(body).buffer } : {}),
-    maxRedirections: 0, connectTimeout: 10_000, signal: AbortSignal.timeout(30_000),
+    method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": contentType || "application/octet-stream" },
+    body: Uint8Array.from(body).buffer, maxRedirections: 0, connectTimeout: 10_000, signal: AbortSignal.timeout(30_000),
   });
   if (!response.ok) throw new ContentServerError(response.status);
-  if (body) return null;
-  if (Number(response.headers.get("content-length")) > MAX_COVER_BYTES) throw new Error("Work cover exceeds the 10 MiB limit.");
-  const bytes = new Uint8Array(await response.arrayBuffer());
-  if (!bytes.length || bytes.length > MAX_COVER_BYTES) throw new Error("Work cover is empty or exceeds the 10 MiB limit.");
-  return bytes;
 }
 
 export interface WorkMetadataSyncResult {
@@ -194,43 +187,15 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       }
       delete cache.deleted[entry.id];
       const file = byIdentity.get(identity);
-      const current = file ? await readStoredNovelMetadata(file.directory) : null;
-      let expectedFingerprint: string | null = null;
-      if (current) {
-        expectedFingerprint = await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata));
-        if (!file || !matchesSyncedWork(cache, entry.id, file, expectedFingerprint)) continue;
-      }
-      const reconciliation = current && Object.keys(current.metadata.chapters).some(number => !Object.hasOwn(metadata.chapters, number))
-        ? await (await import("./incoming-chapter-number-reconciliation")).prepareIncomingChapterNumberReconciliation(server, token, entry, current.metadata, assertCurrent)
-        : undefined;
-      let cover: Uint8Array | null;
-      try { cover = entry.hasCover ? await coverRequest(server, entry.id, token) : null; }
-      catch (error) {
-        if (explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) continue;
-        if (error instanceof ContentServerError && error.status === 404) {
-          try { await contentServerRequest<WorkCatalogEntry>(server, `/works/${entry.id}`, token); }
-          catch (currentError) {
-            if (currentError instanceof ContentServerError && currentError.status === 404) {
-              cache.deleted[entry.id] = true;
-              delete cache.fingerprints[entry.id]; delete cache.fileVersions[identity];
-              continue;
-            }
-            throw currentError;
-          }
-        }
-        throw error;
-      }
-      await waitForServerWorkDeletion(server, entry.id);
-      if (explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) continue;
-      const installedMetadata = mergeIncomingNovelMetadata(reconciliation?.previousMetadata ?? current?.metadata, metadata);
-      assertCurrent();
-      const incomingFingerprint = await workMetadataFingerprint(installedMetadata, cover);
-      if (incomingFingerprint === expectedFingerprint) {
-        if (file) cache.fileVersions[identity] = workMetadataFileVersion(file)!;
-        continue;
-      }
-      const install = reconciliation?.install ?? installStoredNovelMetadata;
-      const stored = await install(installedMetadata, cover ?? undefined, async (latest, db) => {
+      if (!file || cache.fileVersions[identity] !== workMetadataFileVersion(file) ||
+          file.fingerprint === await storedNovelMetadataFingerprint(metadata)) continue;
+      const current = await readStoredNovelMetadata(file.directory);
+      if (!current || !Object.keys(current.metadata.chapters).some(number => !Object.hasOwn(metadata.chapters, number))) continue;
+      const expectedFingerprint = await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata));
+      if (!matchesSyncedWork(cache, entry.id, file, expectedFingerprint)) continue;
+      const reconciliation = await (await import("./incoming-chapter-number-reconciliation")).prepareIncomingChapterNumberReconciliation(server, token, entry, current.metadata, assertCurrent);
+      if (!reconciliation) continue;
+      const stored = await reconciliation.install(reconciliation.renumberedLocalMetadata, undefined, async (latest, db) => {
         if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) return false;
         if (!isCurrent() || explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) return false;
         const latestFingerprint = latest ? await workMetadataFingerprint(latest.metadata, await readStoredNovelCover(latest.directory, latest.metadata)) : null;
@@ -271,18 +236,19 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       assertCurrent();
       await waitForServerWorkDeletion(server, id);
       if (explicitDeletions.has(file.directory)) continue;
-      let savedEntry: WorkCatalogEntry | null = null;
       let uploadMetadata = metadata;
       const seenEntry = latestById.get(id);
       if (seenEntry && !seenEntry.deleted) {
-        uploadMetadata = mergeIncomingNovelMetadata(parseNovelMetadata(seenEntry.metadata), metadata);
+        const serverMetadata = parseNovelMetadata(seenEntry.metadata);
+        uploadMetadata = mergeIncomingNovelMetadata(serverMetadata, metadata);
+        if (!cover && seenEntry.hasCover) uploadMetadata.cover = serverMetadata.cover;
       }
       try {
-        savedEntry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}${rescan && cache.deleted[id] ? "?restore=true" : ""}`, token, "PUT", uploadMetadata);
+        await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}${rescan && cache.deleted[id] ? "?restore=true" : ""}`, token, "PUT", uploadMetadata);
         assertCurrent();
         await waitForServerWorkDeletion(server, id);
         if (explicitDeletions.has(file.directory)) continue;
-        if (cover) await coverRequest(server, id, token, cover, uploadMetadata.cover?.contentType);
+        if (cover) await uploadWorkCover(server, id, token, cover, uploadMetadata.cover?.contentType);
       } catch (error) {
         await waitForServerWorkDeletion(server, id);
         if (explicitDeletions.has(file.directory) || (error instanceof ContentServerError && error.status === 410)) { cache.deleted[id] = true; dirty = true; continue; }
@@ -291,45 +257,6 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       assertCurrent();
       await waitForServerWorkDeletion(server, id);
       if (explicitDeletions.has(file.directory)) continue;
-      const hasServerCover = Boolean(cover || savedEntry?.hasCover || seenEntry?.hasCover);
-      let finalCover = cover;
-      if (!finalCover && (savedEntry?.hasCover || seenEntry?.hasCover)) {
-        try { finalCover = await coverRequest(server, id, token); }
-        catch (error) {
-          if (!(error instanceof ContentServerError && error.status === 404)) throw error;
-        }
-        assertCurrent();
-        await waitForServerWorkDeletion(server, id);
-        if (explicitDeletions.has(file.directory)) continue;
-      }
-      const savedMetadata = savedEntry && typeof savedEntry === "object" && "metadata" in savedEntry && savedEntry.metadata
-        ? parseNovelMetadata(savedEntry.metadata)
-        : uploadMetadata;
-      const finalMetadata: NovelMetadataV1 = {
-        ...savedMetadata,
-        cover: cover ? metadata.cover : (finalCover ? savedMetadata.cover : null),
-      };
-      const finalFingerprint = await workMetadataFingerprint(finalMetadata, finalCover);
-      if (finalFingerprint !== current) {
-        const stored = await installStoredNovelMetadata(finalMetadata, finalCover ?? undefined, async (latestLocal, db) => {
-          if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) return false;
-          if (!isCurrent() || explicitDeletions.has(file.directory)) return false;
-          const latestFingerprint = latestLocal ? await workMetadataFingerprint(latestLocal.metadata, await readStoredNovelCover(latestLocal.directory, latestLocal.metadata)) : null;
-          if (!isCurrent() || latestFingerprint !== current) return false;
-          const latestFile = await readWorkMetadataSyncFile(metadata.identity, db);
-          if (!isCurrent() || explicitDeletions.has(file.directory) || workMetadataFileVersion(latestFile) !== version) return false;
-        });
-        assertCurrent();
-        delete cache.deleted[id];
-        dirty = true;
-        if (stored) {
-          byIdentity.set(identity, stored.syncFile);
-          await rememberInstalledWork(cache, stored, hasServerCover);
-          installed = true;
-        }
-        if (++uploaded % 25 === 0) await checkpoint();
-        continue;
-      }
       cache.fingerprints[id] = current;
       delete cache.deleted[id];
       cache.fileVersions[identity] = version;

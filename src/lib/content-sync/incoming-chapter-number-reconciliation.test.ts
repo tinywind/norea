@@ -248,20 +248,20 @@ describe("production incoming metadata paths", () => {
     expect(state.metadata.get(coverPath)).toEqual(oldCover);
   });
 
-  it("keeps an ordinary partial catalog merge when the server explicitly has no mappings", async () => {
+  it("keeps the local catalog when there are no server number mappings", async () => {
     mappings = [];
     remote.metadata.chapters = { "1000": "First", "4000": "Fourth" };
     await pull();
-    expect(metadata().chapters).toEqual({ ...originalCatalog, "4000": "Fourth" });
+    expect(metadata().chapters).toEqual(originalCatalog);
     expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();
     expect(state.payloads.has(directory + "/1000")).toBe(true);
   });
 
-  it.each([null, {}])("retains the ordinary partial-catalog behavior of a legacy server (%j)", async value => {
+  it.each([null, {}])("retains local chapter names with a legacy server (%j)", async value => {
     capabilities = value;
     remote.metadata.chapters = { "1000": "First", "4000": "Fourth" };
     await pull();
-    expect(metadata().chapters).toEqual({ ...originalCatalog, "4000": "Fourth" });
+    expect(metadata().chapters).toEqual(originalCatalog);
     expect(proofReads).toBe(0);
     expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();
   });
@@ -269,7 +269,7 @@ describe("production incoming metadata paths", () => {
   it("requires no proof request for an ordinary addition", async () => {
     remote.metadata.chapters = { ...originalCatalog, "4000": "Fourth" };
     await pull();
-    expect(metadata().chapters).toEqual(remote.metadata.chapters);
+    expect(metadata().chapters).toEqual(originalCatalog);
     expect(nativeFetch).not.toHaveBeenCalledWith(expect.stringContaining("/capabilities"), expect.anything());
   });
 
@@ -314,7 +314,7 @@ describe("production incoming metadata paths", () => {
     await pull();
     expectCanonical(before);
     expect(prepareChapterStorageTransfer).toHaveBeenCalledOnce();
-    expect(metadata().novel.name).toBe("Updated title");
+    expect(metadata().novel.name).not.toBe("Updated title");
   });
 
   it("preserves all source and target files when a destination is occupied", async () => {
@@ -338,7 +338,7 @@ describe("production incoming metadata paths", () => {
   it("restores the previous cover, metadata and numbers after a failed DB commit", async () => {
     serverCover = [...nextCover]; state.failCommit = true;
     const before = personalState();
-    await expect(pull()).rejects.toThrow("SQLite commit failure");
+    await expect(syncServerNovelOnOpen(7)).rejects.toThrow("SQLite commit failure");
     expect(personalState()).toEqual(before);
     expect(state.metadata.get(coverPath)).toEqual(oldCover);
     expect(metadata().chapters).toEqual(originalCatalog);
@@ -348,7 +348,7 @@ describe("production incoming metadata paths", () => {
 
   it("does not overwrite unrelated cover bytes during the ordinary exception rollback", async () => {
     serverCover = [...nextCover]; state.failCommit = true; state.replaceCoverBeforeCommit = true;
-    await expect(pull()).rejects.toThrow();
+    await expect(syncServerNovelOnOpen(7)).rejects.toThrow();
     expect(state.metadata.get(coverPath)).toEqual([99, 99, 99]);
     expect(journals()).toHaveLength(1);
     expect(state.payloads.has(directory + "/1000")).toBe(true);
@@ -360,14 +360,14 @@ describe("production incoming metadata paths", () => {
     serverCover = [...nextCover];
     const before = personalState();
     vi.mocked(finalizeChapterStorageTransfer).mockRejectedValueOnce(new Error("Storage disconnected"));
-    await expect(pull()).rejects.toThrow("Storage disconnected");
+    await expect(syncServerNovelOnOpen(7)).rejects.toThrow("Storage disconnected");
     expect(journals()).toHaveLength(1);
     expect(state.metadata.get(coverPath)).toEqual(nextCover);
     await expect(scanStoredNovelChaptersToCache(db, 7, directory, { chapters: [], downloadRevision: 0 })).rejects.toThrow("reconciliation is pending");
     await recoverSourceChapterRenumbersInDb(db);
     await recoverSourceChapterRenumbersInDb(db);
     expectCanonical(before);
-    await pull();
+    await syncServerNovelOnOpen(7);
     expect(prepareChapterStorageTransfer).toHaveBeenCalledOnce();
   });
 
