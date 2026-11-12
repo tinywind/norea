@@ -738,12 +738,12 @@ pub async fn chapter_storage_remove_dir(
 fn chapter_storage_remove_dir_sync(app: AppHandle, relative_dir: String) -> Result<(), String> {
     let media_root = media_root(&app)?;
     let relative_dir = safe_chapter_storage_removal_relative_dir(&relative_dir)?;
-    if storage_metadata(&media_root, "chapter media: inspect storage root")?.is_none() {
-        return Ok(());
+    let path = media_root.join(&relative_dir);
+    if storage_metadata(&media_root, "chapter media: inspect storage root")?.is_some() {
+        validate_storage_path_ancestors(&media_root, &relative_dir)?;
+        remove_transfer_path(&path, "chapter media: remove chapter storage dir")?;
     }
-    validate_storage_path_ancestors(&media_root, &relative_dir)?;
-    let path = media_root.join(relative_dir);
-    remove_transfer_path(&path, "chapter media: remove chapter storage dir")
+    super::work_metadata::forget_chapter_directories_under(&path)
 }
 
 #[tauri::command]

@@ -14,6 +14,12 @@ pub(super) fn registered_chapter_directory(root: &Path, chapter_id: i64) -> Opti
     CHAPTER_DIRECTORIES.lock().ok()?.get(&(root.to_path_buf(), chapter_id)).cloned()
 }
 
+pub(super) fn forget_chapter_directories_under(path: &Path) -> Result<(), String> {
+    let mut directories = CHAPTER_DIRECTORIES.lock().map_err(|_| "work metadata: path registry unavailable")?;
+    directories.retain(|_, directory| !directory.starts_with(path));
+    Ok(())
+}
+
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkMetadataOperation {
@@ -374,4 +380,18 @@ mod tests {
         let directory = super::super::paths::content_chapter_dir_at(root.path(), "source", 7, Some("book"), Some("Renamed"), 42, Some("1"), Some("Opening"), Some(1)).unwrap();
         assert_eq!(directory, root.path().join("contents/source/Original/1"));
     }
+    #[test]
+    fn forgets_only_chapter_registrations_under_the_removed_work() {
+        let root = fixture();
+        operate(root.path(), WorkMetadataOperation { operation: "register".into(), path: None, body: None, reset: None, skip_chapter_directories: None,
+            chapter_directories: Some(HashMap::from([
+                ("42".into(), "contents/source/Original/1".into()),
+                ("43".into(), "contents/source/Original-other/1".into()),
+            ])) }).unwrap();
+        forget_chapter_directories_under(&root.path().join("contents/source/Original")).unwrap();
+        assert!(registered_chapter_directory(root.path(), 42).is_none());
+        assert_eq!(registered_chapter_directory(root.path(), 43), Some(root.path().join("contents/source/Original-other/1")));
+        forget_chapter_directories_under(&root.path().join("contents/source/Original")).unwrap();
+    }
+
 }
