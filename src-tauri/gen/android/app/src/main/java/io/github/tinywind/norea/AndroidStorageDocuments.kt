@@ -105,6 +105,8 @@ internal class AndroidStorageDirectReadPolicy(
   }
 }
 
+internal const val ANDROID_ALL_FILES_ACCESS_REQUIRED = "All files access is required to use the storage folder."
+
 internal class AndroidStorageDocuments(private val context: Context) {
   data class StorageChildDocument(
     val name: String,
@@ -123,24 +125,21 @@ internal class AndroidStorageDocuments(private val context: Context) {
     Log.w(TAG, "Android storage denies direct file reads; using the document provider until restart. root=$rootUri error=$error")
   }
 
+  /**
+   * The storage folder as plain files. On Android 11 and later Norea uses it only with All files
+   * access: going through the document provider costs one provider query per lookup, which made
+   * merges, their recovery and deletions take minutes. Older devices keep the document tree.
+   */
   fun storageRoot(rootUri: String): DocumentFile {
     val root = Uri.parse(rootUri)
-    val treeId = runCatching { DocumentsContract.getTreeDocumentId(root) }.getOrNull()
-    val hasPersistedAccess = contentResolver.persistedUriPermissions.any { permission ->
-      permission.uri == root && permission.isReadPermission && permission.isWritePermission
-    }
-    if (
-      Build.VERSION.SDK_INT >= Build.VERSION_CODES.R &&
-      Environment.isExternalStorageManager() &&
-      hasPersistedAccess &&
-      root.authority == "com.android.externalstorage.documents" &&
-      treeId?.substringBefore(':') == "primary"
-    ) {
-      externalStorageFile(rootUri, "")
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
+      check(Environment.isExternalStorageManager()) { ANDROID_ALL_FILES_ACCESS_REQUIRED }
+      require(root.authority == EXTERNAL_STORAGE_DOCUMENTS_AUTHORITY) { "Android storage folder must be on device storage." }
+      val directory = externalStorageFile(rootUri, "")
         ?.takeIf { it.isDirectory && it.canRead() && it.canWrite() }
-        ?.let { return DocumentFile.fromFile(it) }
+        ?: throw IllegalArgumentException("Android storage folder is unavailable.")
+      return DocumentFile.fromFile(directory)
     }
-
     return DocumentFile.fromTreeUri(context, root)
       ?: throw IllegalArgumentException("Android storage folder is unavailable.")
   }

@@ -5,6 +5,7 @@ import {
   getChapterMediaStorageRoot,
   selectChapterMediaStorageRoot,
 } from "../../lib/chapter-media-storage";
+import { androidAllFilesAccessGranted, AndroidAllFilesAccessRequiredError, ensureAndroidAllFilesAccess } from "../../lib/android-all-files-access";
 import { describeError } from "../../lib/errors";
 import { pluginManager } from "../../lib/plugins/manager";
 import { isAndroidRuntime, isTauriRuntime } from "../../lib/tauri-runtime";
@@ -18,6 +19,8 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
   const [storageReady, setStorageReady] = useState(!isTauriRuntime());
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  // A folder chosen before All files access was required still needs the permission, not a new folder.
+  const [rootNeedsAccess, setRootNeedsAccess] = useState(false);
 
   useEffect(() => {
     if (!isTauriRuntime()) return;
@@ -27,7 +30,10 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
       .then((root) => {
         if (cancelled) return;
         if (isAndroidRuntime()) {
-          setStorageReady(root?.trim().startsWith("content://") === true);
+          const hasRoot = root?.trim().startsWith("content://") === true;
+          const needsAccess = hasRoot && androidAllFilesAccessGranted() === false;
+          setRootNeedsAccess(needsAccess);
+          setStorageReady(hasRoot && !needsAccess);
           return;
         }
         setStorageReady(root !== null && root.trim() !== "");
@@ -61,6 +67,12 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
     setBusy(true);
     setError(null);
     try {
+      if (rootNeedsAccess) {
+        if (!(await ensureAndroidAllFilesAccess())) throw new AndroidAllFilesAccessRequiredError();
+        setRootNeedsAccess(false);
+        setStorageReady(true);
+        return;
+      }
       const root = await selectChapterMediaStorageRoot();
       if (root) {
         setStorageReady(true);
@@ -94,7 +106,9 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
               </Text>
               {isAndroidRuntime() ? (
                 <Text className="norea-storage-setup-hint">
-                  {translate(appLocale, "storageSetup.androidPickerHint")}
+                  {translate(appLocale, rootNeedsAccess
+                    ? "settings.data.mediaStorage.allFiles.required"
+                    : "storageSetup.androidPickerHint")}
                 </Text>
               ) : null}
             </Stack>
@@ -111,9 +125,11 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
             >
               {translate(
                 appLocale,
-                isAndroidRuntime()
-                  ? "storageSetup.selectExternalFolder"
-                  : "storageSetup.selectFolder",
+                rootNeedsAccess
+                  ? "settings.data.mediaStorage.allFiles.request"
+                  : isAndroidRuntime()
+                    ? "storageSetup.selectExternalFolder"
+                    : "storageSetup.selectFolder",
               )}
             </Button>
           </Stack>

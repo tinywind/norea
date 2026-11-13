@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { AndroidAllFilesAccessRequiredError, ensureAndroidAllFilesAccess } from "./android-all-files-access";
 import {
   base64ToBytes,
   bytesToBase64,
@@ -520,6 +521,7 @@ async function runAndroidChapterStorageTransfer(
 }
 
 export async function selectAndroidStorageRoot(): Promise<string | null> {
+  if (!(await ensureAndroidAllFilesAccess())) throw new AndroidAllFilesAccessRequiredError();
   ensurePickResolver();
   const requestId = makeRequestId();
   const payload = await new Promise<AndroidStoragePickPayload>((resolve) => {
