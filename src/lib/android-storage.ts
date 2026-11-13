@@ -134,6 +134,11 @@ interface AndroidStorageBridge {
     fileName: string,
     keep: number,
   ) => void;
+  resetWorkStorageDirectory: (
+    requestId: string,
+    rootUri: string,
+    relativeDir: string,
+  ) => void;
   removeChapterStorageDirectory: (
     requestId: string,
     rootUri: string,
@@ -1014,6 +1019,19 @@ export async function removeAndroidChapterStorageDirectory(
 ): Promise<void> {
   await runAndroidChapterStorageTransfer((requestId, root) => {
     androidStorageBridge().removeChapterStorageDirectory(
+      requestId,
+      root,
+      relativeDir,
+    );
+  });
+}
+
+/** Deletes a work folder's downloads in one request and keeps its novel.json and cover. */
+export async function resetAndroidWorkStorageDirectory(
+  relativeDir: string,
+): Promise<void> {
+  await runAndroidChapterStorageTransfer((requestId, root) => {
+    androidStorageBridge().resetWorkStorageDirectory(
       requestId,
       root,
       relativeDir,

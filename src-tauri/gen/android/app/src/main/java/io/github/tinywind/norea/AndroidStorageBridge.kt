@@ -386,6 +386,21 @@ internal class AndroidStorageBridge(
   }
 
   @JavascriptInterface
+  fun resetWorkStorageDirectory(
+    requestId: String,
+    rootUri: String,
+    relativeDir: String,
+  ) {
+    storageExecutors.foreground.execute {
+      val response = storageResponse {
+        chapterTransfer.resetWorkStorageDirectory(rootUri, relativeDir, storage.workResetBackupRoot())
+        JSONObject().put("ok", true)
+      }
+      resolveChapterStorageTransfer(requestId, response)
+    }
+  }
+
+  @JavascriptInterface
   fun listChapterStorageDirs(
     rootUri: String,
     preferredChapterDir: String,

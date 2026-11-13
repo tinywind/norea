@@ -4,6 +4,7 @@ import android.content.ContentResolver
 import android.provider.DocumentsContract
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
+import java.security.MessageDigest
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -81,6 +82,8 @@ internal fun androidChapterStorageTransferSiblingName(
 internal fun androidChapterStorageTransferMarkerName(token: String): String =
   ".norea-transfer-${validateAndroidChapterStorageTransferToken(token)}"
 
+
+private const val WORK_RESET_COMPLETE = ".complete"
 
 internal class AndroidChapterStorageTransfer(
   private val contentResolver: ContentResolver,
@@ -801,6 +804,55 @@ internal class AndroidChapterStorageTransfer(
       if (prepared.outcome == "copiedSource" || prepared.outcome == "movedSource") {
         rollbackChapterStorageEntry(rootUri, prepared.entry, preparation.token)
       }
+    }
+  }
+
+  /**
+   * Deletes a work folder's downloads with one provider request instead of one per chapter. The work
+   * metadata and cover are copied to an app-private backup, the folder is deleted, and both files are
+   * written back into a new folder. A complete backup left by an interrupted reset is restored first.
+   */
+  fun resetWorkStorageDirectory(rootUri: String, relativeDir: String, backupRoot: File) {
+    val segments = validateAndroidContentStorageRelativeDir(relativeDir, setOf(3))
+    val normalized = segments.joinToString("/")
+    val backupName = MessageDigest.getInstance("SHA-256").digest(normalized.toByteArray(Charsets.UTF_8))
+      .joinToString("") { "%02x".format(it) }
+    val backupDir = File(backupRoot, backupName)
+    val complete = File(backupDir, WORK_RESET_COMPLETE)
+    if (complete.isFile) restoreWorkStorageFiles(rootUri, segments, backupDir)
+    backupDir.deleteRecursively()
+    val directory = storage.storageDocumentAt(rootUri, normalized) ?: return
+    require(directory.isDirectory) { "Android work storage path is not a folder: $normalized" }
+    check(backupDir.mkdirs()) { "Cannot create the work folder backup." }
+    for (child in storage.listStorageChildren(directory)) {
+      if (child.isDirectory || (child.name != "novel.json" && !isAndroidWorkCoverFile(child.name))) continue
+      val part = File(backupDir, "${child.name}.part")
+      contentResolver.openInputStream(child.uri)?.use { input -> part.outputStream().use { input.copyTo(it) } }
+        ?: throw IllegalStateException("Cannot read work file for backup: ${child.name}")
+      check(part.renameTo(File(backupDir, child.name))) { "Cannot keep the work file backup: ${child.name}" }
+    }
+    check(complete.createNewFile()) { "Cannot mark the work folder backup complete." }
+    deleteChapterStorageDocument(directory, "Cannot remove Android work storage directory: $normalized")
+    restoreWorkStorageFiles(rootUri, segments, backupDir)
+    backupDir.deleteRecursively()
+  }
+
+  private fun restoreWorkStorageFiles(rootUri: String, segments: List<String>, backupDir: File) {
+    val files = backupDir.listFiles { file -> file.isFile && file.name != WORK_RESET_COMPLETE && !file.name.endsWith(".part") }
+      ?: return
+    if (files.isEmpty()) return
+    val directory = storage.ensureStorageDirectory(ensureChapterStorageTransferParent(rootUri, segments), segments.last())
+    for (file in files) {
+      if (storage.findStorageChildWithoutRecovery(directory, file.name) != null) continue
+      val created = storage.requireExactCreatedStorageName(
+        storage.createStorageFile(directory, storage.mimeTypeForPath(file.name, "application/octet-stream"), file.name)
+          ?: throw IllegalStateException("Cannot restore work file: ${file.name}"),
+        file.name,
+        "file",
+        "Cannot restore work file: ${file.name}",
+      )
+      contentResolver.openOutputStream(created.uri, "wt")?.use { output -> file.inputStream().use { it.copyTo(output) } }
+        ?: throw IllegalStateException("Cannot write restored work file: ${file.name}")
     }
   }
 

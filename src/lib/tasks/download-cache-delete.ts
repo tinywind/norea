@@ -9,11 +9,13 @@ import { getNovelById } from "../../db/queries/novel";
 import {
   deleteAndroidStoragePath,
   listAndroidChapterStorageDirs,
+  resetAndroidWorkStorageDirectory,
 } from "../android-storage";
 import {
   chapterStorageDirectoryName,
   chapterStorageRelativeDir,
   novelStorageDirectoryName,
+  novelStorageRelativeDir,
   sourceStorageRelativeDir,
 } from "../chapter-storage-path";
 import { forgetResolvedChapterStorageDir, resolvedChapterStorageDir } from "../chapter-storage-resolution";
@@ -250,13 +252,48 @@ async function clearAndroidChapterArtifacts(chapterId: number): Promise<void> {
   forgetResolvedChapterStorageDir(chapterId);
 }
 
+/**
+ * Clears each affected work folder with one storage request, keeping its novel.json and cover,
+ * instead of one document-provider walk per chapter. Returns the chapters it did not cover:
+ * local works, chapters without a record, and chapters known to be stored outside the folder.
+ */
+async function resetAndroidWorkFolders(chapterIds: readonly number[], signal: AbortSignal): Promise<number[]> {
+  const byNovel = new Map<number, number[]>();
+  const uncovered: number[] = [];
+  for (const chapterId of chapterIds) {
+    const chapter = await getChapterById(chapterId);
+    if (!chapter) {
+      uncovered.push(chapterId);
+      continue;
+    }
+    byNovel.set(chapter.novelId, [...(byNovel.get(chapter.novelId) ?? []), chapterId]);
+  }
+  for (const [novelId, novelChapterIds] of byNovel) {
+    throwIfDownloadCacheDeleteAborted(signal);
+    const novel = await getNovelById(novelId);
+    if (!novel || novel.isLocal) {
+      uncovered.push(...novelChapterIds);
+      continue;
+    }
+    const directory = novelStorageRelativeDir(novel);
+    await resetAndroidWorkStorageDirectory(directory);
+    for (const chapterId of novelChapterIds) {
+      const known = resolvedChapterStorageDir(chapterId);
+      if (known && !known.startsWith(`${directory}/`)) uncovered.push(chapterId);
+      else forgetResolvedChapterStorageDir(chapterId);
+    }
+  }
+  return uncovered;
+}
+
 async function clearAndroidDownloadArtifacts(
   scope: DownloadCacheDeleteScope,
   targetIds: readonly number[],
   signal: AbortSignal,
 ): Promise<void> {
   const chapters = await chaptersForDownloadCacheScope(scope, targetIds);
-  const chapterIds = chapters.map((chapter) => chapter.id);
+  const scopedChapterIds = chapters.map((chapter) => chapter.id);
+  const chapterIds = scope === "chapter" ? scopedChapterIds : await resetAndroidWorkFolders(scopedChapterIds, signal);
   for (let index = 0; index < chapterIds.length; index += 1) {
     throwIfDownloadCacheDeleteAborted(signal);
     const chapterId = chapterIds[index]!;
