@@ -244,34 +244,44 @@ export interface WorkMetadataRecoveryProgress {
 
 type ExclusiveMetadataOperation = <T>(run: () => Promise<T>) => Promise<T>;
 const runMetadataOperation: ExclusiveMetadataOperation = run => run();
+type MetadataTransaction = <T>(db: Database, run: (transaction: Database) => Promise<T>) => Promise<T>;
+const runStatementTransaction: MetadataTransaction = (db, run) => withWorkMetadataRollback(async () => {
+  await db.execute("BEGIN IMMEDIATE");
+  try {
+    const result = await run(db);
+    await db.execute("COMMIT");
+    return result;
+  } catch (error) {
+    await db.execute("ROLLBACK");
+    await restoreWorkMetadataDirectories(db, false);
+    throw error;
+  }
+});
 
 export async function initializeWorkMetadata(db: Database, options: {
   rebuild?: boolean;
   runExclusive?: ExclusiveMetadataOperation;
+  /** Runs a write transaction inside `runExclusive`; the app passes one that holds the shared connection. */
+  runTransaction?: MetadataTransaction;
   signal?: AbortSignal;
   onProgress?: (progress: WorkMetadataRecoveryProgress) => void;
 } = {}): Promise<void> {
   if (!isTauriRuntime()) return;
   const run = options.runExclusive ?? runMetadataOperation;
+  const transact = options.runTransaction ?? runStatementTransaction;
   const checkCancelled = () => throwIfAborted(options.signal, "Storage recovery cancelled.");
   const [initialized] = await run(() => db.select<{ id: number }[]>("SELECT id FROM work_metadata_cache_state WHERE id=1"));
   const [pending] = await run(() => db.select<{ pending: number }[]>("SELECT 1 AS pending FROM work_metadata_dirty LIMIT 1"));
   checkCancelled();
   if (initialized && !options.rebuild) {
     await restoreWorkMetadataDirectories(db, true, run, options.signal);
-    if (pending) await run(() => withWorkMetadataRollback(async () => {
+    if (pending) await run(() => {
       checkCancelled();
-      await db.execute("BEGIN IMMEDIATE");
-      try {
-        await flushWorkMetadata(db);
+      return transact(db, async transaction => {
+        await flushWorkMetadata(transaction);
         checkCancelled();
-        await db.execute("COMMIT");
-      } catch (error) {
-        await db.execute("ROLLBACK");
-        await restoreWorkMetadataDirectories(db, false);
-        throw error;
-      }
-    }));
+      });
+    });
     return;
   }
   const progress: WorkMetadataRecoveryProgress = {
@@ -322,23 +332,17 @@ export async function initializeWorkMetadata(db: Database, options: {
       const [pendingWork] = await db.select<{ pending: number }[]>("SELECT 1 AS pending FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [entry.metadata.identity.pluginId, entry.metadata.identity.novelPath]);
       const [existing] = preserveCached || pendingWork ? await db.select<{ id: number }[]>("SELECT id FROM novel WHERE plugin_id=$1 AND path=$2", [entry.metadata.identity.pluginId, entry.metadata.identity.novelPath]) : [];
       if ((preserveCached || pendingWork) && !existing) return null;
-      await db.execute("BEGIN IMMEDIATE");
-      try {
-        const novelId = preserveCached && existing ? existing.id : await applyNovelMetadataToCache(db, metadata, entry.directory, {
+      return transact(db, async transaction => {
+        const novelId = preserveCached && existing ? existing.id : await applyNovelMetadataToCache(transaction, metadata, entry.directory, {
           storedCover: cover, addToLibrary: true, preserveMissingMetadata: true, preserveCachedNovel: Boolean(pendingWork),
         });
-        await scanStoredNovelChaptersToCache(db, novelId, entry.directory, { chapters, downloadRevision, deferNativeRegistration: true });
-        if (!preserveCached && !pendingWork) await rememberStoredNovelMetadata(db, entry.directory, metadata, options.rebuild);
-        if (!pendingWork) await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [entry.metadata.identity.pluginId, entry.metadata.identity.novelPath]);
-        const mapped = await db.select<{ id: number; directory: string }[]>("SELECT chapter_id AS id,directory FROM work_metadata_directory_cache WHERE novel_id=$1", [novelId]);
+        await scanStoredNovelChaptersToCache(transaction, novelId, entry.directory, { chapters, downloadRevision, deferNativeRegistration: true });
+        if (!preserveCached && !pendingWork) await rememberStoredNovelMetadata(transaction, entry.directory, metadata, options.rebuild);
+        if (!pendingWork) await transaction.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [entry.metadata.identity.pluginId, entry.metadata.identity.novelPath]);
+        const mapped = await transaction.select<{ id: number; directory: string }[]>("SELECT chapter_id AS id,directory FROM work_metadata_directory_cache WHERE novel_id=$1", [novelId]);
         checkCancelled();
-        await db.execute("COMMIT");
         return { novelId, directories: mapped, coverDirectoryChanged: current?.directory !== entry.directory };
-      } catch (error) {
-        await db.execute("ROLLBACK");
-        await restoreWorkMetadataDirectories(db, false);
-        throw error;
-      }
+      });
     });
     if (restored) {
       const { directories } = restored;

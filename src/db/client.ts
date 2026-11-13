@@ -167,6 +167,8 @@ export function startWorkMetadataRecovery(rebuild = false): void {
   void getRawDb().then(async db => {
     await initializeWorkMetadata(db, {
       rebuild, signal: controller.signal, runExclusive: queueDbOperation,
+      runTransaction: (rawDb, run) =>
+        runDatabaseTransactionOnQueue(rawDb, run, false, { publishMetadata: false, notifyContentSync: false }),
       onProgress: progress => {
         if (controller.signal.aborted) return;
         useStorageRecoveryStore.setState({ status: "scanning", progress, error: null });

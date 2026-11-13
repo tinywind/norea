@@ -6,7 +6,7 @@ const storage = vi.hoisted(() => ({
   root: "old", files: new Map<string, Map<string, number[]>>(),
   gates: new Map<string, Promise<void>>(), release: [] as (() => void)[],
   calls: [] as string[], writes: 0, failRead: false, active: 0,
-  transactionId: null as string | null,
+  transactionId: null as string | null, transactions: 0, rawStatements: [] as string[],
 }));
 vi.mock("../lib/chapter-content/storage-platform", () => ({ inspectChapterContentArtifacts: async (input: { preferredChapterDir: string; preferredContentFileName: string }) => ({
   status: "present", contentFile: `${input.preferredChapterDir}/${input.preferredContentFileName}`, contentBytes: 1, mediaBytes: 0, mediaComplete: true,
@@ -35,6 +35,7 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: {
     if (sqlite.isTransaction) throw new Error("database transaction: another frontend transaction is active");
     sqlite.exec("BEGIN IMMEDIATE");
     storage.transactionId = args.transactionId!;
+    storage.transactions++;
     return;
   }
   if (command === "database_transaction_execute") {
@@ -111,6 +112,7 @@ beforeEach(async () => {
   covers.changed.mockClear(); covers.invalidated.mockClear();
   storage.root = "old"; storage.files.clear(); storage.gates.clear(); storage.release = [];
   storage.calls = []; storage.writes = 0; storage.failRead = false; storage.active = 0; storage.transactionId = null;
+  storage.transactions = 0; storage.rawStatements = [];
   addWork("old", first, "First");
   sqlite = new DatabaseSync(":memory:");
   const registration = readFileSync("src-tauri/src/database.rs", "utf8");
@@ -122,6 +124,7 @@ beforeEach(async () => {
     path: "sqlite:norea.db",
     select: async (query: string, params: unknown[] = []) => sqlite.prepare(query).all(Object.fromEntries(params.map((value, index) => [`$${index + 1}`, value])) as never),
     execute: async (query: string, params: unknown[] = []) => {
+      storage.rawStatements.push(query);
       const result = sqlite.prepare(query).run(Object.fromEntries(params.map((value, index) => [`$${index + 1}`, value])) as never);
       return { rowsAffected: Number(result.changes), lastInsertId: Number(result.lastInsertRowid) };
     },
@@ -136,6 +139,14 @@ afterEach(async () => {
   await vi.waitFor(() => expect(storage.active).toBe(0));
   await new Promise(resolve => setTimeout(resolve, 0));
   sqlite.close();
+});
+
+it("recovers work metadata through the native transaction that holds the shared connection", async () => {
+  const db = await client.getDb();
+  await vi.waitFor(() => expect(state.getState().status).toBe("complete"));
+  expect(storage.transactions).toBeGreaterThan(0);
+  expect(storage.rawStatements.filter(query => /^\s*(?:BEGIN|COMMIT|ROLLBACK)\b/i.test(query))).toEqual([]);
+  expect(await db.select("SELECT name FROM novel")).toEqual([{ name: "First" }]);
 });
 
 it("keeps committed metadata after a later transaction fails with an older file on disk", async () => {
