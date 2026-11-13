@@ -2,8 +2,9 @@ import { Alert, Button, Loader, Text } from "@mantine/core";
 import { useTranslation } from "../../i18n";
 import type { GlobalSearchResult } from "../../lib/plugins/global-search";
 import { pluginManager } from "../../lib/plugins/manager";
-import type { NovelItem } from "../../lib/plugins/types";
+import type { NovelItem, Plugin } from "../../lib/plugins/types";
 import { SearchBar } from "../SearchBar";
+import { SourceAccessNotice } from "../SourceAccessVerifyButton";
 import { SourceNovelCover } from "../SourceNovelCover";
 import { CheckIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
@@ -35,6 +36,8 @@ interface MergeChooseStepProps {
   searching: boolean;
   selectedKey: string | null;
   sourceName: string;
+  /** Target sources whose search has not settled yet. */
+  waitingSources: readonly Pick<Plugin, "id" | "name">[];
 }
 
 export function MergeChooseStep({
@@ -54,6 +57,7 @@ export function MergeChooseStep({
   searching,
   selectedKey,
   sourceName,
+  waitingSources,
 }: MergeChooseStepProps) {
   const { t } = useTranslation();
   const withNovels = results.filter((result) => !result.error && result.novels.length > 0);
@@ -89,6 +93,14 @@ export function MergeChooseStep({
             </Button>
           </div>
         ) : null}
+        {waitingSources.map((source) => (
+          <SourceAccessNotice
+            active
+            key={source.id}
+            sourceId={source.id}
+            sourceName={source.name}
+          />
+        ))}
         {searchError ? (
           <Alert color="danger" title={t("novelMerge.findTarget.searchFailed")}>
             {searchError}

@@ -668,6 +668,12 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
           searchSettled={searchTargets.isSuccess}
           searchText={searchText}
           searching={searchTargets.isPending}
+          waitingSources={
+            searchTargets.isPending
+              ? targetPlugins.filter((plugin) =>
+                !searchResults.some((result) => result.pluginId === plugin.id))
+              : []
+          }
           selectedKey={selectedTarget ? mergeTargetKey(selectedTarget) : null}
           sourceName={sourceName}
         />

@@ -19,6 +19,11 @@ vi.mock("../../i18n", () => ({
   }),
 }));
 vi.mock("../SourceNovelCover", () => ({ SourceNovelCover: () => null }));
+vi.mock("../SourceAccessVerifyButton", () => ({
+  SourceAccessNotice: ({ sourceName }: { sourceName: string }) => (
+    <p className="access-notice">{sourceName}</p>
+  ),
+}));
 vi.mock("../../lib/plugins/manager", () => ({
   pluginManager: { getPlugin: () => undefined },
 }));
@@ -232,6 +237,7 @@ describe("MergeChooseStep", () => {
     searching: false,
     selectedKey: null,
     sourceName: "Source A",
+    waitingSources: [],
   };
 
   it("lists results as buttons and collapses failed sources", () => {
@@ -246,6 +252,19 @@ describe("MergeChooseStep", () => {
     const $ = render(<MergeChooseStep {...baseProps} searchSettled={false} searching />);
 
     expect($("[role=status] button").text()).toBe("common.cancel");
+  });
+
+  it("offers source access verification for sources the search still waits on", () => {
+    const $ = render(
+      <MergeChooseStep
+        {...baseProps}
+        searchSettled={false}
+        searching
+        waitingSources={[{ id: "d", name: "Source D" }]}
+      />,
+    );
+
+    expect($(".access-notice").text()).toBe("Source D");
   });
 
   it("marks the selected target and offers to continue with it", () => {
