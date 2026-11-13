@@ -425,6 +425,9 @@ internal class AndroidStorageDocuments(private val context: Context) {
   /** App-private, not purged like the cache, so an interrupted work folder reset can still be restored. */
   fun workResetBackupRoot(): File = File(context.noBackupFilesDir, "work-reset-backups")
 
+  /** App-private records of the chapters an unfinished chapter storage transfer touched. */
+  fun transferProgressRoot(): File = File(context.noBackupFilesDir, "transfer-progress")
+
   fun createChapterMediaRepairTempFile(): File =
     File.createTempFile("chapter-media-repair-", ".tmp", context.cacheDir)
 
