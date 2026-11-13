@@ -652,7 +652,7 @@ describe("executeNovelMerge", () => {
     expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
   });
 
-  it("rolls back and stops when the selected A download disappears during prepare", async () => {
+  it("merges past an unfinished A download, leaving it undownloaded for removal with A's folder", async () => {
     mockedPrepareChapterStorageTransfer.mockResolvedValueOnce({
       token: "transfer-1",
       entries: [
@@ -683,11 +683,9 @@ describe("executeNovelMerge", () => {
         ],
         artifactSourceChapterIdByTargetPath: { "/b/1": 11 },
       }),
-    ).rejects.toThrow("disappeared");
+    ).resolves.toMatchObject({ targetNovelId: 2 });
 
-    expect(mockedFinishStorage).toHaveBeenCalled();
-    expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
-    expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
+    expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(expect.objectContaining({ preparedDownloads: [] }));
   });
 
   it("retains committed recovery state when finalization fails after the DB merge", async () => {

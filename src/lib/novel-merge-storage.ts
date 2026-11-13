@@ -49,7 +49,7 @@ function parseJournal(payload: string): NovelMergeStorageJournal {
   if (job.preparation && (job.preparation.token !== job.token || job.preparation.entries.length !== job.entries.length ||
       job.preparation.entries.some((entry, index) => entry.entryId !== job.entries[index]!.entryId ||
         entry.sourceRelativeDir !== job.entries[index]!.sourceRelativeDir || entry.targetRelativeDir !== job.entries[index]!.targetRelativeDir ||
-        !["movedSource", "copiedSource", "keptTarget"].includes(entry.outcome)))) {
+        !["movedSource", "copiedSource", "keptTarget", "sourceNotDownloaded"].includes(entry.outcome)))) {
     throw new Error("Work merge storage receipt does not match its journal. Existing files were retained.");
   }
   return job;

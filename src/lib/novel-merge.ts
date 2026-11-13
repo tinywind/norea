@@ -321,11 +321,8 @@ function validateStoragePreparation(
     ) {
       throw new Error("Chapter storage transfer returned mismatched paths.");
     }
-    if (prepared.outcome === "sourceNotDownloaded") {
-      throw new Error(
-        "An A download disappeared while it was being moved. No novels were merged.",
-      );
-    }
+    // An unfinished A download is not moved; it is deleted with A's folder when the merge finishes.
+    if (prepared.outcome === "sourceNotDownloaded") continue;
     if (
       !prepared.contentFile ||
       parentRelativePath(prepared.contentFile) !== requested.targetRelativeDir
@@ -341,7 +338,7 @@ function validateStoragePreparation(
       throw new Error("Chapter storage transfer returned invalid byte counts.");
     }
   }
-  return preparation.entries;
+  return preparation.entries.filter((entry) => entry.outcome !== "sourceNotDownloaded");
 }
 
 function storedArtifactContentType(

@@ -746,7 +746,8 @@ internal class AndroidChapterStorageTransfer(
           require(source.isDirectory) {
             "Android chapter storage transfer source is not a folder: ${entry.sourceRelativeDir}"
           }
-          require(inspectChapterStorageTransferArtifacts(source, entry.sourceRelativeDir, lookup) != null) {
+          // A move leaves an unfinished source chapter behind as not downloaded; its work folder goes with the source.
+          require(!requireEmptyTargets || inspectChapterStorageTransferArtifacts(source, entry.sourceRelativeDir, lookup) != null) {
             "Android chapter storage transfer source has unfinished content: ${entry.sourceRelativeDir}"
           }
         }
