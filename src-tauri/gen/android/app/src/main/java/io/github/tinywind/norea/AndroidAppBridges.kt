@@ -5,8 +5,6 @@ import android.content.ActivityNotFoundException
 import android.content.Intent
 import android.content.Context
 import android.net.Uri
-import android.os.Build
-import android.os.Environment
 import android.os.PowerManager
 import android.provider.Settings
 import android.webkit.JavascriptInterface
@@ -94,41 +92,6 @@ internal class AndroidBatteryOptimizationBridge(private val activity: Activity) 
       )
       val list = Intent(Settings.ACTION_IGNORE_BATTERY_OPTIMIZATION_SETTINGS)
       opened.complete(listOf(prompt, list).any { intent ->
-        try {
-          activity.startActivity(intent)
-          true
-        } catch (_: ActivityNotFoundException) {
-          false
-        }
-      })
-    }
-    return runCatching { opened.get(2, TimeUnit.SECONDS) }.getOrDefault(false)
-  }
-}
-
-/**
- * All files access. With it the storage folder is read and written as plain files; without it every
- * lookup goes through the document provider, which makes merges, recoveries and deletions slow.
- */
-internal class AndroidAllFilesAccessBridge(private val activity: Activity) {
-  @JavascriptInterface
-  fun isSupported(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R
-
-  @JavascriptInterface
-  fun isGranted(): Boolean = Build.VERSION.SDK_INT >= Build.VERSION_CODES.R && Environment.isExternalStorageManager()
-
-  /** Opens Norea's All files access screen, or the list of apps when that screen is unavailable. */
-  @JavascriptInterface
-  fun request(): Boolean {
-    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.R) return false
-    val opened = CompletableFuture<Boolean>()
-    activity.runOnUiThread {
-      val app = Intent(
-        Settings.ACTION_MANAGE_APP_ALL_FILES_ACCESS_PERMISSION,
-        Uri.parse("package:${activity.packageName}"),
-      )
-      val list = Intent(Settings.ACTION_MANAGE_ALL_FILES_ACCESS_PERMISSION)
-      opened.complete(listOf(app, list).any { intent ->
         try {
           activity.startActivity(intent)
           true

@@ -2,7 +2,6 @@ import { useEffect, useState } from "react";
 import { NumberInput, Select, Stack, Switch } from "@mantine/core";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
 import { ChapterCleanupPanel } from "../ChapterCleanupPanel";
-import { AllFilesAccessSetting } from "../AllFilesAccessSetting";
 import { BatteryOptimizationSetting } from "../BatteryOptimizationSetting";
 import { useConfirm } from "../ui/ConfirmDialog";
 import { StorageRecoveryBanner } from "../runtime/StorageRecovery";
@@ -161,7 +160,6 @@ function MediaStorageSettings({ isBusy }: { isBusy: boolean }) {
           </IconButton>
         </SettingsFieldRow>
       </div>
-      <AllFilesAccessSetting />
     </SettingsSection>
   );
 }
