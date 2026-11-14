@@ -31,30 +31,30 @@ const PAYLOAD_NAMES: &[&str] = &[
     "media.zip.rollback",
 ];
 
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PayloadDigest {
-    sha256: String,
-    bytes: u64,
+    pub sha256: String,
+    pub bytes: u64,
 }
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StoredAsset {
-    key: String,
-    sha256: String,
-    bytes: u64,
+    pub key: String,
+    pub sha256: String,
+    pub bytes: u64,
 }
-#[derive(Clone, serde::Serialize)]
+#[derive(Clone, Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChapterPayloadSnapshot {
-    body: Option<PayloadDigest>,
-    expected_asset_keys: Option<Vec<String>>,
-    stored_assets: Vec<StoredAsset>,
-    fingerprint: String,
-    payload_bytes: u64,
-    content_bytes: u64,
-    media_bytes: u64,
-    media_complete: bool,
+    pub body: Option<PayloadDigest>,
+    pub expected_asset_keys: Option<Vec<String>>,
+    pub stored_assets: Vec<StoredAsset>,
+    pub fingerprint: String,
+    pub payload_bytes: u64,
+    pub content_bytes: u64,
+    pub media_bytes: u64,
+    pub media_complete: bool,
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -429,8 +429,7 @@ fn inspect_inventory(dir: &Path) -> Result<ChapterPayloadSnapshot, String> {
     })
 }
 
-fn resolved_dir(app: &AppHandle, chapter_dir: &str) -> Result<PathBuf, String> {
-    let root = media_root(app)?;
+pub(crate) fn resolved_payload_dir_at(root: &Path, chapter_dir: &str) -> Result<PathBuf, String> {
     let relative = safe_relative_storage_path(chapter_dir)?;
     let dir = root.join(&relative);
     let backup = dir.with_file_name(format!(
@@ -444,8 +443,8 @@ fn resolved_dir(app: &AppHandle, chapter_dir: &str) -> Result<PathBuf, String> {
         Err(e) if e.kind() == io::ErrorKind::NotFound => {}
         Err(e) => return Err(format!("inspect chapter recovery backup: {e}")),
     }
-    let mut current = root.clone();
-    if !fs::metadata(&root)
+    let mut current = root.to_path_buf();
+    if !fs::metadata(root)
         .map_err(|e| format!("inspect storage root: {e}"))?
         .is_dir()
     {
@@ -461,9 +460,21 @@ fn resolved_dir(app: &AppHandle, chapter_dir: &str) -> Result<PathBuf, String> {
         }
     }
     if dir.exists() {
-        validate_chapter_dir_under_storage_root(&root, &dir)?;
+        validate_chapter_dir_under_storage_root(root, &dir)?;
     }
     Ok(dir)
+}
+
+pub(crate) fn inspect_payload_inventory_at(
+    root: &Path,
+    chapter_dir: &str,
+) -> Result<ChapterPayloadSnapshot, String> {
+    inspect_inventory(&resolved_payload_dir_at(root, chapter_dir)?)
+}
+
+fn resolved_dir(app: &AppHandle, chapter_dir: &str) -> Result<PathBuf, String> {
+    let root = media_root(app)?;
+    resolved_payload_dir_at(&root, chapter_dir)
 }
 
 #[tauri::command]

@@ -1,6 +1,7 @@
 pub mod chapter_composition;
 pub mod repository;
 pub mod tx;
+pub mod user_state;
 pub mod vpn;
 pub mod work_metadata;
 
@@ -8,6 +9,17 @@ pub mod work_metadata;
 pub mod test_support;
 
 use serde::{Deserialize, Serialize};
+use sqlx::Row;
+
+pub fn decode_sqlite_f64(row: &sqlx::sqlite::SqliteRow, column: &str) -> f64 {
+    row.try_get::<f64, _>(column)
+        .unwrap_or_else(|_| row.get::<i64, _>(column) as f64)
+}
+
+pub fn decode_sqlite_opt_f64(row: &sqlx::sqlite::SqliteRow, column: &str) -> Option<f64> {
+    row.try_get::<Option<f64>, _>(column)
+        .unwrap_or_else(|_| row.get::<Option<i64>, _>(column).map(|v| v as f64))
+}
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]

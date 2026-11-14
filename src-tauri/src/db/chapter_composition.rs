@@ -459,7 +459,7 @@ struct ExistingChapterRow {
     path: String,
     chapter_number: Option<String>,
     position: i64,
-    progress: i64,
+    progress: f64,
     bookmark: i64,
     unread: i64,
     read_at: Option<i64>,
@@ -668,7 +668,7 @@ pub async fn materialize_chapter_composition_in_tx(
             path: row.get("path"),
             chapter_number: row.get("chapter_number"),
             position: row.get("position"),
-            progress: row.get("progress"),
+            progress: crate::db::decode_sqlite_f64(&row, "progress"),
             bookmark: row.get("bookmark"),
             unread: row.get("unread"),
             read_at: row.get("read_at"),
@@ -827,7 +827,7 @@ pub async fn materialize_chapter_composition_in_tx(
 
     #[derive(Clone, Copy)]
     struct ReadingState {
-        progress: i64,
+        progress: f64,
         bookmark: i64,
         unread: i64,
         read_at: Option<i64>,
@@ -851,7 +851,7 @@ pub async fn materialize_chapter_composition_in_tx(
         reading_by_path.insert(
             path,
             ReadingState {
-                progress: row.get("progress"),
+                progress: crate::db::decode_sqlite_f64(&row, "progress"),
                 bookmark: row.get("bookmark"),
                 unread: row.get("unread"),
                 read_at: row.get("read_at"),
@@ -909,7 +909,7 @@ pub async fn materialize_chapter_composition_in_tx(
         }
 
         let mut state = ReadingState {
-            progress: 0,
+            progress: 0.0,
             bookmark: 0,
             unread: 1,
             read_at: None,
@@ -992,7 +992,7 @@ pub async fn materialize_chapter_composition_in_tx(
                 .bind(&source.page)
                 .bind(&source.content_type)
                 .bind(&source.release_time)
-                .bind(state.map_or(0, |s| s.progress))
+                .bind(state.map_or(0.0, |s| s.progress))
                 .bind(state.map_or(0, |s| s.bookmark))
                 .bind(state.map_or(1, |s| s.unread))
                 .bind(state.and_then(|s| s.read_at))
