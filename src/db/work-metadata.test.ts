@@ -15,9 +15,15 @@ vi.mock("../lib/chapter-content/storage-platform", () => ({ inspectChapterConten
   return { status: "present", contentFile: `${input.preferredChapterDir}/${input.preferredContentFileName}`, contentBytes: 1, mediaBytes: 0, ...mediaInspectionSizes.get(input.preferredChapterDir), mediaComplete };
 } }));
 const databaseClient = vi.hoisted(() => ({ transaction: vi.fn(), get: vi.fn() }));
+const ipcBridge = vi.hoisted(() => ({ handle: null as null | ((command: string, args?: Record<string, unknown>) => Promise<{ handled: true; result: unknown } | { handled: false }>) }));
 vi.mock("./client", () => ({ runDatabaseTransaction: databaseClient.transaction, getDb: databaseClient.get }));
 vi.mock("../lib/tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: async (_command: string, { input }: { input: { operation: string; path: string; body: number[]; reset?: boolean; chapterDirectories?: Record<string, string>; skipChapterDirectories?: string[] } }) => {
+vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: Record<string, unknown> = {}) => {
+  if (ipcBridge.handle) {
+    const bridged = await ipcBridge.handle(command, args);
+    if (bridged.handled) return bridged.result;
+  }
+  const { input } = args as { input: { operation: string; path: string; body: number[]; reset?: boolean; chapterDirectories?: Record<string, string>; skipChapterDirectories?: string[] } };
   if (input.operation === "list") { storage.lists++; return { paths: [...storage.files.keys()].filter((path) => path.endsWith("/novel.json")) }; }
   if (input.operation === "chapters") { storage.chapterLists++; storage.skippedDirectories = input.skipChapterDirectories ?? []; const skipped = new Set(storage.skippedDirectories); const paths = (storage.chapters.get(input.path) ?? []).filter(path => !skipped.has(path.slice(0, path.lastIndexOf("/")))); await storage.chapterScan; return { paths }; }
   if (input.operation === "cover") {
@@ -59,6 +65,7 @@ import { gatherBackupSnapshot } from "../lib/backup/snapshot";
 import { encodeBackupManifest, parseBackupManifest } from "../lib/backup/format";
 import { prepareBackupRestore } from "../lib/backup/restore-plan";
 import { listContentSyncChapters } from "./queries/content-sync";
+import { createWorkMetadataIpcHandler } from "../test/mock-work-metadata-ipc";
 
 let sqlite: DatabaseSync;
 let db: Database;
@@ -97,6 +104,11 @@ beforeEach(() => {
     try { const result = await run(db); sqlite.exec("COMMIT"); return result; }
     catch (error) { sqlite.exec("ROLLBACK"); throw error; }
   });
+  const handler = createWorkMetadataIpcHandler({
+    getDb: () => db,
+    runTransaction: (run, remoteContentSync) => databaseClient.transaction(run, remoteContentSync),
+  });
+  ipcBridge.handle = (command, args) => handler.handle(command, args);
 });
 afterEach(() => sqlite.close());
 

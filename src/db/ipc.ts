@@ -5,10 +5,6 @@ import {
   rememberAuthoritativeChapterStorageDir,
   rememberResolvedNovelStorageDir,
 } from "../lib/chapter-storage-resolution";
-import {
-  invalidateAllNovelCoverSources,
-  notifyNovelCoverChanged,
-} from "../lib/novel-cover-storage";
 import { startPerformanceObservation } from "../lib/observability";
 import { notifyWorkMetadataChanges } from "../lib/work-metadata";
 import { notifyContentSyncSequence } from "./content-sync-journal";
@@ -16,7 +12,10 @@ import {
   notifyUserStateEffects,
   type UserStateChangePriority,
 } from "./user-state-core";
-import { forgetNovelMetadataFile } from "./work-metadata";
+import {
+  forgetNovelMetadataFile,
+  rememberKnownNovelMetadataFile,
+} from "./work-metadata";
 
 export type DbReadMode = "queued" | "committed";
 
@@ -25,6 +24,7 @@ export interface WorkDirectoryUpdate {
   pluginId: string;
   novelPath: string;
   directory: string | null;
+  fingerprint?: string | null;
 }
 
 export interface ChapterDirectoryUpdate {
@@ -36,6 +36,7 @@ export interface DbMutationEffects {
   userStatePriority?: UserStateChangePriority;
   userStateLedgerChanged?: boolean;
   userStateDeferredReady?: boolean;
+  userStateDeferredNovelIds?: number[];
   contentSyncMaxSequence?: number;
   workMetadataChanged?: boolean;
   coverChangedNovelIds?: number[];
@@ -52,9 +53,9 @@ function observationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function applyDbMutationEffects(
+export async function applyDbMutationEffects(
   effects?: DbMutationEffects | null,
-): void {
+): Promise<void> {
   if (!effects) return;
 
   const workIdentities = new Map<
@@ -71,6 +72,14 @@ export function applyDbMutationEffects(
     });
     if (work.directory !== null) {
       rememberResolvedNovelStorageDir(work.novelId, work.directory);
+      if (typeof work.fingerprint === "string") {
+        rememberKnownNovelMetadataFile(
+          work.pluginId,
+          work.novelPath,
+          work.directory,
+          work.fingerprint,
+        );
+      }
     } else {
       forgetResolvedNovelStorageDir(work.novelId);
       forgetNovelMetadataFile(work.pluginId, work.novelPath);
@@ -97,6 +106,8 @@ export function applyDbMutationEffects(
   }
 
   if (effects.coverChangedNovelIds?.length) {
+    const { invalidateAllNovelCoverSources, notifyNovelCoverChanged } =
+      await import("../lib/novel-cover-storage");
     if (effects.coverChangedNovelIds.includes(0)) {
       invalidateAllNovelCoverSources();
     } else {
@@ -123,12 +134,14 @@ export function applyDbMutationEffects(
   if (
     effects.userStatePriority ||
     effects.userStateLedgerChanged ||
-    effects.userStateDeferredReady
+    effects.userStateDeferredReady ||
+    effects.userStateDeferredNovelIds?.length
   ) {
     notifyUserStateEffects({
       priority: effects.userStatePriority,
       ledgerChanged: effects.userStateLedgerChanged,
       deferredReady: effects.userStateDeferredReady,
+      deferredNovelIds: effects.userStateDeferredNovelIds,
     });
   }
 }
@@ -163,7 +176,7 @@ export async function invokeDbMutation<T = void>(
       args === undefined
         ? await invoke<DbMutationEnvelope<T>>(command)
         : await invoke<DbMutationEnvelope<T>>(command, args);
-    applyDbMutationEffects(envelope?.effects);
+    await applyDbMutationEffects(envelope?.effects);
     finish();
     return envelope.value;
   } catch (error) {

@@ -5,7 +5,7 @@ import { materializeChapterComposition, setChapterComposition } from "./chapter-
 import { getChapterComposition } from "./chapter-composition";
 import {
   assertUserStateAvailableInDb, emitUserStateApplied, emitUserStateLedgerChanged, hasUserStateSchema,
-  namespaceFor, requestUserStateDeferredApply, requireBinding, type UserStateDb,
+  installUserStateDeferredNovelRecorder, namespaceFor, requestUserStateDeferredApply, requireBinding, type UserStateDb,
 } from "./user-state-core";
 import { setUserStateActiveServer } from "./user-state";
 import {
@@ -390,6 +390,13 @@ export function deferUserStateCurrentForNovelInDb(db: UserStateDb, novelId: numb
   pendingNovelIds.add(novelId);
   requestUserStateDeferredApply(db);
 }
+export function recordDeferredUserStateCurrentNovelIds(novelIds: readonly number[]): void {
+  if (!currentMode) return;
+  for (const novelId of novelIds) {
+    pendingNovelIds.add(novelId);
+  }
+}
+installUserStateDeferredNovelRecorder(recordDeferredUserStateCurrentNovelIds);
 export async function applyDeferredUserStateCurrent(): Promise<void> {
   const server = currentServer;
   const captured = generation;

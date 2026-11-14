@@ -283,6 +283,39 @@ export async function installReconciledStoredNovelMetadata(
 async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>, reconciliation?: StoredNovelNumberReconciliation, options: InstallStoredNovelMetadataOptions = {}): Promise<InstalledNovelMetadata | null> {
   let metadata = parseNovelMetadata(input);
   if (options.authoritative && !options.preserveLocalCover && metadata.cover && !coverBytes?.length) throw new Error("A migration target cover requires verified cover bytes.");
+  if (!beforeInstall && !reconciliation) {
+    const { invokeDbMutation } = await import("../db/ipc");
+    try {
+      const installed = await invokeDbMutation<{
+        novelId: number;
+        directory: string;
+        metadata: NovelMetadataV1;
+        syncFile: WorkMetadataSyncFile;
+        coverBytes: number[] | null;
+      } | null>("db_work_metadata_install_stored", {
+        input: {
+          metadata,
+          coverBytes: coverBytes ? Array.from(coverBytes) : null,
+          authoritative: options.authoritative ?? false,
+          preserveLocalCover: options.preserveLocalCover ?? false,
+        },
+      });
+      if (!installed) return null;
+      return {
+        directory: installed.directory,
+        metadata: parseNovelMetadata(installed.metadata),
+        syncFile: installed.syncFile,
+        coverBytes: installed.coverBytes ? new Uint8Array(installed.coverBytes) : null,
+      };
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      if (message.includes("publication and rollback failed")) {
+        const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
+        invalidateAllNovelCoverSources();
+      }
+      throw error;
+    }
+  }
   const { runDatabaseTransaction } = await import("../db/client");
   const { applyNovelMetadataToCache, knownNovelMetadataDirectory, readWorkMetadataSyncFile, rememberStoredNovelMetadata } = await import("../db/work-metadata");
     const preferred = knownNovelMetadataDirectory(metadata.identity) ?? await availableNovelMetadataDirectory(metadata);
@@ -376,37 +409,25 @@ async function removeAllStoredNovelCovers(directory: string, preferred: NovelMet
 }
 
 export async function persistNovelCover(directory: string, cover: { body: Uint8Array; fileName: string; contentType: string | null } | null, options: { preserveExisting?: boolean } = {}): Promise<void> {
-  const { runDatabaseTransaction } = await import("../db/client");
-  const { hasWorkMetadataConflict, rememberStoredNovelMetadata } = await import("../db/work-metadata");
-  const identity = await runDatabaseTransaction((db) => withWorkMetadataRollback(async () => {
-    if (options.preserveExisting) {
-      const { cover: existing } = await workMetadataOperation({ operation: "cover", path: `${directory}/novel.json` });
-      if (existing) return;
+  const { invokeDbMutation } = await import("../db/ipc");
+  try {
+    await invokeDbMutation("db_work_metadata_persist_cover", {
+      directory,
+      cover: cover
+        ? {
+            body: Array.from(cover.body),
+            fileName: cover.fileName,
+            contentType: cover.contentType,
+          }
+        : null,
+      preserveExisting: options.preserveExisting ?? false,
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (!options.preserveExisting || message.includes("publication and rollback failed")) {
+      const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
+      invalidateAllNovelCoverSources();
     }
-    const { body } = await workMetadataOperation({ operation: "read", path: `${directory}/novel.json` });
-    if (!body) throw new Error("work metadata: missing work for cover");
-    const metadata = parseNovelMetadata(JSON.parse(new TextDecoder().decode(base64ToBytes(body))));
-    metadata.cover = await discoverStoredNovelCover(directory, metadata.cover);
-    if (await hasWorkMetadataConflict(directory, metadata)) throw new Error("work metadata: file changed outside the cache; refresh from the source before editing");
-    let coverChanged = false;
-    if (cover) {
-      const previousCover = metadata.cover;
-      metadata.cover = { fileName: cover.fileName, contentType: cover.contentType };
-      coverChanged = await writeStoredNovelCover(directory, metadata, cover.body, false);
-      if (previousCover && previousCover.fileName !== cover.fileName) await removeStoredNovelCover(directory, previousCover, false);
-    } else {
-      const removed = new Set<string>();
-      while (metadata.cover) {
-        if (removed.has(metadata.cover.fileName)) throw new Error("work metadata: cleared cover is still present");
-        removed.add(metadata.cover.fileName);
-        await removeStoredNovelCover(directory, metadata.cover, false);
-        coverChanged = true;
-        metadata.cover = await discoverStoredNovelCover(directory);
-      }
-    }
-    await writeStoredNovelMetadata(directory, metadata, false);
-    await rememberStoredNovelMetadata(db, directory, metadata, coverChanged);
-    return metadata.identity;
-  }, { preserveCoverSourcesOnRollback: options.preserveExisting }));
-  if (identity) notifyWorkMetadataChanges(identity);
+    throw error;
+  }
 }

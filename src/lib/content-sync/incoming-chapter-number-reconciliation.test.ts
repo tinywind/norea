@@ -29,9 +29,16 @@ vi.mock("../tasks/scheduler", () => ({ taskScheduler: { cancel: vi.fn() } }));
 vi.mock("../../store/content-sync", () => ({
   useContentSyncStore: { getState: () => ({ serverUrl: "https://content.test", deviceName: "Fixture", lookupTimeoutSeconds: 30 }) },
 }));
+const ipcBridge = vi.hoisted(() => ({
+  handle: null as null | ((command: string, args?: Record<string, unknown>) => Promise<{ handled: true; result: unknown } | { handled: false }>),
+}));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
-  invoke: async (command: string, args: { input?: { operation: string; path?: string; body?: number[] } }) => {
+  invoke: async (command: string, args: { input?: { operation: string; path?: string; body?: number[] } } & Record<string, unknown> = {}) => {
+    if (ipcBridge.handle) {
+      const bridged = await ipcBridge.handle(command, args);
+      if (bridged.handled) return bridged.result;
+    }
     if (command !== "work_metadata_operation" || !args.input) throw new Error("Unexpected native call: " + command);
     const input = args.input;
     if (input.operation === "read") return { body: state.metadata.get(input.path!) ?? null };
@@ -103,6 +110,7 @@ import { contentWorkId, getWorkSyncCursor, recordInstalledWorkMetadata, syncWork
 import { syncServerNovelOnOpen } from "./work-refresh";
 import { refreshServerNovel } from "./browse";
 import type { ServerChapterSummary } from "./chapters";
+import { createWorkMetadataIpcHandler } from "../../test/mock-work-metadata-ipc";
 
 const server = "https://content.test";
 const work: RenumberWork = { id: 7, pluginId: "source", sourceNovelId: "book", path: "/book" };
@@ -156,6 +164,11 @@ beforeEach(async () => {
   } as Database;
   client.getDb.mockResolvedValue(db); client.getReadOnlyDb.mockResolvedValue(db);
   client.runExclusiveDatabaseOperation.mockImplementation(async run => run(db));
+  ipcBridge.handle = createWorkMetadataIpcHandler({
+    getDb: () => db,
+    runTransaction: (run, remote) => client.runDatabaseTransaction(run, remote),
+    runExclusive: (run) => client.runExclusiveDatabaseOperation(() => run()),
+  }).handle;
   client.runDatabaseTransaction.mockImplementation(async run => {
     sqlite.exec("BEGIN IMMEDIATE");
     try {

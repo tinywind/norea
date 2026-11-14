@@ -4,7 +4,8 @@ import { invoke } from "@tauri-apps/api/core";
 import type { QueryResult } from "@tauri-apps/plugin-sql";
 import { startPerformanceObservation } from "../lib/observability";
 import { notifyContentSyncChanges } from "./content-sync-journal";
-import { flushWorkMetadata, initializeWorkMetadata, restoreWorkMetadataDirectories } from "./work-metadata";
+import { applyDbMutationEffects, type DbMutationEffects, type DbMutationEnvelope } from "./ipc";
+import { flushWorkMetadata, restoreWorkMetadataDirectoriesFromRust, type WorkMetadataRecoveryProgress } from "./work-metadata";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { useStorageRecoveryStore } from "../store/storage-recovery";
 import { describeError } from "../lib/errors";
@@ -20,7 +21,9 @@ const DB_BEGIN_RETRY_DELAY_MS = 100;
 let dbPromise: Promise<Database> | null = null;
 let rawDbPromise: Promise<Database> | null = null;
 let dbOperationQueue: Promise<void> = Promise.resolve();
-let metadataRecovery: AbortController | null = null;
+let metadataRecoveryRunId = 0;
+let metadataRecoveryActive = false;
+let pendingRecoveryCancel: Promise<unknown> | null = null;
 
 function observationError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
@@ -33,7 +36,7 @@ async function configureDb(db: Database): Promise<Database> {
     await recoverSourceChapterRenumbersInDb(db);
     const { recoverNovelMergeStorageInDb } = await import("../lib/novel-merge-storage");
     await recoverNovelMergeStorageInDb(db);
-    await restoreWorkMetadataDirectories(db, false);
+    await restoreWorkMetadataDirectoriesFromRust(false);
   }
   return db;
 }
@@ -153,41 +156,74 @@ export async function getReadOnlyDb(): Promise<Pick<Database, "select">> {
 }
 
 export function cancelWorkMetadataRecovery(): void {
-  metadataRecovery?.abort();
-  metadataRecovery = null;
+  metadataRecoveryRunId += 1;
+  if (metadataRecoveryActive && isTauriRuntime()) {
+    pendingRecoveryCancel = invoke("db_work_metadata_cancel_recovery").catch(() => undefined);
+  }
+  metadataRecoveryActive = false;
   useStorageRecoveryStore.setState({ status: "idle", progress: null, error: null });
 }
 
 export function startWorkMetadataRecovery(rebuild = false): void {
-  if (!isTauriRuntime() || (metadataRecovery && !rebuild)) return;
-  cancelWorkMetadataRecovery();
-  const controller = new AbortController();
-  metadataRecovery = controller;
+  if (!isTauriRuntime() || (metadataRecoveryActive && !rebuild)) return;
+  const runId = ++metadataRecoveryRunId;
+  metadataRecoveryActive = true;
+  useStorageRecoveryStore.setState({ status: "idle", progress: null, error: null });
   let recoveredWorks = 0;
-  void getRawDb().then(async db => {
-    await initializeWorkMetadata(db, {
-      rebuild, signal: controller.signal, runExclusive: queueDbOperation,
-      runTransaction: (rawDb, run) =>
-        runDatabaseTransactionOnQueue(rawDb, run, false, { publishMetadata: false, notifyContentSync: false }),
-      onProgress: progress => {
-        if (controller.signal.aborted) return;
-        useStorageRecoveryStore.setState({ status: "scanning", progress, error: null });
-        if (progress.recoveredWorks > recoveredWorks) {
-          recoveredWorks = progress.recoveredWorks;
-          notifyWorkMetadataChanges();
-        }
-      },
-    });
-    notifyUserStateCommitted(db);
-    if (controller.signal.aborted) return;
-    if (!controller.signal.aborted && useStorageRecoveryStore.getState().status === "scanning") {
-      useStorageRecoveryStore.setState({ status: "complete" });
+  let receivedEvents = false;
+  void (async () => {
+    if (pendingRecoveryCancel) {
+      await pendingRecoveryCancel;
     }
-  }).catch((error: unknown) => {
-    if (!controller.signal.aborted) useStorageRecoveryStore.setState({ status: "error", error: describeError(error) });
-  }).finally(() => {
-    if (metadataRecovery === controller) metadataRecovery = null;
-  });
+    await getRawDb();
+    if (metadataRecoveryRunId !== runId) return;
+    const { listen } = await import("@tauri-apps/api/event");
+    let unlisten: (() => void) | undefined;
+    let eventChain = Promise.resolve();
+    try {
+      unlisten = await listen<{
+        progress: WorkMetadataRecoveryProgress;
+        effects?: DbMutationEffects | null;
+      }>("norea:storage-recovery-progress", (event) => {
+        eventChain = eventChain.then(async () => {
+          if (metadataRecoveryRunId !== runId) return;
+          receivedEvents = true;
+          if (event.payload.effects) {
+            await applyDbMutationEffects(event.payload.effects);
+          }
+          if (metadataRecoveryRunId !== runId) return;
+          const { progress } = event.payload;
+          useStorageRecoveryStore.setState({ status: "scanning", progress, error: null });
+          if (progress.recoveredWorks > recoveredWorks) {
+            recoveredWorks = progress.recoveredWorks;
+            notifyWorkMetadataChanges();
+          }
+        });
+      });
+      if (metadataRecoveryRunId !== runId) return;
+      const envelope = await invoke<DbMutationEnvelope<WorkMetadataRecoveryProgress>>(
+        "db_startup_recover_work_metadata",
+        { rebuild },
+      );
+      await eventChain;
+      if (metadataRecoveryRunId !== runId) return;
+      if (!receivedEvents) {
+        await applyDbMutationEffects(envelope.effects);
+      }
+      if (useStorageRecoveryStore.getState().status === "scanning") {
+        useStorageRecoveryStore.setState({ status: "complete" });
+      }
+    } catch (error: unknown) {
+      if (metadataRecoveryRunId === runId) {
+        useStorageRecoveryStore.setState({ status: "error", error: describeError(error) });
+      }
+    } finally {
+      unlisten?.();
+      if (metadataRecoveryRunId === runId) {
+        metadataRecoveryActive = false;
+      }
+    }
+  })();
 }
 
 export async function runExclusiveDatabaseOperation<T>(
@@ -207,7 +243,7 @@ export async function runExclusiveDatabaseOperation<T>(
     } catch (error) {
       discardUserStateNotifications(rawDb);
       if (isTauriRuntime()) {
-        await restoreWorkMetadataDirectories(rawDb, false);
+        await restoreWorkMetadataDirectoriesFromRust(false);
       }
       throw error;
     }
@@ -356,7 +392,7 @@ async function runDatabaseTransactionOnQueue<T>(
         console.warn("[db] transaction rollback failed", rollbackError);
       });
       if (isTauriRuntime()) {
-        await restoreWorkMetadataDirectories(rawDb, false);
+        await restoreWorkMetadataDirectoriesFromRust(false);
       }
     }
     throw error;

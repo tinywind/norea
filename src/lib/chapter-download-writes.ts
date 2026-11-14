@@ -16,6 +16,16 @@ export function canAdoptChapterDownloadSnapshot(chapterId: number, revision: num
     && (downloadRevisions.get(chapterId) ?? 0) <= revision;
 }
 
+export function listIneligibleSnapshotChapterIds(revision: number): number[] {
+  const ids = new Set<number>([...activeWrites.keys(), ...activeDeletions.keys()]);
+  for (const [chapterId, currentRevision] of downloadRevisions) {
+    if (currentRevision > revision) {
+      ids.add(chapterId);
+    }
+  }
+  return [...ids];
+}
+
 export type HoldChapterDownloadSnapshot = (chapterId: number) => boolean;
 
 /** Hold verified files through a database commit; skip busy chapters without waiting inside SQLite. */

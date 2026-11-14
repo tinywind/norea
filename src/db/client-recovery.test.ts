@@ -13,17 +13,29 @@ vi.mock("../lib/chapter-content/storage-platform", () => ({ inspectChapterConten
 }) }));
 const sql = vi.hoisted(() => ({ get: vi.fn() }));
 const covers = vi.hoisted(() => ({ changed: vi.fn(), invalidated: vi.fn() }));
+const events = vi.hoisted(() => ({
+  listeners: new Set<(event: { payload: unknown }) => void>(),
+}));
+const ipcBridge = vi.hoisted(() => ({
+  handle: null as null | ((command: string, args?: Record<string, unknown>) => Promise<{ handled: true; result: unknown } | { handled: false }>),
+}));
 vi.mock("@tauri-apps/plugin-sql", () => ({ default: sql }));
 vi.mock("../lib/tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
 vi.mock("../lib/observability", () => ({ startPerformanceObservation: () => () => undefined, recordPerformanceObservation: () => undefined }));
 vi.mock("../lib/novel-cover-storage", () => ({ notifyNovelCoverChanged: covers.changed, invalidateAllNovelCoverSources: covers.invalidated }));
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: async (_name: string, callback: (event: { payload: unknown }) => void) => {
+    events.listeners.add(callback);
+    return () => { events.listeners.delete(callback); };
+  },
+}));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: {
   root?: string;
   input?: { operation: string; path?: string; body?: number[] };
   transactionId?: string;
   query?: string;
   values?: unknown[];
-} = {}) => {
+} & Record<string, unknown> = {}) => {
   const params = (values: unknown[] = []) =>
     Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never;
   if (command === "database_transaction_reset") {
@@ -67,6 +79,10 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: {
       ...row,
       enabled: Boolean(row.enabled),
     }));
+  }
+  if (ipcBridge.handle) {
+    const bridged = await ipcBridge.handle(command, args);
+    if (bridged.handled) return bridged.result;
   }
   const input = args.input!;
   const root = storage.root;
@@ -115,6 +131,50 @@ async function promptly<T>(promise: Promise<T>): Promise<T> {
   finally { clearTimeout(timeout!); }
 }
 
+async function installRecoveryModules() {
+  events.listeners.clear();
+  client = await import("./client");
+  state = (await import("../store/storage-recovery")).useStorageRecoveryStore;
+  const { createWorkMetadataIpcHandler } = await import("../test/mock-work-metadata-ipc");
+  const { withWorkMetadataRollback } = await import("../lib/work-metadata");
+  const { restoreWorkMetadataDirectories } = await import("./work-metadata");
+  const { invoke } = await import("@tauri-apps/api/core");
+  const rawDb = sql.get();
+  ipcBridge.handle = createWorkMetadataIpcHandler({
+    getDb: () => rawDb,
+    runTransaction: (run, remote) => client.runDatabaseTransaction(run, remote),
+    runExclusive: (run) =>
+      client.runExclusiveDatabaseOperation(() => run(), { publishMetadata: false }),
+    runRecoveryTransaction: async (_db, run) =>
+      withWorkMetadataRollback(async () => {
+        const transactionId = crypto.randomUUID();
+        await invoke("database_transaction_begin", { transactionId });
+        const txDb = {
+          path: "sqlite:norea.db",
+          execute: (query: string, values: unknown[] = []) =>
+            invoke("database_transaction_execute", { transactionId, query, values }),
+          select: (query: string, values: unknown[] = []) =>
+            invoke("database_transaction_select", { transactionId, query, values }),
+          close: async () => false,
+        } as never;
+        try {
+          const result = await run(txDb);
+          await invoke("database_transaction_commit", { transactionId });
+          return result;
+        } catch (error) {
+          await invoke("database_transaction_rollback", { transactionId });
+          await restoreWorkMetadataDirectories(rawDb, false);
+          throw error;
+        }
+      }),
+    emitRecoveryEvent: (payload) => {
+      for (const listener of [...events.listeners]) {
+        listener({ payload });
+      }
+    },
+  }).handle;
+}
+
 beforeEach(async () => {
   vi.resetModules();
   covers.changed.mockClear(); covers.invalidated.mockClear();
@@ -137,8 +197,7 @@ beforeEach(async () => {
       return { rowsAffected: Number(result.changes), lastInsertId: Number(result.lastInsertRowid) };
     },
   });
-  client = await import("./client");
-  state = (await import("../store/storage-recovery")).useStorageRecoveryStore;
+  await installRecoveryModules();
 });
 
 afterEach(async () => {
@@ -261,8 +320,7 @@ it("reopens an initialized database with pending metadata and publishes it witho
   await vi.waitFor(() => expect(state.getState().status).toBe("complete"));
   sqlite.exec("UPDATE novel SET name='Pending title',summary='Pending summary' WHERE id=1");
   vi.resetModules();
-  client = await import("./client");
-  state = (await import("../store/storage-recovery")).useStorageRecoveryStore;
+  await installRecoveryModules();
   storage.calls = [];
   const db = await promptly(client.getDb());
   expect(await db.select("SELECT name,summary FROM novel")).toEqual([{ name: "Pending title", summary: "Pending summary" }]);
@@ -278,8 +336,7 @@ it("retains pending metadata and usable database access when restart publication
   const original = [...storage.files.get("old")!.get(first)!];
   sqlite.exec("UPDATE novel SET summary='Pending summary' WHERE id=1");
   vi.resetModules();
-  client = await import("./client");
-  state = (await import("../store/storage-recovery")).useStorageRecoveryStore;
+  await installRecoveryModules();
   storage.failRead = true;
   const db = await promptly(client.getDb());
   await vi.waitFor(() => expect(state.getState().status).toBe("error"));

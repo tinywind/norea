@@ -22,6 +22,7 @@ export function subscribeUserStateLedgerChanges(listener: () => void): () => voi
 export function emitUserStateLedgerChanged(): void { for (const listener of ledgerChanges) listener(); }
 const applied = new Set<(effects: UserStateApplyEffects) => void>();
 let deferredRunner: (() => Promise<void>) | undefined;
+let deferredNovelRecorder: ((novelIds: readonly number[]) => void) | undefined;
 let runningDeferred = false;
 let deferredRequestedWhileRunning = false;
 let deferredTask: Promise<void> | null = null;
@@ -37,6 +38,11 @@ export function subscribeUserStateChanges(listener: (priority: UserStateChangePr
 export function subscribeUserStateApplied(listener: (effects: UserStateApplyEffects) => void): () => void { applied.add(listener); return () => applied.delete(listener); }
 export function emitUserStateApplied(effects: UserStateApplyEffects): void { for (const listener of applied) listener(effects); }
 export function installUserStateDeferredRunner(run: () => Promise<void>): void { deferredRunner = run; }
+export function installUserStateDeferredNovelRecorder(
+  record: (novelIds: readonly number[]) => void,
+): void {
+  deferredNovelRecorder = record;
+}
 export function requestUserStateDeferredApply(db: UserStateDb): void { ready.add(db); }
 export function discardUserStateNotifications(db: UserStateDb): void { changed.delete(db); ready.delete(db); }
 function scheduleDeferredUserStateApply(): void {
@@ -66,7 +72,11 @@ export function notifyUserStateEffects(input: {
   priority?: UserStateChangePriority | null;
   ledgerChanged?: boolean;
   deferredReady?: boolean;
+  deferredNovelIds?: readonly number[];
 }): void {
+  if (input.deferredNovelIds?.length) {
+    deferredNovelRecorder?.(input.deferredNovelIds);
+  }
   if (input.priority) {
     for (const listener of changes) listener(input.priority);
     emitUserStateLedgerChanged();
