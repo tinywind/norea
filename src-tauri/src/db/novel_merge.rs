@@ -1141,7 +1141,7 @@ pub async fn record_pending_novel_merge_in_tx(
     Ok(operation_id)
 }
 
-fn immutable_lineage_proof(lineage: &JsonValue) -> Result<String, String> {
+pub fn immutable_lineage_proof(lineage: &JsonValue) -> Result<String, String> {
     let Some(obj) = lineage.as_object() else {
         return Err(
             "Incoming work migration is invalid: expected an object. Synchronization was held."

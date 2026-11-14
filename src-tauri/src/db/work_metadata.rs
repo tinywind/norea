@@ -574,6 +574,29 @@ impl<'de> Deserialize<'de> for RawNovelMetadataInput {
 
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExpectedInstallNovelDto {
+    pub id: i64,
+    pub novel_id: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ChapterNumberMappingInputDto {
+    pub chapter_path: String,
+    pub from: String,
+    pub to: String,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StoredNovelNumberReconciliationDto {
+    pub mappings: Vec<ChapterNumberMappingInputDto>,
+    #[serde(default)]
+    pub journal: Option<JsonValue>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InstallStoredNovelMetadataInputDto {
     pub metadata: RawNovelMetadataInput,
     #[serde(default)]
@@ -582,6 +605,46 @@ pub struct InstallStoredNovelMetadataInputDto {
     pub authoritative: bool,
     #[serde(default)]
     pub preserve_local_cover: bool,
+    #[serde(default)]
+    pub guard_server_url: Option<String>,
+    #[serde(default)]
+    pub error_on_source_held: bool,
+    #[serde(default)]
+    pub expected_sync_file_version: Option<Option<String>>,
+    #[serde(default)]
+    pub expected_existing_digest: Option<Option<String>>,
+    #[serde(default)]
+    pub expected_novel: Option<ExpectedInstallNovelDto>,
+    #[serde(default)]
+    pub require_new_work_absent: bool,
+    #[serde(default)]
+    pub reconciliation: Option<StoredNovelNumberReconciliationDto>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IndexedInstallNovelDto {
+    pub id: i64,
+    pub source_novel_id: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InspectInstallTargetDto {
+    pub directory: String,
+    pub existing: Option<StoredNovelMetadataDto>,
+    pub existing_cover_bytes: Option<Vec<u8>>,
+    pub existing_digest: Option<String>,
+    pub sync_file: Option<WorkMetadataSyncFileDto>,
+    pub indexed_novel: Option<IndexedInstallNovelDto>,
+    pub source_held: bool,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReindexPreservedWorkInputDto {
+    pub directory: String,
+    pub metadata: RawNovelMetadataInput,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -3010,6 +3073,363 @@ fn remove_all_stored_covers_in_tx(
     Ok(())
 }
 
+fn sha256_hex_bytes(bytes: &[u8]) -> String {
+    let digest = Sha256::digest(bytes);
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+fn compute_existing_install_digest(
+    existing: &NovelMetadataV1Dto,
+    cover_bytes: Option<&[u8]>,
+) -> Result<String, String> {
+    let serialized = serde_json::to_value(existing)
+        .map_err(|err| format!("db work metadata: serialize existing metadata: {err}"))?;
+    let canonical = serde_json::to_string(&canonical_json_value(&serialized))
+        .map_err(|err| format!("db work metadata: encode canonical metadata: {err}"))?;
+    let cover_hash = cover_bytes.map(sha256_hex_bytes);
+    let combined = format!("{canonical}:{}", cover_hash.as_deref().unwrap_or("none"));
+    Ok(sha256_hex_bytes(combined.as_bytes()))
+}
+
+fn assert_chapter_number_mappings(
+    mappings: &[ChapterNumberMappingInputDto],
+) -> Result<(), String> {
+    let mut from_set = HashSet::new();
+    let mut to_set = HashSet::new();
+    let mut path_set = HashSet::new();
+    for m in mappings {
+        if m.from == m.to
+            || !from_set.insert(m.from.clone())
+            || !to_set.insert(m.to.clone())
+            || !path_set.insert(m.chapter_path.clone())
+        {
+            return Err("Server chapter number mapping is invalid or ambiguous.".to_string());
+        }
+    }
+    let pseudo_changes: Vec<super::chapter::SourceChapterNumberChangeDto> = mappings
+        .iter()
+        .map(|m| super::chapter::SourceChapterNumberChangeDto {
+            id: 1,
+            path: m.chapter_path.clone(),
+            chapter_number: m.from.clone(),
+            next_path: m.chapter_path.clone(),
+            next_chapter_number: m.to.clone(),
+            source_relative_dir: String::new(),
+            target_relative_dir: String::new(),
+            is_downloaded: false,
+        })
+        .collect();
+    super::chapter::assert_source_chapter_number_changes_supported(&pseudo_changes)?;
+    if from_set.iter().any(|num| to_set.contains(num)) {
+        return Err("Server chapter number mapping overlaps.".to_string());
+    }
+    Ok(())
+}
+
+fn plan_server_chapter_number_changes(
+    work: &super::chapter::RenumberWorkDto,
+    stored: &[super::chapter::StoredRenumberChapterDto],
+    mappings: &[ChapterNumberMappingInputDto],
+) -> Result<Vec<super::chapter::SourceChapterNumberChangeDto>, String> {
+    assert_chapter_number_mappings(mappings)?;
+    let by_from: HashMap<&str, &ChapterNumberMappingInputDto> =
+        mappings.iter().map(|m| (m.from.as_str(), m)).collect();
+    let by_path: HashMap<&str, &ChapterNumberMappingInputDto> = mappings
+        .iter()
+        .map(|m| (m.chapter_path.as_str(), m))
+        .collect();
+    let original: HashMap<i64, &super::chapter::StoredRenumberChapterDto> =
+        stored.iter().map(|r| (r.id, r)).collect();
+
+    let mut translated = Vec::with_capacity(stored.len());
+    for row in stored {
+        let number = row
+            .chapter_number
+            .as_deref()
+            .and_then(canonical_chapter_number_str);
+        if let Some(path_mapping) = by_path.get(row.path.as_str()) {
+            if number.as_deref() != Some(path_mapping.from.as_str())
+                && number.as_deref() != Some(path_mapping.to.as_str())
+            {
+                return Err(
+                    "Server chapter mapping does not match the stored chapter number.".to_string(),
+                );
+            }
+        }
+        let Some(mapping) = number
+            .as_deref()
+            .and_then(|num| by_from.get(num))
+            .copied()
+        else {
+            translated.push(row.clone());
+            continue;
+        };
+        let legacy_folder = format!("norea-folder:{}", mapping.from);
+        if row.path != mapping.chapter_path && row.path != legacy_folder {
+            return Err("Server chapter mapping conflicts with a stored source path.".to_string());
+        }
+        let mut copy = row.clone();
+        copy.path = mapping.chapter_path.clone();
+        translated.push(copy);
+    }
+
+    let incoming: Vec<super::chapter::SyncSourceChapterItemDto> = mappings
+        .iter()
+        .map(|m| {
+            let num: f64 = m
+                .to
+                .parse()
+                .map_err(|_| "Server chapter number mapping is invalid or ambiguous.".to_string())?;
+            Ok(super::chapter::SyncSourceChapterItemDto {
+                path: m.chapter_path.clone(),
+                name: String::new(),
+                chapter_number: num,
+                source_chapter_id: Some(m.from.clone()),
+                page: None,
+                release_time: None,
+                content_type: None,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+
+    let mut planned =
+        super::chapter::plan_source_chapter_number_changes(work, &translated, &incoming)?;
+    for change in &mut planned {
+        if let Some(orig) = original.get(&change.id) {
+            change.path = orig.path.clone();
+        }
+    }
+    Ok(planned)
+}
+
+fn verify_and_guard_renumber_metadata_files_at(
+    root: &Path,
+    raw_journal: &JsonValue,
+    ctx: &mut TxContext,
+) -> Result<(), String> {
+    let version = raw_journal.get("version").and_then(JsonValue::as_i64);
+    let metadata_files = raw_journal.get("metadataFiles");
+    if (version == Some(1) && metadata_files.is_some() && !metadata_files.unwrap().is_null())
+        || (version == Some(2)
+            && !metadata_files
+                .and_then(JsonValue::as_array)
+                .is_some_and(|arr| arr.len() == 1))
+    {
+        return Err("Stored chapter reconciliation metadata backup is invalid.".to_string());
+    }
+    let Some(files) = metadata_files.and_then(JsonValue::as_array) else {
+        return Ok(());
+    };
+    let max_cover_bytes: usize = 20 * 1024 * 1024;
+    for file in files {
+        let path = file
+            .get("path")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| "Stored chapter reconciliation cover identity is invalid.".to_string())?;
+        let next_sha256 = file
+            .get("nextSha256")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| "Stored chapter reconciliation cover identity is invalid.".to_string())?;
+        let body = file.get("body").and_then(JsonValue::as_str);
+        let sha256 = file
+            .get("sha256")
+            .and_then(JsonValue::as_str)
+            .map(ToString::to_string);
+        if let Some(body_b64) = body {
+            let decoded = decode_base64(body_b64)
+                .map_err(|_| "Stored cover backup encoding is invalid.".to_string())?;
+            if decoded.len() > max_cover_bytes || encode_base64(&decoded) != body_b64 {
+                return Err("Stored cover backup encoding is invalid.".to_string());
+            }
+            if Some(sha256_hex_bytes(&decoded)) != sha256 {
+                return Err(
+                    "Stored cover backup does not match its digest. Existing files were retained."
+                        .to_string(),
+                );
+            }
+        } else if sha256.is_some() {
+            return Err("Stored chapter reconciliation cover identity is invalid.".to_string());
+        }
+        let current_bytes = crate::chapter_media::read_work_metadata_bytes_at(root, path)?;
+        if let Some(ref bytes) = current_bytes {
+            if bytes.len() > max_cover_bytes {
+                return Err(
+                    "Current cover exceeds the recovery byte limit. Existing files were retained."
+                        .to_string(),
+                );
+            }
+        }
+        let current_sha256 = current_bytes.as_deref().map(sha256_hex_bytes);
+        if current_sha256 != sha256 {
+            return Err(
+                "The cover changed outside chapter reconciliation. Existing files and the recovery backup were retained."
+                    .to_string(),
+            );
+        }
+        ctx.guard_work_metadata_rollback(path.to_string(), sha256, next_sha256.to_string());
+    }
+    Ok(())
+}
+
+pub async fn inspect_install_target_at(
+    pool: &SqlitePool,
+    root: &Path,
+    identity: &WorkMetadataIdentityDto,
+    server_url: Option<&str>,
+) -> Result<InspectInstallTargetDto, String> {
+    let mut conn = pool
+        .acquire()
+        .await
+        .map_err(|err| format!("db work metadata: acquire inspect connection: {err}"))?;
+    let cached_dir: Option<String> = sqlx::query_scalar(
+        "SELECT directory FROM work_metadata_file_cache WHERE plugin_id = ?1 AND path = ?2",
+    )
+    .bind(&identity.plugin_id)
+    .bind(&identity.novel_path)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|err| format!("db work metadata: inspect cached directory: {err}"))?;
+
+    let directory = match cached_dir {
+        Some(dir) => dir,
+        None => available_novel_metadata_directory_at(root, identity)?,
+    };
+
+    let existing_meta = match read_novel_metadata_for_replacement_at(root, &directory, identity)? {
+        Some((mut meta, _)) => {
+            meta.cover = discover_stored_novel_cover_at(root, &directory, meta.cover.as_ref())?;
+            Some(meta)
+        }
+        None => None,
+    };
+
+    let existing_cover_bytes = match existing_meta {
+        Some(ref meta) => read_stored_novel_cover_at(root, &directory, meta)?,
+        None => None,
+    };
+    let existing_digest = match existing_meta {
+        Some(ref meta) => Some(compute_existing_install_digest(
+            meta,
+            existing_cover_bytes.as_deref(),
+        )?),
+        None => None,
+    };
+    let existing = existing_meta.map(|metadata| StoredNovelMetadataDto {
+        directory: directory.clone(),
+        metadata,
+    });
+
+    let sync_file =
+        read_work_metadata_sync_file_in_tx(&mut conn, &identity.plugin_id, &identity.novel_path)
+            .await?;
+
+    let indexed_row = sqlx::query(
+        "SELECT id, source_novel_id FROM novel WHERE plugin_id = ?1 AND path = ?2",
+    )
+    .bind(&identity.plugin_id)
+    .bind(&identity.novel_path)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|err| format!("db work metadata: inspect indexed novel: {err}"))?;
+
+    let indexed_novel = indexed_row.map(|row| IndexedInstallNovelDto {
+        id: row.get("id"),
+        source_novel_id: row.get("source_novel_id"),
+    });
+
+    let source_held = match server_url {
+        Some(url) if !url.trim().is_empty() => {
+            super::content_sync::is_novel_migration_source_held_in_conn(
+                &mut conn,
+                url,
+                &identity.plugin_id,
+                &identity.novel_path,
+                &identity.novel_id,
+            )
+            .await?
+        }
+        _ => false,
+    };
+
+    Ok(InspectInstallTargetDto {
+        directory,
+        existing,
+        existing_cover_bytes,
+        existing_digest,
+        sync_file,
+        indexed_novel,
+        source_held,
+    })
+}
+
+#[tauri::command]
+pub async fn db_work_metadata_inspect_install(
+    app: AppHandle,
+    databases: State<'_, AppDatabase>,
+    identity: WorkMetadataIdentityDto,
+    server_url: Option<String>,
+) -> Result<InspectInstallTargetDto, String> {
+    let root = crate::chapter_media::media_root(&app)?;
+    inspect_install_target_at(databases.writer(), &root, &identity, server_url.as_deref()).await
+}
+
+#[tauri::command]
+pub async fn db_work_metadata_reindex_preserved_work(
+    app: AppHandle,
+    databases: State<'_, AppDatabase>,
+    input: ReindexPreservedWorkInputDto,
+) -> Result<DbMutationEnvelope<i64>, String> {
+    let root = crate::chapter_media::media_root(&app)?;
+    let metadata = parse_novel_metadata_input(&input.metadata)?;
+    let directory = input.directory;
+    with_write_tx(
+        databases.writer(),
+        TxOptions {
+            remote_content_sync: true,
+            metadata_root: MetadataRoot::Path(root.clone()),
+            ..TxOptions::default()
+        },
+        move |conn, ctx| {
+            Box::pin(async move {
+                let novel_id = apply_novel_metadata_to_cache_in_tx(
+                    Some(&root),
+                    &mut *conn,
+                    ctx,
+                    &metadata,
+                    Some(&directory),
+                    ApplyNovelMetadataOptions::default(),
+                )
+                .await?;
+                scan_stored_novel_chapters_to_cache_in_tx(
+                    Some(&root),
+                    &mut *conn,
+                    ctx,
+                    novel_id,
+                    &directory,
+                    None,
+                )
+                .await?;
+                remember_stored_novel_metadata_in_tx(
+                    &mut *conn,
+                    ctx,
+                    &directory,
+                    &metadata,
+                    false,
+                )
+                .await?;
+                sqlx::query("DELETE FROM work_metadata_dirty WHERE plugin_id = ?1 AND path = ?2")
+                    .bind(&metadata.identity.plugin_id)
+                    .bind(&metadata.identity.novel_path)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|err| format!("db work metadata: clear reindexed dirty: {err}"))?;
+                Ok(novel_id)
+            })
+        },
+    )
+    .await
+}
+
 pub async fn install_stored_novel_metadata_at(
     pool: &SqlitePool,
     root: PathBuf,
@@ -3033,6 +3453,62 @@ pub async fn install_stored_novel_metadata_at(
         },
         move |conn, ctx| {
             Box::pin(async move {
+                if let Some(ref server_url) = input.guard_server_url {
+                    if super::content_sync::is_novel_migration_source_held_in_conn(
+                        &mut *conn,
+                        server_url,
+                        &metadata.identity.plugin_id,
+                        &metadata.identity.novel_path,
+                        &metadata.identity.novel_id,
+                    )
+                    .await?
+                    {
+                        if input.error_on_source_held {
+                            return Err("CONTENT_SERVER_410".to_string());
+                        }
+                        return Ok(None);
+                    }
+                }
+
+                if input.expected_novel.is_some() || input.require_new_work_absent {
+                    let indexed = sqlx::query(
+                        "SELECT id, source_novel_id FROM novel WHERE plugin_id = ?1 AND path = ?2",
+                    )
+                    .bind(&metadata.identity.plugin_id)
+                    .bind(&metadata.identity.novel_path)
+                    .fetch_optional(&mut *conn)
+                    .await
+                    .map_err(|err| format!("db work metadata: check indexed novel: {err}"))?;
+
+                    if let Some(ref expected) = input.expected_novel {
+                        let matches = indexed.as_ref().is_some_and(|row| {
+                            let id: i64 = row.get("id");
+                            let src_id: Option<String> = row.get("source_novel_id");
+                            id == expected.id
+                                && src_id.as_deref() == Some(expected.novel_id.as_str())
+                        });
+                        if !matches {
+                            return Err(
+                                "The local migration target changed while refreshing its metadata."
+                                    .to_string(),
+                            );
+                        }
+                    } else if input.require_new_work_absent {
+                        if let Some(row) = indexed {
+                            let src_id: Option<String> = row.get("source_novel_id");
+                            if let Some(actual_src) = src_id {
+                                if actual_src != metadata.identity.novel_id {
+                                    return Err(
+                                        "Local work identity does not match the server metadata."
+                                            .to_string(),
+                                    );
+                                }
+                            }
+                            return Ok(None);
+                        }
+                    }
+                }
+
                 let cached_dir: Option<String> = sqlx::query_scalar(
                     "SELECT directory FROM work_metadata_file_cache \
                      WHERE plugin_id = ?1 AND path = ?2",
@@ -3048,7 +3524,7 @@ pub async fn install_stored_novel_metadata_at(
                     None => available_novel_metadata_directory_at(&root, &metadata.identity)?,
                 };
 
-                let existing = match read_novel_metadata_for_replacement_at(
+                let mut existing = match read_novel_metadata_for_replacement_at(
                     &root,
                     &directory,
                     &metadata.identity,
@@ -3063,6 +3539,130 @@ pub async fn install_stored_novel_metadata_at(
                     }
                     None => None,
                 };
+
+                if let Some(ref expected_digest) = input.expected_existing_digest {
+                    let current_cover = match existing {
+                        Some(ref meta) => read_stored_novel_cover_at(&root, &directory, meta)?,
+                        None => None,
+                    };
+                    let current_digest = match existing {
+                        Some(ref meta) => Some(compute_existing_install_digest(
+                            meta,
+                            current_cover.as_deref(),
+                        )?),
+                        None => None,
+                    };
+                    if &current_digest != expected_digest {
+                        return Ok(None);
+                    }
+                }
+
+                if let Some(ref expected_version) = input.expected_sync_file_version {
+                    let current_file = read_work_metadata_sync_file_in_tx(
+                        &mut *conn,
+                        &metadata.identity.plugin_id,
+                        &metadata.identity.novel_path,
+                    )
+                    .await?;
+                    let current_version = current_file
+                        .map(|f| format!("{}:{}", f.directory, f.fingerprint));
+                    if &current_version != expected_version {
+                        return Ok(None);
+                    }
+                }
+
+                if let Some(ref rec) = input.reconciliation {
+                    assert_chapter_number_mappings(&rec.mappings)?;
+                    let work_row = sqlx::query(
+                        "SELECT id, plugin_id, source_novel_id, path \
+                         FROM novel WHERE plugin_id = ?1 AND path = ?2",
+                    )
+                    .bind(&metadata.identity.plugin_id)
+                    .bind(&metadata.identity.novel_path)
+                    .fetch_optional(&mut *conn)
+                    .await
+                    .map_err(|err| format!("db work metadata: read renumber work: {err}"))?;
+                    let Some(work_row) = work_row else {
+                        return Err("Incoming chapter number identity changed.".to_string());
+                    };
+                    let work_source_id: Option<String> = work_row.get("source_novel_id");
+                    if work_source_id.as_deref() != Some(metadata.identity.novel_id.as_str()) {
+                        return Err("Incoming chapter number identity changed.".to_string());
+                    }
+                    let work = super::chapter::RenumberWorkDto {
+                        id: work_row.get("id"),
+                        plugin_id: work_row.get("plugin_id"),
+                        source_novel_id: work_source_id.unwrap_or_default(),
+                        path: work_row.get("path"),
+                    };
+                    let current_chapters =
+                        super::chapter::read_renumber_chapters_in_conn(&mut *conn, work.id).await?;
+                    let planned = plan_server_chapter_number_changes(
+                        &work,
+                        &current_chapters,
+                        &rec.mappings,
+                    )?;
+                    if let Some(ref raw_journal) = rec.journal {
+                        let journal_changes: Vec<super::chapter::SourceChapterNumberChangeDto> =
+                            serde_json::from_value(
+                                raw_journal
+                                    .get("changes")
+                                    .cloned()
+                                    .unwrap_or(JsonValue::Null),
+                            )
+                            .map_err(|_| {
+                                "Stored chapter number reconciliation is invalid.".to_string()
+                            })?;
+                        if planned != journal_changes {
+                            return Err(
+                                "Local chapter state changed while the server correction was prepared."
+                                    .to_string(),
+                            );
+                        }
+                        verify_and_guard_renumber_metadata_files_at(&root, raw_journal, ctx)?;
+                        super::chapter::apply_source_chapter_number_changes_in_tx(
+                            Some(&root),
+                            &mut *conn,
+                            ctx,
+                            work.id,
+                            raw_journal,
+                        )
+                        .await?;
+                    } else if !planned.is_empty() {
+                        return Err(
+                            "Incoming chapter numbers changed before their storage could be prepared."
+                                .to_string(),
+                        );
+                    }
+
+                    for mapping in &rec.mappings {
+                        if metadata.chapters.0.iter().any(|(k, _)| k == &mapping.from) {
+                            return Err(
+                                "Incoming catalog still contains a replaced chapter number."
+                                    .to_string(),
+                            );
+                        }
+                        if let Some(ref mut prev) = existing {
+                            prev.chapters.0.retain(|(k, _)| k != &mapping.from);
+                        }
+                    }
+
+                    let anchors: Vec<super::novel::ImportedChapterIdentityDto> = rec
+                        .mappings
+                        .iter()
+                        .map(|m| super::novel::ImportedChapterIdentityDto {
+                            path: m.chapter_path.clone(),
+                            chapter_number: Some(m.to.clone()),
+                        })
+                        .collect();
+                    super::novel::reconcile_imported_novel_identity_in_tx(
+                        &mut *conn,
+                        &metadata.identity.plugin_id,
+                        &metadata.identity.novel_path,
+                        &anchors,
+                    )
+                    .await?;
+                }
 
                 let merged = merge_incoming_novel_metadata(existing.as_ref(), &metadata)?;
                 if input.authoritative {
@@ -3157,6 +3757,16 @@ pub async fn install_stored_novel_metadata_at(
                 )
                 .await?
                 .ok_or_else(|| "Installed work metadata is missing from the local index.".to_string())?;
+
+                if let Some(ref rec) = input.reconciliation {
+                    if let Some(ref raw_journal) = rec.journal {
+                        super::chapter::commit_source_chapter_renumber_in_tx(
+                            &mut *conn,
+                            raw_journal,
+                        )
+                        .await?;
+                    }
+                }
 
                 let cover_bytes = read_stored_novel_cover_at(&root, &directory, &metadata)?;
                 ctx.record_cover_changed(installed_novel_id);

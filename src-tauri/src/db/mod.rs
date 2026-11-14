@@ -1,6 +1,7 @@
 pub mod category;
 pub mod chapter;
 pub mod chapter_composition;
+pub mod content_sync;
 pub mod download;
 pub mod novel;
 pub mod novel_merge;

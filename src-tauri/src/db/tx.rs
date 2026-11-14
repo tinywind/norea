@@ -1,8 +1,10 @@
+use std::collections::HashMap;
 use std::fs;
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
+use sha2::{Digest, Sha256};
 use sqlx::{SqliteConnection, SqlitePool};
 
 use super::{
@@ -88,6 +90,7 @@ pub struct TxContext {
     effects: DbMutationEffects,
     file_rollbacks: Vec<FileRollbackEntry>,
     metadata_file_rollbacks: Vec<WorkMetadataRollbackEntry>,
+    metadata_file_guards: HashMap<String, (Option<String>, String)>,
     fetched_catalog: Option<super::work_metadata::FetchedChapterCatalog>,
     native_directories_dirty_root: Option<PathBuf>,
 }
@@ -202,6 +205,16 @@ impl TxContext {
         Ok(())
     }
 
+    pub fn guard_work_metadata_rollback(
+        &mut self,
+        relative: impl Into<String>,
+        original_sha256: Option<String>,
+        next_sha256: String,
+    ) {
+        self.metadata_file_guards
+            .insert(relative.into(), (original_sha256, next_sha256));
+    }
+
     fn rollback_files(&mut self) -> Option<String> {
         let mut rollback_failures: Vec<String> = Vec::new();
 
@@ -216,6 +229,23 @@ impl TxContext {
                     continue;
                 }
             };
+            if let Some((expected_original, expected_next)) =
+                self.metadata_file_guards.get(&entry.relative)
+            {
+                let current_sha256 = current.as_ref().map(|bytes| {
+                    let digest = Sha256::digest(bytes);
+                    digest.iter().map(|b| format!("{b:02x}")).collect::<String>()
+                });
+                let accepted = current_sha256.as_ref() == expected_original.as_ref()
+                    || current_sha256.as_deref() == Some(expected_next.as_str());
+                if !accepted {
+                    rollback_failures.push(
+                        "The cover changed outside chapter reconciliation. Existing files and the recovery backup were retained."
+                            .to_string(),
+                    );
+                    continue;
+                }
+            }
             if current == entry.previous_bytes {
                 continue;
             }
