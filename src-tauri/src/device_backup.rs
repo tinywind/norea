@@ -11,8 +11,8 @@ use std::{
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_sql::{DbInstances, DbPool};
 use zip::{write::SimpleFileOptions, CompressionMethod, ZipArchive, ZipWriter};
+use crate::database::AppDatabase;
 use super::plugin_vpn::saved_profiles::backup::{
     create_private_backup_directory, read_backup_entry, validate_vault_backup,
     vault_backup_entry_limit, write_private_backup_file, VpnBackupPublication, VpnVaultBackupManifest,
@@ -175,14 +175,6 @@ fn digest_file(path: &Path) -> Result<(u64, String), String> {
             .map(|byte| format!("{byte:02x}"))
             .collect(),
     ))
-}
-
-async fn writer(instances: &DbInstances) -> Result<SqlitePool, String> {
-    let guard = instances.0.read().await;
-    match guard.get("sqlite:norea.db") {
-        Some(DbPool::Sqlite(pool)) => Ok(pool.clone()),
-        _ => Err(failure("database is not open")),
-    }
 }
 
 async fn schema(
@@ -594,7 +586,7 @@ async fn restore_database_and_vpn_files(
 #[tauri::command]
 pub async fn device_backup_create(
     app: AppHandle,
-    databases: State<'_, DbInstances>,
+    databases: State<'_, AppDatabase>,
     vpn: State<'_, super::plugin_vpn::state::PluginVpnState>,
     device_name: String,
     settings: Vec<DeviceSetting>,
@@ -602,7 +594,7 @@ pub async fn device_backup_create(
     let stage = new_stage(&app)?;
     let result = async {
         let guard = vpn.lock_device_backup().await?;
-        let pool = writer(&databases).await?;
+        let pool = databases.writer().clone();
         let database = stage.join(DB_ENTRY);
         sqlx::query("VACUUM INTO ?")
             .bind(database.to_string_lossy().as_ref())
@@ -641,7 +633,7 @@ pub async fn device_backup_create(
 #[tauri::command]
 pub async fn device_backup_inspect(
     app: AppHandle,
-    databases: State<'_, DbInstances>,
+    databases: State<'_, AppDatabase>,
     path: String,
 ) -> Result<DeviceBackupManifest, String> {
     let archive = checked_archive(&app, &path)?;
@@ -649,14 +641,14 @@ pub async fn device_backup_inspect(
         tauri::async_runtime::spawn_blocking(move || unpack_archive(&archive))
             .await
             .map_err(failure)??;
-    validate_staged_backup(&database, &vault_directory, &manifest, profile.as_deref(), &writer(&databases).await?).await?;
+    validate_staged_backup(&database, &vault_directory, &manifest, profile.as_deref(), databases.writer()).await?;
     Ok(manifest)
 }
 
 #[tauri::command]
 pub async fn device_backup_restore(
     app: AppHandle,
-    databases: State<'_, DbInstances>,
+    databases: State<'_, AppDatabase>,
     vpn: State<'_, super::plugin_vpn::state::PluginVpnState>,
     workers: State<'_, super::plugin_vpn::download_workers::DownloadVpnWorkers>,
     path: String,
@@ -666,7 +658,7 @@ pub async fn device_backup_restore(
         tauri::async_runtime::spawn_blocking(move || unpack_archive(&archive))
             .await
             .map_err(failure)??;
-    let pool = writer(&databases).await?;
+    let pool = databases.writer().clone();
     validate_staged_backup(&database, &vault_directory, &manifest, profile.as_deref(), &pool).await?;
     let mut guard = vpn.lock_device_backup_restore(workers.inner()).await?;
     let storage_root_path = app.path().app_config_dir().map_err(failure)?.join("chapter-media-storage-root.txt");

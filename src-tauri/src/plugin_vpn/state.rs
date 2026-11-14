@@ -11,7 +11,8 @@ use serde::{Deserialize, Serialize};
 #[cfg(any(target_os = "android", target_os = "windows"))]
 use tauri::Emitter;
 use tauri::{AppHandle, Manager, State};
-use tauri_plugin_sql::{DbInstances, DbPool};
+
+use crate::database::AppDatabase;
 
 use super::download_workers::{DownloadVpnWorkerRef, DownloadVpnWorkers};
 use super::finder::{VpnGateFinder, VpnGateServer};
@@ -625,12 +626,9 @@ pub(crate) async fn plugin_vpn_apply_finder_profile(
 }
 
 pub(crate) async fn saved_profile_database<R: tauri::Runtime>(app: &AppHandle<R>) -> Result<sqlx::SqlitePool, String> {
-    let instances = app.state::<DbInstances>();
-    let databases = instances.0.read().await;
-    match databases.get("sqlite:norea.db") {
-        Some(DbPool::Sqlite(pool)) => Ok(pool.clone()),
-        _ => Err("app database is not initialized for saved VPN profiles".to_string()),
-    }
+    app.try_state::<AppDatabase>()
+        .map(|db| db.writer().clone())
+        .ok_or_else(|| "app database is not initialized for saved VPN profiles".to_string())
 }
 
 #[tauri::command]

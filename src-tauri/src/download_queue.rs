@@ -3,7 +3,8 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use tauri::State;
-use tauri_plugin_sql::{DbInstances, DbPool};
+
+use crate::database::AppDatabase;
 
 const CREATE_DOWNLOAD_QUEUE_TABLE_SQL: &str = r#"
 CREATE TABLE IF NOT EXISTS chapter_download_queue (
@@ -117,38 +118,28 @@ async fn insert_queue_job(
     .map_err(|err| format!("download queue: insert job: {err}"))
 }
 
-async fn queue_pool(db_instances: &DbInstances) -> Result<SqlitePool, String> {
-    let instances = db_instances.0.read().await;
-    match instances.get("sqlite:norea.db") {
-        Some(DbPool::Sqlite(pool)) => Ok(pool.clone()),
-        _ => Err("download queue: app database is not initialized".to_string()),
-    }
-}
-
 #[tauri::command]
 pub async fn chapter_download_queue_enqueue(
-    db_instances: State<'_, DbInstances>,
+    db: State<'_, AppDatabase>,
     jobs: Vec<ChapterDownloadQueueJob>,
 ) -> Result<(), String> {
     if jobs.is_empty() {
         return Ok(());
     }
 
-    let pool = queue_pool(db_instances.inner()).await?;
-    enqueue_queue_jobs(&pool, &jobs, now_ms()).await
+    enqueue_queue_jobs(db.writer(), &jobs, now_ms()).await
 }
 
 #[tauri::command]
 pub async fn chapter_download_queue_remove(
-    db_instances: State<'_, DbInstances>,
+    db: State<'_, AppDatabase>,
     chapter_ids: Vec<i64>,
 ) -> Result<(), String> {
     if chapter_ids.is_empty() {
         return Ok(());
     }
 
-    let pool = queue_pool(db_instances.inner()).await?;
-    remove_queue_jobs(&pool, &chapter_ids).await
+    remove_queue_jobs(db.writer(), &chapter_ids).await
 }
 
 /// Bound IDs per statement; SQLite builds can cap bound variables as low as 999.
@@ -251,11 +242,10 @@ async fn remove_queue_jobs(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(),
 
 #[tauri::command]
 pub async fn chapter_download_queue_lease(
-    db_instances: State<'_, DbInstances>,
+    db: State<'_, AppDatabase>,
     limit: Option<usize>,
 ) -> Result<Vec<ChapterDownloadQueueJob>, String> {
-    let pool = queue_pool(db_instances.inner()).await?;
-    lease_queue_jobs(&pool, limit).await
+    lease_queue_jobs(db.writer(), limit).await
 }
 
 async fn lease_queue_jobs(
@@ -369,7 +359,6 @@ async fn lease_queue_jobs_once(
 mod tests {
     use super::*;
     use sqlx::sqlite::{SqliteConnectOptions, SqlitePoolOptions};
-    use std::collections::HashMap;
 
     fn job(id: i64, plan: Option<&str>, range: Option<&str>) -> ChapterDownloadQueueJob {
         serde_json::from_value(serde_json::json!({
@@ -403,11 +392,8 @@ mod tests {
             .await
             .unwrap();
 
-        let mut dbs = HashMap::new();
-        dbs.insert("sqlite:norea.db".to_string(), DbPool::Sqlite(pool.clone()));
-        let instances = DbInstances(tokio::sync::RwLock::new(dbs));
-
-        let shared = queue_pool(&instances).await.unwrap();
+        let app_db = AppDatabase::from_single_pool(pool.clone());
+        let shared = app_db.writer().clone();
         assert_eq!(
             sqlx::query_scalar::<_, i64>(
                 "SELECT COUNT(*) FROM chapter_download_queue WHERE chapter_id=41",

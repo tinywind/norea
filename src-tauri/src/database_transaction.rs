@@ -5,10 +5,10 @@ use sqlx::{
     Column, Row, Sqlite, SqlitePool, Transaction, TypeInfo, Value as SqlxValue, ValueRef,
 };
 use tauri::State;
-use tauri_plugin_sql::{DbInstances, DbPool};
 use tokio::sync::Mutex;
 
-const DB_URL: &str = "sqlite:norea.db";
+use crate::database::AppDatabase;
+
 const MAX_TRANSACTION_ID_LEN: usize = 128;
 
 struct TransactionSession {
@@ -38,14 +38,6 @@ fn validate_id(id: &str) -> Result<(), String> {
         return Err("database transaction: invalid transaction id".into());
     }
     Ok(())
-}
-
-async fn writer_pool(instances: &DbInstances) -> Result<SqlitePool, String> {
-    let databases = instances.0.read().await;
-    match databases.get(DB_URL) {
-        Some(DbPool::Sqlite(pool)) => Ok(pool.clone()),
-        _ => Err("database transaction: application database is not initialized".into()),
-    }
 }
 
 fn bind_query<'q>(
@@ -221,12 +213,11 @@ impl DatabaseTransactionState {
 
 #[tauri::command]
 pub async fn database_transaction_begin(
-    databases: State<'_, DbInstances>,
+    databases: State<'_, AppDatabase>,
     state: State<'_, DatabaseTransactionState>,
     transaction_id: String,
 ) -> Result<(), String> {
-    let pool = writer_pool(databases.inner()).await?;
-    state.begin(&pool, transaction_id).await
+    state.begin(databases.writer(), transaction_id).await
 }
 
 #[tauri::command]

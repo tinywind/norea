@@ -9,6 +9,7 @@ mod chapter_media;
 mod content_sync;
 mod database;
 mod database_transaction;
+mod db;
 mod device_backup;
 mod desktop_file_open;
 mod device;

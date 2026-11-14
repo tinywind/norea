@@ -3,11 +3,10 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sqlx::{QueryBuilder, Row, Sqlite, SqlitePool};
 use tauri::{AppHandle, Emitter, Runtime, State};
-use tauri_plugin_sql::{DbInstances, DbPool};
 
 use crate::chapter_media::{clear_downloaded_chapter_artifacts, ChapterMediaClearContext};
+use crate::database::AppDatabase;
 
-const DB_URL: &str = "sqlite:norea.db";
 const DOWNLOAD_CACHE_DELETE_PROGRESS_EVENT: &str = "download-cache-delete-progress";
 const DELETE_BATCH_SIZE: usize = 50;
 
@@ -125,14 +124,6 @@ fn normalize_target_ids(scope: &str, target_ids: Vec<i64>) -> Result<Vec<i64>, S
 
 fn parse_target_ids(raw: &str) -> Result<Vec<i64>, String> {
     serde_json::from_str(raw).map_err(|err| format!("download cache: parse target ids: {err}"))
-}
-
-async fn app_db_pool(db_instances: &DbInstances) -> Result<SqlitePool, String> {
-    let instances = db_instances.0.read().await;
-    match instances.get(DB_URL) {
-        Some(DbPool::Sqlite(pool)) => Ok(pool.clone()),
-        None => Err("download cache: norea.db is not loaded".to_string()),
-    }
 }
 
 async fn ensure_work_schema(pool: &SqlitePool) -> Result<(), String> {
@@ -512,7 +503,7 @@ fn emit_progress<R: Runtime>(
 
 #[tauri::command]
 pub async fn download_cache_delete_work_enqueue(
-    db_instances: State<'_, DbInstances>,
+    db: State<'_, AppDatabase>,
     request: DownloadCacheDeleteWorkRequest,
 ) -> Result<DownloadCacheDeleteWork, String> {
     let work_id = request.id.trim().to_string();
@@ -523,7 +514,7 @@ pub async fn download_cache_delete_work_enqueue(
     let target_ids = normalize_target_ids(&scope, request.target_ids)?;
     let target_ids_json = serde_json::to_string(&target_ids)
         .map_err(|err| format!("download cache: serialize target ids: {err}"))?;
-    let pool = app_db_pool(db_instances.inner()).await?;
+    let pool = db.writer().clone();
     ensure_work_schema(&pool).await?;
     let now = now_ms();
 
@@ -575,9 +566,9 @@ pub async fn download_cache_delete_work_enqueue(
 
 #[tauri::command]
 pub async fn download_cache_delete_work_list_resumable(
-    db_instances: State<'_, DbInstances>,
+    db: State<'_, AppDatabase>,
 ) -> Result<Vec<DownloadCacheDeleteWork>, String> {
-    let pool = app_db_pool(db_instances.inner()).await?;
+    let pool = db.writer().clone();
     ensure_work_schema(&pool).await?;
     let rows = sqlx::query(
         r#"
@@ -610,10 +601,10 @@ pub async fn download_cache_delete_work_list_resumable(
 
 #[tauri::command]
 pub async fn download_cache_delete_work_cancel(
-    db_instances: State<'_, DbInstances>,
+    db: State<'_, AppDatabase>,
     work_id: String,
 ) -> Result<(), String> {
-    let pool = app_db_pool(db_instances.inner()).await?;
+    let pool = db.writer().clone();
     ensure_work_schema(&pool).await?;
     sqlx::query(
         r#"
@@ -638,20 +629,20 @@ pub async fn download_cache_delete_work_cancel(
 #[tauri::command]
 pub async fn download_cache_delete_work_run(
     app: AppHandle,
-    db_instances: State<'_, DbInstances>,
+    db: State<'_, AppDatabase>,
     work_id: String,
     clear_files: bool,
 ) -> Result<DownloadCacheDeleteResult, String> {
-    run_download_cache_delete_work(app, db_instances, work_id, clear_files).await
+    run_download_cache_delete_work(app, db, work_id, clear_files).await
 }
 
 async fn run_download_cache_delete_work<R: Runtime>(
     app: AppHandle<R>,
-    db_instances: State<'_, DbInstances>,
+    db: State<'_, AppDatabase>,
     work_id: String,
     clear_files: bool,
 ) -> Result<DownloadCacheDeleteResult, String> {
-    let pool = app_db_pool(db_instances.inner()).await?;
+    let pool = db.writer().clone();
     ensure_work_schema(&pool).await?;
     let work = get_work(&pool, work_id.trim()).await?;
     if work.status == "cancelled" {
@@ -752,7 +743,6 @@ mod tests {
     use super::*;
 
     use std::{
-        collections::HashMap,
         env,
         ffi::OsString,
         fs,
@@ -919,9 +909,7 @@ mod tests {
             .await
             .expect("mark chapter as not downloaded");
 
-            let mut dbs = HashMap::new();
-            dbs.insert(DB_URL.to_string(), DbPool::Sqlite(pool.clone()));
-            app.manage(DbInstances(tokio::sync::RwLock::new(dbs)));
+            app.manage(AppDatabase::from_single_pool(pool.clone()));
 
             let media_root = app
                 .path()
@@ -935,7 +923,7 @@ mod tests {
             assert!(unstored_content_file.exists(), "unstored fixture file should exist");
 
             let work = download_cache_delete_work_enqueue(
-                app.state::<DbInstances>(),
+                app.state::<AppDatabase>(),
                 DownloadCacheDeleteWorkRequest {
                     id: "e2e-delete-novel".to_string(),
                     scope: "novel".to_string(),
@@ -948,7 +936,7 @@ mod tests {
 
             let result = run_download_cache_delete_work(
                 app.handle().clone(),
-                app.state::<DbInstances>(),
+                app.state::<AppDatabase>(),
                 work.id.clone(),
                 true,
             )

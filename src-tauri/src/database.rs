@@ -1,5 +1,6 @@
-use std::{fs, time::Duration};
+use std::{borrow::Cow, fs, path::Path, time::Duration};
 
+use sqlx::migrate::{Migration as SqlxMigration, MigrationType, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager};
@@ -10,8 +11,47 @@ const READ_DB_URL: &str = "sqlite:norea-readonly.db";
 const DB_FILE: &str = "norea.db";
 const DB_BUSY_TIMEOUT_MS: u64 = 5000;
 
+#[derive(Clone)]
+pub struct AppDatabase {
+    writer: SqlitePool,
+    reader: SqlitePool,
+}
+
+impl AppDatabase {
+    pub fn from_pools(writer: SqlitePool, reader: SqlitePool) -> Self {
+        Self { writer, reader }
+    }
+
+    #[cfg(test)]
+    pub fn from_single_pool(pool: SqlitePool) -> Self {
+        Self {
+            writer: pool.clone(),
+            reader: pool,
+        }
+    }
+
+    pub fn writer(&self) -> &SqlitePool {
+        &self.writer
+    }
+
+    pub fn reader(&self) -> &SqlitePool {
+        &self.reader
+    }
+
+    pub fn pool_for(&self, read_mode: crate::db::ReadMode) -> &SqlitePool {
+        match read_mode {
+            crate::db::ReadMode::Queued => &self.writer,
+            crate::db::ReadMode::Committed => &self.reader,
+        }
+    }
+
+    pub async fn close(&self) {
+        self.reader.close().await;
+        self.writer.close().await;
+    }
+}
+
 fn sqlite_pool_options() -> SqlitePoolOptions {
-    // Frontend transactions span IPC calls, so the shared connection must not expire between them.
     SqlitePoolOptions::new()
         .max_connections(1)
         .max_lifetime(None)
@@ -103,7 +143,22 @@ pub fn schema_migrations() -> Vec<Migration> {
     ]
 }
 
-async fn open_sqlite_pools(path: &std::path::Path) -> Result<(SqlitePool, SqlitePool), sqlx::Error> {
+pub fn sqlx_migrations() -> Vec<SqlxMigration> {
+    schema_migrations()
+        .into_iter()
+        .map(|migration| {
+            SqlxMigration::new(
+                migration.version,
+                migration.description.into(),
+                MigrationType::ReversibleUp,
+                migration.sql.into(),
+                false,
+            )
+        })
+        .collect()
+}
+
+async fn open_sqlite_pools(path: &Path) -> Result<(SqlitePool, SqlitePool), sqlx::Error> {
     let options = SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(false)
@@ -115,6 +170,41 @@ async fn open_sqlite_pools(path: &std::path::Path) -> Result<(SqlitePool, Sqlite
         .connect_with(options.read_only(true))
         .await?;
     Ok((writer, reader))
+}
+
+pub async fn open_and_migrate_pools(path: &Path) -> Result<AppDatabase, String> {
+    let writer_options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_millis(DB_BUSY_TIMEOUT_MS));
+    let writer = sqlite_pool_options()
+        .connect_with(writer_options)
+        .await
+        .map_err(|err| format!("database: open writer pool: {err}"))?;
+
+    let migrator = Migrator {
+        migrations: Cow::Owned(sqlx_migrations()),
+        ..Migrator::DEFAULT
+    };
+    if let Err(err) = migrator.run(&writer).await {
+        writer.close().await;
+        return Err(format!("database: run migrations: {err}"));
+    }
+
+    let reader_options = SqliteConnectOptions::new()
+        .filename(path)
+        .create_if_missing(false)
+        .read_only(true)
+        .journal_mode(SqliteJournalMode::Wal)
+        .busy_timeout(Duration::from_millis(DB_BUSY_TIMEOUT_MS));
+    let reader = SqlitePoolOptions::new()
+        .max_connections(2)
+        .connect_with(reader_options)
+        .await
+        .map_err(|err| format!("database: open reader pool: {err}"))?;
+
+    Ok(AppDatabase::from_pools(writer, reader))
 }
 
 pub fn install_sqlite_pools(app: &AppHandle) -> Result<(), String> {
@@ -129,6 +219,8 @@ pub fn install_sqlite_pools(app: &AppHandle) -> Result<(), String> {
             .await
             .map_err(|err| format!("database: open sqlite pools: {err}"))?;
 
+        app.manage(AppDatabase::from_pools(writer.clone(), reader.clone()));
+
         {
             let instances = app.state::<DbInstances>();
             let mut guard = instances.0.write().await;
@@ -142,8 +234,6 @@ pub fn install_sqlite_pools(app: &AppHandle) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use sqlx::migrate::{Migration as SqlxMigration, MigrationType, Migrator};
-    use std::borrow::Cow;
 
     fn schema(sql: &str) -> SqlxMigration {
         SqlxMigration::new(

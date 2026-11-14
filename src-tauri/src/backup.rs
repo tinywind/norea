@@ -19,13 +19,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use serde::{Deserialize, Serialize};
 use sqlx::Sqlite;
 use tauri::{AppHandle, Manager, State, async_runtime};
-use tauri_plugin_sql::{DbInstances, DbPool};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
+use crate::database::AppDatabase;
+
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 const MANIFEST_ENTRY: &str = "manifest.json";
-const DB_URL: &str = "sqlite:norea.db";
 const BACKUP_TEMP_DIR: &str = "backup";
 const MAX_BACKUP_ARCHIVE_BYTES: u64 = 2 * 1024 * BYTES_PER_MIB;
 const MAX_BACKUP_ZIP_ENTRIES: usize = 1;
@@ -1047,7 +1047,7 @@ pub async fn backup_pack_bytes(manifest_json: String) -> Result<Vec<u8>, String>
 
 #[tauri::command]
 pub async fn backup_restore_snapshot(
-    db_instances: State<'_, DbInstances>,
+    db: State<'_, AppDatabase>,
     manifest_json: String,
     cache_json: String,
 ) -> Result<(), String> {
@@ -1055,15 +1055,9 @@ pub async fn backup_restore_snapshot(
         .map_err(|err| format!("backup_restore_snapshot: parse manifest: {err}"))?;
     let cache: BackupRestoreCache = serde_json::from_str(&cache_json)
         .map_err(|err| format!("backup_restore_snapshot: parse storage cache: {err}"))?;
-    let pool = {
-        let instances = db_instances.0.read().await;
-        match instances.get(DB_URL) {
-            Some(DbPool::Sqlite(pool)) => pool.clone(),
-            None => return Err("backup_restore_snapshot: norea.db is not loaded".to_string()),
-        }
-    };
-    let mut tx = pool
-        .begin()
+    let mut tx = db
+        .writer()
+        .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|err| format!("backup_restore_snapshot: begin transaction: {err}"))?;
 
