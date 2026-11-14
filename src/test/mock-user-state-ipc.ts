@@ -753,6 +753,41 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
         };
       }
 
+      if (command === "db_novel_set_in_library") {
+        const id = args.id as number;
+        const inLibrary = Boolean(args.inLibrary);
+        await options.runTransaction(async db => {
+          const flag = inLibrary ? 1 : 0;
+          await db.execute(
+            `UPDATE novel
+             SET
+               in_library = $2,
+               library_added_at = CASE WHEN $2 = 1 THEN unixepoch() ELSE NULL END,
+               updated_at = unixepoch()
+             WHERE id = $1`,
+            [id, flag],
+          );
+          if (inLibrary) {
+            await db.execute(
+              `UPDATE chapter
+               SET found_at = MAX(COALESCE(found_at, 0), unixepoch())
+               WHERE novel_id = $1`,
+              [id],
+            );
+          } else {
+            await db.execute("DELETE FROM novel_download_goal WHERE novel_id = $1", [id]);
+          }
+          await recordLibraryInDb(db, [id]);
+        }, false);
+        return {
+          handled: true,
+          result: {
+            value: null,
+            effects: { userStatePriority: "normal", userStateLedgerChanged: true },
+          } satisfies DbMutationEnvelope<null>,
+        };
+      }
+
       return { handled: false };
     },
   };

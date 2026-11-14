@@ -7,6 +7,8 @@ import type { ChapterPayloadSnapshot } from "../chapter-content/inventory";
 import type { NovelMetadataV1, StoredNovelMetadata } from "../work-metadata";
 
 vi.mock("../../db/client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
+const invokeMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("../../db/work-metadata", async original => ({ ...await original<typeof import("../../db/work-metadata")>(), readWorkMetadataSyncFile: vi.fn() }));
 vi.mock("../work-metadata", async original => ({ ...await original<typeof import("../work-metadata")>(), installStoredNovelMetadata: vi.fn(), readStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn(), workMetadataOperation: vi.fn() }));
 vi.mock("../chapter-content/storage-platform", () => ({ inspectChapterPayloadInventory: vi.fn() }));
@@ -88,6 +90,26 @@ function initializeDevice(idOffset = 0) {
     const result = sqlite.prepare(sql).run(bindings(values)); return { rowsAffected:Number(result.changes), lastInsertId:Number(result.lastInsertRowid) };
   } } as Database;
   vi.mocked(getDb).mockResolvedValue(db);
+  const selectNovelDetail = async (whereSql: string, params: unknown[]) => {
+    const [row] = await db.select<Array<Record<string, unknown>>>(
+      `SELECT n.id, n.source_novel_id AS sourceNovelId, n.plugin_id AS pluginId, ip.name AS pluginName,
+              n.path, n.name, n.cover, n.summary, n.author, n.artist, n.status, n.genres, n.rating,
+              n.in_library AS inLibrary, n.is_local AS isLocal, n.created_at AS createdAt,
+              n.updated_at AS updatedAt, n.library_added_at AS libraryAddedAt, n.last_read_at AS lastReadAt
+       FROM novel n LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id ${whereSql}`,
+      params,
+    );
+    return row ? { ...row, inLibrary: Boolean(row.inLibrary), isLocal: row.pluginId === "local" && Boolean(row.isLocal) } : null;
+  };
+  invokeMock.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+    if (command === "db_novel_get_by_id") {
+      return selectNovelDetail("WHERE n.id = $1", [args.id]);
+    }
+    if (command === "db_novel_find_by_source") {
+      return selectNovelDetail("WHERE n.plugin_id = $1 AND n.path = $2", [args.pluginId, args.path]);
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
   vi.mocked(runDatabaseTransaction).mockImplementation(async (run, remote) => {
     sqlite.exec("BEGIN IMMEDIATE");
     try { if(remote)sqlite.exec("UPDATE content_sync_origin SET remote=1"); const result=await run(db); if(remote)sqlite.exec("UPDATE content_sync_origin SET remote=0"); sqlite.exec("COMMIT"); return result; }

@@ -90,6 +90,90 @@ beforeEach(() => {
       );
       return { total: totalRows[0]?.count ?? 0, uncategorized: uncategorizedRows[0]?.count ?? 0 };
     }
+    const buildFilter = (filter: {
+      search?: string;
+      categoryId?: number | null;
+      unreadOnly?: boolean;
+    } = {}) => {
+      const params: unknown[] = [];
+      const add = (v: unknown) => { params.push(v); return `$${params.length}`; };
+      const conditions = ["n.in_library = 1"];
+      if (filter.search?.trim()) conditions.push(`n.name LIKE '%' || ${add(filter.search.trim())} || '%' COLLATE NOCASE`);
+      if (filter.categoryId === -1) {
+        conditions.push("NOT EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id)");
+      } else if (filter.categoryId != null) {
+        conditions.push(`EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id AND nc.category_id = ${add(filter.categoryId)})`);
+      }
+      if (filter.unreadOnly) conditions.push("COALESCE(s.chapters_unread, 0) > 0");
+      return { conditions, params };
+    };
+    if (command === "db_novel_list_library_ids") {
+      const { conditions, params } = buildFilter(args.filter as never);
+      const rows = await db.select<Array<{ id: number }>>(
+        `SELECT n.id FROM novel n LEFT JOIN novel_stats s ON s.novel_id = n.id WHERE ${conditions.join(" AND ")} ORDER BY n.id`,
+        params,
+      );
+      return rows.map(row => row.id);
+    }
+    if (command === "db_novel_list_library_page") {
+      const { conditions, params } = buildFilter(args.filter as never);
+      const rows = await db.select<Array<Record<string, unknown>>>(
+        `SELECT n.id, n.plugin_id AS pluginId, n.source_novel_id AS sourceNovelId, n.path, n.name, n.cover, n.author,
+                n.in_library AS inLibrary, n.is_local AS isLocal,
+                COALESCE(s.total_chapters, 0) AS totalChapters,
+                COALESCE(s.chapters_downloaded, 0) AS chaptersDownloaded,
+                COALESCE(s.chapters_unread, 0) AS chaptersUnread,
+                COALESCE(s.reading_progress, 0) AS readingProgress,
+                n.last_read_at AS lastReadAt, n.updated_at AS lastUpdatedAt
+         FROM novel n LEFT JOIN novel_stats s ON s.novel_id = n.id
+         WHERE ${conditions.join(" AND ")} ORDER BY n.name COLLATE NOCASE ASC, n.id ASC`,
+        params,
+      );
+      return {
+        hasMore: false,
+        nextCursor: null,
+        novels: rows.map(r => ({ ...r, inLibrary: Boolean(r.inLibrary), isLocal: Boolean(r.isLocal) })),
+      };
+    }
+    if (command === "db_novel_get_library_summary") {
+      const { conditions, params } = buildFilter(args.filter as never);
+      const [row] = await db.select<Array<{ totalNovels: number }>>(
+        `SELECT COUNT(*) AS totalNovels FROM novel n LEFT JOIN novel_stats s ON s.novel_id = n.id WHERE ${conditions.join(" AND ")}`,
+        params,
+      );
+      return {
+        completeNovels: 0,
+        downloadedChapters: 0,
+        downloadedNovels: 0,
+        lastUpdatedAt: null,
+        localNovels: 0,
+        repairNeededNovels: 0,
+        totalChapters: 0,
+        totalNovels: row?.totalNovels ?? 0,
+        unreadChapters: 0,
+        unreadNovels: 0,
+      };
+    }
+    if (command === "db_novel_list_library_source_filters") {
+      const { conditions, params } = buildFilter(args.filter as never);
+      return db.select<Array<{ pluginId: string; pluginName: string | null; totalNovels: number }>>(
+        `SELECT n.plugin_id AS pluginId, ip.name AS pluginName, COUNT(*) AS totalNovels
+         FROM novel n LEFT JOIN novel_stats s ON s.novel_id = n.id LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
+         WHERE ${conditions.join(" AND ")} GROUP BY n.plugin_id, ip.name`,
+        params,
+      );
+    }
+    if (command === "db_novel_get_by_id") {
+      const [row] = await db.select<Array<Record<string, unknown>>>(
+        `SELECT n.id, n.source_novel_id AS sourceNovelId, n.plugin_id AS pluginId, ip.name AS pluginName,
+                n.path, n.name, n.cover, n.summary, n.author, n.artist, n.status, n.genres, n.rating,
+                n.in_library AS inLibrary, n.is_local AS isLocal, n.created_at AS createdAt,
+                n.updated_at AS updatedAt, n.library_added_at AS libraryAddedAt, n.last_read_at AS lastReadAt
+         FROM novel n LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id WHERE n.id = $1`,
+        [args.id],
+      );
+      return row ? { ...row, inLibrary: Boolean(row.inLibrary), isLocal: Boolean(row.isLocal) } : null;
+    }
     throw new Error(`Unexpected command: ${command}`);
   });
 });

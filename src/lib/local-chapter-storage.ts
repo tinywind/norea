@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { runDatabaseTransaction } from "../db/client";
-import { persistWorkChapterDirectories } from "../db/work-metadata";
+import { invokeDbMutation } from "../db/ipc";
 import { resolvedChapterStorageDir } from "./chapter-storage-resolution";
 import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
 import type { ChapterListRow } from "../db/queries/chapter";
@@ -132,8 +131,13 @@ export async function syncLocalChapterStorageAfterOrderChange({
     await pruneNovelStorageDir(
       nextChapters.map((chapter) => localChapterStorageRelativeDir(novel, chapter)),
     );
-    await runDatabaseTransaction(db => persistWorkChapterDirectories(db, novel.id,
-      nextChapters.map(chapter => ({ id: chapter.id, directory: localChapterStorageRelativeDir(novel, chapter) }))));
+    await invokeDbMutation("db_novel_persist_chapter_directories", {
+      novelId: novel.id,
+      chapters: nextChapters.map((chapter) => ({
+        id: chapter.id,
+        directory: localChapterStorageRelativeDir(novel, chapter),
+      })),
+    });
   });
 }
 

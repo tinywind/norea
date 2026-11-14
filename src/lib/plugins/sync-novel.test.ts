@@ -11,6 +11,21 @@ vi.mock("../../db/client", () => ({
   getDb: vi.fn(),
   runDatabaseTransaction: vi.fn(),
 }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+    if (command === "db_novel_freshness_record_cover_fetched") {
+      const db = await mockedGetDb();
+      await db.execute(
+        `INSERT INTO novel_freshness(novel_id,cover_fetched_at)
+         SELECT $1,$2 WHERE EXISTS(SELECT 1 FROM novel WHERE id=$1)
+         ON CONFLICT(novel_id) DO UPDATE SET cover_fetched_at=excluded.cover_fetched_at`,
+        [args.novelId, args.nowSeconds],
+      );
+      return { value: null, effects: {} };
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  }),
+}));
 vi.mock("../../db/queries/novel-identity", () => ({ reconcileImportedNovelIdentityInDb: vi.fn(async () => null) }));
 vi.mock("./source-chapter-renumber", () => ({ withSourceChapterNumberReconciliation: (_input: unknown, publish: (journal: null) => Promise<unknown>) => publish(null) }));
 vi.mock("../source-chapter-renumber", async original => ({ ...await original<typeof import("../source-chapter-renumber")>(), readRenumberChapters: vi.fn(async () => []) }));

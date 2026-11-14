@@ -1,24 +1,27 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../client", () => ({
-  getDb: vi.fn(),
-  runDatabaseTransaction: vi.fn(),
+const invokeMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("../../lib/observability", () => ({
+  startPerformanceObservation: () => () => undefined,
+  recordPerformanceObservation: () => undefined,
 }));
-vi.mock("./novel-identity", () => ({ reconcileImportedNovelIdentityInDb: vi.fn(async () => null), findMatchingNovelIdentityInDb: vi.fn(async () => null) }));
 
-import { getDb, runDatabaseTransaction } from "../client";
 import { MAX_ROUTE_QUERY_ROWS } from "../../lib/performance-budgets";
 import { UNCATEGORIZED_CATEGORY_ID } from "./category";
 import {
+  countLibraryStoredChapters,
   countNovels,
   findNovelBySource,
   getLibraryNovelSummary,
   getNovelById,
   insertNovelIfAbsent,
   listLibraryNovelIdentities,
+  listLibraryNovelIds,
   listLibraryNovelPage,
   listLibraryNovelRefreshTargets,
   listLibraryNovels,
+  listLibrarySourceFilters,
   renumberLocalNovelChapters,
   reorderLocalNovelChapters,
   setNovelInLibrary,
@@ -26,435 +29,137 @@ import {
   upsertLocalNovel,
 } from "./novel";
 
-const mockedGetDb = vi.mocked(getDb);
-const mockedRunDatabaseTransaction = vi.mocked(runDatabaseTransaction);
 const LOCAL_COVER = "data:image/png;base64,AQID";
 
-interface MockedDb {
-  select: ReturnType<typeof vi.fn>;
-  execute: ReturnType<typeof vi.fn>;
-}
-
-function stubDb(): MockedDb {
-  const select = vi.fn();
-  const execute = vi.fn();
-  const db = { select, execute } as never;
-  mockedGetDb.mockResolvedValue(db);
-  mockedRunDatabaseTransaction.mockImplementation(async (run) => run(db));
-  return { select, execute };
-}
-
 beforeEach(() => {
-  vi.clearAllMocks();
+  invokeMock.mockReset();
 });
 
-it.each(["/novel/123", "/webtoon/list?titleId=650305&q=%2f#info", "opaque:{\"id\":123}"])("looks up the exact plugin identity %s", async path => {
-  const db = stubDb();
-  db.select.mockResolvedValue([]);
+it.each([
+  "/novel/123",
+  "/webtoon/list?titleId=650305&q=%2f#info",
+  'opaque:{"id":123}',
+])("looks up the exact plugin identity %s", async (path) => {
+  invokeMock.mockResolvedValueOnce(null);
   expect(await findNovelBySource("source", path)).toBeNull();
-  expect(db.select).toHaveBeenCalledWith(expect.any(String), ["source", path]);
+  expect(invokeMock).toHaveBeenCalledWith("db_novel_find_by_source", {
+    pluginId: "source",
+    path,
+    mode: "queued",
+  });
 });
 
-it.each(["/novel/123", "/webtoon/list?titleId=650305&q=%2f#info", "opaque:{\"id\":123}"])("inserts the exact plugin identity %s", async path => {
-  const db = stubDb();
-  db.execute.mockResolvedValue({ rowsAffected: 1 });
+it.each([
+  "/novel/123",
+  "/webtoon/list?titleId=650305&q=%2f#info",
+  'opaque:{"id":123}',
+])("inserts the exact plugin identity %s", async (path) => {
+  invokeMock.mockResolvedValueOnce({ value: null, effects: {} });
   await insertNovelIfAbsent({ pluginId: "source", path, name: "Novel" });
-  expect(db.execute).toHaveBeenCalledWith(expect.any(String), ["source", path, "Novel", null, 1]);
-});
-
-describe("listLibraryNovelIdentities", () => {
-  it("returns library source identities in deterministic order", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([
-      { pluginId: "source-a", path: "/novel/1" },
-      { pluginId: "source-b", path: "/novel/2" },
-    ]);
-
-    const identities = await listLibraryNovelIdentities();
-
-    const [sql] = db.select.mock.calls[0]!;
-    expect(sql).toContain("WHERE in_library = 1");
-    expect(sql).toContain(
-      "ORDER BY plugin_id COLLATE NOCASE ASC, path COLLATE NOCASE ASC",
-    );
-    expect(identities).toEqual([
-      { pluginId: "source-a", path: "/novel/1" },
-      { pluginId: "source-b", path: "/novel/2" },
-    ]);
+  expect(invokeMock).toHaveBeenCalledWith("db_novel_insert_if_absent", {
+    input: {
+      pluginId: "source",
+      path,
+      name: "Novel",
+      cover: null,
+      inLibrary: true,
+    },
   });
 });
 
-describe("listLibraryNovels", () => {
-  it("filters by in_library=1 and coerces booleans on the default sort", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([
-      {
-        id: 1,
-        pluginId: "local",
-        sourceNovelId: "book-1",
-        path: "p1",
-        name: "Sample A",
-        cover: null,
-        author: "Writer A",
-        inLibrary: 1,
-        isLocal: 0,
-        totalChapters: 10,
-        chaptersDownloaded: 0,
-        chaptersUnread: 5,
-        readingProgress: 55,
-        lastReadAt: 1000,
-        lastUpdatedAt: 1_700_000_000,
-      },
+describe("library queries", () => {
+  it("lists library identities and ids with explicit read modes", async () => {
+    invokeMock
+      .mockResolvedValueOnce([
+        { pluginId: "source-a", path: "/novel/1" },
+        { pluginId: "source-b", path: "/novel/2" },
+      ])
+      .mockResolvedValueOnce([1, 2]);
+
+    await expect(listLibraryNovelIdentities()).resolves.toEqual([
+      { pluginId: "source-a", path: "/novel/1" },
+      { pluginId: "source-b", path: "/novel/2" },
     ]);
-
-    const rows = await listLibraryNovels();
-
-    expect(db.select).toHaveBeenCalledOnce();
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("FROM novel n");
-    expect(sql).toContain("LEFT JOIN novel_stats s ON s.novel_id = n.id");
-    expect(sql).not.toContain("LEFT JOIN chapter");
-    expect(sql).toContain("n.in_library = 1");
-    expect(sql).toContain("n.source_novel_id AS sourceNovelId");
-    expect(sql).toContain("AS readingProgress");
-    expect(sql).toContain("ORDER BY");
-    expect(sql).toContain("last_read_at");
-    expect(params).toEqual([]);
-    expect(rows).toEqual([
-      {
-        id: 1,
-        pluginId: "local",
-        sourceNovelId: "book-1",
-        path: "p1",
-        name: "Sample A",
-        cover: null,
-        author: "Writer A",
-        inLibrary: true,
-        isLocal: false,
-        totalChapters: 10,
-        chaptersDownloaded: 0,
-        chaptersUnread: 5,
-        readingProgress: 55,
-        lastReadAt: 1000,
-        lastUpdatedAt: 1_700_000_000,
-      },
-    ]);
-  });
-
-  it("does not expose remote covers for local novels", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([
-      {
-        id: 1,
-        pluginId: "local",
-        path: "p1",
-        name: "Sample A",
-        cover: "https://example.test/cover.jpg",
-        author: "Writer A",
-        inLibrary: 1,
-        isLocal: 1,
-        totalChapters: 10,
-        chaptersDownloaded: 10,
-        chaptersUnread: 0,
-        readingProgress: 100,
-        lastReadAt: 1000,
-        lastUpdatedAt: 1_700_000_000,
-      },
-    ]);
-
-    const rows = await listLibraryNovels();
-
-    expect(rows[0]?.cover).toBeNull();
-    expect(rows[0]?.isLocal).toBe(true);
-  });
-
-  it("appends a case-insensitive name LIKE clause when search is provided", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovels({ search: "  Hero " });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("LIKE '%' || $1 || '%'");
-    expect(sql).toContain("COLLATE NOCASE");
-    expect(params).toEqual(["Hero"]);
-  });
-
-  it("appends an EXISTS novel_category clause when categoryId is provided", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovels({ categoryId: 7 });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain(
-      "EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id AND nc.category_id = $1)",
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      1,
+      "db_novel_list_library_identities",
+      { mode: "queued" },
     );
-    expect(params).toEqual([7]);
+
+    await expect(
+      listLibraryNovelIds({ categoryId: UNCATEGORIZED_CATEGORY_ID }),
+    ).resolves.toEqual([1, 2]);
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "db_novel_list_library_ids", {
+      filter: { categoryId: UNCATEGORIZED_CATEGORY_ID },
+      mode: "queued",
+    });
   });
 
-  it("filters uncategorized novels with no novel_category rows", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovels({ categoryId: UNCATEGORIZED_CATEGORY_ID });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain(
-      "NOT EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id)",
-    );
-    expect(params).toEqual([]);
-  });
-
-  it("uses materialized unread stats when unreadOnly is enabled", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovels({ unreadOnly: true });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("COALESCE(s.chapters_unread, 0) > 0");
-    expect(params).toEqual([]);
-  });
-
-  it("combines complete stats and stored partial bodies when downloadedOnly is enabled", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovels({ downloadedOnly: true });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain(
-      "(n.is_local = 1 OR (COALESCE(s.chapters_downloaded, 0) + (",
-    );
-    expect(params).toEqual([]);
-  });
-
-  it("combines search and categoryId with stable param order", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovels({ search: "abc", categoryId: 3 });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("$1");
-    expect(sql).toContain("$2");
-    expect(params).toEqual(["abc", 3]);
-  });
-
-  it("ignores blank/whitespace-only search input", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovels({ search: "   " });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).not.toContain("LIKE");
-    expect(params).toEqual([]);
-  });
-
-  it("adds a bounded route limit when requested", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovels({ limit: 75 });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("LIMIT $1");
-    expect(params).toEqual([75]);
-  });
-
-  it("clamps oversized library route limits", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
+  it("clamps oversized route limits before invoking db_novel_list_library", async () => {
+    invokeMock.mockResolvedValueOnce([]);
 
     await listLibraryNovels({
       limit: MAX_ROUTE_QUERY_ROWS + 25,
       search: "abc",
     });
 
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("LIKE '%' || $1 || '%'");
-    expect(sql).toContain("LIMIT $2");
-    expect(params).toEqual(["abc", MAX_ROUTE_QUERY_ROWS]);
-  });
-});
-
-describe("listLibraryNovelPage", () => {
-  it("fetches one extra row and returns the next keyset cursor", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([
-      {
-        id: 9,
-        pluginId: "demo",
-        path: "p9",
-        name: "Nine",
-        cover: null,
-        author: null,
-        inLibrary: 1,
-        isLocal: 0,
-        totalChapters: 12,
-        chaptersDownloaded: 3,
-        chaptersUnread: 4,
-        readingProgress: 25,
-        lastReadAt: null,
-        lastUpdatedAt: 1_700_000_009,
+    expect(invokeMock).toHaveBeenCalledWith("db_novel_list_library", {
+      filter: {
+        limit: MAX_ROUTE_QUERY_ROWS,
+        search: "abc",
       },
-      {
-        id: 8,
-        pluginId: "demo",
-        path: "p8",
-        name: "Eight",
-        cover: null,
-        author: null,
-        inLibrary: 1,
-        isLocal: 0,
-        totalChapters: 10,
-        chaptersDownloaded: 5,
-        chaptersUnread: 0,
-        readingProgress: 100,
-        lastReadAt: 1_700_000_001,
-        lastUpdatedAt: 1_700_000_008,
-      },
-      {
-        id: 7,
-        pluginId: "demo",
-        path: "p7",
-        name: "Seven",
-        cover: null,
-        author: null,
-        inLibrary: 1,
-        isLocal: 0,
-        totalChapters: 1,
-        chaptersDownloaded: 0,
-        chaptersUnread: 1,
-        readingProgress: 0,
-        lastReadAt: null,
-        lastUpdatedAt: 1_700_000_007,
-      },
-    ]);
-
-    const page = await listLibraryNovelPage({ limit: 2 });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("ORDER BY id DESC");
-    expect(sql).toContain("LIMIT $1");
-    expect(params).toEqual([3]);
-    expect(page.hasMore).toBe(true);
-    expect(page.novels).toHaveLength(2);
-    expect(page.nextCursor).toEqual({
-      id: 8,
-      name: "Eight",
-      sortValue: 8,
+      mode: "queued",
     });
   });
 
-  it("adds a default descending id cursor for date-added pages", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
+  it("forwards cursor pagination and clamps page limits", async () => {
+    const pagePayload = {
+      hasMore: true,
+      nextCursor: { id: 8, name: "Eight", sortValue: 8 },
+      novels: [
+        {
+          id: 9,
+          pluginId: "demo",
+          path: "p9",
+          name: "Nine",
+          sourceNovelId: null,
+          cover: null,
+          author: null,
+          inLibrary: true,
+          isLocal: false,
+          totalChapters: 12,
+          chaptersDownloaded: 3,
+          chaptersUnread: 4,
+          readingProgress: 25,
+          lastReadAt: null,
+          lastUpdatedAt: 1_700_000_009,
+        },
+      ],
+    };
+    invokeMock.mockResolvedValueOnce(pagePayload);
 
-    await listLibraryNovelPage({
-      cursor: { id: 50, name: "Cursor", sortValue: 50 },
-      limit: 25,
-    });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("FROM library_rows");
-    expect(sql).toContain("WHERE id < $1");
-    expect(sql).toContain("LIMIT $2");
-    expect(params).toEqual([50, 26]);
-  });
-
-  it("uses the sorted metric plus name and id as the keyset cursor", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovelPage({
-      cursor: { id: 10, name: "Beta", sortValue: 4 },
-      limit: 25,
-      search: "hero",
-      sortOrder: "downloadedDesc",
-    });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("LIKE '%' || $1 || '%'");
-    expect(sql).toContain("chaptersDownloaded < $2");
-    expect(sql).toContain("name COLLATE NOCASE > $4 COLLATE NOCASE");
-    expect(sql).toContain("AND id > $3");
-    expect(sql).toContain(
-      "ORDER BY chaptersDownloaded DESC, name COLLATE NOCASE ASC, id ASC",
+    const page = await listLibraryNovelPage(
+      {
+        cursor: { id: 10, name: "Ten", sortValue: 10 },
+        limit: 2,
+        sortOrder: "dateAddedDesc",
+      },
+      "committed",
     );
-    expect(params).toEqual(["hero", 4, 10, "Beta", 26]);
+
+    expect(invokeMock).toHaveBeenCalledWith("db_novel_list_library_page", {
+      filter: {
+        cursor: { id: 10, name: "Ten", sortValue: 10 },
+        limit: 2,
+        sortOrder: "dateAddedDesc",
+      },
+      mode: "committed",
+    });
+    expect(page).toEqual(pagePayload);
   });
 
-  it("omits the next cursor when the page is not full", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([
-      {
-        id: 1,
-        pluginId: "demo",
-        path: "p1",
-        name: "One",
-        cover: null,
-        author: null,
-        inLibrary: 1,
-        isLocal: 0,
-        totalChapters: 1,
-        chaptersDownloaded: 0,
-        chaptersUnread: 0,
-        readingProgress: 100,
-        lastReadAt: null,
-        lastUpdatedAt: 1_700_000_001,
-      },
-    ]);
-
-    const page = await listLibraryNovelPage({ limit: 2 });
-
-    expect(page).toMatchObject({
-      hasMore: false,
-      nextCursor: null,
-    });
-    expect(page.novels).toHaveLength(1);
-  });
-});
-
-describe("getLibraryNovelSummary", () => {
-  it("aggregates exact stats and tag counts for the current filter", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([
-      {
-        completeNovels: 2,
-        downloadedChapters: 25,
-        downloadedNovels: 3,
-        lastUpdatedAt: 1_700_000_099,
-        localNovels: 1,
-        repairNeededNovels: 2,
-        totalChapters: 40,
-        totalNovels: 4,
-        unreadChapters: 6,
-        unreadNovels: 2,
-      },
-    ]);
-
-    const summary = await getLibraryNovelSummary({
-      categoryId: 7,
-      downloadedOnly: true,
-      search: "hero",
-      unreadOnly: true,
-    });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("WITH library_rows AS");
-    expect(sql).toContain("COUNT(*) AS totalNovels");
-    expect(sql).toContain("SUM(chaptersDownloaded)");
-    expect(sql).toContain("SUM(CASE WHEN chaptersUnread > 0");
-    expect(sql).toContain("EXISTS (SELECT 1 FROM novel_category");
-    expect(sql).toContain("COALESCE(s.chapters_unread, 0) > 0");
-    expect(sql).toContain(
-      "(n.is_local = 1 OR (COALESCE(s.chapters_downloaded, 0) + (",
-    );
-    expect(params).toEqual(["hero", 7]);
-    expect(summary).toEqual({
+  it("queries library summary, stored chapter counts, source filters, and refresh targets", async () => {
+    const summary = {
       completeNovels: 2,
       downloadedChapters: 25,
       downloadedNovels: 3,
@@ -465,603 +170,211 @@ describe("getLibraryNovelSummary", () => {
       totalNovels: 4,
       unreadChapters: 6,
       unreadNovels: 2,
-    });
-  });
-
-  it("returns zero summary values when SQLite does not return a row", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await expect(getLibraryNovelSummary()).resolves.toEqual({
-      completeNovels: 0,
-      downloadedChapters: 0,
-      downloadedNovels: 0,
-      lastUpdatedAt: null,
-      localNovels: 0,
-      repairNeededNovels: 0,
-      totalChapters: 0,
-      totalNovels: 0,
-      unreadChapters: 0,
-      unreadNovels: 0,
-    });
-  });
-});
-
-describe("listLibraryNovelRefreshTargets", () => {
-  it("returns library refresh targets and coerces local flags", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([
-      {
-        id: 2,
-        pluginId: "demo",
-        path: "/novel",
-        name: "Demo",
-        cover: "https://example.test/cover.jpg",
-        isLocal: 0,
-      },
-    ]);
-
-    const rows = await listLibraryNovelRefreshTargets();
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("FROM novel n");
-    expect(sql).toContain("n.in_library = 1");
-    expect(sql).toContain("ORDER BY n.name COLLATE NOCASE ASC");
-    expect(params).toEqual([]);
-    expect(rows).toEqual([
-      {
-        id: 2,
-        pluginId: "demo",
-        path: "/novel",
-        name: "Demo",
-        cover: "https://example.test/cover.jpg",
-        isLocal: false,
-      },
-    ]);
-  });
-
-  it("can scope refresh targets to a manual category", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovelRefreshTargets({ categoryId: 9 });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain(
-      "EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id AND nc.category_id = $1)",
-    );
-    expect(params).toEqual([9]);
-  });
-
-  it("applies every active library filter to refresh targets", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovelRefreshTargets({
-      search: "  Hero ",
-      categoryId: 9,
-      downloadedOnly: true,
-      sourceId: " source-a ",
-      unreadOnly: true,
-    });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain("LEFT JOIN novel_stats s ON s.novel_id = n.id");
-    expect(sql).toContain("n.name LIKE '%' || $1 || '%' COLLATE NOCASE");
-    expect(sql).toContain(
-      "EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id AND nc.category_id = $2)",
-    );
-    expect(sql).toContain(
-      "(n.is_local = 1 OR (COALESCE(s.chapters_downloaded, 0) + (",
-    );
-    expect(sql).toContain("n.plugin_id = $3");
-    expect(sql).toContain("COALESCE(s.chapters_unread, 0) > 0");
-    expect(sql).not.toContain("LIMIT");
-    expect(params).toEqual(["Hero", 9, "source-a"]);
-  });
-
-  it("can scope refresh targets to uncategorized novels", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await listLibraryNovelRefreshTargets({
-      categoryId: UNCATEGORIZED_CATEGORY_ID,
-    });
-
-    const [sql, params] = db.select.mock.calls[0]!;
-    expect(sql).toContain(
-      "NOT EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id)",
-    );
-    expect(params).toEqual([]);
-  });
-});
-
-describe("countNovels", () => {
-  it("returns 0 when the table is empty", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([{ count: 0 }]);
-
-    expect(await countNovels()).toBe(0);
-  });
-
-  it("returns the COUNT(*) value the row carries", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([{ count: 7 }]);
-
-    expect(await countNovels()).toBe(7);
-  });
-});
-
-describe("insertNovelIfAbsent", () => {
-  it("uses INSERT OR IGNORE with the 5 expected params in order", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce(undefined);
-
-    await insertNovelIfAbsent({
-      pluginId: "local",
-      path: "p1",
-      name: "Sample",
-    });
-
-    expect(db.execute).toHaveBeenCalledOnce();
-    const [sql, params] = db.execute.mock.calls[0]!;
-    expect(sql).toContain("INSERT OR IGNORE INTO novel");
-    expect(sql).toContain("library_added_at");
-    expect(params).toEqual(["local", "p1", "Sample", null, 1]);
-  });
-
-  it("forwards a non-default cover and inLibrary=false", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce(undefined);
-
-    await insertNovelIfAbsent({
-      pluginId: "boxnovel",
-      path: "/n/abc",
-      name: "Title",
-      cover: "https://example.test/c.jpg",
-      inLibrary: false,
-    });
-
-    const [, params] = db.execute.mock.calls[0]!;
-    expect(params).toEqual([
-      "boxnovel",
-      "/n/abc",
-      "Title",
-      "https://example.test/c.jpg",
-      0,
-    ]);
-  });
-});
-
-describe("getNovelById", () => {
-  it("returns null when no row matches", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    const result = await getNovelById(999);
-
-    expect(result).toBeNull();
-    const [, params] = db.select.mock.calls[0]!;
-    expect(params).toEqual([999]);
-  });
-
-  it("coerces in_library and is_local to strict booleans", async () => {
-    const db = stubDb();
-    db.select
+    };
+    invokeMock
+      .mockResolvedValueOnce(summary)
+      .mockResolvedValueOnce(14)
       .mockResolvedValueOnce([
-        {
-          id: 5,
-          pluginId: "demo",
-          path: "/n/5",
-          name: "Hero",
-          cover: null,
-          summary: null,
-          author: null,
-          artist: null,
-          status: null,
-          genres: null,
-          inLibrary: 1,
-          isLocal: 0,
-          createdAt: 1_700_000_000,
-          updatedAt: 1_700_000_000,
-          libraryAddedAt: 1_700_000_000,
-          lastReadAt: null,
-        },
+        { pluginId: "source", pluginName: "Source", totalNovels: 4 },
       ])
       .mockResolvedValueOnce([
         {
-          id: 6,
+          id: 2,
           pluginId: "demo",
-          path: "/n/6",
-          name: "String Flag Source",
+          path: "/novel",
+          name: "Demo",
           cover: null,
-          summary: null,
-          author: null,
-          artist: null,
-          status: null,
-          genres: null,
-          inLibrary: "true",
-          isLocal: "true",
-          createdAt: 1_700_000_000,
-          updatedAt: 1_700_000_000,
-          libraryAddedAt: 1_700_000_000,
-          lastReadAt: null,
-        },
-      ])
-      .mockResolvedValueOnce([
-        {
-          id: 7,
-          pluginId: "local",
-          path: "local:manual:sample",
-          name: "String Flag Local",
-          cover: null,
-          summary: null,
-          author: null,
-          artist: null,
-          status: null,
-          genres: null,
-          inLibrary: "true",
-          isLocal: "true",
-          createdAt: 1_700_000_000,
-          updatedAt: 1_700_000_000,
-          libraryAddedAt: 1_700_000_000,
-          lastReadAt: null,
+          isLocal: false,
         },
       ]);
 
-    const result = await getNovelById(5);
-    const sourceResult = await getNovelById(6);
-    const localResult = await getNovelById(7);
+    await expect(
+      getLibraryNovelSummary({ categoryId: 7, unreadOnly: true }, "committed"),
+    ).resolves.toEqual(summary);
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      1,
+      "db_novel_get_library_summary",
+      {
+        filter: { categoryId: 7, unreadOnly: true },
+        mode: "committed",
+      },
+    );
 
-    expect(result?.inLibrary).toBe(true);
-    expect(result?.isLocal).toBe(false);
-    expect(result?.id).toBe(5);
-    expect(result?.name).toBe("Hero");
-    expect(sourceResult?.inLibrary).toBe(true);
-    expect(sourceResult?.isLocal).toBe(false);
-    expect(localResult?.inLibrary).toBe(true);
-    expect(localResult?.isLocal).toBe(true);
+    await expect(countLibraryStoredChapters([])).resolves.toBe(0);
+    await expect(
+      countLibraryStoredChapters([1, 2, 1, Number.NaN], "committed"),
+    ).resolves.toBe(14);
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      2,
+      "db_novel_count_library_stored_chapters",
+      {
+        novelIds: [1, 2],
+        mode: "committed",
+      },
+    );
+
+    await expect(
+      listLibrarySourceFilters({ downloadedOnly: true }, "committed"),
+    ).resolves.toEqual([
+      { pluginId: "source", pluginName: "Source", totalNovels: 4 },
+    ]);
+    await expect(
+      listLibraryNovelRefreshTargets({ search: "Hero" }),
+    ).resolves.toHaveLength(1);
   });
 });
 
-describe("updateLocalNovelMetadata", () => {
-  it("updates only local novel metadata fields", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([{ id: 12 }]);
-    db.execute.mockResolvedValueOnce({ rowsAffected: 1 });
+describe("detail, count, and membership mutations", () => {
+  it("loads novel detail by id and counts novels", async () => {
+    invokeMock.mockResolvedValueOnce(null).mockResolvedValueOnce(7);
+    await expect(getNovelById(999, "committed")).resolves.toBeNull();
+    await expect(countNovels()).resolves.toBe(7);
 
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "db_novel_get_by_id", {
+      id: 999,
+      mode: "committed",
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "db_novel_count", {
+      mode: "queued",
+    });
+  });
+
+  it("toggles library membership through db_novel_set_in_library", async () => {
+    invokeMock
+      .mockResolvedValueOnce({ value: null, effects: {} })
+      .mockResolvedValueOnce({ value: null, effects: {} });
+
+    await setNovelInLibrary(7, true);
+    await setNovelInLibrary(7, false);
+
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "db_novel_set_in_library", {
+      id: 7,
+      inLibrary: true,
+    });
+    expect(invokeMock).toHaveBeenNthCalledWith(2, "db_novel_set_in_library", {
+      id: 7,
+      inLibrary: false,
+    });
+  });
+});
+
+describe("local novel mutations", () => {
+  it("validates local metadata name and forwards normalized fields", async () => {
+    await expect(
+      updateLocalNovelMetadata(12, { name: "   " }),
+    ).rejects.toThrow("local novel: name is required");
+    expect(invokeMock).not.toHaveBeenCalled();
+
+    invokeMock.mockResolvedValueOnce({ value: null, effects: {} });
     await updateLocalNovelMetadata(12, {
-      name: "Manual Book",
+      name: "  Manual Book  ",
       cover: LOCAL_COVER,
       summary: "",
       author: "Writer",
-      artist: "Artist",
-      status: "",
-      genres: "Fantasy",
     });
-
-    const [selectSql, selectParams] = db.select.mock.calls[0]!;
-    expect(selectSql).toContain("plugin_id = $2");
-    expect(selectSql).toContain("is_local = 1");
-    expect(selectParams).toEqual([12, "local"]);
-
-    const [sql, params] = db.execute.mock.calls[0]!;
-    expect(sql).toContain("UPDATE novel");
-    expect(sql).toContain("plugin_id = $9");
-    expect(sql).toContain("is_local = 1");
-    expect(params).toEqual([
-      12,
-      "Manual Book",
-      LOCAL_COVER,
-      null,
-      "Writer",
-      "Artist",
-      null,
-      "Fantasy",
-      "local",
-    ]);
-  });
-
-  it("rejects missing or non-local targets", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([]);
-
-    await expect(
-      updateLocalNovelMetadata(12, {
+    expect(invokeMock).toHaveBeenCalledWith("db_novel_update_local_metadata", {
+      novelId: 12,
+      input: {
         name: "Manual Book",
-      }),
-    ).rejects.toThrow("local novel: target novel is not local");
-    expect(db.execute).not.toHaveBeenCalled();
-  });
-
-  it("discards remote cover sources", async () => {
-    const db = stubDb();
-    db.select.mockResolvedValueOnce([{ id: 12 }]);
-    db.execute.mockResolvedValueOnce({ rowsAffected: 1 });
-
-    await updateLocalNovelMetadata(12, {
-      name: "Manual Book",
-      cover: "https://example.test/cover.jpg",
+        cover: LOCAL_COVER,
+        summary: "",
+        author: "Writer",
+        artist: null,
+        status: null,
+        genres: null,
+      },
     });
-
-    expect(db.execute.mock.calls[0]?.[1]?.[2]).toBeNull();
   });
-});
 
-describe("reorderLocalNovelChapters", () => {
-  it("renumbers local chapter positions in the requested order", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce({ rowsAffected: 2 });
-    db.select
-      .mockResolvedValueOnce([{ id: 42 }])
-      .mockResolvedValueOnce([
-        { id: 8, position: 1, chapterNumber: "1" },
-        { id: 9, position: 2, chapterNumber: "2" },
-      ]);
+  it("routes chapter reorder and renumber commands", async () => {
+    invokeMock
+      .mockResolvedValueOnce({ value: null, effects: {} })
+      .mockResolvedValueOnce({ value: { rowsAffected: 2 }, effects: {} });
 
     await reorderLocalNovelChapters(42, [9, 8]);
+    await expect(renumberLocalNovelChapters(42)).resolves.toEqual({
+      rowsAffected: 2,
+    });
 
-    expect(db.execute).toHaveBeenCalledOnce();
-    expect(db.execute.mock.calls[0]?.[0]).toContain("WITH requested");
-    expect(db.execute.mock.calls[0]?.[1]).toEqual([
-      9,
+    expect(invokeMock).toHaveBeenNthCalledWith(
       1,
-      "1",
-      8,
+      "db_novel_reorder_local_chapters",
+      {
+        novelId: 42,
+        chapterIds: [9, 8],
+      },
+    );
+    expect(invokeMock).toHaveBeenNthCalledWith(
       2,
-      "2",
-      42,
-    ]);
-  });
-
-  it("skips writes when the requested order is unchanged", async () => {
-    const db = stubDb();
-    db.select
-      .mockResolvedValueOnce([{ id: 42 }])
-      .mockResolvedValueOnce([
-        { id: 8, position: 1, chapterNumber: "1" },
-        { id: 9, position: 2, chapterNumber: "2" },
-      ]);
-
-    await reorderLocalNovelChapters(42, [8, 9]);
-
-    expect(db.execute).not.toHaveBeenCalled();
-  });
-
-  it("rejects reorder lists that do not match existing chapters", async () => {
-    const db = stubDb();
-    db.select
-      .mockResolvedValueOnce([{ id: 42 }])
-      .mockResolvedValueOnce([
-        { id: 8, position: 1, chapterNumber: "1" },
-        { id: 9, position: 2, chapterNumber: "2" },
-      ]);
-
-    await expect(reorderLocalNovelChapters(42, [9, 9])).rejects.toThrow(
-      "local novel: reorder ids must match existing chapters",
+      "db_novel_renumber_local_chapters",
+      { novelId: 42 },
     );
-    expect(db.execute).not.toHaveBeenCalled();
   });
 
-  it("rejects partial reorder writes", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce({ rowsAffected: 1 });
-    db.select
-      .mockResolvedValueOnce([{ id: 42 }])
-      .mockResolvedValueOnce([
-        { id: 8, position: 1, chapterNumber: "1" },
-        { id: 9, position: 2, chapterNumber: "2" },
-      ]);
-
-    await expect(reorderLocalNovelChapters(42, [9, 8])).rejects.toThrow(
-      "local novel: failed to update chapter order",
-    );
-    expect(db.execute).toHaveBeenCalledOnce();
-  });
-});
-
-describe("renumberLocalNovelChapters", () => {
-  it("compacts local chapter positions and chapter numbers", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce({ rowsAffected: 2 });
-    db.select
-      .mockResolvedValueOnce([{ id: 42 }])
-      .mockResolvedValueOnce([
-        { id: 12, position: 12, chapterNumber: "12" },
-        { id: 13, position: 13, chapterNumber: "13" },
-      ]);
-
-    const result = await renumberLocalNovelChapters(42);
-
-    expect(result).toEqual({ rowsAffected: 2 });
-    expect(db.execute.mock.calls[0]?.[0]).toContain(
-      "chapter_number = (",
-    );
-    expect(db.execute.mock.calls[0]?.[1]).toEqual([
-      12,
-      1,
-      "1",
-      13,
-      2,
-      "2",
-      42,
-    ]);
-  });
-});
-
-describe("upsertLocalNovel", () => {
-  it("upserts a local library novel and downloaded chapters", async () => {
-    const db = stubDb();
-    db.execute
-      .mockResolvedValueOnce({ rowsAffected: 1 })
-      .mockResolvedValueOnce({ rowsAffected: 1 });
-    db.select.mockResolvedValueOnce([{ id: 42 }]);
+  it("strips heavy chapter bodies and preserves tri-state metadata flags in upsertLocalNovel", async () => {
+    invokeMock.mockResolvedValueOnce({
+      value: {
+        changed: true,
+        changedChapters: 1,
+        novelId: 42,
+        chapterCount: 1,
+      },
+      effects: {},
+    });
 
     const result = await upsertLocalNovel({
-      path: "/books/sample.epub",
-      name: "Local Book",
+      path: "local",
+      name: "local",
       cover: LOCAL_COVER,
-      summary: "Imported locally.",
-      author: "Writer",
-      artist: "Artist",
-      status: "completed",
-      genres: "Fantasy",
+      summary: null,
       chapters: [
         {
           path: "chapter-1",
           name: "Chapter 1",
           position: 1,
           chapterNumber: "1",
-          page: "1",
-          releaseTime: "2026-01-01",
           contentType: "text",
-          content: "Chapter body",
+          content: "Large body that must not cross DB IPC",
           contentBytes: 12,
         },
       ],
     });
 
-    const [novelSql, novelParams] = db.execute.mock.calls[0]!;
-    expect(novelSql).toContain("INSERT INTO novel");
-    expect(novelSql).toContain("ON CONFLICT(plugin_id, path) DO UPDATE");
-    expect(novelSql).toContain("in_library, is_local");
-    expect(novelSql).toContain("in_library       = 1");
-    expect(novelSql).toContain("is_local         = 1");
-    expect(novelParams).toEqual([
-      "local",
-      "/books/sample.epub",
-      "Local Book",
-      LOCAL_COVER,
-      "Imported locally.",
-      "Writer",
-      "Artist",
-      "completed",
-      "Fantasy",
-    ]);
-
-    const [selectSql, selectParams] = db.select.mock.calls[0]!;
-    expect(selectSql).toContain("SELECT id FROM novel");
-    expect(selectParams).toEqual(["local", "/books/sample.epub"]);
-
-    const [chapterSql, chapterParams] = db.execute.mock.calls[1]!;
-    expect(chapterSql).toContain("INSERT INTO chapter");
-    expect(chapterSql).toContain("content_type");
-    expect(chapterSql).toContain("stored_content_type");
-    expect(chapterSql).toContain("content_bytes");
-    expect(chapterSql).toContain("media_repair_needed");
-    expect(chapterSql).toContain("is_downloaded");
-    expect(chapterSql).toContain("is_downloaded  = 1");
-    expect(chapterParams).toEqual([
-      42,
-      "chapter-1",
-      "Chapter 1",
-      1,
-      "1",
-      "1",
-      "2026-01-01",
-      "text",
-      "html",
-      12,
-    ]);
-
+    expect(invokeMock).toHaveBeenCalledWith("db_novel_upsert_local", {
+      input: {
+        path: "local",
+        name: "local",
+        cover: LOCAL_COVER,
+        hasCover: true,
+        summary: null,
+        hasSummary: true,
+        author: null,
+        hasAuthor: false,
+        artist: null,
+        hasArtist: false,
+        status: null,
+        hasStatus: false,
+        genres: null,
+        hasGenres: false,
+        chapters: [
+          {
+            path: "chapter-1",
+            name: "Chapter 1",
+            position: 1,
+            contentType: "text",
+            contentBytes: 12,
+            chapterNumber: "1",
+            page: "1",
+            releaseTime: null,
+          },
+        ],
+      },
+    });
     expect(result).toEqual({
       changed: true,
       changedChapters: 1,
       novelId: 42,
       chapterCount: 1,
     });
-  });
-
-  it("rejects when the local novel id cannot be resolved", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce({ rowsAffected: 1 });
-    db.select.mockResolvedValueOnce([]);
-
-    await expect(
-      upsertLocalNovel({
-        path: "/books/missing.epub",
-        name: "Missing",
-        chapters: [],
-      }),
-    ).rejects.toThrow("local import: failed to resolve local novel id");
-
-    expect(db.execute).toHaveBeenCalledOnce();
-  });
-
-  it("propagates chapter import errors", async () => {
-    const db = stubDb();
-    db.execute
-      .mockResolvedValueOnce({ rowsAffected: 1 })
-      .mockRejectedValueOnce(new Error("chapter failed"));
-    db.select.mockResolvedValueOnce([{ id: 42 }]);
-
-    await expect(
-      upsertLocalNovel({
-        path: "/books/missing.epub",
-        name: "Missing",
-        chapters: [
-          {
-            path: "chapter-1",
-            name: "Chapter 1",
-            position: 1,
-            content: "Chapter body",
-            contentBytes: 12,
-          },
-        ],
-      }),
-    ).rejects.toThrow("chapter failed");
-  });
-
-  it("discards remote cover sources", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce({ rowsAffected: 1 });
-    db.select.mockResolvedValueOnce([{ id: 42 }]);
-
-    await upsertLocalNovel({
-      path: "/books/sample.epub",
-      name: "Local Book",
-      cover: "https://example.test/cover.jpg",
-      chapters: [],
-    });
-
-    expect(db.execute.mock.calls[0]?.[1]?.[3]).toBeNull();
-  });
-});
-
-describe("setNovelInLibrary", () => {
-  it("updates in_library and bumps updated_at", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce(undefined);
-
-    await setNovelInLibrary(7, true);
-
-    const [sql, params] = db.execute.mock.calls[0]!;
-    expect(sql).toContain("UPDATE novel");
-    expect(sql).toContain("in_library = $2");
-    expect(sql).toContain("library_added_at");
-    expect(sql).toContain("updated_at = unixepoch()");
-    expect(params).toEqual([7, 1]);
-
-    const [chapterSql, chapterParams] = db.execute.mock.calls[1]!;
-    expect(chapterSql).toContain("UPDATE chapter");
-    expect(chapterSql).toContain("found_at");
-    expect(chapterParams).toEqual([7]);
-  });
-
-  it("can flip the flag back to false", async () => {
-    const db = stubDb();
-    db.execute.mockResolvedValueOnce(undefined);
-
-    await setNovelInLibrary(7, false);
-
-    const [, params] = db.execute.mock.calls[0]!;
-    expect(params).toEqual([7, 0]);
-    expect(db.execute.mock.calls[1]).toEqual(["DELETE FROM novel_download_goal WHERE novel_id = $1", [7]]);
-    expect(db.execute).toHaveBeenCalledTimes(2);
-    expect(mockedRunDatabaseTransaction).toHaveBeenCalledWith(
-      expect.any(Function),
-      false,
-      { busyBeginRetries: 3 },
-    );
   });
 });

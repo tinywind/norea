@@ -11,7 +11,17 @@ const mocks = vi.hoisted(() => ({
   task: undefined as { startedAt: number; finishedAt: number } | undefined,
 }));
 
-vi.mock("../../db/client", () => ({ getDb: vi.fn(async () => ({ select: async () => mocks.novels })) }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (command: string, args?: { novelIds?: number[] }) => {
+    if (command === "db_novel_list_for_update_check") {
+      const novels = mocks.novels as Array<{ id: number }>;
+      if (!args?.novelIds) return novels;
+      const wanted = new Set(args.novelIds);
+      return novels.filter((novel) => wanted.has(novel.id));
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  }),
+}));
 vi.mock("../../db/queries/chapter", () => ({
   listLibraryUpdatesPage: vi.fn(async () => ({ hasMore: false, nextCursor: null, updates: [] })),
 }));

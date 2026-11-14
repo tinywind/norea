@@ -1,4 +1,4 @@
-import { getDb } from "../../db/client";
+import { invokeDbQuery } from "../../db/ipc";
 import {
   listLibraryUpdatesPage,
   type LibraryUpdateEntry,
@@ -70,21 +70,12 @@ export interface NewChapterCheckOptions {
   taskTitle?: (novel: NovelForCheck) => string;
 }
 
-/** Library novels, the ones being read first. */
-const SELECT_LIBRARY_NOVELS_FOR_CHECK = `
-  SELECT id, plugin_id AS pluginId, path, name
-  FROM novel
-  WHERE in_library = 1
-  ORDER BY last_read_at IS NULL, last_read_at DESC, name COLLATE NOCASE ASC
-`;
-
 async function listNovelsForCheck(options: NewChapterCheckOptions): Promise<NovelForCheck[]> {
   if (options.filter) return listLibraryNovelRefreshTargets(options.filter);
-  const db = await getDb();
-  const novels = await db.select<NovelForCheck[]>(SELECT_LIBRARY_NOVELS_FOR_CHECK);
-  if (!options.novelIds) return novels;
-  const wanted = new Set(options.novelIds);
-  return novels.filter((novel) => wanted.has(novel.id));
+  return invokeDbQuery<NovelForCheck[]>(
+    "db_novel_list_for_update_check",
+    options.novelIds ? { novelIds: [...options.novelIds] } : {},
+  );
 }
 
 /** One novel's check, shared by every entry point so a novel is never fetched twice at once. */

@@ -3,6 +3,23 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+    if (command === "db_novel_get_by_id") {
+      const currentDb = await vi.mocked(getDb)();
+      const [row] = await currentDb.select<Array<Record<string, unknown>>>(
+        `SELECT n.id, n.source_novel_id AS sourceNovelId, n.plugin_id AS pluginId, ip.name AS pluginName,
+                n.path, n.name, n.cover, n.summary, n.author, n.artist, n.status, n.genres, n.rating,
+                n.in_library AS inLibrary, n.is_local AS isLocal, n.created_at AS createdAt,
+                n.updated_at AS updatedAt, n.library_added_at AS libraryAddedAt, n.last_read_at AS lastReadAt
+         FROM novel n LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id WHERE n.id = $1`,
+        [args.id],
+      );
+      return row ? { ...row, inLibrary: Boolean(row.inLibrary), isLocal: row.pluginId === "local" && Boolean(row.isLocal) } : null;
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  }),
+}));
 import { getDb, runDatabaseTransaction } from "../client";
 import { userStateEntityKey } from "../../lib/user-state/types";
 import { deleteLocalNovelRecords, findLocalDeletionNovel, listDeletionDownloadedChapterIds, clearNovelDownloadFiles } from "./content-deletion";

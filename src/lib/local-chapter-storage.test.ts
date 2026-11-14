@@ -9,11 +9,34 @@ vi.mock("../db/client", () => ({ getDb: database.get, runDatabaseTransaction: da
 vi.mock("./tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => storage.android }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, input: {
   oldRelativeDir?: string; newRelativeDir?: string; relativeDir?: string; keepNames?: string[];
+  novelId?: number; chapters?: Array<{ id: number; directory: string }>;
   input?: { operation: string };
 }) => {
   const remove = (directory: string) => {
     for (const path of storage.files.keys()) if (path.startsWith(directory + "/")) storage.files.delete(path);
   };
+  if (command === "db_novel_persist_chapter_directories") {
+    const previous = sqlite
+      .prepare("SELECT chapter_id FROM work_metadata_directory_cache WHERE novel_id = ?")
+      .all(input.novelId!) as Array<{ chapter_id: number }>;
+    sqlite.prepare("DELETE FROM work_metadata_directory_cache WHERE novel_id = ?").run(input.novelId!);
+    const stmt = sqlite.prepare(
+      "INSERT INTO work_metadata_directory_cache(chapter_id, novel_id, directory) VALUES (?, ?, ?)",
+    );
+    const nextIds = new Set<number>();
+    const chapterDirectories: Array<{ chapterId: number; directory: string | null }> = [];
+    for (const chapter of input.chapters ?? []) {
+      stmt.run(chapter.id, input.novelId!, chapter.directory);
+      nextIds.add(chapter.id);
+      chapterDirectories.push({ chapterId: chapter.id, directory: chapter.directory });
+    }
+    for (const row of previous) {
+      if (!nextIds.has(row.chapter_id)) {
+        chapterDirectories.push({ chapterId: row.chapter_id, directory: null });
+      }
+    }
+    return { value: null, effects: { chapterDirectories } };
+  }
   if (command === "chapter_storage_relocate_dir") {
     const entries = [...storage.files].filter(([path]) => path.startsWith(input.oldRelativeDir! + "/"));
     if (!entries.length) return;

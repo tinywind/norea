@@ -3,6 +3,21 @@ import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("../../db/client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+    if (command === "db_novel_freshness_record_cover_fetched") {
+      const db = await vi.mocked(getDb)();
+      await db.execute(
+        `INSERT INTO novel_freshness(novel_id,cover_fetched_at)
+         SELECT $1,$2 WHERE EXISTS(SELECT 1 FROM novel WHERE id=$1)
+         ON CONFLICT(novel_id) DO UPDATE SET cover_fetched_at=excluded.cover_fetched_at`,
+        [args.novelId, args.nowSeconds],
+      );
+      return { value: null, effects: {} };
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  }),
+}));
 vi.mock("../updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
 vi.mock("../novel-cover-storage", () => ({ saveNovelCoverFromSource: vi.fn() }));
 

@@ -601,6 +601,180 @@ export function createWorkMetadataIpcHandler(
         };
       }
 
+      if (
+        command === "db_novel_list_library" ||
+        command === "db_novel_list_library_page" ||
+        command === "db_novel_get_library_summary"
+      ) {
+        const db = await options.getDb();
+        const filter = ((args.filter ?? {}) as {
+          search?: string;
+          categoryId?: number | null;
+          downloadedOnly?: boolean;
+          repairNeededOnly?: boolean;
+          sourceId?: string | null;
+          unreadOnly?: boolean;
+          localOnly?: boolean;
+          completedOnly?: boolean;
+          limit?: number;
+        });
+        const storedSql = `(COALESCE(s.chapters_downloaded, 0) + (
+          SELECT COUNT(*) FROM chapter stored
+          WHERE stored.novel_id = n.id AND stored.is_downloaded = 0 AND stored.content_bytes > 0
+        ))`;
+        const params: unknown[] = [];
+        const addParam = (v: unknown) => {
+          params.push(v);
+          return `$${params.length}`;
+        };
+        const conditions: string[] = ["n.in_library = 1"];
+        const trimmed = filter.search?.trim() ?? "";
+        if (trimmed) conditions.push(`n.name LIKE '%' || ${addParam(trimmed)} || '%' COLLATE NOCASE`);
+        if (filter.categoryId === -1) {
+          conditions.push("NOT EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id)");
+        } else if (filter.categoryId != null) {
+          conditions.push(`EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id AND nc.category_id = ${addParam(filter.categoryId)})`);
+        }
+        if (filter.downloadedOnly) conditions.push(`(n.is_local = 1 OR ${storedSql} > 0)`);
+        if (filter.repairNeededOnly) conditions.push("EXISTS (SELECT 1 FROM chapter c WHERE c.novel_id = n.id AND c.media_repair_needed = 1)");
+        if (filter.sourceId?.trim()) conditions.push(`n.plugin_id = ${addParam(filter.sourceId.trim())}`);
+        if (filter.unreadOnly) conditions.push("COALESCE(s.chapters_unread, 0) > 0");
+        if (filter.localOnly) conditions.push(`n.plugin_id = ${addParam("local")} AND n.is_local = 1`);
+        if (filter.completedOnly) conditions.push("COALESCE(s.total_chapters, 0) > 0 AND COALESCE(s.chapters_unread, 0) = 0");
+
+        const cte = `WITH library_rows AS (
+          SELECT
+            n.id,
+            n.plugin_id AS pluginId,
+            ip.name AS pluginName,
+            n.source_novel_id AS sourceNovelId,
+            n.path,
+            n.name,
+            n.cover,
+            n.author,
+            n.in_library AS inLibrary,
+            n.is_local AS isLocal,
+            COALESCE(s.total_chapters, 0) AS totalChapters,
+            ${storedSql} AS chaptersDownloaded,
+            COALESCE(s.chapters_unread, 0) AS chaptersUnread,
+            COALESCE(s.reading_progress, 0) AS readingProgress,
+            n.last_read_at AS lastReadAt,
+            CASE WHEN COALESCE(s.total_chapters, 0) > 0 THEN COALESCE(s.last_chapter_updated_at, n.updated_at) ELSE n.updated_at END AS lastUpdatedAt
+          FROM novel n
+          LEFT JOIN novel_stats s ON s.novel_id = n.id
+          LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
+          WHERE ${conditions.join(" AND ")}
+        )`;
+
+        if (command === "db_novel_get_library_summary") {
+          const [row] = await db.select<Array<Record<string, number | null>>>(
+            `${cte}
+             SELECT
+               COUNT(*) AS totalNovels,
+               COALESCE(SUM(totalChapters), 0) AS totalChapters,
+               COALESCE(SUM(chaptersDownloaded), 0) AS downloadedChapters,
+               COALESCE(SUM(chaptersUnread), 0) AS unreadChapters,
+               MAX(lastUpdatedAt) AS lastUpdatedAt,
+               COALESCE(SUM(CASE WHEN chaptersUnread > 0 THEN 1 ELSE 0 END), 0) AS unreadNovels,
+               COALESCE(SUM(CASE WHEN isLocal = 1 OR chaptersDownloaded > 0 THEN 1 ELSE 0 END), 0) AS downloadedNovels,
+               COALESCE(SUM(CASE WHEN pluginId = 'local' AND isLocal = 1 THEN 1 ELSE 0 END), 0) AS localNovels,
+               COALESCE(SUM(CASE WHEN totalChapters > 0 AND chaptersUnread = 0 THEN 1 ELSE 0 END), 0) AS completeNovels,
+               COALESCE(SUM(EXISTS (SELECT 1 FROM chapter c WHERE c.novel_id = library_rows.id AND c.media_repair_needed = 1)), 0) AS repairNeededNovels
+             FROM library_rows`,
+            params,
+          );
+          return {
+            handled: true,
+            result: {
+              completeNovels: row?.completeNovels ?? 0,
+              downloadedChapters: row?.downloadedChapters ?? 0,
+              downloadedNovels: row?.downloadedNovels ?? 0,
+              lastUpdatedAt: row?.lastUpdatedAt ?? null,
+              localNovels: row?.localNovels ?? 0,
+              repairNeededNovels: row?.repairNeededNovels ?? 0,
+              totalChapters: row?.totalChapters ?? 0,
+              totalNovels: row?.totalNovels ?? 0,
+              unreadChapters: row?.unreadChapters ?? 0,
+              unreadNovels: row?.unreadNovels ?? 0,
+            },
+          };
+        }
+
+        const pageLimit = filter.limit ?? 100;
+        const rawRows = await db.select<Array<Record<string, unknown>>>(
+          `${cte} SELECT * FROM library_rows ORDER BY id DESC`,
+          params,
+        );
+        const mapped = rawRows.map(row => {
+          const isLocal = row.pluginId === "local" && Boolean(row.isLocal);
+          return {
+            ...row,
+            inLibrary: Boolean(row.inLibrary),
+            isLocal,
+          };
+        });
+        if (command === "db_novel_list_library") {
+          return {
+            handled: true,
+            result: filter.limit !== undefined ? mapped.slice(0, filter.limit) : mapped,
+          };
+        }
+        const novels = mapped.slice(0, pageLimit);
+        const hasMore = mapped.length > pageLimit;
+        const last = novels.at(-1) as { id: number; name: string } | undefined;
+        return {
+          handled: true,
+          result: {
+            hasMore,
+            nextCursor: hasMore && last ? { id: last.id, name: last.name, sortValue: last.id } : null,
+            novels,
+          },
+        };
+      }
+
+      if (command === "db_novel_freshness_record_cover_fetched") {
+        const db = await options.getDb();
+        await db.execute(
+          `INSERT INTO novel_freshness(novel_id,cover_fetched_at)
+           SELECT $1,$2 WHERE EXISTS(SELECT 1 FROM novel WHERE id=$1)
+           ON CONFLICT(novel_id) DO UPDATE SET cover_fetched_at=excluded.cover_fetched_at`,
+          [args.novelId, args.nowSeconds],
+        );
+        return {
+          handled: true,
+          result: { value: null, effects: {} } satisfies DbMutationEnvelope<null>,
+        };
+      }
+
+      if (command === "db_novel_get_by_id" || command === "db_novel_find_by_source") {
+        const db = await options.getDb();
+        const [row] = await db.select<Array<Record<string, unknown>>>(
+          command === "db_novel_get_by_id"
+            ? `SELECT n.id, n.source_novel_id AS sourceNovelId, n.plugin_id AS pluginId, ip.name AS pluginName,
+                      n.path, n.name, n.cover, n.summary, n.author, n.artist, n.status, n.genres, n.rating,
+                      n.in_library AS inLibrary, n.is_local AS isLocal, n.created_at AS createdAt,
+                      n.updated_at AS updatedAt, n.library_added_at AS libraryAddedAt, n.last_read_at AS lastReadAt
+               FROM novel n LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id WHERE n.id = $1`
+            : `SELECT n.id, n.source_novel_id AS sourceNovelId, n.plugin_id AS pluginId, ip.name AS pluginName,
+                      n.path, n.name, n.cover, n.summary, n.author, n.artist, n.status, n.genres, n.rating,
+                      n.in_library AS inLibrary, n.is_local AS isLocal, n.created_at AS createdAt,
+                      n.updated_at AS updatedAt, n.library_added_at AS libraryAddedAt, n.last_read_at AS lastReadAt
+               FROM novel n LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
+               WHERE n.plugin_id = $1 AND n.path = $2`,
+          command === "db_novel_get_by_id" ? [args.id] : [args.pluginId, args.path],
+        );
+        return {
+          handled: true,
+          result: row
+            ? {
+                ...row,
+                inLibrary: Boolean(row.inLibrary),
+                isLocal: row.pluginId === "local" && Boolean(row.isLocal),
+              }
+            : null,
+        };
+      }
+
       return { handled: false };
     },
   };
