@@ -272,14 +272,24 @@ export function createWorkMetadataIpcHandler(
 
       if (command === "db_work_metadata_read_sync_files") {
         const db = await options.getDb();
-        if (args.rescan) {
-          throw new Error("Expected JS wrapper to expand rescan before query");
+        const [pending] = await db.select<Array<{ pending: number }>>(
+          "SELECT 1 AS pending FROM work_metadata_dirty LIMIT 1",
+        );
+        if (pending) {
+          await options.runTransaction(async (transaction) => {
+            await flushWorkMetadata(transaction);
+          });
         }
         const rows = await db.select<WorkMetadataSyncFile[]>(
           `SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision
            FROM work_metadata_file_cache f LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path`,
         );
-        return { handled: true, result: rows };
+        return {
+          handled: true,
+          result: { value: rows, effects: {} } satisfies DbMutationEnvelope<
+            WorkMetadataSyncFile[]
+          >,
+        };
       }
 
       if (command === "db_work_metadata_read_sync_file") {

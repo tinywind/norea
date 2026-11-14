@@ -177,7 +177,7 @@ describe("work metadata Rust IPC contracts", () => {
     });
   });
 
-  it("flushes pending metadata before reading sync files and routes single-file reads", async () => {
+  it("unwraps mutation envelope when reading sync files and routes single-file reads", async () => {
     const syncFile = {
       pluginId: "source",
       path: "/book-1",
@@ -185,8 +185,7 @@ describe("work metadata Rust IPC contracts", () => {
       fingerprint: "a".repeat(64),
       revision: 3,
     };
-    router.mockMutation("db_work_metadata_flush_pending");
-    router.mockQuery("db_work_metadata_read_sync_files", [syncFile]);
+    router.mockMutation("db_work_metadata_read_sync_files", [syncFile]);
     router.mockQuery("db_work_metadata_read_sync_file", syncFile);
 
     await expect(readWorkMetadataSyncFiles(false)).resolves.toEqual([syncFile]);
@@ -195,7 +194,6 @@ describe("work metadata Rust IPC contracts", () => {
     ).resolves.toEqual(syncFile);
 
     expect(router.calls.map((call) => call.command)).toEqual([
-      "db_work_metadata_flush_pending",
       "db_work_metadata_read_sync_files",
       "db_work_metadata_read_sync_file",
     ]);

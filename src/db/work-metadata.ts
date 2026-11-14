@@ -475,8 +475,8 @@ export async function rememberStoredNovelMetadata(db: Database, directory: strin
 
 export async function readWorkMetadataSyncFiles(rescan = false): Promise<WorkMetadataSyncFile[]> {
   if (!isTauriRuntime()) return [];
-  await invokeDbMutation("db_work_metadata_flush_pending");
   if (rescan) {
+    await invokeDbMutation("db_work_metadata_flush_pending");
     const entries = await listStoredNovelMetadata();
     for (const entry of entries) {
       await runWorkContentStorageOperation(entry.metadata.identity.pluginId, entry.metadata.identity.novelPath, async () => {
@@ -491,10 +491,7 @@ export async function readWorkMetadataSyncFiles(rescan = false): Promise<WorkMet
       });
     }
   }
-  return invokeDbQuery<WorkMetadataSyncFile[]>("db_work_metadata_read_sync_files", {
-    rescan: false,
-    readMode: "queued",
-  });
+  return invokeDbMutation<WorkMetadataSyncFile[]>("db_work_metadata_read_sync_files");
 }
 
 export async function markWorkMetadataRefreshed(db: Database, identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">): Promise<void> {
