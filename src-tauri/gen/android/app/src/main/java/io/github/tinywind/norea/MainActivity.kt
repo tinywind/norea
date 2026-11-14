@@ -7,7 +7,6 @@ import android.net.Uri
 import android.os.Build
 import android.os.Bundle
 import android.view.ViewGroup
-import android.webkit.WebResourceResponse
 import android.webkit.WebView
 import androidx.activity.OnBackPressedCallback
 import androidx.activity.enableEdgeToEdge
@@ -19,15 +18,6 @@ import org.json.JSONObject
 
 class MainActivity : TauriActivity() {
   private val bridgeSession = BridgeSession()
-  private val storageDocuments by lazy { AndroidStorageDocuments(this) }
-  private val readerMediaCache by lazy { AndroidReaderMediaCache(this, storageDocuments) }
-  private val localMediaResponder by lazy {
-    AndroidLocalMediaResponder(this, storageDocuments, readerMediaCache)
-  }
-  private val storageRootPicker by lazy { AndroidStorageRootPicker(this) { mainWebView } }
-  private val storageBridge by lazy {
-    AndroidStorageBridge(this, { mainWebView }, storageRootPicker, storageDocuments, readerMediaCache)
-  }
   private val taskNotificationBridge by lazy {
     AndroidTaskNotificationBridge(
       this,
@@ -68,6 +58,7 @@ class MainActivity : TauriActivity() {
 
   override fun onCreate(savedInstanceState: Bundle?) {
     AndroidAppLoggingBridge.register()
+    AndroidNativeIo.attachActivity(this)
     RustlsPlatformVerifierBridge.init(applicationContext)
     AndroidNetworkState.start(applicationContext)
     AndroidPowerState.start(applicationContext)
@@ -105,6 +96,7 @@ class MainActivity : TauriActivity() {
 
   override fun onResume() {
     super.onResume()
+    AndroidNativeIo.attachActivity(this)
     AndroidActivityLifecycle.publish(id, true)
     activityResumed = true
     TaskBackgroundExecution.policy.foreground()
@@ -131,8 +123,6 @@ class MainActivity : TauriActivity() {
     webView.addJavascriptInterface(bridge, "__NoreaAndroidScraper")
     webView.addJavascriptInterface(AndroidSafeAreaBridge { safeAreaInsetsJson }, "__NoreaAndroidSafeArea")
     webView.addJavascriptInterface(taskNotificationBridge, "__NoreaAndroidTasks")
-    webView.addJavascriptInterface(AndroidUpdateInstallBridge(this, bridgeSession), "__NoreaAndroidUpdater")
-    webView.addJavascriptInterface(storageBridge, "__NoreaAndroidStorage")
     webView.addJavascriptInterface(AndroidVpnProxyBridge(bridgeSession, applicationContext), "__NoreaAndroidVpn")
     webView.addJavascriptInterface(AndroidBatteryOptimizationBridge(this), "__NoreaAndroidBatteryOptimization")
     webView.addJavascriptInterface(AndroidAllFilesAccessBridge(this), "__NoreaAndroidAllFilesAccess")
@@ -185,7 +175,7 @@ class MainActivity : TauriActivity() {
     androidVpnDownloadWorkers?.destroy()
     androidVpnDownloadWorkers = null
     mainWebView?.removeJavascriptInterface("__NoreaAndroidVpnWorkers")
-    storageBridge.destroy()
+    AndroidNativeIo.detachActivity(this)
     super.onDestroy()
     AndroidActivityLifecycle.publishDestruction(id, true)
   }
@@ -318,11 +308,8 @@ class MainActivity : TauriActivity() {
 
   override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
     super.onActivityResult(requestCode, resultCode, data)
-    storageRootPicker.onActivityResult(requestCode, resultCode, data)
+    AndroidNativeIo.onActivityResult(this, requestCode, resultCode, data)
   }
-
-  fun androidLocalMediaResponse(uri: Uri): WebResourceResponse? =
-    localMediaResponder.androidLocalMediaResponse(uri)
 
   private fun requestNotificationPermissionIfNeeded() {
     if (Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU) return

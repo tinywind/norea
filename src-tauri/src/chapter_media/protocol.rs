@@ -1,22 +1,30 @@
 //! Reader media protocol responses and encoded media access.
 
+use super::chapter_media_blocking;
 use super::media::{
     chapter_media_body_from_src_with_context, chapter_media_path_from_src_with_context,
     parse_media_src,
 };
 use super::paths::{
-    media_root, CONTENTS_ROOT_DIR, IMMUTABLE_COVER_CACHE_CONTROL,
+    media_root, safe_media_relative_path, safe_relative_storage_path, CONTENTS_ROOT_DIR,
+    IMMUTABLE_COVER_CACHE_CONTROL,
 };
 use std::{
     fs::{self, File},
-    io::BufReader,
-    path::{Path, PathBuf},
+    io::{BufReader, Read, Write},
+    path::{Component, Path, PathBuf},
 };
 use tauri::{
     http::{self, header, StatusCode},
-    AppHandle,
+    AppHandle, Manager,
 };
 use zip::{result::ZipError, ZipArchive};
+
+const READER_MEDIA_CACHE_DIR: &str = "reader-media";
+const READER_MEDIA_CACHE_REQUEST_PREFIX: &str = "reader-asset/~cache/";
+const MAX_READER_CACHE_ENTRIES: usize = 100_000;
+const MAX_READER_CACHE_ENTRY_BYTES: u64 = 256 * 1024 * 1024;
+const MAX_READER_CACHE_TOTAL_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 
 pub fn norea_media_protocol_response(
     app: &AppHandle,
@@ -70,6 +78,22 @@ fn norea_media_protocol_body(
     app: &AppHandle,
     request_path: &str,
 ) -> Result<(Vec<u8>, &'static str), (StatusCode, String)> {
+    let decoded = percent_decode_utf8(request_path.trim_start_matches('/'))
+        .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
+    if decoded.starts_with(READER_MEDIA_CACHE_REQUEST_PREFIX) {
+        let cache_base = app
+            .path()
+            .app_cache_dir()
+            .map_err(|err| {
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("norea media: app cache dir: {err}"),
+                )
+            })?
+            .join(READER_MEDIA_CACHE_DIR);
+        return read_reader_media_cache_body(&cache_base, &decoded);
+    }
+
     let relative_path = norea_media_relative_path(request_path)
         .map_err(|message| (StatusCode::BAD_REQUEST, message))?;
     let media_root =
@@ -89,6 +113,348 @@ fn norea_media_protocol_body(
     })?;
     let content_type = norea_media_content_type(&path, &body);
     Ok((body, content_type))
+}
+
+fn safe_reader_media_cache_token(value: &str) -> Result<String, String> {
+    let trimmed = value.trim();
+    if trimmed.is_empty()
+        || trimmed.len() > 96
+        || trimmed == "."
+        || trimmed == ".."
+        || !trimmed
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '_' | '-'))
+    {
+        return Err("chapter media: invalid reader media cache token".to_string());
+    }
+    Ok(trimmed.to_string())
+}
+
+fn read_reader_media_cache_body(
+    cache_base: &Path,
+    decoded_request_path: &str,
+) -> Result<(Vec<u8>, &'static str), (StatusCode, String)> {
+    let rest = decoded_request_path
+        .strip_prefix(READER_MEDIA_CACHE_REQUEST_PREFIX)
+        .ok_or_else(|| {
+            (
+                StatusCode::BAD_REQUEST,
+                "norea media: invalid reader cache path".to_string(),
+            )
+        })?;
+    let (raw_token, raw_entry) = rest.split_once('/').ok_or_else(|| {
+        (
+            StatusCode::BAD_REQUEST,
+            "norea media: missing reader cache entry".to_string(),
+        )
+    })?;
+    let token =
+        safe_reader_media_cache_token(raw_token).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    let entry_path =
+        safe_media_relative_path(raw_entry).map_err(|msg| (StatusCode::BAD_REQUEST, msg))?;
+    let path = cache_base.join(token).join(&entry_path);
+    let metadata = match fs::symlink_metadata(&path) {
+        Ok(metadata) => metadata,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => {
+            return Err((
+                StatusCode::NOT_FOUND,
+                "norea media: cached file not found".to_string(),
+            ));
+        }
+        Err(err) => {
+            return Err((
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("norea media: inspect cached file: {err}"),
+            ));
+        }
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_file() {
+        return Err((
+            StatusCode::NOT_FOUND,
+            "norea media: cached file not found".to_string(),
+        ));
+    }
+    if metadata.len() > MAX_READER_CACHE_ENTRY_BYTES {
+        return Err((
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "norea media: cached file exceeds byte limit".to_string(),
+        ));
+    }
+    let body = fs::read(&path).map_err(|err| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("norea media: read cached file: {err}"),
+        )
+    })?;
+    let content_type = media_mime_type(&path, &body);
+    Ok((body, content_type))
+}
+
+fn checked_storage_contents_path(root: &Path, relative_path: &str) -> Result<PathBuf, String> {
+    let rel = safe_relative_storage_path(relative_path)?;
+    let mut components = rel.components();
+    match components.next() {
+        Some(Component::Normal(first)) if first == CONTENTS_ROOT_DIR => {}
+        _ => return Err("chapter media: storage path must start with contents".to_string()),
+    }
+    let mut current = root.to_path_buf();
+    for component in rel.components() {
+        let Component::Normal(segment) = component else {
+            return Err("chapter media: invalid storage path component".to_string());
+        };
+        current.push(segment);
+        match fs::symlink_metadata(&current) {
+            Ok(metadata) if metadata.file_type().is_symlink() => {
+                return Err("chapter media: symbolic links are not supported".to_string());
+            }
+            Ok(_) => {}
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => {}
+            Err(err) => return Err(format!("chapter media: inspect storage path: {err}")),
+        }
+    }
+    Ok(current)
+}
+
+fn copy_reader_bounded<R: Read, W: Write>(
+    mut reader: R,
+    mut writer: W,
+    max_bytes: u64,
+    context: &str,
+) -> Result<u64, String> {
+    let mut total = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader
+            .read(&mut buffer)
+            .map_err(|err| format!("{context}: {err}"))?;
+        if read == 0 {
+            break;
+        }
+        total = total
+            .checked_add(read as u64)
+            .ok_or_else(|| format!("{context}: byte count overflow"))?;
+        if total > max_bytes {
+            return Err(format!("{context}: exceeds the {max_bytes} byte limit"));
+        }
+        writer
+            .write_all(&buffer[..read])
+            .map_err(|err| format!("{context}: write cache: {err}"))?;
+    }
+    Ok(total)
+}
+
+fn copy_media_dir_to_reader_cache(
+    source_dir: &Path,
+    prefix: &str,
+    cache_dir: &Path,
+    entry_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<(), String> {
+    if !source_dir.is_dir() {
+        return Ok(());
+    }
+    let mut entries = fs::read_dir(source_dir)
+        .map_err(|err| format!("chapter media: read media directory: {err}"))?
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("chapter media: read media entry: {err}"))?;
+    entries.sort_by_key(|entry| entry.file_name());
+    for entry in entries {
+        let file_type = entry
+            .file_type()
+            .map_err(|err| format!("chapter media: inspect media entry: {err}"))?;
+        if file_type.is_symlink() {
+            continue;
+        }
+        let child_name = entry.file_name().to_string_lossy().into_owned();
+        let candidate = if prefix.is_empty() {
+            child_name
+        } else {
+            format!("{prefix}/{child_name}")
+        };
+        let Ok(entry_name) = safe_media_relative_path(&candidate) else {
+            continue;
+        };
+        if file_type.is_dir() {
+            copy_media_dir_to_reader_cache(
+                &entry.path(),
+                &entry_name,
+                cache_dir,
+                entry_count,
+                total_bytes,
+            )?;
+            continue;
+        }
+        if !file_type.is_file() || entry_name.ends_with(".part") {
+            continue;
+        }
+        let metadata = entry
+            .metadata()
+            .map_err(|err| format!("chapter media: inspect media file: {err}"))?;
+        if metadata.len() > MAX_READER_CACHE_ENTRY_BYTES {
+            return Err("chapter media: reader media file exceeds entry size limit".to_string());
+        }
+        *entry_count += 1;
+        if *entry_count > MAX_READER_CACHE_ENTRIES {
+            return Err("chapter media: reader media directory exceeds entry limit".to_string());
+        }
+        let target = cache_dir.join(&entry_name);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("chapter media: create reader cache parent: {err}"))?;
+        }
+        let input = File::open(entry.path())
+            .map_err(|err| format!("chapter media: open reader media file: {err}"))?;
+        let output = File::create(&target)
+            .map_err(|err| format!("chapter media: create reader cache file: {err}"))?;
+        let copied = copy_reader_bounded(
+            input,
+            output,
+            MAX_READER_CACHE_ENTRY_BYTES,
+            "chapter media: copy reader media file",
+        )?;
+        *total_bytes = total_bytes
+            .checked_add(copied)
+            .filter(|sum| *sum <= MAX_READER_CACHE_TOTAL_BYTES)
+            .ok_or_else(|| "chapter media: reader media cache exceeds total byte limit".to_string())?;
+    }
+    Ok(())
+}
+
+fn copy_media_archive_to_reader_cache(
+    archive_path: &Path,
+    cache_dir: &Path,
+    entry_count: &mut usize,
+    total_bytes: &mut u64,
+) -> Result<(), String> {
+    if !archive_path.is_file() {
+        return Ok(());
+    }
+    let archive_file = File::open(archive_path)
+        .map_err(|err| format!("chapter media: open reader media archive: {err}"))?;
+    let mut archive = ZipArchive::new(BufReader::new(archive_file))
+        .map_err(|err| format!("chapter media: read reader media archive: {err}"))?;
+    if archive.len() > MAX_READER_CACHE_ENTRIES {
+        return Err("chapter media: reader media archive exceeds entry limit".to_string());
+    }
+    for index in 0..archive.len() {
+        let mut entry = archive
+            .by_index(index)
+            .map_err(|err| format!("chapter media: open reader archive entry: {err}"))?;
+        *entry_count += 1;
+        if *entry_count > MAX_READER_CACHE_ENTRIES {
+            return Err("chapter media: reader media archive exceeds entry limit".to_string());
+        }
+        if entry.is_dir() {
+            continue;
+        }
+        let raw_name = entry
+            .name()
+            .map_err(|err| format!("chapter media: read reader archive entry name: {err}"))?
+            .replace('\\', "/");
+        let Ok(entry_name) = safe_media_relative_path(raw_name.trim_matches('/')) else {
+            continue;
+        };
+        if entry.size() > MAX_READER_CACHE_ENTRY_BYTES {
+            return Err("chapter media: reader archive entry exceeds size limit".to_string());
+        }
+        let target = cache_dir.join(&entry_name);
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent)
+                .map_err(|err| format!("chapter media: create reader cache parent: {err}"))?;
+        }
+        let output = File::create(&target)
+            .map_err(|err| format!("chapter media: create reader cache file: {err}"))?;
+        let copied = copy_reader_bounded(
+            &mut entry,
+            output,
+            MAX_READER_CACHE_ENTRY_BYTES,
+            "chapter media: extract reader archive entry",
+        )?;
+        *total_bytes = total_bytes
+            .checked_add(copied)
+            .filter(|sum| *sum <= MAX_READER_CACHE_TOTAL_BYTES)
+            .ok_or_else(|| "chapter media: reader media cache exceeds total byte limit".to_string())?;
+    }
+    Ok(())
+}
+
+pub(super) fn prepare_reader_media_cache_at(
+    storage_root: &Path,
+    cache_base: &Path,
+    media_relative_path: &str,
+    archive_relative_path: &str,
+    cache_token: &str,
+) -> Result<(), String> {
+    let safe_token = safe_reader_media_cache_token(cache_token)?;
+    let media_dir = checked_storage_contents_path(storage_root, media_relative_path)?;
+    let archive_path = checked_storage_contents_path(storage_root, archive_relative_path)?;
+
+    fs::create_dir_all(cache_base)
+        .map_err(|err| format!("chapter media: create reader cache root: {err}"))?;
+    let canonical_base = fs::canonicalize(cache_base)
+        .map_err(|err| format!("chapter media: resolve reader cache root: {err}"))?;
+    let token_dir = canonical_base.join(&safe_token);
+    fs::create_dir_all(&token_dir)
+        .map_err(|err| format!("chapter media: create reader cache token dir: {err}"))?;
+    let canonical_token = fs::canonicalize(&token_dir)
+        .map_err(|err| format!("chapter media: resolve reader cache token dir: {err}"))?;
+    if !canonical_token.starts_with(&canonical_base) || canonical_token == canonical_base {
+        return Err("chapter media: reader cache token escapes cache directory".to_string());
+    }
+
+    let mut media_entries = 0_usize;
+    let mut total_bytes = 0_u64;
+    copy_media_dir_to_reader_cache(
+        &media_dir,
+        "",
+        &canonical_token,
+        &mut media_entries,
+        &mut total_bytes,
+    )?;
+
+    let mut archive_entries = 0_usize;
+    let mut total_with_archive = total_bytes;
+    if let Err(err) = copy_media_archive_to_reader_cache(
+        &archive_path,
+        &canonical_token,
+        &mut archive_entries,
+        &mut total_with_archive,
+    ) {
+        if media_entries == 0 {
+            return Err(err);
+        }
+        log::warn!("reader media archive overlay failed for '{archive_relative_path}': {err}");
+    }
+
+    if media_entries == 0 && archive_entries == 0 {
+        return Err("chapter media: reader media source not found".to_string());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn chapter_media_prepare_reader_cache(
+    app: AppHandle,
+    media_relative_path: String,
+    archive_relative_path: String,
+    cache_token: String,
+) -> Result<(), String> {
+    chapter_media_blocking("prepare reader media cache", move || {
+        let storage_root = media_root(&app)?;
+        let cache_base = app
+            .path()
+            .app_cache_dir()
+            .map_err(|err| format!("chapter media: app cache dir: {err}"))?
+            .join(READER_MEDIA_CACHE_DIR);
+        prepare_reader_media_cache_at(
+            &storage_root,
+            &cache_base,
+            &media_relative_path,
+            &archive_relative_path,
+            &cache_token,
+        )
+    })
+    .await
 }
 
 fn norea_media_relative_path(request_path: &str) -> Result<PathBuf, String> {

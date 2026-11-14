@@ -67,3 +67,40 @@ fn chapter_identity_lookup_matches_complete_directory_names() {
     assert_eq!(content_chapter_dirs_matching_identity(root.path(), "demo", 7, "book", 42, Some("1"), Some(8)).unwrap(),
         [root.path().join("contents/demo/book/1")]);
 }
+
+#[test]
+fn resolves_android_external_storage_tree_uris_and_rejects_foreign_authorities() {
+    assert_eq!(
+        resolve_storage_root_path(
+            "content://com.android.externalstorage.documents/tree/primary%3ADocuments%2FNorea"
+        )
+        .unwrap(),
+        Path::new("/storage/emulated/0/Documents/Norea")
+    );
+    assert_eq!(
+        resolve_storage_root_path(
+            "content://com.android.externalstorage.documents/tree/primary%3A"
+        )
+        .unwrap(),
+        Path::new("/storage/emulated/0")
+    );
+    assert_eq!(
+        resolve_storage_root_path(
+            "content://com.android.externalstorage.documents/tree/1234-5678%3ANorea%2FBooks/document/1234-5678%3ANorea%2FBooks"
+        )
+        .unwrap(),
+        Path::new("/storage/1234-5678/Norea/Books")
+    );
+    assert_eq!(
+        resolve_storage_root_path("/storage/emulated/0/Documents/NoreaWaydroidMergeTest").unwrap(),
+        Path::new("/storage/emulated/0/Documents/NoreaWaydroidMergeTest")
+    );
+    for invalid in [
+        "content://com.android.providers.downloads.documents/tree/downloads",
+        "content://com.android.externalstorage.documents/tree/primary%3ADocuments%2F..%2Fescape",
+        "content://com.android.externalstorage.documents/tree/..%3ANorea",
+        "",
+    ] {
+        assert!(resolve_storage_root_path(invalid).is_err(), "{invalid}");
+    }
+}

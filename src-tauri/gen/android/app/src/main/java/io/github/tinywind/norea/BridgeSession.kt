@@ -27,7 +27,6 @@ object BridgeCapabilities {
   const val SCRAPER_EXTRACT = "scraper.extract"
   const val SCRAPER_NAVIGATE = "scraper.navigate"
   const val SCRAPER_BOUNDS = "scraper.bounds"
-  const val UPDATE_OPEN_APK = "update.openApk"
   const val VPN_PROXY_CONFIGURE = "vpn.proxy.configure"
   const val VPN_WORKER = "vpn.worker"
 
@@ -41,7 +40,6 @@ object BridgeCapabilities {
     SCRAPER_EXTRACT,
     SCRAPER_NAVIGATE,
     SCRAPER_BOUNDS,
-    UPDATE_OPEN_APK,
     VPN_PROXY_CONFIGURE,
     VPN_WORKER,
   )

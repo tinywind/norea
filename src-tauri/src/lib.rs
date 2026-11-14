@@ -1,3 +1,4 @@
+mod android_content_io;
 mod android_file_open;
 #[cfg(target_os = "android")]
 mod android_lifecycle;
@@ -185,6 +186,8 @@ pub fn run() {
             content_sync::content_sync_upload,
             content_sync::content_sync_download,
             content_sync::content_sync_install,
+            android_content_io::local_file_describe,
+            android_content_io::local_file_read,
             android_file_open::android_open_file_temp_read,
             android_file_open::android_open_file_url_take,
             backup::backup_delete_temp_file,
@@ -218,12 +221,15 @@ pub fn run() {
             chapter_media::chapter_media_data_url,
             chapter_media::chapter_media_get_storage_root,
             chapter_media::chapter_media_path,
+            chapter_media::chapter_media_pick_storage_root,
+            chapter_media::chapter_media_prepare_reader_cache,
             chapter_media::chapter_media_prepare_workspace,
             chapter_media::chapter_media_prune,
             chapter_media::chapter_media_read_manifest,
             chapter_media::chapter_media_rollback_restore,
             chapter_media::chapter_media_set_storage_root,
             chapter_media::chapter_media_store_handle,
+            chapter_media::chapter_media_stored_entry_sizes,
             chapter_media::chapter_media_total_size,
             chapter_media::chapter_media_use_default_storage_root,
             chapter_media::chapter_media_write_manifest,

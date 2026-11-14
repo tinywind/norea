@@ -191,18 +191,35 @@ val patchRustWebViewClient by tasks.registering {
         val file = source.asFile
         if (!file.exists()) return@doLast
 
-        val original = file.readText()
-        val hook =
-            "        (view.context as? MainActivity)?.androidLocalMediaResponse(request.url)?.let { return it }"
-        if (original.contains(hook)) return@doLast
-
-        val target = "    ): WebResourceResponse? {\n        pendingUrlRedirect?.let {\n"
-        val replacement =
-            "    ): WebResourceResponse? {\n$hook\n\n        pendingUrlRedirect?.let {\n"
-        check(original.contains(target)) {
-            "RustWebViewClient request interception hook target was not found."
+        var updated = file.readText()
+        val legacyHook =
+            "        (view.context as? MainActivity)?.androidLocalMediaResponse(request.url)?.let { return it }\n\n"
+        if (updated.contains(legacyHook)) {
+            updated = updated.replace(legacyHook, "")
         }
-        file.writeText(original.replace(target, replacement))
+
+        val patchedHeaderGuard =
+            "response.responseHeaders.keys.none { it.equals(\"Cache-Control\", ignoreCase = true) }"
+        if (!updated.contains(patchedHeaderGuard)) {
+            val target =
+                "                if (response.responseHeaders != null) {\n" +
+                    "                    response.responseHeaders[\"Cache-Control\"] = \"no-store\"\n" +
+                    "                } else {"
+            val replacement =
+                "                if (response.responseHeaders != null) {\n" +
+                    "                    if ($patchedHeaderGuard) {\n" +
+                    "                        response.responseHeaders[\"Cache-Control\"] = \"no-store\"\n" +
+                    "                    }\n" +
+                    "                } else {"
+            check(updated.contains(target)) {
+                "RustWebViewClient Cache-Control header target was not found."
+            }
+            updated = updated.replace(target, replacement)
+        }
+
+        if (updated != file.readText()) {
+            file.writeText(updated)
+        }
     }
 }
 

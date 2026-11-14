@@ -851,8 +851,20 @@ fn write_backup_zip_file<W: Write + Seek>(
 }
 
 fn write_backup_zip(manifest_json: &str, output_path: &str) -> Result<(), String> {
-    let file = File::create(output_path)
-        .map_err(|err| format!("backup_pack: failed to create '{output_path}': {err}"))?;
+    let trimmed = output_path.trim();
+    if trimmed.starts_with("content://") {
+        let bytes = backup_zip_bytes(manifest_json)?;
+        let mut writer = crate::android_content_io::open_path_or_uri_write_truncate(trimmed)
+            .map_err(|err| format!("backup_pack: failed to open '{trimmed}': {err}"))?;
+        writer
+            .write_all(&bytes)
+            .and_then(|()| writer.flush())
+            .map_err(|err| format!("backup_pack: failed to write '{trimmed}': {err}"))?;
+        return Ok(());
+    }
+    let resolved = crate::android_content_io::resolve_filesystem_path(trimmed)?;
+    let file = File::create(&resolved)
+        .map_err(|err| format!("backup_pack: failed to create '{}': {err}", resolved.display()))?;
     write_backup_zip_file(file, manifest_json, "backup_pack")
 }
 
@@ -1017,8 +1029,7 @@ fn publish_auto_backup(
     Ok(pruned)
 }
 
-/// Desktop automatic backup into `backups/` of the storage folder. Android
-/// storage folders are SAF trees, written by the storage bridge instead.
+/// Publishes an automatic backup into `backups/` of the storage folder.
 #[tauri::command]
 pub async fn backup_publish_auto(
     app: AppHandle,
@@ -1029,9 +1040,6 @@ pub async fn backup_publish_auto(
     backup_blocking("backup_publish_auto", move || {
         let root = crate::chapter_media::media_root(&app)
             .map_err(|err| format!("{AUTO_BACKUP_FOLDER_UNAVAILABLE}: {err}"))?;
-        if root.to_string_lossy().starts_with("content://") {
-            return Err("backup_publish_auto: content URI storage needs the Android bridge".to_string());
-        }
         publish_auto_backup(&root.join(AUTO_BACKUP_DIR), &manifest_json, &file_name, keep).map(|_| ())
     })
     .await
@@ -1200,11 +1208,21 @@ fn ensure_backup_archive_size(size: u64) -> Result<(), String> {
 }
 
 fn unpack_backup_path(input_path: String) -> Result<UnpackedBackup, String> {
-    let file = File::open(&input_path)
-        .map_err(|err| format!("backup_unpack: failed to open '{input_path}': {err}"))?;
+    let trimmed = input_path.trim();
+    if trimmed.starts_with("content://") {
+        let bytes = crate::android_content_io::read_path_or_uri_bounded(
+            trimmed,
+            MAX_BACKUP_ARCHIVE_BYTES,
+        )
+        .map_err(|err| format!("backup_unpack: failed to read '{trimmed}': {err}"))?;
+        return read_backup_archive(Cursor::new(bytes));
+    }
+    let resolved = crate::android_content_io::resolve_filesystem_path(trimmed)?;
+    let file = File::open(&resolved)
+        .map_err(|err| format!("backup_unpack: failed to open '{}': {err}", resolved.display()))?;
     let metadata = file
         .metadata()
-        .map_err(|err| format!("backup_unpack: failed to inspect '{input_path}': {err}"))?;
+        .map_err(|err| format!("backup_unpack: failed to inspect '{}': {err}", resolved.display()))?;
     ensure_backup_archive_size(metadata.len())?;
     read_backup_archive(BufReader::new(file))
 }

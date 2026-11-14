@@ -284,8 +284,44 @@ fn open_installer(app: &AppHandle, installer_path: &Path) -> Result<(), String> 
 }
 
 #[cfg(target_os = "android")]
-fn open_installer(_app: &AppHandle, _installer_path: &Path) -> Result<(), String> {
-    Ok(())
+fn open_installer(_app: &AppHandle, installer_path: &Path) -> Result<(), String> {
+    let (size, sha256) = compute_update_file_digest(installer_path)?;
+    crate::android_content_io::install_update_apk(installer_path, size, &sha256)
+}
+
+#[cfg(target_os = "android")]
+fn compute_update_file_digest(path: &Path) -> Result<(u64, String), String> {
+    let file_size = fs::metadata(path)
+        .map_err(|err| format!("installer metadata read failed: {err}"))?
+        .len();
+    validate_update_size(file_size)?;
+
+    let mut file = File::open(path).map_err(|err| format!("installer open failed: {err}"))?;
+    let mut hasher = Sha256::new();
+    let mut total = 0u64;
+    let mut buffer = [0u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|err| format!("installer read failed: {err}"))?;
+        if read == 0 {
+            break;
+        }
+        let read_u64 =
+            u64::try_from(read).map_err(|_| "installer read size overflow".to_string())?;
+        total = total
+            .checked_add(read_u64)
+            .ok_or_else(|| "installer size overflow".to_string())?;
+        validate_update_size(total)?;
+        hasher.update(&buffer[..read]);
+    }
+    validate_expected_size(total, file_size)?;
+    let sha256 = hasher
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    Ok((total, sha256))
 }
 
 fn empty_to_none(value: Option<&'static str>) -> Option<&'static str> {

@@ -238,6 +238,13 @@ fn discover_cover(metadata_path: &Path) -> Result<Option<StoredCover>, String> {
 
 #[tauri::command]
 pub async fn work_metadata_operation(app: AppHandle, input: WorkMetadataOperation) -> Result<WorkMetadataResult, String> {
+    #[cfg(target_os = "android")]
+    if input.operation == "list" && super::paths::configured_storage_root_value(&app)?.is_none() {
+        return Ok(WorkMetadataResult {
+            paths: Some(Vec::new()),
+            ..Default::default()
+        });
+    }
     let root = media_root(&app)?;
     chapter_media_blocking("work metadata", move || operate(&root, input)).await
 }

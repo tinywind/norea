@@ -870,20 +870,23 @@ pub(crate) async fn plugin_vpn_list_manual_profiles(
     Ok(state.saved_profiles()?.lock().await.manual_profiles())
 }
 
-/// Desktop sync of saved profiles with `vpn-profiles/` in the storage folder.
+/// Syncs saved profiles with `vpn-profiles/` in the storage folder.
 #[tauri::command]
 pub(crate) async fn plugin_vpn_sync_stored_profiles(
     app: AppHandle, state: State<'_, PluginVpnState>,
 ) -> Result<StoredSyncReport, String> {
     ensure_supported()?;
-    let root = crate::chapter_media::media_root(&app)?;
-    if root.to_string_lossy().starts_with("content://") {
-        return Err("content URI storage folders sync through the Android storage bridge".to_string());
+    #[cfg(target_os = "android")]
+    if crate::chapter_media::configured_storage_root_value(&app)?.is_none() {
+        return Ok(StoredSyncReport::default());
     }
+    let root = crate::chapter_media::media_root(&app)?;
+    let root_key = crate::chapter_media::configured_storage_root_value(&app)?
+        .unwrap_or_else(|| root.to_string_lossy().into_owned());
     let pool = saved_profile_database(&app).await?;
     let _operation = state.shared.operation.lock().await;
     let mut vault = state.saved_profiles()?.lock().await;
-    let plan = vault.plan_stored_sync(&pool, &root.to_string_lossy(), None).await?;
+    let plan = vault.plan_stored_sync(&pool, &root_key, None).await?;
     let files = plan.desktop_files(&vault);
     let outcome = stored::sync_directory_folder(&root, &plan, &files);
     vault.finish_stored_sync(&pool, &plan.token, outcome).await
@@ -983,9 +986,17 @@ pub(crate) async fn plugin_vpn_import_profile(
     let _operation = state.shared.operation.lock().await;
     state.require_disabled("import a profile")?;
 
-    let bytes = tauri::async_runtime::spawn_blocking(move || read_profile_source(Path::new(&path)))
-        .await
-        .map_err(|error| format!("could not read the OpenVPN profile: {error}"))??;
+    let bytes = tauri::async_runtime::spawn_blocking(move || {
+        let trimmed = path.trim();
+        if trimmed.starts_with("content://") || trimmed.starts_with("file://") {
+            crate::android_content_io::read_path_or_uri_bounded(trimmed, MAX_PROFILE_BYTES as u64)
+                .map_err(|error| format!("could not read the OpenVPN profile: {error}"))
+        } else {
+            read_profile_source(Path::new(trimmed))
+        }
+    })
+    .await
+    .map_err(|error| format!("could not read the OpenVPN profile: {error}"))??;
     reject_reserved_vpn_gate_profile_marker(&bytes)?;
     import_profile_bytes(state.inner(), bytes, "import a profile", None).await
 }

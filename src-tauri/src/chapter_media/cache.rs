@@ -6,13 +6,20 @@ use super::content::content_chapter_dir_from_context;
 use super::media::{media_path_in_chapter_dir, media_src_chapter_id, parse_media_src};
 use super::paths::{
     content_chapter_dir_at, content_chapter_dirs_matching_identity, ensure_contents_nomedia,
-    media_roots_for_lookup, CONTENTS_ROOT_DIR, MEDIA_ARCHIVE_FILE, MEDIA_DOWNLOAD_DIR,
+    media_roots_for_lookup, safe_media_relative_path, CONTENTS_ROOT_DIR, MEDIA_ARCHIVE_FILE,
+    MEDIA_DOWNLOAD_DIR,
 };
 use super::protocol::archive_contains_file;
 use super::publication::archive_backup_path;
 use super::types::ChapterMediaClearContext;
-use std::{collections::HashSet, fs, io::ErrorKind, path::Path};
+use std::{
+    collections::{HashMap, HashSet},
+    fs::{self, File},
+    io::{BufReader, ErrorKind},
+    path::Path,
+};
 use tauri::{AppHandle, Runtime};
+use zip::{result::ZipError, ZipArchive};
 
 #[tauri::command]
 pub async fn chapter_media_total_size(
@@ -120,6 +127,130 @@ fn chapter_media_total_size_sync(
         }
     }
     Ok(total)
+}
+
+#[tauri::command]
+pub async fn chapter_media_stored_entry_sizes(
+    app: AppHandle,
+    file_names: Vec<String>,
+    chapter_id: Option<i64>,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    source_novel_id: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+) -> Result<HashMap<String, u64>, String> {
+    chapter_media_blocking("stored entry sizes", move || {
+        chapter_media_stored_entry_sizes_sync(
+            app,
+            file_names,
+            chapter_id,
+            novel_id,
+            source_id,
+            novel_name,
+            source_novel_id,
+            chapter_number,
+            chapter_name,
+            chapter_position,
+        )
+    })
+    .await
+}
+
+fn chapter_media_stored_entry_sizes_in_dir(
+    chapter_dir: &Path,
+    file_names: &[String],
+) -> Result<HashMap<String, u64>, String> {
+    let mut sizes = HashMap::new();
+    let mut pending_archive = Vec::new();
+
+    for raw_name in file_names {
+        let Ok(file_name) = safe_media_relative_path(raw_name) else {
+            continue;
+        };
+        if sizes.contains_key(&file_name) {
+            continue;
+        }
+        if let Some(path) = media_path_in_chapter_dir(chapter_dir, &file_name) {
+            match fs::metadata(&path) {
+                Ok(metadata) if metadata.is_file() && metadata.len() > 0 => {
+                    sizes.insert(file_name, metadata.len());
+                    continue;
+                }
+                Ok(_) => {}
+                Err(err) if err.kind() == ErrorKind::NotFound => {}
+                Err(err) => {
+                    return Err(format!("chapter media: read media metadata: {err}"));
+                }
+            }
+        }
+        pending_archive.push(file_name);
+    }
+
+    if !pending_archive.is_empty() {
+        let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+        if archive_path.is_file() {
+            let archive_file = File::open(&archive_path)
+                .map_err(|err| format!("chapter media: open archive: {err}"))?;
+            let mut archive = ZipArchive::new(BufReader::new(archive_file))
+                .map_err(|err| format!("chapter media: read archive: {err}"))?;
+            for file_name in pending_archive {
+                match archive.by_name(&file_name) {
+                    Ok(entry) if entry.is_file() && entry.size() > 0 => {
+                        sizes.insert(file_name, entry.size());
+                    }
+                    Ok(_) | Err(ZipError::FileNotFound) => {}
+                    Err(err) => {
+                        return Err(format!("chapter media: open archive entry: {err}"));
+                    }
+                }
+            }
+        }
+    }
+
+    Ok(sizes)
+}
+
+fn chapter_media_stored_entry_sizes_sync(
+    app: AppHandle,
+    file_names: Vec<String>,
+    context_chapter_id: Option<i64>,
+    novel_id: Option<i64>,
+    source_id: Option<String>,
+    novel_name: Option<String>,
+    source_novel_id: Option<String>,
+    chapter_number: Option<String>,
+    chapter_name: Option<String>,
+    chapter_position: Option<i64>,
+) -> Result<HashMap<String, u64>, String> {
+    if file_names.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let chapter_id = media_src_chapter_id(context_chapter_id)?;
+    let mut merged = HashMap::new();
+    for root in media_roots_for_lookup(&app)? {
+        if let Some(chapter_dir) = content_chapter_dir_from_context(
+            &root,
+            novel_id,
+            source_id.as_deref(),
+            source_novel_id.as_deref(),
+            novel_name.as_deref(),
+            chapter_id,
+            chapter_number.as_deref(),
+            chapter_name.as_deref(),
+            chapter_position,
+        )? {
+            for (name, size) in chapter_media_stored_entry_sizes_in_dir(&chapter_dir, &file_names)? {
+                merged.entry(name).or_insert(size);
+            }
+            if merged.len() >= file_names.len() {
+                break;
+            }
+        }
+    }
+    Ok(merged)
 }
 
 fn prune_chapter_dir(dir: &Path) -> Result<(), String> {
@@ -416,5 +547,37 @@ mod tests {
         fs::write(&chapter, "unexpected file").expect("write file");
         assert!(remove_downloaded_chapter_dir(&chapter).is_err());
         assert_eq!(fs::read_to_string(&chapter).expect("read file"), "unexpected file");
+    }
+
+    #[test]
+    fn stored_entry_sizes_resolves_direct_files_and_uncompressed_archive_entries() {
+        use std::io::Write;
+        use zip::{write::SimpleFileOptions, ZipWriter};
+
+        let temp = tempfile::tempdir().expect("temporary storage");
+        let chapter = temp.path().join("chapter");
+        fs::create_dir_all(chapter.join("media")).expect("create media");
+        fs::write(chapter.join("media/direct.png"), b"12345").expect("write direct");
+
+        let archive = File::create(chapter.join("media.zip")).expect("create archive");
+        let mut writer = ZipWriter::new(archive);
+        writer
+            .start_file("archived.jpg", SimpleFileOptions::default())
+            .expect("start archived");
+        writer.write_all(&[b'a'; 1024]).expect("write archived");
+        writer.finish().expect("finish archive");
+
+        let sizes = chapter_media_stored_entry_sizes_in_dir(
+            &chapter,
+            &[
+                "direct.png".to_string(),
+                "archived.jpg".to_string(),
+                "missing.webp".to_string(),
+            ],
+        )
+        .expect("inspect entry sizes");
+        assert_eq!(sizes.get("direct.png"), Some(&5));
+        assert_eq!(sizes.get("archived.jpg"), Some(&1024));
+        assert!(!sizes.contains_key("missing.webp"));
     }
 }

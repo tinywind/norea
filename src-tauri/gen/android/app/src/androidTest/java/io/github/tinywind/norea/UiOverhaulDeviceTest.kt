@@ -9,7 +9,6 @@ import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
-import java.io.File
 import java.util.concurrent.CountDownLatch
 import java.util.concurrent.TimeUnit
 import org.junit.Assert.assertEquals
@@ -25,27 +24,6 @@ class UiOverhaulDeviceTest {
   private fun requireIsolatedApp() {
     check(context.packageName == "io.github.tinywind.norea.debug") {
       "These checks must run in the isolated debug application."
-    }
-  }
-
-  @Test
-  fun automaticBackupReportsAMissingFolderGrantWithoutChangingTheArchive() {
-    requireIsolatedApp()
-    val input = File.createTempFile("backup-grant-check-", ".zip", context.cacheDir)
-    val bytes = byteArrayOf(0x50, 0x4b, 3, 4)
-    input.writeBytes(bytes)
-    val storage = AndroidStorageDocuments(context)
-    val backups = AndroidAutoBackups(context, storage, AndroidContentUriFiles(context, storage))
-    val root = "content://com.android.externalstorage.documents/tree/primary%3ANorea-ungranted-ui-qa"
-    assertTrue(context.contentResolver.persistedUriPermissions.none { it.uri.toString() == root })
-    try {
-      val error = runCatching {
-        backups.publish(root, input.path, "norea-auto-backup-20261104000000.zip", 1)
-      }.exceptionOrNull()
-      assertTrue(error.toString(), error?.message?.startsWith(AUTO_BACKUP_FOLDER_UNAVAILABLE) == true)
-      assertTrue(input.readBytes().contentEquals(bytes))
-    } finally {
-      input.delete()
     }
   }
 

@@ -26,6 +26,8 @@ pub(super) const CHAPTER_MEDIA_MANIFEST_FILE: &str = "manifest.json";
 pub(super) const CHAPTER_PARTIAL_CONTENT_FILE: &str = ".chapter-content.partial";
 
 const STORAGE_ROOT_CONFIG_FILE: &str = "chapter-media-storage-root.txt";
+const EXTERNAL_STORAGE_TREE_URI_PREFIX: &str =
+    "content://com.android.externalstorage.documents/tree/";
 
 pub(super) const MEDIA_RESTORE_BACKUP_INFIX: &str = ".restore-backup-";
 
@@ -47,7 +49,9 @@ fn storage_root_config_path<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, S
         .join(STORAGE_ROOT_CONFIG_FILE))
 }
 
-fn configured_media_root<R: Runtime>(app: &AppHandle<R>) -> Result<Option<PathBuf>, String> {
+pub(crate) fn configured_storage_root_value<R: Runtime>(
+    app: &AppHandle<R>,
+) -> Result<Option<String>, String> {
     let config_path = storage_root_config_path(app)?;
     match fs::read_to_string(&config_path) {
         Ok(value) => {
@@ -55,7 +59,7 @@ fn configured_media_root<R: Runtime>(app: &AppHandle<R>) -> Result<Option<PathBu
             if trimmed.is_empty() {
                 Ok(None)
             } else {
-                Ok(Some(PathBuf::from(trimmed)))
+                Ok(Some(trimmed.to_string()))
             }
         }
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
@@ -63,41 +67,165 @@ fn configured_media_root<R: Runtime>(app: &AppHandle<R>) -> Result<Option<PathBu
     }
 }
 
-pub(crate) fn media_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
-    configured_media_root(app)?.map_or_else(|| default_media_root(app), Ok)
+fn decode_percent_utf8(value: &str) -> Result<String, String> {
+    let bytes = value.as_bytes();
+    let mut decoded = Vec::with_capacity(bytes.len());
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err("chapter media: invalid storage root percent encoding".to_string());
+            }
+            let decode_hex = |byte: u8| -> Option<u8> {
+                match byte {
+                    b'0'..=b'9' => Some(byte - b'0'),
+                    b'a'..=b'f' => Some(byte - b'a' + 10),
+                    b'A'..=b'F' => Some(byte - b'A' + 10),
+                    _ => None,
+                }
+            };
+            let high = decode_hex(bytes[index + 1])
+                .ok_or_else(|| "chapter media: invalid storage root percent encoding".to_string())?;
+            let low = decode_hex(bytes[index + 2])
+                .ok_or_else(|| "chapter media: invalid storage root percent encoding".to_string())?;
+            decoded.push((high << 4) | low);
+            index += 3;
+        } else {
+            decoded.push(bytes[index]);
+            index += 1;
+        }
+    }
+    String::from_utf8(decoded).map_err(|_| "chapter media: invalid utf-8 storage root".to_string())
 }
 
-fn save_configured_media_root<R: Runtime>(
-    app: &AppHandle<R>,
-    root_path: &Path,
-) -> Result<String, String> {
-    let root_value = root_path.to_string_lossy().into_owned();
-    if !root_value.starts_with("content://") {
-        fs::create_dir_all(root_path)
-            .map_err(|err| format!("chapter media: create storage root: {err}"))?;
-        ensure_contents_nomedia(root_path)?;
+pub(crate) fn resolve_storage_root_path(raw: &str) -> Result<PathBuf, String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return Err("chapter media: storage root is empty".to_string());
     }
+    if trimmed.contains('\0') {
+        return Err("chapter media: storage root contains an invalid character".to_string());
+    }
+    if let Some(rest) = trimmed.strip_prefix(EXTERNAL_STORAGE_TREE_URI_PREFIX) {
+        let encoded_tree_id = rest
+            .split(['/', '?', '#'])
+            .next()
+            .filter(|segment| !segment.is_empty())
+            .ok_or_else(|| "Android storage folder is unavailable.".to_string())?;
+        let tree_id = decode_percent_utf8(encoded_tree_id)?;
+        if tree_id.contains('\0') {
+            return Err("chapter media: storage root contains an invalid character".to_string());
+        }
+        let (volume, tree_path) = match tree_id.split_once(':') {
+            Some((vol, rel)) => (vol.trim(), rel),
+            None => (tree_id.trim(), ""),
+        };
+        if volume.is_empty()
+            || volume == "."
+            || volume == ".."
+            || volume.contains('/')
+            || volume.contains('\\')
+        {
+            return Err("Android storage folder is unavailable.".to_string());
+        }
+        let mut resolved = if volume == "primary" {
+            #[cfg(target_os = "android")]
+            {
+                crate::android_content_io::external_storage_root_path()
+            }
+            #[cfg(not(target_os = "android"))]
+            {
+                PathBuf::from("/storage/emulated/0")
+            }
+        } else {
+            PathBuf::from("/storage").join(volume)
+        };
+        for segment in tree_path.replace('\\', "/").split('/') {
+            let segment = segment.trim();
+            if segment.is_empty() {
+                continue;
+            }
+            if segment == "." || segment == ".." {
+                return Err("chapter media: invalid storage root path segment".to_string());
+            }
+            resolved.push(segment);
+        }
+        return Ok(resolved);
+    }
+    if trimmed.starts_with("content://") {
+        return Err("Android storage folder must be on device storage.".to_string());
+    }
+    if trimmed.starts_with("file://") {
+        return crate::android_content_io::resolve_filesystem_path(trimmed);
+    }
+    Ok(PathBuf::from(trimmed))
+}
+
+pub(crate) fn media_root<R: Runtime>(app: &AppHandle<R>) -> Result<PathBuf, String> {
+    #[cfg(target_os = "android")]
+    {
+        let raw = configured_storage_root_value(app)?
+            .ok_or_else(|| "Android media storage folder has not been selected.".to_string())?;
+        crate::android_content_io::ensure_all_files_access()?;
+        return resolve_storage_root_path(&raw);
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        match configured_storage_root_value(app)? {
+            Some(raw) => resolve_storage_root_path(&raw),
+            None => default_media_root(app),
+        }
+    }
+}
+
+fn save_configured_media_root_value<R: Runtime>(
+    app: &AppHandle<R>,
+    raw_value: &str,
+) -> Result<String, String> {
+    let trimmed = raw_value.trim();
+    if trimmed.is_empty() {
+        return Err("chapter media: storage root is empty".to_string());
+    }
+    if trimmed.contains('\0') {
+        return Err("chapter media: storage root contains an invalid character".to_string());
+    }
+    #[cfg(target_os = "android")]
+    crate::android_content_io::ensure_all_files_access()?;
+
+    let resolved_path = resolve_storage_root_path(trimmed)?;
+    fs::create_dir_all(&resolved_path)
+        .map_err(|err| format!("chapter media: create storage root: {err}"))?;
+    ensure_contents_nomedia(&resolved_path)?;
+
     let config_path = storage_root_config_path(app)?;
     if let Some(parent) = config_path.parent() {
         fs::create_dir_all(parent)
             .map_err(|err| format!("chapter media: create config dir: {err}"))?;
     }
-    fs::write(&config_path, &root_value)
+    fs::write(&config_path, trimmed)
         .map_err(|err| format!("chapter media: write storage root: {err}"))?;
-    Ok(root_value)
+    Ok(trimmed.to_string())
 }
 
 pub(super) fn ensure_contents_nomedia(root: &Path) -> Result<(), String> {
     let contents_dir = root.join(CONTENTS_ROOT_DIR);
     fs::create_dir_all(&contents_dir)
         .map_err(|err| format!("chapter media: create contents dir: {err}"))?;
+    let nomedia_path = contents_dir.join(NO_MEDIA_FILE);
+    #[cfg(target_os = "android")]
+    let existed = nomedia_path.is_file();
     File::options()
         .write(true)
         .create(true)
         .truncate(false)
-        .open(contents_dir.join(NO_MEDIA_FILE))
+        .open(&nomedia_path)
         .map(|_| ())
-        .map_err(|err| format!("chapter media: create .nomedia: {err}"))
+        .map_err(|err| format!("chapter media: create .nomedia: {err}"))?;
+    #[cfg(target_os = "android")]
+    if !existed {
+        crate::android_content_io::scan_file(&nomedia_path);
+    }
+    Ok(())
 }
 
 pub(super) fn media_roots_for_lookup<R: Runtime>(
@@ -105,19 +233,19 @@ pub(super) fn media_roots_for_lookup<R: Runtime>(
 ) -> Result<Vec<PathBuf>, String> {
     let mut roots = Vec::new();
     roots.push(media_root(app)?);
-    let default_root = default_media_root(app)?;
-    if !roots.iter().any(|root| root == &default_root) {
-        roots.push(default_root);
+    #[cfg(not(target_os = "android"))]
+    {
+        let default_root = default_media_root(app)?;
+        if !roots.iter().any(|root| root == &default_root) {
+            roots.push(default_root);
+        }
     }
     Ok(roots)
 }
 
 #[tauri::command]
 pub async fn chapter_media_get_storage_root(app: AppHandle) -> Result<Option<String>, String> {
-    chapter_media_blocking("read storage root", move || {
-        configured_media_root(&app).map(|root| root.map(|path| path.to_string_lossy().into_owned()))
-    })
-    .await
+    chapter_media_blocking("read storage root", move || configured_storage_root_value(&app)).await
 }
 
 #[tauri::command]
@@ -126,27 +254,46 @@ pub async fn chapter_media_set_storage_root(
     root: String,
 ) -> Result<String, String> {
     chapter_media_blocking("set storage root", move || {
-        let trimmed = root.trim();
-        if trimmed.is_empty() {
-            return Err("chapter media: storage root is empty".to_string());
-        }
-        if trimmed.contains('\0') {
-            return Err("chapter media: storage root contains an invalid character".to_string());
-        }
-
-        let root_path = PathBuf::from(trimmed);
-        save_configured_media_root(&app, &root_path)
+        save_configured_media_root_value(&app, &root)
     })
     .await
 }
 
 #[tauri::command]
+pub async fn chapter_media_pick_storage_root(app: AppHandle) -> Result<Option<String>, String> {
+    #[cfg(target_os = "android")]
+    {
+        crate::android_content_io::ensure_all_files_access()?;
+        let Some(picked) = crate::android_content_io::pick_storage_root().await? else {
+            return Ok(None);
+        };
+        chapter_media_blocking("pick storage root", move || {
+            save_configured_media_root_value(&app, &picked).map(Some)
+        })
+        .await
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = app;
+        Err("Android storage picker is only supported on Android.".to_string())
+    }
+}
+
+#[tauri::command]
 pub async fn chapter_media_use_default_storage_root(app: AppHandle) -> Result<String, String> {
-    chapter_media_blocking("use default storage root", move || {
-        let root_path = default_media_root(&app)?;
-        save_configured_media_root(&app, &root_path)
-    })
-    .await
+    #[cfg(target_os = "android")]
+    {
+        let _ = app;
+        Err("Android requires selecting an external storage folder.".to_string())
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        chapter_media_blocking("use default storage root", move || {
+            let root_path = default_media_root(&app)?;
+            save_configured_media_root_value(&app, &root_path.to_string_lossy())
+        })
+        .await
+    }
 }
 
 pub(super) fn safe_segment(value: &str, fallback: &str) -> String {

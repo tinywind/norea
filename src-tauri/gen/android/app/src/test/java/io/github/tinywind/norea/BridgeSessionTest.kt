@@ -44,10 +44,10 @@ class BridgeSessionTest {
     val nonce = session.newNonce()
 
     val authority = session.validate(
-      BridgeCapabilities.UPDATE_OPEN_APK,
+      BridgeCapabilities.VPN_PROXY_CONFIGURE,
       BridgeAuthorityFields(
         token = session.sessionToken,
-        capability = BridgeCapabilities.UPDATE_OPEN_APK,
+        capability = BridgeCapabilities.VPN_PROXY_CONFIGURE,
         nonce = nonce,
       ),
     )
@@ -81,7 +81,7 @@ class BridgeSessionTest {
         BridgeCapabilities.SCRAPER_FETCH,
         BridgeAuthorityFields(
           token = session.sessionToken,
-          capability = BridgeCapabilities.UPDATE_OPEN_APK,
+          capability = BridgeCapabilities.VPN_PROXY_CONFIGURE,
           nonce = session.newNonce(),
         ),
       )
@@ -94,10 +94,10 @@ class BridgeSessionTest {
 
     assertThrows(IllegalArgumentException::class.java) {
       session.validate(
-        BridgeCapabilities.UPDATE_OPEN_APK,
+        BridgeCapabilities.VPN_PROXY_CONFIGURE,
         BridgeAuthorityFields(
           token = "wrong-token",
-          capability = BridgeCapabilities.UPDATE_OPEN_APK,
+          capability = BridgeCapabilities.VPN_PROXY_CONFIGURE,
           nonce = session.newNonce(),
         ),
       )

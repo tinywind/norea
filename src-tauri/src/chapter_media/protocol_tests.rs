@@ -76,3 +76,64 @@ fn non_image_media_preserves_extension_fallback() {
         "audio/mpeg"
     );
 }
+
+#[test]
+fn prepares_and_serves_reader_media_cache_from_archive_and_directory() {
+    use std::io::Write;
+    use zip::{write::SimpleFileOptions, ZipWriter};
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let storage_root = temp.path().join("storage");
+    let cache_base = temp.path().join("cache/reader-media");
+    let chapter_dir = storage_root.join("contents/demo/book/1");
+    fs::create_dir_all(chapter_dir.join("media")).expect("create media dir");
+    fs::write(chapter_dir.join("media/0001-direct.png"), b"\x89PNG\r\n\x1a\ndirect")
+        .expect("write direct media");
+    fs::write(chapter_dir.join("media/0002-incomplete.png.part"), b"partial")
+        .expect("write partial media");
+
+    let archive_file = File::create(chapter_dir.join("media.zip")).expect("create zip");
+    let mut writer = ZipWriter::new(archive_file);
+    writer
+        .start_file("0003-archived.jpg", SimpleFileOptions::default())
+        .expect("start zip entry");
+    writer.write_all(b"\xff\xd8\xffarchived").expect("write zip entry");
+    writer.finish().expect("finish zip");
+
+    prepare_reader_media_cache_at(
+        &storage_root,
+        &cache_base,
+        "contents/demo/book/1/media",
+        "contents/demo/book/1/media.zip",
+        "28-token_1",
+    )
+    .expect("prepare reader cache");
+
+    let (direct_body, direct_mime) =
+        read_reader_media_cache_body(&cache_base, "reader-asset/~cache/28-token_1/0001-direct.png")
+            .expect("serve direct cached media");
+    assert_eq!(direct_body, b"\x89PNG\r\n\x1a\ndirect");
+    assert_eq!(direct_mime, "image/png");
+
+    let (archived_body, archived_mime) = read_reader_media_cache_body(
+        &cache_base,
+        "reader-asset/~cache/28-token_1/0003-archived.jpg",
+    )
+    .expect("serve archived cached media");
+    assert_eq!(archived_body, b"\xff\xd8\xffarchived");
+    assert_eq!(archived_mime, "image/jpeg");
+
+    let missing_partial = read_reader_media_cache_body(
+        &cache_base,
+        "reader-asset/~cache/28-token_1/0002-incomplete.png.part",
+    )
+    .expect_err("skip .part files");
+    assert_eq!(missing_partial.0, StatusCode::NOT_FOUND);
+
+    let traversal = read_reader_media_cache_body(
+        &cache_base,
+        "reader-asset/~cache/../0001-direct.png",
+    )
+    .expect_err("reject invalid token");
+    assert_eq!(traversal.0, StatusCode::BAD_REQUEST);
+}

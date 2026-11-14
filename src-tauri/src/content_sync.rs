@@ -346,7 +346,13 @@ fn install_directory(source: &Path, destination: &Path) -> Result<(), String> {
                 .write(true)
                 .open(&target)
                 .map_err(&io_failure)?;
-            stored.set_times(fs::FileTimes::new().set_modified(original.modified().map_err(&io_failure)?)).map_err(&io_failure)?;
+            let modified = original.modified().map_err(&io_failure)?;
+            match stored.set_times(fs::FileTimes::new().set_modified(modified)) {
+                Ok(()) => {}
+                #[cfg(target_os = "android")]
+                Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => {}
+                Err(error) => return Err(io_failure(error)),
+            }
             stored.sync_all().map_err(&io_failure)?;
             if stored.metadata().map_err(&io_failure)?.len() != original.len() {
                 return Err(chapter_storage_failure("copy installed chapter", "storage copy size mismatch"));

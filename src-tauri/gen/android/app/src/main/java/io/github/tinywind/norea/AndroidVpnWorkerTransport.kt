@@ -19,7 +19,7 @@ internal const val VPN_WORKER_EXECUTION = 3
 internal const val VPN_WORKER_MANUAL_CLOSED = 4
 internal const val VPN_WORKER_TRANSFER_FAILED = 5
 internal const val VPN_WORKER_REQUEST_LIMIT = 16L * 1024L * 1024L
-internal const val VPN_WORKER_RESPONSE_LIMIT = ANDROID_CHAPTER_MEDIA_MAX_ENTRY_BYTES
+internal const val VPN_WORKER_RESPONSE_LIMIT = 256L * 1024L * 1024L
 internal const val VPN_WORKER_MAX_PENDING = 32
 
 internal class AndroidVpnWorkerTransport(context: Context) {
