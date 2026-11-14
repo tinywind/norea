@@ -403,6 +403,8 @@ pub fn run() {
             android_content_io::local_file_describe,
             android_content_io::local_file_read,
             android_file_open::android_open_file_url_take,
+            backup::backup_gather_snapshot,
+            backup::backup_list_cached_chapter_directories,
             backup::backup_pack,
             backup::backup_pack_bytes,
             backup::backup_publish_auto,

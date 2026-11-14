@@ -16,7 +16,7 @@ use std::io::{BufReader, BufWriter, Cursor, Read, Seek, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use sqlx::Sqlite;
+use sqlx::{Row, Sqlite, SqlitePool};
 use tauri::{AppHandle, State, async_runtime};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -980,6 +980,472 @@ pub async fn backup_pack_bytes(manifest_json: String) -> Result<Vec<u8>, String>
         backup_zip_bytes(&manifest_json)
     })
     .await
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGatheredNovelDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub chapter_composition_payload: Option<String>,
+    pub id: i64,
+    pub plugin_id: String,
+    pub source_novel_id: Option<String>,
+    pub path: String,
+    pub name: String,
+    pub cover: Option<String>,
+    pub summary: Option<String>,
+    pub author: Option<String>,
+    pub artist: Option<String>,
+    pub status: Option<String>,
+    pub genres: Option<String>,
+    pub in_library: bool,
+    pub is_local: bool,
+    pub created_at: i64,
+    pub updated_at: i64,
+    pub library_added_at: Option<i64>,
+    pub last_read_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGatheredChapterDto {
+    pub id: i64,
+    pub novel_id: i64,
+    pub path: String,
+    pub name: String,
+    pub chapter_number: Option<String>,
+    pub position: i64,
+    pub page: String,
+    pub bookmark: bool,
+    pub unread: bool,
+    pub progress: i64,
+    pub is_downloaded: bool,
+    pub source_content_type: String,
+    pub stored_content_type: Option<String>,
+    pub content_bytes: i64,
+    pub media_bytes: i64,
+    pub release_time: Option<String>,
+    pub read_at: Option<i64>,
+    pub created_at: Option<i64>,
+    pub found_at: i64,
+    pub found_by_check: bool,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGatheredCategoryDto {
+    pub id: i64,
+    pub name: String,
+    pub sort: i64,
+    pub is_system: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub stable_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGatheredNovelCategoryDto {
+    pub id: i64,
+    pub novel_id: i64,
+    pub category_id: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGatheredRepositoryDto {
+    pub id: i64,
+    pub url: String,
+    pub name: Option<String>,
+    pub added_at: i64,
+    pub priority: i64,
+    pub enabled: bool,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGatheredInstalledPluginDto {
+    pub id: String,
+    pub name: String,
+    pub lang: String,
+    pub version: String,
+    pub icon_url: String,
+    pub source_url: String,
+    pub source_code: String,
+    pub installed_at: i64,
+    pub repository_url: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGatheredVpnGateServerVerdictDto {
+    pub ip: String,
+    pub verdict: String,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGatheredNovelDownloadGoalDto {
+    pub novel_id: i64,
+    pub kind: String,
+    pub count: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BackupGatheredSnapshotDto {
+    pub novels: Vec<BackupGatheredNovelDto>,
+    pub chapters: Vec<BackupGatheredChapterDto>,
+    pub categories: Vec<BackupGatheredCategoryDto>,
+    pub novel_categories: Vec<BackupGatheredNovelCategoryDto>,
+    pub repositories: Vec<BackupGatheredRepositoryDto>,
+    pub installed_plugins: Vec<BackupGatheredInstalledPluginDto>,
+    pub vpn_gate_server_verdicts: Vec<BackupGatheredVpnGateServerVerdictDto>,
+    pub download_goals: Vec<BackupGatheredNovelDownloadGoalDto>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CachedChapterDirectoryDto {
+    pub plugin_id: String,
+    pub novel_path: String,
+    pub chapter_path: String,
+    pub directory: String,
+    pub stored_content_type: Option<String>,
+    pub content_bytes: i64,
+    pub media_bytes: i64,
+}
+
+async fn gather_backup_snapshot_in_tx(
+    tx: &mut sqlx::Transaction<'_, Sqlite>,
+) -> Result<BackupGatheredSnapshotDto, String> {
+    let novel_rows = sqlx::query(
+        "SELECT
+            id,
+            plugin_id,
+            source_novel_id,
+            path,
+            name,
+            cover,
+            summary,
+            author,
+            artist,
+            status,
+            genres,
+            in_library,
+            is_local,
+            created_at,
+            updated_at,
+            library_added_at,
+            last_read_at,
+            (SELECT payload FROM novel_chapter_composition WHERE novel_id = novel.id) AS chapter_composition_payload
+         FROM novel
+         ORDER BY id",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| format!("backup_gather_snapshot: select novels: {err}"))?;
+
+    let mut novels = Vec::with_capacity(novel_rows.len());
+    for row in novel_rows {
+        let plugin_id: String = row.get("plugin_id");
+        let is_local_flag: i64 = row.get("is_local");
+        novels.push(BackupGatheredNovelDto {
+            chapter_composition_payload: row.get("chapter_composition_payload"),
+            id: row.get("id"),
+            is_local: plugin_id == "local" && is_local_flag != 0,
+            plugin_id,
+            source_novel_id: row.get("source_novel_id"),
+            path: row.get("path"),
+            name: row.get("name"),
+            cover: row.get("cover"),
+            summary: row.get("summary"),
+            author: row.get("author"),
+            artist: row.get("artist"),
+            status: row.get("status"),
+            genres: row.get("genres"),
+            in_library: row.get::<i64, _>("in_library") != 0,
+            created_at: row.get("created_at"),
+            updated_at: row.get("updated_at"),
+            library_added_at: row.get("library_added_at"),
+            last_read_at: row.get("last_read_at"),
+        });
+    }
+
+    let chapter_rows = sqlx::query(
+        "SELECT
+            id,
+            novel_id,
+            path,
+            name,
+            chapter_number,
+            position,
+            page,
+            bookmark,
+            unread,
+            progress,
+            is_downloaded,
+            content_type,
+            stored_content_type,
+            content_bytes,
+            media_bytes,
+            release_time,
+            read_at,
+            created_at,
+            found_at,
+            found_by_check,
+            updated_at
+         FROM chapter
+         ORDER BY id",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| format!("backup_gather_snapshot: select chapters: {err}"))?;
+
+    let mut chapters = Vec::with_capacity(chapter_rows.len());
+    for row in chapter_rows {
+        let progress = row
+            .try_get::<i64, _>("progress")
+            .unwrap_or_else(|_| crate::db::decode_sqlite_f64(&row, "progress") as i64);
+        chapters.push(BackupGatheredChapterDto {
+            id: row.get("id"),
+            novel_id: row.get("novel_id"),
+            path: row.get("path"),
+            name: row.get("name"),
+            chapter_number: row.get("chapter_number"),
+            position: row.get("position"),
+            page: row.get("page"),
+            bookmark: row.get::<i64, _>("bookmark") != 0,
+            unread: row.get::<i64, _>("unread") != 0,
+            progress,
+            is_downloaded: row.get::<i64, _>("is_downloaded") != 0,
+            source_content_type: row.get("content_type"),
+            stored_content_type: row.get("stored_content_type"),
+            content_bytes: row.get("content_bytes"),
+            media_bytes: row.get("media_bytes"),
+            release_time: row.get("release_time"),
+            read_at: row.get("read_at"),
+            created_at: row.get("created_at"),
+            found_at: row.get("found_at"),
+            found_by_check: row.get::<i64, _>("found_by_check") != 0,
+            updated_at: row.get("updated_at"),
+        });
+    }
+
+    let category_rows = sqlx::query(
+        "SELECT id, name, sort, is_system
+         FROM category
+         ORDER BY id",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| format!("backup_gather_snapshot: select categories: {err}"))?;
+
+    let mut categories = Vec::with_capacity(category_rows.len());
+    for row in category_rows {
+        let id: i64 = row.get("id");
+        let is_system = row.get::<i64, _>("is_system") != 0;
+        let stable_id = if is_system {
+            None
+        } else {
+            crate::db::user_state::core::stable_category_id_in_tx(&mut **tx, id, false).await?
+        };
+        categories.push(BackupGatheredCategoryDto {
+            id,
+            name: row.get("name"),
+            sort: row.get("sort"),
+            is_system,
+            stable_id,
+        });
+    }
+
+    let novel_category_rows = sqlx::query(
+        "SELECT id, novel_id, category_id
+         FROM novel_category
+         ORDER BY id",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| format!("backup_gather_snapshot: select novel_category: {err}"))?;
+
+    let novel_categories = novel_category_rows
+        .into_iter()
+        .map(|row| BackupGatheredNovelCategoryDto {
+            id: row.get("id"),
+            novel_id: row.get("novel_id"),
+            category_id: row.get("category_id"),
+        })
+        .collect();
+
+    let repository_rows = sqlx::query(
+        "SELECT id, url, name, added_at, priority, enabled
+         FROM repository
+         ORDER BY priority, id",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| format!("backup_gather_snapshot: select repositories: {err}"))?;
+
+    let repositories = repository_rows
+        .into_iter()
+        .map(|row| BackupGatheredRepositoryDto {
+            id: row.get("id"),
+            url: row.get("url"),
+            name: row.get("name"),
+            added_at: row.get("added_at"),
+            priority: row.get("priority"),
+            enabled: row.get::<i64, _>("enabled") != 0,
+        })
+        .collect();
+
+    let installed_plugin_rows = sqlx::query(
+        "SELECT
+            id,
+            name,
+            lang,
+            version,
+            icon_url,
+            source_url,
+            source_code,
+            installed_at,
+            repository_url
+         FROM installed_plugin
+         ORDER BY installed_at DESC, id ASC",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| format!("backup_gather_snapshot: select installed_plugin: {err}"))?;
+
+    let installed_plugins = installed_plugin_rows
+        .into_iter()
+        .map(|row| BackupGatheredInstalledPluginDto {
+            id: row.get("id"),
+            name: row.get("name"),
+            lang: row.get("lang"),
+            version: row.get("version"),
+            icon_url: row.get("icon_url"),
+            source_url: row.get("source_url"),
+            source_code: row.get("source_code"),
+            installed_at: row.get("installed_at"),
+            repository_url: row.get("repository_url"),
+        })
+        .collect();
+
+    let verdict_rows = sqlx::query(
+        "SELECT ip, verdict, updated_at
+         FROM vpn_gate_server_verdict
+         ORDER BY ip",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| format!("backup_gather_snapshot: select vpn_gate_server_verdict: {err}"))?;
+
+    let vpn_gate_server_verdicts = verdict_rows
+        .into_iter()
+        .map(|row| BackupGatheredVpnGateServerVerdictDto {
+            ip: row.get("ip"),
+            verdict: row.get("verdict"),
+            updated_at: row.get("updated_at"),
+        })
+        .collect();
+
+    let goal_rows = sqlx::query(
+        "SELECT novel_id, kind, count, updated_at
+         FROM novel_download_goal
+         ORDER BY novel_id",
+    )
+    .fetch_all(&mut **tx)
+    .await
+    .map_err(|err| format!("backup_gather_snapshot: select novel_download_goal: {err}"))?;
+
+    let download_goals = goal_rows
+        .into_iter()
+        .map(|row| BackupGatheredNovelDownloadGoalDto {
+            novel_id: row.get("novel_id"),
+            kind: row.get("kind"),
+            count: row.get("count"),
+            updated_at: row.get("updated_at"),
+        })
+        .collect();
+
+    Ok(BackupGatheredSnapshotDto {
+        novels,
+        chapters,
+        categories,
+        novel_categories,
+        repositories,
+        installed_plugins,
+        vpn_gate_server_verdicts,
+        download_goals,
+    })
+}
+
+async fn list_cached_chapter_directories_from_pool(
+    pool: &SqlitePool,
+) -> Result<Vec<CachedChapterDirectoryDto>, String> {
+    let rows = sqlx::query(
+        "SELECT
+            n.plugin_id,
+            n.path AS novel_path,
+            c.path AS chapter_path,
+            d.directory,
+            c.stored_content_type,
+            c.content_bytes,
+            c.media_bytes
+         FROM work_metadata_directory_cache d
+         JOIN chapter c ON c.id = d.chapter_id
+         JOIN novel n ON n.id = c.novel_id",
+    )
+    .fetch_all(pool)
+    .await
+    .map_err(|err| format!("backup_list_cached_chapter_directories: {err}"))?;
+
+    Ok(rows
+        .into_iter()
+        .map(|row| CachedChapterDirectoryDto {
+            plugin_id: row.get("plugin_id"),
+            novel_path: row.get("novel_path"),
+            chapter_path: row.get("chapter_path"),
+            directory: row.get("directory"),
+            stored_content_type: row.get("stored_content_type"),
+            content_bytes: row.get("content_bytes"),
+            media_bytes: row.get("media_bytes"),
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub async fn backup_gather_snapshot(
+    db: State<'_, AppDatabase>,
+) -> Result<BackupGatheredSnapshotDto, String> {
+    let mut tx = db
+        .writer()
+        .begin_with("BEGIN IMMEDIATE")
+        .await
+        .map_err(|err| format!("backup_gather_snapshot: begin transaction: {err}"))?;
+
+    match gather_backup_snapshot_in_tx(&mut tx).await {
+        Ok(snapshot) => {
+            tx.commit()
+                .await
+                .map_err(|err| format!("backup_gather_snapshot: commit transaction: {err}"))?;
+            Ok(snapshot)
+        }
+        Err(error) => {
+            let _ = tx.rollback().await;
+            Err(error)
+        }
+    }
+}
+
+#[tauri::command]
+pub async fn backup_list_cached_chapter_directories(
+    db: State<'_, AppDatabase>,
+    read_mode: Option<crate::db::ReadMode>,
+) -> Result<Vec<CachedChapterDirectoryDto>, String> {
+    list_cached_chapter_directories_from_pool(db.pool_for(read_mode.unwrap_or_default())).await
 }
 
 #[tauri::command]
@@ -1964,6 +2430,116 @@ mod tests {
         assert!(error.contains("invalid chapter composition"));
         tx.rollback().await.unwrap();
         assert_eq!(sqlx::query_scalar::<_, String>("SELECT name FROM novel WHERE id=99").fetch_one(&pool).await.unwrap(), "Original");
+    }
+
+    #[tokio::test]
+    async fn gather_snapshot_exports_all_tables_with_booleans_and_stable_category_ids() {
+        let pool = restore_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library, is_local, created_at, updated_at, library_added_at)
+             VALUES
+                (1, 'demo', 'src-1', '/n/1', 'Remote Novel', 1, 1, 100, 101, 102),
+                (2, 'local', 'local-2', 'local-2', 'Local Novel', 0, 1, 200, 201, NULL);
+             INSERT INTO novel_chapter_composition(novel_id, payload)
+             VALUES (1, '{\"version\":1,\"updatedAt\":5,\"entries\":[]}');
+             INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, page, bookmark, unread, progress, is_downloaded, content_type, stored_content_type, content_bytes, media_bytes, created_at, found_at, found_by_check, updated_at)
+             VALUES (10, 1, '/c/1', 'Opening', '1', 1, '1', 1, 0, 75, 1, 'text', 'html', 2048, 512, NULL, 0, 1, 150);
+             INSERT INTO category(id, name, sort, is_system)
+             VALUES (1, 'Default', 0, 1), (7, 'Favorites', 2, 0);
+             INSERT INTO novel_category(id, novel_id, category_id) VALUES (3, 1, 7);
+             INSERT INTO repository(id, url, name, added_at, priority, enabled)
+             VALUES (4, 'https://repo.example/plugins.json', 'Main Repo', 300, 1, 1);
+             INSERT INTO installed_plugin(id, name, lang, version, icon_url, source_url, source_code, installed_at, repository_url)
+             VALUES ('demo', 'Demo', 'en', '1.0.0', 'https://repo.example/icon.png', 'https://repo.example/demo.js', 'module.exports={}', 400, 'https://repo.example/plugins.json');
+             INSERT INTO vpn_gate_server_verdict(ip, verdict, updated_at)
+             VALUES ('198.51.100.10', 'works', 500);
+             INSERT INTO novel_download_goal(novel_id, kind, count, updated_at)
+             VALUES (1, 'keep_ahead', 3, 600), (2, 'none', NULL, 601);",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed backup tables");
+
+        let mut tx = pool.begin().await.expect("begin");
+        let snapshot = gather_backup_snapshot_in_tx(&mut tx)
+            .await
+            .expect("gather snapshot");
+        tx.commit().await.expect("commit");
+
+        assert_eq!(snapshot.novels.len(), 2);
+        assert!(snapshot.novels[0].in_library);
+        // Non-local plugin must never report is_local = true even if integer column is 1.
+        assert!(!snapshot.novels[0].is_local);
+        assert_eq!(
+            snapshot.novels[0].chapter_composition_payload.as_deref(),
+            Some("{\"version\":1,\"updatedAt\":5,\"entries\":[]}")
+        );
+        assert!(!snapshot.novels[1].in_library);
+        assert!(snapshot.novels[1].is_local);
+
+        assert_eq!(snapshot.chapters.len(), 1);
+        let ch = &snapshot.chapters[0];
+        assert!(ch.bookmark);
+        assert!(!ch.unread);
+        assert_eq!(ch.progress, 75);
+        assert!(ch.is_downloaded);
+        assert_eq!(ch.source_content_type, "text");
+        assert_eq!(ch.stored_content_type.as_deref(), Some("html"));
+        assert_eq!(ch.content_bytes, 2048);
+        assert_eq!(ch.media_bytes, 512);
+        assert_eq!(ch.created_at, None);
+        assert!(ch.found_by_check);
+
+        assert_eq!(snapshot.categories.len(), 2);
+        assert!(snapshot.categories[0].is_system);
+        assert_eq!(snapshot.categories[0].stable_id, None);
+        assert!(!snapshot.categories[1].is_system);
+        assert!(
+            snapshot.categories[1]
+                .stable_id
+                .as_deref()
+                .is_some_and(|id| id.starts_with("legacy-"))
+        );
+
+        assert_eq!(snapshot.novel_categories.len(), 1);
+        assert_eq!(snapshot.repositories.len(), 1);
+        assert!(snapshot.repositories[0].enabled);
+        assert_eq!(snapshot.installed_plugins.len(), 1);
+        assert_eq!(snapshot.vpn_gate_server_verdicts.len(), 1);
+        assert_eq!(snapshot.download_goals.len(), 2);
+        assert_eq!(snapshot.download_goals[0].count, Some(3));
+        assert_eq!(snapshot.download_goals[1].count, None);
+    }
+
+    #[tokio::test]
+    async fn list_cached_chapter_directories_joins_novel_and_chapter_metadata() {
+        let pool = restore_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO novel(id, plugin_id, path, name) VALUES (1, 'source', '/book', 'Book');
+             INSERT INTO chapter(id, novel_id, path, name, position, stored_content_type, content_bytes, media_bytes)
+             VALUES (10, 1, '/c/1', 'Ch 1', 1, 'html', 28, 3);
+             INSERT INTO work_metadata_directory_cache(chapter_id, novel_id, directory)
+             VALUES (10, 1, 'contents/source/book/1');",
+        )
+        .execute(&pool)
+        .await
+        .expect("seed directory cache");
+
+        let rows = list_cached_chapter_directories_from_pool(&pool)
+            .await
+            .expect("list cached chapter directories");
+        assert_eq!(
+            rows,
+            vec![CachedChapterDirectoryDto {
+                plugin_id: "source".to_string(),
+                novel_path: "/book".to_string(),
+                chapter_path: "/c/1".to_string(),
+                directory: "contents/source/book/1".to_string(),
+                stored_content_type: Some("html".to_string()),
+                content_bytes: 28,
+                media_bytes: 3,
+            }]
+        );
     }
 
 }
