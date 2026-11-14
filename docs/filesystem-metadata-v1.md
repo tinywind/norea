@@ -31,10 +31,13 @@ that chapter path by an unambiguous chapter number. Work metadata refresh does
 not delete source chapters that have not been downloaded.
 
 SQLite also stores rebuildable metadata fingerprints and chapter directory
-mappings. Normal startup loads these mappings without rereading all work files.
-An uninitialized cache, explicit rescan, or failed-write recovery reads the
-authoritative files. Changes made outside the app require a rescan; writes check
-the previous file fingerprint to avoid overwriting external edits.
+mappings through the Rust host (`src-tauri/src/db/work_metadata.rs` and
+`src-tauri/src/db/tx.rs`). Normal startup loads these mappings without rereading
+all work files. An uninitialized cache, explicit rescan, or failed-write
+recovery reads the authoritative files in per-work Rust transactions so
+foreground reads are not blocked by storage inspection. Changes made outside the
+app require a rescan; writes check the previous file fingerprint to avoid
+overwriting external edits.
 
 Readers require `identity.pluginId`, `identity.novelId`, `identity.novelPath`, and `novel.name`.
 `schemaVersion` defaults to 1 when absent; an explicit unsupported version is

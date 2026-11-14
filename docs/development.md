@@ -76,12 +76,14 @@ Test fresh initialization, upgrades from supported installed versions, reopening
 and rollback after a failed upgrade. Version/checksum errors preserve the database
 and require diagnosis before retrying.
 
-The work home requests `committed` reads for its detail and chapter-list queries
-through a read-only SQLite pool mapped to the same `norea.db` file. WAL allows
-these queries to read committed data while a metadata transaction publishes its
-files. All writes and transactional reads
-remain on the serialized single-connection writer. Do not use the reader for
-mutation preconditions that must wait for earlier queued writes.
+`AppDatabase` (`src-tauri/src/db/mod.rs`) owns both SQLite pools on `norea.db`
+and executes all SQL in Rust (`src-tauri/src/db/*`). Work home and other
+non-blocking views request `committed` reads through the read-only `reader`
+pool (`DatabaseReadMode`), allowing WAL queries to read committed rows while a
+metadata transaction publishes its files. All writes and `queued` reads remain
+on the serialized single-connection `writer` pool. Do not use `committed` reads
+for mutation preconditions that must wait for earlier queued writes, and do not
+reintroduce frontend SQL execution or generic SQL pass-through IPC commands.
 
 Rust-side checks:
 
@@ -235,19 +237,22 @@ machine's LAN IP or `10.0.2.2` for the Android emulator.
 | React app | `src/` |
 | Tauri/Rust host | `src-tauri/` |
 | Android project shell | `src-tauri/gen/android/` |
-| Database queries and schema | `src/db/`, `src-tauri/src/schema.sql`, `drizzle.config.ts` |
+| Database commands, queries, and schema | `src-tauri/src/db/`, `src/db/`, `src-tauri/src/schema.sql`, `drizzle.config.ts` |
 | Plugin runtime | `src/lib/plugins/`, `src/lib/http/`, `src-tauri/src/scraper/` |
 | Chapter media and storage | `src/lib/chapter-media/`, `src/lib/chapter-content/`, `src-tauri/src/chapter_media/` |
 | Task scheduling | `src/lib/tasks/` |
 | Runtime viewport and startup gates | `src/lib/runtime/`, `src/components/runtime/` |
-| Local import and local novel data | `src/lib/local-import.ts`, `src/db/queries/novel.ts` |
+| Local import and local novel data | `src-tauri/src/local_import.rs`, `src/lib/local-import.ts`, `src/db/queries/novel.ts` |
 | i18n strings | `strings/languages/` |
 
 The Android project stays under `src-tauri/gen/android/` because Tauri owns
 that build location. Its tracked `app/src/main/java/io/github/tinywind/norea/`
 sources and `app/src/main/res/raw/` scripts are maintained app code; Gradle's
-generated bindings and build outputs remain untracked. `MainActivity` connects
-the lifecycle and WebView to the storage, media, update and scraper modules.
+generated bindings and build outputs remain untracked. `MainActivity` wires
+lifecycle, window/safe-area, VPN/service, permission, and scraper WebView
+bridges, while `AndroidNativeIo` provides JNI helpers used by Rust commands and
+the `norea-media` protocol for SAF storage, single-file descriptors, and APK
+installation (never direct JavaScript file I/O bridges).
 
 The TypeScript scheduler owns app tasks and source access. The Android scraper
 queue separately owns WebView navigation/extraction exclusivity and concurrent

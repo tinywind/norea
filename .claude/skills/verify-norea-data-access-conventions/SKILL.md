@@ -9,7 +9,9 @@ Use after changing DB access, plugin fetches, scraper runtime, repository cache,
 
 ## Rules
 
-- App DB access must stay on the current SQLite path: `src/db/client.ts` loads `sqlite:norea.db` through `@tauri-apps/plugin-sql`, and app-owned operations use established query helpers unless the reviewed code has an explicit persistence boundary such as backup snapshot/apply, library update checks, plugin-to-library import orchestration, or a justified Rust IPC/storage boundary.
+- App DB access must stay on the Rust-owned SQLite path: `AppDatabase` (`src-tauri/src/db/mod.rs`) owns the serialized `writer` pool and read-only `reader` pool, all SQL executes in domain-scoped Rust commands (`src-tauri/src/db/*`, `src-tauri/src/backup.rs`), and frontend callers go through `src/db/ipc.ts` and `src/db/queries/*`.
+- Flag any reintroduction of `tauri-plugin-sql`, `@tauri-apps/plugin-sql`, raw SQL strings in production TypeScript/JavaScript (outside `src/db/schema.ts`), or generic SQL/transaction pass-through Tauri commands.
+- Local and Android file I/O must use `@tauri-apps/plugin-dialog`, the `norea-media` protocol, and typed Rust commands (`AndroidNativeIo.kt` JNI helpers on Android); flag `<input type="file">` pickers or direct Android `@JavascriptInterface` file I/O bridges.
 - Do not introduce a second ORM, browser storage replacement, or direct DB path without an explicit tech-stack change.
 - Plugin-owned site fetch changes should also run `verify-plugin-fetch-contract`; this skill only flags obvious data-access helpers that bypass the sanctioned scraper bridge.
 - Repository/plugin index/list queries must define deterministic ordering at the query/helper boundary.

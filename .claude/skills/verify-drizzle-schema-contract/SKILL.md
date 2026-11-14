@@ -12,21 +12,21 @@ app-owned SQLite structure matches the canonical schema in `src/db/schema.ts`.
 
 ## Current Repo Facts
 
-- `drizzle.config.ts` points at `src/db/schema.ts`; Drizzle stays in the project for schema definitions and deliberate migration SQL generation.
-- The runtime DB handle is `src/db/client.ts`, backed by `@tauri-apps/plugin-sql` and `Database.load("sqlite:norea.db")`.
-- Current runtime queries use `db.select(...)` and `db.execute(...)` with SQL strings, not Drizzle query builders.
+- `drizzle.config.ts` points at `src/db/schema.ts`; Drizzle stays in the project for canonical schema definitions and deliberate migration SQL generation.
+- The runtime DB is owned exclusively by Rust `AppDatabase` (`src-tauri/src/db/mod.rs`) using `sqlx` `writer` (single-connection) and `reader` (read-only) pools on `norea.db`.
+- Runtime SQL executes inside domain-scoped Rust modules (`src-tauri/src/db/*`, `src-tauri/src/backup.rs`, `src-tauri/src/download_*.rs`) via `sqlx`; production TypeScript has zero SQL strings outside `src/db/schema.ts` and calls typed Tauri commands through `src/db/ipc.ts` and `src/db/queries/*`.
 - The version 1 `src-tauri/src/schema.sql` baseline is immutable. Every later schema change requires a higher version and appended upgrade SQL, including development builds.
-- Tauri registers the ordered migration list from `schema_migrations()` in `src-tauri/src/database.rs` through `src-tauri/src/lib.rs`. Generated `drizzle/` output alone does not register a runtime migration.
+- Rust runs `sqlx::migrate::Migrator` over the ordered list from `schema_migrations()` in `src-tauri/src/database.rs` during `AppDatabase` startup. Generated `drizzle/` output alone does not register a runtime migration.
 - Fresh initialization and upgrades must both produce the current canonical Drizzle schema while retaining existing data.
 
 ## Checks
 
 - Build the canonical table/column/index map from `src/db/schema.ts` first. Do not infer the canonical structure from raw SQL, tests, backup models, route props, or generated migration files.
-- Every app-owned persisted table or column mentioned in changed raw SQL must exist in the canonical map. Flag new table/column names that appear only in SQL strings, backup models, tests, Rust structs, or migrations.
+- Every app-owned persisted table or column mentioned in changed Rust SQL must exist in the canonical map. Flag new table/column names that appear only in SQL strings, backup models, tests, Rust structs, or migrations, and flag any SQL strings added to production TypeScript outside `src/db/schema.ts`.
 - Schema edits must append an ordered migration and increment its version without modifying applied SQL.
 - Registered schema migrations must match the canonical schema intent. Flag release schema or migration DDL that diverges from `src/db/schema.ts` unless the change is an explicit SQLite backfill/compatibility step.
-- Ordinary app-owned DB reads/writes should go through `src/db/queries/*` helpers. New direct `getDb()` usage outside that layer needs a clear reason, such as backup snapshot/apply, library update-check orchestration, or plugin-to-library orchestration.
-- Raw SQL is normal in this repo, but it is not a source of truth. Verify table names, column names, aliases, boolean 0/1 coercions, conflict targets, ordering, and null handling against the canonical map.
+- Ordinary app-owned DB reads/writes in TypeScript must go through `src/db/queries/*` and `src/db/ipc.ts` over domain-scoped Rust commands; generic SQL pass-through IPC commands are forbidden.
+- Raw SQL in Rust persistence modules is normal in this repo, but it is not a source of truth. Verify table names, column names, aliases, boolean 0/1 coercions, conflict targets, ordering, and null handling against the canonical map.
 - Query result interfaces may be view models for joins, aggregates, aliases, and UI-specific rows. Flag interfaces that restate direct table rows or inserts instead of using schema-exported `$inferSelect` / `$inferInsert` types.
 - Plugin-owned fetch/site data stays outside this rule except persisted app-owned cache tables such as `installed_plugin` and `repository_index_cache`.
 - Backup format models are serialized artifact contracts, not a second live DB schema. Snapshot/apply code must visibly map each persisted field to and from canonical schema columns.

@@ -29,8 +29,9 @@ Optional prompt additions:
 6. Keep all committed files in English.
 7. Do not change the Tauri, React, Mantine, Rust, Drizzle, or plugin-fetch stack.
 8. Do not replace plugin-owned site fetches with ordinary HTTP paths.
-9. Keep edits report-scoped and minimal.
-10. Use `apply_patch` for manual edits.
-11. Do not run build, compile, test, or git-mutating commands unless the invocation explicitly requests them.
-12. Write the English-only fix summary to `.tmp/skill-reports/fix-<target-report-basename>.md`.
-13. Return one concise summary line with fixed and deferred counts.
+9. Do not introduce SQL strings in production TypeScript/JavaScript, `plugin-sql`, generic SQL pass-through commands, `<input type="file">`, or direct Android JS file I/O bridges.
+10. Keep edits report-scoped and minimal.
+11. Use `apply_patch` for manual edits.
+12. Do not run build, compile, test, or git-mutating commands unless the invocation explicitly requests them.
+13. Write the English-only fix summary to `.tmp/skill-reports/fix-<target-report-basename>.md`.
+14. Return one concise summary line with fixed and deferred counts.

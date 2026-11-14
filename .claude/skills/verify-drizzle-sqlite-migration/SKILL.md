@@ -5,7 +5,7 @@ description: Verify SQLite Drizzle schema, bootstrap SQL, and migrations preserv
 
 # Verify Drizzle SQLite Migration
 
-Use when Drizzle schema, runtime bootstrap SQL, SQLite migrations, `tauri-plugin-sql` DB client code, backup DB gather/apply logic, or library/plugin persistence changes.
+Use when Drizzle schema, runtime bootstrap SQL, SQLite migrations, Rust `AppDatabase` / `sqlx` migration runner code (`src-tauri/src/database.rs`, `src-tauri/src/db/mod.rs`), backup DB gather/apply logic, or library/plugin persistence changes.
 
 ## Migration Policy
 

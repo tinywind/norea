@@ -105,10 +105,35 @@ are acceptable to keep, but they are not binding.
 | UI | Mantine |
 | Routing | TanStack Router |
 | State | Zustand and TanStack Query |
-| Database | SQLite through `tauri-plugin-sql` with Drizzle schema definitions |
+| Database | Rust-owned SQLite (`sqlx`) with Drizzle schema definitions in `src/db/schema.ts` |
 | HTTP | `tauri-plugin-http`, Rust-side fetch commands, and scraper WebView |
 | Package manager | pnpm |
 | Node | 24 LTS |
+
+## Host I/O and Database Invariant
+
+All SQLite access and local or Android file I/O are owned by the Rust host behind
+typed, domain-scoped Tauri commands.
+
+- Rust owns `AppDatabase` (`src-tauri/src/db/mod.rs`) with a serialized
+  single-connection `writer` pool and a read-only `reader` pool, and runs
+  `sqlx::migrate::Migrator` over `database::schema_migrations()` at startup.
+- Frontend code accesses persistence exclusively through `src/db/ipc.ts` and
+  `src/db/queries/*` wrappers over domain-scoped Rust commands in
+  `src-tauri/src/db/*` and `src-tauri/src/backup.rs`.
+- Mixed file and SQLite mutations must coordinate atomic rollback and journal
+  recovery in Rust (`src-tauri/src/db/tx.rs`) and return `DbMutationEnvelope<T>`
+  side-effect metadata for frontend cache updates.
+- Do not reintroduce `tauri-plugin-sql`, `@tauri-apps/plugin-sql`, SQL strings in
+  production TypeScript/JavaScript (outside `src/db/schema.ts` Drizzle table
+  declarations), or generic SQL/transaction pass-through Tauri commands.
+- Local and Android file selection, reading, writing, media serving, and APK
+  installation must go through `@tauri-apps/plugin-dialog`, the `norea-media`
+  custom protocol, and Rust commands backed on Android by JNI helpers in
+  `AndroidNativeIo.kt`. Do not add `<input type="file">` pickers or direct
+  Android `@JavascriptInterface` file I/O bridges (`__NoreaAndroidScraper` and
+  non-file runtime/service/window/permission bridges remain scoped to platform
+  control only).
 
 ## Plugin Fetch Invariant
 

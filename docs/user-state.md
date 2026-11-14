@@ -35,9 +35,10 @@ pending. Raw numeric folder placeholders are never treated as portable identity.
 ## Delta storage and merge cost
 
 The app does **not** upload the accumulated personal-state snapshot on each edit.
-A local SQLite outbox stores one latest intent per changed entity. Never-attempted
-edits may coalesce; once an operation is sent, its UUID and bytes remain immutable
-until the exact receipt is acknowledged.
+A local SQLite outbox managed by the Rust host (`src-tauri/src/db/user_state/`)
+stores one latest intent per changed entity behind typed IPC commands.
+Never-attempted edits may coalesce; once an operation is sent, its UUID and
+bytes remain immutable until the exact receipt is acknowledged.
 
 The server stores the current value of each entity in `user_state_records`, writes
 an ordered revision row to `user_state_changes`, and stores idempotent operation

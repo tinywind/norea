@@ -36,6 +36,7 @@ Do not use for simple lookups, obvious one-file fixes, or tasks with a single fa
 - Committed files must be English-only.
 - Visible UI strings belong in `strings/languages/<locale>/`.
 - Plugin-owned traffic must use the sanctioned scraper/WebView fetch path.
+- All SQLite reads/writes and local/Android file I/O must go through typed, domain-scoped Rust Tauri commands.
 - Keep changes surgical and in current project scope.
 - Do not run build, compile, test, or git-mutating commands unless the current user request explicitly permits them.
 - Write reports and transient files only under `.tmp/`.

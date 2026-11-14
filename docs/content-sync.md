@@ -101,8 +101,9 @@ completed source refresh. Unchanged server metadata and covers are not reinstall
 A failed server or site request leaves the saved work usable. A work must have
 original source identity metadata; folder names cannot establish work identity.
 
-Before a chapter download, Norea checks the cached download state in SQLite and
-skips completed chapters. For pending chapters, each download batch lists the
+Before a chapter download, Norea checks the cached download state in SQLite
+through typed Rust persistence commands (`src-tauri/src/db/content_sync.rs`,
+`src-tauri/src/db/download.rs`) and skips completed chapters. For pending chapters, each download batch lists the
 work's chapter folders once and restores missing download flags and chapter
 rows before contacting the server. Each discovered folder is checked for its
 body and declared ZIP assets without finalizing or rewriting media. Deletions during this scan
