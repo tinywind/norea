@@ -1,3 +1,4 @@
+pub mod category;
 pub mod chapter_composition;
 pub mod repository;
 pub mod tx;

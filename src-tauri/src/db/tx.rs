@@ -61,6 +61,15 @@ impl Default for TxOptions {
     }
 }
 
+impl TxOptions {
+    pub fn with_app_metadata(app: tauri::AppHandle) -> Self {
+        Self {
+            metadata_root: MetadataRoot::App(app),
+            ..Self::default()
+        }
+    }
+}
+
 #[derive(Debug)]
 struct FileRollbackEntry {
     path: PathBuf,
