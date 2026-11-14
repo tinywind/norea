@@ -11,14 +11,13 @@
 //! storage. Only the current manifest-only archive format is supported.
 
 use std::collections::HashSet;
-use std::fs::{self, File, OpenOptions};
+use std::fs::{self, File};
 use std::io::{BufReader, BufWriter, Cursor, Read, Seek, Write};
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use sqlx::Sqlite;
-use tauri::{AppHandle, Manager, State, async_runtime};
+use tauri::{AppHandle, State, async_runtime};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
@@ -26,7 +25,6 @@ use crate::database::AppDatabase;
 
 const BYTES_PER_MIB: u64 = 1024 * 1024;
 const MANIFEST_ENTRY: &str = "manifest.json";
-const BACKUP_TEMP_DIR: &str = "backup";
 const MAX_BACKUP_ARCHIVE_BYTES: u64 = 2 * 1024 * BYTES_PER_MIB;
 const MAX_BACKUP_ZIP_ENTRIES: usize = 1;
 const MAX_BACKUP_MANIFEST_BYTES: u64 = 256 * BYTES_PER_MIB;
@@ -868,48 +866,6 @@ fn write_backup_zip(manifest_json: &str, output_path: &str) -> Result<(), String
     write_backup_zip_file(file, manifest_json, "backup_pack")
 }
 
-fn backup_temp_dir(app: &AppHandle) -> Result<PathBuf, String> {
-    let dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|err| format!("backup_pack_temp_file: app cache dir: {err}"))?
-        .join(BACKUP_TEMP_DIR);
-    fs::create_dir_all(&dir)
-        .map_err(|err| format!("backup_pack_temp_file: create temp dir: {err}"))?;
-    Ok(dir)
-}
-
-fn backup_temp_path(dir: &Path, attempt: u32) -> PathBuf {
-    let now = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|duration| duration.as_nanos())
-        .unwrap_or(0);
-    dir.join(format!("norea-backup-{now}-{attempt}.zip"))
-}
-
-fn write_backup_temp_file(app: AppHandle, manifest_json: String) -> Result<String, String> {
-    let dir = backup_temp_dir(&app)?;
-    for attempt in 0..16 {
-        let path = backup_temp_path(&dir, attempt);
-        match OpenOptions::new().write(true).create_new(true).open(&path) {
-            Ok(file) => {
-                if let Err(err) =
-                    write_backup_zip_file(file, &manifest_json, "backup_pack_temp_file")
-                {
-                    let _ = fs::remove_file(&path);
-                    return Err(err);
-                }
-                return Ok(path.to_string_lossy().into_owned());
-            }
-            Err(err) if err.kind() == std::io::ErrorKind::AlreadyExists => continue,
-            Err(err) => {
-                return Err(format!("backup_pack_temp_file: create temp file: {err}"));
-            }
-        }
-    }
-    Err("backup_pack_temp_file: failed to allocate a temp file".to_string())
-}
-
 fn backup_zip_bytes(manifest_json: &str) -> Result<Vec<u8>, String> {
     let mut zip = ZipWriter::new(Cursor::new(Vec::new()));
     write_manifest_entry(&mut zip, manifest_json, "backup_pack_bytes")?;
@@ -940,33 +896,6 @@ pub async fn backup_pack(manifest_json: String, output_path: String) -> Result<(
         write_backup_zip(&manifest_json, &output_path)
     })
     .await
-}
-
-#[tauri::command]
-pub async fn backup_pack_temp_file(
-    app: AppHandle,
-    manifest_json: String,
-) -> Result<String, String> {
-    backup_blocking("backup_pack_temp_file", move || {
-        write_backup_temp_file(app, manifest_json)
-    })
-    .await
-}
-
-#[tauri::command]
-pub fn backup_delete_temp_file(app: AppHandle, path: String) -> Result<(), String> {
-    let temp_dir = backup_temp_dir(&app)?;
-    let temp_dir = temp_dir
-        .canonicalize()
-        .map_err(|err| format!("backup_delete_temp_file: temp dir: {err}"))?;
-    let path = PathBuf::from(path);
-    let file_path = path
-        .canonicalize()
-        .map_err(|err| format!("backup_delete_temp_file: temp file: {err}"))?;
-    if !file_path.starts_with(&temp_dir) {
-        return Err("backup_delete_temp_file: path is outside backup temp dir".to_string());
-    }
-    fs::remove_file(&file_path).map_err(|err| format!("backup_delete_temp_file: remove: {err}"))
 }
 
 /// `norea-auto-backup-<yyyyMMddHHmmss>.zip`, the only names automatic backups

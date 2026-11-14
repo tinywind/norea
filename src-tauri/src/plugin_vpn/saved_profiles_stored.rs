@@ -547,9 +547,6 @@ fn remove_staging(directory: Option<&Path>) {
     }
 }
 
-/// Removes staged copies left by an interrupted Android sync.
-pub(crate) fn clear_staging(directory: &Path) { remove_staging(Some(directory)); }
-
 /// Desktop folder transport: the storage root is an ordinary directory.
 pub(crate) fn sync_directory_folder(root: &Path, plan: &StoredSyncPlan, publish: &[(String, Vec<u8>)]) -> StoredFolderOutcome {
     let mut outcome = StoredFolderOutcome::default();

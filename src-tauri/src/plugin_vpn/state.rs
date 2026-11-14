@@ -18,7 +18,7 @@ use super::download_workers::{DownloadVpnWorkerRef, DownloadVpnWorkers};
 use super::finder::{VpnGateFinder, VpnGateServer};
 use super::transport::{PluginVpnTransportCursor, PluginVpnTransportFailure};
 use super::saved_profiles::automatic::AutomaticVpnProfile;
-use super::saved_profiles::stored::{self, ManualVpnProfile, StoredFolderOutcome, StoredSyncPlan, StoredSyncPublished, StoredSyncReport};
+use super::saved_profiles::stored::{self, ManualVpnProfile, StoredSyncReport};
 use super::saved_profiles::{
     ForegroundVpnProfile, SavedProfileVault, SavedVpnProfile, SavedVpnProfileCaptureSource, SavedVpnProfileLease,
     SavedVpnProfileSelection, SavedVpnProfileVaultSnapshot, VpnGateServerVerdictMutation,
@@ -890,69 +890,6 @@ pub(crate) async fn plugin_vpn_sync_stored_profiles(
     let files = plan.desktop_files(&vault);
     let outcome = stored::sync_directory_folder(&root, &plan, &files);
     vault.finish_stored_sync(&pool, &plan.token, outcome).await
-}
-
-/// Android sync, step 1: stages the files to publish in the app cache for the storage bridge.
-/// Returns None until a storage folder is selected.
-#[tauri::command]
-pub(crate) async fn plugin_vpn_plan_stored_profile_sync(
-    app: AppHandle, state: State<'_, PluginVpnState>,
-) -> Result<Option<StoredSyncPlan>, String> {
-    ensure_supported()?;
-    let root = crate::chapter_media::media_root(&app)?.to_string_lossy().into_owned();
-    if !root.starts_with("content://") {
-        return Ok(None);
-    }
-    let staging = app.path().app_cache_dir()
-        .map_err(|error| format!("could not resolve the app cache directory: {error}"))?
-        .join("vpn-profile-sync");
-    let pool = saved_profile_database(&app).await?;
-    let _operation = state.shared.operation.lock().await;
-    let mut vault = state.saved_profiles()?.lock().await;
-    stored::clear_staging(&staging);
-    vault.plan_stored_sync(&pool, &root, Some(staging.as_path())).await.map(Some)
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct StoredSyncInbound {
-    file_name: String,
-    path: String,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase", deny_unknown_fields)]
-pub(crate) struct StoredSyncFolderResult {
-    reachable: bool,
-    published: Vec<StoredSyncPublished>,
-    deleted: Vec<String>,
-    inbound: Vec<StoredSyncInbound>,
-    errors: Vec<String>,
-}
-
-/// Android sync, step 2: records what the storage bridge did and imports the files it copied
-/// out of the folder into the bridge's temporary files.
-#[tauri::command]
-pub(crate) async fn plugin_vpn_finish_stored_profile_sync(
-    token: String, result: StoredSyncFolderResult, app: AppHandle, state: State<'_, PluginVpnState>,
-) -> Result<StoredSyncReport, String> {
-    ensure_supported()?;
-    let mut outcome = StoredFolderOutcome {
-        reachable: result.reachable,
-        published: result.published,
-        deleted: result.deleted,
-        inbound: Vec::new(),
-        errors: result.errors,
-    };
-    for file in result.inbound {
-        match read_profile_source(Path::new(&file.path)) {
-            Ok(bytes) => outcome.inbound.push((file.file_name, bytes)),
-            Err(error) => outcome.errors.push(format!("{}: {error}", file.file_name)),
-        }
-    }
-    let pool = saved_profile_database(&app).await?;
-    let _operation = state.shared.operation.lock().await;
-    state.saved_profiles()?.lock().await.finish_stored_sync(&pool, &token, outcome).await
 }
 
 #[tauri::command]

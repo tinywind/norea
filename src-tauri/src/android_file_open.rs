@@ -1,19 +1,13 @@
-use std::{
-    fs,
-    path::{Path, PathBuf},
-    sync::Mutex,
-};
+use std::sync::Mutex;
 
 #[cfg(target_os = "android")]
-use tauri::Emitter;
+use tauri::{AppHandle, Emitter, Manager};
 #[cfg(any(target_os = "android", test))]
 use tauri::Url;
-use tauri::{ipc::Response, AppHandle, Manager, State};
+use tauri::State;
 
 #[cfg(target_os = "android")]
 const ANDROID_OPEN_FILES_EVENT: &str = "android-open-files";
-const ANDROID_STORAGE_TEMP_DIR: &str = "android-storage-bridge";
-const MAX_ANDROID_OPEN_FILE_BYTES: u64 = 25 * 1024 * 1024;
 
 #[derive(Debug, Default)]
 struct AndroidOpenFileRegistry {
@@ -82,39 +76,6 @@ pub fn android_open_file_url_take(
     state: State<'_, AndroidOpenFileState>,
 ) -> Result<Vec<String>, String> {
     state.take()
-}
-
-#[tauri::command]
-pub fn android_open_file_temp_read(app: AppHandle, path: String) -> Result<Response, String> {
-    let cache_dir = app
-        .path()
-        .app_cache_dir()
-        .map_err(|err| format!("android file open: resolve cache directory: {err}"))?;
-    let temp_root = fs::canonicalize(cache_dir.join(ANDROID_STORAGE_TEMP_DIR))
-        .map_err(|err| format!("android file open: resolve temp directory: {err}"))?;
-    let path = contained_temp_file(&temp_root, Path::new(&path))?;
-    let metadata = fs::metadata(&path)
-        .map_err(|err| format!("android file open: inspect '{}': {err}", path.display()))?;
-    if !metadata.is_file() {
-        return Err("android file open: temp path is not a file".to_string());
-    }
-    if metadata.len() > MAX_ANDROID_OPEN_FILE_BYTES {
-        return Err(format!(
-            "android file open: file exceeds the {MAX_ANDROID_OPEN_FILE_BYTES} byte limit"
-        ));
-    }
-    let bytes = fs::read(&path)
-        .map_err(|err| format!("android file open: read '{}': {err}", path.display()))?;
-    Ok(Response::new(bytes))
-}
-
-fn contained_temp_file(root: &Path, path: &Path) -> Result<PathBuf, String> {
-    let path = fs::canonicalize(path)
-        .map_err(|err| format!("android file open: resolve temp file: {err}"))?;
-    if !path.starts_with(root) || path == root {
-        return Err("android file open: temp file is outside the bridge directory".to_string());
-    }
-    Ok(path)
 }
 
 #[cfg(test)]
