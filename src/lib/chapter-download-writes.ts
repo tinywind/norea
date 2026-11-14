@@ -4,6 +4,7 @@ import { ChapterStorageError, isChapterStorageError } from "./chapter-storage-er
 const activeWrites = new Map<number, Set<Promise<void>>>();
 const activeDeletions = new Map<number, Set<Promise<void>>>();
 const activeSnapshotReads = new Map<number, Set<Promise<void>>>();
+const activeGlobalSnapshotReads = new Set<Promise<void>>();
 const downloadRevisions = new Map<number, number>();
 let downloadRevision = 0;
 
@@ -56,6 +57,26 @@ export async function withChapterDownloadSnapshotReads<T>(
   }
 }
 
+/** Hold verified files across a Rust snapshot or projection IPC call; skip busy chapters without blocking. */
+export async function withGlobalChapterDownloadSnapshotReads<T>(
+  read: (skippedChapterIds: number[], hold: HoldChapterDownloadSnapshot) => Promise<T>,
+): Promise<T> {
+  const skipped = new Set<number>([...activeWrites.keys(), ...activeDeletions.keys()]);
+  let settle!: () => void;
+  const settled = new Promise<void>(resolve => {
+    settle = resolve;
+  });
+  activeGlobalSnapshotReads.add(settled);
+  const hold: HoldChapterDownloadSnapshot = chapterId =>
+    !skipped.has(chapterId) && !activeWrites.has(chapterId) && !activeDeletions.has(chapterId);
+  try {
+    return await read([...skipped], hold);
+  } finally {
+    activeGlobalSnapshotReads.delete(settled);
+    settle();
+  }
+}
+
 /** Tracks local filesystem or database writes; keep network waits outside. */
 export async function withChapterDownloadWrite<T>(
   chapterId: number,
@@ -65,7 +86,11 @@ export async function withChapterDownloadWrite<T>(
 ): Promise<T> {
   throwIfAborted(signal, "Chapter download was cancelled.");
   for (;;) {
-    const pending = [...(activeDeletions.get(chapterId) ?? []), ...(activeSnapshotReads.get(chapterId) ?? [])];
+    const pending = [
+      ...(activeDeletions.get(chapterId) ?? []),
+      ...(activeSnapshotReads.get(chapterId) ?? []),
+      ...activeGlobalSnapshotReads,
+    ];
     if (!pending.length) break;
     await Promise.all(pending);
     throwIfAborted(signal, "Chapter download was cancelled.");
@@ -113,7 +138,10 @@ export async function withChapterDownloadDeletion<T>(
     deletions.add(settled);
   }
   try {
-    const reads = [...selectedChapterIds].flatMap(chapterId => [...(activeSnapshotReads.get(chapterId) ?? [])]);
+    const reads = [
+      ...activeGlobalSnapshotReads,
+      ...[...selectedChapterIds].flatMap(chapterId => [...(activeSnapshotReads.get(chapterId) ?? [])]),
+    ];
     if (reads.length) await Promise.all(reads);
     return await remove();
   } finally {

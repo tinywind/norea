@@ -3,10 +3,13 @@ import { DatabaseSync } from "node:sqlite";
 import type Database from "@tauri-apps/plugin-sql";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("./client", () => ({
   getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn(), runExclusiveDatabaseOperation: vi.fn(),
 }));
+import { invoke } from "@tauri-apps/api/core";
 import { getDb, getReadOnlyDb, runDatabaseTransaction, runExclusiveDatabaseOperation } from "./client";
+import { createUserStateIpcHandler } from "../test/mock-user-state-ipc";
 import {
   acknowledgeUserStateOperationsInDb, applyUserStateReadPageInDb, bindUserStateWorkspaceInDb,
   getUserStateLedgerStatusInDb, listUserStateConflictsInDb, listUserStateDeferredInDb, prepareUserStateOperationsInDb, resolveUserStateLedgerConflictInDb,
@@ -83,6 +86,16 @@ beforeEach(() => {
   vi.mocked(getReadOnlyDb).mockImplementation(async () => active.db);
   vi.mocked(runDatabaseTransaction).mockImplementation(run => tx(active, run));
   vi.mocked(runExclusiveDatabaseOperation).mockImplementation(async run => run(active.db));
+  const ipc = createUserStateIpcHandler({
+    getDb: () => getDb(),
+    runTransaction: (run, remoteContentSync) => runDatabaseTransaction(run, remoteContentSync),
+    runExclusive: run => runExclusiveDatabaseOperation(run, { publishMetadata: false }),
+  });
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    const handled = await ipc.handle(command, (args as Record<string, unknown>) ?? {});
+    if (handled.handled) return handled.result as never;
+    throw new Error(`Unexpected IPC command in user-state.test.ts: ${command}`);
+  });
   setUserStateActiveServer(binding.serverUrl);
 });
 afterEach(async () => { setUserStateActiveServer(null); await waitForUserStateDeferredApply(); while (fixtures.length) fixtures.pop()!.sql.close(); });

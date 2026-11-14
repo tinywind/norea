@@ -17,12 +17,15 @@ const readerStorage = vi.hoisted(() => {
   return { original, originalWindow, values };
 });
 
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("./client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("../lib/chapter-content/storage-platform", async importOriginal => ({
   ...await importOriginal<typeof import("../lib/chapter-content/storage-platform")>(),
   inspectChapterPayloadInventory: vi.fn(),
 }));
+import { invoke } from "@tauri-apps/api/core";
 import { getDb, getReadOnlyDb, runDatabaseTransaction } from "./client";
+import { createUserStateIpcHandler } from "../test/mock-user-state-ipc";
 import {
   applyUserStateCurrentSnapshot, bindUserStateCurrentWorkspace, exportUserStateCurrentSnapshot,
   getUserStateCurrentStatus, setUserStateCurrentServer,
@@ -85,6 +88,15 @@ beforeEach(() => {
   vi.mocked(getDb).mockImplementation(async () => active.db);
   vi.mocked(getReadOnlyDb).mockImplementation(async () => active.db);
   vi.mocked(runDatabaseTransaction).mockImplementation(run => tx(active, run));
+  const ipc = createUserStateIpcHandler({
+    getDb: () => getDb(),
+    runTransaction: (run, remoteContentSync) => runDatabaseTransaction(run, remoteContentSync),
+  });
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    const handled = await ipc.handle(command, (args as Record<string, unknown>) ?? {});
+    if (handled.handled) return handled.result as never;
+    throw new Error(`Unexpected IPC command in user-state-current.test.ts: ${command}`);
+  });
   setUserStateCurrentServer(binding.serverUrl);
 });
 afterEach(async () => {
