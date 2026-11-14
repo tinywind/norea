@@ -14,6 +14,7 @@ use super::user_state::core::{
 };
 use super::{DbMutationEffects, DbMutationEnvelope, ReadMode};
 
+pub const UNCATEGORIZED_CATEGORY_ID: i64 = -1;
 const CATEGORY_BUSY_RETRIES: u32 = 3;
 const CATEGORY_MEMBERSHIP_CHUNK: usize = 500;
 

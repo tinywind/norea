@@ -1,5 +1,6 @@
 pub mod category;
 pub mod chapter_composition;
+pub mod novel;
 pub mod repository;
 pub mod tx;
 pub mod user_state;
