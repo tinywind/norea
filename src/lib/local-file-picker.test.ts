@@ -48,6 +48,13 @@ describe("local-file-picker", () => {
       filters: [{ extensions: ["txt"], name: "Books" }],
       multiple: true,
     });
+    expect(invokeMock).toHaveBeenCalledWith("local_file_describe", {
+      pathOrUri: "/books/sample.txt",
+    });
+    expect(invokeMock).toHaveBeenCalledWith("local_file_read", {
+      maxBytes: 1024,
+      pathOrUri: "/books/sample.txt",
+    });
     expect(files).toHaveLength(1);
     expect(files[0]?.name).toBe("sample.txt");
     expect(await files[0]?.text()).toBe("hello");
@@ -82,7 +89,7 @@ describe("local-file-picker", () => {
         };
       }
       if (command === "local_file_read") {
-        throw new Error("File exceeds size limit.");
+        throw new Error("content URI read: file exceeds the 1024 byte limit");
       }
       throw new Error(`unexpected command: ${command}`);
     });

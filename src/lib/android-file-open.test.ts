@@ -52,11 +52,11 @@ describe("Android file open bridge", () => {
       type: "application/epub+zip",
     });
     expect(invokeMock).toHaveBeenCalledWith("local_file_describe", {
-      path: CONTENT_URI,
+      pathOrUri: CONTENT_URI,
     });
     expect(invokeMock).toHaveBeenCalledWith("local_file_read", {
       maxBytes: LOCAL_IMPORT_LIMITS.fileBytes,
-      path: CONTENT_URI,
+      pathOrUri: CONTENT_URI,
     });
   });
 
@@ -97,7 +97,9 @@ describe("Android file open bridge", () => {
         };
       }
       if (command === "local_file_read") {
-        throw new Error("Android content URI exceeds size limit.");
+        throw new Error(
+          `content URI read: file exceeds the ${LOCAL_IMPORT_LIMITS.pdfBytes} byte limit`,
+        );
       }
       throw new Error(`unexpected command: ${command}`);
     });
@@ -138,7 +140,7 @@ describe("Android file open bridge", () => {
     });
     expect(invokeMock).toHaveBeenCalledWith("local_file_read", {
       maxBytes: LOCAL_IMPORT_LIMITS.markdownBytes,
-      path: CONTENT_URI,
+      pathOrUri: CONTENT_URI,
     });
   });
 

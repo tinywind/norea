@@ -89,7 +89,7 @@ export async function describeLocalFile(
   pathOrUri: string,
 ): Promise<LocalFileDescriptor> {
   return invoke<LocalFileDescriptor>("local_file_describe", {
-    path: pathOrUri,
+    pathOrUri,
   });
 }
 
@@ -99,7 +99,7 @@ export async function readLocalPathOrUriBytes(
 ): Promise<Uint8Array<ArrayBuffer>> {
   const raw = await invoke<unknown>("local_file_read", {
     maxBytes,
-    path: pathOrUri,
+    pathOrUri,
   });
   return normalizeIpcBytes(raw);
 }
@@ -140,7 +140,10 @@ export async function readLocalPathOrUriAsFile(
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (descriptor.size === null && /exceeds size limit/i.test(message)) {
+    if (
+      descriptor.size === null &&
+      /exceeds (?:size|the \d+ byte) limit/i.test(message)
+    ) {
       return descriptorOnlyFile({
         ...descriptor,
         size: limit + 1,
