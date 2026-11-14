@@ -504,19 +504,19 @@ export async function markWorkMetadataRefreshed(db: Database, identity: Pick<Nov
     ON CONFLICT(plugin_id,path) DO UPDATE SET revision=revision+1`, [identity.pluginId, identity.novelPath]);
 }
 
-export async function readWorkMetadataSyncFile(identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">, db?: Database): Promise<WorkMetadataSyncFile | null> {
+export async function readWorkMetadataSyncFile(identity: Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath">): Promise<WorkMetadataSyncFile | null> {
   if (!isTauriRuntime()) return null;
-  if (!db) {
-    return invokeDbQuery<WorkMetadataSyncFile | null>("db_work_metadata_read_sync_file", {
-      pluginId: identity.pluginId,
-      novelPath: identity.novelPath,
-      readMode: "queued",
-    });
-  }
-  const [file] = await db.select<WorkMetadataSyncFile[]>(`SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision
-    FROM work_metadata_file_cache f LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path
-    WHERE f.plugin_id=$1 AND f.path=$2`, [identity.pluginId, identity.novelPath]);
-  return file ?? null;
+  return invokeDbQuery<WorkMetadataSyncFile | null>("db_work_metadata_read_sync_file", {
+    pluginId: identity.pluginId,
+    novelPath: identity.novelPath,
+    readMode: "queued",
+  });
+}
+
+export async function reindexPreservedWorkMetadata(directory: string, metadata: NovelMetadataV1): Promise<number> {
+  return invokeDbMutation<number>("db_work_metadata_reindex_preserved_work", {
+    input: { directory, metadata: parseNovelMetadata(metadata) },
+  });
 }
 
 export async function persistWorkChapterDirectories(db: Database, novelId: number, chapters: { id: number; directory: string }[], registerNative = true): Promise<void> {

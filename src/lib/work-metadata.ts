@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import type Database from "@tauri-apps/plugin-sql";
 import type { WorkMetadataSyncFile } from "../db/work-metadata";
 import { bytesToBase64, base64ToBytes } from "./base64";
 import { inspectChapterContentArtifacts } from "./chapter-content/storage-platform";
@@ -8,7 +7,6 @@ import { isTauriRuntime } from "./tauri-runtime";
 import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
 import { canonicalMetadataValue, coverContentType, MAX_NOVEL_COVER_BYTES, parseNovelMetadata, safeMetadataChild, type NovelMetadataV1 } from "./work-metadata/schema";
 import { throwIfAborted } from "./abort";
-import { mergeIncomingNovelMetadata } from "./work-metadata/merge";
 export { parseNovelMetadata, type NovelMetadataV1 } from "./work-metadata/schema";
 
 export interface StoredNovelMetadata { directory: string; metadata: NovelMetadataV1 }
@@ -33,6 +31,9 @@ export function subscribeWorkMetadataChanges(listener: (identity?: WorkMetadataC
 export function notifyWorkMetadataChanges(identity?: WorkMetadataChange): void {
   if (publicationChanges) { publicationChanges.push(identity); return; }
   for (const listener of listeners) listener(identity);
+}
+export function setWorkMetadataRollbackGuard(path: string, guard: () => Promise<void>): void {
+  publicationRollbackGuards?.set(path, guard);
 }
 
 export async function registerNativeWorkChapterDirectories(directories: Record<string, string>, reset = false): Promise<void> {
@@ -264,7 +265,7 @@ export interface InstallStoredNovelMetadataOptions {
   preserveLocalCover?: boolean;
 }
 
-export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>, options: InstallStoredNovelMetadataOptions = {}): Promise<InstalledNovelMetadata | null> {
+export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null) => Promise<void | false>, options: InstallStoredNovelMetadataOptions = {}): Promise<InstalledNovelMetadata | null> {
   const metadata = parseNovelMetadata(input);
   return runWorkContentStorageOperation(metadata.identity.pluginId, metadata.identity.novelPath,
     () => installStoredNovelMetadataInWorkOperation(metadata, coverBytes, beforeInstall, undefined, options));
@@ -274,184 +275,63 @@ export async function installStoredNovelMetadata(input: NovelMetadataV1, coverBy
 export async function installReconciledStoredNovelMetadata(
   input: NovelMetadataV1,
   coverBytes: Uint8Array | undefined,
-  beforeInstall: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>,
+  beforeInstall: (current: StoredNovelMetadata | null) => Promise<void | false>,
   reconciliation: StoredNovelNumberReconciliation,
 ): Promise<InstalledNovelMetadata | null> {
   return installStoredNovelMetadataInWorkOperation(input, coverBytes, beforeInstall, reconciliation);
 }
 
-async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>, reconciliation?: StoredNovelNumberReconciliation, options: InstallStoredNovelMetadataOptions = {}): Promise<InstalledNovelMetadata | null> {
-  let metadata = parseNovelMetadata(input);
+async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1, coverBytes?: Uint8Array, beforeInstall?: (current: StoredNovelMetadata | null) => Promise<void | false>, reconciliation?: StoredNovelNumberReconciliation, options: InstallStoredNovelMetadataOptions = {}): Promise<InstalledNovelMetadata | null> {
+  const metadata = parseNovelMetadata(input);
   if (options.authoritative && !options.preserveLocalCover && metadata.cover && !coverBytes?.length) throw new Error("A migration target cover requires verified cover bytes.");
-  if (!beforeInstall && !reconciliation) {
-    const { invokeDbMutation } = await import("../db/ipc");
-    try {
-      const installed = await invokeDbMutation<{
-        novelId: number;
-        directory: string;
-        metadata: NovelMetadataV1;
-        syncFile: WorkMetadataSyncFile;
-        coverBytes: number[] | null;
-      } | null>("db_work_metadata_install_stored", {
-        input: {
-          metadata,
-          coverBytes: coverBytes ? Array.from(coverBytes) : null,
-          authoritative: options.authoritative ?? false,
-          preserveLocalCover: options.preserveLocalCover ?? false,
-        },
-      });
-      if (!installed) return null;
-      return {
-        directory: installed.directory,
-        metadata: parseNovelMetadata(installed.metadata),
-        syncFile: installed.syncFile,
-        coverBytes: installed.coverBytes ? new Uint8Array(installed.coverBytes) : null,
-      };
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      if (message.includes("publication and rollback failed")) {
-        const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
-        invalidateAllNovelCoverSources();
-      }
-      throw error;
-    }
+  const { invokeDbMutation, invokeDbQuery } = await import("../db/ipc");
+  if (beforeInstall) {
+    const inspected = await invokeDbQuery<{
+      directory: string;
+      existing: StoredNovelMetadata | null;
+    }>("db_work_metadata_inspect_install", {
+      identity: metadata.identity,
+      serverUrl: null,
+    });
+    const existing = inspected.existing
+      ? {
+          directory: inspected.existing.directory,
+          metadata: parseNovelMetadata(inspected.existing.metadata),
+        }
+      : null;
+    if (await beforeInstall(existing) === false) return null;
   }
-  const { runDatabaseTransaction } = await import("../db/client");
-  const { applyNovelMetadataToCache, knownNovelMetadataDirectory, readWorkMetadataSyncFile, rememberStoredNovelMetadata } = await import("../db/work-metadata");
-    const preferred = knownNovelMetadataDirectory(metadata.identity) ?? await availableNovelMetadataDirectory(metadata);
-    const installed = await runDatabaseTransaction(async (db) => {
-      const directory = knownNovelMetadataDirectory(metadata.identity) ?? preferred;
-      const existing = await readNovelMetadataForReplacement(directory, metadata.identity);
-      if (existing) existing.metadata.cover = await discoverStoredNovelCover(directory, existing.metadata.cover);
-      if (await beforeInstall?.(existing, db) === false) return null;
-      return withWorkMetadataRollback(async () => {
-        let previous = existing?.metadata;
-        if (reconciliation) {
-          const renumber = await import("./source-chapter-renumber");
-          renumber.assertChapterNumberMappings(reconciliation.mappings);
-          const [work] = await db.select<import("./source-chapter-renumber").RenumberWork[]>(
-            "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE plugin_id=$1 AND path=$2",
-            [metadata.identity.pluginId, metadata.identity.novelPath],
-          );
-          if (!work || work.sourceNovelId !== metadata.identity.novelId) throw new Error("Incoming chapter number identity changed.");
-          const currentChapters = await db.select<import("./source-chapter-renumber").StoredRenumberChapter[]>(
-            "SELECT c.id,c.path,c.chapter_number AS chapterNumber,c.position,c.is_downloaded AS isDownloaded,d.directory " +
-            "FROM chapter c LEFT JOIN work_metadata_directory_cache d ON d.chapter_id=c.id WHERE c.novel_id=$1 ORDER BY c.id",
-            [work.id],
-          );
-          const changes = renumber.planServerChapterNumberChanges(work, currentChapters, reconciliation.mappings);
-          if (reconciliation.journal) {
-            if (JSON.stringify(changes) !== JSON.stringify(reconciliation.journal.changes)) {
-              throw new Error("Local chapter state changed while the server correction was prepared.");
-            }
-            await renumber.assertSourceChapterRenumberMetadataUnchanged(reconciliation.journal);
-            const journal = reconciliation.journal;
-            for (const file of journal.metadataFiles ?? []) {
-              publicationRollbackGuards?.set(file.path, () => renumber.assertSourceChapterRenumberMetadataRecoverable(journal));
-            }
-            if (journal.work.id !== work.id || journal.phase !== "preparing") {
-              throw new Error("Chapter number reconciliation no longer matches this work.");
-            }
-            for (const change of journal.changes) {
-              const chapter = currentChapters.find(row => row.id === change.id);
-              if (!chapter || chapter.path !== change.path || renumber.canonicalChapterNumber(chapter.chapterNumber) !== change.chapterNumber ||
-                  currentChapters.some(row => row.id !== change.id &&
-                    (row.path === change.nextPath || renumber.canonicalChapterNumber(row.chapterNumber) === change.nextChapterNumber))) {
-                throw new Error("A chapter changed while its number was being reconciled; existing files were retained.");
-              }
-            }
-            for (const change of journal.changes) {
-              await db.execute("UPDATE chapter SET path=$1,chapter_number=$2,updated_at=unixepoch() WHERE id=$3 AND novel_id=$4",
-                [change.nextPath, change.nextChapterNumber, change.id, work.id]);
-            }
-            const changed = new Map(journal.changes.map(change => [change.id, change.targetRelativeDir]));
-            const directories = currentChapters.flatMap(chapter => {
-              const dir = changed.get(chapter.id) ?? chapter.directory;
-              return dir ? [{ id: chapter.id, directory: dir }] : [];
-            });
-            const { persistWorkChapterDirectories } = await import("../db/work-metadata");
-            await persistWorkChapterDirectories(db, work.id, directories);
-            const exclusionRows = await db.select<{ key: string; payload: string }[]>(
-              "SELECT cache_key AS key,payload FROM content_sync_cache WHERE cache_key LIKE 'norea-content-deletions:%'",
-            );
-            const replacements = new Map(journal.changes.map(change => [change.chapterNumber, change.nextChapterNumber]));
-            for (const row of exclusionRows) {
-              const exclusions = JSON.parse(row.payload) as string[];
-              if (!Array.isArray(exclusions)) throw new Error("Stored chapter deletion exclusions are invalid.");
-              let changedExclusions = false;
-              const next = exclusions.map(value => {
-                const key: unknown = JSON.parse(value);
-                if (!Array.isArray(key) || key.length !== 3 || key[0] !== journal.work.pluginId || key[1] !== journal.work.sourceNovelId ||
-                    !Array.isArray(key[2]) || key[2][0] !== "number") return value;
-                const number = renumber.canonicalChapterNumber(key[2][1]);
-                const replacement = number === null ? undefined : replacements.get(number);
-                if (replacement === undefined) return value;
-                changedExclusions = true;
-                return JSON.stringify([key[0], key[1], ["number", Number(replacement)]]);
-              });
-              if (changedExclusions) {
-                await db.execute("UPDATE content_sync_cache SET payload=$1 WHERE cache_key=$2",
-                  [JSON.stringify([...new Set(next)]), row.key]);
-              }
-            }
-          } else if (changes.length) {
-            throw new Error("Incoming chapter numbers changed before their storage could be prepared.");
-          }
-          const chapters = { ...previous?.chapters };
-          for (const mapping of reconciliation.mappings) {
-            delete chapters[mapping.from];
-            if (Object.hasOwn(metadata.chapters, mapping.from)) throw new Error("Incoming catalog still contains a replaced chapter number.");
-          }
-          if (previous) previous = { ...previous, chapters };
-          const { reconcileImportedNovelIdentityInDb } = await import("../db/queries/novel-identity");
-          await reconcileImportedNovelIdentityInDb(db, {
-            pluginId: metadata.identity.pluginId, path: metadata.identity.novelPath,
-          }, reconciliation.mappings.map(mapping => ({ path: mapping.chapterPath, chapterNumber: mapping.to })));
-        }
-        const merged = mergeIncomingNovelMetadata(previous, metadata);
-        metadata = options.authoritative ? { ...merged, novel: metadata.novel, cover: metadata.cover } : merged;
-        if (options.authoritative && !options.preserveLocalCover) await removeAllStoredNovelCovers(directory, existing?.metadata.cover ?? null);
-        if (coverBytes) await writeStoredNovelCover(directory, metadata, coverBytes, false);
-        else if (!options.authoritative || options.preserveLocalCover) metadata.cover = existing?.metadata.cover ?? null;
-        const installedNovelId = await applyNovelMetadataToCache(db, metadata, directory, { preserveMissingMetadata: !options.authoritative });
-        if (options.authoritative && !options.preserveLocalCover && !metadata.novel.isLocal) await db.execute("UPDATE novel SET cover=NULL WHERE id=$1", [installedNovelId]);
-        const [cached] = await db.select<Pick<NovelMetadataV1["novel"], "author" | "artist" | "summary" | "status" | "genres" | "rating">[]>(
-          "SELECT author,artist,summary,status,genres,rating FROM novel WHERE id=$1", [installedNovelId]);
-        if (!cached) throw new Error("Installed work metadata is missing from the local cache.");
-        metadata.novel = { ...metadata.novel, ...cached };
-        await writeStoredNovelMetadata(directory, metadata, false);
-        await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2", [metadata.identity.pluginId, metadata.identity.novelPath]);
-        await rememberStoredNovelMetadata(db, directory, metadata, true);
-        const syncFile = await readWorkMetadataSyncFile(metadata.identity, db);
-        if (!syncFile) throw new Error("Installed work metadata is missing from the local index.");
-        if (reconciliation?.journal) {
-          const renumber = await import("./source-chapter-renumber");
-          const committedJob = { ...reconciliation.journal, phase: "committed" as const };
-          await db.execute(
-            "INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload",
-            [renumber.renumberJournalKey(committedJob.operationId), JSON.stringify(committedJob)],
-          );
-          if (committedJob.serverUrl) {
-            const remote = {
-              version: 1 as const,
-              operationId: committedJob.operationId,
-              serverUrl: committedJob.serverUrl,
-              identity: { pluginId: committedJob.work.pluginId, novelId: committedJob.work.sourceNovelId, novelPath: committedJob.work.path },
-              mappings: committedJob.changes.map(change => ({ chapterPath: change.nextPath, from: change.chapterNumber, to: change.nextChapterNumber })),
-              status: "pending" as const,
-              createdAt: Date.now(),
-            };
-            await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2)",
-              [renumber.SERVER_CHAPTER_RENUMBER_PREFIX + committedJob.operationId, JSON.stringify(remote)]);
-          }
-        }
-        return { novelId: installedNovelId, directory, syncFile, coverBytes: await readStoredNovelCover(directory, metadata) };
-      });
-    }, true);
+  try {
+    const installed = await invokeDbMutation<{
+      novelId: number;
+      directory: string;
+      metadata: NovelMetadataV1;
+      syncFile: WorkMetadataSyncFile;
+      coverBytes: number[] | null;
+    } | null>("db_work_metadata_install_stored", {
+      input: {
+        metadata,
+        coverBytes: coverBytes ? Array.from(coverBytes) : null,
+        authoritative: options.authoritative ?? false,
+        preserveLocalCover: options.preserveLocalCover ?? false,
+        reconciliation: reconciliation ?? null,
+      },
+    });
     if (!installed) return null;
-    const { notifyNovelCoverChanged } = await import("./novel-cover-storage");
-    notifyNovelCoverChanged(installed.novelId, { pluginId: metadata.identity.pluginId, path: metadata.identity.novelPath });
-    return { directory: installed.directory, metadata, syncFile: installed.syncFile, coverBytes: installed.coverBytes };
+    return {
+      directory: installed.directory,
+      metadata: parseNovelMetadata(installed.metadata),
+      syncFile: installed.syncFile,
+      coverBytes: installed.coverBytes ? new Uint8Array(installed.coverBytes) : null,
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (message.includes("publication and rollback failed")) {
+      const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
+      invalidateAllNovelCoverSources();
+    }
+    throw error;
+  }
 }
 
 export async function removeStoredNovelCover(directory: string, cover: NovelMetadataV1["cover"], notifyChanges = true, identity?: WorkMetadataChange): Promise<void> {
@@ -460,17 +340,6 @@ export async function removeStoredNovelCover(directory: string, cover: NovelMeta
     const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
     invalidateAllNovelCoverSources();
     notifyWorkMetadataChanges(identity);
-  }
-}
-
-async function removeAllStoredNovelCovers(directory: string, preferred: NovelMetadataV1["cover"]): Promise<void> {
-  let cover = await discoverStoredNovelCover(directory, preferred);
-  const removed = new Set<string>();
-  while (cover) {
-    if (removed.has(cover.fileName)) throw new Error("work metadata: cleared cover is still present");
-    removed.add(cover.fileName);
-    await removeStoredNovelCover(directory, cover, false);
-    cover = await discoverStoredNovelCover(directory);
   }
 }
 

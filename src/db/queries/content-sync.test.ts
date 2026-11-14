@@ -29,7 +29,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../client";
 import { adoptStoredChapterContentMetadata, saveChapterContentMetadata } from "./chapter";
 import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, listContentSyncWorkChapters, listUntrackedContentSyncChapters, markContentInstalled, readContentSyncCache, writeContentSyncCache, canUploadContentChapter } from "./content-sync";
-import { cacheServerChapters, recordPendingNovelMergeInDb, listNovelMigrations, saveNovelMigration, isNovelMigrationSourceHeldInDb } from "./content-sync";
+import { cacheServerChapters, recordPendingNovelMerge, listNovelMigrations, saveNovelMigration, isNovelMigrationSourceHeld } from "./content-sync";
 import { applyNovelMetadataToCache } from "../work-metadata";
 import { syncNovelFromSource } from "../../lib/plugins/sync-novel";
 import type { Plugin } from "../../lib/plugins/types";
@@ -377,8 +377,7 @@ it("retains content deletion events without personal-state tombstones", async ()
 it("keeps a durable source hold scoped to the server, including after completion", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(43,'target','new-work','/new-work','Target')");
   sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,is_downloaded) VALUES(11,42,'/chapter','One','1',1,1),(21,43,'/new-chapter','One','9001',1,1)");
-  const db = await getDb();
-  const operationId = await recordPendingNovelMergeInDb(db, {
+  const operationId = await recordPendingNovelMerge({
     serverUrl: "http://server/", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
     preparedDownloads: [{ sourceChapterId: 11, transferredFromSource: true }],
   });
@@ -388,17 +387,17 @@ it("keeps a durable source hold scoped to the server, including after completion
     target: { pluginId: "target", novelId: "new-work", novelPath: "/new-work" },
     chapters: [{ sourceChapterPath: "/chapter", targetChapterPath: "/new-chapter", sourceChapterNumber: "1", targetChapterNumber: "9001", decision: "copy-source" }],
   });
-  expect(await isNovelMigrationSourceHeldInDb(db, "http://server", manifest.identity)).toBe(true);
-  expect(await isNovelMigrationSourceHeldInDb(db, "http://other", manifest.identity)).toBe(false);
+  expect(await isNovelMigrationSourceHeld("http://server", manifest.identity)).toBe(true);
+  expect(await isNovelMigrationSourceHeld("http://other", manifest.identity)).toBe(false);
   await saveNovelMigration({ ...job!, status: "completed" });
   expect(await listNovelMigrations("http://server")).toEqual([]);
   expect(await listNovelMigrations("http://server", true)).toHaveLength(1);
-  expect(await isNovelMigrationSourceHeldInDb(db, "http://server", manifest.identity)).toBe(true);
+  expect(await isNovelMigrationSourceHeld("http://server", manifest.identity)).toBe(true);
 });
 
 it("blocks a held source import within its raw metadata transaction", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(43,'target','new-work','/new-work','Target')");
-  await recordPendingNovelMergeInDb(await getDb(), {
+  await recordPendingNovelMerge({
     serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: {}, preparedDownloads: [],
   });
   await expect(importContentMetadata(manifest, "http://server")).rejects.toThrow("held");
@@ -408,7 +407,7 @@ it("blocks a held source import within its raw metadata transaction", async () =
 it("refuses retained-target migration without the actual complete inventory", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(43,'target','new-work','/new-work','Target')");
   sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position) VALUES(11,42,'/chapter','One',1),(21,43,'/new-chapter','One',1)");
-  await expect(recordPendingNovelMergeInDb(await getDb(), {
+  await expect(recordPendingNovelMerge({
     serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
     preparedDownloads: [{ sourceChapterId: 11, transferredFromSource: false }],
   })).rejects.toThrow("complete verified inventory");
@@ -423,8 +422,8 @@ it("accepts missing declarations only with explicit verified body-only proof", a
     serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
     preparedDownloads: [{ sourceChapterId: 11, transferredFromSource: false, targetInventory: inventory }],
   };
-  await expect(recordPendingNovelMergeInDb(await getDb(), input)).rejects.toThrow("complete verified inventory");
-  await recordPendingNovelMergeInDb(await getDb(), { ...input,
+  await expect(recordPendingNovelMerge(input)).rejects.toThrow("complete verified inventory");
+  await recordPendingNovelMerge({ ...input,
     preparedDownloads: [{ ...input.preparedDownloads[0]!, targetInventoryBodyOnly: true }],
   });
   const [job] = await listNovelMigrations("http://server");
@@ -438,7 +437,7 @@ it("stores the captured target metadata independently of later caller or databas
     novel: { name: "Target", author: "Fresh author", artist: null, summary: null, status: null, genres: null, rating: 0, isLocal: false },
     cover: null, coverSha256: null,
   };
-  await recordPendingNovelMergeInDb(await getDb(), {
+  await recordPendingNovelMerge({
     serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: {}, preparedDownloads: [], targetMetadata,
   });
   targetMetadata.novel.author = "Changed caller";
@@ -449,7 +448,7 @@ it("stores the captured target metadata independently of later caller or databas
 
 it("refuses to record target metadata that changed before the merge transaction", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,author) VALUES(43,'target','new-work','/new-work','Target','Changed author')");
-  await expect(recordPendingNovelMergeInDb(await getDb(), {
+  await expect(recordPendingNovelMerge({
     serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: {}, preparedDownloads: [],
     targetMetadata: {
       novel: { name: "Target", author: "Fresh author", artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
@@ -463,14 +462,14 @@ it.each(["pending", "failed", "blocked", "completed", "inactive"] as const)("hon
   const key = "norea-content-incoming-migration:" + JSON.stringify(["http://server", "incoming-op"]);
   const payload = { version: 1, serverUrl: "http://server", operationId: "incoming-op", status, source: { pluginId: "source", novelId: "work", novelPath: "/work" } };
   sqlite.prepare("INSERT INTO content_sync_cache(cache_key,payload) VALUES(?,?)").run(key, JSON.stringify(payload));
-  expect(await isNovelMigrationSourceHeldInDb(await getDb(), "http://server", manifest.identity)).toBe(status !== "inactive");
-  expect(await isNovelMigrationSourceHeldInDb(await getDb(), "http://another", manifest.identity)).toBe(false);
+  expect(await isNovelMigrationSourceHeld("http://server", manifest.identity)).toBe(status !== "inactive");
+  expect(await isNovelMigrationSourceHeld("http://another", manifest.identity)).toBe(false);
 });
 
 it("never converts local skipSourceContentChapterIds into server discardSourceContent and requires explicit inventory-bound discard approval", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(43,'target','new-work','/new-work','Target')");
   sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(11,42,'/chapter','Source','1',1),(21,43,'/new-chapter','Target','9001',1)");
-  await recordPendingNovelMergeInDb(await getDb(), {
+  await recordPendingNovelMerge({
     serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
     skipSourceContentChapterIds: [11], preparedDownloads: [],
   });
@@ -480,14 +479,14 @@ it("never converts local skipSourceContentChapterIds into server discardSourceCo
   });
   expect(preservedJob.chapters[0]!.discardSourceContent).toBeUndefined();
 
-  await expect(recordPendingNovelMergeInDb(await getDb(), {
+  await expect(recordPendingNovelMerge({
     serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
     skipSourceContentChapterIds: [11], preparedDownloads: [{ sourceChapterId: 11, transferredFromSource: true }],
   })).rejects.toThrow(/without copying/);
 
   sqlite.exec("DELETE FROM content_sync_cache");
   const sourceInv = { body: { sha256: "a".repeat(64), bytes: 50 }, expectedAssetKeys: null, storedAssets: [] };
-  await recordPendingNovelMergeInDb(await getDb(), {
+  await recordPendingNovelMerge({
     serverUrl: "http://server", sourceNovelId: 42, targetNovelId: 43, chapterIdMap: { 11: 21 },
     explicitServerDiscardBySourceId: { 11: { approvedByUser: true, expectedSourceInventory: sourceInv } },
     preparedDownloads: [],

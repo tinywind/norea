@@ -2,7 +2,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import { createHash } from "node:crypto";
 const native = vi.hoisted(() => ({ download: vi.fn(), install: vi.fn(), stage: vi.fn() }));
 
-vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false),
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeld: vi.fn(async () => false),
   listContentSyncChapters: vi.fn(), listContentSyncWorkChapters: vi.fn(), listUntrackedContentSyncChapters: vi.fn(), importContentMetadata: vi.fn(), markContentInstalled: vi.fn(),
   readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn(),
   contentJournalHead: vi.fn(), readContentJournal: vi.fn(), canUploadContentChapter: vi.fn(),

@@ -1,5 +1,4 @@
 import { canonicalMetadataValue } from "../work-metadata/schema";
-import type Database from "@tauri-apps/plugin-sql";
 import {
   assertChapterNumberMappings,
   canonicalChapterNumber,
@@ -29,7 +28,7 @@ export interface IncomingChapterNumberReconciliation {
   install: (
     metadata: NovelMetadataV1,
     cover: Uint8Array | undefined,
-    beforeInstall: (current: StoredNovelMetadata | null, db?: Database) => Promise<void | false>,
+    beforeInstall: (current: StoredNovelMetadata | null) => Promise<void | false>,
   ) => Promise<InstalledNovelMetadata | null>;
 }
 

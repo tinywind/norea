@@ -67,6 +67,7 @@ import {
   createNovelMergeIpcHandler,
   readRenumberChaptersInDb,
 } from "./mock-novel-merge-ipc";
+import { createContentSyncIpcHandler } from "./mock-content-sync-ipc";
 
 export interface ChapterIpcBridgeOptions {
   getDb: () => Database | Promise<Database>;
@@ -415,6 +416,7 @@ function optionalText(value: string | undefined | null): string | null {
 
 export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
   const novelMergeIpc = createNovelMergeIpcHandler(options);
+  const contentSyncIpc = createContentSyncIpcHandler(options);
   const resolveReader = async (readMode?: unknown) => {
     if (readMode === "committed" && options.getReadOnlyDb) {
       return options.getReadOnlyDb();
@@ -1784,7 +1786,9 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
         };
       }
 
-      return novelMergeIpc.handle(command, args);
+      const mergeHandled = await novelMergeIpc.handle(command, args);
+      if (mergeHandled.handled) return mergeHandled;
+      return contentSyncIpc.handle(command, args);
     },
   };
 }

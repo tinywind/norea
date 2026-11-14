@@ -4,11 +4,24 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb, runDatabaseTransaction } from "../../db/client";
 import {
   getIncomingMigrationCursor, incomingMigrationFromLineage, INCOMING_MIGRATION_CACHE_PREFIX,
-  listIncomingMigrations, parseWorkMigrationLineage, saveIncomingMigration, saveIncomingMigrationCursor,
+  listIncomingMigrations, parseWorkMigrationLineage, rememberIncomingMigrationPage,
+  saveIncomingMigration, saveIncomingMigrationCursor,
   type IncomingMigration, type WorkMigrationLineage,
 } from "./migration-feed-state";
 
 vi.mock("../../db/client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+    const { createContentSyncIpcHandler } = await import("../../test/mock-content-sync-ipc");
+    const contentSyncIpc = createContentSyncIpcHandler({
+      getDb: () => vi.mocked(getDb)(),
+      runTransaction: (run, remote) => vi.mocked(runDatabaseTransaction)(run, remote),
+    });
+    const handled = await contentSyncIpc.handle(command, args);
+    if (handled.handled) return handled.result;
+    throw new Error(`Unexpected command: ${command}`);
+  }),
+}));
 
 const server = "https://content.test";
 const hash = (character: string) => character.repeat(64);
@@ -228,18 +241,30 @@ describe("incoming migration receipts", () => {
     expect(await getIncomingMigrationCursor("https://another.test/")).toBe(2);
   });
 
-  it("commits a receipt and cursor inside the caller's transaction and rolls both back with it", async () => {
-    const record = incomingMigrationFromLineage(server, lineage());
-    sqlite.exec("BEGIN");
-    await saveIncomingMigration(record, db);
-    await saveIncomingMigrationCursor(server, 17, db);
-    expect(await listIncomingMigrations(server, false, db)).toEqual([record]);
-    expect(await getIncomingMigrationCursor(server, db)).toBe(17);
-    expect(getDb).not.toHaveBeenCalled();
-    expect(runDatabaseTransaction).not.toHaveBeenCalled();
-    sqlite.exec("ROLLBACK");
-    expect(await listIncomingMigrations(server)).toEqual([]);
+  it("commits receipts and cursor atomically per page and rolls both back when an event fails", async () => {
+    const validLineage = lineage();
+    const valid = incomingMigrationFromLineage(server, validLineage);
+    const conflictingLineage = {
+      ...lineage(),
+      operationId: "22222222-2222-3333-4444-555555555555",
+      sequence: 18,
+    };
+    const conflictingExisting = incomingMigrationFromLineage(server, conflictingLineage);
+    await saveIncomingMigration(conflictingExisting);
+    const rewrittenLineage: WorkMigrationLineage = {
+      ...conflictingLineage,
+      sequence: 19,
+      targetWork: {
+        ...conflictingLineage.targetWork,
+        metadata: { ...conflictingLineage.targetWork.metadata, novel: { ...conflictingLineage.targetWork.metadata.novel, author: "Changed" } },
+      },
+    };
+    await expect(rememberIncomingMigrationPage(server, [validLineage, rewrittenLineage], 19)).rejects.toThrow("immutable lineage");
+    expect(await listIncomingMigrations(server)).toEqual([conflictingExisting]);
     expect(await getIncomingMigrationCursor(server)).toBe(0);
+    await rememberIncomingMigrationPage(server, [validLineage], 17);
+    expect(await listIncomingMigrations(server)).toEqual([valid, conflictingExisting]);
+    expect(await getIncomingMigrationCursor(server)).toBe(17);
   });
 
   it("preserves completed work against a late failure and releases it after a newer inactive event", async () => {

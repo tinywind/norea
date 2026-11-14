@@ -831,7 +831,7 @@ describe("archive recovery and exact command integration", () => {
       fullDecisionCoverage: true,
       active: true,
     };
-    await saveIncomingMigration(incomingMigrationFromLineage("https://state.example", lineage), active.db);
+    await saveIncomingMigration(incomingMigrationFromLineage("https://state.example", lineage));
     await applyNovelMergeInDb({
       sourceNovelId: 1,
       targetNovelId: 2,

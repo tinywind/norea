@@ -15,6 +15,7 @@ import {
   saveIncomingMigration,
   type WorkMigrationLineage,
 } from "../../lib/content-sync/migration-feed-state";
+import { createContentSyncIpcHandler } from "../../test/mock-content-sync-ipc";
 import { createNovelMergeIpcHandler } from "../../test/mock-novel-merge-ipc";
 import { runDatabaseTransaction } from "../client";
 import { applyNovelMergeInDb } from "./novel-merge";
@@ -94,9 +95,16 @@ beforeEach(() => {
     getDb: async () => activeDb,
     runTransaction: (run, remote) => mockedRunDatabaseTransaction(run, remote),
   });
+  const contentSyncIpc = createContentSyncIpcHandler({
+    getDb: async () => activeDb,
+    runTransaction: (run, remote) => mockedRunDatabaseTransaction(run, remote),
+  });
   vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
-    const handled = await ipc.handle(command, (args as Record<string, unknown>) ?? {});
+    const payload = (args as Record<string, unknown>) ?? {};
+    const handled = await ipc.handle(command, payload);
     if (handled.handled) return handled.result as never;
+    const syncHandled = await contentSyncIpc.handle(command, payload);
+    if (syncHandled.handled) return syncHandled.result as never;
     throw new Error(`Unexpected IPC command in novel-merge.test.ts: ${command}`);
   });
   mockedRunDatabaseTransaction.mockImplementation(async (run) =>
@@ -639,7 +647,7 @@ describe("applyNovelMergeInDb user state transaction", () => {
 
   it("records a recipient receipt in the same transaction as local reading-state migration", async () => {
     const lineage = sampleIncomingLineage();
-    await saveIncomingMigration(incomingMigrationFromLineage("https://content.example.test", lineage), activeDb);
+    await saveIncomingMigration(incomingMigrationFromLineage("https://content.example.test", lineage));
     await applyNovelMergeInDb({
       ...input(),
       incomingMigrationCommit: {
@@ -655,7 +663,7 @@ describe("applyNovelMergeInDb user state transaction", () => {
   });
   it("rolls recipient receipt and reading state back when the source cannot be removed", async () => {
     const lineage = sampleIncomingLineage();
-    await saveIncomingMigration(incomingMigrationFromLineage("https://content.example.test", lineage), activeDb);
+    await saveIncomingMigration(incomingMigrationFromLineage("https://content.example.test", lineage));
     sqlite.exec("CREATE TRIGGER reject_incoming_merge BEFORE DELETE ON novel WHEN OLD.id=1 BEGIN SELECT RAISE(ABORT,'incoming deletion rejected'); END");
     const before = sqlite.prepare("SELECT * FROM chapter ORDER BY id").all();
     await expect(applyNovelMergeInDb({

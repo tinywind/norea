@@ -5,6 +5,13 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+    const { createContentSyncIpcHandler } = await import("../../test/mock-content-sync-ipc");
+    const contentSyncIpc = createContentSyncIpcHandler({
+      getDb: () => vi.mocked(getDb)(),
+      runTransaction: (run, remote) => vi.mocked(runDatabaseTransaction)(run, remote),
+    });
+    const handled = await contentSyncIpc.handle(command, args);
+    if (handled.handled) return handled.result;
     if (command === "db_novel_get_by_id") {
       const currentDb = await vi.mocked(getDb)();
       const [row] = await currentDb.select<Array<Record<string, unknown>>>(

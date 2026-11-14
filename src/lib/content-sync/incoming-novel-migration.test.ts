@@ -136,7 +136,7 @@ beforeEach(() => {
   });
   vi.mocked(installStoredNovelMetadata).mockImplementation(async (input,cover,before,options) => {
     expect(options?.authoritative).toBe(true);
-    await runDatabaseTransaction(async db=>{await before?.(null,db);const id=await applyNovelMetadataToCache(db,input,undefined,{preserveMissingMetadata:false});await db.execute("UPDATE novel SET cover=NULL WHERE id=$1",[id]);},true);
+    await runDatabaseTransaction(async db=>{await before?.(null);const id=await applyNovelMetadataToCache(db,input,undefined,{preserveMissingMetadata:false});await db.execute("UPDATE novel SET cover=NULL WHERE id=$1",[id]);},true);
     const directory=`contents/${input.identity.pluginId}/${input.identity.novelId}`;
     const stored={directory,metadata:structuredClone(input)};metadataFiles.set(directory,stored);
     return {...stored,coverBytes:cover??null,syncFile:{directory,fingerprint:"latest",revision:7,pluginId:input.identity.pluginId,path:input.identity.novelPath}};
@@ -166,7 +166,7 @@ afterEach(()=>sqlite.close());
 async function seedPendingIncoming() {
   const baselineChain = fixture().chain;
   sqlite.exec("DELETE FROM content_sync_cache WHERE cache_key LIKE 'norea-content-incoming-migration:%'");
-  await saveIncomingMigration(incomingMigrationFromLineage("http://server", baselineChain[0]!), db);
+  await saveIncomingMigration(incomingMigrationFromLineage("http://server", baselineChain[0]!));
   return baselineChain;
 }
 async function apply(assertCurrent:()=>void|Promise<void>=()=>undefined){
@@ -192,7 +192,7 @@ it("replays the same migration on two devices with distinct local IDs and preser
       {path:"/b/11",progress:100,unread:0,bookmark:1,is_downloaded:1},{path:"/b/12",progress:42,unread:1,bookmark:0,is_downloaded:0},
     ]);
     expect(files.has("contents/beta/b-work/11")).toBe(true);expect(files.has("contents/alpha/a-work/1")).toBe(false);
-    expect((await listIncomingMigrations("http://server", true, db))[0]?.status).toBe("completed");
+    expect((await listIncomingMigrations("http://server", true))[0]?.status).toBe("completed");
     expect(result!.installedTargetMetadata!.metadata.novel.name).toBe("Fresh target");
   }
   expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();expect(syncNovelFromSource).not.toHaveBeenCalled();expect(enqueueSourceTask).not.toHaveBeenCalled();expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
@@ -247,10 +247,10 @@ it("moves a recipient-only body using the approved mapping without requesting a 
 it("rolls back moved files, reading state and receipt if the server target changes before commit",async()=>{
   afterPrepare=()=>{live.work.revision="8".repeat(64);};
   await expect(apply()).rejects.toBeInstanceOf(IncomingNovelMigrationRetryableError);
-  expect(await findNovelBySource("alpha","/old")).not.toBeNull();expect(files.has("contents/alpha/a-work/1")).toBe(true);expect(files.has("contents/beta/b-work/11")).toBe(false);expect((await listIncomingMigrations("http://server", true, db))[0]?.status).toBe("pending");
+  expect(await findNovelBySource("alpha","/old")).not.toBeNull();expect(files.has("contents/alpha/a-work/1")).toBe(true);expect(files.has("contents/beta/b-work/11")).toBe(false);expect((await listIncomingMigrations("http://server", true))[0]?.status).toBe("pending");
 });
 it("records an idempotent no-op when this recipient already has no original work",async()=>{
-  sqlite.exec("DELETE FROM novel WHERE id=1");expect(await apply()).toBeNull();expect(installStoredNovelMetadata).not.toHaveBeenCalled();expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();expect((await listIncomingMigrations("http://server", true, db))[0]?.status).toBe("completed");
+  sqlite.exec("DELETE FROM novel WHERE id=1");expect(await apply()).toBeNull();expect(installStoredNovelMetadata).not.toHaveBeenCalled();expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();expect((await listIncomingMigrations("http://server", true))[0]?.status).toBe("completed");
 });
 it("receives a mapping for a work with a server cover without fetching the cover", async () => {
   live.work.metadata.cover = { fileName: "cover.png", contentType: "image/png" };

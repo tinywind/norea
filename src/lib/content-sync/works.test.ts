@@ -8,14 +8,15 @@ vi.mock("../work-metadata", async original => ({
   listStoredNovelMetadata: vi.fn(), readStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn(),
   installStoredNovelMetadata: vi.fn(),
 }));
-vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false), readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeld: vi.fn(async () => false), readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
 vi.mock("../../db/work-metadata", async original => ({ ...await original<typeof import("../../db/work-metadata")>(), readWorkMetadataSyncFile: vi.fn(), readWorkMetadataSyncFiles: vi.fn() }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { installStoredNovelMetadata, listStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover } from "../work-metadata";
 import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint } from "../../db/work-metadata";
-import { syncWorkMetadata, contentWorkId, canPullWorkMetadata, recordInstalledWorkMetadata, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint, releaseMigratedTargetMetadataInDb } from "./works";
+import { syncWorkMetadata, contentWorkId, canPullWorkMetadata, recordInstalledWorkMetadata, recordDeletedWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint } from "./works";
+import { releaseMigratedTargetMetadataInTestDb } from "../../test/mock-content-sync-ipc";
 
 const metadata = (name = "Book"): NovelMetadataV1 => ({
   schemaVersion: 1, identity: { pluginId: "example", novelId: "book", novelPath: "/book" },
@@ -686,7 +687,7 @@ it("releases a committed migration target in the caller transaction without losi
   const cache = { cursor: 42, deleted: { [id]: true, other: true }, fingerprints: { [id]: "old", other: "kept" }, fileVersions: { [JSON.stringify([identity.pluginId, identity.novelPath])]: "old", unrelated: "kept" } };
   const execute = vi.fn(async (_query: string, _values: unknown[]) => ({ rowsAffected: 1 }));
   const raw = { select: vi.fn(async () => [{ payload: JSON.stringify(cache) }]), execute } as unknown as Database;
-  await releaseMigratedTargetMetadataInDb(raw, "http://server/", identity);
+  await releaseMigratedTargetMetadataInTestDb(raw, "http://server/", identity);
   expect(raw.select).toHaveBeenCalledWith(expect.any(String), ["norea-content-works:http://server"]);
   const stored = JSON.parse(vi.mocked(execute).mock.calls[0]![1]![0] as string);
   expect(stored).toEqual({ cursor: 42, deleted: { other: true }, fingerprints: { other: "kept" }, fileVersions: { unrelated: "kept" } });

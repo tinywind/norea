@@ -1,4 +1,3 @@
-import { runDatabaseTransaction } from "../../db/client";
 import { isAbortError } from "../abort";
 import { applySharedReaderState, useReaderStore } from "../../store/reader";
 import { recordInstalledWorkMetadata } from "./works";
@@ -7,7 +6,7 @@ import { contentServerRequest, ContentServerError, ContentServerTransportError, 
 import { publishNovelMigrationSourceHold } from "./deletion-exclusions";
 import {
   getIncomingMigrationCursor, incomingMigrationFromLineage, listIncomingMigrations,
-  parseWorkMigrationLineage, saveIncomingMigration, saveIncomingMigrationCursor,
+  parseWorkMigrationLineage, rememberIncomingMigrationPage, saveIncomingMigration,
   type IncomingMigration, type WorkMigrationLineage,
 } from "./migration-feed-state";
 import { applyIncomingNovelMigration, IncomingNovelMigrationRetryableError, type ResolvedIncomingNovelMigration } from "./incoming-novel-migration";
@@ -102,40 +101,7 @@ function pageValue(value: unknown, after: number): { items: WorkMigrationLineage
 }
 
 async function rememberPage(server: string, items: readonly WorkMigrationLineage[], cursor: number): Promise<void> {
-  await runDatabaseTransaction(async db => {
-    const previous = new Map((await listIncomingMigrations(server, true, db)).map(record => [record.operationId, record]));
-    const changedSources = new Set<string>();
-    for (const entry of items) {
-      const old = previous.get(entry.operationId);
-      if (!old || entry.sequence > old.sequence) changedSources.add(entry.sourceWork.id);
-      const record = incomingMigrationFromLineage(server, entry, old);
-      await saveIncomingMigration(record, db);
-      previous.set(record.operationId, record);
-    }
-    // A later migration or revocation can resolve a previously blocked intermediate target.
-    // Reconsider only predecessors reached by new evidence; unrelated review holds stay blocked.
-    const successors = new Map<string, WorkMigrationLineage[]>();
-    for (const value of previous.values()) {
-      if (!value.lineage.active) continue;
-      const edges = successors.get(value.lineage.sourceWork.id) ?? [];
-      edges.push(value.lineage); successors.set(value.lineage.sourceWork.id, edges);
-    }
-    for (const record of previous.values()) {
-      if (record.status !== "blocked") continue;
-      const remaining = [record.lineage.targetWork.id];
-      const visited = new Set<string>();
-      let affected = false;
-      while (remaining.length && !affected) {
-        const id = remaining.pop()!;
-        if (visited.has(id)) continue;
-        visited.add(id);
-        if (changedSources.has(id)) affected = true;
-        for (const edge of successors.get(id) ?? []) remaining.push(edge.targetWork.id);
-      }
-      if (affected) await saveIncomingMigration({ ...record, status: "pending", error: undefined }, db);
-    }
-    await saveIncomingMigrationCursor(server, cursor, db);
-  });
+  await rememberIncomingMigrationPage(server, items, cursor);
   for (const entry of items) if (entry.active) publishNovelMigrationSourceHold(server, entry.sourceWork.identity);
 }
 

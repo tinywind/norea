@@ -1,4 +1,4 @@
-import { getDb } from "../../db/client";
+import { invokeDbQuery } from "../../db/ipc";
 import { writeContentSyncCache } from "../../db/queries/content-sync";
 import {
   SERVER_CHAPTER_RENUMBER_PREFIX,
@@ -44,13 +44,11 @@ function parseJob(payload: string): ServerChapterRenumberJob {
 export async function listPendingChapterNumberReconciliations(server: string): Promise<ServerChapterRenumberJob[]> {
   if (!server.trim()) return [];
   const normalizedServer = normalizeContentServerUrl(server);
-  const db = await getDb();
-  const rows = await db.select<{ payload: string }[]>(
-    "SELECT payload FROM content_sync_cache WHERE cache_key LIKE $1 AND json_extract(payload,'$.status')='pending' " +
-    "ORDER BY json_extract(payload,'$.createdAt'),cache_key",
-    [SERVER_CHAPTER_RENUMBER_PREFIX + "%"],
+  const payloads = await invokeDbQuery<string[]>(
+    "db_content_sync_list_pending_renumber_reconciliations",
+    { readMode: "queued" },
   );
-  return rows.map(row => parseJob(row.payload)).filter(job => normalizeContentServerUrl(job.serverUrl) === normalizedServer);
+  return payloads.map(parseJob).filter(job => normalizeContentServerUrl(job.serverUrl) === normalizedServer);
 }
 
 async function saveJob(job: ServerChapterRenumberJob): Promise<void> {

@@ -1,5 +1,4 @@
-import type Database from "@tauri-apps/plugin-sql";
-import { getDb, runDatabaseTransaction } from "../../db/client";
+import { invokeDbMutation, invokeDbQuery } from "../../db/ipc";
 import { isChapterPayloadInventory, type ChapterPayloadInventory } from "../chapter-content/inventory";
 import { canonicalMetadataValue, parseNovelMetadata, type NovelMetadataV1 } from "../work-metadata/schema";
 import { normalizeContentServerUrl } from "./client";
@@ -70,7 +69,6 @@ export interface IncomingMigration {
 }
 
 export const INCOMING_MIGRATION_CACHE_PREFIX = "norea-content-incoming-migration:";
-const CURSOR_PREFIX = "norea-content-incoming-migration-cursor:";
 const MAX_CHAPTERS = 10_000;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const canonical = (value: unknown) => JSON.stringify(canonicalMetadataValue(value));
@@ -340,58 +338,53 @@ function storedIncoming(row: { cacheKey: string; payload: string }): IncomingMig
   return parsed;
 }
 
-export async function listIncomingMigrations(server: string, includeCompleted = false, db?: Database): Promise<IncomingMigration[]> {
+export async function listIncomingMigrations(server: string, includeCompleted = false): Promise<IncomingMigration[]> {
   const serverUrl = normalizeContentServerUrl(server);
-  const connection = db ?? await getDb();
-  const prefix = serverReceiptPrefix(serverUrl);
-  const rows = await connection.select<{ cacheKey: string; payload: string }[]>(
-    "SELECT cache_key AS cacheKey,payload FROM content_sync_cache WHERE substr(cache_key,1,length($1))=$1 ORDER BY cache_key", [prefix],
+  const rows = await invokeDbQuery<Array<{ cacheKey: string; payload: string }>>(
+    "db_content_sync_list_cache_entries",
+    {
+      prefix: serverReceiptPrefix(serverUrl),
+      exactSubstr: true,
+      readMode: "queued",
+    },
   );
   return rows.map(storedIncoming).filter(value => includeCompleted || (value.status !== "completed" && value.status !== "inactive"))
     .sort((left, right) => left.sequence - right.sequence || left.operationId.localeCompare(right.operationId));
 }
 
-/** A supplied raw database keeps this receipt in the caller's merge transaction. */
-export async function saveIncomingMigration(record: IncomingMigration, db?: Database): Promise<void> {
+export async function saveIncomingMigration(record: IncomingMigration): Promise<void> {
   const proposed = parseIncoming(record);
-  const key = receiptKey(proposed.serverUrl, proposed.operationId);
-  const save = async (connection: Database) => {
-    const rows = await connection.select<{ cacheKey: string; payload: string }[]>(
-      "SELECT cache_key AS cacheKey,payload FROM content_sync_cache WHERE cache_key=$1", [key],
-    );
-    const previous = rows[0] && storedIncoming(rows[0]);
-    const checked = incomingMigrationFromLineage(proposed.serverUrl, proposed.lineage, previous);
-    // Never regress a completed merge or a newer revocation when a stale caller settles late.
-    const selected = checked.sequence > proposed.sequence || (checked.status === "completed" && proposed.status !== "inactive")
-      ? checked : proposed;
-    await connection.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload",
-      [key, JSON.stringify(selected)]);
-  };
-  if (db) await save(db);
-  else await runDatabaseTransaction(save);
+  await invokeDbMutation("db_content_sync_save_incoming_migration", { record: proposed });
 }
 
-function parseCursor(payload: string, serverUrl: string): number {
-  const value = object(JSON.parse(payload));
-  if (value.version !== 1 || value.serverUrl !== serverUrl) return invalid("stored cursor");
-  return sequence(value.cursor, true);
-}
-
-export async function getIncomingMigrationCursor(server: string, db?: Database): Promise<number> {
+export async function getIncomingMigrationCursor(server: string): Promise<number> {
   const serverUrl = normalizeContentServerUrl(server);
-  const connection = db ?? await getDb();
-  const rows = await connection.select<{ payload: string }[]>("SELECT payload FROM content_sync_cache WHERE cache_key=$1", [CURSOR_PREFIX + serverUrl]);
-  return rows[0] ? parseCursor(rows[0].payload, serverUrl) : 0;
+  return invokeDbQuery<number>("db_content_sync_get_incoming_migration_cursor", {
+    serverUrl,
+    readMode: "queued",
+  });
 }
 
-export async function saveIncomingMigrationCursor(server: string, cursor: number, db?: Database): Promise<void> {
+export async function saveIncomingMigrationCursor(server: string, cursor: number): Promise<void> {
   const serverUrl = normalizeContentServerUrl(server);
   sequence(cursor, true);
-  const save = async (connection: Database) => {
-    const previous = await getIncomingMigrationCursor(serverUrl, connection);
-    await connection.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload",
-      [CURSOR_PREFIX + serverUrl, JSON.stringify({ version: 1, serverUrl, cursor: Math.max(previous, cursor) })]);
-  };
-  if (db) await save(db);
-  else await runDatabaseTransaction(save);
+  await invokeDbMutation("db_content_sync_save_incoming_migration_cursor", {
+    serverUrl,
+    cursor,
+  });
+}
+
+export async function rememberIncomingMigrationPage(
+  server: string,
+  items: readonly WorkMigrationLineage[],
+  cursor: number,
+): Promise<void> {
+  const serverUrl = normalizeContentServerUrl(server);
+  sequence(cursor, true);
+  const validated = items.map(parseWorkMigrationLineage);
+  await invokeDbMutation("db_content_sync_remember_incoming_migration_page", {
+    serverUrl,
+    items: validated,
+    cursor,
+  });
 }

@@ -10,7 +10,7 @@ import {
   withServerWorkDeletionExclusions,
 } from "./deletion-exclusions";
 
-vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeldInDb: vi.fn(async () => false), readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeld: vi.fn(async () => false), readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
 const memory = new Map<string, string>();
 beforeEach(() => {
   memory.clear(); vi.clearAllMocks();

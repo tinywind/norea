@@ -11,10 +11,22 @@ import { resolveIncomingNovelMigration, syncIncomingNovelMigrations } from "./mi
 import { commitIncomingMigrationInDb } from "../../test/mock-novel-merge-ipc";
 
 vi.mock("../../db/client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+    const { createContentSyncIpcHandler } = await import("../../test/mock-content-sync-ipc");
+    const contentSyncIpc = createContentSyncIpcHandler({
+      getDb: () => vi.mocked(getDb)(),
+      runTransaction: (run, remote) => vi.mocked(runDatabaseTransaction)(run, remote),
+    });
+    const handled = await contentSyncIpc.handle(command, args);
+    if (handled.handled) return handled.result;
+    throw new Error(`Unexpected command: ${command}`);
+  }),
+}));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("./deletion-exclusions", () => ({ publishNovelMigrationSourceHold: vi.fn() }));
 vi.mock("./incoming-novel-migration", () => ({ applyIncomingNovelMigration: vi.fn(), IncomingNovelMigrationRetryableError: class extends Error {} }));
-vi.mock("./works", () => ({ recordInstalledWorkMetadata: vi.fn(), releaseMigratedTargetMetadataInDb: vi.fn() }));
+vi.mock("./works", () => ({ recordInstalledWorkMetadata: vi.fn() }));
 
 const server = "https://content.test";
 const hash = (value: string) => value.repeat(64);

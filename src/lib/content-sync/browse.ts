@@ -1,17 +1,17 @@
 import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { findNovelBySource } from "../../db/queries/novel";
-import { applyNovelMetadataToCache, knownNovelMetadataDirectory, rememberStoredNovelMetadata, scanStoredNovelChaptersToCache } from "../../db/work-metadata";
+import { knownNovelMetadataDirectory, reindexPreservedWorkMetadata } from "../../db/work-metadata";
 import { useContentSyncStore } from "../../store/content-sync";
 import { bytesToBase64 } from "../base64";
-import { availableNovelMetadataDirectory, installStoredNovelMetadata, parseNovelMetadata, readStoredNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
+import { availableNovelMetadataDirectory, installStoredNovelMetadata, listStoredNovelChapters, parseNovelMetadata, readStoredNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
 import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 import { rememberServerNovelSource, type ServerNovelSource } from "./novel-source";
 import { contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
 import { fetchServerChapters } from "./chapters";
-import { cacheServerChapters, isNovelMigrationSourceHeldInDb, listNovelMigrations } from "../../db/queries/content-sync";
+import { cacheServerChapters, isNovelMigrationSourceHeld, listNovelMigrations } from "../../db/queries/content-sync";
 import { listIncomingMigrations } from "./migration-feed-state";
 import type { MigrationWorkIdentity } from "./novel-migration-types";
 
@@ -167,17 +167,11 @@ export async function refreshServerNovel(
     const incoming = previous ? mergeIncomingNovelMetadata(previous, received) : received;
     const install = reconciliation?.install ?? installStoredNovelMetadata;
     let retainedNovelId: number | null = null;
-    const installed = await install(incoming, cover?.bytes, async (current, db) => {
-      if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) throw new ContentServerError(410);
+    const installed = await install(incoming, cover?.bytes, async (current) => {
+      if (await isNovelMigrationSourceHeld(server, metadata.identity)) throw new ContentServerError(410);
       if (isDeleted()) return false;
       if (!requireNewWork && !expectedNovel) return;
-      if (!db) throw new Error("Cannot inspect the local work index outside its database transaction.");
-      // This callback already owns the work storage lock and raw DB transaction.
-      // A serialized query here would wait on our own transaction indefinitely.
-      const [indexed] = await db.select<{ id: number; sourceNovelId: string | null }[]>(
-        "SELECT id,source_novel_id AS sourceNovelId FROM novel WHERE plugin_id=$1 AND path=$2",
-        [metadata.identity.pluginId, metadata.identity.novelPath],
-      );
+      const indexed = await findNovelBySource(metadata.identity.pluginId, metadata.identity.novelPath);
       if (isDeleted()) throw new ContentServerError(410);
       if (expectedNovel) {
         if (indexed?.id !== expectedNovel.id || indexed.sourceNovelId !== expectedNovel.identity.novelId) {
@@ -196,12 +190,9 @@ export async function refreshServerNovel(
       // Full-device restore can omit a work while deliberately preserving its
       // original files. Opening it indexes those files, without publishing the
       // server response over its existing metadata, cover, or chapter contents.
-      retainedNovelId = await applyNovelMetadataToCache(db, current.metadata, current.directory);
-      await scanStoredNovelChaptersToCache(db, retainedNovelId, current.directory);
+      await listStoredNovelChapters(current.directory);
       if (isDeleted()) throw new ContentServerError(410);
-      await rememberStoredNovelMetadata(db, current.directory, current.metadata);
-      await db.execute("DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2",
-        [metadata.identity.pluginId, metadata.identity.novelPath]);
+      retainedNovelId = await reindexPreservedWorkMetadata(current.directory, current.metadata);
       if (isDeleted()) throw new ContentServerError(410);
       return false;
     });

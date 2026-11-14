@@ -1,12 +1,18 @@
 import { beforeEach, expect, it, vi } from "vitest";
-vi.mock("../../db/client", () => ({ getDb: vi.fn() }));
 vi.mock("../../db/queries/content-sync", () => ({ writeContentSyncCache: vi.fn() }));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: vi.fn(async (command: string) => {
+    if (command === "db_content_sync_list_pending_renumber_reconciliations") {
+      return [...memory.values()].filter(payload => JSON.parse(payload).status === "pending");
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  }),
+}));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("./works", () => ({ contentWorkId: async () => "work-id" }));
 vi.mock("./deletion-exclusions", () => ({ readServerWorkDeletionExclusions: vi.fn(async () => new Set<string>()), serverWorkDeletionKey: (identity: {pluginId:string;novelId:string}) => `contents/${identity.pluginId}/${identity.novelId}` }));
 import { readServerWorkDeletionExclusions } from "./deletion-exclusions";
 
-import { getDb } from "../../db/client";
 import { writeContentSyncCache } from "../../db/queries/content-sync";
 import { ContentServerError, contentServerRequest } from "./client";
 import { reconcilePendingChapterNumbers } from "./chapter-number-reconciliation";
@@ -29,7 +35,6 @@ const receipt = { operationId, work: { id: "work-id", metadata: { identity } }, 
 beforeEach(() => {
   vi.clearAllMocks(); memory.clear(); memory.set(key, JSON.stringify(initial()));
   vi.mocked(readServerWorkDeletionExclusions).mockResolvedValue(new Set());
-  vi.mocked(getDb).mockResolvedValue({ select: async () => [...memory.values()].filter(payload => JSON.parse(payload).status === "pending").map(payload => ({ payload })) } as never);
   vi.mocked(writeContentSyncCache).mockImplementation(async (cacheKey, payload) => { memory.set(cacheKey, payload); });
   vi.mocked(contentServerRequest).mockImplementation(async (_server, path, _token, method, body) => {
     if (path === "/capabilities") return { chapterNumberReconciliationVersion: 1 };

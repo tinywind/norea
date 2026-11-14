@@ -103,7 +103,7 @@ import { flushWorkMetadata, restoreWorkMetadataDirectories, scanStoredNovelChapt
 import { withWorkMetadataRollback } from "./work-metadata";
 import { prepareChapterStorageTransfer, finalizeChapterStorageTransfer, rollbackChapterStorageTransfer } from "./chapter-storage-transfer";
 import { syncNovelFromSource } from "./plugins/sync-novel";
-import { isNovelMigrationSourceHeldInDb } from "../db/queries/content-sync";
+import { isNovelMigrationSourceHeld } from "../db/queries/content-sync";
 import type { ChapterItem, Plugin } from "./plugins/types";
 
 const work: RenumberWork = { id: 7, pluginId: "source", sourceNovelId: "book", path: "/book" };
@@ -210,7 +210,7 @@ it("reconciles a full refresh without replacing IDs, reading state, downloads, o
   const deletion = sqlite.prepare("SELECT payload FROM content_sync_cache WHERE cache_key LIKE 'norea-content-deletions:%'").get()!;
   expect(JSON.parse(deletion.payload as string)).toEqual([JSON.stringify(["source", "book", ["number", 2]])]);
   expect(sqlite.prepare("SELECT 1 FROM content_sync_cache WHERE cache_key LIKE 'norea-source-chapter-renumber:%'").get()).toBeUndefined();
-  expect(await isNovelMigrationSourceHeldInDb(db, "https://content.test",
+  expect(await isNovelMigrationSourceHeld("https://content.test",
     { pluginId: "source", novelId: "book", novelPath: "/book" })).toBe(true);
 });
 

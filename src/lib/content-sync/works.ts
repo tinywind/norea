@@ -1,8 +1,7 @@
-import type Database from "@tauri-apps/plugin-sql";
 import { canonicalMetadataValue } from "../work-metadata/schema";
 import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
-import { isNovelMigrationSourceHeldInDb, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
+import { isNovelMigrationSourceHeld, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { readWorkMetadataSyncFile, readWorkMetadataSyncFiles, storedNovelMetadataFingerprint, type WorkMetadataSyncFile } from "../../db/work-metadata";
 import { parseNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, type InstalledNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest, ContentServerError, normalizeContentServerUrl } from "./client";
@@ -68,20 +67,6 @@ export async function recordDeletedWorkMetadata(server: string, entry: WorkCatal
     throw new Error("Server work deletion does not match its metadata.");
   }
   await recordServerWorkDeletionExclusion(server, metadata.identity);
-}
-
-/** Release only this verified target inside the same transaction that commits its local migration.
- * If post-commit fingerprint indexing fails, ordinary synchronization can still publish its current file. */
-export async function releaseMigratedTargetMetadataInDb(db: Database, server: string, identity: NovelMetadataV1["identity"]): Promise<void> {
-  const key = cacheKey(normalizeContentServerUrl(server));
-  const rows = await db.select<{ payload: string }[]>("SELECT payload FROM content_sync_cache WHERE cache_key=$1", [key]);
-  if (!rows[0]) return;
-  const cache = JSON.parse(rows[0].payload) as WorkSyncCache;
-  const id = await contentWorkId(identity);
-  delete cache.deleted[id];
-  delete cache.fingerprints[id];
-  delete cache.fileVersions[identityKey(identity)];
-  await db.execute("UPDATE content_sync_cache SET payload=$1 WHERE cache_key=$2", [JSON.stringify(cache), key]);
 }
 
 async function rememberInstalledWork(cache: WorkSyncCache, stored: InstalledNovelMetadata, hasServerCover: boolean): Promise<void> {
@@ -195,12 +180,12 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       if (!matchesSyncedWork(cache, entry.id, file, expectedFingerprint)) continue;
       const reconciliation = await (await import("./incoming-chapter-number-reconciliation")).prepareIncomingChapterNumberReconciliation(server, token, entry, current.metadata, assertCurrent);
       if (!reconciliation) continue;
-      const stored = await reconciliation.install(reconciliation.renumberedLocalMetadata, undefined, async (latest, db) => {
-        if (db && await isNovelMigrationSourceHeldInDb(db, server, metadata.identity)) return false;
+      const stored = await reconciliation.install(reconciliation.renumberedLocalMetadata, undefined, async (latest) => {
+        if (await isNovelMigrationSourceHeld(server, metadata.identity)) return false;
         if (!isCurrent() || explicitDeletions.has(serverWorkDeletionKey(metadata.identity))) return false;
         const latestFingerprint = latest ? await workMetadataFingerprint(latest.metadata, await readStoredNovelCover(latest.directory, latest.metadata)) : null;
         if (!isCurrent() || latestFingerprint !== expectedFingerprint) return false;
-        const latestFile = await readWorkMetadataSyncFile(metadata.identity, db);
+        const latestFile = await readWorkMetadataSyncFile(metadata.identity);
         if (!isCurrent() || explicitDeletions.has(serverWorkDeletionKey(metadata.identity)) || workMetadataFileVersion(latestFile) !== workMetadataFileVersion(file)) return false;
       });
       assertCurrent();

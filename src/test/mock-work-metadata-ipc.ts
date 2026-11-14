@@ -1,8 +1,14 @@
 import type Database from "@tauri-apps/plugin-sql";
 import { base64ToBytes } from "../lib/base64";
 import { currentChapterDownloadRevision } from "../lib/chapter-download-writes";
+import { reconcileImportedNovelIdentityInDb } from "../db/queries/novel-identity";
 import { mergeIncomingNovelMetadata } from "../lib/work-metadata/merge";
 import { createChapterIpcHandler } from "./mock-chapter-ipc";
+import {
+  applySourceChapterNumberChangesInDb,
+  commitSourceChapterRenumberInDb,
+  readRenumberChaptersInDb,
+} from "./mock-novel-merge-ipc";
 import {
   availableNovelMetadataDirectory,
   discoverStoredNovelCover,
@@ -11,12 +17,14 @@ import {
   readStoredNovelMetadata,
   registerNativeWorkChapterDirectories,
   removeStoredNovelCover,
+  setWorkMetadataRollbackGuard,
   withWorkMetadataRollback,
   workMetadataOperation,
   writeStoredNovelCover,
   writeStoredNovelMetadata,
   type NovelMetadataV1,
   type StoredNovelChapter,
+  type StoredNovelNumberReconciliation,
 } from "../lib/work-metadata";
 import type { DbMutationEffects, DbMutationEnvelope } from "../db/ipc";
 import {
@@ -428,12 +436,66 @@ export function createWorkMetadataIpcHandler(
         };
       }
 
+      if (command === "db_work_metadata_inspect_install") {
+        const identity = args.identity as NovelMetadataV1["identity"];
+        const directory =
+          knownNovelMetadataDirectory(identity) ??
+          (await availableNovelMetadataDirectory({
+            identity,
+            novel: {
+              name: identity.novelId,
+              author: null,
+              artist: null,
+              summary: null,
+              status: null,
+              genres: null,
+              rating: null,
+              isLocal: identity.pluginId === "local",
+            },
+          }));
+        const existing = await readMetadataForReplacement(directory, identity);
+        return {
+          handled: true,
+          result: { directory, existing },
+        };
+      }
+
+      if (command === "db_work_metadata_reindex_preserved_work") {
+        const input = args.input as {
+          directory: string;
+          metadata: NovelMetadataV1;
+        };
+        const metadata = parseNovelMetadata(input.metadata);
+        const novelId = await options.runTransaction(async (db) => {
+          const id = await applyNovelMetadataToCache(
+            db,
+            metadata,
+            input.directory,
+          );
+          await scanStoredNovelChaptersToCache(db, id, input.directory);
+          await rememberStoredNovelMetadata(db, input.directory, metadata);
+          await db.execute(
+            "DELETE FROM work_metadata_dirty WHERE plugin_id=$1 AND path=$2",
+            [metadata.identity.pluginId, metadata.identity.novelPath],
+          );
+          return id;
+        }, true);
+        return {
+          handled: true,
+          result: {
+            value: novelId,
+            effects: {},
+          } satisfies DbMutationEnvelope<number>,
+        };
+      }
+
       if (command === "db_work_metadata_install_stored") {
         const input = args.input as {
           metadata: NovelMetadataV1;
           coverBytes?: number[] | null;
           authoritative?: boolean;
           preserveLocalCover?: boolean;
+          reconciliation?: StoredNovelNumberReconciliation | null;
         };
         let metadata = parseNovelMetadata(input.metadata);
         const coverBytes = input.coverBytes?.length
@@ -441,6 +503,7 @@ export function createWorkMetadataIpcHandler(
           : undefined;
         const authoritative = Boolean(input.authoritative);
         const preserveLocalCover = Boolean(input.preserveLocalCover);
+        const reconciliation = input.reconciliation ?? undefined;
         if (
           authoritative &&
           !preserveLocalCover &&
@@ -462,7 +525,76 @@ export function createWorkMetadataIpcHandler(
             metadata.identity,
           );
           return withWorkMetadataRollback(async () => {
-            const previous = existing?.metadata;
+            let previous = existing?.metadata;
+            if (reconciliation) {
+              const renumber = await import("../lib/source-chapter-renumber");
+              renumber.assertChapterNumberMappings(reconciliation.mappings);
+              const [work] = await db.select<
+                import("../lib/source-chapter-renumber").RenumberWork[]
+              >(
+                "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE plugin_id=$1 AND path=$2",
+                [metadata.identity.pluginId, metadata.identity.novelPath],
+              );
+              if (!work || work.sourceNovelId !== metadata.identity.novelId) {
+                throw new Error("Incoming chapter number identity changed.");
+              }
+              const currentChapters = await readRenumberChaptersInDb(
+                db,
+                work.id,
+              );
+              const changes = renumber.planServerChapterNumberChanges(
+                work,
+                currentChapters,
+                reconciliation.mappings,
+              );
+              if (reconciliation.journal) {
+                if (
+                  JSON.stringify(changes) !==
+                  JSON.stringify(reconciliation.journal.changes)
+                ) {
+                  throw new Error(
+                    "Local chapter state changed while the server correction was prepared.",
+                  );
+                }
+                await renumber.assertSourceChapterRenumberMetadataUnchanged(
+                  reconciliation.journal,
+                );
+                const journal = reconciliation.journal;
+                for (const file of journal.metadataFiles ?? []) {
+                  setWorkMetadataRollbackGuard(file.path, () =>
+                    renumber.assertSourceChapterRenumberMetadataRecoverable(
+                      journal,
+                    ),
+                  );
+                }
+                await applySourceChapterNumberChangesInDb(db, work.id, journal);
+              } else if (changes.length) {
+                throw new Error(
+                  "Incoming chapter numbers changed before their storage could be prepared.",
+                );
+              }
+              const chapters = { ...previous?.chapters };
+              for (const mapping of reconciliation.mappings) {
+                delete chapters[mapping.from];
+                if (Object.hasOwn(metadata.chapters, mapping.from)) {
+                  throw new Error(
+                    "Incoming catalog still contains a replaced chapter number.",
+                  );
+                }
+              }
+              if (previous) previous = { ...previous, chapters };
+              await reconcileImportedNovelIdentityInDb(
+                db,
+                {
+                  pluginId: metadata.identity.pluginId,
+                  path: metadata.identity.novelPath,
+                },
+                reconciliation.mappings.map((mapping) => ({
+                  path: mapping.chapterPath,
+                  chapterNumber: mapping.to,
+                })),
+              );
+            }
             const merged = mergeIncomingNovelMetadata(previous, metadata);
             metadata = authoritative
               ? { ...merged, novel: metadata.novel, cover: metadata.cover }
@@ -531,6 +663,9 @@ export function createWorkMetadataIpcHandler(
               throw new Error(
                 "Installed work metadata is missing from the local index.",
               );
+            }
+            if (reconciliation?.journal) {
+              await commitSourceChapterRenumberInDb(db, reconciliation.journal);
             }
             const storedCover = await readStoredNovelCover(directory, metadata);
             return {

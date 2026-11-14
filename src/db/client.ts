@@ -3,7 +3,6 @@ import Database from "@tauri-apps/plugin-sql";
 import { invoke } from "@tauri-apps/api/core";
 import type { QueryResult } from "@tauri-apps/plugin-sql";
 import { startPerformanceObservation } from "../lib/observability";
-import { notifyContentSyncChanges } from "./content-sync-journal";
 import { applyDbMutationEffects, type DbMutationEffects, type DbMutationEnvelope } from "./ipc";
 import { flushWorkMetadata, restoreWorkMetadataDirectoriesFromRust, type WorkMetadataRecoveryProgress } from "./work-metadata";
 import { isTauriRuntime } from "../lib/tauri-runtime";
@@ -87,9 +86,6 @@ function serializedDb(rawDb: Database): Database {
               )
             : await withWorkMetadataRollback(async () => {
                 const result = await rawDb.execute(query, bindValues);
-                if (/\b(novel|chapter|novel_chapter_composition|content_sync_journal)\b/i.test(query)) {
-                  await notifyContentSyncChanges(rawDb);
-                }
                 notifyUserStateCommitted(rawDb);
                 return result;
               });
@@ -236,7 +232,6 @@ export async function runExclusiveDatabaseOperation<T>(
       const result = await run(rawDb);
       if (options.publishMetadata !== false) {
         await flushWorkMetadata(rawDb);
-        await notifyContentSyncChanges(rawDb);
       }
       notifyUserStateCommitted(rawDb);
       return result;
@@ -380,9 +375,6 @@ async function runDatabaseTransactionOnQueue<T>(
       return value;
     });
     notifyUserStateCommitted(transactionDb);
-    if (options.notifyContentSync !== false) {
-      await notifyContentSyncChanges(rawDb);
-    }
     return result;
   } catch (error) {
     if (!committed) {

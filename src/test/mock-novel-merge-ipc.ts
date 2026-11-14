@@ -6,7 +6,6 @@ import {
 } from "../db/chapter-composition";
 import type { DatabaseReadMode } from "../db/client";
 import type { DbMutationEnvelope } from "../db/ipc";
-import { recordPendingNovelMergeInDb } from "../db/queries/content-sync";
 import type {
   ApplyNovelMergeInput,
   IncomingMigrationCommit,
@@ -32,12 +31,13 @@ import { chapterCompositionCatalog, type ChapterCompositionV1 } from "../lib/cha
 import { isKnownChapterContentType, type ChapterContentType } from "../lib/chapter-content";
 import type { ChapterStorageTransferEntry } from "../lib/chapter-storage-transfer";
 import { normalizeContentServerUrl } from "../lib/content-sync/client";
+import { incomingMigrationFromLineage } from "../lib/content-sync/migration-feed-state";
 import {
-  incomingMigrationFromLineage,
-  listIncomingMigrations,
-  saveIncomingMigration,
-} from "../lib/content-sync/migration-feed-state";
-import { releaseMigratedTargetMetadataInDb } from "../lib/content-sync/works";
+  listIncomingMigrationsInTestDb,
+  recordPendingNovelMergeInTestDb,
+  releaseMigratedTargetMetadataInTestDb,
+  saveIncomingMigrationInTestDb,
+} from "./mock-content-sync-ipc";
 import {
   parseNovelMergeStorageJournal,
   type MergeStorageWork,
@@ -235,7 +235,7 @@ export async function commitIncomingMigrationInDb(
 ): Promise<void> {
   const server = normalizeContentServerUrl(commit.serverUrl);
   const savedChain = new Map(
-    (await listIncomingMigrations(server, true, db)).map((value) => [
+    (await listIncomingMigrationsInTestDb(db, server, true)).map((value) => [
       value.operationId,
       value,
     ]),
@@ -261,16 +261,17 @@ export async function commitIncomingMigrationInDb(
     );
   }
   if (commit.releaseTargetWork) {
-    await releaseMigratedTargetMetadataInDb(db, server, {
+    await releaseMigratedTargetMetadataInTestDb(db, server, {
       pluginId: commit.releaseTargetWork.pluginId,
       novelId: "",
       novelPath: commit.releaseTargetWork.novelPath,
     });
   }
-  await saveIncomingMigration(
-    { ...current, status: "completed", error: undefined },
-    db,
-  );
+  await saveIncomingMigrationInTestDb(db, {
+    ...current,
+    status: "completed",
+    error: undefined,
+  });
 }
 
 interface NovelMergeNovelRow {
@@ -709,7 +710,7 @@ async function applyNovelMergeTx(
       .sort((left, right) => right[1] - left[1])[0]?.[0] ?? null;
 
   if (contentSyncServerUrl) {
-    await recordPendingNovelMergeInDb(db, {
+    await recordPendingNovelMergeInTestDb(db, {
       serverUrl: contentSyncServerUrl,
       sourceSnapshot: contentSyncSourceSnapshot,
       targetMetadata: contentSyncTargetMetadata,
