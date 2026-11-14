@@ -1,11 +1,15 @@
-import type Database from "@tauri-apps/plugin-sql";
-import { getDb, runDatabaseTransaction } from "../db/client";
-import { createNovelMergeStorageJournal, finishNovelMergeStorageInDb, recoverNovelMergeStorageInDb, saveNovelMergeStoragePreparation } from "./novel-merge-storage";
-import { getChapterComposition } from "../db/chapter-composition";
+import {
+  createNovelMergeStorageJournal,
+  finishNovelMergeStorage,
+  recoverNovelMergeStorage,
+  saveNovelMergeStoragePreparation,
+} from "./novel-merge-storage";
+import { readChapterComposition } from "../db/chapter-composition";
 import { compileNovelMergeComposition, validateReviewedNovelMergeCatalog, type NovelMergeCompositionEntry, type ReviewedNovelMergeChapterCatalog } from "./novel-merge-composition";
 import { hasStoredChapterContent, listChaptersByNovel, type ChapterListRow } from "../db/queries/chapter";
 import {
   applyNovelMergeInDb,
+  type IncomingMigrationCommit,
   type NovelMergeChapterDecision,
   type NovelMergeDatabaseResult,
   type PreparedNovelMergeDownload,
@@ -68,9 +72,8 @@ export interface NovelMergeResult extends NovelMergeDatabaseResult {
 
 export interface IncomingNovelMergeOptions {
   signal: AbortSignal;
-  recordIncomingMigration: (db: Database) => Promise<void>;
+  incomingMigrationCommit: IncomingMigrationCommit;
   beforeCommit?: () => Promise<void>;
-
 }
 
 interface MergeChapterResolution {
@@ -361,7 +364,7 @@ async function mergeNovelStorageAndRecords(
   contentSyncTargetMetadata?: NovelMigrationTargetMetadata,
   incoming?: IncomingNovelMergeOptions,
 ): Promise<NovelMergeResult> {
-  await recoverNovelMergeStorageInDb(await getDb(), [sourceNovel.id, targetNovel.id]);
+  await recoverNovelMergeStorage([sourceNovel.id, targetNovel.id]);
   await cancelNovelChapterDownloadWork([sourceNovel.id, targetNovel.id]);
   throwIfNovelMergeAborted(signal);
   const [sourceChapters, storedTargetChapters] = await Promise.all([
@@ -370,12 +373,17 @@ async function mergeNovelStorageAndRecords(
   ]);
   throwIfNovelMergeAborted(signal);
   if (input.composition) validateReviewedNovelMergeCatalog(input.reviewedChapterCatalog, sourceChapters, storedTargetChapters);
-  const db = input.composition ? await getDb() : null;
+  const [sourceComposition, targetComposition] = input.composition
+    ? await Promise.all([
+        readChapterComposition(sourceNovel.id),
+        readChapterComposition(targetNovel.id),
+      ])
+    : [null, null];
   const compiled = input.composition ? compileNovelMergeComposition({
     entries: input.composition, sourceNovel, targetNovel, sourceChapters,
     targetChapters: storedTargetChapters,
-    sourceComposition: await getChapterComposition(db!, sourceNovel.id),
-    targetComposition: await getChapterComposition(db!, targetNovel.id),
+    sourceComposition,
+    targetComposition,
   }) : null;
   const targetChapters = compiled?.targetChapters ?? storedTargetChapters;
   const decisions = compiled?.decisions ?? input.decisions ?? [];
@@ -393,17 +401,17 @@ async function mergeNovelStorageAndRecords(
   );
   throwIfNovelMergeAborted(signal);
 
-  const storageJournal = entries.length ? await runDatabaseTransaction(db => createNovelMergeStorageJournal(
-    db, sourceNovel, targetNovel, entries, [...cleanupRelativeDirs, novelStorageRelativeDir(sourceNovel)],
+  const storageJournal = entries.length ? await createNovelMergeStorageJournal(
+    sourceNovel, targetNovel, entries, [...cleanupRelativeDirs, novelStorageRelativeDir(sourceNovel)],
     compiled?.composition,
-  )) : null;
+  ) : null;
   let preparation: ChapterStorageTransferPreparation | null = null;
   let databaseResult: NovelMergeDatabaseResult;
   try {
     if (storageJournal) {
       preparation = await prepareChapterStorageTransfer(entries, { token: storageJournal.token, moveSource: true });
       validateStoragePreparation(entries, preparation);
-      await runDatabaseTransaction(db => saveNovelMergeStoragePreparation(db, storageJournal, preparation!));
+      await saveNovelMergeStoragePreparation(storageJournal, preparation);
     }
     throwIfNovelMergeAborted(signal);
     const preparedEntries = preparation
@@ -482,12 +490,12 @@ async function mergeNovelStorageAndRecords(
       ...(contentSyncServerUrl ? { contentSyncServerUrl } : {}),
       ...(contentSyncSourceSnapshot ? { contentSyncSourceSnapshot } : {}),
       ...(contentSyncTargetMetadata ? { contentSyncTargetMetadata } : {}),
-      ...(incoming ? { recordIncomingMigration: incoming.recordIncomingMigration } : {}),
+      ...(incoming ? { incomingMigrationCommit: incoming.incomingMigrationCommit } : {}),
       ...(storageJournal ? { storageTransferToken: storageJournal.token } : {}),
     });
   } catch (error) {
     if (storageJournal) {
-      try { await finishNovelMergeStorageInDb(await getDb(), storageJournal.token); }
+      try { await finishNovelMergeStorage(storageJournal.token); }
       catch (recoveryError) { throw new AggregateError([error, recoveryError], "Work merge failed and storage recovery is pending. Existing files were retained."); }
       throw error;
     }
@@ -514,7 +522,7 @@ async function mergeNovelStorageAndRecords(
   }
   if (storageJournal && canDeleteSourceStorage) {
     try {
-      await finishNovelMergeStorageInDb(await getDb(), storageJournal.token);
+      await finishNovelMergeStorage(storageJournal.token);
     } catch (error) {
       cleanupWarnings.push(`Storage finalization needs recovery: ${errorMessage(error)}`);
     }

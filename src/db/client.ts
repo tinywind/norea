@@ -32,10 +32,10 @@ function observationError(error: unknown): string {
 async function configureDb(db: Database): Promise<Database> {
   await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
   if (isTauriRuntime()) {
-    const { recoverSourceChapterRenumbersInDb } = await import("../lib/source-chapter-renumber");
-    await recoverSourceChapterRenumbersInDb(db);
-    const { recoverNovelMergeStorageInDb } = await import("../lib/novel-merge-storage");
-    await recoverNovelMergeStorageInDb(db);
+    const { recoverSourceChapterRenumbers } = await import("../lib/source-chapter-renumber");
+    await recoverSourceChapterRenumbers();
+    const { recoverNovelMergeStorage } = await import("../lib/novel-merge-storage");
+    await recoverNovelMergeStorage();
     await restoreWorkMetadataDirectoriesFromRust(false);
   }
   return db;

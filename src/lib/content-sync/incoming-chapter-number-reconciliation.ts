@@ -1,13 +1,11 @@
 import { canonicalMetadataValue } from "../work-metadata/schema";
 import type Database from "@tauri-apps/plugin-sql";
-import { getDb } from "../../db/client";
 import {
   assertChapterNumberMappings,
   canonicalChapterNumber,
+  inspectSourceRenumberWork,
   planServerChapterNumberChanges,
-  readRenumberChapters,
   type ChapterNumberMapping,
-  type RenumberWork,
 } from "../source-chapter-renumber";
 import {
   installReconciledStoredNovelMetadata,
@@ -92,16 +90,15 @@ export async function prepareIncomingChapterNumberReconciliation(
   assertCurrent();
   if (!proof.mappings.length) return; // Partial catalogs are legitimate without a recorded renumber.
 
-  const db = await getDb();
-  const [work] = await db.select<RenumberWork[]>(
-    "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE plugin_id=$1 AND path=$2",
-    [current.identity.pluginId, current.identity.novelPath],
+  const inspected = await inspectSourceRenumberWork(
+    current.identity.pluginId,
+    current.identity.novelPath,
   );
-  if (!work || work.sourceNovelId !== current.identity.novelId ||
+  if (!inspected || inspected.work.sourceNovelId !== current.identity.novelId ||
       canonical(current.identity) !== canonical(entry.metadata.identity)) {
     throw new Error("Incoming chapter number proof does not match the local work.");
   }
-  const stored = await readRenumberChapters(db, work.id);
+  const { work, storedChapters: stored } = inspected;
   const oldNumbers = new Set(proof.mappings.map(mapping => mapping.from));
   const applicable = proof.mappings.some(mapping =>
     Object.hasOwn(current.chapters, mapping.from) ||

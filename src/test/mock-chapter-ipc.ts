@@ -58,12 +58,15 @@ import {
 } from "../lib/performance-budgets";
 import { LOCAL_PLUGIN_ID, type ChapterItem } from "../lib/plugins/types";
 import {
-  applySourceChapterNumberChangesInDb,
-  commitSourceChapterRenumberInDb,
   planSourceChapterNumberChanges,
-  readRenumberChapters,
   type SourceChapterRenumberJournal,
 } from "../lib/source-chapter-renumber";
+import {
+  applySourceChapterNumberChangesInDb,
+  commitSourceChapterRenumberInDb,
+  createNovelMergeIpcHandler,
+  readRenumberChaptersInDb,
+} from "./mock-novel-merge-ipc";
 
 export interface ChapterIpcBridgeOptions {
   getDb: () => Database | Promise<Database>;
@@ -411,6 +414,7 @@ function optionalText(value: string | undefined | null): string | null {
 }
 
 export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
+  const novelMergeIpc = createNovelMergeIpcHandler(options);
   const resolveReader = async (readMode?: unknown) => {
     if (readMode === "committed" && options.getReadOnlyDb) {
       return options.getReadOnlyDb();
@@ -1696,7 +1700,7 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
                   sourceNovelId: input.sourceNovelId,
                   path: input.novelPath,
                 },
-                await readRenumberChapters(db, novelId),
+                await readRenumberChaptersInDb(db, novelId),
                 detailChapters,
               ).length
             ) {
@@ -1780,7 +1784,7 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
         };
       }
 
-      return { handled: false };
+      return novelMergeIpc.handle(command, args);
     },
   };
 }

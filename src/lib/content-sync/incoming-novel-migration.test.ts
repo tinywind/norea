@@ -43,7 +43,7 @@ import { downloadServerChapterFromServer } from "./sync";
 import { recordInstalledWorkMetadata } from "./works";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { applyIncomingNovelMigration, IncomingNovelMigrationRetryableError, type ResolvedIncomingNovelMigration } from "./incoming-novel-migration";
-import type { WorkMigrationLineage } from "./migration-feed-state";
+import { incomingMigrationFromLineage, listIncomingMigrations, saveIncomingMigration, type WorkMigrationLineage } from "./migration-feed-state";
 
 let sqlite: DatabaseSync;
 let db: Database;
@@ -109,6 +109,9 @@ function initializeDevice(idOffset = 0) {
     });
     const handled = await chapterIpc.handle(command, args);
     if (handled.handled) return handled.result;
+    if (command === "db_work_metadata_flush_pending") {
+      return { value: null, effects: {} };
+    }
     if (command === "db_novel_get_by_id") {
       return selectNovelDetail("WHERE n.id = $1", [args.id]);
     }
@@ -160,7 +163,24 @@ beforeEach(() => {
   vi.mocked(nativeFetch).mockResolvedValue(new Response(new Uint8Array([42]),{headers:{"content-type":"image/png"}}));
 });
 afterEach(()=>sqlite.close());
-async function apply(assertCurrent:()=>void|Promise<void>=()=>undefined){return applyIncomingNovelMigration("http://server","device",resolved,{assertCurrent,recordIncomingMigration:async db=>{await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload",["incoming-receipt",JSON.stringify({status:"completed"})]);}});}
+async function seedPendingIncoming() {
+  const baselineChain = fixture().chain;
+  sqlite.exec("DELETE FROM content_sync_cache WHERE cache_key LIKE 'norea-content-incoming-migration:%'");
+  await saveIncomingMigration(incomingMigrationFromLineage("http://server", baselineChain[0]!), db);
+  return baselineChain;
+}
+async function apply(assertCurrent:()=>void|Promise<void>=()=>undefined){
+  const baselineChain = await seedPendingIncoming();
+  return applyIncomingNovelMigration("http://server","device",resolved,{
+    assertCurrent,
+    incomingMigrationCommit: {
+      serverUrl: "http://server",
+      expectedOperationId: baselineChain[0]!.operationId,
+      expectedSequence: baselineChain[0]!.sequence,
+      chain: baselineChain,
+    },
+  });
+}
 
 it("replays the same migration on two devices with distinct local IDs and preserves their reading state",async()=>{
   for(const offset of [0,100]){
@@ -172,7 +192,7 @@ it("replays the same migration on two devices with distinct local IDs and preser
       {path:"/b/11",progress:100,unread:0,bookmark:1,is_downloaded:1},{path:"/b/12",progress:42,unread:1,bookmark:0,is_downloaded:0},
     ]);
     expect(files.has("contents/beta/b-work/11")).toBe(true);expect(files.has("contents/alpha/a-work/1")).toBe(false);
-    expect(sqlite.prepare("SELECT payload FROM content_sync_cache WHERE cache_key='incoming-receipt'").get()).toEqual({payload:'{"status":"completed"}'});
+    expect((await listIncomingMigrations("http://server", true, db))[0]?.status).toBe("completed");
     expect(result!.installedTargetMetadata!.metadata.novel.name).toBe("Fresh target");
   }
   expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();expect(syncNovelFromSource).not.toHaveBeenCalled();expect(enqueueSourceTask).not.toHaveBeenCalled();expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
@@ -227,10 +247,10 @@ it("moves a recipient-only body using the approved mapping without requesting a 
 it("rolls back moved files, reading state and receipt if the server target changes before commit",async()=>{
   afterPrepare=()=>{live.work.revision="8".repeat(64);};
   await expect(apply()).rejects.toBeInstanceOf(IncomingNovelMigrationRetryableError);
-  expect(await findNovelBySource("alpha","/old")).not.toBeNull();expect(files.has("contents/alpha/a-work/1")).toBe(true);expect(files.has("contents/beta/b-work/11")).toBe(false);expect(sqlite.prepare("SELECT * FROM content_sync_cache WHERE cache_key='incoming-receipt'").all()).toEqual([]);
+  expect(await findNovelBySource("alpha","/old")).not.toBeNull();expect(files.has("contents/alpha/a-work/1")).toBe(true);expect(files.has("contents/beta/b-work/11")).toBe(false);expect((await listIncomingMigrations("http://server", true, db))[0]?.status).toBe("pending");
 });
 it("records an idempotent no-op when this recipient already has no original work",async()=>{
-  sqlite.exec("DELETE FROM novel WHERE id=1");expect(await apply()).toBeNull();expect(installStoredNovelMetadata).not.toHaveBeenCalled();expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();expect(sqlite.prepare("SELECT payload FROM content_sync_cache WHERE cache_key='incoming-receipt'").get()).toEqual({payload:'{"status":"completed"}'});
+  sqlite.exec("DELETE FROM novel WHERE id=1");expect(await apply()).toBeNull();expect(installStoredNovelMetadata).not.toHaveBeenCalled();expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();expect((await listIncomingMigrations("http://server", true, db))[0]?.status).toBe("completed");
 });
 it("receives a mapping for a work with a server cover without fetching the cover", async () => {
   live.work.metadata.cover = { fileName: "cover.png", contentType: "image/png" };
@@ -267,9 +287,19 @@ it.each(["source", "target"] as const)("preserves a partial %s body and missing-
 });
 it("checks remote lineage once immediately before the SQL transaction, including a source-absent replay", async () => {
   const beforeCommit = vi.fn(async () => { expect(sqlite.isTransaction).toBe(false); await db.select("SELECT id FROM novel"); });
-  const run = () => applyIncomingNovelMigration("http://server", "device", resolved, {
-    assertCurrent: () => undefined, beforeCommit, recordIncomingMigration: async db => { await db.select("SELECT id FROM novel"); },
-  });
+  const run = async () => {
+    const baselineChain = await seedPendingIncoming();
+    return applyIncomingNovelMigration("http://server", "device", resolved, {
+      assertCurrent: () => undefined,
+      beforeCommit,
+      incomingMigrationCommit: {
+        serverUrl: "http://server",
+        expectedOperationId: baselineChain[0]!.operationId,
+        expectedSequence: baselineChain[0]!.sequence,
+        chain: baselineChain,
+      },
+    });
+  };
   await run(); expect(beforeCommit).toHaveBeenCalledOnce();
   await run(); expect(beforeCommit).toHaveBeenCalledTimes(2);
 });
@@ -286,13 +316,33 @@ it("does not reuse a local-only decision for a different recipient path with the
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
 });
 
-it("distinguishes a prepared target from a source-absent receipt in its raw commit callback", async () => {
-  const recordIncomingMigration = vi.fn(async (_db: Database, _targetPrepared?: boolean) => undefined);
-  const options = { assertCurrent: () => undefined, recordIncomingMigration };
-  await applyIncomingNovelMigration("http://server", "device", resolved, options);
-  expect(recordIncomingMigration.mock.calls[0]![1]).toBe(true);
-  await applyIncomingNovelMigration("http://server", "device", resolved, options);
-  expect(recordIncomingMigration.mock.calls[1]![1]).toBe(false);
+it("distinguishes a prepared target from a source-absent receipt in its commit payload", async () => {
+  let baselineChain = await seedPendingIncoming();
+  await applyIncomingNovelMigration("http://server", "device", resolved, {
+    assertCurrent: () => undefined,
+    incomingMigrationCommit: {
+      serverUrl: "http://server",
+      expectedOperationId: baselineChain[0]!.operationId,
+      expectedSequence: baselineChain[0]!.sequence,
+      chain: baselineChain,
+    },
+  });
+  const mergeCall = invokeMock.mock.calls.find(([cmd]) => cmd === "db_novel_merge_apply");
+  expect((mergeCall?.[1] as { input?: { incomingMigrationCommit?: { releaseTargetWork?: unknown } } })?.input?.incomingMigrationCommit?.releaseTargetWork)
+    .toMatchObject({ pluginId: "beta", novelPath: "/new" });
+  invokeMock.mockClear();
+  baselineChain = await seedPendingIncoming();
+  await applyIncomingNovelMigration("http://server", "device", resolved, {
+    assertCurrent: () => undefined,
+    incomingMigrationCommit: {
+      serverUrl: "http://server",
+      expectedOperationId: baselineChain[0]!.operationId,
+      expectedSequence: baselineChain[0]!.sequence,
+      chain: baselineChain,
+    },
+  });
+  const absentCall = invokeMock.mock.calls.find(([cmd]) => cmd === "db_novel_merge_complete_incoming_migration");
+  expect((absentCall?.[1] as { input?: { releaseTargetWork?: unknown } })?.input?.releaseTargetWork).toBeUndefined();
 });
 
 it("keeps target-primary body choice on a recipient with only an A download while migrating its reading state", async () => {

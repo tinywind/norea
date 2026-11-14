@@ -1,7 +1,6 @@
-import type Database from "@tauri-apps/plugin-sql";
-import { runDatabaseTransaction } from "../../db/client";
 import { readWorkMetadataSyncFile } from "../../db/work-metadata";
 import { listChaptersByNovel, upsertSourceChapters, type ChapterListRow, type InsertChapterInput } from "../../db/queries/chapter";
+import { completeIncomingNovelMigration, type IncomingMigrationCommit } from "../../db/queries/novel-merge";
 import { findNovelBySource } from "../../db/queries/novel";
 import { canonicalMetadataValue, parseNovelMetadata } from "../work-metadata/schema";
 import { installStoredNovelMetadata, readStoredNovelCover, readStoredNovelMetadata, type InstalledNovelMetadata } from "../work-metadata";
@@ -27,7 +26,7 @@ export interface IncomingNovelMigrationOptions {
   signal?: AbortSignal;
   assertCurrent: () => void | Promise<void>;
   beforeCommit?: () => Promise<void>;
-  recordIncomingMigration: (db: Database, targetPrepared?: boolean) => Promise<void>;
+  incomingMigrationCommit: Omit<IncomingMigrationCommit, "releaseTargetWork">;
 }
 
 export class IncomingNovelMigrationReviewRequiredError extends Error {
@@ -102,7 +101,7 @@ export async function applyIncomingNovelMigration(
     await check();
     await options.beforeCommit?.();
     await check();
-    await runDatabaseTransaction(db => options.recordIncomingMigration(db, false));
+    await completeIncomingNovelMigration(options.incomingMigrationCommit);
     return null;
   }
   if (source.isLocal || source.sourceNovelId !== resolved.sourceWork.identity.novelId) review("The recipient source identity changed.");
@@ -161,7 +160,14 @@ export async function applyIncomingNovelMigration(
       }
       await check();
     },
-    recordIncomingMigration: db => options.recordIncomingMigration(db, true),
+    incomingMigrationCommit: {
+      ...options.incomingMigrationCommit,
+      releaseTargetWork: {
+        workId: resolved.targetWork.id,
+        pluginId: resolved.targetWork.identity.pluginId,
+        novelPath: resolved.targetWork.identity.novelPath,
+      },
+    },
   });
   let installedTargetMetadata: InstalledNovelMetadata | undefined;
   try {

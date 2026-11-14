@@ -1,17 +1,28 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
+import type Database from "@tauri-apps/plugin-sql";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("../../lib/tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
 vi.mock("../client", () => ({
   runDatabaseTransaction: vi.fn(),
 }));
 
+import { invoke } from "@tauri-apps/api/core";
+import {
+  incomingMigrationFromLineage,
+  saveIncomingMigration,
+  type WorkMigrationLineage,
+} from "../../lib/content-sync/migration-feed-state";
+import { createNovelMergeIpcHandler } from "../../test/mock-novel-merge-ipc";
 import { runDatabaseTransaction } from "../client";
 import { applyNovelMergeInDb } from "./novel-merge";
 
 const mockedRunDatabaseTransaction = vi.mocked(runDatabaseTransaction);
 let mockExecute: ReturnType<typeof vi.fn>;
 let mockSelect: ReturnType<typeof vi.fn>;
+let activeDb: Database;
 
 const sourceNovel = {
   id: 1,
@@ -78,8 +89,18 @@ beforeEach(() => {
     .fn()
     .mockResolvedValueOnce([sourceNovel, targetNovel])
     .mockResolvedValueOnce([sourceChapter(), targetChapter()]);
+  activeDb = { execute: mockExecute, select: mockSelect } as unknown as Database;
+  const ipc = createNovelMergeIpcHandler({
+    getDb: async () => activeDb,
+    runTransaction: (run, remote) => mockedRunDatabaseTransaction(run, remote),
+  });
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    const handled = await ipc.handle(command, (args as Record<string, unknown>) ?? {});
+    if (handled.handled) return handled.result as never;
+    throw new Error(`Unexpected IPC command in novel-merge.test.ts: ${command}`);
+  });
   mockedRunDatabaseTransaction.mockImplementation(async (run) =>
-    run({ execute: mockExecute, select: mockSelect } as never),
+    run(activeDb as never),
   );
 });
 
@@ -385,6 +406,7 @@ describe("applyNovelMergeInDb user state transaction", () => {
         lastInsertId: 0,
       }),
     };
+    activeDb = db as unknown as Database;
     mockedRunDatabaseTransaction.mockImplementation(async (run) => {
       sqlite.exec("BEGIN IMMEDIATE");
       try {
@@ -573,24 +595,81 @@ describe("applyNovelMergeInDb user state transaction", () => {
     expect(snapshot()).toEqual(before);
     expect(sqlite.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
   });
+  function sampleIncomingLineage(): WorkMigrationLineage {
+    return {
+      sequence: 1,
+      operationId: "11111111-2222-3333-4444-000000000001",
+      sourceWork: {
+        id: "1".repeat(64),
+        revision: "a".repeat(64),
+        identity: { pluginId: "source-a", novelId: "101", novelPath: "/a" },
+        metadata: {
+          schemaVersion: 1,
+          identity: { pluginId: "source-a", novelId: "101", novelPath: "/a" },
+          novel: { name: "Source", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+          cover: null,
+          chapters: { "1": "1화", "2": "2화", "3": "Note" },
+        },
+        coverSha256: null,
+      },
+      targetWork: {
+        id: "2".repeat(64),
+        revision: "b".repeat(64),
+        identity: { pluginId: "source-b", novelId: "202", novelPath: "/b" },
+        metadata: {
+          schemaVersion: 1,
+          identity: { pluginId: "source-b", novelId: "202", novelPath: "/b" },
+          novel: { name: "Target", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+          cover: null,
+          chapters: { "6001": "1화", "6002": "2화" },
+        },
+        coverSha256: null,
+      },
+      deletedSource: { revision: "a".repeat(64), sequence: 2 },
+      mappings: [],
+      chapterDecisions: [
+        { sourceChapterPath: "/a/1", sourceChapterNumber: "1", targetChapterPath: "/b/1", targetChapterNumber: "6001", sourceMetadataVerified: true, targetMetadataVerified: true },
+        { sourceChapterPath: "/a/2", sourceChapterNumber: "2", targetChapterPath: "/b/2", targetChapterNumber: "6002", sourceMetadataVerified: true, targetMetadataVerified: true },
+        { sourceChapterPath: "/a/note", sourceChapterNumber: "3", targetChapterPath: null, targetChapterNumber: null, sourceMetadataVerified: true, targetMetadataVerified: false },
+      ],
+      fullDecisionCoverage: true,
+      active: true,
+    };
+  }
+
   it("records a recipient receipt in the same transaction as local reading-state migration", async () => {
-    await applyNovelMergeInDb({ ...input(), recordIncomingMigration: async db => {
-      expect(sqlite.prepare("SELECT id FROM novel WHERE id=1").get()).toEqual({ id: 1 });
-      await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2)", ["norea-content-incoming-migration:receipt", JSON.stringify({ status: "completed" })]);
-    } });
+    const lineage = sampleIncomingLineage();
+    await saveIncomingMigration(incomingMigrationFromLineage("https://content.example.test", lineage), activeDb);
+    await applyNovelMergeInDb({
+      ...input(),
+      incomingMigrationCommit: {
+        serverUrl: "https://content.example.test",
+        expectedOperationId: lineage.operationId,
+        expectedSequence: 1,
+        chain: [lineage],
+      },
+    });
     expect(sqlite.prepare("SELECT id FROM novel ORDER BY id").all()).toEqual([{ id: 2 }]);
     expect(sqlite.prepare("SELECT unread,progress,bookmark FROM chapter WHERE id=21").get()).toEqual({ unread: 0, progress: 100, bookmark: 1 });
-    expect(sqlite.prepare("SELECT cache_key FROM content_sync_cache").all()).toEqual([{ cache_key: "norea-content-incoming-migration:receipt" }]);
+    expect(sqlite.prepare("SELECT json_extract(payload,'$.status') AS status FROM content_sync_cache").all()).toEqual([{ status: "completed" }]);
   });
   it("rolls recipient receipt and reading state back when the source cannot be removed", async () => {
+    const lineage = sampleIncomingLineage();
+    await saveIncomingMigration(incomingMigrationFromLineage("https://content.example.test", lineage), activeDb);
     sqlite.exec("CREATE TRIGGER reject_incoming_merge BEFORE DELETE ON novel WHEN OLD.id=1 BEGIN SELECT RAISE(ABORT,'incoming deletion rejected'); END");
     const before = sqlite.prepare("SELECT * FROM chapter ORDER BY id").all();
-    await expect(applyNovelMergeInDb({ ...input(), recordIncomingMigration: async db => {
-      await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2)", ["norea-content-incoming-migration:receipt", JSON.stringify({ status: "completed" })]);
-    } })).rejects.toThrow("incoming deletion rejected");
+    await expect(applyNovelMergeInDb({
+      ...input(),
+      incomingMigrationCommit: {
+        serverUrl: "https://content.example.test",
+        expectedOperationId: lineage.operationId,
+        expectedSequence: 1,
+        chain: [lineage],
+      },
+    })).rejects.toThrow("incoming deletion rejected");
     expect(sqlite.prepare("SELECT id FROM novel ORDER BY id").all()).toEqual([{ id: 1 }, { id: 2 }]);
     expect(sqlite.prepare("SELECT * FROM chapter ORDER BY id").all()).toEqual(before);
-    expect(sqlite.prepare("SELECT * FROM content_sync_cache").all()).toEqual([]);
+    expect(sqlite.prepare("SELECT json_extract(payload,'$.status') AS status FROM content_sync_cache").all()).toEqual([{ status: "pending" }]);
   });
 
 });

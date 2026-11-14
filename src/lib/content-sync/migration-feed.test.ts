@@ -8,6 +8,7 @@ import { publishNovelMigrationSourceHold } from "./deletion-exclusions";
 import { applyIncomingNovelMigration } from "./incoming-novel-migration";
 import { getIncomingMigrationCursor, incomingMigrationFromLineage, listIncomingMigrations, saveIncomingMigration, type WorkMigrationLineage } from "./migration-feed-state";
 import { resolveIncomingNovelMigration, syncIncomingNovelMigrations } from "./migration-feed";
+import { commitIncomingMigrationInDb } from "../../test/mock-novel-merge-ipc";
 
 vi.mock("../../db/client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
@@ -119,7 +120,7 @@ describe("received migration synchronization", () => {
       await options.beforeCommit?.();
       await runDatabaseTransaction(async raw => {
         await raw.execute("INSERT INTO local_merge(operation) VALUES($1)", [resolved.chain[0]!.operationId]);
-        await options.recordIncomingMigration(raw);
+        await commitIncomingMigrationInDb(raw, options.incomingMigrationCommit);
       });
       return null;
     });
@@ -247,7 +248,7 @@ describe("received migration synchronization", () => {
       await saveIncomingMigration(incomingMigrationFromLineage(server, successor, previous));
       await runDatabaseTransaction(async raw => {
         await raw.execute("INSERT INTO local_merge(operation) VALUES($1)", [resolved.chain[0]!.operationId]);
-        await options.recordIncomingMigration(raw);
+        await commitIncomingMigrationInDb(raw, options.incomingMigrationCommit);
       });
       return null;
     });

@@ -1,21 +1,26 @@
 import { DatabaseSync } from "node:sqlite";
+import type Database from "@tauri-apps/plugin-sql";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+vi.mock("./tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
 vi.mock("./chapter-storage-transfer", () => ({
   finalizeChapterStorageTransfer: vi.fn(),
   rollbackChapterStorageTransfer: vi.fn(),
   removeChapterStorageDirectory: vi.fn(),
 }));
 vi.mock("./work-metadata", () => ({ workMetadataOperation: vi.fn() }));
-vi.mock("../db/work-metadata", () => ({ flushWorkMetadata: vi.fn() }));
+vi.mock("../db/work-metadata", () => ({ flushWorkMetadata: vi.fn(), flushPendingWorkMetadata: vi.fn() }));
 
+import { invoke } from "@tauri-apps/api/core";
+import { createNovelMergeIpcHandler } from "../test/mock-novel-merge-ipc";
 import { finalizeChapterStorageTransfer, rollbackChapterStorageTransfer, removeChapterStorageDirectory } from "./chapter-storage-transfer";
 import { workMetadataOperation } from "./work-metadata";
-import { commitNovelMergeStorageInDb, createNovelMergeStorageJournal, recoverNovelMergeStorageInDb, saveNovelMergeStoragePreparation } from "./novel-merge-storage";
+import { commitNovelMergeStorage, createNovelMergeStorageJournal, recoverNovelMergeStorage, saveNovelMergeStoragePreparation } from "./novel-merge-storage";
 import type { ChapterCompositionV1 } from "./chapter-composition";
 
 let sql: DatabaseSync;
-let db: Parameters<typeof recoverNovelMergeStorageInDb>[0];
+let db: Database;
 const source = { id: 1, pluginId: "source-a", sourceNovelId: "a", path: "/a" };
 const target = { id: 2, pluginId: "source-b", sourceNovelId: "b", path: "/b" };
 const entries = [{ entryId: "11", sourceRelativeDir: "contents/source-a/a/1", targetRelativeDir: "contents/source-b/b/2" }];
@@ -33,7 +38,16 @@ beforeEach(() => {
   db = {
     select: async (query: string, values?: unknown[]) => sql.prepare(query).all(bindings(values) as never),
     execute: async (query: string, values?: unknown[]) => ({ rowsAffected: Number(sql.prepare(query).run(bindings(values) as never).changes) }),
-  } as typeof db;
+  } as Database;
+  const ipc = createNovelMergeIpcHandler({
+    getDb: async () => db,
+    runTransaction: async (run) => run(db),
+  });
+  vi.mocked(invoke).mockImplementation(async (command: string, args?: unknown) => {
+    const handled = await ipc.handle(command, (args as Record<string, unknown>) ?? {});
+    if (handled.handled) return handled.result as never;
+    throw new Error(`Unexpected IPC command: ${command}`);
+  });
   files = new Map([["contents/source-a/a/novel.json", "source-before"], ["contents/source-b/b/novel.json", "target-before"]]);
   vi.mocked(workMetadataOperation).mockImplementation(async input => {
     if (input.operation === "write") files.set(input.path!, input.body!);
@@ -44,9 +58,9 @@ beforeEach(() => {
 afterEach(() => sql.close());
 
 it("recovers a process stopped after a folder move but before the native receipt was saved", async () => {
-  await createNovelMergeStorageJournal(db, source, target, entries, ["contents/source-a/a"]);
+  await createNovelMergeStorageJournal(source, target, entries, ["contents/source-a/a"]);
   files.delete("contents/source-a/a/novel.json");
-  await recoverNovelMergeStorageInDb(db);
+  await recoverNovelMergeStorage();
   expect(rollbackChapterStorageTransfer).toHaveBeenCalledWith(expect.objectContaining({
     entries: [expect.objectContaining({ ...entries[0], outcome: "movedSource", replacedTarget: true })],
   }));
@@ -57,16 +71,16 @@ it("recovers a process stopped after a folder move but before the native receipt
 });
 
 it("finalizes a committed move after restart and removes only source work roots", async () => {
-  const job = await createNovelMergeStorageJournal(db, source, target, entries, ["contents/source-a/a/1", "contents/source-a/a"]);
+  const job = await createNovelMergeStorageJournal(source, target, entries, ["contents/source-a/a/1", "contents/source-a/a"]);
   const preparation = { token: job.token, entries: [{ ...entries[0]!, outcome: "movedSource" as const, replacedTarget: false,
     contentFile: "contents/source-b/b/2/content.html", contentBytes: 12, mediaBytes: 0 }] };
-  await saveNovelMergeStoragePreparation(db, job, preparation);
+  await saveNovelMergeStoragePreparation(job, preparation);
   sql.exec("BEGIN");
-  await commitNovelMergeStorageInDb(db, job.token);
+  await commitNovelMergeStorage(job.token);
   sql.exec("DELETE FROM novel WHERE id=1; COMMIT");
   files.set("contents/source-b/b/novel.json", "committed-target");
-  await recoverNovelMergeStorageInDb(db);
-  await recoverNovelMergeStorageInDb(db);
+  await recoverNovelMergeStorage();
+  await recoverNovelMergeStorage();
   expect(finalizeChapterStorageTransfer).toHaveBeenCalledExactlyOnceWith(preparation);
   expect(rollbackChapterStorageTransfer).not.toHaveBeenCalled();
   expect(removeChapterStorageDirectory).toHaveBeenCalledExactlyOnceWith("contents/source-a/a");
@@ -74,44 +88,44 @@ it("finalizes a committed move after restart and removes only source work roots"
 });
 
 it("retains the recovery journal when folder restoration fails", async () => {
-  await createNovelMergeStorageJournal(db, source, target, entries, ["contents/source-a/a"]);
+  await createNovelMergeStorageJournal(source, target, entries, ["contents/source-a/a"]);
   vi.mocked(rollbackChapterStorageTransfer).mockRejectedValueOnce(new Error("Source path is occupied"));
-  await expect(recoverNovelMergeStorageInDb(db)).rejects.toThrow("Source path is occupied");
+  await expect(recoverNovelMergeStorage()).rejects.toThrow("Source path is occupied");
   expect(sql.prepare("SELECT count(*) AS count FROM content_sync_cache").get()).toEqual({ count: 1 });
   expect(removeChapterStorageDirectory).not.toHaveBeenCalled();
-  await recoverNovelMergeStorageInDb(db);
+  await recoverNovelMergeStorage();
   expect(sql.prepare("SELECT * FROM content_sync_cache").all()).toEqual([]);
 });
 
 it("recovers only the locked work before a retry in the same process", async () => {
-  await createNovelMergeStorageJournal(db, source, target, entries, ["contents/source-a/a"]);
-  await recoverNovelMergeStorageInDb(db, [99]);
+  await createNovelMergeStorageJournal(source, target, entries, ["contents/source-a/a"]);
+  await recoverNovelMergeStorage([99]);
   expect(rollbackChapterStorageTransfer).not.toHaveBeenCalled();
-  await recoverNovelMergeStorageInDb(db, [1]);
+  await recoverNovelMergeStorage([1]);
   expect(rollbackChapterStorageTransfer).toHaveBeenCalledOnce();
 });
 
 it("keeps the preparing phase when the merge transaction rolls back", async () => {
-  const job = await createNovelMergeStorageJournal(db, source, target, entries, ["contents/source-a/a"]);
+  const job = await createNovelMergeStorageJournal(source, target, entries, ["contents/source-a/a"]);
   sql.exec("BEGIN");
-  await commitNovelMergeStorageInDb(db, job.token);
+  await commitNovelMergeStorage(job.token);
   sql.exec("ROLLBACK");
-  await recoverNovelMergeStorageInDb(db);
+  await recoverNovelMergeStorage();
   expect(rollbackChapterStorageTransfer).toHaveBeenCalledOnce();
   expect(finalizeChapterStorageTransfer).not.toHaveBeenCalled();
 });
 
 it("refuses recovery after the original work identity or metadata changed", async () => {
-  await createNovelMergeStorageJournal(db, source, target, entries, ["contents/source-a/a"]);
+  await createNovelMergeStorageJournal(source, target, entries, ["contents/source-a/a"]);
   sql.exec("UPDATE work_metadata_file_cache SET fingerprint='outside-edit' WHERE novel_id=2");
-  await expect(recoverNovelMergeStorageInDb(db)).rejects.toThrow(/changed/);
+  await expect(recoverNovelMergeStorage()).rejects.toThrow(/changed/);
   expect(rollbackChapterStorageTransfer).not.toHaveBeenCalled();
 });
 
 it("retains files and the journal when metadata was edited outside the interrupted merge", async () => {
-  await createNovelMergeStorageJournal(db, source, target, entries, ["contents/source-a/a"]);
+  await createNovelMergeStorageJournal(source, target, entries, ["contents/source-a/a"]);
   files.set("contents/source-b/b/novel.json", "outside-edit");
-  await expect(recoverNovelMergeStorageInDb(db)).rejects.toThrow(/metadata changed/);
+  await expect(recoverNovelMergeStorage()).rejects.toThrow(/metadata changed/);
   expect(rollbackChapterStorageTransfer).not.toHaveBeenCalled();
   expect(files.get("contents/source-b/b/novel.json")).toBe("outside-edit");
   expect(sql.prepare("SELECT count(*) AS count FROM content_sync_cache").get()).toEqual({ count: 1 });
@@ -129,11 +143,11 @@ it("restores the baseline after the planned chapter composition was published be
     user: { included: true, order: 1, name: null, chapterNumber: "2" },
   }] };
   files.set("contents/source-b/b/novel.json", baseline);
-  const job = await createNovelMergeStorageJournal(db, source, target, entries, ["contents/source-a/a"], composition);
+  const job = await createNovelMergeStorageJournal(source, target, entries, ["contents/source-a/a"], composition);
   const published = JSON.parse(Buffer.from(job.target.nextMetadataBody!, "base64").toString("utf8"));
   files.set("contents/source-b/b/novel.json", Buffer.from(JSON.stringify(published, null, 2)).toString("base64"));
   files.delete("contents/source-a/a/novel.json");
-  await recoverNovelMergeStorageInDb(db);
+  await recoverNovelMergeStorage();
   expect(files.get("contents/source-b/b/novel.json")).toBe(baseline);
   expect(files.get("contents/source-a/a/novel.json")).toBe("source-before");
 });

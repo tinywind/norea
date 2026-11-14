@@ -473,10 +473,15 @@ export async function rememberStoredNovelMetadata(db: Database, directory: strin
   knownFiles.set(key, { directory, fingerprint });
 }
 
+export async function flushPendingWorkMetadata(): Promise<void> {
+  if (!isTauriRuntime()) return;
+  await invokeDbMutation("db_work_metadata_flush_pending");
+}
+
 export async function readWorkMetadataSyncFiles(rescan = false): Promise<WorkMetadataSyncFile[]> {
   if (!isTauriRuntime()) return [];
   if (rescan) {
-    await invokeDbMutation("db_work_metadata_flush_pending");
+    await flushPendingWorkMetadata();
     const entries = await listStoredNovelMetadata();
     for (const entry of entries) {
       await runWorkContentStorageOperation(entry.metadata.identity.pluginId, entry.metadata.identity.novelPath, async () => {

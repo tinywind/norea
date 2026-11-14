@@ -1,13 +1,12 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-vi.mock("../db/client", () => ({ getDb: vi.fn(async () => ({})), runDatabaseTransaction: vi.fn(async run => run({})) }));
 vi.mock("./novel-merge-storage", () => ({
   createNovelMergeStorageJournal: vi.fn(async () => ({ token: "transfer-1" })),
   saveNovelMergeStoragePreparation: vi.fn(),
-  finishNovelMergeStorageInDb: vi.fn(),
-  recoverNovelMergeStorageInDb: vi.fn(),
+  finishNovelMergeStorage: vi.fn(),
+  recoverNovelMergeStorage: vi.fn(),
 }));
-vi.mock("../db/chapter-composition", () => ({ getChapterComposition: vi.fn(async () => null) }));
+vi.mock("../db/chapter-composition", () => ({ readChapterComposition: vi.fn(async () => null) }));
 
 vi.mock("./content-sync/sync", () => ({
   runContentSyncOperation: vi.fn(async (operation: () => Promise<unknown>) => operation()),
@@ -109,7 +108,7 @@ import { persistNovelCover, readStoredNovelCover, readStoredNovelMetadata, type 
 import { runExclusiveChapterStorageOperation } from "./tasks/chapter-storage-operation";
 import { cancelNovelChapterDownloadWork } from "./tasks/download-cache-delete";
 import { executeNovelMerge, executeNovelMergeFromServer } from "./novel-merge";
-import { finishNovelMergeStorageInDb } from "./novel-merge-storage";
+import { finishNovelMergeStorage } from "./novel-merge-storage";
 import { useContentSyncStore } from "../store/content-sync";
 import { syncContentServer, runContentSyncOperation } from "./content-sync/sync";
 import { publishNovelMigrationSourceHold } from "./content-sync/deletion-exclusions";
@@ -125,7 +124,7 @@ const mockedReconcileStoredChapterContent = vi.mocked(
 const mockedPrepareChapterStorageTransfer = vi.mocked(
   prepareChapterStorageTransfer,
 );
-const mockedFinishStorage = vi.mocked(finishNovelMergeStorageInDb);
+const mockedFinishStorage = vi.mocked(finishNovelMergeStorage);
 const mockedRemoveChapterStorageDirectory = vi.mocked(
   removeChapterStorageDirectory,
 );
@@ -396,7 +395,7 @@ describe("executeNovelMerge", () => {
     expect(mockedSyncNovelFromSource.mock.invocationCallOrder[0])
       .toBeLessThan(mockedApplyNovelMergeInDb.mock.invocationCallOrder[0]!);
     expect(mockedFinishStorage).toHaveBeenCalled();
-    expect(mockedFinishStorage).toHaveBeenCalledWith(expect.anything(), "transfer-1");
+    expect(mockedFinishStorage).toHaveBeenCalledWith("transfer-1");
     expect(result).toMatchObject({ targetNovelId: 2, chapterIdMap: { 11: 21 } });
   });
 
@@ -607,9 +606,7 @@ describe("executeNovelMerge", () => {
       }),
     ).rejects.toThrow("DB failed");
 
-    expect(mockedFinishStorage).toHaveBeenCalledWith(
-      expect.anything(), "transfer-1",
-    );
+    expect(mockedFinishStorage).toHaveBeenCalledWith("transfer-1");
     expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
   });
 
@@ -931,16 +928,21 @@ it("retains original records and files when the fresh target proof cannot be cap
 });
 
 const incomingInventory = { body: { sha256: "a".repeat(64), bytes: 100 }, expectedAssetKeys: [], storedAssets: [] };
+const incomingMigrationCommit = {
+  serverUrl: "http://server",
+  expectedOperationId: "11111111-1111-4111-8111-111111111111",
+  expectedSequence: 1,
+  chain: [],
+};
 it("applies a received migration without plugins or an outgoing server operation", async () => {
-  const recordIncomingMigration = vi.fn(async () => undefined);
   vi.mocked(inspectChapterPayloadInventory).mockResolvedValue({ ...incomingInventory, fingerprint: "inventory", payloadBytes: 100, contentBytes: 100, mediaBytes: 0, mediaComplete: true });
   const result = await executeNovelMergeFromServer({
     sourceNovelId: 1, targetNovelId: 2,
     decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
-  }, { signal: new AbortController().signal, recordIncomingMigration });
+  }, { signal: new AbortController().signal, incomingMigrationCommit });
   expect(result.targetNovelId).toBe(2);
   expect(result.contentSyncPending).toBeUndefined();
-  expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(expect.objectContaining({ recordIncomingMigration }));
+  expect(mockedApplyNovelMergeInDb).toHaveBeenCalledWith(expect.objectContaining({ incomingMigrationCommit }));
   expect(mockedApplyNovelMergeInDb.mock.calls[0]![0].contentSyncServerUrl).toBeUndefined();
   expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
   expect(mockedSyncNovelFromSource).not.toHaveBeenCalled();
@@ -954,7 +956,7 @@ it("rolls back an incoming move when the destination bytes differ from the origi
     .mockResolvedValueOnce({ ...snapshot, body: { sha256: "b".repeat(64), bytes: 100 } });
   await expect(executeNovelMergeFromServer({
     sourceNovelId: 1, targetNovelId: 2, decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
-  }, { signal: new AbortController().signal, recordIncomingMigration: vi.fn() })).rejects.toThrow("changed during the move");
+  }, { signal: new AbortController().signal, incomingMigrationCommit })).rejects.toThrow("changed during the move");
   expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
   expect(mockedFinishStorage).toHaveBeenCalledOnce();
   expect(mockedRemoveChapterStorageDirectory).not.toHaveBeenCalled();
@@ -966,7 +968,7 @@ it("preserves an occupied directory detected during native preparation", async (
   mockedPrepareChapterStorageTransfer.mockResolvedValue({ ...original, entries: original.entries.map(entry => ({ ...entry, replacedTarget: true })) });
   await expect(executeNovelMergeFromServer({ sourceNovelId: 1, targetNovelId: 2,
     decisions: [{ sourceChapterId: 11, kind: "map", targetChapterPath: "/b/1" }],
-  }, { signal: new AbortController().signal, recordIncomingMigration: vi.fn() })).rejects.toThrow("changed during the move");
+  }, { signal: new AbortController().signal, incomingMigrationCommit })).rejects.toThrow("changed during the move");
   expect(mockedApplyNovelMergeInDb).not.toHaveBeenCalled();
   expect(mockedFinishStorage).toHaveBeenCalledOnce();
 });

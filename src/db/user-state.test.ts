@@ -795,8 +795,55 @@ describe("archive recovery and exact command integration", () => {
   it("does not echo an incoming migration as new manual library or reading commands", async () => {
     addWork(active, 2, 21, { ...work, pluginId: "target", sourceNovelId: "other-book", novelPath: "/target" });
     await bind();
-    await applyNovelMergeInDb({ sourceNovelId: 1, targetNovelId: 2,
-      decisions: [{ kind: "map", sourceChapterId: 11, targetChapterPath: "/chapter/1" }], preparedDownloads: [], recordIncomingMigration: async () => undefined });
+    const { incomingMigrationFromLineage, saveIncomingMigration } = await import("../lib/content-sync/migration-feed-state");
+    const lineage = {
+      sequence: 1,
+      operationId: "11111111-2222-3333-4444-000000000001",
+      sourceWork: {
+        id: "1".repeat(64),
+        revision: "a".repeat(64),
+        identity: { pluginId: "source", novelId: "book", novelPath: "/book" },
+        metadata: {
+          schemaVersion: 1 as const,
+          identity: { pluginId: "source", novelId: "book", novelPath: "/book" },
+          novel: { name: "Book", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+          cover: null,
+          chapters: { "1": "One" },
+        },
+        coverSha256: null,
+      },
+      targetWork: {
+        id: "2".repeat(64),
+        revision: "b".repeat(64),
+        identity: { pluginId: "target", novelId: "other-book", novelPath: "/target" },
+        metadata: {
+          schemaVersion: 1 as const,
+          identity: { pluginId: "target", novelId: "other-book", novelPath: "/target" },
+          novel: { name: "Target", author: null, artist: null, summary: null, status: null, genres: null, rating: null, isLocal: false },
+          cover: null,
+          chapters: { "1": "One" },
+        },
+        coverSha256: null,
+      },
+      deletedSource: { revision: "a".repeat(64), sequence: 2 },
+      mappings: [],
+      chapterDecisions: [{ sourceChapterPath: "/chapter/1", sourceChapterNumber: "1", targetChapterPath: "/chapter/1", targetChapterNumber: "1", sourceMetadataVerified: true, targetMetadataVerified: true }],
+      fullDecisionCoverage: true,
+      active: true,
+    };
+    await saveIncomingMigration(incomingMigrationFromLineage("https://state.example", lineage), active.db);
+    await applyNovelMergeInDb({
+      sourceNovelId: 1,
+      targetNovelId: 2,
+      decisions: [{ kind: "map", sourceChapterId: 11, targetChapterPath: "/chapter/1" }],
+      preparedDownloads: [],
+      incomingMigrationCommit: {
+        serverUrl: "https://state.example",
+        expectedOperationId: lineage.operationId,
+        expectedSequence: 1,
+        chain: [lineage],
+      },
+    });
     expect(await prepare()).toEqual([]);
   });
 });

@@ -1,7 +1,7 @@
 import { runDatabaseTransaction } from "../../db/client";
 import { isAbortError } from "../abort";
 import { applySharedReaderState, useReaderStore } from "../../store/reader";
-import { recordInstalledWorkMetadata, releaseMigratedTargetMetadataInDb } from "./works";
+import { recordInstalledWorkMetadata } from "./works";
 import type { InstalledNovelMetadata } from "../work-metadata";
 import { contentServerRequest, ContentServerError, ContentServerTransportError, normalizeContentServerUrl } from "./client";
 import { publishNovelMigrationSourceHold } from "./deletion-exclusions";
@@ -208,22 +208,11 @@ export async function syncIncomingNovelMigrations(
         signal,
         assertCurrent: () => { signal.throwIfAborted(); assertCurrent(); },
         beforeCommit: assertLineageCurrent,
-        recordIncomingMigration: async (db, targetPrepared = false) => {
-          assertCurrent(); signal.throwIfAborted();
-          const savedChain = new Map((await listIncomingMigrations(server, true, db)).map(value => [value.operationId, value]));
-          for (const edge of resolved.chain) {
-            const savedEdge = savedChain.get(edge.operationId);
-            if (!savedEdge || savedEdge.sequence !== edge.sequence || !savedEdge.lineage.active) {
-              throw new Error("The received work migration chain changed before its local commit.");
-            }
-            incomingMigrationFromLineage(server, edge, savedEdge);
-          }
-          const current = savedChain.get(expected.operationId);
-          if (!current || current.sequence !== expected.sequence || current.status !== "pending" || !current.lineage.active) {
-            throw new Error("The received work migration changed before its local commit.");
-          }
-          if (targetPrepared) await releaseMigratedTargetMetadataInDb(db, server, resolved.targetWork.identity);
-          await saveIncomingMigration({ ...current, status: "completed", error: undefined }, db);
+        incomingMigrationCommit: {
+          serverUrl: server,
+          expectedOperationId: expected.operationId,
+          expectedSequence: expected.sequence,
+          chain: resolved.chain,
         },
       });
       if (result) {

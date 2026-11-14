@@ -1,17 +1,17 @@
-import type Database from "@tauri-apps/plugin-sql";
+import type { DatabaseReadMode } from "../db/client";
+import { invokeDbMutation, invokeDbQuery } from "../db/ipc";
 import { base64ToBytes, bytesToBase64 } from "./base64";
-import { MAX_NOVEL_COVER_BYTES } from "./work-metadata/schema";
-import { persistWorkChapterDirectories } from "../db/work-metadata";
 import { chapterStorageRelativeDir, novelStorageRelativeDir } from "./chapter-storage-path";
 import {
   finalizeChapterStorageTransfer,
   rollbackChapterStorageTransfer,
   type ChapterStorageTransferPreparation,
 } from "./chapter-storage-transfer";
+import type { ChapterItem } from "./plugins/types";
 import { isStorageId } from "./storage-id";
 import { isTauriRuntime } from "./tauri-runtime";
 import { workMetadataOperation } from "./work-metadata";
-import type { ChapterItem } from "./plugins/types";
+import { MAX_NOVEL_COVER_BYTES } from "./work-metadata/schema";
 
 export const SOURCE_CHAPTER_RENUMBER_PREFIX = "norea-source-chapter-renumber:";
 export const SERVER_CHAPTER_RENUMBER_PREFIX = "norea-content-chapter-number-reconciliation:";
@@ -30,6 +30,19 @@ export interface StoredRenumberChapter {
   position: number;
   directory: string | null;
   isDownloaded: number;
+}
+
+export interface SourceRenumberWorkInspection {
+  work: RenumberWork;
+  hasComposition: boolean;
+  pendingJournalPayloads: string[];
+  storedChapters: StoredRenumberChapter[];
+}
+
+export interface FlushAndReadRenumberWorkResult {
+  work: RenumberWork;
+  storedChapters: StoredRenumberChapter[];
+  metadataFingerprint: string | null;
 }
 
 export interface SourceChapterNumberChange {
@@ -243,11 +256,50 @@ export function assertSourceChapterNumberChangesSupported(changes: readonly Pick
   }
 }
 
-export async function readRenumberChapters(db: Pick<Database, "select">, novelId: number): Promise<StoredRenumberChapter[]> {
-  return db.select<StoredRenumberChapter[]>(
-    "SELECT c.id,c.path,c.chapter_number AS chapterNumber,c.position,c.is_downloaded AS isDownloaded,d.directory " +
-    "FROM chapter c LEFT JOIN work_metadata_directory_cache d ON d.chapter_id=c.id WHERE c.novel_id=$1 ORDER BY c.id",
-    [novelId],
+export async function inspectSourceRenumberWork(
+  pluginId: string,
+  path: string,
+  readMode?: DatabaseReadMode,
+): Promise<SourceRenumberWorkInspection | null> {
+  return invokeDbQuery<SourceRenumberWorkInspection | null>(
+    "db_source_renumber_inspect_work",
+    { pluginId, path, ...(readMode ? { readMode } : {}) },
+  );
+}
+
+export async function readRenumberChapters(
+  novelId: number,
+  readMode?: DatabaseReadMode,
+): Promise<StoredRenumberChapter[]> {
+  return invokeDbQuery<StoredRenumberChapter[]>(
+    "db_source_renumber_read_chapters",
+    { novelId, ...(readMode ? { readMode } : {}) },
+  );
+}
+
+export async function listSourceChapterRenumberJournals(
+  workId?: number,
+  readMode?: DatabaseReadMode,
+): Promise<string[]> {
+  return invokeDbQuery<string[]>("db_source_renumber_list_journals", {
+    workId: workId ?? null,
+    ...(readMode ? { readMode } : {}),
+  });
+}
+
+export async function flushAndReadRenumberWork(
+  work: RenumberWork,
+): Promise<FlushAndReadRenumberWorkResult> {
+  return invokeDbMutation<FlushAndReadRenumberWorkResult>(
+    "db_source_renumber_flush_and_read_work",
+    {
+      input: {
+        workId: work.id,
+        pluginId: work.pluginId,
+        path: work.path,
+        sourceNovelId: work.sourceNovelId,
+      },
+    },
   );
 }
 
@@ -389,24 +441,27 @@ export function pendingRenumberRollback(job: SourceChapterRenumberJournal): Chap
   };
 }
 
-export async function saveSourceChapterRenumberJournal(db: Pick<Database, "execute">, job: SourceChapterRenumberJournal): Promise<void> {
-  await db.execute(
-    "INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload",
-    [renumberJournalKey(job.operationId), JSON.stringify(job)],
-  );
+export async function saveSourceChapterRenumberJournal(job: SourceChapterRenumberJournal): Promise<void> {
+  await invokeDbMutation<void>("db_source_renumber_save_journal", { job });
 }
 
-export async function readSourceChapterRenumberJournal(db: Pick<Database, "select">, operationId: string): Promise<SourceChapterRenumberJournal | null> {
-  const [row] = await db.select<{ payload: string }[]>("SELECT payload FROM content_sync_cache WHERE cache_key=$1", [renumberJournalKey(operationId)]);
-  return row ? parseSourceChapterRenumberJournal(row.payload) : null;
+export async function readSourceChapterRenumberJournal(
+  operationId: string,
+  readMode?: DatabaseReadMode,
+): Promise<SourceChapterRenumberJournal | null> {
+  const payload = await invokeDbQuery<string | null>(
+    "db_source_renumber_read_journal",
+    { operationId, ...(readMode ? { readMode } : {}) },
+  );
+  return payload ? parseSourceChapterRenumberJournal(payload) : null;
 }
 
 export async function createSourceChapterRenumberJournal(
-  db: Database,
   work: RenumberWork,
   changes: SourceChapterNumberChange[],
   serverUrl: string | null,
   coverWrites: readonly ChapterRenumberCoverWrite[] = [],
+  expectedFingerprint?: string | null,
 ): Promise<SourceChapterRenumberJournal> {
   assertSourceChapterNumberChangesSupported(changes);
   if (coverWrites.length > 1) throw new Error("Chapter reconciliation supports one incoming cover target.");
@@ -421,109 +476,57 @@ export async function createSourceChapterRenumberJournal(
     metadataFiles.push({ path, body, sha256: body === null ? null : await bodySha256(body), nextSha256: write.sha256 });
   }
   const metadata = isTauriRuntime() ? await workMetadataOperation({ operation: "read", path: metadataPath(work) }) : { body: null };
-  const [cached] = await db.select<{ fingerprint: string }[]>("SELECT fingerprint FROM work_metadata_file_cache WHERE novel_id=$1", [work.id]);
-  const job: SourceChapterRenumberJournal = {
-    version: metadataFiles.length ? 2 : 1, operationId: crypto.randomUUID(), phase: "preparing", work, changes,
-    metadataBody: metadata.body ?? null, metadataFingerprint: cached?.fingerprint ?? null, serverUrl,
-    ...(metadataFiles.length ? { metadataFiles } : {}),
-  };
-  validateMetadataFiles(job);
-  await saveSourceChapterRenumberJournal(db, job);
-  return job;
-}
-
-export async function applySourceChapterNumberChangesInDb(db: Database, novelId: number, job: SourceChapterRenumberJournal): Promise<void> {
-  if (job.work.id !== novelId || job.phase !== "preparing") throw new Error("Chapter number reconciliation no longer matches this work.");
-  const current = await readRenumberChapters(db, novelId);
-  for (const change of job.changes) {
-    const chapter = current.find(row => row.id === change.id);
-    if (!chapter || chapter.path !== change.path || canonicalChapterNumber(chapter.chapterNumber) !== change.chapterNumber ||
-        current.some(row => row.id !== change.id &&
-          (row.path === change.nextPath || canonicalChapterNumber(row.chapterNumber) === change.nextChapterNumber))) {
-      throw new Error("A chapter changed while its number was being reconciled; existing files were retained.");
-    }
-  }
-  for (const change of job.changes) {
-    await db.execute("UPDATE chapter SET path=$1,chapter_number=$2,updated_at=unixepoch() WHERE id=$3 AND novel_id=$4",
-      [change.nextPath, change.nextChapterNumber, change.id, novelId]);
-  }
-  const changed = new Map(job.changes.map(change => [change.id, change.targetRelativeDir]));
-  const directories = current.flatMap(chapter => {
-    const directory = changed.get(chapter.id) ?? chapter.directory;
-    return directory ? [{ id: chapter.id, directory }] : [];
-  });
-  await persistWorkChapterDirectories(db, novelId, directories);
-  const rows = await db.select<{ key: string; payload: string }[]>(
-    "SELECT cache_key AS key,payload FROM content_sync_cache WHERE cache_key LIKE 'norea-content-deletions:%'",
+  const raw = await invokeDbMutation<SourceChapterRenumberJournal>(
+    "db_source_renumber_create_journal",
+    {
+      input: {
+        operationId: crypto.randomUUID(),
+        work,
+        changes,
+        metadataBody: metadata.body ?? null,
+        serverUrl,
+        ...(metadataFiles.length ? { metadataFiles } : {}),
+        ...(expectedFingerprint !== undefined
+          ? { expectedFingerprint }
+          : {}),
+      },
+    },
   );
-  const replacements = new Map(job.changes.map(change => [change.chapterNumber, change.nextChapterNumber]));
-  for (const row of rows) {
-    const exclusions = JSON.parse(row.payload) as string[];
-    if (!Array.isArray(exclusions)) throw new Error("Stored chapter deletion exclusions are invalid.");
-    let changedExclusions = false;
-    const next = exclusions.map(value => {
-      const key: unknown = JSON.parse(value);
-      if (!Array.isArray(key) || key.length !== 3 || key[0] !== job.work.pluginId || key[1] !== job.work.sourceNovelId ||
-          !Array.isArray(key[2]) || key[2][0] !== "number") return value;
-      const number = canonicalChapterNumber(key[2][1]);
-      const replacement = number === null ? undefined : replacements.get(number);
-      if (replacement === undefined) return value;
-      changedExclusions = true;
-      return JSON.stringify([key[0], key[1], ["number", Number(replacement)]]);
-    });
-    if (changedExclusions) await db.execute("UPDATE content_sync_cache SET payload=$1 WHERE cache_key=$2",
-      [JSON.stringify([...new Set(next)]), row.key]);
-  }
+  return parseSourceChapterRenumberJournal(JSON.stringify(raw));
 }
 
-export async function commitSourceChapterRenumberInDb(db: Database, job: SourceChapterRenumberJournal): Promise<void> {
-  await saveSourceChapterRenumberJournal(db, { ...job, phase: "committed" });
-  if (job.serverUrl) {
-    const remote: ServerChapterRenumberJob = {
-      version: 1, operationId: job.operationId, serverUrl: job.serverUrl,
-      identity: { pluginId: job.work.pluginId, novelId: job.work.sourceNovelId, novelPath: job.work.path },
-      mappings: job.changes.map(change => ({ chapterPath: change.nextPath, from: change.chapterNumber, to: change.nextChapterNumber })),
-      status: "pending", createdAt: Date.now(),
-    };
-    await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2)",
-      [SERVER_CHAPTER_RENUMBER_PREFIX + job.operationId, JSON.stringify(remote)]);
-  }
+export async function applySourceChapterNumberChanges(
+  novelId: number,
+  job: SourceChapterRenumberJournal,
+): Promise<void> {
+  await invokeDbMutation<string[]>("db_source_renumber_apply_changes", {
+    novelId,
+    job,
+  });
+}
+
+export async function commitSourceChapterRenumber(
+  job: SourceChapterRenumberJournal,
+): Promise<void> {
+  await invokeDbMutation<void>("db_source_renumber_commit", { job });
 }
 
 /** Runs before storage scanning. The committed database phase decides which copy is authoritative. */
-export async function recoverSourceChapterRenumbersInDb(db: Database): Promise<void> {
-  const rows = await db.select<{ payload: string }[]>(
-    "SELECT payload FROM content_sync_cache WHERE cache_key LIKE $1 ORDER BY cache_key", [SOURCE_CHAPTER_RENUMBER_PREFIX + "%"],
-  );
-  for (const row of rows) await finishSourceChapterRenumberInDb(db, parseSourceChapterRenumberJournal(row.payload));
+export async function recoverSourceChapterRenumbers(): Promise<void> {
+  const payloads = await listSourceChapterRenumberJournals();
+  for (const payload of payloads) {
+    await finishSourceChapterRenumber(parseSourceChapterRenumberJournal(payload));
+  }
 }
 
-export async function finishSourceChapterRenumberInDb(db: Database, job: SourceChapterRenumberJournal): Promise<void> {
-  const [work] = await db.select<RenumberWork[]>(
-    "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE id=$1", [job.work.id]);
-  const rows = await readRenumberChapters(db, job.work.id);
+export async function finishSourceChapterRenumber(
+  job: SourceChapterRenumberJournal,
+): Promise<void> {
+  await invokeDbQuery<void>("db_source_renumber_verify_recovery", { job });
   const committed = job.phase === "committed";
-  if (!work || work.pluginId !== job.work.pluginId || work.sourceNovelId !== job.work.sourceNovelId || work.path !== job.work.path ||
-      job.changes.some(change => {
-        const row = rows.find(current => current.id === change.id);
-        const expectedNumber = committed ? change.nextChapterNumber : change.chapterNumber;
-        const expectedDirectory = committed ? change.targetRelativeDir : change.sourceRelativeDir;
-        return !row || row.path !== (committed ? change.nextPath : change.path) ||
-          canonicalChapterNumber(row.chapterNumber) !== expectedNumber ||
-          (committed ? row.directory !== expectedDirectory : row.directory !== null && row.directory !== expectedDirectory);
-      })) {
-    throw new Error("Chapter number recovery does not match the current database. Existing files were retained.");
-  }
-  if (!committed) {
-    const [cached] = await db.select<{ fingerprint: string }[]>(
-      "SELECT fingerprint FROM work_metadata_file_cache WHERE novel_id=$1", [job.work.id]);
-    if ((cached?.fingerprint ?? null) !== job.metadataFingerprint) {
-      throw new Error("Work metadata changed after chapter reconciliation was prepared. Existing files were retained.");
-    }
-  }
   const metadataFiles = await inspectMetadataFiles(job, committed ? "committed" : "rollback");
   if (isTauriRuntime()) {
-    if (job.phase === "committed") await finalizeChapterStorageTransfer(job.preparation!);
+    if (committed) await finalizeChapterStorageTransfer(job.preparation!);
     else {
       await rollbackChapterStorageTransfer(pendingRenumberRollback(job));
       for (const { file, currentSha256 } of metadataFiles) {
@@ -537,5 +540,7 @@ export async function finishSourceChapterRenumberInDb(db: Database, job: SourceC
         : { operation: "write", path: metadataPath(job.work), body: job.metadataBody });
     }
   }
-  await db.execute("DELETE FROM content_sync_cache WHERE cache_key=$1", [renumberJournalKey(job.operationId)]);
+  await invokeDbMutation<void>("db_source_renumber_delete_journal", {
+    operationId: job.operationId,
+  });
 }

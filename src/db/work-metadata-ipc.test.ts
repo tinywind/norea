@@ -109,6 +109,8 @@ describe("work metadata Rust IPC contracts", () => {
   beforeEach(() => {
     router.reset();
     router.installOn(invokeMock);
+    router.handle("db_source_renumber_list_journals", () => []);
+    router.handle("db_novel_merge_list_storage_journals", () => []);
     events.listeners.clear();
     covers.changed.mockClear();
     covers.invalidated.mockClear();

@@ -1,11 +1,9 @@
 import { listChaptersByNovel, type ChapterListRow } from "../db/queries/chapter";
-import type { NovelMergeChapterDecision } from "../db/queries/novel-merge";
+import { findNovelMergeTargetPreview, type NovelMergeChapterDecision } from "../db/queries/novel-merge";
 import type { NovelDetailRecord } from "../db/queries/novel";
 import type { ChapterCompositionV1, ChapterCompositionEntry, ChapterSourceSnapshot } from "./chapter-composition";
 import { includedChapterCompositionEntries, parseChapterComposition } from "./chapter-composition";
 import { refreshChapterComposition } from "./chapter-composition-refresh";
-import { getDb } from "../db/client";
-import { getChapterComposition } from "../db/chapter-composition";
 import type { SourceNovel } from "./plugins/types";
 
 /** The array order is the reading order; provider numbers never identify a selection. */
@@ -49,18 +47,14 @@ export interface CompiledNovelMergeComposition {
 
 /** Preserve an existing B arrangement while previewing fresh provider metadata. */
 export async function resolveNovelMergeTargetPreview(pluginId: string, detail: SourceNovel): Promise<SourceNovel> {
-  const db = await getDb();
-  const [novel] = await db.select<{ id: number }[]>(
-    "SELECT id FROM novel WHERE plugin_id=$1 AND (path=$2 OR source_novel_id=$3) ORDER BY CASE WHEN path=$2 THEN 0 ELSE 1 END LIMIT 1",
-    [pluginId, detail.path, detail.novelId],
-  );
+  const novel = await findNovelMergeTargetPreview(pluginId, detail.path, detail.novelId);
   if (!novel) return detail;
-  const previous = await getChapterComposition(db, novel.id);
+  const previous = novel.composition ? parseChapterComposition(novel.composition) : null;
   if (!previous) {
     // A provider can temporarily omit an episode that is still stored locally.
     // Show it in the editor so absence from the provider never means user exclusion.
     const paths = new Set(detail.chapters.map(chapter => chapter.path));
-    const stored = await listChaptersByNovel(novel.id);
+    const stored = await listChaptersByNovel(novel.novelId);
     const missing = stored.filter(chapter => !paths.has(chapter.path)).map(chapter => ({
       path: chapter.path, name: chapter.name, chapterNumber: Number(chapter.chapterNumber ?? chapter.position),
       page: chapter.page, releaseTime: chapter.releaseTime ?? undefined, contentType: chapter.sourceContentType,

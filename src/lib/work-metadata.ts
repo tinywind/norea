@@ -334,7 +334,12 @@ async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1,
             [metadata.identity.pluginId, metadata.identity.novelPath],
           );
           if (!work || work.sourceNovelId !== metadata.identity.novelId) throw new Error("Incoming chapter number identity changed.");
-          const changes = renumber.planServerChapterNumberChanges(work, await renumber.readRenumberChapters(db, work.id), reconciliation.mappings);
+          const currentChapters = await db.select<import("./source-chapter-renumber").StoredRenumberChapter[]>(
+            "SELECT c.id,c.path,c.chapter_number AS chapterNumber,c.position,c.is_downloaded AS isDownloaded,d.directory " +
+            "FROM chapter c LEFT JOIN work_metadata_directory_cache d ON d.chapter_id=c.id WHERE c.novel_id=$1 ORDER BY c.id",
+            [work.id],
+          );
+          const changes = renumber.planServerChapterNumberChanges(work, currentChapters, reconciliation.mappings);
           if (reconciliation.journal) {
             if (JSON.stringify(changes) !== JSON.stringify(reconciliation.journal.changes)) {
               throw new Error("Local chapter state changed while the server correction was prepared.");
@@ -344,7 +349,51 @@ async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1,
             for (const file of journal.metadataFiles ?? []) {
               publicationRollbackGuards?.set(file.path, () => renumber.assertSourceChapterRenumberMetadataRecoverable(journal));
             }
-            await renumber.applySourceChapterNumberChangesInDb(db, work.id, reconciliation.journal);
+            if (journal.work.id !== work.id || journal.phase !== "preparing") {
+              throw new Error("Chapter number reconciliation no longer matches this work.");
+            }
+            for (const change of journal.changes) {
+              const chapter = currentChapters.find(row => row.id === change.id);
+              if (!chapter || chapter.path !== change.path || renumber.canonicalChapterNumber(chapter.chapterNumber) !== change.chapterNumber ||
+                  currentChapters.some(row => row.id !== change.id &&
+                    (row.path === change.nextPath || renumber.canonicalChapterNumber(row.chapterNumber) === change.nextChapterNumber))) {
+                throw new Error("A chapter changed while its number was being reconciled; existing files were retained.");
+              }
+            }
+            for (const change of journal.changes) {
+              await db.execute("UPDATE chapter SET path=$1,chapter_number=$2,updated_at=unixepoch() WHERE id=$3 AND novel_id=$4",
+                [change.nextPath, change.nextChapterNumber, change.id, work.id]);
+            }
+            const changed = new Map(journal.changes.map(change => [change.id, change.targetRelativeDir]));
+            const directories = currentChapters.flatMap(chapter => {
+              const dir = changed.get(chapter.id) ?? chapter.directory;
+              return dir ? [{ id: chapter.id, directory: dir }] : [];
+            });
+            const { persistWorkChapterDirectories } = await import("../db/work-metadata");
+            await persistWorkChapterDirectories(db, work.id, directories);
+            const exclusionRows = await db.select<{ key: string; payload: string }[]>(
+              "SELECT cache_key AS key,payload FROM content_sync_cache WHERE cache_key LIKE 'norea-content-deletions:%'",
+            );
+            const replacements = new Map(journal.changes.map(change => [change.chapterNumber, change.nextChapterNumber]));
+            for (const row of exclusionRows) {
+              const exclusions = JSON.parse(row.payload) as string[];
+              if (!Array.isArray(exclusions)) throw new Error("Stored chapter deletion exclusions are invalid.");
+              let changedExclusions = false;
+              const next = exclusions.map(value => {
+                const key: unknown = JSON.parse(value);
+                if (!Array.isArray(key) || key.length !== 3 || key[0] !== journal.work.pluginId || key[1] !== journal.work.sourceNovelId ||
+                    !Array.isArray(key[2]) || key[2][0] !== "number") return value;
+                const number = renumber.canonicalChapterNumber(key[2][1]);
+                const replacement = number === null ? undefined : replacements.get(number);
+                if (replacement === undefined) return value;
+                changedExclusions = true;
+                return JSON.stringify([key[0], key[1], ["number", Number(replacement)]]);
+              });
+              if (changedExclusions) {
+                await db.execute("UPDATE content_sync_cache SET payload=$1 WHERE cache_key=$2",
+                  [JSON.stringify([...new Set(next)]), row.key]);
+              }
+            }
           } else if (changes.length) {
             throw new Error("Incoming chapter numbers changed before their storage could be prepared.");
           }
@@ -376,8 +425,25 @@ async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1,
         const syncFile = await readWorkMetadataSyncFile(metadata.identity, db);
         if (!syncFile) throw new Error("Installed work metadata is missing from the local index.");
         if (reconciliation?.journal) {
-          const { commitSourceChapterRenumberInDb } = await import("./source-chapter-renumber");
-          await commitSourceChapterRenumberInDb(db, reconciliation.journal);
+          const renumber = await import("./source-chapter-renumber");
+          const committedJob = { ...reconciliation.journal, phase: "committed" as const };
+          await db.execute(
+            "INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload",
+            [renumber.renumberJournalKey(committedJob.operationId), JSON.stringify(committedJob)],
+          );
+          if (committedJob.serverUrl) {
+            const remote = {
+              version: 1 as const,
+              operationId: committedJob.operationId,
+              serverUrl: committedJob.serverUrl,
+              identity: { pluginId: committedJob.work.pluginId, novelId: committedJob.work.sourceNovelId, novelPath: committedJob.work.path },
+              mappings: committedJob.changes.map(change => ({ chapterPath: change.nextPath, from: change.chapterNumber, to: change.nextChapterNumber })),
+              status: "pending" as const,
+              createdAt: Date.now(),
+            };
+            await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2)",
+              [renumber.SERVER_CHAPTER_RENUMBER_PREFIX + committedJob.operationId, JSON.stringify(remote)]);
+          }
         }
         return { novelId: installedNovelId, directory, syncFile, coverBytes: await readStoredNovelCover(directory, metadata) };
       });

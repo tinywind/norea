@@ -95,9 +95,9 @@ vi.mock("../chapter-storage-transfer", () => ({
 
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import {
-  applySourceChapterNumberChangesInDb, commitSourceChapterRenumberInDb, createSourceChapterRenumberJournal,
+  applySourceChapterNumberChanges, commitSourceChapterRenumber, createSourceChapterRenumberJournal,
   parseSourceChapterRenumberJournal, planServerChapterNumberChanges, readRenumberChapters,
-  recoverSourceChapterRenumbersInDb, saveSourceChapterRenumberJournal, validateRenumberPreparation,
+  recoverSourceChapterRenumbers, saveSourceChapterRenumberJournal, validateRenumberPreparation,
   type ChapterNumberMapping, type RenumberWork, type SourceChapterRenumberJournal,
 } from "../source-chapter-renumber";
 import {
@@ -170,6 +170,7 @@ beforeEach(async () => {
     runExclusive: (run) => client.runExclusiveDatabaseOperation(() => run()),
   }).handle;
   client.runDatabaseTransaction.mockImplementation(async run => {
+    if (sqlite.isTransaction) return run(db);
     sqlite.exec("BEGIN IMMEDIATE");
     try {
       return await withWorkMetadataRollback(async () => {
@@ -377,8 +378,8 @@ describe("production incoming metadata paths", () => {
     expect(journals()).toHaveLength(1);
     expect(state.metadata.get(coverPath)).toEqual(nextCover);
     await expect(scanStoredNovelChaptersToCache(db, 7, directory, { chapters: [], downloadRevision: 0 })).rejects.toThrow("reconciliation is pending");
-    await recoverSourceChapterRenumbersInDb(db);
-    await recoverSourceChapterRenumbersInDb(db);
+    await recoverSourceChapterRenumbers();
+    await recoverSourceChapterRenumbers();
     expectCanonical(before);
     await syncServerNovelOnOpen(7);
     expect(prepareChapterStorageTransfer).toHaveBeenCalledOnce();
@@ -413,14 +414,14 @@ describe("production incoming metadata paths", () => {
 });
 
 async function preparedCoverJob(fileName = "cover.png"): Promise<SourceChapterRenumberJournal> {
-  const changes = planServerChapterNumberChanges(work, await readRenumberChapters(db, 7), mappings);
-  const job = await createSourceChapterRenumberJournal(db, work, changes, null,
+  const changes = planServerChapterNumberChanges(work, await readRenumberChapters(7), mappings);
+  const job = await createSourceChapterRenumberJournal(work, changes, null,
     [{ fileName, sha256: await sha256(nextCover) }]);
   job.preparation = await prepareChapterStorageTransfer(changes.map(change => ({
     entryId: String(change.id), sourceRelativeDir: change.sourceRelativeDir, targetRelativeDir: change.targetRelativeDir,
   })), { token: job.operationId, requireEmptyTargets: true });
   validateRenumberPreparation(job, job.preparation);
-  await saveSourceChapterRenumberJournal(db, job);
+  await saveSourceChapterRenumberJournal(job);
   return job;
 }
 
@@ -430,7 +431,7 @@ describe("durable cover recovery", () => {
     const job = await preparedCoverJob();
     expect(job.version).toBe(2);
     state.metadata.set(coverPath, [...nextCover]);
-    await recoverSourceChapterRenumbersInDb(db);
+    await recoverSourceChapterRenumbers();
     expect(state.metadata.get(coverPath)).toEqual(oldCover);
     expect(metadata()).toEqual(originalDocument);
     expect([...state.payloads.keys()]).toEqual([directory + "/1000", directory + "/3000"]);
@@ -440,12 +441,12 @@ describe("durable cover recovery", () => {
     const before = personalState();
     const job = await preparedCoverJob();
     sqlite.exec("BEGIN IMMEDIATE");
-    await applySourceChapterNumberChangesInDb(db, 7, job);
+    await applySourceChapterNumberChanges(7, job);
     state.metadata.set(coverPath, [...nextCover]);
     await flushWorkMetadata(db, { novelId: 7, chapters: canonicalCatalog, replacedChapterNumbers: mappings.map(item => item.from) });
-    await commitSourceChapterRenumberInDb(db, job);
+    await commitSourceChapterRenumber(job);
     sqlite.exec("COMMIT");
-    await recoverSourceChapterRenumbersInDb(db);
+    await recoverSourceChapterRenumbers();
     expectCanonical(before);
     expect(state.metadata.get(coverPath)).toEqual(nextCover);
   });
@@ -453,7 +454,7 @@ describe("durable cover recovery", () => {
   it("removes a newly created target on rollback and retains a differently named old cover", async () => {
     await preparedCoverJob("cover.webp");
     state.metadata.set(directory + "/cover.webp", [...nextCover]);
-    await recoverSourceChapterRenumbersInDb(db);
+    await recoverSourceChapterRenumbers();
     expect(state.metadata.has(directory + "/cover.webp")).toBe(false);
     expect(state.metadata.get(coverPath)).toEqual(oldCover);
   });
@@ -461,7 +462,7 @@ describe("durable cover recovery", () => {
   it("retains both payload copies and the journal if an unrelated cover replaced the intended file", async () => {
     await preparedCoverJob();
     state.metadata.set(coverPath, [9, 9, 9]);
-    await expect(recoverSourceChapterRenumbersInDb(db)).rejects.toThrow("cover changed outside");
+    await expect(recoverSourceChapterRenumbers()).rejects.toThrow("cover changed outside");
     expect(state.metadata.get(coverPath)).toEqual([9, 9, 9]);
     expect(journals()).toHaveLength(1);
     expect(rollbackChapterStorageTransfer).not.toHaveBeenCalled();
@@ -471,8 +472,8 @@ describe("durable cover recovery", () => {
   });
 
   it.each(["../cover.png", "novel.json", "contents/other/book/cover.png"])("rejects a cover target outside its owned work filename (%s)", async fileName => {
-    const changes = planServerChapterNumberChanges(work, await readRenumberChapters(db, 7), mappings);
-    await expect(createSourceChapterRenumberJournal(db, work, changes, null, [{ fileName, sha256: await sha256(nextCover) }])).rejects.toThrow("cover is invalid");
+    const changes = planServerChapterNumberChanges(work, await readRenumberChapters(7), mappings);
+    await expect(createSourceChapterRenumberJournal(work, changes, null, [{ fileName, sha256: await sha256(nextCover) }])).rejects.toThrow("cover is invalid");
     expect(journals()).toEqual([]);
   });
 
@@ -485,15 +486,15 @@ describe("durable cover recovery", () => {
       ...job, metadataFiles: [{ ...job.metadataFiles![0], body: "AQID\n" }],
     }))).toThrow("encoding");
     const corrupted = { ...job, metadataFiles: [{ ...job.metadataFiles![0], sha256: "0".repeat(64) }] };
-    await saveSourceChapterRenumberJournal(db, corrupted);
-    await expect(recoverSourceChapterRenumbersInDb(db)).rejects.toThrow("does not match its digest");
+    await saveSourceChapterRenumberJournal(corrupted);
+    await expect(recoverSourceChapterRenumbers()).rejects.toThrow("does not match its digest");
     expect(rollbackChapterStorageTransfer).not.toHaveBeenCalled();
     expect(journals()).toHaveLength(1);
   });
 
   it("uses v1 for an unchanged source journal and rejects cover backups disguised as v1", async () => {
-    const changes = planServerChapterNumberChanges(work, await readRenumberChapters(db, 7), mappings);
-    const old = await createSourceChapterRenumberJournal(db, work, changes, null);
+    const changes = planServerChapterNumberChanges(work, await readRenumberChapters(7), mappings);
+    const old = await createSourceChapterRenumberJournal(work, changes, null);
     expect(old.version).toBe(1);
     expect(parseSourceChapterRenumberJournal(JSON.stringify(old))).toEqual(old);
     const next = await preparedCoverJob();

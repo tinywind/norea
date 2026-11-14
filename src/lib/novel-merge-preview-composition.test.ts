@@ -1,14 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-vi.mock("../db/client", () => ({ getDb: vi.fn() }));
-vi.mock("../db/chapter-composition", () => ({ getChapterComposition: vi.fn(async () => null) }));
+vi.mock("../db/queries/novel-merge", () => ({ findNovelMergeTargetPreview: vi.fn() }));
 vi.mock("../db/queries/chapter", () => ({ listChaptersByNovel: vi.fn(async () => []) }));
-import { getDb } from "../db/client";
+import { findNovelMergeTargetPreview } from "../db/queries/novel-merge";
 import { listChaptersByNovel } from "../db/queries/chapter";
 import { resolveNovelMergeTargetPreview, validateReviewedNovelMergeCatalog } from "./novel-merge-composition";
 const raw = { novelId: "work-b", path: "/b", name: "B", chapters: [{ path: "/b/2", name: "Current", chapterNumber: 2 }] };
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(getDb).mockResolvedValue({ select: vi.fn(async () => [{ id: 2 }]) } as never);
+  vi.mocked(findNovelMergeTargetPreview).mockResolvedValue({ novelId: 2, composition: null });
 });
 describe("reviewed composition catalog", () => {
   it("includes a stored chapter omitted by the live provider, so it is never silently excluded", async () => {

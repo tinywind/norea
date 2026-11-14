@@ -1,10 +1,23 @@
 import type Database from "@tauri-apps/plugin-sql";
+import type { DatabaseReadMode } from "./client";
+import { invokeDbQuery } from "./ipc";
 import { assertChapterCompositionStorageOwnership, type ChapterCompositionPreparedCopy } from "../lib/chapter-composition-storage";
 import { canonicalChapterNumber } from "../lib/source-chapter-renumber";
 import {
   includedChapterCompositionEntries, parseChapterComposition,
   type ChapterCompositionV1, type ChapterSourceSnapshot,
 } from "../lib/chapter-composition";
+
+export async function readChapterComposition(
+  novelId: number,
+  readMode?: DatabaseReadMode,
+): Promise<ChapterCompositionV1 | null> {
+  const row = await invokeDbQuery<ChapterCompositionV1 | null>(
+    "db_chapter_composition_get",
+    { novelId, ...(readMode ? { readMode } : {}) },
+  );
+  return row ? parseChapterComposition(row) : null;
+}
 
 export async function getChapterComposition(
   db: Pick<Database, "select">, novelId: number,

@@ -25,6 +25,14 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: R
   });
   const handled = await chapterIpc.handle(command, args);
   if (handled.handled) return handled.result;
+  if (command === "db_work_metadata_flush_pending") {
+    const currentDb = await client.getDb();
+    const [pending] = await currentDb.select("SELECT 1 AS pending FROM work_metadata_dirty LIMIT 1");
+    if (pending) {
+      await client.runDatabaseTransaction((txDb: Database) => flushWorkMetadata(txDb));
+    }
+    return { value: null, effects: {} };
+  }
   if (command === "db_novel_freshness_record_cover_fetched") {
     const currentDb = await client.getDb();
     await currentDb.execute(
@@ -78,13 +86,13 @@ vi.mock("./chapter-storage-transfer", () => ({
 }));
 
 import {
-  applySourceChapterNumberChangesInDb,
+  applySourceChapterNumberChanges,
   assertSourceChapterNumberChangesSupported,
-  commitSourceChapterRenumberInDb,
+  commitSourceChapterRenumber,
   createSourceChapterRenumberJournal,
   planSourceChapterNumberChanges,
   readRenumberChapters,
-  recoverSourceChapterRenumbersInDb,
+  recoverSourceChapterRenumbers,
   saveSourceChapterRenumberJournal,
   validateRenumberPreparation,
   type RenumberWork,
@@ -129,6 +137,7 @@ beforeEach(async () => {
   client.getDb.mockResolvedValue(db);
   client.runExclusiveDatabaseOperation.mockImplementation(async run => run(db));
   client.runDatabaseTransaction.mockImplementation(async run => {
+    if (sqlite.isTransaction) return run(db);
     sqlite.exec("BEGIN IMMEDIATE");
     try {
       return await withWorkMetadataRollback(async () => {
@@ -164,21 +173,21 @@ function plugin(): Plugin {
 }
 
 async function preparedJob(): Promise<SourceChapterRenumberJournal> {
-  const changes = planSourceChapterNumberChanges(work, await readRenumberChapters(db, 7), chapters);
-  const job = await createSourceChapterRenumberJournal(db, work, changes, "https://content.test");
+  const changes = planSourceChapterNumberChanges(work, await readRenumberChapters(7), chapters);
+  const job = await createSourceChapterRenumberJournal(work, changes, "https://content.test");
   job.preparation = await prepareChapterStorageTransfer(changes.map(change => ({
     entryId: String(change.id), sourceRelativeDir: change.sourceRelativeDir, targetRelativeDir: change.targetRelativeDir,
   })), { token: job.operationId, requireEmptyTargets: true });
   validateRenumberPreparation(job, job.preparation);
-  await saveSourceChapterRenumberJournal(db, job);
+  await saveSourceChapterRenumberJournal(job);
   return job;
 }
 
 async function publish(job: SourceChapterRenumberJournal): Promise<void> {
-  await applySourceChapterNumberChangesInDb(db, 7, job);
+  await applySourceChapterNumberChanges(7, job);
   await flushWorkMetadata(db, { novelId: 7, chapters: { "1": "First", "2": "Second", "3": "Third" },
     replacedChapterNumbers: job.changes.map(change => change.chapterNumber) });
-  await commitSourceChapterRenumberInDb(db, job);
+  await commitSourceChapterRenumber(job);
 }
 
 it("reconciles a full refresh without replacing IDs, reading state, downloads, or payload bytes", async () => {
@@ -237,7 +246,7 @@ it("recovers a process exit after metadata was written but before SQLite committ
   await publish(job);
   sqlite.exec("ROLLBACK");
   expect(metadata().chapters).toHaveProperty("1");
-  await recoverSourceChapterRenumbersInDb(db);
+  await recoverSourceChapterRenumbers();
   expect(metadata()).toEqual(beforeMetadata);
   expect([...state.payloads.keys()]).toEqual([directory + "/1000", directory + "/3000"]);
   expect(sqlite.prepare("SELECT chapter_number FROM chapter WHERE id=11").get()).toEqual({ chapter_number: "1000" });
@@ -249,8 +258,8 @@ it("finishes a committed transfer after reopening and is idempotent on the next 
   sqlite.exec("BEGIN IMMEDIATE");
   await publish(job);
   sqlite.exec("COMMIT");
-  await recoverSourceChapterRenumbersInDb(db);
-  await recoverSourceChapterRenumbersInDb(db);
+  await recoverSourceChapterRenumbers();
+  await recoverSourceChapterRenumbers();
   expect(finalizeChapterStorageTransfer).toHaveBeenCalledOnce();
   expect(personalState()).toEqual(before);
   expect([...state.payloads.keys()]).toEqual([directory + "/1", directory + "/3"]);
@@ -260,10 +269,10 @@ it("retains its journal and blocks storage recovery when committed cleanup fails
   const job = await preparedJob();
   await publish(job);
   vi.mocked(finalizeChapterStorageTransfer).mockRejectedValueOnce(new Error("Storage disconnected"));
-  await expect(recoverSourceChapterRenumbersInDb(db)).rejects.toThrow("Storage disconnected");
+  await expect(recoverSourceChapterRenumbers()).rejects.toThrow("Storage disconnected");
   await expect(scanStoredNovelChaptersToCache(db, 7, directory, { chapters: [], downloadRevision: 0 })).rejects.toThrow("reconciliation is pending");
   expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()).toEqual({ count: 3 });
-  await recoverSourceChapterRenumbersInDb(db);
+  await recoverSourceChapterRenumbers();
   expect([...state.payloads.keys()]).toEqual([directory + "/1", directory + "/3"]);
 });
 
@@ -343,7 +352,7 @@ it("enforces the server mapping and actual-path boundaries before local file cha
 it("refuses to apply a retained journal to a different restored database state", async () => {
   await preparedJob();
   sqlite.prepare("UPDATE chapter SET chapter_number='5000' WHERE id=11").run();
-  await expect(recoverSourceChapterRenumbersInDb(db)).rejects.toThrow("does not match the current database");
+  await expect(recoverSourceChapterRenumbers()).rejects.toThrow("does not match the current database");
   expect(rollbackChapterStorageTransfer).not.toHaveBeenCalled();
   expect(finalizeChapterStorageTransfer).not.toHaveBeenCalled();
   expect(state.payloads.has(directory + "/1000")).toBe(true);
@@ -353,7 +362,7 @@ it("refuses to apply a retained journal to a different restored database state",
 it("retains both copies when an uncommitted journal has a different restored metadata baseline", async () => {
   await preparedJob();
   sqlite.prepare("UPDATE work_metadata_file_cache SET fingerprint='restored-document' WHERE novel_id=7").run();
-  await expect(recoverSourceChapterRenumbersInDb(db)).rejects.toThrow("metadata changed");
+  await expect(recoverSourceChapterRenumbers()).rejects.toThrow("metadata changed");
   expect(rollbackChapterStorageTransfer).not.toHaveBeenCalled();
   expect(state.payloads.has(directory + "/1000")).toBe(true);
   expect(state.payloads.has(directory + "/1")).toBe(true);
