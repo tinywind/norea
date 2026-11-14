@@ -96,9 +96,6 @@
     }
   },
   "plugins": {
-    "sql": {
-      "preload": ["sqlite:norea.db"]
-    },
     "deep-link": {
       "mobile": [
         {

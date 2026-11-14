@@ -4,12 +4,16 @@ use sqlx::migrate::{Migration as SqlxMigration, MigrationType, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
 use sqlx::SqlitePool;
 use tauri::{AppHandle, Manager};
-use tauri_plugin_sql::{DbInstances, DbPool, Migration, MigrationKind};
 
-const DB_URL: &str = "sqlite:norea.db";
-const READ_DB_URL: &str = "sqlite:norea-readonly.db";
 const DB_FILE: &str = "norea.db";
 const DB_BUSY_TIMEOUT_MS: u64 = 5000;
+
+#[derive(Debug, Clone, Copy)]
+pub struct SchemaMigration {
+    pub version: i64,
+    pub description: &'static str,
+    pub sql: &'static str,
+}
 
 #[derive(Clone)]
 pub struct AppDatabase {
@@ -66,79 +70,67 @@ fn run_async_command<F: std::future::Future>(command: F) -> F::Output {
     }
 }
 
-pub fn schema_migrations() -> Vec<Migration> {
+pub fn schema_migrations() -> Vec<SchemaMigration> {
     vec![
-        Migration {
+        SchemaMigration {
             version: 1,
             description: "create current application schema",
             sql: include_str!("schema.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 2,
             description: "persist immutable VPN download plans",
             sql: include_str!("migrations/0002_vpn_download_plans.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 3,
             description: "persist batch-wide VPN profile exclusions",
             sql: include_str!("migrations/0003_vpn_download_profile_issues.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 4,
             description: "persist chapter download failures and retry budgets",
             sql: include_str!("migrations/0004_chapter_download_failures.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 5,
             description: "persist novel download goals",
             sql: include_str!("migrations/0005_novel_download_goals.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 6,
             description: "allow an explicit no-download goal and persist goal exclusions",
             sql: include_str!("migrations/0006_download_goal_opt_out.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 7,
             description: "record novel freshness and chapters found by checks",
             sql: include_str!("migrations/0007_novel_freshness.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 8,
             description: "allow several plugin repositories and record plugin publishers",
             sql: include_str!("migrations/0008_plugin_repositories.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 9,
             description: "record VPN download page timeouts and site refusals as profile problems",
             sql: include_str!("migrations/0009_vpn_profile_issue_page_causes.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 10,
             description: "preserve source chapter provenance and user composition",
             sql: include_str!("migrations/0010_novel_chapter_composition.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 11,
             description: "persist cross-device personal state intents and receipts",
             sql: include_str!("migrations/0011_user_state_journal.sql"),
-            kind: MigrationKind::Up,
         },
-        Migration {
+        SchemaMigration {
             version: 12,
             description: "journal chapter path rewrites and incomplete media bodies for content sync",
             sql: include_str!("migrations/0012_content_sync_journal_triggers.sql"),
-            kind: MigrationKind::Up,
         },
     ]
 }
@@ -158,6 +150,7 @@ pub fn sqlx_migrations() -> Vec<SqlxMigration> {
         .collect()
 }
 
+#[cfg(test)]
 async fn open_sqlite_pools(path: &Path) -> Result<(SqlitePool, SqlitePool), sqlx::Error> {
     let options = SqliteConnectOptions::new()
         .filename(path)
@@ -215,18 +208,8 @@ pub fn install_sqlite_pools(app: &AppHandle) -> Result<(), String> {
             .map_err(|err| format!("database: app config dir: {err}"))?;
         fs::create_dir_all(&db_dir).map_err(|err| format!("database: create db dir: {err}"))?;
 
-        let (writer, reader) = open_sqlite_pools(&db_dir.join(DB_FILE))
-            .await
-            .map_err(|err| format!("database: open sqlite pools: {err}"))?;
-
-        app.manage(AppDatabase::from_pools(writer.clone(), reader.clone()));
-
-        {
-            let instances = app.state::<DbInstances>();
-            let mut guard = instances.0.write().await;
-            let _ = guard.insert(DB_URL.to_string(), DbPool::Sqlite(writer));
-            let _ = guard.insert(READ_DB_URL.to_string(), DbPool::Sqlite(reader));
-        }
+        let pools = open_and_migrate_pools(&db_dir.join(DB_FILE)).await?;
+        app.manage(pools);
         Ok(())
     })
 }
@@ -738,5 +721,32 @@ mod tests {
             .unwrap();
         assert_eq!(value, 42);
         pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn open_and_migrate_pools_creates_and_reopens_existing_database_cleanly() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+
+        let db = open_and_migrate_pools(&path).await.unwrap();
+        sqlx::query("INSERT INTO novel(id, plugin_id, path, name, in_library) VALUES (1, 'source', '/book', 'Saved Book', 1)")
+            .execute(db.writer())
+            .await
+            .unwrap();
+        let committed: String = sqlx::query_scalar("SELECT name FROM novel WHERE id = 1")
+            .fetch_one(db.reader())
+            .await
+            .unwrap();
+        assert_eq!(committed, "Saved Book");
+        db.close().await;
+
+        let reopened = open_and_migrate_pools(&path).await.unwrap();
+        let retained: (String, i64) =
+            sqlx::query_as("SELECT name, in_library FROM novel WHERE id = 1")
+                .fetch_one(reopened.reader())
+                .await
+                .unwrap();
+        assert_eq!(retained, ("Saved Book".to_string(), 1));
+        reopened.close().await;
     }
 }

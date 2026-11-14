@@ -9,7 +9,6 @@ mod backup;
 mod chapter_media;
 mod content_sync;
 mod database;
-mod database_transaction;
 mod db;
 mod device_backup;
 mod desktop_file_open;
@@ -79,7 +78,6 @@ pub fn run() {
     if let Err(error) = app_logging::initialize("io.github.tinywind.norea") {
         eprintln!("Application logging initialization failed: {error}");
     }
-    let migrations = database::schema_migrations();
 
     let plugin_vpn = plugin_vpn::PluginVpnState::bind()
         .expect("could not start the plugin VPN proxy");
@@ -147,7 +145,6 @@ pub fn run() {
         .manage(android_file_open::AndroidOpenFileState::default())
         .manage(desktop_open_files)
         .manage(native_stream::NativeStreamState::default())
-        .manage(database_transaction::DatabaseTransactionState::default())
         .manage(db::work_metadata::WorkMetadataRecoveryState::default())
         .manage(task_notifications::TaskNotificationState::default())
         .manage(plugin_vpn)
@@ -164,11 +161,6 @@ pub fn run() {
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_notification::init())
         .plugin(tauri_plugin_opener::init())
-        .plugin(
-            tauri_plugin_sql::Builder::default()
-                .add_migrations("sqlite:norea.db", migrations)
-                .build(),
-        )
         .register_uri_scheme_protocol("norea-media", |ctx, request| {
             chapter_media::norea_media_protocol_response(ctx.app_handle(), request)
         })
@@ -387,12 +379,6 @@ pub fn run() {
             db::content_sync::db_content_deletion_verify_download_clear,
             db::content_sync::db_content_deletion_commit_download_clear,
             db::content_sync::db_content_deletion_list_novel_chapter_ids,
-            database_transaction::database_transaction_begin,
-            database_transaction::database_transaction_execute,
-            database_transaction::database_transaction_select,
-            database_transaction::database_transaction_commit,
-            database_transaction::database_transaction_rollback,
-            database_transaction::database_transaction_reset,
             content_sync::content_sync_create_stage,
             content_sync::content_sync_snapshot,
             content_sync::content_sync_fingerprint,
