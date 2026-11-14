@@ -1,6 +1,7 @@
 import type Database from "@tauri-apps/plugin-sql";
 import type { DbMutationEnvelope } from "../db/ipc";
 import { withChapterDownloadSnapshotReads } from "../lib/chapter-download-writes";
+import { createChapterIpcHandler } from "./mock-chapter-ipc";
 import {
   parseUserStateCurrentSnapshot,
   type UserStateCurrentApplyResult,
@@ -74,11 +75,18 @@ export interface UserStateIpcBridgeOptions {
 }
 
 export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
+  const chapterIpc = createChapterIpcHandler({
+    getDb: options.getDb,
+    runTransaction: options.runTransaction,
+  });
+
   return {
     async handle(
       command: string,
       args: Record<string, unknown> = {},
     ): Promise<{ handled: true; result: unknown } | { handled: false }> {
+      const chapterHandled = await chapterIpc.handle(command, args);
+      if (chapterHandled.handled) return chapterHandled;
       if (command === "db_user_state_set_current_mode") {
         return { handled: true, result: null };
       }

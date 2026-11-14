@@ -1,4 +1,5 @@
-import { getDb, getReadOnlyDb, type DatabaseReadMode } from "../db/client";
+import type { DatabaseReadMode } from "../db/client";
+import { invokeDbQuery } from "../db/ipc";
 import {
   adoptStoredChapterContentMetadata,
   markStoredChapterContentMissing,
@@ -7,7 +8,6 @@ import {
   type ChapterMutationResult,
   type SaveChapterContentOptions,
 } from "../db/queries/chapter";
-import { sqliteBoolean } from "../db/sqlite-value";
 import {
   DEFAULT_CHAPTER_CONTENT_TYPE,
   normalizeChapterContentType,
@@ -46,9 +46,9 @@ interface ChapterStorageRow {
   contentBytes: number;
   sourceContentType: string;
   storedContentType: string | null;
-  isDownloaded: unknown;
+  isDownloaded: boolean | number;
   mediaBytes: number;
-  mediaRepairNeeded: unknown;
+  mediaRepairNeeded: boolean | number;
   novelId: number;
   novelName: string;
   novelPath: string;
@@ -90,46 +90,7 @@ export interface ChapterStorageRestoreOptions {
   limit?: number;
 }
 
-const SELECT_CHAPTER_STORAGE_ROW = `
-  SELECT
-    c.id AS chapterId,
-    c.novel_id AS novelId,
-    c.name AS chapterName,
-    c.chapter_number AS chapterNumber,
-    c.position,
-    c.is_downloaded AS isDownloaded,
-    c.content_type AS sourceContentType,
-    c.stored_content_type AS storedContentType,
-    c.content_bytes AS contentBytes,
-    c.media_bytes AS mediaBytes,
-    c.media_repair_needed AS mediaRepairNeeded,
-    n.plugin_id AS pluginId,
-    n.path AS novelPath,
-    n.source_novel_id AS sourceNovelId,
-    n.name AS novelName
-  FROM chapter c
-  JOIN novel n ON n.id = c.novel_id
-`;
-
-const SELECT_CHAPTER_STORAGE_METADATA_ROW = `
-  ${SELECT_CHAPTER_STORAGE_ROW}
-  WHERE c.id = $1
-`;
-
 let activeStorageMirrorSweepCancel: (() => void) | null = null;
-
-const SELECT_DOWNLOADED_CHAPTER_STORAGE_ROWS_BY_NOVEL = `
-  ${SELECT_CHAPTER_STORAGE_ROW}
-  WHERE c.novel_id = $1
-    AND c.is_downloaded = 1
-  ORDER BY c.position, c.id
-`;
-
-const SELECT_DOWNLOADED_CHAPTER_STORAGE_ROWS = `
-  ${SELECT_CHAPTER_STORAGE_ROW}
-  WHERE c.is_downloaded = 1
-  ORDER BY c.novel_id, c.position, c.id
-`;
 
 function storageMetadata(
   row: ChapterStorageRow,
@@ -159,13 +120,11 @@ function storageMetadata(
 async function getChapterStorageRow(
   chapterId: number,
   readMode: DatabaseReadMode = "queued",
-) {
-  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
-  const rows = await db.select<ChapterStorageRow[]>(
-    SELECT_CHAPTER_STORAGE_METADATA_ROW,
-    [chapterId],
-  );
-  return rows[0] ?? null;
+): Promise<ChapterStorageRow | null> {
+  return invokeDbQuery<ChapterStorageRow | null>("db_chapter_get_storage_row", {
+    chapterId,
+    readMode,
+  });
 }
 
 async function getChapterStorageMetadata(chapterId: number) {
@@ -266,8 +225,8 @@ async function reconcileStoredChapterStorageRow(
       row.contentBytes === artifacts.contentBytes &&
       row.mediaBytes === artifacts.mediaBytes &&
       row.storedContentType === contentType &&
-      sqliteBoolean(row.mediaRepairNeeded) === !artifacts.mediaComplete &&
-      sqliteBoolean(row.isDownloaded) === artifacts.mediaComplete;
+      Boolean(row.mediaRepairNeeded) === !artifacts.mediaComplete &&
+      Boolean(row.isDownloaded) === artifacts.mediaComplete;
     if (readMode === "queued" || !metadataMatchesArtifacts) {
       await adoptStoredChapterContentMetadata(
         row.chapterId,
@@ -278,7 +237,7 @@ async function reconcileStoredChapterStorageRow(
       );
     }
   } else if (
-    sqliteBoolean(row.isDownloaded) ||
+    Boolean(row.isDownloaded) ||
     row.contentBytes > 0 ||
     row.mediaBytes > 0
   ) {
@@ -330,21 +289,25 @@ export async function readStoredChapterContentMirror(
   chapterId: number,
   readMode: DatabaseReadMode = "queued",
 ): Promise<string | null> {
-  return (await reconcileAndReadStoredChapterContent(chapterId, readMode)).content;
+  return (await reconcileAndReadStoredChapterContent(chapterId, readMode))
+    .content;
 }
 
 export async function reconcileAndReadStoredChapterContent(
   chapterId: number,
   readMode: DatabaseReadMode = "queued",
 ): Promise<ReconciledStoredChapterContent> {
-  const reconciled = await reconcileStoredChapterContentState(chapterId, readMode);
+  const reconciled = await reconcileStoredChapterContentState(
+    chapterId,
+    readMode,
+  );
   const { artifacts } = reconciled;
   if (artifacts.status !== "present" || !artifacts.contentFile) {
     return { artifacts, content: null };
   }
   const content =
     reconciled.content ??
-    await readStoredChapterContentFile(artifacts.contentFile);
+    (await readStoredChapterContentFile(artifacts.contentFile));
   if (content !== null) return { artifacts, content };
   forgetResolvedChapterStorageDir(chapterId);
   await markStoredChapterContentMissing(chapterId);
@@ -415,13 +378,7 @@ export async function saveStoredChapterContent(
   options: SaveChapterContentOptions = {},
 ): Promise<ChapterMutationResult> {
   await writeStoredChapterContent(chapterId, html, contentType);
-  const result = await saveChapterContentMetadata(
-    chapterId,
-    html,
-    contentType,
-    options,
-  );
-  return result;
+  return saveChapterContentMetadata(chapterId, html, contentType, options);
 }
 
 export async function saveStoredChapterPartialContent(
@@ -430,12 +387,7 @@ export async function saveStoredChapterPartialContent(
   contentType: ChapterContentType = DEFAULT_CHAPTER_CONTENT_TYPE,
 ): Promise<ChapterMutationResult> {
   await writeStoredChapterPartialContent(chapterId, html);
-  const result = await saveChapterPartialContentMetadata(
-    chapterId,
-    html,
-    contentType,
-  );
-  return result;
+  return saveChapterPartialContentMetadata(chapterId, html, contentType);
 }
 
 export async function clearStoredChapterContentMirror(
@@ -457,19 +409,18 @@ export async function clearStoredNovelChapterContentMirrors(
   novelId: number,
 ): Promise<void> {
   if (!isTauriRuntime()) return;
-  const db = await getDb();
-  const rows = await db.select<ChapterStorageRow[]>(
-    SELECT_DOWNLOADED_CHAPTER_STORAGE_ROWS_BY_NOVEL,
-    [novelId],
+  const rows = await invokeDbQuery<ChapterStorageRow[]>(
+    "db_chapter_list_storage_rows",
+    { input: { downloadedByNovelId: novelId } },
   );
   await Promise.all(rows.map(clearStoredChapterContentRow));
 }
 
 export async function clearAllStoredChapterContentMirrors(): Promise<void> {
   if (!isTauriRuntime()) return;
-  const db = await getDb();
-  const rows = await db.select<ChapterStorageRow[]>(
-    SELECT_DOWNLOADED_CHAPTER_STORAGE_ROWS,
+  const rows = await invokeDbQuery<ChapterStorageRow[]>(
+    "db_chapter_list_storage_rows",
+    { input: { allDownloaded: true } },
   );
   await Promise.all(rows.map(clearStoredChapterContentRow));
 }
@@ -486,28 +437,20 @@ export async function restoreChapterContentStorageMirror(
     };
   }
 
-  const db = await getDb();
-  const params: unknown[] = [];
-  const clauses = ["n.is_local = 0"];
-  if (options.chapterIds && options.chapterIds.size > 0) {
-    const placeholders = [...options.chapterIds].map((chapterId) => {
-      params.push(chapterId);
-      return `$${params.length}`;
-    });
-    clauses.push(`c.id IN (${placeholders.join(", ")})`);
-  } else if (options.afterChapterId && options.afterChapterId > 0) {
-    params.push(options.afterChapterId);
-    clauses.push(`c.id > $${params.length}`);
-  }
   const limit =
-    options.limit === undefined ? null : clampBackfillLimit(options.limit);
-  const limitClause = limit ? `\n  LIMIT $${params.length + 1}` : "";
-  if (limit) params.push(limit);
-  const rows = await db.select<ChapterStorageRow[]>(
-    `${SELECT_CHAPTER_STORAGE_ROW}
-  WHERE ${clauses.join(" AND ")}
-  ORDER BY c.id${limitClause}`,
-    params,
+    options.limit === undefined ? undefined : clampBackfillLimit(options.limit);
+  const rows = await invokeDbQuery<ChapterStorageRow[]>(
+    "db_chapter_list_storage_rows",
+    {
+      input: {
+        ...(options.chapterIds && options.chapterIds.size > 0
+          ? { chapterIds: [...options.chapterIds] }
+          : options.afterChapterId && options.afterChapterId > 0
+            ? { afterChapterId: options.afterChapterId }
+            : {}),
+        ...(limit !== undefined ? { limit } : {}),
+      },
+    },
   );
   let restoredChapters = 0;
   for (const row of rows) {

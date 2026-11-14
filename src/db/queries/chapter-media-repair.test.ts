@@ -1,44 +1,74 @@
-import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 
-vi.mock("../client", () => ({ getDb: vi.fn() }));
-import { getDb } from "../client";
-import { markChapterMediaRepairPending, saveChapterContentMetadata, saveChapterPartialContentMetadata } from "./chapter";
+const invokeMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("../../lib/observability", () => ({
+  startPerformanceObservation: () => () => undefined,
+  recordPerformanceObservation: () => undefined,
+}));
 
-let sqlite: DatabaseSync;
+import {
+  markChapterMediaRepairPending,
+  saveChapterContentMetadata,
+  saveChapterPartialContentMetadata,
+} from "./chapter";
+
 beforeEach(() => {
-  sqlite = new DatabaseSync(":memory:");
-  sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
-  sqlite.exec(`INSERT INTO novel(id,plugin_id,path,name) VALUES (1,'source','/book','Book');
-    INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,media_repair_needed,media_bytes)
-    VALUES (1,1,'/1','Chapter',1,0,1,123)`);
-  vi.mocked(getDb).mockResolvedValue({
-    execute: async (sql: string, params: unknown[] = []) => {
-      const result = sqlite.prepare(sql).run(Object.fromEntries(params.map((value, index) => [`$${index + 1}`, value])) as never);
-      return { rowsAffected: Number(result.changes) };
-    },
-  } as never);
+  invokeMock.mockReset();
 });
-afterEach(() => sqlite.close());
 
-it("retains the incomplete flag after a partial repair until final content is published", async () => {
-  const html = '<img src="norea-media://reader-asset/good.png"><img src="norea-media://reader-asset/missing.png">';
+it("sends partial repair flag separately from final content metadata", async () => {
+  const html =
+    '<img src="norea-media://reader-asset/good.png"><img src="https://cdn.example/missing.png">';
+  invokeMock
+    .mockResolvedValueOnce({ value: { rowsAffected: 1 }, effects: {} })
+    .mockResolvedValueOnce({ value: { rowsAffected: 1 }, effects: {} });
+
   await saveChapterPartialContentMetadata(1, html, "html");
-  expect(sqlite.prepare("SELECT is_downloaded,media_repair_needed,media_bytes FROM chapter").get()).toEqual({
-    is_downloaded: 0, media_repair_needed: 1, media_bytes: 123,
-  });
-  await saveChapterContentMetadata(1, html, "html", { mediaBytes: 456 });
-  expect(sqlite.prepare("SELECT is_downloaded,media_repair_needed,media_bytes FROM chapter").get()).toEqual({
-    is_downloaded: 1, media_repair_needed: 0, media_bytes: 456,
-  });
+  expect(invokeMock).toHaveBeenNthCalledWith(
+    1,
+    "db_chapter_save_partial_content_metadata",
+    {
+      input: {
+        chapterId: 1,
+        contentBytes: new TextEncoder().encode(html).byteLength,
+        contentType: "html",
+        mediaRepairNeeded: true,
+      },
+    },
+  );
+
+  const repairedHtml =
+    '<img src="norea-media://reader-asset/good.png"><img src="norea-media://reader-asset/fixed.png">';
+  await saveChapterContentMetadata(1, repairedHtml, "html", { mediaBytes: 456 });
+  expect(invokeMock).toHaveBeenNthCalledWith(
+    2,
+    "db_chapter_save_content_metadata",
+    {
+      input: {
+        chapterId: 1,
+        contentBytes: new TextEncoder().encode(repairedHtml).byteLength,
+        contentType: "html",
+        mediaBytes: 456,
+        mediaRepairNeeded: false,
+      },
+    },
+  );
 });
 
-it("marks repair pending without losing existing byte counts", async () => {
-  sqlite.exec("UPDATE chapter SET is_downloaded=1, media_repair_needed=0");
-  expect(await markChapterMediaRepairPending(1)).toEqual({ rowsAffected: 1 });
-  expect(sqlite.prepare("SELECT is_downloaded,media_repair_needed,media_bytes FROM chapter").get()).toEqual({
-    is_downloaded: 0, media_repair_needed: 1, media_bytes: 123,
+it("marks repair pending via db_chapter_mark_media_repair_pending", async () => {
+  invokeMock
+    .mockResolvedValueOnce({ value: { rowsAffected: 1 }, effects: {} })
+    .mockResolvedValueOnce({ value: { rowsAffected: 0 }, effects: {} });
+
+  await expect(markChapterMediaRepairPending(1)).resolves.toEqual({
+    rowsAffected: 1,
   });
-  expect(await markChapterMediaRepairPending(99)).toEqual({ rowsAffected: 0 });
+  expect(invokeMock).toHaveBeenCalledWith(
+    "db_chapter_mark_media_repair_pending",
+    { chapterId: 1 },
+  );
+  await expect(markChapterMediaRepairPending(99)).resolves.toEqual({
+    rowsAffected: 0,
+  });
 });

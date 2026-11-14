@@ -1,51 +1,107 @@
-import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 
-vi.mock("../client", () => ({ getDb: vi.fn() }));
-import { getDb } from "../client";
+const invokeMock = vi.hoisted(() => vi.fn());
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("../../lib/observability", () => ({
+  startPerformanceObservation: () => () => undefined,
+  recordPerformanceObservation: () => undefined,
+}));
+
 import { countNewLibraryChaptersSince, listLibraryUpdatesPage } from "./chapter";
 
-let sqlite: DatabaseSync;
-const params = (values: unknown[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never;
-
 beforeEach(() => {
-  sqlite = new DatabaseSync(":memory:");
-  const registration = readFileSync("src-tauri/src/database.rs", "utf8");
-  for (const match of registration.matchAll(/include_str!\("([^"]+)"\)/g)) {
-    sqlite.exec(readFileSync(`src-tauri/src/${match[1]}`, "utf8"));
-  }
-  sqlite.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'s','/a','Library',1),(2,'s','/b','Browsed',0);
-    INSERT INTO chapter(id,novel_id,path,name,position,unread,found_at,found_by_check) VALUES
-      (1,1,'/1','Imported',1,1,100,0),(2,1,'/2','Found',2,1,200,1),(3,1,'/3','Found and read',3,0,300,1),
-      (4,1,'/4','Found later',4,1,400,1),(5,2,'/5','Outside library',1,1,500,1)`);
-  vi.mocked(getDb).mockResolvedValue({
-    select: async (sql: string, values: unknown[] = []) => sqlite.prepare(sql).all(params(values)),
-  } as never);
+  invokeMock.mockReset();
 });
 
-afterEach(() => { sqlite.close(); });
-
-it("lists unread library chapters found by checks, and every unread one in the backlog", async () => {
-  expect((await listLibraryUpdatesPage(10)).updates.map((row) => row.chapterId)).toEqual([4, 2]);
-  expect((await listLibraryUpdatesPage(10, null, "backlog")).updates.map((row) => row.chapterId)).toEqual([4, 2, 1]);
-});
-
-it("counts the new chapters found since Updates was last opened", async () => {
-  expect(await countNewLibraryChaptersSince(0)).toBe(2);
-  expect(await countNewLibraryChaptersSince(200)).toBe(1);
-  expect(await countNewLibraryChaptersSince(400)).toBe(0);
-});
-
-it("sorts new chapters by a parseable source release time and pages through it", async () => {
-  sqlite.exec(`UPDATE chapter SET release_time='1970-01-01T00:01:40Z' WHERE id=4;
-    UPDATE chapter SET release_time='3 days ago' WHERE id=2;
-    INSERT INTO chapter(id,novel_id,path,name,position,unread,found_at,found_by_check,release_time) VALUES
-      (6,1,'/6','Released later than found',6,1,250,1,'2099-01-01')`);
+it("requests new and backlog scopes with explicit read modes", async () => {
+  invokeMock
+    .mockResolvedValueOnce([
+      {
+        chapterId: 6,
+        chapterPath: "/6",
+        novelId: 1,
+        pluginId: "s",
+        novelSourceNovelId: null,
+        novelPath: "/a",
+        chapterName: "Six",
+        contentType: "html",
+        position: 6,
+        sortAt: 250,
+        isDownloaded: false,
+        novelName: "Library",
+        novelCover: null,
+        novelIsLocal: false,
+      },
+      {
+        chapterId: 2,
+        chapterPath: "/2",
+        novelId: 1,
+        pluginId: "s",
+        novelSourceNovelId: null,
+        novelPath: "/a",
+        chapterName: "Two",
+        contentType: "html",
+        position: 2,
+        sortAt: 200,
+        isDownloaded: false,
+        novelName: "Library",
+        novelCover: null,
+        novelIsLocal: false,
+      },
+      {
+        chapterId: 4,
+        chapterPath: "/4",
+        novelId: 1,
+        pluginId: "s",
+        novelSourceNovelId: null,
+        novelPath: "/a",
+        chapterName: "Four",
+        contentType: "html",
+        position: 4,
+        sortAt: 100,
+        isDownloaded: false,
+        novelName: "Library",
+        novelCover: null,
+        novelIsLocal: false,
+      },
+    ])
+    .mockResolvedValueOnce([]);
 
   const first = await listLibraryUpdatesPage(2);
-  expect(first.updates.map((row) => [row.chapterId, row.sortAt])).toEqual([[6, 250], [2, 200]]);
-  const second = await listLibraryUpdatesPage(2, first.nextCursor);
-  expect(second.updates.map((row) => [row.chapterId, row.sortAt])).toEqual([[4, 100]]);
-  expect((await listLibraryUpdatesPage(10, null, "backlog")).updates.map((row) => row.sortAt)).toEqual([400, 250, 200, 100]);
+  expect(first.updates.map((row) => [row.chapterId, row.sortAt])).toEqual([
+    [6, 250],
+    [2, 200],
+  ]);
+  expect(first.hasMore).toBe(true);
+  expect(first.nextCursor).toEqual({ chapterId: 2, sortAt: 200, position: 2 });
+
+  await listLibraryUpdatesPage(2, first.nextCursor, "backlog", "committed");
+  expect(invokeMock).toHaveBeenNthCalledWith(
+    2,
+    "db_chapter_list_library_updates",
+    {
+      input: {
+        limit: 3,
+        cursor: { chapterId: 2, sortAt: 200, position: 2 },
+        scope: "backlog",
+      },
+      readMode: "committed",
+    },
+  );
+});
+
+it("counts new chapters found since Updates was last opened", async () => {
+  invokeMock.mockResolvedValueOnce(2).mockResolvedValueOnce(0);
+
+  await expect(countNewLibraryChaptersSince(0)).resolves.toBe(2);
+  expect(invokeMock).toHaveBeenNthCalledWith(1, "db_chapter_count_new_since", {
+    seenAt: 0,
+    readMode: "queued",
+  });
+
+  await expect(countNewLibraryChaptersSince(400, "committed")).resolves.toBe(0);
+  expect(invokeMock).toHaveBeenNthCalledWith(2, "db_chapter_count_new_since", {
+    seenAt: 400,
+    readMode: "committed",
+  });
 });

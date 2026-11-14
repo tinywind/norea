@@ -69,7 +69,15 @@ beforeEach(() => {
     throw new Error(`Unexpected database: ${url}`);
   });
   invokeMock.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
-    const { getDb, getReadOnlyDb } = await import("./client");
+    const { getDb, getReadOnlyDb, runDatabaseTransaction } = await import("./client");
+    const { createChapterIpcHandler } = await import("../test/mock-chapter-ipc");
+    const chapterIpc = createChapterIpcHandler({
+      getDb,
+      getReadOnlyDb,
+      runTransaction: runDatabaseTransaction,
+    });
+    const chapterHandled = await chapterIpc.handle(command, args);
+    if (chapterHandled.handled) return chapterHandled.result;
     const db = await (args.mode === "committed" ? getReadOnlyDb() : getDb());
     if (command === "db_category_list") {
       const rows = await db.select<Array<{ id: number; name: string; sort: number; isSystem: number; novelCount: number }>>(

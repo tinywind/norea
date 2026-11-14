@@ -17,9 +17,26 @@ vi.mock("./novel-cover-storage", () => ({ saveNovelCoverFromSource: vi.fn(), inv
 vi.mock("./tasks/download-cache-delete", () => ({ cancelNovelChapterDownloadWork: vi.fn(async () => undefined) }));
 vi.mock("./content-sync/sync", () => ({ runContentSyncOperation: (run: () => Promise<unknown>) => run() }));
 vi.mock("../store/content-sync", () => ({ useContentSyncStore: { getState: () => ({ serverUrl: "https://content.test" }) } }));
-vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: { input?: { operation: string; path?: string; body?: number[] } }) => {
-  if (command !== "work_metadata_operation" || !args.input) throw new Error("Unexpected native call: " + command);
-  const input = args.input;
+vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: Record<string, unknown> = {}) => {
+  const { createChapterIpcHandler } = await import("../test/mock-chapter-ipc");
+  const chapterIpc = createChapterIpcHandler({
+    getDb: () => client.getDb(),
+    runTransaction: (run, remote) => client.runDatabaseTransaction(run, remote),
+  });
+  const handled = await chapterIpc.handle(command, args);
+  if (handled.handled) return handled.result;
+  if (command === "db_novel_freshness_record_cover_fetched") {
+    const currentDb = await client.getDb();
+    await currentDb.execute(
+      `INSERT INTO novel_freshness(novel_id,cover_fetched_at)
+       SELECT $1,$2 WHERE EXISTS(SELECT 1 FROM novel WHERE id=$1)
+       ON CONFLICT(novel_id) DO UPDATE SET cover_fetched_at=excluded.cover_fetched_at`,
+      [args.novelId, args.nowSeconds],
+    );
+    return { value: null, effects: {} };
+  }
+  const input = args.input as { operation: string; path?: string; body?: number[] } | undefined;
+  if (command !== "work_metadata_operation" || !input) throw new Error("Unexpected native call: " + command);
   if (input.operation === "read") return { body: state.metadata.get(input.path!) ?? null };
   if (input.operation === "write") state.metadata.set(input.path!, [...input.body!]);
   if (input.operation === "remove") state.metadata.delete(input.path!);

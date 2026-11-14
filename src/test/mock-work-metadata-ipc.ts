@@ -2,6 +2,7 @@ import type Database from "@tauri-apps/plugin-sql";
 import { base64ToBytes } from "../lib/base64";
 import { currentChapterDownloadRevision } from "../lib/chapter-download-writes";
 import { mergeIncomingNovelMetadata } from "../lib/work-metadata/merge";
+import { createChapterIpcHandler } from "./mock-chapter-ipc";
 import {
   availableNovelMetadataDirectory,
   discoverStoredNovelCover,
@@ -102,6 +103,10 @@ export function createWorkMetadataIpcHandler(
   options: WorkMetadataIpcBridgeOptions,
 ) {
   let recoveryController: AbortController | null = null;
+  const chapterIpc = createChapterIpcHandler({
+    getDb: options.getDb,
+    runTransaction: options.runTransaction,
+  });
 
   return {
     cancelRecovery(): void {
@@ -112,6 +117,8 @@ export function createWorkMetadataIpcHandler(
       command: string,
       args: Record<string, unknown> = {},
     ): Promise<{ handled: true; result: unknown } | { handled: false }> {
+      const chapterHandled = await chapterIpc.handle(command, args);
+      if (chapterHandled.handled) return chapterHandled;
       if (command === "db_work_metadata_cancel_recovery") {
         recoveryController?.abort();
         recoveryController = null;

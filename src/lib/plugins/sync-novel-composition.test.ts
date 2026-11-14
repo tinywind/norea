@@ -8,6 +8,14 @@ import type { Plugin, SourceNovel } from "./types";
 vi.mock("../../db/client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
+    const { createChapterIpcHandler } = await import("../../test/mock-chapter-ipc");
+    const chapterIpc = createChapterIpcHandler({
+      getDb: () => vi.mocked(getDb)(),
+      getReadOnlyDb: () => vi.mocked(getReadOnlyDb)(),
+      runTransaction: (run, remote) => vi.mocked(runDatabaseTransaction)(run, remote),
+    });
+    const handled = await chapterIpc.handle(command, args);
+    if (handled.handled) return handled.result;
     if (command === "db_novel_freshness_record_cover_fetched") {
       const currentDb = await vi.mocked(getDb)();
       await currentDb.execute(

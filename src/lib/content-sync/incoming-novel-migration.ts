@@ -1,7 +1,7 @@
 import type Database from "@tauri-apps/plugin-sql";
 import { runDatabaseTransaction } from "../../db/client";
 import { readWorkMetadataSyncFile } from "../../db/work-metadata";
-import { listChaptersByNovel, upsertSourceChaptersInDb, type ChapterListRow, type InsertChapterInput } from "../../db/queries/chapter";
+import { listChaptersByNovel, upsertSourceChapters, type ChapterListRow, type InsertChapterInput } from "../../db/queries/chapter";
 import { findNovelBySource } from "../../db/queries/novel";
 import { canonicalMetadataValue, parseNovelMetadata } from "../work-metadata/schema";
 import { installStoredNovelMetadata, readStoredNovelCover, readStoredNovelMetadata, type InstalledNovelMetadata } from "../work-metadata";
@@ -133,7 +133,7 @@ export async function applyIncomingNovelMigration(
     chapterInputs.set(decision.targetChapterPath, { novelId: target.id, path: decision.targetChapterPath, chapterNumber: decision.targetChapterNumber,
       name, position: number !== null && positions.has(number) ? positions.get(number)! : mapping!.target.position, page: "1" });
   }
-  if (!live.work.metadata.chapterComposition) await runDatabaseTransaction(db => upsertSourceChaptersInDb(db, [...chapterInputs.values()]), true);
+  if (!live.work.metadata.chapterComposition) await upsertSourceChapters([...chapterInputs.values()], { remoteContentSync: true });
   await rememberServerNovelSource(target.id, { serverUrl: server, workId: resolved.targetWork.id });
   const targets = new Map((await listChaptersByNovel(target.id)).map(chapter => [chapter.path, chapter]));
   const decisions: NovelMergeChapterDecision[] = [];

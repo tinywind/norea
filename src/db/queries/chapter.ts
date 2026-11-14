@@ -1,6 +1,3 @@
-import { remapUnattemptedChapterPathsInDb } from "../user-state-migration";
-import { deferUserStateForNovelInDb } from "../user-state";
-import { hasUserStateSchema, markPrivateChapterProgressInDb, recordChaptersInDb, recordNovelChaptersInDb, recordPublicNovelReadingInDb, recordResumeClearedInDb } from "../user-state-core";
 import {
   DEFAULT_CHAPTER_CONTENT_TYPE,
   normalizeChapterContentType,
@@ -8,6 +5,7 @@ import {
   type ChapterContentType,
 } from "../../lib/chapter-content";
 import { chapterMediaRepairFlag } from "../../lib/chapter-media-state";
+import type { ChapterSourceSnapshot } from "../../lib/chapter-composition";
 import {
   MAX_CHAPTER_BULK_INPUT_ROWS,
   MAX_CHAPTER_TITLE_BYTES,
@@ -17,21 +15,16 @@ import {
   assertByteBudget,
   clampRouteQueryLimit,
 } from "../../lib/performance-budgets";
-import { getDb, getReadOnlyDb, runDatabaseTransaction, type DatabaseReadMode } from "../client";
-import { sqliteBoolean } from "../sqlite-value";
-import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
-import { LOCAL_PLUGIN_ID } from "../../lib/plugins/types";
-import { parseChapterComposition, type ChapterSourceSnapshot } from "../../lib/chapter-composition";
-import type Database from "@tauri-apps/plugin-sql";
+import type { DatabaseReadMode } from "../client";
+import { invokeDbMutation, invokeDbQuery } from "../ipc";
 
-export async function findLocalImportedChapter(pathKey: string): Promise<{ id: number; novelId: number } | null> {
-  const db = await getDb();
-  const [chapter] = await db.select<{ id: number; novelId: number }[]>(
-    `SELECT c.id,c.novel_id AS novelId FROM chapter c JOIN novel n ON n.id=c.novel_id
-     WHERE n.plugin_id=$1 AND n.path=$2 AND n.is_local=1 AND c.path=$3`,
-    [LOCAL_PLUGIN_ID, LOCAL_NOVEL_PATH, `${pathKey}/chapter-0001`],
+export async function findLocalImportedChapter(
+  pathKey: string,
+): Promise<{ id: number; novelId: number } | null> {
+  return invokeDbQuery<{ id: number; novelId: number } | null>(
+    "db_chapter_find_local_imported",
+    { pathKey },
   );
-  return chapter ?? null;
 }
 
 export interface ChapterRow {
@@ -69,111 +62,18 @@ export function hasStoredChapterContent(
   return chapter.isDownloaded || chapter.contentBytes > 0;
 }
 
-type RawChapterListRow = Omit<
-  ChapterListRow,
-  | "bookmark"
-  | "unread"
-  | "isDownloaded"
-  | "sourceContentType"
-  | "contentType"
-  | "mediaRepairNeeded"
-> & {
-  bookmark: unknown;
-  unread: unknown;
-  isDownloaded: unknown;
-  sourceContentType: string | null;
-  storedContentType: string | null;
-  mediaRepairNeeded: unknown;
-};
-
-type RawChapterRow = RawChapterListRow;
-
-const CHAPTER_LIST_SELECT_FIELDS = `
-  id,
-  novel_id       AS novelId,
-  path,
-  name,
-  chapter_number AS chapterNumber,
-  position,
-  page,
-  bookmark,
-  unread,
-  progress,
-  is_downloaded  AS isDownloaded,
-  content_type   AS sourceContentType,
-  stored_content_type AS storedContentType,
-  content_bytes   AS contentBytes,
-  media_bytes     AS mediaBytes,
-  media_repair_needed AS mediaRepairNeeded,
-  release_time   AS releaseTime,
-  read_at        AS readAt,
-  created_at     AS createdAt,
-  found_at       AS foundAt,
-  updated_at     AS updatedAt
-`;
-
-const CHAPTER_DETAIL_SELECT_FIELDS = CHAPTER_LIST_SELECT_FIELDS;
-
 function getUtf8ByteLength(value: string): number {
   return new TextEncoder().encode(value).byteLength;
-}
-
-function normalizeChapterListRow(row: RawChapterListRow): ChapterListRow {
-  const { storedContentType: rawStoredContentType, ...chapter } = row;
-  const sourceContentType = normalizeChapterContentType(row.sourceContentType);
-  const storedContentType = rawStoredContentType
-    ? normalizeChapterContentType(rawStoredContentType)
-    : null;
-  return {
-    ...chapter,
-    bookmark: sqliteBoolean(row.bookmark),
-    unread: sqliteBoolean(row.unread),
-    isDownloaded: sqliteBoolean(row.isDownloaded),
-    sourceContentType,
-    contentType: storedContentType ?? sourceContentType,
-    mediaRepairNeeded: sqliteBoolean(row.mediaRepairNeeded),
-  };
-}
-
-function normalizeChapterRow(row: RawChapterRow): ChapterRow {
-  return normalizeChapterListRow(row);
-}
-
-async function withCompositionDisplay<T extends { novelId: number; path?: string; chapterPath?: string }>(
-  db: Pick<Database, "select">, rows: T[],
-): Promise<Array<T & { displayChapterNumber?: string | null; compositionSource?: ChapterSourceSnapshot }>> {
-  if (!rows.length) return rows;
-  const novelIds = [...new Set(rows.map(row => row.novelId))];
-  const stored = await db.select<{ novelId: number; payload: string }[]>(
-    "SELECT novel_id AS novelId,payload FROM novel_chapter_composition WHERE novel_id IN (" +
-      novelIds.map((_, index) => "$" + (index + 1)).join(",") + ")", novelIds,
-  );
-  const displays = new Map<number, Map<string, { displayChapterNumber: string; compositionSource: ChapterSourceSnapshot }>>();
-  for (const record of stored) {
-    if (typeof record.payload !== "string") continue;
-    const composition = parseChapterComposition(JSON.parse(record.payload));
-    displays.set(record.novelId, new Map(composition.entries.filter(entry => entry.user.included)
-      .map(entry => [entry.path, { displayChapterNumber: entry.user.chapterNumber ?? String(entry.user.order), compositionSource: entry.sources[entry.primarySource] }])));
-  }
-  return rows.map(row => {
-    const display = displays.get(row.novelId)?.get(row.path ?? row.chapterPath ?? "");
-    return display === undefined ? row : { ...row, ...display };
-  });
 }
 
 export async function listChaptersByNovel(
   novelId: number,
   readMode: DatabaseReadMode = "queued",
 ): Promise<ChapterListRow[]> {
-  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
-  const rows = await db.select<RawChapterListRow[]>(
-    `SELECT ${CHAPTER_LIST_SELECT_FIELDS}
-     FROM chapter
-     WHERE novel_id = $1
-     ORDER BY position, id`,
-    [novelId],
-  );
-  return withCompositionDisplay(db, rows.map(normalizeChapterListRow));
+  return invokeDbQuery<ChapterListRow[]>("db_chapter_list_by_novel", {
+    novelId,
+    readMode,
+  });
 }
 
 export interface LibraryDownloadChapter extends ChapterListRow {
@@ -183,21 +83,10 @@ export interface LibraryDownloadChapter extends ChapterListRow {
 export async function listLibraryDownloadChapters(
   novelId: number,
 ): Promise<LibraryDownloadChapter[]> {
-  const db = await getDb();
-  const rows = await db.select<
-    Array<RawChapterListRow & { isDownloadQueued: unknown }>
-  >(
-    `SELECT ${CHAPTER_LIST_SELECT_FIELDS},
-       EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id = chapter.id) AS isDownloadQueued
-     FROM chapter
-     WHERE novel_id = $1
-     ORDER BY position, id`,
-    [novelId],
+  return invokeDbQuery<LibraryDownloadChapter[]>(
+    "db_chapter_list_library_download",
+    { novelId },
   );
-  return withCompositionDisplay(db, rows.map((row) => ({
-    ...normalizeChapterListRow(row),
-    isDownloadQueued: sqliteBoolean(row.isDownloadQueued),
-  })));
 }
 
 /** One page, in id order, of a source novel's chapters with no stored body and no persisted download. */
@@ -205,47 +94,29 @@ export async function listUnqueuedChapterDownloads(
   novelId: number,
   afterChapterId = 0,
 ): Promise<ChapterListRow[]> {
-  const db = await getDb();
-  const rows = await db.select<RawChapterListRow[]>(
-    `SELECT ${CHAPTER_LIST_SELECT_FIELDS} FROM chapter
-     WHERE novel_id = $1 AND id > $2
-       AND EXISTS(SELECT 1 FROM novel n WHERE n.id = chapter.novel_id AND n.is_local = 0)
-       AND is_downloaded = 0 AND content_bytes <= 0
-       AND NOT EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id = chapter.id)
-     ORDER BY id LIMIT $3`,
-    [novelId, afterChapterId, MAX_ROUTE_QUERY_ROWS],
+  return invokeDbQuery<ChapterListRow[]>(
+    "db_chapter_list_unqueued_downloads",
+    { novelId, afterChapterId },
   );
-  return withCompositionDisplay(db, rows.map(normalizeChapterListRow));
 }
 
 export async function getChapterById(
   chapterId: number,
   readMode: DatabaseReadMode = "queued",
 ): Promise<ChapterRow | null> {
-  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
-  const rows = await db.select<RawChapterRow[]>(
-    `SELECT ${CHAPTER_DETAIL_SELECT_FIELDS}
-     FROM chapter
-     WHERE id = $1`,
-    [chapterId],
-  );
-  return rows[0] ? (await withCompositionDisplay(db, [normalizeChapterRow(rows[0])]))[0] : null;
+  return invokeDbQuery<ChapterRow | null>("db_chapter_get_by_id", {
+    chapterId,
+    readMode,
+  });
 }
 
 export async function listExistingChapterIds(
   chapterIds: readonly number[],
 ): Promise<number[]> {
   if (chapterIds.length === 0) return [];
-  const db = await getDb();
-  const existingChapterIds: number[] = [];
-  for (const chunk of chapterChunks([...new Set(chapterIds)], CHAPTER_ID_CHUNK_SIZE)) {
-    const rows = await db.select<{ id: number }[]>(
-      `SELECT id FROM chapter WHERE id IN (${chapterIdPlaceholders(1, chunk.length)})`,
-      chunk,
-    );
-    existingChapterIds.push(...rows.map((row) => row.id));
-  }
-  return existingChapterIds;
+  return invokeDbQuery<number[]>("db_chapter_list_existing_ids", {
+    chapterIds: [...new Set(chapterIds)],
+  });
 }
 
 export interface InsertChapterInput {
@@ -281,32 +152,6 @@ export interface BulkChapterMutationResult extends ChapterMutationResult {
   chunks: number;
 }
 
-type DbHandle = Awaited<ReturnType<typeof getDb>>;
-
-const FINISHED_PROGRESS = 100;
-const SQLITE_BIND_PARAMETER_BUDGET = 900;
-const SOURCE_CHAPTER_PARAM_COUNT = 8;
-const SOURCE_CHAPTER_PATH_PARAM_COUNT = 4;
-const DOWNLOADED_CHAPTER_PARAM_COUNT = 10;
-const SOURCE_CHAPTER_CHUNK_SIZE = Math.max(
-  1,
-  Math.min(
-    MAX_ROUTE_QUERY_ROWS,
-    Math.floor(SQLITE_BIND_PARAMETER_BUDGET / SOURCE_CHAPTER_PARAM_COUNT),
-  ),
-);
-const DOWNLOADED_CHAPTER_CHUNK_SIZE = Math.max(
-  1,
-  Math.min(
-    MAX_ROUTE_QUERY_ROWS,
-    Math.floor(SQLITE_BIND_PARAMETER_BUDGET / DOWNLOADED_CHAPTER_PARAM_COUNT),
-  ),
-);
-const CHAPTER_ID_CHUNK_SIZE = Math.max(
-  1,
-  Math.min(MAX_ROUTE_QUERY_ROWS, SQLITE_BIND_PARAMETER_BUDGET - 2),
-);
-
 function assertChapterTextBudget(
   value: string,
   maxBytes: number,
@@ -315,10 +160,7 @@ function assertChapterTextBudget(
   assertByteBudget(getUtf8ByteLength(value), maxBytes, label);
 }
 
-function assertChapterBulkCount(
-  count: number,
-  label: string,
-): void {
+function assertChapterBulkCount(count: number, label: string): void {
   if (count > MAX_CHAPTER_BULK_INPUT_ROWS) {
     throw new Error(
       `${label} has ${count} chapters, which exceeds the ${MAX_CHAPTER_BULK_INPUT_ROWS} chapter limit.`,
@@ -334,18 +176,28 @@ function assertChapterMetadataBudget(
   assertChapterTextBudget(input.path, MAX_CHAPTER_URL_BYTES, `${label} URL`);
 }
 
-function validateSourceChapterInputs(
-  inputs: readonly InsertChapterInput[],
-): void {
-  assertChapterBulkCount(inputs.length, "Chapter upsert");
-  for (const input of inputs) {
-    assertChapterMetadataBudget(input, "Chapter");
-  }
+function normalizeInsertChapterInput(input: InsertChapterInput) {
+  return {
+    novelId: input.novelId,
+    path: input.path,
+    name: input.name,
+    position: input.position,
+    chapterNumber: input.chapterNumber ?? null,
+    page: input.page ?? "1",
+    releaseTime: input.releaseTime ?? null,
+    contentType: normalizeChapterContentType(input.contentType),
+  };
 }
 
-function normalizedDownloadedChapterInput(
-  input: DownloadedChapterUpsertInput,
-): DownloadedChapterUpsertInput & { contentBytes: number } {
+function validateSourceChapterInputs(inputs: readonly InsertChapterInput[]) {
+  assertChapterBulkCount(inputs.length, "Chapter upsert");
+  return inputs.map((input) => {
+    assertChapterMetadataBudget(input, "Chapter");
+    return normalizeInsertChapterInput(input);
+  });
+}
+
+function normalizedDownloadedChapterInput(input: DownloadedChapterUpsertInput) {
   assertChapterMetadataBudget(input, "Downloaded chapter");
   const contentBytes = input.contentBytes ?? 0;
   if (
@@ -359,385 +211,68 @@ function normalizedDownloadedChapterInput(
       "Downloaded chapter content",
     );
   }
-  return { ...input, contentBytes };
+  return {
+    ...normalizeInsertChapterInput(input),
+    contentBytes,
+  };
 }
 
 function validateDownloadedChapterInputs(
   inputs: readonly DownloadedChapterUpsertInput[],
-): Array<DownloadedChapterUpsertInput & { contentBytes: number }> {
+) {
   assertChapterBulkCount(inputs.length, "Downloaded chapter upsert");
   return inputs.map(normalizedDownloadedChapterInput);
 }
 
-function sourceChapterValuesSql(inputs: readonly InsertChapterInput[]): string {
-  return inputs
-    .map((_, index) => {
-      const param = index * SOURCE_CHAPTER_PARAM_COUNT + 1;
-      return `($${param}, $${param + 1}, $${param + 2}, $${param + 3}, $${param + 4}, $${param + 5}, $${param + 6}, $${param + 7}, unixepoch(), unixepoch())`;
-    })
-    .join(", ");
-}
-
-function sourceChapterParams(inputs: readonly InsertChapterInput[]): unknown[] {
-  return inputs.flatMap((input) => [
-    input.novelId,
-    input.path,
-    input.name,
-    input.position,
-    input.chapterNumber ?? null,
-    input.page ?? "1",
-    input.releaseTime ?? null,
-    normalizeChapterContentType(input.contentType),
-  ]);
-}
-
-function sourceChapterPathValuesSql(
-  inputs: readonly InsertChapterInput[],
-): string {
-  return inputs
-    .map((_, index) => {
-      const param = index * SOURCE_CHAPTER_PATH_PARAM_COUNT + 1;
-      return `($${param}, $${param + 1}, $${param + 2}, $${param + 3})`;
-    })
-    .join(", ");
-}
-
-function sourceChapterPathParams(
-  inputs: readonly InsertChapterInput[],
-): unknown[] {
-  return inputs.flatMap((input) => [
-    input.novelId,
-    input.path,
-    input.chapterNumber ?? null,
-    input.page ?? "1",
-  ]);
-}
-
-function downloadedChapterValuesSql(
-  inputs: readonly DownloadedChapterUpsertInput[],
-): string {
-  return inputs
-    .map((_, index) => {
-      const param = index * DOWNLOADED_CHAPTER_PARAM_COUNT + 1;
-      return `($${param}, $${param + 1}, $${param + 2}, $${param + 3}, $${param + 4}, $${param + 5}, $${param + 6}, $${param + 7}, $${param + 8}, $${param + 9}, 0, 1, unixepoch(), unixepoch())`;
-    })
-    .join(", ");
-}
-
-function downloadedChapterParams(
-  inputs: ReadonlyArray<DownloadedChapterUpsertInput & { contentBytes: number }>,
-): unknown[] {
-  return inputs.flatMap((input) => [
-    input.novelId,
-    input.path,
-    input.name,
-    input.position,
-    input.chapterNumber ?? null,
-    input.page ?? "1",
-    input.releaseTime ?? null,
-    normalizeChapterContentType(input.contentType),
-    storedChapterContentType(normalizeChapterContentType(input.contentType)),
-    input.contentBytes,
-  ]);
-}
-
-function chapterChunks<T>(
-  inputs: readonly T[],
-  chunkSize: number,
-): readonly T[][] {
-  const chunks: T[][] = [];
-  for (let index = 0; index < inputs.length; index += chunkSize) {
-    chunks.push(inputs.slice(index, index + chunkSize));
-  }
-  return chunks;
-}
-
-function chapterIdPlaceholders(startParam: number, count: number): string {
-  return Array.from(
-    { length: count },
-    (_, index) => `$${startParam + index}`,
-  ).join(", ");
-}
-
-async function executeSourceChapterChunk(
-  db: DbHandle,
-  chunk: readonly InsertChapterInput[],
-): Promise<number> {
-  const result = await db.execute(
-    `INSERT INTO chapter
-       (novel_id, path, name, position, chapter_number, page, release_time, content_type, created_at, found_at)
-     VALUES ${sourceChapterValuesSql(chunk)}
-     ON CONFLICT(novel_id, path) DO UPDATE SET
-       name           = excluded.name,
-       position       = excluded.position,
-       chapter_number = excluded.chapter_number,
-       page           = excluded.page,
-       release_time   = excluded.release_time,
-       content_type   = excluded.content_type,
-       updated_at     = unixepoch()
-      WHERE
-        name IS NOT excluded.name
-        OR position IS NOT excluded.position
-        OR chapter_number IS NOT excluded.chapter_number
-        OR page IS NOT excluded.page
-        OR release_time IS NOT excluded.release_time
-        OR content_type IS NOT excluded.content_type`,
-    sourceChapterParams(chunk),
-  );
-  return result.rowsAffected;
-}
-
-// The novel_id term limits the scan to the incoming novels' rows instead of the whole chapter table,
-// and the cheap incoming match runs before the per-row MIN lookup. Every check runs this inside its
-// transaction, so a full-table scan here held the shared database queue for seconds per novel.
-async function migrateSourceChapterPathsWithDb(
-  db: DbHandle,
-  chunk: readonly InsertChapterInput[],
-): Promise<number> {
-  const before = await hasUserStateSchema(db) ? await db.select<{ id: number; novelId: number; path: string }[]>(
-    `WITH incoming(novel_id,path,chapter_number,page) AS (VALUES ${sourceChapterPathValuesSql(chunk)})
-     SELECT target.id,target.novel_id AS novelId,target.path FROM chapter target JOIN incoming
-     ON incoming.novel_id=target.novel_id AND incoming.chapter_number IS target.chapter_number AND incoming.page IS target.page
-     WHERE incoming.path IS NOT target.path`, sourceChapterPathParams(chunk)) : [];
-  const result = await db.execute(
-    `WITH incoming(novel_id, path, chapter_number, page) AS (
-       VALUES ${sourceChapterPathValuesSql(chunk)}
-     )
-     UPDATE chapter AS target
-        SET path = (
-          SELECT incoming.path
-            FROM incoming
-           WHERE incoming.novel_id IS target.novel_id
-             AND incoming.chapter_number IS target.chapter_number
-             AND incoming.page IS target.page
-        ),
-            updated_at = unixepoch()
-      WHERE target.novel_id IN (SELECT novel_id FROM incoming)
-        AND EXISTS (
-          SELECT 1
-            FROM incoming
-           WHERE incoming.novel_id IS target.novel_id
-             AND incoming.chapter_number IS target.chapter_number
-             AND incoming.page IS target.page
-             AND incoming.path IS NOT target.path
-        )
-        AND target.id = (
-              SELECT MIN(existing.id)
-                FROM chapter AS existing
-               WHERE existing.novel_id IS target.novel_id
-                 AND existing.chapter_number IS target.chapter_number
-                 AND existing.page IS target.page
-            )
-        AND NOT EXISTS (
-          SELECT 1
-            FROM chapter AS existing
-            JOIN incoming
-              ON incoming.novel_id IS existing.novel_id
-             AND incoming.path IS existing.path
-           WHERE existing.id IS NOT target.id
-             AND incoming.novel_id IS target.novel_id
-             AND incoming.chapter_number IS target.chapter_number
-             AND incoming.page IS target.page
-        )`,
-    sourceChapterPathParams(chunk),
-  );
-  await remapUnattemptedChapterPathsInDb(db, before);
-  return result.rowsAffected;
-}
-
-async function executeDownloadedChapterChunk(
-  db: DbHandle,
-  chunk: ReadonlyArray<DownloadedChapterUpsertInput & { contentBytes: number }>,
-): Promise<number> {
-  const result = await db.execute(
-    `INSERT INTO chapter
-       (novel_id, path, name, position, chapter_number, page, release_time, content_type, stored_content_type, content_bytes, media_repair_needed, is_downloaded, created_at, found_at)
-     VALUES ${downloadedChapterValuesSql(chunk)}
-     ON CONFLICT(novel_id, path) DO UPDATE SET
-       name           = excluded.name,
-       position       = excluded.position,
-       chapter_number = excluded.chapter_number,
-       page           = excluded.page,
-       release_time   = excluded.release_time,
-       content_type   = excluded.content_type,
-       stored_content_type = excluded.stored_content_type,
-       content_bytes  = excluded.content_bytes,
-       media_repair_needed = 0,
-       media_bytes_checked_at = NULL,
-       is_downloaded  = 1,
-       updated_at     = unixepoch()
-      WHERE
-        name IS NOT excluded.name
-        OR position IS NOT excluded.position
-        OR chapter_number IS NOT excluded.chapter_number
-        OR page IS NOT excluded.page
-        OR release_time IS NOT excluded.release_time
-        OR content_type IS NOT excluded.content_type
-        OR stored_content_type IS NOT excluded.stored_content_type
-        OR content_bytes IS NOT excluded.content_bytes
-        OR media_repair_needed IS NOT 0
-        OR is_downloaded IS NOT 1`,
-    downloadedChapterParams(chunk),
-  );
-  return result.rowsAffected;
-}
-
-async function upsertSourceChaptersWithDb(
-  db: DbHandle,
-  inputs: readonly InsertChapterInput[],
-): Promise<BulkChapterMutationResult> {
-  if (inputs.length === 0) return { rowsAffected: 0, chunks: 0 };
-  validateSourceChapterInputs(inputs);
-
-  let rowsAffected = 0;
-  let chunks = 0;
-  const sourceChunks = chapterChunks(inputs, SOURCE_CHAPTER_CHUNK_SIZE);
-  for (const chunk of sourceChunks) {
-    rowsAffected += await migrateSourceChapterPathsWithDb(db, chunk);
-    rowsAffected += await executeSourceChapterChunk(db, chunk);
-    chunks += 1;
-  }
-  for (const novelId of new Set(inputs.map(row => row.novelId))) await deferUserStateForNovelInDb(db, novelId);
-  return { rowsAffected, chunks };
-}
-
-export async function upsertSourceChaptersInDb(
-  db: DbHandle,
-  inputs: readonly InsertChapterInput[],
-): Promise<BulkChapterMutationResult> {
-  return upsertSourceChaptersWithDb(db, inputs);
-}
-
 export async function upsertSourceChapters(
   inputs: readonly InsertChapterInput[],
+  options: { remoteContentSync?: boolean } = {},
 ): Promise<BulkChapterMutationResult> {
-  validateSourceChapterInputs(inputs);
-  return runDatabaseTransaction((db) => upsertSourceChaptersWithDb(db, inputs));
-}
-
-async function upsertDownloadedChaptersWithDb(
-  db: DbHandle,
-  inputs: readonly DownloadedChapterUpsertInput[],
-): Promise<BulkChapterMutationResult> {
-  if (inputs.length === 0) return { rowsAffected: 0, chunks: 0 };
-  const normalizedInputs = validateDownloadedChapterInputs(inputs);
-
-  let rowsAffected = 0;
-  let chunks = 0;
-  for (const chunk of chapterChunks(
-    normalizedInputs,
-    DOWNLOADED_CHAPTER_CHUNK_SIZE,
-  )) {
-    rowsAffected += await executeDownloadedChapterChunk(db, chunk);
-    chunks += 1;
-  }
-  return { rowsAffected, chunks };
-}
-
-export async function upsertDownloadedChaptersInDb(
-  db: DbHandle,
-  inputs: readonly DownloadedChapterUpsertInput[],
-): Promise<BulkChapterMutationResult> {
-  return upsertDownloadedChaptersWithDb(db, inputs);
+  const normalized = validateSourceChapterInputs(inputs);
+  if (normalized.length === 0) return { rowsAffected: 0, chunks: 0 };
+  return invokeDbMutation<BulkChapterMutationResult>(
+    "db_chapter_upsert_source",
+    {
+      inputs: normalized,
+      ...(options.remoteContentSync ? { remoteContentSync: true } : {}),
+    },
+  );
 }
 
 export async function upsertDownloadedChapters(
   inputs: readonly DownloadedChapterUpsertInput[],
 ): Promise<BulkChapterMutationResult> {
-  validateDownloadedChapterInputs(inputs);
-  return runDatabaseTransaction((db) =>
-    upsertDownloadedChaptersWithDb(db, inputs),
+  const normalized = validateDownloadedChapterInputs(inputs);
+  if (normalized.length === 0) return { rowsAffected: 0, chunks: 0 };
+  return invokeDbMutation<BulkChapterMutationResult>(
+    "db_chapter_upsert_downloaded",
+    { inputs: normalized },
   );
 }
 
 export async function insertChapterIfAbsent(
   input: InsertChapterInput,
 ): Promise<void> {
-  const db = await getDb();
-  await db.execute(
-    `INSERT OR IGNORE INTO chapter
-       (novel_id, path, name, position, chapter_number, page, release_time, content_type, created_at, found_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, unixepoch(), unixepoch())`,
-    [
-      input.novelId,
-      input.path,
-      input.name,
-      input.position,
-      input.chapterNumber ?? null,
-      input.page ?? "1",
-      input.releaseTime ?? null,
-      normalizeChapterContentType(input.contentType),
-    ],
-  );
+  await invokeDbMutation<null>("db_chapter_insert_if_absent", {
+    input: normalizeInsertChapterInput(input),
+  });
 }
 
 export async function getLatestSourceChapterAnchor(
   novelId: number,
 ): Promise<LatestSourceChapterAnchor | null> {
-  const db = await getDb();
-  const rows = await db.select<
-    { chapterNumber: string | null; position: number; path: string }[]
-  >(
-    `SELECT chapter_number AS chapterNumber, position, path
-     FROM chapter
-     WHERE novel_id = $1`,
-    [novelId],
+  return invokeDbQuery<LatestSourceChapterAnchor | null>(
+    "db_chapter_get_latest_source_anchor",
+    { novelId },
   );
-  if (rows.length === 0) return null;
-
-  let latest: LatestSourceChapterAnchor | null = null;
-  for (const row of rows) {
-    if (row.path.startsWith("norea-folder:")) continue;
-    if (row.chapterNumber === null) return null;
-    const chapterNumber = Number(row.chapterNumber);
-    if (!Number.isFinite(chapterNumber)) return null;
-    if (!latest || chapterNumber > latest.chapterNumber) {
-      latest = {
-        novelId,
-        chapterNumber,
-        position: row.position,
-      };
-    }
-  }
-
-  return latest;
 }
 
 export async function upsertChapter(
   input: InsertChapterInput,
 ): Promise<ChapterMutationResult> {
-  const db = await getDb();
-  const result = await db.execute(
-    `INSERT INTO chapter
-       (novel_id, path, name, position, chapter_number, page, release_time, content_type, created_at, found_at)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, unixepoch(), unixepoch())
-     ON CONFLICT(novel_id, path) DO UPDATE SET
-       name           = excluded.name,
-       position       = excluded.position,
-       chapter_number = excluded.chapter_number,
-       page           = excluded.page,
-       release_time   = excluded.release_time,
-       content_type   = excluded.content_type,
-       updated_at     = unixepoch()
-      WHERE
-        name IS NOT excluded.name
-        OR position IS NOT excluded.position
-        OR chapter_number IS NOT excluded.chapter_number
-        OR page IS NOT excluded.page
-        OR release_time IS NOT excluded.release_time
-        OR content_type IS NOT excluded.content_type`,
-    [
-      input.novelId,
-      input.path,
-      input.name,
-      input.position,
-      input.chapterNumber ?? null,
-      input.page ?? "1",
-      input.releaseTime ?? null,
-      normalizeChapterContentType(input.contentType),
-    ],
-  );
-  return { rowsAffected: result.rowsAffected };
+  return invokeDbMutation<ChapterMutationResult>("db_chapter_upsert", {
+    input: normalizeInsertChapterInput(input),
+  });
 }
 
 /**
@@ -745,50 +280,17 @@ export async function upsertChapter(
  * lazily loaded images then shift that position, which would otherwise overwrite "read" with
  * a partial value. Explicit read-state changes go through setChaptersReadState instead.
  */
-const KEEP_FINISHED_PROGRESS_SQL = "CASE WHEN progress >= 100 THEN progress ELSE $2 END";
-
 export async function updateChapterProgress(
   chapterId: number,
   progress: number,
   options: { recordHistory?: boolean } = {},
 ): Promise<void> {
-  return runDatabaseTransaction(async (db) => {
-
-  const clamped = Math.max(0, Math.min(100, Math.round(progress)));
-  const recordHistory = options.recordHistory ?? true;
-  if (recordHistory) {
-    await db.execute(
-      `UPDATE chapter
-       SET
-         progress   = ${KEEP_FINISHED_PROGRESS_SQL},
-         unread     = CASE WHEN $2 >= 100 THEN 0 ELSE unread END,
-         read_at    = CASE WHEN $2 > 0 THEN unixepoch() ELSE read_at END,
-         updated_at = unixepoch()
-       WHERE id = $1`,
-      [chapterId, clamped],
-    );
-    await db.execute(
-      `UPDATE novel
-       SET last_read_at = unixepoch(), updated_at = unixepoch()
-       WHERE id = (
-         SELECT novel_id FROM chapter WHERE id = $1
-       )`,
-      [chapterId],
-    );
-    await recordChaptersInDb(db, [chapterId]);
-    return;
-  }
-
-  await markPrivateChapterProgressInDb(db, chapterId);
-  await db.execute(
-    `UPDATE chapter
-     SET
-       progress   = ${KEEP_FINISHED_PROGRESS_SQL},
-       unread     = CASE WHEN $2 >= 100 THEN 0 ELSE unread END,
-       updated_at = unixepoch()
-     WHERE id = $1`,
-    [chapterId, clamped],
-  );
+  await invokeDbMutation<null>("db_chapter_update_progress", {
+    input: {
+      chapterId,
+      progress,
+      recordHistory: options.recordHistory ?? true,
+    },
   });
 }
 
@@ -799,16 +301,6 @@ export interface ChapterReadState {
   unread: boolean;
 }
 
-interface RawChapterReadState {
-  id: number;
-  progress: number;
-  unread: unknown;
-}
-
-function normalizeChapterReadState(row: RawChapterReadState): ChapterReadState {
-  return { id: row.id, progress: row.progress, unread: sqliteBoolean(row.unread) };
-}
-
 export async function setChaptersReadState(
   chapterIds: readonly number[],
   unread: boolean,
@@ -816,38 +308,14 @@ export async function setChaptersReadState(
   const uniqueChapterIds = Array.from(new Set(chapterIds)).filter(
     (chapterId) => Number.isInteger(chapterId) && chapterId > 0,
   );
-  if (uniqueChapterIds.length === 0) return { rowsAffected: 0, chunks: 0, previous: [] };
+  if (uniqueChapterIds.length === 0) {
+    return { rowsAffected: 0, chunks: 0, previous: [] };
+  }
   assertChapterBulkCount(uniqueChapterIds.length, "Chapter read state update");
-
-  const unreadFlag = unread ? 1 : 0;
-  const progress = unread ? 0 : FINISHED_PROGRESS;
-  return runDatabaseTransaction(async (db) => {
-    let rowsAffected = 0;
-    let chunks = 0;
-    const previous: ChapterReadState[] = [];
-
-    for (const chunk of chapterChunks(uniqueChapterIds, CHAPTER_ID_CHUNK_SIZE)) {
-      const rows = await db.select<RawChapterReadState[]>(
-        `SELECT id, unread, progress FROM chapter
-         WHERE id IN (${chapterIdPlaceholders(1, chunk.length)})`,
-        [...chunk],
-      );
-      previous.push(...rows.map(normalizeChapterReadState));
-      const result = await db.execute(
-        `UPDATE chapter
-         SET
-           progress   = $1,
-           unread     = $2,
-           updated_at = unixepoch()
-         WHERE id IN (${chapterIdPlaceholders(3, chunk.length)})`,
-        [progress, unreadFlag, ...chunk],
-      );
-      rowsAffected += result.rowsAffected;
-      chunks += 1;
-    }
-
-    await recordChaptersInDb(db, uniqueChapterIds);
-    return { rowsAffected, chunks, previous };
+  return invokeDbMutation<
+    BulkChapterMutationResult & { previous: ChapterReadState[] }
+  >("db_chapter_set_read_state", {
+    input: { chapterIds: uniqueChapterIds, unread },
   });
 }
 
@@ -859,40 +327,13 @@ export async function setNovelsReadState(
   const uniqueNovelIds = Array.from(new Set(novelIds)).filter(
     (novelId) => Number.isInteger(novelId) && novelId > 0,
   );
-  if (uniqueNovelIds.length === 0) return { rowsAffected: 0, chunks: 0, previous: [] };
-
-  const progress = unread ? 0 : FINISHED_PROGRESS;
-  const unreadFlag = unread ? 1 : 0;
-  return runDatabaseTransaction(async (db) => {
-    let rowsAffected = 0;
-    let chunks = 0;
-    const previous: ChapterReadState[] = [];
-
-    for (const chunk of chapterChunks(uniqueNovelIds, CHAPTER_ID_CHUNK_SIZE)) {
-      const novelPlaceholders = chapterIdPlaceholders(3, chunk.length);
-      const rows = await db.select<RawChapterReadState[]>(
-        `SELECT id, unread, progress FROM chapter
-         WHERE novel_id IN (${novelPlaceholders})
-           AND (progress <> $1 OR unread <> $2)`,
-        [progress, unreadFlag, ...chunk],
-      );
-      previous.push(...rows.map(normalizeChapterReadState));
-      const result = await db.execute(
-        `UPDATE chapter
-         SET
-           progress   = $1,
-           unread     = $2,
-           updated_at = unixepoch()
-         WHERE novel_id IN (${novelPlaceholders})
-           AND (progress <> $1 OR unread <> $2)`,
-        [progress, unreadFlag, ...chunk],
-      );
-      rowsAffected += result.rowsAffected;
-      chunks += 1;
-    }
-
-    await recordNovelChaptersInDb(db, uniqueNovelIds);
-    return { rowsAffected, chunks, previous };
+  if (uniqueNovelIds.length === 0) {
+    return { rowsAffected: 0, chunks: 0, previous: [] };
+  }
+  return invokeDbMutation<
+    BulkChapterMutationResult & { previous: ChapterReadState[] }
+  >("db_chapter_set_novels_read_state", {
+    input: { novelIds: uniqueNovelIds, unread },
   });
 }
 
@@ -900,39 +341,15 @@ export async function setNovelsReadState(
 export async function restoreChapterReadStates(
   states: readonly ChapterReadState[],
 ): Promise<BulkChapterMutationResult> {
-  const groups = new Map<string, { ids: number[]; progress: number; unread: number }>();
-  for (const state of states) {
-    if (!Number.isInteger(state.id) || state.id <= 0) continue;
-    const unread = state.unread ? 1 : 0;
-    const key = `${unread}:${state.progress}`;
-    const group = groups.get(key) ?? { ids: [], progress: state.progress, unread };
-    group.ids.push(state.id);
-    groups.set(key, group);
-  }
-  if (groups.size === 0) return { rowsAffected: 0, chunks: 0 };
+  const validStates = states.filter(
+    (state) => Number.isInteger(state.id) && state.id > 0,
+  );
+  if (validStates.length === 0) return { rowsAffected: 0, chunks: 0 };
   assertChapterBulkCount(states.length, "Chapter read state restore");
-
-  return runDatabaseTransaction(async (db) => {
-    let rowsAffected = 0;
-    let chunks = 0;
-    for (const group of groups.values()) {
-      for (const chunk of chapterChunks(group.ids, CHAPTER_ID_CHUNK_SIZE)) {
-        const result = await db.execute(
-          `UPDATE chapter
-           SET
-             progress   = $1,
-             unread     = $2,
-             updated_at = unixepoch()
-           WHERE id IN (${chapterIdPlaceholders(3, chunk.length)})`,
-          [group.progress, group.unread, ...chunk],
-        );
-        rowsAffected += result.rowsAffected;
-        chunks += 1;
-      }
-    }
-    await recordChaptersInDb(db, states.map(state => state.id));
-    return { rowsAffected, chunks };
-  });
+  return invokeDbMutation<BulkChapterMutationResult>(
+    "db_chapter_restore_read_states",
+    { states: validStates },
+  );
 }
 
 export type RelativeChapterDirection = "before" | "after";
@@ -945,120 +362,28 @@ export async function setRelativeChaptersReadState(
   if (!Number.isInteger(anchorChapterId) || anchorChapterId <= 0) {
     return { rowsAffected: 0, previous: [] };
   }
-
-  const rangePredicate =
-    direction === "before"
-      ? `(candidate.position < reference.position
-          OR (candidate.position = reference.position
-              AND candidate.id < reference.id))`
-      : `(candidate.position > reference.position
-          OR (candidate.position = reference.position
-              AND candidate.id > reference.id))`;
-  const progress = unread ? 0 : FINISHED_PROGRESS;
-  const unreadFlag = unread ? 1 : 0;
-  return runDatabaseTransaction(async (db) => {
-    const previous = await db.select<RawChapterReadState[]>(
-      `WITH reference AS (
-         SELECT id, novel_id, position
-         FROM chapter
-         WHERE id = $1
-       )
-       SELECT candidate.id, candidate.unread, candidate.progress
-       FROM chapter AS candidate
-       CROSS JOIN reference
-       WHERE candidate.novel_id = reference.novel_id
-         AND candidate.id <> reference.id
-         AND ${rangePredicate}
-         AND (candidate.progress <> $2 OR candidate.unread <> $3)`,
-      [anchorChapterId, progress, unreadFlag],
-    );
-    const result = await db.execute(
-      `WITH reference AS (
-         SELECT id, novel_id, position
-         FROM chapter
-         WHERE id = $1
-       )
-       UPDATE chapter
-       SET
-         progress   = $2,
-         unread     = $3,
-         updated_at = unixepoch()
-       WHERE id IN (
-         SELECT candidate.id
-         FROM chapter AS candidate
-         CROSS JOIN reference
-         WHERE candidate.novel_id = reference.novel_id
-           AND candidate.id <> reference.id
-           AND ${rangePredicate}
-       )
-         AND (progress <> $2 OR unread <> $3)`,
-      [anchorChapterId, progress, unreadFlag],
-    );
-    if (await hasUserStateSchema(db)) {
-      const targets = await db.select<{ id: number }[]>(`WITH reference AS (SELECT id,novel_id,position FROM chapter WHERE id=$1)
-        SELECT candidate.id FROM chapter candidate CROSS JOIN reference WHERE candidate.novel_id=reference.novel_id
-        AND candidate.id<>reference.id AND ${rangePredicate}`, [anchorChapterId]);
-      await recordChaptersInDb(db, targets.map(row => row.id));
-    }
-    return { rowsAffected: result.rowsAffected, previous: previous.map(normalizeChapterReadState) };
+  return invokeDbMutation<
+    ChapterMutationResult & { previous: ChapterReadState[] }
+  >("db_chapter_set_relative_read_state", {
+    input: { anchorChapterId, direction, unread },
   });
 }
 
 export async function markChapterOpened(chapterId: number): Promise<void> {
-  return runDatabaseTransaction(async (db) => {
-
-  await db.execute(
-    `UPDATE chapter
-     SET read_at = unixepoch(), updated_at = unixepoch()
-     WHERE id = $1`,
-    [chapterId],
-  );
-  await db.execute(
-    `UPDATE novel
-     SET last_read_at = unixepoch(), updated_at = unixepoch()
-     WHERE id = (
-       SELECT novel_id FROM chapter WHERE id = $1
-     )`,
-    [chapterId],
-  );
-    await recordChaptersInDb(db, [chapterId]);
-  });
+  await invokeDbMutation<null>("db_chapter_mark_opened", { chapterId });
 }
 
 export async function clearNovelHistory(novelId: number): Promise<void> {
-  return runDatabaseTransaction(async (db) => {
-
-  await db.execute(
-    `UPDATE chapter
-     SET read_at = NULL, updated_at = unixepoch()
-     WHERE novel_id = $1 AND read_at IS NOT NULL`,
-    [novelId],
-  );
-  await db.execute(
-    `UPDATE novel
-     SET last_read_at = NULL, updated_at = unixepoch()
-     WHERE id = $1`,
-    [novelId],
-  );
-    await recordPublicNovelReadingInDb(db, [novelId], true);
-    await recordResumeClearedInDb(db, [novelId]);
-  });
+  await invokeDbMutation<null>("db_chapter_clear_novel_history", { novelId });
 }
 
 export async function setChapterBookmark(
   chapterId: number,
   bookmarked: boolean,
 ): Promise<void> {
-  return runDatabaseTransaction(async (db) => {
-
-  const bookmarkFlag = bookmarked ? 1 : 0;
-  await db.execute(
-    `UPDATE chapter
-     SET bookmark = $2, updated_at = unixepoch()
-     WHERE id = $1`,
-    [chapterId, bookmarkFlag],
-  );
-    await recordChaptersInDb(db, [chapterId], "bookmark");
+  await invokeDbMutation<null>("db_chapter_set_bookmark", {
+    chapterId,
+    bookmarked,
   });
 }
 
@@ -1068,31 +393,25 @@ export async function saveChapterContentMetadata(
   contentType: ChapterContentType = DEFAULT_CHAPTER_CONTENT_TYPE,
   options: SaveChapterContentOptions = {},
 ): Promise<ChapterMutationResult> {
-  const db = await getDb();
   const normalizedContentType = storedChapterContentType(
     normalizeChapterContentType(contentType),
   );
-  const result = await db.execute(
-    `UPDATE chapter
-     SET
-       stored_content_type = $2,
-       content_bytes  = $3,
-       media_bytes    = $4,
-       media_repair_needed = $5,
-       media_bytes_checked_at = CASE WHEN $6 = 1 THEN unixepoch() ELSE NULL END,
-       is_downloaded  = 1,
-       updated_at     = unixepoch()
-     WHERE id = $1`,
-    [
-      chapterId,
-      normalizedContentType,
-      getUtf8ByteLength(html),
-      options.mediaBytes ?? 0,
-      chapterMediaRepairFlag(html, normalizedContentType),
-      options.mediaBytes === undefined ? 0 : 1,
-    ],
+  return invokeDbMutation<ChapterMutationResult>(
+    "db_chapter_save_content_metadata",
+    {
+      input: {
+        chapterId,
+        contentBytes: getUtf8ByteLength(html),
+        contentType: normalizedContentType,
+        ...(options.mediaBytes !== undefined
+          ? { mediaBytes: options.mediaBytes }
+          : {}),
+        mediaRepairNeeded: Boolean(
+          chapterMediaRepairFlag(html, normalizedContentType),
+        ),
+      },
+    },
   );
-  return { rowsAffected: result.rowsAffected };
 }
 
 export async function saveChapterPartialContentMetadata(
@@ -1100,37 +419,31 @@ export async function saveChapterPartialContentMetadata(
   html: string,
   contentType: ChapterContentType = DEFAULT_CHAPTER_CONTENT_TYPE,
 ): Promise<ChapterMutationResult> {
-  const db = await getDb();
   const normalizedContentType = storedChapterContentType(
     normalizeChapterContentType(contentType),
   );
-  const result = await db.execute(
-    `UPDATE chapter
-     SET
-       stored_content_type = $2,
-       content_bytes  = $3,
-       media_repair_needed = MAX(media_repair_needed, $4),
-       media_bytes_checked_at = NULL,
-       updated_at     = unixepoch()
-     WHERE id = $1`,
-    [
-      chapterId,
-      normalizedContentType,
-      getUtf8ByteLength(html),
-      chapterMediaRepairFlag(html, normalizedContentType),
-    ],
+  return invokeDbMutation<ChapterMutationResult>(
+    "db_chapter_save_partial_content_metadata",
+    {
+      input: {
+        chapterId,
+        contentBytes: getUtf8ByteLength(html),
+        contentType: normalizedContentType,
+        mediaRepairNeeded: Boolean(
+          chapterMediaRepairFlag(html, normalizedContentType),
+        ),
+      },
+    },
   );
-  return { rowsAffected: result.rowsAffected };
 }
 
-export async function markChapterMediaRepairPending(chapterId: number): Promise<ChapterMutationResult> {
-  const db = await getDb();
-  const result = await db.execute(
-    `UPDATE chapter SET media_repair_needed = 1, is_downloaded = 0,
-      media_bytes_checked_at = NULL WHERE id = $1`,
-    [chapterId],
+export async function markChapterMediaRepairPending(
+  chapterId: number,
+): Promise<ChapterMutationResult> {
+  return invokeDbMutation<ChapterMutationResult>(
+    "db_chapter_mark_media_repair_pending",
+    { chapterId },
   );
-  return { rowsAffected: result.rowsAffected };
 }
 
 export async function adoptStoredChapterContentMetadata(
@@ -1140,89 +453,34 @@ export async function adoptStoredChapterContentMetadata(
   contentType: ChapterContentType | null,
   mediaRepairNeeded = false,
 ): Promise<ChapterMutationResult> {
-  const db = await getDb();
   const normalizedContentType = contentType
     ? storedChapterContentType(normalizeChapterContentType(contentType))
     : null;
-  const result = await db.execute(
-    `UPDATE chapter
-     SET
-       content_bytes  = $2,
-       media_bytes    = $3,
-       media_repair_needed = $5,
-       media_bytes_checked_at = unixepoch(),
-       stored_content_type = COALESCE($4, stored_content_type),
-       is_downloaded  = 1 - $5
-     WHERE id = $1
-       AND (content_bytes IS NOT $2
-         OR media_bytes IS NOT $3
-         OR media_repair_needed IS NOT $5
-         OR ($4 IS NOT NULL AND stored_content_type IS NOT $4)
-         OR is_downloaded IS NOT (1 - $5))`,
-    [
-      chapterId,
-      contentBytes,
-      mediaBytes,
-      normalizedContentType,
-      mediaRepairNeeded ? 1 : 0,
-    ],
+  return invokeDbMutation<ChapterMutationResult>(
+    "db_chapter_adopt_stored_content_metadata",
+    {
+      input: {
+        chapterId,
+        contentBytes,
+        mediaBytes,
+        contentType: normalizedContentType,
+        mediaRepairNeeded,
+      },
+    },
   );
-  if (result.rowsAffected === 0) {
-    const checked = await db.execute(
-      "UPDATE chapter SET media_bytes_checked_at = unixepoch() WHERE id = $1",
-      [chapterId],
-    );
-    return { rowsAffected: checked.rowsAffected };
-  }
-  return { rowsAffected: result.rowsAffected };
 }
 
 export async function markStoredChapterContentMissing(
   chapterId: number,
 ): Promise<ChapterMutationResult> {
-  const db = await getDb();
-  const result = await db.execute(
-    `UPDATE chapter
-     SET
-       content_bytes  = 0,
-       media_bytes    = 0,
-       media_repair_needed = 0,
-       media_bytes_checked_at = NULL,
-       stored_content_type = NULL,
-       is_downloaded  = 0
-     WHERE id = $1
-       AND novel_id IN (
-         SELECT id
-         FROM novel
-         WHERE is_local = 0
-       )`,
-    [chapterId],
+  return invokeDbMutation<ChapterMutationResult>(
+    "db_chapter_mark_stored_content_missing",
+    { chapterId },
   );
-  return { rowsAffected: result.rowsAffected };
 }
 
-export async function clearChapterContent(
-  chapterId: number,
-): Promise<void> {
-  const db = await getDb();
-  await db.execute(
-    `UPDATE chapter
-     SET
-       content_bytes  = 0,
-       media_bytes    = 0,
-       media_repair_needed = 0,
-       media_bytes_checked_at = NULL,
-       stored_content_type = NULL,
-       is_downloaded  = 0,
-       updated_at     = unixepoch()
-     WHERE id = $1
-       AND novel_id IN (
-         SELECT id
-         FROM novel
-         WHERE is_local = 0
-       )`,
-    [chapterId],
-  );
+export async function clearChapterContent(chapterId: number): Promise<void> {
+  await invokeDbMutation<null>("db_chapter_clear_content", { chapterId });
 }
 
 /**
@@ -1249,16 +507,6 @@ export interface LibraryUpdateEntry {
   novelName: string;
   novelCover: string | null;
   novelIsLocal: boolean;
-}
-
-interface RawLibraryUpdate
-  extends Omit<
-    LibraryUpdateEntry,
-    "contentType" | "isDownloaded" | "novelIsLocal"
-  > {
-  contentType: string;
-  isDownloaded: number;
-  novelIsLocal: unknown;
 }
 
 const DEFAULT_UPDATES_LIMIT = Math.min(100, MAX_ROUTE_QUERY_ROWS);
@@ -1292,72 +540,20 @@ function getUpdatesCursor(
  */
 export type LibraryUpdatesScope = "new" | "backlog";
 
-/**
- * A release time the plugin gave as a date ("2026-11-02", "2026.11.02", local midnight) or an
- * ISO date and time, capped at the found time; free-form text such as "3 days ago" falls back to it.
- */
-const RELEASE_OR_FOUND_AT_SQL = `MIN(COALESCE(CASE
-    WHEN c.release_time GLOB '[0-9][0-9][0-9][0-9][-.][0-9][0-9][-.][0-9][0-9]'
-      THEN unixepoch(replace(c.release_time, '.', '-'), 'utc')
-    WHEN c.release_time GLOB '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9][ T][0-9][0-9]:[0-9][0-9]*'
-      THEN unixepoch(c.release_time)
-  END, c.found_at), c.found_at)`;
-
 export async function listLibraryUpdates(
   limit: number = DEFAULT_UPDATES_LIMIT,
   cursor: LibraryUpdatesCursor | null = null,
   scope: LibraryUpdatesScope = "new",
   readMode: DatabaseReadMode = "queued",
 ): Promise<LibraryUpdateEntry[]> {
-  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
   const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_UPDATES_LIMIT);
-  const sortAt = scope === "new" ? RELEASE_OR_FOUND_AT_SQL : "c.found_at";
-  const cursorClause = cursor
-    ? `AND (
-         ${sortAt} < $1
-         OR (${sortAt} = $1 AND c.position < $2)
-         OR (${sortAt} = $1 AND c.position = $2 AND c.id < $3)
-       )`
-    : "";
-  const params = cursor
-    ? [cursor.sortAt, cursor.position, cursor.chapterId, normalizedLimit]
-    : [normalizedLimit];
-  const limitParam = cursor ? "$4" : "$1";
-  const rows = await db.select<RawLibraryUpdate[]>(
-    `SELECT
-       c.id              AS chapterId,
-       c.path            AS chapterPath,
-       c.novel_id        AS novelId,
-       n.plugin_id       AS pluginId,
-       ip.name           AS pluginName,
-       n.source_novel_id AS novelSourceNovelId,
-       n.path            AS novelPath,
-       c.name            AS chapterName,
-       COALESCE(c.stored_content_type, c.content_type) AS contentType,
-       c.position,
-       ${sortAt} AS sortAt,
-       c.is_downloaded   AS isDownloaded,
-       n.name            AS novelName,
-       n.cover           AS novelCover,
-       n.is_local        AS novelIsLocal
-     FROM chapter c
-     JOIN novel n ON n.id = c.novel_id
-     LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
-     WHERE
-       n.in_library = 1
-       AND c.unread = 1
-       ${scope === "new" ? "AND c.found_by_check = 1" : ""}
-       ${cursorClause}
-      ORDER BY sortAt DESC, c.position DESC, c.id DESC
-      LIMIT ${limitParam}`,
-    params,
+  return invokeDbQuery<LibraryUpdateEntry[]>(
+    "db_chapter_list_library_updates",
+    {
+      input: { limit: normalizedLimit, cursor, scope },
+      readMode,
+    },
   );
-  return rows.map((row) => ({
-    ...row,
-    contentType: normalizeChapterContentType(row.contentType),
-    isDownloaded: !!row.isDownloaded,
-    novelIsLocal: sqliteBoolean(row.novelIsLocal),
-  }));
 }
 
 /** Unread chapters found by checks since `seenAt` (Unix seconds), for the Updates badge. */
@@ -1365,11 +561,10 @@ export async function countNewLibraryChaptersSince(
   seenAt: number,
   readMode: DatabaseReadMode = "queued",
 ): Promise<number> {
-  const db = await (readMode === "committed" ? getReadOnlyDb() : getDb());
-  const [row] = await db.select<{ count: number }[]>(
-    `SELECT COUNT(*) AS count FROM chapter c JOIN novel n ON n.id = c.novel_id
-     WHERE n.in_library = 1 AND c.unread = 1 AND c.found_by_check = 1 AND c.found_at > $1`, [seenAt]);
-  return row?.count ?? 0;
+  return invokeDbQuery<number>("db_chapter_count_new_since", {
+    seenAt,
+    readMode,
+  });
 }
 
 export async function listLibraryUpdatesPage(
@@ -1397,6 +592,7 @@ export async function listLibraryUpdatesPage(
 /** One chapter recently read, joined with its parent novel for display. */
 export interface RecentlyReadEntry {
   displayChapterNumber?: string | null;
+  compositionSource?: ChapterSourceSnapshot;
   chapterPath?: string;
   chapterId: number;
   novelId: number;
@@ -1414,12 +610,6 @@ export interface RecentlyReadEntry {
   novelPath: string;
 }
 
-interface RawRecentlyReadEntry
-  extends Omit<RecentlyReadEntry, "novelInLibrary" | "novelIsLocal"> {
-  novelInLibrary: unknown;
-  novelIsLocal: unknown;
-}
-
 const DEFAULT_HISTORY_LIMIT = Math.min(100, MAX_ROUTE_QUERY_ROWS);
 
 /**
@@ -1429,43 +619,10 @@ const DEFAULT_HISTORY_LIMIT = Math.min(100, MAX_ROUTE_QUERY_ROWS);
 export async function listRecentlyRead(
   limit: number = DEFAULT_HISTORY_LIMIT,
 ): Promise<RecentlyReadEntry[]> {
-  const db = await getDb();
   const normalizedLimit = clampRouteQueryLimit(limit, DEFAULT_HISTORY_LIMIT);
-  const rows = await db.select<RawRecentlyReadEntry[]>(
-    `SELECT
-       c.id              AS chapterId,
-       c.novel_id        AS novelId,
-       c.name            AS chapterName,
-       c.chapter_number  AS chapterNumber,
-       c.path            AS chapterPath,
-       c.position,
-       c.read_at         AS readAt,
-       c.progress,
-       n.plugin_id       AS pluginId,
-       n.source_novel_id AS novelSourceNovelId,
-       n.name            AS novelName,
-       n.cover           AS novelCover,
-       n.in_library      AS novelInLibrary,
-       n.is_local        AS novelIsLocal,
-       n.path            AS novelPath
-     FROM chapter c
-     JOIN novel n ON n.id = c.novel_id
-     WHERE c.id = (
-       SELECT c2.id
-       FROM chapter c2
-       WHERE c2.novel_id = c.novel_id AND c2.read_at IS NOT NULL
-       ORDER BY c2.read_at DESC, c2.position DESC, c2.id DESC
-       LIMIT 1
-     )
-     ORDER BY c.read_at DESC, c.position DESC, c.id DESC
-     LIMIT $1`,
-    [normalizedLimit],
-  );
-  return withCompositionDisplay(db, rows.map((row) => ({
-    ...row,
-    novelInLibrary: sqliteBoolean(row.novelInLibrary),
-    novelIsLocal: sqliteBoolean(row.novelIsLocal),
-  })));
+  return invokeDbQuery<RecentlyReadEntry[]>("db_chapter_list_recently_read", {
+    limit: normalizedLimit,
+  });
 }
 
 export async function getAdjacentChapter(
@@ -1473,19 +630,9 @@ export async function getAdjacentChapter(
   position: number,
   direction: 1 | -1,
 ): Promise<ChapterListRow | null> {
-  const db = await getDb();
-  const sql =
-    direction === 1
-      ? `SELECT ${CHAPTER_LIST_SELECT_FIELDS}
-         FROM chapter
-         WHERE novel_id = $1 AND position > $2
-         ORDER BY position ASC
-         LIMIT 1`
-      : `SELECT ${CHAPTER_LIST_SELECT_FIELDS}
-         FROM chapter
-         WHERE novel_id = $1 AND position < $2
-         ORDER BY position DESC
-         LIMIT 1`;
-  const rows = await db.select<RawChapterListRow[]>(sql, [novelId, position]);
-  return rows[0] ? (await withCompositionDisplay(db, [normalizeChapterListRow(rows[0])]))[0] : null;
+  return invokeDbQuery<ChapterListRow | null>("db_chapter_get_adjacent", {
+    novelId,
+    position,
+    direction,
+  });
 }

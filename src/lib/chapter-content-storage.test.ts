@@ -4,9 +4,9 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-vi.mock("../db/client", () => ({
-  getDb: vi.fn(),
-  getReadOnlyDb: vi.fn(),
+vi.mock("./observability", () => ({
+  startPerformanceObservation: () => () => undefined,
+  recordPerformanceObservation: () => undefined,
 }));
 
 vi.mock("../db/queries/chapter", () => ({
@@ -22,7 +22,6 @@ vi.mock("./tauri-runtime", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { getDb, getReadOnlyDb } from "../db/client";
 import {
   adoptStoredChapterContentMetadata,
   markStoredChapterContentMissing,
@@ -40,7 +39,6 @@ import {
 } from "./chapter-content-storage";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
-const getDbMock = vi.mocked(getDb);
 const invokeMock = vi.mocked(invoke);
 const adoptStoredChapterContentMetadataMock = vi.mocked(
   adoptStoredChapterContentMetadata,
@@ -54,68 +52,60 @@ const saveChapterPartialContentMetadataMock = vi.mocked(
 );
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const isTauriRuntimeMock = vi.mocked(isTauriRuntime);
-let selectMock: ReturnType<typeof vi.fn>;
+
+const storageRowMock = vi.fn<(args?: unknown) => Promise<unknown>>();
+const storageRowsListMock = vi.fn<(args?: unknown) => Promise<unknown[]>>();
+const mirrorInvokeMock = vi.fn<
+  (command: string, args?: unknown) => Promise<unknown>
+>();
 
 function chapterRow(overrides: Record<string, unknown> = {}) {
   return {
-    artist: null,
-    author: null,
-    bookmark: 0,
-    chapterCreatedAt: 1_700_000_000,
-    chapterFoundAt: 1_700_000_000,
     chapterId: 10,
     chapterName: "Chapter 1",
     chapterNumber: "1",
-    chapterPath: "/c/1",
-    chapterUpdatedAt: 1_700_000_000,
     contentBytes: 10,
     sourceContentType: "text",
     storedContentType: "html",
-    cover: null,
-    genres: null,
-    inLibrary: 1,
-    isDownloaded: 1,
-    isLocal: 0,
-    lastReadAt: null,
-    libraryAddedAt: 1_700_000_000,
+    isDownloaded: true,
     mediaBytes: 0,
-    mediaRepairNeeded: 0,
-    novelCreatedAt: 1_700_000_000,
+    mediaRepairNeeded: false,
     novelId: 1,
     novelName: "Sample Novel",
     sourceNovelId: "1",
     novelPath: "/n/1",
-    novelUpdatedAt: 1_700_000_000,
-    page: "1",
     pluginId: "demo",
     position: 1,
-    progress: 0,
-    readAt: null,
-    releaseTime: null,
-    status: null,
-    summary: null,
-    unread: 1,
     ...overrides,
   };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  selectMock = vi.fn().mockResolvedValue([chapterRow()]);
-  getDbMock.mockResolvedValue({ select: selectMock } as never);
-  vi.mocked(getReadOnlyDb).mockResolvedValue({ select: selectMock } as never);
-  isAndroidRuntimeMock.mockReturnValue(false);
-  isTauriRuntimeMock.mockReturnValue(true);
-  invokeMock.mockImplementation(async (command) => {
+  storageRowMock.mockImplementation(async () => chapterRow());
+  storageRowsListMock.mockImplementation(async () => [chapterRow()]);
+  mirrorInvokeMock.mockImplementation(async (command: string) => {
     if (command === "chapter_content_mirror_inspect") {
       return {
-        status: "present", mediaComplete: true,
+        status: "present",
+        mediaComplete: true,
         contentFile: "contents/demo/1/1/content.html",
         contentBytes: 10,
         mediaBytes: 0,
       };
     }
     return undefined;
+  });
+  isAndroidRuntimeMock.mockReturnValue(false);
+  isTauriRuntimeMock.mockReturnValue(true);
+  invokeMock.mockImplementation(async (command, args) => {
+    if (command === "db_chapter_get_storage_row") {
+      return storageRowMock(args);
+    }
+    if (command === "db_chapter_list_storage_rows") {
+      return storageRowsListMock(args);
+    }
+    return mirrorInvokeMock(command, args);
   });
   adoptStoredChapterContentMetadataMock.mockResolvedValue({ rowsAffected: 1 });
   markStoredChapterContentMissingMock.mockResolvedValue({ rowsAffected: 1 });
@@ -124,51 +114,78 @@ beforeEach(() => {
 });
 
 describe("chapter content storage", () => {
-  it.each([false, true])("reads matching committed artifacts without the writer queue (incomplete: %s)", async incomplete => {
-    const artifacts = {
-      status: "present", mediaComplete: !incomplete,
-      contentFile: "contents/demo/1/1/content.html", contentBytes: 10, mediaBytes: 0,
-    };
-    selectMock.mockResolvedValue([chapterRow({
-      isDownloaded: incomplete ? 0 : 1,
-      mediaRepairNeeded: incomplete ? 1 : 0,
-    })]);
-    invokeMock.mockImplementation(async command =>
-      command === "chapter_content_mirror_inspect" ? artifacts : "<p>stored</p>");
-    getDbMock.mockImplementation(() => { throw new Error("Reader entered writer queue"); });
-    adoptStoredChapterContentMetadataMock.mockImplementation(() => {
-      throw new Error("Reader queued unchanged metadata");
-    });
+  it.each([false, true])(
+    "reads matching committed artifacts without adopting unchanged metadata (incomplete: %s)",
+    async (incomplete) => {
+      const artifacts = {
+        status: "present",
+        mediaComplete: !incomplete,
+        contentFile: "contents/demo/1/1/content.html",
+        contentBytes: 10,
+        mediaBytes: 0,
+      };
+      storageRowMock.mockResolvedValue(
+        chapterRow({
+          isDownloaded: !incomplete,
+          mediaRepairNeeded: incomplete,
+        }),
+      );
+      mirrorInvokeMock.mockImplementation(async (command: string) =>
+        command === "chapter_content_mirror_inspect" ? artifacts : "<p>stored</p>",
+      );
+      adoptStoredChapterContentMetadataMock.mockImplementation(() => {
+        throw new Error("Reader queued unchanged metadata");
+      });
 
-    await expect(readStoredChapterContentMirror(10, "committed")).resolves.toBe("<p>stored</p>");
-    expect(getReadOnlyDb).toHaveBeenCalledOnce();
-    expect(getDbMock).not.toHaveBeenCalled();
-    expect(adoptStoredChapterContentMetadataMock).not.toHaveBeenCalled();
-  });
+      await expect(
+        readStoredChapterContentMirror(10, "committed"),
+      ).resolves.toBe("<p>stored</p>");
+      expect(storageRowMock).toHaveBeenCalledExactlyOnceWith({
+        chapterId: 10,
+        readMode: "committed",
+      });
+      expect(adoptStoredChapterContentMetadataMock).not.toHaveBeenCalled();
+    },
+  );
 
   it.each([
     { contentBytes: 9 },
     { mediaBytes: 1 },
     { storedContentType: null },
-    { isDownloaded: 0 },
-    { mediaRepairNeeded: 1 },
-  ])("reconciles changed artifacts when reading committed metadata: %j", async metadata => {
-    selectMock.mockResolvedValue([chapterRow(metadata)]);
-    invokeMock.mockImplementation(async command => command === "chapter_content_mirror_inspect"
-      ? { status: "present", mediaComplete: true, contentFile: "contents/demo/1/1/content.html", contentBytes: 10, mediaBytes: 0 }
-      : "<p>stored</p>");
+    { isDownloaded: false },
+    { mediaRepairNeeded: true },
+  ])(
+    "reconciles changed artifacts when reading committed metadata: %j",
+    async (metadata) => {
+      storageRowMock.mockResolvedValue(chapterRow(metadata));
+      mirrorInvokeMock.mockImplementation(async (command: string) =>
+        command === "chapter_content_mirror_inspect"
+          ? {
+              status: "present",
+              mediaComplete: true,
+              contentFile: "contents/demo/1/1/content.html",
+              contentBytes: 10,
+              mediaBytes: 0,
+            }
+          : "<p>stored</p>",
+      );
 
-    await expect(readStoredChapterContentMirror(10, "committed")).resolves.toBe("<p>stored</p>");
-    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledExactlyOnceWith(10, 10, 0, "html", false);
-  });
+      await expect(
+        readStoredChapterContentMirror(10, "committed"),
+      ).resolves.toBe("<p>stored</p>");
+      expect(
+        adoptStoredChapterContentMetadataMock,
+      ).toHaveBeenCalledExactlyOnceWith(10, 10, 0, "html", false);
+    },
+  );
 
   it("reads chapter content from the storage file", async () => {
-    invokeMock.mockImplementation(async (command) => {
+    mirrorInvokeMock.mockImplementation(async (command: string) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present", mediaComplete: true,
-          contentFile:
-            "contents/demo/1/1/content.html",
+          status: "present",
+          mediaComplete: true,
+          contentFile: "contents/demo/1/1/content.html",
           contentBytes: 13,
           mediaBytes: 0,
         };
@@ -183,10 +200,10 @@ describe("chapter content storage", () => {
       "<p>stored</p>",
     );
 
-    expect(selectMock).toHaveBeenCalledWith(
-      expect.stringContaining("FROM chapter c"),
-      [10],
-    );
+    expect(storageRowMock).toHaveBeenCalledWith({
+      chapterId: 10,
+      readMode: "queued",
+    });
     expect(invokeMock).toHaveBeenCalledWith(
       "chapter_content_mirror_read_file",
       {
@@ -203,12 +220,12 @@ describe("chapter content storage", () => {
   });
 
   it("treats an empty final content file as downloaded", async () => {
-    invokeMock.mockImplementation(async (command) => {
+    mirrorInvokeMock.mockImplementation(async (command: string) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present", mediaComplete: true,
-          contentFile:
-            "contents/demo/1/1/content.html",
+          status: "present",
+          mediaComplete: true,
+          contentFile: "contents/demo/1/1/content.html",
           contentBytes: 0,
           mediaBytes: 0,
         };
@@ -228,12 +245,26 @@ describe("chapter content storage", () => {
   });
 
   it("normalizes adopted text metadata to the physical HTML file", async () => {
-    selectMock.mockResolvedValueOnce([
+    storageRowMock.mockResolvedValueOnce(
       chapterRow({ sourceContentType: "text", storedContentType: null }),
-    ]);
+    );
+    mirrorInvokeMock.mockImplementation(async (command: string) => {
+      if (command === "chapter_content_mirror_inspect") {
+        return {
+          status: "present",
+          mediaComplete: true,
+          contentFile: "contents/demo/1/1/content.html",
+          contentBytes: 10,
+          mediaBytes: 0,
+        };
+      }
+      if (command === "chapter_content_mirror_read_file") return "<p>text</p>";
+      return undefined;
+    });
 
     await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
-      status: "present", mediaComplete: true,
+      status: "present",
+      mediaComplete: true,
       contentFile: expect.stringContaining("content.html"),
     });
     expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
@@ -246,17 +277,31 @@ describe("chapter content storage", () => {
   });
 
   it("adopts final content for fresh download metadata", async () => {
-    selectMock.mockResolvedValueOnce([
+    storageRowMock.mockResolvedValueOnce(
       chapterRow({
         contentBytes: 0,
-        isDownloaded: 0,
+        isDownloaded: false,
         mediaBytes: 0,
         storedContentType: null,
       }),
-    ]);
+    );
+    mirrorInvokeMock.mockImplementation(async (command: string) => {
+      if (command === "chapter_content_mirror_inspect") {
+        return {
+          status: "present",
+          mediaComplete: true,
+          contentFile: "contents/demo/1/1/content.html",
+          contentBytes: 10,
+          mediaBytes: 0,
+        };
+      }
+      if (command === "chapter_content_mirror_read_file") return "<p>fresh</p>";
+      return undefined;
+    });
 
     await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
-      status: "present", mediaComplete: true,
+      status: "present",
+      mediaComplete: true,
       contentFile: expect.stringContaining("content.html"),
       contentBytes: 10,
       mediaBytes: 0,
@@ -270,18 +315,19 @@ describe("chapter content storage", () => {
     );
   });
 
-  it.each([0, 1])(
+  it.each([false, true])(
     "restores repair metadata from artifact inspection for downloaded flag %s",
     async (isDownloaded) => {
       const storedHtml =
         '<img src="media/local.webp"><img src="https://cdn.example/panel.webp">';
-      selectMock.mockResolvedValueOnce([
-        chapterRow({ isDownloaded, mediaRepairNeeded: 0 }),
-      ]);
-      invokeMock.mockImplementation(async (command) => {
+      storageRowMock.mockResolvedValueOnce(
+        chapterRow({ isDownloaded, mediaRepairNeeded: false }),
+      );
+      mirrorInvokeMock.mockImplementation(async (command: string) => {
         if (command === "chapter_content_mirror_inspect") {
           return {
-            status: "present", mediaComplete: false,
+            status: "present",
+            mediaComplete: false,
             contentFile: "contents/demo/1/1/content.html",
             contentBytes: 82,
             mediaBytes: 1024,
@@ -301,22 +347,23 @@ describe("chapter content storage", () => {
         true,
       );
       expect(markStoredChapterContentMissingMock).not.toHaveBeenCalled();
-      expect(invokeMock).toHaveBeenCalledWith(
-        "chapter_content_mirror_read_file",
-        { contentFile: "contents/demo/1/1/content.html" },
-      );
-      expect(invokeMock.mock.calls.filter(
-        ([command]) => command === "chapter_content_mirror_read_file",
-      )).toHaveLength(1);
+      expect(
+        mirrorInvokeMock.mock.calls.filter(
+          ([command]) => command === "chapter_content_mirror_read_file",
+        ),
+      ).toHaveLength(1);
     },
   );
 
   it("clears stale repair metadata when all manifest assets are stored", async () => {
-    selectMock.mockResolvedValueOnce([chapterRow({ mediaRepairNeeded: 1 })]);
-    invokeMock.mockImplementation(async (command) => {
+    storageRowMock.mockResolvedValueOnce(
+      chapterRow({ mediaRepairNeeded: true }),
+    );
+    mirrorInvokeMock.mockImplementation(async (command: string) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present", mediaComplete: true,
+          status: "present",
+          mediaComplete: true,
           contentFile: "contents/demo/1/1/content.html",
           contentBytes: 48,
           mediaBytes: 1024,
@@ -329,34 +376,25 @@ describe("chapter content storage", () => {
     });
 
     await expect(reconcileStoredChapterContent(10)).resolves.toMatchObject({
-      status: "present", mediaComplete: true,
+      status: "present",
+      mediaComplete: true,
     });
 
     expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
-      10, 48, 1024, "html", false,
+      10,
+      48,
+      1024,
+      "html",
+      false,
     );
   });
 
-  it("marks missing declared assets for repair even when a body is readable", async () => {
-    selectMock.mockResolvedValueOnce([chapterRow({ mediaRepairNeeded: 0 })]);
-    invokeMock.mockImplementation(async (command) => {
-      if (command === "chapter_content_mirror_inspect") return {
-        status: "present", mediaComplete: false, contentFile: "contents/demo/1/1/content.html", contentBytes: 48, mediaBytes: 0,
-      };
-      if (command === "chapter_content_mirror_read_file") return '<img src="norea-media://reader-asset/panel.png">';
-      return undefined;
-    });
-    await reconcileStoredChapterContent(10);
-    expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(10, 48, 0, "html", true);
-    expect(markStoredChapterContentMissingMock).not.toHaveBeenCalled();
-    expect(invokeMock.mock.calls.every(([command]) => !String(command).includes("write") && !String(command).includes("delete"))).toBe(true);
-  });
-
   it("preserves metadata when a final HTML file cannot be read", async () => {
-    invokeMock.mockImplementation(async (command) => {
+    mirrorInvokeMock.mockImplementation(async (command: string) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present", mediaComplete: true,
+          status: "present",
+          mediaComplete: true,
           contentFile: "contents/demo/1/1/content.html",
           contentBytes: 48,
           mediaBytes: 1024,
@@ -376,8 +414,9 @@ describe("chapter content storage", () => {
   });
 
   it("does not load a binary PDF during metadata reconciliation", async () => {
-    invokeMock.mockResolvedValueOnce({
-      status: "present", mediaComplete: true,
+    mirrorInvokeMock.mockResolvedValueOnce({
+      status: "present",
+      mediaComplete: true,
       contentFile: "contents/demo/1/1/content.pdf",
       contentBytes: 4096,
       mediaBytes: 0,
@@ -385,17 +424,22 @@ describe("chapter content storage", () => {
 
     await reconcileStoredChapterContent(10);
 
-    expect(invokeMock).toHaveBeenCalledTimes(1);
+    expect(mirrorInvokeMock).toHaveBeenCalledTimes(1);
     expect(adoptStoredChapterContentMetadataMock).toHaveBeenCalledWith(
-      10, 4096, 0, "pdf", false,
+      10,
+      4096,
+      0,
+      "pdf",
+      false,
     );
   });
 
   it("marks HTML missing when it disappears after artifact inspection", async () => {
-    invokeMock.mockImplementation(async (command) => {
+    mirrorInvokeMock.mockImplementation(async (command: string) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present", mediaComplete: true,
+          status: "present",
+          mediaComplete: true,
           contentFile: "contents/demo/1/1/content.html",
           contentBytes: 48,
           mediaBytes: 1024,
@@ -410,13 +454,10 @@ describe("chapter content storage", () => {
     });
     expect(adoptStoredChapterContentMetadataMock).not.toHaveBeenCalled();
     expect(markStoredChapterContentMissingMock).toHaveBeenCalledOnce();
-    expect(invokeMock.mock.calls.filter(
-      ([command]) => command === "chapter_content_mirror_read_file",
-    )).toHaveLength(1);
   });
 
   it("marks non-local metadata missing when no final content file exists", async () => {
-    invokeMock.mockResolvedValueOnce({
+    mirrorInvokeMock.mockResolvedValueOnce({
       status: "missing",
       contentFile: null,
       contentBytes: 0,
@@ -427,36 +468,7 @@ describe("chapter content storage", () => {
     expect(markStoredChapterContentMissingMock).toHaveBeenCalledWith(10);
   });
 
-  it.each([
-    ["1", true],
-    [" true ", true],
-    ["0", false],
-    ["false", false],
-    [null, false],
-  ])(
-    "reconciles missing content using persisted boolean %s",
-    async (flag, downloaded) => {
-      selectMock.mockResolvedValueOnce([
-        chapterRow({
-          isDownloaded: flag,
-          contentBytes: 0,
-          mediaBytes: 0,
-        }),
-      ]);
-      invokeMock.mockResolvedValueOnce({
-        status: "missing",
-        contentFile: null,
-        contentBytes: 0,
-        mediaBytes: 0,
-      });
-      await reconcileStoredChapterContent(10);
-      expect(markStoredChapterContentMissingMock).toHaveBeenCalledTimes(
-        downloaded ? 1 : 0,
-      );
-    },
-  );
-
-  it("writes chapter content to the storage file and saves metadata", async () => {
+  it("writes chapter content and partial chapter content to storage and saves metadata", async () => {
     const result = await saveStoredChapterContent(10, "<p>stored</p>", "html", {
       mediaBytes: 12,
     });
@@ -476,11 +488,8 @@ describe("chapter content storage", () => {
       }),
     });
     expect(result).toEqual({ rowsAffected: 1 });
-  });
 
-  it("writes partial chapter content to the storage file and saves metadata", async () => {
     await saveStoredChapterPartialContent(10, "<p>partial</p>", "html");
-
     expect(saveChapterPartialContentMetadataMock).toHaveBeenCalledWith(
       10,
       "<p>partial</p>",
@@ -494,16 +503,19 @@ describe("chapter content storage", () => {
 
   it("uses the Rust mirror IPC commands on Android", async () => {
     isAndroidRuntimeMock.mockReturnValue(true);
-    invokeMock.mockImplementation(async (command) => {
+    mirrorInvokeMock.mockImplementation(async (command: string) => {
       if (command === "chapter_content_mirror_inspect") {
         return {
-          status: "present", mediaComplete: true,
+          status: "present",
+          mediaComplete: true,
           contentFile: "contents/demo/1/1/content.html",
           contentBytes: 12,
           mediaBytes: 0,
         };
       }
-      if (command === "chapter_content_mirror_read_file") return "<p>android</p>";
+      if (command === "chapter_content_mirror_read_file") {
+        return "<p>android</p>";
+      }
       return undefined;
     });
 
@@ -521,15 +533,14 @@ describe("chapter content storage", () => {
       "chapter_content_mirror_store",
       expect.objectContaining({ chapterId: 10, content: "<p>android</p>" }),
     );
-    expect(invokeMock).toHaveBeenCalledWith(
-      "chapter_content_mirror_clear",
-      { chapterDir: expect.stringContaining("contents/demo/1/1") },
-    );
+    expect(invokeMock).toHaveBeenCalledWith("chapter_content_mirror_clear", {
+      chapterDir: expect.stringContaining("contents/demo/1/1"),
+    });
   });
 
   it("preserves metadata when Android storage is inaccessible", async () => {
     isAndroidRuntimeMock.mockReturnValue(true);
-    invokeMock.mockRejectedValueOnce(
+    mirrorInvokeMock.mockRejectedValueOnce(
       new Error("Android storage folder is not readable."),
     );
 
@@ -540,7 +551,7 @@ describe("chapter content storage", () => {
   });
 
   it("continues startup reconciliation after one chapter inspection fails", async () => {
-    selectMock.mockResolvedValueOnce([
+    storageRowsListMock.mockResolvedValueOnce([
       chapterRow(),
       chapterRow({
         chapterId: 11,
@@ -550,12 +561,14 @@ describe("chapter content storage", () => {
       }),
     ]);
     let inspectionCount = 0;
-    invokeMock.mockImplementation(async (command) => {
+    mirrorInvokeMock.mockImplementation(async (command: string) => {
+      if (command === "chapter_content_mirror_read_file") return "<p>ok</p>";
       if (command !== "chapter_content_mirror_inspect") return undefined;
       inspectionCount += 1;
       if (inspectionCount === 1) throw new Error("interrupted finalization");
       return {
-        status: "present", mediaComplete: true,
+        status: "present",
+        mediaComplete: true,
         contentFile: "contents/demo/1/2/content.html",
         contentBytes: 12,
         mediaBytes: 8,

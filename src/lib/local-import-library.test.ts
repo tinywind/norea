@@ -11,6 +11,7 @@ vi.mock("./local-import-media", () => ({ cacheLocalImportedChapterMedia: vi.fn()
 import { importLocalFileToLibrary } from "./local-import-library";
 import { importSystemOpenedFile } from "./system-file-import";
 import { cacheLocalImportedChapterMedia } from "./local-import-media";
+import { createChapterIpcHandler } from "../test/mock-chapter-ipc";
 
 let sqlite: DatabaseSync;
 let queue: Promise<unknown>;
@@ -37,7 +38,12 @@ beforeEach(() => {
     queue = result.catch(() => undefined);
     return result;
   });
-  client.invoke.mockImplementation((command: string, args: {
+  const chapterIpc = createChapterIpcHandler({
+    getDb: () => db,
+    runTransaction: (run) => client.transaction(run),
+  });
+  client.invoke.mockImplementation(async (command: string, args: {
+    pathKey?: string;
     input?: {
       path: string;
       name: string;
@@ -65,6 +71,10 @@ beforeEach(() => {
       }>;
     };
   } = {}) => {
+    const handled = await chapterIpc.handle(command, args as Record<string, unknown>);
+    if (handled.handled) {
+      return handled.result;
+    }
     if (command !== "db_novel_upsert_local") {
       throw new Error(`Unexpected command: ${command}`);
     }

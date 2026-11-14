@@ -1,69 +1,41 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import { readFileSync } from "node:fs";
-import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 
-vi.mock("../../db/chapter-composition", async original => ({
-  ...await original<typeof import("../../db/chapter-composition")>(),
-  getChapterComposition: vi.fn(async () => null),
-}));
+const invokeMock = vi.hoisted(() => vi.fn());
+const renumberMock = vi.hoisted(() =>
+  vi.fn((_input: unknown, publish: (journal: null) => Promise<unknown>) =>
+    publish(null),
+  ),
+);
 
-vi.mock("../../db/client", () => ({
-  getDb: vi.fn(),
-  runDatabaseTransaction: vi.fn(),
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
+vi.mock("../observability", () => ({
+  startPerformanceObservation: () => () => undefined,
+  recordPerformanceObservation: () => undefined,
 }));
-vi.mock("@tauri-apps/api/core", () => ({
-  invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
-    if (command === "db_novel_freshness_record_cover_fetched") {
-      const db = await mockedGetDb();
-      await db.execute(
-        `INSERT INTO novel_freshness(novel_id,cover_fetched_at)
-         SELECT $1,$2 WHERE EXISTS(SELECT 1 FROM novel WHERE id=$1)
-         ON CONFLICT(novel_id) DO UPDATE SET cover_fetched_at=excluded.cover_fetched_at`,
-        [args.novelId, args.nowSeconds],
-      );
-      return { value: null, effects: {} };
-    }
-    throw new Error(`Unexpected command: ${command}`);
-  }),
+vi.mock("./source-chapter-renumber", () => ({
+  withSourceChapterNumberReconciliation: renumberMock,
 }));
-vi.mock("../../db/queries/novel-identity", () => ({ reconcileImportedNovelIdentityInDb: vi.fn(async () => null) }));
-vi.mock("./source-chapter-renumber", () => ({ withSourceChapterNumberReconciliation: (_input: unknown, publish: (journal: null) => Promise<unknown>) => publish(null) }));
-vi.mock("../source-chapter-renumber", async original => ({ ...await original<typeof import("../source-chapter-renumber")>(), readRenumberChapters: vi.fn(async () => []) }));
-
-vi.mock("../../db/queries/chapter", () => ({
-  getLatestSourceChapterAnchor: vi.fn(),
-  upsertSourceChaptersInDb: vi.fn(),
-}));
-
 vi.mock("../updates/update-index-events", () => ({
   markUpdatesIndexDirty: vi.fn(),
 }));
-
 vi.mock("../novel-cover-storage", () => ({
   saveNovelCoverFromSource: vi.fn(),
 }));
+vi.mock("../tauri-runtime", () => ({
+  isTauriRuntime: () => false,
+}));
 
-import { getDb, runDatabaseTransaction } from "../../db/client";
-import {
-  getLatestSourceChapterAnchor,
-  upsertSourceChaptersInDb,
-} from "../../db/queries/chapter";
 import { saveNovelCoverFromSource } from "../novel-cover-storage";
 import { subscribeWorkMetadataChanges } from "../work-metadata";
 import { isSourceAccessRequiredError } from "./source-access";
-import { syncNovelFromSource } from "./sync-novel";
+import {
+  COVER_REFRESH_SECONDS,
+  getSourceDuplicateChapterInfo,
+  syncNovelFromSource,
+} from "./sync-novel";
 import type { Plugin, SourceNovel } from "./types";
 
-const mockedGetDb = vi.mocked(getDb);
-const mockedRunDatabaseTransaction = vi.mocked(runDatabaseTransaction);
-const mockedGetLatestSourceChapterAnchor = vi.mocked(
-  getLatestSourceChapterAnchor,
-);
 const mockedSaveNovelCoverFromSource = vi.mocked(saveNovelCoverFromSource);
-const mockedUpsertSourceChaptersInDb = vi.mocked(upsertSourceChaptersInDb);
-
-let mockExecute: ReturnType<typeof vi.fn>;
-let mockSelect: ReturnType<typeof vi.fn>;
 
 function makeDetail(chapterNumbers: number[]): SourceNovel {
   return {
@@ -99,357 +71,349 @@ function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
   };
 }
 
-function applyCapturedNovelUpsert() {
-  const sqlite = new DatabaseSync(":memory:");
-  try {
-    sqlite.exec(readFileSync("src-tauri/src/schema.sql", "utf8"));
-    sqlite.exec(`INSERT INTO novel(plugin_id, path, name, cover, summary, author, artist, status, genres, rating, source_novel_id)
-      VALUES ('demo', '/novel', 'Novel', 'https://source.test/saved.jpg', 'Saved summary',
-        'Saved author', 'Saved artist', 'Completed', 'Fantasy', 4.5, 'novel')`);
-    const [sql, values] = mockExecute.mock.calls[0]!;
-    const result = sqlite.prepare(sql).run(
-      Object.fromEntries(values.map((value: unknown, index: number) => [`$${index + 1}`, value])) as never,
-    );
-    const row = sqlite.prepare("SELECT name, cover, summary, author, artist, status, genres, rating FROM novel").get();
-    return { result, row };
-  } finally { sqlite.close(); }
-}
-
-function registeredDatabase(): DatabaseSync {
-  const sqlite = new DatabaseSync(":memory:");
-  const registration = readFileSync("src-tauri/src/database.rs", "utf8");
-  for (const match of registration.matchAll(/include_str!\("([^"]+)"\)/g)) {
-    sqlite.exec(readFileSync(`src-tauri/src/${match[1]}`, "utf8"));
-  }
-  return sqlite;
+function publishResult(overrides: Record<string, unknown> = {}) {
+  return {
+    value: {
+      republish: true,
+      changedChapters: 1,
+      newChapters: 0,
+      cover: null,
+      coverChanged: false,
+      coverFetchedAt: null,
+      novelChanged: false,
+      inLibrary: false,
+      novelId: 7,
+      ...overrides,
+    },
+    effects: {},
+  };
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mockExecute = vi.fn().mockResolvedValue({ rowsAffected: 0 });
-  mockSelect = vi.fn().mockResolvedValue([{ id: 7, sourceNovelId: "novel", inLibrary: 0 }]);
-  mockedGetDb.mockResolvedValue({
-    execute: mockExecute,
-    select: mockSelect,
-  } as never);
-  mockedRunDatabaseTransaction.mockImplementation(async (run) =>
-    run({
-      execute: mockExecute,
-      select: mockSelect,
-    } as never),
-  );
-  mockedGetLatestSourceChapterAnchor.mockResolvedValue({
-    novelId: 7,
-    chapterNumber: 2,
-    position: 2,
-  });
-  mockedUpsertSourceChaptersInDb.mockResolvedValue({
-    chunks: 1,
-    rowsAffected: 1,
-  });
+  renumberMock.mockImplementation((_input, publish) => publish(null));
   mockedSaveNovelCoverFromSource.mockResolvedValue(undefined);
+  invokeMock.mockImplementation(async (command: string) => {
+    if (command === "db_chapter_get_sync_since_anchor") {
+      return {
+        existingNovelId: 7,
+        anchor: { novelId: 7, chapterNumber: 2, position: 2 },
+      };
+    }
+    if (command === "db_novel_sync_from_source") {
+      return publishResult();
+    }
+    if (command === "db_novel_freshness_record_cover_fetched") {
+      return { value: null, effects: {} };
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
 });
 
 describe("syncNovelFromSource", () => {
-  it.each([undefined, "", " \t\n "])("preserves stored metadata when a default source refresh returns %j", async missing => {
-    await syncNovelFromSource(makePlugin({
-      parseNovel: async () => ({
-        ...makeDetail([1]), cover: missing, summary: missing, author: missing,
-        artist: missing, status: missing, genres: missing,
+  it.each([undefined, "", " \t\n "])(
+    "normalizes blank source metadata %j to null while preserving missing metadata",
+    async (missing) => {
+      await syncNovelFromSource(
+        makePlugin({
+          parseNovel: async () => ({
+            ...makeDetail([1]),
+            cover: missing,
+            summary: missing,
+            author: missing,
+            artist: missing,
+            status: missing,
+            genres: missing,
+          }),
+        }),
+        { name: "Novel", path: "/novel" },
+      );
+
+      expect(invokeMock).toHaveBeenCalledWith("db_novel_sync_from_source", {
+        input: expect.objectContaining({
+          pluginId: "demo",
+          novelPath: "/novel",
+          novelName: "Novel",
+          preserveMissingMetadata: true,
+          cover: null,
+          summary: null,
+          author: null,
+          artist: null,
+          status: null,
+          genres: null,
+          rating: null,
+        }),
+      });
+    },
+  );
+
+  it("sends nonempty source fields, zero rating, and authoritativeMetadata when preserveMissingMetadata is false", async () => {
+    const result = await syncNovelFromSource(
+      makePlugin({
+        parseNovel: async () => ({
+          ...makeDetail([1]),
+          name: "Updated title",
+          cover: "https://source.test/new.jpg",
+          summary: "New summary",
+          author: "New author",
+          artist: "New artist",
+          status: "Ongoing",
+          genres: "Adventure",
+          rating: 0,
+        }),
       }),
-    }), { name: "Novel", path: "/novel" });
-    const { result, row } = applyCapturedNovelUpsert();
-    expect(result.changes).toBe(0);
-    expect(row).toEqual({
-      name: "Novel", cover: "https://source.test/saved.jpg", summary: "Saved summary",
-      author: "Saved author", artist: "Saved artist", status: "Completed", genres: "Fantasy", rating: 4.5,
-    });
-  });
+      {
+        name: "Novel",
+        path: "/novel",
+        cover: "https://source.test/stale-browse.jpg",
+      },
+      { preserveMissingMetadata: false, refreshCover: true },
+    );
 
-  it("replaces stored metadata with nonempty source fields and a zero rating", async () => {
-    await syncNovelFromSource(makePlugin({
-      parseNovel: async () => ({
-        ...makeDetail([1]), name: "Updated title", cover: "https://source.test/new.jpg",
-        summary: "New summary", author: "New author", artist: "New artist",
-        status: "Ongoing", genres: "Adventure", rating: 0,
+    expect(invokeMock).toHaveBeenCalledWith("db_novel_sync_from_source", {
+      input: expect.objectContaining({
+        novelName: "Updated title",
+        cover: "https://source.test/new.jpg",
+        summary: "New summary",
+        author: "New author",
+        artist: "New artist",
+        status: "Ongoing",
+        genres: "Adventure",
+        rating: 0,
+        preserveMissingMetadata: false,
       }),
-    }), { name: "Novel", path: "/novel" });
-    expect(applyCapturedNovelUpsert().row).toEqual({
-      name: "Updated title", cover: "https://source.test/new.jpg", summary: "New summary",
-      author: "New author", artist: "New artist", status: "Ongoing", genres: "Adventure", rating: 0,
+    });
+    expect(result.authoritativeMetadata).toEqual({
+      identity: { pluginId: "demo", novelId: "novel", novelPath: "/novel" },
+      novel: {
+        name: "Updated title",
+        author: "New author",
+        artist: "New artist",
+        summary: "New summary",
+        status: "Ongoing",
+        genres: "Adventure",
+        rating: 0,
+        isLocal: false,
+      },
+      coverUrl: "https://source.test/new.jpg",
     });
   });
 
-  it("keeps explicitly requested metadata replacement available", async () => {
-    await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { preserveMissingMetadata: false });
-    expect(applyCapturedNovelUpsert().row).toEqual({
-      name: "Novel", cover: null, summary: null, author: null, artist: null,
-      status: null, genres: null, rating: null,
-    });
-  });
+  it("does not revive stale browse cover when preserveMissingMetadata is false", async () => {
+    await syncNovelFromSource(
+      makePlugin(),
+      {
+        name: "Novel",
+        path: "/novel",
+        cover: "https://source.test/stale-browse.jpg",
+      },
+      { preserveMissingMetadata: false, refreshCover: true },
+    );
 
-  it("replaces absent source metadata without reviving the stale browse cover", async () => {
-    await syncNovelFromSource(makePlugin(), {
-      name: "Novel", path: "/novel", cover: "https://source.test/stale-browse.jpg",
-    }, { preserveMissingMetadata: false, refreshCover: true });
-    expect(applyCapturedNovelUpsert().row).toEqual({
-      name: "Novel", cover: null, summary: null, author: null, artist: null,
-      status: null, genres: null, rating: null,
-    });
     expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledExactlyOnceWith(
-      expect.objectContaining({ id: "demo" }), expect.objectContaining({ id: 7 }), null,
+      expect.objectContaining({ id: "demo" }),
+      expect.objectContaining({ id: 7 }),
+      null,
       { refresh: true, clearMissing: true },
     );
   });
 
-  it("fetches the authoritative cover exactly once even for a work outside the library", async () => {
-    const plugin = makePlugin({ parseNovel: async () => ({ ...makeDetail([1]), cover: "/fresh.jpg" }) });
-    await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, {
-      preserveMissingMetadata: false, refreshCover: true,
-    });
-    expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledExactlyOnceWith(
-      plugin, expect.objectContaining({ id: 7 }), "/fresh.jpg", { refresh: true, clearMissing: true },
-    );
-  });
-
   it("fails an authoritative refresh when the new cover cannot be stored", async () => {
-    mockedSaveNovelCoverFromSource.mockRejectedValueOnce(new Error("New cover unavailable"));
-    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
-    try {
-      await expect(syncNovelFromSource(makePlugin({ parseNovel: async () => ({ ...makeDetail([1]), cover: "/fresh.jpg" }) }),
-        { name: "Novel", path: "/novel" }, { preserveMissingMetadata: false, refreshCover: true }))
-        .rejects.toThrow("New cover unavailable");
-    } finally { warn.mockRestore(); }
-  });
-
-  it("queues unchanged source metadata for upload and notifies after commit", async () => {
-    mockedUpsertSourceChaptersInDb.mockResolvedValue({ chunks: 1, rowsAffected: 0 });
-    let committed = false;
-    mockedRunDatabaseTransaction.mockImplementationOnce(async run => {
-      const result = await run({ execute: mockExecute, select: mockSelect } as never);
-      committed = true;
-      return result;
-    });
-    const changed = vi.fn(() => { expect(committed).toBe(true); });
-    const unsubscribe = subscribeWorkMetadataChanges(changed);
-    try {
-      expect((await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" })).changed).toBe(false);
-      expect(mockExecute).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO work_metadata_sync_journal"), ["demo", "/novel"]);
-      expect(changed).toHaveBeenCalledOnce();
-      expect(changed).toHaveBeenCalledWith({ pluginId: "demo", novelPath: "/novel" });
-    } finally { unsubscribe(); }
-  });
-
-  it("leaves the upload revision alone when a check finds nothing changed", async () => {
-    mockedUpsertSourceChaptersInDb.mockResolvedValue({ chunks: 1, rowsAffected: 0 });
-    const changed = vi.fn();
-    const unsubscribe = subscribeWorkMetadataChanges(changed);
-    try {
-      expect((await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { markFoundByCheck: true })).changed).toBe(false);
-      expect(mockExecute).not.toHaveBeenCalledWith(expect.stringContaining("INSERT INTO work_metadata_sync_journal"), expect.anything());
-      expect(changed).not.toHaveBeenCalled();
-
-      mockedUpsertSourceChaptersInDb.mockResolvedValue({ chunks: 1, rowsAffected: 1 });
-      await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { markFoundByCheck: true });
-      expect(mockExecute).toHaveBeenCalledWith(expect.stringContaining("INSERT INTO work_metadata_sync_journal"), ["demo", "/novel"]);
-      expect(changed).toHaveBeenCalledOnce();
-    } finally { unsubscribe(); }
-  });
-
-  it("does not notify an upload when the source metadata transaction fails", async () => {
-    mockedRunDatabaseTransaction.mockRejectedValueOnce(new Error("Commit failed"));
-    const changed = vi.fn();
-    const unsubscribe = subscribeWorkMetadataChanges(changed);
-    try {
-      await expect(syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" })).rejects.toThrow("Commit failed");
-      expect(changed).not.toHaveBeenCalled();
-    } finally { unsubscribe(); }
-  });
-
-  it.each(["/novel/123", "/webtoon/list?titleId=650305&q=%2f#info", "opaque:{\"id\":123}"])("preserves the requested plugin identity %s through parsing and storage", async path => {
-    const plugin = makePlugin({
-      parseNovel: vi.fn(async () => ({ ...makeDetail([1]), rating: 4.5, status: "On break" })),
-    });
-    await syncNovelFromSource(plugin, {
-      name: "Novel", path,
-    });
-    expect(plugin.parseNovel).toHaveBeenCalledWith(path);
-    const [sql, values] = mockExecute.mock.calls[0]!;
-    expect(sql).toContain("genres, rating");
-    expect(values).toEqual([
-      "demo", path, "Novel", null, null,
-      null, null, "On break", null, 4.5, "novel",
-    ]);
-    expect(mockSelect).toHaveBeenCalledWith(expect.any(String), ["demo", path]);
-  });
-
-  it("preserves an omitted rating during partial metadata refresh", async () => {
-    await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, {
-      preserveMissingMetadata: true,
-    });
-    expect(mockExecute.mock.calls[0]?.[0]).toContain("rating = COALESCE(excluded.rating, rating)");
-    expect(mockExecute.mock.calls[0]?.[1]?.[9]).toBeNull();
-  });
-
-  it.each([0, 5])("stores the valid rating boundary %s", async (rating) => {
-    await syncNovelFromSource(makePlugin({
-      parseNovel: async () => ({ ...makeDetail([1]), rating }),
-    }), { name: "Novel", path: "/novel" });
-    expect(mockExecute.mock.calls[0]?.[1]?.[9]).toBe(rating);
-  });
-
-  it.each([-1, 5.1, Number.NaN, Number.POSITIVE_INFINITY])("rejects invalid source rating %s", async (rating) => {
-    await expect(syncNovelFromSource(makePlugin({
-      parseNovel: async () => ({ ...makeDetail([1]), rating }),
-    }), { name: "Novel", path: "/novel" })).rejects.toThrow("rating outside 0 to 5");
-    expect(mockExecute).not.toHaveBeenCalled();
-  });
-
-  it("does not parse or mutate an aborted refresh", async () => {
-    const plugin = makePlugin();
-    await expect(syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, { signal: AbortSignal.abort() })).rejects.toThrow();
-    expect(plugin.parseNovel).not.toHaveBeenCalled();
-    expect(mockedRunDatabaseTransaction).not.toHaveBeenCalled();
-  });
-
-  it("does not mutate when cancellation arrives during source parsing", async () => {
-    const controller = new AbortController();
-    const plugin = makePlugin({ parseNovel: async () => { controller.abort(); return makeDetail([1]); } });
-    await expect(syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, { signal: controller.signal })).rejects.toThrow();
-    expect(mockedRunDatabaseTransaction).not.toHaveBeenCalled();
-  });
-
-  it("checks cancellation again when the queued transaction starts", async () => {
-    const controller = new AbortController();
-    mockedRunDatabaseTransaction.mockImplementationOnce(async run => {
-      controller.abort();
-      return run({ execute: mockExecute, select: mockSelect } as never);
-    });
-    await expect(syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { signal: controller.signal })).rejects.toThrow();
-    expect(mockExecute).not.toHaveBeenCalled();
-  });
-
-  it.each(["deleted", "replaced", "renamed"])("rejects a delayed existing-work refresh after the work is %s", async change => {
-    const sqlite = registeredDatabase();
-    sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(7,'demo','novel','/novel','Original')");
-    const parameters = (values: SQLInputValue[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value]));
-    const db = {
-      select: async (sql: string, values: SQLInputValue[] = []) => sqlite.prepare(sql).all(parameters(values)),
-      execute: async (sql: string, values: SQLInputValue[] = []) => ({ rowsAffected: Number(sqlite.prepare(sql).run(parameters(values)).changes) }),
-    };
-    mockedGetDb.mockResolvedValue(db as never);
-    mockedRunDatabaseTransaction.mockImplementation(async run => {
-      sqlite.exec("BEGIN");
-      try { const result = await run(db as never); sqlite.exec("COMMIT"); return result; }
-      catch (error) { sqlite.exec("ROLLBACK"); throw error; }
-    });
-    let release!: (detail: SourceNovel) => void;
-    const detail = new Promise<SourceNovel>(resolve => { release = resolve; });
-    const refresh = syncNovelFromSource(makePlugin({ parseNovel: () => detail }), { name: "Original", path: "/novel" }, { novelId: 7 });
-    try {
-      if (change === "renamed") sqlite.exec("UPDATE novel SET path='/renamed' WHERE id=7");
-      else {
-        sqlite.exec("DELETE FROM novel WHERE id=7");
-        if (change === "replaced") sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(8,'demo','novel','/novel','Replacement')");
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "db_novel_sync_from_source") {
+        return publishResult({ cover: "/fresh.jpg" });
       }
-      const before = sqlite.prepare("SELECT id,path,name FROM novel").all();
-      release(makeDetail([1]));
-      await expect(refresh).rejects.toThrow("Work no longer matches the source refresh");
-      expect(sqlite.prepare("SELECT id,path,name FROM novel").all()).toEqual(before);
-      expect(mockedUpsertSourceChaptersInDb).not.toHaveBeenCalled();
-      expect(sqlite.prepare("SELECT * FROM work_metadata_sync_journal").all()).toEqual([]);
-      if (change === "deleted") {
-        await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" });
-        expect(sqlite.prepare("SELECT name FROM novel").all()).toEqual([{ name: "Novel" }]);
-      }
-    } finally { sqlite.close(); }
-  });
-
-  it("flags only chapters a check inserts into a novel that already had chapters", async () => {
-    const sqlite = registeredDatabase();
-    const parameters = (values: SQLInputValue[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value]));
-    const db = {
-      select: async (sql: string, values: SQLInputValue[] = []) => sqlite.prepare(sql).all(parameters(values)),
-      execute: async (sql: string, values: SQLInputValue[] = []) => ({ rowsAffected: Number(sqlite.prepare(sql).run(parameters(values)).changes) }),
-    };
-    mockedGetDb.mockResolvedValue(db as never);
-    mockedRunDatabaseTransaction.mockImplementation(async run => run(db as never));
-    mockedUpsertSourceChaptersInDb.mockImplementation(async (handle, inputs) => {
-      let rowsAffected = 0;
-      for (const input of inputs) {
-        rowsAffected += (await handle.execute(
-          "INSERT INTO chapter(novel_id,path,name,position,chapter_number) VALUES($1,$2,$3,$4,$5) ON CONFLICT(novel_id,path) DO NOTHING",
-          [input.novelId, input.path, input.name, input.position, input.chapterNumber ?? null])).rowsAffected;
-      }
-      return { chunks: 1, rowsAffected };
+      return { value: null, effects: {} };
     });
-    try {
-      const plugin = makePlugin({ parseNovel: vi.fn(async () => makeDetail([1, 2])) });
-      const first = await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, { markFoundByCheck: true });
-      expect(first.newChapters).toBe(0);
-      vi.mocked(plugin.parseNovel).mockResolvedValue(makeDetail([1, 2, 3, 4]));
-      const check = await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, { markFoundByCheck: true });
-      expect(check.newChapters).toBe(2);
-      vi.mocked(plugin.parseNovel).mockResolvedValue(makeDetail([1, 2, 3, 4, 5]));
-      expect((await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" })).newChapters).toBe(0);
-      expect(sqlite.prepare("SELECT path,found_by_check AS flagged FROM chapter ORDER BY id").all()).toEqual([
-        { path: "/chapter-1", flagged: 0 }, { path: "/chapter-2", flagged: 0 }, { path: "/chapter-3", flagged: 1 },
-        { path: "/chapter-4", flagged: 1 }, { path: "/chapter-5", flagged: 0 },
-      ]);
-    } finally { sqlite.close(); }
-  });
-
-  it("rejects chapters without finite numeric chapterNumber", async () => {
-    const plugin = makePlugin({
-      parseNovel: vi.fn(() =>
-        Promise.resolve({
-          ...makeDetail([]),
-          chapters: [
-            {
-              chapterNumber: Number.NaN,
-              name: "Broken",
-              path: "/broken",
-            },
-          ],
-        }),
-      ),
-    });
+    mockedSaveNovelCoverFromSource.mockRejectedValueOnce(
+      new Error("New cover unavailable"),
+    );
 
     await expect(
-      syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }),
-    ).rejects.toThrow("finite numeric chapterNumber");
+      syncNovelFromSource(
+        makePlugin({
+          parseNovel: async () => ({ ...makeDetail([1]), cover: "/fresh.jpg" }),
+        }),
+        { name: "Novel", path: "/novel" },
+        { preserveMissingMetadata: false, refreshCover: true },
+      ),
+    ).rejects.toThrow("New cover unavailable");
   });
 
-  it("keeps the first duplicate chapterNumber from a source result", async () => {
-    const plugin = makePlugin({
-      parseNovel: vi.fn(() =>
-        Promise.resolve({
+  it("notifies work metadata listeners only when republish is true and IPC succeeds", async () => {
+    const changed = vi.fn();
+    const unsubscribe = subscribeWorkMetadataChanges(changed);
+    try {
+      invokeMock.mockResolvedValueOnce(
+        publishResult({ republish: false, changedChapters: 0 }),
+      );
+      expect(
+        (
+          await syncNovelFromSource(
+            makePlugin(),
+            { name: "Novel", path: "/novel" },
+            { markFoundByCheck: true },
+          )
+        ).changed,
+      ).toBe(false);
+      expect(changed).not.toHaveBeenCalled();
+
+      invokeMock.mockResolvedValueOnce(
+        publishResult({ republish: true, changedChapters: 0 }),
+      );
+      await syncNovelFromSource(makePlugin(), {
+        name: "Novel",
+        path: "/novel",
+      });
+      expect(changed).toHaveBeenCalledExactlyOnceWith({
+        pluginId: "demo",
+        novelPath: "/novel",
+      });
+
+      invokeMock.mockRejectedValueOnce(new Error("Commit failed"));
+      await expect(
+        syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }),
+      ).rejects.toThrow("Commit failed");
+      expect(changed).toHaveBeenCalledOnce();
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it.each([
+    "/novel/123",
+    "/webtoon/list?titleId=650305&q=%2f#info",
+    'opaque:{"id":123}',
+  ])(
+    "preserves the requested plugin identity %s through parsing and IPC",
+    async (path) => {
+      const plugin = makePlugin({
+        parseNovel: vi.fn(async () => ({
+          ...makeDetail([1]),
+          rating: 4.5,
+          status: "On break",
+        })),
+      });
+      await syncNovelFromSource(plugin, { name: "Novel", path });
+      expect(plugin.parseNovel).toHaveBeenCalledWith(path);
+      expect(invokeMock).toHaveBeenCalledWith("db_novel_sync_from_source", {
+        input: expect.objectContaining({
+          pluginId: "demo",
+          novelPath: path,
+          status: "On break",
+          rating: 4.5,
+        }),
+      });
+    },
+  );
+
+  it.each([-1, 5.1, Number.NaN, Number.POSITIVE_INFINITY])(
+    "rejects invalid source rating %s before invoking IPC",
+    async (rating) => {
+      await expect(
+        syncNovelFromSource(
+          makePlugin({
+            parseNovel: async () => ({ ...makeDetail([1]), rating }),
+          }),
+          { name: "Novel", path: "/novel" },
+        ),
+      ).rejects.toThrow("rating outside 0 to 5");
+      expect(invokeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it("checks cancellation before parsing, after parsing, and before publishing", async () => {
+    const plugin = makePlugin();
+    await expect(
+      syncNovelFromSource(
+        plugin,
+        { name: "Novel", path: "/novel" },
+        { signal: AbortSignal.abort() },
+      ),
+    ).rejects.toThrow();
+    expect(plugin.parseNovel).not.toHaveBeenCalled();
+
+    const midParse = new AbortController();
+    await expect(
+      syncNovelFromSource(
+        makePlugin({
+          parseNovel: async () => {
+            midParse.abort();
+            return makeDetail([1]);
+          },
+        }),
+        { name: "Novel", path: "/novel" },
+        { signal: midParse.signal },
+      ),
+    ).rejects.toThrow();
+
+    const beforePublish = new AbortController();
+    renumberMock.mockImplementationOnce(async (_input, publish) => {
+      beforePublish.abort();
+      return publish(null);
+    });
+    await expect(
+      syncNovelFromSource(
+        makePlugin(),
+        { name: "Novel", path: "/novel" },
+        { signal: beforePublish.signal },
+      ),
+    ).rejects.toThrow();
+    expect(invokeMock).not.toHaveBeenCalled();
+  });
+
+  it("validates chapterNumber, contentType, and deduplicates duplicate chapter numbers", async () => {
+    await expect(
+      syncNovelFromSource(
+        makePlugin({
+          parseNovel: async () => ({
+            ...makeDetail([]),
+            chapters: [
+              { chapterNumber: Number.NaN, name: "Broken", path: "/broken" },
+            ],
+          }),
+        }),
+        { name: "Novel", path: "/novel" },
+      ),
+    ).rejects.toThrow("finite numeric chapterNumber");
+
+    await expect(
+      syncNovelFromSource(
+        makePlugin({
+          parseNovel: async () => ({
+            ...makeDetail([]),
+            chapters: [
+              {
+                chapterNumber: 1,
+                contentType: "mobi" as never,
+                name: "Broken",
+                path: "/broken",
+              },
+            ],
+          }),
+        }),
+        { name: "Novel", path: "/novel" },
+      ),
+    ).rejects.toThrow('unsupported chapter contentType "mobi"');
+
+    const result = await syncNovelFromSource(
+      makePlugin({
+        parseNovel: async () => ({
           ...makeDetail([]),
           chapters: [
             {
               chapterNumber: 1,
               name: "First",
               path: "/first",
+              contentType: "epub",
             },
-            {
-              chapterNumber: 1,
-              name: "Duplicate",
-              path: "/duplicate",
-            },
-            {
-              chapterNumber: 2,
-              name: "Second",
-              path: "/second",
-            },
+            { chapterNumber: 1, name: "Duplicate", path: "/duplicate" },
+            { chapterNumber: 2, name: "Second", path: "/second" },
           ],
         }),
-      ),
-    });
-
-    const result = await syncNovelFromSource(plugin, {
-      name: "Novel",
-      path: "/novel",
-    });
+      }),
+      { name: "Novel", path: "/novel" },
+    );
 
     expect(result.duplicateChapters).toEqual([
       {
@@ -459,301 +423,106 @@ describe("syncNovelFromSource", () => {
         discardedCount: 1,
       },
     ]);
-    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
-      expect.anything(),
-      [
-        expect.objectContaining({
-          chapterNumber: "1",
-          name: "First",
-          path: "/first",
-          position: 1,
-        }),
-        expect.objectContaining({
-          chapterNumber: "2",
-          name: "Second",
-          path: "/second",
-          position: 2,
-        }),
-      ],
-    );
-  });
-
-  it("uses parseNovelSince and starts at the anchor position for suffix results", async () => {
-    const plugin = makePlugin();
-
-    await syncNovelFromSource(
-      plugin,
-      { name: "Novel", path: "/novel" },
-      { chapterRefreshMode: "since", novelId: 7 },
-    );
-
-    expect(plugin.parseNovelSince).toHaveBeenCalledWith("/novel", 2);
-    expect(plugin.parseNovel).not.toHaveBeenCalled();
-    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
-      expect.anything(),
-      [
-        expect.objectContaining({
-          chapterNumber: "2",
-          novelId: 7,
-          path: "/chapter-2",
-          position: 2,
-        }),
-        expect.objectContaining({
-          chapterNumber: "3",
-          novelId: 7,
-          path: "/chapter-3",
-          position: 3,
-        }),
-      ],
-    );
-  });
-
-  it("treats a since result starting before the anchor as a full list", async () => {
-    const plugin = makePlugin({
-      parseNovelSince: vi.fn(() => Promise.resolve(makeDetail([1, 2, 3]))),
-    });
-
-    await syncNovelFromSource(
-      plugin,
-      { name: "Novel", path: "/novel" },
-      { chapterRefreshMode: "since", novelId: 7 },
-    );
-
-    expect(plugin.parseNovel).not.toHaveBeenCalled();
-    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.arrayContaining([
-        expect.objectContaining({
-          chapterNumber: "1",
-          position: 1,
-        }),
-      ]),
-    );
-  });
-
-  it("falls back to parseNovel when a since result skips the anchor", async () => {
-    const plugin = makePlugin({
-      parseNovelSince: vi.fn(() => Promise.resolve(makeDetail([3, 4]))),
-    });
-
-    await syncNovelFromSource(
-      plugin,
-      { name: "Novel", path: "/novel" },
-      { chapterRefreshMode: "since", novelId: 7 },
-    );
-
-    expect(plugin.parseNovelSince).toHaveBeenCalledWith("/novel", 2);
-    expect(plugin.parseNovel).toHaveBeenCalledWith("/novel");
-    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.arrayContaining([
-        expect.objectContaining({
-          chapterNumber: "1",
-          position: 1,
-        }),
-      ]),
-    );
-  });
-
-  it("falls back to full refresh when existing chapters lack chapter numbers", async () => {
-    mockedGetLatestSourceChapterAnchor.mockResolvedValueOnce(null);
-    const plugin = makePlugin();
-
-    await syncNovelFromSource(
-      plugin,
-      { name: "Novel", path: "/novel" },
-      { chapterRefreshMode: "since", novelId: 7 },
-    );
-
-    expect(plugin.parseNovelSince).not.toHaveBeenCalled();
-    expect(plugin.parseNovel).toHaveBeenCalledWith("/novel");
-  });
-
-  it("preserves supported epub chapter content types", async () => {
-    const plugin = makePlugin({
-      parseNovel: vi.fn(() =>
-        Promise.resolve({
-          ...makeDetail([]),
-          chapters: [
-            {
-              chapterNumber: 1,
-              contentType: "epub" as const,
-              name: "EPUB Chapter",
-              path: "/chapter-1",
-            },
-          ],
-        }),
-      ),
-    });
-
-    await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" });
-
-    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.arrayContaining([
-        expect.objectContaining({
-          contentType: "epub",
-          path: "/chapter-1",
-        }),
-      ]),
-    );
-  });
-
-  it("defaults missing chapter content types to html", async () => {
-    const plugin = makePlugin({
-      parseNovel: vi.fn(() => Promise.resolve(makeDetail([1]))),
-    });
-
-    await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" });
-
-    expect(mockedUpsertSourceChaptersInDb).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.arrayContaining([
-        expect.objectContaining({
-          contentType: "html",
-          path: "/chapter-1",
-        }),
-      ]),
-    );
-  });
-
-  it("stores the resolved novel cover when the synced novel is in the library", async () => {
-    mockSelect.mockResolvedValueOnce([{ sourceNovelId: "novel" }]).mockResolvedValueOnce([{ id: 7, inLibrary: 1 }]);
-    const plugin = makePlugin({
-      parseNovel: vi.fn(() =>
-        Promise.resolve({
-          ...makeDetail([1]),
-          cover: "https://source.test/cover.jpg",
-          name: "Updated Novel",
-        }),
-      ),
-    });
-
-    await syncNovelFromSource(plugin, {
-      cover: "https://source.test/old.jpg",
-      name: "Novel",
-      path: "/novel",
-    });
-
-    expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledWith(
-      plugin,
-      {
-        id: 7,
-        name: "Updated Novel",
-        path: "/novel",
-        pluginId: "demo",
-        sourceNovelId: "novel",
-      },
-      "https://source.test/cover.jpg",
-      { refresh: false },
-    );
-    expect(mockSelect.mock.calls[1]?.[0]).toContain(
-      "in_library AS inLibrary",
-    );
-  });
-
-  it("stores the preserved database cover when an update omits cover metadata", async () => {
-    mockSelect.mockResolvedValueOnce([{ id: 7 }]).mockResolvedValueOnce([{ sourceNovelId: "novel" }]).mockResolvedValueOnce([
-      {
-        cover: "https://source.test/preserved-cover.jpg",
-        id: 7,
-        inLibrary: 1,
-      },
-    ]);
-
-    const plugin = makePlugin({
-      parseNovelSince: vi.fn((_path, since) =>
-        Promise.resolve(makeDetail([since, since + 1])),
-      ),
-    });
-    await syncNovelFromSource(
-      plugin,
-      { name: "Novel", path: "/novel" },
-      {
-        chapterRefreshMode: "since",
-        novelId: 7,
-        preserveMissingMetadata: true,
-      },
-    );
-
-    expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledWith(
-      plugin,
-      {
-        id: 7,
-        name: "Novel",
-        path: "/novel",
-        pluginId: "demo",
-        sourceNovelId: "novel",
-      },
-      "https://source.test/preserved-cover.jpg",
-      { refresh: false },
-    );
-    expect(mockSelect.mock.calls[2]?.[0]).toContain("SELECT id, cover");
-  });
-
-  it("fetches a library cover again only when its value changes, after 30 days or on a rebuild", async () => {
-    const sqlite = registeredDatabase();
-    const parameters = (values: SQLInputValue[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value]));
-    const db = {
-      select: async (sql: string, values: SQLInputValue[] = []) => sqlite.prepare(sql).all(parameters(values)),
-      execute: async (sql: string, values: SQLInputValue[] = []) => ({ rowsAffected: Number(sqlite.prepare(sql).run(parameters(values)).changes) }),
-    };
-    mockedGetDb.mockResolvedValue(db as never);
-    mockedRunDatabaseTransaction.mockImplementation(async run => run(db as never));
-    sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,cover,in_library) VALUES(7,'demo','novel','/novel','Novel','https://source.test/a.jpg',1)");
-    let cover = "https://source.test/a.jpg";
-    const plugin = makePlugin({ parseNovel: vi.fn(async () => ({ ...makeDetail([1]), cover })) });
-    const refreshes = async (options = {}) => {
-      mockedSaveNovelCoverFromSource.mockClear();
-      await syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }, options);
-      return mockedSaveNovelCoverFromSource.mock.calls.map((call) => call[3]?.refresh);
-    };
-    try {
-      expect(await refreshes()).toEqual([false]);
-      const baseline = sqlite.prepare("SELECT cover_fetched_at AS fetched FROM novel_freshness WHERE novel_id=7").get() as { fetched: number };
-      expect(baseline.fetched).toBeGreaterThan(0);
-      expect(await refreshes()).toEqual([false]);
-      cover = "https://source.test/b.jpg";
-      expect(await refreshes()).toEqual([true]);
-      expect(await refreshes()).toEqual([false]);
-      sqlite.exec(`UPDATE novel_freshness SET cover_fetched_at=cover_fetched_at-${30 * 24 * 60 * 60} WHERE novel_id=7`);
-      expect(await refreshes()).toEqual([true]);
-      expect(await refreshes({ refreshCover: true })).toEqual([true]);
-    } finally { sqlite.close(); }
-  });
-
-  it("does not persist a cover when opening a novel outside the library", async () => {
-    await syncNovelFromSource(
-      makePlugin({
-        parseNovel: vi.fn(() =>
-          Promise.resolve({
-            ...makeDetail([1]),
-            cover: "https://source.test/cover.jpg",
+    expect(getSourceDuplicateChapterInfo(7)).toEqual(result.duplicateChapters);
+    expect(invokeMock).toHaveBeenCalledWith("db_novel_sync_from_source", {
+      input: expect.objectContaining({
+        chapters: [
+          expect.objectContaining({
+            chapterNumber: 1,
+            name: "First",
+            path: "/first",
+            contentType: "epub",
           }),
-        ),
+          expect.objectContaining({
+            chapterNumber: 2,
+            name: "Second",
+            path: "/second",
+            contentType: "html",
+          }),
+        ],
       }),
-      {
-        name: "Novel",
-        path: "/novel",
-      },
-    );
-
-    expect(mockedSaveNovelCoverFromSource).not.toHaveBeenCalled();
+    });
   });
 
-  it.each([0, 1])("refreshes a cover on an explicit metadata update (in library: %s)", async inLibrary => {
-    mockSelect.mockResolvedValue([{ id: 7, inLibrary, cover: "https://source.test/cover.jpg" }]);
-    await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }, { refreshCover: true });
-    expect(mockedSaveNovelCoverFromSource).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "demo" }),
-      expect.objectContaining({ id: 7, path: "/novel" }),
-      "https://source.test/cover.jpg",
+  it("uses parseNovelSince at the anchor and falls back to parseNovel when the anchor is missing or skipped", async () => {
+    const suffixPlugin = makePlugin();
+    await syncNovelFromSource(
+      suffixPlugin,
+      { name: "Novel", path: "/novel" },
+      { chapterRefreshMode: "since", novelId: 7 },
+    );
+    expect(suffixPlugin.parseNovelSince).toHaveBeenCalledWith("/novel", 2);
+    expect(suffixPlugin.parseNovel).not.toHaveBeenCalled();
+    expect(invokeMock).toHaveBeenCalledWith("db_novel_sync_from_source", {
+      input: expect.objectContaining({
+        startPosition: 2,
+        expectedNovelId: 7,
+      }),
+    });
+
+    const skippedPlugin = makePlugin({
+      parseNovelSince: vi.fn(async () => makeDetail([3, 4])),
+    });
+    await syncNovelFromSource(
+      skippedPlugin,
+      { name: "Novel", path: "/novel" },
+      { chapterRefreshMode: "since", novelId: 7 },
+    );
+    expect(skippedPlugin.parseNovel).toHaveBeenCalledWith("/novel");
+
+    invokeMock.mockImplementationOnce(async (command: string) => {
+      if (command === "db_chapter_get_sync_since_anchor") {
+        return { existingNovelId: 7, anchor: null };
+      }
+      return publishResult();
+    });
+    const noAnchorPlugin = makePlugin();
+    await syncNovelFromSource(
+      noAnchorPlugin,
+      { name: "Novel", path: "/novel" },
+      { chapterRefreshMode: "since", novelId: 7 },
+    );
+    expect(noAnchorPlugin.parseNovelSince).not.toHaveBeenCalled();
+    expect(noAnchorPlugin.parseNovel).toHaveBeenCalledWith("/novel");
+  });
+
+  it("refreshes library covers only on change, after 30 days, or on explicit refresh, and propagates challenges", async () => {
+    const nowSeconds = Math.floor(Date.now() / 1000);
+    invokeMock.mockImplementationOnce(async () =>
+      publishResult({
+        inLibrary: true,
+        cover: "https://source.test/a.jpg",
+        coverChanged: false,
+        coverFetchedAt: nowSeconds - 60,
+      }),
+    );
+    await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" });
+    expect(mockedSaveNovelCoverFromSource).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 7 }),
+      "https://source.test/a.jpg",
+      { refresh: false },
+    );
+
+    invokeMock.mockImplementationOnce(async () =>
+      publishResult({
+        inLibrary: true,
+        cover: "https://source.test/a.jpg",
+        coverChanged: false,
+        coverFetchedAt: nowSeconds - COVER_REFRESH_SECONDS - 5,
+      }),
+    );
+    await syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" });
+    expect(mockedSaveNovelCoverFromSource).toHaveBeenLastCalledWith(
+      expect.anything(),
+      expect.objectContaining({ id: 7 }),
+      "https://source.test/a.jpg",
       { refresh: true },
     );
-  });
 
-  it("propagates a source access challenge from cover storage", async () => {
-    mockSelect.mockResolvedValueOnce([{ sourceNovelId: "novel" }]).mockResolvedValueOnce([{ id: 7, inLibrary: 1 }]);
+    invokeMock.mockImplementationOnce(async () =>
+      publishResult({ inLibrary: true, cover: "https://source.test/a.jpg" }),
+    );
     mockedSaveNovelCoverFromSource.mockRejectedValueOnce(
       Object.assign(new Error("Complete the Cloudflare check."), {
         challenge: {
@@ -763,37 +532,8 @@ describe("syncNovelFromSource", () => {
         code: "manual-action-required",
       }),
     );
-
-    const request = syncNovelFromSource(makePlugin(), {
-      name: "Novel",
-      path: "/novel",
-    });
-
-    await expect(request).rejects.toSatisfy(isSourceAccessRequiredError);
-  });
-
-  it("rejects explicit unsupported chapter content types", async () => {
-    const plugin = makePlugin({
-      parseNovel: vi.fn(() =>
-        Promise.resolve({
-          ...makeDetail([]),
-          chapters: [
-            {
-              chapterNumber: 1,
-              contentType: "mobi" as never,
-              name: "Broken",
-              path: "/broken",
-            },
-          ],
-        }),
-      ),
-    });
-
     await expect(
-      syncNovelFromSource(plugin, { name: "Novel", path: "/novel" }),
-    ).rejects.toThrow('unsupported chapter contentType "mobi"');
-
-    expect(mockExecute).not.toHaveBeenCalled();
-    expect(mockedUpsertSourceChaptersInDb).not.toHaveBeenCalled();
+      syncNovelFromSource(makePlugin(), { name: "Novel", path: "/novel" }),
+    ).rejects.toSatisfy(isSourceAccessRequiredError);
   });
 });

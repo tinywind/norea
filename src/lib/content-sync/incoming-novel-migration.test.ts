@@ -102,6 +102,13 @@ function initializeDevice(idOffset = 0) {
     return row ? { ...row, inLibrary: Boolean(row.inLibrary), isLocal: row.pluginId === "local" && Boolean(row.isLocal) } : null;
   };
   invokeMock.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+    const { createChapterIpcHandler } = await import("../../test/mock-chapter-ipc");
+    const chapterIpc = createChapterIpcHandler({
+      getDb: () => vi.mocked(getDb)(),
+      runTransaction: (run, remote) => vi.mocked(runDatabaseTransaction)(run, remote),
+    });
+    const handled = await chapterIpc.handle(command, args);
+    if (handled.handled) return handled.result;
     if (command === "db_novel_get_by_id") {
       return selectNovelDetail("WHERE n.id = $1", [args.id]);
     }
