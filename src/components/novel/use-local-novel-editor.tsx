@@ -3,9 +3,7 @@ import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   useEffect,
   useId,
-  useRef,
   useState,
-  type ChangeEvent,
   type FormEvent,
 } from "react";
 import {
@@ -20,14 +18,15 @@ import {
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
 import { syncLocalChapterStorageAfterOrderChange } from "../../lib/local-chapter-storage";
-import { clearLocalImportFileCache } from "../../lib/local-import";
+import { pickLocalFiles } from "../../lib/local-file-picker";
+import { clearLocalImportFileCache, localImportFileSizeLimit } from "../../lib/local-import";
 import { importLocalFileToLibrary } from "../../lib/local-import-library";
 import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { type DefaultChapterSort } from "../../store/library";
 import { LocalCoverPicker } from "../LocalCoverPicker";
 import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
 import { chaptersKey, novelKey } from "./novel-detail-model";
-const LOCAL_IMPORT_ACCEPT = ".txt,.html,.htm,.md,.markdown,.epub,.pdf";
+const LOCAL_IMPORT_EXTENSIONS = ["txt", "html", "htm", "md", "markdown", "epub", "pdf"];
 const EMPTY_LOCAL_NOVEL_FORM: LocalNovelMetadataInput = {
   name: "",
   cover: "",
@@ -79,7 +78,6 @@ export function useLocalNovelEditor(
 ) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const localChapterInputRef = useRef<HTMLInputElement>(null);
   const [localChapterError, setLocalChapterError] = useState<string | null>(
     null,
   );
@@ -151,18 +149,26 @@ export function useLocalNovelEditor(
   function openLocalChapterInput(): void {
     addLocalChapters.reset();
     setLocalChapterError(null);
-    localChapterInputRef.current?.click();
-  }
-
-  function handleLocalChapterFilesSelected(
-    event: ChangeEvent<HTMLInputElement>,
-  ): void {
-    const files = Array.from(event.currentTarget.files ?? []);
-    event.currentTarget.value = "";
-    if (files.length === 0) return;
-
-    if (!novel?.isLocal) return;
-    addLocalChapters.mutate(files);
+    void pickLocalFiles({
+      extensions: LOCAL_IMPORT_EXTENSIONS,
+      filterName: t("library.localImport.title"),
+      multiple: true,
+      maxBytesForFile: (descriptor) =>
+        localImportFileSizeLimit({
+          name: descriptor.fileName,
+          type: descriptor.mimeType,
+        }),
+    }).then(
+      (files) => {
+        if (files.length === 0 || !novel?.isLocal) return;
+        addLocalChapters.mutate(files);
+      },
+      (error: unknown) => {
+        setLocalChapterError(
+          error instanceof Error ? error.message : String(error),
+        );
+      },
+    );
   }
 
   function openLocalMetadataEditor(): void {
@@ -221,15 +227,6 @@ export function useLocalNovelEditor(
 
   const editor = (
     <>
-      {" "}
-      <input
-        ref={localChapterInputRef}
-        accept={LOCAL_IMPORT_ACCEPT}
-        className="norea-novel-file-input"
-        multiple
-        onChange={handleLocalChapterFilesSelected}
-        type="file"
-      />
       <ResponsiveSheet
         busy={updateLocalMetadata.isPending}
         footer={

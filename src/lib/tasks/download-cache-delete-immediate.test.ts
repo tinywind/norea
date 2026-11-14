@@ -16,10 +16,6 @@ vi.mock("../../db/queries/download-cache", () => ({
   }]),
   listNonLocalOrdinaryQueuedDownloadChapterIds: vi.fn(async () => []),
 }));
-vi.mock("../android-storage", () => ({
-  deleteAndroidStoragePath: vi.fn(),
-  listAndroidChapterStorageDirs: vi.fn(),
-}));
 vi.mock("../tauri-runtime", () => ({
   isAndroidRuntime: () => false,
   isTauriRuntime: () => true,

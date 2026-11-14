@@ -173,7 +173,7 @@ describe("stored cover discovery", () => {
     isAndroidRuntimeMock.mockReturnValue(android);
     workMetadataMock.mockResolvedValue({ cover: { fileName: "cover.jpg", modifiedAt: 1 } });
     const src = await resolveStoredNovelCoverSrc(novel);
-    expect(src).toContain(android ? "/__norea_android_media__/file/" : `http://norea-media.localhost/${directory}/cover.jpg`);
+    expect(src).toContain(`http://norea-media.localhost/${directory}/cover.jpg`);
     expect(workMetadataMock).toHaveBeenCalledExactlyOnceWith({ operation: "cover", path: `${directory}/novel.json` });
     expect(pluginMediaFetchMock).not.toHaveBeenCalled();
   });
@@ -485,11 +485,11 @@ describe("cached novel cover display sources", () => {
     expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
 
     const local = await resolveCachedNovelCoverSrc(displayNovel, options);
-    expect(local).toContain(android ? "/__norea_android_media__/file/" : "/cover.jpg?v=");
+    expect(local).toContain(`http://norea-media.localhost/${directory}/cover.jpg?v=`);
     await persistCachedNovelCoverSource(displayNovel, options);
     invalidateAllNovelCoverSources();
     pluginMediaFetchMock.mockRejectedValue(new Error("offline"));
-    await expect(resolveCachedNovelCoverSrc(displayNovel, options)).resolves.toContain(android ? "/__norea_android_media__/file/" : "/cover.jpg?v=");
+    await expect(resolveCachedNovelCoverSrc(displayNovel, options)).resolves.toContain(`http://norea-media.localhost/${directory}/cover.jpg?v=`);
     expect(persistNovelCover).toHaveBeenCalledOnce();
     expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
   });

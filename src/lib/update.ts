@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { androidBridgeAuthority } from "./android-bridge";
 import { appFetch } from "./http";
 import {
   cancelNativeStream,
@@ -19,7 +18,6 @@ const GITHUB_API_BASE = "https://api.github.com/repos/tinywind/norea";
 const DEV_RELEASE_TAG = "dev-0.2";
 const UPDATE_MANIFEST_SCHEMA_VERSION = 1;
 const ANDROID_UPDATE_STREAM_TTL_MS = 30 * 60 * 1000;
-const ANDROID_UPDATE_OPEN_APK_CAPABILITY = "update.openApk";
 const SHA256_HEX_PATTERN = /^[a-f0-9]{64}$/i;
 const SUPPORTED_UPDATE_PLATFORMS = new Set([
   "windows-x64",
@@ -146,25 +144,10 @@ interface AssetPreference {
   token: string;
 }
 
-interface AndroidUpdateInstallBridge {
-  openApk: (payload: string) => string;
-}
-
-interface AndroidUpdateInstallResult {
-  error?: string;
-  ok?: boolean;
-}
-
 interface Semver {
   major: number;
   minor: number;
   patch: number;
-}
-
-declare global {
-  interface Window {
-    __NoreaAndroidUpdater?: AndroidUpdateInstallBridge;
-  }
 }
 
 export function getBuildInfo(): Promise<BuildInfo> {
@@ -310,13 +293,11 @@ async function installAndroidUpdate(
   }
 
   try {
-    const installerPath = await invoke<string>("download_and_open_update", {
+    return await invoke<string>("download_and_open_update", {
       fileName: candidate.downloadFileName,
       metadata: integrity,
       url: candidate.downloadUrl,
     });
-    openAndroidInstaller(installerPath, integrity);
-    return installerPath;
   } catch (error) {
     if (!shouldUseAndroidRendererDownloadFallback(error)) {
       throw error;
@@ -375,7 +356,6 @@ async function installAndroidUpdateViaRendererStream(
       metadata: integrity,
     });
     streamHandle = null;
-    openAndroidInstaller(installerPath, integrity);
     return installerPath;
   } catch (error) {
     if (streamHandle) {
@@ -760,35 +740,6 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   }
   const source = Uint8Array.from(bytes);
   return hexFromBytes(await subtle.digest("SHA-256", source));
-}
-
-function openAndroidInstaller(
-  path: string,
-  metadata: UpdateAssetIntegrity,
-): void {
-  const bridge = window.__NoreaAndroidUpdater;
-  if (!bridge) {
-    throw new Error("Android update installer bridge is unavailable.");
-  }
-
-  let result: AndroidUpdateInstallResult;
-  try {
-    result = JSON.parse(
-      bridge.openApk(
-        JSON.stringify({
-          _bridge: androidBridgeAuthority(ANDROID_UPDATE_OPEN_APK_CAPABILITY),
-          metadata,
-          path,
-        }),
-      ),
-    ) as AndroidUpdateInstallResult;
-  } catch {
-    throw new Error("Android update installer bridge returned an invalid response.");
-  }
-
-  if (!result.ok) {
-    throw new Error(result.error || "Android update installer failed to open.");
-  }
 }
 
 function selectReleaseAssetByName(

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useId, useMemo, useState, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
@@ -41,6 +41,7 @@ import {
   type RepoFetchFailure,
 } from "../components/browse/use-plugin-catalog";
 import { showSettingsToast } from "../components/settings/settings-toast";
+import { pickLocalFiles } from "../lib/local-file-picker";
 import { useConfirm } from "../components/ui/ConfirmDialog";
 import {
   ChevronRightIcon,
@@ -264,7 +265,6 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
   const [failedUpdates, setFailedUpdates] = useState<ReadonlyMap<string, unknown>>(
     () => new Map(),
   );
-  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   const repositories = useMemo(() => repos.data ?? [], [repos.data]);
   const enabledRepositories = useMemo(
@@ -609,7 +609,21 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
               disabled={installFromFile.isPending}
               label={t("extensions.installFromFile")}
               loading={installFromFile.isPending}
-              onClick={() => fileInputRef.current?.click()}
+              onClick={() => {
+                void pickLocalFiles({
+                  extensions: ["js"],
+                  filterName: "JavaScript",
+                  multiple: false,
+                  maxBytesForFile: () => MAX_PLUGIN_SOURCE_FILE_BYTES,
+                }).then(
+                  ([file]) => {
+                    if (file) installFromFile.mutate(file);
+                  },
+                  (error: unknown) => {
+                    showSettingsToast("danger", describeError(error));
+                  },
+                );
+              }}
               size="lg"
             >
               <ImportIcon />
@@ -624,18 +638,6 @@ export function ExtensionsPage({ focusPluginId }: ExtensionsPageProps) {
             >
               <GithubIcon />
             </IconButton>
-            <input
-              accept=".js,text/javascript,application/javascript"
-              hidden
-              onChange={(event) => {
-                const file = event.currentTarget.files?.[0] ?? null;
-                event.currentTarget.value = "";
-                if (file) installFromFile.mutate(file);
-              }}
-              ref={fileInputRef}
-              tabIndex={-1}
-              type="file"
-            />
           </>
         }
         onBack={goBack}

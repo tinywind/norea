@@ -14,13 +14,14 @@ import {
   useImperativeHandle,
   useRef,
   useState,
-  type ChangeEvent,
 } from "react";
 import { upsertLocalNovel } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
-import { clearLocalImportFileCache } from "../../lib/local-import";
+import { pickLocalFiles } from "../../lib/local-file-picker";
+import { clearLocalImportFileCache, localImportFileSizeLimit } from "../../lib/local-import";
 import { importLocalFileToLibrary } from "../../lib/local-import-library";
 import { LOCAL_NOVEL_NAME, LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
+import { showErrorToast } from "../../lib/runtime/error-toast";
 import { useLibraryStore } from "../../store/library";
 import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
 import {
@@ -40,7 +41,7 @@ import {
   type LocalImportReviewItem,
 } from "./local-import-review";
 import { LocalImportReviewRow } from "./LocalImportReviewRow";
-const LOCAL_IMPORT_ACCEPT = ".txt,.html,.htm,.md,.markdown,.epub,.pdf";
+const LOCAL_IMPORT_EXTENSIONS = ["txt", "html", "htm", "md", "markdown", "epub", "pdf"];
 export interface LibraryLocalImportHandle {
   openFilePicker: () => void;
 }
@@ -58,7 +59,6 @@ export const LibraryLocalImport = forwardRef<
   const takePendingLocalImportFiles = useLibraryStore(
     (s) => s.takePendingLocalImportFiles,
   );
-  const localImportInputRef = useRef<HTMLInputElement>(null);
   const [batch, setBatch] = useState<LocalImportBatch | null>(null);
   const [waitingFiles, setWaitingFiles] = useState<readonly File[]>([]);
   const nextBatchIdRef = useRef(0);
@@ -182,14 +182,20 @@ export const LibraryLocalImport = forwardRef<
     requestImport(takePendingLocalImportFiles());
   }, [pendingLocalImportFiles, requestImport, takePendingLocalImportFiles]);
 
-  const handleLocalImportFilesSelected = useCallback(
-    (event: ChangeEvent<HTMLInputElement>) => {
-      const files = Array.from(event.currentTarget.files ?? []);
-      event.currentTarget.value = "";
-      requestImport(files);
-    },
-    [requestImport],
-  );
+  const openFilePicker = useCallback(() => {
+    void pickLocalFiles({
+      extensions: LOCAL_IMPORT_EXTENSIONS,
+      filterName: t("library.localImport.title"),
+      multiple: true,
+      maxBytesForFile: (descriptor) =>
+        localImportFileSizeLimit({
+          name: descriptor.fileName,
+          type: descriptor.mimeType,
+        }),
+    }).then(requestImport, (error: unknown) => {
+      showErrorToast(t("library.localImport.title"), error);
+    });
+  }, [requestImport, t]);
 
   const busy = isLocalImportBusy(batch);
   const items = batch?.items ?? [];
@@ -200,20 +206,12 @@ export const LibraryLocalImport = forwardRef<
   useImperativeHandle(
     ref,
     () => ({
-      openFilePicker: () => localImportInputRef.current?.click(),
+      openFilePicker,
     }),
-    [],
+    [openFilePicker],
   );
   return (
     <>
-      <input
-        ref={localImportInputRef}
-        accept={LOCAL_IMPORT_ACCEPT}
-        className="norea-library-file-input"
-        multiple
-        onChange={handleLocalImportFilesSelected}
-        type="file"
-      />
       <ResponsiveSheet
         busy={busy}
         footer={

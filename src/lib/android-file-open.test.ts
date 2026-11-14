@@ -8,19 +8,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(),
 }));
 
-vi.mock("./android-storage", () => ({
-  copyAndroidContentUriToTempFile: vi.fn(),
-  deleteAndroidContentUriTempFile: vi.fn(),
-  describeAndroidContentUri: vi.fn(),
-}));
-
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
-import {
-  copyAndroidContentUriToTempFile,
-  deleteAndroidContentUriTempFile,
-  describeAndroidContentUri,
-} from "./android-storage";
 import {
   startAndroidFileOpenListener,
   takePendingAndroidOpenFiles,
@@ -29,37 +18,26 @@ import { LOCAL_IMPORT_LIMITS } from "./local-import";
 
 const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);
-const copyContentUriMock = vi.mocked(copyAndroidContentUriToTempFile);
-const deleteContentUriTempFileMock = vi.mocked(
-  deleteAndroidContentUriTempFile,
-);
-const describeContentUriMock = vi.mocked(describeAndroidContentUri);
 
 const CONTENT_URI = "content://documents/Book.epub";
 
 beforeEach(() => {
   invokeMock.mockReset();
   listenMock.mockReset();
-  copyContentUriMock.mockReset();
-  deleteContentUriTempFileMock.mockReset();
-  describeContentUriMock.mockReset();
 });
 
 describe("Android file open bridge", () => {
-  it("copies a pending content URI through a bounded temp file", async () => {
-    describeContentUriMock.mockResolvedValue({
-      fileName: "Book.epub",
-      mimeType: "application/epub+zip",
-      size: 4,
-    });
-    copyContentUriMock.mockResolvedValue({
-      bytes: 4,
-      mimeType: "application/epub+zip",
-      path: "/data/user/0/norea/cache/android-storage-bridge/content.tmp",
-    });
+  it("reads a pending content URI through bounded Rust file commands", async () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "android_open_file_url_take") return [CONTENT_URI];
-      if (command === "android_open_file_temp_read") {
+      if (command === "local_file_describe") {
+        return {
+          fileName: "Book.epub",
+          mimeType: "application/epub+zip",
+          size: 4,
+        };
+      }
+      if (command === "local_file_read") {
         return new Uint8Array([1, 2, 3, 4]).buffer;
       }
       throw new Error(`unexpected command: ${command}`);
@@ -73,26 +51,27 @@ describe("Android file open bridge", () => {
       size: 4,
       type: "application/epub+zip",
     });
-    expect(copyContentUriMock).toHaveBeenCalledWith(
-      CONTENT_URI,
-      LOCAL_IMPORT_LIMITS.fileBytes,
-    );
-    expect(invokeMock).toHaveBeenCalledWith(
-      "android_open_file_temp_read",
-      {
-        path: "/data/user/0/norea/cache/android-storage-bridge/content.tmp",
-      },
-    );
-    expect(deleteContentUriTempFileMock).toHaveBeenCalledOnce();
+    expect(invokeMock).toHaveBeenCalledWith("local_file_describe", {
+      path: CONTENT_URI,
+    });
+    expect(invokeMock).toHaveBeenCalledWith("local_file_read", {
+      maxBytes: LOCAL_IMPORT_LIMITS.fileBytes,
+      path: CONTENT_URI,
+    });
   });
 
-  it("does not copy content that already exceeds the import limit", async () => {
-    describeContentUriMock.mockResolvedValue({
-      fileName: "Huge.pdf",
-      mimeType: "application/pdf",
-      size: LOCAL_IMPORT_LIMITS.pdfBytes + 1,
+  it("does not read content that already exceeds the import limit", async () => {
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "android_open_file_url_take") return [CONTENT_URI];
+      if (command === "local_file_describe") {
+        return {
+          fileName: "Huge.pdf",
+          mimeType: "application/pdf",
+          size: LOCAL_IMPORT_LIMITS.pdfBytes + 1,
+        };
+      }
+      throw new Error(`unexpected command: ${command}`);
     });
-    invokeMock.mockResolvedValue([CONTENT_URI]);
 
     const files = await takePendingAndroidOpenFiles();
 
@@ -101,26 +80,24 @@ describe("Android file open bridge", () => {
       size: LOCAL_IMPORT_LIMITS.pdfBytes + 1,
       type: "application/pdf",
     });
-    expect(copyContentUriMock).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalledWith(
+      "local_file_read",
+      expect.anything(),
+    );
   });
 
-  it("keeps readable content when temp-file cleanup fails", async () => {
-    const cleanupError = new Error("Temp-file cleanup failed.");
-    describeContentUriMock.mockResolvedValue({
-      fileName: "Book.pdf",
-      mimeType: "application/pdf",
-      size: 4,
-    });
-    copyContentUriMock.mockResolvedValue({
-      bytes: 4,
-      mimeType: "application/pdf",
-      path: "/data/user/0/norea/cache/android-storage-bridge/content.tmp",
-    });
-    deleteContentUriTempFileMock.mockRejectedValue(cleanupError);
+  it("marks unknown-size content that exceeds the stream limit as oversized", async () => {
     invokeMock.mockImplementation(async (command) => {
       if (command === "android_open_file_url_take") return [CONTENT_URI];
-      if (command === "android_open_file_temp_read") {
-        return new Uint8Array([1, 2, 3, 4]).buffer;
+      if (command === "local_file_describe") {
+        return {
+          fileName: "Book.pdf",
+          mimeType: "application/pdf",
+          size: null,
+        };
+      }
+      if (command === "local_file_read") {
+        throw new Error("Android content URI exceeds size limit.");
       }
       throw new Error(`unexpected command: ${command}`);
     });
@@ -130,27 +107,23 @@ describe("Android file open bridge", () => {
 
     expect(files[0]).toMatchObject({
       name: "Book.pdf",
-      size: 4,
+      size: LOCAL_IMPORT_LIMITS.pdfBytes + 1,
       type: "application/pdf",
     });
-    await expect(files[0].arrayBuffer()).resolves.toBeInstanceOf(ArrayBuffer);
-    expect(onError).toHaveBeenCalledWith(cleanupError);
+    expect(onError).not.toHaveBeenCalled();
   });
 
   it("uses the Markdown limit for Android-opened md files", async () => {
-    describeContentUriMock.mockResolvedValue({
-      fileName: "Chapter.md",
-      mimeType: "text/markdown",
-      size: 4,
-    });
-    copyContentUriMock.mockResolvedValue({
-      bytes: 4,
-      mimeType: "text/markdown",
-      path: "/data/user/0/norea/cache/android-storage-bridge/content.tmp",
-    });
     invokeMock.mockImplementation(async (command) => {
       if (command === "android_open_file_url_take") return [CONTENT_URI];
-      if (command === "android_open_file_temp_read") {
+      if (command === "local_file_describe") {
+        return {
+          fileName: "Chapter.md",
+          mimeType: "text/markdown",
+          size: 4,
+        };
+      }
+      if (command === "local_file_read") {
         return new TextEncoder().encode("# MD").buffer;
       }
       throw new Error(`unexpected command: ${command}`);
@@ -163,16 +136,19 @@ describe("Android file open bridge", () => {
       size: 4,
       type: "text/markdown",
     });
-    expect(copyContentUriMock).toHaveBeenCalledWith(
-      CONTENT_URI,
-      LOCAL_IMPORT_LIMITS.markdownBytes,
-    );
+    expect(invokeMock).toHaveBeenCalledWith("local_file_read", {
+      maxBytes: LOCAL_IMPORT_LIMITS.markdownBytes,
+      path: CONTENT_URI,
+    });
   });
 
   it("preserves descriptor failures as reviewable file errors", async () => {
     const error = new Error("Content provider denied metadata access.");
-    describeContentUriMock.mockRejectedValue(error);
-    invokeMock.mockResolvedValue([CONTENT_URI]);
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "android_open_file_url_take") return [CONTENT_URI];
+      if (command === "local_file_describe") throw error;
+      throw new Error(`unexpected command: ${command}`);
+    });
     const onError = vi.fn();
 
     const files = await takePendingAndroidOpenFiles(onError);
@@ -194,21 +170,18 @@ describe("Android file open bridge", () => {
         } as never);
       return () => undefined;
     });
-    describeContentUriMock.mockResolvedValue({
-      fileName: "Book.txt",
-      mimeType: "text/plain",
-      size: 4,
-    });
-    copyContentUriMock.mockResolvedValue({
-      bytes: 4,
-      mimeType: "text/plain",
-      path: "/data/user/0/norea/cache/android-storage-bridge/content.tmp",
-    });
     invokeMock.mockImplementation(async (command) => {
       if (command === "android_open_file_url_take") {
         return warmOpen ? [CONTENT_URI] : [];
       }
-      if (command === "android_open_file_temp_read") {
+      if (command === "local_file_describe") {
+        return {
+          fileName: "Book.txt",
+          mimeType: "text/plain",
+          size: 4,
+        };
+      }
+      if (command === "local_file_read") {
         return new TextEncoder().encode("text").buffer;
       }
       throw new Error(`unexpected command: ${command}`);

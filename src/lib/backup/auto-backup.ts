@@ -2,21 +2,25 @@ import { invoke } from "@tauri-apps/api/core";
 import { translate } from "../../i18n";
 import { useAppearanceStore } from "../../store/appearance";
 import { useAutoBackupStore, type AutoBackupSchedule } from "../../store/auto-backup";
-import { BackupFolderUnavailableError, publishAndroidAutoBackup } from "../android-storage";
 import { describeError } from "../errors";
 import { enqueueMainTask } from "../tasks/main-tasks";
-import { isAndroidRuntime } from "../tauri-runtime";
 import { encodeBackupManifest } from "./format";
 import { automaticBackupFilename } from "./io";
-import { deleteBackupTempFile, packBackupTempFile } from "./pack";
 import { gatherBackupSnapshot } from "./snapshot";
+
+export class BackupFolderUnavailableError extends Error {
+  constructor(message: string, options?: ErrorOptions) {
+    super(message, options);
+    this.name = "BackupFolderUnavailableError";
+  }
+}
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
 /** A failed run waits this long before the next attempt, so it never loops. */
 const FAILURE_RETRY_MS = HOUR_MS;
 /** Matches `AUTO_BACKUP_FOLDER_UNAVAILABLE` in src-tauri/src/backup.rs. */
-const DESKTOP_FOLDER_UNAVAILABLE = "backup_publish_auto: storage folder unavailable";
+const STORAGE_FOLDER_UNAVAILABLE = "backup_publish_auto: storage folder unavailable";
 
 const SCHEDULE_INTERVAL_MS: Record<Exclude<AutoBackupSchedule, "off">, number> = {
   daily: DAY_MS,
@@ -43,25 +47,18 @@ export function isAutomaticBackupDue(state: AutoBackupDueState, now: number): bo
 export async function writeAutomaticBackup(keep: number, now: Date = new Date()): Promise<string> {
   const fileName = automaticBackupFilename(now);
   const manifest = await gatherBackupSnapshot();
-  if (isAndroidRuntime()) {
-    const tempPath = await packBackupTempFile(manifest);
-    try {
-      await publishAndroidAutoBackup(tempPath, fileName, keep);
-    } finally {
-      await deleteBackupTempFile(tempPath).catch((error: unknown) =>
-        console.warn("[backup:auto] temp file cleanup failed", error),
-      );
+  try {
+    await invoke("backup_publish_auto", {
+      manifestJson: encodeBackupManifest(manifest),
+      fileName,
+      keep,
+    });
+  } catch (error) {
+    const message = describeError(error);
+    if (message.startsWith(STORAGE_FOLDER_UNAVAILABLE)) {
+      throw new BackupFolderUnavailableError(message, { cause: error });
     }
-  } else {
-    try {
-      await invoke("backup_publish_auto", { manifestJson: encodeBackupManifest(manifest), fileName, keep });
-    } catch (error) {
-      const message = describeError(error);
-      if (message.startsWith(DESKTOP_FOLDER_UNAVAILABLE)) {
-        throw new BackupFolderUnavailableError(message, { cause: error });
-      }
-      throw error;
-    }
+    throw error;
   }
   return fileName;
 }

@@ -1,13 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  deleteAndroidStoragePath,
-  inspectAndroidChapterArtifacts,
-  inspectAndroidChapterPayloadInventory,
-  deleteAndroidChapterPayload,
-  readAndroidStorageText,
-  renameAndroidStoragePath,
-  writeAndroidStorageText,
-} from "../android-storage";
 import type { ChapterContentType } from "../chapter-content";
 import type { ChapterPayloadSnapshot } from "./inventory";
 import {
@@ -17,7 +8,6 @@ import {
   type ChapterStorageNovelPathInput,
 } from "../chapter-storage-path";
 import { resolvedChapterStorageDir } from "../chapter-storage-resolution";
-import { isAndroidRuntime } from "../tauri-runtime";
 
 export interface ChapterContentStorageIdentity {
   novel: ChapterStorageNovelPathInput & { id: number; pluginId: string };
@@ -25,6 +15,14 @@ export interface ChapterContentStorageIdentity {
     id: number;
     contentType: ChapterContentType;
   };
+}
+
+export interface InspectStoredChapterArtifactsInput {
+  preferredChapterDir: string;
+  sourceDir: string;
+  novelDirectoryName: string;
+  chapterDirectoryName: string;
+  preferredContentFileName: string;
 }
 
 export interface StoredChapterArtifactsInspection {
@@ -58,9 +56,9 @@ export async function inspectChapterPayloadInventory(
 ): Promise<ChapterPayloadSnapshot> {
   signal?.throwIfAborted();
   const chapterDir = cleanupChapterDir(identity);
-  const snapshot = isAndroidRuntime()
-    ? await inspectAndroidChapterPayloadInventory(chapterDir)
-    : await invoke<ChapterPayloadSnapshot>("chapter_payload_inventory", { chapterDir });
+  const snapshot = await invoke<ChapterPayloadSnapshot>("chapter_payload_inventory", {
+    chapterDir,
+  });
   signal?.throwIfAborted();
   return snapshot;
 }
@@ -70,9 +68,10 @@ export async function deleteChapterPayload(
   expectedFingerprint: string,
 ): Promise<ChapterPayloadDeleteResult> {
   const chapterDir = cleanupChapterDir(identity);
-  return isAndroidRuntime()
-    ? deleteAndroidChapterPayload(chapterDir, expectedFingerprint)
-    : invoke<ChapterPayloadDeleteResult>("chapter_payload_delete", { chapterDir, expectedFingerprint });
+  return invoke<ChapterPayloadDeleteResult>("chapter_payload_delete", {
+    chapterDir,
+    expectedFingerprint,
+  });
 }
 
 const CHAPTER_PARTIAL_CONTENT_FILE = ".chapter-content.partial";
@@ -102,23 +101,18 @@ export function chapterPartialContentRelativePath(
 export async function readStoredChapterContentFile(
   contentFile: string,
 ): Promise<string | null> {
-  if (isAndroidRuntime()) {
-    return readAndroidStorageText(contentFile);
-  }
   return invoke<string | null>("chapter_content_mirror_read_file", {
     contentFile,
   });
 }
 
 export async function inspectChapterContentArtifacts(
-  input: Parameters<typeof inspectAndroidChapterArtifacts>[0],
+  input: InspectStoredChapterArtifactsInput,
 ): Promise<StoredChapterArtifactsInspection> {
-  return isAndroidRuntime()
-    ? inspectAndroidChapterArtifacts(input)
-    : invoke<StoredChapterArtifactsInspection>(
-        "chapter_content_mirror_inspect",
-        { ...input },
-      );
+  return invoke<StoredChapterArtifactsInspection>(
+    "chapter_content_mirror_inspect",
+    { ...input },
+  );
 }
 
 export async function writeChapterContentFile(
@@ -126,63 +120,29 @@ export async function writeChapterContentFile(
   content: string,
   metadata: ChapterContentStorageIdentity,
 ): Promise<void> {
-  if (isAndroidRuntime()) {
-    const preferredContentPath = chapterContentRelativePath(
-      metadata.novel,
-      metadata.chapter,
-    );
-    const contentFileName =
-      preferredContentPath.split("/").at(-1) ?? "content.html";
-    const preferredChapterDir = chapterStorageRelativeDir(
-      metadata.novel,
-      metadata.chapter,
-    );
-    const chapterDir =
-      resolvedChapterStorageDir(chapterId) ?? preferredChapterDir;
-    const contentPath = `${chapterDir}/${contentFileName}`;
-    const tempPath = `${contentPath}.tmp`;
-    await writeAndroidStorageText(tempPath, content);
-    await renameAndroidStoragePath(tempPath, contentFileName);
-    await Promise.all(
-      ["content.html", "content.pdf"]
-        .filter((fileName) => fileName !== contentFileName)
-        .map((fileName) =>
-          deleteAndroidStoragePath(`${chapterDir}/${fileName}`),
-        ),
-    );
-    await deleteAndroidStoragePath(
-      `${chapterDir}/${CHAPTER_PARTIAL_CONTENT_FILE}`,
-    );
-    if (chapterDir !== preferredChapterDir) {
-      await deleteAndroidStoragePath(
-        chapterPartialContentRelativePath(metadata.novel, metadata.chapter),
-      );
-    }
-    return;
-  }
-
   await invoke("chapter_content_mirror_store", {
     chapterId,
     content,
-    metadata: { ...metadata, storageDir: chapterStorageRelativeDir(metadata.novel, metadata.chapter) },
+    metadata: {
+      ...metadata,
+      storageDir: chapterStorageRelativeDir(metadata.novel, metadata.chapter),
+    },
   });
 }
+
 export async function writeChapterPartialContentFile(
   content: string,
   metadata: ChapterContentStorageIdentity,
 ): Promise<void> {
-  if (isAndroidRuntime()) {
-    await writeAndroidStorageText(
-      chapterPartialContentRelativePath(metadata.novel, metadata.chapter),
-      content,
-    );
-    return;
-  }
   await invoke("chapter_content_mirror_store_partial", {
     content,
-    metadata: { ...metadata, storageDir: chapterStorageRelativeDir(metadata.novel, metadata.chapter) },
+    metadata: {
+      ...metadata,
+      storageDir: chapterStorageRelativeDir(metadata.novel, metadata.chapter),
+    },
   });
 }
+
 export async function clearChapterContentFiles(
   chapterId: number,
   loadIdentity: () =>
@@ -192,19 +152,9 @@ export async function clearChapterContentFiles(
 ): Promise<void> {
   const identity = await loadIdentity();
   if (!identity) return;
-  if (isAndroidRuntime()) {
-    await deleteAndroidStoragePath(
-      chapterContentRelativePath(identity.novel, identity.chapter),
-    );
-    await deleteAndroidStoragePath(
-      chapterPartialContentRelativePath(identity.novel, identity.chapter),
-    );
-    return;
-  }
   await invoke("chapter_content_mirror_clear", {
-    chapterDir: resolvedChapterStorageDir(chapterId) ?? chapterStorageRelativeDir(
-      identity.novel,
-      identity.chapter,
-    ),
+    chapterDir:
+      resolvedChapterStorageDir(chapterId) ??
+      chapterStorageRelativeDir(identity.novel, identity.chapter),
   });
 }

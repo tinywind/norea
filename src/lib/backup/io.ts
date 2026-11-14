@@ -1,14 +1,6 @@
 import { open, save } from "@tauri-apps/plugin-dialog";
-import {
-  copyAndroidContentUriToTempFile,
-  deleteAndroidContentUriTempFile,
-  writeAndroidContentUriFile,
-} from "../android-storage";
-import { MAX_BACKUP_ARCHIVE_BYTES } from "../performance-budgets";
-import { isAndroidRuntime } from "../tauri-runtime";
-import { deleteBackupTempFile, packBackup, packBackupTempFile } from "./pack";
+import { packBackup } from "./pack";
 import { applyBackupSnapshot, gatherBackupSnapshot } from "./snapshot";
-import type { BackupManifest } from "./format";
 import { unpackBackup } from "./unpack";
 
 const ZIP_FILTER_NAME = "Norea Backup";
@@ -55,20 +47,7 @@ export async function exportBackupToFile(): Promise<string | null> {
   });
   if (!path) return null;
   const manifest = await gatherBackupSnapshot();
-  if (isAndroidRuntime() && path.startsWith("content://")) {
-    const tempPath = await packBackupTempFile(manifest);
-    try {
-      await writeAndroidContentUriFile(path, tempPath, "application/zip");
-    } finally {
-      try {
-        await deleteBackupTempFile(tempPath);
-      } catch (error) {
-        console.warn("[backup] temp file cleanup failed", error);
-      }
-    }
-  } else {
-    await packBackup(manifest, path);
-  }
+  await packBackup(manifest, path);
   return path;
 }
 
@@ -87,28 +66,9 @@ export async function importBackupFromFile(): Promise<string | null> {
     filters: [zipFilter()],
   });
   if (selected === null || Array.isArray(selected)) {
-    // `multiple: false` should never resolve with an array, but the
-    // dialog plugin's union type forces us to narrow.
     return null;
   }
-  const manifest =
-    isAndroidRuntime() && selected.startsWith("content://")
-      ? await unpackAndroidBackupContentUri(selected)
-      : await unpackBackup(selected);
+  const manifest = await unpackBackup(selected);
   await applyBackupSnapshot(manifest);
   return selected;
-}
-
-async function unpackAndroidBackupContentUri(
-  uri: string,
-): Promise<BackupManifest> {
-  const tempFile = await copyAndroidContentUriToTempFile(
-    uri,
-    MAX_BACKUP_ARCHIVE_BYTES,
-  );
-  try {
-    return await unpackBackup(tempFile.path);
-  } finally {
-    await deleteAndroidContentUriTempFile(tempFile);
-  }
 }

@@ -1167,10 +1167,6 @@ html[data-norea-keyboard="open"] .norea-mobile-nav {
   word-break: break-word;
 }
 
-.norea-local-cover-picker-input {
-  display: none;
-}
-
 .norea-console-status {
   align-items: center;
   color: var(--norea-color-ink-muted);

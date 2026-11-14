@@ -16,14 +16,6 @@ vi.mock("../db/queries/chapter", () => ({
   saveChapterPartialContentMetadata: vi.fn(),
 }));
 
-vi.mock("./android-storage", () => ({
-  deleteAndroidStoragePath: vi.fn(),
-  inspectAndroidChapterArtifacts: vi.fn(),
-  readAndroidStorageText: vi.fn(),
-  renameAndroidStoragePath: vi.fn(),
-  writeAndroidStorageText: vi.fn(),
-}));
-
 vi.mock("./tauri-runtime", () => ({
   isAndroidRuntime: vi.fn(),
   isTauriRuntime: vi.fn(),
@@ -37,13 +29,6 @@ import {
   saveChapterContentMetadata,
   saveChapterPartialContentMetadata,
 } from "../db/queries/chapter";
-import {
-  deleteAndroidStoragePath,
-  inspectAndroidChapterArtifacts,
-  readAndroidStorageText,
-  renameAndroidStoragePath,
-  writeAndroidStorageText,
-} from "./android-storage";
 import {
   clearStoredChapterContentMirror,
   readStoredChapterContentMirror,
@@ -67,13 +52,6 @@ const saveChapterContentMetadataMock = vi.mocked(saveChapterContentMetadata);
 const saveChapterPartialContentMetadataMock = vi.mocked(
   saveChapterPartialContentMetadata,
 );
-const deleteAndroidStoragePathMock = vi.mocked(deleteAndroidStoragePath);
-const inspectAndroidChapterArtifactsMock = vi.mocked(
-  inspectAndroidChapterArtifacts,
-);
-const readAndroidStorageTextMock = vi.mocked(readAndroidStorageText);
-const renameAndroidStoragePathMock = vi.mocked(renameAndroidStoragePath);
-const writeAndroidStorageTextMock = vi.mocked(writeAndroidStorageText);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const isTauriRuntimeMock = vi.mocked(isTauriRuntime);
 let selectMock: ReturnType<typeof vi.fn>;
@@ -139,17 +117,10 @@ beforeEach(() => {
     }
     return undefined;
   });
-  inspectAndroidChapterArtifactsMock.mockResolvedValue({
-    status: "present", mediaComplete: true,
-    contentFile: "contents/demo/1/1/content.html",
-    contentBytes: 10,
-    mediaBytes: 0,
-  });
   adoptStoredChapterContentMetadataMock.mockResolvedValue({ rowsAffected: 1 });
   markStoredChapterContentMissingMock.mockResolvedValue({ rowsAffected: 1 });
   saveChapterContentMetadataMock.mockResolvedValue({ rowsAffected: 1 });
   saveChapterPartialContentMetadataMock.mockResolvedValue({ rowsAffected: 1 });
-  renameAndroidStoragePathMock.mockResolvedValue(undefined);
 });
 
 describe("chapter content storage", () => {
@@ -521,9 +492,20 @@ describe("chapter content storage", () => {
     );
   });
 
-  it("uses Android storage APIs on Android", async () => {
+  it("uses the Rust mirror IPC commands on Android", async () => {
     isAndroidRuntimeMock.mockReturnValue(true);
-    readAndroidStorageTextMock.mockResolvedValueOnce("<p>android</p>");
+    invokeMock.mockImplementation(async (command) => {
+      if (command === "chapter_content_mirror_inspect") {
+        return {
+          status: "present", mediaComplete: true,
+          contentFile: "contents/demo/1/1/content.html",
+          contentBytes: 12,
+          mediaBytes: 0,
+        };
+      }
+      if (command === "chapter_content_mirror_read_file") return "<p>android</p>";
+      return undefined;
+    });
 
     await expect(readStoredChapterContentMirror(10)).resolves.toBe(
       "<p>android</p>",
@@ -531,25 +513,23 @@ describe("chapter content storage", () => {
     await writeStoredChapterContentMirror(10, "<p>android</p>");
     await clearStoredChapterContentMirror(10);
 
-    expect(readAndroidStorageTextMock).toHaveBeenCalledWith(
-      expect.stringContaining("content.html"),
+    expect(invokeMock).toHaveBeenCalledWith(
+      "chapter_content_mirror_read_file",
+      { contentFile: expect.stringContaining("content.html") },
     );
-    expect(writeAndroidStorageTextMock).toHaveBeenCalledWith(
-      expect.stringContaining("content.html.tmp"),
-      "<p>android</p>",
+    expect(invokeMock).toHaveBeenCalledWith(
+      "chapter_content_mirror_store",
+      expect.objectContaining({ chapterId: 10, content: "<p>android</p>" }),
     );
-    expect(renameAndroidStoragePathMock).toHaveBeenCalledWith(
-      expect.stringContaining("content.html.tmp"),
-      "content.html",
-    );
-    expect(deleteAndroidStoragePathMock).toHaveBeenCalledWith(
-      expect.stringContaining("content.html"),
+    expect(invokeMock).toHaveBeenCalledWith(
+      "chapter_content_mirror_clear",
+      { chapterDir: expect.stringContaining("contents/demo/1/1") },
     );
   });
 
   it("preserves metadata when Android storage is inaccessible", async () => {
     isAndroidRuntimeMock.mockReturnValue(true);
-    inspectAndroidChapterArtifactsMock.mockRejectedValueOnce(
+    invokeMock.mockRejectedValueOnce(
       new Error("Android storage folder is not readable."),
     );
 

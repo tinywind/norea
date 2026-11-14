@@ -4,13 +4,8 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../db/client", () => ({
   runExclusiveDatabaseOperation: vi.fn((run: () => Promise<unknown>) => run()),
 }));
-vi.mock("./android-storage", () => ({
-  deleteAndroidContentUriTempFile: vi.fn(async () => undefined),
-  syncAndroidVpnProfileFiles: vi.fn(),
-}));
 
 import { invoke } from "@tauri-apps/api/core";
-import { deleteAndroidContentUriTempFile, syncAndroidVpnProfileFiles } from "./android-storage";
 import {
   applySavedPluginVpnProfile,
   captureSavedPluginVpnProfile,
@@ -20,7 +15,7 @@ import {
 } from "./plugin-vpn-profiles";
 
 function stubTauriWindow(android: boolean): EventTarget {
-  const target = Object.assign(new EventTarget(), { __TAURI_INTERNALS__: {} }, android ? { __NoreaAndroidStorage: {} } : {});
+  const target = Object.assign(new EventTarget(), { __TAURI_INTERNALS__: {} }, android ? { __NoreaAndroidBridge: {} } : {});
   vi.stubGlobal("window", target);
   return target;
 }
@@ -68,8 +63,8 @@ describe("saved plugin VPN profiles", () => {
     expect(invoke).toHaveBeenCalledWith("plugin_vpn_apply_saved_profile", { id: "a".repeat(64), expectedHash: "a".repeat(64) });
   });
 
-  it("syncs the desktop storage folder in one native call and announces imported profiles", async () => {
-    const target = stubTauriWindow(false);
+  it.each([false, true])("syncs the storage folder in one native call and announces imported profiles (Android: %s)", async (android) => {
+    const target = stubTauriWindow(android);
     let changes = 0; target.addEventListener("norea-vpn-profiles-changed", () => { changes++; });
     vi.mocked(invoke).mockResolvedValueOnce({ imported: 2, errors: [] });
     await syncStoredPluginVpnProfiles();
@@ -78,38 +73,13 @@ describe("saved plugin VPN profiles", () => {
     vi.unstubAllGlobals();
   });
 
-  it("moves Android profile files only between staged private files and removes the bridge copies", async () => {
-    stubTauriWindow(true);
-    const plan = { token: "t", publish: [{ fileName: "8.8.8.8.ovpn", inputPath: "/cache/vpn-profile-sync/t/8.8.8.8.ovpn" }], delete: ["1.1.1.1.ovpn"], known: ["8.8.8.8.ovpn"] };
-    const result = { reachable: true, published: [{ fileName: "8.8.8.8.ovpn", sha256: "a".repeat(64) }], deleted: ["1.1.1.1.ovpn"],
-      inbound: [{ fileName: "vpn.example.com.ovpn", path: "/cache/android-storage-bridge/content-1.tmp" }], errors: [] };
-    vi.mocked(invoke).mockResolvedValueOnce(plan).mockResolvedValueOnce({ imported: 1, errors: [] });
-    vi.mocked(syncAndroidVpnProfileFiles).mockResolvedValueOnce(result);
+  it.each([false, true])("does not announce profile changes when native sync imports nothing (Android: %s)", async (android) => {
+    const target = stubTauriWindow(android);
+    let changes = 0; target.addEventListener("norea-vpn-profiles-changed", () => { changes++; });
+    vi.mocked(invoke).mockResolvedValueOnce({ imported: 0, errors: [] });
     await syncStoredPluginVpnProfiles();
-    expect(invoke).toHaveBeenNthCalledWith(1, "plugin_vpn_plan_stored_profile_sync");
-    expect(syncAndroidVpnProfileFiles).toHaveBeenCalledWith({ publish: plan.publish, delete: plan.delete, known: plan.known });
-    expect(invoke).toHaveBeenNthCalledWith(2, "plugin_vpn_finish_stored_profile_sync", { token: "t", result });
-    expect(deleteAndroidContentUriTempFile).toHaveBeenCalledWith("/cache/android-storage-bridge/content-1.tmp");
-    vi.unstubAllGlobals();
-  });
-
-  it("reports an unreachable Android folder so native keeps its publication record", async () => {
-    stubTauriWindow(true);
-    vi.mocked(invoke).mockResolvedValueOnce({ token: "t", publish: [], delete: [], known: [] }).mockResolvedValueOnce({ imported: 0, errors: [] });
-    vi.mocked(syncAndroidVpnProfileFiles).mockRejectedValueOnce(new Error("Android media storage folder must be selected again."));
-    await syncStoredPluginVpnProfiles();
-    expect(invoke).toHaveBeenLastCalledWith("plugin_vpn_finish_stored_profile_sync", { token: "t", result: {
-      reachable: false, published: [], deleted: [], inbound: [], errors: ["Android media storage folder must be selected again."],
-    } });
-    vi.unstubAllGlobals();
-  });
-
-  it("skips Android sync until a storage folder is selected", async () => {
-    stubTauriWindow(true);
-    vi.mocked(invoke).mockResolvedValueOnce(null);
-    await syncStoredPluginVpnProfiles();
-    expect(invoke).toHaveBeenCalledTimes(1);
-    expect(syncAndroidVpnProfileFiles).not.toHaveBeenCalled();
+    expect(invoke).toHaveBeenCalledWith("plugin_vpn_sync_stored_profiles");
+    expect(changes).toBe(0);
     vi.unstubAllGlobals();
   });
 });

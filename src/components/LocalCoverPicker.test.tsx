@@ -6,15 +6,17 @@ import {
   type BackNavigationHarness,
 } from "../lib/android-back-navigation.test-support";
 
-const mocks = vi.hoisted(() => ({ convert: vi.fn() }));
+const mocks = vi.hoisted(() => ({ convert: vi.fn(), pick: vi.fn() }));
 vi.mock("../lib/local-cover", () => ({
   convertLocalCoverFile: mocks.convert,
   isLocalCoverSource: (value: unknown) => typeof value === "string" && value.startsWith("data:"),
-  LOCAL_COVER_ACCEPT: "image/*",
   LOCAL_COVER_LIMITS: { fileBytes: 1024 * 1024 },
   LocalCoverError: class extends Error {
     constructor(readonly code: string) { super(code); }
   },
+}));
+vi.mock("../lib/local-file-picker", () => ({
+  pickLocalFiles: mocks.pick,
 }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 
@@ -50,11 +52,12 @@ async function mount() {
 
 const elements = () => collectElements(tree);
 async function choose(name: string) {
-  const input = elements().find((element) => element.type === "input")!;
+  mocks.pick.mockResolvedValueOnce([new File(["x"], name)]);
+  const chooseButton = elements().find(
+    (element) => element.props.label === "library.localNovel.coverChoose",
+  )!;
   await harness!.run(() => {
-    void (input.props.onChange as (event: unknown) => Promise<void>)({
-      currentTarget: { files: [new File(["x"], name)], value: name },
-    });
+    (chooseButton.props.onClick as () => void)();
   });
 }
 const status = () => elements().find((element) => element.props.role === "status");

@@ -2,17 +2,11 @@ import { invoke } from "@tauri-apps/api/core";
 import { runExclusiveDatabaseOperation } from "../db/client";
 import type { VpnGateServerVerdict } from "../db/queries/vpn-gate-server-verdict";
 import {
-  deleteAndroidContentUriTempFile,
-  syncAndroidVpnProfileFiles,
-  type AndroidVpnProfileSyncResult,
-} from "./android-storage";
-import { describeError } from "./errors";
-import {
   preparePluginVpnProfileChange,
   type PluginVpnServerProtocol,
   type PluginVpnStatus,
 } from "./plugin-vpn";
-import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
+import { isTauriRuntime } from "./tauri-runtime";
 
 export const SAVED_PLUGIN_VPN_PROFILES_QUERY_KEY = [
   "plugin-vpn", "saved-profiles",
@@ -115,13 +109,6 @@ export async function applySavedPluginVpnProfile(
   });
 }
 
-interface StoredVpnProfileSyncPlan {
-  token: string;
-  publish: { fileName: string; inputPath: string }[];
-  delete: string[];
-  known: string[];
-}
-
 interface StoredVpnProfileSyncReport {
   imported: number;
   errors: string[];
@@ -145,10 +132,10 @@ export function syncStoredPluginVpnProfiles(): Promise<void> {
     try {
       do {
         storedSyncAgain = false;
-        const report = await (isAndroidRuntime() ? syncAndroidStoredProfiles() : runExclusiveDatabaseOperation<StoredVpnProfileSyncReport>(
+        const report = await runExclusiveDatabaseOperation<StoredVpnProfileSyncReport | null>(
           () => invoke("plugin_vpn_sync_stored_profiles"),
           { publishMetadata: false },
-        ));
+        );
         for (const error of report?.errors ?? []) console.warn("[plugin-vpn] stored profile sync", error);
         if (report && report.imported > 0) publishProfilePoolChange();
       } while (storedSyncAgain);
@@ -159,27 +146,4 @@ export function syncStoredPluginVpnProfiles(): Promise<void> {
     }
   })();
   return storedSync;
-}
-
-async function syncAndroidStoredProfiles(): Promise<StoredVpnProfileSyncReport | null> {
-  const plan = await runExclusiveDatabaseOperation<StoredVpnProfileSyncPlan | null>(
-    () => invoke("plugin_vpn_plan_stored_profile_sync"),
-    { publishMetadata: false },
-  );
-  if (!plan) return null;
-  let result: AndroidVpnProfileSyncResult;
-  try {
-    result = await syncAndroidVpnProfileFiles({ publish: plan.publish, delete: plan.delete, known: plan.known });
-  } catch (error) {
-    result = { reachable: false, published: [], deleted: [], inbound: [], errors: [describeError(error)] };
-  }
-  try {
-    return await runExclusiveDatabaseOperation<StoredVpnProfileSyncReport>(
-      () => invoke("plugin_vpn_finish_stored_profile_sync", { token: plan.token, result }),
-      { publishMetadata: false },
-    );
-  } finally {
-    await Promise.all(result.inbound.map((file) => deleteAndroidContentUriTempFile(file.path).catch((error: unknown) =>
-      console.warn("[plugin-vpn] stored profile temp cleanup failed", error))));
-  }
 }

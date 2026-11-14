@@ -2,15 +2,14 @@ import { novelStorageRelativeDir, type ChapterStorageNovelPathInput } from "./ch
 import { pluginMediaFetch } from "./http";
 import { getPluginBaseUrl } from "./plugins/base-url";
 import type { Plugin } from "./plugins/types";
-import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
+import { isTauriRuntime } from "./tauri-runtime";
 import { resolvedNovelStorageDir } from "./chapter-storage-resolution";
 import { coverContentType } from "./work-metadata/schema";
 import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
 
 const NOVEL_COVER_BASENAME = "cover";
 const DEFAULT_COVER_EXTENSION = "img";
-const ANDROID_LOCAL_MEDIA_SRC_PREFIX = "/__norea_android_media__/file/";
-const WINDOWS_NOREA_MEDIA_SRC_PREFIX = "http://norea-media.localhost/";
+const NOREA_MEDIA_SRC_PREFIX = "http://norea-media.localhost/";
 // Object URLs pin fetched image bytes, while stored covers are plain URL strings
 // that let remounted cards render without another native lookup.
 const MAX_UNUSED_COVER_OBJECT_URLS = 100;
@@ -513,9 +512,7 @@ export async function resolveStoredNovelCoverSrc(
 }
 
 function storedNovelCoverSrc(stored: StoredNovelCover, novelId: number): string {
-  const src = isAndroidRuntime()
-    ? androidLocalMediaSrc(stored.relativePath)
-    : noreaMediaSrc(stored.relativePath);
+  const src = noreaMediaSrc(stored.relativePath);
   const updatedAt = Math.max(0, Math.trunc(stored.modifiedAt));
   const snapshot = getNovelCoverSnapshot(novelId);
   const storageVersion = snapshot
@@ -585,19 +582,8 @@ export function notifyNovelCoverChanged(
   }
 }
 
-function androidLocalMediaSrc(relativePath: string): string {
-  const binaryPath = String.fromCharCode(
-    ...new TextEncoder().encode(relativePath),
-  );
-  const encodedPath = btoa(binaryPath)
-    .replaceAll("+", "-")
-    .replaceAll("/", "_")
-    .replace(/=+$/, "");
-  return `${ANDROID_LOCAL_MEDIA_SRC_PREFIX}${encodedPath}`;
-}
-
 function noreaMediaSrc(relativePath: string): string {
-  return `${WINDOWS_NOREA_MEDIA_SRC_PREFIX}${relativePath
+  return `${NOREA_MEDIA_SRC_PREFIX}${relativePath
     .split("/")
     .map(encodeURIComponent)
     .join("/")}`;

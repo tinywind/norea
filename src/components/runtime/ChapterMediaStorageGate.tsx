@@ -30,7 +30,7 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
       .then((root) => {
         if (cancelled) return;
         if (isAndroidRuntime()) {
-          const hasRoot = root?.trim().startsWith("content://") === true;
+          const hasRoot = Boolean(root?.trim());
           const needsAccess = hasRoot && androidAllFilesAccessGranted() === false;
           setRootNeedsAccess(needsAccess);
           setStorageReady(hasRoot && !needsAccess);

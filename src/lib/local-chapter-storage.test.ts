@@ -7,23 +7,6 @@ const storage = vi.hoisted(() => ({ files: new Map<string, string>(), android: f
 const database = vi.hoisted(() => ({ get: vi.fn(), transaction: vi.fn() }));
 vi.mock("../db/client", () => ({ getDb: database.get, runDatabaseTransaction: database.transaction }));
 vi.mock("./tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => storage.android }));
-vi.mock("./android-storage", () => ({
-  deleteAndroidStoragePath: async (directory: string) => {
-    for (const path of storage.files.keys()) if (path.startsWith(directory + "/")) storage.files.delete(path);
-  },
-  renameAndroidStoragePath: async (directory: string, newName: string, allowMissing = false) => {
-    const entries = [...storage.files].filter(([path]) => path.startsWith(directory + "/"));
-    if (!entries.length) {
-      if (allowMissing) return;
-      throw new Error("Android storage rename source does not exist");
-    }
-    const target = directory.slice(0, directory.lastIndexOf("/") + 1) + newName;
-    for (const [path, body] of entries) {
-      storage.files.delete(path);
-      storage.files.set(target + path.slice(directory.length), body);
-    }
-  },
-}));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, input: {
   oldRelativeDir?: string; newRelativeDir?: string; relativeDir?: string; keepNames?: string[];
   input?: { operation: string };

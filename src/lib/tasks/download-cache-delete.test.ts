@@ -22,11 +22,6 @@ vi.mock("../../db/queries/download-cache", () => ({
   listNonLocalOrdinaryQueuedDownloadChapterIds: queries.listNonLocalOrdinaryQueuedDownloadChapterIds,
 }));
 vi.mock("../../db/queries/novel", () => ({ getNovelById: vi.fn() }));
-vi.mock("../android-storage", () => ({
-  deleteAndroidStoragePath: vi.fn(),
-  listAndroidChapterStorageDirs: vi.fn(),
-  resetAndroidWorkStorageDirectory: vi.fn(),
-}));
 vi.mock("../tauri-runtime", () => ({
   isAndroidRuntime: vi.fn(() => false),
   isTauriRuntime: vi.fn(() => true),
@@ -43,9 +38,6 @@ import {
   type DownloadCacheDeleteWork,
 } from "./download-cache-delete";
 import { getChapterById } from "../../db/queries/chapter";
-import { getNovelById } from "../../db/queries/novel";
-import { deleteAndroidStoragePath, listAndroidChapterStorageDirs, resetAndroidWorkStorageDirectory } from "../android-storage";
-import { novelStorageRelativeDir } from "../chapter-storage-path";
 import { isAndroidRuntime } from "../tauri-runtime";
 import { clearAuthoritativeStorageDirs, rememberAuthoritativeChapterStorageDir } from "../chapter-storage-resolution";
 
@@ -79,7 +71,6 @@ beforeEach(() => {
   }]);
   queries.listNonLocalOrdinaryQueuedDownloadChapterIds.mockResolvedValue([]);
   vi.mocked(getChapterById).mockResolvedValue(null);
-  vi.mocked(getNovelById).mockResolvedValue(null);
   vi.mocked(isAndroidRuntime).mockReturnValue(false);
   downloadQueue.waitForChapterDownloadQueueMutations.mockResolvedValue(undefined);
   scheduler.getSnapshot.mockReturnValue({ records: [] });
@@ -135,7 +126,7 @@ describe("deleteDownloadCache", () => {
     expect(native.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", { workId: "work-1", clearFiles: true });
   });
 
-  it("removes queued work without probing storage for an unstored chapter", async () => {
+  it("removes queued work without probing renderer chapter rows", async () => {
     vi.mocked(isAndroidRuntime).mockReturnValue(true);
     queries.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([]);
     queries.listNonLocalOrdinaryQueuedDownloadChapterIds.mockResolvedValue([77]);
@@ -146,23 +137,15 @@ describe("deleteDownloadCache", () => {
 
     expect(native.invoke).toHaveBeenCalledWith("chapter_download_queue_remove", { chapterIds: [77] });
     expect(getChapterById).not.toHaveBeenCalled();
-    expect(listAndroidChapterStorageDirs).not.toHaveBeenCalled();
-    expect(deleteAndroidStoragePath).not.toHaveBeenCalled();
+    expect(native.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", { workId: "work-1", clearFiles: true });
   });
 
-  it("clears a work's downloads with one folder reset instead of one walk per chapter", async () => {
-    vi.mocked(isAndroidRuntime).mockReturnValue(true);
-    const novel = { id: 3, pluginId: "source", sourceNovelId: "work", path: "/work", name: "Work", isLocal: false };
-    const outside = "contents/source/Older-name/9-Moved";
-    rememberAuthoritativeChapterStorageDir(9, outside);
+  it.each([false, true])("delegates file cleanup and record clearing to Rust in one native run (Android: %s)", async (android) => {
+    vi.mocked(isAndroidRuntime).mockReturnValue(android);
+    rememberAuthoritativeChapterStorageDir(9, "contents/source/Older-name/9-Moved");
     queries.listNonLocalDownloadCacheDeleteChapters.mockResolvedValue([7, 8, 9].map(id => ({
       id, contentBytes: 1, isDownloaded: true, path: `/chapter/${id}`, pluginId: "source", sourceContentType: "html",
     })));
-    vi.mocked(getChapterById).mockImplementation(async id => ({ id, novelId: 3, name: `Chapter ${id}`, position: id }) as never);
-    vi.mocked(getNovelById).mockResolvedValue(novel as never);
-    vi.mocked(resetAndroidWorkStorageDirectory).mockResolvedValue(undefined);
-    vi.mocked(deleteAndroidStoragePath).mockResolvedValue(undefined);
-    vi.mocked(listAndroidChapterStorageDirs).mockRejectedValue(new Error("Per-chapter folder search must not run"));
     const invokeDefault = native.invoke.getMockImplementation()!;
     native.invoke.mockImplementation(async (command: string, args?: unknown) => command === "download_cache_delete_work_enqueue"
       ? { ...createWork("work-1"), scope: "novel", targetIds: [3], total: 3 }
@@ -172,27 +155,10 @@ describe("deleteDownloadCache", () => {
       scope: "novel", targetIds: [3], title: "Delete work", workId: "work-1",
     })).resolves.toEqual(deleted);
 
-    expect(resetAndroidWorkStorageDirectory).toHaveBeenCalledExactlyOnceWith(novelStorageRelativeDir(novel as never));
-    expect(listAndroidChapterStorageDirs).not.toHaveBeenCalled();
-    expect(vi.mocked(deleteAndroidStoragePath).mock.calls.map(([path]) => path)).toContain(outside);
-  });
-
-  it("clears the record for a missing known folder without searching other works", async () => {
-    vi.mocked(isAndroidRuntime).mockReturnValue(true);
-    const directory = "contents/source/Original-work/1-Opening";
-    rememberAuthoritativeChapterStorageDir(7, directory);
-    vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 3, name: "Opening", position: 1 } as never);
-    vi.mocked(getNovelById).mockResolvedValue({ id: 3, pluginId: "source", path: "/work", name: "Renamed", isLocal: false } as never);
-    vi.mocked(deleteAndroidStoragePath).mockResolvedValue(undefined);
-    vi.mocked(listAndroidChapterStorageDirs).mockRejectedValue(new Error("Unrelated folder search must not run"));
-
-    await expect(deleteDownloadCache({
-      scope: "chapter", targetIds: [7], title: "Delete chapter", workId: "work-1",
-    })).resolves.toEqual(deleted);
-
-    expect(listAndroidChapterStorageDirs).not.toHaveBeenCalled();
-    expect(deleteAndroidStoragePath).toHaveBeenCalledWith(directory);
-    expect(native.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", { workId: "work-1", clearFiles: false });
+    expect(native.invoke).toHaveBeenCalledWith("download_cache_delete_work_run", {
+      workId: "work-1",
+      clearFiles: true,
+    });
   });
 
   it("deletes stored content when its source plugin is unavailable", async () => {

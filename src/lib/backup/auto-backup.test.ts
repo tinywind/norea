@@ -1,22 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  BackupFolderUnavailableError: class BackupFolderUnavailableError extends Error {},
   android: false,
   invoke: vi.fn(),
-  publishAndroid: vi.fn(),
-  packTemp: vi.fn(async () => "/cache/backup/temp.zip"),
-  deleteTemp: vi.fn(async () => undefined),
   run: vi.fn(),
 }));
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("../tauri-runtime", () => ({ isAndroidRuntime: () => mocks.android }));
-vi.mock("../android-storage", () => ({
-  BackupFolderUnavailableError: mocks.BackupFolderUnavailableError,
-  publishAndroidAutoBackup: mocks.publishAndroid,
-}));
-vi.mock("./pack", () => ({ packBackupTempFile: mocks.packTemp, deleteBackupTempFile: mocks.deleteTemp }));
 vi.mock("./snapshot", () => ({ gatherBackupSnapshot: vi.fn(async () => ({ version: 5 })) }));
 vi.mock("./format", () => ({ encodeBackupManifest: () => '{"version":5}' }));
 vi.mock("../tasks/main-tasks", () => ({
@@ -25,7 +16,12 @@ vi.mock("../tasks/main-tasks", () => ({
 
 import { useAutoBackupStore } from "../../store/auto-backup";
 import { enqueueMainTask } from "../tasks/main-tasks";
-import { isAutomaticBackupDue, runAutomaticBackupIfDue, writeAutomaticBackup } from "./auto-backup";
+import {
+  BackupFolderUnavailableError,
+  isAutomaticBackupDue,
+  runAutomaticBackupIfDue,
+  writeAutomaticBackup,
+} from "./auto-backup";
 
 const HOUR = 60 * 60 * 1000;
 const DAY = 24 * HOUR;
@@ -56,8 +52,8 @@ describe("isAutomaticBackupDue", () => {
 describe("writeAutomaticBackup", () => {
   beforeEach(() => vi.clearAllMocks());
 
-  it("publishes into the desktop storage folder with a timestamped name", async () => {
-    mocks.android = false;
+  it.each([false, true])("publishes into the storage folder through Rust with a timestamped name (Android: %s)", async (android) => {
+    mocks.android = android;
     const fileName = await writeAutomaticBackup(5, new Date(2026, 10, 4, 9, 8, 7));
 
     expect(fileName).toBe("norea-auto-backup-20261104090807.zip");
@@ -66,25 +62,14 @@ describe("writeAutomaticBackup", () => {
     });
   });
 
-  it("reports a desktop storage folder it cannot reach as unavailable", async () => {
-    mocks.android = false;
+  it.each([false, true])("reports a storage folder Rust cannot reach as unavailable (Android: %s)", async (android) => {
+    mocks.android = android;
     mocks.invoke.mockRejectedValueOnce("backup_publish_auto: storage folder unavailable: create D:\\Norea\\backups: not found");
-    await expect(writeAutomaticBackup(5)).rejects.toBeInstanceOf(mocks.BackupFolderUnavailableError);
+    await expect(writeAutomaticBackup(5)).rejects.toBeInstanceOf(BackupFolderUnavailableError);
 
     mocks.invoke.mockRejectedValueOnce("backup_publish_auto: sync: disk error");
     const failure = await writeAutomaticBackup(5).catch((error: unknown) => error);
-    expect(failure).not.toBeInstanceOf(mocks.BackupFolderUnavailableError);
-  });
-
-  it("copies the packed archive through the Android storage bridge and removes the temp file", async () => {
-    mocks.android = true;
-    mocks.publishAndroid.mockRejectedValueOnce(new Error("Storage folder is not writable."));
-
-    await expect(writeAutomaticBackup(3, new Date(2026, 10, 4, 9, 8, 7))).rejects.toThrow("not writable");
-
-    expect(mocks.publishAndroid).toHaveBeenCalledWith("/cache/backup/temp.zip", "norea-auto-backup-20261104090807.zip", 3);
-    expect(mocks.deleteTemp).toHaveBeenCalledWith("/cache/backup/temp.zip");
-    expect(mocks.invoke).not.toHaveBeenCalled();
+    expect(failure).not.toBeInstanceOf(BackupFolderUnavailableError);
   });
 });
 
@@ -98,7 +83,7 @@ describe("runAutomaticBackupIfDue", () => {
   });
 
   it("marks a failure that could not reach the folder, and a later success or clear forgets it", async () => {
-    mocks.run.mockRejectedValueOnce(new mocks.BackupFolderUnavailableError("Automatic backup folder unavailable"));
+    mocks.run.mockRejectedValueOnce(new BackupFolderUnavailableError("Automatic backup folder unavailable"));
     await runAutomaticBackupIfDue(NOW);
     expect(useAutoBackupStore.getState()).toMatchObject({ lastFailureFolderUnavailable: true });
 
@@ -124,13 +109,13 @@ describe("runAutomaticBackupIfDue", () => {
 
   it("records a failure with its reason and keeps the last success", async () => {
     useAutoBackupStore.setState({ lastSuccessAt: NOW - 8 * DAY, lastFileName: "previous.zip" });
-    mocks.run.mockRejectedValueOnce(new Error("Android storage folder is not writable."));
+    mocks.run.mockRejectedValueOnce(new Error("Storage folder is not writable."));
 
     await runAutomaticBackupIfDue(NOW);
 
     expect(useAutoBackupStore.getState()).toMatchObject({
       lastSuccessAt: NOW - 8 * DAY, lastFileName: "previous.zip",
-      lastError: "Android storage folder is not writable.",
+      lastError: "Storage folder is not writable.",
       lastFailureFolderUnavailable: false,
     });
   });

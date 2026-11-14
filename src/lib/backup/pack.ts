@@ -16,18 +16,6 @@ export async function packBackup(
   });
 }
 
-export async function packBackupTempFile(
-  manifest: BackupManifest,
-): Promise<string> {
-  return invoke<string>("backup_pack_temp_file", {
-    manifestJson: encodeBackupManifest(manifest),
-  });
-}
-
-export async function deleteBackupTempFile(path: string): Promise<void> {
-  await invoke("backup_delete_temp_file", { path });
-}
-
 export async function packBackupBytes(
   manifest: BackupManifest,
 ): Promise<number[]> {

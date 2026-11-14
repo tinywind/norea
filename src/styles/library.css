@@ -264,10 +264,6 @@
   }
 }
 
-.norea-library-file-input {
-  display: none;
-}
-
 .norea-library-local-import-list {
   border: 1px solid var(--norea-color-rule);
   border-radius: var(--norea-radius-md);

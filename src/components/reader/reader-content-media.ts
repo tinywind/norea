@@ -195,7 +195,12 @@ export function stopReaderMediaClick(event: MouseEvent<HTMLDivElement>): void {
 function mediaPatchValueKind(value: string): string {
   if (value === "") return "blank";
   if (value.startsWith("data:")) return "data-url";
-  if (value.startsWith("norea-media://")) return "local-media";
+  if (
+    value.startsWith("norea-media://") ||
+    value.startsWith("http://norea-media.localhost/")
+  ) {
+    return "local-media";
+  }
   if (value.startsWith("http://") || value.startsWith("https://")) {
     return "remote";
   }
@@ -205,7 +210,12 @@ function mediaPatchValueKind(value: string): string {
 export function isRemoteMediaUrl(value: string): boolean {
   try {
     const parsed = new URL(value, window.location.href);
-    if (parsed.host === "asset.localhost") return false;
+    if (
+      parsed.host === "asset.localhost" ||
+      parsed.host === "norea-media.localhost"
+    ) {
+      return false;
+    }
     return parsed.protocol === "http:" || parsed.protocol === "https:";
   } catch {
     return value.startsWith("//");

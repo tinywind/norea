@@ -38,13 +38,30 @@ export const CHAPTER_MEDIA_STORAGE_ROOT_QUERY_KEY = [
 ] as const;
 
 const ANDROID_TREE_DOCUMENT = /^content:\/\/[^/]+\/tree\/([^/]+)/;
+const ANDROID_PRIMARY_FS_PREFIX = "/storage/emulated/0";
+const ANDROID_REMOVABLE_FS_PATTERN =
+  /^\/storage\/([0-9A-Fa-f]{4}-[0-9A-Fa-f]{4})(?:\/(.*))?$/;
 
 /**
- * A storage folder as people read it. An Android folder grant is a document
- * tree URI such as `content://…/tree/primary%3ANorea`; it shows as the
- * volume and path, with the built-in volume named "Internal storage".
+ * A storage folder as people read it. Android storage roots may be a resolved
+ * `/storage/emulated/0/...` path or a legacy `content://…/tree/primary%3A...`
+ * URI; both show as the volume and path, with the built-in volume named
+ * "Internal storage".
  */
 export function formatStorageFolder(root: string, internalStorageLabel: string): string {
+  if (root === ANDROID_PRIMARY_FS_PREFIX || root === `${ANDROID_PRIMARY_FS_PREFIX}/`) {
+    return internalStorageLabel;
+  }
+  if (root.startsWith(`${ANDROID_PRIMARY_FS_PREFIX}/`)) {
+    const rel = root.slice(ANDROID_PRIMARY_FS_PREFIX.length + 1).replace(/\/+$/, "");
+    return rel ? `${internalStorageLabel}/${rel}` : internalStorageLabel;
+  }
+  const removable = ANDROID_REMOVABLE_FS_PATTERN.exec(root);
+  if (removable) {
+    const volume = removable[1]!;
+    const rel = (removable[2] ?? "").replace(/\/+$/, "");
+    return rel ? `${volume}/${rel}` : volume;
+  }
   const treeId = ANDROID_TREE_DOCUMENT.exec(root)?.[1];
   if (!treeId) return root;
   let documentId: string;

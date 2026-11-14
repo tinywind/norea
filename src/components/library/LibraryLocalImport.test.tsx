@@ -21,6 +21,7 @@ const mocks = vi.hoisted(() => ({
   analyses: [] as Array<{ file: File; resolve: () => void }>,
   imports: [] as Array<{ file: File; resolve: (novelId: number) => void }>,
   navigate: vi.fn(),
+  pick: vi.fn(),
   localHome: { isPending: false, error: null as unknown, reset: () => { mocks.localHome.error = null; }, mutate: vi.fn() },
 }));
 vi.mock("@mantine/core", async (importOriginal) => ({
@@ -35,7 +36,12 @@ vi.mock("@tanstack/react-query", () => ({
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ locale: "en", t: (key: string) => key }) }));
 vi.mock("../../db/queries/novel", () => ({ upsertLocalNovel: vi.fn() }));
-vi.mock("../../lib/local-import", () => ({ clearLocalImportFileCache: vi.fn() }));
+vi.mock("../../lib/local-file-picker", () => ({ pickLocalFiles: mocks.pick }));
+vi.mock("../../lib/local-import", () => ({
+  clearLocalImportFileCache: vi.fn(),
+  localImportFileSizeLimit: () => 25 * 1024 * 1024,
+}));
+vi.mock("../../lib/runtime/error-toast", () => ({ showErrorToast: vi.fn() }));
 vi.mock("../../lib/local-import-library", () => ({
   importLocalFileToLibrary: (file: File) => {
     const pending = deferred<number>();
@@ -65,11 +71,13 @@ type ImportRender = (props: { active: boolean }, ref: Ref<LibraryLocalImportHand
 
 let harness: BackNavigationHarness | undefined;
 let tree: ReactNode;
+const handleRef = createRef<LibraryLocalImportHandle>();
 
 beforeEach(() => {
   mocks.analyses.length = 0;
   mocks.imports.length = 0;
   mocks.navigate.mockClear();
+  mocks.pick.mockReset();
 });
 
 afterEach(async () => {
@@ -78,9 +86,9 @@ afterEach(async () => {
   mocks.localHome.error = null;
 });
 
-/** Mounts only the sheets, which own back navigation; the probe has no DOM for the file input. */
+/** Mounts only the sheets, which own back navigation. */
 function ImportProbe() {
-  tree = (LibraryLocalImport as unknown as { render: ImportRender }).render({ active: true }, createRef());
+  tree = (LibraryLocalImport as unknown as { render: ImportRender }).render({ active: true }, handleRef);
   return collectElements(tree)
     .filter((element) => element.type === ResponsiveSheet)
     .map((element, index) => cloneElement(element, { key: index }));
@@ -95,10 +103,11 @@ const reviewedFiles = () =>
 const button = (label: string) => elements().find((element) => element.props.children === label);
 
 async function chooseFiles(...names: string[]) {
-  const input = elements().find((element) => element.props.type === "file")!;
-  await harness!.run(() => (input.props.onChange as (event: unknown) => void)({
-    currentTarget: { files: names.map((name) => new File(["text"], name)), value: names[0] },
-  }));
+  mocks.pick.mockResolvedValueOnce(names.map((name) => new File(["text"], name)));
+  await harness!.run(async () => {
+    handleRef.current!.openFilePicker();
+    await Promise.resolve();
+  });
 }
 
 async function finishAnalyses() {

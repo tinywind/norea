@@ -1,11 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import {
-  finalizeAndroidChapterStorageTransfer,
-  prepareAndroidChapterStorageTransfer,
-  removeAndroidChapterStorageDirectory,
-  rollbackAndroidChapterStorageTransfer,
-} from "./android-storage";
-import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
+import { isTauriRuntime } from "./tauri-runtime";
 
 export interface ChapterStorageTransferOptions {
   token?: string;
@@ -142,9 +136,10 @@ export async function prepareChapterStorageTransfer(
   options: ChapterStorageTransferOptions = {},
 ): Promise<ChapterStorageTransferPreparation> {
   requireChapterStorageRuntime();
-  const preparation = isAndroidRuntime()
-    ? await prepareAndroidChapterStorageTransfer(entries, options)
-    : await invoke<unknown>("chapter_storage_prepare_transfer", { entries, ...options });
+  const preparation = await invoke<unknown>("chapter_storage_prepare_transfer", {
+    entries,
+    ...options,
+  });
   return parseChapterStorageTransferPreparation(preparation);
 }
 
@@ -152,10 +147,6 @@ export async function finalizeChapterStorageTransfer(
   preparation: ChapterStorageTransferPreparation,
 ): Promise<void> {
   requireChapterStorageRuntime();
-  if (isAndroidRuntime()) {
-    await finalizeAndroidChapterStorageTransfer(preparation);
-    return;
-  }
   await invoke("chapter_storage_finalize_transfer", { preparation });
 }
 
@@ -163,10 +154,6 @@ export async function rollbackChapterStorageTransfer(
   preparation: ChapterStorageTransferPreparation,
 ): Promise<void> {
   requireChapterStorageRuntime();
-  if (isAndroidRuntime()) {
-    await rollbackAndroidChapterStorageTransfer(preparation);
-    return;
-  }
   await invoke("chapter_storage_rollback_transfer", { preparation });
 }
 
@@ -174,9 +161,5 @@ export async function removeChapterStorageDirectory(
   relativeDir: string,
 ): Promise<void> {
   requireChapterStorageRuntime();
-  if (isAndroidRuntime()) {
-    await removeAndroidChapterStorageDirectory(relativeDir);
-    return;
-  }
   await invoke("chapter_storage_remove_dir", { relativeDir });
 }

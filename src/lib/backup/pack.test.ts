@@ -10,7 +10,7 @@ import {
   encodeBackupManifest,
   type BackupManifest,
 } from "./format";
-import { deleteBackupTempFile, packBackup, packBackupTempFile } from "./pack";
+import { packBackup } from "./pack";
 
 const invokeMock = vi.mocked(invoke);
 
@@ -145,27 +145,5 @@ describe("packBackup", () => {
     await packBackup(manifest, "C:\\backup.zip");
 
     expect(manifest).toEqual(before);
-  });
-
-  it("invokes backup_pack_temp_file with the manifest only", async () => {
-    const manifest = makeManifest();
-    invokeMock.mockResolvedValue("C:\\temp\\norea-backup.zip");
-
-    await expect(packBackupTempFile(manifest)).resolves.toBe(
-      "C:\\temp\\norea-backup.zip",
-    );
-
-    expect(invokeMock).toHaveBeenCalledTimes(1);
-    expect(invokeMock).toHaveBeenCalledWith("backup_pack_temp_file", {
-      manifestJson: encodeBackupManifest(manifest),
-    });
-  });
-
-  it("deletes backup temp files through the Rust command", async () => {
-    await deleteBackupTempFile("C:\\temp\\norea-backup.zip");
-
-    expect(invokeMock).toHaveBeenCalledWith("backup_delete_temp_file", {
-      path: "C:\\temp\\norea-backup.zip",
-    });
   });
 });

@@ -1,16 +1,18 @@
-import { useEffect, useRef, useState, type ChangeEvent } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Group, Loader, Stack, Text } from "@mantine/core";
 import {
   convertLocalCoverFile,
   isLocalCoverSource,
-  LOCAL_COVER_ACCEPT,
   LOCAL_COVER_LIMITS,
   LocalCoverError,
 } from "../lib/local-cover";
+import { pickLocalFiles } from "../lib/local-file-picker";
 import { useTranslation } from "../i18n";
 import { ConsoleCover } from "./ConsolePrimitives";
 import { IconButton } from "./IconButton";
 import { ImageIcon, TrashIcon } from "./ui/icons";
+
+const LOCAL_COVER_EXTENSIONS = ["avif", "gif", "jpeg", "jpg", "png", "webp"];
 
 interface LocalCoverPickerProps {
   alt: string;
@@ -29,7 +31,6 @@ export function LocalCoverPicker({
   value,
 }: LocalCoverPickerProps) {
   const { t } = useTranslation();
-  const inputRef = useRef<HTMLInputElement>(null);
   const requestRef = useRef(0);
   const [error, setError] = useState<string | null>(null);
   const [pending, setPending] = useState(false);
@@ -45,9 +46,20 @@ export function LocalCoverPicker({
     onPendingChange?.(converting);
   };
 
-  const handleFileSelected = async (event: ChangeEvent<HTMLInputElement>) => {
-    const file = event.currentTarget.files?.[0] ?? null;
-    event.currentTarget.value = "";
+  const handleChooseCover = async () => {
+    let files: File[];
+    try {
+      files = await pickLocalFiles({
+        extensions: LOCAL_COVER_EXTENSIONS,
+        filterName: t("library.localNovel.cover"),
+        multiple: false,
+        maxBytesForFile: () => LOCAL_COVER_LIMITS.fileBytes,
+      });
+    } catch (caught) {
+      setError(localCoverErrorMessage(caught, maxMegabytes, t));
+      return;
+    }
+    const file = files[0] ?? null;
     if (!file) return;
 
     // Only the latest choice may set the cover; an earlier, slower conversion is dropped.
@@ -74,19 +86,11 @@ export function LocalCoverPicker({
       <Group align="center" gap="sm">
         <ConsoleCover alt={alt} height={108} src={coverSource} width={72} />
         <Stack gap={6} style={{ minWidth: 0 }}>
-          <input
-            accept={LOCAL_COVER_ACCEPT}
-            className="norea-local-cover-picker-input"
-            disabled={disabled}
-            onChange={handleFileSelected}
-            ref={inputRef}
-            type="file"
-          />
           <Group gap="xs">
             <IconButton
               disabled={disabled}
               label={t("library.localNovel.coverChoose")}
-              onClick={() => inputRef.current?.click()}
+              onClick={() => void handleChooseCover()}
               size="lg"
               type="button"
             >

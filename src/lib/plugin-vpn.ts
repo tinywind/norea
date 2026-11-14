@@ -1,11 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  copyAndroidContentUriToTempFile,
-  deleteAndroidContentUriTempFile,
-  type AndroidStorageTempFile,
-} from "./android-storage";
 import { androidBridgeAuthority } from "./android-bridge";
 import { isAndroidRuntime } from "./tauri-runtime";
 import { usePluginVpnStore } from "../store/plugin-vpn";
@@ -14,7 +9,6 @@ import { isNetworkOnline, withNetworkRequest } from "./network";
 import { resetPluginVpnBrowserSession } from "./plugin-vpn-browser-session";
 import { cancelAutomaticPluginVpnCandidateTests } from "./plugin-vpn-automatic";
 
-const MAX_OPENVPN_PROFILE_BYTES = 1024 * 1024;
 const PLUGIN_VPN_STATUS_EVENT = "plugin-vpn-status";
 const VPN_PROXY_CONFIGURE_CAPABILITY = "vpn.proxy.configure";
 
@@ -395,28 +389,8 @@ export async function importPluginVpnProfile(): Promise<PluginVpnStatus | null> 
     throw new Error("OpenVPN profile selection returned multiple files.");
   }
 
-  let tempFile: AndroidStorageTempFile | null = null;
-  let path = selected;
-  if (isAndroidRuntime() && selected.startsWith("content://")) {
-    tempFile = await copyAndroidContentUriToTempFile(
-      selected,
-      MAX_OPENVPN_PROFILE_BYTES,
-    );
-    path = tempFile.path;
-  }
-
-  try {
-    await preparePluginVpnProfileChange();
-    return await invoke<PluginVpnStatus>("plugin_vpn_import_profile", { path });
-  } finally {
-    if (tempFile) {
-      try {
-        await deleteAndroidContentUriTempFile(tempFile);
-      } catch (error) {
-        console.warn("[plugin-vpn] temp profile cleanup failed", error);
-      }
-    }
-  }
+  await preparePluginVpnProfileChange();
+  return invoke<PluginVpnStatus>("plugin_vpn_import_profile", { path: selected });
 }
 
 export function connectPluginVpn(

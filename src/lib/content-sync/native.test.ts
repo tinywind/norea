@@ -1,12 +1,10 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { invoke } from "@tauri-apps/api/core";
-import { snapshotAndroidContentChapter, installAndroidContentChapter } from "../android-storage";
 import { isAndroidRuntime } from "../tauri-runtime";
 import { fingerprintContentChapter, uploadContentChapter, withContentChapterStage, withDownloadedContentChapter, type CatalogEntry } from "./native";
 import { runWorkContentStorageOperation } from "./storage-operation";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("../android-storage", () => ({ snapshotAndroidContentChapter: vi.fn(), installAndroidContentChapter: vi.fn() }));
 vi.mock("../tauri-runtime", () => ({ isAndroidRuntime: vi.fn() }));
 const identity = { pluginId: "source", novelId: "book", novelPath: "/book" };
 const entry: CatalogEntry = {
@@ -20,8 +18,6 @@ const entry: CatalogEntry = {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  vi.mocked(snapshotAndroidContentChapter).mockReset();
-  vi.mocked(installAndroidContentChapter).mockReset();
   vi.mocked(isAndroidRuntime).mockReturnValue(true);
   vi.mocked(invoke).mockImplementation(async command => {
     if (command === "content_sync_create_stage") return "/cache/content-sync/one";
@@ -30,12 +26,17 @@ beforeEach(() => {
   });
 });
 
-it("serializes an Android snapshot with same-work foreground storage access", async () => {
+it("serializes a native snapshot with same-work foreground storage access", async () => {
   let release!: () => void;
   const started = new Promise<void>(resolve => {
-    vi.mocked(snapshotAndroidContentChapter).mockImplementationOnce(async () => {
-      resolve();
-      await new Promise<void>(done => { release = done; });
+    const original = vi.mocked(invoke).getMockImplementation()!;
+    vi.mocked(invoke).mockImplementation(async (command, args) => {
+      if (command === "content_sync_snapshot") {
+        resolve();
+        await new Promise<void>(done => { release = done; });
+        return undefined;
+      }
+      return original(command, args);
     });
   });
   const stage = withContentChapterStage({ storageDir: "contents/source/book/1", identity }, async () => undefined);
@@ -49,7 +50,7 @@ it("serializes an Android snapshot with same-work foreground storage access", as
   expect(foreground).toBe(true);
 });
 
-it("fingerprints and uploads one Android snapshot instead of copying the chapter twice", async () => {
+it("fingerprints and uploads one native snapshot instead of copying the chapter twice", async () => {
   const storageDir = "contents/source/book/1";
   await withContentChapterStage({ storageDir, identity }, async stagePath => {
     expect(await fingerprintContentChapter({ storageDir, stagePath })).toBe("snapshot-fingerprint");
@@ -57,7 +58,7 @@ it("fingerprints and uploads one Android snapshot instead of copying the chapter
       manifest: { packageVersion: 1, identity: { pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/one" },
         novel: { name: "Book", isLocal: false }, chapter: { name: "One", position: 1, page: "1", contentType: "html" } } });
   });
-  expect(snapshotAndroidContentChapter).toHaveBeenCalledExactlyOnceWith(storageDir, "/cache/content-sync/one");
+  expect(invoke).toHaveBeenCalledWith("content_sync_snapshot", { storageDir, stagePath: "/cache/content-sync/one" });
   expect(invoke).toHaveBeenCalledWith("content_sync_fingerprint", { storageDir, stagePath: "/cache/content-sync/one" });
   expect(invoke).toHaveBeenCalledWith("content_sync_upload", expect.objectContaining({ stagePath: "/cache/content-sync/one", conflictPolicy: "replace-server" }));
   expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual(["content_sync_remove_stage", { stagePath: "/cache/content-sync/one" }]);
@@ -78,7 +79,6 @@ it.each([true, false])("discards a snapshot invalidated by a new download before
     if (command === "content_sync_snapshot") controller.abort();
     return original(command, args);
   });
-  vi.mocked(snapshotAndroidContentChapter).mockImplementationOnce(async () => { controller.abort(); });
   const upload = vi.fn();
   await expect(withContentChapterStage({ storageDir: "contents/source/book/1", identity, signal: controller.signal }, upload))
     .rejects.toMatchObject({ name: "AbortError" });
@@ -93,14 +93,13 @@ it("preserves native HTTP status and server rejection details for sync recovery"
     .rejects.toMatchObject({ status: 403, message: "Device is blocked" });
 });
 
-it("releases the Windows work lock after the snapshot, before transferring it", async () => {
+it("releases the work lock after the snapshot, before transferring it", async () => {
   vi.mocked(isAndroidRuntime).mockReturnValue(false);
   const storageDir = "contents/source/book/1";
   await withContentChapterStage({ storageDir, identity }, async () => {
     expect(invoke).toHaveBeenCalledWith("content_sync_snapshot", { storageDir, stagePath: "/cache/content-sync/one" });
     await runWorkContentStorageOperation(identity.pluginId, identity.novelPath, async () => undefined);
   });
-  expect(snapshotAndroidContentChapter).not.toHaveBeenCalled();
 });
 
 it.each([true, false])("stages a download before publishing it and always removes the stage (Android: %s)", async android => {
@@ -109,11 +108,9 @@ it.each([true, false])("stages a download before publishing it and always remove
   await withDownloadedContentChapter({ serverUrl: "http://server", entry, storageDir, chapterId: 1 }, async (_sizes, install) => {
     expect(invoke).toHaveBeenCalledWith("content_sync_download", expect.objectContaining({ entry, storageDir, stagePath: "/cache/content-sync/one" }));
     expect(invoke).not.toHaveBeenCalledWith("content_sync_install", expect.anything());
-    expect(installAndroidContentChapter).not.toHaveBeenCalled();
     await install(storageDir);
   });
-  if (android) expect(installAndroidContentChapter).toHaveBeenCalledExactlyOnceWith(storageDir, "/cache/content-sync/one");
-  else expect(invoke).toHaveBeenCalledWith("content_sync_install", { storageDir, stagePath: "/cache/content-sync/one" });
+  expect(invoke).toHaveBeenCalledWith("content_sync_install", { storageDir, stagePath: "/cache/content-sync/one" });
   expect(vi.mocked(invoke).mock.calls.at(-1)).toEqual(["content_sync_remove_stage", { stagePath: "/cache/content-sync/one" }]);
 });
 
@@ -131,33 +128,22 @@ it("keeps an invalid native server package separate from local storage failure",
   expect(apply).not.toHaveBeenCalled();
 });
 
-it.each(["Cannot create Android storage folder: book", "Cannot publish downloaded chapter."])("classifies Android installation failure as storage: %s", async message => {
-  const failure = new Error(message);
+it("preserves installation cancellation without stopping shared storage", async () => {
+  const failure = new DOMException("Cancelled", "AbortError");
   vi.mocked(invoke).mockImplementation(async command => {
     if (command === "content_sync_create_stage") return "/cache/content-sync/one";
     if (command === "content_sync_download") return { contentBytes: 18, mediaBytes: 0, mediaComplete: true };
+    if (command === "content_sync_install") throw failure;
     return undefined;
   });
-  vi.mocked(installAndroidContentChapter).mockRejectedValueOnce(failure);
-  await expect(withDownloadedContentChapter({
-    serverUrl: "http://server", entry, storageDir: "contents/source/book/1", chapterId: 1,
-  }, async (_sizes, install) => install("contents/source/book/1"))).rejects.toMatchObject({
-    code: "chapter-storage-failed", operation: "install downloaded chapter", cause: failure,
-  });
-  expect(invoke).toHaveBeenCalledWith("content_sync_remove_stage", { stagePath: "/cache/content-sync/one" });
-});
-
-it("preserves Android installation cancellation without stopping shared storage", async () => {
-  const failure = new DOMException("Cancelled", "AbortError");
-  vi.mocked(installAndroidContentChapter).mockRejectedValueOnce(failure);
   await expect(withDownloadedContentChapter({
     serverUrl: "http://server", entry, storageDir: "contents/source/book/1", chapterId: 1,
   }, async (_sizes, install) => install("contents/source/book/1"))).rejects.toBe(failure);
 });
 
-it("restores a native install I/O error while preserving its operation", async () => {
+it.each([true, false])("restores a native install I/O error while preserving its operation (Android: %s)", async android => {
   const failure = "chapter-storage-failed: publish downloaded chapter: storage unavailable";
-  vi.mocked(isAndroidRuntime).mockReturnValue(false);
+  vi.mocked(isAndroidRuntime).mockReturnValue(android);
   vi.mocked(invoke).mockImplementation(async command => {
     if (command === "content_sync_create_stage") return "/cache/content-sync/one";
     if (command === "content_sync_download") return { contentBytes: 18, mediaBytes: 0, mediaComplete: true };
@@ -169,6 +155,7 @@ it("restores a native install I/O error while preserving its operation", async (
   }, async (_sizes, install) => install("contents/source/book/1"))).rejects.toMatchObject({
     code: "chapter-storage-failed", operation: "publish downloaded chapter", cause: failure,
   });
+  expect(invoke).toHaveBeenCalledWith("content_sync_remove_stage", { stagePath: "/cache/content-sync/one" });
 });
 
 it("preserves native local I/O failures as storage failures before considering HTTP text", async () => {

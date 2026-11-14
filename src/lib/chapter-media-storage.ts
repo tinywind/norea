@@ -1,6 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open } from "@tauri-apps/plugin-dialog";
-import { selectAndroidStorageRoot } from "./android-storage";
 import { invalidateAllNovelCoverSources } from "./novel-cover-storage";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
@@ -53,7 +52,7 @@ export async function selectChapterMediaStorageRoot(): Promise<string | null> {
     const { cancelWorkMetadataRecovery, startWorkMetadataRecovery } = await import("../db/client");
     cancelWorkMetadataRecovery();
     try {
-      const root = await selectAndroidStorageRoot();
+      const root = await invoke<string | null>("chapter_media_pick_storage_root");
       if (root) await recoverStorageMetadata();
       else startWorkMetadataRecovery();
       return root;

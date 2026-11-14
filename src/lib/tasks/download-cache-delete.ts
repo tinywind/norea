@@ -1,33 +1,16 @@
 import { invoke } from "@tauri-apps/api/core";
-import { getChapterById } from "../../db/queries/chapter";
 import {
   listNonLocalDownloadCacheDeleteChapters,
   listNonLocalOrdinaryQueuedDownloadChapterIds,
   type DownloadCacheDeleteChapterCandidate,
 } from "../../db/queries/download-cache";
-import { getNovelById } from "../../db/queries/novel";
-import {
-  deleteAndroidStoragePath,
-  listAndroidChapterStorageDirs,
-  resetAndroidWorkStorageDirectory,
-} from "../android-storage";
-import {
-  chapterStorageDirectoryName,
-  chapterStorageRelativeDir,
-  novelStorageDirectoryName,
-  novelStorageRelativeDir,
-  sourceStorageRelativeDir,
-} from "../chapter-storage-path";
-import { forgetResolvedChapterStorageDir, resolvedChapterStorageDir } from "../chapter-storage-resolution";
 import { waitForChapterDownloadWrites, withChapterDownloadDeletion } from "../chapter-download-writes";
-import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
+import { isTauriRuntime } from "../tauri-runtime";
 import {
   discardQueuedChapterDownloads,
   waitForChapterDownloadQueueMutations,
 } from "./chapter-download";
 import { taskScheduler, type TaskRecord } from "./scheduler";
-
-const ANDROID_DELETE_YIELD_INTERVAL = 10;
 
 export type DownloadCacheDeleteScope = "chapter" | "novel" | "all";
 
@@ -183,10 +166,6 @@ async function runNativeWork(
   });
 }
 
-async function yieldAndroidDeletion(): Promise<void> {
-  await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
-}
-
 function throwIfDownloadCacheDeleteAborted(signal: AbortSignal): void {
   if (!signal.aborted) return;
   throw (
@@ -225,86 +204,6 @@ async function chaptersForDownloadCacheScope(
   return listNonLocalDownloadCacheDeleteChapters();
 }
 
-async function clearAndroidChapterArtifacts(chapterId: number): Promise<void> {
-  const chapter = await getChapterById(chapterId);
-  const novel = chapter ? await getNovelById(chapter.novelId) : null;
-  if (chapter && novel && !novel.isLocal) {
-    const preferredChapterDir = chapterStorageRelativeDir(novel, chapter);
-    const knownDirectory = resolvedChapterStorageDir(chapterId);
-    const chapterDirs = knownDirectory ? [knownDirectory] : await listAndroidChapterStorageDirs({
-      preferredChapterDir,
-      sourceDir: sourceStorageRelativeDir(novel),
-      novelDirectoryName: novelStorageDirectoryName(novel),
-      chapterDirectoryName: chapterStorageDirectoryName(chapter),
-    });
-    if (chapterDirs.length > 1) {
-      throw new Error(
-        `Multiple stored chapter folders match chapter ${chapterId}; delete the intended chapter folders manually.`,
-      );
-    }
-    for (const chapterDir of new Set([
-      ...chapterDirs,
-      preferredChapterDir,
-    ])) {
-      await deleteAndroidStoragePath(chapterDir);
-    }
-  }
-  forgetResolvedChapterStorageDir(chapterId);
-}
-
-/**
- * Clears each affected work folder with one storage request, keeping its novel.json and cover,
- * instead of one document-provider walk per chapter. Returns the chapters it did not cover:
- * local works, chapters without a record, and chapters known to be stored outside the folder.
- */
-async function resetAndroidWorkFolders(chapterIds: readonly number[], signal: AbortSignal): Promise<number[]> {
-  const byNovel = new Map<number, number[]>();
-  const uncovered: number[] = [];
-  for (const chapterId of chapterIds) {
-    const chapter = await getChapterById(chapterId);
-    if (!chapter) {
-      uncovered.push(chapterId);
-      continue;
-    }
-    byNovel.set(chapter.novelId, [...(byNovel.get(chapter.novelId) ?? []), chapterId]);
-  }
-  for (const [novelId, novelChapterIds] of byNovel) {
-    throwIfDownloadCacheDeleteAborted(signal);
-    const novel = await getNovelById(novelId);
-    if (!novel || novel.isLocal) {
-      uncovered.push(...novelChapterIds);
-      continue;
-    }
-    const directory = novelStorageRelativeDir(novel);
-    await resetAndroidWorkStorageDirectory(directory);
-    for (const chapterId of novelChapterIds) {
-      const known = resolvedChapterStorageDir(chapterId);
-      if (known && !known.startsWith(`${directory}/`)) uncovered.push(chapterId);
-      else forgetResolvedChapterStorageDir(chapterId);
-    }
-  }
-  return uncovered;
-}
-
-async function clearAndroidDownloadArtifacts(
-  scope: DownloadCacheDeleteScope,
-  targetIds: readonly number[],
-  signal: AbortSignal,
-): Promise<void> {
-  const chapters = await chaptersForDownloadCacheScope(scope, targetIds);
-  const scopedChapterIds = chapters.map((chapter) => chapter.id);
-  const chapterIds = scope === "chapter" ? scopedChapterIds : await resetAndroidWorkFolders(scopedChapterIds, signal);
-  for (let index = 0; index < chapterIds.length; index += 1) {
-    throwIfDownloadCacheDeleteAborted(signal);
-    const chapterId = chapterIds[index]!;
-    await clearAndroidChapterArtifacts(chapterId);
-    const current = index + 1;
-    if (current % ANDROID_DELETE_YIELD_INTERVAL === 0) {
-      await yieldAndroidDeletion();
-    }
-  }
-}
-
 async function runDownloadCacheDelete(
   work: DownloadCacheDeleteWork,
   signal: AbortSignal,
@@ -325,17 +224,6 @@ async function runDownloadCacheDelete(
     if (signal.aborted) {
       await requestCancellation();
       throwIfDownloadCacheDeleteAborted(signal);
-    }
-    if (isAndroidRuntime()) {
-      await clearAndroidDownloadArtifacts(
-        work.scope,
-        work.targetIds,
-        signal,
-      );
-      throwIfDownloadCacheDeleteAborted(signal);
-      const result = await runNativeWork(work.id, false);
-      throwIfDownloadCacheDeleteAborted(signal);
-      return result;
     }
     const result = await runNativeWork(work.id, true);
     throwIfDownloadCacheDeleteAborted(signal);

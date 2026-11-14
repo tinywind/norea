@@ -70,6 +70,10 @@ describe("storage folder label", () => {
     expect(formatStorageFolder(uri, "Internal storage")).toBe("Internal storage/Books/Norea");
     expect(formatStorageFolder("content://com.android.externalstorage.documents/tree/1A2B-3C4D%3ANorea", "Internal storage"))
       .toBe("1A2B-3C4D/Norea");
+    expect(formatStorageFolder("/storage/emulated/0/Documents/Norea", "Internal storage"))
+      .toBe("Internal storage/Documents/Norea");
+    expect(formatStorageFolder("/storage/1A2B-3C4D/Norea", "Internal storage"))
+      .toBe("1A2B-3C4D/Norea");
   });
 
   it("keeps desktop paths and unknown URIs as they are", () => {

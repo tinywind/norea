@@ -10,12 +10,8 @@ import {
   type NovelDetailRecord,
 } from "../db/queries/novel";
 import { listChaptersByNovel } from "../db/queries/chapter";
-import {
-  deleteAndroidStoragePath,
-  renameAndroidStoragePath,
-} from "./android-storage";
 import { chapterStorageDirectoryName, novelStorageRelativeDir } from "./chapter-storage-path";
-import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
+import { isTauriRuntime } from "./tauri-runtime";
 
 type LocalChapterStorageNovel = Pick<
   NovelDetailRecord,
@@ -59,10 +55,6 @@ function temporaryRelativeDir(relativeDir: string, chapterId: number): string {
 
 async function removeStorageDir(relativeDir: string): Promise<void> {
   if (!isTauriRuntime()) return;
-  if (isAndroidRuntime()) {
-    await deleteAndroidStoragePath(relativeDir);
-    return;
-  }
   await invoke("chapter_storage_remove_dir", { relativeDir });
 }
 
@@ -71,16 +63,6 @@ async function relocateStorageDir(
   newRelativeDir: string,
 ): Promise<void> {
   if (!isTauriRuntime() || oldRelativeDir === newRelativeDir) return;
-  if (isAndroidRuntime()) {
-    const oldParent = pathParent(oldRelativeDir);
-    const newParent = pathParent(newRelativeDir);
-    if (oldParent !== newParent) {
-      await deleteAndroidStoragePath(oldRelativeDir);
-      return;
-    }
-    await renameAndroidStoragePath(oldRelativeDir, pathName(newRelativeDir), true);
-    return;
-  }
   await invoke("chapter_storage_relocate_dir", {
     oldRelativeDir,
     newRelativeDir,
@@ -90,7 +72,7 @@ async function relocateStorageDir(
 async function pruneNovelStorageDir(
   expectedRelativeDirs: readonly string[],
 ): Promise<void> {
-  if (!isTauriRuntime() || isAndroidRuntime() || expectedRelativeDirs.length === 0) {
+  if (!isTauriRuntime() || expectedRelativeDirs.length === 0) {
     return;
   }
   const parent = pathParent(expectedRelativeDirs[0]!);

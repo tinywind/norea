@@ -16,11 +16,6 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({
   open: vi.fn(),
 }));
 
-vi.mock("./android-storage", () => ({
-  copyAndroidContentUriToTempFile: vi.fn(),
-  deleteAndroidContentUriTempFile: vi.fn(),
-}));
-
 vi.mock("./tauri-runtime", () => ({
   isAndroidRuntime: vi.fn(() => false),
 }));
@@ -28,10 +23,6 @@ vi.mock("./tauri-runtime", () => ({
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open } from "@tauri-apps/plugin-dialog";
-import {
-  copyAndroidContentUriToTempFile,
-  deleteAndroidContentUriTempFile,
-} from "./android-storage";
 import { isAndroidRuntime } from "./tauri-runtime";
 import { usePluginVpnStore } from "../store/plugin-vpn";
 import { useDownloadRecoveryStore } from "../store/download-recovery";
@@ -65,12 +56,6 @@ const invokeMock = vi.mocked(invoke);
 const listenMock = vi.mocked(listen);
 const openMock = vi.mocked(open);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
-const copyAndroidContentUriToTempFileMock = vi.mocked(
-  copyAndroidContentUriToTempFile,
-);
-const deleteAndroidContentUriTempFileMock = vi.mocked(
-  deleteAndroidContentUriTempFile,
-);
 
 const STATUS: PluginVpnStatus = {
   error: null,
@@ -570,29 +555,15 @@ describe("plugin VPN", () => {
     expect(usePluginVpnStore.getState().enabled).toBe(true);
   });
 
-  it("imports Android content profiles through a capped temp file and cleans it", async () => {
+  it("imports Android content profiles directly through the Rust profile importer", async () => {
     stubAndroidProxy();
     isAndroidRuntimeMock.mockReturnValue(true);
     openMock.mockResolvedValue("content://profiles/client.ovpn");
-    copyAndroidContentUriToTempFileMock.mockResolvedValue({
-      bytes: 512,
-      mimeType: "application/x-openvpn-profile",
-      path: "/data/user/0/norea/cache/client.ovpn",
-    });
 
     await expect(importPluginVpnProfile()).resolves.toEqual(STATUS);
 
-    expect(copyAndroidContentUriToTempFileMock).toHaveBeenCalledWith(
-      "content://profiles/client.ovpn",
-      1024 * 1024,
-    );
     expect(invokeMock).toHaveBeenCalledWith("plugin_vpn_import_profile", {
-      path: "/data/user/0/norea/cache/client.ovpn",
-    });
-    expect(deleteAndroidContentUriTempFileMock).toHaveBeenCalledWith({
-      bytes: 512,
-      mimeType: "application/x-openvpn-profile",
-      path: "/data/user/0/norea/cache/client.ovpn",
+      path: "content://profiles/client.ovpn",
     });
   });
 

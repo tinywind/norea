@@ -1,9 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
-import { snapshotAndroidContentChapter, installAndroidContentChapter } from "../android-storage";
-import { isAndroidRuntime } from "../tauri-runtime";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { ContentServerError } from "./client";
-import { ChapterStorageError, withChapterStorageOperation } from "../chapter-storage-error";
+import { ChapterStorageError } from "../chapter-storage-error";
 
 export interface ContentIdentity {
   pluginId: string;
@@ -41,9 +39,7 @@ export async function withContentChapterStage<T>(input: { storageDir: string; id
     await runWorkContentStorageOperation(input.identity.pluginId, input.identity.novelPath, async () => {
       input.signal?.throwIfAborted();
       await input.verifySource?.();
-      return isAndroidRuntime()
-        ? snapshotAndroidContentChapter(input.storageDir, stagePath)
-        : invoke("content_sync_snapshot", { storageDir: input.storageDir, stagePath });
+      return invoke("content_sync_snapshot", { storageDir: input.storageDir, stagePath });
     });
     input.signal?.throwIfAborted();
     return await run(stagePath);
@@ -139,8 +135,7 @@ export async function withDownloadedContentChapter<T>(input: {
     input.signal?.throwIfAborted();
     return await apply(result, async storageDir => {
       try {
-        if (isAndroidRuntime()) await withChapterStorageOperation("install downloaded chapter", () => installAndroidContentChapter(storageDir, stagePath));
-        else await invoke("content_sync_install", { storageDir, stagePath });
+        await invoke("content_sync_install", { storageDir, stagePath });
       } catch (error) {
         throw nativeChapterStorageError(error) ?? error;
       }

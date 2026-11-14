@@ -4,25 +4,12 @@ vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(),
 }));
 
-vi.mock("./android-storage", () => ({
-  finalizeAndroidChapterStorageTransfer: vi.fn(),
-  prepareAndroidChapterStorageTransfer: vi.fn(),
-  removeAndroidChapterStorageDirectory: vi.fn(),
-  rollbackAndroidChapterStorageTransfer: vi.fn(),
-}));
-
 vi.mock("./tauri-runtime", () => ({
   isAndroidRuntime: vi.fn(),
   isTauriRuntime: vi.fn(),
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import {
-  finalizeAndroidChapterStorageTransfer,
-  prepareAndroidChapterStorageTransfer,
-  removeAndroidChapterStorageDirectory,
-  rollbackAndroidChapterStorageTransfer,
-} from "./android-storage";
 import {
   finalizeChapterStorageTransfer,
   prepareChapterStorageTransfer,
@@ -36,10 +23,6 @@ import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 const invokeMock = vi.mocked(invoke);
 const isAndroidRuntimeMock = vi.mocked(isAndroidRuntime);
 const isTauriRuntimeMock = vi.mocked(isTauriRuntime);
-const prepareAndroidMock = vi.mocked(prepareAndroidChapterStorageTransfer);
-const finalizeAndroidMock = vi.mocked(finalizeAndroidChapterStorageTransfer);
-const rollbackAndroidMock = vi.mocked(rollbackAndroidChapterStorageTransfer);
-const removeAndroidMock = vi.mocked(removeAndroidChapterStorageDirectory);
 
 const entries: ChapterStorageTransferEntry[] = [
   {
@@ -65,10 +48,6 @@ const preparation: ChapterStorageTransferPreparation = {
 
 beforeEach(() => {
   invokeMock.mockReset();
-  prepareAndroidMock.mockReset();
-  finalizeAndroidMock.mockReset();
-  rollbackAndroidMock.mockReset();
-  removeAndroidMock.mockReset();
   isTauriRuntimeMock.mockReturnValue(true);
   isAndroidRuntimeMock.mockReturnValue(false);
 });
@@ -80,64 +59,33 @@ describe("chapter storage transfer", () => {
     await expect(prepareChapterStorageTransfer(entries, { token: "move-1", moveSource: true })).resolves.toEqual(moved);
   });
 
-  it("uses the desktop prepare IPC contract", async () => {
-    invokeMock.mockResolvedValue(preparation);
+  it.each([false, true])("uses the Rust prepare, finalize, rollback, and remove IPC contracts (Android: %s)", async (android) => {
+    isAndroidRuntimeMock.mockReturnValue(android);
+    invokeMock.mockResolvedValueOnce(preparation).mockResolvedValue(undefined);
 
     await expect(prepareChapterStorageTransfer(entries)).resolves.toEqual(
       preparation,
     );
-
-    expect(invokeMock).toHaveBeenCalledWith("chapter_storage_prepare_transfer", {
-      entries,
-    });
-  });
-
-  it("uses the desktop finalize and rollback IPC contracts", async () => {
-    invokeMock.mockResolvedValue(undefined);
-
     await finalizeChapterStorageTransfer(preparation);
     await rollbackChapterStorageTransfer(preparation);
+    await removeChapterStorageDirectory("contents/source-a/Novel-a");
 
+    expect(invokeMock).toHaveBeenNthCalledWith(1, "chapter_storage_prepare_transfer", {
+      entries,
+    });
     expect(invokeMock).toHaveBeenNthCalledWith(
-      1,
+      2,
       "chapter_storage_finalize_transfer",
       { preparation },
     );
     expect(invokeMock).toHaveBeenNthCalledWith(
-      2,
+      3,
       "chapter_storage_rollback_transfer",
       { preparation },
     );
-  });
-
-  it("removes a desktop novel storage directory through the strict storage IPC", async () => {
-    invokeMock.mockResolvedValue(undefined);
-
-    await removeChapterStorageDirectory("contents/source-a/Novel-a");
-
-    expect(invokeMock).toHaveBeenCalledWith("chapter_storage_remove_dir", {
+    expect(invokeMock).toHaveBeenNthCalledWith(4, "chapter_storage_remove_dir", {
       relativeDir: "contents/source-a/Novel-a",
     });
-  });
-
-  it("delegates transfer operations to the Android storage bridge", async () => {
-    isAndroidRuntimeMock.mockReturnValue(true);
-    prepareAndroidMock.mockResolvedValue(preparation);
-
-    await expect(prepareChapterStorageTransfer(entries)).resolves.toEqual(
-      preparation,
-    );
-    await finalizeChapterStorageTransfer(preparation);
-    await rollbackChapterStorageTransfer(preparation);
-    await removeChapterStorageDirectory(entries[0]!.sourceRelativeDir);
-
-    expect(prepareAndroidMock).toHaveBeenCalledWith(entries, {});
-    expect(finalizeAndroidMock).toHaveBeenCalledWith(preparation);
-    expect(rollbackAndroidMock).toHaveBeenCalledWith(preparation);
-    expect(removeAndroidMock).toHaveBeenCalledWith(
-      entries[0]!.sourceRelativeDir,
-    );
-    expect(invokeMock).not.toHaveBeenCalled();
   });
 
   it.each([
@@ -167,15 +115,11 @@ describe("chapter storage transfer", () => {
   });
 });
 
-it("passes the persisted token and strict destination checks to native preparation", async () => {
+it.each([false, true])("passes the persisted token and strict destination checks to native preparation (Android: %s)", async (android) => {
   isTauriRuntimeMock.mockReturnValue(true);
-  isAndroidRuntimeMock.mockReturnValue(false);
+  isAndroidRuntimeMock.mockReturnValue(android);
   invokeMock.mockResolvedValue(preparation);
   const options = { token: preparation.token, requireEmptyTargets: true };
   await prepareChapterStorageTransfer(entries, options);
   expect(invokeMock).toHaveBeenCalledWith("chapter_storage_prepare_transfer", { entries, ...options });
-  isAndroidRuntimeMock.mockReturnValue(true);
-  prepareAndroidMock.mockResolvedValue(preparation);
-  await prepareChapterStorageTransfer(entries, options);
-  expect(prepareAndroidMock).toHaveBeenCalledWith(entries, options);
 });

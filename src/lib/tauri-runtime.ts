@@ -8,7 +8,7 @@ export function isTauriRuntime(): boolean {
 export function isAndroidRuntime(): boolean {
   return (
     isTauriRuntime() &&
-    (hasAndroidUserAgent() || hasAndroidStorageBridge())
+    (hasAndroidUserAgent() || hasAndroidBridge())
   );
 }
 
@@ -18,11 +18,11 @@ function hasAndroidUserAgent(): boolean {
   );
 }
 
-function hasAndroidStorageBridge(): boolean {
+function hasAndroidBridge(): boolean {
   return (
     typeof window !== "undefined" &&
-    "__NoreaAndroidStorage" in
-      (window as Window & { __NoreaAndroidStorage?: unknown })
+    "__NoreaAndroidBridge" in
+      (window as Window & { __NoreaAndroidBridge?: unknown })
   );
 }
 

@@ -128,7 +128,8 @@ export function localChapterMediaSrc(fileName: string): string {
   return `${LOCAL_MEDIA_SRC_PREFIX}${fileName}`;
 }
 
-const ANDROID_READER_MEDIA_CACHE_SCOPE_SEGMENT = "~cache";
+const ANDROID_READER_MEDIA_CACHE_PREFIX =
+  "http://norea-media.localhost/reader-asset/~cache";
 
 export function androidReaderMediaCacheToken(archivePath: string): string {
   let hash = 2166136261;
@@ -145,7 +146,7 @@ export function androidReaderLocalChapterMediaSrc(
 ): string {
   const token = androidReaderMediaCacheToken(archivePath);
   return [
-    `${LOCAL_MEDIA_SRC_PREFIX}${ANDROID_READER_MEDIA_CACHE_SCOPE_SEGMENT}`,
+    ANDROID_READER_MEDIA_CACHE_PREFIX,
     token,
     fileName,
   ].join("/");

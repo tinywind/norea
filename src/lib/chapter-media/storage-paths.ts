@@ -4,7 +4,6 @@ import {
   type ChapterStorageChapterPathInput,
   type ChapterStorageNovelPathInput,
   chapterMediaArchiveRelativePath,
-  chapterMediaManifestRelativePath,
   chapterMediaRelativePath,
   chapterStorageRelativeDir,
 } from "../chapter-storage-path";
@@ -106,54 +105,4 @@ export function androidChapterMediaArchiveRelativePathForContext(
       storageChapterPathInput(context),
     ),
   );
-}
-
-export function androidChapterMediaManifestRelativePath(
-  context: ChapterMediaStorageContext | null | undefined,
-): string {
-  if (!hasStorageContext(context)) {
-    throw new Error("Chapter media storage identity is required.");
-  }
-  return resolvedAndroidChapterStoragePath(
-    context,
-    chapterMediaManifestRelativePath(
-      storageNovelPathInput(context),
-      storageChapterPathInput(context),
-    ),
-  );
-}
-
-export function androidChapterMediaTransactionPaths({
-  archivePath,
-  manifestPath,
-}: {
-  archivePath: string;
-  manifestPath: string;
-}): string[] {
-  return [
-    archivePath,
-    `${archivePath}.tmp.zip`,
-    `${archivePath}.bak`,
-    `${archivePath}.rollback`,
-    manifestPath,
-    `${manifestPath}.tmp`,
-    `${manifestPath}.bak`,
-  ];
-}
-
-export function chapterMediaManifestLogContext(
-  context: ChapterMediaStorageContext,
-) {
-  return {
-    chapterId: context.chapterId,
-    chapterName: context.chapterName,
-    chapterNumber: context.chapterNumber,
-    chapterPosition: context.chapterPosition,
-    hasStorageContext: hasStorageContext(context),
-    manifestPath: androidChapterMediaManifestRelativePath(context),
-    novelId: context.novelId,
-    novelName: context.novelName,
-    sourceNovelId: context.sourceNovelId,
-    sourceId: context.sourceId,
-  };
 }

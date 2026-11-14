@@ -1,11 +1,10 @@
 import { invoke } from "@tauri-apps/api/core";
 import type Database from "@tauri-apps/plugin-sql";
 import type { WorkMetadataSyncFile } from "../db/work-metadata";
-import { androidWorkMetadataOperation } from "./android-storage";
 import { bytesToBase64, base64ToBytes } from "./base64";
 import { inspectChapterContentArtifacts } from "./chapter-content/storage-platform";
 import { novelStorageRelativeDir } from "./chapter-storage-path";
-import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
+import { isTauriRuntime } from "./tauri-runtime";
 import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
 import { canonicalMetadataValue, coverContentType, MAX_NOVEL_COVER_BYTES, parseNovelMetadata, safeMetadataChild, type NovelMetadataV1 } from "./work-metadata/schema";
 import { throwIfAborted } from "./abort";
@@ -38,7 +37,7 @@ export function notifyWorkMetadataChanges(identity?: WorkMetadataChange): void {
 
 export async function registerNativeWorkChapterDirectories(directories: Record<string, string>, reset = false): Promise<void> {
   if (!reset && Object.keys(directories).length === 0) return;
-  if (isTauriRuntime() && !isAndroidRuntime()) await workMetadataOperation({ operation: "register", chapterDirectories: directories, reset });
+  if (isTauriRuntime()) await workMetadataOperation({ operation: "register", chapterDirectories: directories, reset });
 }
 
 export async function availableNovelMetadataDirectory(metadata: Pick<NovelMetadataV1, "identity" | "novel">): Promise<string> {
@@ -84,7 +83,6 @@ export async function workMetadataOperation(input: WorkMetadataOperation): Promi
 }
 
 async function rawWorkMetadataOperation(input: WorkMetadataOperation): Promise<WorkMetadataOperationResult> {
-  if (isAndroidRuntime()) return androidWorkMetadataOperation(input);
   const result = await invoke<Omit<WorkMetadataOperationResult, "body"> & { body?: number[] | null }>("work_metadata_operation", {
     input: { ...input, body: input.body === undefined ? undefined : Array.from(base64ToBytes(input.body)) },
   });

@@ -219,25 +219,19 @@ function mockDevUpdateRoutes(
   });
 }
 
-function installAndroidBridge(
-  openApk = vi.fn(() => JSON.stringify({ ok: true })),
-) {
+function installAndroidBridge() {
   vi.stubGlobal("window", {
     __NoreaAndroidBridge: {
       nonce: vi.fn(() => "nonce-123"),
       session: vi.fn(() =>
         JSON.stringify({
-          capabilities: ["update.openApk"],
+          capabilities: [],
           sessionToken: "session-token",
           version: 2,
         }),
       ),
     },
-    __NoreaAndroidUpdater: {
-      openApk,
-    },
   });
-  return openApk;
 }
 
 function streamInfo(size: number, finished = false) {
@@ -506,7 +500,7 @@ describe("update installation", () => {
     });
     const installerPath =
       "/data/user/0/io.github.tinywind.norea/cache/Norea Updates/norea-arm64.apk";
-    const openApk = installAndroidBridge();
+    installAndroidBridge();
     appFetchMock.mockResolvedValue({
       arrayBuffer: async () => bytes.buffer,
       headers: {
@@ -551,6 +545,10 @@ describe("update installation", () => {
         "User-Agent": "Norea",
       },
     });
-    expect(openApk).toHaveBeenCalledTimes(1);
+    expect(invokeMock).toHaveBeenCalledWith("open_downloaded_update_handle", {
+      fileName: candidate.downloadFileName,
+      handle: "update-stream-1",
+      metadata: candidate.integrity,
+    });
   });
 });
