@@ -1,5 +1,7 @@
 export type PerformanceObservationName =
   | "db.execute"
+  | "db.mutation"
+  | "db.query"
   | "db.select"
   | "download-cache.backfill"
   | "scheduler.event"

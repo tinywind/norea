@@ -39,14 +39,7 @@ export function emitUserStateApplied(effects: UserStateApplyEffects): void { for
 export function installUserStateDeferredRunner(run: () => Promise<void>): void { deferredRunner = run; }
 export function requestUserStateDeferredApply(db: UserStateDb): void { ready.add(db); }
 export function discardUserStateNotifications(db: UserStateDb): void { changed.delete(db); ready.delete(db); }
-export function notifyUserStateCommitted(db: UserStateDb): void {
-  const priority = changed.get(db);
-  if (priority) {
-    changed.delete(db);
-    for (const listener of changes) listener(priority);
-    emitUserStateLedgerChanged();
-  }
-  if (!ready.delete(db)) return;
+function scheduleDeferredUserStateApply(): void {
   if (runningDeferred) {
     deferredRequestedWhileRunning = true;
     return;
@@ -67,6 +60,29 @@ export function notifyUserStateCommitted(db: UserStateDb): void {
     deferredRequestedWhileRunning = false;
     deferredTask = null;
   });
+}
+
+export function notifyUserStateEffects(input: {
+  priority?: UserStateChangePriority | null;
+  ledgerChanged?: boolean;
+  deferredReady?: boolean;
+}): void {
+  if (input.priority) {
+    for (const listener of changes) listener(input.priority);
+    emitUserStateLedgerChanged();
+  } else if (input.ledgerChanged) {
+    emitUserStateLedgerChanged();
+  }
+  if (input.deferredReady) {
+    scheduleDeferredUserStateApply();
+  }
+}
+
+export function notifyUserStateCommitted(db: UserStateDb): void {
+  const priority = changed.get(db);
+  changed.delete(db);
+  const deferredReady = ready.delete(db);
+  notifyUserStateEffects({ priority, deferredReady });
 }
 
 /** Old fixture databases and interrupted bootstrap do not pretend to support the new protocol. */

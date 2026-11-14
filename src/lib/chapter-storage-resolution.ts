@@ -6,6 +6,11 @@ export function rememberAuthoritativeChapterStorageDir(chapterId: number, direct
   authoritativeChapterStorageDirs.set(chapterId, directory);
 }
 
+export function forgetAuthoritativeChapterStorageDir(chapterId: number): void {
+  authoritativeChapterStorageDirs.delete(chapterId);
+  resolvedChapterStorageDirs.delete(chapterId);
+}
+
 export function clearAuthoritativeStorageDirs(): void {
   authoritativeChapterStorageDirs.clear();
   resolvedNovelStorageDirs.clear();
@@ -14,6 +19,10 @@ export function clearAuthoritativeStorageDirs(): void {
 
 export function rememberResolvedNovelStorageDir(novelId: number, directory: string): void {
   resolvedNovelStorageDirs.set(novelId, directory);
+}
+
+export function forgetResolvedNovelStorageDir(novelId: number): void {
+  resolvedNovelStorageDirs.delete(novelId);
 }
 
 export function resolvedNovelStorageDir(novelId?: number | null): string | null {
