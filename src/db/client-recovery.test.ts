@@ -60,6 +60,14 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: {
     return;
   }
   if (command === "chapter_media_set_storage_root") { storage.root = args.root!; return args.root; }
+  if (command === "db_repo_list") {
+    return (sqlite.prepare(
+      "SELECT id, url, name, added_at AS addedAt, priority, enabled FROM repository ORDER BY priority, id",
+    ).all() as Array<Record<string, unknown>>).map((row) => ({
+      ...row,
+      enabled: Boolean(row.enabled),
+    }));
+  }
   const input = args.input!;
   const root = storage.root;
   const files = storage.files.get(root)!;
