@@ -1,6 +1,6 @@
 import { includedChapterCompositionEntries, parseChapterComposition } from "../chapter-composition";
 import { storedChapterContentType } from "../chapter-content";
-import type Database from "@tauri-apps/plugin-sql";
+import { invokeDbQuery } from "../../db/ipc";
 import { storedNovelMetadataFingerprint } from "../../db/work-metadata";
 import { bytesToBase64 } from "../base64";
 import { chapterStorageDirectoryName } from "../chapter-storage-path";
@@ -23,11 +23,12 @@ const chapterKey = (pluginId: string, novelPath: string, path: string) => JSON.s
 const chapterNumber = (chapter: BackupChapter) => Number(chapter.chapterNumber ?? chapter.position);
 
 /** Read original files before the native transaction; restoring never publishes files. */
-export async function prepareBackupRestore(db: Database, snapshot: BackupManifest): Promise<BackupRestorePlan> {
+export async function prepareBackupRestore(snapshot: BackupManifest): Promise<BackupRestorePlan> {
   const entries = await listStoredNovelMetadata();
-  const cached = await db.select<CachedChapterDirectory[]>(`SELECT n.plugin_id AS pluginId,n.path AS novelPath,c.path AS chapterPath,d.directory,
-    c.stored_content_type AS storedContentType,c.content_bytes AS contentBytes,c.media_bytes AS mediaBytes
-    FROM work_metadata_directory_cache d JOIN chapter c ON c.id=d.chapter_id JOIN novel n ON n.id=c.novel_id`);
+  const cached = await invokeDbQuery<CachedChapterDirectory[]>(
+    "backup_list_cached_chapter_directories",
+    { readMode: "queued" },
+  );
   const directories = new Map(cached.map(row => [chapterKey(row.pluginId, row.novelPath, row.chapterPath), row.directory]));
   const cachedByDirectory = new Map(cached.map(row => [chapterKey(row.pluginId, row.novelPath, row.directory), row]));
   const plan: BackupRestorePlan = {

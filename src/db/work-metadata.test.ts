@@ -347,7 +347,7 @@ it("preserves a plugin novel ID through source sync, work files, upload discover
   expect((await listContentSyncChapters())[0]).toMatchObject({ sourceNovelId: "literal-42", novelPath: "/source-route?book=42" });
   const backup = parseBackupManifest(encodeBackupManifest(await gatherBackupSnapshot()));
   expect(backup.novels[0]!.sourceNovelId).toBe("literal-42");
-  const restored = await prepareBackupRestore(db, backup);
+  const restored = await prepareBackupRestore(backup);
   expect(restored.manifest.novels[0]!.sourceNovelId).toBe("literal-42");
 });
 
@@ -1823,7 +1823,7 @@ it("keeps source snapshots and excluded tombstones in portable backups and resto
   const backup = parseBackupManifest(encodeBackupManifest(await gatherBackupSnapshot()));
   expect(backup.version).toBe(6);
   expect(backup.novels[0]!.chapterComposition).toEqual(metadata.chapterComposition);
-  const restored = await prepareBackupRestore(db, backup);
+  const restored = await prepareBackupRestore(backup);
   expect(restored.manifest.novels[0]!.chapterComposition).toEqual(metadata.chapterComposition);
   expect(restored.manifest.chapters.map(chapter => [chapter.path, chapter.position, chapter.chapterNumber]))
     .toEqual([["/chapter/2", 1, "2"], ["/chapter/1", 2, "1"]]);

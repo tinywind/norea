@@ -26,6 +26,8 @@ import {
   type StoredNovelChapter,
   type StoredNovelNumberReconciliation,
 } from "../lib/work-metadata";
+import { sqliteBoolean } from "../db/sqlite-value";
+import { stableCategoryIdInDb } from "../db/user-state-core";
 import type { DbMutationEffects, DbMutationEnvelope } from "../db/ipc";
 import {
   applyNovelMetadataToCache,
@@ -915,6 +917,106 @@ export function createWorkMetadataIpcHandler(
               }
             : null,
         };
+      }
+
+      if (command === "backup_list_cached_chapter_directories") {
+        const db = await options.getDb();
+        const rows = await db.select<Array<Record<string, unknown>>>(
+          `SELECT n.plugin_id AS pluginId, n.path AS novelPath, c.path AS chapterPath, d.directory,
+                  c.stored_content_type AS storedContentType, c.content_bytes AS contentBytes, c.media_bytes AS mediaBytes
+           FROM work_metadata_directory_cache d
+           JOIN chapter c ON c.id = d.chapter_id
+           JOIN novel n ON n.id = c.novel_id`,
+        );
+        return { handled: true, result: rows };
+      }
+
+      if (command === "backup_gather_snapshot") {
+        const result = await options.runTransaction(async (db) => {
+          const [
+            novels,
+            chapters,
+            categories,
+            novelCategories,
+            repositories,
+            installedPlugins,
+            vpnGateServerVerdicts,
+            downloadGoals,
+          ] = await Promise.all([
+            db.select<Array<Record<string, unknown>>>(
+              `SELECT id, plugin_id AS pluginId, source_novel_id AS sourceNovelId, path, name, cover, summary,
+                      author, artist, status, genres, in_library AS inLibrary, is_local AS isLocal,
+                      created_at AS createdAt, updated_at AS updatedAt, library_added_at AS libraryAddedAt,
+                      last_read_at AS lastReadAt,
+                      (SELECT payload FROM novel_chapter_composition WHERE novel_id = novel.id) AS chapterCompositionPayload
+               FROM novel ORDER BY id`,
+            ),
+            db.select<Array<Record<string, unknown>>>(
+              `SELECT id, novel_id AS novelId, path, name, chapter_number AS chapterNumber, position, page,
+                      bookmark, unread, progress, is_downloaded AS isDownloaded, content_type AS sourceContentType,
+                      stored_content_type AS storedContentType, content_bytes AS contentBytes, media_bytes AS mediaBytes,
+                      release_time AS releaseTime, read_at AS readAt, created_at AS createdAt, found_at AS foundAt,
+                      found_by_check AS foundByCheck, updated_at AS updatedAt
+               FROM chapter ORDER BY id`,
+            ),
+            db.select<Array<{ id: number; name: string; sort: number; isSystem: number }>>(
+              `SELECT id, name, sort, is_system AS isSystem FROM category ORDER BY id`,
+            ),
+            db.select<Array<Record<string, unknown>>>(
+              `SELECT id, novel_id AS novelId, category_id AS categoryId FROM novel_category ORDER BY id`,
+            ),
+            db.select<Array<Record<string, unknown>>>(
+              `SELECT id, url, name, added_at AS addedAt, priority, enabled FROM repository ORDER BY priority, id`,
+            ),
+            db.select<Array<Record<string, unknown>>>(
+              `SELECT id, name, lang, version, icon_url AS iconUrl, source_url AS sourceUrl,
+                      source_code AS sourceCode, installed_at AS installedAt, repository_url AS repositoryUrl
+               FROM installed_plugin ORDER BY installed_at DESC, id ASC`,
+            ),
+            db.select<Array<Record<string, unknown>>>(
+              `SELECT ip, verdict, updated_at AS updatedAt FROM vpn_gate_server_verdict ORDER BY ip`,
+            ),
+            db.select<Array<Record<string, unknown>>>(
+              `SELECT novel_id AS novelId, kind, count, updated_at AS updatedAt FROM novel_download_goal ORDER BY novel_id`,
+            ),
+          ]);
+          const mappedCategories = [];
+          for (const row of categories) {
+            const isSystem = Boolean(row.isSystem);
+            const stableId = isSystem ? null : await stableCategoryIdInDb(db, row.id);
+            mappedCategories.push({
+              id: row.id,
+              name: row.name,
+              sort: row.sort,
+              isSystem,
+              ...(stableId ? { stableId } : {}),
+            });
+          }
+          return {
+            novels: novels.map((row) => ({
+              ...row,
+              inLibrary: sqliteBoolean(row.inLibrary),
+              isLocal: row.pluginId === "local" && sqliteBoolean(row.isLocal),
+            })),
+            chapters: chapters.map((row) => ({
+              ...row,
+              bookmark: sqliteBoolean(row.bookmark),
+              unread: sqliteBoolean(row.unread),
+              isDownloaded: sqliteBoolean(row.isDownloaded),
+              foundByCheck: sqliteBoolean(row.foundByCheck),
+            })),
+            categories: mappedCategories,
+            novelCategories,
+            repositories: repositories.map((row) => ({
+              ...row,
+              enabled: sqliteBoolean(row.enabled),
+            })),
+            installedPlugins,
+            vpnGateServerVerdicts,
+            downloadGoals,
+          };
+        });
+        return { handled: true, result };
       }
 
       return { handled: false };

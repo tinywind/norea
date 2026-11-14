@@ -1,9 +1,9 @@
 import { parseChapterComposition } from "../chapter-composition";
 import { invoke } from "@tauri-apps/api/core";
-import { cancelWorkMetadataRecovery, getDb, runDatabaseTransaction, runExclusiveDatabaseOperation } from "../../db/client";
-import { restoreWorkMetadataDirectories } from "../../db/work-metadata";
-import { sqliteBoolean } from "../../db/sqlite-value";
-import { emitUserStateLedgerChanged, stableCategoryIdInDb } from "../../db/user-state-core";
+import { cancelWorkMetadataRecovery } from "../../db/client";
+import { invokeDbQuery } from "../../db/ipc";
+import { restoreWorkMetadataDirectoriesFromRust } from "../../db/work-metadata";
+import { emitUserStateLedgerChanged } from "../../db/user-state-core";
 import { DOWNLOAD_GOAL_SETTINGS_KEY, useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { DOWNLOAD_RECOVERY_SETTINGS_KEY, useDownloadRecoveryStore } from "../../store/download-recovery";
 import { useReaderStore } from "../../store/reader";
@@ -31,7 +31,8 @@ import {
   type BackupSetting,
   type BackupVpnGateServerVerdict,
 } from "./format";
-interface RawNovelRow {
+
+interface GatheredNovelDto {
   chapterCompositionPayload?: string | null;
   id: number;
   sourceNovelId: string | null;
@@ -44,21 +45,15 @@ interface RawNovelRow {
   artist: string | null;
   status: string | null;
   genres: string | null;
-  inLibrary: unknown;
-  isLocal: unknown;
+  inLibrary: boolean;
+  isLocal: boolean;
   createdAt: number;
   updatedAt: number;
   libraryAddedAt: number | null;
   lastReadAt: number | null;
 }
 
-const LOCAL_PLUGIN_ID = "local";
-
-function isLocalNovel(pluginId: string, value: unknown): boolean {
-  return pluginId === LOCAL_PLUGIN_ID && sqliteBoolean(value);
-}
-
-interface RawChapterRow {
+interface GatheredChapterDto {
   id: number;
   novelId: number;
   path: string;
@@ -66,10 +61,10 @@ interface RawChapterRow {
   chapterNumber: string | null;
   position: number;
   page: string;
-  bookmark: unknown;
-  unread: unknown;
+  bookmark: boolean;
+  unread: boolean;
   progress: number;
-  isDownloaded: unknown;
+  isDownloaded: boolean;
   sourceContentType: string;
   storedContentType: string | null;
   contentBytes: number;
@@ -78,32 +73,22 @@ interface RawChapterRow {
   readAt: number | null;
   createdAt: number | null;
   foundAt: number;
-  foundByCheck: unknown;
+  foundByCheck: boolean;
   updatedAt: number;
 }
 
-interface RawCategoryRow {
-  id: number;
-  name: string;
-  sort: number;
-  isSystem: number;
+interface GatheredSnapshotDto {
+  novels: GatheredNovelDto[];
+  chapters: GatheredChapterDto[];
+  categories: BackupCategory[];
+  novelCategories: BackupNovelCategory[];
+  repositories: BackupRepository[];
+  installedPlugins: BackupInstalledPlugin[];
+  vpnGateServerVerdicts: BackupVpnGateServerVerdict[];
+  downloadGoals: BackupNovelDownloadGoal[];
 }
 
-interface RawInstalledPluginRow {
-  id: string;
-  name: string;
-  lang: string;
-  version: string;
-  iconUrl: string;
-  sourceUrl: string;
-  sourceCode: string;
-  installedAt: number;
-  repositoryUrl: string | null;
-}
-
-interface RawRepositoryRow extends Omit<BackupRepository, "enabled"> {
-  enabled: unknown;
-}
+const LOCAL_PLUGIN_ID = "local";
 
 const BACKUP_SETTING_KEYS = new Set([
   "app-appearance-settings",
@@ -120,104 +105,6 @@ const BACKUP_SETTING_PREFIXES = [
   "plugin-v2:",
   "source-filters:",
 ];
-const SELECT_NOVELS = `
-  SELECT
-    id,
-    plugin_id      AS pluginId,
-    source_novel_id AS sourceNovelId,
-    path,
-    name,
-    cover,
-    summary,
-    author,
-    artist,
-    status,
-    genres,
-    in_library     AS inLibrary,
-    is_local       AS isLocal,
-    created_at     AS createdAt,
-    updated_at     AS updatedAt,
-    library_added_at AS libraryAddedAt,
-    last_read_at   AS lastReadAt,
-    (SELECT payload FROM novel_chapter_composition WHERE novel_id=novel.id) AS chapterCompositionPayload
-  FROM novel
-  ORDER BY id
-`;
-
-const SELECT_CHAPTERS = `
-  SELECT
-    id,
-    novel_id       AS novelId,
-    path,
-    name,
-    chapter_number AS chapterNumber,
-    position,
-    page,
-    bookmark,
-    unread,
-    progress,
-    is_downloaded  AS isDownloaded,
-    content_type   AS sourceContentType,
-    stored_content_type AS storedContentType,
-    content_bytes  AS contentBytes,
-    media_bytes    AS mediaBytes,
-    release_time   AS releaseTime,
-    read_at        AS readAt,
-    created_at     AS createdAt,
-    found_at       AS foundAt,
-    found_by_check AS foundByCheck,
-    updated_at     AS updatedAt
-  FROM chapter
-  ORDER BY id
-`;
-
-const SELECT_CATEGORIES = `
-  SELECT id, name, sort, is_system AS isSystem
-  FROM category
-  ORDER BY id
-`;
-
-const SELECT_NOVEL_CATEGORIES = `
-  SELECT id, novel_id AS novelId, category_id AS categoryId
-  FROM novel_category
-  ORDER BY id
-`;
-
-const SELECT_REPOSITORIES = `
-  SELECT id, url, name, added_at AS addedAt, priority, enabled
-  FROM repository
-  ORDER BY priority, id
-`;
-
-const SELECT_INSTALLED_PLUGINS = `
-  SELECT
-    id,
-    name,
-    lang,
-    version,
-    icon_url    AS iconUrl,
-    source_url  AS sourceUrl,
-    source_code AS sourceCode,
-    installed_at AS installedAt,
-    repository_url AS repositoryUrl
-  FROM installed_plugin
-  ORDER BY installed_at DESC, id ASC
-`;
-
-const SELECT_VPN_GATE_SERVER_VERDICTS = `
-  SELECT
-    ip,
-    verdict,
-    updated_at AS updatedAt
-  FROM vpn_gate_server_verdict
-  ORDER BY ip
-`;
-
-const SELECT_NOVEL_DOWNLOAD_GOALS = `
-  SELECT novel_id AS novelId, kind, count, updated_at AS updatedAt
-  FROM novel_download_goal
-  ORDER BY novel_id
-`;
 
 function browserLocalStorage(): Storage | null {
   try {
@@ -269,9 +156,11 @@ function writeBackupSettings(settings: readonly BackupSetting[]): void {
   }
 }
 
-function toNovel(row: RawNovelRow): BackupNovel {
+function toNovel(row: GatheredNovelDto): BackupNovel {
   return {
-    ...(row.chapterCompositionPayload ? { chapterComposition: parseChapterComposition(JSON.parse(row.chapterCompositionPayload)) } : {}),
+    ...(row.chapterCompositionPayload
+      ? { chapterComposition: parseChapterComposition(JSON.parse(row.chapterCompositionPayload)) }
+      : {}),
     id: row.id,
     pluginId: row.pluginId,
     sourceNovelId: row.sourceNovelId,
@@ -283,8 +172,8 @@ function toNovel(row: RawNovelRow): BackupNovel {
     artist: row.artist,
     status: row.status,
     genres: row.genres,
-    inLibrary: sqliteBoolean(row.inLibrary),
-    isLocal: isLocalNovel(row.pluginId, row.isLocal),
+    inLibrary: Boolean(row.inLibrary),
+    isLocal: row.pluginId === LOCAL_PLUGIN_ID && Boolean(row.isLocal),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     libraryAddedAt: row.libraryAddedAt,
@@ -292,7 +181,7 @@ function toNovel(row: RawNovelRow): BackupNovel {
   };
 }
 
-function toChapter(row: RawChapterRow): BackupChapter {
+function toChapter(row: GatheredChapterDto): BackupChapter {
   return {
     id: row.id,
     novelId: row.novelId,
@@ -301,10 +190,10 @@ function toChapter(row: RawChapterRow): BackupChapter {
     chapterNumber: row.chapterNumber,
     position: row.position,
     page: row.page,
-    bookmark: sqliteBoolean(row.bookmark),
-    unread: sqliteBoolean(row.unread),
+    bookmark: Boolean(row.bookmark),
+    unread: Boolean(row.unread),
     progress: row.progress,
-    isDownloaded: sqliteBoolean(row.isDownloaded),
+    isDownloaded: Boolean(row.isDownloaded),
     sourceContentType: normalizeChapterContentType(row.sourceContentType),
     contentType: storedChapterContentType(
       normalizeChapterContentType(
@@ -318,81 +207,43 @@ function toChapter(row: RawChapterRow): BackupChapter {
     readAt: row.readAt,
     createdAt: row.createdAt,
     foundAt: row.foundAt,
-    foundByCheck: sqliteBoolean(row.foundByCheck),
+    foundByCheck: Boolean(row.foundByCheck),
     updatedAt: row.updatedAt,
   };
 }
 
-function toCategory(row: RawCategoryRow, stableId: string | null): BackupCategory {
-  return {
-    id: row.id,
-    name: row.name,
-    sort: row.sort,
-    isSystem: !!row.isSystem,
-    ...(stableId ? { stableId } : {}),
-  };
-}
-
-function toInstalledPlugin(row: RawInstalledPluginRow): BackupInstalledPlugin {
-  return {
-    id: row.id,
-    name: row.name,
-    lang: row.lang,
-    version: row.version,
-    iconUrl: row.iconUrl,
-    sourceUrl: row.sourceUrl,
-    sourceCode: row.sourceCode,
-    installedAt: row.installedAt,
-    repositoryUrl: row.repositoryUrl,
-  };
-}
-
 /**
- * Read every row from the backup-relevant tables and return a
- * fresh `BackupManifest` ready to feed `encodeBackupManifest` and
- * `packBackup`. Chapter rows carry their download flags and byte
- * counts from the database; chapter bodies and media are not read.
+ * Read every row from the backup-relevant tables via a single native
+ * transaction and return a fresh `BackupManifest` ready to feed
+ * `encodeBackupManifest` and `packBackup`. Chapter rows carry their
+ * download flags and byte counts from the database; chapter bodies and
+ * media are not read.
  */
-export function gatherBackupSnapshot(): Promise<BackupManifest> {
-  return runDatabaseTransaction(async db => {
-    const [
-      novels,
-      chapters,
-      categories,
-      novelCategories,
-      repositories,
-      installedPlugins,
-      vpnGateServerVerdicts,
-      downloadGoals,
-    ] =
-      await Promise.all([
-        db.select<RawNovelRow[]>(SELECT_NOVELS),
-        db.select<RawChapterRow[]>(SELECT_CHAPTERS),
-        db.select<RawCategoryRow[]>(SELECT_CATEGORIES),
-        db.select<BackupNovelCategory[]>(SELECT_NOVEL_CATEGORIES),
-        db.select<RawRepositoryRow[]>(SELECT_REPOSITORIES),
-        db.select<RawInstalledPluginRow[]>(SELECT_INSTALLED_PLUGINS),
-        db.select<BackupVpnGateServerVerdict[]>(
-          SELECT_VPN_GATE_SERVER_VERDICTS,
-        ),
-        db.select<BackupNovelDownloadGoal[]>(SELECT_NOVEL_DOWNLOAD_GOALS),
-      ]);
+export async function gatherBackupSnapshot(): Promise<BackupManifest> {
+  const snapshot = await invokeDbQuery<GatheredSnapshotDto>("backup_gather_snapshot");
 
-    return {
-      version: BACKUP_FORMAT_VERSION,
-      exportedAt: Math.floor(Date.now() / 1000),
-      novels: novels.map(toNovel),
-      chapters: chapters.map(toChapter),
-      categories: await Promise.all(categories.map(async row =>
-        toCategory(row, row.isSystem ? null : await stableCategoryIdInDb(db, row.id)))),
-      novelCategories,
-      repositories: repositories.map((row) => ({ ...row, enabled: sqliteBoolean(row.enabled) })),
-      installedPlugins: installedPlugins.map(toInstalledPlugin),
-      settings: readBackupSettings(),
-      vpnGateServerVerdicts,
-      downloadGoals,
-    };
-  });
+  return {
+    version: BACKUP_FORMAT_VERSION,
+    exportedAt: Math.floor(Date.now() / 1000),
+    novels: snapshot.novels.map(toNovel),
+    chapters: snapshot.chapters.map(toChapter),
+    categories: snapshot.categories.map((category) => ({
+      id: category.id,
+      name: category.name,
+      sort: category.sort,
+      isSystem: Boolean(category.isSystem),
+      ...(category.stableId ? { stableId: category.stableId } : {}),
+    })),
+    novelCategories: snapshot.novelCategories,
+    repositories: snapshot.repositories.map((row) => ({
+      ...row,
+      enabled: Boolean(row.enabled),
+    })),
+    installedPlugins: snapshot.installedPlugins,
+    settings: readBackupSettings(),
+    vpnGateServerVerdicts: snapshot.vpnGateServerVerdicts,
+    downloadGoals: snapshot.downloadGoals,
+  };
 }
 
 /**
@@ -409,17 +260,14 @@ export function applyBackupSnapshot(
 
 async function restoreBackupSnapshot(manifest: BackupManifest): Promise<void> {
   clearResolvedChapterStorageDirs();
-  await getDb();
   cancelWorkMetadataRecovery();
-  await runExclusiveDatabaseOperation(async db => {
-    const plan = await prepareBackupRestore(db, manifest);
-    await invoke("backup_restore_snapshot", {
-      manifestJson: encodeBackupManifest(plan.manifest),
-      cacheJson: JSON.stringify(plan.cache),
-    });
-    emitUserStateLedgerChanged();
-    await restoreWorkMetadataDirectories(db);
+  const plan = await prepareBackupRestore(manifest);
+  await invoke("backup_restore_snapshot", {
+    manifestJson: encodeBackupManifest(plan.manifest),
+    cacheJson: JSON.stringify(plan.cache),
   });
+  emitUserStateLedgerChanged();
+  await restoreWorkMetadataDirectoriesFromRust(true);
   clearResolvedChapterStorageDirs();
   invalidateAllNovelCoverSources();
   writeBackupSettings(manifest.settings);
