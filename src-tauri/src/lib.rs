@@ -173,6 +173,18 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             device::get_default_device_name,
+            db::repository::db_repo_list,
+            db::repository::db_repo_add,
+            db::repository::db_repo_set_enabled,
+            db::repository::db_repo_reorder,
+            db::repository::db_repo_remove,
+            db::repository::db_plugin_list_installed,
+            db::repository::db_plugin_upsert_installed,
+            db::repository::db_plugin_delete_installed,
+            db::repository::db_repo_cache_get,
+            db::repository::db_repo_cache_list_all,
+            db::repository::db_repo_cache_set,
+            db::repository::db_repo_cache_delete,
             database_transaction::database_transaction_begin,
             database_transaction::database_transaction_execute,
             database_transaction::database_transaction_select,
