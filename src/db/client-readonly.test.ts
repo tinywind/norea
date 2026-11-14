@@ -4,10 +4,12 @@ import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const sqlPlugin = vi.hoisted(() => ({ get: vi.fn() }));
+const invokeMock = vi.hoisted(() => vi.fn());
 const libraryQueries = vi.hoisted(() => ({
   page: undefined as undefined | { queryFn: (context: { pageParam: null }) => Promise<unknown> },
   panels: [] as Array<{ queryFn: () => Promise<unknown> }>,
 }));
+vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("@tauri-apps/plugin-sql", () => ({ default: sqlPlugin }));
 vi.mock("../lib/tauri-runtime", () => ({ isTauriRuntime: () => false }));
 vi.mock("react", async original => ({
@@ -65,6 +67,30 @@ beforeEach(() => {
     if (url === "sqlite:norea.db") return connection(writer);
     if (url === "sqlite:norea-readonly.db") return connection(reader);
     throw new Error(`Unexpected database: ${url}`);
+  });
+  invokeMock.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
+    const { getDb, getReadOnlyDb } = await import("./client");
+    const db = await (args.mode === "committed" ? getReadOnlyDb() : getDb());
+    if (command === "db_category_list") {
+      const rows = await db.select<Array<{ id: number; name: string; sort: number; isSystem: number; novelCount: number }>>(
+        `SELECT c.id, c.name, c.sort, c.is_system AS isSystem, COUNT(DISTINCT n.id) AS novelCount
+         FROM category c
+         LEFT JOIN novel_category nc ON nc.category_id = c.id
+         LEFT JOIN novel n ON n.id = nc.novel_id AND n.in_library = 1
+         GROUP BY c.id, c.name, c.sort, c.is_system
+         ORDER BY c.sort, c.name`,
+      );
+      return rows.map(row => ({ ...row, isSystem: !!row.isSystem, novelCount: Number(row.novelCount) }));
+    }
+    if (command === "db_category_get_library_counts") {
+      const totalRows = await db.select<{ count: number }[]>("SELECT COUNT(*) AS count FROM novel WHERE in_library = 1");
+      const uncategorizedRows = await db.select<{ count: number }[]>(
+        `SELECT COUNT(*) AS count FROM novel n
+         WHERE n.in_library = 1 AND NOT EXISTS (SELECT 1 FROM novel_category nc WHERE nc.novel_id = n.id)`,
+      );
+      return { total: totalRows[0]?.count ?? 0, uncategorized: uncategorizedRows[0]?.count ?? 0 };
+    }
+    throw new Error(`Unexpected command: ${command}`);
   });
 });
 

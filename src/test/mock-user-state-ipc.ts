@@ -24,10 +24,16 @@ import {
   chapterWork,
   hasUserStateSchema,
   namespaceFor,
+  recordCategoryInDb,
+  recordChapterUnreadFlagsInDb,
+  recordLibraryInDb,
+  recordMembershipInDb,
+  recordNovelChaptersInDb,
   recordResumeClearedInDb,
   recordUserStateChangesInDb,
   requestUserStateDeferredApply,
   requireBinding,
+  stableCategoryIdInDb,
   USER_CHAPTER_SELECT,
   userStateRestorePausedInDb,
   workspaceRows,
@@ -537,6 +543,213 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
             value: applied,
             effects: { userStateLedgerChanged: true },
           } satisfies DbMutationEnvelope<UserStateCurrentApplyResult>,
+        };
+      }
+
+      if (command === "db_category_insert") {
+        const input = args.input as { name: string; sort?: number | null };
+        await options.runTransaction(async db => {
+          await db.execute(
+            `INSERT INTO category (name, sort, is_system)
+             VALUES (
+               $1,
+               COALESCE($2, (SELECT COALESCE(MAX(sort), -1) + 1 FROM category)),
+               0
+             )`,
+            [input.name, input.sort ?? null],
+          );
+          if (await hasUserStateSchema(db)) {
+            const [created] = await db.select<{ id: number }[]>(
+              "SELECT id FROM category WHERE name=$1",
+              [input.name],
+            );
+            if (created) await recordCategoryInDb(db, created.id, { create: true });
+          }
+        });
+        return {
+          handled: true,
+          result: {
+            value: undefined,
+            effects: { userStatePriority: "normal", userStateLedgerChanged: true },
+          } satisfies DbMutationEnvelope<undefined>,
+        };
+      }
+
+      if (command === "db_category_update") {
+        const id = args.id as number;
+        const input = args.input as { name: string };
+        await options.runTransaction(async db => {
+          await stableCategoryIdInDb(db, id);
+          await db.execute(
+            "UPDATE category SET name = $2 WHERE id = $1 AND is_system = 0",
+            [id, input.name],
+          );
+          await recordCategoryInDb(db, id);
+        });
+        return {
+          handled: true,
+          result: {
+            value: undefined,
+            effects: { userStatePriority: "normal", userStateLedgerChanged: true },
+          } satisfies DbMutationEnvelope<undefined>,
+        };
+      }
+
+      if (command === "db_category_delete") {
+        const id = args.id as number;
+        await options.runTransaction(async db => {
+          await recordCategoryInDb(db, id, { deleted: true });
+          if (await hasUserStateSchema(db)) {
+            const members = await db.select<{ id: number }[]>(
+              "SELECT novel_id AS id FROM novel_category WHERE category_id=$1",
+              [id],
+            );
+            await recordMembershipInDb(db, members.map(row => row.id), id, false);
+          }
+          await db.execute("DELETE FROM category WHERE id = $1 AND is_system = 0", [id]);
+        });
+        return {
+          handled: true,
+          result: {
+            value: undefined,
+            effects: { userStatePriority: "normal", userStateLedgerChanged: true },
+          } satisfies DbMutationEnvelope<undefined>,
+        };
+      }
+
+      if (command === "db_category_set_for_novel") {
+        const novelId = args.novelId as number;
+        const uniqueCategoryIds = args.categoryIds as number[];
+        await options.runTransaction(async db => {
+          const works = await db.select<{ id: number }[]>(
+            "SELECT id FROM novel WHERE id = $1 AND in_library = 1",
+            [novelId],
+          );
+          if (works.length === 0) throw new Error("novel-category:work-not-found");
+          if (uniqueCategoryIds.length > 0) {
+            const placeholders = uniqueCategoryIds.map((_, index) => `$${index + 1}`).join(", ");
+            const categories = await db.select<{ id: number }[]>(
+              `SELECT id FROM category WHERE is_system = 0 AND id IN (${placeholders})`,
+              uniqueCategoryIds,
+            );
+            if (categories.length !== uniqueCategoryIds.length) {
+              throw new Error("novel-category:category-not-found");
+            }
+          }
+          const currentRows = await db.select<{ id: number }[]>(
+            `SELECT nc.category_id AS id
+             FROM novel_category nc
+             JOIN category c ON c.id=nc.category_id
+             WHERE nc.novel_id=$1 AND c.is_system=0`,
+            [novelId],
+          );
+          const currentIds = new Set(currentRows.map(row => row.id));
+          const targetIds = new Set(uniqueCategoryIds);
+          const removed = [...currentIds].filter(id => !targetIds.has(id));
+          const added = uniqueCategoryIds.filter(id => !currentIds.has(id));
+          if (await hasUserStateSchema(db)) {
+            for (const id of removed) await recordMembershipInDb(db, [novelId], id, false);
+            for (const id of added) await recordMembershipInDb(db, [novelId], id, true);
+          }
+          if (removed.length) {
+            const placeholders = removed.map((_, index) => `$${index + 2}`).join(", ");
+            await db.execute(
+              `DELETE FROM novel_category WHERE novel_id=$1 AND category_id IN (${placeholders})`,
+              [novelId, ...removed],
+            );
+          }
+          if (added.length) {
+            const values = added.map((_, index) => `($1, $${index + 2})`).join(", ");
+            await db.execute(
+              `INSERT OR IGNORE INTO novel_category (novel_id, category_id) VALUES ${values}`,
+              [novelId, ...added],
+            );
+          }
+        });
+        return {
+          handled: true,
+          result: {
+            value: undefined,
+            effects: { userStatePriority: "normal", userStateLedgerChanged: true },
+          } satisfies DbMutationEnvelope<undefined>,
+        };
+      }
+
+      if (command === "db_maintenance_clear_library_membership") {
+        const rowsAffected = await options.runTransaction(async db => {
+          await db.execute(
+            "DELETE FROM novel_download_goal WHERE novel_id IN (SELECT id FROM novel WHERE in_library = 1)",
+          );
+          const result = await db.execute(
+            `UPDATE novel
+             SET in_library = 0, library_added_at = NULL, updated_at = unixepoch()
+             WHERE in_library = 1 OR library_added_at IS NOT NULL`,
+          );
+          await recordLibraryInDb(db);
+          return result.rowsAffected;
+        });
+        return {
+          handled: true,
+          result: {
+            value: { rowsAffected },
+            effects: { userStatePriority: "normal", userStateLedgerChanged: true },
+          } satisfies DbMutationEnvelope<{ rowsAffected: number }>,
+        };
+      }
+
+      if (command === "db_maintenance_clear_updates_tab") {
+        const rowsAffected = await options.runTransaction(async db => {
+          const result = await db.execute(
+            `UPDATE chapter
+             SET unread = 0, updated_at = unixepoch()
+             WHERE unread = 1
+               AND novel_id IN (SELECT id FROM novel WHERE in_library = 1)
+               AND COALESCE(created_at, updated_at) >= (
+                 SELECT COALESCE(library_added_at, updated_at, created_at)
+                 FROM novel
+                 WHERE novel.id = chapter.novel_id
+               )`,
+          );
+          if (await hasUserStateSchema(db)) {
+            const rows = await db.select<{ id: number }[]>(
+              `SELECT c.id FROM chapter c JOIN novel n ON n.id=c.novel_id
+               WHERE n.in_library=1 AND COALESCE(c.created_at,c.updated_at)>=COALESCE(n.library_added_at,n.updated_at,n.created_at)`,
+            );
+            await recordChapterUnreadFlagsInDb(db, rows.map(row => row.id), false);
+          }
+          return result.rowsAffected;
+        });
+        return {
+          handled: true,
+          result: {
+            value: { rowsAffected },
+            effects: { userStatePriority: "normal", userStateLedgerChanged: true },
+          } satisfies DbMutationEnvelope<{ rowsAffected: number }>,
+        };
+      }
+
+      if (command === "db_maintenance_clear_reading_progress") {
+        const rowsAffected = await options.runTransaction(async db => {
+          const result = await db.execute(
+            `UPDATE chapter
+             SET progress = 0, unread = 1, read_at = NULL, updated_at = unixepoch()
+             WHERE progress <> 0 OR unread = 0 OR read_at IS NOT NULL`,
+          );
+          await db.execute(
+            `UPDATE novel
+             SET last_read_at = NULL, updated_at = unixepoch()
+             WHERE last_read_at IS NOT NULL`,
+          );
+          await recordNovelChaptersInDb(db);
+          await recordResumeClearedInDb(db);
+          return result.rowsAffected;
+        });
+        return {
+          handled: true,
+          result: {
+            value: { rowsAffected },
+            effects: { userStatePriority: "normal", userStateLedgerChanged: true },
+          } satisfies DbMutationEnvelope<{ rowsAffected: number }>,
         };
       }
 
