@@ -1,9 +1,8 @@
-import { readFileSync } from "node:fs";
-import { DatabaseSync } from "node:sqlite";
-import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { beforeEach, expect, it, vi } from "vitest";
 
-vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
-import { getDb, runDatabaseTransaction } from "../client";
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
+
+import { invoke } from "@tauri-apps/api/core";
 import {
   clearChapterDownloadFailures,
   clearScheduledChapterDownloadRetries,
@@ -11,93 +10,98 @@ import {
   listChapterDownloadFailures,
   recordChapterDownloadFailure,
   type ChapterDownloadFailureInput,
+  type StoredChapterDownloadFailure,
 } from "./chapter-download-failure";
 
-let sqlite: DatabaseSync;
-
-const params = (values: unknown[]) => Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never;
-const raw = {
-  select: async (sql: string, values: unknown[] = []) => sqlite.prepare(sql).all(params(values)),
-  execute: async (sql: string, values: unknown[] = []) =>
-    ({ rowsAffected: Number(sqlite.prepare(sql).run(params(values)).changes), lastInsertId: 0 }),
-};
+const mockedInvoke = vi.mocked(invoke);
 
 beforeEach(() => {
-  sqlite = new DatabaseSync(":memory:");
-  const registration = readFileSync("src-tauri/src/database.rs", "utf8");
-  for (const match of registration.matchAll(/include_str!\("([^"]+)"\)/g)) {
-    sqlite.exec(readFileSync(`src-tauri/src/${match[1]}`, "utf8"));
-  }
-  sqlite.exec(`INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/work','Work');
-    INSERT INTO chapter(id,novel_id,path,name,position) VALUES(1,1,'/1','One',1),(2,1,'/2','Two',2)`);
-  vi.mocked(getDb).mockResolvedValue(raw as never);
-  vi.mocked(runDatabaseTransaction).mockImplementation(async (run) => {
-    sqlite.exec("BEGIN IMMEDIATE");
-    try { const result = await run(raw as never); sqlite.exec("COMMIT"); return result; }
-    catch (error) { sqlite.exec("ROLLBACK"); throw error; }
-  });
+  vi.clearAllMocks();
 });
 
-afterEach(() => { sqlite.close(); });
-
-function failure(chapterId: number, extra: Partial<ChapterDownloadFailureInput> = {}): ChapterDownloadFailureInput {
+function failure(
+  chapterId: number,
+  extra: Partial<ChapterDownloadFailureInput> = {},
+): ChapterDownloadFailureInput {
   return {
-    chapterId, pluginId: "source", failureClass: "transient", messageSummary: "Timed out",
-    jobJson: JSON.stringify({ id: chapterId }), now: 1_000,
-    retryDelayMs: (attempts) => attempts <= 3 ? attempts * 10 : null, ...extra,
+    chapterId,
+    pluginId: "source",
+    failureClass: "transient",
+    messageSummary: "Timed out",
+    jobJson: JSON.stringify({ id: chapterId }),
+    now: 1_000,
+    retryDelayMs: (attempts) => (attempts <= 3 ? attempts * 10 : null),
+    ...extra,
   };
 }
 
-it("counts attempts from the persisted row and stops scheduling after the budget", async () => {
-  const recorded = [];
-  for (let attempt = 0; attempt < 4; attempt += 1) {
-    recorded.push(await recordChapterDownloadFailure(failure(1, { now: 1_000 + attempt })));
-  }
-  expect(recorded.map((row) => [row?.attempts, row?.nextRetryAt])).toEqual([[1, 1_010], [2, 1_021], [3, 1_032], [4, null]]);
-  expect(await listChapterDownloadFailures()).toEqual([expect.objectContaining({
-    chapterId: 1, pluginId: "source", failureClass: "transient", attempts: 4, nextRetryAt: null, updatedAt: 1_003,
-  })]);
+it("forwards precomputed retry budgets to db_download_failure_record", async () => {
+  const stored: StoredChapterDownloadFailure = {
+    chapterId: 1,
+    pluginId: "source",
+    failureClass: "transient",
+    messageSummary: "Timed out",
+    challengeUrl: null,
+    attempts: 1,
+    nextRetryAt: 1_010,
+    jobJson: '{"id":1}',
+    updatedAt: 1_000,
+  };
+  mockedInvoke.mockResolvedValueOnce({ value: stored, effects: {} });
+
+  await expect(recordChapterDownloadFailure(failure(1))).resolves.toEqual(
+    stored,
+  );
+  expect(mockedInvoke).toHaveBeenCalledWith("db_download_failure_record", {
+    input: expect.objectContaining({
+      chapterId: 1,
+      pluginId: "source",
+      failureClass: "transient",
+      messageSummary: "Timed out",
+      challengeUrl: null,
+      now: 1_000,
+      fallbackRetryDelayMs: null,
+      retryDelaysMs: expect.arrayContaining([10, 20, 30, null]),
+    }),
+  });
 });
 
-it("clears legacy retry deadlines while retaining failure jobs, attempts and error details", async () => {
-  await recordChapterDownloadFailure(failure(1, { jobJson: '{"id":1,"pluginId":"source","chapterPath":"/1","title":"One"}' }));
-  await recordChapterDownloadFailure(failure(1, { now: 2_000, messageSummary: "Still unavailable", jobJson: '{"id":1,"pluginId":"source","chapterPath":"/1","title":"One"}' }));
-  await recordChapterDownloadFailure(failure(2, { retryDelayMs: () => null }));
+it("clears scheduled retries and failure rows via Rust commands", async () => {
+  await expect(clearChapterDownloadFailures([])).resolves.toBe(0);
+  expect(mockedInvoke).not.toHaveBeenCalled();
 
-  expect(await clearScheduledChapterDownloadRetries()).toBe(1);
-  expect(await listChapterDownloadFailures()).toEqual([
-    { chapterId: 2, pluginId: "source", failureClass: "transient", messageSummary: "Timed out", challengeUrl: null,
-      attempts: 1, nextRetryAt: null, jobJson: '{"id":2}', updatedAt: 1_000 },
-    { chapterId: 1, pluginId: "source", failureClass: "transient", messageSummary: "Still unavailable", challengeUrl: null,
-      attempts: 2, nextRetryAt: null, jobJson: '{"id":1,"pluginId":"source","chapterPath":"/1","title":"One"}', updatedAt: 2_000 },
-  ]);
-  expect(await clearScheduledChapterDownloadRetries()).toBe(0);
+  mockedInvoke.mockResolvedValueOnce({ value: 2, effects: {} });
+  mockedInvoke.mockResolvedValueOnce({ value: 1, effects: {} });
+
+  await expect(clearChapterDownloadFailures([1, 1, 2])).resolves.toBe(2);
+  await expect(clearScheduledChapterDownloadRetries()).resolves.toBe(1);
+
+  expect(mockedInvoke).toHaveBeenNthCalledWith(1, "db_download_failure_clear", {
+    chapterIds: [1, 2],
+  });
+  expect(mockedInvoke).toHaveBeenNthCalledWith(
+    2,
+    "db_download_failure_clear_scheduled_retries",
+  );
 });
 
-it("reads only the requested chapter with its persisted retry admission", async () => {
-  await recordChapterDownloadFailure(failure(1, { retryDelayMs: () => null }));
-  await recordChapterDownloadFailure(failure(2, { now: 2_000, retryDelayMs: () => 500 }));
-  expect(await getChapterDownloadFailure(2)).toMatchObject({ chapterId: 2, attempts: 1, nextRetryAt: 2_500 });
-  expect(await getChapterDownloadFailure(1)).toMatchObject({ chapterId: 1, attempts: 1, nextRetryAt: null });
-  expect(await getChapterDownloadFailure(99)).toBeUndefined();
-});
+it("reads single and listed chapter failures and maps null to undefined", async () => {
+  const row: StoredChapterDownloadFailure = {
+    chapterId: 2,
+    pluginId: "source",
+    failureClass: "challenge",
+    messageSummary: "Verify",
+    challengeUrl: "https://cdn.example/",
+    attempts: 2,
+    nextRetryAt: null,
+    jobJson: '{"id":2}',
+    updatedAt: 2_000,
+  };
+  mockedInvoke.mockResolvedValueOnce(row);
+  mockedInvoke.mockResolvedValueOnce(null);
+  mockedInvoke.mockResolvedValueOnce([row]);
 
-it("keeps the latest class, summary and challenge host", async () => {
-  await recordChapterDownloadFailure(failure(2));
-  await recordChapterDownloadFailure(failure(2, {
-    failureClass: "challenge", messageSummary: "Verify", challengeUrl: "https://cdn.example/", retryDelayMs: () => null,
-  }));
-  expect(await listChapterDownloadFailures()).toEqual([expect.objectContaining({
-    chapterId: 2, failureClass: "challenge", messageSummary: "Verify", challengeUrl: "https://cdn.example/", attempts: 2, nextRetryAt: null,
-  })]);
-});
-
-it("does not record a failure for a deleted chapter and clears with the chapter", async () => {
-  expect(await recordChapterDownloadFailure(failure(99))).toBeNull();
-  await recordChapterDownloadFailure(failure(1));
-  await recordChapterDownloadFailure(failure(2));
-  sqlite.exec("DELETE FROM chapter WHERE id=2");
-  expect((await listChapterDownloadFailures()).map((row) => row.chapterId)).toEqual([1]);
-  expect(await clearChapterDownloadFailures([1, 1, 2])).toBe(1);
-  expect(await listChapterDownloadFailures()).toEqual([]);
+  await expect(getChapterDownloadFailure(2)).resolves.toEqual(row);
+  await expect(getChapterDownloadFailure(99)).resolves.toBeUndefined();
+  await expect(listChapterDownloadFailures()).resolves.toEqual([row]);
 });

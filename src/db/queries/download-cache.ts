@@ -1,22 +1,9 @@
-import { getDb } from "../client";
-import { sqliteBoolean } from "../sqlite-value";
-import {
-  normalizeChapterContentType,
-  type ChapterContentType,
-} from "../../lib/chapter-content";
+import type { ChapterContentType } from "../../lib/chapter-content";
 import {
   MAX_BACKFILL_PER_RUN,
   clampBackfillLimit,
 } from "../../lib/performance-budgets";
-
-/**
- * A chapter whose text is stored, including one whose media is still missing; the
- * library and novel pages count stored chapters by the same rule.
- */
-const STORED_CHAPTER_SQL = "(c.is_downloaded = 1 OR c.content_bytes > 0)";
-const STORED_CHAPTER_UNALIASED_SQL = "(is_downloaded = 1 OR content_bytes > 0)";
-const DELETE_CANDIDATE_CHAPTER_SQL =
-  "(c.is_downloaded = 1 OR c.content_bytes > 0 OR c.media_repair_needed = 1)";
+import { invokeDbMutation, invokeDbQuery } from "../ipc";
 
 export interface DownloadCacheResult {
   rowsAffected: number;
@@ -38,11 +25,6 @@ export interface DownloadCacheNovel {
   mediaRepairNeededChapters: number;
   totalBytes: number;
   lastDownloadedAt: number | null;
-}
-
-interface RawDownloadCacheNovel
-  extends Omit<DownloadCacheNovel, "inLibrary"> {
-  inLibrary: number;
 }
 
 export interface DownloadCacheChapter {
@@ -74,21 +56,6 @@ export interface DownloadCacheDeleteChapterCandidate {
   sourceContentType: ChapterContentType;
 }
 
-interface RawDownloadCacheDeleteChapterCandidate
-  extends Omit<
-    DownloadCacheDeleteChapterCandidate,
-    "isDownloaded" | "sourceContentType"
-  > {
-  isDownloaded: unknown;
-  sourceContentType: string | null;
-}
-
-interface RawDownloadCacheChapter
-  extends Omit<DownloadCacheChapter, "unread" | "mediaRepairNeeded"> {
-  unread: number;
-  mediaRepairNeeded: unknown;
-}
-
 export interface DownloadCacheMediaBackfillCandidate {
   id: number;
   sourceNovelId: string | null;
@@ -102,268 +69,102 @@ export interface DownloadCacheMediaBackfillCandidate {
   updatedAt: number;
 }
 
-export async function listDownloadCacheNovels(): Promise<DownloadCacheNovel[]> {
-  const db = await getDb();
-  const rows = await db.select<RawDownloadCacheNovel[]>(
-    `SELECT
-       n.id             AS novelId,
-       n.name           AS novelName,
-       n.cover          AS novelCover,
-       n.path           AS novelPath,
-       n.plugin_id      AS pluginId,
-       n.source_novel_id AS sourceNovelId,
-       ip.name          AS pluginName,
-       n.in_library     AS inLibrary,
-       COUNT(c.id)      AS chaptersDownloaded,
-       (
-         SELECT COUNT(*)
-         FROM chapter all_chapters
-         WHERE all_chapters.novel_id = n.id
-       )                AS totalChapters,
-       COALESCE(SUM(CASE WHEN c.unread = 1 THEN 1 ELSE 0 END), 0)
-                        AS unreadDownloaded,
-       COALESCE(SUM(CASE WHEN c.unread = 0 THEN 1 ELSE 0 END), 0)
-                        AS readDownloaded,
-       COALESCE(SUM(CASE WHEN c.media_repair_needed = 1 THEN 1 ELSE 0 END), 0)
-                        AS mediaRepairNeededChapters,
-       COALESCE(SUM(c.content_bytes + c.media_bytes), 0) AS totalBytes,
-       MAX(c.updated_at) AS lastDownloadedAt
-     FROM novel n
-     JOIN chapter c ON c.novel_id = n.id
-     LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
-     WHERE ${STORED_CHAPTER_SQL}
-       AND n.is_local = 0
-     GROUP BY n.id
-     ORDER BY lastDownloadedAt DESC, n.name COLLATE NOCASE ASC`,
-  );
+function normalizeTargetIds(
+  rawIds: readonly number[] | undefined,
+): number[] | undefined {
+  if (rawIds === undefined) return undefined;
+  return [
+    ...new Set(rawIds.filter((id) => Number.isInteger(id) && id > 0)),
+  ].sort((left, right) => left - right);
+}
 
-  return rows.map((row) => ({
-    ...row,
-    inLibrary: !!row.inLibrary,
-  }));
+export async function listDownloadCacheNovels(): Promise<DownloadCacheNovel[]> {
+  return invokeDbQuery<DownloadCacheNovel[]>("db_download_cache_list_novels");
 }
 
 export async function listDownloadCacheChapters(
   novelId: number,
 ): Promise<DownloadCacheChapter[]> {
-  const db = await getDb();
-  const rows = await db.select<RawDownloadCacheChapter[]>(
-    `SELECT
-       c.id,
-       c.novel_id AS novelId,
-       c.name,
-       c.position,
-       c.unread,
-       c.progress,
-       c.read_at AS readAt,
-       c.updated_at AS downloadedAt,
-       c.content_bytes AS contentBytes,
-       c.media_bytes AS mediaBytes,
-       c.media_repair_needed AS mediaRepairNeeded,
-       c.content_bytes + c.media_bytes AS totalBytes
-     FROM chapter c
-     JOIN novel n ON n.id = c.novel_id
-     WHERE c.novel_id = $1
-       AND ${STORED_CHAPTER_SQL}
-       AND n.is_local = 0
-     ORDER BY c.position ASC, c.id ASC`,
-    [novelId],
+  return invokeDbQuery<DownloadCacheChapter[]>(
+    "db_download_cache_list_chapters",
+    { novelId },
   );
-
-  return rows.map((row) => ({
-    ...row,
-    unread: !!row.unread,
-    mediaRepairNeeded: sqliteBoolean(row.mediaRepairNeeded),
-  }));
 }
 
 export async function listNonLocalDownloadCacheDeleteChapters(
   filter: DownloadCacheDeleteChapterIdFilter = {},
 ): Promise<DownloadCacheDeleteChapterCandidate[]> {
-  const db = await getDb();
-  const requestedIds = filter.chapterIds ?? filter.novelIds;
-  if (requestedIds?.length === 0) return [];
-
-  const targetIds = requestedIds
-    ? [
-        ...new Set(
-          requestedIds.filter((id) => Number.isInteger(id) && id > 0),
-        ),
-      ].sort((left, right) => left - right)
-    : [];
-  if (requestedIds && targetIds.length === 0) return [];
-
-  const targetColumn = filter.chapterIds
-    ? "c.id"
-    : filter.novelIds
-      ? "c.novel_id"
-      : null;
-  const targetFilter = targetColumn
-    ? `AND ${targetColumn} IN (${targetIds
-        .map((_, index) => `$${index + 1}`)
-        .join(", ")})`
-    : "";
-  const rows = await db.select<RawDownloadCacheDeleteChapterCandidate[]>(
-    `SELECT
-       c.content_bytes AS contentBytes,
-       c.id,
-       c.is_downloaded AS isDownloaded,
-       c.path,
-       c.content_type AS sourceContentType,
-       n.plugin_id AS pluginId
-     FROM chapter c
-     JOIN novel n ON n.id = c.novel_id
-     WHERE n.is_local = 0
-       AND ${DELETE_CANDIDATE_CHAPTER_SQL}
-       ${targetFilter}
-     ORDER BY c.novel_id, c.position, c.id`,
-    targetIds,
+  const chapterIds = normalizeTargetIds(filter.chapterIds);
+  const novelIds = normalizeTargetIds(filter.novelIds);
+  if (chapterIds?.length === 0 || novelIds?.length === 0) {
+    return [];
+  }
+  return invokeDbQuery<DownloadCacheDeleteChapterCandidate[]>(
+    "db_download_cache_list_delete_candidates",
+    {
+      filter:
+        chapterIds !== undefined
+          ? { chapterIds }
+          : novelIds !== undefined
+            ? { novelIds }
+            : {},
+    },
   );
-  return rows.map((row) => ({
-    ...row,
-    isDownloaded: sqliteBoolean(row.isDownloaded),
-    sourceContentType: normalizeChapterContentType(row.sourceContentType),
-  }));
 }
 
 export async function listNonLocalOrdinaryQueuedDownloadChapterIds(
   filter: DownloadCacheDeleteChapterIdFilter = {},
 ): Promise<number[]> {
-  const db = await getDb();
-  const requestedIds = filter.chapterIds ?? filter.novelIds;
-  if (requestedIds?.length === 0) return [];
-
-  const targetIds = requestedIds
-    ? [...new Set(requestedIds.filter((id) => Number.isInteger(id) && id > 0))]
-        .sort((left, right) => left - right)
-    : [];
-  if (requestedIds && targetIds.length === 0) return [];
-
-  const targetColumn = filter.chapterIds
-    ? "q.chapter_id"
-    : filter.novelIds
-      ? "c.novel_id"
-      : null;
-  const targetFilter = targetColumn
-    ? `AND ${targetColumn} IN (${targetIds.map((_, index) => `$${index + 1}`).join(", ")})`
-    : "";
-  const rows = await db.select<Array<{ id: number }>>(
-    `SELECT q.chapter_id AS id
-     FROM chapter_download_queue q
-     JOIN chapter c ON c.id = q.chapter_id
-     JOIN novel n ON n.id = c.novel_id
-     WHERE n.is_local = 0
-       AND json_extract(q.job_json, '$.vpnPlanId') IS NULL
-       AND json_extract(q.job_json, '$.vpnRangeId') IS NULL
-       AND json_extract(q.job_json, '$.vpnBatchId') IS NULL
-       ${targetFilter}
-     ORDER BY c.novel_id, c.position, c.id`,
-    targetIds,
+  const chapterIds = normalizeTargetIds(filter.chapterIds);
+  const novelIds = normalizeTargetIds(filter.novelIds);
+  if (chapterIds?.length === 0 || novelIds?.length === 0) {
+    return [];
+  }
+  return invokeDbQuery<number[]>(
+    "db_download_cache_list_ordinary_queued_ids",
+    {
+      filter:
+        chapterIds !== undefined
+          ? { chapterIds }
+          : novelIds !== undefined
+            ? { novelIds }
+            : {},
+    },
   );
-  return rows.map((row) => row.id);
 }
 
 export async function deleteDownloadCacheChapter(
   chapterId: number,
 ): Promise<DownloadCacheResult> {
-  const db = await getDb();
-  const result = await db.execute(
-    `UPDATE chapter
-     SET
-       content_bytes = 0,
-       media_bytes   = 0,
-       media_repair_needed = 0,
-       media_bytes_checked_at = NULL,
-       is_downloaded = 0,
-       updated_at    = unixepoch()
-     WHERE id = $1
-       AND ${STORED_CHAPTER_UNALIASED_SQL}
-       AND EXISTS (
-         SELECT 1 FROM novel n
-         WHERE n.id = chapter.novel_id
-           AND n.is_local = 0
-       )`,
-    [chapterId],
+  return invokeDbMutation<DownloadCacheResult>(
+    "db_download_cache_delete_chapter",
+    { chapterId },
   );
-  return { rowsAffected: result.rowsAffected };
 }
 
 export async function deleteDownloadCacheNovel(
   novelId: number,
 ): Promise<DownloadCacheResult> {
-  const db = await getDb();
-  const result = await db.execute(
-    `UPDATE chapter
-     SET
-       content_bytes = 0,
-       media_bytes   = 0,
-       media_repair_needed = 0,
-       media_bytes_checked_at = NULL,
-       is_downloaded = 0,
-       updated_at    = unixepoch()
-     WHERE novel_id = $1
-       AND ${STORED_CHAPTER_UNALIASED_SQL}
-       AND EXISTS (
-         SELECT 1 FROM novel n
-         WHERE n.id = chapter.novel_id
-           AND n.is_local = 0
-       )`,
-    [novelId],
+  return invokeDbMutation<DownloadCacheResult>(
+    "db_download_cache_delete_novel",
+    { novelId },
   );
-  return { rowsAffected: result.rowsAffected };
 }
 
 export async function deleteAllDownloadCache(): Promise<DownloadCacheResult> {
-  const db = await getDb();
-  const result = await db.execute(
-    `UPDATE chapter
-     SET
-       content_bytes = 0,
-       media_bytes   = 0,
-       media_repair_needed = 0,
-       media_bytes_checked_at = NULL,
-       is_downloaded = 0,
-       updated_at    = unixepoch()
-     WHERE ${STORED_CHAPTER_UNALIASED_SQL}
-       AND EXISTS (
-         SELECT 1 FROM novel n
-         WHERE n.id = chapter.novel_id
-           AND n.is_local = 0
-       )`,
-  );
-  return { rowsAffected: result.rowsAffected };
+  return invokeDbMutation<DownloadCacheResult>("db_download_cache_delete_all");
 }
 
 export async function listDownloadCacheMediaBackfillCandidates(
   novelId?: number,
   limit: number = MAX_BACKFILL_PER_RUN,
 ): Promise<DownloadCacheMediaBackfillCandidate[]> {
-  const db = await getDb();
-  const novelFilter = novelId === undefined ? "" : "AND c.novel_id = $1";
-  const normalizedLimit = clampBackfillLimit(limit);
-  const limitParam = novelId === undefined ? "$1" : "$2";
-  return db.select<DownloadCacheMediaBackfillCandidate[]>(
-    `SELECT
-       c.id,
-       c.name           AS chapterName,
-       n.source_novel_id AS sourceNovelId,
-       c.chapter_number AS chapterNumber,
-       c.novel_id       AS novelId,
-       c.position,
-       c.updated_at     AS updatedAt,
-       n.name           AS novelName,
-       n.path           AS novelPath,
-       n.plugin_id      AS pluginId
-     FROM chapter c
-     JOIN novel n ON n.id = c.novel_id
-     WHERE c.is_downloaded = 1
-       AND c.media_bytes = 0
-       AND c.media_bytes_checked_at IS NULL
-       AND n.is_local = 0
-       ${novelFilter}
-     ORDER BY c.updated_at ASC, c.id ASC
-     LIMIT ${limitParam}`,
-    novelId === undefined ? [normalizedLimit] : [novelId, normalizedLimit],
+  return invokeDbQuery<DownloadCacheMediaBackfillCandidate[]>(
+    "db_download_cache_list_media_backfill_candidates",
+    {
+      novelId: novelId ?? null,
+      limit: clampBackfillLimit(limit),
+    },
   );
 }
 
@@ -371,18 +172,11 @@ export async function updateDownloadCacheChapterMediaBytes(
   chapterId: number,
   mediaBytes: number,
 ): Promise<DownloadCacheResult> {
-  const db = await getDb();
-  const result = await db.execute(
-    `UPDATE chapter
-     SET
-       media_bytes = $2,
-       media_bytes_checked_at = unixepoch()
-     WHERE id = $1
-       AND (
-         media_bytes IS NOT $2
-         OR media_bytes_checked_at IS NULL
-       )`,
-    [chapterId, Math.max(0, Math.round(mediaBytes))],
+  return invokeDbMutation<DownloadCacheResult>(
+    "db_download_cache_update_media_bytes",
+    {
+      chapterId,
+      mediaBytes: Math.max(0, Math.round(mediaBytes)),
+    },
   );
-  return { rowsAffected: result.rowsAffected };
 }
