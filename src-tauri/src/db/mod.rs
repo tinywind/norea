@@ -1,5 +1,6 @@
 pub mod repository;
 pub mod tx;
+pub mod vpn;
 
 #[cfg(test)]
 pub mod test_support;
