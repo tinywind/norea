@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-vi.mock("../../db/client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
     const { createChapterIpcHandler } = await import("../../test/mock-chapter-ipc");
@@ -29,7 +28,7 @@ vi.mock("@tauri-apps/api/core", () => ({
 vi.mock("../updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
 vi.mock("../novel-cover-storage", () => ({ saveNovelCoverFromSource: vi.fn() }));
 
-import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../../db/client";
+import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../../test/sql/client";
 import { saveNovelCoverFromSource } from "../novel-cover-storage";
 import { syncNovelFromSource, type SyncNovelFromSourceOptions } from "./sync-novel";
 import type { ChapterItem, Plugin, SourceNovel } from "./types";

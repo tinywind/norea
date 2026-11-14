@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("../db/client", () => ({ runExclusiveDatabaseOperation: vi.fn() }));
 vi.mock("./plugin-vpn-profiles", () => ({ syncStoredPluginVpnProfiles: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";

@@ -1,30 +1,27 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../test/sql/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("./client", () => ({
-  getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn(), runExclusiveDatabaseOperation: vi.fn(),
-}));
 import { invoke } from "@tauri-apps/api/core";
-import { getDb, getReadOnlyDb, runDatabaseTransaction, runExclusiveDatabaseOperation } from "./client";
+import { getDb, getReadOnlyDb, runDatabaseTransaction, runExclusiveDatabaseOperation } from "../test/sql/client";
 import { createUserStateIpcHandler } from "../test/mock-user-state-ipc";
 import {
   acknowledgeUserStateOperationsInDb, applyUserStateReadPageInDb, bindUserStateWorkspaceInDb,
   getUserStateLedgerStatusInDb, listUserStateConflictsInDb, listUserStateDeferredInDb, prepareUserStateOperationsInDb, resolveUserStateLedgerConflictInDb,
-} from "./user-state-ledger";
+} from "../test/sql/user-state-ledger";
 import {
   discardUserStateNotifications, notifyUserStateCommitted,
   recordUserStateChangesInDb, stableCategoryIdInDb, subscribeUserStateChanges, waitForUserStateDeferredApply,
-} from "./user-state-core";
-import { materializeUserStateRecordInDb, refreshUnattemptedUserStateIdentitiesInDb } from "./user-state-materialize";
+} from "../test/sql/user-state-core";
+import { deferUserStateForNovelInDb, materializeUserStateRecordInDb, refreshUnattemptedUserStateIdentitiesInDb } from "../test/sql/user-state-materialize";
 import {
-  acknowledgeUserStateOperations, applyUserStateReadPage, deferUserStateForNovelInDb, materializePendingUserState, recordUserResume, resumeUserStateAfterRestore, setUserStateActiveServer,
+  acknowledgeUserStateOperations, applyUserStateReadPage, materializePendingUserState, recordUserResume, resumeUserStateAfterRestore, setUserStateActiveServer,
 } from "./user-state";
 import { applyNovelMergeInDb } from "./queries/novel-merge";
 import { deleteLocalNovelRecords } from "./queries/content-deletion";
-import { remapPendingUserStateInDb } from "./user-state-migration";
+import { remapPendingUserStateInDb } from "../test/sql/user-state-migration";
 import {
   canonicalUserStateJson, userStateEntityKey, type UserStateBinding, type UserStateEntity,
   type UserStateOperation, type UserStateRecord, type UserStateValue, type UserStateValueMap, type UserStateWorkReference,
@@ -33,7 +30,7 @@ import { clearNovelHistory, setChapterBookmark, setChaptersReadState, setNovelsR
 import { setNovelInLibrary } from "./queries/novel";
 import { deleteCategory, insertCategory, setNovelCategories, updateCategory } from "./queries/category";
 import { clearLibraryMembership, clearReadingProgress, clearUpdatesTab } from "./queries/maintenance";
-import { setChapterComposition } from "./chapter-composition";
+import { setChapterComposition } from "../test/sql/chapter-composition";
 import type { ChapterCompositionV1 } from "../lib/chapter-composition";
 
 interface Fixture { sql: DatabaseSync; db: Database }

@@ -1,8 +1,8 @@
 import { isApplyingSharedReaderResume, useReaderStore } from "../../store/reader";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../../test/sql/types";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getDb, runDatabaseTransaction } from "../../db/client";
+import { getDb, runDatabaseTransaction } from "../../test/sql/client";
 import { contentServerRequest, ContentServerError, ContentServerTransportError } from "./client";
 import { publishNovelMigrationSourceHold } from "./deletion-exclusions";
 import { applyIncomingNovelMigration } from "./incoming-novel-migration";
@@ -10,7 +10,6 @@ import { getIncomingMigrationCursor, incomingMigrationFromLineage, listIncomingM
 import { resolveIncomingNovelMigration, syncIncomingNovelMigrations } from "./migration-feed";
 import { commitIncomingMigrationInDb } from "../../test/mock-novel-merge-ipc";
 
-vi.mock("../../db/client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
     const { createContentSyncIpcHandler } = await import("../../test/mock-content-sync-ipc");

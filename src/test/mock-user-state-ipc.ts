@@ -1,4 +1,4 @@
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "./sql/types";
 import type { DbMutationEnvelope } from "../db/ipc";
 import { withChapterDownloadSnapshotReads } from "../lib/chapter-download-writes";
 import { createChapterIpcHandler } from "./mock-chapter-ipc";
@@ -39,7 +39,7 @@ import {
   userStateRestorePausedInDb,
   workspaceRows,
   type UserChapterRow,
-} from "../db/user-state-core";
+} from "./sql/user-state-core";
 import {
   applyCurrentSnapshotWithTransactionsInDb,
   buildCurrentSnapshotInDb,
@@ -47,7 +47,7 @@ import {
   currentExportKey,
   loadCurrentDataInDb,
   type CurrentWork,
-} from "../db/user-state-current-data";
+} from "./sql/user-state-current-data";
 import {
   acknowledgeUserStateOperationsInDb,
   applyUserStateReadPageInDb,
@@ -58,12 +58,12 @@ import {
   prepareUserStateOperationsInDb,
   resolveUserStateLedgerConflictInDb,
   type UserStateLedgerStatus,
-} from "../db/user-state-ledger";
+} from "./sql/user-state-ledger";
 import {
   listPendingUserStateProjectionRecordsInDb,
   projectUserStateRecordsInDb,
   refreshUnattemptedUserStateIdentitiesInDb,
-} from "../db/user-state-materialize";
+} from "./sql/user-state-materialize";
 
 export interface UserStateIpcBridgeOptions {
   getDb: () => Database | Promise<Database>;

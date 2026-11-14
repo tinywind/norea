@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../test/sql/types";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const readerStorage = vi.hoisted(() => {
@@ -18,22 +18,22 @@ const readerStorage = vi.hoisted(() => {
 });
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
-vi.mock("./client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("../lib/chapter-content/storage-platform", async importOriginal => ({
   ...await importOriginal<typeof import("../lib/chapter-content/storage-platform")>(),
   inspectChapterPayloadInventory: vi.fn(),
 }));
 import { invoke } from "@tauri-apps/api/core";
-import { getDb, getReadOnlyDb, runDatabaseTransaction } from "./client";
+import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../test/sql/client";
 import { createUserStateIpcHandler } from "../test/mock-user-state-ipc";
 import {
   applyUserStateCurrentSnapshot, bindUserStateCurrentWorkspace, exportUserStateCurrentSnapshot,
   getUserStateCurrentStatus, setUserStateCurrentServer,
 } from "./user-state-current";
-import { currentCacheKey, currentCategoryId, currentStatusKey } from "./user-state-current-data";
-import { deferUserStateForNovelInDb, resumeUserStateAfterRestore } from "./user-state";
-import { remapPendingUserStateInDb } from "./user-state-migration";
-import { discardUserStateNotifications, notifyUserStateCommitted, subscribeUserStateApplied, waitForUserStateDeferredApply } from "./user-state-core";
+import { currentCacheKey, currentCategoryId, currentStatusKey } from "../test/sql/user-state-current-data";
+import { resumeUserStateAfterRestore } from "./user-state";
+import { deferUserStateForNovelInDb } from "../test/sql/user-state-materialize";
+import { remapPendingUserStateInDb } from "../test/sql/user-state-migration";
+import { discardUserStateNotifications, notifyUserStateCommitted, subscribeUserStateApplied, waitForUserStateDeferredApply } from "../test/sql/user-state-core";
 import { userStateEntityKey, type UserStateBinding, type UserStateValueMap, type UserStateWorkReference } from "../lib/user-state/types";
 import { type UserStateCurrentItem, type UserStateCurrentSnapshot } from "../lib/user-state/current-types";
 import type { ChapterCompositionV1 } from "../lib/chapter-composition";

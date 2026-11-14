@@ -6,8 +6,6 @@ import { isTauriRuntime } from "../lib/tauri-runtime";
 import {
   emitUserStateApplied,
   installUserStateDeferredNovelRecorder,
-  requestUserStateDeferredApply,
-  type UserStateDb,
 } from "./user-state-core";
 import { setUserStateActiveServer } from "./user-state";
 import {
@@ -163,15 +161,6 @@ export async function applyUserStateCurrentSnapshot(
     }
     return applyCurrentSnapshot(binding, snapshot);
   });
-}
-
-/** A metadata commit retries only the current snapshot entries for its exact work. */
-export function deferUserStateCurrentForNovelInDb(
-  db: UserStateDb,
-  novelId: number,
-): void {
-  pendingNovelIds.add(novelId);
-  requestUserStateDeferredApply(db);
 }
 
 export function recordDeferredUserStateCurrentNovelIds(

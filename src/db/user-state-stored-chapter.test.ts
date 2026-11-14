@@ -12,9 +12,9 @@ import {
   portableStoredChapterReferenceInDb,
   portableStoredUserStateIntentInDb,
   resolveStoredChapterReferenceInDb,
-} from "./user-state-stored-chapter";
+} from "../test/sql/user-state-stored-chapter";
 import { storedChapterPath } from "../lib/user-state/stored-chapter";
-import type { UserStateDb } from "./user-state-core";
+import type { UserStateDb } from "../test/sql/user-state-core";
 
 const hash = "a".repeat(64);
 const work = { pluginId: "source", sourceNovelId: "book", novelPath: "/book", name: "Book" };

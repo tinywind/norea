@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { runExclusiveDatabaseOperation } from "../db/client";
 import type { PluginVpnServerProtocol } from "./plugin-vpn";
 import { syncStoredPluginVpnProfiles, type SavedVpnProfile } from "./plugin-vpn-profiles";
 
@@ -88,10 +87,7 @@ export function recordAutomaticPluginVpnProfileResult(profile: Pick<AutomaticVpn
  * is the user's explicit verdict; the app never approves servers by itself.
  */
 export async function approveWorkingAutomaticPluginVpnProfiles(): Promise<SavedVpnProfile[]> {
-  const approved = await runExclusiveDatabaseOperation<SavedVpnProfile[]>(
-    () => invoke("plugin_vpn_approve_working_automatic_profiles"),
-    { publishMetadata: false },
-  );
+  const approved = await invoke<SavedVpnProfile[]>("plugin_vpn_approve_working_automatic_profiles");
   void syncStoredPluginVpnProfiles();
   return approved;
 }

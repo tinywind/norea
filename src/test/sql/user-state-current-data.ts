@@ -1,19 +1,19 @@
 import {
   parseChapterComposition, type ChapterCompositionV1, type ChapterSourceSnapshot,
-} from "../lib/chapter-composition";
+} from "../../lib/chapter-composition";
 import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "./chapter-composition";
-import type { ChapterContentType } from "../lib/chapter-content";
-import type { HoldChapterDownloadSnapshot } from "../lib/chapter-download-writes";
-import { mergeUserStateComposition } from "../lib/user-state/composition";
-import { parseStoredChapterPath, storedChapterDigest, storedChapterNumber, storedChapterPath } from "../lib/user-state/stored-chapter";
+import type { ChapterContentType } from "../../lib/chapter-content";
+import type { HoldChapterDownloadSnapshot } from "../../lib/chapter-download-writes";
+import { mergeUserStateComposition } from "../../lib/user-state/composition";
+import { parseStoredChapterPath, storedChapterDigest, storedChapterNumber, storedChapterPath } from "../../lib/user-state/stored-chapter";
 import {
   canonicalUserStateJson, parseUserStateEntity, parseUserStateValue, userStateEntityKey, userStateWorkKey,
   type UserStateBinding, type UserStateChapterReference, type UserStateValueMap, type UserStateWorkReference,
-} from "../lib/user-state/types";
+} from "../../lib/user-state/types";
 import {
   mergeUserStateCurrentReading, mergeUserStateCurrentResume, parseUserStateCurrentItem,
   type UserStateCurrentApplyResult, type UserStateCurrentItem, type UserStateCurrentSnapshot,
-} from "../lib/user-state/current-types";
+} from "../../lib/user-state/current-types";
 import { assertUserStateAvailableInDb, namespaceFor, requireBinding, type UserStateDb } from "./user-state-core";
 
 export interface CurrentWork extends UserStateWorkReference {
@@ -159,7 +159,7 @@ async function loadStoredChapterPathsInDb(db: UserStateDb, data: CurrentData, re
   for (const { chapter, work, number } of candidates) {
     if (!unique.has(JSON.stringify([work.id, number])) || !hold(chapter.id)) continue;
     try {
-      const { inspectChapterPayloadInventory } = await import("../lib/chapter-content/storage-platform");
+      const { inspectChapterPayloadInventory } = await import("../../lib/chapter-content/storage-platform");
       const inventory = await inspectChapterPayloadInventory({ novel: { ...work, path: work.novelPath }, chapter });
       const digest = await storedChapterDigest(inventory);
       if (!digest) continue;

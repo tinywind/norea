@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
     const { createContentSyncIpcHandler } = await import("../../test/mock-content-sync-ipc");
@@ -27,7 +26,7 @@ vi.mock("@tauri-apps/api/core", () => ({
     throw new Error(`Unexpected command: ${command}`);
   }),
 }));
-import { getDb, runDatabaseTransaction } from "../client";
+import { getDb, runDatabaseTransaction } from "../../test/sql/client";
 import { userStateEntityKey } from "../../lib/user-state/types";
 import { deleteLocalNovelRecords, findLocalDeletionNovel, listDeletionDownloadedChapterIds, clearNovelDownloadFiles } from "./content-deletion";
 

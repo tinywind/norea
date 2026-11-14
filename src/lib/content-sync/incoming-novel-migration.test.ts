@@ -1,12 +1,11 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { createHash } from "node:crypto";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../../test/sql/types";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 import type { ChapterPayloadSnapshot } from "../chapter-content/inventory";
 import type { NovelMetadataV1, StoredNovelMetadata } from "../work-metadata";
 
-vi.mock("../../db/client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 const invokeMock = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("../../db/work-metadata", async original => ({ ...await original<typeof import("../../db/work-metadata")>(), readWorkMetadataSyncFile: vi.fn() }));
@@ -26,8 +25,9 @@ vi.mock("./novel-source", () => ({ rememberServerNovelSource: vi.fn() }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: vi.fn() }));
 
-import { getDb, runDatabaseTransaction } from "../../db/client";
-import { applyNovelMetadataToCache, readWorkMetadataSyncFile } from "../../db/work-metadata";
+import { getDb, runDatabaseTransaction } from "../../test/sql/client";
+import { readWorkMetadataSyncFile } from "../../db/work-metadata";
+import { applyNovelMetadataToCache } from "../../test/sql/work-metadata";
 import { findNovelBySource, getNovelById } from "../../db/queries/novel";
 import { getChapterById } from "../../db/queries/chapter";
 import { installStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, workMetadataOperation } from "../work-metadata";

@@ -7,11 +7,11 @@ import {
 import {
   parseUserStateRecord, userStateEntityKey, type UserStateApplyEffects, type UserStateBinding,
   type UserStateChapterReference, type UserStateRecord, type UserStateValueMap, type UserStateWorkReference,
-} from "../lib/user-state/types";
-import { mergeUserStateComposition } from "../lib/user-state/composition";
-import { parseStoredChapterPath } from "../lib/user-state/stored-chapter";
+} from "../../lib/user-state/types";
+import { mergeUserStateComposition } from "../../lib/user-state/composition";
+import { parseStoredChapterPath } from "../../lib/user-state/stored-chapter";
 import { resolveStoredChapterReferenceInDb } from "./user-state-stored-chapter";
-import type { ChapterCompositionV1 } from "../lib/chapter-composition";
+import type { ChapterCompositionV1 } from "../../lib/chapter-composition";
 
 export class DeferredUserState extends Error {
   constructor(readonly reason: string, detail?: string) { super(detail ?? reason); }
@@ -316,9 +316,10 @@ export async function projectUserStateRecordsInDb(
 /** Metadata/import callers use this inside their existing transaction. */
 export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: number): Promise<void> {
   if (!await hasUserStateSchema(db)) return;
-  const current = await import("./user-state-current");
+  const current = await import("../../db/user-state-current");
   if (current.isUserStateCurrentMode()) {
-    current.deferUserStateCurrentForNovelInDb(db, novelId);
+    current.recordDeferredUserStateCurrentNovelIds([novelId]);
+    requestUserStateDeferredApply(db);
     return;
   }
   await refreshUnattemptedUserStateIdentitiesInDb(db, novelId);

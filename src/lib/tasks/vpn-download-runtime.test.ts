@@ -19,9 +19,8 @@ const boundary = vi.hoisted(() => ({
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: boundary.invoke }));
 vi.mock("../../db/client", () => ({
-  getDb: async () => { boundary.restoreEffects.push("database-open"); return {}; },
+  initializeDatabaseSession: async () => { boundary.restoreEffects.push("database-init"); },
   cancelWorkMetadataRecovery: () => { boundary.restoreEffects.push("metadata-stop"); },
-  runExclusiveDatabaseOperation: async (run: () => Promise<unknown>) => { boundary.restoreEffects.push("database-lock"); return run(); },
 }));
 vi.mock("../../i18n", () => ({ translate: (_locale: string, key: string) => key }));
 vi.mock("../../store/appearance", () => ({ useAppearanceStore: { getState: () => ({ appLocale: "en" }) } }));
@@ -2104,7 +2103,7 @@ describe("VPN download production integration", () => {
       expect(backup.readDeviceSettings()).toEqual(previous);
       stopNative();
       await finished;
-      expect(boundary.restoreEffects).toEqual(["sync-lock", "storage-lock", "database-open", "database-lock", "metadata-stop", "native-restore"]);
+      expect(boundary.restoreEffects).toEqual(["sync-lock", "storage-lock", "database-init", "metadata-stop", "native-restore"]);
       expect(runtime.getVpnDownloadRuntimeSnapshot().plans[0]!.ranges.every(range => range.phase === "paused" && !range.userPaused)).toBe(true);
       expect(boundary.enqueue.mock.calls.map(([job]) => job.id)).toEqual([8]);
     } finally {

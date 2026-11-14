@@ -36,16 +36,6 @@ vi.mock("../lib/novel-cover-storage", () => ({
   notifyNovelCoverChanged: covers.changed,
   invalidateAllNovelCoverSources: covers.invalidated,
 }));
-vi.mock("@tauri-apps/plugin-sql", () => ({
-  default: {
-    get: () => ({
-      path: "sqlite:norea.db",
-      execute: vi.fn(async () => ({ rowsAffected: 0, lastInsertId: 0 })),
-      select: vi.fn(async () => []),
-      close: vi.fn(async () => true),
-    }),
-  },
-}));
 
 import { installUserStateDeferredNovelRecorder } from "./user-state-core";
 import {
@@ -274,7 +264,6 @@ describe("work metadata Rust IPC contracts", () => {
   });
 
   it("streams startup recovery events and awaits cancellation before starting a rebuild", async () => {
-    router.handle("database_transaction_reset", () => undefined);
     router.mockQuery("db_work_metadata_restore_directories", {
       files: [],
       chapters: [],

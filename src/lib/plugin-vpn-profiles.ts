@@ -1,5 +1,4 @@
 import { invoke } from "@tauri-apps/api/core";
-import { runExclusiveDatabaseOperation } from "../db/client";
 import type { VpnGateServerVerdict } from "../db/queries/vpn-gate-server-verdict";
 import {
   preparePluginVpnProfileChange,
@@ -65,10 +64,7 @@ export async function captureSavedPluginVpnProfile(
   ip: string,
   source: SavedVpnProfileCaptureSource,
 ): Promise<VpnGateServerVerdictMutation> {
-  const result = await runExclusiveDatabaseOperation<VpnGateServerVerdictMutation>(
-    () => invoke("plugin_vpn_capture_saved_profile", { ip, source }),
-    { publishMetadata: false },
-  );
+  const result = await invoke<VpnGateServerVerdictMutation>("plugin_vpn_capture_saved_profile", { ip, source });
   publishProfilePoolChange();
   void syncStoredPluginVpnProfiles();
   return result;
@@ -78,10 +74,7 @@ export async function revokeSavedPluginVpnProfile(
   ip: string,
   verdict: "fails" | null,
 ): Promise<VpnGateServerVerdictMutation> {
-  const result = await runExclusiveDatabaseOperation<VpnGateServerVerdictMutation>(
-    () => invoke("plugin_vpn_revoke_saved_profile", { ip, verdict }),
-    { publishMetadata: false },
-  );
+  const result = await invoke<VpnGateServerVerdictMutation>("plugin_vpn_revoke_saved_profile", { ip, verdict });
   publishProfilePoolChange();
   void syncStoredPluginVpnProfiles();
   return result;
@@ -132,10 +125,7 @@ export function syncStoredPluginVpnProfiles(): Promise<void> {
     try {
       do {
         storedSyncAgain = false;
-        const report = await runExclusiveDatabaseOperation<StoredVpnProfileSyncReport | null>(
-          () => invoke("plugin_vpn_sync_stored_profiles"),
-          { publishMetadata: false },
-        );
+        const report = await invoke<StoredVpnProfileSyncReport | null>("plugin_vpn_sync_stored_profiles");
         for (const error of report?.errors ?? []) console.warn("[plugin-vpn] stored profile sync", error);
         if (report && report.imported > 0) publishProfilePoolChange();
       } while (storedSyncAgain);

@@ -1,177 +1,93 @@
-import { discardUserStateNotifications, notifyUserStateCommitted } from "./user-state-core";
-import Database from "@tauri-apps/plugin-sql";
 import { invoke } from "@tauri-apps/api/core";
-import type { QueryResult } from "@tauri-apps/plugin-sql";
-import { startPerformanceObservation } from "../lib/observability";
-import { applyDbMutationEffects, type DbMutationEffects, type DbMutationEnvelope } from "./ipc";
-import { flushWorkMetadata, restoreWorkMetadataDirectoriesFromRust, type WorkMetadataRecoveryProgress } from "./work-metadata";
+import {
+  applyDbMutationEffects,
+  type DbMutationEffects,
+  type DbMutationEnvelope,
+} from "./ipc";
+import {
+  restoreWorkMetadataDirectoriesFromRust,
+  type WorkMetadataRecoveryProgress,
+} from "./work-metadata";
 import { isTauriRuntime } from "../lib/tauri-runtime";
 import { useStorageRecoveryStore } from "../store/storage-recovery";
 import { describeError } from "../lib/errors";
-import { notifyWorkMetadataChanges, withWorkMetadataRollback } from "../lib/work-metadata";
+import { notifyWorkMetadataChanges } from "../lib/work-metadata";
 
 export type DatabaseReadMode = "queued" | "committed";
 
-const DB_URL = "sqlite:norea.db";
-const READ_DB_URL = "sqlite:norea-readonly.db";
-const DB_BUSY_TIMEOUT_MS = 5000;
-const DB_BEGIN_RETRY_DELAY_MS = 100;
-
-let dbPromise: Promise<Database> | null = null;
-let rawDbPromise: Promise<Database> | null = null;
-let dbOperationQueue: Promise<void> = Promise.resolve();
+let sessionRecoveryPromise: Promise<void> | null = null;
 let metadataRecoveryRunId = 0;
 let metadataRecoveryActive = false;
 let pendingRecoveryCancel: Promise<unknown> | null = null;
 
-function observationError(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
-
-async function configureDb(db: Database): Promise<Database> {
-  await db.execute(`PRAGMA busy_timeout = ${DB_BUSY_TIMEOUT_MS}`);
-  if (isTauriRuntime()) {
-    const { recoverSourceChapterRenumbers } = await import("../lib/source-chapter-renumber");
-    await recoverSourceChapterRenumbers();
-    const { recoverNovelMergeStorage } = await import("../lib/novel-merge-storage");
-    await recoverNovelMergeStorage();
-    await restoreWorkMetadataDirectoriesFromRust(false);
-  }
-  return db;
-}
-
-async function openRawDb(): Promise<Database> {
-  if (isTauriRuntime()) {
-    // The native process can survive a WebView reload. Roll back any abandoned
-    // frontend transaction before this frontend lifetime starts using SQLite.
-    await invoke("database_transaction_reset");
-  }
-  return configureDb(Database.get(DB_URL));
-}
-
-async function queueDbOperation<T>(run: () => Promise<T>): Promise<T> {
-  let releaseQueue: () => void = () => undefined;
-  const previousQueue = dbOperationQueue;
-  const currentQueue = new Promise<void>((resolve) => {
-    releaseQueue = resolve;
-  });
-  dbOperationQueue = previousQueue
-    .catch(() => undefined)
-    .then(() => currentQueue);
-
-  await previousQueue.catch(() => undefined);
-  try {
-    return await run();
-  } finally {
-    releaseQueue();
-  }
-}
-
-function serializedDb(rawDb: Database): Database {
-  return {
-    path: rawDb.path,
-    execute(query: string, bindValues?: unknown[]): Promise<QueryResult> {
-      const finish = startPerformanceObservation("db.execute", {
-        bindValueCount: bindValues?.length ?? 0,
-      });
-      return queueDbOperation(async () => {
-        const metadataMutation = isTauriRuntime() &&
-          /\b(novel|chapter|novel_chapter_composition)\b/i.test(query) &&
-          /\b(INSERT|UPDATE|DELETE|REPLACE)\b/i.test(query);
-        try {
-          const result = metadataMutation
-            ? await runDatabaseTransactionOnQueue(
-                rawDb,
-                db => db.execute(query, bindValues),
-              )
-            : await withWorkMetadataRollback(async () => {
-                const result = await rawDb.execute(query, bindValues);
-                notifyUserStateCommitted(rawDb);
-                return result;
-              });
-          finish({ rowsAffected: result.rowsAffected });
-          return result;
-        } catch (error) {
-          if (!metadataMutation) discardUserStateNotifications(rawDb);
-          finish({ error: observationError(error), failed: true });
-          throw error;
-        }
-      });
-    },
-    select<T>(query: string, bindValues?: unknown[]): Promise<T> {
-      const finish = startPerformanceObservation("db.select", {
-        bindValueCount: bindValues?.length ?? 0,
-      });
-      return queueDbOperation(async () => {
-        try {
-          const result = await rawDb.select<T>(query, bindValues);
-          finish({
-            rowCount: Array.isArray(result) ? result.length : undefined,
-          });
-          return result;
-        } catch (error) {
-          finish({ error: observationError(error), failed: true });
-          throw error;
-        }
-      });
-    },
-    close(db?: string): Promise<boolean> {
-      return queueDbOperation(() => rawDb.close(db));
-    },
-  } as Database;
-}
-
-function getRawDb(): Promise<Database> {
-  if (!rawDbPromise) {
-    rawDbPromise = openRawDb();
-  }
-  return rawDbPromise;
-}
-
-/**
- * Singleton accessor for the SQLite database.
- *
- * The Rust-side `tauri-plugin-sql` registration in
- * `src-tauri/src/lib.rs` runs the bootstrap schema migration the first
- * time this URL is loaded.
- */
-export function getDb(): Promise<Database> {
-  if (!dbPromise) {
-    dbPromise = getRawDb().then(db => {
-      startWorkMetadataRecovery();
-      return serializedDb(db);
+function ensureSessionRecovered(): Promise<void> {
+  if (!sessionRecoveryPromise) {
+    sessionRecoveryPromise = (async () => {
+      if (!isTauriRuntime()) return;
+      const { recoverSourceChapterRenumbers } = await import(
+        "../lib/source-chapter-renumber"
+      );
+      await recoverSourceChapterRenumbers();
+      const { recoverNovelMergeStorage } = await import(
+        "../lib/novel-merge-storage"
+      );
+      await recoverNovelMergeStorage();
+      await restoreWorkMetadataDirectoriesFromRust(false);
+    })().catch((error: unknown) => {
+      sessionRecoveryPromise = null;
+      throw error;
     });
   }
-  return dbPromise;
+  return sessionRecoveryPromise;
 }
 
-/** Reads committed data without waiting for metadata publication on the writer. */
-export async function getReadOnlyDb(): Promise<Pick<Database, "select">> {
-  await getDb();
-  return Database.get(READ_DB_URL);
+export async function initializeDatabaseSession(): Promise<void> {
+  await ensureSessionRecovered();
+  startWorkMetadataRecovery();
 }
 
 export function cancelWorkMetadataRecovery(): void {
   metadataRecoveryRunId += 1;
   if (metadataRecoveryActive && isTauriRuntime()) {
-    pendingRecoveryCancel = invoke("db_work_metadata_cancel_recovery").catch(() => undefined);
+    pendingRecoveryCancel = invoke("db_work_metadata_cancel_recovery").catch(
+      () => undefined,
+    );
   }
   metadataRecoveryActive = false;
-  useStorageRecoveryStore.setState({ status: "idle", progress: null, error: null });
+  useStorageRecoveryStore.setState({
+    status: "idle",
+    progress: null,
+    error: null,
+  });
 }
 
 export function startWorkMetadataRecovery(rebuild = false): void {
   if (!isTauriRuntime() || (metadataRecoveryActive && !rebuild)) return;
   const runId = ++metadataRecoveryRunId;
   metadataRecoveryActive = true;
-  useStorageRecoveryStore.setState({ status: "idle", progress: null, error: null });
+  useStorageRecoveryStore.setState({
+    status: "idle",
+    progress: null,
+    error: null,
+  });
   let recoveredWorks = 0;
   let receivedEvents = false;
   void (async () => {
     if (pendingRecoveryCancel) {
       await pendingRecoveryCancel;
     }
-    await getRawDb();
+    try {
+      await ensureSessionRecovered();
+    } catch (error: unknown) {
+      if (metadataRecoveryRunId === runId) {
+        useStorageRecoveryStore.setState({
+          status: "error",
+          error: describeError(error),
+        });
+        metadataRecoveryActive = false;
+      }
+      return;
+    }
     if (metadataRecoveryRunId !== runId) return;
     const { listen } = await import("@tauri-apps/api/event");
     let unlisten: (() => void) | undefined;
@@ -189,7 +105,11 @@ export function startWorkMetadataRecovery(rebuild = false): void {
           }
           if (metadataRecoveryRunId !== runId) return;
           const { progress } = event.payload;
-          useStorageRecoveryStore.setState({ status: "scanning", progress, error: null });
+          useStorageRecoveryStore.setState({
+            status: "scanning",
+            progress,
+            error: null,
+          });
           if (progress.recoveredWorks > recoveredWorks) {
             recoveredWorks = progress.recoveredWorks;
             notifyWorkMetadataChanges();
@@ -197,10 +117,9 @@ export function startWorkMetadataRecovery(rebuild = false): void {
         });
       });
       if (metadataRecoveryRunId !== runId) return;
-      const envelope = await invoke<DbMutationEnvelope<WorkMetadataRecoveryProgress>>(
-        "db_startup_recover_work_metadata",
-        { rebuild },
-      );
+      const envelope = await invoke<
+        DbMutationEnvelope<WorkMetadataRecoveryProgress>
+      >("db_startup_recover_work_metadata", { rebuild });
       await eventChain;
       if (metadataRecoveryRunId !== runId) return;
       if (!receivedEvents) {
@@ -211,7 +130,10 @@ export function startWorkMetadataRecovery(rebuild = false): void {
       }
     } catch (error: unknown) {
       if (metadataRecoveryRunId === runId) {
-        useStorageRecoveryStore.setState({ status: "error", error: describeError(error) });
+        useStorageRecoveryStore.setState({
+          status: "error",
+          error: describeError(error),
+        });
       }
     } finally {
       unlisten?.();
@@ -220,189 +142,4 @@ export function startWorkMetadataRecovery(rebuild = false): void {
       }
     }
   })();
-}
-
-export async function runExclusiveDatabaseOperation<T>(
-  run: (db: Database) => Promise<T>,
-  options: { publishMetadata?: boolean } = {},
-): Promise<T> {
-  const rawDb = await getRawDb();
-  return queueDbOperation(async () => {
-    try {
-      const result = await run(rawDb);
-      if (options.publishMetadata !== false) {
-        await flushWorkMetadata(rawDb);
-      }
-      notifyUserStateCommitted(rawDb);
-      return result;
-    } catch (error) {
-      discardUserStateNotifications(rawDb);
-      if (isTauriRuntime()) {
-        await restoreWorkMetadataDirectoriesFromRust(false);
-      }
-      throw error;
-    }
-  });
-}
-
-export interface DatabaseTransactionOptions {
-  publishMetadata?: boolean;
-  notifyContentSync?: boolean;
-  /** Extra attempts to acquire BEGIN IMMEDIATE after SQLite reports BUSY/LOCKED. */
-  busyBeginRetries?: number;
-}
-
-function isDatabaseBusyError(error: unknown): boolean {
-  const message = error instanceof Error ? error.message : String(error);
-  return /(?:code:\s*(?:5|6)|database is (?:locked|busy)|SQLITE_(?:BUSY|LOCKED))/i.test(message);
-}
-
-async function beginImmediate(db: Database, retries: number): Promise<void> {
-  const attempts = Math.max(0, Math.floor(retries)) + 1;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      await db.execute("BEGIN IMMEDIATE");
-      return;
-    } catch (error) {
-      if (!isDatabaseBusyError(error) || attempt + 1 >= attempts) throw error;
-      await new Promise<void>(resolve =>
-        setTimeout(resolve, DB_BEGIN_RETRY_DELAY_MS * (attempt + 1)),
-      );
-    }
-  }
-}
-
-interface DatabaseTransactionHandle {
-  db: Database;
-  commit: () => Promise<void>;
-  rollback: () => Promise<void>;
-}
-
-function nativeTransactionDatabase(transactionId: string): Database {
-  return {
-    path: DB_URL,
-    execute(query: string, bindValues?: unknown[]): Promise<QueryResult> {
-      return invoke<QueryResult>("database_transaction_execute", {
-        transactionId,
-        query,
-        values: bindValues ?? [],
-      });
-    },
-    select<T>(query: string, bindValues?: unknown[]): Promise<T> {
-      return invoke<T>("database_transaction_select", {
-        transactionId,
-        query,
-        values: bindValues ?? [],
-      });
-    },
-    close(): Promise<boolean> {
-      return Promise.reject(
-        new Error("Cannot close a database through an active transaction."),
-      );
-    },
-  } as Database;
-}
-
-async function openDatabaseTransaction(
-  rawDb: Database,
-  retries: number,
-): Promise<DatabaseTransactionHandle> {
-  if (!isTauriRuntime()) {
-    await beginImmediate(rawDb, retries);
-    return {
-      db: rawDb,
-      commit: async () => {
-        await rawDb.execute("COMMIT");
-      },
-      rollback: async () => {
-        await rawDb.execute("ROLLBACK");
-      },
-    };
-  }
-
-  const transactionId = crypto.randomUUID();
-  const attempts = Math.max(0, Math.floor(retries)) + 1;
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    try {
-      await invoke("database_transaction_begin", { transactionId });
-      return {
-        db: nativeTransactionDatabase(transactionId),
-        commit: () =>
-          invoke("database_transaction_commit", { transactionId }),
-        rollback: () =>
-          invoke("database_transaction_rollback", { transactionId }),
-      };
-    } catch (error) {
-      if (!isDatabaseBusyError(error) || attempt + 1 >= attempts) throw error;
-      await new Promise<void>(resolve =>
-        setTimeout(resolve, DB_BEGIN_RETRY_DELAY_MS * (attempt + 1)),
-      );
-    }
-  }
-  throw new Error("Database transaction could not be started.");
-}
-
-async function runDatabaseTransactionOnQueue<T>(
-  rawDb: Database,
-  run: (db: Database) => Promise<T>,
-  remoteContentSync = false,
-  options: DatabaseTransactionOptions = {},
-): Promise<T> {
-  const transaction = await openDatabaseTransaction(
-    rawDb,
-    options.busyBeginRetries ?? 0,
-  );
-  const transactionDb = transaction.db;
-  let committed = false;
-  try {
-    const result = await withWorkMetadataRollback(async () => {
-      if (remoteContentSync) {
-        await transactionDb.execute(
-          "UPDATE content_sync_origin SET remote=1 WHERE id=1",
-        );
-      }
-      const value = await run(transactionDb);
-      if (options.publishMetadata !== false) {
-        await flushWorkMetadata(transactionDb);
-      }
-      if (remoteContentSync) {
-        await transactionDb.execute(
-          "UPDATE content_sync_origin SET remote=0 WHERE id=1",
-        );
-      }
-      await transaction.commit();
-      committed = true;
-      return value;
-    });
-    notifyUserStateCommitted(transactionDb);
-    return result;
-  } catch (error) {
-    if (!committed) {
-      discardUserStateNotifications(transactionDb);
-      await transaction.rollback().catch((rollbackError: unknown) => {
-        // eslint-disable-next-line no-console
-        console.warn("[db] transaction rollback failed", rollbackError);
-      });
-      if (isTauriRuntime()) {
-        await restoreWorkMetadataDirectoriesFromRust(false);
-      }
-    }
-    throw error;
-  }
-}
-
-export async function runDatabaseTransaction<T>(
-  run: (db: Database) => Promise<T>,
-  remoteContentSync = false,
-  options: DatabaseTransactionOptions = {},
-): Promise<T> {
-  const rawDb = await getRawDb();
-  return queueDbOperation(() =>
-    runDatabaseTransactionOnQueue(
-      rawDb,
-      run,
-      remoteContentSync,
-      options,
-    ),
-  );
 }

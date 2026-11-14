@@ -81,6 +81,9 @@ vi.mock("../../lib/chapter-media-storage", () => ({
   getChapterMediaStorageRoot: mocks.storageRoot,
   selectChapterMediaStorageRoot: vi.fn(),
 }));
+vi.mock("../../db/client", () => ({
+  initializeDatabaseSession: () => Promise.resolve(),
+}));
 vi.mock("../../lib/plugins/manager", () => ({
   pluginManager: { loadInstalledFromDb: () => Promise.resolve() },
 }));

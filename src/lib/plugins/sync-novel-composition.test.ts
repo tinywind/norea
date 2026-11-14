@@ -1,11 +1,10 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync, type SQLInputValue } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../../test/sql/types";
 import type { ChapterCompositionV1, ChapterSourceSnapshot } from "../chapter-composition";
 import type { Plugin, SourceNovel } from "./types";
 
-vi.mock("../../db/client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
     const { createChapterIpcHandler } = await import("../../test/mock-chapter-ipc");
@@ -29,12 +28,12 @@ vi.mock("@tauri-apps/api/core", () => ({
     throw new Error(`Unexpected command: ${command}`);
   }),
 }));
-vi.mock("../../db/queries/novel-identity", () => ({ reconcileImportedNovelIdentityInDb: vi.fn(async () => null) }));
+vi.mock("../../test/sql/novel-identity", () => ({ reconcileImportedNovelIdentityInDb: vi.fn(async () => null) }));
 vi.mock("./source-chapter-renumber", () => ({ withSourceChapterNumberReconciliation: vi.fn((_input: unknown, publish: (journal: null) => Promise<unknown>) => publish(null)) }));
 vi.mock("../novel-cover-storage", () => ({ saveNovelCoverFromSource: vi.fn(async () => undefined) }));
 vi.mock("../updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
-import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../../db/client";
-import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "../../db/chapter-composition";
+import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../../test/sql/client";
+import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "../../test/sql/chapter-composition";
 import { listChaptersByNovel } from "../../db/queries/chapter";
 import { applyNovelMergeInDb } from "../../db/queries/novel-merge";
 import { syncNovelFromSource } from "./sync-novel";

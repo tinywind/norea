@@ -1,11 +1,10 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../test/sql/types";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const storage = vi.hoisted(() => ({ files: new Map<string, string>(), android: false }));
 const database = vi.hoisted(() => ({ get: vi.fn(), transaction: vi.fn() }));
-vi.mock("../db/client", () => ({ getDb: database.get, runDatabaseTransaction: database.transaction }));
 vi.mock("./tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => storage.android }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, input: {
   oldRelativeDir?: string; newRelativeDir?: string; relativeDir?: string; keepNames?: string[];

@@ -3,7 +3,7 @@ import {
   USER_STATE_CLIENT_BATCH_BYTES, userStateEntityKey, userStateJsonBytes,
   type UserStateBinding, type UserStateConflict, type UserStateDeferred, type UserStateEntity,
   type UserStateMergeResult, type UserStateOperation, type UserStateReadResponse, type UserStateRecord, type UserStateValueMap,
-} from "../lib/user-state/types";
+} from "../../lib/user-state/types";
 import {
   assertUserStateAvailableInDb, canonicalEntity, chapterReference, chapterWork, intentFromRow, namespaceFor, recordUserStateChangesInDb, requireBinding,
   resolveCategoryAlias, seedUserStateInDb, USER_CHAPTER_SELECT, USER_STATE_PRELINK_BASE_REVISION, userStateRestorePausedInDb, workspaceRows,

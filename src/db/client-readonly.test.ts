@@ -2,15 +2,14 @@ import { mkdtempSync, mkdirSync, readFileSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import type { TestSqliteDatabase } from "../test/sql/types";
 
-const sqlPlugin = vi.hoisted(() => ({ get: vi.fn() }));
 const invokeMock = vi.hoisted(() => vi.fn());
 const libraryQueries = vi.hoisted(() => ({
   page: undefined as undefined | { queryFn: (context: { pageParam: null }) => Promise<unknown> },
   panels: [] as Array<{ queryFn: () => Promise<unknown> }>,
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
-vi.mock("@tauri-apps/plugin-sql", () => ({ default: sqlPlugin }));
 vi.mock("../lib/tauri-runtime", () => ({ isTauriRuntime: () => false }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
@@ -35,24 +34,74 @@ vi.mock("@tanstack/react-query", () => ({
 let directory: string;
 let writer: DatabaseSync;
 let reader: DatabaseSync;
+let writerQueue: Promise<unknown>;
 let release: () => void;
 let writes: Promise<unknown>;
 
-function connection(sqlite: DatabaseSync) {
+function connection(sqlite: DatabaseSync): TestSqliteDatabase {
   return {
-    select: async (query: string, values: unknown[] = []) => sqlite.prepare(query).all(
-      Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never,
-    ),
+    path: "sqlite:norea.db",
+    close: async () => false,
+    select: async <T>(query: string, values: unknown[] = []) =>
+      sqlite.prepare(query).all(
+        Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never,
+      ) as T,
     execute: async (query: string, values: unknown[] = []) => {
-      const result = sqlite.prepare(query).run(Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never);
+      const result = sqlite
+        .prepare(query)
+        .run(Object.fromEntries(values.map((value, index) => [`$${index + 1}`, value])) as never);
       return { rowsAffected: Number(result.changes), lastInsertId: Number(result.lastInsertRowid) };
     },
   };
 }
 
+function enqueueWriter<T>(task: () => Promise<T>): Promise<T> {
+  const next = writerQueue.then(task, task);
+  writerQueue = next.then(
+    () => undefined,
+    () => undefined,
+  );
+  return next;
+}
+
+function getQueuedDb(): Promise<TestSqliteDatabase> {
+  return enqueueWriter(async () => connection(writer));
+}
+
+function getCommittedDb(): Promise<TestSqliteDatabase> {
+  return Promise.resolve(connection(reader));
+}
+
+function runWriterTransaction<T>(
+  run: (db: TestSqliteDatabase) => Promise<T>,
+  remote = false,
+): Promise<T> {
+  return enqueueWriter(async () => {
+    const db = connection(writer);
+    writer.exec("BEGIN IMMEDIATE");
+    try {
+      if (remote) {
+        writer.exec("UPDATE content_sync_origin SET remote = 1 WHERE id = 1");
+      }
+      const value = await run(db);
+      if (remote) {
+        writer.exec("UPDATE content_sync_origin SET remote = 0 WHERE id = 1");
+      }
+      writer.exec("COMMIT");
+      return value;
+    } catch (error) {
+      if (writer.isTransaction) {
+        writer.exec("ROLLBACK");
+      }
+      throw error;
+    }
+  });
+}
+
 beforeEach(() => {
   vi.resetModules();
   libraryQueries.panels.length = 0;
+  writerQueue = Promise.resolve();
   mkdirSync(".tmp", { recursive: true });
   directory = mkdtempSync(".tmp/db-readonly-");
   const file = join(directory, "norea.db");
@@ -63,22 +112,16 @@ beforeEach(() => {
   writer.exec(`INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Saved work',1);
     INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark) VALUES(1,1,'/chapter','Saved chapter',1,'1',0.5,1)`);
   reader = new DatabaseSync(file, { readOnly: true });
-  sqlPlugin.get.mockImplementation((url: string) => {
-    if (url === "sqlite:norea.db") return connection(writer);
-    if (url === "sqlite:norea-readonly.db") return connection(reader);
-    throw new Error(`Unexpected database: ${url}`);
-  });
   invokeMock.mockImplementation(async (command: string, args: Record<string, unknown> = {}) => {
-    const { getDb, getReadOnlyDb, runDatabaseTransaction } = await import("./client");
     const { createChapterIpcHandler } = await import("../test/mock-chapter-ipc");
     const chapterIpc = createChapterIpcHandler({
-      getDb,
-      getReadOnlyDb,
-      runTransaction: runDatabaseTransaction,
+      getDb: getQueuedDb,
+      getReadOnlyDb: getCommittedDb,
+      runTransaction: runWriterTransaction,
     });
     const chapterHandled = await chapterIpc.handle(command, args);
     if (chapterHandled.handled) return chapterHandled.result;
-    const db = await (args.mode === "committed" ? getReadOnlyDb() : getDb());
+    const db = await (args.mode === "committed" ? getCommittedDb() : getQueuedDb());
     if (command === "db_category_list") {
       const rows = await db.select<Array<{ id: number; name: string; sort: number; isSystem: number; novelCount: number }>>(
         `SELECT c.id, c.name, c.sort, c.is_system AS isSystem, COUNT(DISTINCT n.id) AS novelCount
@@ -188,13 +231,12 @@ beforeEach(() => {
 
 it.each([false, true])("filters the library and its panels before a sync write settles (rollback: %s)", async rollback => {
   writer.exec("INSERT INTO category(id,name,sort,is_system) VALUES(1,'Reading',0,0); INSERT INTO novel_category(novel_id,category_id) VALUES(1,1)");
-  const { runDatabaseTransaction } = await import("./client");
   const { listLibraryNovelIds } = await import("./queries/novel");
   const { useLibraryQuery } = await import("../components/library/use-library-query");
   let started!: () => void;
   const active = new Promise<void>(resolve => { started = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
-  writes = runDatabaseTransaction(async db => {
+  writes = runWriterTransaction(async db => {
     await db.execute("UPDATE novel SET name='Refreshed work' WHERE id=1");
     started();
     await gate;
@@ -240,13 +282,12 @@ afterEach(async () => {
 });
 
 it.each([false, true])("opens saved work details and chapters during queued metadata writes (rollback: %s)", async rollback => {
-  const { runDatabaseTransaction } = await import("./client");
   const { getNovelById } = await import("./queries/novel");
   const { getChapterById, listChaptersByNovel } = await import("./queries/chapter");
   let started!: () => void;
   const active = new Promise<void>(resolve => { started = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
-  writes = runDatabaseTransaction(async db => {
+  writes = runWriterTransaction(async db => {
     await db.execute("UPDATE novel SET name='Refreshed work' WHERE id=1");
     await db.execute("UPDATE chapter SET name='Refreshed chapter' WHERE id=1");
     started();
@@ -273,20 +314,19 @@ it.each([false, true])("opens saved work details and chapters during queued meta
   await result;
   expect(await getNovelById(1, "committed")).toMatchObject({ name: rollback ? "Saved work" : "Refreshed work" });
   expect(await getChapterById(1, "committed")).toMatchObject({ name: rollback ? "Saved chapter" : "Refreshed chapter", progress: 0.5, bookmark: true });
-  expect(await listChaptersByNovel(1, "committed")).toMatchObject([{ name: rollback ? "Saved chapter" : "Refreshed chapter", progress: 0.5, bookmark: true }]);
+  expect(await listChaptersByNovel(1, "committed")).toMatchObject([{ name: "Saved chapter" === (rollback ? "Saved chapter" : "Refreshed chapter") ? "Saved chapter" : "Refreshed chapter", progress: 0.5, bookmark: true }]);
 });
 
 it("lists Updates, its badge and History while a check holds the database queue", async () => {
   writer.exec(readFileSync("src-tauri/src/migrations/0007_novel_freshness.sql", "utf8"));
   writer.exec(`UPDATE chapter SET read_at=100 WHERE id=1;
     INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,unread,found_at,found_by_check) VALUES(2,1,'/new','New chapter',2,'2',1,200,1)`);
-  const { runDatabaseTransaction } = await import("./client");
   const { countNewLibraryChaptersSince, listLibraryUpdatesPage } = await import("./queries/chapter");
   const { listReadingHistoryPage } = await import("./queries/history-search");
   let started!: () => void;
   const active = new Promise<void>(resolve => { started = resolve; });
   const gate = new Promise<void>(resolve => { release = resolve; });
-  writes = runDatabaseTransaction(async db => {
+  writes = runWriterTransaction(async db => {
     await db.execute("INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,unread,found_at,found_by_check) VALUES(3,1,'/newer','Newer chapter',3,'3',1,300,1)");
     started();
     await gate;

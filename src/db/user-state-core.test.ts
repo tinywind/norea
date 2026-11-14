@@ -5,7 +5,7 @@ import {
   requestUserStateDeferredApply,
   waitForUserStateDeferredApply,
   type UserStateDb,
-} from "./user-state-core";
+} from "../test/sql/user-state-core";
 
 it("replays a projection request committed while the background runner is active", async () => {
   const db = {} as UserStateDb;

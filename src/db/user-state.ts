@@ -4,7 +4,6 @@ import {
   emitUserStateApplied,
   emitUserStateLedgerChanged,
 } from "./user-state-core";
-import type { UserStateLedgerStatus } from "./user-state-ledger";
 import {
   parsePortableReaderAnchor,
   parseUserStateOperation,
@@ -20,14 +19,25 @@ import {
   type UserStateRecord,
 } from "../lib/user-state/types";
 
+export interface UserStateLedgerStatus {
+  cursor: number;
+  through: number | null;
+  pending: number;
+  conflicts: number;
+  deferred: number;
+  projectionPending: number;
+  projectionParked: number;
+  projectionFailed: number;
+  lastSuccessAt: number | null;
+  pausedAfterRestore: boolean;
+}
+
 export {
   subscribeUserStateApplied,
   subscribeUserStateChanges,
   subscribeUserStateLedgerChanges,
 } from "./user-state-core";
-export type { UserStateLedgerStatus } from "./user-state-ledger";
 export type { UserStateChangePriority } from "./user-state-core";
-export { deferUserStateForNovelInDb } from "./user-state-materialize";
 
 let activeServer: string | null = null;
 let activeGeneration = 0;

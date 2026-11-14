@@ -1,7 +1,7 @@
 import { beforeEach, expect, it, vi } from "vitest";
 
 const mocks = vi.hoisted(() => ({
-  invoke: vi.fn(), request: vi.fn(), register: vi.fn(), exclusive: vi.fn(),
+  invoke: vi.fn(), request: vi.fn(), register: vi.fn(), initSession: vi.fn(),
   suspendVpn: vi.fn(), releaseVpn: vi.fn(),
   values: new Map<string, string>(), server: "http://server", deviceName: "",
 }));
@@ -12,8 +12,8 @@ vi.mock("../../store/content-sync", () => ({
   useContentSyncStore: { getState: () => ({ serverUrl: mocks.server, deviceName: mocks.deviceName }) },
 }));
 vi.mock("../../db/client", () => ({
-  getDb: async () => ({}), cancelWorkMetadataRecovery: vi.fn(),
-  runExclusiveDatabaseOperation: mocks.exclusive,
+  initializeDatabaseSession: mocks.initSession,
+  cancelWorkMetadataRecovery: vi.fn(),
 }));
 vi.mock("../tasks/main-tasks", () => ({ enqueueMainTask: ({ run }: { run: () => Promise<unknown> }) => ({ promise: run() }) }));
 vi.mock("../tasks/vpn-download-runtime", () => ({ suspendVpnDownloadsForRestore: mocks.suspendVpn }));
@@ -41,7 +41,7 @@ beforeEach(() => {
     setItem: (key: string, value: string) => { mocks.values.set(key, value); },
     clear: () => mocks.values.clear(),
   });
-  mocks.exclusive.mockImplementation((run: () => unknown) => run());
+  mocks.initSession.mockResolvedValue(undefined);
   mocks.suspendVpn.mockReset().mockResolvedValue(mocks.releaseVpn);
   mocks.register.mockResolvedValue("device-token");
   mocks.request.mockImplementation(async (_server, path) => path === "/capabilities"
@@ -87,7 +87,7 @@ it("backs up all settings including source, server and VPN configuration with th
   expect(readDeviceSettings()).toContainEqual({
     key: "download-recovery-settings", value: '{"state":{"forbiddenAction":"retry","rotateFingerprintOnVpnChange":true}}',
   });
-  expect(mocks.exclusive).toHaveBeenCalledWith(expect.any(Function), { publishMetadata: false });
+  expect(mocks.initSession).toHaveBeenCalledOnce();
   expect(mocks.invoke).toHaveBeenCalledWith("device_backup_cleanup", { path: file.path });
 });
 it("rejects duplicate device rows", async () => {
@@ -175,7 +175,7 @@ it("releases the stopped-worker hold without taking database locks if the server
   mocks.values.set("old", "retained");
   mocks.suspendVpn.mockImplementationOnce(async () => { mocks.server = "http://other"; return mocks.releaseVpn; });
   await expect(restoreDeviceBackup("http://server", entry)).rejects.toMatchObject({ code: "changed" });
-  expect(mocks.exclusive).not.toHaveBeenCalled();
+  expect(mocks.initSession).not.toHaveBeenCalled();
   expect(mocks.invoke).not.toHaveBeenCalledWith("device_backup_restore", expect.anything());
   expect(readDeviceSettings()).toEqual([{ key: "old", value: "retained" }]);
   expect(mocks.releaseVpn).toHaveBeenCalledOnce();

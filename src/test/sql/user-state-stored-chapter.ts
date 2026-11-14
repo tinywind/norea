@@ -1,16 +1,16 @@
-import type { ChapterContentType } from "../lib/chapter-content";
-import { withChapterDownloadSnapshotReads } from "../lib/chapter-download-writes";
+import type { ChapterContentType } from "../../lib/chapter-content";
+import { withChapterDownloadSnapshotReads } from "../../lib/chapter-download-writes";
 import {
   parseStoredChapterPath,
   storedChapterDigest,
   storedChapterNumber,
   storedChapterPath,
-} from "../lib/user-state/stored-chapter";
+} from "../../lib/user-state/stored-chapter";
 import type {
   UserStateChapterReference,
   UserStateValueMap,
   UserStateWorkReference,
-} from "../lib/user-state/types";
+} from "../../lib/user-state/types";
 import type { UserStateDb, UserStateIntent } from "./user-state-core";
 
 interface StoredChapterCandidate {
@@ -43,7 +43,7 @@ async function digestCandidate(candidate: StoredChapterCandidate): Promise<strin
   return withChapterDownloadSnapshotReads(async hold => {
     if (!hold(candidate.id)) return null;
     try {
-      const { inspectChapterPayloadInventory } = await import("../lib/chapter-content/storage-platform");
+      const { inspectChapterPayloadInventory } = await import("../../lib/chapter-content/storage-platform");
       const inventory = await inspectChapterPayloadInventory({
         novel: {
           id: candidate.novelId,

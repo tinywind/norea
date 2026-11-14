@@ -1,7 +1,7 @@
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../../test/sql/types";
 import { DatabaseSync } from "node:sqlite";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getDb, runDatabaseTransaction } from "../../db/client";
+import { getDb, runDatabaseTransaction } from "../../test/sql/client";
 import {
   getIncomingMigrationCursor, incomingMigrationFromLineage, INCOMING_MIGRATION_CACHE_PREFIX,
   listIncomingMigrations, parseWorkMigrationLineage, rememberIncomingMigrationPage,
@@ -9,7 +9,6 @@ import {
   type IncomingMigration, type WorkMigrationLineage,
 } from "./migration-feed-state";
 
-vi.mock("../../db/client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
     const { createContentSyncIpcHandler } = await import("../../test/mock-content-sync-ipc");

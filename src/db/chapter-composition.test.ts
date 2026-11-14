@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../test/sql/types";
 import { afterEach, beforeEach, expect, it } from "vitest";
-import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "./chapter-composition";
+import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "../test/sql/chapter-composition";
 import type { ChapterCompositionV1 } from "../lib/chapter-composition";
 
 let sqlite: DatabaseSync;

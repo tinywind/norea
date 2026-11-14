@@ -1,7 +1,7 @@
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "./sql/types";
 import { base64ToBytes } from "../lib/base64";
 import { currentChapterDownloadRevision } from "../lib/chapter-download-writes";
-import { reconcileImportedNovelIdentityInDb } from "../db/queries/novel-identity";
+import { reconcileImportedNovelIdentityInDb } from "./sql/novel-identity";
 import { mergeIncomingNovelMetadata } from "../lib/work-metadata/merge";
 import { createChapterIpcHandler } from "./mock-chapter-ipc";
 import {
@@ -26,8 +26,8 @@ import {
   type StoredNovelChapter,
   type StoredNovelNumberReconciliation,
 } from "../lib/work-metadata";
-import { sqliteBoolean } from "../db/sqlite-value";
-import { stableCategoryIdInDb } from "../db/user-state-core";
+import { sqliteBoolean } from "./sql/sqlite-value";
+import { stableCategoryIdInDb } from "./sql/user-state-core";
 import type { DbMutationEffects, DbMutationEnvelope } from "../db/ipc";
 import {
   applyNovelMetadataToCache,
@@ -40,7 +40,7 @@ import {
   scanStoredNovelChaptersToCache,
   type WorkMetadataRecoveryProgress,
   type WorkMetadataSyncFile,
-} from "../db/work-metadata";
+} from "./sql/work-metadata";
 
 export interface WorkMetadataIpcBridgeOptions {
   getDb: () => Database | Promise<Database>;

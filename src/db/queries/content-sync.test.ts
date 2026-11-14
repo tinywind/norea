@@ -2,7 +2,6 @@ import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
 import { beforeEach, afterEach, expect, it, vi } from "vitest";
 
-vi.mock("../client", () => ({ getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: vi.fn(async (command: string, args: Record<string, unknown> = {}) => {
     const { createChapterIpcHandler } = await import("../../test/mock-chapter-ipc");
@@ -26,11 +25,11 @@ vi.mock("@tauri-apps/api/core", () => ({
     throw new Error(`Unexpected command: ${command}`);
   }),
 }));
-import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../client";
+import { getDb, getReadOnlyDb, runDatabaseTransaction } from "../../test/sql/client";
 import { adoptStoredChapterContentMetadata, saveChapterContentMetadata } from "./chapter";
 import { contentJournalHead, readContentJournal, importContentMetadata, listContentSyncChapters, listContentSyncWorkChapters, listUntrackedContentSyncChapters, markContentInstalled, readContentSyncCache, writeContentSyncCache, canUploadContentChapter } from "./content-sync";
 import { cacheServerChapters, recordPendingNovelMerge, listNovelMigrations, saveNovelMigration, isNovelMigrationSourceHeld } from "./content-sync";
-import { applyNovelMetadataToCache } from "../work-metadata";
+import { applyNovelMetadataToCache } from "../../test/sql/work-metadata";
 import { syncNovelFromSource } from "../../lib/plugins/sync-novel";
 import type { Plugin } from "../../lib/plugins/types";
 import { clearAuthoritativeStorageDirs, rememberAuthoritativeChapterStorageDir, resolvedChapterStorageDir } from "../../lib/chapter-storage-resolution";
@@ -499,7 +498,7 @@ it("never converts local skipSourceContentChapterIds into server discardSourceCo
 });
 
 it("does not resurrect excluded chapters from server catalogs or imported packages", async () => {
-  const { materializeChapterComposition, setChapterComposition } = await import("../chapter-composition");
+  const { materializeChapterComposition, setChapterComposition } = await import("../../test/sql/chapter-composition");
   const composition = { version: 1 as const, updatedAt: 1, entries: [1, 2].map(number => ({
     id: "entry-" + number, path: "/chapter/" + number, storageChapterNumber: String(number),
     sources: [{ pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/raw/" + number,

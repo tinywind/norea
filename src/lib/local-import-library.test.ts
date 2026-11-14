@@ -1,12 +1,10 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../test/sql/types";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const client = vi.hoisted(() => ({ getDb: vi.fn(), transaction: vi.fn(), invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: client.invoke }));
-vi.mock("../db/client", () => ({ getDb: client.getDb, runDatabaseTransaction: client.transaction }));
-vi.mock("../db/queries/novel-identity", () => ({ reconcileImportedNovelIdentityInDb: vi.fn(async () => null), findMatchingNovelIdentityInDb: vi.fn(async () => null) }));
 vi.mock("./local-import-media", () => ({ cacheLocalImportedChapterMedia: vi.fn() }));
 import { importLocalFileToLibrary } from "./local-import-library";
 import { importSystemOpenedFile } from "./system-file-import";

@@ -1,5 +1,6 @@
 import { Button, Paper, Stack, Text, Title } from "@mantine/core";
 import { useEffect, useState, type ReactNode } from "react";
+import { initializeDatabaseSession } from "../../db/client";
 import { translate } from "../../i18n";
 import {
   getChapterMediaStorageRoot,
@@ -54,13 +55,15 @@ export function ChapterMediaStorageGate({ children }: { children: ReactNode }) {
   useEffect(() => {
     if (!storageReady || !isTauriRuntime()) return;
 
-    void pluginManager.loadInstalledFromDb().catch((unknownError: unknown) => {
-      // eslint-disable-next-line no-console
-      console.warn(
-        "[bootstrap] failed to rehydrate installed plugins",
-        unknownError,
-      );
-    });
+    void initializeDatabaseSession()
+      .then(() => pluginManager.loadInstalledFromDb())
+      .catch((unknownError: unknown) => {
+        // eslint-disable-next-line no-console
+        console.warn(
+          "[bootstrap] failed to rehydrate installed plugins",
+          unknownError,
+        );
+      });
   }, [storageReady]);
 
   async function chooseStorageRoot(): Promise<void> {

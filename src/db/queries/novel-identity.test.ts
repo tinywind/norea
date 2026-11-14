@@ -1,9 +1,9 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../../test/sql/types";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
-import { findMatchingNovelIdentityInDb, reconcileImportedNovelIdentityInDb } from "./novel-identity";
+import { findMatchingNovelIdentityInDb, reconcileImportedNovelIdentityInDb } from "../../test/sql/novel-identity";
 
 let sqlite: DatabaseSync;
 let db: Database;

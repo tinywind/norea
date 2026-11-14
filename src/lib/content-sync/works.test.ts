@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../../test/sql/types";
 vi.mock("./migration-feed-state", () => ({ listIncomingMigrations: vi.fn(async () => []) }));
 import type { NovelMetadataV1 } from "../work-metadata";
 

@@ -1,12 +1,12 @@
-import type Database from "@tauri-apps/plugin-sql";
-import { getChapterComposition } from "../db/chapter-composition";
+import type { TestSqliteDatabase as Database } from "./sql/types";
+import { getChapterComposition } from "./sql/chapter-composition";
 import type { DbMutationEffects, DbMutationEnvelope } from "../db/ipc";
 import type {
   ContentJournalEntry,
   ContentSyncChapter,
 } from "../db/queries/content-sync";
-import { reconcileImportedNovelIdentityInDb } from "../db/queries/novel-identity";
-import { sqliteBoolean } from "../db/sqlite-value";
+import { reconcileImportedNovelIdentityInDb } from "./sql/novel-identity";
+import { sqliteBoolean } from "./sql/sqlite-value";
 import {
   chapterReference,
   chapterWork,
@@ -17,7 +17,7 @@ import {
   recordResumeClearedInDb,
   USER_CHAPTER_SELECT,
   type UserChapterRow,
-} from "../db/user-state-core";
+} from "./sql/user-state-core";
 import {
   isChapterPayloadInventory,
   type ChapterPayloadInventory,

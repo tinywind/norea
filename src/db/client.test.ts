@@ -1,169 +1,210 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
-const sqlPluginMock = vi.hoisted(() => ({
-  get: vi.fn(),
-  load: vi.fn(),
+const runtime = vi.hoisted(() => ({ tauri: true }));
+const invokeMock = vi.hoisted(() => vi.fn());
+const events = vi.hoisted(() => ({
+  listeners: new Set<(event: { payload: unknown }) => void>(),
 }));
 
-vi.mock("@tauri-apps/plugin-sql", () => ({
-  default: sqlPluginMock,
+vi.mock("../lib/tauri-runtime", () => ({
+  isTauriRuntime: () => runtime.tauri,
 }));
 
-vi.mock("../lib/observability", () => ({
-  startPerformanceObservation: vi.fn(() => vi.fn()),
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: invokeMock,
 }));
 
-interface RawDbMock {
-  close: ReturnType<typeof vi.fn>;
-  execute: ReturnType<typeof vi.fn>;
-  path: string;
-  select: ReturnType<typeof vi.fn>;
-}
+vi.mock("@tauri-apps/api/event", () => ({
+  listen: vi.fn(
+    async (_name: string, callback: (event: { payload: unknown }) => void) => {
+      events.listeners.add(callback);
+      return () => {
+        events.listeners.delete(callback);
+      };
+    },
+  ),
+}));
 
-function makeRawDb(): RawDbMock {
-  return {
-    close: vi.fn(),
-    execute: vi.fn().mockResolvedValue({ rowsAffected: 0 }),
-    path: "sqlite:norea.db",
-    select: vi.fn().mockResolvedValue([]),
-  };
-}
-
-async function loadClient(rawDb: RawDbMock) {
+async function loadClient() {
   vi.resetModules();
-  sqlPluginMock.get.mockReturnValue(rawDb);
   return import("./client");
 }
 
 beforeEach(() => {
   vi.clearAllMocks();
+  runtime.tauri = true;
+  events.listeners.clear();
+  invokeMock.mockImplementation(async (command: string) => {
+    if (
+      command === "db_source_renumber_list_journals" ||
+      command === "db_novel_merge_list_storage_journals"
+    ) {
+      return [];
+    }
+    if (command === "db_work_metadata_restore_directories") {
+      return { files: [], chapters: [] };
+    }
+    if (command === "db_startup_recover_work_metadata") {
+      return {
+        value: {
+          recoveredWorks: 0,
+          recoveredChapters: 0,
+          totalWorks: 0,
+          currentWork: null,
+        },
+        effects: {},
+      };
+    }
+    if (command === "db_work_metadata_cancel_recovery") {
+      return null;
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
 });
 
-describe("getDb", () => {
-  it("reuses the preloaded sqlite pool", async () => {
-    const rawDb = makeRawDb();
-    const { getDb } = await loadClient(rawDb);
+describe("initializeDatabaseSession", () => {
+  it("skips IPC initialization outside Tauri runtime", async () => {
+    runtime.tauri = false;
+    const { initializeDatabaseSession } = await loadClient();
 
-    await getDb();
+    await initializeDatabaseSession();
 
-    expect(sqlPluginMock.get).toHaveBeenCalledWith("sqlite:norea.db");
-    expect(sqlPluginMock.load).not.toHaveBeenCalled();
+    expect(invokeMock).not.toHaveBeenCalled();
   });
 
-  it("initializes a current database without rewriting the chapter schema", async () => {
-    const rawDb = makeRawDb();
-    const { getDb } = await loadClient(rawDb);
+  it("recovers session journals once across concurrent and repeated calls", async () => {
+    const { initializeDatabaseSession } = await loadClient();
 
-    await getDb();
-
-    expect(rawDb.execute).toHaveBeenCalledWith("PRAGMA busy_timeout = 5000");
-    expect(rawDb.execute.mock.calls.some(([sql]) => /ALTER TABLE|SET stored_content_type/.test(sql))).toBe(false);
-    expect(rawDb.select).not.toHaveBeenCalledWith("PRAGMA table_info(chapter)");
-  });
-});
-
-describe("runDatabaseTransaction", () => {
-  it("commits successful work inside one queued transaction", async () => {
-    const rawDb = makeRawDb();
-    const { getDb, runDatabaseTransaction } = await loadClient(rawDb);
-    await getDb();
-    rawDb.execute.mockClear();
-
-    await expect(
-      runDatabaseTransaction(async (db) => {
-        await db.execute("UPDATE chapter SET name = $1", ["Chapter"]);
-        return 42;
-      }),
-    ).resolves.toBe(42);
-
-    expect(rawDb.execute.mock.calls.map(([sql]) => sql)).toEqual([
-      "BEGIN IMMEDIATE",
-      "UPDATE chapter SET name = $1",
-      "COMMIT",
+    await Promise.all([
+      initializeDatabaseSession(),
+      initializeDatabaseSession(),
     ]);
+    await initializeDatabaseSession();
+
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "db_startup_recover_work_metadata",
+        { rebuild: false },
+      );
+    });
+    expect(
+      invokeMock.mock.calls.filter(
+        ([cmd]) => cmd === "db_source_renumber_list_journals",
+      ),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.filter(
+        ([cmd]) => cmd === "db_novel_merge_list_storage_journals",
+      ),
+    ).toHaveLength(1);
+    expect(
+      invokeMock.mock.calls.filter(
+        ([cmd]) => cmd === "db_work_metadata_restore_directories",
+      ),
+    ).toHaveLength(1);
   });
 
-  it("retries only BEGIN IMMEDIATE when a native writer temporarily holds SQLite", async () => {
-    const rawDb = makeRawDb();
-    const { getDb, runDatabaseTransaction } = await loadClient(rawDb);
-    await getDb();
-    rawDb.execute.mockClear();
-    let beginAttempts = 0;
-    rawDb.execute.mockImplementation(async (sql: string) => {
-      if (sql === "BEGIN IMMEDIATE" && beginAttempts++ < 2) {
-        throw new Error("error returned from database: (code: 5) database is locked");
+  it("resets session recovery state when initial journal recovery fails so retries succeed", async () => {
+    let failOnce = true;
+    invokeMock.mockImplementation(async (command: string) => {
+      if (command === "db_source_renumber_list_journals") {
+        if (failOnce) {
+          failOnce = false;
+          throw new Error("temporary startup failure");
+        }
+        return [];
       }
-      return { rowsAffected: 0 };
+      if (command === "db_novel_merge_list_storage_journals") {
+        return [];
+      }
+      if (command === "db_work_metadata_restore_directories") {
+        return { files: [], chapters: [] };
+      }
+      if (command === "db_startup_recover_work_metadata") {
+        return {
+          value: {
+            recoveredWorks: 0,
+            recoveredChapters: 0,
+            totalWorks: 0,
+            currentWork: null,
+          },
+          effects: {},
+        };
+      }
+      throw new Error(`Unexpected command: ${command}`);
     });
-    const work = vi.fn(async (db: { execute: (sql: string) => Promise<unknown> }) => {
-      await db.execute("UPDATE user_state_operation SET status='acknowledged'");
-      return "done";
+
+    const { initializeDatabaseSession } = await loadClient();
+
+    await expect(initializeDatabaseSession()).rejects.toThrow(
+      "temporary startup failure",
+    );
+    await expect(initializeDatabaseSession()).resolves.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "db_startup_recover_work_metadata",
+        { rebuild: false },
+      );
+    });
+  });
+
+  it("cancels active work metadata recovery through Rust IPC", async () => {
+    let releaseRecovery!: () => void;
+    const recoveryGate = new Promise<void>((resolve) => {
+      releaseRecovery = resolve;
+    });
+    invokeMock.mockImplementation(async (command: string) => {
+      if (
+        command === "db_source_renumber_list_journals" ||
+        command === "db_novel_merge_list_storage_journals"
+      ) {
+        return [];
+      }
+      if (command === "db_work_metadata_restore_directories") {
+        return { files: [], chapters: [] };
+      }
+      if (command === "db_startup_recover_work_metadata") {
+        await recoveryGate;
+        return {
+          value: {
+            recoveredWorks: 0,
+            recoveredChapters: 0,
+            totalWorks: 0,
+            currentWork: null,
+          },
+          effects: {},
+        };
+      }
+      if (command === "db_work_metadata_cancel_recovery") {
+        return null;
+      }
+      throw new Error(`Unexpected command: ${command}`);
     });
 
-    await expect(runDatabaseTransaction(work as never, false, { busyBeginRetries: 3 })).resolves.toBe("done");
+    const { initializeDatabaseSession, cancelWorkMetadataRecovery } =
+      await loadClient();
+    const { useStorageRecoveryStore } = await import(
+      "../store/storage-recovery"
+    );
 
-    expect(work).toHaveBeenCalledOnce();
-    expect(rawDb.execute.mock.calls.map(([sql]) => sql)).toEqual([
-      "BEGIN IMMEDIATE",
-      "BEGIN IMMEDIATE",
-      "BEGIN IMMEDIATE",
-      "UPDATE user_state_operation SET status='acknowledged'",
-      "COMMIT",
-    ]);
-  });
+    await initializeDatabaseSession();
+    await vi.waitFor(() => {
+      expect(invokeMock).toHaveBeenCalledWith(
+        "db_startup_recover_work_metadata",
+        { rebuild: false },
+      );
+    });
 
-  it("does not retry a non-locking BEGIN failure", async () => {
-    const rawDb = makeRawDb();
-    const { getDb, runDatabaseTransaction } = await loadClient(rawDb);
-    await getDb();
-    rawDb.execute.mockClear();
-    rawDb.execute.mockRejectedValueOnce(new Error("database disk image is malformed"));
-    const work = vi.fn();
+    cancelWorkMetadataRecovery();
+    expect(invokeMock).toHaveBeenCalledWith(
+      "db_work_metadata_cancel_recovery",
+    );
+    expect(useStorageRecoveryStore.getState()).toMatchObject({
+      status: "idle",
+      progress: null,
+      error: null,
+    });
 
-    await expect(runDatabaseTransaction(work, false, { busyBeginRetries: 3 })).rejects.toThrow("database disk image is malformed");
-
-    expect(work).not.toHaveBeenCalled();
-    expect(rawDb.execute).toHaveBeenCalledTimes(1);
-    expect(rawDb.execute).toHaveBeenCalledWith("BEGIN IMMEDIATE");
-  });
-
-  it("can commit a remote projection without publishing metadata or content-sync notifications", async () => {
-    const rawDb = makeRawDb();
-    const { getDb, runDatabaseTransaction } = await loadClient(rawDb);
-    await getDb();
-    rawDb.execute.mockClear();
-
-    await expect(runDatabaseTransaction(async db => {
-      await db.execute("UPDATE chapter SET progress = $1", [73]);
-      return "done";
-    }, true, { publishMetadata: false, notifyContentSync: false })).resolves.toBe("done");
-
-    expect(rawDb.execute.mock.calls.map(([sql]) => sql)).toEqual([
-      "BEGIN IMMEDIATE",
-      "UPDATE content_sync_origin SET remote=1 WHERE id=1",
-      "UPDATE chapter SET progress = $1",
-      "UPDATE content_sync_origin SET remote=0 WHERE id=1",
-      "COMMIT",
-    ]);
-  });
-
-  it("rolls back when transactional work fails", async () => {
-    const rawDb = makeRawDb();
-    const { getDb, runDatabaseTransaction } = await loadClient(rawDb);
-    await getDb();
-    rawDb.execute.mockClear();
-
-    await expect(
-      runDatabaseTransaction(async (db) => {
-        await db.execute("UPDATE chapter SET name = $1", ["Chapter"]);
-        throw new Error("chapter failed");
-      }),
-    ).rejects.toThrow("chapter failed");
-
-    expect(rawDb.execute.mock.calls.map(([sql]) => sql)).toEqual([
-      "BEGIN IMMEDIATE",
-      "UPDATE chapter SET name = $1",
-      "ROLLBACK",
-    ]);
+    releaseRecovery();
   });
 });

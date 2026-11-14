@@ -1,9 +1,9 @@
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "./sql/types";
 import {
   getChapterComposition,
   materializeChapterComposition,
   setChapterComposition,
-} from "../db/chapter-composition";
+} from "./sql/chapter-composition";
 import type { DatabaseReadMode } from "../db/client";
 import type { DbMutationEnvelope } from "../db/ipc";
 import type {
@@ -11,8 +11,8 @@ import type {
   IncomingMigrationCommit,
   NovelMergeDatabaseResult,
 } from "../db/queries/novel-merge";
-import { sqliteBoolean } from "../db/sqlite-value";
-import { deferUserStateForNovelInDb } from "../db/user-state";
+import { sqliteBoolean } from "./sql/sqlite-value";
+import { deferUserStateForNovelInDb } from "./sql/user-state-materialize";
 import {
   hasUserStateSchema,
   recordChaptersInDb,
@@ -20,12 +20,12 @@ import {
   recordLibraryInDb,
   recordMembershipInDb,
   recordPublicNovelReadingInDb,
-} from "../db/user-state-core";
+} from "./sql/user-state-core";
 import {
   remapPendingUserStateInDb,
   transferSettledNovelMergeResumeInDb,
-} from "../db/user-state-migration";
-import { flushWorkMetadata, persistWorkChapterDirectories } from "../db/work-metadata";
+} from "./sql/user-state-migration";
+import { flushWorkMetadata, persistWorkChapterDirectories } from "./sql/work-metadata";
 import { bytesToBase64, base64ToBytes } from "../lib/base64";
 import { chapterCompositionCatalog, type ChapterCompositionV1 } from "../lib/chapter-composition";
 import { isKnownChapterContentType, type ChapterContentType } from "../lib/chapter-content";

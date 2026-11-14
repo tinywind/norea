@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../../test/sql/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const state = vi.hoisted(() => ({
@@ -15,7 +15,6 @@ const client = vi.hoisted(() => ({
   getDb: vi.fn(), getReadOnlyDb: vi.fn(), runDatabaseTransaction: vi.fn(), runExclusiveDatabaseOperation: vi.fn(),
 }));
 const globalSync = vi.hoisted(() => vi.fn((run: () => Promise<unknown>) => run()));
-vi.mock("../../db/client", () => client);
 vi.mock("../tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
 vi.mock("../novel-cover-storage", () => ({
   saveNovelCoverFromSource: vi.fn(), invalidateAllNovelCoverSources: vi.fn(), notifyNovelCoverChanged: vi.fn(),
@@ -102,7 +101,7 @@ import {
 } from "../source-chapter-renumber";
 import {
   flushWorkMetadata, readWorkMetadataSyncFile, restoreWorkMetadataDirectories, scanStoredNovelChaptersToCache,
-} from "../../db/work-metadata";
+} from "../../test/sql/work-metadata";
 import { readStoredNovelCover, readStoredNovelMetadata, withWorkMetadataRollback, type NovelMetadataV1 } from "../work-metadata";
 import { prepareChapterStorageTransfer, finalizeChapterStorageTransfer, rollbackChapterStorageTransfer } from "../chapter-storage-transfer";
 import { cacheServerChapters } from "../../db/queries/content-sync";

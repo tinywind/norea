@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { translate } from "../../i18n";
 import { holdDownloadGoalsAfterRestore } from "../download-goals/budget";
 import { useAppearanceStore } from "../../store/appearance";
-import { cancelWorkMetadataRecovery, getDb, runExclusiveDatabaseOperation } from "../../db/client";
+import { cancelWorkMetadataRecovery, initializeDatabaseSession } from "../../db/client";
 import { useContentSyncStore } from "../../store/content-sync";
 import { enqueueMainTask } from "../tasks/main-tasks";
 import { suspendVpnDownloadsForRestore } from "../tasks/vpn-download-runtime";
@@ -114,8 +114,8 @@ async function exclusive<T>(kind: "backup.export" | "backup.restore", action: ()
   return runContentSyncOperation(() => enqueueMainTask({
     kind, title: translate(useAppearanceStore.getState().appLocale, kind === "backup.export" ? "deviceBackup.upload" : "deviceBackup.restore"),
     run: () => runContentStorageOperation(async () => {
-      await getDb();
-      return runExclusiveDatabaseOperation(action, { publishMetadata: false });
+      await initializeDatabaseSession();
+      return action();
     }),
   }).promise);
 }

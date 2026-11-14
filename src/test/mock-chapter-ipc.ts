@@ -1,9 +1,9 @@
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "./sql/types";
 import {
   getChapterComposition,
   materializeChapterComposition,
   setChapterComposition,
-} from "../db/chapter-composition";
+} from "./sql/chapter-composition";
 import type { DatabaseReadMode } from "../db/client";
 import type { DbMutationEnvelope } from "../db/ipc";
 import type {
@@ -26,18 +26,18 @@ import type {
   HistoryPage,
   HistoryProgressFilter,
 } from "../db/queries/history-search";
-import { reconcileImportedNovelIdentityInDb } from "../db/queries/novel-identity";
-import { sqliteBoolean } from "../db/sqlite-value";
-import { deferUserStateForNovelInDb } from "../db/user-state";
+import { reconcileImportedNovelIdentityInDb } from "./sql/novel-identity";
+import { sqliteBoolean } from "./sql/sqlite-value";
+import { deferUserStateForNovelInDb } from "./sql/user-state-materialize";
 import {
   hasUserStateSchema,
   markPrivateChapterProgressInDb,
   recordChaptersInDb,
   recordPublicNovelReadingInDb,
   recordResumeClearedInDb,
-} from "../db/user-state-core";
-import { remapUnattemptedChapterPathsInDb } from "../db/user-state-migration";
-import { flushWorkMetadata, markWorkMetadataRefreshed } from "../db/work-metadata";
+} from "./sql/user-state-core";
+import { remapUnattemptedChapterPathsInDb } from "./sql/user-state-migration";
+import { flushWorkMetadata, markWorkMetadataRefreshed } from "./sql/work-metadata";
 import {
   parseChapterComposition,
   type ChapterSourceSnapshot,

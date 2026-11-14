@@ -1,5 +1,5 @@
 import { DatabaseSync } from "node:sqlite";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../test/sql/types";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
@@ -10,7 +10,7 @@ vi.mock("./chapter-storage-transfer", () => ({
   removeChapterStorageDirectory: vi.fn(),
 }));
 vi.mock("./work-metadata", () => ({ workMetadataOperation: vi.fn() }));
-vi.mock("../db/work-metadata", () => ({ flushWorkMetadata: vi.fn(), flushPendingWorkMetadata: vi.fn() }));
+vi.mock("../db/work-metadata", () => ({ flushPendingWorkMetadata: vi.fn() }));
 
 import { invoke } from "@tauri-apps/api/core";
 import { createNovelMergeIpcHandler } from "../test/mock-novel-merge-ipc";

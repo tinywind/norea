@@ -1,4 +1,4 @@
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "./types";
 
 interface WorkSourceIdentity {
   pluginId: string;

@@ -3,9 +3,9 @@ import {
   USER_CHAPTER_SELECT, workReferenceInDb, type IntentRow, type UserChapterRow, type UserStateDb, type UserStateIntent,
 } from "./user-state-core";
 import { currentResumeValues } from "./user-state-current-data";
-import { mergeUserStateCurrentResume, parseUserStateCurrentItem } from "../lib/user-state/current-types";
+import { mergeUserStateCurrentResume, parseUserStateCurrentItem } from "../../lib/user-state/current-types";
 import { DeferredUserState, materializeUserStateRecordInDb } from "./user-state-materialize";
-import { parseUserStateRecord, userStateEntityKey, userStateWorkKey, type UserStateApplyEffects, type UserStateResumeEffect, type UserStateValueMap } from "../lib/user-state/types";
+import { parseUserStateRecord, userStateEntityKey, userStateWorkKey, type UserStateApplyEffects, type UserStateResumeEffect, type UserStateValueMap } from "../../lib/user-state/types";
 
 async function pendingIntents(db: UserStateDb): Promise<IntentRow[]> {
   return db.select<IntentRow[]>(`SELECT i.sequence,i.entity_key AS entityKey,i.entity_json AS entityJson,i.value_json AS valueJson,i.seed FROM user_state_intent i
@@ -45,7 +45,7 @@ export async function remapPendingUserStateInDb(db: UserStateDb, sourceNovelId: 
   }
   const sourceKey = userStateWorkKey(source);
   const targetKey = userStateWorkKey(target);
-  if ((await import("./user-state-current")).isUserStateCurrentMode()) {
+  if ((await import("../../db/user-state-current")).isUserStateCurrentMode()) {
     const local = await db.select<IntentRow[]>("SELECT sequence,entity_key AS entityKey,entity_json AS entityJson,value_json AS valueJson,seed FROM user_state_intent WHERE json_extract(entity_json,'$.kind')='resume'");
     const shared = await db.select<{ resumes: string | null }[]>("SELECT json_extract(payload,'$.resumes') AS resumes FROM content_sync_cache WHERE cache_key LIKE 'user-state-current-status:%'");
     const publicResumes = currentResumeValues({

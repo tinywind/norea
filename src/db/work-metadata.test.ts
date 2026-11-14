@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../test/sql/types";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 
 const storage = vi.hoisted(() => ({ files: new Map<string, number[]>(), readGates: new Map<string, Promise<void>>(), fail: false, failOncePath: "", failReadPath: "", lists: 0, reads: 0, chapterLists: 0, skippedDirectories: [] as string[], chapterScan: undefined as Promise<void> | undefined, chapters: new Map<string, string[]>(), writes: 0, directories: {} as Record<string, string> }));
@@ -16,7 +16,6 @@ vi.mock("../lib/chapter-content/storage-platform", () => ({ inspectChapterConten
 } }));
 const databaseClient = vi.hoisted(() => ({ transaction: vi.fn(), get: vi.fn() }));
 const ipcBridge = vi.hoisted(() => ({ handle: null as null | ((command: string, args?: Record<string, unknown>) => Promise<{ handled: true; result: unknown } | { handled: false }>) }));
-vi.mock("./client", () => ({ runDatabaseTransaction: databaseClient.transaction, getDb: databaseClient.get }));
 vi.mock("../lib/tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: Record<string, unknown> = {}) => {
   if (ipcBridge.handle) {
@@ -44,11 +43,11 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: async (command: string, args: R
   return {};
 } }));
 
-import { getChapterComposition } from "./chapter-composition";
+import { getChapterComposition } from "../test/sql/chapter-composition";
 import { applyNovelMergeInDb } from "./queries/novel-merge";
 import type { ChapterCompositionPreparedCopy } from "../lib/chapter-composition-storage";
 import { chapterCompositionCatalog, type ChapterCompositionV1 } from "../lib/chapter-composition";
-import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata, knownNovelMetadataDirectory, readWorkMetadataSyncFiles, refreshStoredNovelChapterDownloads, restoreWorkMetadataDirectories, storedNovelMetadataFingerprint } from "./work-metadata";
+import { applyNovelMetadataToCache, flushWorkMetadata, initializeWorkMetadata, knownNovelMetadataDirectory, readWorkMetadataSyncFiles, refreshStoredNovelChapterDownloads, restoreWorkMetadataDirectories, storedNovelMetadataFingerprint } from "../test/sql/work-metadata";
 import { withChapterDownloadDeletion, withChapterDownloadWrite } from "../lib/chapter-download-writes";
 import { adoptStoredChapterContentMetadata } from "./queries/chapter";
 import { getLibraryNovelSummary, listLibraryNovels } from "./queries/novel";

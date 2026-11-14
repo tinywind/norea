@@ -1,13 +1,10 @@
 import { readFileSync } from "node:fs";
 import { DatabaseSync } from "node:sqlite";
-import type Database from "@tauri-apps/plugin-sql";
+import type { TestSqliteDatabase as Database } from "../../test/sql/types";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../../lib/tauri-runtime", () => ({ isTauriRuntime: () => true, isAndroidRuntime: () => false }));
-vi.mock("../client", () => ({
-  runDatabaseTransaction: vi.fn(),
-}));
 
 import { invoke } from "@tauri-apps/api/core";
 import {
@@ -17,7 +14,7 @@ import {
 } from "../../lib/content-sync/migration-feed-state";
 import { createContentSyncIpcHandler } from "../../test/mock-content-sync-ipc";
 import { createNovelMergeIpcHandler } from "../../test/mock-novel-merge-ipc";
-import { runDatabaseTransaction } from "../client";
+import { runDatabaseTransaction } from "../../test/sql/client";
 import { applyNovelMergeInDb } from "./novel-merge";
 
 const mockedRunDatabaseTransaction = vi.mocked(runDatabaseTransaction);
