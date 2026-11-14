@@ -23,7 +23,7 @@ pub(super) const MEDIA_ARCHIVE_FILE: &str = "media.zip";
 
 pub(super) const CHAPTER_MEDIA_MANIFEST_FILE: &str = "manifest.json";
 
-pub(super) const CHAPTER_PARTIAL_CONTENT_FILE: &str = ".chapter-content.partial";
+pub(crate) const CHAPTER_PARTIAL_CONTENT_FILE: &str = ".chapter-content.partial";
 
 const STORAGE_ROOT_CONFIG_FILE: &str = "chapter-media-storage-root.txt";
 const EXTERNAL_STORAGE_TREE_URI_PREFIX: &str =
@@ -348,7 +348,7 @@ pub(super) fn safe_media_relative_path(value: &str) -> Result<String, String> {
     Ok(trimmed.to_string())
 }
 
-pub(super) fn is_storage_id(value: &str) -> bool {
+pub(crate) fn is_storage_id(value: &str) -> bool {
     if value.is_empty() || value.len() > 240 || value.starts_with(['.', ' '])
         || value.ends_with(['.', ' '])
         || value.chars().any(|ch| ch < '\u{0020}' || "<>:\"/\\|?*".contains(ch))
@@ -368,12 +368,12 @@ pub(super) fn is_storage_id(value: &str) -> bool {
             && device.as_bytes()[3].is_ascii_digit())
 }
 
-pub(super) fn is_plugin_storage_id(value: &str) -> bool {
+pub(crate) fn is_plugin_storage_id(value: &str) -> bool {
     is_storage_id(value) && value.split('-').all(|part| !part.is_empty()
         && part.bytes().all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit()))
 }
 
-pub(super) fn content_novel_dir_at(
+pub(crate) fn content_novel_dir_at(
     root: &Path,
     source_id: &str,
     _novel_id: i64,
@@ -388,7 +388,7 @@ pub(super) fn content_novel_dir_at(
     Ok(root.join(CONTENTS_ROOT_DIR).join(source_id).join(source_novel_id))
 }
 
-pub(super) fn chapter_number_segment(
+pub(crate) fn chapter_number_segment(
     chapter_number: Option<&str>,
     position: Option<i64>,
     _chapter_id: i64,
@@ -413,7 +413,7 @@ pub(super) fn chapter_number_segment(
     Ok(if number == 0.0 { "0".to_string() } else { number.to_string() })
 }
 
-pub(super) fn is_chapter_directory_name(value: &str) -> bool {
+pub(crate) fn is_chapter_directory_name(value: &str) -> bool {
     chapter_number_segment(Some(value), None, 0).is_ok_and(|number| number == value)
 }
 

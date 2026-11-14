@@ -5,8 +5,8 @@ use serde::{Deserialize, Serialize};
 use std::{collections::{HashMap, HashSet}, fs, io::{ErrorKind, Read, Write}, path::{Path, PathBuf}, sync::{LazyLock, Mutex}};
 use tauri::AppHandle;
 
-const MAX_METADATA_BYTES: usize = 16 * 1024 * 1024;
-const MAX_COVER_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_METADATA_BYTES: usize = 16 * 1024 * 1024;
+pub(crate) const MAX_COVER_BYTES: usize = 10 * 1024 * 1024;
 
 static CHAPTER_DIRECTORIES: LazyLock<Mutex<HashMap<(PathBuf, i64), PathBuf>>> = LazyLock::new(|| Mutex::new(HashMap::new()));
 
@@ -38,11 +38,14 @@ pub struct WorkMetadataResult {
     cover: Option<StoredCover>,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "camelCase")]
-struct StoredCover { file_name: String, modified_at: u64 }
+pub(crate) struct StoredCover {
+    pub file_name: String,
+    pub modified_at: u64,
+}
 
-pub(super) fn is_cover_file(name: &str) -> bool {
+pub(crate) fn is_cover_file(name: &str) -> bool {
     name.strip_prefix("cover.").is_some_and(|extension| matches!(extension, "avif" | "bmp" | "gif" | "img" | "jpg" | "jpeg" | "png" | "svg" | "webp"))
 }
 
@@ -234,6 +237,123 @@ fn discover_cover(metadata_path: &Path) -> Result<Option<StoredCover>, String> {
     }
     covers.sort_by(|a, b| (preferred.as_ref() != Some(&a.file_name), &a.file_name).cmp(&(preferred.as_ref() != Some(&b.file_name), &b.file_name)));
     Ok(covers.into_iter().next())
+}
+
+pub(crate) fn read_work_metadata_bytes_at(
+    root: &Path,
+    relative: &str,
+) -> Result<Option<Vec<u8>>, String> {
+    let path = checked_path(root, relative)?;
+    let limit = if relative.ends_with(".json") {
+        MAX_METADATA_BYTES
+    } else {
+        MAX_COVER_BYTES
+    };
+    read_file(&path, limit)
+}
+
+pub(crate) fn write_work_metadata_bytes_at(
+    root: &Path,
+    relative: &str,
+    body: &[u8],
+) -> Result<bool, String> {
+    let path = checked_path(root, relative)?;
+    let limit = if relative.ends_with(".json") {
+        MAX_METADATA_BYTES
+    } else {
+        MAX_COVER_BYTES
+    };
+    if body.is_empty() || body.len() > limit {
+        return Err("work metadata: invalid file size".into());
+    }
+    if relative.ends_with(".json") {
+        serde_json::from_slice::<serde_json::Value>(body)
+            .map_err(|err| format!("work metadata: invalid JSON: {err}"))?;
+    }
+    if read_file(&path, limit)?.as_deref() == Some(body) {
+        return Ok(false);
+    }
+    publish(&path, body)?;
+    Ok(true)
+}
+
+pub(crate) fn remove_work_metadata_file_at(root: &Path, relative: &str) -> Result<(), String> {
+    let path = checked_path(root, relative)?;
+    match fs::remove_file(&path) {
+        Ok(()) => {}
+        Err(err) if err.kind() == ErrorKind::NotFound => {}
+        Err(err) => return Err(err.to_string()),
+    }
+    for suffix in ["bak", "tmp"] {
+        let artifact = path.with_file_name(format!(
+            "{}.{suffix}",
+            path.file_name().unwrap_or_default().to_string_lossy()
+        ));
+        if artifact.is_file() {
+            fs::remove_file(artifact).map_err(|err| err.to_string())?;
+        }
+    }
+    Ok(())
+}
+
+pub(crate) fn list_work_metadata_files_at(root: &Path) -> Result<Vec<String>, String> {
+    list_files(root)
+}
+
+pub(crate) fn list_work_chapter_files_at(
+    root: &Path,
+    relative: &str,
+    skipped: &HashSet<String>,
+) -> Result<Vec<String>, String> {
+    list_chapter_files(root, relative, skipped)
+}
+
+pub(crate) fn discover_work_cover_at(
+    root: &Path,
+    relative: &str,
+) -> Result<Option<StoredCover>, String> {
+    let path = checked_path(root, relative)?;
+    discover_cover(&path)
+}
+
+pub(crate) fn register_work_chapter_directories_at(
+    root: &Path,
+    incoming: &[(i64, String)],
+    reset: bool,
+) -> Result<(), String> {
+    let mut validated = Vec::with_capacity(incoming.len());
+    for (chapter_id, relative) in incoming {
+        if *chapter_id <= 0 {
+            return Err("work metadata: invalid chapter id".into());
+        }
+        let parts: Vec<_> = relative.split('/').collect();
+        if parts.len() != 4
+            || parts[0] != "contents"
+            || !parts.iter().all(|part| safe_child(part))
+            || !super::paths::is_plugin_storage_id(parts[1])
+            || !super::paths::is_chapter_directory_name(parts[3])
+        {
+            return Err("work metadata: invalid chapter directory".into());
+        }
+        let mut directory = root.to_path_buf();
+        for part in &parts {
+            directory.push(part);
+            if fs::symlink_metadata(&directory)
+                .is_ok_and(|metadata| metadata.file_type().is_symlink())
+            {
+                return Err("work metadata: symbolic chapter directory".into());
+            }
+        }
+        validated.push(((root.to_path_buf(), *chapter_id), root.join(relative)));
+    }
+    let mut directories = CHAPTER_DIRECTORIES
+        .lock()
+        .map_err(|_| "work metadata: path registry unavailable")?;
+    if reset {
+        directories.retain(|(storage_root, _), _| storage_root != root);
+    }
+    directories.extend(validated);
+    Ok(())
 }
 
 #[tauri::command]

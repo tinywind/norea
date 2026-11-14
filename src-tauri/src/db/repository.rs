@@ -14,6 +14,7 @@ fn repo_tx_options() -> TxOptions {
         remote_content_sync: false,
         notify_content_sync: false,
         busy_begin_retries: 0,
+        ..TxOptions::default()
     }
 }
 

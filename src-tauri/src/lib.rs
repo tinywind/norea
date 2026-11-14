@@ -148,6 +148,7 @@ pub fn run() {
         .manage(desktop_open_files)
         .manage(native_stream::NativeStreamState::default())
         .manage(database_transaction::DatabaseTransactionState::default())
+        .manage(db::work_metadata::WorkMetadataRecoveryState::default())
         .manage(task_notifications::TaskNotificationState::default())
         .manage(plugin_vpn)
         .manage(download_vpn_workers)
@@ -197,6 +198,18 @@ pub fn run() {
             db::vpn::db_vpn_profile_issue_list,
             db::vpn::db_vpn_profile_issue_record,
             db::vpn::db_vpn_profile_issue_reallow,
+            db::work_metadata::db_work_metadata_restore_directories,
+            db::work_metadata::db_work_metadata_get_work_directory,
+            db::work_metadata::db_work_metadata_apply_scanned_downloads,
+            db::work_metadata::db_work_metadata_refresh_stored_downloads,
+            db::work_metadata::db_work_metadata_flush_pending,
+            db::work_metadata::db_work_metadata_rescan_work,
+            db::work_metadata::db_work_metadata_read_sync_files,
+            db::work_metadata::db_work_metadata_read_sync_file,
+            db::work_metadata::db_work_metadata_persist_cover,
+            db::work_metadata::db_work_metadata_install_stored,
+            db::work_metadata::db_startup_recover_work_metadata,
+            db::work_metadata::db_work_metadata_cancel_recovery,
             database_transaction::database_transaction_begin,
             database_transaction::database_transaction_execute,
             database_transaction::database_transaction_select,

@@ -12,11 +12,41 @@ use super::{
 
 const DB_BEGIN_RETRY_DELAY_MS: u64 = 100;
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Clone, Default)]
+pub enum MetadataRoot {
+    #[default]
+    None,
+    Path(PathBuf),
+    App(tauri::AppHandle),
+}
+
+impl std::fmt::Debug for MetadataRoot {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::None => write!(f, "MetadataRoot::None"),
+            Self::Path(path) => f.debug_tuple("MetadataRoot::Path").field(path).finish(),
+            Self::App(_) => write!(f, "MetadataRoot::App(..)"),
+        }
+    }
+}
+
+impl MetadataRoot {
+    pub fn resolve(&self) -> Result<Option<PathBuf>, String> {
+        match self {
+            Self::None => Ok(None),
+            Self::Path(path) => Ok(Some(path.clone())),
+            Self::App(app) => crate::chapter_media::media_root(app).map(Some),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
 pub struct TxOptions {
     pub remote_content_sync: bool,
     pub notify_content_sync: bool,
     pub busy_begin_retries: u32,
+    pub publish_metadata: bool,
+    pub metadata_root: MetadataRoot,
 }
 
 impl Default for TxOptions {
@@ -25,6 +55,8 @@ impl Default for TxOptions {
             remote_content_sync: false,
             notify_content_sync: true,
             busy_begin_retries: 0,
+            publish_metadata: true,
+            metadata_root: MetadataRoot::None,
         }
     }
 }
@@ -35,10 +67,20 @@ struct FileRollbackEntry {
     previous_bytes: Option<Vec<u8>>,
 }
 
+#[derive(Debug)]
+struct WorkMetadataRollbackEntry {
+    root: PathBuf,
+    relative: String,
+    previous_bytes: Option<Vec<u8>>,
+}
+
 #[derive(Debug, Default)]
 pub struct TxContext {
     effects: DbMutationEffects,
     file_rollbacks: Vec<FileRollbackEntry>,
+    metadata_file_rollbacks: Vec<WorkMetadataRollbackEntry>,
+    fetched_catalog: Option<super::work_metadata::FetchedChapterCatalog>,
+    native_directories_dirty_root: Option<PathBuf>,
 }
 
 impl TxContext {
@@ -58,12 +100,19 @@ impl TxContext {
         self.effects.user_state_deferred_ready = true;
     }
 
+    pub fn record_user_state_deferred_novel(&mut self, novel_id: i64) {
+        if novel_id > 0 && !self.effects.user_state_deferred_novel_ids.contains(&novel_id) {
+            self.effects.user_state_deferred_novel_ids.push(novel_id);
+        }
+        self.effects.user_state_deferred_ready = true;
+    }
+
     pub fn mark_work_metadata_changed(&mut self) {
         self.effects.work_metadata_changed = true;
     }
 
     pub fn record_cover_changed(&mut self, novel_id: i64) {
-        if novel_id > 0 && !self.effects.cover_changed_novel_ids.contains(&novel_id) {
+        if novel_id >= 0 && !self.effects.cover_changed_novel_ids.contains(&novel_id) {
             self.effects.cover_changed_novel_ids.push(novel_id);
         }
     }
@@ -74,6 +123,50 @@ impl TxContext {
 
     pub fn record_chapter_directory(&mut self, update: ChapterDirectoryUpdateDto) {
         self.effects.chapter_directories.push(update);
+    }
+
+    pub fn set_fetched_chapter_catalog(
+        &mut self,
+        catalog: super::work_metadata::FetchedChapterCatalog,
+    ) {
+        self.fetched_catalog = Some(catalog);
+    }
+
+    pub(crate) fn take_fetched_chapter_catalog(
+        &mut self,
+    ) -> Option<super::work_metadata::FetchedChapterCatalog> {
+        self.fetched_catalog.take()
+    }
+
+    pub fn mark_native_directories_dirty(&mut self, root: &Path) {
+        if self.native_directories_dirty_root.is_none() {
+            self.native_directories_dirty_root = Some(root.to_path_buf());
+        }
+    }
+
+    /// Captures the pre-transaction contents of a `contents/<plugin>/<work>/...`
+    /// metadata or cover file so that any subsequent SQLite or publication error
+    /// restores the exact previous file via atomic storage replacement.
+    pub fn snapshot_work_metadata_file(
+        &mut self,
+        root: &Path,
+        relative: &str,
+    ) -> Result<(), String> {
+        if self
+            .metadata_file_rollbacks
+            .iter()
+            .any(|entry| entry.root == root && entry.relative == relative)
+        {
+            return Ok(());
+        }
+        let previous_bytes =
+            crate::chapter_media::read_work_metadata_bytes_at(root, relative)?;
+        self.metadata_file_rollbacks.push(WorkMetadataRollbackEntry {
+            root: root.to_path_buf(),
+            relative: relative.to_string(),
+            previous_bytes,
+        });
+        Ok(())
     }
 
     /// Captures the current contents of `path` (if not already captured in this
@@ -100,7 +193,44 @@ impl TxContext {
         Ok(())
     }
 
-    fn rollback_files(&mut self) {
+    fn rollback_files(&mut self) -> Option<String> {
+        let mut rollback_failures: Vec<String> = Vec::new();
+
+        for entry in self.metadata_file_rollbacks.drain(..).rev() {
+            let current = match crate::chapter_media::read_work_metadata_bytes_at(
+                &entry.root,
+                &entry.relative,
+            ) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    rollback_failures.push(err);
+                    continue;
+                }
+            };
+            if current == entry.previous_bytes {
+                continue;
+            }
+            let result = match entry.previous_bytes {
+                Some(ref bytes) => crate::chapter_media::write_work_metadata_bytes_at(
+                    &entry.root,
+                    &entry.relative,
+                    bytes,
+                )
+                .map(|_| ()),
+                None => crate::chapter_media::remove_work_metadata_file_at(
+                    &entry.root,
+                    &entry.relative,
+                ),
+            };
+            if let Err(err) = result {
+                log::warn!(
+                    "db tx: failed to restore work metadata '{}' on rollback: {err}",
+                    entry.relative
+                );
+                rollback_failures.push(err);
+            }
+        }
+
         for entry in self.file_rollbacks.drain(..).rev() {
             match entry.previous_bytes {
                 Some(bytes) => {
@@ -112,6 +242,7 @@ impl TxContext {
                             "db tx: failed to restore '{}' on rollback: {err}",
                             entry.path.display()
                         );
+                        rollback_failures.push(err.to_string());
                     }
                 }
                 None => {
@@ -121,10 +252,17 @@ impl TxContext {
                                 "db tx: failed to remove created file '{}' on rollback: {err}",
                                 entry.path.display()
                             );
+                            rollback_failures.push(err.to_string());
                         }
                     }
                 }
             }
+        }
+
+        if rollback_failures.is_empty() {
+            None
+        } else {
+            Some(rollback_failures.join("; "))
         }
     }
 }
@@ -198,6 +336,17 @@ where
 
         let value = run(&mut tx, &mut ctx).await?;
 
+        if options.publish_metadata && !matches!(options.metadata_root, MetadataRoot::None) {
+            let fetched = ctx.take_fetched_chapter_catalog();
+            super::work_metadata::flush_dirty_in_tx(
+                &options.metadata_root,
+                &mut tx,
+                &mut ctx,
+                fetched.as_ref(),
+            )
+            .await?;
+        }
+
         if options.remote_content_sync {
             set_content_sync_origin(&mut tx, false).await?;
         }
@@ -218,16 +367,35 @@ where
                 effects: ctx.effects,
             }),
             Err(err) => {
-                ctx.rollback_files();
-                Err(format!("db tx: commit: {err}"))
+                let rollback_failure = ctx.rollback_files();
+                if let Some(root) = ctx.native_directories_dirty_root.take() {
+                    let _ =
+                        super::work_metadata::restore_native_directories_from_pool(pool, &root)
+                            .await;
+                }
+                match rollback_failure {
+                    Some(rb_err) => Err(format!(
+                        "work metadata: publication and rollback failed: db tx: commit: {err}; rollback: {rb_err}"
+                    )),
+                    None => Err(format!("db tx: commit: {err}")),
+                }
             }
         },
         Err(error) => {
-            ctx.rollback_files();
+            let rollback_failure = ctx.rollback_files();
             if let Err(rollback_err) = tx.rollback().await {
                 log::warn!("db tx: rollback failed after error: {rollback_err}");
             }
-            Err(error)
+            if let Some(root) = ctx.native_directories_dirty_root.take() {
+                let _ =
+                    super::work_metadata::restore_native_directories_from_pool(pool, &root).await;
+            }
+            match rollback_failure {
+                Some(rb_err) => Err(format!(
+                    "work metadata: publication and rollback failed: {error}; rollback: {rb_err}"
+                )),
+                None => Err(error),
+            }
         }
     }
 }
@@ -255,7 +423,7 @@ mod tests {
                     ctx.record_user_state_ledger_change();
                     ctx.record_user_state_change(UserStateCommitPriority::Reading);
                     ctx.record_user_state_change(UserStateCommitPriority::Normal);
-                    ctx.request_user_state_deferred_apply();
+                    ctx.record_user_state_deferred_novel(1);
                     ctx.mark_work_metadata_changed();
                     ctx.record_cover_changed(1);
                     ctx.record_cover_changed(1);
@@ -264,6 +432,7 @@ mod tests {
                         plugin_id: "demo".to_string(),
                         novel_path: "/n1".to_string(),
                         directory: Some("contents/demo/n1".to_string()),
+                        fingerprint: Some("fp1".to_string()),
                     });
                     ctx.record_chapter_directory(ChapterDirectoryUpdateDto {
                         chapter_id: 10,
@@ -283,6 +452,7 @@ mod tests {
         );
         assert!(envelope.effects.user_state_ledger_changed);
         assert!(envelope.effects.user_state_deferred_ready);
+        assert_eq!(envelope.effects.user_state_deferred_novel_ids, vec![1]);
         assert!(envelope.effects.work_metadata_changed);
         assert_eq!(envelope.effects.cover_changed_novel_ids, vec![1]);
         assert_eq!(envelope.effects.work_directories.len(), 1);

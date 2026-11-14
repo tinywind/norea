@@ -1,6 +1,8 @@
+pub mod chapter_composition;
 pub mod repository;
 pub mod tx;
 pub mod vpn;
+pub mod work_metadata;
 
 #[cfg(test)]
 pub mod test_support;
@@ -40,6 +42,8 @@ pub struct WorkDirectoryUpdateDto {
     pub plugin_id: String,
     pub novel_path: String,
     pub directory: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub fingerprint: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -58,6 +62,8 @@ pub struct DbMutationEffects {
     pub user_state_ledger_changed: bool,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub user_state_deferred_ready: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub user_state_deferred_novel_ids: Vec<i64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub content_sync_max_sequence: Option<i64>,
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]

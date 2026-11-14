@@ -94,24 +94,23 @@ pub(super) fn inspect_content_chapter_dir(
     }))
 }
 
-fn chapter_content_mirror_inspect_sync(
-    app: AppHandle,
-    preferred_chapter_dir: String,
-    source_dir: String,
-    novel_directory_name: String,
-    chapter_directory_name: String,
-    preferred_content_file_name: String,
+pub(crate) fn inspect_chapter_content_mirror_at(
+    root: &Path,
+    preferred_chapter_dir: &str,
+    source_dir: &str,
+    novel_directory_name: &str,
+    chapter_directory_name: &str,
+    preferred_content_file_name: &str,
 ) -> Result<ChapterContentInspection, String> {
-    let root = media_root(&app)?;
-    let preferred_relative_dir = safe_relative_storage_path(&preferred_chapter_dir)?;
-    let source_relative_dir = safe_relative_storage_path(&source_dir)?;
-    let preferred_file_name = Path::new(&preferred_content_file_name)
+    let preferred_relative_dir = safe_relative_storage_path(preferred_chapter_dir)?;
+    let source_relative_dir = safe_relative_storage_path(source_dir)?;
+    let preferred_file_name = Path::new(preferred_content_file_name)
         .file_name()
         .and_then(|value| value.to_str())
         .ok_or_else(|| "chapter media: invalid preferred content file name".to_string())?;
 
     if let Some(inspection) = inspect_content_chapter_dir(
-        &root,
+        root,
         &root.join(&preferred_relative_dir),
         preferred_file_name,
     )? {
@@ -121,11 +120,11 @@ fn chapter_content_mirror_inspect_sync(
     let mut matches = Vec::new();
     for chapter_path in content_chapter_dirs_matching_segments(
         &root.join(source_relative_dir),
-        &novel_directory_name,
-        &chapter_directory_name,
+        novel_directory_name,
+        chapter_directory_name,
     )? {
         if let Some(inspection) =
-            inspect_content_chapter_dir(&root, &chapter_path, preferred_file_name)?
+            inspect_content_chapter_dir(root, &chapter_path, preferred_file_name)?
         {
             matches.push(inspection);
         }
@@ -144,6 +143,25 @@ fn chapter_content_mirror_inspect_sync(
             "chapter media: multiple stored chapter folders match source identity {chapter_directory_name}"
         )),
     }
+}
+
+fn chapter_content_mirror_inspect_sync(
+    app: AppHandle,
+    preferred_chapter_dir: String,
+    source_dir: String,
+    novel_directory_name: String,
+    chapter_directory_name: String,
+    preferred_content_file_name: String,
+) -> Result<ChapterContentInspection, String> {
+    let root = media_root(&app)?;
+    inspect_chapter_content_mirror_at(
+        &root,
+        &preferred_chapter_dir,
+        &source_dir,
+        &novel_directory_name,
+        &chapter_directory_name,
+        &preferred_content_file_name,
+    )
 }
 
 fn chapter_content_extension(content_type: Option<&str>) -> &'static str {

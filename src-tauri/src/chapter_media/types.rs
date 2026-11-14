@@ -15,11 +15,11 @@ pub(crate) struct ChapterMediaClearContext {
 #[derive(Debug, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChapterContentInspection {
-    pub(super) status: String,
-    pub(super) content_file: Option<String>,
-    pub(super) content_bytes: u64,
-    pub(super) media_bytes: u64,
-    pub(super) media_complete: bool,
+    pub(crate) status: String,
+    pub(crate) content_file: Option<String>,
+    pub(crate) content_bytes: u64,
+    pub(crate) media_bytes: u64,
+    pub(crate) media_complete: bool,
 }
 
 
