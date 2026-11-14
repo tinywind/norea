@@ -3,6 +3,7 @@ pub mod chapter;
 pub mod chapter_composition;
 pub mod download;
 pub mod novel;
+pub mod novel_merge;
 pub mod repository;
 pub mod tx;
 pub mod user_state;

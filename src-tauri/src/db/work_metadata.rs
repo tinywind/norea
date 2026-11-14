@@ -26,7 +26,7 @@ use super::{
 pub const STORAGE_RECOVERY_PROGRESS_EVENT: &str = "norea:storage-recovery-progress";
 const LOCAL_PLUGIN_ID: &str = "local";
 
-fn encode_base64(bytes: &[u8]) -> String {
+pub(super) fn encode_base64(bytes: &[u8]) -> String {
     const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut output = String::with_capacity(bytes.len().div_ceil(3) * 4);
     for chunk in bytes.chunks(3) {
@@ -49,7 +49,7 @@ fn encode_base64(bytes: &[u8]) -> String {
     output
 }
 
-fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
+pub(super) fn decode_base64(input: &str) -> Result<Vec<u8>, String> {
     let cleaned: Vec<u8> = input
         .bytes()
         .filter(|byte| !byte.is_ascii_whitespace())
@@ -835,7 +835,7 @@ pub fn stored_novel_metadata_fingerprint(metadata: &NovelMetadataV1Dto) -> Resul
     Ok(digest.iter().map(|byte| format!("{byte:02x}")).collect())
 }
 
-fn canonical_json_value(value: &JsonValue) -> JsonValue {
+pub(super) fn canonical_json_value(value: &JsonValue) -> JsonValue {
     match value {
         JsonValue::Array(items) => {
             JsonValue::Array(items.iter().map(canonical_json_value).collect())
