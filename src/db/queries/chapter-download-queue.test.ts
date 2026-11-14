@@ -5,7 +5,9 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ChapterDownloadJob } from "../../lib/tasks/chapter-download";
 import type { VpnDownloadPlan } from "../../lib/tasks/vpn-download-types";
 
+vi.mock("@tauri-apps/api/core", () => ({ invoke: vi.fn() }));
 vi.mock("../client", () => ({ getDb: vi.fn(), runDatabaseTransaction: vi.fn() }));
+import { invoke } from "@tauri-apps/api/core";
 import { getDb, runDatabaseTransaction } from "../client";
 import { createVpnDownloadPlan, getVpnDownloadRangeJobs } from "./vpn-download-plans";
 
@@ -61,6 +63,37 @@ beforeEach(() => {
     sqlite.exec("BEGIN IMMEDIATE");
     try { const result = await run(raw as never); sqlite.exec("COMMIT"); return result; }
     catch (error) { sqlite.exec("ROLLBACK"); throw error; }
+  }));
+  vi.mocked(invoke).mockImplementation((command, args) => exclusive(async () => {
+    if (command === "db_vpn_plan_create") {
+      const { plan, jobs } = args as { plan: VpnDownloadPlan; jobs: ChapterDownloadJob[] };
+      sqlite.exec("BEGIN IMMEDIATE");
+      try {
+        sqlite.prepare("INSERT INTO vpn_download_plan(id,payload,revision) VALUES(?,?,?)")
+          .run(plan.id, JSON.stringify(plan), plan.revision);
+        const now = Date.now();
+        for (const item of jobs) {
+          sqlite.prepare("UPDATE chapter_download_queue SET job_json=?,updated_at_ms=?,leased_at_ms=NULL WHERE chapter_id=?")
+            .run(JSON.stringify(item), now, item.id);
+        }
+        sqlite.exec("COMMIT");
+        return { value: null, effects: {} };
+      } catch (error) {
+        sqlite.exec("ROLLBACK");
+        throw error;
+      }
+    }
+    if (command === "db_vpn_plan_get_range_jobs") {
+      const { planId, rangeId } = args as { planId: string; rangeId: string };
+      const planRow = sqlite.prepare("SELECT payload FROM vpn_download_plan WHERE id=?").get(planId) as { payload: string };
+      const parsedPlan = JSON.parse(planRow.payload) as VpnDownloadPlan;
+      const targetRange = parsedPlan.ranges.find(r => r.id === rangeId)!;
+      return targetRange.selectedChapterIds.slice(targetRange.checkpoint).map(id => {
+        const qRow = sqlite.prepare("SELECT job_json FROM chapter_download_queue WHERE chapter_id=?").get(id) as { job_json: string };
+        return JSON.parse(qRow.job_json);
+      });
+    }
+    throw new Error(`Unexpected command in chapter-download-queue.test.ts: ${command}`);
   }));
 });
 

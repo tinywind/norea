@@ -1,4 +1,4 @@
-import { getDb } from "../client";
+import { invokeDbQuery } from "../ipc";
 import {
   captureSavedPluginVpnProfile,
   revokeSavedPluginVpnProfile,
@@ -18,15 +18,7 @@ export interface VpnGateServerVerdict {
 export async function listVpnGateServerVerdicts(): Promise<
   VpnGateServerVerdict[]
 > {
-  const db = await getDb();
-  return db.select<VpnGateServerVerdict[]>(
-    `SELECT
-       ip,
-       verdict,
-       updated_at AS updatedAt
-     FROM vpn_gate_server_verdict
-     ORDER BY ip`,
-  );
+  return invokeDbQuery<VpnGateServerVerdict[]>("db_vpn_list_verdicts");
 }
 
 export async function setVpnGateServerVerdict(
