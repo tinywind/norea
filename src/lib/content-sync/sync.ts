@@ -162,11 +162,20 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     const targetedRows = discoveryOnly && requested?.length
       ? await listContentSyncChapters(requested)
       : [];
-    const discoveredRows = [...new Map([...changedRows, ...targetedRows].map(row => [identity(row), row])).values()];
+    const isLocalIdentity = (id: string) => {
+      try {
+        const parsed = JSON.parse(id) as unknown;
+        return Array.isArray(parsed) && parsed[0] === "local";
+      } catch {
+        return false;
+      }
+    };
+    const isLocalRow = (row: ContentSyncChapter) => row.pluginId === "local" || row.isLocal;
+    const discoveredRows = [...new Map([...changedRows, ...targetedRows].filter(row => !isLocalRow(row)).map(row => [identity(row), row])).values()];
     const deletedIds = Object.keys(cache.tombstones);
     // Deletion deltas omit chapter numbers, so recheck the work to resolve folder aliases.
     const recheckWorks = [...new Set(deletedIds.map(id => JSON.stringify((JSON.parse(id) as string[]).slice(0, 2))))];
-    const recheckRows = recheckWorks.length ? await listContentSyncWorkChapters(recheckWorks) : [];
+    const recheckRows = (recheckWorks.length ? await listContentSyncWorkChapters(recheckWorks) : []).filter(row => !isLocalRow(row));
     const rows = [...discoveredRows, ...recheckRows];
     const rowsByIdentity = new Map(rows.map(row => [identity(row), row]));
     const deletedLocalWorks = new Set<string>();
@@ -175,11 +184,13 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         if (deletedWorks.has(await contentWorkId({ pluginId: row.pluginId, novelPath: row.novelPath }))) deletedLocalWorks.add(JSON.stringify([row.pluginId, row.novelPath]));
       }
     }
-    const pending = new Set([
-      ...cache.pendingUploads,
-      ...(discoveryOnly ? discoveredRows.map(identity) : (requested ?? rowsByIdentity.keys())),
-      ...recheckRows.map(identity),
-    ]);
+    const pending = new Set(
+      [
+        ...cache.pendingUploads,
+        ...(discoveryOnly ? discoveredRows.map(identity) : (requested ?? rowsByIdentity.keys())),
+        ...recheckRows.map(identity),
+      ].filter(id => !isLocalIdentity(id)),
+    );
     if (!pending.size && cache.includesIncompleteChapters && cache.localCursor === head && !deletedIds.length) {
       if (needsLocalDiscovery) {
         cache.localDiscoveryVersion = LOCAL_CONTENT_DISCOVERY_VERSION;

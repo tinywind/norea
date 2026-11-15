@@ -1,5 +1,5 @@
 import {
-  canonicalUserStateJson, parseUserStateEntity, parseUserStateMergeResult, parseUserStateOperation, parseUserStateReadResponse, parseUserStateRecord,
+  canonicalUserStateJson, isLocalUserStateEntity, parseUserStateEntity, parseUserStateMergeResult, parseUserStateOperation, parseUserStateReadResponse, parseUserStateRecord,
   USER_STATE_CLIENT_BATCH_BYTES, userStateEntityKey, userStateJsonBytes,
   type UserStateBinding, type UserStateConflict, type UserStateDeferred, type UserStateEntity,
   type UserStateMergeResult, type UserStateOperation, type UserStateReadResponse, type UserStateRecord, type UserStateValueMap,
@@ -9,12 +9,65 @@ import {
   resolveCategoryAlias, seedUserStateInDb, USER_CHAPTER_SELECT, USER_STATE_PRELINK_BASE_REVISION, userStateRestorePausedInDb, workspaceRows,
   type IntentRow, type UserChapterRow, type UserStateDb,
 } from "./user-state-core";
+import { isCurrentWorkHeld, loadCurrentHeldSourcesInDb } from "./user-state-current-data";
 import { portableStoredUserStateIntentInDb } from "./user-state-stored-chapter";
 
 interface PendingRow extends IntentRow { baseRevision: number; acknowledgedSequence: number }
 interface OperationRow { operationId: string; entityKey: string; intentSequence: number; payload: string; status: string; receipt: string | null }
-interface StoredRecordRow { entityKey: string; revision: number; payload: string; deletionRevision: number }
+interface StoredRecordRow { entityKey: string; revision: number; appliedRevision: number; payload: string; deletionRevision: number }
 const USER_STATE_DB_BATCH_BYTES = 8 * 1024 * 1024;
+
+export async function purgeAndSettleLocalUserStateInDb(db: UserStateDb): Promise<void> {
+  await db.execute(`DELETE FROM user_state_operation
+    WHERE json_extract(payload,'$.entity.work.pluginId')='local'
+      OR (json_extract(payload,'$.entity.kind')='composition'
+          AND EXISTS (SELECT 1 FROM json_each(payload,'$.value.composition.entries') e,json_each(e.value,'$.sources') s
+                      WHERE json_extract(s.value,'$.pluginId')='local'))`);
+  await db.execute(`DELETE FROM user_state_conflict WHERE entity_key IN (
+    SELECT entity_key FROM user_state_intent
+    WHERE json_extract(entity_json,'$.work.pluginId')='local'
+      OR (json_extract(entity_json,'$.kind')='composition'
+          AND EXISTS (SELECT 1 FROM json_each(value_json,'$.composition.entries') e,json_each(e.value,'$.sources') s
+                      WHERE json_extract(s.value,'$.pluginId')='local')))`);
+  await db.execute(`DELETE FROM user_state_progress WHERE entity_key IN (
+    SELECT entity_key FROM user_state_intent
+    WHERE json_extract(entity_json,'$.work.pluginId')='local'
+      OR (json_extract(entity_json,'$.kind')='composition'
+          AND EXISTS (SELECT 1 FROM json_each(value_json,'$.composition.entries') e,json_each(e.value,'$.sources') s
+                      WHERE json_extract(s.value,'$.pluginId')='local')))`);
+  await db.execute(`DELETE FROM user_state_intent
+    WHERE json_extract(entity_json,'$.work.pluginId')='local'
+      OR (json_extract(entity_json,'$.kind')='composition'
+          AND EXISTS (SELECT 1 FROM json_each(value_json,'$.composition.entries') e,json_each(e.value,'$.sources') s
+                      WHERE json_extract(s.value,'$.pluginId')='local'))`);
+  await db.execute(`UPDATE user_state_record
+    SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL
+    WHERE (applied_revision<revision OR deferred_reason IS NOT NULL)
+      AND (json_extract(payload,'$.entity.work.pluginId')='local'
+        OR (json_extract(payload,'$.entity.kind')='composition'
+            AND EXISTS (SELECT 1 FROM json_each(payload,'$.value.composition.entries') e,json_each(e.value,'$.sources') s
+                        WHERE json_extract(s.value,'$.pluginId')='local')))`);
+}
+
+export async function settleHeldSourceRecordsInDb(db: UserStateDb, namespace: string, serverUrl: string): Promise<number> {
+  const held = await loadCurrentHeldSourcesInDb(db, serverUrl);
+  if (!held.idPairs.length && !held.pathPairs.length) return 0;
+  const result = await db.execute(`UPDATE user_state_record
+    SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL
+    WHERE namespace=$1
+      AND (applied_revision<revision OR deferred_reason IS NOT NULL)
+      AND json_extract(payload,'$.entity.kind')<>'category'
+      AND (
+        (json_extract(payload,'$.entity.work.sourceNovelId') IS NOT NULL
+         AND EXISTS (SELECT 1 FROM json_each($2) h
+           WHERE json_extract(h.value,'$.pluginId')=json_extract(user_state_record.payload,'$.entity.work.pluginId')
+             AND json_extract(h.value,'$.sourceNovelId')=lower(json_extract(user_state_record.payload,'$.entity.work.sourceNovelId'))))
+        OR EXISTS (SELECT 1 FROM json_each($3) hp
+          WHERE json_extract(hp.value,'$.pluginId')=json_extract(user_state_record.payload,'$.entity.work.pluginId')
+            AND json_extract(hp.value,'$.novelPath')=json_extract(user_state_record.payload,'$.entity.work.novelPath'))
+      )`, [namespace, JSON.stringify(held.idPairs), JSON.stringify(held.pathPairs)]);
+  return result.rowsAffected;
+}
 
 function jsonBatches<T>(rows: readonly T[], size: (row: T) => number): T[][] {
   const batches: T[][] = [];
@@ -30,7 +83,7 @@ function jsonBatches<T>(rows: readonly T[], size: (row: T) => number): T[][] {
   return batches;
 }
 export interface UserStateLedgerStatus { cursor: number; through: number | null; pending: number; conflicts: number; deferred: number;
-  projectionPending: number; projectionParked: number; projectionFailed: number;
+  projectionPending: number; projectionFailed: number;
   lastSuccessAt: number | null; pausedAfterRestore: boolean }
 
 export async function bindUserStateWorkspaceInDb(db: UserStateDb, binding: UserStateBinding): Promise<void> {
@@ -45,6 +98,7 @@ export async function bindUserStateWorkspaceInDb(db: UserStateDb, binding: UserS
   // Pre-LWW clients could leave compare-and-swap conflicts that permanently block
   // the next explicit edit. The workspace is single-user now, so retry those intents.
   await db.execute("DELETE FROM user_state_conflict WHERE namespace=$1 AND reason='revision-mismatch'", [namespace]);
+  await purgeAndSettleLocalUserStateInDb(db);
 
   // Current-snapshot clients created only the workspace row. Seed the durable delta
   // outbox once when such a database upgrades, then use record-level intents only.
@@ -79,6 +133,7 @@ export async function prepareUserStateOperationsInDb(
 ): Promise<UserStateOperation[]> {
   await assertUserStateAvailableInDb(db);
   const { namespace } = await requireBinding(db, binding);
+  await purgeAndSettleLocalUserStateInDb(db);
   const limit = limits.limit === undefined ? null : Math.max(1, Math.floor(limits.limit));
   const maxBytes = Math.min(USER_STATE_CLIENT_BATCH_BYTES, limits.maxBytes ?? USER_STATE_CLIENT_BATCH_BYTES);
   const allowOpaqueIdentity = limits.allowOpaqueIdentity === true;
@@ -141,7 +196,9 @@ export async function storeUserStateRecordsInDb(db: UserStateDb, namespace: stri
     const record = parseUserStateRecord(raw);
     const payload = canonicalUserStateJson(record);
     return {
-      entityKey: userStateEntityKey(record.entity), revision: record.revision, payload,
+      entityKey: userStateEntityKey(record.entity), revision: record.revision,
+      appliedRevision: isLocalUserStateEntity(record.entity, record.value) ? record.revision : 0,
+      payload,
       deletionRevision: record.entity.kind === "category" && (record.value as UserStateValueMap["category"]).deleted ? record.revision : 0,
     };
   });
@@ -157,11 +214,12 @@ export async function storeUserStateRecordsInDb(db: UserStateDb, namespace: stri
       const payload = incoming.get(JSON.stringify([row.entityKey, row.revision]));
       if (payload !== undefined && payload !== row.payload) throw new Error("The shared state revision changed its contents.");
     }
-    await db.execute(`INSERT INTO user_state_record(namespace,entity_key,revision,payload,deletion_revision)
+    await db.execute(`INSERT INTO user_state_record(namespace,entity_key,revision,applied_revision,payload,deletion_revision)
       SELECT $1,json_extract(value,'$.entityKey'),json_extract(value,'$.revision'),
-        json_extract(value,'$.payload'),json_extract(value,'$.deletionRevision')
+        json_extract(value,'$.appliedRevision'),json_extract(value,'$.payload'),json_extract(value,'$.deletionRevision')
       FROM json_each($2) WHERE true
-      ON CONFLICT(namespace,entity_key) DO UPDATE SET revision=excluded.revision,payload=excluded.payload,
+      ON CONFLICT(namespace,entity_key) DO UPDATE SET revision=excluded.revision,
+        applied_revision=MAX(user_state_record.applied_revision,excluded.applied_revision),payload=excluded.payload,
         deletion_revision=MAX(user_state_record.deletion_revision,excluded.deletion_revision),deferred_reason=NULL,deferred_detail=NULL
       WHERE excluded.revision>user_state_record.revision`, [namespace, encoded]);
   }
@@ -349,6 +407,7 @@ export async function listUserStateConflictsInDb(db: UserStateDb, binding: UserS
   const result: UserStateConflict[] = [];
   for (const row of rows) {
     const intent = intentFromRow(row);
+    if (isLocalUserStateEntity(intent.entity, intent.value)) continue;
     const effective = await canonicalEntity(db, namespace, intent.entity);
     const [shared] = await db.select<{ payload: string }[]>("SELECT payload FROM user_state_record WHERE namespace=$1 AND entity_key=$2", [namespace, userStateEntityKey(effective)]);
     const record = shared ? parseUserStateRecord(JSON.parse(shared.payload)) : null;
@@ -364,6 +423,7 @@ export async function listUserStateDeferredInDb(db: UserStateDb, binding: UserSt
   const result: UserStateDeferred[] = [];
   for (const row of intents) {
     const intent = intentFromRow(row);
+    if (isLocalUserStateEntity(intent.entity, intent.value)) continue;
     const reason = unresolvedIntent(intent.entity, intent.value);
     if (reason) result.push({ id: row.entityKey, entity: intent.entity, reason });
   }
@@ -371,42 +431,71 @@ export async function listUserStateDeferredInDb(db: UserStateDb, binding: UserSt
 }
 export async function getUserStateLedgerStatusInDb(db: UserStateDb, binding: UserStateBinding): Promise<UserStateLedgerStatus> {
   const workspace = await requireBinding(db, binding);
-  const [count] = await db.select<{ pending: number }[]>("SELECT COUNT(*) AS pending FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key WHERE p.namespace=$1 AND i.sequence>p.acknowledged_sequence", [workspace.namespace]);
-  const [held] = await db.select<{ deferred: number }[]>("SELECT COUNT(*) AS deferred FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1 WHERE i.sequence>p.acknowledged_sequence AND ((json_type(i.entity_json,'$.work')='object' AND json_extract(i.entity_json,'$.work.sourceNovelId') IS NULL) OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'norea-folder:%' OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'local-folder:%')", [workspace.namespace]);
+  const [count] = await db.select<{ pending: number }[]>(
+    "SELECT COUNT(*) AS pending FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key WHERE p.namespace=$1 AND i.sequence>p.acknowledged_sequence AND COALESCE(json_extract(i.entity_json,'$.work.pluginId'),'')<>'local'",
+    [workspace.namespace],
+  );
+  const [held] = await db.select<{ deferred: number }[]>(
+    "SELECT COUNT(*) AS deferred FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1 WHERE i.sequence>p.acknowledged_sequence AND COALESCE(json_extract(i.entity_json,'$.work.pluginId'),'')<>'local' AND ((json_type(i.entity_json,'$.work')='object' AND json_extract(i.entity_json,'$.work.sourceNovelId') IS NULL) OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'norea-folder:%' OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'local-folder:%')",
+    [workspace.namespace],
+  );
   const heldIntents = await db.select<{ entityKey: string; entityJson: string }[]>(`SELECT i.entity_key AS entityKey,i.entity_json AS entityJson
     FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1
-    WHERE i.seed=0 AND p.base_revision<>$2 AND i.sequence>p.acknowledged_sequence`,
+    WHERE i.seed=0 AND p.base_revision<>$2 AND i.sequence>p.acknowledged_sequence
+      AND COALESCE(json_extract(i.entity_json,'$.work.pluginId'),'')<>'local'`,
     [workspace.namespace, USER_STATE_PRELINK_BASE_REVISION]);
   const heldKeys = new Set<string>();
   for (const row of heldIntents) {
     const entity = parseUserStateEntity(JSON.parse(row.entityJson));
+    heldKeys.add(userStateEntityKey(entity));
     heldKeys.add(userStateEntityKey(await canonicalEntity(db, workspace.namespace, entity)));
   }
-  const [projection] = await db.select<{ waiting: number; parked: number; failed: number }[]>(`WITH current AS (
-    SELECT entity_key,applied_revision<revision AS waiting,deferred_reason,
-      json_extract(payload,'$.entity.kind') AS kind,
-      json_extract(payload,'$.entity.work.pluginId') AS plugin_id,
-      json_extract(payload,'$.entity.work.sourceNovelId') AS novel_id,
-      json_extract(payload,'$.entity.work.novelPath') AS novel_path
-    FROM user_state_record WHERE namespace=$1 AND (applied_revision<revision OR deferred_reason IS NOT NULL)
-  ), classified AS (
-    SELECT entity_key,waiting,deferred_reason,
-      (kind='category' OR EXISTS (
-        SELECT 1 FROM novel n WHERE n.plugin_id=current.plugin_id
-          AND (CASE WHEN current.novel_id IS NULL THEN n.path=current.novel_path
-            ELSE lower(n.source_novel_id)=lower(current.novel_id) END)
-      )) AS applicable FROM current
-  ) SELECT
-    COALESCE(SUM(CASE WHEN waiting AND deferred_reason IS NULL AND applicable
-      AND entity_key NOT IN (SELECT value FROM json_each($2)) THEN 1 ELSE 0 END),0) AS waiting,
-    COALESCE(SUM(CASE WHEN deferred_reason IS NOT NULL AND deferred_reason<>'projection-error'
-      OR (waiting AND deferred_reason IS NULL AND NOT applicable) THEN 1 ELSE 0 END),0) AS parked,
-    COALESCE(SUM(CASE WHEN deferred_reason='projection-error' THEN 1 ELSE 0 END),0) AS failed
-    FROM classified`, [workspace.namespace, JSON.stringify([...heldKeys])]);
+  const heldSources = await loadCurrentHeldSourcesInDb(db, binding.serverUrl);
+  const projRows = await db.select<{
+    entityKey: string;
+    waiting: number;
+    deferredReason: string | null;
+    pluginId: string | null;
+    novelId: string | null;
+    novelPath: string | null;
+    applicable: number;
+  }[]>(`SELECT entity_key AS entityKey,applied_revision<revision AS waiting,deferred_reason AS deferredReason,
+      json_extract(payload,'$.entity.work.pluginId') AS pluginId,
+      json_extract(payload,'$.entity.work.sourceNovelId') AS novelId,
+      json_extract(payload,'$.entity.work.novelPath') AS novelPath,
+      (json_extract(payload,'$.entity.kind')='category' OR EXISTS (
+        SELECT 1 FROM novel n WHERE n.plugin_id=json_extract(user_state_record.payload,'$.entity.work.pluginId')
+          AND n.plugin_id<>'local' AND n.is_local=0
+          AND (CASE WHEN json_extract(user_state_record.payload,'$.entity.work.sourceNovelId') IS NULL
+            THEN n.path=json_extract(user_state_record.payload,'$.entity.work.novelPath')
+            ELSE lower(n.source_novel_id)=lower(json_extract(user_state_record.payload,'$.entity.work.sourceNovelId')) END)
+      )) AS applicable
+    FROM user_state_record WHERE namespace=$1
+      AND (applied_revision<revision OR deferred_reason='projection-error')
+      AND COALESCE(json_extract(payload,'$.entity.work.pluginId'),'')<>'local'`, [workspace.namespace]);
+  let projectionPending = 0;
+  let projectionFailed = 0;
+  for (const row of projRows) {
+    if (row.pluginId && isCurrentWorkHeld(heldSources, {
+      pluginId: row.pluginId,
+      sourceNovelId: row.novelId,
+      novelPath: row.novelPath ?? "",
+      name: "",
+    })) {
+      continue;
+    }
+    if (row.deferredReason === "projection-error") {
+      projectionFailed += 1;
+      continue;
+    }
+    if (row.waiting && row.deferredReason === null && row.applicable && !heldKeys.has(row.entityKey)) {
+      projectionPending += 1;
+    }
+  }
   return { cursor: workspace.cursor, through: workspace.through, pending: count?.pending ?? 0,
     conflicts: (await listUserStateConflictsInDb(db, binding)).length,
     deferred: held?.deferred ?? 0,
-    projectionPending: projection?.waiting ?? 0, projectionParked: projection?.parked ?? 0, projectionFailed: projection?.failed ?? 0,
+    projectionPending, projectionFailed,
     lastSuccessAt: workspace.lastSuccessAt, pausedAfterRestore: await userStateRestorePausedInDb(db) };
 }
 

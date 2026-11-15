@@ -121,6 +121,9 @@ export async function applyChapterDifferences(
           await downloadServerChapterFromServer(entry, source.serverUrl, { token,
             target: { pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath }, expectedLocalFingerprint: difference.local.fingerprint });
         } else {
+          if (row.pluginId === "local" || row.isLocal) {
+            throw new Error("Local files cannot be uploaded to the content server.");
+          }
           const storageDir = resolvedChapterStorageDir(row.chapterId) ?? chapterStorageRelativeDir(storageIdentity(row).novel, storageIdentity(row).chapter);
           await withContentChapterStage({ storageDir, identity: { pluginId: row.pluginId, novelPath: row.novelPath }, verifySource: verifyLocal }, async stagePath => {
             await uploadContentChapter({ serverUrl: source.serverUrl, token, chapterId: row.chapterId, conflictPolicy: "replace-server", storageDir, stagePath,

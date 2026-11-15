@@ -17,7 +17,6 @@ import {
   type UserStateMergeResult,
   type UserStateOperation,
   type UserStateReadResponse,
-  type UserStateRecord,
 } from "../lib/user-state/types";
 import {
   assertUserStateAvailableInDb,
@@ -60,8 +59,7 @@ import {
   type UserStateLedgerStatus,
 } from "./sql/user-state-ledger";
 import {
-  listPendingUserStateProjectionRecordsInDb,
-  projectUserStateRecordsInDb,
+  projectPendingUserStateInDb,
   refreshUnattemptedUserStateIdentitiesInDb,
 } from "./sql/user-state-materialize";
 
@@ -165,7 +163,6 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
             conflicts: 0,
             deferred: 0,
             projectionPending: 0,
-            projectionParked: 0,
             projectionFailed: 0,
             lastSuccessAt: null,
             pausedAfterRestore: await userStateRestorePausedInDb(db),
@@ -173,7 +170,7 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
           return { handled: true, result: status };
         }
         const [row] = await db.select<{ pending: number }[]>(
-          "SELECT COUNT(*) AS pending FROM user_state_intent",
+          "SELECT COUNT(*) AS pending FROM user_state_intent WHERE COALESCE(json_extract(entity_json,'$.work.pluginId'),'')<>'local'",
         );
         const status: UserStateLedgerStatus = {
           cursor: 0,
@@ -182,7 +179,6 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
           conflicts: 0,
           deferred: 0,
           projectionPending: 0,
-          projectionParked: 0,
           projectionFailed: 0,
           lastSuccessAt: null,
           pausedAfterRestore: await userStateRestorePausedInDb(db),
@@ -269,29 +265,17 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
         };
       }
 
-      if (command === "db_user_state_list_pending_projection_records") {
-        const db = await options.getDb();
-        return {
-          handled: true,
-          result: await listPendingUserStateProjectionRecordsInDb(
-            db,
-            args.binding as UserStateBinding,
-          ),
-        };
-      }
-
-      if (command === "db_user_state_project_records_chunk") {
+      if (command === "db_user_state_project_pending") {
         const binding = args.binding as UserStateBinding;
-        const records = (args.records ?? []) as UserStateRecord[];
         const applied = await options.runTransaction(
-          db => projectUserStateRecordsInDb(db, binding, records),
+          db => projectPendingUserStateInDb(db, binding),
           true,
         );
         return {
           handled: true,
           result: {
             value: applied,
-            effects: {},
+            effects: { userStateLedgerChanged: true },
           } satisfies DbMutationEnvelope<UserStateApplyEffects>,
         };
       }

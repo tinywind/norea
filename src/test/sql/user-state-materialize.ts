@@ -5,11 +5,12 @@ import {
   type IntentRow, type UserStateDb,
 } from "./user-state-core";
 import {
-  parseUserStateRecord, userStateEntityKey, type UserStateApplyEffects, type UserStateBinding,
+  isLocalUserStateEntity, parseUserStateEntity, parseUserStateRecord, userStateEntityKey, type UserStateApplyEffects, type UserStateBinding,
   type UserStateChapterReference, type UserStateRecord, type UserStateValueMap, type UserStateWorkReference,
 } from "../../lib/user-state/types";
 import { mergeUserStateComposition } from "../../lib/user-state/composition";
 import { parseStoredChapterPath } from "../../lib/user-state/stored-chapter";
+import { purgeAndSettleLocalUserStateInDb, settleHeldSourceRecordsInDb } from "./user-state-ledger";
 import { resolveStoredChapterReferenceInDb } from "./user-state-stored-chapter";
 import type { ChapterCompositionV1 } from "../../lib/chapter-composition";
 
@@ -86,8 +87,18 @@ async function categoryLocalIdInDb(db: UserStateDb, namespace: string, categoryI
 }
 
 export async function materializeUserStateRecordInDb(db: UserStateDb, namespace: string, record: UserStateRecord): Promise<UserStateApplyEffects> {
+  return (await materializeUserStateRecordWithOptionsInDb(db, namespace, record, false)).effects;
+}
+
+async function materializeUserStateRecordWithOptionsInDb(
+  db: UserStateDb,
+  namespace: string,
+  record: UserStateRecord,
+  deferLastReadAt: boolean,
+): Promise<{ effects: UserStateApplyEffects; touchedNovelId: number | null }> {
   const { entity } = record;
   const effects: UserStateApplyEffects = { resumes: [] };
+  if (isLocalUserStateEntity(entity, record.value)) return { effects, touchedNovelId: null };
   if (entity.kind === "category") {
     const value = record.value as UserStateValueMap["category"];
     const categoryId = await resolveCategoryAlias(db, namespace, entity.categoryId);
@@ -95,7 +106,7 @@ export async function materializeUserStateRecordInDb(db: UserStateDb, namespace:
     if (value.deleted) {
       if (mappedId) await db.execute("DELETE FROM category WHERE id=$1 AND is_system=0", [mappedId]);
       await db.execute("INSERT INTO user_state_category(category_id) VALUES($1) ON CONFLICT(category_id) DO NOTHING", [categoryId]);
-      return effects;
+      return { effects, touchedNovelId: null };
     }
     const [collision] = await db.select<{ id: number }[]>("SELECT id FROM category WHERE name=$1", [value.name]);
     if (collision && collision.id !== mappedId) {
@@ -107,7 +118,7 @@ export async function materializeUserStateRecordInDb(db: UserStateDb, namespace:
       if (!mappedId && baseline) {
         await db.execute("INSERT INTO user_state_category(category_id,local_id) VALUES($1,$2) ON CONFLICT(category_id) DO UPDATE SET local_id=excluded.local_id", [categoryId, collision.id]);
         await db.execute("UPDATE category SET sort=$2 WHERE id=$1", [collision.id, value.sort]);
-        return effects;
+        return { effects, touchedNovelId: null };
       }
       throw new DeferredUserState("category-name-conflict", value.name);
     }
@@ -116,7 +127,7 @@ export async function materializeUserStateRecordInDb(db: UserStateDb, namespace:
       const result = await db.execute("INSERT INTO category(name,sort,is_system) VALUES($1,$2,0)", [value.name, value.sort]);
       await db.execute("INSERT INTO user_state_category(category_id,local_id) VALUES($1,$2) ON CONFLICT(category_id) DO UPDATE SET local_id=excluded.local_id", [categoryId, result.lastInsertId]);
     }
-    return effects;
+    return { effects, touchedNovelId: null };
   }
   const work = await findUserStateWorkInDb(db, entity.work);
   // Shared user state is authoritative user data, not a content catalog. Never
@@ -139,7 +150,7 @@ export async function materializeUserStateRecordInDb(db: UserStateDb, namespace:
       const deleted = state && (parseUserStateRecord(JSON.parse(state.payload)).value as UserStateValueMap["category"]).deleted;
       if (value.included && (deleted || state && state.deletionRevision >= record.revision)) throw new DeferredUserState("category-deleted");
       if (!categoryLocalId) {
-        if (!value.included) return effects;
+        if (!value.included) return { effects, touchedNovelId: null };
         throw new DeferredUserState("category-missing");
       }
       if (value.included) await db.execute("INSERT OR IGNORE INTO novel_category(novel_id,category_id) VALUES($1,$2)", [work.id, categoryLocalId]);
@@ -150,6 +161,7 @@ export async function materializeUserStateRecordInDb(db: UserStateDb, namespace:
       const chapterId = await findChapter(db, work.id, entity.chapter);
       const value = record.value as UserStateValueMap["reading"];
       await db.execute("UPDATE chapter SET progress=$2,unread=$3,read_at=$4 WHERE id=$1", [chapterId, value.progress, value.unread ? 1 : 0, value.readAt]);
+      if (deferLastReadAt) return { effects, touchedNovelId: work.id };
       await db.execute("UPDATE novel SET last_read_at=(SELECT MAX(read_at) FROM chapter WHERE novel_id=$1) WHERE id=$1", [work.id]);
       break;
     }
@@ -168,7 +180,7 @@ export async function materializeUserStateRecordInDb(db: UserStateDb, namespace:
       effects.resumes.push(...(await applySharedCompositionInDb(db, work.id, (record.value as UserStateValueMap["composition"]).composition, namespace)).resumes);
       break;
   }
-  return effects;
+  return { effects, touchedNovelId: null };
 }
 
 export async function refreshUnattemptedUserStateIdentitiesInDb(db: UserStateDb, novelId?: number): Promise<void> {
@@ -233,75 +245,96 @@ async function reapplyComposedChapterUserStateInDb(db: UserStateDb, namespace: s
   return effects;
 }
 
-function projectionPriority(record: UserStateRecord): number {
-  switch (record.entity.kind) {
-    case "category": return 0;
-    case "library": return 1;
-    case "composition": return 2;
-    default: return 3;
-  }
-}
-
-export async function listPendingUserStateProjectionRecordsInDb(
+export async function projectPendingUserStateInDb(
   db: UserStateDb, binding: UserStateBinding,
-): Promise<UserStateRecord[]> {
-  const { namespace } = await requireBinding(db, binding);
-  await assertUserStateAvailableInDb(db);
-  const rows = await db.select<{ payload: string }[]>(`SELECT payload FROM user_state_record r
-    WHERE namespace=$1 AND applied_revision<revision AND (deferred_reason IS NULL OR deferred_reason='projection-error') AND (
-      json_extract(payload,'$.entity.kind') IN ('category','library')
-      OR EXISTS (
-        SELECT 1 FROM novel n
-        WHERE n.plugin_id=json_extract(r.payload,'$.entity.work.pluginId')
-          AND (CASE WHEN json_extract(r.payload,'$.entity.work.sourceNovelId') IS NULL
-            THEN n.path=json_extract(r.payload,'$.entity.work.novelPath')
-            ELSE lower(n.source_novel_id)=lower(json_extract(r.payload,'$.entity.work.sourceNovelId')) END)
-      )
-    )
-    ORDER BY CASE json_extract(payload,'$.entity.kind') WHEN 'category' THEN 0 WHEN 'library' THEN 1 WHEN 'composition' THEN 2 ELSE 3 END,revision`, [namespace]);
-  return rows.map(row => parseUserStateRecord(JSON.parse(row.payload)));
-}
-
-export async function projectUserStateRecordsInDb(
-  db: UserStateDb, binding: UserStateBinding, raws: readonly UserStateRecord[],
 ): Promise<UserStateApplyEffects> {
   const { namespace } = await requireBinding(db, binding);
   await assertUserStateAvailableInDb(db);
   const effects: UserStateApplyEffects = { resumes: [] };
-  const records = raws.map(parseUserStateRecord).sort((a, b) => projectionPriority(a) - projectionPriority(b) || a.revision - b.revision);
-  if (!records.length) return effects;
+
+  await purgeAndSettleLocalUserStateInDb(db);
+  await settleHeldSourceRecordsInDb(db, namespace, binding.serverUrl);
+
+  await db.execute(`UPDATE user_state_record
+    SET applied_revision=revision,deferred_reason='missing-work',deferred_detail=NULL
+    WHERE namespace=$1
+      AND applied_revision<revision
+      AND (deferred_reason IS NULL OR deferred_reason='projection-error')
+      AND json_extract(payload,'$.entity.kind')<>'category'
+      AND NOT EXISTS (
+        SELECT 1 FROM novel n
+        WHERE n.plugin_id=json_extract(user_state_record.payload,'$.entity.work.pluginId')
+          AND n.plugin_id<>'local' AND n.is_local=0
+          AND (CASE WHEN json_extract(user_state_record.payload,'$.entity.work.sourceNovelId') IS NULL
+            THEN n.path=json_extract(user_state_record.payload,'$.entity.work.novelPath')
+            ELSE lower(n.source_novel_id)=lower(json_extract(user_state_record.payload,'$.entity.work.sourceNovelId')) END)
+      )`, [namespace]);
+
+  const pendingRows = await db.select<{ entityKey: string; revision: number; payload: string }[]>(`
+    SELECT entity_key AS entityKey,revision,payload FROM user_state_record
+    WHERE namespace=$1 AND applied_revision<revision
+      AND (deferred_reason IS NULL OR deferred_reason='projection-error')
+    ORDER BY CASE json_extract(payload,'$.entity.kind') WHEN 'category' THEN 0 WHEN 'library' THEN 1 WHEN 'composition' THEN 2 ELSE 3 END,revision`,
+    [namespace]);
+  if (!pendingRows.length) return effects;
 
   const dirtyBefore = await db.select<{ pluginId: string; path: string }[]>(
     "SELECT plugin_id AS pluginId,path FROM work_metadata_dirty ORDER BY plugin_id,path",
   );
-  const identities = records.map(record => ({ entityKey: userStateEntityKey(record.entity), revision: record.revision }));
-  const stored = await db.select<{ entityKey: string; revision: number; appliedRevision: number }[]>(`
-    SELECT r.entity_key AS entityKey,r.revision,r.applied_revision AS appliedRevision
-    FROM json_each($2) incoming CROSS JOIN user_state_record r
-      ON r.entity_key=json_extract(incoming.value,'$.entityKey')
-    WHERE r.namespace=$1`, [namespace, JSON.stringify(identities)]);
-  const state = new Map(stored.map(row => [row.entityKey, row]));
+  const heldIntents = await db.select<{ entityJson: string }[]>(`SELECT i.entity_json AS entityJson
+    FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1
+    WHERE i.seed=0 AND p.base_revision<>$2 AND i.sequence>p.acknowledged_sequence`,
+    [namespace, USER_STATE_PRELINK_BASE_REVISION]);
+  const heldKeys = new Set<string>();
+  for (const row of heldIntents) {
+    const entity = parseUserStateEntity(JSON.parse(row.entityJson));
+    heldKeys.add(userStateEntityKey(entity));
+    heldKeys.add(userStateEntityKey(await canonicalEntity(db, namespace, entity)));
+  }
 
-  for (const record of records) {
-    const key = userStateEntityKey(record.entity);
-    const current = state.get(key);
-    if (!current || current.revision !== record.revision || current.appliedRevision >= record.revision) continue;
-    if (await hasPendingUserStateForRecordInDb(db, namespace, record)) continue;
+  let sawComposition = false;
+  const touchedLastReadNovels = new Set<number>();
+  for (const row of pendingRows) {
+    const record = parseUserStateRecord(JSON.parse(row.payload));
+    if (isLocalUserStateEntity(record.entity, record.value)) {
+      await db.execute("UPDATE user_state_record SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
+        [namespace, row.entityKey, record.revision]);
+      continue;
+    }
+    if (sawComposition) {
+      const [current] = await db.select<{ appliedRevision: number }[]>(
+        "SELECT applied_revision AS appliedRevision FROM user_state_record WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
+        [namespace, row.entityKey, record.revision],
+      );
+      if (!current || current.appliedRevision >= record.revision) continue;
+    }
+    if (heldKeys.has(row.entityKey)) continue;
+    if ("categoryId" in record.entity && heldKeys.has(userStateEntityKey(await canonicalEntity(db, namespace, record.entity)))) {
+      continue;
+    }
     try {
-      const next = await materializeUserStateRecordInDb(db, namespace, record);
+      const { effects: next, touchedNovelId } = await materializeUserStateRecordWithOptionsInDb(db, namespace, record, true);
+      if (record.entity.kind === "composition") sawComposition = true;
+      if (touchedNovelId !== null) touchedLastReadNovels.add(touchedNovelId);
       effects.resumes.push(...next.resumes);
       await db.execute("UPDATE user_state_record SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
-        [namespace, key, record.revision]);
+        [namespace, row.entityKey, record.revision]);
     } catch (error) {
       if (error instanceof DeferredUserState) {
         await db.execute("UPDATE user_state_record SET applied_revision=revision,deferred_reason=$4,deferred_detail=$5 WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
-          [namespace, key, record.revision, error.reason, error.message.slice(0, 500)]);
+          [namespace, row.entityKey, record.revision, error.reason, error.message.slice(0, 500)]);
       } else {
         await db.execute("UPDATE user_state_record SET deferred_reason='projection-error',deferred_detail=$4 WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
-          [namespace, key, record.revision, String(error).slice(0, 500)]);
+          [namespace, row.entityKey, record.revision, String(error).slice(0, 500)]);
         console.warn("[user-state] stored shared state but could not project it into local content", error);
       }
     }
+  }
+
+  if (touchedLastReadNovels.size) {
+    await db.execute(`UPDATE novel
+      SET last_read_at=(SELECT MAX(read_at) FROM chapter WHERE novel_id=novel.id)
+      WHERE id IN (SELECT value FROM json_each($1))`, [JSON.stringify([...touchedLastReadNovels])]);
   }
 
   await db.execute("DELETE FROM work_metadata_dirty");
@@ -325,10 +358,12 @@ export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: numbe
   await refreshUnattemptedUserStateIdentitiesInDb(db, novelId);
   const [work] = await db.select<{ pluginId: string; sourceNovelId: string | null; novelPath: string }[]>(
     "SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath FROM novel WHERE id=$1", [novelId]);
-  if (work) await db.execute(`UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE
-    json_extract(payload,'$.entity.work.pluginId')=$1 AND
-    (json_extract(payload,'$.entity.work.novelPath')=$3 OR
-      ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))`,
-    [work.pluginId, work.sourceNovelId, work.novelPath]);
-  requestUserStateDeferredApply(db);
+  if (work && work.pluginId !== "local") {
+    await db.execute(`UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE
+      json_extract(payload,'$.entity.work.pluginId')=$1 AND
+      (json_extract(payload,'$.entity.work.novelPath')=$3 OR
+        ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))`,
+      [work.pluginId, work.sourceNovelId, work.novelPath]);
+    requestUserStateDeferredApply(db);
+  }
 }

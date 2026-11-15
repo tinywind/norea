@@ -202,6 +202,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
     // A file that changed without the cache is never uploaded over the server copy, but it no longer blocks the other works.
     const changedOutsideCache: string[] = [];
     for (const [identity, file] of byIdentity) {
+      if (file.pluginId === "local") continue;
       const version = workMetadataFileVersion(file)!;
       const id = await contentWorkId({ pluginId: file.pluginId, novelPath: file.path });
       knownWorks.set(id, { identity, directory: file.directory });
@@ -210,6 +211,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       const latest = await readStoredNovelMetadata(file.directory);
       if (!latest) { cache.fileVersions[identity] = version; dirty = true; continue; }
       const { metadata } = latest;
+      if (metadata.identity.pluginId === "local" || metadata.novel.isLocal) continue;
       const cover = await readStoredNovelCover(file.directory, metadata);
       const current = await workMetadataFingerprint(metadata, cover);
       const currentFile = await readWorkMetadataSyncFile(metadata.identity);

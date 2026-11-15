@@ -107,9 +107,26 @@ export interface UserStateStatus {
   pending: number;
   conflicts: UserStateConflict[];
   projectionPending?: number;
-  projectionParked?: number;
   projectionFailed?: number;
   lastSuccessAt: number | null;
+}
+
+export function isLocalUserStateEntity(
+  entity: UserStateEntity,
+  value?: UserStateValue,
+): boolean {
+  if ("work" in entity && entity.work.pluginId === "local") return true;
+  if (
+    entity.kind === "composition" &&
+    value &&
+    "composition" in value &&
+    value.composition.entries.some(entry =>
+      entry.sources.some(source => source.pluginId === "local"),
+    )
+  ) {
+    return true;
+  }
+  return false;
 }
 export interface ResolveUserStateConflictInput {
   conflictId: string;

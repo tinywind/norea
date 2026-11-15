@@ -18,15 +18,16 @@ use super::core::{
 };
 use super::stored_chapter::verified_chapter_storage_dir_in_tx;
 use super::types::{
-    canonical_user_state_json, fold_ascii, merge_user_state_composition,
-    merge_user_state_current_reading, merge_user_state_current_resume, namespace_for,
-    parse_chapter_reference, parse_portable_reader_anchor, parse_stored_chapter_path,
-    parse_user_state_current_item, parse_user_state_current_snapshot, parse_user_state_entity,
-    parse_user_state_value, parse_work_reference, sha256_hex, stored_chapter_digest,
-    stored_chapter_number, stored_chapter_path, user_state_entity_key, user_state_work_key,
-    user_state_work_key_parts, CurrentSnapshotRetryDto, PreparedDeferredCurrentRetryDto,
-    UserStateBindingDto, UserStateChapterReferenceDto, UserStateCurrentApplyResultDto,
-    UserStateCurrentStatusDto, UserStateResumeEffectDto, UserStateWorkReferenceDto,
+    canonical_user_state_json, fold_ascii, is_local_user_state_entity,
+    merge_user_state_composition, merge_user_state_current_reading,
+    merge_user_state_current_resume, namespace_for, parse_chapter_reference,
+    parse_portable_reader_anchor, parse_stored_chapter_path, parse_user_state_current_item,
+    parse_user_state_current_snapshot, parse_user_state_entity, parse_user_state_value,
+    parse_work_reference, sha256_hex, stored_chapter_digest, stored_chapter_number,
+    stored_chapter_path, user_state_entity_key, user_state_work_key, user_state_work_key_parts,
+    CurrentSnapshotRetryDto, PreparedDeferredCurrentRetryDto, UserStateBindingDto,
+    UserStateChapterReferenceDto, UserStateCurrentApplyResultDto, UserStateCurrentStatusDto,
+    UserStateResumeEffectDto, UserStateWorkReferenceDto,
 };
 
 #[derive(Debug, Clone)]
@@ -84,6 +85,7 @@ pub struct CurrentCategory {
 #[derive(Debug, Clone, Default)]
 pub struct CurrentHeldSources {
     pub ids: HashSet<String>,
+    pub id_pairs: HashSet<(String, String)>,
     pub paths: HashSet<(String, String)>,
 }
 
@@ -163,7 +165,7 @@ pub async fn load_current_held_sources_in_tx(
          WHERE CASE WHEN cache_key LIKE 'norea-content-novel-migration:%' \
                       OR cache_key LIKE 'norea-content-incoming-migration:%' \
                       OR cache_key LIKE 'norea-content-chapter-number-reconciliation:%' \
-               THEN json_extract(payload, '$.serverUrl') = ?1 ELSE 0 END",
+               THEN rtrim(json_extract(payload, '$.serverUrl'), '/') = rtrim(?1, '/') ELSE 0 END",
     )
     .bind(server_url)
     .fetch_all(&mut *conn)
@@ -227,6 +229,9 @@ pub async fn load_current_held_sources_in_tx(
                 Some(source_novel_id),
                 novel_path_str,
             ));
+            result
+                .id_pairs
+                .insert((plugin_id.clone(), fold_ascii(source_novel_id)));
         }
         if let Some(novel_path) = r.novel_path.filter(|s| !s.is_empty()) {
             result.paths.insert((plugin_id, novel_path));
@@ -237,7 +242,8 @@ pub async fn load_current_held_sources_in_tx(
 
 pub async fn load_current_works_in_tx(conn: &mut SqliteConnection) -> Result<Vec<CurrentWork>, String> {
     let rows = sqlx::query(
-        "SELECT id, plugin_id, source_novel_id, path, name, in_library, library_added_at FROM novel",
+        "SELECT id, plugin_id, source_novel_id, path, name, in_library, library_added_at \
+         FROM novel WHERE plugin_id <> 'local' AND is_local = 0",
     )
     .fetch_all(&mut *conn)
     .await
@@ -358,7 +364,9 @@ pub async fn load_current_data_in_tx(
         let raw_val: JsonValue = serde_json::from_str(&val_str)
             .map_err(|err| format!("db user state current: parse resume value: {err}"))?;
         let val = parse_user_state_value("resume", &raw_val)?;
-        resumes.push((ent, val));
+        if !is_local_user_state_entity(&ent, Some(&val)) {
+            resumes.push((ent, val));
+        }
     }
 
     let cached_resumes: Option<String> = sqlx::query_scalar(
@@ -374,7 +382,10 @@ pub async fn load_current_data_in_tx(
         let raw_arr: Vec<JsonValue> = serde_json::from_str(&resumes_json)
             .map_err(|err| format!("db user state current: parse cached resumes: {err}"))?;
         for item in raw_arr {
-            applied_resumes.push(parse_user_state_current_item(&item)?);
+            let (ent, val) = parse_user_state_current_item(&item)?;
+            if !is_local_user_state_entity(&ent, Some(&val)) {
+                applied_resumes.push((ent, val));
+            }
         }
     }
 
@@ -424,6 +435,7 @@ pub async fn load_current_data_in_tx(
                    c.read_at AS readAt, c.bookmark, c.chapter_number AS chapterNumber, c.position";
     let requested_from = " FROM json_each(?1) r \
                            JOIN novel n ON json_extract(r.value, '$.pluginId') = n.plugin_id \
+                             AND n.plugin_id <> 'local' AND n.is_local = 0 \
                              AND lower(json_extract(r.value, '$.sourceNovelId')) = lower(n.source_novel_id) \
                            JOIN chapter c ON c.novel_id = n.id";
     let requested_chapters_sql = format!(
@@ -470,7 +482,8 @@ pub async fn load_current_data_in_tx(
                                      OR p.entity_key = json_array('reading', \
                                           json_array(n.plugin_id, 'path', n.path) || '', c.path))";
         let sql = format!(
-            "SELECT {columns} FROM chapter c JOIN novel n ON n.id = c.novel_id WHERE {positive} \
+            "SELECT {columns} FROM chapter c JOIN novel n ON n.id = c.novel_id \
+             WHERE n.plugin_id <> 'local' AND n.is_local = 0 AND ({positive}) \
              UNION {requested_chapters_sql}"
         );
         sqlx::query(&sql)
@@ -1687,7 +1700,11 @@ pub async fn apply_current_snapshot_at(
     retry: Option<CurrentSnapshotRetryDto>,
     skipped_chapter_ids: &HashSet<i64>,
 ) -> Result<DbMutationEnvelope<UserStateCurrentApplyResultDto>, String> {
-    let (workspace_id, epoch, all_items) = parse_user_state_current_snapshot(raw_snapshot)?;
+    let (workspace_id, epoch, raw_all_items) = parse_user_state_current_snapshot(raw_snapshot)?;
+    let all_items: Vec<(JsonValue, JsonValue)> = raw_all_items
+        .into_iter()
+        .filter(|(ent, val)| !is_local_user_state_entity(ent, Some(val)))
+        .collect();
     if workspace_id != binding.workspace_id || epoch != binding.epoch {
         return Err("The current personal state workspace does not match this device.".to_string());
     }

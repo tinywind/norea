@@ -1945,6 +1945,35 @@ pub async fn apply_novel_merge_in_tx(
         commit_novel_merge_storage_in_tx(conn, token).await?;
     }
 
+    if has_user_state_schema_in_tx(conn).await? {
+        if let Some(src_row) = sqlx::query(
+            "SELECT plugin_id, source_novel_id, path FROM novel WHERE id = ?1",
+        )
+        .bind(input.source_novel_id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|err| format!("db novel merge: load source novel for user state settle: {err}"))?
+        {
+            let src_plugin_id: String = src_row.get("plugin_id");
+            let src_novel_id: Option<String> = src_row.get("source_novel_id");
+            let src_path: String = src_row.get("path");
+            sqlx::query(
+                "UPDATE user_state_record \
+                 SET applied_revision = revision, deferred_reason = NULL, deferred_detail = NULL \
+                 WHERE (applied_revision < revision OR deferred_reason IS NOT NULL) \
+                   AND json_extract(payload, '$.entity.work.pluginId') = ?1 \
+                   AND (json_extract(payload, '$.entity.work.novelPath') = ?3 \
+                        OR (?2 IS NOT NULL AND lower(json_extract(payload, '$.entity.work.sourceNovelId')) = lower(?2)))",
+            )
+            .bind(&src_plugin_id)
+            .bind(&src_novel_id)
+            .bind(&src_path)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db novel merge: settle retired source records: {err}"))?;
+        }
+    }
+
     let delete_result = sqlx::query("DELETE FROM novel WHERE id = ?1")
         .bind(input.source_novel_id)
         .execute(&mut *conn)

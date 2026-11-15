@@ -7,6 +7,7 @@ import type {
 } from "../db/queries/content-sync";
 import { reconcileImportedNovelIdentityInDb } from "./sql/novel-identity";
 import { sqliteBoolean } from "./sql/sqlite-value";
+import { deferUserStateForNovelInDb } from "./sql/user-state-materialize";
 import {
   chapterReference,
   chapterWork,
@@ -793,6 +794,9 @@ export function createContentSyncIpcHandler(
             );
             inserted ||= result.rowsAffected > 0;
           }
+          if (inserted) {
+            await deferUserStateForNovelInDb(db, novelId);
+          }
           seq = await readJournalSeq(db);
           return inserted;
         }, true);
@@ -898,6 +902,8 @@ export function createContentSyncIpcHandler(
           JOIN novel n ON n.id=c.novel_id
           LEFT JOIN known ON known.key=json_array(n.plugin_id,n.path,c.path)
           WHERE n.source_novel_id IS NOT NULL
+            AND n.is_local=0
+            AND n.plugin_id<>'local'
             AND (c.is_downloaded=1 OR c.content_bytes>0)
             AND known.key IS NULL
           ORDER BY n.id,c.position,c.id`,
@@ -919,7 +925,9 @@ export function createContentSyncIpcHandler(
         const db = await selectDb(args.readMode as string | undefined);
         const rows = await db.select<{ ready: boolean }[]>(
           `SELECT EXISTS(
-            SELECT 1 FROM chapter c WHERE c.id=$1 AND (c.is_downloaded=1 OR c.content_bytes>0)
+            SELECT 1 FROM chapter c JOIN novel n ON n.id=c.novel_id
+            WHERE c.id=$1 AND n.is_local=0 AND n.plugin_id<>'local'
+            AND (c.is_downloaded=1 OR c.content_bytes>0)
             AND NOT EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id=c.id)
           ) AS ready`,
           [args.chapterId],
@@ -1017,6 +1025,7 @@ export function createContentSyncIpcHandler(
             "SELECT id FROM chapter WHERE novel_id=$1 AND path=$2",
             [novelId, identity.chapterPath],
           );
+          await deferUserStateForNovelInDb(db, novelId);
           seq = await readJournalSeq(db);
           return { novelId, chapterId: chapters[0]!.id };
         }, true);

@@ -175,7 +175,7 @@ export async function getUserStateStatus(): Promise<UserStateStatus> {
   return {
     workspaceId: binding?.workspaceId ?? null, epoch: binding?.epoch ?? null,
     pending: status.pending, conflicts,
-    projectionPending: status.projectionPending, projectionParked: status.projectionParked, projectionFailed: status.projectionFailed,
+    projectionPending: status.projectionPending, projectionFailed: status.projectionFailed,
     lastSuccessAt: status.lastSuccessAt, pausedAfterRestore: status.pausedAfterRestore === true,
   };
 }

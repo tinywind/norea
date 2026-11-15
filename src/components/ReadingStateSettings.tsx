@@ -293,7 +293,7 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
             })}</Text>
             <Text size="sm" c={data.projectionFailed ? "danger" : "dimmed"}>
               {t("userState.projectionCounts", {
-                pending: data.projectionPending ?? 0, parked: data.projectionParked ?? 0, failed: data.projectionFailed ?? 0,
+                pending: data.projectionPending ?? 0, failed: data.projectionFailed ?? 0,
               })}
             </Text>
             {data.conflicts.length ? <Text size="sm">{t("userState.conflictsDescription")}</Text> : null}

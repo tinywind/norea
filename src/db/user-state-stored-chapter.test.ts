@@ -43,7 +43,9 @@ beforeEach(() => {
       chapter_number TEXT,
       position INTEGER NOT NULL,
       content_type TEXT NOT NULL DEFAULT 'html',
-      stored_content_type TEXT
+      stored_content_type TEXT,
+      is_downloaded INTEGER NOT NULL DEFAULT 1,
+      content_bytes INTEGER NOT NULL DEFAULT 100
     );
     CREATE TABLE novel_chapter_composition (novel_id INTEGER PRIMARY KEY, payload TEXT NOT NULL);
     INSERT INTO novel(id,plugin_id,source_novel_id,path,name)
@@ -138,6 +140,16 @@ describe("delta stored chapter identity", () => {
       name: "One",
     })).toBeNull();
     expect(mocks.inspect).not.toHaveBeenCalled();
+  });
+
+  it("resolves a stored chapter reference before chapter download while rejecting unreadable downloaded payloads", async () => {
+    const path = storedChapterPath("1", hash)!;
+    mocks.inspect.mockRejectedValue(new Error("payload not downloaded yet"));
+    sqlite.exec("UPDATE chapter SET is_downloaded=0,content_bytes=0 WHERE id=11");
+    expect(await resolveStoredChapterReferenceInDb(db, 1, { chapterPath: path, name: "One" })).toBe(11);
+
+    sqlite.exec("UPDATE chapter SET is_downloaded=1,content_bytes=100 WHERE id=11");
+    expect(await resolveStoredChapterReferenceInDb(db, 1, { chapterPath: path, name: "One" })).toBeNull();
   });
 
   it("refuses an ambiguous number fallback instead of guessing a chapter", async () => {

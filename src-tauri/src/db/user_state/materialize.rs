@@ -17,9 +17,9 @@ use super::core::{
 use super::is_user_state_current_mode;
 use super::stored_chapter::resolve_stored_chapter_reference_in_tx;
 use super::types::{
-    merge_user_state_composition, parse_chapter_reference, parse_portable_reader_anchor,
-    parse_stored_chapter_path, parse_user_state_record, parse_work_reference,
-    user_state_entity_key, ParsedUserStateRecord, UserStateApplyEffectsDto,
+    is_local_user_state_entity, merge_user_state_composition, parse_chapter_reference,
+    parse_portable_reader_anchor, parse_stored_chapter_path, parse_user_state_record,
+    parse_work_reference, user_state_entity_key, ParsedUserStateRecord, UserStateApplyEffectsDto,
     UserStateChapterReferenceDto, UserStateResumeEffectDto, UserStateWorkReferenceDto,
     USER_STATE_PRELINK_BASE_REVISION,
 };
@@ -449,7 +449,39 @@ pub fn materialize_user_state_record_in_tx<'a>(
     Box<dyn std::future::Future<Output = Result<UserStateApplyEffectsDto, MaterializeError>> + Send + 'a>,
 > {
     Box::pin(async move {
+        materialize_user_state_record_with_options_in_tx(
+            root,
+            conn,
+            namespace,
+            record,
+            skipped_chapter_ids,
+            false,
+        )
+        .await
+        .map(|(effects, _)| effects)
+    })
+}
+
+pub fn materialize_user_state_record_with_options_in_tx<'a>(
+    root: Option<&'a Path>,
+    conn: &'a mut SqliteConnection,
+    namespace: &'a str,
+    record: &'a ParsedUserStateRecord,
+    skipped_chapter_ids: &'a HashSet<i64>,
+    defer_last_read_at: bool,
+) -> std::pin::Pin<
+    Box<
+        dyn std::future::Future<
+                Output = Result<(UserStateApplyEffectsDto, Option<i64>), MaterializeError>,
+            > + Send
+            + 'a,
+    >,
+> {
+    Box::pin(async move {
         let mut effects = UserStateApplyEffectsDto::default();
+        if is_local_user_state_entity(&record.entity, Some(&record.value)) {
+            return Ok((effects, None));
+        }
         let kind = record.entity["kind"].as_str().unwrap_or("");
         if kind == "category" {
             let raw_cat_id = record.entity["categoryId"].as_str().unwrap_or("");
@@ -473,7 +505,7 @@ pub fn materialize_user_state_record_in_tx<'a>(
                 .execute(&mut *conn)
                 .await
                 .map_err(|err| format!("db user state: tombstone category mapping: {err}"))?;
-                return Ok(effects);
+                return Ok((effects, None));
             }
             let collision_id: Option<i64> =
                 sqlx::query_scalar("SELECT id FROM category WHERE name = ?1")
@@ -512,7 +544,7 @@ pub fn materialize_user_state_record_in_tx<'a>(
                             .execute(&mut *conn)
                             .await
                             .map_err(|err| format!("db user state: update baseline sort: {err}"))?;
-                        return Ok(effects);
+                        return Ok((effects, None));
                     }
                     return Err(MaterializeError::Deferred(DeferredUserStateError::new(
                         "category-name-conflict",
@@ -546,7 +578,7 @@ pub fn materialize_user_state_record_in_tx<'a>(
                 .await
                 .map_err(|err| format!("db user state: map inserted category: {err}"))?;
             }
-            return Ok(effects);
+            return Ok((effects, None));
         }
 
         let work_ref = parse_work_reference(&record.entity["work"])?;
@@ -611,7 +643,7 @@ pub fn materialize_user_state_record_in_tx<'a>(
                 }
                 let Some(local_cat_id) = category_local_id else {
                     if !included {
-                        return Ok(effects);
+                        return Ok((effects, None));
                     }
                     return Err(MaterializeError::Deferred(DeferredUserStateError::new(
                         "category-missing",
@@ -655,6 +687,9 @@ pub fn materialize_user_state_record_in_tx<'a>(
                 .execute(&mut *conn)
                 .await
                 .map_err(|err| format!("db user state: project reading: {err}"))?;
+                if defer_last_read_at {
+                    return Ok((effects, Some(work.id)));
+                }
                 sqlx::query(
                     "UPDATE novel SET last_read_at = (SELECT MAX(read_at) FROM chapter WHERE novel_id = ?1) \
                      WHERE id = ?1",
@@ -714,7 +749,7 @@ pub fn materialize_user_state_record_in_tx<'a>(
             }
             _ => {}
         }
-        Ok(effects)
+        Ok((effects, None))
     })
 }
 
@@ -863,6 +898,9 @@ pub async fn defer_user_state_for_novel_in_tx(
         .map_err(|err| format!("db user state: lookup deferred work: {err}"))?;
     if let Some(w) = work {
         let plugin_id: String = w.get("plugin_id");
+        if plugin_id == "local" {
+            return Ok(());
+        }
         let source_novel_id: Option<String> = w.get("source_novel_id");
         let novel_path: String = w.get("path");
         sqlx::query(

@@ -772,6 +772,24 @@ async function applyNovelMergeTx(
     await commitNovelMergeStorageInDb(db, storageTransferToken);
   }
 
+  if (await hasUserStateSchema(db)) {
+    const [srcRef] = await db.select<{ pluginId: string; sourceNovelId: string | null; path: string }[]>(
+      "SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE id = $1",
+      [sourceNovelId],
+    );
+    if (srcRef) {
+      await db.execute(
+        `UPDATE user_state_record
+         SET applied_revision = revision, deferred_reason = NULL, deferred_detail = NULL
+         WHERE (applied_revision < revision OR deferred_reason IS NOT NULL)
+           AND json_extract(payload, '$.entity.work.pluginId') = $1
+           AND (json_extract(payload, '$.entity.work.novelPath') = $3
+                OR ($2 IS NOT NULL AND lower(json_extract(payload, '$.entity.work.sourceNovelId')) = lower($2)))`,
+        [srcRef.pluginId, srcRef.sourceNovelId, srcRef.path],
+      );
+    }
+  }
+
   const deleteResult = await db.execute("DELETE FROM novel WHERE id = $1", [
     sourceNovelId,
   ]);

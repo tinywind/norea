@@ -62,6 +62,9 @@ export async function uploadContentChapter(input: {
   stagePath: string;
   signal?: AbortSignal;
 }): Promise<CatalogEntry> {
+  if (input.manifest.identity.pluginId === "local" || input.manifest.novel.isLocal) {
+    throw new Error("Local files cannot be uploaded to the content server.");
+  }
   try {
     input.signal?.throwIfAborted();
     return await invoke<CatalogEntry>("content_sync_upload", {

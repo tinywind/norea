@@ -102,7 +102,7 @@ describe("user state transport", () => {
     let waiting = 1;
     mocks.status.mockImplementation(async () => ({
       cursor, through, pending: outbox.length, conflicts: 0, deferred: 0,
-      projectionPending: waiting, projectionParked: 0, projectionFailed: 0, lastSuccessAt: null,
+      projectionPending: waiting, projectionFailed: 0, lastSuccessAt: null,
     }));
     mocks.recoverProjection.mockImplementation(async () => { waiting = 0; return { resumes: [] }; });
     await synchronizeUserState();
@@ -114,7 +114,7 @@ describe("user state transport", () => {
   it("retains pending edits if recovery still cannot complete an applicable projection", async () => {
     mocks.status.mockImplementation(async () => ({
       cursor, through, pending: outbox.length, conflicts: 0, deferred: 0,
-      projectionPending: 1, projectionParked: 0, projectionFailed: 0, lastSuccessAt: null,
+      projectionPending: 1, projectionFailed: 0, lastSuccessAt: null,
     }));
     await expect(synchronizeUserState()).rejects.toThrow(/projection/);
     expect(mocks.recoverProjection).toHaveBeenCalledOnce();
@@ -125,7 +125,7 @@ describe("user state transport", () => {
   it("preserves queued edits when a received applicable projection has failed", async () => {
     mocks.status.mockImplementation(async () => ({
       cursor, through, pending: outbox.length, conflicts: 0, deferred: 0,
-      projectionPending: 0, projectionParked: 0, projectionFailed: 1, lastSuccessAt: null,
+      projectionPending: 0, projectionFailed: 1, lastSuccessAt: null,
     }));
     await expect(synchronizeUserState()).rejects.toThrow(/projection/);
     expect(mocks.prepare).not.toHaveBeenCalled();
@@ -136,7 +136,7 @@ describe("user state transport", () => {
     let failing = true;
     mocks.status.mockImplementation(async () => ({
       cursor, through, pending: outbox.length, conflicts: 0, deferred: 0,
-      projectionPending: 0, projectionParked: 0, projectionFailed: Number(failing), lastSuccessAt: null,
+      projectionPending: 0, projectionFailed: Number(failing), lastSuccessAt: null,
     }));
     await expect(synchronizeUserState()).rejects.toThrow(/projection/);
     expect(outbox).toEqual([operation]);

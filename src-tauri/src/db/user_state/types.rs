@@ -83,10 +83,41 @@ pub struct UserStateLedgerStatusDto {
     pub conflicts: usize,
     pub deferred: i64,
     pub projection_pending: i64,
-    pub projection_parked: i64,
     pub projection_failed: i64,
     pub last_success_at: Option<i64>,
     pub paused_after_restore: bool,
+}
+
+pub fn is_local_user_state_entity(entity: &JsonValue, value: Option<&JsonValue>) -> bool {
+    if entity
+        .get("work")
+        .and_then(|w| w.get("pluginId"))
+        .and_then(JsonValue::as_str)
+        == Some("local")
+    {
+        return true;
+    }
+    if entity.get("kind").and_then(JsonValue::as_str) == Some("composition") {
+        if let Some(entries) = value
+            .and_then(|v| v.get("composition"))
+            .and_then(|c| c.get("entries"))
+            .and_then(JsonValue::as_array)
+        {
+            if entries.iter().any(|entry| {
+                entry
+                    .get("sources")
+                    .and_then(JsonValue::as_array)
+                    .is_some_and(|sources| {
+                        sources.iter().any(|src| {
+                            src.get("pluginId").and_then(JsonValue::as_str) == Some("local")
+                        })
+                    })
+            }) {
+                return true;
+            }
+        }
+    }
+    false
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

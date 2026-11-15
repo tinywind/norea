@@ -22,13 +22,16 @@ pub struct StoredChapterCandidate {
     pub chapter_number: Option<String>,
     pub position: i64,
     pub content_type: String,
+    pub is_downloaded: i64,
+    pub content_bytes: i64,
 }
 
 const CANDIDATE_COLUMNS: &str = "\
 c.id, c.novel_id AS novelId, n.plugin_id AS pluginId, \
 n.source_novel_id AS sourceNovelId, n.path AS novelPath, c.path, c.name, \
 c.chapter_number AS chapterNumber, c.position, \
-COALESCE(c.stored_content_type, c.content_type) AS contentType";
+COALESCE(c.stored_content_type, c.content_type) AS contentType, \
+c.is_downloaded AS isDownloaded, c.content_bytes AS contentBytes";
 
 fn map_candidate_row(row: &sqlx::sqlite::SqliteRow) -> StoredChapterCandidate {
     StoredChapterCandidate {
@@ -42,6 +45,8 @@ fn map_candidate_row(row: &sqlx::sqlite::SqliteRow) -> StoredChapterCandidate {
         chapter_number: row.get("chapterNumber"),
         position: row.get("position"),
         content_type: row.get("contentType"),
+        is_downloaded: row.get("isDownloaded"),
+        content_bytes: row.get("contentBytes"),
     }
 }
 
@@ -305,12 +310,18 @@ pub async fn resolve_stored_chapter_reference_in_tx(
     {
         return Ok(None);
     }
-    let Some(digest) =
+    if let Some(digest) =
         digest_candidate_in_tx(root, conn, candidate, skipped_chapter_ids).await
-    else {
-        return Ok(None);
-    };
-    Ok((digest == stored.sha256).then_some(candidate.id))
+    {
+        return Ok((digest == stored.sha256).then_some(candidate.id));
+    }
+    if candidate.is_downloaded == 0
+        && candidate.content_bytes == 0
+        && !skipped_chapter_ids.contains(&candidate.id)
+    {
+        return Ok(Some(candidate.id));
+    }
+    Ok(None)
 }
 
 pub fn make_chapter_ref_json(

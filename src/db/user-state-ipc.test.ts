@@ -121,7 +121,6 @@ describe("user-state Rust IPC wrappers", () => {
               conflicts: 0,
               deferred: 0,
               projectionPending: 0,
-              projectionParked: 0,
               projectionFailed: 0,
               lastSuccessAt: 1000,
               pausedAfterRestore: false,
@@ -150,38 +149,14 @@ describe("user-state Rust IPC wrappers", () => {
               value: { resumes: [] },
               effects: { userStateLedgerChanged: true },
             };
-          case "db_user_state_list_pending_projection_records":
-            return [
-              {
-                entity: {
-                  kind: "resume",
-                  work: {
-                    pluginId: "src",
-                    sourceNovelId: "novel-1",
-                    novelPath: "/novel-1",
-                    name: "Novel 1",
-                  },
-                },
-                value: {
-                  chapter: { chapterPath: "/ch/1", name: "Ch 1" },
-                  anchor: null,
-                  openedAt: 42,
-                },
-                revision: 3,
-                operationId: "remote-3",
-                updatedAt: 42,
-                deviceId: "dev",
-                deviceName: "Device",
-              },
-            ];
-          case "db_user_state_project_records_chunk":
+          case "db_user_state_project_pending":
             return {
               value: {
                 resumes: [
                   { novelId: 7, chapterId: 70, anchor: null, openedAt: 42 },
                 ],
               },
-              effects: {},
+              effects: { userStateLedgerChanged: true },
             };
           default:
             throw new Error(`Unexpected command: ${command}`);

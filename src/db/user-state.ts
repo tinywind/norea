@@ -7,7 +7,6 @@ import {
 import {
   parsePortableReaderAnchor,
   parseUserStateOperation,
-  parseUserStateRecord,
   type PortableReaderAnchor,
   type UserStateApplyEffects,
   type UserStateBinding,
@@ -16,7 +15,6 @@ import {
   type UserStateMergeResult,
   type UserStateOperation,
   type UserStateReadResponse,
-  type UserStateRecord,
 } from "../lib/user-state/types";
 
 export interface UserStateLedgerStatus {
@@ -26,7 +24,6 @@ export interface UserStateLedgerStatus {
   conflicts: number;
   deferred: number;
   projectionPending: number;
-  projectionParked: number;
   projectionFailed: number;
   lastSuccessAt: number | null;
   pausedAfterRestore: boolean;
@@ -45,7 +42,6 @@ let activeGeneration = 0;
 const USER_STATE_BUSY_RETRIES = 3;
 const USER_STATE_LOCAL_ACK_CHUNK = 128;
 const USER_STATE_LOCAL_ACK_YIELD_MS = 0;
-const USER_STATE_PROJECTION_CHUNK = 16;
 
 function isUserStateDatabaseBusy(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -139,39 +135,6 @@ async function yieldUserStateAck(): Promise<void> {
   );
 }
 
-async function yieldUserStateProjection(): Promise<void> {
-  // Projection is a convenience view over durable user-state records. Yield a
-  // frame between small write transactions so library queries, cover reads and
-  // other native bridge work stay responsive while a large history catches up.
-  await new Promise<void>(resolve => setTimeout(resolve, 16));
-}
-
-async function projectUserStateRecords(
-  binding: UserStateBinding,
-  records: readonly UserStateRecord[],
-): Promise<UserStateApplyEffects> {
-  if (!records.length) return { resumes: [] };
-  const effects: UserStateApplyEffects = { resumes: [] };
-  for (let start = 0; start < records.length; start += USER_STATE_PROJECTION_CHUNK) {
-    await yieldUserStateProjection();
-    const chunk = records.slice(start, start + USER_STATE_PROJECTION_CHUNK);
-    const next = await withGlobalChapterDownloadSnapshotReads(skippedChapterIds =>
-      invokeDbMutation<UserStateApplyEffects>(
-        "db_user_state_project_records_chunk",
-        {
-          binding,
-          records: chunk,
-          skippedChapterIds,
-        },
-      ),
-    );
-    effects.resumes.push(...next.resumes);
-  }
-  emitUserStateApplied(effects);
-  emitUserStateLedgerChanged();
-  return effects;
-}
-
 export async function materializePendingUserState(
   binding: UserStateBinding,
 ): Promise<UserStateApplyEffects> {
@@ -180,12 +143,16 @@ export async function materializePendingUserState(
     activeGeneration === generation &&
     (activeServer === null || activeServer === binding.serverUrl);
   if (!allowed()) return { resumes: [] };
-  const rows = await invokeDbQuery<UserStateRecord[]>(
-    "db_user_state_list_pending_projection_records",
-    { binding },
+  const effects = await withGlobalChapterDownloadSnapshotReads(
+    skippedChapterIds =>
+      invokeDbMutation<UserStateApplyEffects>("db_user_state_project_pending", {
+        binding,
+        skippedChapterIds,
+      }),
   );
-  if (!allowed()) return { resumes: [] };
-  return projectUserStateRecords(binding, rows.map(parseUserStateRecord));
+  emitUserStateApplied(effects);
+  emitUserStateLedgerChanged();
+  return effects;
 }
 
 export async function applyUserStateReadPage(

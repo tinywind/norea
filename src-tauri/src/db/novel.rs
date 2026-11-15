@@ -1492,7 +1492,7 @@ pub async fn insert_novel_if_absent_in_tx(
     .await
     .map_err(|err| format!("db novel: insert novel if absent: {err}"))?;
 
-    if in_library == 1 && has_user_state_schema_in_tx(conn).await? {
+    if has_user_state_schema_in_tx(conn).await? {
         if let Some(created_id) = sqlx::query_scalar::<_, i64>(
             "SELECT id FROM novel WHERE plugin_id = ?1 AND path = ?2",
         )
@@ -1502,7 +1502,10 @@ pub async fn insert_novel_if_absent_in_tx(
         .await
         .map_err(|err| format!("db novel: select inserted novel id: {err}"))?
         {
-            record_library_in_tx(conn, ctx, Some(&[created_id]), false).await?;
+            if in_library == 1 {
+                record_library_in_tx(conn, ctx, Some(&[created_id]), false).await?;
+            }
+            defer_user_state_for_novel_in_tx(conn, ctx, created_id).await?;
         }
     }
     Ok(())

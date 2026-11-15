@@ -1325,3 +1325,14 @@ it("preserves a device body edited since the chapter difference comparison", asy
   expect(native.install).not.toHaveBeenCalled();
   expect(markContentInstalled).not.toHaveBeenCalled();
 });
+
+it("never uploads local works or chapters during server synchronization", async () => {
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{
+    chapterId: 901, novelId: 90, pluginId: "local", sourceNovelId: "local-book",
+    novelPath: "local:book", chapterPath: "local:book/1", chapterNumber: "1", position: 1,
+    novelName: "Local Book", chapterName: "Local Ch 1", contentType: "html",
+    isLocal: true, isDownloaded: true, mediaRepairNeeded: false,
+  }] as never);
+  await syncContentServer(true, true);
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+});

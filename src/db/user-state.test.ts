@@ -33,7 +33,7 @@ import { clearLibraryMembership, clearReadingProgress, clearUpdatesTab } from ".
 import { setChapterComposition } from "../test/sql/chapter-composition";
 import type { ChapterCompositionV1 } from "../lib/chapter-composition";
 
-interface Fixture { sql: DatabaseSync; db: Database }
+interface Fixture { sql: DatabaseSync; db: Database; queue: Promise<unknown> }
 const fixtures: Fixture[] = [];
 let active: Fixture;
 const binding: UserStateBinding = { serverUrl: "https://state.example", workspaceId: "workspace-1", epoch: "epoch-1" };
@@ -54,16 +54,20 @@ function fixture(): Fixture {
       return { rowsAffected: Number(result.changes), lastInsertId: Number(result.lastInsertRowid) };
     },
   } as Database;
-  const result = { sql, db }; fixtures.push(result); return result;
+  const result: Fixture = { sql, db, queue: Promise.resolve() }; fixtures.push(result); return result;
 }
 function addWork(target: Fixture, id = 1, chapterId = 11, reference = work): void {
   target.sql.prepare("INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(?,?,?,?,?)").run(id, reference.pluginId, reference.sourceNovelId, reference.novelPath, reference.name);
   target.sql.prepare("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(?,?,'/chapter/1','One','1',1)").run(chapterId, id);
 }
 async function tx<T>(target: Fixture, run: (db: Database) => Promise<T>): Promise<T> {
-  target.sql.exec("BEGIN IMMEDIATE");
-  try { const result = await run(target.db); target.sql.exec("COMMIT"); notifyUserStateCommitted(target.db); return result; }
-  catch (error) { target.sql.exec("ROLLBACK"); discardUserStateNotifications(target.db); throw error; }
+  const next = target.queue.catch(() => undefined).then(async () => {
+    target.sql.exec("BEGIN IMMEDIATE");
+    try { const result = await run(target.db); target.sql.exec("COMMIT"); notifyUserStateCommitted(target.db); return result; }
+    catch (error) { target.sql.exec("ROLLBACK"); discardUserStateNotifications(target.db); throw error; }
+  });
+  target.queue = next;
+  return next;
 }
 function shared(entity: UserStateEntity, value: UserStateValue, revision: number, operationId = "remote-" + revision): UserStateRecord {
   return { entity, value, revision, operationId, updatedAt: revision, deviceId: "other-device", deviceName: "Other device" };
@@ -108,7 +112,7 @@ describe("durable personal-state ledger", () => {
     });
     await waitForUserStateDeferredApply();
     const lookups = select.mock.calls.filter(([query]) => query.includes("r.entity_key AS entityKey") && query.includes("json_each($2)"));
-    expect(lookups.length).toBeGreaterThanOrEqual(2);
+    expect(lookups.length).toBeGreaterThanOrEqual(1);
     for (const [query, values = []] of lookups) {
       const plan = active.sql.prepare("EXPLAIN QUERY PLAN " + query).all(
         Object.fromEntries(values.map((value, index) => ["$" + (index + 1), value])) as never);
@@ -205,13 +209,15 @@ describe("durable personal-state ledger", () => {
     });
     await waitForUserStateDeferredApply();
     const first = await getUserStateLedgerStatusInDb(active.db, binding);
-    expect(first).toMatchObject({ projectionPending: 0, projectionParked: 1, projectionFailed: 0 });
+    expect(first).toMatchObject({ projectionPending: 0, projectionFailed: 0 });
+    expect(active.sql.prepare("SELECT applied_revision,deferred_reason FROM user_state_record").get())
+      .toEqual({ applied_revision: 1, deferred_reason: "missing-work" });
     addWork(active, 3, 33, other);
     await tx(active, db => deferUserStateForNovelInDb(db, 3));
     await waitForUserStateDeferredApply();
     expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=33").get()).toEqual({ progress: 74 });
     expect(await getUserStateLedgerStatusInDb(active.db, binding)).toMatchObject({
-      projectionPending: 0, projectionParked: 0, projectionFailed: 0,
+      projectionPending: 0, projectionFailed: 0,
     });
   });
 
@@ -226,7 +232,7 @@ describe("durable personal-state ledger", () => {
     });
     await waitForUserStateDeferredApply();
     const failed = await getUserStateLedgerStatusInDb(active.db, binding);
-    expect(failed).toMatchObject({ pending: 1, projectionPending: 0, projectionParked: 0, projectionFailed: 1 });
+    expect(failed).toMatchObject({ pending: 1, projectionPending: 0, projectionFailed: 1 });
     expect(active.sql.prepare("SELECT revision,applied_revision,deferred_reason FROM user_state_record").get())
       .toEqual({ revision: 1, applied_revision: 0, deferred_reason: "projection-error" });
     active.sql.exec("DROP TRIGGER fail_projection");
@@ -234,7 +240,7 @@ describe("durable personal-state ledger", () => {
     await waitForUserStateDeferredApply();
     expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=11").get()).toEqual({ progress: 87 });
     expect(await getUserStateLedgerStatusInDb(active.db, binding)).toMatchObject({
-      pending: 1, projectionPending: 0, projectionParked: 0, projectionFailed: 0,
+      pending: 1, projectionPending: 0, projectionFailed: 0,
     });
   });
 
@@ -1194,4 +1200,84 @@ it("reopens parked category-name-conflict shared records when resolving a catego
     { name: "SciFi" },
     { name: "SciFi (Tablet)" },
   ]);
+});
+
+it("applies stored chapter progress before download, settles retired migration sources, and excludes local works", async () => {
+  await bind();
+  for (const op of await prepare()) await ack(op, 1);
+
+  const undownloadedWork: UserStateWorkReference = {
+    pluginId: "source",
+    sourceNovelId: "undownloaded-work",
+    novelPath: "/undownloaded-work",
+    name: "Undownloaded Work",
+  };
+  active.sql.exec(`
+    INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library)
+      VALUES(5,'source','undownloaded-work','/undownloaded-work','Undownloaded Work',0);
+    INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,is_downloaded,content_bytes)
+      VALUES(51,5,'norea-folder:1','Chapter 1','1',1,0,0);
+  `);
+
+  const retiredWork: UserStateWorkReference = {
+    pluginId: "source",
+    sourceNovelId: "retired-work",
+    novelPath: "/retired-work",
+    name: "Retired Work",
+  };
+  active.sql.prepare("INSERT INTO content_sync_cache(cache_key,payload) VALUES(?,?)").run(
+    "norea-content-incoming-migration:op-retired-1",
+    JSON.stringify({
+      serverUrl: `${binding.serverUrl}/`,
+      operationId: "op-retired-1",
+      status: "completed",
+      source: { pluginId: retiredWork.pluginId, novelId: retiredWork.sourceNovelId, novelPath: retiredWork.novelPath },
+    }),
+  );
+
+  const localWork: UserStateWorkReference = {
+    pluginId: "local",
+    sourceNovelId: "local-1",
+    novelPath: "/local-1",
+    name: "Local Work",
+  };
+  active.sql.exec(`
+    INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library,is_local)
+      VALUES(6,'local','local-1','/local-1','Local Work',1,1);
+    INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread)
+      VALUES(61,6,'/local-ch-1','Local Chapter 1','1',1,55,0);
+  `);
+  await setNovelInLibrary(6, true);
+  await recordUserResume(61, null, 900);
+  expect(await prepare()).toEqual([]);
+
+  const storedPath = `norea-stored:${"c".repeat(64)}:norea-folder%3A1`;
+  await applyUserStateReadPage(binding, {
+    version: 1,
+    workspaceId: binding.workspaceId,
+    epoch: binding.epoch,
+    headRevision: 5,
+    through: 5,
+    nextCursor: 5,
+    hasMore: false,
+    records: [
+      shared({ kind: "reading", work: undownloadedWork, chapter: { chapterPath: storedPath, name: "Chapter 1" } }, readingValue(68), 2),
+      shared({ kind: "bookmark", work: undownloadedWork, chapter: { chapterPath: storedPath, name: "Chapter 1" } }, { bookmarked: true }, 3),
+      shared({ kind: "reading", work: retiredWork, chapter: { chapterPath: "/retired-1", name: "Retired 1" } }, readingValue(90), 4),
+      shared({ kind: "reading", work: localWork, chapter: { chapterPath: "/local-ch-1", name: "Local Chapter 1" } }, readingValue(99), 5),
+    ],
+  });
+  await waitForUserStateDeferredApply();
+
+  expect(active.sql.prepare("SELECT progress,bookmark FROM chapter WHERE id=51").get()).toEqual({ progress: 68, bookmark: 1 });
+  expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=61").get()).toEqual({ progress: 55 });
+  expect(active.sql.prepare("SELECT revision,applied_revision,deferred_reason FROM user_state_record ORDER BY revision").all()).toEqual([
+    { revision: 2, applied_revision: 2, deferred_reason: null },
+    { revision: 3, applied_revision: 3, deferred_reason: null },
+    { revision: 4, applied_revision: 4, deferred_reason: null },
+    { revision: 5, applied_revision: 5, deferred_reason: null },
+  ]);
+  const status = await getUserStateLedgerStatusInDb(active.db, binding);
+  expect(status).toMatchObject({ pending: 0, projectionPending: 0, projectionFailed: 0 });
+  expect("projectionParked" in status).toBe(false);
 });

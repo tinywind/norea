@@ -17,11 +17,13 @@ use super::current::{
 use super::ledger::{
     acknowledge_user_state_operations_in_tx, apply_user_state_read_page_in_tx,
     bind_user_state_workspace_in_tx, get_user_state_ledger_status_in_tx,
-    list_pending_projection_records_in_tx, list_user_state_conflicts_in_tx,
-    prepare_user_state_operations_in_tx, project_user_state_records_in_tx,
-    resolve_user_state_ledger_conflict_in_tx, PrepareUserStateOperationsLimitsDto,
+    list_user_state_conflicts_in_tx, prepare_user_state_operations_in_tx,
+    project_pending_user_state_in_tx, resolve_user_state_ledger_conflict_in_tx,
+    PrepareUserStateOperationsLimitsDto,
 };
-use super::materialize::refresh_unattempted_user_state_identities_in_tx;
+use super::materialize::{
+    defer_user_state_for_novel_in_tx, refresh_unattempted_user_state_identities_in_tx,
+};
 use super::types::{
     sha256_hex, stored_chapter_path, user_state_entity_key, CurrentSnapshotRetryDto,
     ResolveUserStateLedgerConflictInputDto, UserStateBindingDto,
@@ -248,11 +250,11 @@ async fn prelink_edits_become_soft_seeds_and_project_shared_deletions_preserving
     assert!(env.effects.user_state_ledger_changed);
 
     let mut read_conn = pool.acquire().await.unwrap();
-    let pending_proj = list_pending_projection_records_in_tx(&mut read_conn, &binding)
+    let status_before = get_user_state_ledger_status_in_tx(&mut read_conn, Some(&binding))
         .await
         .unwrap();
     drop(read_conn);
-    assert_eq!(pending_proj.len(), 5);
+    assert_eq!(status_before.projection_pending, 5);
 
     let b4 = binding.clone();
     let proj_opts = TxOptions {
@@ -261,9 +263,9 @@ async fn prelink_edits_become_soft_seeds_and_project_shared_deletions_preserving
         notify_content_sync: false,
         ..TxOptions::default()
     };
-    let proj_res = with_write_tx(pool, proj_opts, move |conn, _ctx| {
+    let proj_res = with_write_tx(pool, proj_opts, move |conn, ctx| {
         Box::pin(async move {
-            project_user_state_records_in_tx(None, conn, &b4, &pending_proj, &HashSet::new()).await
+            project_pending_user_state_in_tx(None, conn, ctx, &b4, &HashSet::new()).await
         })
     })
     .await
@@ -481,13 +483,13 @@ async fn portable_stored_chapter_digest_upgrades_norea_folder_and_resolves_on_pr
 
     let peer_root = temp.path().to_path_buf();
     let pb3 = binding.clone();
-    with_write_tx(peer_pool, opts, move |conn, _ctx| {
+    with_write_tx(peer_pool, opts, move |conn, ctx| {
         Box::pin(async move {
-            project_user_state_records_in_tx(
+            project_pending_user_state_in_tx(
                 Some(&peer_root),
                 conn,
+                ctx,
                 &pb3,
-                &[rec],
                 &HashSet::new(),
             )
             .await
@@ -742,4 +744,305 @@ async fn current_snapshot_exports_applies_and_retries_deferred_metadata() {
         .await
         .unwrap();
     assert_eq!(status.missing_metadata_count, 0);
+}
+
+#[tokio::test]
+async fn bulk_projection_skips_missing_works_applies_pre_download_stored_progress_and_reopens_via_b_route() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let binding = sample_binding();
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    let b1 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    let digest = sha256_hex(b"chapter-19-payload");
+    let stored_path = stored_chapter_path(Some("19"), &digest).unwrap();
+    let work = sample_work();
+    let remote = vec![
+        shared_record(
+            json!({ "kind": "library", "work": work }),
+            json!({ "inLibrary": true, "addedAt": 100 }),
+            1,
+            "op-lib",
+        ),
+        shared_record(
+            json!({
+                "kind": "reading",
+                "work": work,
+                "chapter": { "chapterPath": stored_path, "name": "Nineteen" },
+            }),
+            json!({ "progress": 64, "unread": false, "readAt": 250 }),
+            2,
+            "op-read",
+        ),
+    ];
+    let page = json!({
+        "version": 1,
+        "workspaceId": binding.workspace_id,
+        "epoch": binding.epoch,
+        "headRevision": 2,
+        "through": 2,
+        "nextCursor": 2,
+        "hasMore": false,
+        "records": remote,
+    });
+
+    let b2 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { apply_user_state_read_page_in_tx(conn, ctx, &b2, &page).await })
+    })
+    .await
+    .unwrap();
+
+    // Novel is not in DB yet -> bulk projection parks missing-work immediately with 0 pending.
+    let b3 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            project_pending_user_state_in_tx(None, conn, ctx, &b3, &HashSet::new()).await
+        })
+    })
+    .await
+    .unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    let status = get_user_state_ledger_status_in_tx(&mut conn, Some(&binding))
+        .await
+        .unwrap();
+    drop(conn);
+    assert_eq!(status.projection_pending, 0);
+    assert_eq!(status.projection_failed, 0);
+
+    // Add novel + undownloaded server-cached chapter (is_downloaded = 0, content_bytes = 0) and trigger B route.
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) \
+         VALUES (1, 'source', 'book', '/book', 'Book', 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, is_downloaded, content_bytes) \
+         VALUES (19, 1, 'norea-folder:19', 'Nineteen', '19', 1, 0, 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { defer_user_state_for_novel_in_tx(conn, ctx, 1).await })
+    })
+    .await
+    .unwrap();
+
+    let b4 = binding.clone();
+    with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move {
+            project_pending_user_state_in_tx(None, conn, ctx, &b4, &HashSet::new()).await
+        })
+    })
+    .await
+    .unwrap();
+
+    let row = sqlx::query(
+        "SELECT n.in_library, n.last_read_at, CAST(c.progress AS REAL) AS progress, c.unread, c.read_at \
+         FROM novel n JOIN chapter c ON c.novel_id = n.id WHERE n.id = 1 AND c.id = 19",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(row.get::<i64, _>("in_library"), 1);
+    assert_eq!(row.get::<Option<i64>, _>("last_read_at"), Some(250));
+    assert_eq!(row.get::<f64, _>("progress"), 64.0);
+    assert_eq!(row.get::<i64, _>("unread"), 0);
+    assert_eq!(row.get::<Option<i64>, _>("read_at"), Some(250));
+}
+
+#[tokio::test]
+async fn retired_migration_sources_and_local_works_are_excluded_and_settled() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let binding = sample_binding();
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    // Seed a local novel + chapter with reading state before binding workspace.
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, is_local, in_library) \
+         VALUES (10, 'local', 'local-doc', 'local', 'Local Work', 1, 1)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, bookmark) \
+         VALUES (101, 10, 'local-ch-1', 'Local One', '1', 1, 88, 0, 1)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // Also insert a retired migration source novel that still exists locally alongside its migration cache entry.
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) \
+         VALUES (20, 'retired-src', 'old-book', '/old-book', 'Old Book', 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2)",
+    )
+    .bind("norea-content-novel-migration:op-retired")
+    .bind(
+        json!({
+            "operationId": "op-retired",
+            "serverUrl": format!("{}/", binding.server_url),
+            "status": "completed",
+            "source": {
+                "pluginId": "retired-src",
+                "novelId": "old-book",
+                "novelPath": "/old-book",
+            },
+        })
+        .to_string(),
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let b1 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    // Local changes must produce zero outbound operations.
+    let local_ent = json!({
+        "kind": "library",
+        "work": {
+            "pluginId": "local",
+            "sourceNovelId": "local-doc",
+            "novelPath": "local",
+            "name": "Local Work",
+        },
+    });
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            record_user_state_changes_in_tx(
+                conn,
+                ctx,
+                &[(local_ent, json!({ "inLibrary": true, "addedAt": 10 }))],
+                false,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+
+    let b2 = binding.clone();
+    let ops = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(
+                None,
+                conn,
+                ctx,
+                &b2,
+                &PrepareUserStateOperationsLimitsDto::default(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap()
+    .value;
+    assert!(ops.is_empty());
+
+    // Receive remote records for both the retired migration source and a legacy local work.
+    let page = json!({
+        "version": 1,
+        "workspaceId": binding.workspace_id,
+        "epoch": binding.epoch,
+        "headRevision": 2,
+        "through": 2,
+        "nextCursor": 2,
+        "hasMore": false,
+        "records": [
+            shared_record(
+                json!({
+                    "kind": "library",
+                    "work": {
+                        "pluginId": "retired-src",
+                        "sourceNovelId": "old-book",
+                        "novelPath": "/old-book",
+                        "name": "Old Book",
+                    },
+                }),
+                json!({ "inLibrary": true, "addedAt": 50 }),
+                1,
+                "op-retired-lib",
+            ),
+            shared_record(
+                json!({
+                    "kind": "library",
+                    "work": {
+                        "pluginId": "local",
+                        "sourceNovelId": "local-doc",
+                        "novelPath": "local",
+                        "name": "Local Work",
+                    },
+                }),
+                json!({ "inLibrary": false, "addedAt": null }),
+                2,
+                "op-local-lib",
+            ),
+        ],
+    });
+    let b3 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { apply_user_state_read_page_in_tx(conn, ctx, &b3, &page).await })
+    })
+    .await
+    .unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    let status_before = get_user_state_ledger_status_in_tx(&mut conn, Some(&binding))
+        .await
+        .unwrap();
+    drop(conn);
+    assert_eq!(status_before.projection_pending, 0);
+
+    let b4 = binding.clone();
+    with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move {
+            project_pending_user_state_in_tx(None, conn, ctx, &b4, &HashSet::new()).await
+        })
+    })
+    .await
+    .unwrap();
+
+    // Neither the retired source (id 20) nor the local novel (id 10) should be mutated by remote state.
+    let retired_lib: i64 = sqlx::query_scalar("SELECT in_library FROM novel WHERE id = 20")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(retired_lib, 0);
+    let local_lib: i64 = sqlx::query_scalar("SELECT in_library FROM novel WHERE id = 10")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(local_lib, 1);
 }

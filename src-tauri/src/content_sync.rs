@@ -616,6 +616,9 @@ pub async fn content_sync_upload(
 }
 
 fn chapter_file_manifest(source: &Path, mut manifest: Value) -> Result<Value, String> {
+    if manifest["identity"]["pluginId"] == "local" || manifest["novel"]["isLocal"] == true {
+        return Err(failure("local files cannot be uploaded to the content server"));
+    }
     let body = if manifest["chapter"]["contentType"] == "pdf" { "content.pdf" } else { "content.html" };
     let mut records = Vec::new();
     for path in chapter_files(source)? {

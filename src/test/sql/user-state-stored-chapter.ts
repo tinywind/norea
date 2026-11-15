@@ -24,12 +24,15 @@ interface StoredChapterCandidate {
   chapterNumber: string | null;
   position: number;
   contentType: ChapterContentType;
+  isDownloaded: number;
+  contentBytes: number;
 }
 
 const CANDIDATE_COLUMNS = "c.id,c.novel_id AS novelId,n.plugin_id AS pluginId," +
   "n.source_novel_id AS sourceNovelId,n.path AS novelPath,c.path,c.name," +
   "c.chapter_number AS chapterNumber,c.position," +
-  "COALESCE(c.stored_content_type,c.content_type) AS contentType";
+  "COALESCE(c.stored_content_type,c.content_type) AS contentType," +
+  "c.is_downloaded AS isDownloaded,c.content_bytes AS contentBytes";
 
 async function hasComposition(db: UserStateDb, novelId: number): Promise<boolean> {
   const [row] = await db.select<{ present: number }[]>(
@@ -146,5 +149,9 @@ export async function resolveStoredChapterReferenceInDb(
   const candidate = rows[0]!;
   if (storedChapterNumber(candidate.chapterNumber) !== stored.chapterNumber) return null;
   const digest = await digestCandidate(candidate);
-  return digest === stored.sha256 ? candidate.id : null;
+  if (digest !== null) return digest === stored.sha256 ? candidate.id : null;
+  if (Number(candidate.isDownloaded) === 0 && Number(candidate.contentBytes) === 0) {
+    return withChapterDownloadSnapshotReads(async hold => hold(candidate.id) ? candidate.id : null);
+  }
+  return null;
 }

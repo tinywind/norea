@@ -8,9 +8,9 @@ use crate::db::tx::TxContext;
 use crate::db::UserStateCommitPriority;
 
 use super::types::{
-    canonical_user_state_json, namespace_for, parse_user_state_entity, parse_user_state_value,
-    random_uuid_v4, sha256_hex, user_state_entity_key, user_state_work_key_parts,
-    UserStateBindingDto, UserStateWorkReferenceDto,
+    canonical_user_state_json, is_local_user_state_entity, namespace_for, parse_user_state_entity,
+    parse_user_state_value, random_uuid_v4, sha256_hex, user_state_entity_key,
+    user_state_work_key_parts, UserStateBindingDto, UserStateWorkReferenceDto,
 };
 
 #[derive(Debug, Clone)]
@@ -244,7 +244,13 @@ pub async fn record_user_state_changes_in_tx(
         let ent = parse_user_state_entity(raw_ent)?;
         let kind = ent["kind"].as_str().unwrap_or("");
         let val = parse_user_state_value(kind, raw_val)?;
+        if is_local_user_state_entity(&ent, Some(&val)) {
+            continue;
+        }
         entries.push((ent, val));
+    }
+    if entries.is_empty() {
+        return Ok(());
     }
 
     for batch in entries.chunks(80) {
@@ -416,6 +422,9 @@ pub async fn mark_private_chapter_progress_in_tx(
     }
     let rows = load_user_chapter_rows_by_ids_in_tx(conn, &[chapter_id]).await?;
     if let Some(row) = rows.first() {
+        if row.plugin_id == "local" {
+            return Ok(());
+        }
         let entity = json!({
             "kind": "reading",
             "work": chapter_work_json(row),
@@ -451,8 +460,13 @@ pub async fn record_chapter_rows_in_tx(
     if rows.is_empty() || !has_user_state_schema_in_tx(conn).await? {
         return Ok(());
     }
+    let non_local_rows: Vec<&UserChapterRow> =
+        rows.iter().filter(|r| r.plugin_id != "local").collect();
+    if non_local_rows.is_empty() {
+        return Ok(());
+    }
     if kind == "reading" && !seed {
-        for chunk in rows.chunks(400) {
+        for chunk in non_local_rows.chunks(400) {
             let mut keys = Vec::with_capacity(chunk.len());
             for row in chunk {
                 let ent = json!({
@@ -476,8 +490,8 @@ pub async fn record_chapter_rows_in_tx(
                 .map_err(|err| format!("db user state: clear private reading markers: {err}"))?;
         }
     }
-    let mut entries = Vec::with_capacity(rows.len());
-    for row in rows {
+    let mut entries = Vec::with_capacity(non_local_rows.len());
+    for row in non_local_rows {
         let ent = json!({
             "kind": kind,
             "work": chapter_work_json(row),
@@ -578,7 +592,7 @@ pub async fn record_library_in_tx(
                 let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
                 let sql = format!(
                     "SELECT plugin_id, source_novel_id, path, name, in_library, library_added_at \
-                     FROM novel WHERE id IN ({})",
+                     FROM novel WHERE id IN ({}) AND plugin_id <> 'local' AND is_local = 0",
                     placeholders.join(",")
                 );
                 let mut q = sqlx::query(&sql);
@@ -590,7 +604,8 @@ pub async fn record_library_in_tx(
                     .map_err(|err| format!("db user state: load library works: {err}"))?
             }
             None => sqlx::query(
-                "SELECT plugin_id, source_novel_id, path, name, in_library, library_added_at FROM novel",
+                "SELECT plugin_id, source_novel_id, path, name, in_library, library_added_at \
+                 FROM novel WHERE plugin_id <> 'local' AND is_local = 0",
             )
             .fetch_all(&mut *conn)
             .await
@@ -719,6 +734,37 @@ pub async fn record_membership_in_tx(
     included: bool,
     seed: bool,
 ) -> Result<(), String> {
+    if novel_ids.is_empty() {
+        return Ok(());
+    }
+    let mut works = Vec::with_capacity(novel_ids.len());
+    for chunk in novel_ids.chunks(400) {
+        let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT plugin_id, source_novel_id, path, name \
+             FROM novel WHERE id IN ({}) AND plugin_id <> 'local' AND is_local = 0",
+            placeholders.join(",")
+        );
+        let mut q = sqlx::query(&sql);
+        for id in chunk {
+            q = q.bind(*id);
+        }
+        let rows = q
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: load membership works: {err}"))?;
+        for r in rows {
+            works.push(UserStateWorkReferenceDto {
+                plugin_id: r.get("plugin_id"),
+                source_novel_id: r.get("source_novel_id"),
+                novel_path: r.get("path"),
+                name: r.get("name"),
+            });
+        }
+    }
+    if works.is_empty() {
+        return Ok(());
+    }
     let Some(stable_id) = stable_category_id_in_tx(conn, category_id, false).await? else {
         return Ok(());
     };
@@ -759,28 +805,9 @@ pub async fn record_membership_in_tx(
             }
         }
     }
-    for chunk in novel_ids.chunks(400) {
-        let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
-        let sql = format!(
-            "SELECT plugin_id, source_novel_id, path, name FROM novel WHERE id IN ({})",
-            placeholders.join(",")
-        );
-        let mut q = sqlx::query(&sql);
-        for id in chunk {
-            q = q.bind(*id);
-        }
-        let rows = q
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|err| format!("db user state: load membership works: {err}"))?;
-        let mut entries = Vec::with_capacity(rows.len());
-        for r in rows {
-            let work = UserStateWorkReferenceDto {
-                plugin_id: r.get("plugin_id"),
-                source_novel_id: r.get("source_novel_id"),
-                novel_path: r.get("path"),
-                name: r.get("name"),
-            };
+    for chunk in works.chunks(400) {
+        let mut entries = Vec::with_capacity(chunk.len());
+        for work in chunk {
             entries.push((
                 json!({
                     "kind": "membership",
@@ -815,7 +842,8 @@ pub async fn record_resume_cleared_in_tx(
             Some(ids) => {
                 let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
                 let sql = format!(
-                    "SELECT plugin_id, source_novel_id, path, name FROM novel WHERE id IN ({})",
+                    "SELECT plugin_id, source_novel_id, path, name \
+                     FROM novel WHERE id IN ({}) AND plugin_id <> 'local' AND is_local = 0",
                     placeholders.join(",")
                 );
                 let mut q = sqlx::query(&sql);
@@ -826,7 +854,10 @@ pub async fn record_resume_cleared_in_tx(
                     .await
                     .map_err(|err| format!("db user state: load cleared resume works: {err}"))?
             }
-            None => sqlx::query("SELECT plugin_id, source_novel_id, path, name FROM novel")
+            None => sqlx::query(
+                "SELECT plugin_id, source_novel_id, path, name \
+                 FROM novel WHERE plugin_id <> 'local' AND is_local = 0",
+            )
                 .fetch_all(&mut *conn)
                 .await
                 .map_err(|err| format!("db user state: load all resume works: {err}"))?,
@@ -946,7 +977,8 @@ pub async fn seed_user_state_in_tx(
     promote_private_work_identities_in_tx(conn).await?;
 
     let novels = sqlx::query(
-        "SELECT id, plugin_id, source_novel_id, path, name, in_library, library_added_at FROM novel",
+        "SELECT id, plugin_id, source_novel_id, path, name, in_library, library_added_at \
+         FROM novel WHERE plugin_id <> 'local' AND is_local = 0",
     )
     .fetch_all(&mut *conn)
     .await
@@ -1026,7 +1058,8 @@ pub async fn seed_user_state_in_tx(
     }
 
     let ch_sql = format!(
-        "{USER_CHAPTER_SELECT} WHERE c.progress > 0 OR c.unread = 0 OR c.read_at IS NOT NULL OR c.bookmark = 1"
+        "{USER_CHAPTER_SELECT} WHERE n.plugin_id <> 'local' AND n.is_local = 0 \
+         AND (c.progress > 0 OR c.unread = 0 OR c.read_at IS NOT NULL OR c.bookmark = 1)"
     );
     let ch_rows = sqlx::query(&ch_sql)
         .fetch_all(&mut *conn)

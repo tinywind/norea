@@ -1,6 +1,6 @@
 import type { TestSqliteDatabase as Database } from "./types";
 import {
-  canonicalUserStateJson, parseUserStateEntity, parseUserStateValue, userStateEntityKey,
+  canonicalUserStateJson, isLocalUserStateEntity, parseUserStateEntity, parseUserStateValue, userStateEntityKey,
   type UserStateBinding, type UserStateEntity,
   type UserStateValue, type UserStateWorkReference, type UserStateChapterReference,
 } from "../../lib/user-state/types";
@@ -99,7 +99,8 @@ export async function recordUserStateChangesInDb(db: UserStateDb, input: readonl
   const entries = input.map(entry => {
     const entity = parseUserStateEntity(entry.entity);
     return { entity, value: parseUserStateValue(entity.kind, entry.value) };
-  });
+  }).filter(({ entity, value }) => !isLocalUserStateEntity(entity, value));
+  if (!entries.length) return;
   for (let start = 0; start < entries.length; start += 80) {
     const params: unknown[] = [];
     const batch = entries.slice(start, start + 80);
@@ -175,17 +176,19 @@ export async function recordChaptersInDb(db: UserStateDb, ids: readonly number[]
 export async function markPrivateChapterProgressInDb(db: UserStateDb, chapterId: number): Promise<void> {
   if (!await hasUserStateSchema(db)) return;
   const [row] = await db.select<UserChapterRow[]>(USER_CHAPTER_SELECT + " WHERE c.id=$1", [chapterId]);
-  if (row) await db.execute("INSERT OR IGNORE INTO user_state_private(entity_key,public_value_json) VALUES($1,$2)",
+  if (row && row.pluginId !== "local") await db.execute("INSERT OR IGNORE INTO user_state_private(entity_key,public_value_json) VALUES($1,$2)",
     [userStateEntityKey({ kind: "reading", work: chapterWork(row), chapter: chapterReference(row) }), JSON.stringify({ progress: row.progress, unread: !!row.unread, readAt: row.readAt })]);
 }
 export async function recordChapterRowsInDb(db: UserStateDb, rows: readonly UserChapterRow[], kind: "reading" | "bookmark" = "reading", seed = false): Promise<void> {
+  const nonLocalRows = rows.filter(row => row.pluginId !== "local");
+  if (!nonLocalRows.length) return;
   if (kind === "reading" && !seed && await hasUserStateSchema(db)) {
-    for (let start = 0; start < rows.length; start += 400) {
-      const keys = rows.slice(start, start + 400).map(row => userStateEntityKey({ kind, work: chapterWork(row), chapter: chapterReference(row) }));
+    for (let start = 0; start < nonLocalRows.length; start += 400) {
+      const keys = nonLocalRows.slice(start, start + 400).map(row => userStateEntityKey({ kind, work: chapterWork(row), chapter: chapterReference(row) }));
       await db.execute("DELETE FROM user_state_private WHERE entity_key IN (" + keys.map((_, index) => "$" + (index + 1)).join(",") + ")", keys);
     }
   }
-  await recordUserStateChangesInDb(db, rows.map(row => ({
+  await recordUserStateChangesInDb(db, nonLocalRows.map(row => ({
     entity: { kind, work: chapterWork(row), chapter: chapterReference(row) },
     value: kind === "reading" ? { progress: row.progress, unread: !!row.unread, readAt: row.readAt } : { bookmarked: !!row.bookmark },
   })), seed);
@@ -197,7 +200,9 @@ export async function recordNovelChaptersInDb(db: UserStateDb, novelIds?: readon
   }
   if (!await hasUserStateSchema(db)) return;
   if (novelIds?.length === 0) return;
-  const where = novelIds ? " WHERE c.novel_id IN (" + novelIds.map((_, index) => "$" + (index + 1)).join(",") + ")" : "";
+  const where = novelIds
+    ? " WHERE n.plugin_id<>'local' AND n.is_local=0 AND c.novel_id IN (" + novelIds.map((_, index) => "$" + (index + 1)).join(",") + ")"
+    : " WHERE n.plugin_id<>'local' AND n.is_local=0";
   await recordChapterRowsInDb(db, await db.select<UserChapterRow[]>(USER_CHAPTER_SELECT + where, novelIds ? [...novelIds] : []));
 }
 export async function recordLibraryInDb(db: UserStateDb, novelIds?: readonly number[], removed = false): Promise<void> {
@@ -208,7 +213,7 @@ export async function recordLibraryInDb(db: UserStateDb, novelIds?: readonly num
   if (!await hasUserStateSchema(db) || novelIds?.length === 0) return;
   const rows = await db.select<(UserStateWorkReference & { inLibrary: number; addedAt: number | null })[]>(
     "SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name,in_library AS inLibrary,library_added_at AS addedAt FROM novel" +
-    (novelIds ? " WHERE id IN (" + novelIds.map((_, index) => "$" + (index + 1)).join(",") + ")" : ""), novelIds ? [...novelIds] : []);
+    (novelIds ? " WHERE plugin_id<>'local' AND is_local=0 AND id IN (" + novelIds.map((_, index) => "$" + (index + 1)).join(",") + ")" : " WHERE plugin_id<>'local' AND is_local=0"), novelIds ? [...novelIds] : []);
   await recordUserStateChangesInDb(db, rows.map(row => ({
     entity: { kind: "library", work: { pluginId: row.pluginId, sourceNovelId: row.sourceNovelId, novelPath: row.novelPath, name: row.name } },
     value: { inLibrary: removed ? false : !!row.inLibrary, addedAt: removed ? null : row.addedAt },
@@ -236,6 +241,13 @@ export async function recordCategoryInDb(db: UserStateDb, id: number, options: {
   }
 }
 export async function recordMembershipInDb(db: UserStateDb, novelIds: readonly number[], categoryId: number, included: boolean, seed = false): Promise<void> {
+  if (!novelIds.length || !await hasUserStateSchema(db)) return;
+  const works: UserStateWorkReference[] = [];
+  for (let start = 0; start < novelIds.length; start += 400) {
+    const ids = novelIds.slice(start, start + 400);
+    works.push(...await db.select<UserStateWorkReference[]>("SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name FROM novel WHERE plugin_id<>'local' AND is_local=0 AND id IN (" + ids.map((_, index) => "$" + (index + 1)).join(",") + ")", [...ids]));
+  }
+  if (!works.length) return;
   const stableId = await stableCategoryIdInDb(db, categoryId);
   if (!stableId) return;
   if (!seed && included) {
@@ -255,10 +267,9 @@ export async function recordMembershipInDb(db: UserStateDb, novelIds: readonly n
       if (!knownEverywhere) await recordCategoryInDb(db, categoryId);
     }
   }
-  for (let start = 0; start < novelIds.length; start += 400) {
-    const ids = novelIds.slice(start, start + 400);
-    const works = await db.select<UserStateWorkReference[]>("SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name FROM novel WHERE id IN (" + ids.map((_, index) => "$" + (index + 1)).join(",") + ")", [...ids]);
-    await recordUserStateChangesInDb(db, works.map(work => ({ entity: { kind: "membership", work, categoryId: stableId }, value: { included } })), seed);
+  for (let start = 0; start < works.length; start += 400) {
+    const chunk = works.slice(start, start + 400);
+    await recordUserStateChangesInDb(db, chunk.map(work => ({ entity: { kind: "membership", work, categoryId: stableId }, value: { included } })), seed);
   }
 }
 export async function recordResumeClearedInDb(db: UserStateDb, novelIds?: readonly number[]): Promise<void> {
@@ -269,7 +280,7 @@ export async function recordResumeClearedInDb(db: UserStateDb, novelIds?: readon
   if (!await hasUserStateSchema(db) || novelIds?.length === 0) return;
   const rows = await db.select<(UserStateWorkReference & { id: number })[]>(
     "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name FROM novel" +
-    (novelIds ? " WHERE id IN (" + novelIds.map((_, index) => "$" + (index + 1)).join(",") + ")" : ""), novelIds ? [...novelIds] : []);
+    (novelIds ? " WHERE plugin_id<>'local' AND is_local=0 AND id IN (" + novelIds.map((_, index) => "$" + (index + 1)).join(",") + ")" : " WHERE plugin_id<>'local' AND is_local=0"), novelIds ? [...novelIds] : []);
   await recordUserStateChangesInDb(db, rows.map(({ id: _id, ...work }) => ({
     entity: { kind: "resume", work }, value: { chapter: null, anchor: null, openedAt: null },
   })));
@@ -278,7 +289,7 @@ export async function recordCompositionInDb(db: UserStateDb, novelId: number): P
   if (!await hasUserStateSchema(db)) return;
   const work = await workReferenceInDb(db, novelId);
   const composition = await getChapterComposition(db, novelId);
-  if (work && composition) await recordUserStateChangesInDb(db, [{ entity: { kind: "composition", work }, value: { composition } }]);
+  if (work && work.pluginId !== "local" && composition) await recordUserStateChangesInDb(db, [{ entity: { kind: "composition", work }, value: { composition } }]);
 }
 
 export async function seedUserStateInDb(db: UserStateDb): Promise<void> {
@@ -286,7 +297,7 @@ export async function seedUserStateInDb(db: UserStateDb): Promise<void> {
   if (restore?.restored) return;
   await promotePrivateWorkIdentitiesInDb(db);
   const novels = await db.select<(UserStateWorkReference & { id: number; inLibrary: number; addedAt: number | null })[]>(
-    "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name,in_library AS inLibrary,library_added_at AS addedAt FROM novel");
+    "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name,in_library AS inLibrary,library_added_at AS addedAt FROM novel WHERE plugin_id<>'local' AND is_local=0");
   await recordUserStateChangesInDb(db, novels.filter(row => row.inLibrary).map(({ id: _id, inLibrary: _inLibrary, addedAt, ...work }) => ({
     entity: { kind: "library", work }, value: { inLibrary: true, addedAt },
   })), true);
@@ -302,7 +313,7 @@ export async function seedUserStateInDb(db: UserStateDb): Promise<void> {
     const members = await db.select<{ id: number }[]>("SELECT novel_id AS id FROM novel_category WHERE category_id=$1", [category.id]);
     await recordMembershipInDb(db, members.map(row => row.id), category.id, true, true);
   }
-  const chapters = await db.select<UserChapterRow[]>(USER_CHAPTER_SELECT + " WHERE c.progress>0 OR c.unread=0 OR c.read_at IS NOT NULL OR c.bookmark=1");
+  const chapters = await db.select<UserChapterRow[]>(USER_CHAPTER_SELECT + " WHERE n.plugin_id<>'local' AND n.is_local=0 AND (c.progress>0 OR c.unread=0 OR c.read_at IS NOT NULL OR c.bookmark=1)");
   const privateRows = await db.select<{ entityKey: string }[]>("SELECT entity_key AS entityKey FROM user_state_private");
   const privateKeys = new Set(privateRows.map(row => row.entityKey));
   await recordChapterRowsInDb(db, chapters.filter(row => (row.progress > 0 || !row.unread || row.readAt !== null) &&

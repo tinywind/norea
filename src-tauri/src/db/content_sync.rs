@@ -1368,8 +1368,15 @@ pub async fn db_content_sync_cache_server_chapters(
             metadata_root: MetadataRoot::App(app),
             ..TxOptions::default()
         },
-        move |conn, _ctx| {
-            Box::pin(async move { cache_server_chapters_in_tx(conn, novel_id, &chapters).await })
+        move |conn, ctx| {
+            Box::pin(async move {
+                let inserted = cache_server_chapters_in_tx(conn, novel_id, &chapters).await?;
+                if inserted {
+                    super::user_state::defer_user_state_for_novel_in_tx(conn, ctx, novel_id)
+                        .await?;
+                }
+                Ok(inserted)
+            })
         },
     )
     .await
@@ -1543,6 +1550,8 @@ pub async fn db_content_sync_list_untracked_chapters(
          JOIN novel n ON n.id = c.novel_id \
          LEFT JOIN known ON known.key = json_array(n.plugin_id, n.path, c.path) \
          WHERE n.source_novel_id IS NOT NULL \
+           AND n.is_local = 0 \
+           AND n.plugin_id <> 'local' \
            AND (c.is_downloaded = 1 OR c.content_bytes > 0) \
            AND known.key IS NULL \
          ORDER BY n.id, c.position, c.id",
@@ -1564,7 +1573,11 @@ pub async fn db_content_sync_can_upload_chapter(
     let ready: i64 = sqlx::query_scalar(
         "SELECT EXISTS( \
            SELECT 1 FROM chapter c \
-           WHERE c.id = ?1 AND (c.is_downloaded = 1 OR c.content_bytes > 0) \
+           JOIN novel n ON n.id = c.novel_id \
+           WHERE c.id = ?1 \
+             AND n.is_local = 0 \
+             AND n.plugin_id <> 'local' \
+             AND (c.is_downloaded = 1 OR c.content_bytes > 0) \
              AND NOT EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id = c.id) \
          ) AS ready",
     )
@@ -1590,9 +1603,13 @@ pub async fn db_content_sync_import_metadata(
             metadata_root: MetadataRoot::App(app),
             ..TxOptions::default()
         },
-        move |conn, _ctx| {
+        move |conn, ctx| {
             Box::pin(async move {
-                import_content_metadata_in_tx(conn, &manifest, server_url.as_deref()).await
+                let imported =
+                    import_content_metadata_in_tx(conn, &manifest, server_url.as_deref()).await?;
+                super::user_state::defer_user_state_for_novel_in_tx(conn, ctx, imported.novel_id)
+                    .await?;
+                Ok(imported)
             })
         },
     )
