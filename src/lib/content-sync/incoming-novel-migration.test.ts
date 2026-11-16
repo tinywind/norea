@@ -9,7 +9,7 @@ import type { NovelMetadataV1, StoredNovelMetadata } from "../work-metadata";
 const invokeMock = vi.hoisted(() => vi.fn());
 vi.mock("@tauri-apps/api/core", () => ({ invoke: invokeMock }));
 vi.mock("../../db/work-metadata", async original => ({ ...await original<typeof import("../../db/work-metadata")>(), readWorkMetadataSyncFile: vi.fn() }));
-vi.mock("../work-metadata", async original => ({ ...await original<typeof import("../work-metadata")>(), installStoredNovelMetadata: vi.fn(), readStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn(), workMetadataOperation: vi.fn() }));
+vi.mock("../work-metadata", async original => ({ ...await original<typeof import("../work-metadata")>(), installStoredNovelMetadata: vi.fn(), persistNovelCover: vi.fn(), readStoredNovelMetadata: vi.fn(), readStoredNovelCover: vi.fn(), workMetadataOperation: vi.fn() }));
 vi.mock("../chapter-content/storage-platform", () => ({ inspectChapterPayloadInventory: vi.fn() }));
 vi.mock("../chapter-content-storage", () => ({ reconcileStoredChapterContent: vi.fn() }));
 vi.mock("../chapter-storage-transfer", () => ({ prepareChapterStorageTransfer: vi.fn(), rollbackChapterStorageTransfer: vi.fn(), finalizeChapterStorageTransfer: vi.fn(), removeChapterStorageDirectory: vi.fn() }));
@@ -30,7 +30,7 @@ import { readWorkMetadataSyncFile } from "../../db/work-metadata";
 import { applyNovelMetadataToCache } from "../../test/sql/work-metadata";
 import { findNovelBySource, getNovelById } from "../../db/queries/novel";
 import { getChapterById } from "../../db/queries/chapter";
-import { installStoredNovelMetadata, readStoredNovelMetadata, readStoredNovelCover, workMetadataOperation } from "../work-metadata";
+import { installStoredNovelMetadata, persistNovelCover, readStoredNovelMetadata, readStoredNovelCover, workMetadataOperation } from "../work-metadata";
 import { inspectChapterPayloadInventory } from "../chapter-content/storage-platform";
 import { reconcileStoredChapterContent } from "../chapter-content-storage";
 import { prepareChapterStorageTransfer, rollbackChapterStorageTransfer, finalizeChapterStorageTransfer, removeChapterStorageDirectory } from "../chapter-storage-transfer";
@@ -42,13 +42,14 @@ import { contentServerRequest } from "./client";
 import { downloadServerChapterFromServer } from "./sync";
 import { recordInstalledWorkMetadata } from "./works";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
-import { applyIncomingNovelMigration, IncomingNovelMigrationRetryableError, type ResolvedIncomingNovelMigration } from "./incoming-novel-migration";
+import { applyIncomingNovelMigration, IncomingNovelMigrationRetryableError, repairCompletedIncomingMigrationCovers, type ResolvedIncomingNovelMigration } from "./incoming-novel-migration";
 import { incomingMigrationFromLineage, listIncomingMigrations, saveIncomingMigration, type WorkMigrationLineage } from "./migration-feed-state";
 
 let sqlite: DatabaseSync;
 let db: Database;
 const files = new Map<string, ChapterPayloadSnapshot>();
 const metadataFiles = new Map<string, StoredNovelMetadata>();
+const coverFiles = new Map<string, Uint8Array>();
 let live: { work: WorkMigrationLineage["targetWork"]; chapters: WorkMigrationLineage["mappings"][number]["source"][] };
 let resolved: ResolvedIncomingNovelMigration;
 let afterPrepare: (() => void) | undefined;
@@ -125,7 +126,7 @@ function initializeDevice(idOffset = 0) {
     try { if(remote)sqlite.exec("UPDATE content_sync_origin SET remote=1"); const result=await run(db); if(remote)sqlite.exec("UPDATE content_sync_origin SET remote=0"); sqlite.exec("COMMIT"); return result; }
     catch(error){ sqlite.exec("ROLLBACK"); throw error; }
   });
-  files.clear(); metadataFiles.clear(); files.set("contents/alpha/a-work/1",payload());
+  files.clear(); metadataFiles.clear(); coverFiles.clear(); files.set("contents/alpha/a-work/1",payload());
 }
 beforeEach(() => {
   vi.clearAllMocks(); initializeDevice(); resolved=fixture(); afterPrepare=undefined;
@@ -138,12 +139,27 @@ beforeEach(() => {
     expect(options?.authoritative).toBe(true);
     await runDatabaseTransaction(async db=>{await before?.(null);const id=await applyNovelMetadataToCache(db,input,undefined,{preserveMissingMetadata:false});await db.execute("UPDATE novel SET cover=NULL WHERE id=$1",[id]);},true);
     const directory=`contents/${input.identity.pluginId}/${input.identity.novelId}`;
-    const stored={directory,metadata:structuredClone(input)};metadataFiles.set(directory,stored);
+    const storedMetadata=structuredClone(input);
+    if (cover) coverFiles.set(directory, cover);
+    else if (!options?.preserveLocalCover) { coverFiles.delete(directory); storedMetadata.cover = null; }
+    const stored={directory,metadata:storedMetadata};metadataFiles.set(directory,stored);
     return {...stored,coverBytes:cover??null,syncFile:{directory,fingerprint:"latest",revision:7,pluginId:input.identity.pluginId,path:input.identity.novelPath}};
+  });
+  vi.mocked(persistNovelCover).mockImplementation(async (directory, cover, options) => {
+    if (options?.preserveExisting && coverFiles.has(directory)) return;
+    const stored = metadataFiles.get(directory);
+    if (!stored) return;
+    if (cover) {
+      stored.metadata.cover = { fileName: cover.fileName, contentType: cover.contentType };
+      coverFiles.set(directory, cover.body);
+    } else {
+      stored.metadata.cover = null;
+      coverFiles.delete(directory);
+    }
   });
   vi.mocked(readWorkMetadataSyncFile).mockImplementation(async identity=>{const stored=[...metadataFiles.values()].find(value=>value.metadata.identity.pluginId===identity.pluginId&&value.metadata.identity.novelPath===identity.novelPath);return stored?{directory:stored.directory,fingerprint:"latest",revision:7,pluginId:identity.pluginId,path:identity.novelPath}:null;});
   vi.mocked(readStoredNovelMetadata).mockImplementation(async directory=>metadataFiles.get(directory)??null);
-  vi.mocked(readStoredNovelCover).mockResolvedValue(null);
+  vi.mocked(readStoredNovelCover).mockImplementation(async directory=>coverFiles.get(directory)??null);
   vi.mocked(workMetadataOperation).mockImplementation(async input => {
     const directory = input.path!.slice(0, -"/novel.json".length);
     if (input.operation === "chapters") return { paths: [...files.keys()].filter(path => path.startsWith(directory + "/")).map(path => path + "/content.html") };
@@ -252,12 +268,66 @@ it("rolls back moved files, reading state and receipt if the server target chang
 it("records an idempotent no-op when this recipient already has no original work",async()=>{
   sqlite.exec("DELETE FROM novel WHERE id=1");expect(await apply()).toBeNull();expect(installStoredNovelMetadata).not.toHaveBeenCalled();expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();expect((await listIncomingMigrations("http://server", true))[0]?.status).toBe("completed");
 });
-it("receives a mapping for a work with a server cover without fetching the cover", async () => {
+it("fetches and verifies the server cover when installing a migrated target", async () => {
+  const coverBytes = new Uint8Array([42]);
   live.work.metadata.cover = { fileName: "cover.png", contentType: "image/png" };
-  live.work.coverSha256 = "a".repeat(64);
+  live.work.coverSha256 = createHash("sha256").update(coverBytes).digest("hex");
+  const result = await apply();
+  expect(nativeFetch).toHaveBeenCalledWith(
+    `http://server/api/v1/works/${encodeURIComponent(live.work.id)}/cover`,
+    expect.objectContaining({ headers: { Authorization: "Bearer device" } }),
+  );
+  expect(installStoredNovelMetadata).toHaveBeenCalledWith(live.work.metadata, coverBytes, undefined, { authoritative: true });
+  expect(result!.installedTargetMetadata?.coverBytes).toEqual(coverBytes);
+  expect(recordInstalledWorkMetadata).toHaveBeenCalledWith("http://server", expect.objectContaining({ coverBytes }), true);
+});
+
+it("reuses an already-stored target cover matching coverSha256 without refetching", async () => {
+  const coverBytes = new Uint8Array([7, 8, 9]);
+  const targetMeta = { ...structuredClone(resolved.targetWork.metadata), cover: { fileName: "cover.jpg", contentType: "image/jpeg" } };
+  await applyNovelMetadataToCache(db, targetMeta);
+  metadataFiles.set("contents/beta/b-work", { directory: "contents/beta/b-work", metadata: targetMeta });
+  coverFiles.set("contents/beta/b-work", coverBytes);
+  live.work.metadata.cover = { fileName: "cover.jpg", contentType: "image/jpeg" };
+  live.work.coverSha256 = createHash("sha256").update(coverBytes).digest("hex");
   await apply();
   expect(nativeFetch).not.toHaveBeenCalled();
-  expect(installStoredNovelMetadata).toHaveBeenCalledWith(live.work.metadata, undefined, undefined, { authoritative: true, preserveLocalCover: true });
+  expect(installStoredNovelMetadata).toHaveBeenCalledWith(live.work.metadata, coverBytes, undefined, { authoritative: true });
+});
+
+it("treats a mismatched or missing server cover during migration as retryable without modifying local state", async () => {
+  live.work.metadata.cover = { fileName: "cover.png", contentType: "image/png" };
+  live.work.coverSha256 = "f".repeat(64);
+  await expect(apply()).rejects.toBeInstanceOf(IncomingNovelMigrationRetryableError);
+  expect(await findNovelBySource("alpha", "/old")).not.toBeNull();
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+});
+
+it("backfills missing local covers once for already-completed incoming migrations", async () => {
+  const coverBytes = new Uint8Array([99, 100, 101]);
+  await apply();
+  expect(coverFiles.has("contents/beta/b-work")).toBe(false);
+  const serverMetadata = { ...structuredClone(live.work.metadata), cover: { fileName: "cover.jpg", contentType: "image/jpeg" } };
+  vi.mocked(contentServerRequest).mockImplementation(async (_server, path) => {
+    if (path === `/works/${encodeURIComponent(live.work.id)}`) {
+      return { id: live.work.id, sequence: 5, metadata: serverMetadata, hasCover: true } as never;
+    }
+    throw new Error("Unexpected endpoint " + path);
+  });
+  vi.mocked(nativeFetch).mockImplementation(async () => new Response(coverBytes, { headers: { "content-type": "image/jpeg" } }));
+  const completed = await listIncomingMigrations("http://server", true);
+  expect(await repairCompletedIncomingMigrationCovers("http://server", "device", completed)).toBe(1);
+  expect(persistNovelCover).toHaveBeenCalledWith(
+    "contents/beta/b-work",
+    { body: coverBytes, fileName: "cover.jpg", contentType: "image/jpeg" },
+    { preserveExisting: true },
+  );
+  expect(coverFiles.get("contents/beta/b-work")).toEqual(coverBytes);
+  vi.mocked(nativeFetch).mockClear();
+  vi.mocked(contentServerRequest).mockClear();
+  expect(await repairCompletedIncomingMigrationCovers("http://server", "device", completed)).toBe(0);
+  expect(nativeFetch).not.toHaveBeenCalled();
+  expect(contentServerRequest).not.toHaveBeenCalled();
 });
 
 it("returns the committed mapping even if the subsequent metadata cache notification fails",async()=>{

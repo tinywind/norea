@@ -9,7 +9,12 @@ import {
   parseWorkMigrationLineage, rememberIncomingMigrationPage, saveIncomingMigration,
   type IncomingMigration, type WorkMigrationLineage,
 } from "./migration-feed-state";
-import { applyIncomingNovelMigration, IncomingNovelMigrationRetryableError, type ResolvedIncomingNovelMigration } from "./incoming-novel-migration";
+import {
+  applyIncomingNovelMigration,
+  IncomingNovelMigrationRetryableError,
+  repairCompletedIncomingMigrationCovers,
+  type ResolvedIncomingNovelMigration,
+} from "./incoming-novel-migration";
 
 const PAGE_SIZE = 50;
 
@@ -200,7 +205,14 @@ export async function syncIncomingNovelMigrations(
     assertCurrent(); signal.throwIfAborted();
     await recordInstalledWorkMetadata(server, installed, installed.metadata.cover !== null);
   }
-  if (applied && typeof window !== "undefined") window.dispatchEvent(new Event("norea-content-state-changed"));
+  const repairedCovers = await repairCompletedIncomingMigrationCovers(
+    server,
+    token,
+    await listIncomingMigrations(server, true),
+    assertCurrent,
+    signal,
+  );
+  if ((applied || repairedCovers) && typeof window !== "undefined") window.dispatchEvent(new Event("norea-content-state-changed"));
   const pending = await listIncomingMigrations(server);
   return { applied, pending: pending.length, ...(pending.length ? { error: pending[0]?.error, retryable: pending.some(record => record.status === "pending" || record.status === "failed") } : {}) };
 }

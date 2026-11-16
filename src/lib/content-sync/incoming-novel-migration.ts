@@ -1,16 +1,20 @@
+import { isAbortError } from "../abort";
 import { readWorkMetadataSyncFile } from "../../db/work-metadata";
+import { isNovelMigrationSourceHeld, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { listChaptersByNovel, upsertSourceChapters, type ChapterListRow, type InsertChapterInput } from "../../db/queries/chapter";
 import { completeIncomingNovelMigration, type IncomingMigrationCommit } from "../../db/queries/novel-merge";
 import { findNovelBySource } from "../../db/queries/novel";
 import { canonicalMetadataValue, parseNovelMetadata } from "../work-metadata/schema";
-import { installStoredNovelMetadata, readStoredNovelCover, readStoredNovelMetadata, type InstalledNovelMetadata } from "../work-metadata";
+import { installStoredNovelMetadata, persistNovelCover, readStoredNovelCover, readStoredNovelMetadata, type InstalledNovelMetadata } from "../work-metadata";
 import { executeNovelMergeFromServer, type NovelMergeChapterDecision, type NovelMergeResult } from "../novel-merge";
 import { cancelNovelChapterDownloadWork } from "../tasks/download-cache-delete";
-import { contentServerRequest } from "./client";
-import type { MigrationLineageChapterDecision, MigrationLineageMapping, MigrationLineageWork, WorkMigrationLineage } from "./migration-feed-state";
+import { readServerCover } from "./browse";
+import { ContentServerError, contentServerRequest, normalizeContentServerUrl } from "./client";
+import { serverWorkDeletionKey, waitForServerWorkDeletion, withServerWorkDeletionExclusions } from "./deletion-exclusions";
+import type { IncomingMigration, MigrationLineageChapterDecision, MigrationLineageMapping, MigrationLineageWork, WorkMigrationLineage } from "./migration-feed-state";
 import type { WorkMigrationSnapshot } from "./novel-migration-types";
 import { rememberServerNovelSource } from "./novel-source";
-import { contentWorkId, recordInstalledWorkMetadata } from "./works";
+import { canPullWorkMetadata, contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint, type WorkCatalogEntry } from "./works";
 
 export interface ResolvedIncomingNovelMigration {
   sourceWork: MigrationLineageWork;
@@ -89,6 +93,183 @@ async function currentTarget(server: string, token: string, resolved: ResolvedIn
   return { ...target, work: { ...target.work, metadata } };
 }
 
+async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  return Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer)), byte => byte.toString(16).padStart(2, "0")).join("");
+}
+
+async function resolveTargetCoverBytes(
+  server: string,
+  token: string,
+  workId: string,
+  live: Awaited<ReturnType<typeof currentTarget>>,
+  hasExistingTarget: boolean,
+  signal: AbortSignal,
+): Promise<Uint8Array | undefined> {
+  const expectedCover = live.work.metadata.cover;
+  const expectedDigest = live.work.coverSha256;
+  if (!expectedCover || !expectedDigest) return undefined;
+  if (hasExistingTarget) {
+    const existingSync = await readWorkMetadataSyncFile(live.work.metadata.identity);
+    const existingStored = existingSync ? await readStoredNovelMetadata(existingSync.directory) : null;
+    const existingBytes = existingStored?.metadata.cover
+      ? await readStoredNovelCover(existingStored.directory, existingStored.metadata)
+      : null;
+    if (
+      existingBytes?.length &&
+      existingStored?.metadata.cover?.fileName === expectedCover.fileName &&
+      existingStored.metadata.cover.contentType === expectedCover.contentType &&
+      await sha256Hex(existingBytes) === expectedDigest
+    ) {
+      return existingBytes;
+    }
+  }
+  let downloaded: { bytes: Uint8Array; contentType: string };
+  try {
+    downloaded = await readServerCover(server, token, workId, signal);
+  } catch (error) {
+    if (error instanceof ContentServerError && error.status === 404) {
+      throw new IncomingNovelMigrationRetryableError("The target cover changed before this recipient's migration could commit. The original work was retained.");
+    }
+    throw error;
+  }
+  if (await sha256Hex(downloaded.bytes) !== expectedDigest) {
+    throw new IncomingNovelMigrationRetryableError("The target cover changed before this recipient's migration could commit. The original work was retained.");
+  }
+  return downloaded.bytes;
+}
+
+const COVER_REPAIR_CACHE_PREFIX = "norea-content-incoming-cover-repair:v1:";
+
+/** Backfill missing local covers for targets migrated before incoming replay fetched server covers. */
+export async function repairCompletedIncomingMigrationCovers(
+  serverUrl: string,
+  token: string,
+  records: readonly IncomingMigration[],
+  assertCurrent: () => void = () => undefined,
+  signal = new AbortController().signal,
+): Promise<number> {
+  const completed = records.filter(record => record.status === "completed" && record.lineage.active);
+  if (!completed.length) return 0;
+  const server = normalizeContentServerUrl(serverUrl);
+  const cacheKey = `${COVER_REPAIR_CACHE_PREFIX}${server}`;
+  const rawCache = await readContentSyncCache(cacheKey);
+  let checkedSet = new Set<string>();
+  if (rawCache) {
+    try {
+      const parsed = JSON.parse(rawCache) as { checked?: unknown };
+      if (Array.isArray(parsed.checked)) {
+        checkedSet = new Set(parsed.checked.filter((item): item is string => typeof item === "string" && item.length > 0));
+      }
+    } catch {
+      checkedSet = new Set();
+    }
+  }
+  const unchecked = completed.filter(record => !checkedSet.has(record.operationId));
+  if (!unchecked.length) return 0;
+
+  const supersededSourceIds = new Set(records.filter(record => record.lineage.active).map(record => record.lineage.sourceWork.id));
+  const byTargetId = new Map<string, IncomingMigration[]>();
+  for (const record of unchecked) {
+    const group = byTargetId.get(record.lineage.targetWork.id) ?? [];
+    group.push(record);
+    byTargetId.set(record.lineage.targetWork.id, group);
+  }
+
+  return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, async excluded => {
+    let repaired = 0;
+    let dirty = false;
+    const markChecked = (group: readonly IncomingMigration[]) => {
+      for (const item of group) checkedSet.add(item.operationId);
+      dirty = true;
+    };
+    try {
+      for (const [targetId, group] of byTargetId) {
+        signal.throwIfAborted();
+        assertCurrent();
+        if (supersededSourceIds.has(targetId)) {
+          markChecked(group);
+          continue;
+        }
+        const identity = group[0]!.lineage.targetWork.identity;
+        try {
+          const syncFile = await readWorkMetadataSyncFile(identity);
+          if (!syncFile) {
+            markChecked(group);
+            continue;
+          }
+          if (excluded.has(serverWorkDeletionKey(identity)) || await isNovelMigrationSourceHeld(server, identity)) continue;
+          const stored = await readStoredNovelMetadata(syncFile.directory);
+          if (!stored) {
+            markChecked(group);
+            continue;
+          }
+          const existingCover = await readStoredNovelCover(stored.directory, stored.metadata);
+          if (existingCover?.length) {
+            markChecked(group);
+            continue;
+          }
+          const wasSynced = await canPullWorkMetadata(server, syncFile, await workMetadataFingerprint(stored.metadata, null));
+          let entry: WorkCatalogEntry;
+          try {
+            entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${encodeURIComponent(targetId)}`, token, "GET", undefined, signal);
+          } catch (error) {
+            if (error instanceof ContentServerError && error.status === 404) {
+              markChecked(group);
+              continue;
+            }
+            throw error;
+          }
+          signal.throwIfAborted();
+          assertCurrent();
+          if (entry.deleted || !entry.hasCover) {
+            markChecked(group);
+            continue;
+          }
+          const remoteMetadata = parseNovelMetadata(entry.metadata);
+          if (!remoteMetadata.cover || entry.id !== targetId || await contentWorkId(remoteMetadata.identity) !== targetId || !sameIdentity(remoteMetadata.identity, identity)) {
+            markChecked(group);
+            continue;
+          }
+          const remoteCover = await readServerCover(server, token, targetId, signal);
+          signal.throwIfAborted();
+          assertCurrent();
+          await waitForServerWorkDeletion(server, targetId);
+          if (excluded.has(serverWorkDeletionKey(identity))) continue;
+          await persistNovelCover(
+            stored.directory,
+            {
+              body: remoteCover.bytes,
+              fileName: remoteMetadata.cover.fileName,
+              contentType: remoteMetadata.cover.contentType,
+            },
+            { preserveExisting: true },
+          );
+          if (wasSynced) {
+            const updatedSync = await readWorkMetadataSyncFile(identity);
+            const updatedStored = updatedSync && await readStoredNovelMetadata(updatedSync.directory);
+            const updatedCover = updatedStored && await readStoredNovelCover(updatedStored.directory, updatedStored.metadata);
+            if (updatedSync && updatedStored && updatedCover?.length) {
+              await recordInstalledWorkMetadata(server, { ...updatedStored, syncFile: updatedSync, coverBytes: updatedCover }, true);
+            }
+          }
+          repaired += 1;
+          markChecked(group);
+        } catch (error) {
+          if (isAbortError(error) || (error instanceof ContentServerError && (error.status === 401 || error.status === 403))) throw error;
+          signal.throwIfAborted();
+          assertCurrent();
+          console.warn("[incoming-migration] target cover backfill deferred", error);
+        }
+      }
+    } finally {
+      if (dirty) {
+        await writeContentSyncCache(cacheKey, JSON.stringify({ checked: [...checkedSet] }));
+      }
+    }
+    return repaired;
+  }), signal);
+}
+
 /** Replay the confirmed mapping locally without loading either source plugin. */
 export async function applyIncomingNovelMigration(
   server: string, token: string, resolved: ResolvedIncomingNovelMigration, options: IncomingNovelMigrationOptions,
@@ -118,7 +299,9 @@ export async function applyIncomingNovelMigration(
   });
   const live = await currentTarget(server, token, resolved, signal);
   await check();
-  await installStoredNovelMetadata(live.work.metadata, undefined, undefined, { authoritative: true, preserveLocalCover: true });
+  const targetCoverBytes = await resolveTargetCoverBytes(server, token, resolved.targetWork.id, live, previousTarget !== null, signal);
+  await check();
+  await installStoredNovelMetadata(live.work.metadata, targetCoverBytes, undefined, { authoritative: true });
   const target = await findNovelBySource(resolved.targetWork.identity.pluginId, resolved.targetWork.identity.novelPath);
   if (!target || target.isLocal || target.sourceNovelId !== resolved.targetWork.identity.novelId) review("The recipient target identity could not be prepared.");
   const positions = new Map(Object.keys(live.work.metadata.chapters).sort((a, b) => Number(a) - Number(b)).map((number, index) => [number, index + 1]));
@@ -155,7 +338,7 @@ export async function applyIncomingNovelMigration(
       await options.beforeCommit?.();
       await check();
       const latest = await currentTarget(server, token, resolved, signal);
-      if (latest.work.revision !== live.work.revision) {
+      if (latest.work.revision !== live.work.revision || latest.work.coverSha256 !== live.work.coverSha256) {
         throw new IncomingNovelMigrationRetryableError("The target changed before this recipient's migration could commit. The original work was retained.");
       }
       await check();

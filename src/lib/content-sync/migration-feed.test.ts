@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb, runDatabaseTransaction } from "../../test/sql/client";
 import { contentServerRequest, ContentServerError, ContentServerTransportError } from "./client";
 import { publishNovelMigrationSourceHold } from "./deletion-exclusions";
-import { applyIncomingNovelMigration } from "./incoming-novel-migration";
+import { applyIncomingNovelMigration, repairCompletedIncomingMigrationCovers } from "./incoming-novel-migration";
 import { getIncomingMigrationCursor, incomingMigrationFromLineage, listIncomingMigrations, saveIncomingMigration, type WorkMigrationLineage } from "./migration-feed-state";
 import { resolveIncomingNovelMigration, syncIncomingNovelMigrations } from "./migration-feed";
 import { commitIncomingMigrationInDb } from "../../test/mock-novel-merge-ipc";
@@ -24,7 +24,11 @@ vi.mock("@tauri-apps/api/core", () => ({
 }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("./deletion-exclusions", () => ({ publishNovelMigrationSourceHold: vi.fn() }));
-vi.mock("./incoming-novel-migration", () => ({ applyIncomingNovelMigration: vi.fn(), IncomingNovelMigrationRetryableError: class extends Error {} }));
+vi.mock("./incoming-novel-migration", () => ({
+  applyIncomingNovelMigration: vi.fn(),
+  IncomingNovelMigrationRetryableError: class extends Error {},
+  repairCompletedIncomingMigrationCovers: vi.fn(async () => 0),
+}));
 vi.mock("./works", () => ({ recordInstalledWorkMetadata: vi.fn() }));
 
 const server = "https://content.test";
@@ -135,6 +139,7 @@ describe("received migration synchronization", () => {
       });
       return null;
     });
+    vi.mocked(repairCompletedIncomingMigrationCovers).mockResolvedValue(0);
   });
   afterEach(() => { for (const database of databases.splice(0)) database.close(); });
 
@@ -283,6 +288,23 @@ describe("received migration synchronization", () => {
     vi.mocked(contentServerRequest).mockImplementation(actual);
     await expect(syncIncomingNovelMigrations(server, "token", () => { throw new Error("Connection changed"); })).rejects.toThrow("Connection changed");
     expect(applyIncomingNovelMigration).not.toHaveBeenCalled();
+  });
+
+  it("repairs missing covers for completed incoming migrations and notifies content listeners", async () => {
+    await syncIncomingNovelMigrations(server, "token");
+    vi.stubGlobal("window", new EventTarget());
+    const changed = vi.fn();
+    window.addEventListener("norea-content-state-changed", changed);
+    vi.mocked(repairCompletedIncomingMigrationCovers).mockResolvedValueOnce(2);
+    expect(await syncIncomingNovelMigrations(server, "token")).toEqual({ applied: 0, pending: 0 });
+    expect(repairCompletedIncomingMigrationCovers).toHaveBeenLastCalledWith(
+      server,
+      "token",
+      expect.arrayContaining([expect.objectContaining({ status: "completed" })]),
+      expect.any(Function),
+      expect.any(AbortSignal),
+    );
+    expect(changed).toHaveBeenCalledOnce();
   });
 });
 
