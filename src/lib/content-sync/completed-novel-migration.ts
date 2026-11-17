@@ -1,7 +1,7 @@
 import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl } from "./client";
 import { runServerWorkDeletion } from "./deletion-exclusions";
-import { listIncomingMigrations } from "./migration-feed-state";
+import { listIncomingMigrationSummaries } from "./migration-feed-state";
 import { buildFinalizeNovelMigrationRequest, PendingNovelMigrationError } from "./novel-migration";
 import type { FinalizeWorkMigrationRequest, MigrationWorkIdentity, PendingNovelMigration, WorkMigrationSnapshot } from "./novel-migration-types";
 import { contentWorkId, recordDeletedWorkMetadata, type WorkCatalogEntry } from "./works";
@@ -64,7 +64,7 @@ export async function reconcileCompletedNovelMigrations(
   const server = normalizeContentServerUrl(serverUrl);
   const check = () => { signal?.throwIfAborted(); assertCurrent(); };
   check();
-  const inactive = new Set((await listIncomingMigrations(server, true)).filter(receipt => !receipt.lineage.active).flatMap(receipt => [receipt.operationId, ...(receipt.lineage.legacyOperationId ? [receipt.lineage.legacyOperationId] : [])]));
+  const inactive = new Set((await listIncomingMigrationSummaries(server, true)).filter(receipt => !receipt.lineage.active).flatMap(receipt => [receipt.operationId, ...(receipt.lineage.legacyOperationId ? [receipt.lineage.legacyOperationId] : [])]));
   const jobs = (await listNovelMigrations(server, true)).filter(job => job.status === "completed" && job.request && !inactive.has(job.operationId));
   check();
   const pending: { job: PendingNovelMigration; saved: ReconciliationCache | null }[] = [];

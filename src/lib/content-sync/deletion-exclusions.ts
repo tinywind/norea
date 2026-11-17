@@ -2,7 +2,7 @@ import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from
 import { novelStorageRelativeDir } from "../chapter-storage-path";
 import { normalizeContentServerUrl } from "./client";
 import type { PackageManifest } from "./native";
-import { listIncomingMigrations } from "./migration-feed-state";
+import { listIncomingMigrationSummaries } from "./migration-feed-state";
 
 const cacheKey = (server: string) => `norea-content-deletions:${normalizeContentServerUrl(server)}`;
 const workCacheKey = (server: string) => `norea-content-work-deletions:${normalizeContentServerUrl(server)}`;
@@ -34,7 +34,7 @@ export async function readServerWorkDeletionExclusions(server: string): Promise<
   const saved = await readContentSyncCache(workCacheKey(server));
   const excluded = new Set(saved ? JSON.parse(saved) as string[] : []);
   for (const job of await listNovelMigrations(normalizeContentServerUrl(server), true)) excluded.add(serverWorkDeletionKey(job.source));
-  const incoming = await listIncomingMigrations(server, true);
+  const incoming = await listIncomingMigrationSummaries(server, true);
   const bySource = new Map<string, typeof incoming>();
   for (const record of incoming) {
     if (record.status === "inactive") continue;

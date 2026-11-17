@@ -459,11 +459,15 @@ function parseStoredIncoming(row: {
   if (
     raw.version !== 1 ||
     raw.operationId !== lineage.operationId ||
-    raw.sequence !== lineage.sequence ||
-    row.cacheKey !== receiptKey(serverUrl, lineage.operationId)
+    raw.sequence !== lineage.sequence
   ) {
     throw new Error(
       "Incoming work migration is invalid: stored receipt. Synchronization was held.",
+    );
+  }
+  if (row.cacheKey !== receiptKey(serverUrl, lineage.operationId)) {
+    throw new Error(
+      "Incoming work migration is invalid: receipt cache identity. Synchronization was held.",
     );
   }
   return {
@@ -1114,8 +1118,86 @@ export function createContentSyncIpcHandler(
         };
       }
 
+      if (command === "db_content_sync_list_incoming_migration_summaries") {
+        const db = await selectDb(args.readMode as string | undefined);
+        const includeCompleted = Boolean(args.includeCompleted);
+        const items = await listIncomingMigrationsInTestDb(
+          db,
+          args.serverUrl as string,
+          includeCompleted,
+        );
+        return {
+          handled: true,
+          result: items.map((item) => ({
+            version: 1 as const,
+            serverUrl: item.serverUrl,
+            operationId: item.operationId,
+            sequence: item.sequence,
+            source: item.source,
+            target: item.target,
+            status: item.status,
+            lineage: {
+              ...(item.lineage.legacyOperationId === undefined
+                ? {}
+                : { legacyOperationId: item.lineage.legacyOperationId }),
+              active: item.lineage.active,
+              sourceWork: {
+                id: item.lineage.sourceWork.id,
+                identity: item.lineage.sourceWork.identity,
+              },
+              targetWork: {
+                id: item.lineage.targetWork.id,
+                identity: item.lineage.targetWork.identity,
+              },
+            },
+            ...(item.error === undefined ? {} : { error: item.error }),
+          })),
+        };
+      }
+
+      if (command === "db_content_sync_read_incoming_migrations") {
+        const db = await selectDb(args.readMode as string | undefined);
+        const serverUrl = normalizeContentServerUrl(args.serverUrl as string);
+        const operationIds = args.operationIds as string[] | undefined;
+        const includeCompleted = Boolean(args.includeCompleted);
+        if (operationIds) {
+          const rows: Array<{ cacheKey: string; payload: string }> = [];
+          const seen = new Set<string>();
+          for (const opId of operationIds) {
+            const key = receiptKey(serverUrl, opId);
+            if (seen.has(key)) continue;
+            seen.add(key);
+            const found = await db.select<{ cacheKey: string; payload: string }[]>(
+              "SELECT cache_key AS cacheKey,payload FROM content_sync_cache WHERE cache_key=$1",
+              [key],
+            );
+            if (found[0]) rows.push(found[0]);
+          }
+          return { handled: true, result: rows };
+        }
+        const prefix = serverReceiptPrefix(serverUrl);
+        const allRows = await db.select<{ cacheKey: string; payload: string }[]>(
+          "SELECT cache_key AS cacheKey,payload FROM content_sync_cache WHERE substr(cache_key,1,length($1))=$1 ORDER BY cache_key",
+          [prefix],
+        );
+        const filtered: Array<{ cacheKey: string; payload: string }> = [];
+        for (const row of allRows) {
+          const parsed = parseStoredIncoming(row);
+          if (
+            includeCompleted ||
+            (parsed.status !== "completed" && parsed.status !== "inactive")
+          ) {
+            filtered.push(row);
+          }
+        }
+        return { handled: true, result: filtered };
+      }
+
       if (command === "db_content_sync_save_incoming_migration") {
-        const record = args.record as IncomingMigration;
+        const record =
+          typeof args.recordJson === "string"
+            ? (JSON.parse(args.recordJson) as IncomingMigration)
+            : (args.record as IncomingMigration);
         await options.runTransaction((db) =>
           saveIncomingMigrationInTestDb(db, record),
         );
@@ -1150,7 +1232,11 @@ export function createContentSyncIpcHandler(
 
       if (command === "db_content_sync_remember_incoming_migration_page") {
         const server = args.serverUrl as string;
-        const items = (args.items ?? []) as WorkMigrationLineage[];
+        const items = Array.isArray(args.itemsJson)
+          ? (args.itemsJson as string[]).map(
+              (raw) => JSON.parse(raw) as WorkMigrationLineage,
+            )
+          : ((args.items ?? []) as WorkMigrationLineage[]);
         const cursor = args.cursor as number;
         await options.runTransaction(async (db) => {
           const serverUrl = normalizeContentServerUrl(server);

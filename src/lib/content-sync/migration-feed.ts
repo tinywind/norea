@@ -5,9 +5,10 @@ import type { InstalledNovelMetadata } from "../work-metadata";
 import { contentServerRequest, ContentServerError, ContentServerTransportError, normalizeContentServerUrl } from "./client";
 import { publishNovelMigrationSourceHold } from "./deletion-exclusions";
 import {
-  getIncomingMigrationCursor, incomingMigrationFromLineage, listIncomingMigrations,
-  parseWorkMigrationLineage, rememberIncomingMigrationPage, saveIncomingMigration,
-  type IncomingMigration, type WorkMigrationLineage,
+  getIncomingMigrationCursor, incomingMigrationFromLineage, listIncomingMigrationSummaries,
+  parseWorkMigrationLineage, readIncomingMigration, readIncomingMigrations,
+  rememberIncomingMigrationPage, saveIncomingMigration,
+  type IncomingMigration, type IncomingMigrationSummary, type WorkMigrationLineage,
 } from "./migration-feed-state";
 import {
   applyIncomingNovelMigration,
@@ -16,7 +17,7 @@ import {
   type ResolvedIncomingNovelMigration,
 } from "./incoming-novel-migration";
 
-const PAGE_SIZE = 50;
+const PAGE_SIZE = 5;
 
 export interface IncomingMigrationSyncResult { applied: number; pending: number; error?: string; retryable?: boolean }
 
@@ -121,6 +122,46 @@ async function refreshReceivedMigration(server: string, token: string, record: I
   return next;
 }
 
+function collectReachableActiveOperationIds(
+  initialTargetWorkId: string,
+  summaries: readonly IncomingMigrationSummary[],
+): string[] {
+  const bySource = new Map<string, IncomingMigrationSummary[]>();
+  for (const item of summaries) {
+    if (!item.lineage.active) continue;
+    const list = bySource.get(item.lineage.sourceWork.id) ?? [];
+    list.push(item);
+    bySource.set(item.lineage.sourceWork.id, list);
+  }
+  const visitedWorks = new Set<string>();
+  const operationIds = new Set<string>();
+  const queue = [initialTargetWorkId];
+  while (queue.length) {
+    const workId = queue.pop()!;
+    if (visitedWorks.has(workId)) continue;
+    visitedWorks.add(workId);
+    for (const successor of bySource.get(workId) ?? []) {
+      operationIds.add(successor.operationId);
+      queue.push(successor.lineage.targetWork.id);
+    }
+  }
+  return [...operationIds];
+}
+
+async function resolveSavedIncomingChain(
+  server: string,
+  record: IncomingMigration,
+): Promise<ResolvedIncomingNovelMigration> {
+  const summaries = await listIncomingMigrationSummaries(server, true);
+  const reachableIds = collectReachableActiveOperationIds(record.lineage.targetWork.id, summaries)
+    .filter(operationId => operationId !== record.operationId);
+  const reachableRecords = await readIncomingMigrations(server, reachableIds);
+  return resolveIncomingNovelMigration(record.lineage, [
+    record.lineage,
+    ...reachableRecords.map(item => item.lineage),
+  ]);
+}
+
 /** Persist every source hold before ordinary metadata or body uploads can restore an old work. */
 export async function syncIncomingNovelMigrations(
   serverUrl: string,
@@ -145,19 +186,22 @@ export async function syncIncomingNovelMigrations(
   }
   let applied = 0;
   const installedTargets = new Map<string, InstalledNovelMetadata>();
-  for (const saved of (await listIncomingMigrations(server)).sort((left, right) => left.sequence - right.sequence)) {
-    if (saved.status === "blocked" && !retryBlocked) continue;
+  const pendingSummaries = (await listIncomingMigrationSummaries(server)).sort((left, right) => left.sequence - right.sequence);
+  for (const savedSummary of pendingSummaries) {
+    if (savedSummary.status === "blocked" && !retryBlocked) continue;
+    const saved = await readIncomingMigration(server, savedSummary.operationId);
+    if (!saved || (saved.status === "blocked" && !retryBlocked)) continue;
     let record = saved;
     try {
       record = await refreshReceivedMigration(server, token, record, assertCurrent, signal);
       if (record.status === "inactive" || record.status === "completed") continue;
-      let resolved = resolveIncomingNovelMigration(record.lineage, (await listIncomingMigrations(server, true)).map(value => value.lineage));
+      let resolved = await resolveSavedIncomingChain(server, record);
       for (const edge of resolved.chain.slice(1)) {
-        const next = (await listIncomingMigrations(server, true)).find(value => value.operationId === edge.operationId);
+        const next = await readIncomingMigration(server, edge.operationId);
         if (!next) throw new Error("A later work migration is not saved locally.");
         await refreshReceivedMigration(server, token, next, assertCurrent, signal);
       }
-      resolved = resolveIncomingNovelMigration(record.lineage, (await listIncomingMigrations(server, true)).map(value => value.lineage));
+      resolved = await resolveSavedIncomingChain(server, record);
       record = { ...record, status: "pending", error: undefined };
       await saveIncomingMigration(record);
       const expected = record;
@@ -208,11 +252,11 @@ export async function syncIncomingNovelMigrations(
   const repairedCovers = await repairCompletedIncomingMigrationCovers(
     server,
     token,
-    await listIncomingMigrations(server, true),
+    await listIncomingMigrationSummaries(server, true),
     assertCurrent,
     signal,
   );
   if ((applied || repairedCovers) && typeof window !== "undefined") window.dispatchEvent(new Event("norea-content-state-changed"));
-  const pending = await listIncomingMigrations(server);
+  const pending = await listIncomingMigrationSummaries(server);
   return { applied, pending: pending.length, ...(pending.length ? { error: pending[0]?.error, retryable: pending.some(record => record.status === "pending" || record.status === "failed") } : {}) };
 }

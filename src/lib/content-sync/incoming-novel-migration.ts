@@ -11,7 +11,7 @@ import { cancelNovelChapterDownloadWork } from "../tasks/download-cache-delete";
 import { readServerCover } from "./browse";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl } from "./client";
 import { serverWorkDeletionKey, waitForServerWorkDeletion, withServerWorkDeletionExclusions } from "./deletion-exclusions";
-import type { IncomingMigration, MigrationLineageChapterDecision, MigrationLineageMapping, MigrationLineageWork, WorkMigrationLineage } from "./migration-feed-state";
+import type { IncomingMigrationSummary, MigrationLineageChapterDecision, MigrationLineageMapping, MigrationLineageWork, WorkMigrationLineage } from "./migration-feed-state";
 import type { WorkMigrationSnapshot } from "./novel-migration-types";
 import { rememberServerNovelSource } from "./novel-source";
 import { canPullWorkMetadata, contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, workMetadataFingerprint, type WorkCatalogEntry } from "./works";
@@ -144,7 +144,7 @@ const COVER_REPAIR_CACHE_PREFIX = "norea-content-incoming-cover-repair:v1:";
 export async function repairCompletedIncomingMigrationCovers(
   serverUrl: string,
   token: string,
-  records: readonly IncomingMigration[],
+  records: readonly IncomingMigrationSummary[],
   assertCurrent: () => void = () => undefined,
   signal = new AbortController().signal,
 ): Promise<number> {
@@ -168,7 +168,7 @@ export async function repairCompletedIncomingMigrationCovers(
   if (!unchecked.length) return 0;
 
   const supersededSourceIds = new Set(records.filter(record => record.lineage.active).map(record => record.lineage.sourceWork.id));
-  const byTargetId = new Map<string, IncomingMigration[]>();
+  const byTargetId = new Map<string, IncomingMigrationSummary[]>();
   for (const record of unchecked) {
     const group = byTargetId.get(record.lineage.targetWork.id) ?? [];
     group.push(record);
@@ -178,7 +178,7 @@ export async function repairCompletedIncomingMigrationCovers(
   return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, async excluded => {
     let repaired = 0;
     let dirty = false;
-    const markChecked = (group: readonly IncomingMigration[]) => {
+    const markChecked = (group: readonly IncomingMigrationSummary[]) => {
       for (const item of group) checkedSet.add(item.operationId);
       dirty = true;
     };

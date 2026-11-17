@@ -128,12 +128,44 @@ fn map_content_sync_chapter_row(row: &sqlx::sqlite::SqliteRow) -> ContentSyncCha
     }
 }
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MigrationWorkIdentityDto {
     pub plugin_id: String,
     pub novel_id: String,
     pub novel_path: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncomingMigrationLineageWorkSummaryDto {
+    pub id: String,
+    pub identity: MigrationWorkIdentityDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncomingMigrationLineageSummaryDto {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub legacy_operation_id: Option<String>,
+    pub active: bool,
+    pub source_work: IncomingMigrationLineageWorkSummaryDto,
+    pub target_work: IncomingMigrationLineageWorkSummaryDto,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct IncomingMigrationSummaryDto {
+    pub version: i64,
+    pub server_url: String,
+    pub operation_id: String,
+    pub sequence: i64,
+    pub source: MigrationWorkIdentityDto,
+    pub target: MigrationWorkIdentityDto,
+    pub status: String,
+    pub lineage: IncomingMigrationLineageSummaryDto,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -745,14 +777,323 @@ fn validate_incoming_record_shape(raw: &JsonValue) -> Result<(String, String, i6
                 .to_string(),
         );
     }
-    let _ = immutable_lineage_proof(lineage)?;
+    if !lineage.is_object() {
+        return Err(
+            "Incoming work migration is invalid: expected an object. Synchronization was held."
+                .to_string(),
+        );
+    }
     Ok((server_url, operation_id, sequence, status))
 }
 
-fn merge_lineage_into_previous(
+fn is_hex_sha256_str(value: &str) -> bool {
+    value.len() == 64 && value.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+fn is_uuid_str(value: &str) -> bool {
+    if value.len() != 36 {
+        return false;
+    }
+    value.bytes().enumerate().all(|(idx, b)| match idx {
+        8 | 13 | 18 | 23 => b == b'-',
+        _ => b.is_ascii_hexdigit(),
+    })
+}
+
+fn valid_summary_identity(
+    plugin_id: Option<String>,
+    novel_id: Option<String>,
+    novel_path: Option<String>,
+) -> Result<MigrationWorkIdentityDto, String> {
+    let invalid = || {
+        "Incoming work migration is invalid: stored receipt. Synchronization was held.".to_string()
+    };
+    let plugin_id = plugin_id.filter(|s| !s.trim().is_empty() && s != LOCAL_PLUGIN_ID).ok_or_else(invalid)?;
+    let novel_id = novel_id.filter(|s| !s.trim().is_empty()).ok_or_else(invalid)?;
+    let novel_path = novel_path
+        .filter(|s| !s.trim().is_empty() && !s.bytes().any(|b| b < 0x20 || b == 0x7f))
+        .ok_or_else(invalid)?;
+    Ok(MigrationWorkIdentityDto {
+        plugin_id,
+        novel_id,
+        novel_path,
+    })
+}
+
+pub async fn list_incoming_migration_summaries_in_conn(
+    conn: &mut SqliteConnection,
+    server: &str,
+    include_completed: bool,
+) -> Result<Vec<IncomingMigrationSummaryDto>, String> {
+    let server_url = normalize_content_server_url_strict(server, true)?;
+    let prefix = server_receipt_prefix(&server_url);
+    let rows = sqlx::query(
+        "SELECT \
+           cache_key, \
+           json_valid(payload) AS is_valid, \
+           CASE WHEN json_valid(payload) THEN json_type(payload) ELSE NULL END AS root_type, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.version') = 'integer' THEN json_extract(payload, '$.version') ELSE NULL END AS version, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.serverUrl') = 'text' THEN json_extract(payload, '$.serverUrl') ELSE NULL END AS server_url, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.operationId') = 'text' THEN json_extract(payload, '$.operationId') ELSE NULL END AS operation_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.sequence') = 'integer' THEN json_extract(payload, '$.sequence') ELSE NULL END AS sequence, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.status') = 'text' THEN json_extract(payload, '$.status') ELSE NULL END AS status, \
+           CASE WHEN json_valid(payload) THEN json_type(payload, '$.error') ELSE NULL END AS error_type, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.error') = 'text' THEN json_extract(payload, '$.error') ELSE NULL END AS error_text, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.source.pluginId') = 'text' THEN json_extract(payload, '$.source.pluginId') ELSE NULL END AS source_plugin_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.source.novelId') = 'text' THEN json_extract(payload, '$.source.novelId') ELSE NULL END AS source_novel_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.source.novelPath') = 'text' THEN json_extract(payload, '$.source.novelPath') ELSE NULL END AS source_novel_path, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.target.pluginId') = 'text' THEN json_extract(payload, '$.target.pluginId') ELSE NULL END AS target_plugin_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.target.novelId') = 'text' THEN json_extract(payload, '$.target.novelId') ELSE NULL END AS target_novel_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.target.novelPath') = 'text' THEN json_extract(payload, '$.target.novelPath') ELSE NULL END AS target_novel_path, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage') = 'object' THEN 1 ELSE 0 END AS lineage_is_object, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.operationId') = 'text' THEN json_extract(payload, '$.lineage.operationId') ELSE NULL END AS lineage_operation_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.sequence') = 'integer' THEN json_extract(payload, '$.lineage.sequence') ELSE NULL END AS lineage_sequence, \
+           CASE WHEN json_valid(payload) THEN json_type(payload, '$.lineage.active') ELSE NULL END AS lineage_active_type, \
+           CASE WHEN json_valid(payload) THEN json_type(payload, '$.lineage.legacyOperationId') ELSE NULL END AS legacy_op_type, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.legacyOperationId') = 'text' THEN json_extract(payload, '$.lineage.legacyOperationId') ELSE NULL END AS legacy_operation_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.sourceWork.id') = 'text' THEN json_extract(payload, '$.lineage.sourceWork.id') ELSE NULL END AS source_work_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.sourceWork.identity.pluginId') = 'text' THEN json_extract(payload, '$.lineage.sourceWork.identity.pluginId') ELSE NULL END AS lineage_source_plugin_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.sourceWork.identity.novelId') = 'text' THEN json_extract(payload, '$.lineage.sourceWork.identity.novelId') ELSE NULL END AS lineage_source_novel_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.sourceWork.identity.novelPath') = 'text' THEN json_extract(payload, '$.lineage.sourceWork.identity.novelPath') ELSE NULL END AS lineage_source_novel_path, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.targetWork.id') = 'text' THEN json_extract(payload, '$.lineage.targetWork.id') ELSE NULL END AS target_work_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.targetWork.identity.pluginId') = 'text' THEN json_extract(payload, '$.lineage.targetWork.identity.pluginId') ELSE NULL END AS lineage_target_plugin_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.targetWork.identity.novelId') = 'text' THEN json_extract(payload, '$.lineage.targetWork.identity.novelId') ELSE NULL END AS lineage_target_novel_id, \
+           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.targetWork.identity.novelPath') = 'text' THEN json_extract(payload, '$.lineage.targetWork.identity.novelPath') ELSE NULL END AS lineage_target_novel_path \
+         FROM content_sync_cache \
+         WHERE substr(cache_key, 1, length(?1)) = ?1 \
+         ORDER BY cache_key",
+    )
+    .bind(&prefix)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|err| format!("db content sync: list incoming migration summaries: {err}"))?;
+
+    let invalid_receipt = || {
+        "Incoming work migration is invalid: stored receipt. Synchronization was held.".to_string()
+    };
+    let mut out = Vec::with_capacity(rows.len());
+    for row in rows {
+        let cache_key: String = row.get("cache_key");
+        let is_valid: i64 = row.try_get("is_valid").unwrap_or(0);
+        let root_type: Option<String> = row.try_get("root_type").ok().flatten();
+        let lineage_is_object: i64 = row.try_get("lineage_is_object").unwrap_or(0);
+        if is_valid == 0 || root_type.as_deref() != Some("object") || lineage_is_object == 0 {
+            return Err(invalid_receipt());
+        }
+        let version: Option<i64> = row.try_get("version").ok().flatten();
+        if version != Some(1) {
+            return Err(invalid_receipt());
+        }
+        let raw_server: String = row
+            .try_get::<Option<String>, _>("server_url")
+            .ok()
+            .flatten()
+            .ok_or_else(invalid_receipt)?;
+        let row_server_url = normalize_content_server_url_strict(&raw_server, true)?;
+        let operation_id: String = row
+            .try_get::<Option<String>, _>("operation_id")
+            .ok()
+            .flatten()
+            .filter(|s| is_uuid_str(s))
+            .ok_or_else(|| {
+                "Incoming work migration is invalid: operation ID. Synchronization was held."
+                    .to_string()
+            })?;
+        let lineage_op: Option<String> = row.try_get("lineage_operation_id").ok().flatten();
+        let sequence: i64 = row
+            .try_get::<Option<i64>, _>("sequence")
+            .ok()
+            .flatten()
+            .filter(|&n| n > 0)
+            .ok_or_else(|| {
+                "Incoming work migration is invalid: sequence. Synchronization was held."
+                    .to_string()
+            })?;
+        let lineage_seq: Option<i64> = row.try_get("lineage_sequence").ok().flatten();
+        let active = match row
+            .try_get::<Option<String>, _>("lineage_active_type")
+            .ok()
+            .flatten()
+            .as_deref()
+        {
+            Some("true") => true,
+            Some("false") => false,
+            _ => return Err(invalid_receipt()),
+        };
+        let status: String = row
+            .try_get::<Option<String>, _>("status")
+            .ok()
+            .flatten()
+            .filter(|s| {
+                matches!(
+                    s.as_str(),
+                    "pending" | "failed" | "blocked" | "completed" | "inactive"
+                )
+            })
+            .ok_or_else(invalid_receipt)?;
+        if lineage_op.as_deref() != Some(operation_id.as_str())
+            || lineage_seq != Some(sequence)
+            || (status == "inactive") != !active
+        {
+            return Err(invalid_receipt());
+        }
+        if cache_key != incoming_receipt_key(&row_server_url, &operation_id)
+            || row_server_url != server_url
+        {
+            return Err(
+                "Incoming work migration is invalid: receipt cache identity. Synchronization was held."
+                    .to_string(),
+            );
+        }
+        let legacy_op_type: Option<String> = row.try_get("legacy_op_type").ok().flatten();
+        let legacy_operation_id = match legacy_op_type.as_deref() {
+            None => None,
+            Some("text") => {
+                let leg: String = row
+                    .try_get::<Option<String>, _>("legacy_operation_id")
+                    .ok()
+                    .flatten()
+                    .filter(|s| is_uuid_str(s))
+                    .ok_or_else(|| {
+                        "Incoming work migration is invalid: legacy operation ID. Synchronization was held."
+                            .to_string()
+                    })?;
+                Some(leg)
+            }
+            _ => return Err(invalid_receipt()),
+        };
+        let error_type: Option<String> = row.try_get("error_type").ok().flatten();
+        let error = match error_type.as_deref() {
+            None => None,
+            Some("text") => {
+                let text: String = row
+                    .try_get::<Option<String>, _>("error_text")
+                    .ok()
+                    .flatten()
+                    .filter(|s| !s.trim().is_empty() && s.len() <= 16_384)
+                    .ok_or_else(invalid_receipt)?;
+                Some(text)
+            }
+            _ => return Err(invalid_receipt()),
+        };
+        let source = valid_summary_identity(
+            row.try_get("source_plugin_id").ok().flatten(),
+            row.try_get("source_novel_id").ok().flatten(),
+            row.try_get("source_novel_path").ok().flatten(),
+        )?;
+        let target = valid_summary_identity(
+            row.try_get("target_plugin_id").ok().flatten(),
+            row.try_get("target_novel_id").ok().flatten(),
+            row.try_get("target_novel_path").ok().flatten(),
+        )?;
+        let lineage_source = valid_summary_identity(
+            row.try_get("lineage_source_plugin_id").ok().flatten(),
+            row.try_get("lineage_source_novel_id").ok().flatten(),
+            row.try_get("lineage_source_novel_path").ok().flatten(),
+        )?;
+        let lineage_target = valid_summary_identity(
+            row.try_get("lineage_target_plugin_id").ok().flatten(),
+            row.try_get("lineage_target_novel_id").ok().flatten(),
+            row.try_get("lineage_target_novel_path").ok().flatten(),
+        )?;
+        let source_work_id: String = row
+            .try_get::<Option<String>, _>("source_work_id")
+            .ok()
+            .flatten()
+            .filter(|s| is_hex_sha256_str(s))
+            .ok_or_else(invalid_receipt)?;
+        let target_work_id: String = row
+            .try_get::<Option<String>, _>("target_work_id")
+            .ok()
+            .flatten()
+            .filter(|s| is_hex_sha256_str(s))
+            .ok_or_else(invalid_receipt)?;
+        if source != lineage_source
+            || target != lineage_target
+            || source_work_id == target_work_id
+            || (source.plugin_id == target.plugin_id && source.novel_id == target.novel_id)
+        {
+            return Err(invalid_receipt());
+        }
+        if !include_completed && (status == "completed" || status == "inactive") {
+            continue;
+        }
+        out.push(IncomingMigrationSummaryDto {
+            version: 1,
+            server_url: row_server_url,
+            operation_id,
+            sequence,
+            source,
+            target,
+            status,
+            lineage: IncomingMigrationLineageSummaryDto {
+                legacy_operation_id,
+                active,
+                source_work: IncomingMigrationLineageWorkSummaryDto {
+                    id: source_work_id,
+                    identity: lineage_source,
+                },
+                target_work: IncomingMigrationLineageWorkSummaryDto {
+                    id: target_work_id,
+                    identity: lineage_target,
+                },
+            },
+            error,
+        });
+    }
+    out.sort_by(|left, right| {
+        left.sequence
+            .cmp(&right.sequence)
+            .then_with(|| left.operation_id.cmp(&right.operation_id))
+    });
+    Ok(out)
+}
+
+pub async fn read_incoming_migrations_in_conn(
+    conn: &mut SqliteConnection,
+    server: &str,
+    operation_ids: Option<&[String]>,
+    include_completed: bool,
+) -> Result<Vec<ContentSyncCacheEntryDto>, String> {
+    let server_url = normalize_content_server_url_strict(server, true)?;
+    let target_keys: Vec<String> = match operation_ids {
+        Some(ids) => {
+            let mut keys = Vec::with_capacity(ids.len());
+            for op_id in ids {
+                let key = incoming_receipt_key(&server_url, op_id);
+                if !keys.contains(&key) {
+                    keys.push(key);
+                }
+            }
+            keys
+        }
+        None => list_incoming_migration_summaries_in_conn(conn, &server_url, include_completed)
+            .await?
+            .into_iter()
+            .map(|summary| incoming_receipt_key(&server_url, &summary.operation_id))
+            .collect(),
+    };
+    let mut entries = Vec::with_capacity(target_keys.len());
+    for key in target_keys {
+        let row = sqlx::query("SELECT cache_key, payload FROM content_sync_cache WHERE cache_key = ?1")
+            .bind(&key)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|err| format!("db content sync: read incoming migration payload: {err}"))?;
+        if let Some(row) = row {
+            entries.push(ContentSyncCacheEntryDto {
+                cache_key: row.get("cache_key"),
+                payload: row.get("payload"),
+            });
+        }
+    }
+    Ok(entries)
+}
+
+fn merge_lineage_into_previous_owned(
     server_url: &str,
-    lineage: &JsonValue,
-    previous: Option<&JsonValue>,
+    lineage: JsonValue,
+    previous: Option<JsonValue>,
 ) -> Result<JsonValue, String> {
     let operation_id = lineage
         .get("operationId")
@@ -760,7 +1101,8 @@ fn merge_lineage_into_previous(
         .ok_or_else(|| {
             "Incoming work migration is invalid: operation ID. Synchronization was held."
                 .to_string()
-        })?;
+        })?
+        .to_string();
     let sequence = lineage
         .get("sequence")
         .and_then(JsonValue::as_i64)
@@ -774,19 +1116,25 @@ fn merge_lineage_into_previous(
         .ok_or_else(|| {
             "Incoming work migration is invalid: active. Synchronization was held.".to_string()
         })?;
-    let next_proof = immutable_lineage_proof(lineage)?;
+    let next_legacy = lineage
+        .get("legacyOperationId")
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    let next_proof = immutable_lineage_proof(&lineage)?;
+
+    let mut preserved_status = if active { "pending" } else { "inactive" }.to_string();
+    let mut preserved_error: Option<String> = None;
 
     if let Some(prev) = previous {
-        let (prev_server, prev_op, prev_seq, prev_status) = validate_incoming_record_shape(prev)?;
+        let (prev_server, prev_op, prev_seq, prev_status) = validate_incoming_record_shape(&prev)?;
         let prev_lineage = prev.get("lineage").unwrap_or(&JsonValue::Null);
         let prev_legacy = prev_lineage
             .get("legacyOperationId")
             .and_then(JsonValue::as_str);
-        let next_legacy = lineage.get("legacyOperationId").and_then(JsonValue::as_str);
         if prev_server != server_url
             || prev_op != operation_id
             || immutable_lineage_proof(prev_lineage)? != next_proof
-            || (prev_legacy.is_some() && prev_legacy != next_legacy)
+            || (prev_legacy.is_some() && prev_legacy != next_legacy.as_deref())
         {
             return Err(
                 "Incoming work migration is invalid: immutable lineage changed. Synchronization was held."
@@ -794,7 +1142,7 @@ fn merge_lineage_into_previous(
             );
         }
         if sequence < prev_seq {
-            return Ok(prev.clone());
+            return Ok(prev);
         }
         let prev_active = prev_lineage.get("active").and_then(JsonValue::as_bool);
         if sequence == prev_seq && Some(active) != prev_active {
@@ -803,41 +1151,14 @@ fn merge_lineage_into_previous(
                     .to_string(),
             );
         }
-        let status = if !active {
-            "inactive"
-        } else if prev_status != "inactive" {
-            prev_status.as_str()
-        } else {
-            "pending"
-        };
-        let source = lineage
-            .get("sourceWork")
-            .and_then(|w| w.get("identity"))
-            .cloned()
-            .unwrap_or(JsonValue::Null);
-        let target = lineage
-            .get("targetWork")
-            .and_then(|w| w.get("identity"))
-            .cloned()
-            .unwrap_or(JsonValue::Null);
-        let mut out = json!({
-            "version": 1,
-            "serverUrl": server_url,
-            "operationId": operation_id,
-            "sequence": sequence,
-            "source": source,
-            "target": target,
-            "status": status,
-            "lineage": lineage,
-        });
         if active && prev_status != "inactive" {
-            if let Some(err_val) = prev.get("error").and_then(JsonValue::as_str) {
-                out.as_object_mut()
-                    .unwrap()
-                    .insert("error".to_string(), json!(err_val));
-            }
+            preserved_error = prev
+                .get("error")
+                .and_then(JsonValue::as_str)
+                .map(str::to_string);
+            preserved_status = prev_status;
         }
-        return Ok(out);
+        drop(prev);
     }
 
     let source = lineage
@@ -850,38 +1171,32 @@ fn merge_lineage_into_previous(
         .and_then(|w| w.get("identity"))
         .cloned()
         .unwrap_or(JsonValue::Null);
-    Ok(json!({
-        "version": 1,
-        "serverUrl": server_url,
-        "operationId": operation_id,
-        "sequence": sequence,
-        "source": source,
-        "target": target,
-        "status": if active { "pending" } else { "inactive" },
-        "lineage": lineage,
-    }))
+    let mut map = serde_json::Map::with_capacity(9);
+    map.insert("version".to_string(), json!(1));
+    map.insert("serverUrl".to_string(), json!(server_url));
+    map.insert("operationId".to_string(), json!(operation_id));
+    map.insert("sequence".to_string(), json!(sequence));
+    map.insert("source".to_string(), source);
+    map.insert("target".to_string(), target);
+    map.insert("status".to_string(), json!(preserved_status));
+    map.insert("lineage".to_string(), lineage);
+    if let Some(err_val) = preserved_error {
+        map.insert("error".to_string(), json!(err_val));
+    }
+    Ok(JsonValue::Object(map))
 }
 
-pub async fn save_incoming_migration_in_tx(
+async fn load_existing_incoming_migration_in_conn(
     conn: &mut SqliteConnection,
-    proposed_raw: &JsonValue,
-) -> Result<JsonValue, String> {
-    let (server_url, operation_id, proposed_seq, proposed_status) =
-        validate_incoming_record_shape(proposed_raw)?;
-    let mut proposed = proposed_raw.clone();
-    if let Some(obj) = proposed.as_object_mut() {
-        obj.insert("serverUrl".to_string(), json!(server_url));
-    }
-    let key = incoming_receipt_key(&server_url, &operation_id);
-
+    key: &str,
+) -> Result<Option<JsonValue>, String> {
     let existing_row =
         sqlx::query("SELECT cache_key, payload FROM content_sync_cache WHERE cache_key = ?1")
-            .bind(&key)
+            .bind(key)
             .fetch_optional(&mut *conn)
             .await
             .map_err(|err| format!("db content sync: read existing incoming migration: {err}"))?;
-
-    let previous = match existing_row {
+    match existing_row {
         Some(row) => {
             let row_key: String = row.get("cache_key");
             let payload: String = row.get("payload");
@@ -896,43 +1211,89 @@ pub async fn save_incoming_migration_in_tx(
                         .to_string(),
                 );
             }
-            Some(parsed)
+            Ok(Some(parsed))
         }
-        None => None,
-    };
+        None => Ok(None),
+    }
+}
 
-    let proposed_lineage = proposed.get("lineage").unwrap_or(&JsonValue::Null);
-    let checked = merge_lineage_into_previous(&server_url, proposed_lineage, previous.as_ref())?;
-    let checked_seq = checked
-        .get("sequence")
-        .and_then(JsonValue::as_i64)
-        .unwrap_or(0);
-    let checked_status = checked
-        .get("status")
-        .and_then(JsonValue::as_str)
-        .unwrap_or("");
-
-    let selected = if checked_seq > proposed_seq
-        || (checked_status == "completed" && proposed_status != "inactive")
-    {
-        checked
-    } else {
-        proposed
-    };
-
-    let encoded = serde_json::to_string(&selected)
+async fn write_incoming_migration_record_in_tx(
+    conn: &mut SqliteConnection,
+    key: &str,
+    record: &JsonValue,
+) -> Result<(), String> {
+    let encoded = serde_json::to_string(record)
         .map_err(|err| format!("db content sync: encode incoming migration: {err}"))?;
     sqlx::query(
         "INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2) \
          ON CONFLICT(cache_key) DO UPDATE SET payload = excluded.payload",
     )
-    .bind(&key)
+    .bind(key)
     .bind(encoded)
     .execute(&mut *conn)
     .await
     .map_err(|err| format!("db content sync: write incoming migration: {err}"))?;
+    Ok(())
+}
 
-    Ok(selected)
+pub async fn save_incoming_migration_owned_in_tx(
+    conn: &mut SqliteConnection,
+    mut proposed: JsonValue,
+) -> Result<(), String> {
+    let (server_url, operation_id, proposed_seq, proposed_status) =
+        validate_incoming_record_shape(&proposed)?;
+    if let Some(obj) = proposed.as_object_mut() {
+        obj.insert("serverUrl".to_string(), json!(server_url));
+    }
+    let key = incoming_receipt_key(&server_url, &operation_id);
+    let previous = load_existing_incoming_migration_in_conn(conn, &key).await?;
+
+    let selected = if let Some(prev) = previous {
+        let (prev_server, prev_op, prev_seq, prev_status) = validate_incoming_record_shape(&prev)?;
+        let prev_lineage = prev.get("lineage").unwrap_or(&JsonValue::Null);
+        let proposed_lineage = proposed.get("lineage").unwrap_or(&JsonValue::Null);
+        let prev_legacy = prev_lineage
+            .get("legacyOperationId")
+            .and_then(JsonValue::as_str);
+        let next_legacy = proposed_lineage
+            .get("legacyOperationId")
+            .and_then(JsonValue::as_str);
+        if prev_server != server_url
+            || prev_op != operation_id
+            || immutable_lineage_proof(prev_lineage)? != immutable_lineage_proof(proposed_lineage)?
+            || (prev_legacy.is_some() && prev_legacy != next_legacy)
+        {
+            return Err(
+                "Incoming work migration is invalid: immutable lineage changed. Synchronization was held."
+                    .to_string(),
+            );
+        }
+        if proposed_seq < prev_seq {
+            drop(proposed);
+            prev
+        } else {
+            let prev_active = prev_lineage.get("active").and_then(JsonValue::as_bool);
+            let next_active = proposed_lineage.get("active").and_then(JsonValue::as_bool);
+            if proposed_seq == prev_seq && next_active != prev_active {
+                return Err(
+                    "Incoming work migration is invalid: event state changed without a new sequence. Synchronization was held."
+                        .to_string(),
+                );
+            }
+            drop(prev);
+            if prev_status == "completed" && proposed_status != "inactive" {
+                if let Some(obj) = proposed.as_object_mut() {
+                    obj.insert("status".to_string(), json!("completed"));
+                    obj.remove("error");
+                }
+            }
+            proposed
+        }
+    } else {
+        proposed
+    };
+
+    write_incoming_migration_record_in_tx(conn, &key, &selected).await
 }
 
 fn parse_incoming_cursor_payload(payload: &str, server_url: &str) -> Result<i64, String> {
@@ -1012,135 +1373,135 @@ pub async fn save_incoming_migration_cursor_in_tx(
     Ok(())
 }
 
-pub async fn remember_incoming_migration_page_in_tx(
+pub enum IncomingLineagePageItems<'a> {
+    JsonStrings(&'a [String]),
+    Values(&'a [JsonValue]),
+}
+
+async fn remember_single_incoming_lineage_in_tx(
+    conn: &mut SqliteConnection,
+    server_url: &str,
+    entry: JsonValue,
+    changed_sources: &mut HashSet<String>,
+) -> Result<(), String> {
+    let op_id = entry
+        .get("operationId")
+        .and_then(JsonValue::as_str)
+        .ok_or_else(|| {
+            "Incoming work migration is invalid: operation ID. Synchronization was held."
+                .to_string()
+        })?
+        .to_string();
+    let entry_seq = entry
+        .get("sequence")
+        .and_then(JsonValue::as_i64)
+        .unwrap_or(0);
+    let entry_source_id = entry
+        .get("sourceWork")
+        .and_then(|w| w.get("id"))
+        .and_then(JsonValue::as_str)
+        .map(str::to_string);
+    let key = incoming_receipt_key(server_url, &op_id);
+    let old = load_existing_incoming_migration_in_conn(conn, &key).await?;
+    let old_seq = old
+        .as_ref()
+        .and_then(|v| v.get("sequence"))
+        .and_then(JsonValue::as_i64)
+        .unwrap_or(0);
+    if old.is_none() || entry_seq > old_seq {
+        if let Some(src_id) = entry_source_id {
+            changed_sources.insert(src_id);
+        }
+    }
+    let merged = merge_lineage_into_previous_owned(server_url, entry, old)?;
+    let (_, _, _, _) = validate_incoming_record_shape(&merged)?;
+    write_incoming_migration_record_in_tx(conn, &key, &merged).await
+}
+
+pub async fn remember_incoming_migration_page_items_in_tx(
     conn: &mut SqliteConnection,
     server: &str,
-    items: &[JsonValue],
+    items: IncomingLineagePageItems<'_>,
     cursor: i64,
 ) -> Result<(), String> {
     let server_url = normalize_content_server_url_strict(server, true)?;
-    let prefix = server_receipt_prefix(&server_url);
-    let rows = sqlx::query(
-        "SELECT cache_key, payload FROM content_sync_cache \
-         WHERE substr(cache_key, 1, length(?1)) = ?1 ORDER BY cache_key",
-    )
-    .bind(&prefix)
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|err| format!("db content sync: load incoming migrations for page: {err}"))?;
-
-    let mut previous: HashMap<String, JsonValue> = HashMap::with_capacity(rows.len());
-    for row in rows {
-        let row_key: String = row.get("cache_key");
-        let payload: String = row.get("payload");
-        let parsed: JsonValue = serde_json::from_str(&payload).map_err(|_| {
-            "Incoming work migration is invalid: stored receipt. Synchronization was held."
-                .to_string()
-        })?;
-        let (p_srv, p_op, _, _) = validate_incoming_record_shape(&parsed)?;
-        if row_key != incoming_receipt_key(&p_srv, &p_op) {
-            return Err(
-                "Incoming work migration is invalid: receipt cache identity. Synchronization was held."
-                    .to_string(),
-            );
-        }
-        previous.insert(p_op, parsed);
-    }
+    // Validate existing receipt headers without materializing multi-MB payloads in memory.
+    let _ = list_incoming_migration_summaries_in_conn(conn, &server_url, true).await?;
 
     let mut changed_sources: HashSet<String> = HashSet::new();
-    for entry in items {
-        let op_id = entry
-            .get("operationId")
-            .and_then(JsonValue::as_str)
-            .ok_or_else(|| {
-                "Incoming work migration is invalid: operation ID. Synchronization was held."
-                    .to_string()
-            })?;
-        let entry_seq = entry
-            .get("sequence")
-            .and_then(JsonValue::as_i64)
-            .unwrap_or(0);
-        let old = previous.get(op_id);
-        let old_seq = old
-            .and_then(|v| v.get("sequence"))
-            .and_then(JsonValue::as_i64)
-            .unwrap_or(0);
-        if old.is_none() || entry_seq > old_seq {
-            if let Some(src_id) = entry
-                .get("sourceWork")
-                .and_then(|w| w.get("id"))
-                .and_then(JsonValue::as_str)
-            {
-                changed_sources.insert(src_id.to_string());
+    match items {
+        IncomingLineagePageItems::JsonStrings(raw_items) => {
+            for raw in raw_items {
+                let entry: JsonValue = serde_json::from_str(raw).map_err(|_| {
+                    "Incoming work migration is invalid: expected an object. Synchronization was held."
+                        .to_string()
+                })?;
+                remember_single_incoming_lineage_in_tx(
+                    conn,
+                    &server_url,
+                    entry,
+                    &mut changed_sources,
+                )
+                .await?;
             }
         }
-        let proposed = merge_lineage_into_previous(&server_url, entry, old)?;
-        let saved = save_incoming_migration_in_tx(conn, &proposed).await?;
-        previous.insert(op_id.to_string(), saved);
-    }
-
-    let mut successors: HashMap<String, Vec<String>> = HashMap::new();
-    for value in previous.values() {
-        let Some(lineage) = value.get("lineage") else {
-            continue;
-        };
-        if lineage.get("active").and_then(JsonValue::as_bool) != Some(true) {
-            continue;
-        }
-        if let (Some(src_id), Some(dst_id)) = (
-            lineage
-                .get("sourceWork")
-                .and_then(|w| w.get("id"))
-                .and_then(JsonValue::as_str),
-            lineage
-                .get("targetWork")
-                .and_then(|w| w.get("id"))
-                .and_then(JsonValue::as_str),
-        ) {
-            successors
-                .entry(src_id.to_string())
-                .or_default()
-                .push(dst_id.to_string());
+        IncomingLineagePageItems::Values(entries) => {
+            for entry in entries {
+                remember_single_incoming_lineage_in_tx(
+                    conn,
+                    &server_url,
+                    entry.clone(),
+                    &mut changed_sources,
+                )
+                .await?;
+            }
         }
     }
 
-    let snapshot_records: Vec<JsonValue> = previous.values().cloned().collect();
-    for record in snapshot_records {
-        if record.get("status").and_then(JsonValue::as_str) != Some("blocked") {
-            continue;
-        }
-        let Some(target_id) = record
-            .get("lineage")
-            .and_then(|l| l.get("targetWork"))
-            .and_then(|w| w.get("id"))
-            .and_then(JsonValue::as_str)
-        else {
-            continue;
-        };
-        let mut remaining = vec![target_id.to_string()];
-        let mut visited: HashSet<String> = HashSet::new();
-        let mut affected = false;
-        while let Some(id) = remaining.pop() {
-            if affected {
-                break;
-            }
-            if !visited.insert(id.clone()) {
+    if !changed_sources.is_empty() {
+        let summaries = list_incoming_migration_summaries_in_conn(conn, &server_url, true).await?;
+        let mut successors: HashMap<String, Vec<String>> = HashMap::new();
+        for summary in &summaries {
+            if !summary.lineage.active {
                 continue;
             }
-            if changed_sources.contains(&id) {
-                affected = true;
-            }
-            if let Some(edges) = successors.get(&id) {
-                remaining.extend(edges.iter().cloned());
-            }
+            successors
+                .entry(summary.lineage.source_work.id.clone())
+                .or_default()
+                .push(summary.lineage.target_work.id.clone());
         }
-        if affected {
-            let mut reopened = record.clone();
-            if let Some(obj) = reopened.as_object_mut() {
-                obj.insert("status".to_string(), json!("pending"));
-                obj.remove("error");
+
+        for summary in &summaries {
+            if summary.status != "blocked" {
+                continue;
             }
-            save_incoming_migration_in_tx(conn, &reopened).await?;
+            let mut remaining = vec![summary.lineage.target_work.id.clone()];
+            let mut visited: HashSet<String> = HashSet::new();
+            let mut affected = false;
+            while let Some(id) = remaining.pop() {
+                if affected {
+                    break;
+                }
+                if !visited.insert(id.clone()) {
+                    continue;
+                }
+                if changed_sources.contains(&id) {
+                    affected = true;
+                }
+                if let Some(edges) = successors.get(&id) {
+                    remaining.extend(edges.iter().cloned());
+                }
+            }
+            if affected {
+                let key = incoming_receipt_key(&server_url, &summary.operation_id);
+                if let Some(mut reopened) = load_existing_incoming_migration_in_conn(conn, &key).await? {
+                    if let Some(obj) = reopened.as_object_mut() {
+                        obj.insert("status".to_string(), json!("pending"));
+                        obj.remove("error");
+                    }
+                    write_incoming_migration_record_in_tx(conn, &key, &reopened).await?;
+                }
+            }
         }
     }
 
@@ -1747,9 +2108,52 @@ pub async fn db_content_sync_record_pending_novel_merge(
 }
 
 #[tauri::command]
+pub async fn db_content_sync_list_incoming_migration_summaries(
+    db: State<'_, AppDatabase>,
+    server_url: String,
+    include_completed: Option<bool>,
+    read_mode: Option<ReadMode>,
+) -> Result<Vec<IncomingMigrationSummaryDto>, String> {
+    let mut conn = db
+        .pool_for(read_mode.unwrap_or_default())
+        .acquire()
+        .await
+        .map_err(|err| format!("db content sync: acquire connection: {err}"))?;
+    list_incoming_migration_summaries_in_conn(
+        &mut conn,
+        &server_url,
+        include_completed.unwrap_or(false),
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn db_content_sync_read_incoming_migrations(
+    db: State<'_, AppDatabase>,
+    server_url: String,
+    operation_ids: Option<Vec<String>>,
+    include_completed: Option<bool>,
+    read_mode: Option<ReadMode>,
+) -> Result<Vec<ContentSyncCacheEntryDto>, String> {
+    let mut conn = db
+        .pool_for(read_mode.unwrap_or_default())
+        .acquire()
+        .await
+        .map_err(|err| format!("db content sync: acquire connection: {err}"))?;
+    read_incoming_migrations_in_conn(
+        &mut conn,
+        &server_url,
+        operation_ids.as_deref(),
+        include_completed.unwrap_or(false),
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn db_content_sync_save_incoming_migration(
     db: State<'_, AppDatabase>,
-    record: JsonValue,
+    record_json: Option<String>,
+    record: Option<JsonValue>,
 ) -> Result<DbMutationEnvelope<()>, String> {
     with_write_tx(
         db.writer(),
@@ -1760,8 +2164,20 @@ pub async fn db_content_sync_save_incoming_migration(
         },
         move |conn, _ctx| {
             Box::pin(async move {
-                save_incoming_migration_in_tx(conn, &record).await?;
-                Ok(())
+                let parsed = match (record_json, record) {
+                    (Some(raw), _) => serde_json::from_str::<JsonValue>(&raw).map_err(|_| {
+                        "Incoming work migration is invalid: expected an object. Synchronization was held."
+                            .to_string()
+                    })?,
+                    (None, Some(val)) => val,
+                    (None, None) => {
+                        return Err(
+                            "Incoming work migration is invalid: expected an object. Synchronization was held."
+                                .to_string(),
+                        );
+                    }
+                };
+                save_incoming_migration_owned_in_tx(conn, parsed).await
             })
         },
     )
@@ -1808,7 +2224,8 @@ pub async fn db_content_sync_save_incoming_migration_cursor(
 pub async fn db_content_sync_remember_incoming_migration_page(
     db: State<'_, AppDatabase>,
     server_url: String,
-    items: Vec<JsonValue>,
+    items_json: Option<Vec<String>>,
+    items: Option<Vec<JsonValue>>,
     cursor: i64,
 ) -> Result<DbMutationEnvelope<()>, String> {
     with_write_tx(
@@ -1820,7 +2237,35 @@ pub async fn db_content_sync_remember_incoming_migration_page(
         },
         move |conn, _ctx| {
             Box::pin(async move {
-                remember_incoming_migration_page_in_tx(conn, &server_url, &items, cursor).await
+                match (items_json.as_deref(), items.as_deref()) {
+                    (Some(raw_items), _) => {
+                        remember_incoming_migration_page_items_in_tx(
+                            conn,
+                            &server_url,
+                            IncomingLineagePageItems::JsonStrings(raw_items),
+                            cursor,
+                        )
+                        .await
+                    }
+                    (None, Some(values)) => {
+                        remember_incoming_migration_page_items_in_tx(
+                            conn,
+                            &server_url,
+                            IncomingLineagePageItems::Values(values),
+                            cursor,
+                        )
+                        .await
+                    }
+                    (None, None) => {
+                        remember_incoming_migration_page_items_in_tx(
+                            conn,
+                            &server_url,
+                            IncomingLineagePageItems::JsonStrings(&[]),
+                            cursor,
+                        )
+                        .await
+                    }
+                }
             })
         },
     )
@@ -2230,5 +2675,145 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining, 0);
+    }
+
+    #[tokio::test]
+    async fn incoming_migration_summaries_and_page_streaming_preserve_invariants() {
+        use super::super::novel_merge::{
+            commit_incoming_migration_in_tx, IncomingMigrationCommitDto,
+        };
+
+        let test = open_test_db().await;
+        let db = &test.db;
+        let mut conn = db.writer().acquire().await.unwrap();
+        let server = "https://content.test";
+        let make_lineage = |seq: i64, op: &str, src: (&str, &str), dst: (&str, &str), author: &str| {
+            json!({
+                "sequence": seq,
+                "operationId": op,
+                "active": true,
+                "fullDecisionCoverage": true,
+                "deletedSource": { "revision": "a".repeat(64), "sequence": seq + 10 },
+                "sourceWork": {
+                    "id": src.1.repeat(64),
+                    "revision": "a".repeat(64),
+                    "identity": { "pluginId": src.0, "novelId": "work", "novelPath": "/work" },
+                    "metadata": { "novel": { "name": "Work", "author": author } },
+                    "coverSha256": null
+                },
+                "targetWork": {
+                    "id": dst.1.repeat(64),
+                    "revision": "b".repeat(64),
+                    "identity": { "pluginId": dst.0, "novelId": "work", "novelPath": "/work" },
+                    "metadata": { "novel": { "name": "Work", "author": author } },
+                    "coverSha256": null
+                },
+                "mappings": [],
+                "chapterDecisions": []
+            })
+        };
+
+        let op1 = "11111111-2222-3333-4444-000000000001";
+        let op2 = "11111111-2222-3333-4444-000000000002";
+        let l1 = make_lineage(1, op1, ("alpha", "1"), ("beta", "2"), "Writer");
+        let l2 = make_lineage(2, op2, ("beta", "2"), ("gamma", "3"), "Writer");
+
+        remember_incoming_migration_page_items_in_tx(
+            &mut conn,
+            server,
+            IncomingLineagePageItems::JsonStrings(&[l1.to_string()]),
+            1,
+        )
+        .await
+        .unwrap();
+
+        // Mark op1 blocked, then verify op2 arriving reopens op1 to pending via lightweight summaries.
+        let mut blocked = serde_json::from_str::<JsonValue>(
+            &read_incoming_migrations_in_conn(&mut conn, server, Some(&[op1.to_string()]), true)
+                .await
+                .unwrap()[0]
+                .payload,
+        )
+        .unwrap();
+        blocked
+            .as_object_mut()
+            .unwrap()
+            .insert("status".to_string(), json!("blocked"));
+        blocked
+            .as_object_mut()
+            .unwrap()
+            .insert("error".to_string(), json!("Temporary block"));
+        save_incoming_migration_owned_in_tx(&mut conn, blocked)
+            .await
+            .unwrap();
+
+        remember_incoming_migration_page_items_in_tx(
+            &mut conn,
+            server,
+            IncomingLineagePageItems::JsonStrings(&[l2.to_string()]),
+            2,
+        )
+        .await
+        .unwrap();
+
+        let pending_summaries =
+            list_incoming_migration_summaries_in_conn(&mut conn, server, false)
+                .await
+                .unwrap();
+        assert_eq!(pending_summaries.len(), 2);
+        assert_eq!(pending_summaries[0].status, "pending");
+        assert!(pending_summaries[0].error.is_none());
+
+        // Commit op1 over the [l1, l2] chain, then verify include_completed=false omits op1 payload.
+        commit_incoming_migration_in_tx(
+            &mut conn,
+            &IncomingMigrationCommitDto {
+                server_url: server.to_string(),
+                expected_operation_id: op1.to_string(),
+                expected_sequence: 1,
+                chain: vec![l1.clone(), l2.clone()],
+                release_target_work: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        let remaining_payloads =
+            read_incoming_migrations_in_conn(&mut conn, server, None, false)
+                .await
+                .unwrap();
+        assert_eq!(remaining_payloads.len(), 1);
+        assert!(remaining_payloads[0].cache_key.contains(op2));
+
+        // Immutable lineage mismatch must still be rejected.
+        let mutated_l1 = make_lineage(3, op1, ("alpha", "1"), ("beta", "2"), "Tampered");
+        let err = remember_incoming_migration_page_items_in_tx(
+            &mut conn,
+            server,
+            IncomingLineagePageItems::JsonStrings(&[mutated_l1.to_string()]),
+            3,
+        )
+        .await
+        .unwrap_err();
+        assert!(err.contains("immutable lineage"));
+
+        // Corrupt cache key identity must fail closed even when querying include_completed=false.
+        let bad_key = incoming_receipt_key(server, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee");
+        let completed_payload =
+            read_incoming_migrations_in_conn(&mut conn, server, Some(&[op1.to_string()]), true)
+                .await
+                .unwrap()[0]
+                .payload
+                .clone();
+        sqlx::query("INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2)")
+            .bind(&bad_key)
+            .bind(completed_payload)
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        let identity_err = read_incoming_migrations_in_conn(&mut conn, server, None, false)
+            .await
+            .unwrap_err();
+        assert!(identity_err.contains("receipt cache identity"));
     }
 }

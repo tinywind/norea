@@ -367,6 +367,8 @@ pub fn run() {
             db::content_sync::db_content_sync_read_journal,
             db::content_sync::db_content_sync_is_migration_source_held,
             db::content_sync::db_content_sync_record_pending_novel_merge,
+            db::content_sync::db_content_sync_list_incoming_migration_summaries,
+            db::content_sync::db_content_sync_read_incoming_migrations,
             db::content_sync::db_content_sync_save_incoming_migration,
             db::content_sync::db_content_sync_get_incoming_migration_cursor,
             db::content_sync::db_content_sync_save_incoming_migration_cursor,

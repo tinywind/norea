@@ -1,5 +1,5 @@
 import { beforeEach, expect, it, vi } from "vitest";
-vi.mock("./migration-feed-state", () => ({ listIncomingMigrations: vi.fn(async () => []) }));
+vi.mock("./migration-feed-state", () => ({ listIncomingMigrationSummaries: vi.fn(async () => []) }));
 vi.mock("./chapters", () => ({ fetchServerChapters: vi.fn(async () => []) }));
 vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeld: vi.fn(async () => false), cacheServerChapters: vi.fn(), readContentSyncCache: vi.fn(async () => null), writeContentSyncCache: vi.fn() }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
@@ -26,7 +26,7 @@ import { findNovelBySource } from "../../db/queries/novel";
 import { reindexPreservedWorkMetadata } from "../../db/work-metadata";
 import { fetchServerChapters } from "./chapters";
 import { cacheServerChapters, listNovelMigrations } from "../../db/queries/content-sync";
-import { listIncomingMigrations, type IncomingMigration } from "./migration-feed-state";
+import { listIncomingMigrationSummaries, type IncomingMigrationSummary } from "./migration-feed-state";
 import type { PendingNovelMigration } from "./novel-migration-types";
 import { chapterCompositionCatalog, type ChapterCompositionV1 } from "../chapter-composition";
 import { recordServerWorkDeletionExclusion } from "./deletion-exclusions";
@@ -45,7 +45,7 @@ beforeEach(() => {
   vi.clearAllMocks(); vi.stubGlobal("window", new EventTarget());
   vi.mocked(installStoredNovelMetadata).mockReset().mockResolvedValue(installed);
   vi.mocked(listNovelMigrations).mockReset().mockResolvedValue([]);
-  vi.mocked(listIncomingMigrations).mockReset().mockResolvedValue([]);
+  vi.mocked(listIncomingMigrationSummaries).mockReset().mockResolvedValue([]);
   vi.mocked(readStoredNovelMetadata).mockReset().mockResolvedValue(null);
   vi.mocked(listStoredNovelChapters).mockReset().mockResolvedValue([]);
   vi.mocked(fetchServerChapters).mockReset().mockResolvedValue([]);
@@ -298,7 +298,7 @@ it("reuses a completed legacy migration target and refreshes its current metadat
   expect(job.request?.chapterDecisions).toBeUndefined();
   await expect(openServerNovel("http://server", work)).resolves.toBe(900);
   expect(listNovelMigrations).toHaveBeenCalledWith("http://server", true);
-  expect(listIncomingMigrations).toHaveBeenCalledWith("http://server", true);
+  expect(listIncomingMigrationSummaries).toHaveBeenCalledWith("http://server", true);
   expect(findNovelBySource).toHaveBeenCalledWith("target-source", "/target-book");
   expect(findNovelBySource).not.toHaveBeenCalledWith("source", "/book");
   expect(contentServerRequest).toHaveBeenCalledExactlyOnceWith("http://server", "/works/" + targetId, "device");
@@ -343,10 +343,10 @@ it("preserves a migrated target's manual order, exclusions, names and storage nu
 it("follows an exact completed outgoing and incoming migration chain to its final target", async () => {
   const finalIdentity = { pluginId: "final-source", novelId: "final-book", novelPath: "/final-book" };
   vi.mocked(listNovelMigrations).mockResolvedValue([completedMigration()]);
-  vi.mocked(listIncomingMigrations).mockResolvedValue([{
+  vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([{
     operationId: "next-migration", source: migratedMetadata.identity, target: finalIdentity,
     status: "completed", lineage: { active: true },
-  } as IncomingMigration]);
+  } as IncomingMigrationSummary]);
   vi.mocked(findNovelBySource).mockResolvedValue({ id: 902, sourceNovelId: "final-book", isLocal: false } as never);
   const target = await resolveServerNovelTarget("http://server", await selectedWork());
   expect(target).toMatchObject({ migrated: true, identity: finalIdentity, novel: { id: 902 } });
@@ -364,10 +364,10 @@ it.each(["pending", "failed", "blocked"] as const)("does not redirect an unfinis
 it("honors a saved revocation instead of reviving an older completed outgoing redirect", async () => {
   const job = completedMigration();
   vi.mocked(listNovelMigrations).mockResolvedValue([job]);
-  vi.mocked(listIncomingMigrations).mockResolvedValue([{
+  vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([{
     operationId: job.operationId, source: job.source, target: job.target,
     status: "inactive", lineage: { active: false },
-  } as IncomingMigration]);
+  } as IncomingMigrationSummary]);
   expect((await resolveServerNovelTarget("http://server", await selectedWork())).migrated).toBe(false);
   expect(contentServerRequest).not.toHaveBeenCalled();
 });
@@ -412,10 +412,10 @@ it("stops before publishing when the resolved local target changes during the re
 
 it("honors a reconciliation revocation through its explicit legacy operation binding", async () => {
   const { job, work } = await prepareMigratedOpen();
-  vi.mocked(listIncomingMigrations).mockResolvedValue([{
+  vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([{
     operationId: "new-reconciliation", source: job.source, target: job.target,
     status: "inactive", lineage: { active: false, legacyOperationId: job.operationId },
-  } as IncomingMigration]);
+  } as IncomingMigrationSummary]);
   const target = await resolveServerNovelTarget("http://server", work);
   expect(target.migrated).toBe(false);
   expect(target.identity).toEqual(metadata.identity);
@@ -424,9 +424,9 @@ it("honors a reconciliation revocation through its explicit legacy operation bin
 
 it("does not infer a legacy revocation from shared work identities without an operation binding", async () => {
   const { job, work } = await prepareMigratedOpen();
-  vi.mocked(listIncomingMigrations).mockResolvedValue([{
+  vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([{
     operationId: "unrelated-revocation", source: job.source, target: job.target,
     status: "inactive", lineage: { active: false, legacyOperationId: "another-legacy-operation" },
-  } as IncomingMigration]);
+  } as IncomingMigrationSummary]);
   expect((await resolveServerNovelTarget("http://server", work)).migrated).toBe(true);
 });

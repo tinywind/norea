@@ -5,7 +5,7 @@ const mocks = vi.hoisted(() => ({ list: vi.fn(), read: vi.fn(), write: vi.fn(), 
 vi.mock("../../db/queries/content-sync", () => ({
   listNovelMigrations: mocks.list, readContentSyncCache: mocks.read, writeContentSyncCache: mocks.write, saveNovelMigration: vi.fn(),
 }));
-vi.mock("./migration-feed-state", () => ({ listIncomingMigrations: mocks.incoming }));
+vi.mock("./migration-feed-state", () => ({ listIncomingMigrationSummaries: mocks.incoming }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: mocks.request }));
 vi.mock("./works", () => ({
   contentWorkId: async (identity: { pluginId: string }) => identity.pluginId === "old" ? "source-work" : "target-work",

@@ -4,7 +4,8 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb, runDatabaseTransaction } from "../../test/sql/client";
 import {
   getIncomingMigrationCursor, incomingMigrationFromLineage, INCOMING_MIGRATION_CACHE_PREFIX,
-  listIncomingMigrations, parseWorkMigrationLineage, rememberIncomingMigrationPage,
+  listIncomingMigrations, listIncomingMigrationSummaries, parseWorkMigrationLineage,
+  readIncomingMigration, rememberIncomingMigrationPage,
   saveIncomingMigration, saveIncomingMigrationCursor,
   type IncomingMigration, type WorkMigrationLineage,
 } from "./migration-feed-state";
@@ -303,6 +304,35 @@ describe("incoming migration receipts", () => {
     const key = INCOMING_MIGRATION_CACHE_PREFIX + JSON.stringify([server, "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"]);
     sqlite.prepare("INSERT INTO content_sync_cache VALUES(?,?)").run(key, JSON.stringify(record));
     await expect(listIncomingMigrations(server)).rejects.toThrow("cache identity");
+  });
+
+  it("lists lightweight summaries without full mappings and reads individual full receipts on demand", async () => {
+    const pending = incomingMigrationFromLineage(server, lineage());
+    const completedOp = "22222222-2222-3333-4444-555555555555";
+    const completed = {
+      ...incomingMigrationFromLineage(server, { ...lineage(), operationId: completedOp, sequence: 18 }),
+      status: "completed" as const,
+    };
+    await saveIncomingMigration(pending);
+    await saveIncomingMigration(completed);
+
+    const activeOnly = await listIncomingMigrationSummaries(server);
+    expect(activeOnly).toHaveLength(1);
+    expect(activeOnly[0]).toMatchObject({
+      operationId: pending.operationId,
+      status: "pending",
+      lineage: {
+        active: true,
+        sourceWork: { id: pending.lineage.sourceWork.id, identity: pending.source },
+        targetWork: { id: pending.lineage.targetWork.id, identity: pending.target },
+      },
+    });
+    expect("mappings" in activeOnly[0]!.lineage).toBe(false);
+
+    const allSummaries = await listIncomingMigrationSummaries(server, true);
+    expect(allSummaries.map(item => item.operationId)).toEqual([pending.operationId, completedOp]);
+    expect(await readIncomingMigration(server, completedOp)).toEqual(completed);
+    expect(await readIncomingMigration(server, "33333333-2222-3333-4444-555555555555")).toBeNull();
   });
 
   it("rejects corrupt cursor payloads and invalid cursor values without silently resetting progress", async () => {

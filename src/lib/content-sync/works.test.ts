@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import type { TestSqliteDatabase as Database } from "../../test/sql/types";
-vi.mock("./migration-feed-state", () => ({ listIncomingMigrations: vi.fn(async () => []) }));
+vi.mock("./migration-feed-state", () => ({ listIncomingMigrationSummaries: vi.fn(async () => []) }));
 import type { NovelMetadataV1 } from "../work-metadata";
 
 vi.mock("../work-metadata", async original => ({

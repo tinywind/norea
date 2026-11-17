@@ -121,9 +121,16 @@ describe("received migration synchronization", () => {
     vi.mocked(contentServerRequest).mockImplementation(async (_server, path) => {
       if (path === "/capabilities") return { workMigrationLineageVersion: 1 } as never;
       if (path.startsWith("/work-migrations?")) {
-        const after = Number(new URL("https://content.test" + path).searchParams.get("after"));
-        const items = remote.filter(item => item.sequence > after).sort((left, right) => left.sequence - right.sequence);
-        return { items: structuredClone(items), cursor: Math.max(after, ...remote.map(item => item.sequence)), hasMore: false } as never;
+        const params = new URL("https://content.test" + path).searchParams;
+        const after = Number(params.get("after"));
+        const limit = Number(params.get("limit") ?? "50");
+        const ordered = remote.filter(item => item.sequence > after).sort((left, right) => left.sequence - right.sequence);
+        const items = ordered.slice(0, limit);
+        return {
+          items: structuredClone(items),
+          cursor: items.length ? items.at(-1)!.sequence : after,
+          hasMore: ordered.length > items.length,
+        } as never;
       }
       const operation = decodeURIComponent(path.slice("/work-migrations/".length));
       const entry = remote.find(item => item.operationId === operation);
@@ -305,6 +312,33 @@ describe("received migration synchronization", () => {
       expect.any(AbortSignal),
     );
     expect(changed).toHaveBeenCalledOnce();
+  });
+
+  it("paginates bounded pages and skips reading completed receipt payloads on later syncs", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    remote = Array.from({ length: 7 }, (_, index) => {
+      const seq = index + 1;
+      const item = edge("a", "b", seq);
+      item.sourceWork.id = seq.toString(16).padStart(64, "0");
+      item.sourceWork.identity = { pluginId: "a", novelId: `work-${seq}`, novelPath: `/a/${seq}` };
+      item.sourceWork.metadata.identity = { ...item.sourceWork.identity };
+      item.deletedSource.revision = item.sourceWork.revision;
+      item.targetWork.id = (seq + 100).toString(16).padStart(64, "0");
+      item.targetWork.identity = { pluginId: "b", novelId: `work-${seq}`, novelPath: `/b/${seq}` };
+      item.targetWork.metadata.identity = { ...item.targetWork.identity };
+      return item;
+    });
+    expect(await syncIncomingNovelMigrations(server, "token")).toEqual({ applied: 7, pending: 0 });
+    const pageCalls = vi.mocked(contentServerRequest).mock.calls.filter(call => String(call[1]).startsWith("/work-migrations?"));
+    expect(pageCalls.map(call => call[1])).toEqual([
+      "/work-migrations?after=0&limit=5",
+      "/work-migrations?after=5&limit=5",
+    ]);
+
+    vi.mocked(invoke).mockClear();
+    expect(await syncIncomingNovelMigrations(server, "token")).toEqual({ applied: 0, pending: 0 });
+    const payloadReads = vi.mocked(invoke).mock.calls.filter(call => call[0] === "db_content_sync_read_incoming_migrations");
+    expect(payloadReads).toHaveLength(0);
   });
 });
 

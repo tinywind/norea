@@ -1,8 +1,10 @@
 use std::collections::{HashMap, HashSet};
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use serde::{Deserialize, Serialize};
+use serde::ser::{SerializeMap, SerializeSeq};
+use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value as JsonValue};
+use sha2::{Digest, Sha256};
 use sqlx::{Row, SqliteConnection};
 use tauri::{AppHandle, State};
 
@@ -1141,19 +1143,79 @@ pub async fn record_pending_novel_merge_in_tx(
     Ok(operation_id)
 }
 
-pub fn immutable_lineage_proof(lineage: &JsonValue) -> Result<String, String> {
+struct Sha256Writer(Sha256);
+
+impl std::io::Write for Sha256Writer {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
+
+struct CanonicalJsonRef<'a>(&'a JsonValue);
+
+impl Serialize for CanonicalJsonRef<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        match self.0 {
+            JsonValue::Array(items) => {
+                let mut seq = serializer.serialize_seq(Some(items.len()))?;
+                for item in items {
+                    seq.serialize_element(&CanonicalJsonRef(item))?;
+                }
+                seq.end()
+            }
+            JsonValue::Object(map) => {
+                let mut entries: Vec<_> = map.iter().collect();
+                entries.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
+                let mut ser_map = serializer.serialize_map(Some(entries.len()))?;
+                for (key, val) in entries {
+                    ser_map.serialize_entry(key, &CanonicalJsonRef(val))?;
+                }
+                ser_map.end()
+            }
+            other => other.serialize(serializer),
+        }
+    }
+}
+
+struct CanonicalLineageProof<'a>(&'a serde_json::Map<String, JsonValue>);
+
+impl Serialize for CanonicalLineageProof<'_> {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut entries: Vec<_> = self
+            .0
+            .iter()
+            .filter(|(key, _)| {
+                !matches!(key.as_str(), "sequence" | "active" | "legacyOperationId")
+            })
+            .collect();
+        entries.sort_by(|(lhs, _), (rhs, _)| lhs.cmp(rhs));
+        let mut ser_map = serializer.serialize_map(Some(entries.len()))?;
+        for (key, val) in entries {
+            ser_map.serialize_entry(key, &CanonicalJsonRef(val))?;
+        }
+        ser_map.end()
+    }
+}
+
+pub fn immutable_lineage_proof(lineage: &JsonValue) -> Result<[u8; 32], String> {
     let Some(obj) = lineage.as_object() else {
         return Err(
             "Incoming work migration is invalid: expected an object. Synchronization was held."
                 .to_string(),
         );
     };
-    let mut proof = obj.clone();
-    proof.remove("sequence");
-    proof.remove("active");
-    proof.remove("legacyOperationId");
-    serde_json::to_string(&canonical_json_value(&JsonValue::Object(proof)))
-        .map_err(|err| format!("db novel merge: encode lineage proof: {err}"))
+    let mut writer = Sha256Writer(Sha256::new());
+    serde_json::to_writer(&mut writer, &CanonicalLineageProof(obj))
+        .map_err(|err| format!("db novel merge: encode lineage proof: {err}"))?;
+    let digest = writer.0.finalize();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&digest);
+    Ok(out)
 }
 
 pub async fn release_migrated_target_metadata_in_tx(
@@ -1206,22 +1268,40 @@ pub async fn commit_incoming_migration_in_tx(
     commit: &IncomingMigrationCommitDto,
 ) -> Result<(), String> {
     let server_url = normalize_content_server_url_strict(&commit.server_url, true)?;
-    let prefix = {
-        let arr = serde_json::to_string(&[&server_url])
-            .map_err(|err| format!("db novel merge: encode server prefix: {err}"))?;
-        format!("{INCOMING_MIGRATION_CACHE_PREFIX}{},", &arr[..arr.len() - 1])
-    };
-    let rows = sqlx::query(
-        "SELECT cache_key, payload FROM content_sync_cache \
-         WHERE substr(cache_key, 1, length(?1)) = ?1 ORDER BY cache_key",
-    )
-    .bind(&prefix)
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|err| format!("db novel merge: load incoming migrations: {err}"))?;
+    let mut required_ops: Vec<String> = Vec::with_capacity(commit.chain.len() + 1);
+    for edge in &commit.chain {
+        let edge_op_id = edge
+            .get("operationId")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                "The received work migration chain changed before its local commit.".to_string()
+            })?;
+        if !required_ops.iter().any(|existing| existing == edge_op_id) {
+            required_ops.push(edge_op_id.to_string());
+        }
+    }
+    if !required_ops
+        .iter()
+        .any(|existing| existing == &commit.expected_operation_id)
+    {
+        required_ops.push(commit.expected_operation_id.clone());
+    }
 
-    let mut saved_chain: HashMap<String, (String, JsonValue)> = HashMap::with_capacity(rows.len());
-    for row in rows {
+    let mut saved_chain: HashMap<String, (String, JsonValue)> =
+        HashMap::with_capacity(required_ops.len());
+    for req_op in &required_ops {
+        let expected_key = format!(
+            "{INCOMING_MIGRATION_CACHE_PREFIX}{}",
+            serde_json::to_string(&(&server_url, req_op)).unwrap()
+        );
+        let row = sqlx::query("SELECT cache_key, payload FROM content_sync_cache WHERE cache_key = ?1")
+            .bind(&expected_key)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|err| format!("db novel merge: load incoming migration: {err}"))?;
+        let Some(row) = row else {
+            continue;
+        };
         let cache_key: String = row.get("cache_key");
         let payload: String = row.get("payload");
         let parsed: JsonValue = serde_json::from_str(&payload).map_err(|_| {
@@ -1236,11 +1316,17 @@ pub async fn commit_incoming_migration_in_tx(
                     .to_string()
             })?
             .to_string();
-        let expected_key = format!(
-            "{INCOMING_MIGRATION_CACHE_PREFIX}{}",
-            serde_json::to_string(&(&server_url, &op_id)).unwrap()
-        );
-        if cache_key != expected_key {
+        let stored_server = parsed
+            .get("serverUrl")
+            .and_then(JsonValue::as_str)
+            .ok_or_else(|| {
+                "Incoming work migration is invalid: server URL. Synchronization was held."
+                    .to_string()
+            })?;
+        if op_id != *req_op
+            || cache_key != expected_key
+            || normalize_content_server_url_strict(stored_server, true)? != server_url
+        {
             return Err(
                 "Incoming work migration is invalid: receipt cache identity. Synchronization was held."
                     .to_string(),
@@ -1289,13 +1375,14 @@ pub async fn commit_incoming_migration_in_tx(
         }
     }
 
-    let Some((expected_cache_key, current_record)) = saved_chain.get(&commit.expected_operation_id)
+    let Some((expected_cache_key, mut completed)) =
+        saved_chain.remove(&commit.expected_operation_id)
     else {
         return Err("The received work migration changed before its local commit.".to_string());
     };
-    let cur_seq = current_record.get("sequence").and_then(JsonValue::as_i64);
-    let cur_status = current_record.get("status").and_then(JsonValue::as_str);
-    let cur_active = current_record
+    let cur_seq = completed.get("sequence").and_then(JsonValue::as_i64);
+    let cur_status = completed.get("status").and_then(JsonValue::as_str);
+    let cur_active = completed
         .get("lineage")
         .and_then(|l| l.get("active"))
         .and_then(JsonValue::as_bool);
@@ -1310,7 +1397,6 @@ pub async fn commit_incoming_migration_in_tx(
         release_migrated_target_metadata_in_tx(conn, &server_url, target_work).await?;
     }
 
-    let mut completed = current_record.clone();
     if let Some(obj) = completed.as_object_mut() {
         obj.insert("status".to_string(), json!("completed"));
         obj.remove("error");

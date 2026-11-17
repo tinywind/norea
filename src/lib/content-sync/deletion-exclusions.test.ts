@@ -1,6 +1,6 @@
 import { beforeEach, expect, it, vi } from "vitest";
-import { listIncomingMigrations } from "./migration-feed-state";
-vi.mock("./migration-feed-state", () => ({ listIncomingMigrations: vi.fn(async () => []) }));
+import { listIncomingMigrationSummaries } from "./migration-feed-state";
+vi.mock("./migration-feed-state", () => ({ listIncomingMigrationSummaries: vi.fn(async () => []) }));
 import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import {
   readServerChapterDeletionExclusions,
@@ -14,7 +14,7 @@ vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(asy
 const memory = new Map<string, string>();
 beforeEach(() => {
   memory.clear(); vi.clearAllMocks();
-  vi.mocked(listIncomingMigrations).mockResolvedValue([]);
+  vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([]);
   vi.mocked(listNovelMigrations).mockResolvedValue([]);
   vi.mocked(readContentSyncCache).mockImplementation(async key => memory.get(key) ?? null);
   vi.mocked(writeContentSyncCache).mockImplementation(async (key, value) => { memory.set(key, value); });
@@ -58,13 +58,13 @@ it("holds active received sources and pending targets, but releases inactive mig
     source: { pluginId: from, novelId: "work" }, target: { pluginId: to, novelId: "work" }, status,
     lineage: { sourceWork: { id: from }, targetWork: { id: to, identity: { pluginId: to, novelId: "work" } } },
   });
-  vi.mocked(listIncomingMigrations).mockResolvedValue([
+  vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([
     record("source", "target", "blocked"), record("finished", "current", "completed"), record("restored", "unrelated", "inactive"),
   ] as never);
   expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set([
     "contents/source/work", "contents/target/work", "contents/finished/work",
   ]));
-  expect(listIncomingMigrations).toHaveBeenCalledWith("http://server", true);
+  expect(listIncomingMigrationSummaries).toHaveBeenCalledWith("http://server", true);
 });
 
 it("holds the final target while an earlier incoming migration remains unresolved", async () => {
@@ -72,7 +72,7 @@ it("holds the final target while an earlier incoming migration remains unresolve
     source: { pluginId: from, novelId: "work" }, target: { pluginId: to, novelId: "work" }, status,
     lineage: { sourceWork: { id: from }, targetWork: { id: to, identity: { pluginId: to, novelId: "work" } } },
   });
-  vi.mocked(listIncomingMigrations).mockResolvedValue([record("a", "b", "failed"), record("b", "c", "completed")] as never);
+  vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([record("a", "b", "failed"), record("b", "c", "completed")] as never);
   expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set([
     "contents/a/work", "contents/b/work", "contents/c/work",
   ]));
@@ -80,12 +80,12 @@ it("holds the final target while an earlier incoming migration remains unresolve
 
 it("persists an explicit deletion without copying unrelated received holds", async () => {
   const source = { pluginId: "source", novelId: "work" };
-  vi.mocked(listIncomingMigrations).mockResolvedValue([{ source, target: source, status: "completed",
+  vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([{ source, target: source, status: "completed",
     lineage: { sourceWork: { id: "source" }, targetWork: { id: "target", identity: source } } }] as never);
   await recordServerWorkDeletionExclusion("http://server", { pluginId: "other", novelId: "work" });
   expect(JSON.parse(memory.get("norea-content-work-deletions:http://server")!)).toEqual(["contents/other/work"]);
   await recordServerWorkDeletionExclusion("http://server", source);
-  vi.mocked(listIncomingMigrations).mockResolvedValue([]);
+  vi.mocked(listIncomingMigrationSummaries).mockResolvedValue([]);
   expect(await readServerWorkDeletionExclusions("http://server")).toEqual(new Set(["contents/other/work", "contents/source/work"]));
 });
 

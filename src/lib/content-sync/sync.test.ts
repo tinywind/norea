@@ -15,7 +15,7 @@ vi.mock("./migration-feed", async (original) => ({
   ...await original<typeof import("./migration-feed")>(),
   syncIncomingNovelMigrations: vi.fn(async () => ({ applied: 0, pending: 0 })),
 }));
-vi.mock("./migration-feed-state", () => ({ listIncomingMigrations: vi.fn(async () => []) }));
+vi.mock("./migration-feed-state", () => ({ listIncomingMigrationSummaries: vi.fn(async () => []) }));
 vi.mock("./chapter-number-reconciliation", () => ({ reconcilePendingChapterNumbers: vi.fn(async () => undefined) }));
 vi.mock("./native", () => ({
   uploadContentChapter: vi.fn(), fingerprintContentChapter: vi.fn(),

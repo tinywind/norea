@@ -56,16 +56,27 @@ export interface WorkMigrationLineage {
   active: boolean;
 }
 
-export interface IncomingMigration {
+export type IncomingMigrationStatus = "pending" | "failed" | "blocked" | "completed" | "inactive";
+
+export interface IncomingMigrationSummary {
   version: 1;
   serverUrl: string;
   operationId: string;
   sequence: number;
   source: MigrationWorkIdentity;
   target: MigrationWorkIdentity;
-  status: "pending" | "failed" | "blocked" | "completed" | "inactive";
-  lineage: WorkMigrationLineage;
+  status: IncomingMigrationStatus;
+  lineage: {
+    legacyOperationId?: string;
+    active: boolean;
+    sourceWork: { id: string; identity: MigrationWorkIdentity };
+    targetWork: { id: string; identity: MigrationWorkIdentity };
+  };
   error?: string;
+}
+
+export interface IncomingMigration extends IncomingMigrationSummary {
+  lineage: WorkMigrationLineage;
 }
 
 export const INCOMING_MIGRATION_CACHE_PREFIX = "norea-content-incoming-migration:";
@@ -330,7 +341,6 @@ export function incomingMigrationFromLineage(server: string, entry: WorkMigratio
 }
 
 const receiptKey = (server: string, operationId: string) => INCOMING_MIGRATION_CACHE_PREFIX + JSON.stringify([server, operationId]);
-const serverReceiptPrefix = (server: string) => INCOMING_MIGRATION_CACHE_PREFIX + JSON.stringify([server]).slice(0, -1) + ",";
 
 function storedIncoming(row: { cacheKey: string; payload: string }): IncomingMigration {
   const parsed = parseIncoming(JSON.parse(row.payload));
@@ -338,13 +348,56 @@ function storedIncoming(row: { cacheKey: string; payload: string }): IncomingMig
   return parsed;
 }
 
+export async function listIncomingMigrationSummaries(
+  server: string,
+  includeCompleted = false,
+): Promise<IncomingMigrationSummary[]> {
+  const serverUrl = normalizeContentServerUrl(server);
+  return invokeDbQuery<IncomingMigrationSummary[]>(
+    "db_content_sync_list_incoming_migration_summaries",
+    {
+      serverUrl,
+      includeCompleted,
+      readMode: "queued",
+    },
+  );
+}
+
+export async function readIncomingMigrations(
+  server: string,
+  operationIds: readonly string[],
+): Promise<IncomingMigration[]> {
+  if (!operationIds.length) return [];
+  const serverUrl = normalizeContentServerUrl(server);
+  const rows = await invokeDbQuery<Array<{ cacheKey: string; payload: string }>>(
+    "db_content_sync_read_incoming_migrations",
+    {
+      serverUrl,
+      operationIds: [...operationIds],
+      includeCompleted: true,
+      readMode: "queued",
+    },
+  );
+  return rows
+    .map(storedIncoming)
+    .sort((left, right) => left.sequence - right.sequence || left.operationId.localeCompare(right.operationId));
+}
+
+export async function readIncomingMigration(
+  server: string,
+  operationId: string,
+): Promise<IncomingMigration | null> {
+  const found = await readIncomingMigrations(server, [operationId]);
+  return found.find(item => item.operationId === operationId) ?? null;
+}
+
 export async function listIncomingMigrations(server: string, includeCompleted = false): Promise<IncomingMigration[]> {
   const serverUrl = normalizeContentServerUrl(server);
   const rows = await invokeDbQuery<Array<{ cacheKey: string; payload: string }>>(
-    "db_content_sync_list_cache_entries",
+    "db_content_sync_read_incoming_migrations",
     {
-      prefix: serverReceiptPrefix(serverUrl),
-      exactSubstr: true,
+      serverUrl,
+      includeCompleted,
       readMode: "queued",
     },
   );
@@ -354,7 +407,9 @@ export async function listIncomingMigrations(server: string, includeCompleted = 
 
 export async function saveIncomingMigration(record: IncomingMigration): Promise<void> {
   const proposed = parseIncoming(record);
-  await invokeDbMutation("db_content_sync_save_incoming_migration", { record: proposed });
+  await invokeDbMutation("db_content_sync_save_incoming_migration", {
+    recordJson: JSON.stringify(proposed),
+  });
 }
 
 export async function getIncomingMigrationCursor(server: string): Promise<number> {
@@ -384,7 +439,7 @@ export async function rememberIncomingMigrationPage(
   const validated = items.map(parseWorkMigrationLineage);
   await invokeDbMutation("db_content_sync_remember_incoming_migration_page", {
     serverUrl,
-    items: validated,
+    itemsJson: validated.map(item => JSON.stringify(item)),
     cursor,
   });
 }

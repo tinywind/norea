@@ -11,7 +11,7 @@ import { rememberServerNovelSource, type ServerNovelSource } from "./novel-sourc
 import { contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
 import { fetchServerChapters } from "./chapters";
 import { cacheServerChapters, isNovelMigrationSourceHeld, listNovelMigrations } from "../../db/queries/content-sync";
-import { listIncomingMigrations } from "./migration-feed-state";
+import { listIncomingMigrationSummaries } from "./migration-feed-state";
 import type { MigrationWorkIdentity } from "./novel-migration-types";
 
 export interface ServerWorkSummary {
@@ -91,7 +91,7 @@ export async function resolveServerNovelTarget(serverUrl: string, work: ServerWo
   const server = normalizeContentServerUrl(serverUrl);
   if (await contentWorkId(work.identity) !== work.id) throw new Error("Server work identity does not match its metadata.");
   const [outgoing, incoming] = await Promise.all([
-    listNovelMigrations(server, true), listIncomingMigrations(server, true),
+    listNovelMigrations(server, true), listIncomingMigrationSummaries(server, true),
   ]);
   const revoked = new Set(incoming.filter(receipt => receipt.status === "inactive").flatMap(receipt =>
     [receipt.operationId, ...(receipt.lineage.legacyOperationId ? [receipt.lineage.legacyOperationId] : [])]));
