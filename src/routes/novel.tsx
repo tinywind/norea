@@ -873,6 +873,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   } : undefined, {
                     onSuccess: (result) => {
                       if (result?.inLibrary) showAddedToLibrary(result.novel.id);
+                      // Removing may have deleted the work's files; a server work reads its metadata and cover again.
+                      else if (!result && serverSourceQuery.data) serverSync.retry();
                     },
                   })
                 }

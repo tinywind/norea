@@ -5,7 +5,7 @@ vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(asy
 import type { NovelMetadataV1 } from "../work-metadata";
 
 const mocks = vi.hoisted(() => ({
-  novel: vi.fn(), source: vi.fn(), read: vi.fn(), install: vi.fn(), cover: vi.fn(),
+  novel: vi.fn(), source: vi.fn(), read: vi.fn(), install: vi.fn(), cover: vi.fn(), refresh: vi.fn(),
   plugin: vi.fn(), executor: vi.fn(), enqueue: vi.fn(), cancel: vi.fn(), sync: vi.fn(),
   load: vi.fn(), chapters: vi.fn(), cache: vi.fn(), storedCover: vi.fn(), commit: vi.fn(), syncFile: vi.fn(), canPull: vi.fn(), record: vi.fn(),
   settings: { serverUrl: "http://server", deviceName: "Tablet", lookupTimeoutSeconds: 3 },
@@ -15,7 +15,7 @@ vi.mock("../../db/work-metadata", () => ({ knownNovelMetadataDirectory: () => "c
 vi.mock("./works", async original => ({ ...await original<typeof import("./works")>(), canPullWorkMetadata: mocks.canPull, recordInstalledWorkMetadata: mocks.record }));
 vi.mock("../../store/content-sync", () => ({ useContentSyncStore: { getState: () => mocks.settings } }));
 vi.mock("./novel-source", () => ({ readServerNovelSource: mocks.source }));
-vi.mock("./browse", () => ({ readServerCover: mocks.cover }));
+vi.mock("./browse", () => ({ readServerCover: mocks.cover, refreshServerNovel: mocks.refresh }));
 vi.mock("./device", () => ({ registerContentDevice: vi.fn(async () => "token") }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 vi.mock("../work-metadata", async original => ({ ...await original<typeof import("../work-metadata")>(), readStoredNovelMetadata: mocks.read, installStoredNovelMetadata: mocks.install, readStoredNovelCover: mocks.storedCover }));
@@ -129,6 +129,20 @@ it("does not reinstall unchanged metadata when the server catalog omits locally 
   mocks.cache.mockResolvedValue(false);
   expect(await syncServerNovelOnOpen(42)).toBe(false);
   expect(mocks.commit).not.toHaveBeenCalled();
+});
+
+it("installs a server work's metadata again when its files were removed from this device", async () => {
+  const source = { serverUrl: "http://server", workId: "work" };
+  mocks.source.mockResolvedValue(source);
+  mocks.read.mockResolvedValue(null);
+  mocks.refresh.mockResolvedValue(42);
+  expect(await syncServerNovelOnOpen(42)).toBe(true);
+  expect(mocks.refresh).toHaveBeenCalledExactlyOnceWith(source);
+  expect(contentServerRequest).not.toHaveBeenCalled();
+
+  mocks.source.mockResolvedValue(null);
+  await expect(syncServerNovelOnOpen(42)).rejects.toThrow("Local work metadata is missing");
+  expect(mocks.refresh).toHaveBeenCalledOnce();
 });
 
 it("does not try a folder-name work identity after an exact identity misses", async () => {

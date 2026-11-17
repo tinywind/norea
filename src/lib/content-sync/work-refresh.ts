@@ -8,7 +8,7 @@ import { enqueueSourceTask } from "../tasks/source-tasks";
 import { isTauriRuntime } from "../tauri-runtime";
 import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { availableNovelMetadataDirectory, installStoredNovelMetadata, parseNovelMetadata, readStoredNovelCover, readStoredNovelMetadata } from "../work-metadata";
-import { readServerCover } from "./browse";
+import { readServerCover, refreshServerNovel } from "./browse";
 import { ContentServerError, contentServerRequest, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
 import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
@@ -23,7 +23,7 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
   const source = await readServerNovelSource(novelId);
   const server = source?.serverUrl ?? settings.serverUrl;
   if (!server) return false;
-  return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, async excluded => {
+  const refreshed = await runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, async excluded => {
     signal?.throwIfAborted();
     const novel = await getNovelById(novelId);
     if (!novel) return false;
@@ -32,6 +32,8 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
     if (isDeleted()) return false;
     const directory = knownNovelMetadataDirectory(identity) ?? await availableNovelMetadataDirectory({ identity, novel });
     const stored = await readStoredNovelMetadata(directory);
+    // Removing a work's files from this device also removes its metadata and cover; the server still has them.
+    if (!stored && source) return "metadata-missing" as const;
     if (!stored) throw new Error("Local work metadata is missing. Rescan local files before refreshing.");
     const localCover = await readStoredNovelCover(directory, stored.metadata);
     const expected = await workMetadataFingerprint(stored.metadata, localCover);
@@ -97,6 +99,10 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
     const chaptersChanged = await cacheServerChapters(novelId, result.chapters, signal);
     return installed || chaptersChanged;
   }), signal);
+  if (refreshed !== "metadata-missing") return refreshed;
+  signal?.throwIfAborted();
+  await refreshServerNovel(source!);
+  return true;
 }
 
 interface ServerNovelSourceRefreshOptions {
