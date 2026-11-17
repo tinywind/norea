@@ -7,8 +7,8 @@ function workKey(pluginId: string, novelPath: string): string {
 }
 
 /**
- * The user's categories for content-server works, resolved on this device: a library work answers from its
- * local categories and any other work from the shared state received from that server.
+ * The user's categories for content-server works, resolved on this device: a work with categories here answers
+ * from them and any other work from the shared state of that server, whether or not it is in the library.
  */
 export function useServerWorkCategories(
   server: string,

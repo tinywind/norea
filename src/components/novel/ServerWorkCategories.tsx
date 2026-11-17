@@ -7,7 +7,7 @@ interface ServerWorkCategoriesProps {
   serverUrl: string;
 }
 
-/** The categories shared state holds for a content-server work that is not a library work on this device. */
+/** The categories the user set for a content-server work that is not a library work on this device. */
 export function ServerWorkCategories({ active, novel, serverUrl }: ServerWorkCategoriesProps) {
   const { t } = useTranslation();
   const categoriesOf = useServerWorkCategories(

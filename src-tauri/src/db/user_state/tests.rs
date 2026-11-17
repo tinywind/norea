@@ -1194,7 +1194,7 @@ async fn retired_migration_sources_and_local_works_are_excluded_and_settled() {
 }
 
 #[tokio::test]
-async fn work_categories_come_from_shared_state_until_the_work_is_a_local_library_work() {
+async fn work_categories_come_from_shared_state_until_the_work_has_local_categories() {
     let test_db = open_test_db().await;
     let pool = test_db.db.pool_for(ReadMode::Queued);
     let binding = sample_binding();
@@ -1277,40 +1277,51 @@ async fn work_categories_come_from_shared_state_until_the_work_is_a_local_librar
             .collect::<Vec<_>>()
     };
 
-    // Not installed here: the received records answer, without the deleted category or a work outside the library.
+    // Not installed here: the received records answer, in or out of the library, without the deleted category.
     assert_eq!(
         categories(lookups.clone(), "https://state.example/").await,
-        vec![vec!["Later".to_string(), "Favorites".to_string()], vec![]]
+        vec![
+            vec!["Later".to_string(), "Favorites".to_string()],
+            vec!["Favorites".to_string()]
+        ]
     );
     assert_eq!(
         categories(lookups.clone(), "https://another.example").await,
         vec![Vec::<String>::new(), vec![]]
     );
 
-    // An unsent local removal from the library is newer than the received record.
-    let library_key = user_state_entity_key(&json!({ "kind": "library", "work": work })).unwrap();
+    // Unsent local edits are newer than the received records.
+    for (id, included) in [("cat-favorites", false), ("cat-removed", true)] {
+        let entity = json!({ "kind": "membership", "work": work, "categoryId": id });
+        sqlx::query(
+            "INSERT INTO user_state_intent(entity_key, entity_json, value_json) VALUES (?1, ?2, ?3)",
+        )
+        .bind(user_state_entity_key(&entity).unwrap())
+        .bind(entity.to_string())
+        .bind(json!({ "included": included }).to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    assert_eq!(
+        categories(lookups.clone(), "https://state.example").await[0],
+        vec!["Later".to_string()]
+    );
+
+    // A work installed here without categories of its own still answers from the shared state.
     sqlx::query(
-        "INSERT INTO user_state_intent(entity_key, entity_json, value_json) VALUES (?1, ?2, ?3)",
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) \
+         VALUES (1, 'source', 'book', '/book', 'Book', 0)",
     )
-    .bind(&library_key)
-    .bind(json!({ "kind": "library", "work": work }).to_string())
-    .bind(json!({ "inLibrary": false, "addedAt": null }).to_string())
     .execute(pool)
     .await
     .unwrap();
     assert_eq!(
         categories(lookups.clone(), "https://state.example").await[0],
-        Vec::<String>::new()
+        vec!["Later".to_string()]
     );
 
-    // A library work on this device answers from its own categories.
-    sqlx::query(
-        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) \
-         VALUES (1, 'source', 'book', '/book', 'Book', 1)",
-    )
-    .execute(pool)
-    .await
-    .unwrap();
+    // Its own categories answer once it has some, whether or not it is in the library.
     sqlx::query("INSERT INTO category(id, name, sort, is_system) VALUES (50, 'Local shelf', 1, 0)")
         .execute(pool)
         .await
