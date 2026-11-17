@@ -22,6 +22,7 @@ import {
   recordFailedChapterDownloadAttempt,
   refreshChapterDownloadFailures,
 } from "./chapter-download-failures";
+import { isServerChapterMissingFailure } from "./download-failure";
 import type { ChapterDownloadPhase, TaskRunContext } from "./task-types";
 import type { VpnDownloadWorkerRef } from "./vpn-download-types";
 import { vpnDownloadExecutor } from "./vpn-worker-context";
@@ -118,6 +119,8 @@ export interface ChapterDownloadJob {
   goal?: true;
   /** Retained queue hint; every ordinary download checks the server before source access. */
   serverLane?: true;
+  /** The user accepted the source for a content-server work's chapter that the server lacks. */
+  sourceFallback?: true;
   title: string;
 }
 
@@ -618,6 +621,7 @@ function normalizeQueuedChapterDownloadJob(
     ...(readPositiveIntegerField(record, "retryAt") ? { retryAt: readPositiveIntegerField(record, "retryAt") } : {}),
     ...(record.goal === true ? { goal: true as const } : {}),
     ...(record.serverLane === true ? { serverLane: true as const } : {}),
+    ...(record.sourceFallback === true ? { sourceFallback: true as const } : {}),
     title,
   };
 }
@@ -1139,6 +1143,8 @@ function enqueueChapterDownloadForExecutor(
   const recoveryPolicy = options.recoveryPolicy ?? getDownloadRecoveryPolicy();
   let recoveryProfile = options.recoveryProfile;
   const sourceCooldownKey = options.vpnWorker?.rangeId ?? job.pluginId;
+  const sourceFallback = Boolean(options.vpnWorker) || job.sourceFallback === true || job.pluginId === LOCAL_PLUGIN_ID;
+  let serverChapterMissing = false;
   const completeJob = async (): Promise<void> => {
     await options.onCompleted?.();
     completeChapterDownloadJob(job, queueOwnerId);
@@ -1162,7 +1168,9 @@ function enqueueChapterDownloadForExecutor(
       retryManually: () => {
         downloadRecovery.resume(sourcePluginId, new Set([downloadRecoveryKey(job)]));
         if (isTauriRuntime()) forgetFailures([job.id]);
-        return enqueueChapterDownload(explicitChapterDownloadJob(withoutRetryTime(job)));
+        return enqueueChapterDownload(explicitChapterDownloadJob(withoutRetryTime(
+          serverChapterMissing ? { ...job, sourceFallback: true } : job,
+        )));
       },
       ...(job.retryAt ? { notBefore: job.retryAt } : {}),
     } : {}),
@@ -1231,8 +1239,15 @@ function enqueueChapterDownloadForExecutor(
           chapterForAttempt = chapter;
           sourcePluginId = job.pluginId;
           const storageJob = chapterDownloadStorageJob(job, chapter.path);
-          if ((!sourceAccessVerification && chapter.isDownloaded) ||
-              await tryDownloadServerChapter(storageJob, signal, setChapterDownloadPhase)) {
+          const downloadFromServer = async (): Promise<boolean> => {
+            try {
+              return await tryDownloadServerChapter(storageJob, signal, setChapterDownloadPhase, { sourceFallback });
+            } catch (error) {
+              serverChapterMissing = isServerChapterMissingFailure(error);
+              throw error;
+            }
+          };
+          if ((!sourceAccessVerification && chapter.isDownloaded) || await downloadFromServer()) {
             signal.throwIfAborted();
             await completeJob();
             reportProgress({ current: progressTotal, total: progressTotal }, { force: true });
@@ -1663,7 +1678,10 @@ export async function retryFailedChapterDownloads(chapterIds: readonly number[])
   const wanted = new Set(chapterIds);
   const failures = getChapterDownloadFailureSnapshot().filter((row) => wanted.has(row.chapterId));
   const jobs = failures
-    .map((row) => failedChapterDownloadJob(row.jobJson))
+    .map((row) => {
+      const job = failedChapterDownloadJob(row.jobJson);
+      return job && isServerChapterMissingFailure(row.messageSummary) ? { ...job, sourceFallback: true as const } : job;
+    })
     .filter((job): job is ChapterDownloadJob => job !== null);
   const storageRetry = getChapterDownloadFailureSnapshot().some(row => wanted.has(row.chapterId) && row.failureClass === "storage");
   await forgetChapterDownloadFailures(jobs.map((job) => job.id));

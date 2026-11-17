@@ -169,8 +169,8 @@ export function useNovelChapterActions(
     });
   }
 
-  function downloadChapter(chapter: ChapterListRow, retryAfterFailure = false): void {
-    queueChapterDownloads([chapter], retryAfterFailure);
+  function downloadChapter(chapter: ChapterListRow, retryAfterFailure = false, sourceFallback = false): void {
+    queueChapterDownloads([chapter], retryAfterFailure, sourceFallback);
   }
 
   /** Downloads several chapters the user chose and confirms how many were queued. */
@@ -184,7 +184,7 @@ export function useNovelChapterActions(
   }
 
   /** Queues chapters the user chose, ahead of automatic goal work; false when there was nothing to queue. */
-  function queueChapterDownloads(chaptersToDownload: ChapterListRow[], retryAfterFailure = false): boolean {
+  function queueChapterDownloads(chaptersToDownload: ChapterListRow[], retryAfterFailure = false, sourceFallback = false): boolean {
     if (!novel || chaptersToDownload.length === 0) return false;
     const batchNovel = novel;
     const chapterDownloadJobs = chaptersToDownload.map((chapter) => ({
@@ -198,6 +198,7 @@ export function useNovelChapterActions(
       novelName: batchNovel.name,
       novelPath: batchNovel.path,
       priority: "user" as const,
+      ...(sourceFallback ? { sourceFallback: true as const } : {}),
       title: t("tasks.task.downloadChapter", { name: chapter.name }),
     }));
     const title = t("tasks.task.downloadChapterBatch", { count: chaptersToDownload.length });
@@ -208,7 +209,8 @@ export function useNovelChapterActions(
       total: chaptersToDownload.length,
       prepare: async () => ({ jobs: chapterDownloadJobs, materializeAllTasks: true, title, total: chaptersToDownload.length }),
     });
-    if (retryAfterFailure) {
+    // A chapter the server lacked never reached its source, so its retry acknowledges no source failure stop.
+    if (retryAfterFailure && !sourceFallback) {
       // Publish the current chapter path before acknowledging its source's failure stop.
       void request.materialized.then(() => resumeChapterDownloadQueueAfterFailure(batchNovel.pluginId)).catch(() => undefined);
     }

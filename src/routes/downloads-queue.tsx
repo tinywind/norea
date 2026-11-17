@@ -60,6 +60,7 @@ import {
 import { describeError, userFacingErrorKey } from "../lib/errors";
 import { parseDownloadsSearch } from "../lib/route-search";
 import { cancelChapterDownloadBatches, resumeChapterDownloadQueueAfterFailure } from "../lib/tasks/chapter-download";
+import { isServerChapterMissingFailure } from "../lib/tasks/download-failure";
 import { chapterDownloadFailureAttention } from "../lib/tasks/chapter-download-failure-attention";
 import { cancelChapterDownloadRequest } from "../lib/tasks/chapter-download-requests";
 import {
@@ -99,19 +100,36 @@ const ATTENTION_FOCUS_TIMEOUT_MS = 3_000;
 const ACTIVE_STATUSES = new Set<TaskStatus>(["queued", "running"]);
 
 function taskErrorSummaryKey(error: string, kind: TaskRecord["kind"]): TranslationKey {
+  if (isServerChapterMissingFailure(error)) return "tasks.error.serverMissing";
   const key = userFacingErrorKey(error);
   if (key !== "errors.generic") return key;
   return kind === "chapter.download" ? "tasks.error.download" : "tasks.error.generic";
 }
 
+/** Which side a failed chapter download was using; a chapter the server lacks already names the server. */
+function taskErrorOriginKey(task: TaskRecord): TranslationKey | null {
+  if (task.kind !== "chapter.download" || !task.error || isServerChapterMissingFailure(task.error)) return null;
+  switch (task.chapterDownloadPhase) {
+    case "server-lookup":
+    case "server-download":
+      return "tasks.error.fromServer";
+    case "source-download":
+      return "tasks.error.fromSource";
+    default:
+      return null;
+  }
+}
+
 /** A failure as one plain sentence; the raw error stays one tap away for reports. */
-function TaskErrorLine({ error, kind }: { error: string; kind: TaskRecord["kind"] }) {
+function TaskErrorLine({ error, kind, task }: { error: string; kind: TaskRecord["kind"]; task?: TaskRecord }) {
   const { t } = useTranslation();
   const keepInside = (event: { stopPropagation: () => void }) => event.stopPropagation();
+  const message = t(taskErrorSummaryKey(error, kind));
+  const originKey = task ? taskErrorOriginKey(task) : null;
   return (
     <div className="norea-task-row-error">
       <WarningIcon className="norea-task-row-error-icon" />
-      <span className="norea-task-row-error-text">{t(taskErrorSummaryKey(error, kind))}</span>
+      <span className="norea-task-row-error-text">{originKey ? t(originKey, { message }) : message}</span>
       <Popover position="bottom-start" shadow="md">
         <Popover.Target>
           <button
@@ -542,7 +560,7 @@ const TaskRow = memo(function TaskRow({
           </Text>
         ) : null}
         {currentTask.error ? (
-          <TaskErrorLine error={currentTask.error} kind={currentTask.kind} />
+          <TaskErrorLine error={currentTask.error} kind={currentTask.kind} task={currentTask} />
         ) : null}
         {currentTask.progress && !(withinWork && currentTask.status === "queued") ? (
           <Progress

@@ -4,6 +4,7 @@ import { getNovelById } from "../../db/queries/novel";
 import { useContentSyncStore } from "../../store/content-sync";
 import { withChapterStorageOperation } from "../chapter-storage-error";
 import type { ChapterDownloadJob } from "../tasks/chapter-download";
+import { ServerChapterMissingError } from "../tasks/download-failure";
 import type { ChapterDownloadPhase } from "../tasks/task-types";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
@@ -54,11 +55,15 @@ export async function listServerChapterAvailability(source: ServerNovelSource, s
   }, settings.lookupTimeoutSeconds, signal);
 }
 
-/** Returns false only when no server is configured or the exact chapter lookup confirms its body is absent. */
+/**
+ * Returns false only when no server is configured or the exact chapter lookup confirms its body is absent.
+ * With `sourceFallback: false`, a work opened from the content server throws ServerChapterMissingError instead.
+ */
 export async function tryDownloadServerChapter(
   job: Pick<ChapterDownloadJob, "id" | "novelId" | "pluginId" | "chapterPath">,
   signal?: AbortSignal,
   onPhase?: (phase: ChapterDownloadPhase) => void,
+  options: { sourceFallback?: boolean } = {},
 ): Promise<boolean> {
   signal?.throwIfAborted();
   const chapter = await withChapterStorageOperation("load server chapter", () => getChapterById(job.id));
@@ -94,7 +99,10 @@ export async function tryDownloadServerChapter(
     deadline.throwIfAborted();
     return { entry, token };
   }, settings.lookupTimeoutSeconds ?? 3, signal);
-  if (!found) return false;
+  if (!found) {
+    if (source && options.sourceFallback === false) throw new ServerChapterMissingError();
+    return false;
+  }
   const { entry, token } = found;
   const identity = entry.manifest.identity;
   const sameWork = identity.novelPath === novel.path;

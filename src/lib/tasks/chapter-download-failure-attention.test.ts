@@ -41,3 +41,10 @@ it("collects the VPN ranges whose paused chapters belong to a group", () => {
   expect(group?.chapterIds).toEqual([1, 2, 3, 4]);
   expect(group?.vpnRanges).toEqual([{ planId: "plan", rangeId: "a" }, { planId: "plan", rangeId: "b" }]);
 });
+
+it("separates chapters a content-server work lacks from other content failures", () => {
+  const missing = { messageSummary: "This chapter is not on the content server." };
+  const attention = chapterDownloadFailureAttention([row(1), row(2, missing), row(3, missing)]);
+  expect(attention.groups.map((group) => [group.serverMissing, group.action, group.chapterIds]))
+    .toEqual([[false, "retry", [1]], [true, "retry", [2, 3]]]);
+});

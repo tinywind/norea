@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Group, Text } from "@mantine/core";
 import { IconButton } from "./IconButton";
-import { RepairIcon, RetryIcon, VerifyIcon } from "./ui/icons";
+import { DownloadIcon, RepairIcon, RetryIcon, VerifyIcon } from "./ui/icons";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
 import { pluginManager } from "../lib/plugins/manager";
@@ -81,25 +81,28 @@ export function ChapterDownloadFailureAttention() {
     <>
       {attention.groups.map((group) => {
         const source = pluginManager.getPlugin(group.pluginId)?.name ?? group.pluginId;
-        const message = t(MESSAGE_KEYS[group.failureClass], { source, count: group.chapterIds.length, host: group.challengeHost });
+        const message = t(group.serverMissing ? "downloads.failures.serverMissing" : MESSAGE_KEYS[group.failureClass],
+          { source, count: group.chapterIds.length, host: group.challengeHost });
         return (
           <section className="norea-source-access-banner" data-download-failures={group.failureClass} key={group.key} role="alert">
             <div className="norea-source-access-copy">
               <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{message}</Text>
-              <Text c="dimmed" component="p" lineClamp={2} size="xs">
-                {t("downloads.failures.latest", { message: group.latestSummary })}
-              </Text>
+              {group.serverMissing ? null : (
+                <Text c="dimmed" component="p" lineClamp={2} size="xs">
+                  {t("downloads.failures.latest", { message: group.latestSummary })}
+                </Text>
+              )}
               {error?.key === group.key ? <Text c="danger" component="p" size="sm">{error.message}</Text> : null}
             </div>
             <Group gap="xs" justify="flex-end">
               <IconButton
                 disabled={pending !== null}
-                label={t(ACTION_KEYS[group.action])}
+                label={t(group.serverMissing ? "downloads.failures.downloadFromSource" : ACTION_KEYS[group.action])}
                 loading={pending === group.key}
                 onClick={() => act(group.key, () => group.action === "verify" ? verifyGroup(group, message) : retryGroup(group))}
                 size="lg"
               >
-                {group.action === "verify" ? <VerifyIcon /> : group.action === "repair" ? <RepairIcon /> : <RetryIcon />}
+                {group.serverMissing ? <DownloadIcon /> : group.action === "verify" ? <VerifyIcon /> : group.action === "repair" ? <RepairIcon /> : <RetryIcon />}
               </IconButton>
             </Group>
           </section>

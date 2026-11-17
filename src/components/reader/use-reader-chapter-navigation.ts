@@ -30,6 +30,7 @@ import {
   novelLibraryQueryKey,
 } from "../../lib/reader-query-invalidation";
 import { cancelChapterDownloadBatches, enqueueChapterDownload } from "../../lib/tasks/chapter-download";
+import { isServerChapterMissingFailure } from "../../lib/tasks/download-failure";
 import { taskScheduler, type TaskHandle } from "../../lib/tasks/scheduler";
 import { type ReaderContentHandle } from "../ReaderContent";
 
@@ -117,7 +118,7 @@ export function useReaderChapterNavigation({
   const openChapter = useCallback(
     (
       targetChapter: ReaderNavigationChapter,
-      options?: { initialProgress?: number },
+      options?: { initialProgress?: number; sourceFallback?: boolean },
     ) => {
       if (options?.initialProgress !== undefined) {
         setInitialProgressOverride({
@@ -174,6 +175,7 @@ export function useReaderChapterNavigation({
             novelName: novel.name,
             novelPath: novel.path,
             priority: "interactive",
+            ...(options?.sourceFallback ? { sourceFallback: true as const } : {}),
             title: t("tasks.task.downloadChapter", {
               name: targetChapter.name,
             }),
@@ -239,8 +241,11 @@ export function useReaderChapterNavigation({
   }, [chapter, downloadFailure, openChapter]);
 
   const retryChapterDownload = useCallback(() => {
-    if (chapter) openChapter(chapter);
-  }, [chapter, openChapter]);
+    if (!chapter) return;
+    const serverMissing = downloadFailure?.chapterId === chapter.id &&
+      isServerChapterMissingFailure(downloadFailure.message);
+    openChapter(chapter, serverMissing ? { sourceFallback: true } : undefined);
+  }, [chapter, downloadFailure, openChapter]);
 
   const chapterMissingContent = Boolean(
     chapter && !hasStoredChapterContent(chapter),

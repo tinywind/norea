@@ -1,5 +1,5 @@
 import type { StoredChapterDownloadFailure } from "../../db/queries/chapter-download-failure";
-import type { DownloadFailureClass } from "./download-failure";
+import { isServerChapterMissingFailure, type DownloadFailureClass } from "./download-failure";
 
 export interface VpnFailureRange {
   planId: string;
@@ -11,6 +11,8 @@ export interface ChapterDownloadFailureGroup {
   pluginId: string;
   failureClass: DownloadFailureClass;
   action: "retry" | "repair" | "verify";
+  /** Chapters a content-server work lacks; retrying them downloads from the source. */
+  serverMissing: boolean;
   chapterIds: number[];
   /** Chapters owned by VPN ranges; retrying them resumes their range instead of queueing a direct download. */
   vpnRanges: VpnFailureRange[];
@@ -53,12 +55,14 @@ export function chapterDownloadFailureAttention(
       continue;
     }
     const host = row.failureClass === "challenge" ? challengeHost(row.challengeUrl) : "";
-    const key = JSON.stringify([row.pluginId, row.failureClass, host]);
+    const serverMissing = isServerChapterMissingFailure(row.messageSummary);
+    const key = JSON.stringify(serverMissing ? [row.pluginId, row.failureClass, host, "server-missing"] : [row.pluginId, row.failureClass, host]);
     let group = groups.get(key);
     if (!group) {
       group = {
         key, pluginId: row.pluginId, failureClass: row.failureClass,
         action: row.failureClass === "challenge" ? "verify" : row.failureClass === "media-incomplete" ? "repair" : "retry",
+        serverMissing,
         chapterIds: [], vpnRanges: [], challengeUrl: row.challengeUrl, challengeHost: host, latestSummary: row.messageSummary, updatedAt: row.updatedAt,
       };
       groups.set(key, group);

@@ -157,6 +157,20 @@ it("shows a retryable failure instead of staying busy when the chapter download 
   expect(current.awaitingChapterDownload).toBe(true);
 });
 
+it("allows the source only on the retry of a chapter the content server lacks", async () => {
+  mount();
+  vi.mocked(enqueueChapterDownload).mockImplementationOnce(() => ({
+    id: "download", promise: Promise.reject(new Error("This chapter is not on the content server.")),
+  }) as ReturnType<typeof enqueueChapterDownload>);
+  await render({ ...chapter, contentBytes: 0 });
+  await act(async () => { await new Promise((resolve) => setTimeout(resolve, 0)); });
+  expect(vi.mocked(enqueueChapterDownload).mock.calls[0][0]).not.toHaveProperty("sourceFallback");
+
+  await act(async () => current.retryChapterDownload());
+  expect(enqueueChapterDownload).toHaveBeenCalledTimes(2);
+  expect(vi.mocked(enqueueChapterDownload).mock.calls[1][0]).toMatchObject({ id: 11, sourceFallback: true });
+});
+
 it("reports an offline chapter without a stored body as unavailable instead of busy", async () => {
   mount();
   useNetworkStore.setState({ connectivity: "offline" });

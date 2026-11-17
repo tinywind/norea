@@ -27,6 +27,7 @@ import { type ChapterListRow } from "../../db/queries/chapter";
 import { useTranslation, type TranslationKey } from "../../i18n";
 import { useLongPress } from "../../lib/use-long-press";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
+import { isServerChapterMissingFailure } from "../../lib/tasks/download-failure";
 import { type ChapterDownloadPhase } from "../../lib/tasks/task-types";
 import {
   normalizeFontScalePercent,
@@ -166,6 +167,7 @@ function ChapterListItem({
   } as CSSProperties;
   const downloadActive = status?.kind === "queued" || status?.kind === "running";
   const failedMessage = status?.kind === "failed" ? status.error : null;
+  const serverMissingFailure = failedMessage !== null && isServerChapterMissingFailure(failedMessage);
   const longPress = useLongPress(reorderMode ? undefined : onExtendSelection, 450);
   const releaseTime = chapter.releaseTime
     ? normalizeDateText(chapter.releaseTime)
@@ -185,6 +187,13 @@ function ChapterListItem({
       return (
         <span className="norea-novel-chapter-status">
           {t(status.kind === "running" ? "common.downloading" : status.retryAt ? "novel.downloadRetrying" : "common.queued")}
+        </span>
+      );
+    }
+    if (serverMissingFailure) {
+      return (
+        <span className="norea-novel-chapter-status" data-tone="warn">
+          {t("novel.serverMissing")}
         </span>
       );
     }
@@ -238,6 +247,18 @@ function ChapterListItem({
           size="lg"
         >
           {repairBusy ? <Loader size="xs" /> : <RepairIcon size="1.25rem" />}
+        </IconButton>
+      );
+    }
+    if (serverMissingFailure) {
+      return (
+        <IconButton
+          className="norea-novel-chapter-state-button"
+          label={t("novel.downloadFromSource")}
+          onClick={onDownload}
+          size="lg"
+        >
+          <DownloadIcon size="1.25rem" />
         </IconButton>
       );
     }
@@ -390,6 +411,12 @@ function ChapterListItem({
             {chapter.serverComplete === false ? (
               <span className="norea-novel-chapter-badge">{t("novel.serverIncomplete")}</span>
             ) : null}
+            {!chapter.isDownloaded && chapter.serverComplete === true ? (
+              <span className="norea-novel-chapter-badge">{t("novel.serverComplete")}</span>
+            ) : null}
+            {!chapter.isDownloaded && chapter.serverAvailable === false && !serverMissingFailure ? (
+              <span className="norea-novel-chapter-badge">{t("novel.serverMissing")}</span>
+            ) : null}
             {renderStatus()}
           </span>
         }
@@ -438,7 +465,7 @@ interface VirtualChapterListProps {
   selectionMode: boolean;
   statuses: ReadonlyMap<number, ChapterDownloadStatus>;
   onDeleteDownload: (chapterId: number) => void;
-  onDownload: (chapter: ChapterListRow, retryAfterFailure?: boolean) => void;
+  onDownload: (chapter: ChapterListRow, retryAfterFailure?: boolean, sourceFallback?: boolean) => void;
   /**
    * Long press, right-click or Shift-click: starts a selection with this row,
    * or, while selecting, selects the rows from the range start to this one.
@@ -620,7 +647,11 @@ export function VirtualChapterList({
                 repairBusy={repairPending && repairBusyChapterId === chapter.id}
                 reorderBusy={reorderPending}
                 onOpen={() => onOpen(chapter)}
-                onDownload={() => onDownload(chapter, statuses.get(chapter.id)?.kind === "failed")}
+                onDownload={() => {
+                  const status = statuses.get(chapter.id);
+                  const error = status?.kind === "failed" ? status.error : null;
+                  onDownload(chapter, error !== null, error !== null && isServerChapterMissingFailure(error));
+                }}
                 onDeleteDownload={() => onDeleteDownload(chapter.id)}
                 onExtendSelection={() => onExtendSelection(chapter.id)}
                 onMoveDown={() =>

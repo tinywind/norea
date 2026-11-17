@@ -3910,7 +3910,7 @@ describe("server-first chapter requests", () => {
     enqueueChapterDownload(job);
     expect(capturedSpec).toMatchObject({ serverLane: true });
     await capturedSpec!.run(context());
-    expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(job, expect.any(AbortSignal), undefined);
+    expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(job, expect.any(AbortSignal), undefined, { sourceFallback: false });
     expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
     expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
@@ -4068,7 +4068,7 @@ describe("composed chapter source routing", () => {
     const run = context();
     enqueueChapterDownload(job);
     await capturedSpec!.run(run);
-    expect(tryDownloadServerChapter).toHaveBeenCalledWith(job, expect.any(AbortSignal), undefined);
+    expect(tryDownloadServerChapter).toHaveBeenCalledWith(job, expect.any(AbortSignal), undefined, { sourceFallback: false });
     expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith(source.pluginId, "pool:0");
     expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(source.chapterPath, "html");
     expect(pluginMocks.getChapterResource.mock.calls[0]![0]).toBe(source.chapterPath);
@@ -4090,7 +4090,7 @@ describe("composed chapter source routing", () => {
     const run = context();
     enqueueChapterDownload(targetJob);
     await capturedSpec!.run({ ...run, executor: "server:0" });
-    expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(targetJob, expect.any(AbortSignal), undefined);
+    expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(targetJob, expect.any(AbortSignal), undefined, { sourceFallback: false });
     expect(run.tryStartSourceAccess).not.toHaveBeenCalled();
     expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
@@ -4181,7 +4181,7 @@ describe("composed chapter source routing", () => {
       await handles.at(-1)!.promise;
       expect(taskScheduler.resumeSourceQueue).toHaveBeenCalledWith("source-a");
       expect(taskScheduler.resumeSourceQueue).not.toHaveBeenCalledWith("source-b");
-      expect(tryDownloadServerChapter).toHaveBeenLastCalledWith(expect.objectContaining({ pluginId: "source-b", chapterPath: targetJob.chapterPath }), expect.any(AbortSignal), expect.any(Function));
+      expect(tryDownloadServerChapter).toHaveBeenLastCalledWith(expect.objectContaining({ pluginId: "source-b", chapterPath: targetJob.chapterPath }), expect.any(AbortSignal), expect.any(Function), { sourceFallback: false });
     } finally { scheduler.cancelActiveTasks({ discardQueued: true }); await waitForChapterDownloadQueueMutations(); }
   });
 });

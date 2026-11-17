@@ -111,7 +111,14 @@ cannot restore stale download flags. Detailed content recovery remains part of
 opening stored content and explicit storage rescans.
 For an unfinished chapter, Norea asks the server for that chapter. Matching files
 install into the existing local chapter; otherwise an available source plugin
-handles the download. The server lookup timeout defaults to 3 seconds
+handles the download. A work opened from the content server is the exception:
+when the server lacks a chapter body, the download stops as "not on server"
+without source access, and only the user's retry of that failure (the queue row,
+the Needs attention action, the chapter row, or the reader) continues to the
+source. VPN download runs keep using the source directly. The chapter list marks
+undownloaded chapters of such a work as on the server or not on the server, and
+a failed queue row names the content server or the original site.
+The server lookup timeout defaults to 3 seconds
 and can be set from 1 to 120 seconds. This deadline includes device registration
 and metadata lookup, and also applies to work-home server refreshes. Chapter file
 transfers have their own timeout. Server-only chapters report unavailable-server

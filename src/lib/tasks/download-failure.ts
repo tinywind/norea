@@ -31,6 +31,22 @@ const STORAGE_FAILURE =
 const CONTENT_FAILURE =
   /^(?:chapter-download: local chapter \d+ was not found|Chapter acquisition |Plugin must declare a resource acquisition plan|content-not-found:)|This chapter is not on the content server, and its source has no matching chapter\./i;
 const PLUGIN_PARSE_ERROR_NAMES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError"]);
+const SERVER_CHAPTER_MISSING = "This chapter is not on the content server.";
+
+/** A content-server work lacks this chapter's body; only an explicit retry may continue to the source. */
+export class ServerChapterMissingError extends Error {
+  readonly code = "content-server-chapter-missing";
+
+  constructor() {
+    super(SERVER_CHAPTER_MISSING);
+    this.name = "ServerChapterMissingError";
+  }
+}
+
+/** Recognizes the error, a task's error text, or a stored failure summary. */
+export function isServerChapterMissingFailure(error: unknown): boolean {
+  return describeError(error) === SERVER_CHAPTER_MISSING;
+}
 
 function errorName(error: unknown): string | undefined {
   return error instanceof Error ? error.name : undefined;
@@ -83,6 +99,7 @@ export function classifyDownloadFailure(error: unknown): DownloadFailure {
     ({ failureClass, summary, retryAfterMs: 0, ...extra });
 
   if (errorCode(error) === "chapter-storage-failed" || errorCode(error) === "chapter-media-finalization-failed") return failure("storage");
+  if (isServerChapterMissingFailure(error)) return failure("content");
   if (errorCode(error) === "content-server-request-failed") {
     if ((error as { retryable?: unknown }).retryable === true) return failure("transient");
     const status = errorHttpStatus(error);

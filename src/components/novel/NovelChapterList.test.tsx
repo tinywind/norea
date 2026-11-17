@@ -201,7 +201,14 @@ describe("download state", () => {
     const click = rowClickHandlers.get(failed ? "Retry download" : "Download chapter");
     expect(click).toBeTypeOf("function");
     click!();
-    expect(onDownload).toHaveBeenCalledExactlyOnceWith(chapter, failed);
+    expect(onDownload).toHaveBeenCalledExactlyOnceWith(chapter, failed, false);
+  });
+
+  it("marks the retry of a chapter the server lacks as accepting the source", () => {
+    const onDownload = vi.fn();
+    renderRow({}, { kind: "failed", error: "This chapter is not on the content server." }, { onDownload });
+    rowClickHandlers.get("Download from the original site")!();
+    expect(onDownload).toHaveBeenCalledExactlyOnceWith(chapter, true, true);
   });
 
   it.each<[string, Partial<Row>, ChapterDownloadStatus | undefined, string[]]>([
@@ -269,11 +276,22 @@ describe("server chapter completeness", () => {
     expect(siblingButtons($).attr("aria-label")).toBe("Downloaded");
   });
 
-  it("moves a complete server copy into the details", () => {
-    const $ = renderRow({ serverComplete: true });
+  it("shows a complete server copy until the chapter is downloaded", () => {
+    expect(describedText(renderRow({ serverAvailable: true, serverComplete: true }))).toContain("Full copy on server");
+    const $ = renderRow({ serverAvailable: true, serverComplete: true, isDownloaded: true });
     const description = $(`#${openButton($).attr("aria-describedby")}`);
     expect(description.text()).not.toContain("server");
     expect(description.attr("title")).toBe("Full copy on server");
+  });
+
+  it("marks a chapter the server lacks and offers the source only after that failure", () => {
+    const absent = renderRow({ serverAvailable: false });
+    expect(describedText(absent)).toContain("Not on server");
+    expect(siblingButtons(absent).attr("aria-label")).toBe("Download chapter");
+    const failed = renderRow({ serverAvailable: false }, { kind: "failed", error: "This chapter is not on the content server." });
+    expect(describedText(failed)).toContain("Not on server");
+    expect(describedText(failed)).not.toContain("Download failed");
+    expect(siblingButtons(failed).attr("aria-label")).toBe("Download from the original site");
   });
 });
 

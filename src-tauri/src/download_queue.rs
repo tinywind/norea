@@ -50,6 +50,8 @@ pub struct ChapterDownloadQueueJob {
     goal: Option<bool>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     server_lane: Option<bool>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    source_fallback: Option<bool>,
     title: String,
 }
 
@@ -464,6 +466,15 @@ mod tests {
         assert_eq!(restored["goal"], true);
         assert_eq!(restored["serverLane"], true);
         assert!(restored.get("serverOnly").is_none());
+    }
+
+    #[test]
+    fn source_fallback_flag_survives_json_roundtrip() {
+        let mut value = serde_json::to_value(job(9, None, None)).unwrap();
+        assert!(value.get("sourceFallback").is_none());
+        value["sourceFallback"] = true.into();
+        let restored: ChapterDownloadQueueJob = serde_json::from_value(value).unwrap();
+        assert_eq!(serde_json::to_value(restored).unwrap()["sourceFallback"], true);
     }
 
     #[tokio::test]

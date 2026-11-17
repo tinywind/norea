@@ -3,7 +3,9 @@ import { ChapterMediaFinalizationError, ChapterMediaHttpRetryError, ChapterMedia
 import { cloudflareAccessError } from "../http/response";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import { ContentServerError, ContentServerTransportError } from "../content-sync/client";
-import { automaticRetryDelayMs, classifyDownloadFailure, isSourceForbiddenFailure } from "./download-failure";
+import {
+  automaticRetryDelayMs, classifyDownloadFailure, isServerChapterMissingFailure, isSourceForbiddenFailure, ServerChapterMissingError,
+} from "./download-failure";
 
 const cdnChallenge = cloudflareAccessError(
   { status: 403, statusText: "Forbidden", headers: { "cf-mitigated": "challenge" }, finalUrl: "https://cdn.example.net/a.jpg", body: "" },
@@ -102,6 +104,17 @@ describe("isSourceForbiddenFailure", () => {
     }))).toBe(false);
     expect(isSourceForbiddenFailure(new Error("HTTP 404 Not Found on https://source.example.com/chapter/1"))).toBe(false);
     expect(isSourceForbiddenFailure(new Error("webview_extract: timeout after 35000ms"))).toBe(false);
+  });
+});
+
+describe("isServerChapterMissingFailure", () => {
+  it("recognizes the error and its stored summary, but not a chapter the source also lacks", () => {
+    const error = new ServerChapterMissingError();
+    expect(isServerChapterMissingFailure(error)).toBe(true);
+    expect(classifyDownloadFailure(error)).toMatchObject({ failureClass: "content", summary: error.message });
+    expect(isServerChapterMissingFailure(classifyDownloadFailure(error).summary)).toBe(true);
+    expect(isServerChapterMissingFailure(new Error("This chapter is not on the content server, and its source has no matching chapter."))).toBe(false);
+    expect(isServerChapterMissingFailure(new Error("webview_extract: timeout after 35000ms"))).toBe(false);
   });
 });
 

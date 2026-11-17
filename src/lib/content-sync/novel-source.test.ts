@@ -85,6 +85,21 @@ it("uses an installed source for new chapters absent from a bound server work", 
   expect(await tryDownloadServerChapter(job)).toBe(false);
 });
 
+it("stops a bound server work's absent chapter until the source is explicitly allowed", async () => {
+  await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
+  vi.mocked(contentServerRequest).mockRejectedValue(new ContentServerError(404));
+  await expect(tryDownloadServerChapter(job, undefined, undefined, { sourceFallback: false }))
+    .rejects.toMatchObject({ code: "content-server-chapter-missing", message: "This chapter is not on the content server." });
+  expect(await tryDownloadServerChapter(job, undefined, undefined, { sourceFallback: true })).toBe(false);
+  expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
+});
+
+it("keeps the source route for an unbound work absent from the configured server", async () => {
+  settings.serverUrl = "http://configured";
+  vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
+  expect(await tryDownloadServerChapter(job, undefined, undefined, { sourceFallback: false })).toBe(false);
+});
+
 it("leaves plugin initialization to the source attempt after a bound work misses", async () => {
   await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
   vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
