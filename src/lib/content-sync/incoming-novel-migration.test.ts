@@ -247,6 +247,9 @@ it("moves only two local bodies for ten mapped chapters, regardless of server by
   expect(sqlite.prepare("SELECT COUNT(*) AS total,SUM(is_downloaded) AS stored FROM chapter").get()).toEqual({ total: 10, stored: 2 });
   expect(prepareChapterStorageTransfer).toHaveBeenCalledOnce();
   expect(vi.mocked(prepareChapterStorageTransfer).mock.calls[0]![1]?.moveSource).toBe(true);
+  // Each moved folder is read before the move only: its source, and its absent destination.
+  const inspected = vi.mocked(inspectChapterPayloadInventory).mock.calls.map(([identity]) => chapterStorageRelativeDir(identity.novel, identity.chapter));
+  expect(inspected.sort()).toEqual(["contents/alpha/a-work/1", "contents/alpha/a-work/2", "contents/beta/b-work/11", "contents/beta/b-work/12"]);
   expect(await apply()).toBeNull();
   expect(prepareChapterStorageTransfer).toHaveBeenCalledOnce();
   expect(vi.mocked(contentServerRequest).mock.calls.every(([, path]) => path.endsWith("/migration-snapshot"))).toBe(true);

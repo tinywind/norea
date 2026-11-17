@@ -20,7 +20,7 @@ import {
   type ChapterContentType,
 } from "./chapter-content";
 import { reconcileStoredChapterContent } from "./chapter-content-storage";
-import { isChapterPayloadInventory, type ChapterPayloadInventory } from "./chapter-content/inventory";
+import { isChapterPayloadInventory, type ChapterPayloadInventory, type ChapterPayloadSnapshot } from "./chapter-content/inventory";
 import { workMetadataOperation } from "./work-metadata";
 import { canonicalMetadataValue } from "./work-metadata/schema";
 import { clearResolvedChapterStorageDirs } from "./chapter-storage-resolution";
@@ -280,7 +280,7 @@ async function incomingStorageEntries(
   }
   if (owners.size !== occupied.size) throw new Error("A stored source chapter has no local mapping. Existing files were retained.");
   const entries: ChapterStorageTransferEntry[] = [];
-  const expected = new Map<string, ChapterPayloadInventory>();
+  const expected = new Map<string, ChapterPayloadSnapshot>();
   const excluded = new Set(skipped);
   for (const [path, chapters] of resolution.sourcesByTargetPath) {
     const destination = resolution.targetByPath.get(path)!;
@@ -437,12 +437,16 @@ async function mergeNovelStorageAndRecords(
         }
         const transferredFromSource = entry.outcome === "copiedSource" || entry.outcome === "movedSource";
         const metadataChapter = transferredFromSource ? source : target;
-        const inventory = (incoming || contentSyncServerUrl && !transferredFromSource || !metadataChapter.isDownloaded || metadataChapter.mediaRepairNeeded)
+        // A renamed folder holds exactly the files inspected before the move; reading them again only costs time.
+        const movedInventory = localTransfer && entry.outcome === "movedSource" && !entry.replacedTarget
+          ? localTransfer.expected.get(decision.targetChapterPath)
+          : undefined;
+        const inventory = movedInventory ?? ((incoming || contentSyncServerUrl && !transferredFromSource || !metadataChapter.isDownloaded || metadataChapter.mediaRepairNeeded)
           ? await inspectChapterPayloadInventory({
               novel: targetNovel,
               chapter: { ...target, contentType: storedArtifactContentType(metadataChapter, entry.contentFile) },
             }, signal)
-          : null;
+          : null);
         if (contentSyncServerUrl && !transferredFromSource && inventory && !inventory.mediaComplete) throw new Error("The retained B download is incomplete. No novels were merged.");
         if (localTransfer) {
           const expected = localTransfer.expected.get(decision.targetChapterPath);

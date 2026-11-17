@@ -126,13 +126,17 @@ fn remove_transfer_path(path: &Path, context: &str) -> Result<(), String> {
     let Some(metadata) = storage_metadata(path, context)? else {
         return Ok(());
     };
-    if metadata.is_dir() {
+    let removed = if metadata.is_dir() {
         validate_storage_tree_without_symlinks(path)?;
-        fs::remove_dir_all(path).map_err(|err| format!("{context}: {err}"))
+        fs::remove_dir_all(path)
     } else if metadata.is_file() {
-        fs::remove_file(path).map_err(|err| format!("{context}: {err}"))
+        fs::remove_file(path)
     } else {
-        Err(format!("{context}: unsupported storage entry"))
+        return Err(format!("{context}: unsupported storage entry"));
+    };
+    match removed {
+        Err(err) if err.kind() != ErrorKind::NotFound => Err(format!("{context}: {err}")),
+        _ => Ok(()),
     }
 }
 
@@ -273,6 +277,50 @@ fn has_transfer_marker(target: &Path, token: &str) -> Result<bool, String> {
 
 const MOVE_MARKER: &[u8] = b"{\"mode\":\"move\"}";
 
+/// Entries a move renames straight into an absent target, recorded once before the first rename.
+/// A direct move leaves no marker in the chapter, so recovery restores those entries from this list.
+fn direct_move_ledger_path(root: &Path, token: &str) -> Result<PathBuf, String> {
+    validate_transfer_token(token)?;
+    Ok(root.join(format!(".norea-transfer-{token}.moves")))
+}
+
+fn write_direct_move_ledger(root: &Path, token: &str, entry_ids: &[String]) -> Result<(), String> {
+    let body = serde_json::to_vec(entry_ids)
+        .map_err(|err| format!("chapter media: encode direct move ledger: {err}"))?;
+    let mut file = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(direct_move_ledger_path(root, token)?)
+        .map_err(|err| format!("chapter media: create direct move ledger: {err}"))?;
+    std::io::Write::write_all(&mut file, &body)
+        .and_then(|()| file.sync_all())
+        .map_err(|err| format!("chapter media: write direct move ledger: {err}"))
+}
+
+fn read_direct_move_ledger(root: &Path, token: &str) -> Result<HashSet<String>, String> {
+    let path = direct_move_ledger_path(root, token)?;
+    if storage_metadata(&path, "chapter media: inspect direct move ledger")?.is_none() {
+        return Ok(HashSet::new());
+    }
+    let body = fs::read(&path).map_err(|err| format!("chapter media: read direct move ledger: {err}"))?;
+    // A ledger cut short before its first rename has nothing to restore.
+    Ok(serde_json::from_slice::<Vec<String>>(&body).map(|ids| ids.into_iter().collect()).unwrap_or_default())
+}
+
+/// Moves a directly moved chapter back. Its target was absent when the move started, so a target
+/// present without its source can only be the moved chapter.
+fn restore_direct_move(root: &Path, entry: &ChapterStorageTransferEntry) -> Result<(), String> {
+    let source = root.join(safe_chapter_storage_relative_dir(&entry.source_relative_dir)?);
+    let target = root.join(safe_chapter_storage_relative_dir(&entry.target_relative_dir)?);
+    if storage_metadata(&target, "chapter media: inspect direct move target")?.is_none() {
+        return Ok(());
+    }
+    if storage_metadata(&source, "chapter media: inspect direct move source")?.is_some() {
+        return Err("chapter media: cannot restore a moved chapter over an occupied source".into());
+    }
+    fs::rename(&target, &source).map_err(|error| format!("chapter media: restore moved chapter: {error}"))
+}
+
 fn restore_transfer_candidate(source: &Path, candidate: &Path, token: &str) -> Result<(), String> {
     if !has_transfer_marker(candidate, token)? {
         return Ok(());
@@ -352,6 +400,7 @@ fn prepare_chapter_storage_transfer_entry_at_root(
     token: &str,
     require_empty_targets: bool,
     move_source: bool,
+    direct_move: bool,
 ) -> Result<ChapterStorageTransferPreparedEntry, String> {
     let source_relative = safe_chapter_storage_relative_dir(&entry.source_relative_dir)?;
     let target_relative = safe_chapter_storage_relative_dir(&entry.target_relative_dir)?;
@@ -360,7 +409,8 @@ fn prepare_chapter_storage_transfer_entry_at_root(
     let source = root.join(&source_relative);
     let target = root.join(&target_relative);
 
-    if storage_metadata(&target, "chapter media: inspect transfer target")?.is_some() {
+    let target_exists = storage_metadata(&target, "chapter media: inspect transfer target")?.is_some();
+    if target_exists {
         if require_empty_targets {
             return Err("chapter media: transfer target must be absent".to_string());
         }
@@ -409,6 +459,28 @@ fn prepare_chapter_storage_transfer_entry_at_root(
     fs::create_dir_all(target_parent)
         .map_err(|err| format!("chapter media: create transfer target parent: {err}"))?;
     validate_storage_path_ancestors(root, &target_relative)?;
+    // One rename on shared storage instead of a marker, a stage and a second rename.
+    if direct_move && !target_exists {
+        match fs::rename(&source, &target) {
+            Ok(()) => {
+                let content_path = target.join(
+                    source_artifacts
+                        .content_path
+                        .strip_prefix(&source)
+                        .map_err(|_| "chapter media: transfer content is outside its chapter".to_string())?,
+                );
+                return transfer_prepared_entry(
+                    root,
+                    entry,
+                    ChapterStorageTransferOutcome::MovedSource,
+                    false,
+                    Some(ChapterStorageTransferArtifacts { content_path, ..source_artifacts }),
+                );
+            }
+            Err(error) if error.kind() == ErrorKind::CrossesDevices => {}
+            Err(error) => return Err(format!("chapter media: move transfer directory: {error}")),
+        }
+    }
     let stage = transfer_sibling_path(&target, token, "stage")?;
     let backup = transfer_sibling_path(&target, token, "backup")?;
     if storage_metadata(&stage, "chapter media: inspect transfer stage")?.is_some()
@@ -583,24 +655,40 @@ fn prepare_chapter_storage_transfer_at_root(
                     return Err("chapter media: transfer source is not a directory".to_string());
                 }
                 validate_storage_tree_without_symlinks(&source)?;
-                if inspect_transfer_artifacts(&source)?.is_none() {
+                // A move leaves an unfinished download behind as not downloaded, like a copy does.
+                if require_empty_targets && inspect_transfer_artifacts(&source)?.is_none() {
                     return Err("chapter media: transfer source has unfinished content".to_string());
                 }
             }
         }
     }
     ensure_contents_nomedia(root)?;
+    let mut direct_moves = Vec::new();
+    if move_source {
+        for entry in &entries {
+            let target = root.join(safe_chapter_storage_relative_dir(&entry.target_relative_dir)?);
+            if storage_metadata(&target, "chapter media: inspect transfer target")?.is_none() {
+                direct_moves.push(entry.entry_id.clone());
+            }
+        }
+        if !direct_moves.is_empty() {
+            write_direct_move_ledger(root, token, &direct_moves)?;
+        }
+    }
+    let direct_moves: HashSet<String> = direct_moves.into_iter().collect();
     let mut preparation = ChapterStorageTransferPreparation {
         token: token.to_string(),
         entries: Vec::with_capacity(entries.len()),
     };
     for entry in entries {
+        let direct_move = direct_moves.contains(&entry.entry_id);
         match prepare_chapter_storage_transfer_entry_at_root(
             root,
             entry,
             token,
             require_empty_targets,
             move_source,
+            direct_move,
         ) {
             Ok(prepared) => preparation.entries.push(prepared),
             Err(error) => {
@@ -672,7 +760,10 @@ fn finalize_chapter_storage_transfer_at_root(
         remove_transfer_path(&stage, "chapter media: remove finalized transfer stage")?;
         remove_transfer_path(&backup, "chapter media: remove finalized transfer backup")?;
     }
-    Ok(())
+    remove_transfer_path(
+        &direct_move_ledger_path(root, &preparation.token)?,
+        "chapter media: remove finalized direct move ledger",
+    )
 }
 
 fn rollback_chapter_storage_transfer_at_root(
@@ -680,13 +771,21 @@ fn rollback_chapter_storage_transfer_at_root(
     preparation: &ChapterStorageTransferPreparation,
 ) -> Result<(), String> {
     validate_transfer_preparation(preparation)?;
+    let direct_moves = read_direct_move_ledger(root, &preparation.token)?;
     for entry in preparation.entries.iter().rev() {
         if !matches!(entry.outcome, ChapterStorageTransferOutcome::CopiedSource | ChapterStorageTransferOutcome::MovedSource) { continue; }
-        rollback_transfer_entry(root, &ChapterStorageTransferEntry {
+        let entry = ChapterStorageTransferEntry {
             entry_id: entry.entry_id.clone(), source_relative_dir: entry.source_relative_dir.clone(), target_relative_dir: entry.target_relative_dir.clone(),
-        }, &preparation.token)?;
+        };
+        rollback_transfer_entry(root, &entry, &preparation.token)?;
+        if direct_moves.contains(&entry.entry_id) {
+            restore_direct_move(root, &entry)?;
+        }
     }
-    Ok(())
+    remove_transfer_path(
+        &direct_move_ledger_path(root, &preparation.token)?,
+        "chapter media: remove rolled back direct move ledger",
+    )
 }
 
 #[tauri::command]

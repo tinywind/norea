@@ -138,8 +138,13 @@ same plugin. Self-migration is rejected before any source work is retired.
 Work merges save their storage plan and metadata baseline before moving chapter
 folders. The merge transaction also commits the storage journal. On restart,
 uncommitted moves return to their source paths; committed moves finish cleanup.
-Unexpected source files or metadata changes stop recovery without overwriting
-them. Providers without folder-move support retain the copy-and-delete path.
+A chapter whose destination folder is absent moves with a single rename; the
+transfer records those chapters once in `.norea-transfer-<token>.moves` at the
+storage root before the first rename, and recovery restores them from that list.
+Unfinished source downloads stay behind as not downloaded and are removed with
+the source folder. Unexpected source files or metadata changes stop recovery
+without overwriting them. Providers without folder-move support retain the
+copy-and-delete path.
 
 ## Plugin-owned storage IDs
 

@@ -114,6 +114,92 @@ fn finalization_retains_a_move_stage_when_the_final_target_is_missing() {
 }
 
 #[test]
+fn move_into_absent_targets_renames_each_chapter_once_and_reports_its_artifacts() {
+    let dir = tempfile::tempdir().unwrap();
+    let entries = vec![
+        transfer_entry("1", "contents/source-a/a/1", "contents/source-b/b/11"),
+        transfer_entry("2", "contents/source-a/a/2", "contents/source-b/b/12"),
+    ];
+    write_downloaded_chapter(dir.path(), "contents/source-a/a/1", b"one");
+    write_downloaded_chapter(dir.path(), "contents/source-a/a/2", b"two");
+    let preparation = prepare_chapter_storage_transfer_at_root(dir.path(), entries, "direct", false, true).unwrap();
+    for (entry, body) in preparation.entries.iter().zip([b"one", b"two"]) {
+        assert_eq!(entry.outcome, ChapterStorageTransferOutcome::MovedSource);
+        assert!(!entry.replaced_target);
+        assert_eq!(entry.content_file.as_deref(), Some(format!("{}/content.html", entry.target_relative_dir).as_str()));
+        assert_eq!((entry.content_bytes, entry.media_bytes), (3, 12));
+        let target = dir.path().join(&entry.target_relative_dir);
+        assert_eq!(fs::read(target.join("content.html")).unwrap(), body);
+        assert!(!has_transfer_marker(&target, "direct").unwrap(), "a direct move leaves no chapter marker");
+        assert!(!dir.path().join(&entry.source_relative_dir).exists());
+    }
+    let ledger = direct_move_ledger_path(dir.path(), "direct").unwrap();
+    assert!(ledger.is_file());
+    finalize_chapter_storage_transfer_at_root(dir.path(), &preparation).unwrap();
+    assert!(!ledger.exists());
+    assert_eq!(fs::read(dir.path().join("contents/source-b/b/12/content.html")).unwrap(), b"two");
+}
+
+#[test]
+fn interrupted_direct_move_recovers_from_the_plan_without_a_native_receipt() {
+    let dir = tempfile::tempdir().unwrap();
+    let entries = vec![
+        transfer_entry("1", "contents/source-a/a/1", "contents/source-b/b/11"),
+        transfer_entry("2", "contents/source-a/a/2", "contents/source-b/b/12"),
+        transfer_entry("3", "contents/source-a/a/3", "contents/source-b/b/13"),
+    ];
+    write_downloaded_chapter(dir.path(), "contents/source-a/a/1", b"moved");
+    write_downloaded_chapter(dir.path(), "contents/source-a/a/2", b"not reached");
+    write_downloaded_chapter(dir.path(), "contents/source-b/b/13", b"kept target");
+    let receipt = prepare_chapter_storage_transfer_at_root(dir.path(), entries[..1].to_vec(), "cut", false, true).unwrap();
+    // The app stopped after the first rename: only the recorded plan remains, with every entry assumed moved.
+    let planned = ChapterStorageTransferPreparation {
+        token: receipt.token,
+        entries: entries.iter().map(|entry| ChapterStorageTransferPreparedEntry {
+            entry_id: entry.entry_id.clone(),
+            source_relative_dir: entry.source_relative_dir.clone(),
+            target_relative_dir: entry.target_relative_dir.clone(),
+            outcome: ChapterStorageTransferOutcome::MovedSource,
+            replaced_target: true,
+            content_file: Some(format!("{}/content.html", entry.target_relative_dir)),
+            content_bytes: 0,
+            media_bytes: 0,
+        }).collect(),
+    };
+    rollback_chapter_storage_transfer_at_root(dir.path(), &planned).unwrap();
+    rollback_chapter_storage_transfer_at_root(dir.path(), &planned).unwrap();
+    assert_eq!(fs::read(dir.path().join("contents/source-a/a/1/content.html")).unwrap(), b"moved");
+    assert_eq!(fs::read(dir.path().join("contents/source-a/a/2/content.html")).unwrap(), b"not reached");
+    assert!(!dir.path().join("contents/source-b/b/11").exists());
+    assert_eq!(fs::read(dir.path().join("contents/source-b/b/13/content.html")).unwrap(), b"kept target");
+    assert!(!direct_move_ledger_path(dir.path(), "cut").unwrap().exists());
+}
+
+#[test]
+fn move_leaves_an_unfinished_download_behind_as_not_downloaded() {
+    let dir = tempfile::tempdir().unwrap();
+    let finished = "contents/source-a/a/1";
+    let unfinished = dir.path().join("contents/source-a/a/2");
+    write_downloaded_chapter(dir.path(), finished, b"finished");
+    fs::create_dir_all(unfinished.join(MEDIA_DOWNLOAD_DIR)).unwrap();
+    fs::write(unfinished.join(CHAPTER_PARTIAL_CONTENT_FILE), b"partial").unwrap();
+    let preparation = prepare_chapter_storage_transfer_at_root(dir.path(), vec![
+        transfer_entry("1", finished, "contents/source-b/b/1"),
+        transfer_entry("2", "contents/source-a/a/2", "contents/source-b/b/2"),
+    ], "partial", false, true).unwrap();
+    assert_eq!(preparation.entries[0].outcome, ChapterStorageTransferOutcome::MovedSource);
+    assert_eq!(preparation.entries[1].outcome, ChapterStorageTransferOutcome::SourceNotDownloaded);
+    assert_eq!(fs::read(unfinished.join(CHAPTER_PARTIAL_CONTENT_FILE)).unwrap(), b"partial");
+    assert!(!dir.path().join("contents/source-b/b/2").exists());
+}
+
+#[test]
+fn transfer_path_removal_accepts_an_entry_that_is_already_gone() {
+    let dir = tempfile::tempdir().unwrap();
+    remove_transfer_path(&dir.path().join("missing"), "remove").unwrap();
+}
+
+#[test]
 fn chapter_storage_transfer_copies_the_complete_directory_before_finalize() {
     let dir = tempfile::tempdir().expect("tempdir");
     let source = "contents/source-a/novel-a/1";
