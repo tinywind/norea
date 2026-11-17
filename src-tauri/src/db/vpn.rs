@@ -724,6 +724,10 @@ pub enum VpnDownloadProfileIssueCauseDto {
     AuthenticationRequired,
     #[serde(rename = "tunnel-lost")]
     TunnelLost,
+    #[serde(rename = "page-unresponsive")]
+    PageUnresponsive,
+    #[serde(rename = "site-forbidden")]
+    SiteForbidden,
 }
 
 impl VpnDownloadProfileIssueCauseDto {
@@ -734,6 +738,8 @@ impl VpnDownloadProfileIssueCauseDto {
             Self::ConnectionFailed => "connection-failed",
             Self::AuthenticationRequired => "authentication-required",
             Self::TunnelLost => "tunnel-lost",
+            Self::PageUnresponsive => "page-unresponsive",
+            Self::SiteForbidden => "site-forbidden",
         }
     }
 }
@@ -748,6 +754,8 @@ impl TryFrom<&str> for VpnDownloadProfileIssueCauseDto {
             "connection-failed" => Ok(Self::ConnectionFailed),
             "authentication-required" => Ok(Self::AuthenticationRequired),
             "tunnel-lost" => Ok(Self::TunnelLost),
+            "page-unresponsive" => Ok(Self::PageUnresponsive),
+            "site-forbidden" => Ok(Self::SiteForbidden),
             other => Err(format!("Invalid VPN profile issue cause '{other}'.")),
         }
     }
@@ -2049,13 +2057,46 @@ mod tests {
         assert!(repeat_err.contains("stale revision or is no longer excluded"));
 
         // Deleting the plan retains batch issue history.
+        let page_issue = record_vpn_download_profile_issue(
+            db,
+            VpnDownloadProfileIssueInput {
+                batch_id: "batch-1".to_string(),
+                ip: "192.0.2.2".to_string(),
+                profile_id: "profile-b".to_string(),
+                profile_hash: "a".repeat(64),
+                plan_id: "plan-1".to_string(),
+                range_id: "lane-b".to_string(),
+                generation: 2,
+                cause: VpnDownloadProfileIssueCauseDto::PageUnresponsive,
+            },
+        )
+        .await
+        .unwrap()
+        .value;
+        let forbidden_issue = record_vpn_download_profile_issue(
+            db,
+            VpnDownloadProfileIssueInput {
+                batch_id: "batch-1".to_string(),
+                ip: "192.0.2.3".to_string(),
+                profile_id: "profile-b".to_string(),
+                profile_hash: "a".repeat(64),
+                plan_id: "plan-1".to_string(),
+                range_id: "lane-b".to_string(),
+                generation: 2,
+                cause: VpnDownloadProfileIssueCauseDto::SiteForbidden,
+            },
+        )
+        .await
+        .unwrap()
+        .value;
         cancel_vpn_download_plan(db, "plan-1".to_string())
             .await
             .unwrap();
-        let issues = list_vpn_download_profile_issues(db, Some("batch-1"), ReadMode::Committed)
+        let mut issues = list_vpn_download_profile_issues(db, Some("batch-1"), ReadMode::Committed)
             .await
             .unwrap();
-        assert_eq!(issues, vec![reallowed]);
+        issues.sort_by(|a, b| a.ip.cmp(&b.ip));
+        assert_eq!(issues, vec![reallowed, page_issue, forbidden_issue]);
 
         test_db.db.close().await;
     }
