@@ -96,6 +96,14 @@ describe("classifyDownloadFailure", () => {
   });
 });
 
+describe("source site moved", () => {
+  it("keeps both addresses and is not retried as a transient timeout", () => {
+    const error = new Error("webview_extract: timeout after 35000ms; the page moved to https://www.goodtoon012.com, outside the source site https://www.goodtoon011.com");
+    expect(classifyDownloadFailure(error)).toMatchObject({ failureClass: "content", summary: error.message });
+    expect(classifyDownloadFailure(new Error("webview_extract: timeout after 35000ms")).failureClass).toBe("transient");
+  });
+});
+
 describe("isSourceForbiddenFailure", () => {
   it("recognizes a plain 403 but not a challenge or another status", () => {
     expect(isSourceForbiddenFailure(new Error("HTTP 403 Forbidden on https://source.example.com/chapter/1"))).toBe(true);

@@ -30,6 +30,8 @@ const STORAGE_FAILURE =
   /^Chapter storage failed\b|\b(?:no space left on device|disk (?:i\/o error|is full)|database or disk is full|database disk image is malformed|SQLITE_(?:FULL|IOERR|CORRUPT|READONLY|CANTOPEN)|read-only file system|os error (?:28|30)|storage (?:root|folder) (?:is )?(?:unavailable|not available))\b/i;
 const CONTENT_FAILURE =
   /^(?:chapter-download: local chapter \d+ was not found|Chapter acquisition |Plugin must declare a resource acquisition plan|content-not-found:)|This chapter is not on the content server, and its source has no matching chapter\./i;
+/** The source site now lives at another address; retrying the old one cannot succeed. */
+const SOURCE_SITE_MOVED = /; the page moved to \S+, outside the source site /;
 const PLUGIN_PARSE_ERROR_NAMES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError"]);
 const SERVER_CHAPTER_MISSING = "This chapter is not on the content server.";
 
@@ -122,7 +124,7 @@ export function classifyDownloadFailure(error: unknown): DownloadFailure {
     return failure("transient", { retryAfterMs: retryAfter((error as { retryAfterMs?: unknown }).retryAfterMs) });
   }
   if (errorCode(error) === "chapter-media-finalization-failed" || errorCode(error) === "chapter-storage-failed" || STORAGE_FAILURE.test(message)) return failure("storage");
-  if (CONTENT_FAILURE.test(message)) return failure("content");
+  if (CONTENT_FAILURE.test(message) || SOURCE_SITE_MOVED.test(message)) return failure("content");
   const name = errorName(error);
   if (name && PLUGIN_PARSE_ERROR_NAMES.has(name)) return failure("content");
   const status = errorHttpStatus(error);

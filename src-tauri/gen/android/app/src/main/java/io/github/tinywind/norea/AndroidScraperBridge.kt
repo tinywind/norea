@@ -1672,7 +1672,7 @@ class AndroidScraperBridge(
       )
       return
     }
-    setTimeout(state, id, timeoutMs, "webview_extract: timeout after ${timeoutMs}ms")
+    setTimeout(state, id, timeoutMs, "webview_extract: timeout after ${timeoutMs}ms", url)
     clearExtractScript(state)
     if (beforeScript != null) {
       val targetOrigin = checkNotNull(originUrl(Uri.parse(url)))
@@ -1898,9 +1898,20 @@ class AndroidScraperBridge(
     id: String,
     timeoutMs: Long,
     message: String,
+    extractUrl: String? = null,
   ) {
     clearTimeout(state)
     val timeout = Runnable {
+      // The extraction script runs only on the requested origin, so a site that moved to
+      // another address can only time out; name both addresses so the source can be updated.
+      val movedTo = extractUrl?.let { target ->
+        state.currentUrl?.takeIf { isHttpUrl(it) && !sameOrigin(it, target) }?.let { originUrl(Uri.parse(it)) }
+      }
+      val timeoutMessage = if (movedTo != null) {
+        "$message; the page moved to $movedTo, outside the source site ${originUrl(Uri.parse(extractUrl))}"
+      } else {
+        message
+      }
       if (state.activeFetchId == id) abortActiveFetch(state, id)
       if (state.activeExtractId == id) {
         state.webView?.let { webView ->
@@ -1919,7 +1930,7 @@ class AndroidScraperBridge(
         state.webView?.stopLoading()
         hideScraperSurface(state)
       }
-      finishError(state, id, message)
+      finishError(state, id, timeoutMessage)
     }
     state.activeTimeout = timeout
     mainHandler.postDelayed(timeout, timeoutMs)
