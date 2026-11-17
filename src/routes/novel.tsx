@@ -178,7 +178,9 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     staleTime: 30_000,
   });
   const serverSync = useServerNovelSync(id, active, novelQuery.data?.name ?? "");
-  const offlineState = useDownloadGoalOfflineStates(active && Boolean(novelQuery.data?.inLibrary))?.get(id);
+  const offlineStates = useDownloadGoalOfflineStates(active && Boolean(novelQuery.data?.inLibrary));
+  // Download goals cover only library works; a disabled query still holds the state from before removal.
+  const offlineState = novelQuery.data?.inLibrary ? offlineStates?.get(id) : undefined;
   const managedServerWork = useManagedServerWork(
     novelQuery.data ?? undefined,
     serverSourceQuery.data,
