@@ -130,6 +130,17 @@ describe("chapter row structure", () => {
     expect(describedText($)).toBe("Ch. 122026-10-1245% read");
   });
 
+  it("ends the row with the stored chapter number, apart from the number in the title", () => {
+    const $ = renderRow({ chapterNumber: "255", name: "Chapter 126", isDownloaded: true });
+    const row = $(".norea-novel-chapter");
+    const last = row.children().last();
+    expect(last.hasClass("norea-novel-chapter-system-number")).toBe(true);
+    expect(last.children("[aria-hidden='true']").text()).toBe("255");
+    expect(last.attr("title")).toBe("System no. 255");
+    expect(last.text()).toContain("System no. 255");
+    expect(renderRow({ chapterNumber: null })(".norea-novel-chapter-system-number")).toHaveLength(0);
+  });
+
   it("omits the chapter number when the name already shows it", () => {
     const $ = renderRow({ chapterNumber: "1895", name: "Novel 1895", releaseTime: "2026-10-12" });
     expect($("[id]").filter((_, element) => $(element).hasClass("norea-novel-chapter-meta")).text()).toBe("2026-10-12");

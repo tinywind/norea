@@ -439,6 +439,12 @@ function ChapterListItem({
         }
       />
       {trailing ? <div className="norea-novel-chapter-trailing">{trailing}</div> : null}
+      {chapter.chapterNumber ? (
+        <span className="norea-novel-chapter-system-number" title={t("novel.systemChapterNumber", { number: chapter.chapterNumber })}>
+          <span aria-hidden="true">{chapter.chapterNumber}</span>
+          <VisuallyHidden>{t("novel.systemChapterNumber", { number: chapter.chapterNumber })}</VisuallyHidden>
+        </span>
+      ) : null}
     </div>
   );
 }

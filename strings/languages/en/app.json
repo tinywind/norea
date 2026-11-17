@@ -1548,6 +1548,7 @@
   "novel.addedToLibrary": "Added to library",
   "novel.changeCategory": "Change category",
   "novel.chapterShort": "Ch. {number}",
+  "novel.systemChapterNumber": "System no. {number}",
   "novel.downloadRetrying": "Retrying",
   "novel.downloadFailed": "Download failed",
   "novel.repair": "Repair",

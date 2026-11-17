@@ -619,6 +619,17 @@
   padding-inline: var(--norea-space-1);
 }
 
+/* The number the app stores the chapter under, apart from any number in its title. */
+.norea-novel-chapter-system-number {
+  color: var(--norea-color-ink-muted);
+  flex: 0 0 auto;
+  font-size: var(--norea-text-sm);
+  font-variant-numeric: tabular-nums;
+  min-width: 2.5rem;
+  padding-inline-end: var(--norea-space-2);
+  text-align: end;
+}
+
 .norea-novel-chapter-progress-slot {
   align-items: center;
   display: inline-flex;
