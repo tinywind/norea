@@ -62,6 +62,7 @@ import { ChapterDifferenceManager } from "../components/novel/ChapterDifferenceM
 import { useChapterDifferences } from "../components/novel/use-chapter-differences";
 import { NovelHeroSkeleton, NovelWorkspace } from "../components/novel/NovelWorkspace";
 import { NovelCategoryEditor } from "../components/novel/NovelCategoryEditor";
+import { NovelCompletionEditor } from "../components/novel/NovelCompletionEditor";
 import { ServerWorkCategories } from "../components/novel/ServerWorkCategories";
 import {
   ServerChapterManager,
@@ -119,6 +120,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     useState<ServerNovelSource | null>(null);
   const [reorderMode, setReorderMode] = useState(false);
   const [categorySheetOpen, setCategorySheetOpen] = useState(false);
+  const [completionSheetOpen, setCompletionSheetOpen] = useState(false);
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const titleRef = useRef<HTMLHeadingElement>(null);
   const chaptersHeadingId = useId();
@@ -627,6 +629,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
       onClick: () => fullRefreshMetadata.mutate(),
     });
   }
+  if (!novel.isLocal) {
+    overflowItems.push({
+      icon: EditIcon,
+      label: t("novel.completion.edit"),
+      onClick: () => setCompletionSheetOpen(true),
+    });
+  }
   if (novel.inLibrary && allowSourceAccess && !novel.isLocal) {
     overflowItems.push({
       icon: MigrateIcon,
@@ -1121,6 +1130,18 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
         onSelect={selectChapterRange}
         opened={rangeSheetOpen}
       />
+
+      {novel.isLocal ? null : (
+        <NovelCompletionEditor
+          active={active}
+          completedOverride={novel.completedOverride}
+          novelId={novel.id}
+          novelName={novel.name}
+          onClose={() => setCompletionSheetOpen(false)}
+          opened={completionSheetOpen}
+          sourceStatus={novel.status}
+        />
+      )}
 
       {serverManagerSource ? (
         <ServerChapterManager

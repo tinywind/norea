@@ -8,6 +8,7 @@ import { ContentServerError, contentServerFetch, contentServerRequest, normalize
 import { registerContentDevice } from "./device";
 import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 import { rememberServerNovelSource, type ServerNovelSource } from "./novel-source";
+import { pullWorkOverride } from "./work-overrides";
 import { contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, type WorkCatalogEntry } from "./works";
 import { fetchServerChapters } from "./chapters";
 import { cacheServerChapters, isNovelMigrationSourceHeld, listNovelMigrations } from "../../db/queries/content-sync";
@@ -209,6 +210,10 @@ export async function refreshServerNovel(
     if (isDeleted()) throw new ContentServerError(410);
     if (installed !== null) await cacheServerChapters(novel.id, chapters);
     await rememberServerNovelSource(novel.id, { serverUrl: server, workId: source.workId });
+    // The user's own settings for the work arrive with it; a failed read waits for the next sync or open.
+    await pullWorkOverride(server, token, novel.id, source.workId).catch((error: unknown) => {
+      console.warn("[content-sync] could not read the work override:", error);
+    });
     window.dispatchEvent(new Event("norea-content-state-changed"));
     return novel.id;
   }));

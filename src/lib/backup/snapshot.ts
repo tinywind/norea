@@ -20,6 +20,7 @@ import { prepareBackupRestore } from "./restore-plan";
 import {
   BACKUP_FORMAT_VERSION,
   encodeBackupManifest,
+  parseBackupNovelOverride,
   type BackupCategory,
   type BackupChapter,
   type BackupInstalledPlugin,
@@ -34,6 +35,7 @@ import {
 
 interface GatheredNovelDto {
   chapterCompositionPayload?: string | null;
+  overridePayload?: string | null;
   id: number;
   sourceNovelId: string | null;
   pluginId: string;
@@ -157,10 +159,14 @@ function writeBackupSettings(settings: readonly BackupSetting[]): void {
 }
 
 function toNovel(row: GatheredNovelDto): BackupNovel {
+  const override = row.overridePayload
+    ? parseBackupNovelOverride(JSON.parse(row.overridePayload))
+    : undefined;
   return {
     ...(row.chapterCompositionPayload
       ? { chapterComposition: parseChapterComposition(JSON.parse(row.chapterCompositionPayload)) }
       : {}),
+    ...(override ? { override } : {}),
     id: row.id,
     pluginId: row.pluginId,
     sourceNovelId: row.sourceNovelId,

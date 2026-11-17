@@ -2316,6 +2316,7 @@ pub async fn flush_dirty_in_tx(
                 let relative = format!("{known_dir}/novel.json");
                 ctx.snapshot_work_metadata_file(&root, &relative)?;
                 crate::chapter_media::remove_work_metadata_file_at(&root, &relative)?;
+                super::novel_override::remove_stored_override_file_in_tx(&root, ctx, known_dir)?;
                 ctx.record_work_directory(WorkDirectoryUpdateDto {
                     novel_id: cached_novel_id,
                     plugin_id: plugin_id.clone(),
@@ -2510,6 +2511,14 @@ pub async fn flush_dirty_in_tx(
             None => false,
         };
         write_stored_novel_metadata_in_tx(&root, ctx, &directory, &metadata, true)?;
+        super::novel_override::publish_missing_override_file_in_tx(
+            &root,
+            &mut *conn,
+            ctx,
+            novel_id,
+            &directory,
+        )
+        .await?;
         if cover.is_none() {
             if let Some(prev_cover) = previous.as_ref().and_then(|p| p.cover.as_ref()) {
                 remove_stored_novel_cover_in_tx(&root, ctx, &directory, Some(prev_cover), true)?;
@@ -2871,6 +2880,14 @@ pub async fn db_work_metadata_rescan_work(
                         .await?
                     }
                 };
+                super::novel_override::adopt_stored_novel_override_in_tx(
+                    &root,
+                    &mut *conn,
+                    ctx,
+                    novel_id,
+                    &current.directory,
+                )
+                .await?;
                 let snapshot = ChapterScanSnapshot {
                     chapters: inspected_chapters,
                     skipped_chapter_ids: skipped,
@@ -3398,6 +3415,14 @@ pub async fn db_work_metadata_reindex_preserved_work(
                     &metadata,
                     Some(&directory),
                     ApplyNovelMetadataOptions::default(),
+                )
+                .await?;
+                super::novel_override::adopt_stored_novel_override_in_tx(
+                    &root,
+                    &mut *conn,
+                    ctx,
+                    novel_id,
+                    &directory,
                 )
                 .await?;
                 scan_stored_novel_chapters_to_cache_in_tx(
@@ -4167,6 +4192,14 @@ where
                             )
                             .await?
                         };
+                        super::novel_override::adopt_stored_novel_override_in_tx(
+                            &root_tx,
+                            &mut *conn,
+                            ctx,
+                            novel_id,
+                            &dir_tx,
+                        )
+                        .await?;
 
                         let snapshot = ChapterScanSnapshot {
                             chapters,

@@ -21,6 +21,7 @@ import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { contentWorkId, getWorkSyncCursor, syncWorkMetadata, WorkMetadataChangedOutsideCacheError } from "./works";
+import { syncWorkOverrides } from "./work-overrides";
 import { readServerChapterDeletionExclusions, serverChapterDeletionKey, serverWorkDeletionKey, setServerChapterDeletionExclusion, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 
 const LOCAL_CONTENT_DISCOVERY_VERSION = 1;
@@ -353,6 +354,7 @@ async function performSync(uploadContent = true, rescan = false, retryBlockedMig
     assertDevice(serverUrl, token);
     if (await compactUploadedFingerprints(cache)) await saveCatalog(serverUrl, cache);
     const { deletedWorks, changedOutsideCache } = await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token), rescan);
+    await syncWorkOverrides(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token));
     await pullCatalog(serverUrl, token, cache);
     if (uploadContent) {
       await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks, uploadConflictPolicy);

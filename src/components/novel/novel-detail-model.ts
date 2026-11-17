@@ -182,13 +182,18 @@ const NOVEL_STATUS_LABEL_KEYS: Partial<Record<string, TranslationKey>> = {
 };
 
 /**
- * The status to show for a novel: a known plugin value in the app language,
- * free text as written, and nothing for an empty or "Unknown" status.
+ * The status to show for a novel: the user's own completion flag when set, otherwise a known
+ * plugin value in the app language, free text as written, and nothing for an empty or
+ * "Unknown" status.
  */
 export function novelStatusLabel(
   status: string | null,
   translate: (key: TranslationKey) => string,
+  completedOverride: boolean | null = null,
 ): string | null {
+  if (completedOverride !== null) {
+    return translate(completedOverride ? "novel.status.completed" : "novel.status.ongoing");
+  }
   const value = status?.trim();
   if (!value || value === NovelStatus.Unknown) return null;
   const key = NOVEL_STATUS_LABEL_KEYS[value];

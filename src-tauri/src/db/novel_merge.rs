@@ -21,6 +21,7 @@ use super::chapter_composition::{
     materialize_chapter_composition_in_tx, set_chapter_composition_in_tx,
     ChapterCompositionPreparedCopyDto, ChapterCompositionV1Dto,
 };
+use super::novel_override::{load_novel_override_fields_in_conn, merge_novel_override_in_tx};
 use super::tx::{with_write_tx, MetadataRoot, TxContext, TxOptions};
 use super::user_state::{
     core::{
@@ -1737,6 +1738,19 @@ pub async fn apply_novel_merge_in_tx(
     .await
     .map_err(|err| format!("db novel merge: copy download goal: {err}"))?;
 
+    let source_override =
+        load_novel_override_fields_in_conn(conn, input.source_novel_id).await?;
+    if !source_override.is_empty() {
+        merge_novel_override_in_tx(
+            resolved_root.as_deref(),
+            conn,
+            ctx,
+            input.target_novel_id,
+            &source_override,
+        )
+        .await?;
+    }
+
     let mut chapter_mappings: Vec<(i64, i64)> =
         chapter_id_map.iter().map(|(&s, &t)| (s, t)).collect();
     chapter_mappings.sort_unstable_by_key(|(s, _)| *s);
@@ -2931,6 +2945,14 @@ mod tests {
                 .execute(&mut *conn)
                 .await
                 .unwrap();
+                sqlx::query(
+                    r#"INSERT INTO novel_override (novel_id, payload) VALUES
+                       (1, '{"fields":{"completed":{"value":true,"updatedAt":20},"note":{"value":"source","updatedAt":5},"sourceOnly":{"value":7,"updatedAt":3}}}'),
+                       (2, '{"fields":{"completed":{"value":false,"updatedAt":10},"note":{"value":"target","updatedAt":5}}}')"#,
+                )
+                .execute(&mut *conn)
+                .await
+                .unwrap();
                 Ok(())
             })
         })
@@ -3035,6 +3057,15 @@ mod tests {
         })
         .await;
         assert!(failed.unwrap_err().contains("source busy"));
+        let rolled_back_override: String =
+            sqlx::query_scalar("SELECT payload FROM novel_override WHERE novel_id = 2")
+                .fetch_one(test_db.db.writer())
+                .await
+                .unwrap();
+        assert_eq!(
+            rolled_back_override,
+            r#"{"fields":{"completed":{"value":false,"updatedAt":10},"note":{"value":"target","updatedAt":5}}}"#
+        );
 
         // Storage journal must still be in preparing phase after rollback
         {
@@ -3071,6 +3102,20 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining_ids, vec![2]);
+
+        let merged_overrides: Vec<(i64, String)> =
+            sqlx::query_as("SELECT novel_id, payload FROM novel_override")
+                .fetch_all(&mut *conn)
+                .await
+                .unwrap();
+        assert_eq!(
+            merged_overrides,
+            vec![(
+                2,
+                r#"{"fields":{"completed":{"value":true,"updatedAt":20},"note":{"value":"target","updatedAt":5},"sourceOnly":{"value":7,"updatedAt":3}}}"#
+                    .to_string()
+            )]
+        );
 
         let verified = verify_novel_merge_storage_recovery_in_conn(&mut conn, "move-1")
             .await

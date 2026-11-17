@@ -58,6 +58,8 @@ interface LibraryState {
   incognitoMode: boolean;
   defaultChapterSort: DefaultChapterSort;
   checkIntervalHours: CheckIntervalHours;
+  /** Completed works skip the automatic and on-open checks for new chapters. */
+  skipCompletedChecks: boolean;
   queueLocalImportFiles: (files: readonly File[]) => void;
   takePendingLocalImportFiles: () => File[];
   setSelectedCategoryId: (id: number | null) => void;
@@ -81,6 +83,7 @@ interface LibraryState {
   setIncognitoMode: (incognitoMode: boolean) => void;
   setDefaultChapterSort: (defaultChapterSort: DefaultChapterSort) => void;
   setCheckIntervalHours: (hours: number) => void;
+  setSkipCompletedChecks: (skipCompletedChecks: boolean) => void;
 }
 
 export const useLibraryStore = create<LibraryState>()(
@@ -107,6 +110,7 @@ export const useLibraryStore = create<LibraryState>()(
       incognitoMode: false,
       defaultChapterSort: "asc",
       checkIntervalHours: DEFAULT_CHECK_INTERVAL_HOURS,
+      skipCompletedChecks: true,
       queueLocalImportFiles: (files) =>
         set((state) => ({
           pendingLocalImportFiles: [...state.pendingLocalImportFiles, ...files],
@@ -169,6 +173,7 @@ export const useLibraryStore = create<LibraryState>()(
         set({ defaultChapterSort }),
       setCheckIntervalHours: (hours) =>
         set({ checkIntervalHours: normalizeCheckIntervalHours(hours) }),
+      setSkipCompletedChecks: (skipCompletedChecks) => set({ skipCompletedChecks }),
     }),
     {
       name: "norea-library-settings",
@@ -190,6 +195,7 @@ export const useLibraryStore = create<LibraryState>()(
         incognitoMode: state.incognitoMode,
         defaultChapterSort: state.defaultChapterSort,
         checkIntervalHours: state.checkIntervalHours,
+        skipCompletedChecks: state.skipCompletedChecks,
       }),
     },
   ),

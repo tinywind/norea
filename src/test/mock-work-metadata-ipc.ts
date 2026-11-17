@@ -26,6 +26,7 @@ import {
   type StoredNovelChapter,
   type StoredNovelNumberReconciliation,
 } from "../lib/work-metadata";
+import { completedOverrideInDb, overridePayloadsInDb } from "./sql/novel-override";
 import { sqliteBoolean } from "./sql/sqlite-value";
 import { stableCategoryIdInDb } from "./sql/user-state-core";
 import type { DbMutationEffects, DbMutationEnvelope } from "../db/ipc";
@@ -914,6 +915,7 @@ export function createWorkMetadataIpcHandler(
                 ...row,
                 inLibrary: Boolean(row.inLibrary),
                 isLocal: row.pluginId === "local" && Boolean(row.isLocal),
+                completedOverride: await completedOverrideInDb(db, row.id),
               }
             : null,
         };
@@ -980,6 +982,7 @@ export function createWorkMetadataIpcHandler(
               `SELECT novel_id AS novelId, kind, count, updated_at AS updatedAt FROM novel_download_goal ORDER BY novel_id`,
             ),
           ]);
+          const overridePayloads = await overridePayloadsInDb(db);
           const mappedCategories = [];
           for (const row of categories) {
             const isSystem = Boolean(row.isSystem);
@@ -995,6 +998,9 @@ export function createWorkMetadataIpcHandler(
           return {
             novels: novels.map((row) => ({
               ...row,
+              ...(overridePayloads.has(row.id as number)
+                ? { overridePayload: overridePayloads.get(row.id as number) }
+                : {}),
               inLibrary: sqliteBoolean(row.inLibrary),
               isLocal: row.pluginId === "local" && sqliteBoolean(row.isLocal),
             })),

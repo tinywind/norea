@@ -115,6 +115,35 @@ are canonical nonnegative decimal numbers, including fractions. A chapter with
 no source number uses its positive position. Renaming a title leaves the path
 unchanged.
 
+## User overrides
+
+Values the user sets for a work live in a sibling `override.json`, apart from
+`novel.json`, so a new-chapter check, a source refresh, or a metadata install
+never changes them:
+
+```typescript
+interface WorkOverrideV1 {
+  schemaVersion: 1;
+  identity: { pluginId: string; novelId: string; novelPath: string };
+  fields: Record<string, { value: string | number | boolean | null; updatedAt: number }>;
+}
+```
+
+The first field is `completed`: `true` or `false` when the user set whether the
+work is completed, and `null` to follow the source status again. A cleared field
+stays in the document so the clearing reaches other devices. Field names this
+version does not know are kept as they are. When two copies differ, each field
+takes the value with the later `updatedAt`, and an equal time keeps the stored
+one. The app keeps the fields in the `novel_override` table and derives the
+identity from the work; the file is written only for a work whose `novel.json`
+has been published.
+
+A content server that advertises `workOverrideVersion: 1` stores one override
+per work beside its `novel.json`. The app sends changed overrides and reads the
+ones changed on the server during content sync, and reads a work's override when
+the work is installed or opened. Without that capability the override stays on
+the device.
+
 ## Server and synchronization
 
 The work ID is SHA-256 of `JSON.stringify([pluginId, novelPath])`, matching the

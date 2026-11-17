@@ -286,6 +286,23 @@ describe("gatherBackupSnapshot", () => {
     expect(restored).toEqual(manifest);
   });
 
+  it("carries each novel's stored override and omits it for novels without one", async () => {
+    const override = { fields: {
+      completed: { value: true, updatedAt: 1_763_350_000_000 },
+      futureField: { value: "kept", updatedAt: 5 },
+    } };
+    primeGather([RAW_CHAPTER], [RAW_CATEGORY], [
+      { ...RAW_NOVEL, overridePayload: JSON.stringify(override) },
+      { ...RAW_NOVEL, id: 2, path: "/n/2" },
+    ]);
+
+    const manifest = await gatherBackupSnapshot();
+
+    expect(manifest.novels[0]?.override).toEqual(override);
+    expect("override" in manifest.novels[1]!).toBe(false);
+    expect(parseBackupManifest(encodeBackupManifest(manifest))).toEqual(manifest);
+  });
+
   it("includes app and plugin settings from localStorage", async () => {
     installLocalStorage({
       "app-appearance-settings": "{\"state\":{\"themeMode\":\"dark\"}}",
@@ -377,6 +394,18 @@ describe("applyBackupSnapshot", () => {
     });
     expect(restoreWorkMetadataDirectoriesFromRust).toHaveBeenCalledExactlyOnceWith(true);
     expect(writeStoredChapterContentMirrorMock).not.toHaveBeenCalled();
+  });
+
+  it("sends a novel override to the native restore unchanged", async () => {
+    const override = { fields: { completed: { value: false, updatedAt: 1_763_350_000_000 } } };
+    primeGather([RAW_CHAPTER], [RAW_CATEGORY], [{ ...RAW_NOVEL, overridePayload: JSON.stringify(override) }]);
+    const manifest = parseBackupManifest(encodeBackupManifest(await gatherBackupSnapshot()));
+    invokeMock.mockClear();
+
+    await applyBackupSnapshot(manifest);
+
+    const restore = invokeMock.mock.calls.find(([command]) => command === "backup_restore_snapshot");
+    expect(JSON.parse((restore![1] as { manifestJson: string }).manifestJson).novels[0].override).toEqual(override);
   });
 
   it("preserves nullable creation times from server metadata through export and restore", async () => {

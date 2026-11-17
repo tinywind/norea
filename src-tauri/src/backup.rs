@@ -204,6 +204,8 @@ struct BackupRestoreNovel {
     last_read_at: Option<i64>,
     #[serde(default)]
     chapter_composition: Option<serde_json::Value>,
+    #[serde(default, rename = "override")]
+    work_override: Option<crate::db::novel_override::WorkOverridePayloadDto>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -499,6 +501,16 @@ fn validate_restore_chapter_compositions(manifest: &BackupRestoreManifest) -> Re
     Ok(())
 }
 
+fn validate_restore_overrides(manifest: &BackupRestoreManifest) -> Result<(), String> {
+    for novel in &manifest.novels {
+        let Some(stored) = &novel.work_override else { continue };
+        crate::db::novel_override::validate_override_fields(&stored.fields).map_err(|err| {
+            format!("backup_restore_snapshot: invalid override for novel {}: {err}", novel.id)
+        })?;
+    }
+    Ok(())
+}
+
 fn validate_restore_category_identities(categories: &[BackupRestoreCategory]) -> Result<(), String> {
     let mut seen = std::collections::HashSet::new();
     for category in categories {
@@ -537,6 +549,7 @@ async fn execute_restore_snapshot(
     validate_restore_repositories(&manifest.repositories)?;
     validate_restore_category_identities(&manifest.categories)?;
     validate_restore_chapter_compositions(&manifest)?;
+    validate_restore_overrides(&manifest)?;
     let fenced = sqlx::query("UPDATE user_state_restore_state SET paused=1,restored=1 WHERE id=1")
         .execute(&mut **tx)
         .await
@@ -669,6 +682,11 @@ async fn execute_restore_snapshot(
                 .execute(&mut **tx)
                 .await
                 .map_err(|err| format!("backup_restore_snapshot: insert chapter composition: {err}"))?;
+        }
+        if let Some(stored) = &novel.work_override {
+            crate::db::novel_override::save_novel_override_fields_in_conn(&mut **tx, novel.id, &stored.fields)
+                .await
+                .map_err(|err| format!("backup_restore_snapshot: insert override: {err}"))?;
         }
     }
 
@@ -987,6 +1005,8 @@ pub async fn backup_pack_bytes(manifest_json: String) -> Result<Vec<u8>, String>
 pub struct BackupGatheredNovelDto {
     #[serde(skip_serializing_if = "Option::is_none")]
     pub chapter_composition_payload: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub override_payload: Option<String>,
     pub id: i64,
     pub plugin_id: String,
     pub source_novel_id: Option<String>,
@@ -1140,7 +1160,8 @@ async fn gather_backup_snapshot_in_tx(
             updated_at,
             library_added_at,
             last_read_at,
-            (SELECT payload FROM novel_chapter_composition WHERE novel_id = novel.id) AS chapter_composition_payload
+            (SELECT payload FROM novel_chapter_composition WHERE novel_id = novel.id) AS chapter_composition_payload,
+            (SELECT payload FROM novel_override WHERE novel_id = novel.id) AS override_payload
          FROM novel
          ORDER BY id",
     )
@@ -1154,6 +1175,7 @@ async fn gather_backup_snapshot_in_tx(
         let is_local_flag: i64 = row.get("is_local");
         novels.push(BackupGatheredNovelDto {
             chapter_composition_payload: row.get("chapter_composition_payload"),
+            override_payload: row.get("override_payload"),
             id: row.get("id"),
             is_local: plugin_id == "local" && is_local_flag != 0,
             plugin_id,
@@ -2432,6 +2454,61 @@ mod tests {
         assert_eq!(sqlx::query_scalar::<_, String>("SELECT name FROM novel WHERE id=99").fetch_one(&pool).await.unwrap(), "Original");
     }
 
+    fn override_restore_manifest(work_override: serde_json::Value) -> BackupRestoreManifest {
+        let mut value = composed_restore_manifest();
+        value["novels"][0]["override"] = work_override;
+        serde_json::from_value(value).unwrap()
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_replaces_overrides_with_the_backup_fields() {
+        let pool = restore_pool().await;
+        sqlx::raw_sql(
+            "INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'demo','/n/1','Original'),(99,'demo','/gone','Gone');
+             INSERT INTO novel_override(novel_id,payload) VALUES
+               (1,'{\"fields\":{\"completed\":{\"value\":false,\"updatedAt\":900}}}'),
+               (99,'{\"fields\":{\"completed\":{\"value\":true,\"updatedAt\":900}}}');",
+        )
+        .execute(&pool).await.unwrap();
+        let fields = serde_json::json!({ "fields": {
+            "completed": { "value": true, "updatedAt": 30 },
+            "futureField": { "value": "kept", "updatedAt": 40 }
+        } });
+        let mut tx = pool.begin().await.unwrap();
+        execute_restore_snapshot(&mut tx, override_restore_manifest(fields.clone()), &BackupRestoreCache::default()).await.unwrap();
+        tx.commit().await.unwrap();
+        let rows: Vec<(i64, String)> = sqlx::query_as("SELECT novel_id,payload FROM novel_override")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].0, 1);
+        assert_eq!(serde_json::from_str::<serde_json::Value>(&rows[0].1).unwrap(), fields);
+
+        for absent in [serde_json::Value::Null, serde_json::json!({ "fields": {} })] {
+            let mut tx = pool.begin().await.unwrap();
+            execute_restore_snapshot(&mut tx, override_restore_manifest(absent), &BackupRestoreCache::default()).await.unwrap();
+            tx.commit().await.unwrap();
+            assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM novel_override").fetch_one(&pool).await.unwrap(), 0);
+        }
+        let mut tx = pool.begin().await.unwrap();
+        execute_restore_snapshot(&mut tx, serde_json::from_value(composed_restore_manifest()).unwrap(), &BackupRestoreCache::default())
+            .await.expect("a backup without overrides restores");
+        tx.commit().await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM novel_override").fetch_one(&pool).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn restore_snapshot_rejects_invalid_overrides_before_replacing_any_rows() {
+        let pool = restore_pool().await;
+        sqlx::query("INSERT INTO novel(id,plugin_id,path,name) VALUES(99,'demo','/original','Original')")
+            .execute(&pool).await.unwrap();
+        let invalid = serde_json::json!({ "fields": { "completed": { "value": "yes", "updatedAt": 30 } } });
+        let mut tx = pool.begin().await.unwrap();
+        let error = execute_restore_snapshot(&mut tx, override_restore_manifest(invalid), &BackupRestoreCache::default()).await.unwrap_err();
+        assert!(error.contains("invalid override for novel 1"));
+        tx.rollback().await.unwrap();
+        assert_eq!(sqlx::query_scalar::<_, String>("SELECT name FROM novel WHERE id=99").fetch_one(&pool).await.unwrap(), "Original");
+    }
+
     #[tokio::test]
     async fn gather_snapshot_exports_all_tables_with_booleans_and_stable_category_ids() {
         let pool = restore_pool().await;
@@ -2442,6 +2519,8 @@ mod tests {
                 (2, 'local', 'local-2', 'local-2', 'Local Novel', 0, 1, 200, 201, NULL);
              INSERT INTO novel_chapter_composition(novel_id, payload)
              VALUES (1, '{\"version\":1,\"updatedAt\":5,\"entries\":[]}');
+             INSERT INTO novel_override(novel_id, payload)
+             VALUES (1, '{\"fields\":{\"completed\":{\"value\":true,\"updatedAt\":7}}}');
              INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, page, bookmark, unread, progress, is_downloaded, content_type, stored_content_type, content_bytes, media_bytes, created_at, found_at, found_by_check, updated_at)
              VALUES (10, 1, '/c/1', 'Opening', '1', 1, '1', 1, 0, 75, 1, 'text', 'html', 2048, 512, NULL, 0, 1, 150);
              INSERT INTO category(id, name, sort, is_system)
@@ -2474,8 +2553,13 @@ mod tests {
             snapshot.novels[0].chapter_composition_payload.as_deref(),
             Some("{\"version\":1,\"updatedAt\":5,\"entries\":[]}")
         );
+        assert_eq!(
+            snapshot.novels[0].override_payload.as_deref(),
+            Some("{\"fields\":{\"completed\":{\"value\":true,\"updatedAt\":7}}}")
+        );
         assert!(!snapshot.novels[1].in_library);
         assert!(snapshot.novels[1].is_local);
+        assert_eq!(snapshot.novels[1].override_payload, None);
 
         assert_eq!(snapshot.chapters.len(), 1);
         let ch = &snapshot.chapters[0];

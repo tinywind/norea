@@ -90,6 +90,15 @@ it("keeps every original byte and uses current metadata while restoring library 
   expect(storage.mutations).toBe(0);
 });
 
+it("keeps the backed-up override while current metadata replaces the source fields", async () => {
+  const override = { fields: { completed: { value: true, updatedAt: 1_763_350_000_000 } } };
+  const snapshot = manifest();
+  snapshot.novels[0]!.override = override;
+  const plan = await prepareBackupRestore(snapshot);
+  expect(plan.manifest.novels[0]).toMatchObject({ id: 1, name: "Current title", override });
+  expect(storage.mutations).toBe(0);
+});
+
 it("preserves incomplete chapter files while clearing backed-up download state", async () => {
   mediaInspections.set(`${first}/1`, false);
   const originalFiles = structuredClone(storage.files);

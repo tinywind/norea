@@ -6,6 +6,7 @@ import type {
   ContentSyncChapter,
 } from "../db/queries/content-sync";
 import { reconcileImportedNovelIdentityInDb } from "./sql/novel-identity";
+import { completedOverrideInDb } from "./sql/novel-override";
 import { sqliteBoolean } from "./sql/sqlite-value";
 import { deferUserStateForNovelInDb } from "./sql/user-state-materialize";
 import {
@@ -1351,6 +1352,7 @@ export function createContentSyncIpcHandler(
                 ...row,
                 inLibrary: Boolean(row.inLibrary),
                 isLocal: row.pluginId === "local" && Boolean(row.isLocal),
+                completedOverride: await completedOverrideInDb(db, row.id),
               }
             : null,
         };

@@ -59,7 +59,7 @@ fn checked_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
         return Err("work metadata: invalid file path".into());
     }
     let name = parts[3];
-    if name != "novel.json" && !is_cover_file(name) {
+    if name != "novel.json" && name != "override.json" && !is_cover_file(name) {
         return Err("work metadata: unsupported file".into());
     }
     let mut path = root.to_path_buf();
@@ -495,8 +495,11 @@ mod tests {
     #[test]
     fn rejects_escape_and_non_metadata_files() {
         let root = fixture();
-        for value in ["contents/a/../novel.json", "contents/a/b/content.html", "C:/a/b/novel.json", "contents/a/b/cover../oops"] {
+        for value in ["contents/a/../novel.json", "contents/a/b/content.html", "C:/a/b/novel.json", "contents/a/b/cover../oops", "contents/a/b/override.json.bak", "contents/a/../override.json"] {
             assert!(checked_path(root.path(), value).is_err());
+        }
+        for value in ["contents/a/b/novel.json", "contents/a/b/override.json", "contents/a/b/cover.jpg"] {
+            assert!(checked_path(root.path(), value).is_ok());
         }
     }
     #[test]

@@ -31,7 +31,7 @@ const props: ComponentProps<typeof NovelWorkspace> = {
   novel: {
     id: 3, pluginId: "source-a", sourceNovelId: "novel", path: "/novel", name: "Novel", cover: "https://original.test/cover.jpg",
     summary: null, author: null, artist: null, status: null, genres: null, rating: null, inLibrary: false, isLocal: false,
-    createdAt: 1, updatedAt: 1, libraryAddedAt: null, lastReadAt: null,
+    createdAt: 1, updatedAt: 1, libraryAddedAt: null, lastReadAt: null, completedOverride: null,
   },
   chapters: [], downloadStatuses: new Map(), lastReadChapterId: undefined, libraryBusy: false,
   onRead: vi.fn(), onSelectChapters: vi.fn(), onToggleLibrary: vi.fn(), sourceName: "Source",

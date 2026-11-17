@@ -14,11 +14,19 @@ import { parseChapterComposition, type ChapterCompositionV1 } from "../chapter-c
 
 import { isStorageId } from "../storage-id";
 import type { ChapterContentType } from "../chapter-content";
+import { parseWorkOverride, type WorkOverrideField } from "../work-metadata/override";
 
 export const BACKUP_FORMAT_VERSION = 6 as const;
 
+/** A novel's user-set metadata; the work identity comes from the novel that carries it. */
+export interface BackupNovelOverride {
+  fields: Record<string, WorkOverrideField>;
+}
+
 export interface BackupNovel {
   chapterComposition?: ChapterCompositionV1;
+  /** Absent when the novel has no override, including in earlier version-6 files. */
+  override?: BackupNovelOverride;
   id: number;
   sourceNovelId: string | null;
   pluginId: string;
@@ -220,15 +228,35 @@ function isChapter(value: unknown): value is BackupChapter {
   );
 }
 
+const BACKUP_OVERRIDE_IDENTITY = { pluginId: "backup", novelId: "backup", novelPath: "backup" };
+
+/** Validates a stored `{ fields }` value; an override without fields is no override. */
+export function parseBackupNovelOverride(value: unknown): BackupNovelOverride | undefined {
+  if (!isObject(value)) throw new Error("Work override document is invalid.");
+  const { fields } = parseWorkOverride({
+    schemaVersion: 1,
+    identity: BACKUP_OVERRIDE_IDENTITY,
+    fields: value.fields,
+  });
+  return Object.keys(fields).length > 0 ? { fields } : undefined;
+}
+
 function normalizeNovel(novel: BackupNovel): BackupNovel {
   let chapterComposition: ChapterCompositionV1 | undefined;
   if (novel.chapterComposition !== undefined) {
     try { chapterComposition = parseChapterComposition(novel.chapterComposition); }
     catch (error) { throw new BackupFormatError("novels contains an invalid chapter composition: " + String(error)); }
   }
+  const { override: storedOverride, ...rest } = novel;
+  let override: BackupNovelOverride | undefined;
+  if (storedOverride !== undefined && storedOverride !== null) {
+    try { override = parseBackupNovelOverride(storedOverride); }
+    catch (error) { throw new BackupFormatError("novels contains an invalid override: " + String(error)); }
+  }
   return {
-    ...novel,
+    ...rest,
     ...(chapterComposition ? { chapterComposition } : {}),
+    ...(override ? { override } : {}),
     libraryAddedAt: novel.libraryAddedAt ?? null,
     lastReadAt: novel.lastReadAt ?? null,
   };

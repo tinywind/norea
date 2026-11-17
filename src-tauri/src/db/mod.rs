@@ -5,6 +5,7 @@ pub mod content_sync;
 pub mod download;
 pub mod novel;
 pub mod novel_merge;
+pub mod novel_override;
 pub mod repository;
 pub mod tx;
 pub mod user_state;

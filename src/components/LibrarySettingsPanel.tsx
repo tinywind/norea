@@ -1,4 +1,4 @@
-import { Select, Stack } from "@mantine/core";
+import { Select, Stack, Switch } from "@mantine/core";
 import { SegmentedToggle } from "./SegmentedToggle";
 import { useQuery } from "@tanstack/react-query";
 import { listCategories, UNCATEGORIZED_CATEGORY_ID } from "../db/queries/category";
@@ -41,6 +41,8 @@ export function LibrarySettingsPanel() {
   );
   const checkIntervalHours = useLibraryStore((s) => normalizeCheckIntervalHours(s.checkIntervalHours));
   const setCheckIntervalHours = useLibraryStore((s) => s.setCheckIntervalHours);
+  const skipCompletedChecks = useLibraryStore((s) => s.skipCompletedChecks);
+  const setSkipCompletedChecks = useLibraryStore((s) => s.setSkipCompletedChecks);
 
   return (
     <Stack gap="md">
@@ -143,6 +145,16 @@ export function LibrarySettingsPanel() {
             onChange={(value) => {
               if (value !== null) setCheckIntervalHours(Number(value));
             }}
+          />
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          label={t("librarySettings.skipCompletedChecks")}
+          description={t("librarySettings.skipCompletedChecks.description")}
+        >
+          <Switch
+            aria-label={t("librarySettings.skipCompletedChecks")}
+            checked={skipCompletedChecks}
+            onChange={(event) => setSkipCompletedChecks(event.currentTarget.checked)}
           />
         </SettingsFieldRow>
       </SettingsSection>

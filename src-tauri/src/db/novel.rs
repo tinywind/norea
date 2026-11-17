@@ -177,6 +177,7 @@ pub struct NovelDetailRecordDto {
     pub updated_at: i64,
     pub library_added_at: Option<i64>,
     pub last_read_at: Option<i64>,
+    pub completed_override: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -348,6 +349,7 @@ pub struct CheckCandidateDto {
     pub total_chapters: i64,
     pub unread_chapters: i64,
     pub has_goal: bool,
+    pub completed_override: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1231,9 +1233,12 @@ const SELECT_NOVEL_DETAIL_FIELDS: &str = "\
     n.created_at AS createdAt, \
     n.updated_at AS updatedAt, \
     n.library_added_at AS libraryAddedAt, \
-    n.last_read_at AS lastReadAt \
+    n.last_read_at AS lastReadAt, \
+    CASE json_type(o.payload, '$.fields.completed.value') \
+      WHEN 'true' THEN 1 WHEN 'false' THEN 0 END AS completedOverride \
   FROM novel n \
-  LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id";
+  LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id \
+  LEFT JOIN novel_override o ON o.novel_id = n.id";
 
 fn map_novel_detail_row(row: sqlx::sqlite::SqliteRow) -> NovelDetailRecordDto {
     let plugin_id: String = row.get("pluginId");
@@ -1264,6 +1269,9 @@ fn map_novel_detail_row(row: sqlx::sqlite::SqliteRow) -> NovelDetailRecordDto {
         updated_at: row.get("updatedAt"),
         library_added_at: row.get("libraryAddedAt"),
         last_read_at: row.get("lastReadAt"),
+        completed_override: row
+            .get::<Option<i64>, _>("completedOverride")
+            .map(|flag| flag != 0),
         plugin_id,
     }
 }
@@ -2201,11 +2209,14 @@ pub async fn list_check_candidates_in_conn(
                 COALESCE(f.consecutive_failures, 0) AS consecutiveFailures, \
                 COALESCE(s.total_chapters, 0) AS totalChapters, \
                 COALESCE(s.chapters_unread, 0) AS unreadChapters, \
-                (?1 IS NOT NULL AND n.last_read_at >= ?1 AND (g.novel_id IS NULL OR g.kind <> 'none')) AS hasGoal \
+                (?1 IS NOT NULL AND n.last_read_at >= ?1 AND (g.novel_id IS NULL OR g.kind <> 'none')) AS hasGoal, \
+                CASE json_type(o.payload, '$.fields.completed.value') \
+                  WHEN 'true' THEN 1 WHEN 'false' THEN 0 END AS completedOverride \
          FROM novel n \
          LEFT JOIN novel_freshness f ON f.novel_id = n.id \
          LEFT JOIN novel_stats s ON s.novel_id = n.id \
          LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
+         LEFT JOIN novel_override o ON o.novel_id = n.id \
          WHERE n.in_library = 1 AND n.is_local = 0 \
          ORDER BY n.id",
     )
@@ -2226,6 +2237,9 @@ pub async fn list_check_candidates_in_conn(
             total_chapters: r.get("totalChapters"),
             unread_chapters: r.get("unreadChapters"),
             has_goal: r.get::<i64, _>("hasGoal") != 0,
+            completed_override: r
+                .get::<Option<i64>, _>("completedOverride")
+                .map(|flag| flag != 0),
         })
         .collect())
 }

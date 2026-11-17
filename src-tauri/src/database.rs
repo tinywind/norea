@@ -132,6 +132,11 @@ pub fn schema_migrations() -> Vec<SchemaMigration> {
             description: "journal chapter path rewrites and incomplete media bodies for content sync",
             sql: include_str!("migrations/0012_content_sync_journal_triggers.sql"),
         },
+        SchemaMigration {
+            version: 13,
+            description: "keep user-set work metadata apart from source metadata",
+            sql: include_str!("migrations/0013_novel_override.sql"),
+        },
     ]
 }
 
@@ -487,6 +492,47 @@ mod tests {
         assert!(sqlx::query("INSERT INTO repository(url) VALUES('https://second.test/plugins.json')").execute(&pool).await.is_err());
         assert!(sqlx::query("UPDATE repository SET enabled=2 WHERE id=1").execute(&pool).await.is_err());
         assert!(sqlx::query("UPDATE repository SET priority=0 WHERE id=1").execute(&pool).await.is_err());
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn registered_v12_upgrade_keeps_library_data_and_stores_one_override_per_novel() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
+            SqlxMigration::new(migration.version, migration.description.into(),
+                MigrationType::ReversibleUp, migration.sql.into(), false)
+        }).collect();
+        let pool = bootstrap(&path, &migrations[..12]).await.unwrap();
+        sqlx::query("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,status,in_library) VALUES(1,'source','work-1','/work','Work','Ongoing',1),(2,'source','work-2','/other','Other',NULL,1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO chapter(id,novel_id,path,name,position,progress) VALUES(1,1,'/one','One',1,40)").execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO novel_download_goal VALUES(1,'keep_ahead',3,10)").execute(&pool).await.unwrap();
+        sqlx::query(r#"INSERT INTO novel_chapter_composition VALUES(1,'{"version":1,"updatedAt":5,"entries":[]}')"#).execute(&pool).await.unwrap();
+        assert!(sqlx::query("SELECT 1 FROM novel_override").fetch_optional(&pool).await.is_err());
+        pool.close().await;
+        for _ in 0..2 {
+            let pool = bootstrap(&path, &migrations).await.unwrap();
+            assert_eq!(sqlx::query_as::<_, (i64, String, Option<String>, i64)>("SELECT id,name,status,in_library FROM novel ORDER BY id")
+                .fetch_all(&pool).await.unwrap(), [(1, "Work".into(), Some("Ongoing".into()), 1), (2, "Other".into(), None, 1)]);
+            assert_eq!(sqlx::query_as::<_, (i64, String, Option<i64>)>(
+                "SELECT c.progress,g.kind,g.count FROM chapter c JOIN novel_download_goal g ON g.novel_id=c.novel_id")
+                .fetch_one(&pool).await.unwrap(), (40, "keep_ahead".into(), Some(3)));
+            assert_eq!(sqlx::query_scalar::<_, String>("SELECT payload FROM novel_chapter_composition").fetch_one(&pool).await.unwrap(),
+                r#"{"version":1,"updatedAt":5,"entries":[]}"#);
+            pool.close().await;
+        }
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        let payload = r#"{"fields":{"completed":{"value":true,"updatedAt":1763350000000}}}"#;
+        sqlx::query("INSERT INTO novel_override VALUES(1,?1),(2,?1)").bind(payload).execute(&pool).await.unwrap();
+        assert!(sqlx::query("INSERT INTO novel_override VALUES(1,?1)").bind(payload).execute(&pool).await.is_err());
+        assert!(sqlx::query("INSERT INTO novel_override VALUES(99,?1)").bind(payload).execute(&pool).await.is_err());
+        assert!(sqlx::query("UPDATE novel_override SET payload=NULL WHERE novel_id=1").execute(&pool).await.is_err());
+        sqlx::query("DELETE FROM novel WHERE id=2").execute(&pool).await.unwrap();
+        pool.close().await;
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        assert_eq!(sqlx::query_as::<_, (i64, String)>("SELECT novel_id,payload FROM novel_override").fetch_all(&pool).await.unwrap(),
+            [(1, payload.to_string())]);
         pool.close().await;
     }
 

@@ -102,6 +102,14 @@ export const novelChapterCompositionTable = sqliteTable("novel_chapter_compositi
   payload: text("payload").notNull(),
 });
 
+// NovelOverride: user-set work metadata, kept apart from source metadata so
+// no source refresh or metadata install can change it.
+export const novelOverrideTable = sqliteTable("novel_override", {
+  novelId: integer("novel_id").primaryKey().notNull()
+    .references(() => novelTable.id, { onDelete: "cascade" }),
+  payload: text("payload").notNull(),
+});
+
 export const chapterTable = sqliteTable(
   "chapter",
   {

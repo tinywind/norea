@@ -11,6 +11,7 @@ import {
   findChapterForJump,
   findContinueReadingChapter,
   NO_CHAPTER_LIST_FILTERS,
+  novelStatusLabel,
 } from "./novel-detail-model";
 
 function chapter(
@@ -232,5 +233,18 @@ describe("reader-facing episode numbers", () => {
     expect(chapterIdsInNumberRange(rows, 1, 1)).toEqual([1]);
     expect(chapterIdsInNumberRange(rows, 346, 346)).toEqual([346]);
     expect(rows.map(row => row.chapterNumber)).toEqual(["346378", "5677728"]);
+  });
+});
+
+describe("novelStatusLabel", () => {
+  const translate = (key: string) => key;
+
+  it("shows the source status until the user sets a completion flag", () => {
+    expect(novelStatusLabel("Ongoing", translate)).toBe("novel.status.ongoing");
+    expect(novelStatusLabel("연재중", translate)).toBe("연재중");
+    expect(novelStatusLabel("Unknown", translate)).toBeNull();
+    expect(novelStatusLabel("Ongoing", translate, true)).toBe("novel.status.completed");
+    expect(novelStatusLabel(null, translate, false)).toBe("novel.status.ongoing");
+    expect(novelStatusLabel("Completed", translate, null)).toBe("novel.status.completed");
   });
 });

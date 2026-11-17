@@ -285,3 +285,32 @@ it("upgrades v11 content-sync journal triggers to record incomplete-media bodies
     db.close();
   }
 });
+
+it("upgrades populated v12 storage to one user override per novel without changing existing rows", () => {
+  mkdirSync(".tmp", { recursive: true });
+  const directory = mkdtempSync(".tmp/novel-override-migration-");
+  const file = join(directory, "norea.db");
+  let db = new DatabaseSync(file);
+  try {
+    db.exec("PRAGMA foreign_keys=ON");
+    applyRegisteredMigrations(db, 0, 12);
+    expect(db.prepare("SELECT name FROM sqlite_schema WHERE name='novel_override'").all()).toEqual([]);
+    db.exec(`INSERT INTO novel(id,plugin_id,source_novel_id,path,name,status,in_library) VALUES(1,'source','work-1','/work','Work','Ongoing',1),(2,'source','work-2','/other','Other',NULL,1);
+      INSERT INTO chapter(id,novel_id,path,name,position,progress) VALUES(1,1,'/one','One',1,40);
+      INSERT INTO novel_download_goal VALUES(1,'keep_ahead',3,10);
+      INSERT INTO novel_chapter_composition VALUES(1,'{"version":1,"updatedAt":5,"entries":[]}')`);
+    const tables = ["novel", "chapter", "novel_download_goal", "novel_chapter_composition", "work_metadata_dirty"];
+    const before = tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all());
+    applyRegisteredMigrations(db, 12, 13);
+    const payload = JSON.stringify({ fields: { completed: { value: true, updatedAt: 1763350000000 } } });
+    db.prepare("INSERT INTO novel_override(novel_id,payload) VALUES(1,?),(2,?)").run(payload, payload);
+    expect(tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
+    expect(() => db.prepare("INSERT INTO novel_override(novel_id,payload) VALUES(1,?)").run(payload)).toThrow();
+    expect(() => db.prepare("INSERT INTO novel_override(novel_id,payload) VALUES(99,?)").run(payload)).toThrow();
+    db.exec("DELETE FROM novel WHERE id=2");
+    db.close(); db = new DatabaseSync(file);
+    expect(db.prepare("SELECT novel_id AS novelId,payload FROM novel_override").all()).toEqual([{ novelId: 1, payload }]);
+    expect(db.prepare("SELECT json_extract(payload,'$.fields.completed.value') AS completed FROM novel_override").get())
+      .toEqual({ completed: 1 });
+  } finally { db.close(); rmSync(directory, { recursive: true }); }
+});

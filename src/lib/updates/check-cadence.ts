@@ -1,4 +1,5 @@
 import type { CheckCandidate } from "../../db/queries/novel-freshness";
+import { isNovelCompleted } from "../work-metadata/override";
 
 const HOUR = 60 * 60;
 const DAY = 24 * HOUR;
@@ -15,7 +16,7 @@ export const STALE_ON_OPEN_SECONDS = 6 * HOUR;
 const isReading = (novel: CheckCandidate) =>
   novel.hasGoal || (novel.lastReadAt !== null && novel.unreadChapters > 0);
 const isFinished = (novel: CheckCandidate) =>
-  /complete/i.test(novel.status ?? "") || (novel.totalChapters > 0 && novel.unreadChapters === 0);
+  isNovelCompleted(novel) || (novel.totalChapters > 0 && novel.unreadChapters === 0);
 
 /**
  * How often a novel is checked (spec F2): the interval while it is being read or has a goal,

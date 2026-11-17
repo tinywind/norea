@@ -50,7 +50,7 @@ beforeEach(() => {
   mocks.novel = { id: 7, pluginId: "s", path: "/n", name: "N", isLocal: false, inLibrary: true };
   mocks.serverSource = null;
   mocks.lastCheckedAt = null;
-  useLibraryStore.setState({ checkIntervalHours: 12 });
+  useLibraryStore.setState({ checkIntervalHours: 12, skipCompletedChecks: true });
   useDownloadGoalSettingsStore.setState({ automaticGoal: { kind: "keep_ahead", count: 3 }, automaticOnMobileData: false });
   vi.mocked(listCheckCandidates).mockClear();
 });
@@ -91,6 +91,33 @@ it("waits for the next interval after the user cancels an automatic check", asyn
   expect(mocks.check).toHaveBeenCalledOnce();
   await runDueChecks(1_000_000 + 12 * 3_600_000);
   expect(mocks.check).toHaveBeenCalledTimes(2);
+});
+
+it("leaves completed works out of automatic checks until skipping is turned off", async () => {
+  mocks.candidates = [
+    { ...candidate(1), completedOverride: true },
+    { ...candidate(2), status: "완결", completedOverride: null },
+    { ...candidate(3), status: "Completed", completedOverride: false },
+    { ...candidate(4), status: "Ongoing", completedOverride: null },
+  ];
+  await runDueChecks(1_000_000);
+  expect(mocks.check.mock.calls[0]![0].novelIds).toEqual([3, 4]);
+  useLibraryStore.setState({ skipCompletedChecks: false });
+  await runDueChecks(1_000_000);
+  expect(mocks.check.mock.calls[1]![0].novelIds).toEqual([1, 2, 3, 4]);
+});
+
+it("skips the on-open check of a completed work unless skipping is off or the user marked it ongoing", async () => {
+  const open = () => checkNovelIfStale(7, "title", new AbortController().signal);
+  mocks.novel = { id: 7, pluginId: "s", path: "/n", name: "N", isLocal: false, inLibrary: true, status: "Completed", completedOverride: null };
+  expect(await open()).toBe(false);
+  mocks.novel = { ...(mocks.novel as object), completedOverride: false };
+  expect(await open()).toBe(true);
+  mocks.novel = { ...(mocks.novel as object), status: "Ongoing", completedOverride: true };
+  expect(await open()).toBe(false);
+  useLibraryStore.setState({ skipCompletedChecks: false });
+  expect(await open()).toBe(true);
+  expect(mocks.checkNovel).toHaveBeenCalledTimes(2);
 });
 
 it("checks a novel opened after 6 hours without a check, once within the source budget", async () => {

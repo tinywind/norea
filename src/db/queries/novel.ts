@@ -239,6 +239,8 @@ export interface NovelDetailRecord {
   updatedAt: number;
   libraryAddedAt: number | null;
   lastReadAt: number | null;
+  /** The user's completion flag; null follows the source status. */
+  completedOverride: boolean | null;
 }
 
 export async function getNovelById(

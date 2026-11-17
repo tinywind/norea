@@ -458,3 +458,31 @@ it("rejects malformed chapter composition before any restore can run", () => {
   } }] };
   expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(/chapter composition/);
 });
+it("keeps a novel override with unknown fields and treats a missing or empty one as no override", () => {
+  const override = { fields: {
+    completed: { value: true, updatedAt: 1_763_350_000_000 },
+    futureField: { value: "kept", updatedAt: 5 },
+  } };
+  const withOverride = { ...VALID_MANIFEST, novels: [{ ...VALID_MANIFEST.novels[0]!, override }] };
+  const parsed = parseBackupManifest(encodeBackupManifest(withOverride));
+  expect(parsed.novels[0]!.override).toEqual(override);
+  expect(parseBackupManifest(encodeBackupManifest(parsed))).toEqual(parsed);
+
+  expect("override" in parseBackupManifest(JSON.stringify(VALID_MANIFEST)).novels[0]!).toBe(false);
+  for (const absent of [null, { fields: {} }]) {
+    const manifest = { ...VALID_MANIFEST, novels: [{ ...VALID_MANIFEST.novels[0], override: absent }] };
+    expect("override" in parseBackupManifest(JSON.stringify(manifest)).novels[0]!).toBe(false);
+  }
+});
+it.each([
+  "completed",
+  { completed: { value: true, updatedAt: 1 } },
+  { fields: { completed: { value: "yes", updatedAt: 1 } } },
+  { fields: { completed: { value: true, updatedAt: 0 } } },
+  { fields: { "bad name": { value: true, updatedAt: 1 } } },
+  { fields: { completed: { value: true, updatedAt: 1, extra: 1 } } },
+])("rejects a malformed novel override %j before any restore can run", (override) => {
+  const manifest = { ...VALID_MANIFEST, novels: [{ ...VALID_MANIFEST.novels[0], override }] };
+  expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(BackupFormatError);
+  expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(/invalid override/);
+});

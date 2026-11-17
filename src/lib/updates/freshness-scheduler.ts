@@ -12,6 +12,7 @@ import { pluginManager } from "../plugins/manager";
 import { taskScheduler } from "../tasks/scheduler";
 import { readServerNovelSource } from "../content-sync/novel-source";
 import { SOURCE_CHECKS_PER_HOUR, STALE_ON_OPEN_SECONDS, selectDueChecks } from "./check-cadence";
+import { isNovelCompleted } from "../work-metadata/override";
 import { checkForNewChapters, checkNovelForNewChapters } from "./check-library-updates";
 
 const TICK_MS = 30 * 60_000;
@@ -40,6 +41,7 @@ async function isBudgetPaused(): Promise<boolean> {
  * Checks the library novels that are due (spec F2) while the app is visible: novels being read
  * first, at most 30 checks per source per hour, so a catch-up spreads over the following hours.
  * Skipped while offline, while another check runs, or under the mobile-data and battery budgets.
+ * Completed works are left out while the setting to skip them is on.
  */
 export async function runDueChecks(nowMs = Date.now()): Promise<void> {
   const intervalHours = normalizeCheckIntervalHours(useLibraryStore.getState().checkIntervalHours);
@@ -50,7 +52,9 @@ export async function runDueChecks(nowMs = Date.now()): Promise<void> {
     await pluginManager.loadInstalledFromDb();
     const nowSeconds = Math.floor(nowMs / 1000);
     const activeSince = automaticDownloadActiveSince(useDownloadGoalSettingsStore.getState().automaticGoal, nowSeconds);
-    const candidates = (await listCheckCandidates(activeSince)).filter((novel) => pluginManager.getPlugin(novel.pluginId));
+    const skipCompleted = useLibraryStore.getState().skipCompletedChecks;
+    const candidates = (await listCheckCandidates(activeSince)).filter((novel) =>
+      pluginManager.getPlugin(novel.pluginId) && !(skipCompleted && isNovelCompleted(novel)));
     const due = selectDueChecks(candidates, {
       intervalHours, nowSeconds, recentChecksBySource: await countRecentChecksBySource(nowSeconds - HOUR_SECONDS),
     });
@@ -86,6 +90,7 @@ export async function checkNovelIfStale(
   const nowMs = options.nowMs ?? Date.now();
   const novel = await getNovelById(novelId);
   if (!novel || novel.isLocal || novel.path.startsWith("norea-folder:") || !isNetworkOnline()) return false;
+  if (useLibraryStore.getState().skipCompletedChecks && isNovelCompleted(novel)) return false;
   if (!novel.inLibrary && !await readServerNovelSource(novelId)) return false;
   const nowSeconds = Math.floor(nowMs / 1000);
   const lastCheckedAt = (await getNovelFreshness(novelId))?.lastCheckedAt ?? null;

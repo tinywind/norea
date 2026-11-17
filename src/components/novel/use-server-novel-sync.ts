@@ -2,6 +2,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../i18n";
 import { syncServerNovelOnOpen } from "../../lib/content-sync/work-refresh";
+import { pullWorkOverrideOnOpen } from "../../lib/content-sync/work-overrides";
 import { readServerNovelSource } from "../../lib/content-sync/novel-source";
 import { checkNovelIfStale } from "../../lib/updates/freshness-scheduler";
 import { useContentSyncStore } from "../../store/content-sync";
@@ -39,6 +40,15 @@ export function useServerNovelSync(id: number, active: boolean, name: string) {
     void (async () => {
       try { if (await syncServerNovelOnOpen(id, controller.signal, () => !sourceRefreshed)) await invalidate(); }
       catch (error) { if (!controller.signal.aborted) setServerError(error); }
+    })();
+    void (async () => {
+      try {
+        if (await pullWorkOverrideOnOpen(id, controller.signal) && !controller.signal.aborted) {
+          await queryClient.invalidateQueries({ queryKey: novelKey(id), exact: true });
+        }
+      } catch (error) {
+        if (!controller.signal.aborted) console.warn("[content-sync] could not read the work override:", error);
+      }
     })();
     void (async () => {
       try {

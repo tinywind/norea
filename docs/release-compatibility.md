@@ -19,7 +19,7 @@ The SQLite schema is persistent user data.
 - Runtime startup may rebuild caches from authoritative files, but schema changes
   never use opportunistic runtime DDL.
 
-The current migration set extends through 0012_content_sync_journal_triggers.sql.
+The current migration set extends through 0013_novel_override.sql.
 
 ## Filesystem metadata
 
@@ -29,6 +29,12 @@ contents/<pluginId>/<novelId>/novel.json and the current contract is defined in
 
 Unsupported explicit metadata versions are rejected. Recovery does not guess
 portable identities from titles or local database IDs.
+
+User-set work metadata uses override schema version 1 in a sibling
+contents/<pluginId>/<novelId>/override.json. Source refreshes and metadata
+installs never change it. Recovery merges a stored file into the app database per
+field by edit time and skips an invalid, oversized, or foreign file without
+failing the work.
 
 ## Chapter content
 
@@ -52,6 +58,9 @@ permissions are not portable backup state.
 
 Older portable manifest versions that the current parser does not support are
 rejected instead of being silently reinterpreted.
+
+A novel's override is an optional per-novel field. Version-6 files without it
+restore as novels without an override.
 
 ## Full device backup
 
