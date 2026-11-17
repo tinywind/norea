@@ -43,9 +43,11 @@ import {
   DownloadedIcon,
   DownloadIcon,
   DragIcon,
+  QueuedIcon,
   RepairIcon,
   RetryIcon,
 } from "../ui/icons";
+import { ChapterDownloadProgress } from "./ChapterDownloadProgress";
 import { ListRow } from "../ui/ListRow";
 import { OverflowMenu } from "../ui/OverflowMenu";
 import {
@@ -177,50 +179,45 @@ function ChapterListItem({
       ? t(CHAPTER_DOWNLOAD_LABELS[status.kind][status.phase])
       : null,
     failedMessage,
-    chapter.serverComplete === true ? t("novel.serverComplete") : null,
     duplicateSourceChapterCount > 0
       ? t("novel.sourceDuplicateChapters", { count: duplicateSourceChapterCount })
       : null,
   ].filter(Boolean).join("\n");
+  const onServer = !chapter.isDownloaded && chapter.serverAvailable === true;
+  // The trailing icon shows the state; the row description still names it for screen readers.
   const renderStatus = () => {
-    if (downloadActive) {
-      return (
-        <span className="norea-novel-chapter-status">
-          {t(status.kind === "running" ? "common.downloading" : status.retryAt ? "novel.downloadRetrying" : "common.queued")}
-        </span>
-      );
-    }
-    if (serverMissingFailure) {
-      return (
-        <span className="norea-novel-chapter-status" data-tone="warn">
-          {t("novel.serverMissing")}
-        </span>
-      );
-    }
-    if (failedMessage) {
-      return (
-        <span className="norea-novel-chapter-status" data-tone="danger">
-          {t("novel.downloadFailed")}
-          <VisuallyHidden>{`: ${failedMessage}`}</VisuallyHidden>
-        </span>
-      );
-    }
-    if (chapter.mediaRepairNeeded) {
-      return (
-        <span className="norea-novel-chapter-status" data-tone="warn">
-          {t("novel.mediaRepairNeeded")}
-        </span>
-      );
-    }
-    return null;
+    const state = downloadActive
+      ? t(status.kind === "running" ? "common.downloading" : status.retryAt ? "novel.downloadRetrying" : "common.queued")
+      : serverMissingFailure
+        ? t("novel.serverMissing")
+        : failedMessage
+          ? `${t("novel.downloadFailed")}: ${failedMessage}`
+          : chapter.mediaRepairNeeded
+            ? t("novel.mediaRepairNeeded")
+            : onServer
+              ? t("novel.serverAvailable")
+              : null;
+    return state ? <VisuallyHidden>{state}</VisuallyHidden> : null;
   };
+  const downloadIcon = (Icon: typeof DownloadIcon) => (
+    <span className="norea-novel-chapter-download-icon" data-on-server={onServer ? "true" : undefined}>
+      <Icon size="1.25rem" />
+    </span>
+  );
 
   const renderTrailing = () => {
     if (reorderMode) return null;
-    if (downloadActive) {
+    if (status?.kind === "running") {
+      return <ChapterDownloadProgress chapterId={chapter.id} label={t("common.downloading")} />;
+    }
+    if (status?.kind === "queued") {
       return (
-        <span className="norea-novel-chapter-progress-slot">
-          <Loader aria-hidden="true" size="xs" />
+        <span
+          aria-label={t(status.retryAt ? "novel.downloadRetrying" : "common.queued")}
+          className="norea-novel-chapter-progress-slot norea-novel-chapter-queued"
+          role="img"
+        >
+          <QueuedIcon size="1.25rem" />
         </span>
       );
     }
@@ -271,7 +268,7 @@ function ChapterListItem({
           size="lg"
           tone="danger"
         >
-          <RetryIcon size="1.25rem" />
+          {downloadIcon(RetryIcon)}
         </IconButton>
       );
     }
@@ -304,11 +301,11 @@ function ChapterListItem({
     return (
       <IconButton
         className="norea-novel-chapter-state-button"
-        label={t("novel.downloadChapter")}
+        label={t(onServer ? "novel.downloadChapterFromServer" : "novel.downloadChapter")}
         onClick={onDownload}
         size="lg"
       >
-        <DownloadIcon size="1.25rem" />
+        {downloadIcon(DownloadIcon)}
       </IconButton>
     );
   };
@@ -408,15 +405,6 @@ function ChapterListItem({
               <VisuallyHidden>{t("novel.percentRead", { progress })}</VisuallyHidden>
             ) : null}
             {chapter.serverDifferent ? <span className="norea-novel-chapter-badge">{t("chapterDifference.rowBadge")}</span> : null}
-            {chapter.serverComplete === false ? (
-              <span className="norea-novel-chapter-badge">{t("novel.serverIncomplete")}</span>
-            ) : null}
-            {!chapter.isDownloaded && chapter.serverComplete === true ? (
-              <span className="norea-novel-chapter-badge">{t("novel.serverComplete")}</span>
-            ) : null}
-            {!chapter.isDownloaded && chapter.serverAvailable === false && !serverMissingFailure ? (
-              <span className="norea-novel-chapter-badge">{t("novel.serverMissing")}</span>
-            ) : null}
             {renderStatus()}
           </span>
         }

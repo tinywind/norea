@@ -18,6 +18,7 @@ import {
   IconCheck,
   IconCheckbox,
   IconChecks,
+  IconClock,
   IconChevronDown,
   IconChevronLeft,
   IconChevronRight,
@@ -134,6 +135,7 @@ export const MarkUnreadIcon = withAppDefaults(IconEyeOff);
 export const UnreadIcon = withAppDefaults(IconPointFilled);
 export const DownloadIcon = withAppDefaults(IconDownload);
 export const DownloadedIcon = withAppDefaults(IconCloudCheck);
+export const QueuedIcon = withAppDefaults(IconClock);
 export const TrashIcon = withAppDefaults(IconTrash);
 export const BookmarkIcon = withAppDefaults(IconBookmark);
 export const BookmarkedIcon = withAppDefaults(IconBookmarkFilled);

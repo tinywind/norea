@@ -233,6 +233,22 @@ describe("download state", () => {
     expect(siblingButtons($).map((_, button) => $(button).attr("aria-label")).get().filter(Boolean)).toEqual(labels);
   });
 
+  it("shows a queued chapter with a clock and a running one with a progress ring instead of words", () => {
+    const queued = renderRow({}, { kind: "queued", phase: "source-download" });
+    expect(queued("[role='img'][aria-label='Queued'].norea-novel-chapter-queued svg")).toHaveLength(1);
+    expect(queued("[role='progressbar']")).toHaveLength(0);
+    const visible = (row: ReturnType<typeof renderList>) => row(".norea-novel-chapter-meta").children(":not(.mantine-VisuallyHidden-root)").text();
+    expect(visible(queued)).not.toContain("Queued");
+    const running = renderRow({}, { kind: "running", phase: "source-download" });
+    const ring = running("[role='progressbar'][aria-label='Downloading']");
+    expect(ring).toHaveLength(1);
+    expect(ring.attr("data-indeterminate")).toBe("true");
+    expect(visible(running)).not.toContain("Downloading");
+    for (const $ of [renderRow({}, { kind: "failed", error: "Timed out" }), renderRow({ contentBytes: 10, mediaRepairNeeded: true })]) {
+      expect(visible($)).toBe("Ch. 1");
+    }
+  });
+
   it("repairs missing media in place with a named icon button", () => {
     const $ = renderRow({ contentBytes: 10, mediaRepairNeeded: true });
     expect(describedText($)).toContain("Missing images");
@@ -274,30 +290,31 @@ describe("download state", () => {
   });
 });
 
-describe("server chapter completeness", () => {
-  it("shows a partial server copy and keeps the download action", () => {
-    const $ = renderRow({ serverAvailable: true, serverComplete: false });
-    expect(describedText($)).toContain("Partial copy on server");
-    expect(siblingButtons($).attr("aria-label")).toBe("Download chapter");
+describe("server chapter availability", () => {
+  const dot = ($: ReturnType<typeof renderList>) => $(".norea-novel-chapter-download-icon").attr("data-on-server");
+
+  it("marks the download icon with a dot for a chapter the server holds, in full or in part, with no visible text", () => {
+    for (const serverComplete of [true, false]) {
+      const $ = renderRow({ serverAvailable: true, serverComplete });
+      expect(dot($)).toBe("true");
+      expect(siblingButtons($).attr("aria-label")).toBe("Download chapter from the server");
+      expect($(".norea-novel-chapter-meta").children(":not(.mantine-VisuallyHidden-root)").text()).not.toContain("server");
+      expect(describedText($)).toContain("On the server");
+    }
+    const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.norea-novel-chapter-download-icon\[data-on-server="true"\]::after \{[^}]*border-radius: 50%;/);
   });
 
-  it("preserves a complete local copy when the server copy is incomplete", () => {
-    const $ = renderRow({ serverComplete: false, isDownloaded: true });
-    expect(describedText($)).toContain("Partial copy on server");
+  it("drops the dot once the chapter is downloaded", () => {
+    const $ = renderRow({ serverAvailable: true, serverComplete: false, isDownloaded: true });
     expect(siblingButtons($).attr("aria-label")).toBe("Downloaded");
+    expect(dot($)).toBeUndefined();
+    expect(describedText($)).not.toContain("server");
   });
 
-  it("shows a complete server copy until the chapter is downloaded", () => {
-    expect(describedText(renderRow({ serverAvailable: true, serverComplete: true }))).toContain("Full copy on server");
-    const $ = renderRow({ serverAvailable: true, serverComplete: true, isDownloaded: true });
-    const description = $(`#${openButton($).attr("aria-describedby")}`);
-    expect(description.text()).not.toContain("server");
-    expect(description.attr("title")).toBe("Full copy on server");
-  });
-
-  it("marks a chapter the server lacks and offers the source only after that failure", () => {
+  it("offers a plain download for a chapter the server lacks and the source only after that failure", () => {
     const absent = renderRow({ serverAvailable: false });
-    expect(describedText(absent)).toContain("Not on server");
+    expect(dot(absent)).toBeUndefined();
     expect(siblingButtons(absent).attr("aria-label")).toBe("Download chapter");
     const failed = renderRow({ serverAvailable: false }, { kind: "failed", error: "This chapter is not on the content server." });
     expect(describedText(failed)).toContain("Not on server");

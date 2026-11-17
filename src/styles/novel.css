@@ -638,6 +638,65 @@
   width: var(--norea-control-md);
 }
 
+.norea-novel-chapter-queued {
+  color: var(--norea-color-ink-muted);
+}
+
+.norea-chapter-download-ring svg {
+  overflow: visible;
+}
+
+.norea-chapter-download-ring circle {
+  fill: none;
+  stroke-width: 2.5;
+}
+
+.norea-chapter-download-ring-track {
+  stroke: var(--norea-color-rule);
+}
+
+/* The arc starts at twelve o'clock and fills clockwise. */
+.norea-chapter-download-ring-value {
+  stroke: var(--norea-color-accent);
+  stroke-linecap: round;
+  transform: rotate(-90deg);
+  transform-origin: 50% 50%;
+  transition: stroke-dashoffset var(--norea-duration-base) var(--norea-ease-standard);
+}
+
+.norea-chapter-download-ring[data-indeterminate="true"] svg {
+  animation: norea-chapter-download-spin var(--norea-duration-spin) linear infinite;
+}
+
+@keyframes norea-chapter-download-spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .norea-chapter-download-ring[data-indeterminate="true"] svg {
+    animation: none;
+  }
+}
+
+/* A chapter the content server holds: a small dot on the download icon's upper right. */
+.norea-novel-chapter-download-icon {
+  display: inline-flex;
+  position: relative;
+}
+
+.norea-novel-chapter-download-icon[data-on-server="true"]::after {
+  background: var(--norea-color-accent);
+  border-radius: 50%;
+  content: "";
+  height: 0.4375rem;
+  inset-block-start: -0.125rem;
+  inset-inline-end: -0.1875rem;
+  position: absolute;
+  width: 0.4375rem;
+}
+
 /* Row trailing buttons fill the same 44px slot as the download progress, borderless with the state layer. */
 .norea-icon-button.norea-novel-chapter-state-button {
   --norea-icon-button-size: var(--norea-control-md);

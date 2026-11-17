@@ -379,8 +379,8 @@ it("keeps an incomplete server chapter visible and downloadable without a source
 
   const $ = renderPage();
   expect($("button[aria-label='novel.openChapter']").text()).toContain("Saved chapter");
-  expect($("button[aria-label='novel.openChapter']").text()).toContain("novel.serverIncomplete");
-  expect($("button[aria-label='novel.downloadChapter']")).toHaveLength(1);
+  expect($("button[aria-label='novel.openChapter']").text()).toContain("novel.serverAvailable");
+  expect($("button[aria-label='novel.downloadChapterFromServer']")).toHaveLength(1);
   expect($("button[aria-label='novel.repair']")).toHaveLength(0);
   expect(mocks.chapters[0]).toMatchObject({ isDownloaded: false, mediaRepairNeeded: false });
 });
@@ -391,7 +391,7 @@ it("preserves a complete local chapter when its server copy is incomplete", () =
   mocks.chapters = [{ ...chapter, isDownloaded: true, contentBytes: 100 }];
 
   const $ = renderPage();
-  expect($("button[aria-label='novel.openChapter']").text()).toContain("novel.serverIncomplete");
+  expect($("button[aria-label='novel.openChapter']").text()).not.toContain("novel.server");
   expect($("button[aria-label='novel.downloaded']")).toHaveLength(1);
   expect($.text()).not.toContain("novel.mediaRepairNeeded");
   expect($("button[aria-label='novel.downloadChapter']")).toHaveLength(0);
