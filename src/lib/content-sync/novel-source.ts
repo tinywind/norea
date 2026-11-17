@@ -56,6 +56,12 @@ export async function listServerChapterAvailability(source: ServerNovelSource, s
 }
 
 /**
+ * A work opened from the content server has no source to switch to while it waits, so its lookup gets
+ * the ordinary request time instead of the short wait that bounds an optional server check.
+ */
+const BOUND_WORK_LOOKUP_SECONDS = 30;
+
+/**
  * Returns false only when no server is configured or the exact chapter lookup confirms its body is absent.
  * With `sourceFallback: false`, a work opened from the content server throws ServerChapterMissingError instead.
  */
@@ -98,7 +104,9 @@ export async function tryDownloadServerChapter(
     }
     deadline.throwIfAborted();
     return { entry, token };
-  }, settings.lookupTimeoutSeconds ?? 3, signal);
+  }, source && options.sourceFallback === false
+    ? Math.max(BOUND_WORK_LOOKUP_SECONDS, settings.lookupTimeoutSeconds ?? 3)
+    : settings.lookupTimeoutSeconds ?? 3, signal);
   if (!found) {
     if (source && options.sourceFallback === false) throw new ServerChapterMissingError();
     return false;

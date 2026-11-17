@@ -138,6 +138,26 @@ it("bounds registration and lookup together and ignores responses after timeout"
   expect(contentServerRequest).not.toHaveBeenCalled();
 });
 
+it("gives a bound server work, which has no source to switch to, the ordinary request time to look up", async () => {
+  vi.useFakeTimers();
+  await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
+  vi.mocked(contentServerRequest).mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(entry), 20000)));
+  const slow = tryDownloadServerChapter(job, undefined, undefined, { sourceFallback: false });
+  await vi.advanceTimersByTimeAsync(20000);
+  expect(await slow).toBe(true);
+
+  vi.mocked(registerContentDevice).mockImplementationOnce(() => new Promise(() => undefined));
+  const stalled = tryDownloadServerChapter(job, undefined, undefined, { sourceFallback: false }).catch(error => error);
+  await vi.advanceTimersByTimeAsync(29999);
+  await vi.advanceTimersByTimeAsync(1);
+  expect(await stalled).toMatchObject({ message: "Content server lookup timed out." });
+
+  vi.mocked(registerContentDevice).mockImplementationOnce(() => new Promise(() => undefined));
+  const optional = tryDownloadServerChapter(job, undefined, undefined, { sourceFallback: true }).catch(error => error);
+  await vi.advanceTimersByTimeAsync(3000);
+  expect(await optional).toMatchObject({ message: "Content server lookup timed out." });
+});
+
 it("uses the configured deadline without limiting a successful package transfer", async () => {
   vi.useFakeTimers(); settings.serverUrl = "http://configured"; settings.lookupTimeoutSeconds = 5;
   vi.mocked(contentServerRequest).mockImplementationOnce(() => new Promise(resolve => setTimeout(() => resolve(entry), 4000)));
