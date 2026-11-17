@@ -5,6 +5,7 @@ pub mod materialize;
 pub mod migration;
 pub mod stored_chapter;
 pub mod types;
+pub mod work_categories;
 
 #[cfg(test)]
 mod tests;
@@ -40,6 +41,7 @@ pub use ledger::{
 pub use materialize::{
     defer_user_state_for_novel_in_tx, refresh_unattempted_user_state_identities_in_tx,
 };
+pub use work_categories::{WorkCategoriesDto, WorkCategoryLookupDto};
 pub use types::{
     anchor_to_json, parse_portable_reader_anchor, CurrentSnapshotRetryDto,
     ResolveUserStateLedgerConflictInputDto, UserStateApplyEffectsDto, UserStateBindingDto,
@@ -83,6 +85,21 @@ fn ledger_tx_options() -> TxOptions {
 pub fn db_user_state_set_current_mode(enabled: bool) -> Result<(), String> {
     set_user_state_current_mode(enabled);
     Ok(())
+}
+
+#[tauri::command]
+pub async fn db_user_state_list_work_categories(
+    db: State<'_, AppDatabase>,
+    server_url: String,
+    works: Vec<WorkCategoryLookupDto>,
+    mode: Option<ReadMode>,
+) -> Result<Vec<WorkCategoriesDto>, String> {
+    let mut conn = db
+        .pool_for(mode.unwrap_or_default())
+        .acquire()
+        .await
+        .map_err(|err| format!("db user state: acquire read connection: {err}"))?;
+    work_categories::list_work_categories_in_conn(&mut conn, &server_url, &works).await
 }
 
 #[tauri::command]

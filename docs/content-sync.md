@@ -45,6 +45,10 @@ banners to normal pages. Saved work details and local reading stay usable when
 the server is slow or unavailable. Explicit server actions still report failures
 that prevent completion. Sync does not refresh plugin repositories.
 Server-only works are available in Browse > Server. Opening a selected work can install its metadata and cover.
+Browse > Server cards and the home of a server work show the user's categories for that work. They are
+resolved on the device: a library work answers from its local categories, and any other work from the
+shared library state received from that server, matched by the work's portable identity. The server
+catalog itself carries no user data.
 Sync preserves existing library membership; add server works to the library
 from Browse > Server or a work's detail page. Sync now uploads stored local
 chapters and updates the remote catalog independently of browsing or selected

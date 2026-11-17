@@ -25,6 +25,7 @@ use super::ledger::{
 use super::materialize::{
     defer_user_state_for_novel_in_tx, refresh_unattempted_user_state_identities_in_tx,
 };
+use super::work_categories::{list_work_categories_in_conn, WorkCategoryLookupDto};
 use super::types::{
     sha256_hex, stored_chapter_path, user_state_entity_key, CurrentSnapshotRetryDto,
     ResolveUserStateLedgerConflictInputDto, UserStateBindingDto,
@@ -1190,4 +1191,136 @@ async fn retired_migration_sources_and_local_works_are_excluded_and_settled() {
         .await
         .unwrap();
     assert_eq!(local_lib, 1);
+}
+
+#[tokio::test]
+async fn work_categories_come_from_shared_state_until_the_work_is_a_local_library_work() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let binding = sample_binding();
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+    let b1 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    let work = sample_work();
+    let other = json!({ "pluginId": "source", "sourceNovelId": "other", "novelPath": "/other", "name": "Other" });
+    let category = |id: &str, name: &str, sort: i64, deleted: bool, revision: i64| {
+        shared_record(
+            json!({ "kind": "category", "categoryId": id }),
+            json!({ "name": name, "sort": sort, "deleted": deleted }),
+            revision,
+            &format!("op-{revision}"),
+        )
+    };
+    let membership = |work: &JsonValue, id: &str, included: bool, revision: i64| {
+        shared_record(
+            json!({ "kind": "membership", "work": work, "categoryId": id }),
+            json!({ "included": included }),
+            revision,
+            &format!("op-{revision}"),
+        )
+    };
+    let page = json!({
+        "version": 1,
+        "workspaceId": binding.workspace_id,
+        "epoch": binding.epoch,
+        "headRevision": 9,
+        "through": 9,
+        "nextCursor": 9,
+        "hasMore": false,
+        "records": [
+            category("cat-favorites", "Favorites", 2, false, 1),
+            category("cat-later", "Later", 1, false, 2),
+            shared_record(json!({ "kind": "library", "work": work }), json!({ "inLibrary": true, "addedAt": 100 }), 3, "op-3"),
+            membership(&work, "cat-favorites", true, 4),
+            membership(&work, "cat-later", true, 5),
+            membership(&work, "cat-removed", true, 6),
+            shared_record(json!({ "kind": "library", "work": other }), json!({ "inLibrary": false, "addedAt": null }), 7, "op-7"),
+            membership(&other, "cat-favorites", true, 8),
+            category("cat-removed", "Removed", 3, true, 9),
+        ],
+    });
+    let b2 = binding.clone();
+    with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move { apply_user_state_read_page_in_tx(conn, ctx, &b2, &page).await })
+    })
+    .await
+    .unwrap();
+
+    let lookups = vec![
+        WorkCategoryLookupDto {
+            plugin_id: "source".to_string(),
+            novel_id: "BOOK".to_string(),
+            novel_path: "/book".to_string(),
+        },
+        WorkCategoryLookupDto {
+            plugin_id: "source".to_string(),
+            novel_id: "other".to_string(),
+            novel_path: "/other".to_string(),
+        },
+    ];
+    let categories = |lookups: Vec<WorkCategoryLookupDto>, server_url: &'static str| async move {
+        let mut conn = pool.acquire().await.unwrap();
+        list_work_categories_in_conn(&mut conn, server_url, &lookups)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|work| work.categories)
+            .collect::<Vec<_>>()
+    };
+
+    // Not installed here: the received records answer, without the deleted category or a work outside the library.
+    assert_eq!(
+        categories(lookups.clone(), "https://state.example/").await,
+        vec![vec!["Later".to_string(), "Favorites".to_string()], vec![]]
+    );
+    assert_eq!(
+        categories(lookups.clone(), "https://another.example").await,
+        vec![Vec::<String>::new(), vec![]]
+    );
+
+    // An unsent local removal from the library is newer than the received record.
+    let library_key = user_state_entity_key(&json!({ "kind": "library", "work": work })).unwrap();
+    sqlx::query(
+        "INSERT INTO user_state_intent(entity_key, entity_json, value_json) VALUES (?1, ?2, ?3)",
+    )
+    .bind(&library_key)
+    .bind(json!({ "kind": "library", "work": work }).to_string())
+    .bind(json!({ "inLibrary": false, "addedAt": null }).to_string())
+    .execute(pool)
+    .await
+    .unwrap();
+    assert_eq!(
+        categories(lookups.clone(), "https://state.example").await[0],
+        Vec::<String>::new()
+    );
+
+    // A library work on this device answers from its own categories.
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) \
+         VALUES (1, 'source', 'book', '/book', 'Book', 1)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query("INSERT INTO category(id, name, sort, is_system) VALUES (50, 'Local shelf', 1, 0)")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO novel_category(novel_id, category_id) VALUES (1, 50)")
+        .execute(pool)
+        .await
+        .unwrap();
+    assert_eq!(
+        categories(lookups, "https://state.example").await[0],
+        vec!["Local shelf".to_string()]
+    );
 }

@@ -14,6 +14,8 @@ const mocks = vi.hoisted(() => ({
   server: "http://server",
   browseQueryKeys: [] as unknown[][],
   inLibrary: new Set<string>(),
+  categories: new Map<string, string[]>(),
+  categoryLookups: [] as unknown[][],
   bulkRequest: vi.fn(),
   downloadAll: vi.fn(),
   selection: {
@@ -58,6 +60,9 @@ vi.mock("../../store/content-server-browse", async original => {
   ) };
 });
 vi.mock("../../lib/use-library-novel-membership", () => ({ useLibraryNovelMembership: () => (_pluginId: string, path: string) => mocks.inLibrary.has(path) }));
+vi.mock("../../lib/content-sync/use-server-work-categories", () => ({
+  useServerWorkCategories: (...args: unknown[]) => { mocks.categoryLookups.push(args); return (_pluginId: string, path: string) => mocks.categories.get(path) ?? []; },
+}));
 vi.mock("./use-server-work-selection", () => ({
   useServerWorkSelection: (options: unknown) => { mocks.selectionOptions.push(options); return mocks.selection; },
 }));
@@ -114,6 +119,8 @@ beforeEach(() => {
   useContentServerBrowseStore.setState({ filtersByServer: {} });
   mocks.pages = [{ items: [work("first"), work("second")], total: 2, hasMore: false }];
   mocks.inLibrary.clear();
+  mocks.categories.clear();
+  mocks.categoryLookups.length = 0;
   mocks.selectionOptions.length = 0;
   Object.assign(mocks.selection, { allSelected: false, gathering: null, selected: new Map(), selectionMode: false });
 });
@@ -126,6 +133,14 @@ it("names source chips after installed plugins and falls back to the id", () => 
   expect(chip(elements, "Source A")).toBeDefined();
   expect(chip(elements, "source-b")).toBeDefined();
   expect(chip(elements, "contentSync.allSources").props.selected).toBe(true);
+});
+
+it("shows the user's categories on the cards of the works that have them", () => {
+  mocks.categories.set("/first", ["Later", "Favorites"]);
+  const elements = render();
+  expect(mocks.categoryLookups.at(-1)).toEqual(["http://server", [work("first").identity, work("second").identity], true]);
+  const labels = elements.filter(element => element.type === "span" && element.props["aria-label"]?.startsWith("categories.title"));
+  expect(labels.map(label => label.props.children)).toEqual(["Later, Favorites"]);
 });
 
 it("opens a work from its card and offers no server deletion on the grid", () => {

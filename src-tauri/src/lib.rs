@@ -206,6 +206,7 @@ pub fn run() {
             db::work_metadata::db_work_metadata_cancel_recovery,
             db::user_state::db_user_state_set_current_mode,
             db::user_state::db_user_state_get_binding,
+            db::user_state::db_user_state_list_work_categories,
             db::user_state::db_user_state_bind_workspace,
             db::user_state::db_user_state_prepare_operations,
             db::user_state::db_user_state_get_ledger_status,

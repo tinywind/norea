@@ -9,6 +9,7 @@ import { listServerWorks, openServerNovel, type ServerSourceSummary, type Server
 import { contentServerRequest } from "../../lib/content-sync/client";
 import { registerContentDevice } from "../../lib/content-sync/device";
 import { describeError } from "../../lib/errors";
+import { useServerWorkCategories } from "../../lib/content-sync/use-server-work-categories";
 import { useLibraryNovelMembership } from "../../lib/use-library-novel-membership";
 import { useContentSyncStore } from "../../store/content-sync";
 import { EMPTY_CONTENT_SERVER_BROWSE_FILTERS, useContentServerBrowseStore } from "../../store/content-server-browse";
@@ -83,6 +84,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
   const error = device.error ?? sources.error ?? works.error ?? open.error;
   const items = works.data?.pages.flatMap(page => page.items) ?? [];
   const matchingTotal = works.data?.pages[0]?.total ?? 0;
+  const categoriesOf = useServerWorkCategories(server, items.map(work => work.identity), active);
   const refresh = () => { void queryClient.invalidateQueries({ queryKey: ["content-server", server] }); };
 
   if (!server) {
@@ -193,6 +195,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
           const inLibrary = isInLibrary(work.identity.pluginId, work.identity.novelPath);
           const target: QuickAddTarget = { kind: "server", server, work };
           const selected = selection.selected.has(work.id);
+          const categories = categoriesOf(work.identity.pluginId, work.identity.novelPath).join(", ");
           const content = (
             <>
               <span className="norea-source-cover-frame">
@@ -206,6 +209,11 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
               </span>
               <span className="norea-source-card-title" title={work.novel.name}>{work.novel.name}</span>
               <span className="norea-source-card-meta">{t("contentSync.catalogCount", { count: work.chapterCount })}</span>
+              {categories ? (
+                <span aria-label={`${t("categories.title")}: ${categories}`} className="norea-source-card-categories" title={categories}>
+                  {categories}
+                </span>
+              ) : null}
             </>
           );
           return selection.selectionMode ? (

@@ -62,6 +62,7 @@ import { ChapterDifferenceManager } from "../components/novel/ChapterDifferenceM
 import { useChapterDifferences } from "../components/novel/use-chapter-differences";
 import { NovelHeroSkeleton, NovelWorkspace } from "../components/novel/NovelWorkspace";
 import { NovelCategoryEditor } from "../components/novel/NovelCategoryEditor";
+import { ServerWorkCategories } from "../components/novel/ServerWorkCategories";
 import {
   ServerChapterManager,
   useManagedServerWork,
@@ -844,6 +845,8 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     onOpenSheet={() => setCategorySheetOpen(true)}
                     sheetOpen={categorySheetOpen}
                   />
+                ) : serverSourceQuery.data ? (
+                  <ServerWorkCategories active={active} novel={novel} serverUrl={serverSourceQuery.data.serverUrl} />
                 ) : null}
                 chapters={chapters}
                 checkingNewChapters={serverSync.checking}

@@ -70,6 +70,37 @@ export function setUserStateActiveServer(serverUrl: string | null): void {
   }
 }
 
+export interface WorkCategoryLookup {
+  pluginId: string;
+  /** The source's work ID; empty when the work is known only by its path. */
+  novelId: string;
+  novelPath: string;
+}
+
+export interface WorkCategories {
+  pluginId: string;
+  novelPath: string;
+  categories: string[];
+}
+
+const WORK_CATEGORY_LOOKUP_BATCH = 200;
+
+/** Category names per work, from local library categories or the shared state received from `serverUrl`. */
+export async function listUserWorkCategories(
+  serverUrl: string,
+  works: readonly WorkCategoryLookup[],
+): Promise<WorkCategories[]> {
+  const result: WorkCategories[] = [];
+  for (let start = 0; start < works.length; start += WORK_CATEGORY_LOOKUP_BATCH) {
+    result.push(...await invokeDbQuery<WorkCategories[]>("db_user_state_list_work_categories", {
+      serverUrl,
+      works: works.slice(start, start + WORK_CATEGORY_LOOKUP_BATCH),
+      mode: "committed",
+    }));
+  }
+  return result;
+}
+
 export async function getUserStateBinding(
   serverUrl?: string,
 ): Promise<UserStateBinding | null> {

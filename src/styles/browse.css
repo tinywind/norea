@@ -613,6 +613,16 @@
   white-space: nowrap;
 }
 
+.norea-source-card-categories {
+  color: var(--norea-color-accent);
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  max-width: 6.5rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 @media (max-width: 767px) {
   .norea-plugin-settings-editor .norea-settings-form-row {
     gap: var(--norea-space-2);
