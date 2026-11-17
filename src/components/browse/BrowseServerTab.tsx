@@ -3,7 +3,6 @@ import { createPortal } from "react-dom";
 import { Button, Loader } from "@mantine/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { ChipButton } from "../ChipButton";
 import { useTranslation } from "../../i18n";
 import { listServerWorks, openServerNovel, type ServerSourceSummary, type ServerWorkSummary } from "../../lib/content-sync/browse";
 import { contentServerRequest } from "../../lib/content-sync/client";
@@ -21,6 +20,7 @@ import { AddToLibraryIcon, CheckIcon, DownloadIcon, InLibraryIcon, RefreshIcon, 
 import { SelectionAction, SelectionBar } from "../ui/SelectionBar";
 import { CoverGridSkeleton } from "./CoverGridSkeleton";
 import { QuickAddCard } from "./QuickAddCard";
+import { ServerBrowseFilters } from "./ServerBrowseFilters";
 import { useQuickAddToLibrary, type QuickAddTarget } from "./use-quick-add";
 import { useInstalledPlugins } from "./use-plugin-catalog";
 import { downloadServerWorksOnce } from "./server-download-all";
@@ -43,7 +43,8 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
   const isInLibrary = useLibraryNovelMembership();
   const quickAdd = useQuickAddToLibrary();
   const installed = useInstalledPlugins(active && !!server);
-  const { draft, query, source } = useContentServerBrowseStore(state => state.filtersByServer[server] ?? EMPTY_CONTENT_SERVER_BROWSE_FILTERS);
+  const { completion, draft, query, source } = useContentServerBrowseStore(state => state.filtersByServer[server] ?? EMPTY_CONTENT_SERVER_BROWSE_FILTERS);
+  const filter = useMemo(() => ({ completion, query, source }), [completion, query, source]);
   const setFilters = useContentServerBrowseStore(state => state.setFilters);
   const device = useQuery({
     meta: { errorPresentation: "inline" },
@@ -60,13 +61,13 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
   });
   const works = useInfiniteQuery({
     meta: { errorPresentation: "inline" },
-    queryKey: ["content-server", server, "browse", query, source],
+    queryKey: ["content-server", server, "browse", query, source, completion],
     initialPageParam: 0,
-    queryFn: ({ pageParam, signal }) => listServerWorks(server, device.data!, query, source, pageParam, signal),
+    queryFn: ({ pageParam, signal }) => listServerWorks(server, device.data!, filter, pageParam, signal),
     getNextPageParam: (last, _pages, offset) => last.hasMore ? offset + last.items.length : undefined,
     enabled, staleTime: 30_000,
   });
-  const selection = useServerWorkSelection({ active, query, server, source, token: device.data });
+  const selection = useServerWorkSelection({ active, filter, server, token: device.data });
   const bulkAdd = useServerLibraryAdd(server);
   const open = useMutation({
     meta: { errorPresentation: "inline" },
@@ -96,12 +97,6 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
       />
     );
   }
-
-  const sourceChip = (value: string, label: string) => (
-    <ChipButton key={value || "all"} onClick={() => setFilters(server, { source: value })} selected={source === value}>
-      {label}
-    </ChipButton>
-  );
 
   const selecting = selection.selectionMode;
   useEffect(() => {
@@ -170,7 +165,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
             <IconButton
               disabled={!enabled || matchingTotal === 0}
               label={t("serverLibraryAdd.addAll", { count: matchingTotal })}
-              onClick={() => bulkAdd.request({ count: matchingTotal, works: { query, source } })}
+              onClick={() => bulkAdd.request({ count: matchingTotal, works: filter })}
               size="lg"
             >
               <AddToLibraryIcon />
@@ -178,12 +173,13 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
           </div>
         </div>
       )}
-      {(sources.data?.items.length ?? 0) > 0 ? (
-        <div aria-label={t("contentSync.sourceFilter")} className="norea-browse-chips norea-browse-chips--scroll" role="group">
-          {sourceChip("", t("contentSync.allSources"))}
-          {sources.data!.items.map(item => sourceChip(item.id, pluginNames.get(item.id) ?? item.id))}
-        </div>
-      ) : null}
+      <ServerBrowseFilters
+        filter={filter}
+        onChange={next => setFilters(server, next)}
+        sourceName={id => pluginNames.get(id) ?? id}
+        sources={sources.data?.items ?? []}
+        sourcesLoading={sources.isLoading}
+      />
       {error ? (
         <StateView action={{ label: t("common.retry"), onClick: refresh }} color="danger"
           details={{ content: describeError(error), label: t("common.details") }} title={t("source.error")} />

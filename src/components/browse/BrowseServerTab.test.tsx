@@ -75,7 +75,7 @@ vi.mock("./use-quick-add", () => ({
 import { BrowseServerTab } from "./BrowseServerTab";
 import { QuickAddCard } from "./QuickAddCard";
 import { SearchBar } from "../SearchBar";
-import { ChipButton } from "../ChipButton";
+import { ServerBrowseFilters } from "./ServerBrowseFilters";
 import { StateView } from "../AppFrame";
 import { useContentServerBrowseStore } from "../../store/content-server-browse";
 import { IconButton } from "../IconButton";
@@ -125,14 +125,27 @@ beforeEach(() => {
   Object.assign(mocks.selection, { allSelected: false, gathering: null, selected: new Map(), selectionMode: false });
 });
 
-const chip = (elements: ReactElement<ControlProps>[], label: string) =>
-  elements.find(element => element.type === ChipButton && element.props.children === label)!;
+const toolbarAction = (elements: ReactElement<ControlProps>[], label: string) =>
+  elements.find(element => element.type === IconButton && element.props.label === label)!.props;
 
-it("names source chips after installed plugins and falls back to the id", () => {
+type FiltersProps = Parameters<typeof ServerBrowseFilters>[0];
+const filters = (elements: ReactElement<ControlProps>[]) =>
+  (elements.find(element => element.type === ServerBrowseFilters) as unknown as ReactElement<FiltersProps>).props;
+
+it("names server sources after installed plugins and falls back to the id", () => {
+  const props = filters(render());
+  expect(props.sources.map(source => props.sourceName(source.id))).toEqual(["Source A", "source-b"]);
+  expect(props.filter).toEqual({ completion: "", query: "", source: "" });
+});
+
+it("browses only the chosen completion and keeps it for add all and select all", () => {
+  filters(render()).onChange({ completion: "completed" });
   const elements = render();
-  expect(chip(elements, "Source A")).toBeDefined();
-  expect(chip(elements, "source-b")).toBeDefined();
-  expect(chip(elements, "contentSync.allSources").props.selected).toBe(true);
+  expect(filters(elements).filter.completion).toBe("completed");
+  expect(mocks.browseQueryKeys.at(-1)).toEqual(["content-server", "http://server", "browse", "", "", "completed"]);
+  expect(mocks.selectionOptions.at(-1)).toMatchObject({ filter: { completion: "completed", query: "", source: "" } });
+  toolbarAction(elements, "serverLibraryAdd.addAll").onClick!();
+  expect(mocks.bulkRequest).toHaveBeenCalledWith({ count: 2, works: { completion: "completed", query: "", source: "" } });
 });
 
 it("shows the user's categories on the cards of the works that have them", () => {
@@ -168,15 +181,15 @@ it("links to the content server settings when no server is configured", () => {
 it("retains the search and source when returning from a work", () => {
   render().find(element => element.type === SearchBar)!.props.onChange!("  saved search  ");
   render().find(element => element.type === SearchBar)!.props.onSubmit!();
-  chip(render(), "Source A").props.onClick!();
+  filters(render()).onChange({ source: "source-a" });
 
   mocks.state.length = 0;
   render();
   mocks.effects.forEach(effect => effect());
   const returned = render();
   expect(returned.find(element => element.type === SearchBar)!.props.value).toBe("  saved search  ");
-  expect(chip(returned, "Source A").props.selected).toBe(true);
-  expect(mocks.browseQueryKeys.at(-1)).toEqual(["content-server", "http://server", "browse", "saved search", "source-a"]);
+  expect(filters(returned).filter.source).toBe("source-a");
+  expect(mocks.browseQueryKeys.at(-1)).toEqual(["content-server", "http://server", "browse", "saved search", "source-a", ""]);
 });
 
 it("keeps filters separate for each content server", () => {
@@ -184,19 +197,16 @@ it("keeps filters separate for each content server", () => {
   render().find(element => element.type === SearchBar)!.props.onSubmit!();
   mocks.server = "http://other-server";
   expect(render().find(element => element.type === SearchBar)!.props.value).toBe("");
-  expect(mocks.browseQueryKeys.at(-1)).toEqual(["content-server", "http://other-server", "browse", "", ""]);
+  expect(mocks.browseQueryKeys.at(-1)).toEqual(["content-server", "http://other-server", "browse", "", "", ""]);
   mocks.server = "http://server";
   expect(render().find(element => element.type === SearchBar)!.props.value).toBe("first server");
 });
-
-const toolbarAction = (elements: ReactElement<ControlProps>[], label: string) =>
-  elements.find(element => element.type === IconButton && element.props.label === label)!.props;
 
 it("offers adding every matching server work, including unloaded pages, from the toolbar", () => {
   mocks.pages = [{ items: [work("first"), work("second")], total: 120, hasMore: true }];
   useContentServerBrowseStore.getState().setFilters("http://server", { query: "saga", source: "source-a" });
   toolbarAction(render(), "serverLibraryAdd.addAll").onClick!();
-  expect(mocks.bulkRequest).toHaveBeenCalledWith({ count: 120, works: { query: "saga", source: "source-a" } });
+  expect(mocks.bulkRequest).toHaveBeenCalledWith({ count: 120, works: { completion: "", query: "saga", source: "source-a" } });
 });
 
 it("enters selection from the toolbar or a card's long press", () => {
@@ -205,7 +215,7 @@ it("enters selection from the toolbar or a card's long press", () => {
   expect(mocks.selection.enter).toHaveBeenCalledWith();
   elements.filter(element => element.type === QuickAddCard)[1]!.props.onSelect!();
   expect(mocks.selection.enter).toHaveBeenLastCalledWith(expect.objectContaining({ id: "second" }));
-  expect(mocks.selectionOptions.at(-1)).toMatchObject({ query: "", server: "http://server", source: "", token: "device" });
+  expect(mocks.selectionOptions.at(-1)).toMatchObject({ filter: { completion: "", query: "", source: "" }, server: "http://server", token: "device" });
 });
 
 it("toggles works in selection mode, works in the library included", () => {

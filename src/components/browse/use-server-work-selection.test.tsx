@@ -1,7 +1,7 @@
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
-import type { ServerWorkSummary } from "../../lib/content-sync/browse";
+import type { ServerWorkFilter, ServerWorkSummary } from "../../lib/content-sync/browse";
 
 const mocks = vi.hoisted(() => ({
   backNavigation: vi.fn(),
@@ -19,17 +19,17 @@ const work = (id: string) => ({ id, novel: { name: id }, identity: { pluginId: "
 
 let root: Root;
 let selection: ReturnType<typeof useServerWorkSelection>;
-let filters = { query: "", source: "" };
+let filter: ServerWorkFilter = { completion: "", query: "", source: "" };
 
 function Probe() {
-  selection = useServerWorkSelection({ active: true, server: "http://server", token: "device", ...filters });
+  selection = useServerWorkSelection({ active: true, filter, server: "http://server", token: "device" });
   return null;
 }
 const render = () => act(async () => root.render(<Probe />));
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  filters = { query: "", source: "" };
+  filter = { completion: "", query: "", source: "" };
   const document = { nodeType: 9, activeElement: null, body: null as unknown, documentElement: { nodeName: "HTML" }, addEventListener() {}, removeEventListener() {} };
   const container = {
     nodeType: 1, nodeName: "DIV", tagName: "DIV", namespaceURI: "http://www.w3.org/1999/xhtml",
@@ -66,15 +66,15 @@ it("enters selection and toggles any work, including one already in the library"
 
 it("selects every matching work across unloaded pages, works in the library included", async () => {
   let finish!: (works: ServerWorkSummary[]) => void;
-  mocks.listAll.mockImplementation((_server, _token, _query, _source, onPage: (loaded: number, total: number) => void) => {
+  mocks.listAll.mockImplementation((_server, _token, _filter, onPage: (loaded: number, total: number) => void) => {
     onPage(100, 250);
     return new Promise((resolve) => { finish = resolve; });
   });
-  filters = { query: "saga", source: "source" };
+  filter = { completion: "completed", query: "saga", source: "source" };
   await render();
   await act(async () => selection.enter());
   await act(async () => selection.selectAll());
-  expect(mocks.listAll).toHaveBeenCalledWith("http://server", "device", "saga", "source", expect.any(Function), expect.any(AbortSignal));
+  expect(mocks.listAll).toHaveBeenCalledWith("http://server", "device", { completion: "completed", query: "saga", source: "source" }, expect.any(Function), expect.any(AbortSignal));
   expect(selection.gathering).toEqual({ loaded: 100, total: 250 });
 
   await act(async () => finish([work("a"), work("b"), work("c")]));
@@ -89,13 +89,13 @@ it("selects every matching work across unloaded pages, works in the library incl
 it("discards a gather in flight and clears the selection when the filters change", async () => {
   let signal!: AbortSignal;
   let finish!: (works: ServerWorkSummary[]) => void;
-  mocks.listAll.mockImplementation((_server, _token, _query, _source, _onPage, abort: AbortSignal) => {
+  mocks.listAll.mockImplementation((_server, _token, _filter, _onPage, abort: AbortSignal) => {
     signal = abort;
     return new Promise((resolve) => { finish = resolve; });
   });
   await act(async () => selection.enter(work("a")));
   await act(async () => selection.selectAll());
-  filters = { query: "other", source: "" };
+  filter = { completion: "ongoing", query: "", source: "" };
   await render();
   expect(signal.aborted).toBe(true);
   expect(selection.selected.size).toBe(0);

@@ -1,17 +1,21 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
+import type { ServerWorkCompletion, ServerWorkFilter } from "../lib/content-sync/browse";
 
-interface ContentServerBrowseFilters {
+interface ContentServerBrowseFilters extends ServerWorkFilter {
   draft: string;
-  query: string;
-  source: string;
 }
 
 export const EMPTY_CONTENT_SERVER_BROWSE_FILTERS: ContentServerBrowseFilters = {
+  completion: "",
   draft: "",
   query: "",
   source: "",
 };
+
+function isCompletion(value: unknown): value is ServerWorkCompletion {
+  return value === "" || value === "completed" || value === "ongoing";
+}
 
 interface ContentServerBrowseState {
   filtersByServer: Record<string, ContentServerBrowseFilters>;
@@ -33,6 +37,7 @@ function isServerUrl(value: string): boolean {
 
 function normalizeFilters(value: Record<string, unknown>): ContentServerBrowseFilters {
   return {
+    completion: isCompletion(value.completion) ? value.completion : "",
     draft: typeof value.draft === "string" ? value.draft : "",
     query: typeof value.query === "string" ? value.query : "",
     source: typeof value.source === "string" ? value.source : "",

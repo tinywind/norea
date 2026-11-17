@@ -1,6 +1,6 @@
 import { addNovelsToCategory } from "../../db/queries/category";
 import type { TranslationKey } from "../../i18n";
-import { listAllServerWorks, openServerNovel, resolveServerNovelTarget, type ServerWorkSummary } from "../../lib/content-sync/browse";
+import { listAllServerWorks, openServerNovel, resolveServerNovelTarget, type ServerWorkFilter, type ServerWorkSummary } from "../../lib/content-sync/browse";
 import { registerContentDevice } from "../../lib/content-sync/device";
 import { describeError } from "../../lib/errors";
 import { taskScheduler, type TaskHandle } from "../../lib/tasks/scheduler";
@@ -13,10 +13,7 @@ export const SERVER_LIBRARY_ADD_CONCURRENCY = 3;
 type Translate = (key: TranslationKey, values?: Record<string, string | number>) => string;
 
 /** Every work matching a server browse filter, gathered when the task starts. */
-export interface ServerWorkListing {
-  query: string;
-  source: string;
-}
+export type ServerWorkListing = ServerWorkFilter;
 
 function isWorkListing(works: readonly ServerWorkSummary[] | ServerWorkListing): works is ServerWorkListing {
   return !Array.isArray(works);
@@ -152,9 +149,8 @@ export function enqueueServerLibraryAdd(
       if (!isWorkListing(request.works)) {
         works = request.works;
       } else {
-        const { query, source } = request.works;
         const token = await registerContentDevice(request.server, useContentSyncStore.getState().deviceName, signal);
-        works = await listAllServerWorks(request.server, token, query, source, (loaded, total) => {
+        works = await listAllServerWorks(request.server, token, request.works, (loaded, total) => {
           setDetail(t("serverLibraryAdd.gathering", { loaded, total }));
         }, signal);
         remaining = [...works];

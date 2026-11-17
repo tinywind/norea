@@ -717,3 +717,8 @@
   gap: var(--norea-space-5);
   min-width: 0;
 }
+
+/* The library filter row, aligned with the server browse toolbar instead of the library's inset. */
+.norea-library-filter-row.norea-server-filter-row {
+  padding: 0;
+}

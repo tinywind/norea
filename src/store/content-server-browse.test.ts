@@ -18,7 +18,7 @@ afterEach(() => vi.unstubAllGlobals());
 it("restores server-specific filters after a document reload creates a new store", async () => {
   const first = (await import("./content-server-browse")).useContentServerBrowseStore;
   first.getState().setFilters("http://server", {
-    draft: "QA Server ", query: "QA Server", source: "qa-source",
+    completion: "completed", draft: "QA Server ", query: "QA Server", source: "qa-source",
   });
   first.getState().setFilters("https://other-server", { draft: "Other", query: "Other" });
   expect(JSON.parse(values.get(STORAGE_KEY)!)).toMatchObject({ version: 1 });
@@ -27,8 +27,8 @@ it("restores server-specific filters after a document reload creates a new store
   const restored = (await import("./content-server-browse")).useContentServerBrowseStore;
   expect(restored).not.toBe(first);
   expect(restored.getState().filtersByServer).toEqual({
-    "http://server": { draft: "QA Server ", query: "QA Server", source: "qa-source" },
-    "https://other-server": { draft: "Other", query: "Other", source: "" },
+    "http://server": { completion: "completed", draft: "QA Server ", query: "QA Server", source: "qa-source" },
+    "https://other-server": { completion: "", draft: "Other", query: "Other", source: "" },
   });
   restored.getState().setFilters("http://server", { source: "new-source" });
   expect(restored.getState().filtersByServer["https://other-server"]!.query).toBe("Other");
@@ -41,7 +41,7 @@ it("validates rehydrated fields and never replaces store actions from storage", 
     state: {
       setFilters: "invalid action",
       filtersByServer: {
-        "https://server": { draft: "Saved draft", query: 2, source: null, extra: true },
+        "https://server": { completion: "done", draft: "Saved draft", query: 2, source: null, extra: true },
         "https://broken-server": [],
         "invalid-server": { draft: "Invalid" },
         "file:///tmp/server": { query: "Invalid" },
@@ -50,7 +50,7 @@ it("validates rehydrated fields and never replaces store actions from storage", 
   }));
   await store.persist.rehydrate();
   expect(store.getState().filtersByServer).toEqual({
-    "https://server": { draft: "Saved draft", query: "", source: "" },
+    "https://server": { completion: "", draft: "Saved draft", query: "", source: "" },
   });
   store.getState().setFilters("https://server", { query: "Saved draft" });
   expect(store.getState().filtersByServer["https://server"]!.query).toBe("Saved draft");

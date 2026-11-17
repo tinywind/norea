@@ -25,31 +25,36 @@ export interface ServerWorkSummary {
 }
 export interface ServerWorkPage { items: ServerWorkSummary[]; total: number; hasMore: boolean }
 export interface ServerSourceSummary { id: string; workCount: number }
+/** Completed or ongoing works only; empty for every work. */
+export type ServerWorkCompletion = "" | "completed" | "ongoing";
+/** The server browse filter: a title search, one source ID or every source, and completion. */
+export interface ServerWorkFilter { query: string; source: string; completion: ServerWorkCompletion }
 
 /** The server's largest accepted catalog page. */
 const SERVER_WORK_PAGE_MAX = 100;
 
-export function listServerWorks(server: string, token: string, query: string, source: string, offset: number, signal?: AbortSignal, limit = 40): Promise<ServerWorkPage> {
+export function listServerWorks(server: string, token: string, { query, source, completion }: ServerWorkFilter, offset: number, signal?: AbortSignal, limit = 40): Promise<ServerWorkPage> {
   const params = new URLSearchParams({ q: query, offset: String(offset), limit: String(limit) });
   if (source) params.set("source", source);
+  if (completion) params.set("completion", completion);
   return contentServerRequest(server, `/catalog/works?${params}`, token, "GET", undefined, signal);
 }
 
 /**
- * Every work matching the search and source, fetched in the largest pages the
+ * Every work matching the filter, fetched in the largest pages the
  * server accepts. Concurrent server changes can shift offset pages, so works
  * are deduplicated by id. `onPage` receives the works loaded so far and the
  * server's current total.
  */
 export async function listAllServerWorks(
-  server: string, token: string, query: string, source: string,
+  server: string, token: string, filter: ServerWorkFilter,
   onPage?: (loaded: number, total: number) => void, signal?: AbortSignal,
 ): Promise<ServerWorkSummary[]> {
   const works = new Map<string, ServerWorkSummary>();
   let offset = 0;
   for (;;) {
     signal?.throwIfAborted();
-    const page = await listServerWorks(server, token, query, source, offset, signal, SERVER_WORK_PAGE_MAX);
+    const page = await listServerWorks(server, token, filter, offset, signal, SERVER_WORK_PAGE_MAX);
     for (const work of page.items) works.set(work.id, work);
     offset += page.items.length;
     onPage?.(works.size, Math.max(page.total, works.size));

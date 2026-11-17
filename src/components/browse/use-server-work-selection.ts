@@ -1,14 +1,13 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "../../i18n";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
-import { listAllServerWorks, type ServerWorkSummary } from "../../lib/content-sync/browse";
+import { listAllServerWorks, type ServerWorkFilter, type ServerWorkSummary } from "../../lib/content-sync/browse";
 import { showErrorToast } from "../../lib/runtime/error-toast";
 
 interface ServerWorkSelectionOptions {
   active: boolean;
-  query: string;
+  filter: ServerWorkFilter;
   server: string;
-  source: string;
   token: string | undefined;
 }
 
@@ -19,11 +18,12 @@ export interface ServerWorkSelectAllProgress {
 
 /**
  * Server-grid selection, including works already in the library.
- * Select all gathers every work matching the current search and source,
+ * Select all gathers every work matching the current filter,
  * including pages the grid has not loaded; changing the filters or server
  * clears the selection and discards a gather in flight.
  */
-export function useServerWorkSelection({ active, query, server, source, token }: ServerWorkSelectionOptions) {
+export function useServerWorkSelection({ active, filter, server, token }: ServerWorkSelectionOptions) {
+  const { completion, query, source } = filter;
   const { t } = useTranslation();
   const [selected, setSelected] = useState<ReadonlyMap<string, ServerWorkSummary>>(() => new Map());
   const [selecting, setSelecting] = useState(false);
@@ -50,7 +50,7 @@ export function useServerWorkSelection({ active, query, server, source, token }:
     cancelGather();
     setSelected(new Map());
     setSelectAllCount(null);
-  }, [cancelGather, query, server, source]);
+  }, [cancelGather, completion, query, server, source]);
 
   useEffect(() => () => requestRef.current?.abort(), []);
 
@@ -80,7 +80,7 @@ export function useServerWorkSelection({ active, query, server, source, token }:
     const controller = new AbortController();
     requestRef.current = controller;
     setGathering({ loaded: 0, total: 0 });
-    void listAllServerWorks(server, token, query, source, (loaded, total) => {
+    void listAllServerWorks(server, token, { completion, query, source }, (loaded, total) => {
       if (!controller.signal.aborted) setGathering({ loaded, total });
     }, controller.signal)
       .then((works) => {
@@ -97,7 +97,7 @@ export function useServerWorkSelection({ active, query, server, source, token }:
         requestRef.current = null;
         setGathering(null);
       });
-  }, [query, server, source, t, token]);
+  }, [completion, query, server, source, t, token]);
 
   return {
     allSelected: selectAllCount !== null && selected.size > 0 && selected.size >= selectAllCount,

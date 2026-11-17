@@ -129,15 +129,15 @@ it("runs one main-lane task with progress and retries only the failed works", as
 
 it("gathers every work of a listing when the task starts", async () => {
   mocks.enqueueMain.mockReturnValue({ id: "task", promise: Promise.resolve() });
-  mocks.listAllServerWorks.mockImplementation(async (_server, _token, _query, _source, onPage: (loaded: number, total: number) => void) => {
+  mocks.listAllServerWorks.mockImplementation(async (_server, _token, _filter, onPage: (loaded: number, total: number) => void) => {
     onPage(2, 2);
     return [work("a"), work("b")];
   });
   const retry = vi.fn();
-  enqueueServerLibraryAdd({ categoryIds: [], count: 2, server: "http://server", works: { query: "Book", source: "source" } }, t, retry);
+  enqueueServerLibraryAdd({ categoryIds: [], count: 2, server: "http://server", works: { completion: "completed", query: "Book", source: "source" } }, t, retry);
   const taskContext = context();
   await expect(enqueuedSpec().run(taskContext)).resolves.toEqual({ added: 2, failed: [], pending: [], skipped: 0 });
-  expect(mocks.listAllServerWorks).toHaveBeenCalledWith("http://server", "device", "Book", "source", expect.any(Function), taskContext.signal);
+  expect(mocks.listAllServerWorks).toHaveBeenCalledWith("http://server", "device", { completion: "completed", query: "Book", source: "source" }, expect.any(Function), taskContext.signal);
   expect(taskContext.setDetail).toHaveBeenCalledWith("serverLibraryAdd.gathering(loaded=2,total=2)");
 });
 

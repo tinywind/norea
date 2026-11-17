@@ -89,10 +89,10 @@ it("only adds when the prompt names no works to download", () => {
 it("toasts the summary once the background add finishes and refreshes library queries", async () => {
   const result: ServerLibraryAddResult = { added: 118, failed: [], pending: [], skipped: 2 };
   mocks.enqueue.mockReturnValue({ id: "task", promise: Promise.resolve(result) });
-  startServerLibraryAdd({ categoryIds: [3], count: 120, server: "http://server", works: { query: "", source: "" } }, t, queryClient);
+  startServerLibraryAdd({ categoryIds: [3], count: 120, server: "http://server", works: { completion: "", query: "", source: "" } }, t, queryClient);
   await settle();
   expect(mocks.enqueue).toHaveBeenCalledWith(
-    { categoryIds: [3], count: 120, server: "http://server", works: { query: "", source: "" } }, t, expect.any(Function));
+    { categoryIds: [3], count: 120, server: "http://server", works: { completion: "", query: "", source: "" } }, t, expect.any(Function));
   expect(mocks.show).toHaveBeenCalledWith(expect.objectContaining({
     color: "ok", message: "serverLibraryAdd.added:118 · serverLibraryAdd.skipped:2",
   }));
@@ -105,7 +105,7 @@ it("lists failed works with a Retry that adds only those works again", async () 
   mocks.enqueue
     .mockReturnValueOnce({ id: "task", promise: Promise.reject(error) })
     .mockReturnValue({ id: "retry", promise: new Promise(() => undefined) });
-  startServerLibraryAdd({ categoryIds: [], count: 120, server: "http://server", works: { query: "", source: "" } }, t, queryClient);
+  startServerLibraryAdd({ categoryIds: [], count: 120, server: "http://server", works: { completion: "", query: "", source: "" } }, t, queryClient);
   await settle();
   expect(mocks.show.mock.calls[0]![0]).toMatchObject({
     color: "danger", title: "serverLibraryAdd.added:118 · serverLibraryAdd.failedCount:2",
