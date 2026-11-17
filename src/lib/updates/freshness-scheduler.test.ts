@@ -96,7 +96,7 @@ it("waits for the next interval after the user cancels an automatic check", asyn
 it("leaves completed works out of automatic checks until skipping is turned off", async () => {
   mocks.candidates = [
     { ...candidate(1), completedOverride: true },
-    { ...candidate(2), status: "완결", completedOverride: null },
+    { ...candidate(2), status: "Completed", completedOverride: null },
     { ...candidate(3), status: "Completed", completedOverride: false },
     { ...candidate(4), status: "Ongoing", completedOverride: null },
   ];

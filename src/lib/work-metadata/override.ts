@@ -1,3 +1,4 @@
+import { NovelStatus } from "../plugins/types";
 /** User-set work metadata, kept apart from `novel.json` so no source or metadata refresh can change it. */
 export interface WorkOverrideField {
   value: string | number | boolean | null;
@@ -100,9 +101,10 @@ export function completedOverrideOf(override: WorkOverrideV1 | null | undefined)
   return typeof value === "boolean" ? value : null;
 }
 
-const COMPLETED_SOURCE_STATUS = /complete|finished|완결|完結|完结/i;
-
-/** Whether a work counts as completed: the user's flag wins, otherwise the source status text decides. */
+/**
+ * Whether a work counts as completed: the user's flag wins, otherwise only the plugin's
+ * `NovelStatus.Completed` does. Recognizing a source's completion wording is the plugin's job.
+ */
 export function isNovelCompleted(novel: { status?: string | null; completedOverride?: boolean | null }): boolean {
-  return novel.completedOverride ?? COMPLETED_SOURCE_STATUS.test(novel.status ?? "");
+  return novel.completedOverride ?? novel.status === NovelStatus.Completed;
 }

@@ -59,8 +59,9 @@ it("compares override fields by value and edit time", () => {
 
 it.each([
   [{ status: "Completed" }, true],
-  [{ status: "완결" }, true],
-  [{ status: "Publishing Finished" }, true],
+  [{ status: "완결" }, false],
+  [{ status: "completed" }, false],
+  [{ status: "Publishing Finished" }, false],
   [{ status: "Ongoing" }, false],
   [{ status: null }, false],
   [{ status: "Ongoing", completedOverride: true }, true],
