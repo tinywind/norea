@@ -99,12 +99,52 @@ pub async fn find_user_state_work_in_tx(
     }))
 }
 
+/// Composition entry ids by chapter path for the works one projection pass touches. Without it, every
+/// composed chapter's record parses its work's whole composition again.
+#[derive(Debug, Default)]
+pub struct CompositionEntryCache(HashMap<i64, HashMap<String, Option<String>>>);
+
+impl CompositionEntryCache {
+    async fn entry_id_in_tx(
+        &mut self,
+        conn: &mut SqliteConnection,
+        novel_id: i64,
+        chapter_path: &str,
+    ) -> Result<Option<String>, String> {
+        if !self.0.contains_key(&novel_id) {
+            let rows = sqlx::query(
+                "SELECT json_extract(entry.value, '$.path') AS path, \
+                        json_extract(entry.value, '$.id') AS id \
+                 FROM novel_chapter_composition c, json_each(c.payload, '$.entries') entry \
+                 WHERE c.novel_id = ?1",
+            )
+            .bind(novel_id)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: load composition entries: {err}"))?;
+            let mut entries: HashMap<String, Option<String>> = HashMap::with_capacity(rows.len());
+            for row in rows {
+                if let Some(path) = row.get::<Option<String>, _>("path") {
+                    entries.entry(path).or_insert_with(|| row.get("id"));
+                }
+            }
+            self.0.insert(novel_id, entries);
+        }
+        Ok(self.0[&novel_id].get(chapter_path).cloned().flatten())
+    }
+
+    fn forget(&mut self, novel_id: i64) {
+        self.0.remove(&novel_id);
+    }
+}
+
 async fn find_chapter_in_tx(
     root: Option<&Path>,
     conn: &mut SqliteConnection,
     novel_id: i64,
     chapter: &UserStateChapterReferenceDto,
     skipped_chapter_ids: &HashSet<i64>,
+    composition_entries: Option<&mut CompositionEntryCache>,
 ) -> Result<i64, MaterializeError> {
     if parse_stored_chapter_path(&chapter.chapter_path).is_some() {
         let resolved = resolve_stored_chapter_reference_in_tx(
@@ -146,16 +186,23 @@ async fn find_chapter_in_tx(
     if chapter.chapter_path.starts_with("norea-composed:")
         || chapter.chapter_path.starts_with("norea-source:")
     {
-        let entry_id: Option<String> = sqlx::query_scalar(
-            "SELECT json_extract(entry.value, '$.id') \
-             FROM novel_chapter_composition c, json_each(c.payload, '$.entries') entry \
-             WHERE c.novel_id = ?1 AND json_extract(entry.value, '$.path') = ?2",
-        )
-        .bind(novel_id)
-        .bind(&chapter.chapter_path)
-        .fetch_optional(&mut *conn)
-        .await
-        .map_err(|err| format!("db user state: check chapter ownership: {err}"))?;
+        let entry_id: Option<String> = match composition_entries {
+            Some(cache) => {
+                cache
+                    .entry_id_in_tx(conn, novel_id, &chapter.chapter_path)
+                    .await?
+            }
+            None => sqlx::query_scalar(
+                "SELECT json_extract(entry.value, '$.id') \
+                 FROM novel_chapter_composition c, json_each(c.payload, '$.entries') entry \
+                 WHERE c.novel_id = ?1 AND json_extract(entry.value, '$.path') = ?2",
+            )
+            .bind(novel_id)
+            .bind(&chapter.chapter_path)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: check chapter ownership: {err}"))?,
+        };
         if chapter.composition_entry_id.is_none() || entry_id != chapter.composition_entry_id {
             return Err(MaterializeError::Deferred(DeferredUserStateError::new(
                 "chapter-ownership-mismatch",
@@ -393,18 +440,22 @@ async fn reapply_composed_chapter_user_state_in_tx(
         );
     }
 
+    // The composition is fixed while its chapter records are replayed.
+    let mut composition_entries = CompositionEntryCache::default();
     for key in ordered_keys {
         let (record, is_local) = effective.remove(&key).unwrap();
-        match materialize_user_state_record_in_tx(
+        match materialize_user_state_record_with_options_in_tx(
             root,
             conn,
             namespace,
             &record,
             skipped_chapter_ids,
+            false,
+            Some(&mut composition_entries),
         )
         .await
         {
-            Ok(next) => {
+            Ok((next, _)) => {
                 effects.resumes.extend(next.resumes);
                 if !is_local {
                     sqlx::query(
@@ -456,6 +507,7 @@ pub fn materialize_user_state_record_in_tx<'a>(
             record,
             skipped_chapter_ids,
             false,
+            None,
         )
         .await
         .map(|(effects, _)| effects)
@@ -469,6 +521,7 @@ pub fn materialize_user_state_record_with_options_in_tx<'a>(
     record: &'a ParsedUserStateRecord,
     skipped_chapter_ids: &'a HashSet<i64>,
     defer_last_read_at: bool,
+    mut composition_entries: Option<&'a mut CompositionEntryCache>,
 ) -> std::pin::Pin<
     Box<
         dyn std::future::Future<
@@ -672,8 +725,15 @@ pub fn materialize_user_state_record_with_options_in_tx<'a>(
             }
             "reading" => {
                 let ch_ref = parse_chapter_reference(&record.entity["chapter"])?;
-                let chapter_id =
-                    find_chapter_in_tx(root, conn, work.id, &ch_ref, skipped_chapter_ids).await?;
+                let chapter_id = find_chapter_in_tx(
+                    root,
+                    conn,
+                    work.id,
+                    &ch_ref,
+                    skipped_chapter_ids,
+                    composition_entries.as_deref_mut(),
+                )
+                .await?;
                 let progress = record.value["progress"].as_f64().unwrap_or(0.0);
                 let unread = record.value["unread"].as_bool().unwrap_or(true);
                 let read_at = record.value.get("readAt").and_then(JsonValue::as_i64);
@@ -701,8 +761,15 @@ pub fn materialize_user_state_record_with_options_in_tx<'a>(
             }
             "bookmark" => {
                 let ch_ref = parse_chapter_reference(&record.entity["chapter"])?;
-                let chapter_id =
-                    find_chapter_in_tx(root, conn, work.id, &ch_ref, skipped_chapter_ids).await?;
+                let chapter_id = find_chapter_in_tx(
+                    root,
+                    conn,
+                    work.id,
+                    &ch_ref,
+                    skipped_chapter_ids,
+                    composition_entries.as_deref_mut(),
+                )
+                .await?;
                 let bookmarked = record.value["bookmarked"].as_bool().unwrap_or(false);
                 sqlx::query("UPDATE chapter SET bookmark = ?2 WHERE id = ?1")
                     .bind(chapter_id)
@@ -716,8 +783,15 @@ pub fn materialize_user_state_record_with_options_in_tx<'a>(
                     Some(raw_ch) => {
                         let ch_ref = parse_chapter_reference(raw_ch)?;
                         Some(
-                            find_chapter_in_tx(root, conn, work.id, &ch_ref, skipped_chapter_ids)
-                                .await?,
+                            find_chapter_in_tx(
+                                root,
+                                conn,
+                                work.id,
+                                &ch_ref,
+                                skipped_chapter_ids,
+                                composition_entries.as_deref_mut(),
+                            )
+                            .await?,
                         )
                     }
                     None => None,
@@ -736,6 +810,9 @@ pub fn materialize_user_state_record_with_options_in_tx<'a>(
             }
             "composition" => {
                 let comp = parse_chapter_composition(&record.value["composition"])?;
+                if let Some(cache) = composition_entries.as_deref_mut() {
+                    cache.forget(work.id);
+                }
                 let next = apply_shared_composition_in_tx(
                     root,
                     conn,

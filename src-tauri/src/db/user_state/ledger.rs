@@ -16,7 +16,9 @@ use super::core::{
     USER_CHAPTER_SELECT,
 };
 use super::current::{is_current_work_held, load_current_held_sources_in_tx};
-use super::materialize::{materialize_user_state_record_with_options_in_tx, MaterializeError};
+use super::materialize::{
+    materialize_user_state_record_with_options_in_tx, CompositionEntryCache, MaterializeError,
+};
 use super::stored_chapter::portable_stored_user_state_intent_in_tx;
 use super::types::{
     canonical_user_state_json, is_local_user_state_entity, namespace_for, parse_user_state_entity,
@@ -42,6 +44,34 @@ pub struct PrepareUserStateOperationsLimitsDto {
     #[serde(default)]
     pub skipped_chapter_ids: Option<Vec<i64>>,
 }
+
+// The acknowledgement batches are materialized first: joined lazily, SQLite parses the JSON batch once for
+// every row of the namespace instead of looking each incoming key up through the primary key.
+pub(super) const MARK_ACKNOWLEDGED_RECORDS_APPLIED_SQL: &str = "WITH incoming AS MATERIALIZED ( \
+       SELECT json_extract(value, '$.entityKey') AS entity_key, \
+              json_extract(value, '$.revision') AS revision \
+       FROM json_each(?2) \
+     ) \
+     UPDATE user_state_record AS record SET \
+       applied_revision = MAX(record.applied_revision, incoming.revision), \
+       deferred_reason = NULL, deferred_detail = NULL \
+     FROM incoming \
+     WHERE record.namespace = ?1 AND record.entity_key = incoming.entity_key \
+       AND record.revision = incoming.revision";
+
+pub(super) const ADVANCE_ACKNOWLEDGED_PROGRESS_SQL: &str = "WITH incoming AS MATERIALIZED ( \
+       SELECT json_extract(value, '$.entityKey') AS entity_key, \
+              json_extract(value, '$.intentSequence') AS intent_sequence, \
+              json_extract(value, '$.baseRevision') AS base_revision \
+       FROM json_each(?2) \
+     ) \
+     UPDATE user_state_progress AS progress SET \
+       acknowledged_sequence = MAX(progress.acknowledged_sequence, incoming.intent_sequence), \
+       base_revision = CASE WHEN incoming.base_revision IS NULL \
+                            THEN progress.base_revision \
+                            ELSE incoming.base_revision END \
+     FROM incoming \
+     WHERE progress.namespace = ?1 AND progress.entity_key = incoming.entity_key";
 
 #[derive(Debug, Clone)]
 struct OperationRow {
@@ -176,15 +206,15 @@ async fn settle_held_source_records_in_tx(
            AND json_extract(payload, '$.entity.kind') <> 'category' \
            AND ( \
              (json_extract(payload, '$.entity.work.sourceNovelId') IS NOT NULL \
-              AND EXISTS ( \
-                SELECT 1 FROM json_each(?2) h \
-                WHERE json_extract(h.value, '$.pluginId') = json_extract(user_state_record.payload, '$.entity.work.pluginId') \
-                  AND json_extract(h.value, '$.sourceNovelId') = lower(json_extract(user_state_record.payload, '$.entity.work.sourceNovelId')) \
+              AND (json_extract(payload, '$.entity.work.pluginId'), \
+                   lower(json_extract(payload, '$.entity.work.sourceNovelId'))) IN ( \
+                SELECT json_extract(h.value, '$.pluginId'), json_extract(h.value, '$.sourceNovelId') \
+                FROM json_each(?2) h \
               )) \
-             OR EXISTS ( \
-               SELECT 1 FROM json_each(?3) hp \
-               WHERE json_extract(hp.value, '$.pluginId') = json_extract(user_state_record.payload, '$.entity.work.pluginId') \
-                 AND json_extract(hp.value, '$.novelPath') = json_extract(user_state_record.payload, '$.entity.work.novelPath') \
+             OR (json_extract(payload, '$.entity.work.pluginId'), \
+                 json_extract(payload, '$.entity.work.novelPath')) IN ( \
+               SELECT json_extract(hp.value, '$.pluginId'), json_extract(hp.value, '$.novelPath') \
+               FROM json_each(?3) hp \
              ) \
            )",
     )
@@ -908,24 +938,12 @@ pub async fn acknowledge_user_state_operations_in_tx(
             .map(|(k, rev)| json!({ "entityKey": k, "revision": rev }))
             .collect();
         let encoded = serde_json::to_string(&items).unwrap();
-        sqlx::query(
-            "WITH incoming AS ( \
-               SELECT json_extract(value, '$.entityKey') AS entity_key, \
-                      json_extract(value, '$.revision') AS revision \
-               FROM json_each(?2) \
-             ) \
-             UPDATE user_state_record AS record SET \
-               applied_revision = MAX(record.applied_revision, incoming.revision), \
-               deferred_reason = NULL, deferred_detail = NULL \
-             FROM incoming \
-             WHERE record.namespace = ?1 AND record.entity_key = incoming.entity_key \
-               AND record.revision = incoming.revision",
-        )
-        .bind(&ws.namespace)
-        .bind(&encoded)
-        .execute(&mut *conn)
-        .await
-        .map_err(|err| format!("db user state: mark self-projected ack records: {err}"))?;
+        sqlx::query(MARK_ACKNOWLEDGED_RECORDS_APPLIED_SQL)
+            .bind(&ws.namespace)
+            .bind(&encoded)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: mark self-projected ack records: {err}"))?;
     }
 
     let unique_keys: Vec<String> = pending
@@ -1058,26 +1076,12 @@ pub async fn acknowledge_user_state_operations_in_tx(
             })
             .collect();
         let encoded = serde_json::to_string(&items).unwrap();
-        sqlx::query(
-            "WITH incoming AS ( \
-               SELECT json_extract(value, '$.entityKey') AS entity_key, \
-                      json_extract(value, '$.intentSequence') AS intent_sequence, \
-                      json_extract(value, '$.baseRevision') AS base_revision \
-               FROM json_each(?2) \
-             ) \
-             UPDATE user_state_progress AS progress SET \
-               acknowledged_sequence = MAX(progress.acknowledged_sequence, incoming.intent_sequence), \
-               base_revision = CASE WHEN incoming.base_revision IS NULL \
-                                    THEN progress.base_revision \
-                                    ELSE incoming.base_revision END \
-             FROM incoming \
-             WHERE progress.namespace = ?1 AND progress.entity_key = incoming.entity_key",
-        )
-        .bind(&ws.namespace)
-        .bind(&encoded)
-        .execute(&mut *conn)
-        .await
-        .map_err(|err| format!("db user state: advance progress: {err}"))?;
+        sqlx::query(ADVANCE_ACKNOWLEDGED_PROGRESS_SQL)
+            .bind(&ws.namespace)
+            .bind(&encoded)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: advance progress: {err}"))?;
     }
 
     sqlx::query("UPDATE user_state_workspace SET last_success_at = ?2 WHERE namespace = ?1")
@@ -1787,6 +1791,7 @@ pub async fn project_pending_user_state_in_tx(
 
     let mut saw_composition = false;
     let mut touched_last_read_novels: HashSet<i64> = HashSet::new();
+    let mut composition_entries = CompositionEntryCache::default();
 
     for row in pending_rows {
         let key: String = row.get("entity_key");
@@ -1843,6 +1848,7 @@ pub async fn project_pending_user_state_in_tx(
             &record,
             skipped_chapter_ids,
             true,
+            Some(&mut composition_entries),
         )
         .await
         {

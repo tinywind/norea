@@ -19,7 +19,8 @@ use super::ledger::{
     bind_user_state_workspace_in_tx, get_user_state_ledger_status_in_tx,
     list_user_state_conflicts_in_tx, prepare_user_state_operations_in_tx,
     project_pending_user_state_in_tx, resolve_user_state_ledger_conflict_in_tx,
-    PrepareUserStateOperationsLimitsDto,
+    PrepareUserStateOperationsLimitsDto, ADVANCE_ACKNOWLEDGED_PROGRESS_SQL,
+    MARK_ACKNOWLEDGED_RECORDS_APPLIED_SQL,
 };
 use super::materialize::{
     defer_user_state_for_novel_in_tx, refresh_unattempted_user_state_identities_in_tx,
@@ -96,6 +97,150 @@ async fn explain_query_plan_uses_namespace_and_entity_key_index() {
             .iter()
             .any(|d| d.contains("namespace=? AND entity_key=?")),
         "expected compound PK lookup in query plan, got: {details:?}"
+    );
+}
+
+#[tokio::test]
+async fn acknowledgement_batches_look_up_each_incoming_key_through_the_primary_key() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    for sql in [
+        MARK_ACKNOWLEDGED_RECORDS_APPLIED_SQL,
+        ADVANCE_ACKNOWLEDGED_PROGRESS_SQL,
+    ] {
+        let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
+            .bind("[\"https://state.example\",\"workspace-1\",\"epoch-1\"]")
+            .bind("[{\"entityKey\":\"key\",\"revision\":1,\"intentSequence\":1,\"baseRevision\":1}]")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+        let details: Vec<String> = rows.into_iter().map(|r| r.get("detail")).collect();
+        assert!(
+            details
+                .iter()
+                .any(|d| d.contains("namespace=? AND entity_key=?")),
+            "expected compound PK lookup in query plan, got: {details:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn projection_checks_composed_chapter_ownership_for_every_record_of_a_work() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let binding = sample_binding();
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    let b1 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name) \
+         VALUES (1, 'source', 'book', '/book', 'Book')",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    for (id, entry) in [(21_i64, "entry-1"), (22, "entry-2"), (23, "entry-3")] {
+        sqlx::query(
+            "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position) \
+             VALUES (?1, 1, ?2, ?3, ?4, ?1)",
+        )
+        .bind(id)
+        .bind(format!("norea-composed:{entry}"))
+        .bind(entry)
+        .bind(id.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+    sqlx::query("INSERT INTO novel_chapter_composition(novel_id, payload) VALUES (1, ?1)")
+        .bind(
+            json!({ "entries": [
+                { "id": "entry-1", "path": "norea-composed:entry-1" },
+                { "id": "entry-2", "path": "norea-composed:entry-2" },
+                { "id": "entry-3", "path": "norea-composed:entry-3" },
+            ] })
+            .to_string(),
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let work = sample_work();
+    let reading = |entry: &str, owner: &str, revision: i64| {
+        shared_record(
+            json!({
+                "kind": "reading",
+                "work": work,
+                "chapter": {
+                    "chapterPath": format!("norea-composed:{entry}"),
+                    "compositionEntryId": owner,
+                },
+            }),
+            json!({ "progress": 10 * revision, "unread": false, "readAt": 100 + revision }),
+            revision,
+            &format!("op-{revision}"),
+        )
+    };
+    let page = json!({
+        "version": 1,
+        "workspaceId": binding.workspace_id,
+        "epoch": binding.epoch,
+        "headRevision": 3,
+        "through": 3,
+        "nextCursor": 3,
+        "hasMore": false,
+        "records": [
+            reading("entry-1", "entry-1", 1),
+            reading("entry-2", "replaced-entry", 2),
+            reading("entry-3", "entry-3", 3),
+        ],
+    });
+    let b2 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { apply_user_state_read_page_in_tx(conn, ctx, &b2, &page).await })
+    })
+    .await
+    .unwrap();
+
+    let b3 = binding.clone();
+    with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move {
+            project_pending_user_state_in_tx(None, conn, ctx, &b3, &HashSet::new()).await
+        })
+    })
+    .await
+    .unwrap();
+
+    let progress: Vec<(i64, f64)> =
+        sqlx::query("SELECT id, CAST(progress AS REAL) AS progress FROM chapter ORDER BY id")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| (row.get("id"), row.get("progress")))
+            .collect();
+    assert_eq!(progress, vec![(21, 10.0), (22, 0.0), (23, 30.0)]);
+    let deferred: Vec<Option<String>> =
+        sqlx::query("SELECT deferred_reason FROM user_state_record ORDER BY revision")
+            .fetch_all(pool)
+            .await
+            .unwrap()
+            .into_iter()
+            .map(|row| row.get("deferred_reason"))
+            .collect();
+    assert_eq!(
+        deferred,
+        vec![None, Some("chapter-ownership-mismatch".to_string()), None]
     );
 }
 
