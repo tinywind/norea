@@ -20,6 +20,7 @@ import {
   startChapterDownloadQueueExecutor,
   subscribeChapterDownloadBatchesSettled,
   subscribeChapterDownloads,
+  subscribeChapterMediaRepairs,
 } from "../lib/tasks/chapter-download";
 import { startDownloadCacheDeleteWorkExecutor } from "../lib/tasks/download-cache-delete";
 import { SourceAccessNotificationTracker } from "../lib/tasks/source-access-notifications";
@@ -116,6 +117,17 @@ export function TaskNotifications() {
         void invalidateCompletionWithoutNovel();
       }
     });
+    const unsubscribeChapterMediaRepairs = subscribeChapterMediaRepairs((event) => {
+      if (event.status.kind !== "done") return;
+      if (event.novelId && event.novelId > 0) {
+        void applyNovelChapterDownloadCompletion(queryClient, {
+          chapterId: event.chapterId,
+          novelId: event.novelId,
+        });
+      } else {
+        void invalidateCompletionWithoutNovel();
+      }
+    });
     const unsubscribeChapterDownloadBatches =
       subscribeChapterDownloadBatchesSettled(() => {
         void flushBatchCompletions().catch(() => undefined);
@@ -146,6 +158,7 @@ export function TaskNotifications() {
         window.removeEventListener("focus", restoreQueue);
       }
       unsubscribeChapterDownloadBatches();
+      unsubscribeChapterMediaRepairs();
       unsubscribeChapterDownloads();
       if (pendingCompletions.size > 0 || pendingCompletionWithoutNovel) {
         void flushBatchCompletions().catch(() => undefined);

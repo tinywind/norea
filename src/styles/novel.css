@@ -496,6 +496,22 @@
 .norea-novel-chapter-title[data-read="true"] {
   color: var(--norea-color-ink-muted);
   font-weight: var(--norea-weight-regular);
+  opacity: 0.5;
+}
+
+.norea-novel-chapter[data-progress="read"]:not([data-next="true"]) .norea-novel-chapter-ordinal,
+.norea-novel-chapter[data-progress="read"]:not([data-next="true"]) .norea-novel-chapter-meta {
+  opacity: 0.5;
+}
+
+.norea-novel-chapter[data-progress="read"]:not([data-next="true"]):not([data-busy="true"]):not(:focus-within) .norea-novel-chapter-trailing {
+  opacity: 0.55;
+}
+
+@media (hover: hover) {
+  .norea-novel-chapter[data-progress="read"]:not([data-next="true"]):hover .norea-novel-chapter-trailing {
+    opacity: 1;
+  }
 }
 
 .norea-novel-chapter-bookmark {
@@ -511,6 +527,7 @@
 .norea-novel-chapter[data-next="true"] .norea-novel-chapter-title {
   color: var(--norea-color-on-accent-soft);
   font-weight: var(--norea-weight-bold);
+  opacity: 1;
 }
 
 .norea-novel-chapter-next {
@@ -619,14 +636,17 @@
   padding-inline: var(--norea-space-1);
 }
 
-/* The number the app stores the chapter under, apart from any number in its title. */
-.norea-novel-chapter-system-number {
+.norea-novel-chapter .norea-list-item-leading {
+  gap: var(--norea-space-2);
+}
+
+/* 1-based reading-order sequence number at the start of each chapter row. */
+.norea-novel-chapter-ordinal {
   color: var(--norea-color-ink-muted);
   flex: 0 0 auto;
   font-size: var(--norea-text-sm);
   font-variant-numeric: tabular-nums;
-  min-width: 2.5rem;
-  padding-inline-end: var(--norea-space-2);
+  min-width: 1.75rem;
   text-align: end;
 }
 

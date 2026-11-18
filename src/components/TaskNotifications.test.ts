@@ -107,6 +107,42 @@ describe("download completion notifications", () => {
     }
   });
 
+  it("updates cached chapters immediately when a chapter media repair completes", async () => {
+    const client = new QueryClient();
+    const metadataKey = ["novel", "detail", 7];
+    client.setQueryData(metadataKey, { name: "Book", cover: "cover.webp" });
+    client.setQueryData([...metadataKey, "chapters"], [{ id: 11, isDownloaded: false, mediaRepairNeeded: true }]);
+    const repaired = {
+      isDownloaded: true, mediaRepairNeeded: false, contentBytes: 120,
+      mediaBytes: 30, contentType: "html",
+    } as const;
+    vi.spyOn(chapterQueries, "getChapterById").mockResolvedValue({
+      id: 11, ...repaired,
+    } as chapterQueries.ChapterRow);
+    vi.mocked(useQueryClient).mockReturnValue(client);
+    let repairCompletion!: Parameters<typeof chapterDownloads.subscribeChapterMediaRepairs>[0];
+    vi.spyOn(chapterDownloads, "subscribeChapterDownloads").mockImplementation(() => () => {});
+    vi.spyOn(chapterDownloads, "subscribeChapterMediaRepairs").mockImplementation(listener => { repairCompletion = listener; return () => {}; });
+    vi.spyOn(chapterDownloads, "subscribeChapterDownloadBatchesSettled").mockImplementation(() => () => {});
+    vi.spyOn(chapterDownloads, "startChapterDownloadQueueExecutor").mockImplementation(() => {});
+    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    TaskNotifications();
+    const dispose = vi.mocked(useEffect).mock.calls[0]![0]() as () => void;
+    try {
+      repairCompletion({
+        chapterId: 11,
+        novelId: 7,
+        pluginId: "source",
+        status: { kind: "done" },
+      } as Parameters<typeof repairCompletion>[0]);
+      await vi.waitFor(() => expect(client.getQueryData([...metadataKey, "chapters"])).toEqual([{ id: 11, ...repaired }]));
+      expect(client.getQueryState(metadataKey)?.isInvalidated).toBe(false);
+    } finally {
+      dispose(); client.clear(); vi.unstubAllGlobals();
+    }
+  });
+
   it("patches cached chapters at most four times a second for 1000 batch completions without losing one", async () => {
     vi.useFakeTimers();
     const client = new QueryClient();

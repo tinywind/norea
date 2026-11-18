@@ -192,13 +192,25 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
 
   const rows = useMemo<ServerAwareChapterListRow[]>(() => {
     const storedRows = chaptersQuery.data ?? EMPTY_CHAPTERS;
-    if (!serverSourceQuery.data || !serverChaptersQuery.data) return storedRows.map(chapter => ({ ...chapter, serverDifferent: differentIds.has(chapter.id) }));
+    if (!serverSourceQuery.data || !serverChaptersQuery.data) {
+      return storedRows.map((chapter, index) => ({
+        ...chapter,
+        ordinal: index + 1,
+        serverDifferent: differentIds.has(chapter.id),
+      }));
+    }
     const available = serverChaptersQuery.data;
-    return storedRows.map((chapter) => {
+    return storedRows.map((chapter, index) => {
       const serverComplete = available.paths.get(chapter.path)
         ?? (chapter.chapterNumber != null && /^\d+(?:\.\d+)?$/.test(chapter.chapterNumber)
           ? available.numbers.get(Number(chapter.chapterNumber)) : undefined);
-      return { ...chapter, serverAvailable: serverComplete !== undefined, serverComplete, serverDifferent: differentIds.has(chapter.id) };
+      return {
+        ...chapter,
+        ordinal: index + 1,
+        serverAvailable: serverComplete !== undefined,
+        serverComplete,
+        serverDifferent: differentIds.has(chapter.id),
+      };
     });
   }, [chaptersQuery.data, serverChaptersQuery.data, serverSourceQuery.data, differentIds]);
   const chapters = useMemo(

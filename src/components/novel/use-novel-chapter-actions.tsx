@@ -136,6 +136,7 @@ export function useNovelChapterActions(
       if (!novel || novel.isLocal) return;
       await enqueueChapterMediaRepair({
         id: chapter.id,
+        novelId: novel.id,
         pluginId: novel.pluginId,
         priority: "user",
         title: t("tasks.task.repairChapterMedia", { name: chapter.name }),

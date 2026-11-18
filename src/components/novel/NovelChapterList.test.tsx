@@ -130,15 +130,33 @@ describe("chapter row structure", () => {
     expect(describedText($)).toBe("Ch. 122026-10-1245% read");
   });
 
-  it("ends the row with the stored chapter number, apart from the number in the title", () => {
-    const $ = renderRow({ chapterNumber: "255", name: "Chapter 126", isDownloaded: true });
+  it("leads each row with its 1-based chapter sequence number instead of the internal chapterNumber or id", () => {
+    const $ = renderRow({ id: 99, chapterNumber: "255", position: 1, name: "Chapter 126", isDownloaded: true });
     const row = $(".norea-novel-chapter");
-    const last = row.children().last();
-    expect(last.hasClass("norea-novel-chapter-system-number")).toBe(true);
-    expect(last.children("[aria-hidden='true']").text()).toBe("255");
-    expect(last.attr("title")).toBe("System no. 255");
-    expect(last.text()).toContain("System no. 255");
-    expect(renderRow({ chapterNumber: null })(".norea-novel-chapter-system-number")).toHaveLength(0);
+    const leading = row.find(".norea-list-item-leading");
+    const ordinal = leading.find(".norea-novel-chapter-ordinal");
+    expect(ordinal).toHaveLength(1);
+    expect(ordinal.text()).toBe("1");
+    expect(ordinal.attr("title")).toBe("Chapter no. 1");
+    expect(row.find(".norea-novel-chapter-system-number")).toHaveLength(0);
+
+    const desc = renderList({
+      chapters: [
+        { ...chapter, id: 71, chapterNumber: "71", ordinal: 36, position: 36, name: "36화" },
+        { ...chapter, id: 70, chapterNumber: "70", ordinal: 35, position: 35, name: "35화" },
+      ],
+    });
+    expect(desc(".norea-novel-chapter-ordinal").map((_, el) => desc(el).text()).get()).toEqual(["36", "35"]);
+    expect(desc(".norea-novel-chapter-ordinal").first().attr("title")).toBe("Chapter no. 36");
+  });
+
+  it("places the check ring before the ordinal inside the row leading slot while selecting", () => {
+    const $ = renderRow({}, undefined, { selectedChapterIds: new Set([1]), selectionMode: true });
+    const children = $(".norea-novel-chapter .norea-list-item-leading").children();
+    expect(children).toHaveLength(2);
+    expect(children.eq(0).hasClass("norea-novel-chapter-check")).toBe(true);
+    expect(children.eq(1).hasClass("norea-novel-chapter-ordinal")).toBe(true);
+    expect(children.eq(1).text()).toBe("1");
   });
 
   it("omits the chapter number when the name already shows it", () => {
@@ -171,9 +189,20 @@ describe("chapter row structure", () => {
     ["marked read", { unread: false, progress: 0 }],
     ["read to the end", { unread: true, progress: 100 }],
   ])("marks a finished row read when %s", (_label, row) => {
-    const finished = renderRow(row)(".norea-novel-chapter");
+    const $ = renderRow(row);
+    const finished = $(".norea-novel-chapter");
     expect(finished.attr("data-progress")).toBe("read");
     expect(finished.attr("style")).toContain("--norea-chapter-progress:100%");
+    expect($(".norea-novel-chapter-title").attr("data-read")).toBe("true");
+  });
+
+  it("visually de-emphasizes read chapters more strongly while keeping the next chapter at full contrast", () => {
+    const css = readFileSync(new URL("../../styles/novel.css", import.meta.url), "utf8");
+    expect(css).toMatch(/\.norea-novel-chapter-title\[data-read="true"\]\s*\{[^}]*opacity:\s*0\.5;/);
+    expect(css).toMatch(
+      /\.norea-novel-chapter\[data-progress="read"\]:not\(\[data-next="true"\]\)\s+\.norea-novel-chapter-ordinal,\s*\.norea-novel-chapter\[data-progress="read"\]:not\(\[data-next="true"\]\)\s+\.norea-novel-chapter-meta\s*\{[^}]*opacity:\s*0\.5;/,
+    );
+    expect(css).toMatch(/\.norea-novel-chapter\[data-next="true"\]\s+\.norea-novel-chapter-title\s*\{[^}]*opacity:\s*1;/);
   });
 
   it("marks the chapter Continue opens with a visible Up next label and dims read titles", () => {
@@ -254,6 +283,26 @@ describe("download state", () => {
     expect(describedText($)).toContain("Missing images");
     expect(siblingButtons($).attr("aria-label")).toBe("Repair");
     expect(siblingButtons($).text()).toBe("");
+  });
+
+  it("shows normal queued, running, and done download indicators instead of the repair icon while repair is active or finished", () => {
+    for (const $ of [
+      renderRow({ contentBytes: 10, mediaRepairNeeded: true }, { kind: "queued" }),
+      renderRow({ contentBytes: 10, mediaRepairNeeded: true }, undefined, { repairPending: true, repairBusyChapterId: 1 }),
+    ]) {
+      expect($("[role='img'][aria-label='Queued'].norea-novel-chapter-queued svg")).toHaveLength(1);
+      expect($("button[aria-label='Repair']")).toHaveLength(0);
+      expect($(".norea-novel-chapter").attr("data-busy")).toBe("true");
+    }
+
+    const running = renderRow({ contentBytes: 10, mediaRepairNeeded: true }, { kind: "running" });
+    expect(running("[role='progressbar'][aria-label='Downloading']")).toHaveLength(1);
+    expect(running("button[aria-label='Repair']")).toHaveLength(0);
+    expect(running(".norea-novel-chapter").attr("data-busy")).toBe("true");
+
+    const done = renderRow({ contentBytes: 10, mediaRepairNeeded: true }, { kind: "done" });
+    expect(done("[role='img'][aria-label='Downloaded']")).toHaveLength(1);
+    expect(done("button[aria-label='Repair']")).toHaveLength(0);
   });
 
   it("shows a failure reason inline and keeps the raw error out of the visible text", () => {

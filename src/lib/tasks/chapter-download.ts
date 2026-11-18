@@ -126,10 +126,19 @@ export interface ChapterDownloadJob {
 
 export interface ChapterMediaRepairJob {
   id: number;
+  novelId?: number;
   pluginId: string;
   pluginName?: string;
   priority?: TaskPriority;
   title: string;
+}
+
+export interface ChapterMediaRepairEvent {
+  chapterId: number;
+  novelId?: number;
+  pluginId: string;
+  status: ChapterDownloadStatus;
+  task: TaskRecord;
 }
 
 export type ChapterDownloadStatus =
@@ -1031,6 +1040,22 @@ function eventFromTask(task: TaskRecord): ChapterDownloadEvent | null {
   };
 }
 
+function mediaRepairEventFromTask(task: TaskRecord): ChapterMediaRepairEvent | null {
+  if (task.kind !== "chapter.repairMedia") return null;
+  const chapterId = task.subject?.chapterId;
+  const pluginId = task.subject?.pluginId ?? task.source?.id;
+  if (!chapterId || !pluginId) return null;
+  const status = statusFromTask(task);
+  if (!status) return null;
+  return {
+    chapterId,
+    novelId: task.subject?.novelId,
+    pluginId,
+    status,
+    task,
+  };
+}
+
 const RECOVERED_CHAPTER_PATH_PREFIX = "norea-folder:";
 const recoveredSourceRefreshes = new Map<number, Promise<void>>();
 
@@ -1757,6 +1782,7 @@ export function enqueueChapterMediaRepair(
     subject: {
       chapterId: job.id,
       pluginId: job.pluginId,
+      ...(job.novelId !== undefined ? { novelId: job.novelId } : {}),
     },
     dedupeKey: chapterMediaRepairDedupeKey(job.id),
     canCompleteWithoutSourceAccess: true,
@@ -2195,6 +2221,15 @@ export function subscribeChapterDownloads(
   return taskScheduler.subscribeEvents((event: TaskEvent) => {
     const chapterEvent = eventFromTask(event.task);
     if (chapterEvent) listener(chapterEvent);
+  });
+}
+
+export function subscribeChapterMediaRepairs(
+  listener: (event: ChapterMediaRepairEvent) => void,
+): () => void {
+  return taskScheduler.subscribeEvents((event: TaskEvent) => {
+    const repairEvent = mediaRepairEventFromTask(event.task);
+    if (repairEvent) listener(repairEvent);
   });
 }
 

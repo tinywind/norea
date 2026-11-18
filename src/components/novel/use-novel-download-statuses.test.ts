@@ -2,6 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ChapterDownloadEvent,
   ChapterDownloadStatus,
+  ChapterMediaRepairEvent,
 } from "../../lib/tasks/chapter-download";
 import type { ChapterListRow } from "../../db/queries/chapter";
 import type { StoredChapterDownloadFailure } from "../../db/queries/chapter-download-failure";
@@ -10,9 +11,14 @@ const state = vi.hoisted(() => ({
   effects: [] as Array<() => (() => void) | undefined>,
   statuses: new Map<number, ChapterDownloadStatus>(),
   listener: undefined as ((event: ChapterDownloadEvent) => void) | undefined,
+  repairListener: undefined as ((event: ChapterMediaRepairEvent) => void) | undefined,
+  batchListener: undefined as (() => void) | undefined,
+  vpnListener: undefined as (() => void) | undefined,
   frame: undefined as FrameRequestCallback | undefined,
   cleanup: undefined as (() => void) | undefined,
   current: new Map<number, ChapterDownloadStatus>(),
+  repairCurrent: new Map<number, ChapterDownloadStatus>(),
+  queuedIds: new Set<number>(),
   failures: [] as StoredChapterDownloadFailure[],
   failuresActive: undefined as boolean | undefined,
   updates: 0,
@@ -20,6 +26,7 @@ const state = vi.hoisted(() => ({
 
 vi.mock("react", () => ({
   useMemo: <T>(calculate: () => T) => calculate(),
+  useRef: <T>(current: T) => ({ current }),
   useEffect: (effect: () => (() => void) | undefined) => state.effects.push(effect),
   useState: () => [
     state.statuses,
@@ -32,9 +39,26 @@ vi.mock("react", () => ({
 
 vi.mock("../../lib/tasks/chapter-download", () => ({
   getChapterDownloadStatus: (id: number) => state.current.get(id),
+  getChapterMediaRepairStatus: (id: number) => state.repairCurrent.get(id),
+  isChapterDownloadQueued: (id: number) => state.queuedIds.has(id),
+  subscribeChapterDownloadBatchProgress: (listener: () => void) => {
+    state.batchListener = listener;
+    return () => { state.batchListener = undefined; };
+  },
   subscribeChapterDownloads: (listener: typeof state.listener) => {
     state.listener = listener;
     return () => { state.listener = undefined; };
+  },
+  subscribeChapterMediaRepairs: (listener: typeof state.repairListener) => {
+    state.repairListener = listener;
+    return () => { state.repairListener = undefined; };
+  },
+}));
+
+vi.mock("../../lib/tasks/vpn-download-runtime", () => ({
+  subscribeVpnDownloadRuntime: (listener: () => void) => {
+    state.vpnListener = listener;
+    return () => { state.vpnListener = undefined; };
   },
 }));
 
@@ -52,6 +76,8 @@ beforeEach(() => {
   state.effects.length = 0;
   state.statuses = new Map();
   state.current = new Map();
+  state.repairCurrent = new Map();
+  state.queuedIds = new Set();
   state.failures = [];
   state.failuresActive = undefined;
   state.frame = undefined;
@@ -249,5 +275,68 @@ describe("persisted novel download failures", () => {
     state.failures = [storedFailure()];
     expect(useNovelDownloadStatuses(42, [storedRow], false, "source").size).toBe(0);
     expect(state.failuresActive).toBe(false);
+  });
+
+  it("tracks queued, running, and cancelled chapter.repairMedia events alongside downloads", () => {
+    const emitRepair = (status: ChapterDownloadStatus, chapterId = 1) => {
+      state.repairListener!({
+        chapterId,
+        novelId: 42,
+        pluginId: "source",
+        status,
+        task: {
+          id: `chapter.repairMedia:${chapterId}`,
+          lane: "source",
+          kind: "chapter.repairMedia",
+          priority: "user",
+          title: "First chapter",
+          status: status.kind === "done" ? "succeeded" : status.kind,
+          createdAt: 1,
+          canCancel: true,
+          canRetry: false,
+        },
+      });
+      runFrame();
+      vi.advanceTimersByTime(STATUS_FLUSH_MIN_INTERVAL_MS);
+    };
+
+    emitRepair({ kind: "queued", phase: "server-download" });
+    expect(state.statuses.get(1)).toEqual({ kind: "queued", phase: "server-download" });
+
+    emitRepair({ kind: "running", phase: "source-download" });
+    expect(state.statuses.get(1)).toEqual({ kind: "running", phase: "source-download" });
+
+    emitRepair({ kind: "cancelled" });
+    expect(state.statuses.has(1)).toBe(false);
+  });
+
+  it("initializes active media repair and queued batch/VPN chapters without masking persisted failures", () => {
+    state.cleanup?.();
+    state.effects = [];
+    state.repairCurrent.set(2, { kind: "running", phase: "source-download" });
+    state.queuedIds.add(3);
+    state.queuedIds.add(1);
+    state.failures = [storedFailure({ chapterId: 1 })];
+    const rows = [
+      storedRow,
+      { id: 2, novelId: 42, path: "/chapter/2" } as ChapterListRow,
+      { id: 3, novelId: 42, path: "/chapter/3" } as ChapterListRow,
+    ];
+    useNovelDownloadStatuses(42, rows, true, "source");
+    state.cleanup = state.effects[0]!();
+    state.effects[1]!();
+    expect(state.statuses.get(2)).toEqual({ kind: "running", phase: "source-download" });
+    expect(state.statuses.get(3)).toEqual({ kind: "queued" });
+    expect(state.statuses.has(1)).toBe(false);
+
+    const merged = useNovelDownloadStatuses(42, rows, true, "source");
+    expect(merged.get(1)).toEqual({ kind: "failed", error: "Stored source failure" });
+    expect(merged.get(3)).toEqual({ kind: "queued" });
+
+    state.queuedIds.delete(3);
+    state.vpnListener!();
+    runFrame();
+    vi.advanceTimersByTime(STATUS_FLUSH_MIN_INTERVAL_MS);
+    expect(state.statuses.has(3)).toBe(false);
   });
 });

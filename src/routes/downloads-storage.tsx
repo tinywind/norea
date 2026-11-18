@@ -271,6 +271,7 @@ function DownloadCacheChapters({
     mutationFn: async (chapter: DownloadCacheChapter) => {
       await enqueueChapterMediaRepair({
         id: chapter.id,
+        novelId: novel.novelId,
         pluginId: novel.pluginId,
         priority: "user",
         title: t("tasks.task.repairChapterMedia", { name: chapter.name }),

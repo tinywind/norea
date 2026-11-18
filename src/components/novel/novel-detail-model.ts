@@ -242,7 +242,7 @@ function isActiveDownloadStatus(
   );
 }
 
-function getReadingOrderChapters(
+export function getReadingOrderChapters(
   chapters: readonly ChapterListRow[],
 ): readonly ChapterListRow[] {
   let asc = true;
