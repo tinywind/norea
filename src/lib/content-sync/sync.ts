@@ -21,7 +21,11 @@ import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { contentWorkId, getWorkSyncCursor, syncWorkMetadata, WorkMetadataChangedOutsideCacheError } from "./works";
-import { syncWorkOverrides } from "./work-overrides";
+import {
+  getWorkOverrideSyncCursor,
+  serverSupportsOverrideChangeCursor,
+  syncWorkOverrides,
+} from "./work-overrides";
 import { readServerChapterDeletionExclusions, serverChapterDeletionKey, serverWorkDeletionKey, setServerChapterDeletionExclusion, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 
 const LOCAL_CONTENT_DISCOVERY_VERSION = 1;
@@ -495,7 +499,22 @@ export function restoreServerChapter(entry: CatalogEntry): Promise<void> {
   });
 }
 
-export async function getContentSyncCursors(): Promise<{ catalogCursor: number; workCursor: number }> {
+export async function getContentSyncCursors(): Promise<{
+  catalogCursor: number;
+  workCursor: number;
+  overrideCursor?: number;
+}> {
   const { serverUrl } = useContentSyncStore.getState();
-  return { catalogCursor: (await catalogCache(serverUrl)).cursor, workCursor: await getWorkSyncCursor(serverUrl) };
+  const [catalog, workCursor, supportsOverrideCursor] = await Promise.all([
+    catalogCache(serverUrl),
+    getWorkSyncCursor(serverUrl),
+    serverSupportsOverrideChangeCursor(serverUrl).catch(() => false),
+  ]);
+  return {
+    catalogCursor: catalog.cursor,
+    workCursor,
+    ...(supportsOverrideCursor
+      ? { overrideCursor: await getWorkOverrideSyncCursor(serverUrl) }
+      : {}),
+  };
 }

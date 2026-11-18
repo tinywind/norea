@@ -38,7 +38,8 @@ vi.mock("./works", () => ({ contentWorkId: vi.fn(async (identity: { pluginId: st
 
 import { ContentServerError } from "./client";
 import {
-  pullWorkOverride, pullWorkOverrideOnOpen, resetWorkOverrideSupportForTests, serverSupportsWorkOverrides, syncWorkOverrides,
+  getWorkOverrideSyncCursor, pullWorkOverride, pullWorkOverrideOnOpen, resetWorkOverrideSupportForTests,
+  serverSupportsOverrideChangeCursor, serverSupportsWorkOverrides, syncWorkOverrides,
 } from "./work-overrides";
 
 const identity = (name: string) => ({ pluginId: "plugin", novelId: name, novelPath: `/${name}` });
@@ -205,4 +206,33 @@ it("reads one work's override when it is opened, through its bound server", asyn
     throw new ContentServerError(404);
   });
   expect(await pullWorkOverrideOnOpen(row.id)).toBe(false);
+});
+
+it("dispatches norea-content-state-changed when remote overrides apply and reports override cursor support", async () => {
+  const originalWindow = globalThis.window;
+  const fakeWindow = new EventTarget();
+  const dispatched = vi.fn();
+  fakeWindow.addEventListener("norea-content-state-changed", dispatched);
+  globalThis.window = fakeWindow as unknown as Window & typeof globalThis;
+  try {
+    novel(1, "a");
+    const remoteA = override("a", "Completed", 10);
+    mocks.request.mockImplementation(async (_server: string, path: string) => {
+      if (path === "/capabilities") {
+        return { workOverrideVersion: 1, workOverrideCoverVersion: 1, changeOverrideCursorVersion: 1 };
+      }
+      if (path.startsWith("/work-overrides?after=0&")) {
+        return { items: [{ workId: "id:plugin:/a", revision: 9, override: remoteA }], cursor: 9, hasMore: false };
+      }
+      return { items: [], cursor: 9, hasMore: false };
+    });
+    mocks.merge.mockResolvedValue({ document: remoteA, changed: true });
+
+    await syncWorkOverrides("http://server", "token");
+    expect(dispatched).toHaveBeenCalledOnce();
+    expect(await serverSupportsOverrideChangeCursor("http://server")).toBe(true);
+    expect(await getWorkOverrideSyncCursor("http://server")).toBe(9);
+  } finally {
+    globalThis.window = originalWindow;
+  }
 });

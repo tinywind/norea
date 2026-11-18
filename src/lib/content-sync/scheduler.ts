@@ -72,14 +72,21 @@ export function startContentServerSync(): () => void {
     try {
       const cursor = await getContentSyncCursors();
       if (controller.signal.aborted || current !== generation) return;
-      const hint = await contentServerRequest<{ catalogCursor: number; workCursor: number }>(
-        serverUrl, `/changes?catalogAfter=${cursor.catalogCursor}&workAfter=${cursor.workCursor}&waitSeconds=20`,
+      const overrideQuery = cursor.overrideCursor !== undefined ? `&overrideAfter=${cursor.overrideCursor}` : "";
+      const hint = await contentServerRequest<{ catalogCursor: number; workCursor: number; overrideCursor?: number }>(
+        serverUrl, `/changes?catalogAfter=${cursor.catalogCursor}&workAfter=${cursor.workCursor}${overrideQuery}&waitSeconds=20`,
         deviceKey ?? undefined, "GET", undefined, controller.signal,
       );
       if (controller.signal.aborted || current !== generation || !active()) return;
       poll = undefined;
       pollFailures = 0;
-      if (hint.catalogCursor !== cursor.catalogCursor || hint.workCursor !== cursor.workCursor) requestSync(0);
+      if (
+        hint.catalogCursor !== cursor.catalogCursor ||
+        hint.workCursor !== cursor.workCursor ||
+        (cursor.overrideCursor !== undefined &&
+          hint.overrideCursor !== undefined &&
+          hint.overrideCursor !== cursor.overrideCursor)
+      ) requestSync(0);
       else timer = setTimeout(() => { timer = undefined; void waitForChanges(); }, 250);
     } catch {
       if (controller.signal.aborted || current !== generation || !active()) return;

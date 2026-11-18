@@ -10,6 +10,7 @@ import {
   type WorkOverrideUpdateFields,
 } from "../../db/queries/novel-override";
 import { useTranslation } from "../../i18n";
+import { resolvedNovelStorageDir } from "../../lib/chapter-storage-resolution";
 import { bytesToBase64 } from "../../lib/base64";
 import { pushWorkOverridesNow } from "../../lib/content-sync/work-overrides";
 import { describeError } from "../../lib/errors";
@@ -246,9 +247,11 @@ export function NovelMetadataOverrideEditor({
         queryClient.invalidateQueries({ queryKey: chapterHistoryQueryKey }),
       ]);
       notifications.show({ color: "green", message: t("novel.metadataOverride.saved") });
-      void pushWorkOverridesNow().catch((error: unknown) => {
-        console.warn("[content-sync] failed to push work override:", error);
-      });
+      void pushWorkOverridesNow()
+        .then(() => queryClient.invalidateQueries({ queryKey: ["content-server"] }))
+        .catch((error: unknown) => {
+          console.warn("[content-sync] failed to push work override:", error);
+        });
       onClose();
     },
   });
@@ -276,7 +279,7 @@ export function NovelMetadataOverrideEditor({
   const hasCoverOverride =
     form.cover.mode === "set" ||
     (form.cover.mode === "keep" && Boolean(novel.coverOverride));
-  const coverPickerSupported = novel.inLibrary && Boolean(novel.sourceNovelId);
+  const coverPickerSupported = Boolean(novel.sourceNovelId) && (novel.inLibrary || Boolean(resolvedNovelStorageDir(novel.id)));
 
   const handleChooseCover = async () => {
     setCoverError(null);

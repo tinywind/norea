@@ -21,7 +21,7 @@ vi.mock("./sync", () => ({
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 import { useContentSyncStore } from "../../store/content-sync";
 import { contentServerRequest } from "./client";
-import { syncContentServer, syncReceivedWorkMigrations } from "./sync";
+import { getContentSyncCursors, syncContentServer, syncReceivedWorkMigrations } from "./sync";
 import { startContentServerSync } from "./scheduler";
 import { listNovelMigrations } from "../../db/queries/content-sync";
 import { PendingNovelMigrationError } from "./novel-migration";
@@ -41,6 +41,7 @@ beforeEach(() => {
   useContentSyncStore.setState({ ...useContentSyncStore.getInitialState(), serverUrl: "http://server" });
   vi.mocked(syncContentServer).mockReset().mockResolvedValue();
   vi.mocked(syncReceivedWorkMigrations).mockReset().mockResolvedValue({ applied: 0, pending: 0 });
+  vi.mocked(getContentSyncCursors).mockReset().mockResolvedValue({ catalogCursor: 3, workCursor: 2 });
   vi.mocked(contentServerRequest).mockImplementation((_server, _path, _token, _method, _body, signal) => new Promise((_resolve, reject) => {
     signal?.addEventListener("abort", () => reject(new Error("aborted")), { once: true });
   }));
@@ -120,6 +121,23 @@ it("syncs work-only server changes and local metadata changes", async () => {
   harness.metadataChange?.();
   await vi.advanceTimersByTimeAsync(1500);
   expect(syncContentServer).toHaveBeenCalledTimes(3);
+});
+
+it("sends overrideAfter when supported and wakes sync when overrideCursor advances", async () => {
+  vi.mocked(getContentSyncCursors).mockResolvedValueOnce({ catalogCursor: 3, workCursor: 2, overrideCursor: 7 });
+  useContentSyncStore.setState({ syncMode: "changes", deviceKey: "device-key" });
+  vi.mocked(contentServerRequest).mockResolvedValueOnce({ catalogCursor: 3, workCursor: 2, overrideCursor: 8 });
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(10);
+  expect(contentServerRequest).toHaveBeenCalledWith(
+    "http://server",
+    "/changes?catalogAfter=3&workAfter=2&overrideAfter=7&waitSeconds=20",
+    "device-key",
+    "GET",
+    undefined,
+    expect.any(AbortSignal),
+  );
+  expect(syncContentServer).toHaveBeenCalledTimes(2);
 });
 
 it("cancels change waiting on manual mode, hiding, and disposal", async () => {

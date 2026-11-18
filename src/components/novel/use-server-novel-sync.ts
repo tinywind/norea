@@ -44,7 +44,13 @@ export function useServerNovelSync(id: number, active: boolean, name: string) {
     void (async () => {
       try {
         if (await pullWorkOverrideOnOpen(id, controller.signal) && !controller.signal.aborted) {
-          await queryClient.invalidateQueries({ queryKey: novelKey(id), exact: true });
+          await Promise.all([
+            queryClient.invalidateQueries({ queryKey: novelKey(id), exact: true }),
+            queryClient.invalidateQueries({ queryKey: ["novel", "detail", id, "override"] }),
+          ]);
+          void queryClient.invalidateQueries({ queryKey: ["novel", "library"], refetchType: "none" });
+          void queryClient.invalidateQueries({ queryKey: ["chapter", "updates"], refetchType: "none" });
+          void queryClient.invalidateQueries({ queryKey: ["chapter", "history"], refetchType: "none" });
         }
       } catch (error) {
         if (!controller.signal.aborted) console.warn("[content-sync] could not read the work override:", error);

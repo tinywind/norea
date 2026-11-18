@@ -14,7 +14,11 @@ interface ServerWorkOverride { revision: number; override: unknown }
 interface ServerWorkOverridePage { items: Array<ServerWorkOverride & { workId: string }>; cursor: number; hasMore: boolean }
 /** The last server revision read and, per work, the fields both sides last agreed on. */
 interface WorkOverrideSyncCache { cursor: number; synced: Record<string, string> }
-interface WorkOverrideCapabilities { workOverride: boolean; workOverrideCover: boolean }
+interface WorkOverrideCapabilities {
+  workOverride: boolean;
+  workOverrideCover: boolean;
+  changeOverrideCursor: boolean;
+}
 
 const PAGE_SIZE = 100;
 const MAX_OVERRIDE_COVER_BYTES = 10 * 1024 * 1024;
@@ -26,6 +30,10 @@ async function readCache(server: string): Promise<WorkOverrideSyncCache> {
   return saved ? JSON.parse(saved) as WorkOverrideSyncCache : { cursor: 0, synced: {} };
 }
 
+export async function getWorkOverrideSyncCursor(server: string): Promise<number> {
+  return (await readCache(server)).cursor;
+}
+
 function fieldsKey(override: WorkOverrideV1 | null): string {
   const fields = override?.fields ?? {};
   return JSON.stringify(Object.keys(fields).sort().map(name => [name, fields[name]!.value, fields[name]!.updatedAt]));
@@ -35,10 +43,15 @@ async function readWorkOverrideCapabilities(server: string, signal?: AbortSignal
   const key = normalizeContentServerUrl(server);
   const known = supportByServer.get(key);
   if (known !== undefined) return known;
-  const capabilities = await contentServerRequest<{ workOverrideVersion?: number; workOverrideCoverVersion?: number }>(key, "/capabilities", undefined, "GET", undefined, signal);
+  const capabilities = await contentServerRequest<{
+    workOverrideVersion?: number;
+    workOverrideCoverVersion?: number;
+    changeOverrideCursorVersion?: number;
+  }>(key, "/capabilities", undefined, "GET", undefined, signal);
   const resolved: WorkOverrideCapabilities = {
     workOverride: capabilities.workOverrideVersion === 1,
     workOverrideCover: capabilities.workOverrideCoverVersion === 1,
+    changeOverrideCursor: capabilities.changeOverrideCursorVersion === 1,
   };
   supportByServer.set(key, resolved);
   return resolved;
@@ -47,6 +60,11 @@ async function readWorkOverrideCapabilities(server: string, signal?: AbortSignal
 /** A server without the capability keeps overrides on this device only. */
 export async function serverSupportsWorkOverrides(server: string, signal?: AbortSignal): Promise<boolean> {
   return (await readWorkOverrideCapabilities(server, signal)).workOverride;
+}
+
+export async function serverSupportsOverrideChangeCursor(server: string, signal?: AbortSignal): Promise<boolean> {
+  const capabilities = await readWorkOverrideCapabilities(server, signal);
+  return capabilities.workOverride && capabilities.changeOverrideCursor;
 }
 
 export function resetWorkOverrideSupportForTests(): void {
@@ -204,90 +222,99 @@ async function exchangeWorkOverrides(server: string, token: string, upload: bool
   const capabilities = await readWorkOverrideCapabilities(server, signal);
   if (!capabilities.workOverride) return;
   assertCurrent();
-  const cache = await readCache(server);
-  for (;;) {
-    const page = await contentServerRequest<ServerWorkOverridePage>(server, `/work-overrides?after=${cache.cursor}&limit=${PAGE_SIZE}`, token, "GET", undefined, signal);
-    assertCurrent();
-    for (const item of page.items) {
-      const remote = parseWorkOverride(item.override);
-      if (await contentWorkId(remote.identity) !== item.workId) throw new Error("Server work override identity does not match its work.");
-      const novel = await findNovelBySource(remote.identity.pluginId, remote.identity.novelPath);
-      // A work this device does not have reads its override when it is installed or opened.
-      if (!novel || novel.sourceNovelId !== remote.identity.novelId) continue;
-      const merged = await mergeRemoteWorkOverride(server, token, item.workId, novel.id, remote, capabilities.workOverrideCover, signal);
-      if (!merged.coverUnavailable && fieldsKey(merged.document) === fieldsKey(remote)) {
-        cache.synced[item.workId] = fieldsKey(remote);
-      } else {
-        delete cache.synced[item.workId];
-      }
-    }
-    if (page.items.length > 0 && page.cursor <= cache.cursor) throw new Error("Server work override cursor did not advance.");
-    cache.cursor = Math.max(cache.cursor, page.cursor);
-    await writeContentSyncCache(cacheKey(server), JSON.stringify(cache));
-    if (!page.hasMore) break;
-  }
-
-  if (!upload) return;
-  let dirty = false;
-  for (const local of await listNovelOverrides()) {
-    assertCurrent();
-    const { identity } = local.document;
-    if (local.isLocal || identity.pluginId === LOCAL_PLUGIN_ID || !identity.novelId) continue;
-    const workId = await contentWorkId(identity);
-    if (cache.synced[workId] === fieldsKey(local.document)) continue;
-    let stored: ServerWorkOverride | null = null;
-    let coverMissingOnDevice = false;
-    try {
-      const localCoverField = local.document.fields.cover;
-      const hasLocalCover = typeof localCoverField?.value === "string" && isOverrideCoverFileName(localCoverField.value);
-      if (hasLocalCover) {
-        const localCover = capabilities.workOverrideCover
-          ? await readNovelOverrideCover(local.novelId)
-          : null;
-        if (localCover) {
-          stored = await uploadWorkOverrideCover(
-            server,
-            workId,
-            token,
-            localCover.fileName,
-            localCoverField.updatedAt,
-            localCover.bytes,
-            localCover.contentType,
-            signal,
-          );
+  let localChanged = false;
+  try {
+    const cache = await readCache(server);
+    for (;;) {
+      const page = await contentServerRequest<ServerWorkOverridePage>(server, `/work-overrides?after=${cache.cursor}&limit=${PAGE_SIZE}`, token, "GET", undefined, signal);
+      assertCurrent();
+      for (const item of page.items) {
+        const remote = parseWorkOverride(item.override);
+        if (await contentWorkId(remote.identity) !== item.workId) throw new Error("Server work override identity does not match its work.");
+        const novel = await findNovelBySource(remote.identity.pluginId, remote.identity.novelPath);
+        // A work this device does not have reads its override when it is installed or opened.
+        if (!novel || novel.sourceNovelId !== remote.identity.novelId) continue;
+        const merged = await mergeRemoteWorkOverride(server, token, item.workId, novel.id, remote, capabilities.workOverrideCover, signal);
+        localChanged ||= merged.changed;
+        if (!merged.coverUnavailable && fieldsKey(merged.document) === fieldsKey(remote)) {
+          cache.synced[item.workId] = fieldsKey(remote);
         } else {
-          coverMissingOnDevice = true;
+          delete cache.synced[item.workId];
         }
       }
-      const needsMetadataPut = !stored
-        || Object.keys(local.document.fields).some(name => name !== "cover")
-        || fieldsKey(parseWorkOverride(stored.override)) !== fieldsKey(local.document);
-      if (needsMetadataPut) {
-        stored = await contentServerRequest<ServerWorkOverride>(server, `/works/${workId}/override`, token, "PUT", local.document, signal);
-      }
-    } catch (error) {
-      // The work itself is not on this server; its override stays on this device.
-      if (isMissingOnServer(error)) continue;
-      // One work the server refuses must not stop the rest of the sync.
-      if (error instanceof ContentServerError && error.status === 400) {
-        console.warn("[content-sync] the server refused a work override:", identity.pluginId, identity.novelPath);
-        continue;
-      }
-      throw error;
+      if (page.items.length > 0 && page.cursor <= cache.cursor) throw new Error("Server work override cursor did not advance.");
+      cache.cursor = Math.max(cache.cursor, page.cursor);
+      await writeContentSyncCache(cacheKey(server), JSON.stringify(cache));
+      if (!page.hasMore) break;
     }
-    const merged = parseWorkOverride(stored!.override);
-    let coverUnavailable = coverMissingOnDevice;
-    let applied: WorkOverrideV1 | null = local.document;
-    if (fieldsKey(merged) !== fieldsKey(local.document)) {
-      const reconciled = await mergeRemoteWorkOverride(server, token, workId, local.novelId, merged, capabilities.workOverrideCover, signal);
-      applied = reconciled.document;
-      coverUnavailable ||= reconciled.coverUnavailable;
+
+    if (!upload) return;
+    let dirty = false;
+    for (const local of await listNovelOverrides()) {
+      assertCurrent();
+      const { identity } = local.document;
+      if (local.isLocal || identity.pluginId === LOCAL_PLUGIN_ID || !identity.novelId) continue;
+      const workId = await contentWorkId(identity);
+      if (cache.synced[workId] === fieldsKey(local.document)) continue;
+      let stored: ServerWorkOverride | null = null;
+      let coverMissingOnDevice = false;
+      try {
+        const localCoverField = local.document.fields.cover;
+        const hasLocalCover = typeof localCoverField?.value === "string" && isOverrideCoverFileName(localCoverField.value);
+        if (hasLocalCover) {
+          const localCover = capabilities.workOverrideCover
+            ? await readNovelOverrideCover(local.novelId)
+            : null;
+          if (localCover) {
+            stored = await uploadWorkOverrideCover(
+              server,
+              workId,
+              token,
+              localCover.fileName,
+              localCoverField.updatedAt,
+              localCover.bytes,
+              localCover.contentType,
+              signal,
+            );
+          } else {
+            coverMissingOnDevice = true;
+          }
+        }
+        const needsMetadataPut = !stored
+          || Object.keys(local.document.fields).some(name => name !== "cover")
+          || fieldsKey(parseWorkOverride(stored.override)) !== fieldsKey(local.document);
+        if (needsMetadataPut) {
+          stored = await contentServerRequest<ServerWorkOverride>(server, `/works/${workId}/override`, token, "PUT", local.document, signal);
+        }
+      } catch (error) {
+        // The work itself is not on this server; its override stays on this device.
+        if (isMissingOnServer(error)) continue;
+        // One work the server refuses must not stop the rest of the sync.
+        if (error instanceof ContentServerError && error.status === 400) {
+          console.warn("[content-sync] the server refused a work override:", identity.pluginId, identity.novelPath);
+          continue;
+        }
+        throw error;
+      }
+      const merged = parseWorkOverride(stored!.override);
+      let coverUnavailable = coverMissingOnDevice;
+      let applied: WorkOverrideV1 | null = local.document;
+      if (fieldsKey(merged) !== fieldsKey(local.document)) {
+        const reconciled = await mergeRemoteWorkOverride(server, token, workId, local.novelId, merged, capabilities.workOverrideCover, signal);
+        applied = reconciled.document;
+        coverUnavailable ||= reconciled.coverUnavailable;
+        localChanged ||= reconciled.changed;
+      }
+      if (!coverUnavailable && fieldsKey(applied) === fieldsKey(merged)) cache.synced[workId] = fieldsKey(merged);
+      else delete cache.synced[workId];
+      dirty = true;
     }
-    if (!coverUnavailable && fieldsKey(applied) === fieldsKey(merged)) cache.synced[workId] = fieldsKey(merged);
-    else delete cache.synced[workId];
-    dirty = true;
+    if (dirty) await writeContentSyncCache(cacheKey(server), JSON.stringify(cache));
+  } finally {
+    if (localChanged && typeof window !== "undefined") {
+      window.dispatchEvent(new Event("norea-content-state-changed"));
+    }
   }
-  if (dirty) await writeContentSyncCache(cacheKey(server), JSON.stringify(cache));
 }
 
 /** Reads one work's override from the server into the local work. Resolves true when local values changed. */

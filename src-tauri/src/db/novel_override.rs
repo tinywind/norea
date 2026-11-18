@@ -528,7 +528,7 @@ pub async fn update_novel_override_in_tx(
     if updated_at <= 0 || updated_at > MAX_SAFE_INTEGER {
         return Err("work override: updatedAt is invalid".to_string());
     }
-    let work = load_override_work_in_conn(&mut *conn, novel_id)
+    let mut work = load_override_work_in_conn(&mut *conn, novel_id)
         .await?
         .ok_or_else(|| "work override: novel not found".to_string())?;
     let mut fields = load_novel_override_fields_in_conn(&mut *conn, novel_id).await?;
@@ -598,6 +598,59 @@ pub async fn update_novel_override_in_tx(
             let Some(root) = root else {
                 return Err("work override: storage root is unavailable".to_string());
             };
+            if work.directory.is_none()
+                && !work.identity.novel_id.is_empty()
+                && work.identity.plugin_id != LOCAL_PLUGIN_ID
+            {
+                let in_library: i64 =
+                    sqlx::query_scalar("SELECT in_library FROM novel WHERE id = ?1")
+                        .bind(novel_id)
+                        .fetch_optional(&mut *conn)
+                        .await
+                        .map_err(|err| format!("db novel override: check in_library: {err}"))?
+                        .unwrap_or(0);
+                if in_library != 0 {
+                    let other_dirty: Vec<(String, String)> = sqlx::query_as(
+                        "SELECT plugin_id, path FROM work_metadata_dirty \
+                         WHERE NOT (plugin_id = ?1 AND path = ?2)",
+                    )
+                    .bind(&work.identity.plugin_id)
+                    .bind(&work.identity.novel_path)
+                    .fetch_all(&mut *conn)
+                    .await
+                    .map_err(|err| format!("db novel override: stash dirty rows: {err}"))?;
+                    sqlx::query("DELETE FROM work_metadata_dirty")
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(|err| format!("db novel override: clear dirty rows: {err}"))?;
+                    sqlx::query(
+                        "INSERT INTO work_metadata_dirty(plugin_id, path) VALUES (?1, ?2) \
+                         ON CONFLICT(plugin_id, path) DO NOTHING",
+                    )
+                    .bind(&work.identity.plugin_id)
+                    .bind(&work.identity.novel_path)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|err| format!("db novel override: mark work dirty: {err}"))?;
+                    let metadata_root = crate::db::tx::MetadataRoot::Path(root.to_path_buf());
+                    super::work_metadata::flush_dirty_in_tx(&metadata_root, &mut *conn, ctx, None)
+                        .await?;
+                    for (dirty_plugin, dirty_path) in other_dirty {
+                        sqlx::query(
+                            "INSERT INTO work_metadata_dirty(plugin_id, path) VALUES (?1, ?2) \
+                             ON CONFLICT(plugin_id, path) DO NOTHING",
+                        )
+                        .bind(dirty_plugin)
+                        .bind(dirty_path)
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(|err| format!("db novel override: restore dirty rows: {err}"))?;
+                    }
+                    work = load_override_work_in_conn(&mut *conn, novel_id)
+                        .await?
+                        .ok_or_else(|| "work override: novel not found".to_string())?;
+                }
+            }
             let Some(directory) = work.directory.as_deref() else {
                 return Err(
                     "work override: cover override requires a stored library work directory"
@@ -646,7 +699,7 @@ pub async fn merge_novel_override_with_cover_in_tx(
     let work = load_override_work_in_conn(&mut *conn, novel_id)
         .await?
         .ok_or_else(|| "work override: novel not found".to_string())?;
-    let merged = merge_override_fields(&current, &normalized_incoming);
+    let mut merged = merge_override_fields(&current, &normalized_incoming);
     let prev_cover = current
         .get(COVER_FIELD)
         .and_then(|entry| entry.value.as_str())
@@ -667,41 +720,42 @@ pub async fn merge_novel_override_with_cover_in_tx(
             if bytes.is_empty() || bytes.len() > crate::chapter_media::MAX_COVER_BYTES {
                 return Err("work override: invalid override cover size".to_string());
             }
-            let Some(root) = root else {
-                return Err("work override: storage root is unavailable".to_string());
-            };
-            let Some(directory) = work.directory.as_deref() else {
-                return Err(
-                    "work override: cover override requires a stored library work directory"
-                        .to_string(),
+        }
+        match (root, work.directory.as_deref(), cover_bytes) {
+            (Some(root), Some(directory), Some(bytes)) => {
+                if remove_override_cover_files_in_tx(root, ctx, directory, Some(target_file))? {
+                    cover_file_changed = true;
+                }
+                let relative = format!("{directory}/{target_file}");
+                ctx.snapshot_work_metadata_file(root, &relative)?;
+                if crate::chapter_media::write_work_metadata_bytes_at(root, &relative, bytes)? {
+                    cover_file_changed = true;
+                }
+                if cover_field_changed || cover_file_changed {
+                    ctx.record_cover_changed(novel_id);
+                }
+            }
+            (Some(root), Some(directory), None) if cover_field_changed => {
+                let relative = format!("{directory}/{target_file}");
+                let backed = matches!(
+                    crate::chapter_media::read_work_metadata_bytes_at(root, &relative)?,
+                    Some(existing) if !existing.is_empty()
                 );
-            };
-            if remove_override_cover_files_in_tx(root, ctx, directory, Some(target_file))? {
-                cover_file_changed = true;
-            }
-            let relative = format!("{directory}/{target_file}");
-            ctx.snapshot_work_metadata_file(root, &relative)?;
-            if crate::chapter_media::write_work_metadata_bytes_at(root, &relative, bytes)? {
-                cover_file_changed = true;
-            }
-            if cover_field_changed || cover_file_changed {
+                if !backed {
+                    return Err(
+                        "work override: cover bytes are required for cover override".to_string()
+                    );
+                }
                 ctx.record_cover_changed(novel_id);
             }
-        } else if cover_field_changed {
-            let backed = match (root, work.directory.as_deref()) {
-                (Some(root), Some(directory)) => {
-                    let relative = format!("{directory}/{target_file}");
-                    matches!(
-                        crate::chapter_media::read_work_metadata_bytes_at(root, &relative)?,
-                        Some(existing) if !existing.is_empty()
-                    )
+            (None, _, _) | (_, None, _) => {
+                if let Some(prev) = current.get(COVER_FIELD) {
+                    merged.insert(COVER_FIELD.to_string(), prev.clone());
+                } else {
+                    merged.remove(COVER_FIELD);
                 }
-                _ => false,
-            };
-            if !backed {
-                return Err("work override: cover bytes are required for cover override".to_string());
             }
-            ctx.record_cover_changed(novel_id);
+            _ => {}
         }
     } else if next_cover.is_none() && prev_cover.is_some() {
         if let (Some(root), Some(directory)) = (root, work.directory.as_deref()) {
@@ -1761,6 +1815,97 @@ mod tests {
         assert_eq!(cleared.value.fields["status"].value, JsonValue::Null);
         assert!(!root.join("contents/source/book/cover.override.png").exists());
         assert_eq!(fs::read(&source_cover).unwrap(), b"original-source-cover");
+        test_db.db.close().await;
+    }
+
+    #[tokio::test]
+    async fn update_initializes_directory_for_shelved_novel_missing_file_cache_and_merge_defers_unshelved_cover() {
+        let test_db = open_test_db().await;
+        let root = test_db.dir.path().join("media");
+        fs::create_dir_all(&root).unwrap();
+
+        with_write_tx(test_db.db.writer(), TxOptions::default(), |conn, _ctx| {
+            Box::pin(async move {
+                sqlx::query(
+                    "INSERT INTO novel (id, plugin_id, source_novel_id, path, name, in_library) \
+                     VALUES (1, 'source', 'book', '/book', 'Book', 1), \
+                            (2, 'source', 'browsed', '/browsed', 'Browsed', 0)",
+                )
+                .execute(&mut *conn)
+                .await
+                .map_err(|err| err.to_string())?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+
+        let saved = with_write_tx(test_db.db.writer(), publishing(&root), {
+            let root = root.clone();
+            move |conn, ctx| {
+                Box::pin(async move {
+                    update_novel_override_in_tx(
+                        Some(&root),
+                        conn,
+                        ctx,
+                        1,
+                        &BTreeMap::from([("status".to_string(), json!("Completed"))]),
+                        NovelOverrideCoverActionDto::Set {
+                            file_name: "cover.override.png".to_string(),
+                            bytes: b"png-bytes".to_vec(),
+                        },
+                        100,
+                    )
+                    .await
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            saved.value.fields["cover"].value,
+            json!("cover.override.png")
+        );
+        assert!(root.join("contents/source/book/novel.json").is_file());
+        assert!(root.join("contents/source/book/override.json").is_file());
+        assert_eq!(
+            fs::read(root.join("contents/source/book/cover.override.png")).unwrap(),
+            b"png-bytes"
+        );
+        let cached_dir: Option<String> = sqlx::query_scalar(
+            "SELECT directory FROM work_metadata_file_cache WHERE novel_id = 1",
+        )
+        .fetch_optional(test_db.db.writer())
+        .await
+        .unwrap();
+        assert_eq!(cached_dir.as_deref(), Some("contents/source/book"));
+
+        // Unshelved novel with no work directory yet keeps text/status overrides while deferring cover.
+        let merged = with_write_tx(test_db.db.writer(), TxOptions::default(), |conn, ctx| {
+            Box::pin(async move {
+                let incoming = fields(&[
+                    ("name", json!("Custom Browsed"), 20),
+                    ("status", json!("On Hiatus"), 20),
+                    ("cover", json!("cover.override.png"), 20),
+                ]);
+                merge_novel_override_with_cover_in_tx(
+                    None,
+                    conn,
+                    ctx,
+                    2,
+                    &incoming,
+                    Some(b"png-bytes"),
+                )
+                .await
+            })
+        })
+        .await
+        .unwrap();
+        assert!(merged.value.changed);
+        let merged_doc = merged.value.document.unwrap();
+        assert_eq!(merged_doc.fields["name"].value, json!("Custom Browsed"));
+        assert_eq!(merged_doc.fields["status"].value, json!("On Hiatus"));
+        assert!(!merged_doc.fields.contains_key("cover"));
         test_db.db.close().await;
     }
 
