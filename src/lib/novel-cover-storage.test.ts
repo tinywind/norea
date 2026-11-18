@@ -43,9 +43,9 @@ function makePlugin(overrides: Partial<Plugin> = {}): Plugin {
     getBaseUrl: () => "https://source.test/books/",
     popularNovels: () => Promise.resolve([]),
     parseNovel: () =>
-      Promise.resolve({ novelId: "novel", name: "Sample Novel", path: "/novel", chapters: [] }),
+      Promise.resolve({ novelId: "novel", name: "Sample Novel", path: "/novel", status: "Unknown", chapters: [] }),
     parseNovelSince: () =>
-      Promise.resolve({ novelId: "novel", name: "Sample Novel", path: "/novel", chapters: [] }),
+      Promise.resolve({ novelId: "novel", name: "Sample Novel", path: "/novel", status: "Unknown", chapters: [] }),
     getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: () => Promise.resolve([]),
     ...overrides,

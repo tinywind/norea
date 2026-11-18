@@ -1,4 +1,5 @@
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
+import { assertNovelItems } from "./return-contracts";
 import type {
   ChapterAcquisitionPlan,
   ChapterResource,
@@ -45,6 +46,34 @@ export function hashPluginSource(source: string): string {
   return (hash >>> 0).toString(16).padStart(8, "0");
 }
 
+const wrappedRuntimes = new WeakSet<Plugin>();
+
+function wrapRuntimeMethods(plugin: Plugin): Plugin {
+  if (wrappedRuntimes.has(plugin)) return plugin;
+  const popularNovels = plugin.popularNovels;
+  const searchNovels = plugin.searchNovels;
+  plugin.popularNovels = async (
+    pageNo: number,
+    options?: PluginPopularOptions,
+  ): Promise<NovelItem[]> =>
+    assertNovelItems(
+      plugin.id,
+      "popularNovels",
+      await popularNovels.call(plugin, pageNo, options),
+    );
+  plugin.searchNovels = async (
+    searchTerm: string,
+    pageNo: number,
+  ): Promise<NovelItem[]> =>
+    assertNovelItems(
+      plugin.id,
+      "searchNovels",
+      await searchNovels.call(plugin, searchTerm, pageNo),
+    );
+  wrappedRuntimes.add(plugin);
+  return plugin;
+}
+
 export function createPluginRuntimeHandle({
   compiler,
   initialRuntime,
@@ -53,7 +82,7 @@ export function createPluginRuntimeHandle({
 }: PluginRuntimeHandleOptions): PluginRuntimeHandle {
   const runtimes = new Map<ScraperExecutorId, Plugin>();
   if (initialRuntime) {
-    runtimes.set("immediate", initialRuntime);
+    runtimes.set("immediate", wrapRuntimeMethods(initialRuntime));
   }
 
   return {
@@ -63,12 +92,14 @@ export function createPluginRuntimeHandle({
       const cached = runtimes.get(executor);
       if (cached) return cached;
 
-      const runtime = compiler({
-        source,
-        item,
-        executor,
-        overrideIdentity: true,
-      });
+      const runtime = wrapRuntimeMethods(
+        compiler({
+          source,
+          item,
+          executor,
+          overrideIdentity: true,
+        }),
+      );
       runtimes.set(executor, runtime);
       return runtime;
     },
@@ -108,7 +139,11 @@ export function createLazyPluginProxy(
       options?: PluginPopularOptions,
     ): Promise<NovelItem[]> => {
       const runtime = immediateRuntime(handle);
-      return runtime.popularNovels(pageNo, options);
+      return assertNovelItems(
+        runtime.id,
+        "popularNovels",
+        await runtime.popularNovels(pageNo, options),
+      );
     },
     parseNovel: async (novelPath: string): Promise<SourceNovel> => {
       const runtime = immediateRuntime(handle);
@@ -133,7 +168,11 @@ export function createLazyPluginProxy(
       pageNo: number,
     ): Promise<NovelItem[]> => {
       const runtime = immediateRuntime(handle);
-      return runtime.searchNovels(searchTerm, pageNo);
+      return assertNovelItems(
+        runtime.id,
+        "searchNovels",
+        await runtime.searchNovels(searchTerm, pageNo),
+      );
     },
   } satisfies Plugin;
 

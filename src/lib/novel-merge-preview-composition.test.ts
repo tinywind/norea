@@ -4,7 +4,7 @@ vi.mock("../db/queries/chapter", () => ({ listChaptersByNovel: vi.fn(async () =>
 import { findNovelMergeTargetPreview } from "../db/queries/novel-merge";
 import { listChaptersByNovel } from "../db/queries/chapter";
 import { resolveNovelMergeTargetPreview, validateReviewedNovelMergeCatalog } from "./novel-merge-composition";
-const raw = { novelId: "work-b", path: "/b", name: "B", chapters: [{ path: "/b/2", name: "Current", chapterNumber: 2 }] };
+const raw = { novelId: "work-b", path: "/b", name: "B", status: "Ongoing" as const, chapters: [{ path: "/b/2", name: "Current", chapterNumber: 2 }] };
 beforeEach(() => {
   vi.clearAllMocks();
   vi.mocked(findNovelMergeTargetPreview).mockResolvedValue({ novelId: 2, composition: null });

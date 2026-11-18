@@ -22,8 +22,11 @@ interface PluginItem {
 }
 ```
 
-The host rejects missing or different API versions before registering a
-plugin. Source IDs must remain stable after release.
+The host rejects missing or different API versions, unsupported `installMode`
+values (`"single"` | `"multiSource"`), and invalid `filters` or
+`pluginInputs` / `pluginSettings` schemas before registering a plugin. `multiSource`
+templates cannot be installed directly via file or single-step install and must be
+instantiated as source instances. Source IDs must remain stable after release.
 
 A repository entry is offered as an update only when its `version` is strictly
 newer than the installed one under semver precedence, with any number of
@@ -650,6 +653,16 @@ foreground visit resumes the suspended work independently of user queue pauses.
 Explicit system force-stop is not bypassed; remaining jobs restore at the next
 app launch. This is not an always-on idle VPN service.
 
+## Shared plugin constants and settings schemas
+
+The host sandbox provides canonical runtime constants and helpers on the
+whitelisted `@libs/*` modules:
+
+- `@libs/novelStatus`: `NovelStatus` (`"Unknown"`, `"Ongoing"`, `"Completed"`, `"Licensed"`, `"Publishing Finished"`, `"Cancelled"`, `"On Hiatus"`).
+- `@libs/filterInputs`: `FilterTypes` (`"Text"`, `"Picker"`, `"Checkbox"`, `"Switch"`, `"XCheckbox"`). Every declared filter entry must use a valid `FilterTypes` discriminant, a non-empty `label`, matching default `value` type (`boolean` for `Switch`, `string` for `Text`/`Picker`, `string[]` for `Checkbox`, `{ include?, exclude? }` for `XCheckbox`), and an `options` array where required.
+- `@libs/pluginInputs`: `inputs` / `pluginInputs`, `PluginInputTypes` (`"Text"`, `"Url"`, `"Password"`, `"Number"`, `"Switch"`, `"Select"`), and `PluginInstallModes` (`"single"`, `"multiSource"`). `Switch` inputs require a `boolean` default `value` when specified and must not declare `options`; `Select` inputs require a non-empty `options` array; textual inputs use `string` values.
+- `@libs/webView`: `webViewFetch`, `webViewLoad`, `webViewNavigate`, `ChapterCaptureLoadStrategies`, `ChapterCaptureErrorCodes`, `SourceAccessChallengeKinds`, `SourceAccessErrorCodes`, and `WebViewInteractionTypes`.
+
 ## Required plugin surface
 
 Besides chapter acquisition, a plugin implements:
@@ -662,6 +675,10 @@ interface Plugin {
   lang: string;
   version: string;
   iconUrl: string;
+  installMode?: "single" | "multiSource";
+  filters?: Filters;
+  pluginInputs?: PluginInputSchema;
+  pluginSettings?: PluginInputSchema;
   getBaseUrl(): string;
   popularNovels(pageNo: number, options?: PluginPopularOptions): Promise<NovelItem[]>;
   searchNovels(searchTerm: string, pageNo: number): Promise<NovelItem[]>;
@@ -674,6 +691,10 @@ interface Plugin {
     chapterPath: string,
     contentType: ChapterContentType,
   ): ChapterAcquisitionPlan;
+  getChapterResource?(
+    chapterPath: string,
+    contentType: ChapterContentType,
+  ): Promise<ChapterResource>;
   resolveUrl?(path: string, isNovel?: boolean): string;
 }
 ```
@@ -731,11 +752,14 @@ are invalid. The host rejects missing or unsafe IDs, collisions with another
 source path, and changes to an existing work's ID. No host hash or sanitized
 source-path fallback is generated.
 
-`SourceNovel.status` is an optional source-provided string. `SourceNovel.rating`
-is an optional finite number from 0 to 5. The host stores both with the work
-metadata and rejects ratings outside that range. A partial metadata refresh
-preserves an existing rating when the source omits it; a full replacement
-clears an omitted rating.
+`SourceNovel.status` is required from both `parseNovel` and `parseNovelSince` and
+must be one of the `NovelStatus` constants from `@libs/novelStatus`
+(`"Completed"`, `"Ongoing"`, `"On Hiatus"`, `"Cancelled"`,
+`"Publishing Finished"`, `"Licensed"`, or `"Unknown"`). The host rejects missing
+or unrecognized status values. `SourceNovel.rating` is an optional finite number
+from 0 to 5. The host stores both with the work metadata and rejects ratings
+outside that range. A partial metadata refresh preserves an existing rating when
+the source omits it; a full replacement clears an omitted rating.
 
 ## Example
 

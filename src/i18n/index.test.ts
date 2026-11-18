@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { formatPluginLanguageForLocale, translate } from "./index";
+import {
+  formatPluginLanguageForLocale,
+  resolvePluginLanguageCode,
+  translate,
+} from "./index";
 
 const koreanNames = new Intl.DisplayNames(["ko"], { type: "language" });
 
@@ -20,5 +24,14 @@ describe("plugin language labels", () => {
     expect(formatPluginLanguageForLocale("en", nativeKorean)).toBe(nativeKorean);
     expect(formatPluginLanguageForLocale("ko", "ko")).toBe(nativeKorean);
     expect(formatPluginLanguageForLocale("ko", "Klingonese")).toBe("Klingonese");
+  });
+
+  it("resolves ISO codes, English names, and native names while returning null for Multi", () => {
+    expect(resolvePluginLanguageCode("English")).toBe("en");
+    expect(resolvePluginLanguageCode("한국어")).toBe("ko");
+    expect(resolvePluginLanguageCode("Japanese")).toBe("ja");
+    expect(resolvePluginLanguageCode("ko")).toBe("ko");
+    expect(resolvePluginLanguageCode("Multi")).toBeNull();
+    expect(resolvePluginLanguageCode("Klingonese")).toBeNull();
   });
 });

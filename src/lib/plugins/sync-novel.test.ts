@@ -33,7 +33,7 @@ import {
   getSourceDuplicateChapterInfo,
   syncNovelFromSource,
 } from "./sync-novel";
-import type { Plugin, SourceNovel } from "./types";
+import { NovelStatus, type Plugin, type SourceNovel } from "./types";
 
 const mockedSaveNovelCoverFromSource = vi.mocked(saveNovelCoverFromSource);
 
@@ -42,6 +42,7 @@ function makeDetail(chapterNumbers: number[]): SourceNovel {
     novelId: "novel",
     name: "Novel",
     path: "/novel",
+    status: "Ongoing",
     chapters: chapterNumbers.map((chapterNumber) => ({
       chapterNumber,
       name: `Chapter ${chapterNumber}`,
@@ -112,7 +113,7 @@ beforeEach(() => {
 
 describe("syncNovelFromSource", () => {
   it.each([undefined, "", " \t\n "])(
-    "normalizes blank source metadata %j to null while preserving missing metadata",
+    "normalizes blank optional source metadata %j to null while requiring canonical status",
     async (missing) => {
       await syncNovelFromSource(
         makePlugin({
@@ -122,7 +123,7 @@ describe("syncNovelFromSource", () => {
             summary: missing,
             author: missing,
             artist: missing,
-            status: missing,
+            status: NovelStatus.Unknown,
             genres: missing,
           }),
         }),
@@ -139,7 +140,7 @@ describe("syncNovelFromSource", () => {
           summary: null,
           author: null,
           artist: null,
-          status: null,
+          status: "Unknown",
           genres: null,
           rating: null,
         }),
@@ -291,7 +292,7 @@ describe("syncNovelFromSource", () => {
         parseNovel: vi.fn(async () => ({
           ...makeDetail([1]),
           rating: 4.5,
-          status: "On break",
+          status: "On Hiatus" as const,
         })),
       });
       await syncNovelFromSource(plugin, { name: "Novel", path });
@@ -300,7 +301,7 @@ describe("syncNovelFromSource", () => {
         input: expect.objectContaining({
           pluginId: "demo",
           novelPath: path,
-          status: "On break",
+          status: "On Hiatus",
           rating: 4.5,
         }),
       });
@@ -319,6 +320,49 @@ describe("syncNovelFromSource", () => {
         ),
       ).rejects.toThrow("rating outside 0 to 5");
       expect(invokeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, null, "", " \t\n ", "ongoing", "연재중", "On break"])(
+    "rejects invalid parseNovel status %j before invoking IPC",
+    async (status) => {
+      await expect(
+        syncNovelFromSource(
+          makePlugin({
+            id: "plugin-a",
+            parseNovel: async () =>
+              ({ ...makeDetail([1]), status }) as unknown as SourceNovel,
+          }),
+          { name: "Novel", path: "/novel" },
+        ),
+      ).rejects.toThrow(
+        "Plugin 'plugin-a' parseNovel returned an invalid novel status",
+      );
+      expect(invokeMock).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each([undefined, null, "", " \t\n ", "ongoing", "연재중", "On break"])(
+    "rejects invalid parseNovelSince status %j before invoking publish IPC",
+    async (status) => {
+      await expect(
+        syncNovelFromSource(
+          makePlugin({
+            id: "plugin-a",
+            parseNovelSince: async () =>
+              ({ ...makeDetail([2, 3]), status }) as unknown as SourceNovel,
+          }),
+          { name: "Novel", path: "/novel" },
+          { chapterRefreshMode: "since", novelId: 7 },
+        ),
+      ).rejects.toThrow(
+        "Plugin 'plugin-a' parseNovelSince returned an invalid novel status",
+      );
+      expect(invokeMock).toHaveBeenCalledTimes(1);
+      expect(invokeMock).toHaveBeenCalledWith(
+        "db_chapter_get_sync_since_anchor",
+        expect.anything(),
+      );
     },
   );
 
@@ -395,6 +439,37 @@ describe("syncNovelFromSource", () => {
         { name: "Novel", path: "/novel" },
       ),
     ).rejects.toThrow('unsupported chapter contentType "mobi"');
+
+    await expect(
+      syncNovelFromSource(
+        makePlugin({
+          parseNovel: async () => ({
+            ...makeDetail([]),
+            chapters: [
+              {
+                chapterNumber: 1,
+                contentType: null as never,
+                name: "Null type",
+                path: "/null-type",
+              },
+            ],
+          }),
+        }),
+        { name: "Novel", path: "/novel" },
+      ),
+    ).rejects.toThrow('unsupported chapter contentType "null"');
+
+    await expect(
+      syncNovelFromSource(
+        makePlugin({
+          parseNovel: async () => ({
+            ...makeDetail([1]),
+            path: "https://example.test/novel",
+          }),
+        }),
+        { name: "Novel", path: "/novel" },
+      ),
+    ).rejects.toThrow("exclude the base URL");
 
     const result = await syncNovelFromSource(
       makePlugin({

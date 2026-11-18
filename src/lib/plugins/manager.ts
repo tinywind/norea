@@ -8,8 +8,11 @@ import {
   createPluginFetchShim,
 } from "../http";
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
+import { isRecord } from "../type-guards";
 import { getPluginBaseUrl } from "./base-url";
+import { assertPluginFilters } from "./filterTypes";
 import {
+  assertPluginInputSchema,
   clearPluginInputValues,
   setPluginInputValue,
 } from "./inputs";
@@ -20,8 +23,13 @@ import {
 } from "./runtime";
 import { loadPlugin } from "./sandbox";
 import { createShimResolver } from "./shims";
-import type { Plugin, PluginInstallMode, PluginItem } from "./types";
-import { CURRENT_PLUGIN_API_VERSION } from "./types";
+import {
+  CURRENT_PLUGIN_API_VERSION,
+  isPluginInstallMode,
+  type Plugin,
+  type PluginInstallMode,
+  type PluginItem,
+} from "./types";
 
 export class PluginValidationError extends Error {
   constructor(message: string) {
@@ -69,8 +77,13 @@ function readOptionalPluginString(value: unknown): string | undefined {
 
 function readOptionalPluginInstallMode(
   value: unknown,
+  sourceLabel: string,
 ): PluginInstallMode | undefined {
-  return value === "single" || value === "multiSource" ? value : undefined;
+  if (value === undefined) return undefined;
+  if (isPluginInstallMode(value)) return value;
+  throw new PluginValidationError(
+    `Plugin ${sourceLabel} has unsupported installMode '${String(value)}'.`,
+  );
 }
 
 function slugifyPluginInstanceId(value: string): string {
@@ -96,12 +109,23 @@ function assertPluginContract(plugin: Plugin, sourceLabel: string): void {
       `Plugin ${sourceLabel} is missing required string field 'iconUrl'.`,
     );
   }
+  readOptionalPluginInstallMode(value.installMode, sourceLabel);
   for (const field of REQUIRED_PLUGIN_METHOD_FIELDS) {
     if (typeof value[field] !== "function") {
       throw new PluginValidationError(
         `Plugin ${sourceLabel} is missing required function '${field}'.`,
       );
     }
+  }
+  try {
+    assertPluginFilters(value.filters, sourceLabel);
+    assertPluginInputSchema(value.pluginInputs, "pluginInputs", sourceLabel);
+    assertPluginInputSchema(value.pluginSettings, "pluginSettings", sourceLabel);
+  } catch (error) {
+    if (error instanceof PluginValidationError) throw error;
+    throw new PluginValidationError(
+      error instanceof Error ? error.message : String(error),
+    );
   }
 }
 
@@ -122,27 +146,31 @@ function pluginItemFromLocalSource(
     version: readRequiredPluginString(value.version, "version", sourceUrl),
     url: sourceUrl,
     iconUrl: readOptionalPluginString(value.iconUrl) ?? "",
-    installMode: readOptionalPluginInstallMode(value.installMode),
+    installMode: readOptionalPluginInstallMode(value.installMode, sourceUrl),
     apiVersion: CURRENT_PLUGIN_API_VERSION,
   };
 }
 
 /**
- * Type-guard for the loose JSON shape upstream `repository.json`
- * indexes carry. We only require the fields the host actually
- * uses; any extras pass through.
+ * Type-guard for repository index `PluginItem` entries. Drops malformed entries
+ * or unsupported `apiVersion` / `installMode` values.
  */
 export function isValidPluginItem(value: unknown): value is PluginItem {
-  if (value === null || typeof value !== "object") return false;
-  const v = value as Record<string, unknown>;
+  if (!isRecord(value)) return false;
   return (
-    typeof v.id === "string" &&
-    typeof v.name === "string" &&
-    typeof v.url === "string" &&
-    typeof v.lang === "string" &&
-    typeof v.version === "string" &&
-    typeof v.iconUrl === "string" &&
-    v.apiVersion === CURRENT_PLUGIN_API_VERSION
+    typeof value.id === "string" &&
+    value.id.trim() !== "" &&
+    typeof value.name === "string" &&
+    value.name.trim() !== "" &&
+    typeof value.url === "string" &&
+    value.url.trim() !== "" &&
+    typeof value.lang === "string" &&
+    value.lang.trim() !== "" &&
+    typeof value.version === "string" &&
+    value.version.trim() !== "" &&
+    typeof value.iconUrl === "string" &&
+    value.apiVersion === CURRENT_PLUGIN_API_VERSION &&
+    (value.installMode === undefined || isPluginInstallMode(value.installMode))
   );
 }
 
@@ -172,7 +200,8 @@ function withPluginMetadata(
   target.iconUrl =
     typeof target.iconUrl === "string" ? target.iconUrl : item.iconUrl;
   target.installMode =
-    readOptionalPluginInstallMode(target.installMode) ?? item.installMode;
+    readOptionalPluginInstallMode(target.installMode, item.url) ??
+    item.installMode;
   return plugin;
 }
 
@@ -332,6 +361,11 @@ export class PluginManager {
       }),
       sourceUrl,
     );
+    if (item.installMode === "multiSource") {
+      throw new PluginValidationError(
+        `Plugin '${item.id}' must be installed as a source instance.`,
+      );
+    }
     const plugin = this.loadRuntimePlugin(source, item, "immediate");
     await this.registerInstalledPlugin(plugin, sourceUrl, source, null);
     return plugin;

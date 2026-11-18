@@ -4,6 +4,7 @@ import { enqueueSourceTask } from "../tasks/source-tasks";
 import { taskScheduler, type TaskHandle } from "../tasks/scheduler";
 import { cancelAndroidScraperExecutor } from "../android-scraper";
 import { isSourceAccessRequiredError } from "./source-access";
+import { assertNovelItems } from "./return-contracts";
 
 export interface GlobalSearchResult {
   pluginId: string;
@@ -112,7 +113,12 @@ export async function globalSearch(
           );
           return (
             withTimeout(
-              () => runtimePlugin.searchNovels(term, 1),
+              async () =>
+                assertNovelItems(
+                  plugin.id,
+                  "searchNovels",
+                  await runtimePlugin.searchNovels(term, 1),
+                ),
               timeoutMs,
               () =>
                 cancelAndroidScraperExecutor(

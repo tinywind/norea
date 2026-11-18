@@ -3,9 +3,11 @@ import enMessages from "../../strings/languages/en/app.json";
 import koMessages from "../../strings/languages/ko/app.json";
 import { useAppearanceStore } from "../store/appearance";
 import { normalizeAppLocale, type AppLocale } from "./locales";
+import { ENGLISH_LANGUAGE_NAME_CODES } from "./plugin-languages";
 
 export type { AppLocale } from "./locales";
 export { normalizeAppLocale, SUPPORTED_APP_LOCALES } from "./locales";
+export { resolvePluginLanguageCode } from "./plugin-languages";
 
 type TranslationMessages = typeof enMessages;
 export type TranslationKey = keyof TranslationMessages;
@@ -110,27 +112,6 @@ export function formatRelativeTimeForLocale(
 
   return formatDateForLocale(locale, timestamp);
 }
-
-/** Plugin catalogs name languages in English ("Japanese") or natively ("한국어"), not by code. */
-const ENGLISH_LANGUAGE_NAME_CODES: Readonly<Record<string, string>> = {
-  arabic: "ar",
-  chinese: "zh",
-  english: "en",
-  french: "fr",
-  german: "de",
-  indonesian: "id",
-  italian: "it",
-  japanese: "ja",
-  korean: "ko",
-  polish: "pl",
-  portuguese: "pt",
-  russian: "ru",
-  spanish: "es",
-  thai: "th",
-  turkish: "tr",
-  ukrainian: "uk",
-  vietnamese: "vi",
-};
 
 export function formatPluginLanguageForLocale(
   locale: AppLocale,

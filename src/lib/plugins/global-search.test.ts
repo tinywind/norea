@@ -25,9 +25,9 @@ function makePlugin(
     getBaseUrl: () => `https://${id}.test`,
     popularNovels: () => Promise.resolve([]),
     parseNovel: () =>
-      Promise.resolve({ novelId: "novel", name: "", path: "", chapters: [] }),
+      Promise.resolve({ novelId: "novel", name: "", path: "", status: "Unknown", chapters: [] }),
     parseNovelSince: () =>
-      Promise.resolve({ novelId: "novel", name: "", path: "", chapters: [] }),
+      Promise.resolve({ novelId: "novel", name: "", path: "", status: "Unknown", chapters: [] }),
     getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: searchImpl,
   };
@@ -355,5 +355,23 @@ describe("globalSearch", () => {
     const results = await promise;
     expect(results.length).toBeLessThan(5);
     expect(started).toBeLessThan(5);
+  });
+
+  it("records a contract error when searchNovels returns invalid NovelItem entries", async () => {
+    const manager = makeManager([
+      makePlugin("full-url", async () => [
+        { name: "Bad", path: "https://full-url.test/novel/1" },
+      ]),
+      makePlugin("empty-name", async () => [{ name: "   ", path: "/novel/2" }]),
+    ]);
+
+    const results = await globalSearch(manager, "test");
+
+    expect(results.find((r) => r.pluginId === "full-url")?.error).toMatch(
+      /exclude the base URL/,
+    );
+    expect(results.find((r) => r.pluginId === "empty-name")?.error).toMatch(
+      /valid name or path/,
+    );
   });
 });

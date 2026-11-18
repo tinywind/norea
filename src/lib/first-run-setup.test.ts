@@ -53,4 +53,16 @@ describe("setup suggestions", () => {
     expect(normalizeFirstRunSetupState("later")).toBeNull();
     expect(normalizeFirstRunSetupState(undefined)).toBeNull();
   });
+
+  it("matches catalog language names against appLocale and excludes Multi from language chips", () => {
+    const catalog = [
+      item("e", "English"),
+      item("k", "한국어"),
+      item("j", "Japanese"),
+      item("m", "Multi"),
+    ];
+    expect(setupLanguages(catalog, "ko")).toEqual(["한국어", "English", "Japanese"]);
+    expect(initialSetupLanguages(catalog, "ko")).toEqual(["한국어"]);
+    expect(initialSetupLanguages(catalog, "en")).toEqual(["English"]);
+  });
 });

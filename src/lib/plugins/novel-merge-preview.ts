@@ -1,19 +1,11 @@
 import { enqueueSourceTask } from "../tasks/source-tasks";
 import type { ScraperExecutorId } from "../tasks/scraper-queue";
 import type { TaskHandle } from "../tasks/scheduler";
-import { isKnownChapterContentType } from "../chapter-content";
-import { isStorageId } from "../storage-id";
-import { isRecord } from "../type-guards";
+import {
+  assertValidSourceChapterItem,
+  assertValidSourceNovelMetadata,
+} from "./return-contracts";
 import type { NovelItem, Plugin, SourceNovel } from "./types";
-
-const OPTIONAL_NOVEL_STRING_FIELDS = [
-  "artist",
-  "author",
-  "cover",
-  "genres",
-  "status",
-  "summary",
-] as const;
 
 interface NovelMergePreviewPluginManager {
   getPlugin: (
@@ -39,80 +31,24 @@ export class NovelMergePreviewValidationError extends Error {
   }
 }
 
+const createPreviewError = (message: string) =>
+  new NovelMergePreviewValidationError(message);
+
 export function validateNovelMergeTargetPreview(value: unknown): SourceNovel {
-  if (
-    !isRecord(value) ||
-    typeof value.name !== "string" ||
-    value.name.trim() === "" ||
-    typeof value.path !== "string" ||
-    value.path.trim() === ""
-  ) {
-    throw new NovelMergePreviewValidationError(
-      "Target preview is missing its novel name or path.",
-    );
-  }
-  if (!isStorageId(value.novelId)) throw new NovelMergePreviewValidationError("Target preview has an invalid novel ID.");
-  if (!Array.isArray(value.chapters)) {
-    throw new NovelMergePreviewValidationError(
-      "Target preview did not return a chapter list.",
-    );
-  }
-  for (const field of OPTIONAL_NOVEL_STRING_FIELDS) {
-    if (value[field] !== undefined && typeof value[field] !== "string") {
-      throw new NovelMergePreviewValidationError(
-        `Target preview field '${field}' must be a string.`,
-      );
-    }
-  }
-  if (
-    value.totalPages !== undefined &&
-    (typeof value.totalPages !== "number" ||
-      !Number.isFinite(value.totalPages))
-  ) {
-    throw new NovelMergePreviewValidationError(
-      "Target preview field 'totalPages' must be finite.",
-    );
-  }
+  assertValidSourceNovelMetadata(value, "Target preview", createPreviewError, {
+    invalidStatus: () =>
+      "Target preview field 'status' must be a valid NovelStatus.",
+  });
 
   const chapterPaths = new Set<string>();
   const chapterNumbers = new Set<number>();
   for (const [index, chapter] of value.chapters.entries()) {
-    if (
-      !isRecord(chapter) ||
-      typeof chapter.name !== "string" ||
-      chapter.name.trim() === "" ||
-      typeof chapter.path !== "string" ||
-      chapter.path.trim() === ""
-    ) {
-      throw new NovelMergePreviewValidationError(
-        `Target preview chapter ${index + 1} has no name or path.`,
-      );
-    }
-    if (
-      typeof chapter.chapterNumber !== "number" ||
-      !Number.isFinite(chapter.chapterNumber)
-    ) {
-      throw new NovelMergePreviewValidationError(
-        `Target preview chapter ${index + 1} must have a finite chapterNumber.`,
-      );
-    }
-    if (
-      chapter.contentType !== undefined &&
-      !isKnownChapterContentType(chapter.contentType)
-    ) {
-      throw new NovelMergePreviewValidationError(
-        `Target preview chapter ${index + 1} has an unsupported contentType.`,
-      );
-    }
-    if (
-      (chapter.page !== undefined && typeof chapter.page !== "string") ||
-      (chapter.releaseTime !== undefined &&
-        typeof chapter.releaseTime !== "string")
-    ) {
-      throw new NovelMergePreviewValidationError(
-        `Target preview chapter ${index + 1} has invalid optional metadata.`,
-      );
-    }
+    assertValidSourceChapterItem(chapter, index, "Target preview", createPreviewError, {
+      invalidChapterNumber: (_label, idx) =>
+        `Target preview chapter ${idx + 1} must have a finite chapterNumber.`,
+      invalidContentType: (_label, idx) =>
+        `Target preview chapter ${idx + 1} has an unsupported contentType.`,
+    });
     if (chapterPaths.has(chapter.path)) {
       throw new NovelMergePreviewValidationError(
         `Target preview returned duplicate chapter path '${chapter.path}'.`,
@@ -127,7 +63,7 @@ export function validateNovelMergeTargetPreview(value: unknown): SourceNovel {
     chapterNumbers.add(chapter.chapterNumber);
   }
 
-  return value as unknown as SourceNovel;
+  return value as SourceNovel;
 }
 
 export function enqueueNovelMergeTargetPreviewTask({

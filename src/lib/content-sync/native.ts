@@ -16,7 +16,7 @@ export interface PackageManifest {
   layout: "chapter-files";
   identity: ContentIdentity & { novelId: string };
   novel: { name: string; author?: string | null; summary?: string | null; isLocal: boolean };
-  chapter: { name: string; position: number; chapterNumber?: string | null; contentType: "html" | "text" | "markdown" | "pdf"; page: string };
+  chapter: { name: string; position: number; chapterNumber?: string | null; contentType: "html" | "text" | "markdown" | "pdf" | "epub"; page: string };
   bodyPath: string;
   files: { path: string; size: number; modifiedAt: number }[];
 }

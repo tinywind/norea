@@ -31,10 +31,20 @@ import {
   deletePluginInputValue,
   getPluginInputPrefix,
   getPluginInputValue,
+  PluginInputTypes,
   setPluginInputValue,
 } from "./inputs";
 import { sourceAccessErrorFromEnvelope } from "./source-access";
-import { NovelStatus, type WebViewInteraction } from "./types";
+import {
+  ChapterCaptureErrorCodes,
+  ChapterCaptureLoadStrategies,
+  NovelStatus,
+  PluginInstallModes,
+  SourceAccessChallengeKinds,
+  SourceAccessErrorCodes,
+  WebViewInteractionTypes,
+  type WebViewInteraction,
+} from "./types";
 import {
   nextWebViewInteractionRunId,
   validateWebViewInteractions,
@@ -701,12 +711,19 @@ export function createShimResolver(
         return {
           inputs: pluginInputs,
           pluginInputs,
+          PluginInputTypes,
+          PluginInstallModes,
         };
       case "@libs/webView":
         return {
           webViewFetch: createWebViewFetch(pluginId, scraperExecutor),
           webViewLoad: createWebViewLoad(pluginId, scraperExecutor),
           webViewNavigate: createWebViewNavigate(pluginId, scraperExecutor),
+          ChapterCaptureLoadStrategies,
+          ChapterCaptureErrorCodes,
+          SourceAccessChallengeKinds,
+          SourceAccessErrorCodes,
+          WebViewInteractionTypes,
         };
       default:
         throw new Error(

@@ -1,5 +1,16 @@
+import {
+  isMultiLanguageLabel,
+  resolvePluginLanguageCode,
+} from "../i18n/plugin-languages";
 import type { PluginItem } from "./plugins/types";
 import type { FirstRunSetupState } from "../store/setup";
+
+function matchesAppLocale(lang: string, appLocale: string): boolean {
+  const resolved = resolvePluginLanguageCode(lang);
+  const localeCode = resolvePluginLanguageCode(appLocale);
+  if (resolved && localeCode) return resolved === localeCode;
+  return lang.trim().toLowerCase() === appLocale.trim().toLowerCase();
+}
 
 export interface FirstRunSetupCheck {
   pathname: string;
@@ -26,17 +37,26 @@ export function setupInstallableItems(items: readonly PluginItem[]): PluginItem[
   return items.filter((item) => item.installMode !== "multiSource");
 }
 
-/** The repository's languages, with the app language first when it has sources. */
+/** The repository's languages, excluding Multi, with the app language first when it has sources. */
 export function setupLanguages(items: readonly PluginItem[], appLocale: string): string[] {
-  const languages = [...new Set(setupInstallableItems(items).map((item) => item.lang).filter(Boolean))].sort();
-  return languages.includes(appLocale)
-    ? [appLocale, ...languages.filter((lang) => lang !== appLocale)]
+  const languages = [
+    ...new Set(
+      setupInstallableItems(items)
+        .map((item) => item.lang)
+        .filter((lang) => Boolean(lang.trim()) && !isMultiLanguageLabel(lang)),
+    ),
+  ].sort();
+  const preferred = languages.filter((lang) => matchesAppLocale(lang, appLocale));
+  return preferred.length > 0
+    ? [...preferred, ...languages.filter((lang) => !matchesAppLocale(lang, appLocale))]
     : languages;
 }
 
 /** The app language starts selected when the repository has sources in it. */
 export function initialSetupLanguages(items: readonly PluginItem[], appLocale: string): string[] {
-  return setupLanguages(items, appLocale).includes(appLocale) ? [appLocale] : [];
+  return setupLanguages(items, appLocale).filter((lang) =>
+    matchesAppLocale(lang, appLocale),
+  );
 }
 
 /** Suggested sources: every one-step plugin in the chosen languages, by name. */

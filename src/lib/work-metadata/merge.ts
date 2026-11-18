@@ -1,4 +1,5 @@
 import { chapterCompositionCatalog } from "../chapter-composition";
+import { isNovelStatus } from "../plugins/types";
 import type { NovelMetadataV1 } from "./schema";
 
 export function mergeIncomingNovelMetadata(
@@ -7,8 +8,16 @@ export function mergeIncomingNovelMetadata(
 ): NovelMetadataV1 {
   const novel = { ...incoming.novel };
   if (current) {
-    for (const key of ["author", "artist", "summary", "status", "genres"] as const) {
+    for (const key of ["author", "artist", "summary", "genres"] as const) {
       if (!novel[key]?.trim()) novel[key] = current.novel[key];
+    }
+    if (
+      !novel.status?.trim() ||
+      (!novel.isLocal &&
+        isNovelStatus(current.novel.status) &&
+        !isNovelStatus(novel.status))
+    ) {
+      novel.status = current.novel.status;
     }
     novel.rating ??= current.novel.rating;
   }

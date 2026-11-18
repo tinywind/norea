@@ -2,14 +2,9 @@ import { invokeDbMutation, invokeDbQuery } from "../../db/ipc";
 import type { LatestSourceChapterAnchor } from "../../db/queries/chapter";
 import { recordNovelCoverFetched } from "../../db/queries/novel-freshness";
 import { knownNovelMetadataDirectory } from "../../db/work-metadata";
-import {
-  DEFAULT_CHAPTER_CONTENT_TYPE,
-  isKnownChapterContentType,
-  type ChapterContentType,
-} from "../chapter-content";
+import { type ChapterContentType } from "../chapter-content";
 import { saveNovelCoverFromSource } from "../novel-cover-storage";
 import type { SourceChapterRenumberJournal } from "../source-chapter-renumber";
-import { isStorageId } from "../storage-id";
 import { isTauriRuntime } from "../tauri-runtime";
 import { markUpdatesIndexDirty } from "../updates/update-index-events";
 import {
@@ -17,9 +12,19 @@ import {
   readStoredNovelMetadata,
 } from "../work-metadata";
 import type { NovelMetadataV1 } from "../work-metadata/schema";
+import {
+  assertPluginChapterContentType,
+  assertValidSourceChapterItem,
+  assertValidSourceNovelMetadata,
+} from "./return-contracts";
 import { normalizeSourceAccessRequiredError } from "./source-access";
 import { withSourceChapterNumberReconciliation } from "./source-chapter-renumber";
-import type { ChapterItem, NovelItem, Plugin, SourceNovel } from "./types";
+import type {
+  ChapterItem,
+  NovelItem,
+  Plugin,
+  SourceNovel,
+} from "./types";
 
 export interface SyncNovelFromSourceOptions {
   signal?: AbortSignal;
@@ -124,15 +129,7 @@ function optionalText(value: string | undefined | null): string | null {
 }
 
 function pluginChapterContentType(value: unknown): ChapterContentType {
-  if (value === undefined || value === null || value === "") {
-    return DEFAULT_CHAPTER_CONTENT_TYPE;
-  }
-  if (!isKnownChapterContentType(value)) {
-    throw new Error(
-      `sync-novel: unsupported chapter contentType "${String(value)}".`,
-    );
-  }
-  return value;
+  return assertPluginChapterContentType(value, (message) => new Error(`sync-novel: ${message}`));
 }
 
 function assertSourceChapters(
@@ -142,26 +139,11 @@ function assertSourceChapters(
 ): SourceChapterListResult {
   const firstByChapterNumber = new Map<number, ChapterItem>();
   const duplicateChapters = new Map<number, SourceDuplicateChapterInfo>();
+  const label = `Plugin '${pluginId}' ${method}`;
 
-  for (const chapter of chapters) {
+  for (const [index, chapter] of chapters.entries()) {
+    assertValidSourceChapterItem(chapter, index, label);
     const chapterNumber = chapter.chapterNumber;
-    if (
-      typeof chapterNumber !== "number" ||
-      !Number.isFinite(chapterNumber) ||
-      !/^\d+(?:\.\d+)?$/.test(String(chapterNumber))
-    ) {
-      throw new Error(
-        `Plugin '${pluginId}' ${method} returned a chapter without a finite numeric chapterNumber.`,
-      );
-    }
-
-    if (
-      chapter.sourceChapterId !== undefined &&
-      (typeof chapter.sourceChapterId !== "string" ||
-        !chapter.sourceChapterId.trim())
-    ) {
-      throw new Error("Plugin returned an invalid sourceChapterId.");
-    }
     pluginChapterContentType(chapter.contentType);
 
     const keptChapter = firstByChapterNumber.get(chapterNumber);
@@ -195,24 +177,7 @@ function assertSourceNovel(
   method: string,
   detail: SourceNovel,
 ): { detail: SourceNovel; duplicateChapters: SourceDuplicateChapterInfo[] } {
-  if (!isStorageId(detail.novelId)) {
-    throw new Error(
-      `Plugin '${pluginId}' ${method} returned an invalid novel ID.`,
-    );
-  }
-  if (
-    detail.rating !== undefined &&
-    (!Number.isFinite(detail.rating) || detail.rating < 0 || detail.rating > 5)
-  ) {
-    throw new Error(
-      `Plugin '${pluginId}' ${method} returned a rating outside 0 to 5.`,
-    );
-  }
-  if (!Array.isArray(detail.chapters)) {
-    throw new Error(
-      `Plugin '${pluginId}' ${method} did not return a chapter list.`,
-    );
-  }
+  assertValidSourceNovelMetadata(detail, `Plugin '${pluginId}' ${method}`);
 
   const chapterList = assertSourceChapters(pluginId, method, detail.chapters);
   return {
@@ -376,9 +341,7 @@ async function performNovelSourceRefresh(
             author: optionalText(detail.author),
             artist: optionalText(detail.artist),
             summary: optionalText(detail.summary),
-            status: optionalText(
-              detail.status == null ? null : String(detail.status),
-            ),
+            status: detail.status,
             genres: optionalText(detail.genres),
             rating: detail.rating ?? null,
             isLocal: false,
@@ -403,9 +366,7 @@ async function performNovelSourceRefresh(
           summary: optionalText(detail.summary),
           author: optionalText(detail.author),
           artist: optionalText(detail.artist),
-          status: optionalText(
-            detail.status == null ? null : String(detail.status),
-          ),
+          status: detail.status,
           genres: optionalText(detail.genres),
           rating: detail.rating ?? null,
           preserveMissingMetadata,

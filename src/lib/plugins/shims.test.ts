@@ -288,6 +288,42 @@ describe("createShimResolver", () => {
     expect(typeof resolve("@libs/webView")).toBe("object");
   });
 
+  it("exposes canonical contract constants on @libs/pluginInputs and @libs/webView", () => {
+    const inputsLib = resolve("@libs/pluginInputs") as {
+      PluginInputTypes: Record<string, string>;
+      PluginInstallModes: Record<string, string>;
+    };
+    expect(inputsLib.PluginInputTypes).toEqual({
+      Text: "Text",
+      Url: "Url",
+      Password: "Password",
+      Number: "Number",
+      Switch: "Switch",
+      Select: "Select",
+    });
+    expect(inputsLib.PluginInstallModes).toEqual({
+      Single: "single",
+      MultiSource: "multiSource",
+    });
+
+    const webViewLib = resolve("@libs/webView") as {
+      ChapterCaptureLoadStrategies: Record<string, string>;
+      ChapterCaptureErrorCodes: Record<string, string>;
+      SourceAccessChallengeKinds: Record<string, string>;
+      SourceAccessErrorCodes: Record<string, string>;
+      WebViewInteractionTypes: Record<string, string>;
+    };
+    expect(webViewLib.ChapterCaptureErrorCodes.InteractionFailed).toBe(
+      "interaction-failed",
+    );
+    expect(webViewLib.SourceAccessChallengeKinds.Forbidden).toBe("forbidden");
+    expect(webViewLib.SourceAccessErrorCodes.SourceAccessRequired).toBe(
+      "source-access-required",
+    );
+    expect(webViewLib.WebViewInteractionTypes.WaitFor).toBe("waitFor");
+    expect(webViewLib.ChapterCaptureLoadStrategies.Selector).toBe("selector");
+  });
+
   it("throws for any module outside the whitelist", () => {
     expect(() => resolve("fs")).toThrow(/whitelisted/);
     expect(() => resolve("react")).toThrow(/whitelisted/);

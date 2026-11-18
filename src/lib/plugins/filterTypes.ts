@@ -8,6 +8,8 @@
  * `popularNovels(pageNo, { filters })` — see `types.ts`.
  */
 
+import { isRecord } from "../type-guards";
+
 export interface FilterOption {
   readonly label: string;
   readonly value: string;
@@ -19,6 +21,111 @@ export enum FilterTypes {
   CheckboxGroup = "Checkbox",
   Switch = "Switch",
   ExcludableCheckboxGroup = "XCheckbox",
+}
+
+export const FILTER_TYPE_VALUES: readonly FilterTypes[] = Object.values(FilterTypes);
+
+const FILTER_TYPE_SET: ReadonlySet<string> = new Set(FILTER_TYPE_VALUES);
+
+export function isFilterType(value: unknown): value is FilterTypes {
+  return typeof value === "string" && FILTER_TYPE_SET.has(value);
+}
+
+function isStringArray(value: unknown): value is string[] {
+  return Array.isArray(value) && value.every((entry) => typeof entry === "string");
+}
+
+function isFilterOptionsArray(value: unknown): value is FilterOption[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.label === "string" &&
+        typeof entry.value === "string",
+    )
+  );
+}
+
+export function assertPluginFilters(
+  filters: unknown,
+  sourceLabel: string,
+): void {
+  if (filters === undefined) return;
+  if (!isRecord(filters)) {
+    throw new Error(`Plugin ${sourceLabel} filters must be an object.`);
+  }
+  for (const [key, entry] of Object.entries(filters)) {
+    if (!isRecord(entry)) {
+      throw new Error(`Plugin ${sourceLabel} filter '${key}' must be an object.`);
+    }
+    if (typeof entry.label !== "string" || entry.label.trim() === "") {
+      throw new Error(
+        `Plugin ${sourceLabel} filter '${key}' must declare a non-empty label.`,
+      );
+    }
+    if (!isFilterType(entry.type)) {
+      throw new Error(
+        `Plugin ${sourceLabel} filter '${key}' has unsupported type '${String(entry.type)}'.`,
+      );
+    }
+    switch (entry.type) {
+      case FilterTypes.Switch:
+        if (typeof entry.value !== "boolean") {
+          throw new Error(
+            `Plugin ${sourceLabel} Switch filter '${key}' must have a boolean default value.`,
+          );
+        }
+        break;
+      case FilterTypes.TextInput:
+        if (typeof entry.value !== "string") {
+          throw new Error(
+            `Plugin ${sourceLabel} Text filter '${key}' must have a string default value.`,
+          );
+        }
+        break;
+      case FilterTypes.Picker:
+        if (typeof entry.value !== "string") {
+          throw new Error(
+            `Plugin ${sourceLabel} Picker filter '${key}' must have a string default value.`,
+          );
+        }
+        if (!isFilterOptionsArray(entry.options)) {
+          throw new Error(
+            `Plugin ${sourceLabel} Picker filter '${key}' must have a valid options array.`,
+          );
+        }
+        break;
+      case FilterTypes.CheckboxGroup:
+        if (!isStringArray(entry.value)) {
+          throw new Error(
+            `Plugin ${sourceLabel} Checkbox filter '${key}' must have a string[] default value.`,
+          );
+        }
+        if (!isFilterOptionsArray(entry.options)) {
+          throw new Error(
+            `Plugin ${sourceLabel} Checkbox filter '${key}' must have a valid options array.`,
+          );
+        }
+        break;
+      case FilterTypes.ExcludableCheckboxGroup:
+        if (
+          !isRecord(entry.value) ||
+          (entry.value.include !== undefined && !isStringArray(entry.value.include)) ||
+          (entry.value.exclude !== undefined && !isStringArray(entry.value.exclude))
+        ) {
+          throw new Error(
+            `Plugin ${sourceLabel} XCheckbox filter '${key}' must have an { include?, exclude? } default value.`,
+          );
+        }
+        if (!isFilterOptionsArray(entry.options)) {
+          throw new Error(
+            `Plugin ${sourceLabel} XCheckbox filter '${key}' must have a valid options array.`,
+          );
+        }
+        break;
+    }
+  }
 }
 
 interface SwitchFilter {

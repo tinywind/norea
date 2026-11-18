@@ -86,4 +86,21 @@ describe("chapter composition persistence", () => {
     expect(getChapterCompositionDisplay(parsed, "/chapter/2000")?.position).toBe(1);
     expect(parsed.entries[1999]!.storageChapterNumber).toBe("2000");
   });
+
+  it("preserves canonical NovelStatus when incoming non-local metadata carries blank or non-canonical status", () => {
+    const current = metadata();
+    current.novel = { ...current.novel, status: "Ongoing", isLocal: false };
+
+    const withLegacy = metadata();
+    withLegacy.novel = { ...withLegacy.novel, status: "연재중", isLocal: false };
+    expect(mergeIncomingNovelMetadata(current, withLegacy).novel.status).toBe("Ongoing");
+
+    const withBlank = metadata();
+    withBlank.novel = { ...withBlank.novel, status: "  ", isLocal: false };
+    expect(mergeIncomingNovelMetadata(current, withBlank).novel.status).toBe("Ongoing");
+
+    const withCanonical = metadata();
+    withCanonical.novel = { ...withCanonical.novel, status: "Completed", isLocal: false };
+    expect(mergeIncomingNovelMetadata(current, withCanonical).novel.status).toBe("Completed");
+  });
 });

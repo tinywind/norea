@@ -1,3 +1,25 @@
+import { isRecord } from "../type-guards";
+
+export const PluginInputTypes = {
+  Text: "Text",
+  Url: "Url",
+  Password: "Password",
+  Number: "Number",
+  Switch: "Switch",
+  Select: "Select",
+} as const;
+
+export type PluginInputType =
+  (typeof PluginInputTypes)[keyof typeof PluginInputTypes];
+
+const PLUGIN_INPUT_TYPE_SET: ReadonlySet<string> = new Set(
+  Object.values(PluginInputTypes),
+);
+
+export function isPluginInputType(value: unknown): value is PluginInputType {
+  return typeof value === "string" && PLUGIN_INPUT_TYPE_SET.has(value);
+}
+
 export type PluginInputValue = string | boolean;
 
 export interface PluginInputOption {
@@ -8,11 +30,103 @@ export interface PluginInputOption {
 export interface PluginInputDefinition {
   value?: PluginInputValue;
   label?: string;
-  type?: string;
+  type?: PluginInputType;
   placeholder?: string;
   required?: boolean;
   private?: boolean;
   options?: PluginInputOption[];
+}
+
+function isPluginInputOptionsArray(
+  value: unknown,
+): value is PluginInputOption[] {
+  return (
+    Array.isArray(value) &&
+    value.every(
+      (entry) =>
+        isRecord(entry) &&
+        typeof entry.label === "string" &&
+        typeof entry.value === "string",
+    )
+  );
+}
+
+export function assertPluginInputSchema(
+  schema: unknown,
+  fieldName: "pluginInputs" | "pluginSettings",
+  sourceLabel: string,
+): void {
+  if (schema === undefined) return;
+  if (!isRecord(schema)) {
+    throw new Error(`Plugin ${sourceLabel} ${fieldName} must be an object.`);
+  }
+  for (const [key, entry] of Object.entries(schema)) {
+    if (!isRecord(entry)) {
+      throw new Error(
+        `Plugin ${sourceLabel} ${fieldName}.${key} must be an object.`,
+      );
+    }
+    if (entry.type !== undefined && !isPluginInputType(entry.type)) {
+      throw new Error(
+        `Plugin ${sourceLabel} ${fieldName}.${key} has unsupported type '${String(entry.type)}'.`,
+      );
+    }
+    if (entry.label !== undefined && typeof entry.label !== "string") {
+      throw new Error(
+        `Plugin ${sourceLabel} ${fieldName}.${key}.label must be a string.`,
+      );
+    }
+    if (
+      entry.placeholder !== undefined &&
+      typeof entry.placeholder !== "string"
+    ) {
+      throw new Error(
+        `Plugin ${sourceLabel} ${fieldName}.${key}.placeholder must be a string.`,
+      );
+    }
+    if (entry.required !== undefined && typeof entry.required !== "boolean") {
+      throw new Error(
+        `Plugin ${sourceLabel} ${fieldName}.${key}.required must be a boolean.`,
+      );
+    }
+    if (entry.private !== undefined && typeof entry.private !== "boolean") {
+      throw new Error(
+        `Plugin ${sourceLabel} ${fieldName}.${key}.private must be a boolean.`,
+      );
+    }
+    if (entry.options !== undefined && !isPluginInputOptionsArray(entry.options)) {
+      throw new Error(
+        `Plugin ${sourceLabel} ${fieldName}.${key}.options must be an array of { label, value }.`,
+      );
+    }
+    if (entry.type === PluginInputTypes.Switch) {
+      if (entry.value !== undefined && typeof entry.value !== "boolean") {
+        throw new Error(
+          `Plugin ${sourceLabel} Switch ${fieldName}.${key}.value must be a boolean.`,
+        );
+      }
+      if (entry.options !== undefined) {
+        throw new Error(
+          `Plugin ${sourceLabel} Switch ${fieldName}.${key} must not declare options.`,
+        );
+      }
+    } else if (entry.type === PluginInputTypes.Select) {
+      if (!isPluginInputOptionsArray(entry.options) || entry.options.length === 0) {
+        throw new Error(
+          `Plugin ${sourceLabel} Select ${fieldName}.${key} must declare non-empty options.`,
+        );
+      }
+      if (entry.value !== undefined && typeof entry.value !== "string") {
+        throw new Error(
+          `Plugin ${sourceLabel} Select ${fieldName}.${key}.value must be a string.`,
+        );
+      }
+    } else if (entry.value !== undefined && typeof entry.value !== "string") {
+      throw new Error(
+        `Plugin ${sourceLabel} ${fieldName}.${key}.value must be a string.`,
+      );
+    }
+  }
 }
 
 export type PluginInputSchema = Record<string, PluginInputDefinition>;

@@ -9,7 +9,11 @@ import {
   mergeEpubHtmlSections,
   type EpubHtmlResource,
 } from "./epub-html";
-import type { ChapterItem, SourceNovel } from "./plugins/types";
+import {
+  NovelStatus,
+  type ChapterItem,
+  type SourceNovel,
+} from "./plugins/types";
 
 export const LOCAL_IMPORT_LIMITS = {
   cachedFileBytes: 8 * 1024 * 1024,
@@ -534,6 +538,7 @@ function singleChapterConversion(
       name: analysis.title,
       novelId: "local",
       path: analysis.pathKey,
+      status: NovelStatus.Unknown,
       chapters: [
         {
           name: chapter.name,
@@ -607,6 +612,7 @@ async function convertEpub(
         novelId: "local",
         path: analysis.pathKey,
         author: epub.author,
+        status: NovelStatus.Unknown,
         chapters: [
           {
             name: chapter.name,

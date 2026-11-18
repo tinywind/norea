@@ -8,20 +8,38 @@ export const CURRENT_PLUGIN_API_VERSION = "0.2" as const;
 
 export type PluginApiVersion = typeof CURRENT_PLUGIN_API_VERSION;
 
+export const ChapterCaptureLoadStrategies = {
+  Selector: "selector",
+  NetworkIdle: "network-idle",
+  ScrollToEnd: "scroll-to-end",
+} as const;
+
 export type ChapterCaptureLoadStrategy =
-  | "selector"
-  | "network-idle"
-  | "scroll-to-end";
+  (typeof ChapterCaptureLoadStrategies)[keyof typeof ChapterCaptureLoadStrategies];
+
+export const ChapterCaptureErrorCodes = {
+  InvalidPlan: "invalid-plan",
+  NavigationFailed: "navigation-failed",
+  ManualActionRequired: "manual-action-required",
+  InteractionFailed: "interaction-failed",
+  Timeout: "timeout",
+  ContentNotFound: "content-not-found",
+  CaptureFailed: "capture-failed",
+  Cancelled: "cancelled",
+} as const;
 
 export type ChapterCaptureErrorCode =
-  | "invalid-plan"
-  | "navigation-failed"
-  | "manual-action-required"
-  | "interaction-failed"
-  | "timeout"
-  | "content-not-found"
-  | "capture-failed"
-  | "cancelled";
+  (typeof ChapterCaptureErrorCodes)[keyof typeof ChapterCaptureErrorCodes];
+
+export const WebViewInteractionTypes = {
+  Click: "click",
+  Type: "type",
+  Select: "select",
+  WaitFor: "waitFor",
+} as const;
+
+export type WebViewInteractionType =
+  (typeof WebViewInteractionTypes)[keyof typeof WebViewInteractionTypes];
 
 interface WebViewInteractionBase {
   /** First matching element is the interaction target. */
@@ -49,7 +67,22 @@ export type WebViewInteraction =
   | ({ type: "select"; value: string } & WebViewInteractionBase)
   | ({ type: "waitFor" } & WebViewInteractionBase);
 
-export type SourceAccessChallengeKind = "captcha" | "cloudflare" | "forbidden";
+export const SourceAccessChallengeKinds = {
+  Captcha: "captcha",
+  Cloudflare: "cloudflare",
+  Forbidden: "forbidden",
+} as const;
+
+export type SourceAccessChallengeKind =
+  (typeof SourceAccessChallengeKinds)[keyof typeof SourceAccessChallengeKinds];
+
+export const SourceAccessErrorCodes = {
+  ManualActionRequired: "manual-action-required",
+  SourceAccessRequired: "source-access-required",
+} as const;
+
+export type SourceAccessErrorCode =
+  (typeof SourceAccessErrorCodes)[keyof typeof SourceAccessErrorCodes];
 
 export interface SourceAccessChallenge {
   kind: SourceAccessChallengeKind;
@@ -143,6 +176,16 @@ export enum NovelStatus {
   OnHiatus = "On Hiatus",
 }
 
+export type NovelStatusValue = `${NovelStatus}`;
+
+const NOVEL_STATUS_VALUES: ReadonlySet<string> = new Set<string>(
+  Object.values(NovelStatus),
+);
+
+export function isNovelStatus(value: unknown): value is NovelStatusValue {
+  return typeof value === "string" && NOVEL_STATUS_VALUES.has(value);
+}
+
 export interface NovelItem {
   /** Reserved by upstream; host assigns the local DB id. */
   id?: undefined;
@@ -175,7 +218,7 @@ export interface SourceNovel extends NovelItem {
   summary?: string;
   author?: string;
   artist?: string;
-  status?: string;
+  status: NovelStatusValue;
   /** Source rating from 0 to 5. */
   rating?: number;
   chapters: ChapterItem[];
@@ -186,7 +229,18 @@ export interface SourcePage {
   chapters: ChapterItem[];
 }
 
-export type PluginInstallMode = "single" | "multiSource";
+export const PluginInstallModes = {
+  Single: "single",
+  MultiSource: "multiSource",
+} as const;
+
+export const PLUGIN_INSTALL_MODES = ["single", "multiSource"] as const;
+
+export type PluginInstallMode = (typeof PLUGIN_INSTALL_MODES)[number];
+
+export function isPluginInstallMode(value: unknown): value is PluginInstallMode {
+  return value === "single" || value === "multiSource";
+}
 
 export interface PluginItem {
   id: string;
@@ -223,7 +277,7 @@ export interface Plugin extends PluginItem {
   /** App-managed input schema exposed to plugins through `@libs/pluginInputs`. */
   pluginInputs?: PluginInputSchema;
   /** Alias accepted for plugin setting declarations. */
-  pluginSettings?: PluginInputSchema | Record<string, unknown>;
+  pluginSettings?: PluginInputSchema;
   /** Runtime base URL used by the host for source navigation and URL fallback. */
   getBaseUrl: () => string;
   popularNovels: (

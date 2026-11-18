@@ -48,6 +48,7 @@ import { enqueueOpenNovelFromSourceTask } from "../lib/plugins/open-novel-task";
 import { openPluginSite } from "../lib/plugins/open-plugin-site";
 import { FilterTypes, type Filters } from "../lib/plugins/filterTypes";
 import { pluginManager } from "../lib/plugins/manager";
+import { assertNovelItems } from "../lib/plugins/return-contracts";
 import {
   emptySourceFilterValues,
   readSourceFilters,
@@ -341,12 +342,20 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
             context.executor ?? "immediate",
           );
           if (isKeywordMode) {
-            return runtimePlugin.searchNovels(trimmedSearch, page);
+            return assertNovelItems(
+              plugin.id,
+              "searchNovels",
+              await runtimePlugin.searchNovels(trimmedSearch, page),
+            );
           }
-          return runtimePlugin.popularNovels(page, {
-            showLatestNovels: false,
-            filters: activeFilters as never,
-          });
+          return assertNovelItems(
+            plugin.id,
+            "popularNovels",
+            await runtimePlugin.popularNovels(page, {
+              showLatestNovels: false,
+              filters: activeFilters as never,
+            }),
+          );
         },
       });
       const cancelTask = () => taskScheduler.cancel(task.id);

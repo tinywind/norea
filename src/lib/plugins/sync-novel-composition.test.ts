@@ -92,7 +92,7 @@ afterEach(() => sqlite.close());
 describe("composed work database integration", () => {
   it("keeps the final list, files and read state after a full source renumber and title refresh", async () => {
     const before = sqlite.prepare("SELECT id,chapter_number,content_bytes,is_downloaded,progress,bookmark,unread,read_at FROM chapter WHERE path='/b/2'").get();
-    const result = await syncNovelFromSource(plugin({ novelId: "work-b", path: "/b", name: "Fresh target", chapters: [
+    const result = await syncNovelFromSource(plugin({ novelId: "work-b", path: "/b", name: "Fresh target", status: "Ongoing", chapters: [
       { path: "/b/new-2", sourceChapterId: "b2", name: "Provider revised", chapterNumber: 102 },
       { path: "/b/3", sourceChapterId: "b3", name: "Still excluded", chapterNumber: 103 },
       { path: "/b/4", sourceChapterId: "b4", name: "New ending", chapterNumber: 104 },
@@ -111,7 +111,7 @@ describe("composed work database integration", () => {
   });
 
   it("uses the provider anchor instead of the user's order or storage number for incremental checks", async () => {
-    const p = plugin({ novelId: "work-b", path: "/b", name: "Target", chapters: [
+    const p = plugin({ novelId: "work-b", path: "/b", name: "Target", status: "Ongoing", chapters: [
       { path: "/b/3", sourceChapterId: "b3", name: "Still excluded", chapterNumber: 3 },
       { path: "/b/4", sourceChapterId: "b4", name: "New", chapterNumber: 4 },
     ] });

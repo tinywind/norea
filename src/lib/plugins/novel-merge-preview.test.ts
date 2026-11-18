@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { TaskRunContext } from "../tasks/scheduler";
 import { matchNovelMergeChapters } from "../novel-merge-matching";
-import type { SourceNovel } from "./types";
+import { NovelStatus, type SourceNovel } from "./types";
 
 const enqueueSourceTask = vi.hoisted(() => vi.fn());
 
@@ -22,6 +22,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
       name: "Target novel",
       novelId: "target",
       path: "/novel/target",
+      status: "Ongoing",
       chapters: [
         { name: "Chapter 1", path: "/chapter/1", chapterNumber: 1 },
       ],
@@ -102,6 +103,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
         name: "Broken target",
         novelId: "broken",
         path: "/broken",
+        status: "Ongoing",
         chapters: null,
       }),
     ).toThrow("chapter list");
@@ -113,6 +115,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
         name: "Broken target",
         novelId: "broken",
         path: "/broken",
+        status: "Ongoing",
         chapters: [
           { name: "Chapter", path: "/chapter", chapterNumber: Infinity },
         ],
@@ -126,6 +129,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
         name: "Broken target",
         novelId: "broken",
         path: "/broken",
+        status: "Ongoing",
         chapters: [
           {
             name: "Chapter",
@@ -144,6 +148,7 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
         name: "Broken target",
         novelId: "broken",
         path: "/broken",
+        status: "Ongoing",
         chapters: [
           { name: "First", path: "/chapter/1", chapterNumber: 1 },
           { name: "Duplicate", path: "/chapter/2", chapterNumber: 1 },
@@ -158,10 +163,32 @@ describe("enqueueNovelMergeTargetPreviewTask", () => {
         name: "Broken target",
         novelId: "broken",
         path: "/broken",
+        status: "Ongoing",
         cover: 42,
         chapters: [],
       }),
     ).toThrow("cover");
+
+    expect(() =>
+      validateNovelMergeTargetPreview({
+        name: "Broken target",
+        novelId: "broken",
+        path: "https://example.test/broken",
+        status: "Ongoing",
+        chapters: [],
+      }),
+    ).toThrow("exclude the base URL");
+
+    expect(() =>
+      validateNovelMergeTargetPreview({
+        name: "Broken target",
+        novelId: "broken",
+        path: "/broken",
+        status: "Ongoing",
+        rating: 6,
+        chapters: [],
+      }),
+    ).toThrow("rating outside 0 to 5");
   });
 });
 
@@ -180,13 +207,13 @@ describe("validateNovelMergeTargetPreview source contract", () => {
       name: "Bookkor target",
       novelId: "2743",
       path: "/bookkor-target",
-      status: "연재중",
+      status: "Ongoing",
       rating: 4.815,
       chapters,
     };
   }
 
-  it("accepts localized status and matches 345 displayed episodes among 346 internal IDs", () => {
+  it("accepts canonical status and matches 345 displayed episodes among 346 internal IDs", () => {
     // Representative metadata shape from the Bookkor preview that failed on Y700.
     const latestIds = [5665920, 5669668, 5672461, 5676769, 5677728];
     const chapters = Array.from({ length: 346 }, (_, index) => ({
@@ -201,7 +228,7 @@ describe("validateNovelMergeTargetPreview source contract", () => {
     const preview = validateNovelMergeTargetPreview(target);
 
     expect(preview).toBe(target);
-    expect(preview.status).toBe("연재중");
+    expect(preview.status).toBe("Ongoing");
     expect(preview.chapters).toHaveLength(346);
     expect(preview.chapters[0]?.chapterNumber).toBe(346378);
     expect(preview.chapters.at(-1)?.chapterNumber).toBe(5677728);
@@ -222,22 +249,31 @@ describe("validateNovelMergeTargetPreview source contract", () => {
     });
   });
 
-  it.each(["완결", "連載中", "Serializing"])(
-    "preserves source-owned status %s",
+  it.each(Object.values(NovelStatus))(
+    "accepts canonical NovelStatus %s",
     (status) => {
       const target = { ...bookkorTarget(), status };
       expect(validateNovelMergeTargetPreview(target)).toBe(target);
     },
   );
 
-  it.each([null, 42, {}, ["연재중"]])(
-    "rejects a non-string status without coercion: %j",
-    (status) => {
-      expect(() =>
-        validateNovelMergeTargetPreview({ ...bookkorTarget(), status }),
-      ).toThrow("field 'status' must be a string");
-    },
-  );
+  it.each([
+    undefined,
+    null,
+    "",
+    "ongoing",
+    "연재중",
+    "완결",
+    "連載中",
+    "Serializing",
+    42,
+    {},
+    ["Ongoing"],
+  ])("rejects non-canonical or non-string status %j", (status) => {
+    expect(() =>
+      validateNovelMergeTargetPreview({ ...bookkorTarget(), status }),
+    ).toThrow(/field 'status' must be a valid NovelStatus/);
+  });
 
   it("still rejects string chapter IDs, including a numeric alias of another row", () => {
     const target = bookkorTarget();

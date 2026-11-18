@@ -142,6 +142,15 @@ describe("isValidPluginItem", () => {
     delete missing.apiVersion;
     expect(isValidPluginItem(missing)).toBe(false);
   });
+
+  it("rejects empty metadata strings, arrays, and invalid installMode", () => {
+    expect(isValidPluginItem([])).toBe(false);
+    expect(isValidPluginItem({ ...VALID_ITEM, id: "  " })).toBe(false);
+    expect(isValidPluginItem({ ...VALID_ITEM, lang: "" })).toBe(false);
+    expect(isValidPluginItem({ ...VALID_ITEM, installMode: "multi" })).toBe(false);
+    expect(isValidPluginItem({ ...VALID_ITEM, installMode: "single" })).toBe(true);
+    expect(isValidPluginItem({ ...VALID_ITEM, installMode: "multiSource" })).toBe(true);
+  });
 });
 
 describe("PluginManager.fetchRepository", () => {
@@ -232,6 +241,50 @@ describe("PluginManager.installPlugin", () => {
 
     await expect(manager.installPlugin(VALID_ITEM, REPO_URL)).rejects.toThrow(
       "apiVersion '0.2'",
+    );
+  });
+
+  it("rejects plugins declaring invalid installMode, filters, pluginInputs, or pluginSettings", async () => {
+    const manager = new PluginManager();
+
+    mockedFetchText.mockResolvedValueOnce(
+      VALID_PLUGIN_SOURCE.replace(
+        '    apiVersion: "0.2",\n',
+        '    apiVersion: "0.2",\n    installMode: "multi",\n',
+      ),
+    );
+    await expect(manager.installPlugin(VALID_ITEM, REPO_URL)).rejects.toThrow(
+      "unsupported installMode",
+    );
+
+    mockedFetchText.mockResolvedValueOnce(
+      VALID_PLUGIN_SOURCE.replace(
+        '    apiVersion: "0.2",\n',
+        '    apiVersion: "0.2",\n    filters: { flag: { type: "Switch", label: "Flag", value: "false" } },\n',
+      ),
+    );
+    await expect(manager.installPlugin(VALID_ITEM, REPO_URL)).rejects.toThrow(
+      "boolean default value",
+    );
+
+    mockedFetchText.mockResolvedValueOnce(
+      VALID_PLUGIN_SOURCE.replace(
+        '    apiVersion: "0.2",\n',
+        '    apiVersion: "0.2",\n    pluginInputs: { toggle: { type: "Switch", label: "Toggle", value: "false" } },\n',
+      ),
+    );
+    await expect(manager.installPlugin(VALID_ITEM, REPO_URL)).rejects.toThrow(
+      "Switch pluginInputs.toggle.value must be a boolean",
+    );
+
+    mockedFetchText.mockResolvedValueOnce(
+      VALID_PLUGIN_SOURCE.replace(
+        '    apiVersion: "0.2",\n',
+        '    apiVersion: "0.2",\n    pluginSettings: { picker: { type: "Select", label: "Mode", options: [] } },\n',
+      ),
+    );
+    await expect(manager.installPlugin(VALID_ITEM, REPO_URL)).rejects.toThrow(
+      "Select pluginSettings.picker must declare non-empty options",
     );
   });
 });
@@ -420,6 +473,19 @@ describe("PluginManager.installPluginFromSource", () => {
     expect(mockedUpsertInstalledPlugin).toHaveBeenLastCalledWith(
       expect.objectContaining({ repositoryUrl: null }),
     );
+  });
+
+  it("rejects direct file installs for multiSource templates", async () => {
+    const manager = new PluginManager();
+    const multiSource = VALID_PLUGIN_SOURCE.replace(
+      '    apiVersion: "0.2",\n',
+      '    apiVersion: "0.2",\n    installMode: "multiSource",\n',
+    );
+
+    await expect(
+      manager.installPluginFromSource(multiSource, "local:multi.js"),
+    ).rejects.toThrow("must be installed as a source instance");
+    expect(manager.has("demo")).toBe(false);
   });
 });
 

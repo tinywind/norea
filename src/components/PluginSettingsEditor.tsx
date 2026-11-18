@@ -11,6 +11,7 @@ import { useTranslation } from "../i18n";
 import {
   deletePluginInputValue,
   getPluginInputValue,
+  isPluginInputType,
   setPluginInputValue,
   type PluginInputDefinition,
 } from "../lib/plugins/inputs";
@@ -44,7 +45,7 @@ function asSettingDefinition(value: unknown): PluginInputDefinition | null {
         ? setting.value
         : "",
     label: typeof setting.label === "string" ? setting.label : undefined,
-    type: typeof setting.type === "string" ? setting.type : undefined,
+    type: isPluginInputType(setting.type) ? setting.type : undefined,
     placeholder:
       typeof setting.placeholder === "string" ? setting.placeholder : undefined,
     required: typeof setting.required === "boolean" ? setting.required : undefined,
@@ -139,8 +140,9 @@ export function PluginSettingsEditor({
       {settings.map(({ key, definition }) => {
         const label = definition.label ?? key;
         const value = values[key] ?? "";
+        const kind = inputType(definition);
 
-        if (inputType(definition) === "switch") {
+        if (kind === "switch") {
           return (
             <SettingsFieldRow key={key} label={label}>
               <Switch
@@ -172,7 +174,7 @@ export function PluginSettingsEditor({
           },
         };
 
-        if (inputType(definition) === "select" && definition.options?.length) {
+        if (kind === "select" && definition.options?.length) {
           return (
             <SettingsFieldRow key={key} label={label}>
               <Select
@@ -198,7 +200,10 @@ export function PluginSettingsEditor({
           </SettingsFieldRow>
         ) : (
           <SettingsFieldRow key={key} label={label}>
-            <TextInput {...inputProps} />
+            <TextInput
+              {...inputProps}
+              type={kind === "url" ? "url" : kind === "number" ? "number" : "text"}
+            />
           </SettingsFieldRow>
         );
       })}
