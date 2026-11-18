@@ -31,11 +31,13 @@ import {
   type PluginVpnServerProtocol,
 } from "../lib/plugin-vpn";
 import { usePluginVpnUrlTestStore } from "../store/plugin-vpn-url-test";
+import { StateView } from "./AppFrame";
 import { IconButton } from "./IconButton";
 import { PluginVpnSelectionPanel, PluginVpnUrlTestStatus } from "./PluginVpnSelectionPanel";
 import { TextButton } from "./TextButton";
 import { CloseIcon, ConnectIcon, RefreshIcon, SelectIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
+import { StatusAlert } from "./ui/StatusAlert";
 import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 import "../styles/plugin-vpn-finder.css";
 
@@ -180,9 +182,9 @@ export function PluginVpnFinderLoadFailureNotice({
       : t("settings.data.pluginVpn.finder.loadFailedUnreachable");
   return (
     <>
-      <Text role="alert" size="sm">
+      <StatusAlert color="danger" role="alert">
         {t("settings.data.pluginVpn.finder.loadFailed")} {advice}
-      </Text>
+      </StatusAlert>
       {detail ? (
         <details className="norea-state-details">
           <summary>{t("common.details")}</summary>
@@ -458,18 +460,18 @@ export function PluginVpnFinder({
             ) : null}
           </div>
         ) : connectionPhase === "error" ? (
-          <Text className="norea-plugin-vpn-finder-state" role="alert" size="sm">
+          <StatusAlert color="danger" role="alert">
             {connectionError ?? t("settings.data.pluginVpn.status.error")}
-          </Text>
+          </StatusAlert>
         ) : connectionPhase !== "disabled" && connectionError ? (
-          <Text className="norea-plugin-vpn-finder-state" role="alert" size="sm">
+          <StatusAlert color="danger" role="alert">
             {connectionError}
-          </Text>
+          </StatusAlert>
         ) : null}
         {disabled && disabledReason ? (
-          <Text className="norea-plugin-vpn-finder-state" role="status" size="sm">
+          <StatusAlert color="warn" role="status">
             {disabledReason}
-          </Text>
+          </StatusAlert>
         ) : null}
         <SimpleGrid cols={{ base: 2, sm: 4 }} spacing="xs">
           <TextInput
@@ -585,27 +587,23 @@ export function PluginVpnFinder({
         ) : null}
 
         {serversQuery.isError && serversQuery.data !== undefined ? (
-          <Stack className="norea-plugin-vpn-finder-state" gap="xs">
+          <Stack gap="xs">
             <PluginVpnFinderLoadFailureNotice detail={loadErrorMessage} />
           </Stack>
         ) : null}
         {!online && servers.length === 0 ? (
-          <Text className="norea-plugin-vpn-finder-state" role="status" size="sm">
+          <StatusAlert color="warn" role="status">
             {t("network.waiting")}
-          </Text>
+          </StatusAlert>
         ) : catalogStopped && servers.length === 0 ? (
-          <Stack className="norea-plugin-vpn-finder-state" gap="xs">
-            <Text role="status" size="sm">
-              {t("settings.data.pluginVpn.finder.stopped")}
-            </Text>
-            <TextButton
-              onClick={refreshCatalog}
-              size="sm"
-              variant="default"
-            >
-              {t("settings.data.pluginVpn.finder.retry")}
-            </TextButton>
-          </Stack>
+          <StateView
+            action={{
+              label: t("settings.data.pluginVpn.finder.retry"),
+              onClick: refreshCatalog,
+            }}
+            color="warn"
+            title={t("settings.data.pluginVpn.finder.stopped")}
+          />
         ) : (catalogRefreshing || serversQuery.isPending) && serversQuery.data === undefined ? (
           <Group className="norea-plugin-vpn-finder-state" justify="center">
             <Loader size="sm" />
@@ -614,20 +612,20 @@ export function PluginVpnFinder({
             </Text>
           </Group>
         ) : serversQuery.isError && serversQuery.data === undefined ? (
-          <Stack className="norea-plugin-vpn-finder-state" gap="xs">
+          <Stack gap="xs">
             <PluginVpnFinderLoadFailureNotice detail={loadErrorMessage} />
-            <TextButton
-              onClick={refreshCatalog}
-              size="sm"
-              variant="default"
-            >
-              {t("settings.data.pluginVpn.finder.retry")}
-            </TextButton>
+            <Group>
+              <TextButton
+                onClick={refreshCatalog}
+                size="sm"
+                variant="default"
+              >
+                {t("settings.data.pluginVpn.finder.retry")}
+              </TextButton>
+            </Group>
           </Stack>
         ) : visibleServers.length === 0 ? (
-          <Text className="norea-plugin-vpn-finder-state" size="sm">
-            {t("settings.data.pluginVpn.finder.empty")}
-          </Text>
+          <StateView title={t("settings.data.pluginVpn.finder.empty")} />
         ) : (
           <ScrollArea.Autosize mah="min(36rem, 60vh)" offsetScrollbars>
             <div className="norea-plugin-vpn-finder-table">

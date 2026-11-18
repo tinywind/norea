@@ -46,6 +46,7 @@ const DARK_RAMP_TOWARD_INK = [0.9, 0.75, 0.6, 0.45, 0.28, 0.12, 0];
 const DARK_RAMP_TOWARD_BLACK = [0.15, 0.3, 0.45];
 
 const SOFT_MIX = { light: 0.12, dark: 0.18 } as const;
+const ALERT_BORDER_MIX = { light: 0.28, dark: 0.34 } as const;
 const SOFT_HOVER_EXTRA = 0.06;
 const OUTLINE_HOVER_MIX = 0.05;
 const FILLED_HOVER_MIX = 0.12;
@@ -81,6 +82,7 @@ interface ColorVariants {
   onFilled: string;
   light: string;
   lightHover: string;
+  lightBorder: string;
   /** Text for light, subtle and outline variants, readable on every surface and their hover fills. */
   lightColor: string;
   outlineHover: string;
@@ -100,6 +102,7 @@ function colorVariants(
     base,
     SOFT_MIX[scheme] + SOFT_HOVER_EXTRA,
   );
+  const lightBorder = mixRgb(surfaces.surface, base, ALERT_BORDER_MIX[scheme]);
   const outlineHover = mixRgb(surfaces.surface, base, OUTLINE_HOVER_MIX);
   const lightColor = ensureContrast(
     base,
@@ -113,6 +116,7 @@ function colorVariants(
     onFilled: formatRgb(onFilled),
     light: formatRgb(light),
     lightHover: formatRgb(lightHover),
+    lightBorder: formatRgb(lightBorder),
     lightColor: formatRgb(lightColor),
     outlineHover: formatRgb(outlineHover),
   };
@@ -269,6 +273,7 @@ export function createNoreaMantineTheme(
       [`--mantine-color-${name}-filled-hover`]: color.filledHover,
       [`--mantine-color-${name}-light`]: color.light,
       [`--mantine-color-${name}-light-hover`]: color.lightHover,
+      [`--mantine-color-${name}-light-border`]: color.lightBorder,
       [`--mantine-color-${name}-light-color`]: color.lightColor,
       [`--mantine-color-${name}-outline`]: color.lightColor,
       [`--mantine-color-${name}-outline-hover`]: color.outlineHover,
@@ -316,7 +321,22 @@ export function createNoreaMantineTheme(
       xl: "var(--norea-leading-normal)",
     },
     components: {
-      Alert: { defaultProps: { radius: "sm" } },
+      Alert: {
+        classNames: { root: "norea-alert" },
+        defaultProps: { radius: "md", variant: "light" },
+        vars: (_theme: unknown, props: { color?: string; variant?: string }) => {
+          const variant = props.variant ?? "light";
+          const rawColor = props.color ?? "norea";
+          if (variant === "light" && isNoreaThemeColor(rawColor)) {
+            return {
+              root: {
+                "--alert-bd": `${BORDER_WIDTH} solid ${variants[rawColor].lightBorder}`,
+              },
+            };
+          }
+          return { root: {} };
+        },
+      },
       // Every Mantine control paints the shared hover and pressed state layer from ui.css.
       // D10 button emphasis: `filled` is the one primary action of a screen, region or dialog;
       // `default` is the outline secondary action; `subtle` is borderless, for every control in

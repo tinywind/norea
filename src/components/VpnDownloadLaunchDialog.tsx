@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Accordion, Alert, Button, Stack, Text } from "@mantine/core";
+import { Accordion, Button, Group, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
@@ -10,6 +10,7 @@ import { startVpnDownloadRun } from "../lib/tasks/vpn-download-runtime";
 import { useVpnDownloadStore } from "../store/vpn-download";
 import { TextButton } from "./TextButton";
 import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
+import { StatusAlert } from "./ui/StatusAlert";
 import { VpnDownloadSettings } from "./VpnDownloadSettings";
 
 /** Starts a VPN run over the queued and new chapter downloads. Mount it only while it is open. */
@@ -43,21 +44,23 @@ export function VpnDownloadLaunchDialog({ snapshot, onClose }: { snapshot: VpnDo
         <Text size="sm">{t("vpnDownload.launchHint")}</Text>
         <Text size="sm" fw="var(--norea-weight-bold)">{t("vpnDownload.workerTarget", { count: options.workerCount })}</Text>
         {snapshot.loading || vault.isPending ? <Text size="sm" role="status">{t("vpnDownload.loading")}</Text> : null}
-        {!snapshot.capabilities.supported ? <Alert color="warn">{t("vpnDownload.unsupported")}</Alert> : null}
-        {snapshot.error ? <Alert color="danger" role="alert">{snapshot.error}</Alert> : null}
-        {vault.isError ? <Alert color="danger" role="alert">
+        {!snapshot.capabilities.supported ? <StatusAlert color="warn">{t("vpnDownload.unsupported")}</StatusAlert> : null}
+        {snapshot.error ? <StatusAlert color="danger" role="alert">{snapshot.error}</StatusAlert> : null}
+        {vault.isError ? <StatusAlert color="danger" role="alert">
           <Text size="sm">{describeError(vault.error)}</Text>
-          <TextButton onClick={() => { void vault.refetch(); }}>{t("common.retry")}</TextButton>
-        </Alert> : null}
-        {vault.data?.cleanupError ? <Alert color="danger" role="alert">{vault.data.cleanupError}</Alert> : null}
-        {!vault.isPending && !vault.isError && vault.data?.profiles.length === 0 ? <Alert color="warn">{t("vpnDownload.noProfiles")}</Alert> : null}
+          <Group gap="xs" mt="xs">
+            <TextButton onClick={() => { void vault.refetch(); }}>{t("common.retry")}</TextButton>
+          </Group>
+        </StatusAlert> : null}
+        {vault.data?.cleanupError ? <StatusAlert color="danger" role="alert">{vault.data.cleanupError}</StatusAlert> : null}
+        {!vault.isPending && !vault.isError && vault.data?.profiles.length === 0 ? <StatusAlert color="warn">{t("vpnDownload.noProfiles")}</StatusAlert> : null}
         <Accordion variant="default">
           <Accordion.Item value="options">
             <Accordion.Control>{t("vpnDownload.optionalSettings")}</Accordion.Control>
             <Accordion.Panel><VpnDownloadSettings capabilities={snapshot.capabilities} value={options} onChange={setOptions} disabled={pending} /></Accordion.Panel>
           </Accordion.Item>
         </Accordion>
-        {error ? <Alert color="danger" role="alert">{error}</Alert> : null}
+        {error ? <StatusAlert color="danger" role="alert">{error}</StatusAlert> : null}
       </Stack>
     </ResponsiveSheet>
   );

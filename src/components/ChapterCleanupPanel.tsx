@@ -1,4 +1,4 @@
-import { Alert, Button, Checkbox, Group, MultiSelect, Select, Stack, Text } from "@mantine/core";
+import { Button, Checkbox, Group, MultiSelect, Select, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { listCategories, UNCATEGORIZED_CATEGORY_ID } from "../db/queries/category";
@@ -13,6 +13,7 @@ import { taskScheduler } from "../lib/tasks/scheduler";
 import { useContentSyncStore } from "../store/content-sync";
 import { TextButton } from "./TextButton";
 import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
+import { StatusAlert } from "./ui/StatusAlert";
 import { useStopDownloadGoalsOffer } from "./use-stop-download-goals-offer";
 
 const SERVER_OPTIONS: Record<ChapterCleanupServerMode, TranslationKey> = {
@@ -172,9 +173,9 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
             <Text size="sm">{page + 1} / {Math.ceil(groups.length / 50)}</Text><TextButton size="sm" disabled={(page + 1) * 50 >= groups.length} onClick={() => setPage(page + 1)}>{t("chapterCleanup.next")}</TextButton></Group> : null}
         </details> : null}
         {!running && !confirming ? <TextButton tone="danger" disabled={!approved.targets.length} onClick={() => setConfirming(true)}>{t("chapterCleanup.review")}</TextButton> : null}
-        {confirming ? <Alert color="warn" title={t("chapterCleanup.confirmTitle")}><Stack gap="sm"><Text size="sm">{t("chapterCleanup.confirmText", { count: approved.targets.length })}</Text><Group>
+        {confirming ? <StatusAlert color="warn" title={t("chapterCleanup.confirmTitle")}><Stack gap="sm"><Text size="sm">{t("chapterCleanup.confirmText", { count: approved.targets.length })}</Text><Group>
           <TextButton onClick={() => setConfirming(false)}>{t("common.cancel")}</TextButton><TextButton tone="danger" variant="filled" onClick={() => { void execute(); }}>{t("chapterCleanup.delete")}</TextButton>
-        </Group></Stack></Alert> : null}
+        </Group></Stack></StatusAlert> : null}
       </Stack> : null}
       {running ? <Stack gap="xs"><Text role="status" size="sm">{t("chapterCleanup.progress", { done: result ? result.deleted + result.skipped + result.failed : 0, total: approved?.targets.length ?? result?.total ?? 0 })}</Text>
         <TextButton onClick={() => { if (taskId.current) taskScheduler.cancel(taskId.current); }}>{t("chapterCleanup.cancelTask")}</TextButton></Stack> : null}
@@ -188,7 +189,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
             <Text size="sm" key={item.chapterId}>#{item.chapterId}: {cleanupFailureDetail(item.reason!)}</Text>)}
         </details> : null}
         <Text size="sm" c="dimmed">{t("chapterCleanup.retryHint")}</Text></Stack> : null}
-      {error ? <Alert color="danger" title={t("common.actionFailed")}>{error}</Alert> : null}
+      {error ? <StatusAlert color="danger" title={t("common.actionFailed")}>{error}</StatusAlert> : null}
     </Stack>
   </ResponsiveSheet>;
 }

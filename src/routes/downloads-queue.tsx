@@ -1,4 +1,4 @@
-import { Alert, Popover, Progress, Stack, Text } from "@mantine/core";
+import { Popover, Progress, Stack, Text } from "@mantine/core";
 import { useNavigate, useRouterState } from "@tanstack/react-router";
 import {
   memo,
@@ -36,6 +36,7 @@ import { VpnDownloadAttention } from "../components/VpnDownloadAttention";
 import { VpnDownloadLaunchDialog } from "../components/VpnDownloadLaunchDialog";
 import { VpnDownloadWorkRow, vpnDownloadWorks } from "../components/VpnDownloadWorks";
 import { useConfirm } from "../components/ui/ConfirmDialog";
+import { StatusAlert } from "../components/ui/StatusAlert";
 import { goalNovelIdsOf, stopsGoalsLine, useCancelDownloadTask } from "../components/use-cancel-goal-work";
 import {
   ChevronDownIcon,
@@ -1374,7 +1375,7 @@ export function DownloadsQueueView({
       size="wide"
     >
 
-      {queueError ? <Alert color="danger" role="alert">{queueError}</Alert> : null}
+      {queueError ? <StatusAlert color="danger" role="alert">{queueError}</StatusAlert> : null}
       {active ? <DownloadRecoveryStatus /> : null}
 
       {hasAttention ? (

@@ -69,16 +69,13 @@
   padding: var(--norea-space-6);
 }
 
-.norea-site-browser-error-copy {
-  display: grid;
-  gap: var(--norea-space-3);
-  max-width: 32rem;
-  min-width: 0;
-  width: 100%;
-}
-
-.norea-site-browser-error-detail {
-  overflow-wrap: anywhere;
+.norea-site-browser-error > .norea-state-alert {
+  border-radius: var(--norea-radius-lg);
+  box-shadow: var(--norea-shadow-1);
+  box-sizing: border-box;
+  max-width: 26rem;
+  padding: var(--norea-space-4) var(--norea-space-5);
+  width: min(100%, 26rem);
 }
 
 .norea-site-browser-footer {

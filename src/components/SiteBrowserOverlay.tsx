@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { Button, Loader, Text } from "@mantine/core";
+import { Button, Group, Loader, Text } from "@mantine/core";
 import { PageHeader } from "./AppFrame";
 import { SiteBrowserAddressBar } from "./SiteBrowserAddressBar";
+import { TextButton } from "./TextButton";
+import { StatusAlert } from "./ui/StatusAlert";
 import { useTranslation } from "../i18n";
 import {
   getSiteBrowserPlatform,
@@ -598,25 +600,37 @@ export function SiteBrowserOverlay() {
       />
       <div className="norea-site-browser-page" ref={placeholderRef}>
         {phase === "error" ? (
-          <div className="norea-site-browser-cover norea-site-browser-error" role="alert">
-            <div className="norea-site-browser-error-copy">
-              <Text fw="var(--norea-weight-bold)">{t("siteBrowser.navigationFailed")}</Text>
-              <Text c="dimmed" size="sm">
+          <div className="norea-site-browser-cover norea-site-browser-error">
+            <StatusAlert
+              className="norea-state-alert"
+              color="danger"
+              title={t("siteBrowser.navigationFailed")}
+            >
+              <div className="norea-state-alert-message">
                 {t("siteBrowser.navigationFailedDescription")}
-              </Text>
-              <Text className="norea-site-browser-error-detail" size="sm">
-                {navigationError}
-              </Text>
-              <Button
-                onClick={() => {
-                  if (browserTaskId && currentUrl) {
-                    useSiteBrowserStore.getState().navigateTo(browserTaskId, currentUrl);
-                  }
-                }}
-              >
-                {t("common.retry")}
-              </Button>
-            </div>
+              </div>
+              <Group className="norea-state-alert-actions" gap="xs" mt="sm">
+                <TextButton
+                  size="sm"
+                  variant="default"
+                  onClick={() => {
+                    if (browserTaskId && currentUrl) {
+                      useSiteBrowserStore.getState().navigateTo(browserTaskId, currentUrl);
+                    }
+                  }}
+                >
+                  {t("common.retry")}
+                </TextButton>
+              </Group>
+              {navigationError ? (
+                <details className="norea-state-details">
+                  <summary>{t("common.details")}</summary>
+                  <Text c="dimmed" component="div" size="xs">
+                    {navigationError}
+                  </Text>
+                </details>
+              ) : null}
+            </StatusAlert>
           </div>
         ) : browserLoading ? (
           <div aria-busy="true" className="norea-site-browser-cover" role="status">

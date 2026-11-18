@@ -1,4 +1,4 @@
-import { Alert, Button, Loader, Text } from "@mantine/core";
+import { Button, Loader, Text } from "@mantine/core";
 import { useTranslation } from "../../i18n";
 import type { GlobalSearchResult } from "../../lib/plugins/global-search";
 import { pluginManager } from "../../lib/plugins/manager";
@@ -8,6 +8,7 @@ import { SourceAccessNotice } from "../SourceAccessVerifyButton";
 import { SourceNovelCover } from "../SourceNovelCover";
 import { CheckIcon } from "../ui/icons";
 import { ListRow } from "../ui/ListRow";
+import { StatusAlert } from "../ui/StatusAlert";
 
 export interface MergeTargetCandidate {
   item: NovelItem;
@@ -70,11 +71,11 @@ export function MergeChooseStep({
           {t("novelMerge.choose.description", { source: sourceName })}
         </Text>
         {pluginsError ? (
-          <Alert color="danger" title={t("common.loadFailed")}>
+          <StatusAlert color="danger" title={t("common.loadFailed")}>
             {pluginsError}
-          </Alert>
+          </StatusAlert>
         ) : noTargetPlugins ? (
-          <Alert color="warn">{t("novelMerge.findTarget.noPlugins")}</Alert>
+          <StatusAlert color="warn">{t("novelMerge.findTarget.noPlugins")}</StatusAlert>
         ) : (
           <SearchBar
             onChange={onSearchTextChange}
@@ -102,14 +103,14 @@ export function MergeChooseStep({
           />
         ))}
         {searchError ? (
-          <Alert color="danger" title={t("novelMerge.findTarget.searchFailed")}>
+          <StatusAlert color="danger" title={t("novelMerge.findTarget.searchFailed")}>
             {searchError}
-          </Alert>
+          </StatusAlert>
         ) : null}
         {previewError ? (
-          <Alert color="danger" title={t("novelMerge.findTarget.previewFailed")}>
+          <StatusAlert color="danger" title={t("novelMerge.findTarget.previewFailed")}>
             {previewError}
-          </Alert>
+          </StatusAlert>
         ) : null}
 
         {withNovels.map((result) => (

@@ -24,6 +24,10 @@
   .norea-toasts .mantine-Notification-closeButton:hover {
     background-color: transparent;
   }
+
+  .norea-state-alert-actions .mantine-Button-root[data-variant="default"]:hover:not(:disabled) {
+    background: var(--norea-color-surface-raised);
+  }
 }
 
 .norea-state-layer:focus-visible::after {
@@ -491,22 +495,158 @@ body[data-norea-reader-bars] {
   }
 }
 
-/* Access and recovery notices share the queue's compact warning surface. */
+/* Shared semantic alerts and compact queue/access banners share one visual grammar. */
+.norea-alert[data-tone="danger"] {
+  --norea-alert-bg: var(--norea-color-danger-soft);
+  --norea-alert-border: var(--norea-color-danger-border);
+  --norea-alert-accent: var(--norea-color-on-danger-soft);
+}
+
+.norea-alert[data-tone="warn"] {
+  --norea-alert-bg: var(--norea-color-warn-soft);
+  --norea-alert-border: var(--norea-color-warn-border);
+  --norea-alert-accent: var(--norea-color-on-warn-soft);
+}
+
+.norea-alert[data-tone="ok"] {
+  --norea-alert-bg: var(--norea-color-ok-soft);
+  --norea-alert-border: var(--norea-color-ok-border);
+  --norea-alert-accent: var(--norea-color-on-ok-soft);
+}
+
+.norea-alert[data-tone="info"] {
+  --norea-alert-bg: var(--norea-color-info-soft);
+  --norea-alert-border: var(--norea-color-info-border);
+  --norea-alert-accent: var(--norea-color-on-info-soft);
+}
+
+.norea-alert {
+  background-color: var(--norea-alert-bg, var(--alert-bg));
+  border: 1px solid var(--norea-alert-border, var(--norea-color-rule));
+  border-radius: var(--norea-radius-md);
+  color: var(--norea-color-ink);
+  padding: var(--norea-space-3) var(--norea-space-4);
+  text-align: start;
+}
+
+.norea-alert .mantine-Alert-wrapper {
+  align-items: flex-start;
+  gap: var(--norea-space-3);
+}
+
+.norea-alert .mantine-Alert-icon {
+  color: var(--norea-alert-accent, var(--alert-color));
+  flex: 0 0 auto;
+  height: var(--norea-icon-md);
+  margin: 0.0625rem 0 0;
+  width: var(--norea-icon-md);
+}
+
+.norea-alert .mantine-Alert-body {
+  gap: var(--norea-space-1);
+  min-width: 0;
+}
+
+.norea-alert .mantine-Alert-title {
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-bold);
+  line-height: var(--norea-leading-tight);
+}
+
+.norea-alert.norea-state-alert .mantine-Alert-title {
+  font-size: var(--norea-text-md);
+}
+
+.norea-alert .mantine-Alert-label {
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+  white-space: normal;
+}
+
+.norea-alert .mantine-Alert-message {
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-sm);
+  line-height: var(--norea-leading-normal);
+  overflow: visible;
+  overflow-wrap: anywhere;
+  text-overflow: clip;
+}
+
+.norea-alert-trailing-row {
+  align-items: center;
+  display: flex;
+  gap: var(--norea-space-2);
+  justify-content: space-between;
+  min-width: 0;
+}
+
+.norea-alert-trailing-copy {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.norea-alert-trailing-actions {
+  display: flex;
+  flex: 0 0 auto;
+  gap: var(--norea-space-1);
+}
+
+.norea-state-alert-actions .mantine-Button-root[data-variant="default"] {
+  background: var(--norea-color-surface);
+  border-color: var(--norea-color-rule-strong);
+  color: var(--norea-color-ink);
+}
+
+.norea-state-alert-actions .mantine-Button-root[data-variant="subtle"] {
+  color: var(--norea-color-ink);
+}
+
+/* Access and recovery notices share the same soft-tinted surface and leading icon. */
 .norea-source-access-banners {
   display: grid;
   gap: var(--norea-space-2);
 }
 
 .norea-source-access-banner {
-  align-items: center;
+  --norea-banner-accent: var(--norea-color-on-warn-soft);
+  align-items: flex-start;
   background: var(--norea-color-warn-soft);
-  border: 1px solid var(--norea-color-warn);
+  border: 1px solid var(--norea-color-warn-border);
   border-radius: var(--norea-radius-md);
+  color: var(--norea-color-ink);
   display: grid;
   gap: var(--norea-space-2) var(--norea-space-3);
-  grid-template-columns: minmax(0, 1fr) auto;
-  padding: var(--norea-space-3);
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  padding: var(--norea-space-3) var(--norea-space-4);
   text-align: start;
+}
+
+.norea-source-access-banner[data-tone="danger"] {
+  --norea-banner-accent: var(--norea-color-on-danger-soft);
+  background: var(--norea-color-danger-soft);
+  border-color: var(--norea-color-danger-border);
+}
+
+.norea-source-access-banner[data-tone="info"] {
+  --norea-banner-accent: var(--norea-color-on-info-soft);
+  background: var(--norea-color-info-soft);
+  border-color: var(--norea-color-info-border);
+}
+
+.norea-source-access-banner--status {
+  grid-template-columns: auto minmax(0, 1fr);
+}
+
+.norea-source-access-icon {
+  color: var(--norea-banner-accent);
+  display: flex;
+  flex: 0 0 auto;
+  height: var(--norea-icon-md);
+  margin-top: 0.0625rem;
+  width: var(--norea-icon-md);
 }
 
 .norea-source-access-copy {
@@ -524,12 +664,13 @@ body[data-norea-reader-bars] {
 
 .norea-source-access-actions {
   align-items: center;
+  align-self: center;
   display: flex;
   flex-wrap: nowrap;
   gap: var(--norea-space-1);
 }
 
-/* Status-only notices use the full width; icon actions remain beside the message. */
+/* Fallback if a status-only banner renders without a trailing control slot. */
 .norea-source-access-copy:only-child {
   grid-column: 1 / -1;
 }

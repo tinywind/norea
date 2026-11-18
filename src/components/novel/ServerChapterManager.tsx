@@ -1,4 +1,4 @@
-import { Alert, Badge, Group, Indicator, Loader, Pagination, Stack, Text } from "@mantine/core";
+import { Badge, Group, Indicator, Loader, Pagination, Stack, Text } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useState } from "react";
 import type { NovelDetailRecord } from "../../db/queries/novel";
@@ -15,6 +15,7 @@ import { ServerWorkDeleteButton } from "../ServerWorkDeleteButton";
 import { IconButton } from "../IconButton";
 import { BackIcon, DeselectIcon, RefreshIcon, SelectAllIcon, TrashIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
+import { StatusAlert } from "../ui/StatusAlert";
 
 /**
  * The content-server work that "Manage server data" opens for this novel, or
@@ -117,7 +118,7 @@ export function ServerChapterManager({ source, name, onClose }: { source: Server
             </Indicator>
           </Group>
         </div>
-        {error ? <Alert color="danger" title={t("common.actionFailed")}>{describeError(error)}</Alert> : null}
+        {error ? <StatusAlert color="danger" title={t("common.actionFailed")}>{describeError(error)}</StatusAlert> : null}
         {chapters.isFetching ? <Group p="md"><Loader size="sm" /><Text>{t("contentSync.loadingServerChapters")}</Text></Group> : null}
         {!chapters.isPending && !error && !rows.length ? <StateView title={t("contentSync.noServerChapters")} /> : null}
         <div className="norea-server-chapter-list" aria-label={t("contentSync.serverChapters")}>

@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Alert, Group, Progress, Stack, Text } from "@mantine/core";
+import { Group, Progress, Stack, Text } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
@@ -20,6 +20,7 @@ import { useConfirm } from "./ui/ConfirmDialog";
 import { CloseIcon, InfoIcon, PauseIcon, PlayIcon, RetryIcon, VerifyIcon } from "./ui/icons";
 import { OverflowMenu, type OverflowMenuItem } from "./ui/OverflowMenu";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
+import { StatusAlert } from "./ui/StatusAlert";
 
 export interface VpnDownloadWorkActions {
   retryDraft: (draftId: string) => Promise<void>;
@@ -209,7 +210,7 @@ export function VpnDownloadWorkRow({ work, snapshot, actions = runtimeActions }:
       </div>
       <Progress aria-label={t("vpnDownload.workProgressLabel", { title: work.title })} className="norea-task-work-progress"
         value={work.total ? work.completed / work.total * 100 : 0} size="xs" />
-      {errors[work.key] ? <Alert color="danger" role="alert">{errors[work.key]}</Alert> : null}
+      {errors[work.key] ? <StatusAlert color="danger" role="alert">{errors[work.key]}</StatusAlert> : null}
       <ResponsiveSheet opened={detailsOpened} onClose={() => setDetailsOpened(false)} title={t("vpnDownload.detailsTitle", { title: work.title })}>
         {detailsOpened ? <VpnDownloadWorkDetails work={work} snapshot={snapshot} actions={actions} /> : null}
       </ResponsiveSheet>
@@ -239,7 +240,7 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
 
   return (
     <Stack gap="md">
-      {snapshot.error ? <Alert color="danger" role="alert">{snapshot.error}</Alert> : null}
+      {snapshot.error ? <StatusAlert color="danger" role="alert">{snapshot.error}</StatusAlert> : null}
       {work.handover.map(waiting => <Text key={waiting.id} size="sm" role="status" className="norea-vpn-download-range">{t("vpnDownload.phase.waitingHandover")}</Text>)}
       {work.drafts.map(draft => {
         const key = JSON.stringify(["draft", draft.id]);
@@ -247,13 +248,13 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
           draft.phase === "failed" ? "vpnDownload.phase.failed" : "vpnDownload.phase.preparing";
         return <Stack key={draft.id} gap="xs" className="norea-vpn-download-range">
           <Text size="sm" role="status">{t(phaseKey)}</Text>
-          {draft.error ? <Alert color="danger" role="alert">{draft.error}</Alert> : null}
+          {draft.error ? <StatusAlert color="danger" role="alert">{draft.error}</StatusAlert> : null}
           {draft.phase === "failed" ? <SettingsInlineControls>
             <IconButton disabled={pendingKeys.has(key) || !runEnabled || draft.userPaused} label={t("vpnDownload.retryPreparing", { title: draft.title })}
               loading={pendingKeys.has(key)} size="lg"
               onClick={() => { if (runEnabled && !draft.userPaused) return run(key, () => actions.retryDraft(draft.id)); }}><RetryIcon /></IconButton>
           </SettingsInlineControls> : null}
-          {errors[key] ? <Alert color="danger" role="alert">{errors[key]}</Alert> : null}
+          {errors[key] ? <StatusAlert color="danger" role="alert">{errors[key]}</StatusAlert> : null}
         </Stack>;
       })}
       {work.plans.flatMap(plan => plan.ranges.map(range => {
@@ -286,7 +287,7 @@ export function VpnDownloadWorkDetails({ work, snapshot, actions = runtimeAction
               {resume ? <IconButton label={actionLabel(t("vpnDownload.resume"))} disabled={!canAct || work.held} size="lg"
                 onClick={() => { if (canAct && !work.held) return run(key, () => actions.resumeRange(plan.id, range.id)); }}><PlayIcon /></IconButton> : null}
             </SettingsInlineControls> : null}
-            {errors[key] ? <Alert color="danger" role="alert">{errors[key]}</Alert> : null}
+            {errors[key] ? <StatusAlert color="danger" role="alert">{errors[key]}</StatusAlert> : null}
           </Stack>
         );
       }))}

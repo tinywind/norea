@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Alert, Group, Stack, Text } from "@mantine/core";
+import { Group, Stack, Text } from "@mantine/core";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { formatDateTimeForLocale, useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
@@ -14,6 +14,7 @@ import { notifyVpnDownloadProfilesChanged } from "../lib/tasks/vpn-download-runt
 import { showSettingsToast } from "./settings/settings-toast";
 import { IconButton } from "./IconButton";
 import { PreferIcon, RetryIcon } from "./ui/icons";
+import { StatusAlert } from "./ui/StatusAlert";
 
 const VPN_GATE_SERVER_VERDICTS_QUERY_KEY = ["vpn-gate-server-verdicts"] as const;
 
@@ -62,12 +63,17 @@ export function TestedVpnServers({ disabled = false }: { disabled?: boolean }) {
   }
   if (servers.isError) {
     return (
-      <Alert color="danger" role="alert">
-        <Text size="sm">{describeError(servers.error)}</Text>
-        <IconButton label={t("common.retry")} size="lg" onClick={() => void servers.refetch()}>
-          <RetryIcon />
-        </IconButton>
-      </Alert>
+      <StatusAlert
+        color="danger"
+        role="alert"
+        trailing={
+          <IconButton label={t("common.retry")} size="lg" onClick={() => void servers.refetch()}>
+            <RetryIcon />
+          </IconButton>
+        }
+      >
+        {describeError(servers.error)}
+      </StatusAlert>
     );
   }
 
@@ -90,7 +96,7 @@ export function TestedVpnServers({ disabled = false }: { disabled?: boolean }) {
           <PreferIcon />
         </IconButton>
       </Group>
-      {approveError ? <Alert color="danger" role="alert">{approveError}</Alert> : null}
+      {approveError ? <StatusAlert color="danger" role="alert">{approveError}</StatusAlert> : null}
       {servers.data.length === 0 ? (
         <Text c="dimmed" size="sm">{t("settings.data.pluginVpn.tested.empty")}</Text>
       ) : (

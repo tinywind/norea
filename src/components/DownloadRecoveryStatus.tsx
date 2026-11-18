@@ -1,6 +1,7 @@
 import { Stack, Text } from "@mantine/core";
 import { useEffect, useState, useSyncExternalStore } from "react";
 import { useTranslation, type TranslationKey } from "../i18n";
+import { InfoIcon } from "./ui/icons";
 import {
   getDownloadRecoverySnapshot,
   subscribeDownloadRecovery,
@@ -30,7 +31,10 @@ export function DownloadRecoveryStatus() {
   return (
     <Stack gap="xs">
       {episodes.map(episode => (
-        <section className="norea-source-access-banner" data-download-recovery={episode.key} key={episode.key} role="status">
+        <section className="norea-source-access-banner norea-source-access-banner--status" data-download-recovery={episode.key} data-tone="info" key={episode.key} role="status">
+          <span aria-hidden="true" className="norea-source-access-icon">
+            <InfoIcon size="1.25rem" />
+          </span>
           <div className="norea-source-access-copy">
             <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{episode.title}</Text>
             <Text component="p" size="sm">

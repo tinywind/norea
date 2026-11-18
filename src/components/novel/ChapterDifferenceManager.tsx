@@ -1,4 +1,4 @@
-import { Alert, Button, Checkbox, Group, NumberInput, Pagination, Select, Stack, Text } from "@mantine/core";
+import { Button, Checkbox, Group, NumberInput, Pagination, Select, Stack, Text } from "@mantine/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { useMemo, useState } from "react";
 import { useTranslation } from "../../i18n";
@@ -8,6 +8,7 @@ import { describeError } from "../../lib/errors";
 import { chaptersKey } from "./novel-detail-model";
 import type { ChapterDifferenceScan } from "../../lib/content-sync/chapter-differences";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
+import { StatusAlert } from "../ui/StatusAlert";
 
 type Scope = "all" | "deviceLarger" | "serverLarger" | "sameSize" | "range" | "selected";
 
@@ -76,8 +77,8 @@ export function ChapterDifferenceManager({ novelId, source, differences, onClose
         <Button variant="subtle" size="compact-sm" disabled={apply.isPending} loading={refreshing}
           onClick={() => { setActions(new Map()); setCompleted(new Set()); apply.reset(); onRefresh(); }}>{t("common.refresh")}</Button>
       </Group>
-      {scanError ? <Alert color="danger">{describeError(scanError)}</Alert> : null}
-      {scanErrors > 0 ? <Alert color="warn">{t("chapterDifference.unchecked", { count: scanErrors })}</Alert> : null}
+      {scanError ? <StatusAlert color="danger">{describeError(scanError)}</StatusAlert> : null}
+      {scanErrors > 0 ? <StatusAlert color="warn">{t("chapterDifference.unchecked", { count: scanErrors })}</StatusAlert> : null}
       <Select label={t("chapterDifference.scope")} value={scope} disabled={busy} allowDeselect={false}
         data={(["all", "deviceLarger", "serverLarger", "sameSize", "range", "selected"] as const).map(value => ({ value, label: t(`chapterDifference.scope.${value}`) }))}
         onChange={value => { setScope(value as Scope); setPage(1); }} />
@@ -121,13 +122,13 @@ export function ChapterDifferenceManager({ novelId, source, differences, onClose
         {!target.length ? <Text p="md" c="dimmed">{t("chapterDifference.noMatches")}</Text> : null}
       </div>
       {target.length > 100 ? <Pagination value={shownPage} total={Math.ceil(target.length / 100)} onChange={setPage} disabled={busy} siblings={0} /> : null}
-      {apply.error ? <Alert color="danger">{describeError(apply.error)}</Alert> : null}
-      {apply.data ? <Alert color={apply.data.errors.length ? "warn" : "ok"}>
+      {apply.error ? <StatusAlert color="danger">{describeError(apply.error)}</StatusAlert> : null}
+      {apply.data ? <StatusAlert color={apply.data.errors.length ? "warn" : "ok"}>
         {t("chapterDifference.result", { completed: apply.data.completed.length, failed: apply.data.errors.length })}
-        {apply.data.errors.length ? <details><summary>{t("common.details")}</summary>
+        {apply.data.errors.length ? <details className="norea-state-details"><summary>{t("common.details")}</summary>
           {apply.data.errors.map(error => <Text size="sm" key={error.chapterId}>{differences.find(row => row.chapter.chapterId === error.chapterId)?.chapter.chapterName} · {error.message}</Text>)}
         </details> : null}
-      </Alert> : null}
+      </StatusAlert> : null}
       <div className="norea-difference-footer">
         <Text size="sm" aria-live="polite">{apply.isPending ? t("chapterDifference.progress", progress) : t("chapterDifference.plan", {
           upload: uploadCount, download: downloadCount, keep: remaining.length - uploadCount - downloadCount,

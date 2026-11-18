@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { Alert, Checkbox, Group, Indicator, Loader, NumberInput, Radio, Stack, Text } from "@mantine/core";
+import { Checkbox, Group, Indicator, Loader, NumberInput, Radio, Stack, Text } from "@mantine/core";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { listVpnGateServerVerdicts, setVpnGateServerVerdict, type VpnGateServerVerdictValue } from "../db/queries/vpn-gate-server-verdict";
 import { formatDateTimeForLocale, useTranslation, type TranslationKey } from "../i18n";
@@ -19,6 +19,7 @@ import { SegmentedToggle } from "./SegmentedToggle";
 import { useConfirm } from "./ui/ConfirmDialog";
 import { ConnectIcon, ExcludeIcon, RefreshIcon, RestartIcon, RetryIcon, SaveIcon, SelectIcon, SettingsIcon, SortIcon } from "./ui/icons";
 import { ResponsiveSheet } from "./ui/ResponsiveSheet";
+import { StatusAlert } from "./ui/StatusAlert";
 import { VpnGateServerVerdictControl } from "./VpnGateServerVerdictControl";
 import "../styles/library.css";
 
@@ -295,8 +296,8 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
         <Stack gap="md">
           <Text size="sm">{t("settings.data.pluginVpn.saved.managementHelp")}</Text>
           {issues.isPending ? <Text role="status">{t("settings.data.pluginVpn.saved.loading")}</Text> : null}
-          {issues.isError ? <Alert color="danger" role="alert">{describeError(issues.error)} <IconButton label={t("common.retry")} size="lg" onClick={() => { void issues.refetch(); }}><RetryIcon /></IconButton></Alert> : null}
-          {actionError ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
+          {issues.isError ? <StatusAlert color="danger" role="alert" trailing={<IconButton label={t("common.retry")} size="lg" onClick={() => { void issues.refetch(); }}><RetryIcon /></IconButton>}>{describeError(issues.error)}</StatusAlert> : null}
+          {actionError ? <StatusAlert color="danger" role="alert">{actionError}</StatusAlert> : null}
           <Group justify="space-between" wrap="nowrap">
             <IconButton label={t("settings.data.pluginVpn.saved.reallowAll", { count: excludedApprovedCount })} size="lg"
               disabled={managementLocked || !excludedApprovedCount} loading={busy} onClick={() => {
@@ -427,7 +428,7 @@ export function SavedVpnProfilesSettings({ connectingProfileId = null, disabled 
         opened={blockedOpened} onClose={() => setBlockedOpened(false)} size="lg" title={t("settings.data.pluginVpn.blocked.title")}>
         <Stack gap="md">
           <Text size="sm">{t("settings.data.pluginVpn.blocked.description")}</Text>
-          {actionError ? <Alert color="danger" role="alert">{actionError}</Alert> : null}
+          {actionError ? <StatusAlert color="danger" role="alert">{actionError}</StatusAlert> : null}
           {!blockedServers.length ? <Text size="sm">{t("settings.data.pluginVpn.blocked.empty")}</Text> : null}
           {blockedServers.map(row => (
             <Group key={row.ip} justify="space-between" wrap="nowrap" pb="sm" style={{ borderBottom: "1px solid var(--mantine-color-default-border)" }}>

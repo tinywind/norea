@@ -475,6 +475,7 @@
 }
 
 .norea-task-request-error {
+  color: var(--norea-color-danger);
   font-size: var(--norea-text-sm);
   padding: 0 var(--norea-space-3) var(--norea-space-2) var(--norea-space-2);
 }

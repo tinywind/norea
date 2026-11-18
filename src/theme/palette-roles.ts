@@ -23,6 +23,7 @@ export interface StatusRole {
   color: string;
   soft: string;
   onSoft: string;
+  border: string;
 }
 
 export interface PaletteRoles {
@@ -69,6 +70,7 @@ export const TEXT_CONTRAST = 4.5;
 export const NON_TEXT_CONTRAST = 3;
 
 const SOFT_MIX = { light: 0.12, dark: 0.18 } as const;
+const STATUS_BORDER_MIX = { light: 0.28, dark: 0.34 } as const;
 
 const FIXED_STATUS_HUES = {
   warn: { hue: 38, saturation: 0.9 },
@@ -140,10 +142,12 @@ function statusRole(
   scheme: ColorScheme,
 ): StatusRole {
   const soft = mixRgb(surface, color, SOFT_MIX[scheme]);
+  const border = mixRgb(surface, color, STATUS_BORDER_MIX[scheme]);
   return {
     color: formatRgb(color),
     soft: formatRgb(soft),
     onSoft: formatRgb(ensureContrast(color, [soft], TEXT_CONTRAST, ink)),
+    border: formatRgb(border),
   };
 }
 
@@ -297,6 +301,7 @@ export function paletteRoleCssVariables(
     variables[`--norea-color-${name}`] = roles[name].color;
     variables[`--norea-color-${name}-soft`] = roles[name].soft;
     variables[`--norea-color-on-${name}-soft`] = roles[name].onSoft;
+    variables[`--norea-color-${name}-border`] = roles[name].border;
   }
   return variables;
 }

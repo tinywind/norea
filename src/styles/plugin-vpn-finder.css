@@ -1,10 +1,8 @@
 .norea-plugin-vpn-finder-state {
-  align-items: flex-start;
-  background: var(--norea-color-surface);
-  border: 1px solid var(--norea-color-rule);
-  border-radius: var(--norea-radius-md);
+  align-items: center;
+  color: var(--norea-color-ink-muted);
   min-height: 4rem;
-  padding: var(--norea-space-3);
+  padding: var(--norea-space-4);
 }
 
 /* One compact line for the connection: progress, message, and its cancel action at the end. */

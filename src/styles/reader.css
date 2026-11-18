@@ -744,6 +744,63 @@
   padding: var(--norea-space-5);
 }
 
+.norea-reader-shell[style*="--norea-reader-bg"] .norea-reader-state-frame,
+.norea-reader-shell[style*="--norea-reader-bg"] .norea-pdf-reader-state {
+  --norea-color-bg: var(--norea-reader-bg);
+  --norea-color-surface: var(--norea-reader-chrome-bg);
+  --norea-color-surface-raised: var(--norea-reader-chrome-raised);
+  --norea-color-ink: var(--norea-reader-ink);
+  --norea-color-ink-muted: var(--norea-reader-ink-muted);
+  --norea-color-rule: var(--norea-reader-rule);
+  --norea-color-rule-strong: var(--norea-reader-ink-muted);
+  --norea-color-icon-subtle: var(--norea-reader-ink-muted);
+  --mantine-color-text: var(--norea-reader-ink);
+  --mantine-color-bright: var(--norea-reader-ink);
+  --mantine-color-dimmed: var(--norea-reader-ink-muted);
+  --norea-color-danger: var(--norea-reader-danger);
+  --norea-color-danger-soft: var(--norea-reader-danger-soft);
+  --norea-color-on-danger-soft: var(--norea-reader-on-danger-soft);
+  --norea-color-danger-border: var(--norea-reader-danger-border);
+  --norea-color-warn: var(--norea-reader-warn);
+  --norea-color-warn-soft: var(--norea-reader-warn-soft);
+  --norea-color-on-warn-soft: var(--norea-reader-on-warn-soft);
+  --norea-color-warn-border: var(--norea-reader-warn-border);
+  --norea-color-ok: var(--norea-reader-ok);
+  --norea-color-ok-soft: var(--norea-reader-ok-soft);
+  --norea-color-on-ok-soft: var(--norea-reader-on-ok-soft);
+  --norea-color-ok-border: var(--norea-reader-ok-border);
+  --norea-color-info: var(--norea-reader-info);
+  --norea-color-info-soft: var(--norea-reader-info-soft);
+  --norea-color-on-info-soft: var(--norea-reader-on-info-soft);
+  --norea-color-info-border: var(--norea-reader-info-border);
+}
+
+.norea-reader-state-frame > .norea-state-alert,
+.norea-reader-state-frame > .norea-source-access-banner,
+.norea-pdf-reader-state > .norea-state-alert {
+  border-radius: var(--norea-radius-lg);
+  box-shadow: var(--norea-shadow-1);
+  box-sizing: border-box;
+  max-width: 24rem;
+  padding: var(--norea-space-4) var(--norea-space-5);
+  text-align: start;
+  width: min(100%, 24rem);
+}
+
+.norea-reader-state-frame .mantine-Button-root[data-variant="default"],
+.norea-pdf-reader-state .mantine-Button-root[data-variant="default"] {
+  background: var(--norea-reader-chrome-bg, var(--norea-color-surface));
+  border-color: var(--norea-reader-ink-muted, var(--norea-color-rule-strong));
+  color: var(--norea-reader-ink, var(--norea-color-ink));
+}
+
+@media (hover: hover) {
+  .norea-reader-state-frame .mantine-Button-root[data-variant="default"]:hover:not(:disabled),
+  .norea-pdf-reader-state .mantine-Button-root[data-variant="default"]:hover:not(:disabled) {
+    background: var(--norea-reader-chrome-raised, var(--norea-color-surface-raised));
+  }
+}
+
 .norea-reader-seekbars {
   inset: 0;
   opacity: 0;

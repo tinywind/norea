@@ -8,7 +8,7 @@ import { resumeChapterDownloadQueueAfterFailure } from "../lib/tasks/chapter-dow
 import { redactUrlsForLog } from "../lib/url-log";
 import type { TaskSnapshot } from "../lib/tasks/task-types";
 import { IconButton } from "./IconButton";
-import { PlayIcon, SettingsIcon } from "./ui/icons";
+import { PlayIcon, SettingsIcon, WarningIcon } from "./ui/icons";
 import { useSettingsRevealStore } from "./settings/settings-reveal";
 
 export function DownloadFailureStopNotice({ snapshot }: {
@@ -46,7 +46,10 @@ export function DownloadFailureStopNotice({ snapshot }: {
   return (
     <>
       {rows.map(({ sourceId, source, message }) => (
-        <section className="norea-source-access-banner" data-download-failure-stop={sourceId ?? "global"} key={sourceId === undefined ? "global" : `source:${sourceId}`} role="alert">
+        <section className="norea-source-access-banner" data-download-failure-stop={sourceId ?? "global"} data-tone="danger" key={sourceId === undefined ? "global" : `source:${sourceId}`} role="alert">
+          <span aria-hidden="true" className="norea-source-access-icon">
+            <WarningIcon size="1.25rem" />
+          </span>
           <div className="norea-source-access-copy">
             <Text component="h3" fw="var(--norea-weight-bold)" size="sm">
               {source ? t("downloads.stopped.source", { source }) : t("downloads.stopped.global")}

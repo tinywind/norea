@@ -44,6 +44,10 @@ describe("StateView", () => {
     for (const color of ["danger", "warn"] as const) {
       const markup = render(<StateView color={color} message="Failed" title="Could not load" />);
       expect(markup, color).toContain("mantine-Alert");
+      expect(markup, color).toContain("norea-state-alert");
+      expect(markup, color).toContain(`data-tone="${color}"`);
+      expect(markup, color).toContain("<svg");
+      expect(markup, color).not.toContain("norea-surface");
       expect(markup, color).not.toContain("norea-empty-state");
     }
   });

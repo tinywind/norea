@@ -137,13 +137,13 @@ body {
 }
 
 .norea-storage-setup-error {
-  background: rgba(196, 74, 58, 0.1);
-  border: 1px solid rgba(196, 74, 58, 0.24);
-  border-radius: var(--norea-radius-sm);
-  color: var(--norea-color-danger);
-  font-size: var(--norea-text-md);
-  line-height: 1.45;
-  padding: var(--norea-space-3);
+  background: var(--norea-color-danger-soft);
+  border: 1px solid var(--norea-color-danger-border);
+  border-radius: var(--norea-radius-md);
+  color: var(--norea-color-ink);
+  font-size: var(--norea-text-sm);
+  line-height: var(--norea-leading-normal);
+  padding: var(--norea-space-3) var(--norea-space-4);
 }
 
 a {

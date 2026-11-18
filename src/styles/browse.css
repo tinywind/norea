@@ -295,8 +295,8 @@
 
 .norea-search-failure-notice {
   align-items: flex-start;
-  background: var(--norea-color-surface-raised);
-  border: 1px solid var(--norea-color-rule);
+  background: var(--norea-color-warn-soft);
+  border: 1px solid var(--norea-color-warn-border);
   border-radius: var(--norea-radius-md);
   display: grid;
   gap: var(--norea-space-3);
@@ -305,7 +305,7 @@
 }
 
 .norea-search-failure-icon {
-  color: var(--norea-color-danger);
+  color: var(--norea-color-on-warn-soft);
 }
 
 .norea-search-failure-copy {

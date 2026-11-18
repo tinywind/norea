@@ -1,4 +1,4 @@
-import { Alert, Button, Checkbox, Stack, Text } from "@mantine/core";
+import { Button, Checkbox, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient } from "@tanstack/react-query";
 import { useRouter } from "@tanstack/react-router";
@@ -12,6 +12,7 @@ import { describeError } from "../lib/errors";
 import { markUpdatesIndexDirty } from "../lib/updates/update-index-events";
 import { finishContentDeletion, useContentDeletionStore } from "../store/content-deletion";
 import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
+import { StatusAlert } from "./ui/StatusAlert";
 import { useStopDownloadGoalsOffer } from "./use-stop-download-goals-offer";
 
 export function ContentDeletionDialog() {
@@ -116,7 +117,7 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
       {serverOption ? <Checkbox checked={options.server} disabled={busy || actions !== null}
         onChange={event => { const checked = event.currentTarget.checked; setOptions(current => ({ ...current, server: checked })); }}
         label={serverOption} /> : null}
-      {request.kind === "server-work" && options.local ? <Alert color="warn">{t("contentDeletion.localWorkHint")}</Alert> : null}
+      {request.kind === "server-work" && options.local ? <StatusAlert color="warn">{t("contentDeletion.localWorkHint")}</StatusAlert> : null}
       {actions ? <Stack gap="xs" aria-live="polite">
         {(["library", "device", "server"] as const).map(side => {
           const targets = actions.filter(action => action.side === side);
@@ -124,13 +125,13 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
           const done = targets.filter(action => succeeded.has(action.id)).length;
           return <Text size="sm" key={side}>{t(`contentDeletion.${side}`)}: {done}/{targets.length}</Text>;
         })}
-        {failed.length ? <Alert color="danger" title={t("contentDeletion.partialFailure", { count: failed.length })}>
+        {failed.length ? <StatusAlert color="danger" title={t("contentDeletion.partialFailure", { count: failed.length })}>
           <Stack gap="xs">{failed.slice(0, 10).map(result => <Text size="sm" key={result.id}>
             {actions.find(action => action.id === result.id)?.name}: {result.error}
           </Text>)}</Stack>
-        </Alert> : null}
+        </StatusAlert> : null}
       </Stack> : null}
-      {error ? <Alert color="danger" title={t("common.actionFailed")}>{error}</Alert> : null}
+      {error ? <StatusAlert color="danger" title={t("common.actionFailed")}>{error}</StatusAlert> : null}
     </Stack>
   </ResponsiveSheet>;
 }

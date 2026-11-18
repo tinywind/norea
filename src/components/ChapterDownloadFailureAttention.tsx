@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Group, Text } from "@mantine/core";
 import { IconButton } from "./IconButton";
-import { DownloadIcon, RepairIcon, RetryIcon, VerifyIcon } from "./ui/icons";
+import { DownloadIcon, RepairIcon, RetryIcon, VerifyIcon, WarningIcon } from "./ui/icons";
 import { useTranslation, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
 import { pluginManager } from "../lib/plugins/manager";
@@ -84,7 +84,16 @@ export function ChapterDownloadFailureAttention() {
         const message = t(group.serverMissing ? "downloads.failures.serverMissing" : MESSAGE_KEYS[group.failureClass],
           { source, count: group.chapterIds.length, host: group.challengeHost });
         return (
-          <section className="norea-source-access-banner" data-download-failures={group.failureClass} key={group.key} role="alert">
+          <section
+            className="norea-source-access-banner"
+            data-download-failures={group.failureClass}
+            data-tone={group.serverMissing || group.failureClass === "challenge" ? "warn" : "danger"}
+            key={group.key}
+            role="alert"
+          >
+            <span aria-hidden="true" className="norea-source-access-icon">
+              <WarningIcon size="1.25rem" />
+            </span>
             <div className="norea-source-access-copy">
               <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{message}</Text>
               {group.serverMissing ? null : (

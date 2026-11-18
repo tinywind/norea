@@ -1,5 +1,6 @@
-import { Alert, Button, Text } from "@mantine/core";
+import { Button, Text } from "@mantine/core";
 import { useTranslation, type TranslationKey } from "../../i18n";
+import { StatusAlert } from "../ui/StatusAlert";
 import type { NovelMergeDecisionSummary } from "./merge-map-rows";
 import type { CompositionSummary } from "./merge-composition-editor";
 
@@ -85,14 +86,14 @@ export function MergeConfirmStep({
             )}
           </dl>
           {compositionSummary ? <Text c="dimmed" size="sm">{t("novelMerge.confirm.orderPreserved")}</Text> : null}
-          <Alert color="warn" variant="light">
+          <StatusAlert color="warn">
             {t("novelMerge.confirm.warning", { source: sourceName, target: targetName })}
-          </Alert>
+          </StatusAlert>
           {error ? (
-            <Alert color="danger" title={t("novelMerge.mergeFailed")}>
+            <StatusAlert color="danger" title={t("novelMerge.mergeFailed")}>
               <Text size="sm">{error}</Text>
               {onReloadCatalog ? <Button loading={reloadingCatalog} mt="sm" onClick={onReloadCatalog} variant="default">{t("novelMerge.catalog.reload")}</Button> : null}
-            </Alert>
+            </StatusAlert>
           ) : null}
         </section>
       </div>

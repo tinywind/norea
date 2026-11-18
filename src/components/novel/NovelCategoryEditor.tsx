@@ -1,4 +1,4 @@
-import { Alert, Button, Checkbox, Group, Loader, Stack, Text } from "@mantine/core";
+import { Button, Checkbox, Group, Loader, Stack, Text } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
@@ -13,6 +13,7 @@ import { describeError } from "../../lib/errors";
 import { ChipButton } from "../ChipButton";
 import { PlusIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
+import { StatusAlert } from "../ui/StatusAlert";
 
 interface NovelCategoryEditorProps {
   active: boolean;
@@ -165,9 +166,9 @@ export function NovelCategoryEditor({
           <Text fw="var(--norea-weight-bold)">{novelName}</Text>
           <Text c="dimmed" size="sm">{t("categories.editWorkDescription")}</Text>
           {errorMessage ? (
-            <Alert color="danger" role="alert">
+            <StatusAlert color="danger" role="alert">
               {errorMessage}
-            </Alert>
+            </StatusAlert>
           ) : null}
           {loading ? <Loader size="sm" /> : null}
           {categories.map((category) => (

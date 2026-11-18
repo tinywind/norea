@@ -114,6 +114,7 @@ describe("resolvePaletteRoles contrast gate", () => {
         TEXT_CONTRAST,
         `on-${name}-soft`,
       );
+      expectContrast(roles.ink, roles[name].soft, TEXT_CONTRAST, `ink-on-${name}-soft`);
     }
   });
 
@@ -201,6 +202,7 @@ describe("paletteRoleCssVariables", () => {
     expect(variables["--norea-color-ink-muted"]).toBe(roles.inkMuted);
     expect(variables["--norea-color-surface-raised"]).toBe(roles.surfaceRaised);
     expect(variables["--norea-color-danger"]).toBe(roles.danger.color);
+    expect(variables["--norea-color-danger-border"]).toBe(roles.danger.border);
     expect(variables["--norea-color-on-warn-soft"]).toBe(roles.warn.onSoft);
     expect(variables["--norea-color-overlay-surface"]).toBe(roles.overlaySurface);
     expect(variables["--norea-color-inverse-surface"]).toBe(roles.inverseSurface);

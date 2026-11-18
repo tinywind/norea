@@ -1,7 +1,7 @@
 import { useRef, useState } from "react";
 import { Group, Text } from "@mantine/core";
 import { IconButton } from "./IconButton";
-import { PlayIcon, RetryIcon, SearchIcon, VerifyIcon } from "./ui/icons";
+import { PlayIcon, RetryIcon, SearchIcon, VerifyIcon, WarningIcon } from "./ui/icons";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "../i18n";
 import { describeError } from "../lib/errors";
@@ -37,7 +37,15 @@ export function VpnDownloadAttention({ snapshot }: { snapshot: VpnDownloadRuntim
       () => Promise.all(item.ranges.map(({ planId, rangeId }) => resumeVpnDownloadRange(planId, rangeId)))] as const;
 
   return (
-    <section className="norea-source-access-banner" role="alert" data-vpn-attention={item.kind}>
+    <section
+      className="norea-source-access-banner"
+      data-tone={item.kind === "failed" ? "danger" : "warn"}
+      data-vpn-attention={item.kind}
+      role="alert"
+    >
+      <span aria-hidden="true" className="norea-source-access-icon">
+        <WarningIcon size="1.25rem" />
+      </span>
       <div className="norea-source-access-copy">
         <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{message}</Text>
         {error ? <Text c="danger" component="p" size="sm">{error}</Text> : null}

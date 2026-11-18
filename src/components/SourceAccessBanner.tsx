@@ -11,7 +11,7 @@ import type { SourceAccessBlock } from "../lib/tasks/source-access-gate";
 import { useSiteBrowserStore } from "../store/site-browser";
 import { IconButton } from "./IconButton";
 import { OverflowMenu } from "./ui/OverflowMenu";
-import { VerifyIcon } from "./ui/icons";
+import { VerifyIcon, WarningIcon } from "./ui/icons";
 
 export interface SourceAccessBannerEntry {
   block: SourceAccessBlock;
@@ -64,7 +64,10 @@ export function SourceAccessBannerGroup({ entries }: {
 
   return (
     <section className="norea-source-access-banner"
-      data-source-access={members.map(member => member.block.scopeKey).join(" ")} role="alert">
+      data-source-access={members.map(member => member.block.scopeKey).join(" ")} data-tone="warn" role="alert">
+      <span aria-hidden="true" className="norea-source-access-icon">
+        <WarningIcon size="1.25rem" />
+      </span>
       <div className="norea-source-access-copy">
         <Text component="h3" fw="var(--norea-weight-bold)" size="sm">{title} · {hostname}</Text>
         {grouped ? (

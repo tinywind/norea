@@ -5,7 +5,6 @@ import {
   type ReactNode,
 } from "react";
 import {
-  Alert,
   Box,
   Button,
   Group,
@@ -19,6 +18,7 @@ import {
 } from "@mantine/core";
 import { BackIconButton } from "./BackIconButton";
 import { TextButton } from "./TextButton";
+import { StatusAlert } from "./ui/StatusAlert";
 import type { AppIcon } from "./ui/icons";
 import { useSiteBrowserStore } from "../store/site-browser";
 
@@ -281,16 +281,15 @@ export function StateView({
   }
 
   return (
-    <Alert
-      className="norea-surface"
-      color={color}
-      radius="sm"
+    <StatusAlert
+      className="norea-state-alert"
+      color={color === "warn" ? "warn" : color === "ok" ? "ok" : "danger"}
+      icon={Icon ? <Icon size="1.25rem" /> : undefined}
       title={title}
-      variant="light"
     >
-      {message ? <Text size="sm">{message}</Text> : null}
+      {message ? <div className="norea-state-alert-message">{message}</div> : null}
       {action || secondaryAction ? (
-        <Group gap="xs" mt="md">
+        <Group className="norea-state-alert-actions" gap="xs" mt="sm">
           {action ? (
             <TextButton
               size="sm"
@@ -308,7 +307,7 @@ export function StateView({
         </Group>
       ) : null}
       {detailsBlock}
-    </Alert>
+    </StatusAlert>
   );
 }
 

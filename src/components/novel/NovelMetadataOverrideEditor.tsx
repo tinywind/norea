@@ -26,6 +26,7 @@ import { useNovelCoverSource } from "../../lib/use-novel-cover-source";
 import { isOverrideCoverFileName } from "../../lib/work-metadata/schema";
 import { ConsoleCover } from "../ConsolePrimitives";
 import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
+import { StatusAlert } from "../ui/StatusAlert";
 import {
   CANONICAL_NOVEL_STATUSES,
   canonicalNovelStatusLabel,
@@ -455,7 +456,7 @@ export function NovelMetadataOverrideEditor({
                   : t("novel.metadataOverride.coverRequiresLibrary")}
               </Text>
               {coverError ? (
-                <Text c="red" role="alert" size="xs">
+                <Text c="danger" role="alert" size="xs">
                   {coverError}
                 </Text>
               ) : null}
@@ -567,9 +568,9 @@ export function NovelMetadataOverrideEditor({
           />
 
           {save.error ? (
-            <Text c="red" role="alert" size="sm">
+            <StatusAlert color="danger" role="alert">
               {describeError(save.error)}
-            </Text>
+            </StatusAlert>
           ) : null}
         </Stack>
       </form>

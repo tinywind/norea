@@ -37,8 +37,8 @@
 
 .norea-updates-failure-notice {
   align-items: flex-start;
-  background: var(--norea-color-surface-raised);
-  border-bottom: 1px solid var(--norea-color-rule);
+  background: var(--norea-color-warn-soft);
+  border-bottom: 1px solid var(--norea-color-warn-border);
   display: flex;
   flex-wrap: wrap;
   gap: var(--norea-space-2) var(--norea-space-3);
@@ -46,7 +46,7 @@
 }
 
 .norea-updates-failure-icon {
-  color: var(--norea-color-warn);
+  color: var(--norea-color-on-warn-soft);
   flex: 0 0 auto;
 }
 
