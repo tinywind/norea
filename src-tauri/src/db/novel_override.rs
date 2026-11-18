@@ -2,6 +2,8 @@
 //! neither a source refresh nor a metadata install can change it.
 
 use std::collections::BTreeMap;
+use std::fs;
+use std::io::ErrorKind;
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
@@ -11,7 +13,7 @@ use tauri::{AppHandle, State};
 
 use crate::database::AppDatabase;
 
-use super::novel::LOCAL_PLUGIN_ID;
+use super::novel::{is_novel_status, LOCAL_PLUGIN_ID};
 use super::tx::{with_write_tx, TxContext, TxOptions};
 use super::work_metadata::WorkMetadataIdentityDto;
 use super::{DbMutationEnvelope, ReadMode, WorkDirectoryUpdateDto};
@@ -20,9 +22,14 @@ pub const MAX_WORK_OVERRIDE_BYTES: usize = 256 * 1024;
 const MAX_FIELDS: usize = 64;
 const MAX_FIELD_NAME_LENGTH: usize = 64;
 const MAX_TEXT_UNITS: usize = 8192;
+const MAX_SUMMARY_TEXT_UNITS: usize = 65536;
 const MAX_SAFE_INTEGER: i64 = 9_007_199_254_740_991;
 const OVERRIDE_FILE_NAME: &str = "override.json";
 const COMPLETED_FIELD: &str = "completed";
+const STATUS_FIELD: &str = "status";
+const COVER_FIELD: &str = "cover";
+const NAME_FIELD: &str = "name";
+const SUMMARY_FIELD: &str = "summary";
 
 pub type WorkOverrideFields = BTreeMap<String, WorkOverrideFieldDto>;
 
@@ -62,9 +69,46 @@ pub struct NovelOverrideMergeResultDto {
     pub changed: bool,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(tag = "mode", rename_all = "camelCase", deny_unknown_fields)]
+pub enum NovelOverrideCoverActionDto {
+    Keep,
+    Clear,
+    Set {
+        #[serde(rename = "fileName")]
+        file_name: String,
+        bytes: Vec<u8>,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NovelOverrideCoverBytesDto {
+    pub file_name: String,
+    pub content_type: String,
+    pub bytes: Vec<u8>,
+}
+
 struct OverrideWork {
     identity: WorkMetadataIdentityDto,
     directory: Option<String>,
+}
+
+fn override_cover_content_type(file_name: &str) -> &'static str {
+    let extension = Path::new(file_name)
+        .extension()
+        .and_then(|ext| ext.to_str())
+        .map(|ext| ext.to_ascii_lowercase());
+    match extension.as_deref() {
+        Some("avif") => "image/avif",
+        Some("bmp") => "image/bmp",
+        Some("gif") => "image/gif",
+        Some("jpg") | Some("jpeg") => "image/jpeg",
+        Some("png") => "image/png",
+        Some("svg") => "image/svg+xml",
+        Some("webp") => "image/webp",
+        _ => "application/octet-stream",
+    }
 }
 
 fn is_field_name(name: &str) -> bool {
@@ -75,15 +119,36 @@ fn is_field_name(name: &str) -> bool {
 }
 
 fn validate_override_field(name: &str, field: &WorkOverrideFieldDto) -> Result<(), String> {
-    let valid_value = match &field.value {
-        JsonValue::Null | JsonValue::Bool(_) => true,
-        JsonValue::Number(number) => {
-            name != COMPLETED_FIELD && number.as_f64().is_some_and(f64::is_finite)
-        }
-        JsonValue::String(text) => {
-            name != COMPLETED_FIELD && text.encode_utf16().count() <= MAX_TEXT_UNITS
-        }
-        JsonValue::Array(_) | JsonValue::Object(_) => false,
+    let valid_value = match name {
+        COMPLETED_FIELD => matches!(&field.value, JsonValue::Null | JsonValue::Bool(_)),
+        STATUS_FIELD => match &field.value {
+            JsonValue::Null => true,
+            JsonValue::String(text) => is_novel_status(text),
+            _ => false,
+        },
+        COVER_FIELD => match &field.value {
+            JsonValue::Null => true,
+            JsonValue::String(text) => crate::chapter_media::is_override_cover_file(text),
+            _ => false,
+        },
+        NAME_FIELD => match &field.value {
+            JsonValue::Null => true,
+            JsonValue::String(text) => {
+                !text.trim().is_empty() && text.encode_utf16().count() <= MAX_TEXT_UNITS
+            }
+            _ => false,
+        },
+        SUMMARY_FIELD => match &field.value {
+            JsonValue::Null => true,
+            JsonValue::String(text) => text.encode_utf16().count() <= MAX_SUMMARY_TEXT_UNITS,
+            _ => false,
+        },
+        _ => match &field.value {
+            JsonValue::Null | JsonValue::Bool(_) => true,
+            JsonValue::Number(number) => number.as_f64().is_some_and(f64::is_finite),
+            JsonValue::String(text) => text.encode_utf16().count() <= MAX_TEXT_UNITS,
+            JsonValue::Array(_) | JsonValue::Object(_) => false,
+        },
     };
     if !is_field_name(name)
         || !valid_value
@@ -93,6 +158,43 @@ fn validate_override_field(name: &str, field: &WorkOverrideFieldDto) -> Result<(
         return Err(format!("work override: field '{name}' is invalid"));
     }
     Ok(())
+}
+
+pub fn normalize_override_fields(fields: &WorkOverrideFields) -> Result<WorkOverrideFields, String> {
+    validate_override_fields(fields)?;
+    let mut normalized = WorkOverrideFields::new();
+    let mut legacy_completed: Option<WorkOverrideFieldDto> = None;
+    for (name, field) in fields {
+        if name == COMPLETED_FIELD {
+            let status_value = match &field.value {
+                JsonValue::Bool(true) => JsonValue::String("Completed".to_string()),
+                JsonValue::Bool(false) => JsonValue::String("Ongoing".to_string()),
+                JsonValue::Null => JsonValue::Null,
+                _ => unreachable!("validated completed value"),
+            };
+            legacy_completed = Some(WorkOverrideFieldDto {
+                value: status_value,
+                updated_at: field.updated_at,
+            });
+            continue;
+        }
+        let mut entry = field.clone();
+        if name == NAME_FIELD {
+            if let JsonValue::String(ref text) = entry.value {
+                entry.value = JsonValue::String(text.trim().to_string());
+            }
+        }
+        normalized.insert(name.clone(), entry);
+    }
+    if let Some(legacy) = legacy_completed {
+        if normalized
+            .get(STATUS_FIELD)
+            .is_none_or(|kept| legacy.updated_at > kept.updated_at)
+        {
+            normalized.insert(STATUS_FIELD.to_string(), legacy);
+        }
+    }
+    Ok(normalized)
 }
 
 pub fn validate_override_fields(fields: &WorkOverrideFields) -> Result<(), String> {
@@ -122,13 +224,13 @@ pub fn parse_work_override_bytes(bytes: &[u8]) -> Result<WorkOverrideV1Dto, Stri
     if bytes.len() > MAX_WORK_OVERRIDE_BYTES {
         return Err("work override: document exceeds size limit".to_string());
     }
-    let document: WorkOverrideV1Dto = serde_json::from_slice(bytes)
+    let mut document: WorkOverrideV1Dto = serde_json::from_slice(bytes)
         .map_err(|err| format!("work override: invalid JSON: {err}"))?;
     if document.schema_version != 1 {
         return Err("work override: unsupported version".to_string());
     }
     validate_override_identity(&document.identity)?;
-    validate_override_fields(&document.fields)?;
+    document.fields = normalize_override_fields(&document.fields)?;
     Ok(document)
 }
 
@@ -168,9 +270,9 @@ fn encode_work_override(
 }
 
 fn decode_override_payload(payload: &str) -> Result<WorkOverrideFields, String> {
-    serde_json::from_str::<WorkOverridePayloadDto>(payload)
-        .map(|stored| stored.fields)
-        .map_err(|err| format!("work override: invalid stored JSON: {err}"))
+    let stored = serde_json::from_str::<WorkOverridePayloadDto>(payload)
+        .map_err(|err| format!("work override: invalid stored JSON: {err}"))?;
+    normalize_override_fields(&stored.fields)
 }
 
 async fn load_override_work_in_conn(
@@ -226,8 +328,8 @@ pub async fn save_novel_override_fields_in_conn(
     novel_id: i64,
     fields: &WorkOverrideFields,
 ) -> Result<(), String> {
-    validate_override_fields(fields)?;
-    if fields.is_empty() {
+    let normalized = normalize_override_fields(fields)?;
+    if normalized.is_empty() {
         sqlx::query("DELETE FROM novel_override WHERE novel_id = ?1")
             .bind(novel_id)
             .execute(&mut *conn)
@@ -235,10 +337,8 @@ pub async fn save_novel_override_fields_in_conn(
             .map_err(|err| format!("db novel override: delete override: {err}"))?;
         return Ok(());
     }
-    let payload = serde_json::to_string(&WorkOverridePayloadDto {
-        fields: fields.clone(),
-    })
-    .map_err(|err| format!("work override: encode stored JSON: {err}"))?;
+    let payload = serde_json::to_string(&WorkOverridePayloadDto { fields: normalized })
+        .map_err(|err| format!("work override: encode stored JSON: {err}"))?;
     sqlx::query(
         "INSERT INTO novel_override(novel_id, payload) VALUES (?1, ?2) \
          ON CONFLICT(novel_id) DO UPDATE SET payload = excluded.payload",
@@ -303,6 +403,35 @@ pub async fn list_novel_overrides_in_conn(
         .collect()
 }
 
+fn remove_override_cover_files_in_tx(
+    root: &Path,
+    ctx: &mut TxContext,
+    directory: &str,
+    keep_file: Option<&str>,
+) -> Result<bool, String> {
+    let entries = match fs::read_dir(root.join(directory)) {
+        Ok(entries) => entries,
+        Err(err) if err.kind() == ErrorKind::NotFound => return Ok(false),
+        Err(err) => return Err(format!("work override: list override covers: {err}")),
+    };
+    let mut names = Vec::new();
+    for entry in entries {
+        let entry = entry.map_err(|err| format!("work override: read override cover entry: {err}"))?;
+        let name = entry.file_name().to_string_lossy().into_owned();
+        if crate::chapter_media::is_override_cover_file(&name) && keep_file != Some(name.as_str()) {
+            names.push(name);
+        }
+    }
+    names.sort();
+    let removed_any = !names.is_empty();
+    for name in names {
+        let relative = format!("{directory}/{name}");
+        ctx.snapshot_work_metadata_file(root, &relative)?;
+        crate::chapter_media::remove_work_metadata_file_at(root, &relative)?;
+    }
+    Ok(removed_any)
+}
+
 /// Stores a novel's override and mirrors it to `override.json` in the work's known metadata
 /// directory: written while fields exist, removed once they are empty. A work without a
 /// published `novel.json` gets its file when that directory is first published.
@@ -316,13 +445,21 @@ pub async fn store_novel_override_in_tx(
     let work = load_override_work_in_conn(&mut *conn, novel_id)
         .await?
         .ok_or_else(|| "work override: novel not found".to_string())?;
-    let (document, bytes) = encode_work_override(&work.identity, fields)?;
-    save_novel_override_fields_in_conn(&mut *conn, novel_id, fields).await?;
+    let normalized = normalize_override_fields(fields)?;
+    let (document, bytes) = encode_work_override(&work.identity, &normalized)?;
+    save_novel_override_fields_in_conn(&mut *conn, novel_id, &normalized).await?;
 
     if let (Some(root), Some(directory)) = (root, work.directory.as_deref()) {
+        let active_cover = normalized
+            .get(COVER_FIELD)
+            .and_then(|entry| entry.value.as_str())
+            .filter(|name| crate::chapter_media::is_override_cover_file(name));
+        if remove_override_cover_files_in_tx(root, ctx, directory, active_cover)? {
+            ctx.record_cover_changed(novel_id);
+        }
         let relative = format!("{directory}/{OVERRIDE_FILE_NAME}");
         ctx.snapshot_work_metadata_file(root, &relative)?;
-        if fields.is_empty() {
+        if normalized.is_empty() {
             crate::chapter_media::remove_work_metadata_file_at(root, &relative)?;
         } else {
             crate::chapter_media::write_work_metadata_bytes_at(root, &relative, &bytes)?;
@@ -351,7 +488,23 @@ pub async fn set_novel_override_field_in_tx(
     value: JsonValue,
     updated_at: i64,
 ) -> Result<WorkOverrideV1Dto, String> {
-    let mut entry = WorkOverrideFieldDto { value, updated_at };
+    if field == COMPLETED_FIELD || field == COVER_FIELD {
+        return Err(format!(
+            "work override: field '{field}' cannot be updated directly"
+        ));
+    }
+    let normalized_value = if field == NAME_FIELD {
+        match value {
+            JsonValue::String(text) => JsonValue::String(text.trim().to_string()),
+            other => other,
+        }
+    } else {
+        value
+    };
+    let mut entry = WorkOverrideFieldDto {
+        value: normalized_value,
+        updated_at,
+    };
     validate_override_field(field, &entry)?;
     let mut fields = load_novel_override_fields_in_conn(&mut *conn, novel_id).await?;
     if let Some(existing) = fields.get(field) {
@@ -362,24 +515,207 @@ pub async fn set_novel_override_field_in_tx(
     store_novel_override_in_tx(root, conn, ctx, novel_id, &fields).await
 }
 
-/// Stores `merge(stored, incoming)` under the novel's own identity.
-pub async fn merge_novel_override_in_tx(
+/// Applies multiple user field edits and an optional cover override update in one transaction.
+pub async fn update_novel_override_in_tx(
+    root: Option<&Path>,
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    novel_id: i64,
+    updates: &BTreeMap<String, JsonValue>,
+    cover: NovelOverrideCoverActionDto,
+    updated_at: i64,
+) -> Result<WorkOverrideV1Dto, String> {
+    if updated_at <= 0 || updated_at > MAX_SAFE_INTEGER {
+        return Err("work override: updatedAt is invalid".to_string());
+    }
+    let work = load_override_work_in_conn(&mut *conn, novel_id)
+        .await?
+        .ok_or_else(|| "work override: novel not found".to_string())?;
+    let mut fields = load_novel_override_fields_in_conn(&mut *conn, novel_id).await?;
+    let mut mutated = false;
+
+    for (name, raw_value) in updates {
+        if name == COMPLETED_FIELD || name == COVER_FIELD {
+            return Err(format!(
+                "work override: field '{name}' cannot be passed in fields map"
+            ));
+        }
+        let value = if name == NAME_FIELD {
+            match raw_value {
+                JsonValue::String(text) => JsonValue::String(text.trim().to_string()),
+                other => other.clone(),
+            }
+        } else {
+            raw_value.clone()
+        };
+        let entry_updated_at = match fields.get(name) {
+            Some(existing) => updated_at.max(existing.updated_at.saturating_add(1)),
+            None => updated_at,
+        };
+        let entry = WorkOverrideFieldDto {
+            value,
+            updated_at: entry_updated_at,
+        };
+        validate_override_field(name, &entry)?;
+        fields.insert(name.clone(), entry);
+        mutated = true;
+    }
+
+    match cover {
+        NovelOverrideCoverActionDto::Keep => {}
+        NovelOverrideCoverActionDto::Clear => {
+            let had_cover_value = fields
+                .get(COVER_FIELD)
+                .is_some_and(|existing| !existing.value.is_null());
+            let mut removed_cover_file = false;
+            if let (Some(root), Some(directory)) = (root, work.directory.as_deref()) {
+                removed_cover_file = remove_override_cover_files_in_tx(root, ctx, directory, None)?;
+            }
+            if had_cover_value {
+                let entry_updated_at = match fields.get(COVER_FIELD) {
+                    Some(existing) => updated_at.max(existing.updated_at.saturating_add(1)),
+                    None => updated_at,
+                };
+                let entry = WorkOverrideFieldDto {
+                    value: JsonValue::Null,
+                    updated_at: entry_updated_at,
+                };
+                validate_override_field(COVER_FIELD, &entry)?;
+                fields.insert(COVER_FIELD.to_string(), entry);
+                mutated = true;
+            }
+            if had_cover_value || removed_cover_file {
+                ctx.record_cover_changed(novel_id);
+            }
+        }
+        NovelOverrideCoverActionDto::Set { file_name, bytes } => {
+            if !crate::chapter_media::is_override_cover_file(&file_name) {
+                return Err("work override: invalid override cover filename".to_string());
+            }
+            if bytes.is_empty() || bytes.len() > crate::chapter_media::MAX_COVER_BYTES {
+                return Err("work override: invalid override cover size".to_string());
+            }
+            let Some(root) = root else {
+                return Err("work override: storage root is unavailable".to_string());
+            };
+            let Some(directory) = work.directory.as_deref() else {
+                return Err(
+                    "work override: cover override requires a stored library work directory"
+                        .to_string(),
+                );
+            };
+            remove_override_cover_files_in_tx(root, ctx, directory, Some(&file_name))?;
+            let relative = format!("{directory}/{file_name}");
+            ctx.snapshot_work_metadata_file(root, &relative)?;
+            crate::chapter_media::write_work_metadata_bytes_at(root, &relative, &bytes)?;
+            let entry_updated_at = match fields.get(COVER_FIELD) {
+                Some(existing) => updated_at.max(existing.updated_at.saturating_add(1)),
+                None => updated_at,
+            };
+            let entry = WorkOverrideFieldDto {
+                value: JsonValue::String(file_name),
+                updated_at: entry_updated_at,
+            };
+            validate_override_field(COVER_FIELD, &entry)?;
+            fields.insert(COVER_FIELD.to_string(), entry);
+            ctx.record_cover_changed(novel_id);
+            mutated = true;
+        }
+    }
+
+    if !mutated {
+        let normalized = normalize_override_fields(&fields)?;
+        let (document, _) = encode_work_override(&work.identity, &normalized)?;
+        return Ok(document);
+    }
+    store_novel_override_in_tx(root, conn, ctx, novel_id, &fields).await
+}
+
+/// Stores `merge(stored, incoming)` under the novel's own identity, updating or clearing
+/// any `cover.override.<ext>` sibling file when the merged override changes `cover`.
+pub async fn merge_novel_override_with_cover_in_tx(
     root: Option<&Path>,
     conn: &mut SqliteConnection,
     ctx: &mut TxContext,
     novel_id: i64,
     incoming: &WorkOverrideFields,
+    cover_bytes: Option<&[u8]>,
 ) -> Result<NovelOverrideMergeResultDto, String> {
-    validate_override_fields(incoming)?;
+    let normalized_incoming = normalize_override_fields(incoming)?;
     let current = load_novel_override_fields_in_conn(&mut *conn, novel_id).await?;
-    let merged = merge_override_fields(&current, incoming);
-    let changed = merged != current;
+    let work = load_override_work_in_conn(&mut *conn, novel_id)
+        .await?
+        .ok_or_else(|| "work override: novel not found".to_string())?;
+    let merged = merge_override_fields(&current, &normalized_incoming);
+    let prev_cover = current
+        .get(COVER_FIELD)
+        .and_then(|entry| entry.value.as_str())
+        .filter(|name| crate::chapter_media::is_override_cover_file(name));
+    let next_cover = merged
+        .get(COVER_FIELD)
+        .and_then(|entry| entry.value.as_str())
+        .filter(|name| crate::chapter_media::is_override_cover_file(name));
+    let cover_field_changed = merged.get(COVER_FIELD) != current.get(COVER_FIELD);
+    let incoming_won_cover = next_cover.is_some()
+        && merged.get(COVER_FIELD) == normalized_incoming.get(COVER_FIELD)
+        && (cover_field_changed || cover_bytes.is_some());
+
+    let mut cover_file_changed = false;
+    if incoming_won_cover {
+        let target_file = next_cover.expect("checked next_cover");
+        if let Some(bytes) = cover_bytes {
+            if bytes.is_empty() || bytes.len() > crate::chapter_media::MAX_COVER_BYTES {
+                return Err("work override: invalid override cover size".to_string());
+            }
+            let Some(root) = root else {
+                return Err("work override: storage root is unavailable".to_string());
+            };
+            let Some(directory) = work.directory.as_deref() else {
+                return Err(
+                    "work override: cover override requires a stored library work directory"
+                        .to_string(),
+                );
+            };
+            if remove_override_cover_files_in_tx(root, ctx, directory, Some(target_file))? {
+                cover_file_changed = true;
+            }
+            let relative = format!("{directory}/{target_file}");
+            ctx.snapshot_work_metadata_file(root, &relative)?;
+            if crate::chapter_media::write_work_metadata_bytes_at(root, &relative, bytes)? {
+                cover_file_changed = true;
+            }
+            if cover_field_changed || cover_file_changed {
+                ctx.record_cover_changed(novel_id);
+            }
+        } else if cover_field_changed {
+            let backed = match (root, work.directory.as_deref()) {
+                (Some(root), Some(directory)) => {
+                    let relative = format!("{directory}/{target_file}");
+                    matches!(
+                        crate::chapter_media::read_work_metadata_bytes_at(root, &relative)?,
+                        Some(existing) if !existing.is_empty()
+                    )
+                }
+                _ => false,
+            };
+            if !backed {
+                return Err("work override: cover bytes are required for cover override".to_string());
+            }
+            ctx.record_cover_changed(novel_id);
+        }
+    } else if next_cover.is_none() && prev_cover.is_some() {
+        if let (Some(root), Some(directory)) = (root, work.directory.as_deref()) {
+            if remove_override_cover_files_in_tx(root, ctx, directory, None)? {
+                cover_file_changed = true;
+            }
+        }
+        ctx.record_cover_changed(novel_id);
+    }
+
+    let changed = merged != current || cover_file_changed;
     let document = if changed {
         store_novel_override_in_tx(root, conn, ctx, novel_id, &merged).await?
     } else {
-        let work = load_override_work_in_conn(&mut *conn, novel_id)
-            .await?
-            .ok_or_else(|| "work override: novel not found".to_string())?;
         WorkOverrideV1Dto {
             schema_version: 1,
             identity: work.identity,
@@ -390,6 +726,17 @@ pub async fn merge_novel_override_in_tx(
         document: (!document.fields.is_empty()).then_some(document),
         changed,
     })
+}
+
+/// Stores `merge(stored, incoming)` under the novel's own identity.
+pub async fn merge_novel_override_in_tx(
+    root: Option<&Path>,
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    novel_id: i64,
+    incoming: &WorkOverrideFields,
+) -> Result<NovelOverrideMergeResultDto, String> {
+    merge_novel_override_with_cover_in_tx(root, conn, ctx, novel_id, incoming, None).await
 }
 
 /// Merges the `override.json` found in a work directory into the stored override. The file
@@ -411,7 +758,7 @@ pub async fn adopt_stored_novel_override_in_tx(
     let Some(work) = load_override_work_in_conn(&mut *conn, novel_id).await? else {
         return Ok(());
     };
-    let incoming = match stored {
+    let mut incoming = match stored {
         Ok(document) if document.identity == work.identity => document.fields,
         Ok(_) => {
             log::warn!("[work-override] skipped {relative}: it belongs to another work");
@@ -422,6 +769,21 @@ pub async fn adopt_stored_novel_override_in_tx(
             return Ok(());
         }
     };
+    if let Some(cover_file) = incoming
+        .get(COVER_FIELD)
+        .and_then(|entry| entry.value.as_str())
+        .map(str::to_owned)
+    {
+        let cover_relative = format!("{directory}/{cover_file}");
+        let backed = matches!(
+            crate::chapter_media::read_work_metadata_bytes_at(root, &cover_relative),
+            Ok(Some(bytes)) if !bytes.is_empty()
+        );
+        if !backed {
+            log::warn!("[work-override] skipped missing cover file {cover_relative}");
+            incoming.remove(COVER_FIELD);
+        }
+    }
     let current = load_novel_override_fields_in_conn(&mut *conn, novel_id).await?;
     let merged = merge_override_fields(&current, &incoming);
     if merged == current {
@@ -430,6 +792,9 @@ pub async fn adopt_stored_novel_override_in_tx(
     if let Err(error) = encode_work_override(&work.identity, &merged) {
         log::warn!("[work-override] skipped {relative}: {error}");
         return Ok(());
+    }
+    if merged.get(COVER_FIELD) != current.get(COVER_FIELD) {
+        ctx.record_cover_changed(novel_id);
     }
     store_novel_override_in_tx(None, conn, ctx, novel_id, &merged).await?;
     Ok(())
@@ -464,15 +829,50 @@ pub(super) async fn publish_missing_override_file_in_tx(
     Ok(())
 }
 
-/// Removes the `override.json` of a work whose novel row is gone.
+/// Removes `override.json` and any `cover.override.*` files of a work whose novel row is gone.
 pub(super) fn remove_stored_override_file_in_tx(
     root: &Path,
     ctx: &mut TxContext,
     directory: &str,
 ) -> Result<(), String> {
+    remove_override_cover_files_in_tx(root, ctx, directory, None)?;
     let relative = format!("{directory}/{OVERRIDE_FILE_NAME}");
     ctx.snapshot_work_metadata_file(root, &relative)?;
     crate::chapter_media::remove_work_metadata_file_at(root, &relative)
+}
+
+pub async fn read_novel_override_cover_in_conn(
+    root: Option<&Path>,
+    conn: &mut SqliteConnection,
+    novel_id: i64,
+) -> Result<Option<NovelOverrideCoverBytesDto>, String> {
+    let work = load_override_work_in_conn(&mut *conn, novel_id)
+        .await?
+        .ok_or_else(|| "work override: novel not found".to_string())?;
+    let fields = load_novel_override_fields_in_conn(&mut *conn, novel_id).await?;
+    let Some(file_name) = fields
+        .get(COVER_FIELD)
+        .and_then(|entry| entry.value.as_str())
+        .filter(|name| crate::chapter_media::is_override_cover_file(name))
+        .map(str::to_owned)
+    else {
+        return Ok(None);
+    };
+    let (Some(root), Some(directory)) = (root, work.directory.as_deref()) else {
+        return Ok(None);
+    };
+    let relative = format!("{directory}/{file_name}");
+    let Some(bytes) = crate::chapter_media::read_work_metadata_bytes_at(root, &relative)? else {
+        return Ok(None);
+    };
+    if bytes.is_empty() {
+        return Ok(None);
+    }
+    Ok(Some(NovelOverrideCoverBytesDto {
+        content_type: override_cover_content_type(&file_name).to_string(),
+        file_name,
+        bytes,
+    }))
 }
 
 #[tauri::command]
@@ -500,6 +900,22 @@ pub async fn db_novel_override_list(
         .await
         .map_err(|err| format!("db novel override: acquire connection: {err}"))?;
     list_novel_overrides_in_conn(&mut conn).await
+}
+
+#[tauri::command]
+pub async fn db_novel_override_read_cover(
+    app: AppHandle,
+    db: State<'_, AppDatabase>,
+    novel_id: i64,
+    mode: Option<ReadMode>,
+) -> Result<Option<NovelOverrideCoverBytesDto>, String> {
+    let root = crate::chapter_media::media_root(&app).ok();
+    let mut conn = db
+        .pool_for(mode.unwrap_or_default())
+        .acquire()
+        .await
+        .map_err(|err| format!("db novel override: acquire connection: {err}"))?;
+    read_novel_override_cover_in_conn(root.as_deref(), &mut conn, novel_id).await
 }
 
 #[tauri::command]
@@ -532,11 +948,41 @@ pub async fn db_novel_override_set_field(
 }
 
 #[tauri::command]
+pub async fn db_novel_override_update(
+    app: AppHandle,
+    db: State<'_, AppDatabase>,
+    novel_id: i64,
+    fields: BTreeMap<String, JsonValue>,
+    cover: Option<NovelOverrideCoverActionDto>,
+    updated_at: i64,
+) -> Result<DbMutationEnvelope<WorkOverrideV1Dto>, String> {
+    let root = crate::chapter_media::media_root(&app).ok();
+    let mut opts = TxOptions::with_app_metadata(app);
+    opts.busy_begin_retries = 3;
+    with_write_tx(db.pool_for(ReadMode::Queued), opts, move |conn, ctx| {
+        Box::pin(async move {
+            update_novel_override_in_tx(
+                root.as_deref(),
+                conn,
+                ctx,
+                novel_id,
+                &fields,
+                cover.unwrap_or(NovelOverrideCoverActionDto::Keep),
+                updated_at,
+            )
+            .await
+        })
+    })
+    .await
+}
+
+#[tauri::command]
 pub async fn db_novel_override_merge(
     app: AppHandle,
     db: State<'_, AppDatabase>,
     novel_id: i64,
     document: WorkOverrideV1Dto,
+    cover_bytes: Option<Vec<u8>>,
 ) -> Result<DbMutationEnvelope<NovelOverrideMergeResultDto>, String> {
     if document.schema_version != 1 {
         return Err("work override: unsupported version".to_string());
@@ -546,7 +992,15 @@ pub async fn db_novel_override_merge(
     opts.busy_begin_retries = 3;
     with_write_tx(db.pool_for(ReadMode::Queued), opts, move |conn, ctx| {
         Box::pin(async move {
-            merge_novel_override_in_tx(root.as_deref(), conn, ctx, novel_id, &document.fields).await
+            merge_novel_override_with_cover_in_tx(
+                root.as_deref(),
+                conn,
+                ctx,
+                novel_id,
+                &document.fields,
+                cover_bytes.as_deref(),
+            )
+            .await
         })
     })
     .await
@@ -657,20 +1111,25 @@ mod tests {
         .await
     }
 
-    async fn completed_override(conn: &mut SqliteConnection, novel_id: i64) -> Option<bool> {
+    async fn status_override(conn: &mut SqliteConnection, novel_id: i64) -> Option<String> {
         get_novel_by_id_in_conn(conn, novel_id)
             .await
             .unwrap()
             .unwrap()
-            .completed_override
+            .status_override
     }
 
     #[test]
     fn validates_field_names_values_and_edit_times() {
         for (name, value, updated_at) in [
+            ("status", json!("Completed"), 1),
+            ("status", json!("On Hiatus"), MAX_SAFE_INTEGER),
+            ("status", JsonValue::Null, 1_763_350_000_000),
             ("completed", json!(true), 1),
-            ("completed", json!(false), MAX_SAFE_INTEGER),
-            ("completed", JsonValue::Null, 1_763_350_000_000),
+            ("cover", json!("cover.override.png"), 5),
+            ("cover", JsonValue::Null, 5),
+            ("name", json!("Custom title"), 5),
+            ("summary", json!("x".repeat(MAX_SUMMARY_TEXT_UNITS)), 5),
             ("title", json!("Custom title"), 5),
             ("t", json!("x".repeat(MAX_TEXT_UNITS)), 5),
             ("volumeCount2", json!(12.5), 5),
@@ -684,9 +1143,17 @@ mod tests {
         for (name, value, updated_at) in [
             ("completed", json!("yes"), 5),
             ("completed", json!(1), 5),
-            ("completed", json!(true), 0),
-            ("completed", json!(true), -1),
-            ("completed", json!(true), MAX_SAFE_INTEGER + 1),
+            ("status", json!("InvalidStatus"), 5),
+            ("status", json!(true), 5),
+            ("cover", json!("cover.png"), 5),
+            ("cover", json!("../cover.override.png"), 5),
+            ("cover", json!("cover.override.exe"), 5),
+            ("name", json!("   "), 5),
+            ("name", json!(123), 5),
+            ("summary", json!("x".repeat(MAX_SUMMARY_TEXT_UNITS + 1)), 5),
+            ("status", json!("Completed"), 0),
+            ("status", json!("Completed"), -1),
+            ("status", json!("Completed"), MAX_SAFE_INTEGER + 1),
             ("title", json!(["a"]), 5),
             ("title", json!({ "text": "a" }), 5),
             ("title", json!("x".repeat(MAX_TEXT_UNITS + 1)), 5),
@@ -712,13 +1179,14 @@ mod tests {
     }
 
     #[test]
-    fn parses_documents_and_keeps_unknown_fields() {
+    fn parses_documents_upgrades_legacy_completed_and_keeps_unknown_fields() {
         let document = json!({
             "schemaVersion": 1,
             "identity": { "pluginId": "source", "novelId": "book", "novelPath": "/book" },
             "fields": {
                 "futureField": { "value": "kept", "updatedAt": 9 },
-                "completed": { "value": null, "updatedAt": 1763350000000_i64 }
+                "completed": { "value": true, "updatedAt": 1763350000000_i64 },
+                "name": { "value": "  Trimmed  ", "updatedAt": 12 }
             },
             "futureSection": true
         });
@@ -727,13 +1195,14 @@ mod tests {
         assert_eq!(
             parsed.fields,
             fields(&[
-                ("completed", JsonValue::Null, 1_763_350_000_000),
                 ("futureField", json!("kept"), 9),
+                ("name", json!("Trimmed"), 12),
+                ("status", json!("Completed"), 1_763_350_000_000),
             ])
         );
         assert_eq!(
             serde_json::to_string(&parsed).unwrap(),
-            r#"{"schemaVersion":1,"identity":{"pluginId":"source","novelId":"book","novelPath":"/book"},"fields":{"completed":{"value":null,"updatedAt":1763350000000},"futureField":{"value":"kept","updatedAt":9}}}"#
+            r#"{"schemaVersion":1,"identity":{"pluginId":"source","novelId":"book","novelPath":"/book"},"fields":{"futureField":{"value":"kept","updatedAt":9},"name":{"value":"Trimmed","updatedAt":12},"status":{"value":"Completed","updatedAt":1763350000000}}}"#
         );
 
         let rejected = |mutate: fn(&mut JsonValue)| {
@@ -783,12 +1252,12 @@ mod tests {
     #[test]
     fn merge_takes_strictly_newer_entries_and_keeps_base_on_equal_times() {
         let base = fields(&[
-            ("completed", json!(true), 10),
+            ("status", json!("Completed"), 10),
             ("note", json!("base"), 5),
             ("baseOnly", json!(1), 1),
         ]);
         let incoming = fields(&[
-            ("completed", json!(false), 11),
+            ("status", json!("Ongoing"), 11),
             ("note", json!("incoming"), 5),
             ("incomingOnly", JsonValue::Null, 1),
         ]);
@@ -797,9 +1266,9 @@ mod tests {
             merged,
             fields(&[
                 ("baseOnly", json!(1), 1),
-                ("completed", json!(false), 11),
                 ("incomingOnly", JsonValue::Null, 1),
                 ("note", json!("base"), 5),
+                ("status", json!("Ongoing"), 11),
             ])
         );
         assert_eq!(merge_override_fields(&merged, &incoming), merged);
@@ -824,8 +1293,8 @@ mod tests {
             TxOptions::default(),
             None,
             1,
-            "completed",
-            json!(true),
+            "status",
+            json!("Completed"),
             100,
         )
         .await
@@ -840,12 +1309,12 @@ mod tests {
                     novel_id: "book".to_string(),
                     novel_path: "/book".to_string(),
                 },
-                fields: fields(&[("completed", json!(true), 100)]),
+                fields: fields(&[("status", json!("Completed"), 100)]),
             }
         );
         assert_eq!(
             stored_payload(&test_db, 1).await.as_deref(),
-            Some(r#"{"fields":{"completed":{"value":true,"updatedAt":100}}}"#)
+            Some(r#"{"fields":{"status":{"value":"Completed","updatedAt":100}}}"#)
         );
 
         let earlier_clock = set_field(
@@ -853,37 +1322,37 @@ mod tests {
             TxOptions::default(),
             None,
             1,
-            "completed",
-            json!(false),
+            "status",
+            json!("On Hiatus"),
             50,
         )
         .await
         .unwrap();
         assert_eq!(
             earlier_clock.value.fields,
-            fields(&[("completed", json!(false), 101)])
+            fields(&[("status", json!("On Hiatus"), 101)])
         );
         let same_clock = set_field(
             &test_db,
             TxOptions::default(),
             None,
             1,
-            "completed",
-            json!(true),
+            "status",
+            json!("Licensed"),
             101,
         )
         .await
         .unwrap();
         assert_eq!(
             same_clock.value.fields,
-            fields(&[("completed", json!(true), 102)])
+            fields(&[("status", json!("Licensed"), 102)])
         );
         let cleared = set_field(
             &test_db,
             TxOptions::default(),
             None,
             1,
-            "completed",
+            "status",
             JsonValue::Null,
             500,
         )
@@ -891,18 +1360,20 @@ mod tests {
         .unwrap();
         assert_eq!(
             cleared.value.fields,
-            fields(&[("completed", JsonValue::Null, 500)])
+            fields(&[("status", JsonValue::Null, 500)])
         );
         assert_eq!(
             stored_payload(&test_db, 1).await.as_deref(),
-            Some(r#"{"fields":{"completed":{"value":null,"updatedAt":500}}}"#)
+            Some(r#"{"fields":{"status":{"value":null,"updatedAt":500}}}"#)
         );
 
         for (novel_id, field, value, updated_at) in [
-            (1, "completed", json!("yes"), 600),
-            (1, "Completed", json!(true), 600),
-            (1, "completed", json!(true), 0),
-            (99, "completed", json!(true), 600),
+            (1, "completed", json!(true), 600),
+            (1, "cover", json!("cover.override.png"), 600),
+            (1, "status", json!("yes"), 600),
+            (1, "Status", json!("Completed"), 600),
+            (1, "status", json!("Completed"), 0),
+            (99, "status", json!("Completed"), 600),
         ] {
             assert!(
                 set_field(
@@ -921,14 +1392,14 @@ mod tests {
         }
         assert_eq!(
             stored_payload(&test_db, 1).await.as_deref(),
-            Some(r#"{"fields":{"completed":{"value":null,"updatedAt":500}}}"#)
+            Some(r#"{"fields":{"status":{"value":null,"updatedAt":500}}}"#)
         );
         assert_eq!(stored_payload(&test_db, 99).await, None);
         test_db.db.close().await;
     }
 
     #[tokio::test]
-    async fn reads_overrides_with_each_novels_identity_and_exposes_the_completed_flag() {
+    async fn reads_overrides_with_each_novels_identity_and_exposes_status_override() {
         let test_db = open_test_db().await;
         seed_novels(&test_db, TxOptions::default()).await;
         set_field(
@@ -936,8 +1407,8 @@ mod tests {
             TxOptions::default(),
             None,
             2,
-            "completed",
-            json!(false),
+            "status",
+            json!("Ongoing"),
             10,
         )
         .await
@@ -947,8 +1418,8 @@ mod tests {
             TxOptions::default(),
             None,
             3,
-            "completed",
-            json!(true),
+            "status",
+            json!("Completed"),
             10,
         )
         .await
@@ -958,8 +1429,8 @@ mod tests {
             TxOptions::default(),
             None,
             1,
-            "completed",
-            json!(true),
+            "status",
+            json!("Completed"),
             10,
         )
         .await
@@ -988,8 +1459,8 @@ mod tests {
         assert_eq!(
             listed[0].document.fields,
             fields(&[
-                ("completed", json!(true), 10),
-                ("futureField", json!("kept"), 20)
+                ("futureField", json!("kept"), 20),
+                ("status", json!("Completed"), 10),
             ])
         );
         assert_eq!(listed[1].document.identity.plugin_id, "local");
@@ -1003,8 +1474,14 @@ mod tests {
             None
         );
 
-        assert_eq!(completed_override(&mut conn, 1).await, Some(true));
-        assert_eq!(completed_override(&mut conn, 2).await, Some(false));
+        assert_eq!(
+            status_override(&mut conn, 1).await.as_deref(),
+            Some("Completed")
+        );
+        assert_eq!(
+            status_override(&mut conn, 2).await.as_deref(),
+            Some("Ongoing")
+        );
         let candidates = list_check_candidates_in_conn(&mut conn, None)
             .await
             .unwrap();
@@ -1014,10 +1491,10 @@ mod tests {
                 .map(|candidate| (
                     candidate.novel_id,
                     candidate.status.as_deref(),
-                    candidate.completed_override
+                    candidate.status_override.as_deref(),
                 ))
                 .collect::<Vec<_>>(),
-            [(1, Some("Ongoing"), Some(true)), (3, None, Some(true))]
+            [(1, Some("Ongoing"), Some("Completed")), (3, None, Some("Completed"))]
         );
         drop(conn);
 
@@ -1026,7 +1503,7 @@ mod tests {
             TxOptions::default(),
             None,
             1,
-            "completed",
+            "status",
             JsonValue::Null,
             30,
         )
@@ -1037,35 +1514,43 @@ mod tests {
             .await
             .unwrap();
         let mut conn = test_db.db.writer().acquire().await.unwrap();
-        assert_eq!(completed_override(&mut conn, 1).await, None);
-        assert_eq!(completed_override(&mut conn, 3).await, None);
+        assert_eq!(status_override(&mut conn, 1).await, None);
+        assert_eq!(status_override(&mut conn, 3).await, None);
         let candidates = list_check_candidates_in_conn(&mut conn, None)
             .await
             .unwrap();
         assert!(candidates
             .iter()
-            .all(|candidate| candidate.completed_override.is_none()));
+            .all(|candidate| candidate.status_override.is_none()));
         drop(conn);
         test_db.db.close().await;
     }
 
     #[tokio::test]
-    async fn merge_reports_whether_the_stored_override_changed() {
+    async fn merge_reports_whether_the_stored_override_changed_and_handles_cover_bytes() {
         let test_db = open_test_db().await;
-        seed_novels(&test_db, TxOptions::default()).await;
-        let merge = |incoming: WorkOverrideFields, novel_id: i64| {
-            with_write_tx(
-                test_db.db.writer(),
-                TxOptions::default(),
-                move |conn, ctx| {
-                    Box::pin(async move {
-                        merge_novel_override_in_tx(None, conn, ctx, novel_id, &incoming).await
-                    })
-                },
-            )
+        let root = published_root(&test_db).await;
+        let source_cover = root.join("contents/source/book/cover.jpg");
+        fs::write(&source_cover, b"source-cover").unwrap();
+
+        let merge = |incoming: WorkOverrideFields, novel_id: i64, cover: Option<Vec<u8>>| {
+            let root = root.clone();
+            with_write_tx(test_db.db.writer(), publishing(&root), move |conn, ctx| {
+                Box::pin(async move {
+                    merge_novel_override_with_cover_in_tx(
+                        Some(&root),
+                        conn,
+                        ctx,
+                        novel_id,
+                        &incoming,
+                        cover.as_deref(),
+                    )
+                    .await
+                })
+            })
         };
 
-        let empty = merge(WorkOverrideFields::new(), 1).await.unwrap();
+        let empty = merge(WorkOverrideFields::new(), 1, None).await.unwrap();
         assert_eq!(
             empty.value,
             NovelOverrideMergeResultDto {
@@ -1077,8 +1562,13 @@ mod tests {
         assert_eq!(stored_payload(&test_db, 1).await, None);
 
         let created = merge(
-            fields(&[("completed", json!(true), 10), ("note", json!("a"), 5)]),
+            fields(&[
+                ("status", json!("Completed"), 10),
+                ("note", json!("a"), 5),
+                ("cover", json!("cover.override.png"), 10),
+            ]),
             1,
+            Some(b"override-png".to_vec()),
         )
         .await
         .unwrap();
@@ -1086,10 +1576,16 @@ mod tests {
         assert!(created.effects.work_metadata_changed);
         let document = created.value.document.unwrap();
         assert_eq!(document.identity.novel_path, "/book");
+        assert_eq!(
+            fs::read(root.join("contents/source/book/cover.override.png")).unwrap(),
+            b"override-png"
+        );
+        assert_eq!(fs::read(&source_cover).unwrap(), b"source-cover");
 
         let stale = merge(
-            fields(&[("completed", json!(false), 10), ("note", json!("b"), 4)]),
+            fields(&[("status", json!("Ongoing"), 10), ("note", json!("b"), 4)]),
             1,
+            None,
         )
         .await
         .unwrap();
@@ -1102,28 +1598,169 @@ mod tests {
         );
         assert!(!stale.effects.work_metadata_changed);
 
-        let newer = merge(fields(&[("completed", JsonValue::Null, 11)]), 1)
-            .await
-            .unwrap();
+        let newer = merge(
+            fields(&[
+                ("status", JsonValue::Null, 11),
+                ("cover", JsonValue::Null, 11),
+            ]),
+            1,
+            None,
+        )
+        .await
+        .unwrap();
         assert!(newer.value.changed);
         assert_eq!(
             newer.value.document.unwrap().fields,
-            fields(&[("completed", JsonValue::Null, 11), ("note", json!("a"), 5)])
+            fields(&[
+                ("cover", JsonValue::Null, 11),
+                ("note", json!("a"), 5),
+                ("status", JsonValue::Null, 11),
+            ])
+        );
+        assert!(!root.join("contents/source/book/cover.override.png").exists());
+        assert_eq!(fs::read(&source_cover).unwrap(), b"source-cover");
+
+        assert!(merge(fields(&[("cover", json!("cover.override.jpg"), 20)]), 1, None)
+            .await
+            .is_err());
+        assert!(merge(fields(&[("status", json!("yes"), 12)]), 1, None)
+            .await
+            .is_err());
+        assert!(merge(fields(&[("status", json!("Completed"), 12)]), 99, None)
+            .await
+            .is_err());
+        assert!(merge(WorkOverrideFields::new(), 99, None).await.is_err());
+        test_db.db.close().await;
+    }
+
+    #[tokio::test]
+    async fn update_writes_override_cover_without_deleting_source_cover_and_rolls_back() {
+        let test_db = open_test_db().await;
+        let root = published_root(&test_db).await;
+        let source_cover = root.join("contents/source/book/cover.jpg");
+        fs::write(&source_cover, b"original-source-cover").unwrap();
+
+        let first_updates = BTreeMap::from([
+            ("name".to_string(), json!("  Custom Name  ")),
+            ("author".to_string(), json!("Override Author")),
+            ("artist".to_string(), json!("Override Artist")),
+            ("genres".to_string(), json!("Fantasy, Action")),
+            ("summary".to_string(), json!("Edited summary")),
+            ("status".to_string(), json!("On Hiatus")),
+        ]);
+        let first = with_write_tx(test_db.db.writer(), publishing(&root), {
+            let root = root.clone();
+            move |conn, ctx| {
+                Box::pin(async move {
+                    update_novel_override_in_tx(
+                        Some(&root),
+                        conn,
+                        ctx,
+                        1,
+                        &first_updates,
+                        NovelOverrideCoverActionDto::Set {
+                            file_name: "cover.override.png".to_string(),
+                            bytes: b"png-bytes".to_vec(),
+                        },
+                        100,
+                    )
+                    .await
+                })
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(first.value.fields["name"].value, json!("Custom Name"));
+        assert_eq!(first.value.fields["status"].value, json!("On Hiatus"));
+        assert_eq!(
+            first.value.fields["cover"].value,
+            json!("cover.override.png")
         );
         assert_eq!(
-            stored_payload(&test_db, 1).await.as_deref(),
-            Some(
-                r#"{"fields":{"completed":{"value":null,"updatedAt":11},"note":{"value":"a","updatedAt":5}}}"#
-            )
+            fs::read(root.join("contents/source/book/cover.override.png")).unwrap(),
+            b"png-bytes"
         );
+        assert_eq!(fs::read(&source_cover).unwrap(), b"original-source-cover");
 
-        assert!(merge(fields(&[("completed", json!("yes"), 12)]), 1)
-            .await
-            .is_err());
-        assert!(merge(fields(&[("completed", json!(true), 12)]), 99)
-            .await
-            .is_err());
-        assert!(merge(WorkOverrideFields::new(), 99).await.is_err());
+        let mut conn = test_db.db.writer().acquire().await.unwrap();
+        let detail = get_novel_by_id_in_conn(&mut conn, 1).await.unwrap().unwrap();
+        assert_eq!(detail.name, "Custom Name");
+        assert_eq!(detail.author.as_deref(), Some("Override Author"));
+        assert_eq!(detail.artist.as_deref(), Some("Override Artist"));
+        assert_eq!(detail.genres.as_deref(), Some("Fantasy, Action"));
+        assert_eq!(detail.summary.as_deref(), Some("Edited summary"));
+        assert_eq!(detail.status.as_deref(), Some("On Hiatus"));
+        assert_eq!(detail.status_override.as_deref(), Some("On Hiatus"));
+        assert_eq!(detail.cover_override.as_deref(), Some("cover.override.png"));
+        assert_eq!(detail.source_metadata.name, "Book");
+        assert_eq!(
+            read_novel_override_cover_in_conn(Some(&root), &mut conn, 1)
+                .await
+                .unwrap(),
+            Some(NovelOverrideCoverBytesDto {
+                file_name: "cover.override.png".to_string(),
+                content_type: "image/png".to_string(),
+                bytes: b"png-bytes".to_vec(),
+            })
+        );
+        drop(conn);
+
+        let aborted = with_write_tx(test_db.db.writer(), publishing(&root), {
+            let root = root.clone();
+            move |conn, ctx| {
+                Box::pin(async move {
+                    update_novel_override_in_tx(
+                        Some(&root),
+                        conn,
+                        ctx,
+                        1,
+                        &BTreeMap::new(),
+                        NovelOverrideCoverActionDto::Set {
+                            file_name: "cover.override.webp".to_string(),
+                            bytes: b"webp-bytes".to_vec(),
+                        },
+                        200,
+                    )
+                    .await?;
+                    assert!(!root.join("contents/source/book/cover.override.png").exists());
+                    assert!(root.join("contents/source/book/cover.override.webp").is_file());
+                    Err::<(), String>("abort cover swap".to_string())
+                })
+            }
+        })
+        .await;
+        assert_eq!(aborted.unwrap_err(), "abort cover swap");
+        assert_eq!(
+            fs::read(root.join("contents/source/book/cover.override.png")).unwrap(),
+            b"png-bytes"
+        );
+        assert!(!root.join("contents/source/book/cover.override.webp").exists());
+        assert_eq!(fs::read(&source_cover).unwrap(), b"original-source-cover");
+
+        let cleared = with_write_tx(test_db.db.writer(), publishing(&root), {
+            let root = root.clone();
+            move |conn, ctx| {
+                Box::pin(async move {
+                    update_novel_override_in_tx(
+                        Some(&root),
+                        conn,
+                        ctx,
+                        1,
+                        &BTreeMap::from([("status".to_string(), JsonValue::Null)]),
+                        NovelOverrideCoverActionDto::Clear,
+                        300,
+                    )
+                    .await
+                })
+            }
+        })
+        .await
+        .unwrap();
+        assert_eq!(cleared.value.fields["cover"].value, JsonValue::Null);
+        assert_eq!(cleared.value.fields["status"].value, JsonValue::Null);
+        assert!(!root.join("contents/source/book/cover.override.png").exists());
+        assert_eq!(fs::read(&source_cover).unwrap(), b"original-source-cover");
         test_db.db.close().await;
     }
 
@@ -1142,8 +1779,8 @@ mod tests {
                         conn,
                         ctx,
                         1,
-                        "completed",
-                        json!(true),
+                        "status",
+                        json!("Completed"),
                         100,
                     )
                     .await?;
@@ -1162,8 +1799,8 @@ mod tests {
             publishing(&root),
             Some(root.clone()),
             1,
-            "completed",
-            json!(true),
+            "status",
+            json!("Completed"),
             100,
         )
         .await
@@ -1187,7 +1824,7 @@ mod tests {
             json!({
                 "schemaVersion": 1,
                 "identity": { "pluginId": "source", "novelId": "book", "novelPath": "/book" },
-                "fields": { "completed": { "value": true, "updatedAt": 100 } }
+                "fields": { "status": { "value": "Completed", "updatedAt": 100 } }
             })
         );
 
@@ -1200,8 +1837,8 @@ mod tests {
                         conn,
                         ctx,
                         1,
-                        "completed",
-                        json!(false),
+                        "status",
+                        json!("Ongoing"),
                         200,
                     )
                     .await?;
@@ -1223,7 +1860,7 @@ mod tests {
         assert_eq!(fs::read(&file).unwrap(), published);
         assert_eq!(
             stored_payload(&test_db, 1).await.as_deref(),
-            Some(r#"{"fields":{"completed":{"value":true,"updatedAt":100}}}"#)
+            Some(r#"{"fields":{"status":{"value":"Completed","updatedAt":100}}}"#)
         );
 
         with_write_tx(test_db.db.writer(), publishing(&root), {
@@ -1265,8 +1902,8 @@ mod tests {
             TxOptions::default(),
             Some(root.clone()),
             1,
-            "completed",
-            json!(true),
+            "status",
+            json!("Completed"),
             100,
         )
         .await
@@ -1283,11 +1920,11 @@ mod tests {
             parse_work_override_bytes(&fs::read(root.join(OVERRIDE_PATH)).unwrap())
                 .unwrap()
                 .fields,
-            fields(&[("completed", json!(true), 100)])
+            fields(&[("status", json!("Completed"), 100)])
         );
         assert!(!root.join("contents/local/shelf/override.json").exists());
 
-        let kept = br#"{"schemaVersion":1,"identity":{"pluginId":"source","novelId":"book","novelPath":"/book"},"fields":{"completed":{"value":false,"updatedAt":900}}}"#;
+        let kept = br#"{"schemaVersion":1,"identity":{"pluginId":"source","novelId":"book","novelPath":"/book"},"fields":{"status":{"value":"Ongoing","updatedAt":900}}}"#;
         fs::write(root.join(OVERRIDE_PATH), kept).unwrap();
         with_write_tx(test_db.db.writer(), publishing(&root), |conn, _ctx| {
             Box::pin(async move {
@@ -1302,6 +1939,11 @@ mod tests {
         .unwrap();
         assert_eq!(fs::read(root.join(OVERRIDE_PATH)).unwrap(), kept);
 
+        fs::write(
+            root.join("contents/source/book/cover.override.png"),
+            b"delete-with-work",
+        )
+        .unwrap();
         let failed_delete = with_write_tx(test_db.db.writer(), publishing(&root), |conn, _ctx| {
             Box::pin(async move {
                 sqlx::query("DELETE FROM novel WHERE id = 1")
@@ -1318,6 +1960,10 @@ mod tests {
         .await;
         assert!(failed_delete.is_err());
         assert_eq!(fs::read(root.join(OVERRIDE_PATH)).unwrap(), kept);
+        assert_eq!(
+            fs::read(root.join("contents/source/book/cover.override.png")).unwrap(),
+            b"delete-with-work"
+        );
 
         with_write_tx(test_db.db.writer(), publishing(&root), |conn, _ctx| {
             Box::pin(async move {
@@ -1331,6 +1977,7 @@ mod tests {
         .await
         .unwrap();
         assert!(!root.join(OVERRIDE_PATH).exists());
+        assert!(!root.join("contents/source/book/cover.override.png").exists());
         assert!(!root.join("contents/source/book/novel.json").exists());
         assert_eq!(stored_payload(&test_db, 1).await, None);
         test_db.db.close().await;
@@ -1393,7 +2040,25 @@ mod tests {
             Some(&override_bytes(
                 "book",
                 "/book",
-                json!({ "completed": { "value": true, "updatedAt": 100 }, "note": { "value": "disk", "updatedAt": 5 } }),
+                json!({
+                    "completed": { "value": true, "updatedAt": 100 },
+                    "cover": { "value": "cover.override.png", "updatedAt": 15 },
+                    "note": { "value": "disk", "updatedAt": 5 }
+                }),
+            )),
+        );
+        fs::write(root.join("contents/source/book/cover.override.png"), b"override-img").unwrap();
+        write_work(
+            &root,
+            "missing-cover",
+            "/missing-cover",
+            Some(&override_bytes(
+                "missing-cover",
+                "/missing-cover",
+                json!({
+                    "status": { "value": "Licensed", "updatedAt": 20 },
+                    "cover": { "value": "cover.override.jpg", "updatedAt": 20 }
+                }),
             )),
         );
         write_work(
@@ -1414,31 +2079,38 @@ mod tests {
             Some(&override_bytes(
                 "invalid",
                 "/invalid",
-                json!({ "completed": { "value": "yes", "updatedAt": 100 } }),
+                json!({ "status": { "value": "yes", "updatedAt": 100 } }),
             )),
         );
         write_work(&root, "plain", "/plain", None);
 
         recover(&test_db, &root, false).await;
-        let recovered: Vec<(String, String)> = sqlx::query_as(
-            "SELECT n.path, o.payload FROM novel_override o JOIN novel n ON n.id = o.novel_id",
+        let mut recovered: Vec<(String, String)> = sqlx::query_as(
+            "SELECT n.path, o.payload FROM novel_override o JOIN novel n ON n.id = o.novel_id ORDER BY n.path",
         )
         .fetch_all(test_db.db.writer())
         .await
         .unwrap();
+        recovered.sort();
         assert_eq!(
             recovered,
-            [(
-                "/book".to_string(),
-                r#"{"fields":{"completed":{"value":true,"updatedAt":100},"note":{"value":"disk","updatedAt":5}}}"#.to_string()
-            )]
+            [
+                (
+                    "/book".to_string(),
+                    r#"{"fields":{"cover":{"value":"cover.override.png","updatedAt":15},"note":{"value":"disk","updatedAt":5},"status":{"value":"Completed","updatedAt":100}}}"#.to_string()
+                ),
+                (
+                    "/missing-cover".to_string(),
+                    r#"{"fields":{"status":{"value":"Licensed","updatedAt":20}}}"#.to_string()
+                ),
+            ]
         );
         assert_eq!(
             sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM novel")
                 .fetch_one(test_db.db.writer())
                 .await
                 .unwrap(),
-            5
+            6
         );
 
         let book_id: i64 = sqlx::query_scalar("SELECT id FROM novel WHERE path = '/book'")
@@ -1450,8 +2122,8 @@ mod tests {
             TxOptions::default(),
             None,
             book_id,
-            "completed",
-            json!(false),
+            "status",
+            json!("Ongoing"),
             300,
         )
         .await
@@ -1460,7 +2132,7 @@ mod tests {
             "book",
             "/book",
             json!({
-                "completed": { "value": true, "updatedAt": 200 },
+                "status": { "value": "Completed", "updatedAt": 200 },
                 "note": { "value": "newer disk", "updatedAt": 6 },
                 "diskOnly": { "value": 1, "updatedAt": 1 }
             }),
@@ -1470,7 +2142,7 @@ mod tests {
         assert_eq!(
             stored_payload(&test_db, book_id).await.as_deref(),
             Some(
-                r#"{"fields":{"completed":{"value":false,"updatedAt":300},"diskOnly":{"value":1,"updatedAt":1},"note":{"value":"newer disk","updatedAt":6}}}"#
+                r#"{"fields":{"cover":{"value":"cover.override.png","updatedAt":15},"diskOnly":{"value":1,"updatedAt":1},"note":{"value":"newer disk","updatedAt":6},"status":{"value":"Ongoing","updatedAt":300}}}"#
             )
         );
         assert_eq!(fs::read(root.join(OVERRIDE_PATH)).unwrap(), disk);

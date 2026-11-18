@@ -2481,7 +2481,13 @@ mod tests {
             .fetch_all(&pool).await.unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].0, 1);
-        assert_eq!(serde_json::from_str::<serde_json::Value>(&rows[0].1).unwrap(), fields);
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rows[0].1).unwrap(),
+            serde_json::json!({ "fields": {
+                "futureField": { "value": "kept", "updatedAt": 40 },
+                "status": { "value": "Completed", "updatedAt": 30 }
+            } })
+        );
 
         for absent in [serde_json::Value::Null, serde_json::json!({ "fields": {} })] {
             let mut tx = pool.begin().await.unwrap();

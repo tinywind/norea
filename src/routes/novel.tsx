@@ -62,7 +62,7 @@ import { ChapterDifferenceManager } from "../components/novel/ChapterDifferenceM
 import { useChapterDifferences } from "../components/novel/use-chapter-differences";
 import { NovelHeroSkeleton, NovelWorkspace } from "../components/novel/NovelWorkspace";
 import { NovelCategoryEditor } from "../components/novel/NovelCategoryEditor";
-import { NovelCompletionEditor } from "../components/novel/NovelCompletionEditor";
+import { NovelMetadataOverrideEditor } from "../components/novel/NovelMetadataOverrideEditor";
 import { ServerWorkCategories } from "../components/novel/ServerWorkCategories";
 import {
   ServerChapterManager,
@@ -646,7 +646,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   if (!novel.isLocal) {
     overflowItems.push({
       icon: EditIcon,
-      label: t("novel.completion.edit"),
+      label: t("novel.metadataOverride.edit"),
       onClick: () => setCompletionSheetOpen(true),
     });
   }
@@ -1148,14 +1148,11 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
       />
 
       {novel.isLocal ? null : (
-        <NovelCompletionEditor
+        <NovelMetadataOverrideEditor
           active={active}
-          completedOverride={novel.completedOverride}
-          novelId={novel.id}
-          novelName={novel.name}
+          novel={novel}
           onClose={() => setCompletionSheetOpen(false)}
           opened={completionSheetOpen}
-          sourceStatus={novel.status}
         />
       )}
 

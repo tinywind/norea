@@ -172,6 +172,26 @@ export function findChapterForJump(
   return chapters.find((chapter) => chapter.name.toLocaleLowerCase().includes(needle));
 }
 
+export const CANONICAL_NOVEL_STATUSES = [
+  NovelStatus.Unknown,
+  NovelStatus.Ongoing,
+  NovelStatus.Completed,
+  NovelStatus.Licensed,
+  NovelStatus.PublishingFinished,
+  NovelStatus.Cancelled,
+  NovelStatus.OnHiatus,
+] as const;
+
+export const CANONICAL_NOVEL_STATUS_LABEL_KEYS: Record<string, TranslationKey> = {
+  [NovelStatus.Unknown]: "novel.status.unknown",
+  [NovelStatus.Ongoing]: "novel.status.ongoing",
+  [NovelStatus.Completed]: "novel.status.completed",
+  [NovelStatus.Licensed]: "novel.status.licensed",
+  [NovelStatus.PublishingFinished]: "novel.status.publishingFinished",
+  [NovelStatus.Cancelled]: "novel.status.cancelled",
+  [NovelStatus.OnHiatus]: "novel.status.onHiatus",
+};
+
 const NOVEL_STATUS_LABEL_KEYS: Partial<Record<string, TranslationKey>> = {
   [NovelStatus.Ongoing]: "novel.status.ongoing",
   [NovelStatus.Completed]: "novel.status.completed",
@@ -182,21 +202,29 @@ const NOVEL_STATUS_LABEL_KEYS: Partial<Record<string, TranslationKey>> = {
 };
 
 /**
- * The status to show for a novel: the user's own completion flag when set, otherwise a known
+ * The status to show for a novel: the user's status override when set, otherwise a known
  * plugin value in the app language, free text as written, and nothing for an empty or
  * "Unknown" status.
  */
 export function novelStatusLabel(
   status: string | null,
   translate: (key: TranslationKey) => string,
-  completedOverride: boolean | null = null,
+  statusOverride: string | null = null,
 ): string | null {
-  if (completedOverride !== null) {
-    return translate(completedOverride ? "novel.status.completed" : "novel.status.ongoing");
-  }
-  const value = status?.trim();
+  const effective = statusOverride ?? status;
+  const value = effective?.trim();
   if (!value || value === NovelStatus.Unknown) return null;
   const key = NOVEL_STATUS_LABEL_KEYS[value];
+  return key ? translate(key) : value;
+}
+
+export function canonicalNovelStatusLabel(
+  status: string | null | undefined,
+  translate: (key: TranslationKey) => string,
+): string {
+  const value = status?.trim();
+  if (!value) return translate("novel.status.unknown");
+  const key = CANONICAL_NOVEL_STATUS_LABEL_KEYS[value];
   return key ? translate(key) : value;
 }
 
@@ -226,10 +254,20 @@ export function beforeChapterIdForMove(
 
 export function splitGenres(genres: string | null): string[] {
   if (!genres) return [];
-  return genres
-    .split(/[|,]/)
-    .map((genre) => genre.trim())
-    .filter(Boolean);
+  const normalized = genres
+    .replace(/[\r\n\t]/g, " ")
+    .replace(/ #/g, ",");
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const part of normalized.split(/[|,]/)) {
+    const cleaned = part.trim().replace(/^#+/, "").trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    result.push(cleaned);
+  }
+  return result;
 }
 
 function isActiveDownloadStatus(

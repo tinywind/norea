@@ -22,6 +22,8 @@ import {
   listLibraryNovelRefreshTargets,
   listLibraryNovels,
   listLibrarySourceFilters,
+  listLibraryStatusFilters,
+  listLibraryTagFilters,
   renumberLocalNovelChapters,
   reorderLocalNovelChapters,
   setNovelInLibrary,
@@ -221,6 +223,24 @@ describe("library queries", () => {
     await expect(
       listLibraryNovelRefreshTargets({ search: "Hero" }),
     ).resolves.toHaveLength(1);
+
+    invokeMock
+      .mockResolvedValueOnce([{ status: "Completed", totalNovels: 3 }])
+      .mockResolvedValueOnce([{ tag: "Fantasy", totalNovels: 2 }]);
+    await expect(
+      listLibraryStatusFilters({ tags: ["Fantasy"] }, "committed"),
+    ).resolves.toEqual([{ status: "Completed", totalNovels: 3 }]);
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      "db_novel_list_library_status_filters",
+      { filter: { tags: ["Fantasy"] }, mode: "committed" },
+    );
+    await expect(
+      listLibraryTagFilters({ statuses: ["Completed"] }, "committed"),
+    ).resolves.toEqual([{ tag: "Fantasy", totalNovels: 2 }]);
+    expect(invokeMock).toHaveBeenLastCalledWith(
+      "db_novel_list_library_tag_filters",
+      { filter: { statuses: ["Completed"] }, mode: "committed" },
+    );
   });
 });
 

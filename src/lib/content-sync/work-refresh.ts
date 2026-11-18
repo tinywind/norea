@@ -124,7 +124,7 @@ export async function refreshServerNovelFromSource(novelId: number, title: strin
     subject: { novelId, novelName: novel.name, path: novel.path },
     dedupeKey: `source.refreshNovel:${options.refreshCover ? "explicit" : "on-open"}:${novel.pluginId}:${novel.path}`,
     run: context => syncNovelFromSource(pluginManager.getPluginForExecutor(novel.pluginId, context.executor ?? "immediate"),
-      { name: novel.name, path: novel.path, cover: novel.cover ?? undefined },
+      { name: novel.sourceMetadata?.name ?? novel.name, path: novel.path, cover: novel.cover ?? undefined },
       { novelId, chapterRefreshMode: "full", preserveMissingMetadata: true, refreshCover: options.refreshCover ?? false, signal: context.signal }),
   });
   const abort = () => { taskScheduler.cancel(task.id); };

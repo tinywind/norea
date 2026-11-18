@@ -83,3 +83,20 @@ it("keeps the author and artist fields on separate rows on phones", async () => 
     .filter((element) => (element.props.cols as { base?: number } | undefined)?.base === 1);
   expect(grids).toHaveLength(2);
 });
+
+it("uses canonical NovelStatus choices for local work publication status", async () => {
+  harness = mountBackNavigationHarness();
+  await harness.render(<Page><EditorProbe /></Page>);
+  const select = collectElements(metadataModal().props.children as ReactNode)
+    .find((element) => element.props.label === "library.localNovel.status");
+  expect(select).toBeDefined();
+  expect((select!.props.data as Array<{ value: string }>).map((item) => item.value)).toEqual([
+    "Unknown",
+    "Ongoing",
+    "Completed",
+    "Licensed",
+    "Publishing Finished",
+    "Cancelled",
+    "On Hiatus",
+  ]);
+});

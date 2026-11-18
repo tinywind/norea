@@ -458,14 +458,18 @@ it("rejects malformed chapter composition before any restore can run", () => {
   } }] };
   expect(() => parseBackupManifest(JSON.stringify(manifest))).toThrow(/chapter composition/);
 });
-it("keeps a novel override with unknown fields and treats a missing or empty one as no override", () => {
-  const override = { fields: {
+it("keeps a novel override with unknown fields, upgrades legacy completed to status, and treats a missing or empty one as no override", () => {
+  const legacyOverride = { fields: {
     completed: { value: true, updatedAt: 1_763_350_000_000 },
     futureField: { value: "kept", updatedAt: 5 },
   } };
-  const withOverride = { ...VALID_MANIFEST, novels: [{ ...VALID_MANIFEST.novels[0]!, override }] };
+  const upgradedOverride = { fields: {
+    futureField: { value: "kept", updatedAt: 5 },
+    status: { value: "Completed", updatedAt: 1_763_350_000_000 },
+  } };
+  const withOverride = { ...VALID_MANIFEST, novels: [{ ...VALID_MANIFEST.novels[0]!, override: legacyOverride }] };
   const parsed = parseBackupManifest(encodeBackupManifest(withOverride));
-  expect(parsed.novels[0]!.override).toEqual(override);
+  expect(parsed.novels[0]!.override).toEqual(upgradedOverride);
   expect(parseBackupManifest(encodeBackupManifest(parsed))).toEqual(parsed);
 
   expect("override" in parseBackupManifest(JSON.stringify(VALID_MANIFEST)).novels[0]!).toBe(false);

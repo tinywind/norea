@@ -312,6 +312,8 @@ pub struct LibraryUpdateEntryDto {
     pub is_downloaded: bool,
     pub novel_name: String,
     pub novel_cover: Option<String>,
+    #[serde(default)]
+    pub novel_cover_override: Option<String>,
     pub novel_is_local: bool,
 }
 
@@ -336,6 +338,8 @@ pub struct RecentlyReadEntryDto {
     pub novel_source_novel_id: Option<String>,
     pub novel_name: String,
     pub novel_cover: Option<String>,
+    #[serde(default)]
+    pub novel_cover_override: Option<String>,
     pub novel_in_library: bool,
     pub novel_is_local: bool,
     pub novel_path: String,
@@ -347,6 +351,8 @@ pub struct ContinueReadingEntryDto {
     pub novel_id: i64,
     pub novel_name: String,
     pub novel_cover: Option<String>,
+    #[serde(default)]
+    pub novel_cover_override: Option<String>,
     pub novel_is_local: bool,
     pub novel_path: String,
     pub plugin_id: String,
@@ -2060,17 +2066,21 @@ pub async fn list_library_updates_in_conn(
            c.position, \
            {sort_at} AS sort_at, \
            c.is_downloaded, \
-           n.name AS novel_name, \
+           {effective_name} AS novel_name, \
            n.cover AS novel_cover, \
+           {override_cover} AS novel_cover_override, \
            n.is_local AS novel_is_local \
          FROM chapter c \
          JOIN novel n ON n.id = c.novel_id \
+         LEFT JOIN novel_override o ON o.novel_id = n.id \
          LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id \
          WHERE n.in_library = 1 AND c.unread = 1 \
            {found_clause} \
            {cursor_clause} \
          ORDER BY sort_at DESC, c.position DESC, c.id DESC \
-         LIMIT {limit_param}"
+         LIMIT {limit_param}",
+        effective_name = super::novel::EFFECTIVE_NOVEL_NAME_SQL,
+        override_cover = super::novel::OVERRIDE_COVER_SQL,
     );
     let mut query = sqlx::query(&sql);
     if let Some(ref cursor) = input.cursor {
@@ -2106,6 +2116,7 @@ pub async fn list_library_updates_in_conn(
                 is_downloaded: r.get::<i64, _>("is_downloaded") != 0,
                 novel_name: r.get("novel_name"),
                 novel_cover: r.get("novel_cover"),
+                novel_cover_override: r.get("novel_cover_override"),
                 novel_is_local: r.get::<i64, _>("novel_is_local") != 0,
             }
         })
@@ -2131,7 +2142,7 @@ pub async fn list_recently_read_in_conn(
     limit: Option<i64>,
 ) -> Result<Vec<RecentlyReadEntryDto>, String> {
     let normalized_limit = clamp_route_query_limit(limit, DEFAULT_HISTORY_LIMIT);
-    let rows = sqlx::query(
+    let sql = format!(
         "SELECT \
            c.id AS chapter_id, \
            c.novel_id, \
@@ -2143,13 +2154,15 @@ pub async fn list_recently_read_in_conn(
            c.progress, \
            n.plugin_id, \
            n.source_novel_id AS novel_source_novel_id, \
-           n.name AS novel_name, \
+           {effective_name} AS novel_name, \
            n.cover AS novel_cover, \
+           {override_cover} AS novel_cover_override, \
            n.in_library AS novel_in_library, \
            n.is_local AS novel_is_local, \
            n.path AS novel_path \
          FROM chapter c \
          JOIN novel n ON n.id = c.novel_id \
+         LEFT JOIN novel_override o ON o.novel_id = n.id \
          WHERE c.id = ( \
            SELECT c2.id FROM chapter c2 \
            WHERE c2.novel_id = c.novel_id AND c2.read_at IS NOT NULL \
@@ -2158,11 +2171,14 @@ pub async fn list_recently_read_in_conn(
          ) \
          ORDER BY c.read_at DESC, c.position DESC, c.id DESC \
          LIMIT ?1",
-    )
-    .bind(normalized_limit)
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|err| format!("db chapter: list recently read: {err}"))?;
+        effective_name = super::novel::EFFECTIVE_NOVEL_NAME_SQL,
+        override_cover = super::novel::OVERRIDE_COVER_SQL,
+    );
+    let rows = sqlx::query(&sql)
+        .bind(normalized_limit)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db chapter: list recently read: {err}"))?;
 
     let mut entries: Vec<RecentlyReadEntryDto> = rows
         .iter()
@@ -2181,6 +2197,7 @@ pub async fn list_recently_read_in_conn(
             novel_source_novel_id: r.get("novel_source_novel_id"),
             novel_name: r.get("novel_name"),
             novel_cover: r.get("novel_cover"),
+            novel_cover_override: r.get("novel_cover_override"),
             novel_in_library: r.get::<i64, _>("novel_in_library") != 0,
             novel_is_local: r.get::<i64, _>("novel_is_local") != 0,
             novel_path: r.get("novel_path"),
@@ -2212,12 +2229,13 @@ pub async fn list_continue_reading_in_conn(
     let normalized_limit = limit
         .unwrap_or(CONTINUE_READING_LIMIT)
         .clamp(1, CONTINUE_READING_LIMIT);
-    let rows = sqlx::query(
+    let sql = format!(
         "WITH latest AS ( \
            SELECT \
              n.id AS novel_id, \
-             n.name AS novel_name, \
+             {effective_name} AS novel_name, \
              n.cover AS novel_cover, \
+             {override_cover} AS novel_cover_override, \
              n.is_local AS novel_is_local, \
              n.path AS novel_path, \
              n.plugin_id, \
@@ -2241,6 +2259,7 @@ pub async fn list_continue_reading_in_conn(
                WHERE nc.novel_id = n.id AND nc.position > c.position \
                ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS next_chapter_position \
            FROM novel n \
+           LEFT JOIN novel_override o ON o.novel_id = n.id \
            JOIN chapter c ON c.id = ( \
              SELECT c2.id FROM chapter c2 \
              WHERE c2.novel_id = n.id AND c2.read_at IS NOT NULL \
@@ -2253,11 +2272,14 @@ pub async fn list_continue_reading_in_conn(
          WHERE progress < 100 OR next_chapter_id IS NOT NULL \
          ORDER BY read_at DESC, position DESC, chapter_id DESC \
          LIMIT ?1",
-    )
-    .bind(normalized_limit)
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|err| format!("db chapter: list continue reading: {err}"))?;
+        effective_name = super::novel::EFFECTIVE_NOVEL_NAME_SQL,
+        override_cover = super::novel::OVERRIDE_COVER_SQL,
+    );
+    let rows = sqlx::query(&sql)
+        .bind(normalized_limit)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db chapter: list continue reading: {err}"))?;
 
     Ok(rows
         .iter()
@@ -2265,6 +2287,7 @@ pub async fn list_continue_reading_in_conn(
             novel_id: r.get("novel_id"),
             novel_name: r.get("novel_name"),
             novel_cover: r.get("novel_cover"),
+            novel_cover_override: r.get("novel_cover_override"),
             novel_is_local: r.get::<i64, _>("novel_is_local") != 0,
             novel_path: r.get("novel_path"),
             plugin_id: r.get("plugin_id"),
@@ -2338,12 +2361,14 @@ pub async fn list_reading_history_page_in_conn(
              c.progress, \
              n.plugin_id, \
              n.source_novel_id AS novel_source_novel_id, \
-             n.name AS novel_name, \
+             {effective_name} AS novel_name, \
              n.cover AS novel_cover, \
+             {override_cover} AS novel_cover_override, \
              n.in_library AS novel_in_library, \
              n.is_local AS novel_is_local, \
              n.path AS novel_path \
            FROM novel n \
+           LEFT JOIN novel_override o ON o.novel_id = n.id \
            JOIN chapter c ON c.id = ( \
              SELECT c2.id FROM chapter c2 \
              WHERE c2.novel_id = n.id AND c2.read_at IS NOT NULL \
@@ -2357,7 +2382,9 @@ pub async fn list_reading_history_page_in_conn(
            {progress_clause} \
            {cursor_clause} \
          ORDER BY read_at DESC, position DESC, chapter_id DESC \
-         LIMIT ?1"
+         LIMIT ?1",
+        effective_name = super::novel::EFFECTIVE_NOVEL_NAME_SQL,
+        override_cover = super::novel::OVERRIDE_COVER_SQL,
     );
 
     let mut query = sqlx::query(&sql).bind(page_size + 1);
@@ -2395,6 +2422,7 @@ pub async fn list_reading_history_page_in_conn(
             novel_source_novel_id: r.get("novel_source_novel_id"),
             novel_name: r.get("novel_name"),
             novel_cover: r.get("novel_cover"),
+            novel_cover_override: r.get("novel_cover_override"),
             novel_in_library: r.get::<i64, _>("novel_in_library") != 0,
             novel_is_local: r.get::<i64, _>("novel_is_local") != 0,
             novel_path: r.get("novel_path"),

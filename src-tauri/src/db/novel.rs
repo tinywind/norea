@@ -19,6 +19,100 @@ use super::{decode_sqlite_f64, decode_sqlite_opt_f64, DbMutationEnvelope, ReadMo
 pub const LOCAL_PLUGIN_ID: &str = "local";
 pub const LOCAL_NOVEL_PATH: &str = "local";
 
+pub(crate) const NOVEL_STATUS_VALUES: [&str; 7] = [
+    "Unknown",
+    "Ongoing",
+    "Completed",
+    "Licensed",
+    "Publishing Finished",
+    "Cancelled",
+    "On Hiatus",
+];
+
+pub(crate) fn is_novel_status(value: &str) -> bool {
+    NOVEL_STATUS_VALUES.contains(&value)
+}
+
+pub(crate) fn canonical_novel_status(value: Option<&str>) -> String {
+    let trimmed = value.map(str::trim).filter(|s| !s.is_empty());
+    match trimmed {
+        None => "Unknown".to_string(),
+        Some(status) => status.to_string(),
+    }
+}
+
+pub(crate) fn split_novel_tags(raw: &str) -> Vec<String> {
+    let normalized = raw.replace(['\r', '\n', '\t'], " ").replace(" #", ",");
+    let mut seen = HashSet::new();
+    let mut tags = Vec::new();
+    for part in normalized.split([',', '|']) {
+        let cleaned = part.trim().trim_start_matches('#').trim();
+        if cleaned.is_empty() {
+            continue;
+        }
+        let key = cleaned.to_lowercase();
+        if seen.insert(key) {
+            tags.push(cleaned.to_string());
+        }
+    }
+    tags
+}
+
+pub(super) const EFFECTIVE_NOVEL_NAME_SQL: &str = "CASE \
+  WHEN json_type(o.payload, '$.fields.name.value') = 'text' \
+    AND trim(json_extract(o.payload, '$.fields.name.value')) <> '' \
+  THEN trim(json_extract(o.payload, '$.fields.name.value')) \
+  ELSE n.name \
+END";
+
+pub(super) const EFFECTIVE_NOVEL_AUTHOR_SQL: &str = "CASE \
+  WHEN json_type(o.payload, '$.fields.author.value') = 'text' \
+  THEN NULLIF(trim(json_extract(o.payload, '$.fields.author.value')), '') \
+  ELSE n.author \
+END";
+
+pub(super) const EFFECTIVE_NOVEL_ARTIST_SQL: &str = "CASE \
+  WHEN json_type(o.payload, '$.fields.artist.value') = 'text' \
+  THEN NULLIF(trim(json_extract(o.payload, '$.fields.artist.value')), '') \
+  ELSE n.artist \
+END";
+
+pub(super) const EFFECTIVE_NOVEL_SUMMARY_SQL: &str = "CASE \
+  WHEN json_type(o.payload, '$.fields.summary.value') = 'text' \
+  THEN CASE WHEN trim(json_extract(o.payload, '$.fields.summary.value')) <> '' \
+    THEN json_extract(o.payload, '$.fields.summary.value') ELSE NULL END \
+  ELSE n.summary \
+END";
+
+pub(super) const EFFECTIVE_NOVEL_STATUS_SQL: &str = "CASE \
+  WHEN json_type(o.payload, '$.fields.status.value') = 'text' \
+    THEN json_extract(o.payload, '$.fields.status.value') \
+  WHEN json_type(o.payload, '$.fields.completed.value') = 'true' THEN 'Completed' \
+  WHEN json_type(o.payload, '$.fields.completed.value') = 'false' THEN 'Ongoing' \
+  ELSE n.status \
+END";
+
+pub(super) const EFFECTIVE_NOVEL_GENRES_SQL: &str = "CASE \
+  WHEN json_type(o.payload, '$.fields.genres.value') = 'text' \
+  THEN NULLIF(trim(json_extract(o.payload, '$.fields.genres.value')), '') \
+  ELSE n.genres \
+END";
+
+pub(super) const OVERRIDE_STATUS_SQL: &str = "CASE \
+  WHEN json_type(o.payload, '$.fields.status.value') = 'text' \
+    THEN json_extract(o.payload, '$.fields.status.value') \
+  WHEN json_type(o.payload, '$.fields.completed.value') = 'true' THEN 'Completed' \
+  WHEN json_type(o.payload, '$.fields.completed.value') = 'false' THEN 'Ongoing' \
+  ELSE NULL \
+END";
+
+pub(super) const OVERRIDE_COVER_SQL: &str = "CASE \
+  WHEN json_type(o.payload, '$.fields.cover.value') = 'text' \
+    AND json_extract(o.payload, '$.fields.cover.value') LIKE 'cover.override.%' \
+  THEN json_extract(o.payload, '$.fields.cover.value') \
+  ELSE NULL \
+END";
+
 const MAX_ROUTE_QUERY_ROWS: i64 = 500;
 const DEFAULT_LIBRARY_PAGE_LIMIT: i64 = 100;
 const MAX_INLINE_IPC_BYTES: i64 = 128 * 1024 * 1024;
@@ -44,6 +138,7 @@ pub struct LibraryNovelDto {
     pub path: String,
     pub name: String,
     pub cover: Option<String>,
+    pub cover_override: Option<String>,
     pub author: Option<String>,
     pub in_library: bool,
     pub is_local: bool,
@@ -74,6 +169,10 @@ pub struct LibraryFilterDto {
     pub local_only: Option<bool>,
     #[serde(default)]
     pub completed_only: Option<bool>,
+    #[serde(default)]
+    pub statuses: Option<Vec<String>>,
+    #[serde(default)]
+    pub tags: Option<Vec<String>>,
     #[serde(default)]
     pub sort_order: Option<String>,
     #[serde(default)]
@@ -130,6 +229,20 @@ pub struct LibrarySourceFilterDto {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct LibraryStatusFilterDto {
+    pub status: String,
+    pub total_novels: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryTagFilterDto {
+    pub tag: String,
+    pub total_novels: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct LibraryNovelIdentityDto {
     pub plugin_id: String,
     pub path: String,
@@ -157,6 +270,17 @@ pub struct NovelForCheckDto {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct NovelSourceMetadataDto {
+    pub name: String,
+    pub author: Option<String>,
+    pub artist: Option<String>,
+    pub summary: Option<String>,
+    pub status: Option<String>,
+    pub genres: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct NovelDetailRecordDto {
     pub id: i64,
     pub source_novel_id: Option<String>,
@@ -165,6 +289,7 @@ pub struct NovelDetailRecordDto {
     pub path: String,
     pub name: String,
     pub cover: Option<String>,
+    pub cover_override: Option<String>,
     pub summary: Option<String>,
     pub author: Option<String>,
     pub artist: Option<String>,
@@ -177,7 +302,8 @@ pub struct NovelDetailRecordDto {
     pub updated_at: i64,
     pub library_added_at: Option<i64>,
     pub last_read_at: Option<i64>,
-    pub completed_override: Option<bool>,
+    pub status_override: Option<String>,
+    pub source_metadata: NovelSourceMetadataDto,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -349,7 +475,7 @@ pub struct CheckCandidateDto {
     pub total_chapters: i64,
     pub unread_chapters: i64,
     pub has_goal: bool,
-    pub completed_override: Option<bool>,
+    pub status_override: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -748,7 +874,9 @@ fn build_library_filter_conditions(
 
     if let Some(search) = filter.search.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         let p = add_param(params, SqlParam::Text(search.to_string()));
-        conditions.push(format!("n.name LIKE '%' || {p} || '%' COLLATE NOCASE"));
+        conditions.push(format!(
+            "{EFFECTIVE_NOVEL_NAME_SQL} LIKE '%' || {p} || '%' COLLATE NOCASE"
+        ));
     }
     if filter.category_id == Some(UNCATEGORIZED_CATEGORY_ID) {
         conditions.push(
@@ -792,6 +920,44 @@ fn build_library_filter_conditions(
             "COALESCE(s.total_chapters, 0) > 0 AND COALESCE(s.chapters_unread, 0) = 0".to_string(),
         );
     }
+    let mut statuses: Vec<String> = Vec::new();
+    for raw in filter.statuses.iter().flatten() {
+        let trimmed = raw.trim();
+        if !trimmed.is_empty() && !statuses.iter().any(|existing| existing == trimmed) {
+            statuses.push(trimmed.to_string());
+        }
+    }
+    if !statuses.is_empty() {
+        let placeholders: Vec<String> = statuses
+            .into_iter()
+            .map(|status| add_param(params, SqlParam::Text(status)))
+            .collect();
+        conditions.push(format!(
+            "COALESCE(NULLIF(trim({EFFECTIVE_NOVEL_STATUS_SQL}), ''), 'Unknown') IN ({})",
+            placeholders.join(", ")
+        ));
+    }
+    let mut seen_tags = HashSet::new();
+    for raw_tag in filter.tags.iter().flatten() {
+        let cleaned = raw_tag.trim().trim_start_matches('#').trim();
+        if cleaned.is_empty() || !seen_tags.insert(cleaned.to_lowercase()) {
+            continue;
+        }
+        let p = add_param(params, SqlParam::Text(cleaned.to_string()));
+        conditions.push(format!(
+            "EXISTS ( \
+               WITH RECURSIVE tag_split(raw_tok, rest) AS ( \
+                 SELECT '', replace(replace(replace(replace(replace(COALESCE({EFFECTIVE_NOVEL_GENRES_SQL}, ''), '|', ','), char(13), ' '), char(10), ' '), char(9), ' '), ' #', ',') || ',' \
+                 UNION ALL \
+                 SELECT trim(substr(rest, 1, instr(rest, ',') - 1)), substr(rest, instr(rest, ',') + 1) \
+                 FROM tag_split WHERE instr(rest, ',') > 0 \
+               ) \
+               SELECT 1 FROM tag_split \
+               WHERE trim(ltrim(trim(raw_tok), '#')) <> '' \
+                 AND trim(ltrim(trim(raw_tok), '#')) = {p} COLLATE NOCASE \
+             )"
+        ));
+    }
 
     conditions
 }
@@ -805,9 +971,12 @@ fn library_rows_cte(conditions: &[String]) -> String {
              ip.name AS pluginName, \
              n.source_novel_id AS sourceNovelId, \
              n.path, \
-             n.name, \
+             {EFFECTIVE_NOVEL_NAME_SQL} AS name, \
              n.cover, \
-             n.author, \
+             {OVERRIDE_COVER_SQL} AS coverOverride, \
+             {EFFECTIVE_NOVEL_AUTHOR_SQL} AS author, \
+             {EFFECTIVE_NOVEL_STATUS_SQL} AS status, \
+             {EFFECTIVE_NOVEL_GENRES_SQL} AS genres, \
              n.in_library AS inLibrary, \
              n.is_local AS isLocal, \
              COALESCE(s.total_chapters, 0) AS totalChapters, \
@@ -825,6 +994,7 @@ fn library_rows_cte(conditions: &[String]) -> String {
            FROM novel n \
            LEFT JOIN novel_stats s ON s.novel_id = n.id \
            LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id \
+           LEFT JOIN novel_override o ON o.novel_id = n.id \
            WHERE {} \
          )",
         conditions.join(" AND ")
@@ -907,7 +1077,7 @@ pub async fn select_library_novels_in_conn(
     };
     let sql = format!(
         "{} \
-         SELECT id, pluginId, pluginName, sourceNovelId, path, name, cover, author, \
+         SELECT id, pluginId, pluginName, sourceNovelId, path, name, cover, coverOverride, author, \
                 inLibrary, isLocal, totalChapters, chaptersDownloaded, chaptersUnread, \
                 readingProgress, lastReadAt, lastUpdatedAt \
          FROM library_rows \
@@ -941,6 +1111,11 @@ pub async fn select_library_novels_in_conn(
                     display_local_cover(raw_cover)
                 } else {
                     raw_cover
+                },
+                cover_override: if is_local {
+                    None
+                } else {
+                    row.get("coverOverride")
                 },
                 author: row.get("author"),
                 in_library: in_library_raw != 0,
@@ -1000,6 +1175,7 @@ pub async fn list_library_novel_ids_in_conn(
     let sql = format!(
         "SELECT n.id FROM novel n \
          LEFT JOIN novel_stats s ON s.novel_id = n.id \
+         LEFT JOIN novel_override o ON o.novel_id = n.id \
          WHERE {} \
          ORDER BY n.id",
         conditions.join(" AND ")
@@ -1144,6 +1320,94 @@ pub async fn list_library_source_filters_in_conn(
         .collect())
 }
 
+pub async fn list_library_status_filters_in_conn(
+    conn: &mut SqliteConnection,
+    filter: &LibraryFilterDto,
+) -> Result<Vec<LibraryStatusFilterDto>, String> {
+    let mut stripped = filter.clone();
+    stripped.statuses = None;
+    stripped.sort_order = None;
+    stripped.limit = None;
+    let mut params = Vec::new();
+    let conditions = build_library_filter_conditions(&stripped, &mut params);
+    let sql = format!(
+        "{} \
+         SELECT COALESCE(NULLIF(trim(status), ''), 'Unknown') AS canonicalStatus, \
+                COUNT(*) AS totalNovels \
+         FROM library_rows \
+         GROUP BY canonicalStatus \
+         ORDER BY \
+           CASE canonicalStatus \
+             WHEN 'Ongoing' THEN 0 \
+             WHEN 'Completed' THEN 1 \
+             WHEN 'On Hiatus' THEN 2 \
+             WHEN 'Publishing Finished' THEN 3 \
+             WHEN 'Licensed' THEN 4 \
+             WHEN 'Cancelled' THEN 5 \
+             WHEN 'Unknown' THEN 6 \
+             ELSE 7 \
+           END ASC, \
+           canonicalStatus COLLATE NOCASE ASC",
+        library_rows_cte(&conditions)
+    );
+    let rows = bind_sql_params(sqlx::query(&sql), &params)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db novel: list library status filters: {err}"))?;
+    Ok(rows
+        .into_iter()
+        .map(|row| LibraryStatusFilterDto {
+            status: row.get("canonicalStatus"),
+            total_novels: row.get::<Option<i64>, _>("totalNovels").unwrap_or(0),
+        })
+        .collect())
+}
+
+pub async fn list_library_tag_filters_in_conn(
+    conn: &mut SqliteConnection,
+    filter: &LibraryFilterDto,
+) -> Result<Vec<LibraryTagFilterDto>, String> {
+    let mut stripped = filter.clone();
+    stripped.sort_order = None;
+    stripped.limit = None;
+    let mut params = Vec::new();
+    let conditions = build_library_filter_conditions(&stripped, &mut params);
+    let sql = format!(
+        "{} \
+         SELECT genres FROM library_rows \
+         WHERE genres IS NOT NULL AND trim(genres) <> ''",
+        library_rows_cte(&conditions)
+    );
+    let rows = bind_sql_params(sqlx::query(&sql), &params)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db novel: list library tag filters: {err}"))?;
+
+    let mut counts: HashMap<String, (String, i64)> = HashMap::new();
+    for row in rows {
+        let raw_genres: String = row.get("genres");
+        for tag in split_novel_tags(&raw_genres) {
+            let key = tag.to_lowercase();
+            counts
+                .entry(key)
+                .and_modify(|(_, total)| *total += 1)
+                .or_insert((tag, 1));
+        }
+    }
+    let mut items: Vec<LibraryTagFilterDto> = counts
+        .into_values()
+        .map(|(tag, total_novels)| LibraryTagFilterDto { tag, total_novels })
+        .collect();
+    items.sort_by(|left, right| {
+        right
+            .total_novels
+            .cmp(&left.total_novels)
+            .then_with(|| left.tag.to_lowercase().cmp(&right.tag.to_lowercase()))
+            .then_with(|| left.tag.cmp(&right.tag))
+    });
+    Ok(items)
+}
+
 pub async fn list_library_novel_refresh_targets_in_conn(
     conn: &mut SqliteConnection,
     filter: &LibraryFilterDto,
@@ -1151,11 +1415,13 @@ pub async fn list_library_novel_refresh_targets_in_conn(
     let mut params = Vec::new();
     let conditions = build_library_filter_conditions(filter, &mut params);
     let sql = format!(
-        "SELECT n.id, n.plugin_id AS pluginId, n.path, n.name, n.cover, n.is_local AS isLocal \
+        "SELECT n.id, n.plugin_id AS pluginId, n.path, \
+                {EFFECTIVE_NOVEL_NAME_SQL} AS name, n.cover, n.is_local AS isLocal \
          FROM novel n \
          LEFT JOIN novel_stats s ON s.novel_id = n.id \
+         LEFT JOIN novel_override o ON o.novel_id = n.id \
          WHERE {} \
-         ORDER BY n.name COLLATE NOCASE ASC",
+         ORDER BY name COLLATE NOCASE ASC",
         conditions.join(" AND ")
     );
     let rows = bind_sql_params(sqlx::query(&sql), &params)
@@ -1183,15 +1449,17 @@ pub async fn list_novels_for_update_check_in_conn(
     conn: &mut SqliteConnection,
     novel_ids: Option<&[i64]>,
 ) -> Result<Vec<NovelForCheckDto>, String> {
-    let rows = sqlx::query(
-        "SELECT id, plugin_id AS pluginId, path, name \
-         FROM novel \
-         WHERE in_library = 1 \
-         ORDER BY last_read_at IS NULL, last_read_at DESC, name COLLATE NOCASE ASC",
-    )
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|err| format!("db novel: list novels for update check: {err}"))?;
+    let sql = format!(
+        "SELECT n.id, n.plugin_id AS pluginId, n.path, {EFFECTIVE_NOVEL_NAME_SQL} AS name \
+         FROM novel n \
+         LEFT JOIN novel_override o ON o.novel_id = n.id \
+         WHERE n.in_library = 1 \
+         ORDER BY n.last_read_at IS NULL, n.last_read_at DESC, name COLLATE NOCASE ASC"
+    );
+    let rows = sqlx::query(&sql)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db novel: list novels for update check: {err}"))?;
 
     let wanted: Option<HashSet<i64>> = novel_ids.map(|ids| ids.iter().copied().collect());
     Ok(rows
@@ -1213,32 +1481,41 @@ pub async fn list_novels_for_update_check_in_conn(
         .collect())
 }
 
-const SELECT_NOVEL_DETAIL_FIELDS: &str = "\
-  SELECT \
-    n.id, \
-    n.source_novel_id AS sourceNovelId, \
-    n.plugin_id AS pluginId, \
-    ip.name AS pluginName, \
-    n.path, \
-    n.name, \
-    n.cover, \
-    n.summary, \
-    n.author, \
-    n.artist, \
-    n.status, \
-    n.genres, \
-    n.rating, \
-    n.in_library AS inLibrary, \
-    n.is_local AS isLocal, \
-    n.created_at AS createdAt, \
-    n.updated_at AS updatedAt, \
-    n.library_added_at AS libraryAddedAt, \
-    n.last_read_at AS lastReadAt, \
-    CASE json_type(o.payload, '$.fields.completed.value') \
-      WHEN 'true' THEN 1 WHEN 'false' THEN 0 END AS completedOverride \
-  FROM novel n \
-  LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id \
-  LEFT JOIN novel_override o ON o.novel_id = n.id";
+fn select_novel_detail_fields_sql() -> String {
+    format!(
+        "SELECT \
+           n.id, \
+           n.source_novel_id AS sourceNovelId, \
+           n.plugin_id AS pluginId, \
+           ip.name AS pluginName, \
+           n.path, \
+           {EFFECTIVE_NOVEL_NAME_SQL} AS name, \
+           n.cover, \
+           {OVERRIDE_COVER_SQL} AS coverOverride, \
+           {EFFECTIVE_NOVEL_SUMMARY_SQL} AS summary, \
+           {EFFECTIVE_NOVEL_AUTHOR_SQL} AS author, \
+           {EFFECTIVE_NOVEL_ARTIST_SQL} AS artist, \
+           {EFFECTIVE_NOVEL_STATUS_SQL} AS status, \
+           {EFFECTIVE_NOVEL_GENRES_SQL} AS genres, \
+           n.name AS sourceName, \
+           n.author AS sourceAuthor, \
+           n.artist AS sourceArtist, \
+           n.summary AS sourceSummary, \
+           n.status AS sourceStatus, \
+           n.genres AS sourceGenres, \
+           n.rating, \
+           n.in_library AS inLibrary, \
+           n.is_local AS isLocal, \
+           n.created_at AS createdAt, \
+           n.updated_at AS updatedAt, \
+           n.library_added_at AS libraryAddedAt, \
+           n.last_read_at AS lastReadAt, \
+           {OVERRIDE_STATUS_SQL} AS statusOverride \
+         FROM novel n \
+         LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id \
+         LEFT JOIN novel_override o ON o.novel_id = n.id"
+    )
+}
 
 fn map_novel_detail_row(row: sqlx::sqlite::SqliteRow) -> NovelDetailRecordDto {
     let plugin_id: String = row.get("pluginId");
@@ -1257,6 +1534,11 @@ fn map_novel_detail_row(row: sqlx::sqlite::SqliteRow) -> NovelDetailRecordDto {
         } else {
             raw_cover
         },
+        cover_override: if is_local {
+            None
+        } else {
+            row.get("coverOverride")
+        },
         summary: row.get("summary"),
         author: row.get("author"),
         artist: row.get("artist"),
@@ -1269,9 +1551,15 @@ fn map_novel_detail_row(row: sqlx::sqlite::SqliteRow) -> NovelDetailRecordDto {
         updated_at: row.get("updatedAt"),
         library_added_at: row.get("libraryAddedAt"),
         last_read_at: row.get("lastReadAt"),
-        completed_override: row
-            .get::<Option<i64>, _>("completedOverride")
-            .map(|flag| flag != 0),
+        status_override: row.get("statusOverride"),
+        source_metadata: NovelSourceMetadataDto {
+            name: row.get("sourceName"),
+            author: row.get("sourceAuthor"),
+            artist: row.get("sourceArtist"),
+            summary: row.get("sourceSummary"),
+            status: row.get("sourceStatus"),
+            genres: row.get("sourceGenres"),
+        },
         plugin_id,
     }
 }
@@ -1280,7 +1568,7 @@ pub async fn get_novel_by_id_in_conn(
     conn: &mut SqliteConnection,
     id: i64,
 ) -> Result<Option<NovelDetailRecordDto>, String> {
-    let sql = format!("{SELECT_NOVEL_DETAIL_FIELDS} WHERE n.id = ?1");
+    let sql = format!("{} WHERE n.id = ?1", select_novel_detail_fields_sql());
     let row = sqlx::query(&sql)
         .bind(id)
         .fetch_optional(&mut *conn)
@@ -1294,7 +1582,10 @@ pub async fn find_novel_by_source_in_conn(
     plugin_id: &str,
     path: &str,
 ) -> Result<Option<NovelDetailRecordDto>, String> {
-    let sql = format!("{SELECT_NOVEL_DETAIL_FIELDS} WHERE n.plugin_id = ?1 AND n.path = ?2");
+    let sql = format!(
+        "{} WHERE n.plugin_id = ?1 AND n.path = ?2",
+        select_novel_detail_fields_sql()
+    );
     let row = sqlx::query(&sql)
         .bind(plugin_id)
         .bind(path)
@@ -2203,27 +2494,27 @@ pub async fn list_check_candidates_in_conn(
     conn: &mut SqliteConnection,
     active_since: Option<i64>,
 ) -> Result<Vec<CheckCandidateDto>, String> {
-    let rows = sqlx::query(
+    let sql = format!(
         "SELECT n.id AS novelId, n.plugin_id AS pluginId, n.status, n.last_read_at AS lastReadAt, \
                 f.last_checked_at AS lastCheckedAt, \
                 COALESCE(f.consecutive_failures, 0) AS consecutiveFailures, \
                 COALESCE(s.total_chapters, 0) AS totalChapters, \
                 COALESCE(s.chapters_unread, 0) AS unreadChapters, \
                 (?1 IS NOT NULL AND n.last_read_at >= ?1 AND (g.novel_id IS NULL OR g.kind <> 'none')) AS hasGoal, \
-                CASE json_type(o.payload, '$.fields.completed.value') \
-                  WHEN 'true' THEN 1 WHEN 'false' THEN 0 END AS completedOverride \
+                {OVERRIDE_STATUS_SQL} AS statusOverride \
          FROM novel n \
          LEFT JOIN novel_freshness f ON f.novel_id = n.id \
          LEFT JOIN novel_stats s ON s.novel_id = n.id \
          LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
          LEFT JOIN novel_override o ON o.novel_id = n.id \
          WHERE n.in_library = 1 AND n.is_local = 0 \
-         ORDER BY n.id",
-    )
-    .bind(active_since)
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|err| format!("db novel freshness: list check candidates: {err}"))?;
+         ORDER BY n.id"
+    );
+    let rows = sqlx::query(&sql)
+        .bind(active_since)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db novel freshness: list check candidates: {err}"))?;
 
     Ok(rows
         .into_iter()
@@ -2237,9 +2528,7 @@ pub async fn list_check_candidates_in_conn(
             total_chapters: r.get("totalChapters"),
             unread_chapters: r.get("unreadChapters"),
             has_goal: r.get::<i64, _>("hasGoal") != 0,
-            completed_override: r
-                .get::<Option<i64>, _>("completedOverride")
-                .map(|flag| flag != 0),
+            status_override: r.get("statusOverride"),
         })
         .collect())
 }
@@ -2731,6 +3020,34 @@ pub async fn db_novel_list_library_source_filters(
         .await
         .map_err(|err| format!("db novel: acquire connection: {err}"))?;
     list_library_source_filters_in_conn(&mut conn, &filter.unwrap_or_default()).await
+}
+
+#[tauri::command]
+pub async fn db_novel_list_library_status_filters(
+    db: State<'_, AppDatabase>,
+    filter: Option<LibraryFilterDto>,
+    mode: Option<ReadMode>,
+) -> Result<Vec<LibraryStatusFilterDto>, String> {
+    let mut conn = db
+        .pool_for(mode.unwrap_or_default())
+        .acquire()
+        .await
+        .map_err(|err| format!("db novel: acquire connection: {err}"))?;
+    list_library_status_filters_in_conn(&mut conn, &filter.unwrap_or_default()).await
+}
+
+#[tauri::command]
+pub async fn db_novel_list_library_tag_filters(
+    db: State<'_, AppDatabase>,
+    filter: Option<LibraryFilterDto>,
+    mode: Option<ReadMode>,
+) -> Result<Vec<LibraryTagFilterDto>, String> {
+    let mut conn = db
+        .pool_for(mode.unwrap_or_default())
+        .acquire()
+        .await
+        .map_err(|err| format!("db novel: acquire connection: {err}"))?;
+    list_library_tag_filters_in_conn(&mut conn, &filter.unwrap_or_default()).await
 }
 
 #[tauri::command]
@@ -3430,5 +3747,117 @@ mod tests {
                 .unwrap(),
             vec![500]
         );
+    }
+
+    #[tokio::test]
+    async fn library_queries_respect_overrides_and_status_tag_filters() {
+        let harness = open_test_db().await;
+        let pool = harness.db.writer();
+        sqlx::query("INSERT INTO installed_plugin (id, name, version, lang, icon_url, source_url, source_code) VALUES ('src', 'Source One', '1.0', 'en', '', 'https://example.com/plugin.js', 'code')")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO novel (id, plugin_id, source_novel_id, path, name, author, status, genres, in_library, is_local) \
+             VALUES \
+               (1, 'src', 'n1', '/n1', 'Orig One', 'Orig Author', 'Ongoing', 'Fantasy | Action', 1, 0), \
+               (2, 'src', 'n2', '/n2', 'Orig Two', 'Author Two', 'Completed', '#Romance #Action', 1, 0), \
+               (3, 'src', 'n3', '/n3', 'Orig Three', 'Author Three', NULL, 'Drama, Romance', 1, 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            r#"INSERT INTO novel_override (novel_id, payload) VALUES
+               (1, '{"fields":{"name":{"value":"Custom One","updatedAt":10},"author":{"value":"Custom Author","updatedAt":10},"status":{"value":"On Hiatus","updatedAt":10},"genres":{"value":"Mystery, Romance","updatedAt":10},"cover":{"value":"cover.override.png","updatedAt":10}}}')"#,
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let detail = get_novel_by_id_in_conn(&mut conn, 1).await.unwrap().unwrap();
+        assert_eq!(detail.name, "Custom One");
+        assert_eq!(detail.author.as_deref(), Some("Custom Author"));
+        assert_eq!(detail.status.as_deref(), Some("On Hiatus"));
+        assert_eq!(detail.status_override.as_deref(), Some("On Hiatus"));
+        assert_eq!(detail.cover_override.as_deref(), Some("cover.override.png"));
+        assert_eq!(detail.genres.as_deref(), Some("Mystery, Romance"));
+        assert_eq!(detail.source_metadata.name, "Orig One");
+        assert_eq!(detail.source_metadata.status.as_deref(), Some("Ongoing"));
+
+        let status_counts =
+            list_library_status_filters_in_conn(&mut conn, &LibraryFilterDto::default())
+                .await
+                .unwrap();
+        assert_eq!(
+            status_counts,
+            vec![
+                LibraryStatusFilterDto {
+                    status: "Completed".to_string(),
+                    total_novels: 1,
+                },
+                LibraryStatusFilterDto {
+                    status: "On Hiatus".to_string(),
+                    total_novels: 1,
+                },
+                LibraryStatusFilterDto {
+                    status: "Unknown".to_string(),
+                    total_novels: 1,
+                },
+            ]
+        );
+
+        let tag_counts =
+            list_library_tag_filters_in_conn(&mut conn, &LibraryFilterDto::default())
+                .await
+                .unwrap();
+        assert!(tag_counts.contains(&LibraryTagFilterDto {
+            tag: "Romance".to_string(),
+            total_novels: 3,
+        }));
+        assert!(tag_counts.contains(&LibraryTagFilterDto {
+            tag: "Mystery".to_string(),
+            total_novels: 1,
+        }));
+        assert!(!tag_counts.iter().any(|entry| entry.tag == "Fantasy"));
+
+        let by_status = list_library_novel_page_in_conn(
+            &mut conn,
+            &LibraryNovelPageFilterDto {
+                filter: LibraryFilterDto {
+                    statuses: Some(vec!["On Hiatus".to_string(), "Unknown".to_string()]),
+                    sort_order: Some("nameAsc".to_string()),
+                    ..Default::default()
+                },
+                cursor: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            by_status.novels.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![1, 3]
+        );
+        assert_eq!(
+            by_status.novels[0].cover_override.as_deref(),
+            Some("cover.override.png")
+        );
+
+        let by_tags = list_library_novel_ids_in_conn(
+            &mut conn,
+            &LibraryFilterDto {
+                tags: Some(vec!["Romance".to_string(), "Action".to_string()]),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(by_tags, vec![2]);
+
+        let check_list = list_novels_for_update_check_in_conn(&mut conn, Some(&[1]))
+            .await
+            .unwrap();
+        assert_eq!(check_list[0].name, "Custom One");
     }
 }

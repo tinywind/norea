@@ -370,7 +370,7 @@ beforeEach(() => {
   vi.mocked(getNovelById).mockReset().mockResolvedValue({
     id: 11, pluginId: "source-a", sourceNovelId: "novel", path: "/novel", name: "Novel",
     cover: null, summary: null, author: null, artist: null, status: null, genres: null, rating: null,
-    inLibrary: true, isLocal: false, createdAt: 1, updatedAt: 1, libraryAddedAt: 1, lastReadAt: null, completedOverride: null,
+    inLibrary: true, isLocal: false, createdAt: 1, updatedAt: 1, libraryAddedAt: 1, lastReadAt: null, statusOverride: null,
   });
   vi.mocked(refreshStoredNovelChapterDownloads).mockReset().mockResolvedValue(undefined);
   vi.mocked(getStoredChapterMediaBytes).mockResolvedValue(3);

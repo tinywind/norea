@@ -95,10 +95,10 @@ it("waits for the next interval after the user cancels an automatic check", asyn
 
 it("leaves completed works out of automatic checks until skipping is turned off", async () => {
   mocks.candidates = [
-    { ...candidate(1), completedOverride: true },
-    { ...candidate(2), status: "Completed", completedOverride: null },
-    { ...candidate(3), status: "Completed", completedOverride: false },
-    { ...candidate(4), status: "Ongoing", completedOverride: null },
+    { ...candidate(1), statusOverride: "Completed" },
+    { ...candidate(2), status: "Completed", statusOverride: null },
+    { ...candidate(3), status: "Completed", statusOverride: "Ongoing" },
+    { ...candidate(4), status: "Ongoing", statusOverride: null },
   ];
   await runDueChecks(1_000_000);
   expect(mocks.check.mock.calls[0]![0].novelIds).toEqual([3, 4]);
@@ -109,11 +109,11 @@ it("leaves completed works out of automatic checks until skipping is turned off"
 
 it("skips the on-open check of a completed work unless skipping is off or the user marked it ongoing", async () => {
   const open = () => checkNovelIfStale(7, "title", new AbortController().signal);
-  mocks.novel = { id: 7, pluginId: "s", path: "/n", name: "N", isLocal: false, inLibrary: true, status: "Completed", completedOverride: null };
+  mocks.novel = { id: 7, pluginId: "s", path: "/n", name: "N", isLocal: false, inLibrary: true, status: "Completed", statusOverride: null };
   expect(await open()).toBe(false);
-  mocks.novel = { ...(mocks.novel as object), completedOverride: false };
+  mocks.novel = { ...(mocks.novel as object), statusOverride: "Ongoing" };
   expect(await open()).toBe(true);
-  mocks.novel = { ...(mocks.novel as object), status: "Ongoing", completedOverride: true };
+  mocks.novel = { ...(mocks.novel as object), status: "Ongoing", statusOverride: "Completed" };
   expect(await open()).toBe(false);
   useLibraryStore.setState({ skipCompletedChecks: false });
   expect(await open()).toBe(true);

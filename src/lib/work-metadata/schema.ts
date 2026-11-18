@@ -5,6 +5,10 @@ import { LOCAL_PLUGIN_ID } from "../plugins/types";
 export const MAX_NOVEL_METADATA_BYTES = 16 * 1024 * 1024;
 export const MAX_NOVEL_COVER_BYTES = 10 * 1024 * 1024;
 
+export function isOverrideCoverFileName(value: unknown): value is string {
+  return typeof value === "string" && /^cover\.override\.(avif|bmp|gif|img|jpe?g|png|svg|webp)$/.test(value);
+}
+
 export interface NovelMetadataV1 {
   schemaVersion: 1;
   identity: { pluginId: string; novelId: string; novelPath: string };

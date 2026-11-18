@@ -18,6 +18,7 @@ import type { MigrationWorkIdentity } from "./novel-migration-types";
 export interface ServerWorkSummary {
   id: string;
   sequence: number;
+  overrideRevision?: number;
   identity: NovelMetadataV1["identity"];
   novel: NovelMetadataV1["novel"];
   hasCover: boolean;
@@ -62,30 +63,60 @@ export async function listAllServerWorks(
   }
 }
 
+async function parseCoverResponse(
+  response: Response,
+  server: string,
+  token: string,
+): Promise<{ bytes: Uint8Array; contentType: string }> {
+  if (!response.ok) {
+    if (response.status === 401 && token) {
+      const { forgetContentDeviceRegistration } = await import("./device");
+      forgetContentDeviceRegistration(server, token);
+    }
+    throw new ContentServerError(response.status);
+  }
+  if (Number(response.headers.get("content-length")) > 10 * 1024 * 1024) throw new Error("Server cover exceeds the size limit.");
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new Error("Server cover is empty or exceeds the size limit.");
+  const contentType = response.headers.get("content-type")?.split(";")[0] ?? "image/jpeg";
+  if (!contentType.startsWith("image/") && contentType !== "application/octet-stream") throw new Error("Server cover is not an image.");
+  return { bytes, contentType };
+}
+
 export async function readServerCover(server: string, token: string, id: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; contentType: string }> {
   return withContentServerLookup(async deadline => {
     const response = await contentServerFetch(`${normalizeContentServerUrl(server)}/api/v1/works/${encodeURIComponent(id)}/cover`, {
       headers: { Authorization: `Bearer ${token}` }, maxRedirections: 0, connectTimeout: 10_000,
       signal: deadline,
     });
-    if (!response.ok) {
-      if (response.status === 401 && token) {
-        const { forgetContentDeviceRegistration } = await import("./device");
-        forgetContentDeviceRegistration(server, token);
-      }
-      throw new ContentServerError(response.status);
-    }
-    if (Number(response.headers.get("content-length")) > 10 * 1024 * 1024) throw new Error("Server cover exceeds the size limit.");
-    const bytes = new Uint8Array(await response.arrayBuffer());
-    if (!bytes.length || bytes.length > 10 * 1024 * 1024) throw new Error("Server cover is empty or exceeds the size limit.");
-    const contentType = response.headers.get("content-type")?.split(";")[0] ?? "image/jpeg";
-    if (!contentType.startsWith("image/") && contentType !== "application/octet-stream") throw new Error("Server cover is not an image.");
-    return { bytes, contentType };
+    return parseCoverResponse(response, server, token);
   }, 30, signal);
+}
+
+export async function readServerCatalogCover(server: string, token: string, id: string, signal?: AbortSignal): Promise<{ bytes: Uint8Array; contentType: string }> {
+  try {
+    return await withContentServerLookup(async deadline => {
+      const response = await contentServerFetch(`${normalizeContentServerUrl(server)}/api/v1/catalog/works/${encodeURIComponent(id)}/cover`, {
+        headers: { Authorization: `Bearer ${token}` }, maxRedirections: 0, connectTimeout: 10_000,
+        signal: deadline,
+      });
+      return parseCoverResponse(response, server, token);
+    }, 30, signal);
+  } catch (error) {
+    if (error instanceof ContentServerError && error.status === 404) {
+      return readServerCover(server, token, id, signal);
+    }
+    throw error;
+  }
 }
 
 export async function serverCoverSource(server: string, token: string, id: string, signal?: AbortSignal): Promise<string> {
   const cover = await readServerCover(server, token, id, signal);
+  return `data:${cover.contentType === "application/octet-stream" ? "image/jpeg" : cover.contentType};base64,${bytesToBase64(cover.bytes)}`;
+}
+
+export async function serverCatalogCoverSource(server: string, token: string, id: string, signal?: AbortSignal): Promise<string> {
+  const cover = await readServerCatalogCover(server, token, id, signal);
   return `data:${cover.contentType === "application/octet-stream" ? "image/jpeg" : cover.contentType};base64,${bytesToBase64(cover.bytes)}`;
 }
 

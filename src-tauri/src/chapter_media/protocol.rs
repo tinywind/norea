@@ -71,7 +71,8 @@ fn is_novel_cover_media_path(request_path: &str) -> bool {
     let file_name = parts.get(3).copied().unwrap_or_default();
     parts.len() == 4
         && parts.first() == Some(&CONTENTS_ROOT_DIR)
-        && super::work_metadata::is_cover_file(file_name)
+        && (super::work_metadata::is_cover_file(file_name)
+            || super::work_metadata::is_override_cover_file(file_name))
 }
 
 fn norea_media_protocol_body(

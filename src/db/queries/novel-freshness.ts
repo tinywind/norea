@@ -62,8 +62,8 @@ export interface CheckCandidate {
   unreadChapters: number;
   /** The current global automatic policy covers this active, unpaused library novel. */
   hasGoal: boolean;
-  /** The user's completion flag; null follows the source status. */
-  completedOverride: boolean | null;
+  /** Canonical status override when explicitly set; null follows the source status. */
+  statusOverride: string | null;
 }
 
 export async function listCheckCandidates(

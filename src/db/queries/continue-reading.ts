@@ -12,6 +12,7 @@ export interface ContinueReadingEntry {
   novelId: number;
   novelName: string;
   novelCover: string | null;
+  novelCoverOverride?: string | null;
   novelIsLocal: boolean;
   novelPath: string;
   pluginId: string;

@@ -1,5 +1,6 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
+import { isNovelStatus, type NovelStatusValue } from "../lib/plugins/types";
 
 export type LibraryDisplayMode =
   | "compact"
@@ -36,6 +37,31 @@ export function normalizeCheckIntervalHours(value: unknown): CheckIntervalHours 
   return CHECK_INTERVAL_CHOICES.find((choice) => choice === value) ?? DEFAULT_CHECK_INTERVAL_HOURS;
 }
 
+function sanitizeStatusList(raw: unknown): NovelStatusValue[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<NovelStatusValue>();
+  for (const item of raw) {
+    if (isNovelStatus(item) && !seen.has(item)) seen.add(item);
+  }
+  return [...seen];
+}
+
+function sanitizeTagList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const cleaned = item.trim().replace(/^#+/, "").trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(cleaned);
+  }
+  return tags;
+}
+
 interface LibraryState {
   pendingLocalImportFiles: readonly File[];
   selectedCategoryId: number | null;
@@ -55,6 +81,8 @@ interface LibraryState {
   localOnlyMode: boolean;
   completedOnlyMode: boolean;
   repairNeededOnlyMode: boolean;
+  selectedStatuses: NovelStatusValue[];
+  selectedTags: string[];
   incognitoMode: boolean;
   defaultChapterSort: DefaultChapterSort;
   checkIntervalHours: CheckIntervalHours;
@@ -79,6 +107,10 @@ interface LibraryState {
   setLocalOnlyMode: (localOnlyMode: boolean) => void;
   setCompletedOnlyMode: (completedOnlyMode: boolean) => void;
   setRepairNeededOnlyMode: (repairNeededOnlyMode: boolean) => void;
+  setSelectedStatuses: (statuses: readonly string[]) => void;
+  toggleStatus: (status: string) => void;
+  setSelectedTags: (tags: readonly string[]) => void;
+  toggleTag: (tag: string) => void;
   clearFilters: () => void;
   setIncognitoMode: (incognitoMode: boolean) => void;
   setDefaultChapterSort: (defaultChapterSort: DefaultChapterSort) => void;
@@ -107,6 +139,8 @@ export const useLibraryStore = create<LibraryState>()(
       localOnlyMode: false,
       completedOnlyMode: false,
       repairNeededOnlyMode: false,
+      selectedStatuses: [],
+      selectedTags: [],
       incognitoMode: false,
       defaultChapterSort: "asc",
       checkIntervalHours: DEFAULT_CHECK_INTERVAL_HOURS,
@@ -160,6 +194,32 @@ export const useLibraryStore = create<LibraryState>()(
           unreadOnlyMode: completedOnlyMode ? false : state.unreadOnlyMode,
         })),
       setRepairNeededOnlyMode: (repairNeededOnlyMode) => set({ repairNeededOnlyMode }),
+      setSelectedStatuses: (statuses) =>
+        set({ selectedStatuses: sanitizeStatusList(statuses) }),
+      toggleStatus: (status) => {
+        if (!isNovelStatus(status)) return;
+        set((state) => ({
+          selectedStatuses: state.selectedStatuses.includes(status)
+            ? state.selectedStatuses.filter((item) => item !== status)
+            : [...state.selectedStatuses, status],
+        }));
+      },
+      setSelectedTags: (tags) =>
+        set({ selectedTags: sanitizeTagList(tags) }),
+      toggleTag: (tag) => {
+        const normalized = sanitizeTagList([tag]);
+        if (normalized.length === 0) return;
+        const target = normalized[0]!;
+        const targetKey = target.toLowerCase();
+        set((state) => {
+          const exists = state.selectedTags.some((item) => item.toLowerCase() === targetKey);
+          return {
+            selectedTags: exists
+              ? state.selectedTags.filter((item) => item.toLowerCase() !== targetKey)
+              : [...state.selectedTags, target],
+          };
+        });
+      },
       clearFilters: () =>
         set({
           downloadedOnlyMode: false,
@@ -167,6 +227,8 @@ export const useLibraryStore = create<LibraryState>()(
           localOnlyMode: false,
           completedOnlyMode: false,
           repairNeededOnlyMode: false,
+          selectedStatuses: [],
+          selectedTags: [],
         }),
       setIncognitoMode: (incognitoMode) => set({ incognitoMode }),
       setDefaultChapterSort: (defaultChapterSort) =>
@@ -177,6 +239,17 @@ export const useLibraryStore = create<LibraryState>()(
     }),
     {
       name: "norea-library-settings",
+      merge: (persisted, current) => {
+        const partial = (persisted && typeof persisted === "object"
+          ? persisted
+          : {}) as Partial<LibraryState>;
+        return {
+          ...current,
+          ...partial,
+          selectedStatuses: sanitizeStatusList(partial.selectedStatuses),
+          selectedTags: sanitizeTagList(partial.selectedTags),
+        };
+      },
       partialize: (state) => ({
         displayMode: state.displayMode,
         novelsPerRow: state.novelsPerRow,
@@ -191,6 +264,8 @@ export const useLibraryStore = create<LibraryState>()(
         localOnlyMode: state.localOnlyMode,
         completedOnlyMode: state.completedOnlyMode,
         repairNeededOnlyMode: state.repairNeededOnlyMode,
+        selectedStatuses: state.selectedStatuses,
+        selectedTags: state.selectedTags,
         defaultCategoryId: state.defaultCategoryId,
         incognitoMode: state.incognitoMode,
         defaultChapterSort: state.defaultChapterSort,

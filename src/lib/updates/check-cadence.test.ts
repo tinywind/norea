@@ -6,7 +6,7 @@ const HOUR = 3600;
 const DAY = 24 * HOUR;
 const novel = (novelId: number, extra: Partial<CheckCandidate> = {}): CheckCandidate => ({
   novelId, pluginId: "s", status: null, lastReadAt: 100, lastCheckedAt: 0, consecutiveFailures: 0,
-  totalChapters: 10, unreadChapters: 4, hasGoal: false, completedOverride: null, ...extra,
+  totalChapters: 10, unreadChapters: 4, hasGoal: false, statusOverride: null, ...extra,
 });
 
 it("checks reading novels every interval, unstarted ones every 3 days and finished ones weekly", () => {

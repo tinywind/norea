@@ -112,6 +112,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
   const localOnlyMode = useLibraryStore((s) => s.localOnlyMode);
   const completedOnlyMode = useLibraryStore((s) => s.completedOnlyMode);
   const repairNeededOnlyMode = useLibraryStore((s) => s.repairNeededOnlyMode);
+  const selectedStatuses = useLibraryStore((s) => s.selectedStatuses);
+  const selectedTags = useLibraryStore((s) => s.selectedTags);
   const clearFilters = useLibraryStore((s) => s.clearFilters);
   const wide = useMediaQuery("(min-width: 768px)", undefined, {
     getInitialValueInEffect: false,
@@ -131,6 +133,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       localOnly: localOnlyMode,
       completedOnly: completedOnlyMode,
       repairNeededOnly: repairNeededOnlyMode,
+      statuses: selectedStatuses,
+      tags: selectedTags,
     }),
     [
       debouncedSearch,
@@ -141,6 +145,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
       localOnlyMode,
       completedOnlyMode,
       repairNeededOnlyMode,
+      selectedStatuses,
+      selectedTags,
     ],
   );
   const {
@@ -148,6 +154,8 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     summary,
     tagSummary,
     sourceFilters,
+    statusFilters,
+    tagFilters,
     categories,
     categoryCounts,
     rows,
@@ -266,7 +274,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     unreadOnlyMode ||
     localOnlyMode ||
     completedOnlyMode ||
-    repairNeededOnlyMode;
+    repairNeededOnlyMode ||
+    selectedStatuses.length > 0 ||
+    selectedTags.length > 0;
 
   const showContinueShelf = isContinueReadingShelfVisible({
     enabled: showContinueReading,
@@ -599,7 +609,11 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
         opened={active && viewOptionsOpen}
         sources={sourceRows}
         sourcesLoading={sourceFilters.isLoading}
+        statuses={statusFilters.data ?? []}
+        statusesLoading={statusFilters.isLoading}
         tab={viewOptionsTab}
+        tags={tagFilters.data ?? []}
+        tagsLoading={tagFilters.isLoading}
       />
       <LibraryDownloadSheet
         applying={downloadOnceMutation.isPending}

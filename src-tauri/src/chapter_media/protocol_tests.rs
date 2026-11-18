@@ -61,6 +61,9 @@ fn only_novel_cover_media_paths_use_the_immutable_cache_policy() {
     assert!(is_novel_cover_media_path(
         "/contents/demo/novel-id/cover.jpg"
     ));
+    assert!(is_novel_cover_media_path(
+        "/contents/demo/novel-id/cover.override.png"
+    ));
     assert!(!is_novel_cover_media_path(
         "/contents/demo/novel-id/cover.json"
     ));

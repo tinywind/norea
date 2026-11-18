@@ -1,5 +1,8 @@
+import { useShallow } from "zustand/react/shallow";
 import type { LibraryNovelSummary } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
+import { useLibraryStore } from "../../store/library";
+import { canonicalNovelStatusLabel } from "../novel/novel-detail-model";
 import { ChipButton } from "../ChipButton";
 import { IconButton } from "../IconButton";
 import { FilterIcon, SelectIcon } from "../ui/icons";
@@ -30,8 +33,19 @@ export function LibraryQuickFilters({
 }: LibraryQuickFiltersProps) {
   const { t } = useTranslation();
   const flags = useLibraryFilterFlags(counts);
+  const { selectedStatuses, selectedTags, toggleStatus, toggleTag } = useLibraryStore(
+    useShallow((s) => ({
+      selectedStatuses: s.selectedStatuses,
+      selectedTags: s.selectedTags,
+      toggleStatus: s.toggleStatus,
+      toggleTag: s.toggleTag,
+    })),
+  );
   const activeCount =
-    flags.filter((flag) => flag.active).length + (sourceActive ? 1 : 0);
+    flags.filter((flag) => flag.active).length +
+    (sourceActive ? 1 : 0) +
+    selectedStatuses.length +
+    selectedTags.length;
 
   return (
     <div className="norea-library-filter-row">
@@ -52,6 +66,26 @@ export function LibraryQuickFilters({
               {t(flag.labelKey)}
             </ChipButton>
           ))}
+        {selectedStatuses.map((status) => (
+          <ChipButton
+            className="norea-library-chip"
+            key={`status:${status}`}
+            onClick={() => toggleStatus(status)}
+            selected
+          >
+            {canonicalNovelStatusLabel(status, t)}
+          </ChipButton>
+        ))}
+        {selectedTags.map((tag) => (
+          <ChipButton
+            className="norea-library-chip"
+            key={`tag:${tag}`}
+            onClick={() => toggleTag(tag)}
+            selected
+          >
+            {tag}
+          </ChipButton>
+        ))}
         <ChipButton
           className="norea-library-chip"
           icon={<FilterIcon />}

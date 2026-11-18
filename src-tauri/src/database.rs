@@ -137,6 +137,11 @@ pub fn schema_migrations() -> Vec<SchemaMigration> {
             description: "keep user-set work metadata apart from source metadata",
             sql: include_str!("migrations/0013_novel_override.sql"),
         },
+        SchemaMigration {
+            version: 14,
+            description: "upgrade legacy completed work overrides to canonical status",
+            sql: include_str!("migrations/0014_novel_override_status.sql"),
+        },
     ]
 }
 
@@ -533,6 +538,41 @@ mod tests {
         let pool = bootstrap(&path, &migrations).await.unwrap();
         assert_eq!(sqlx::query_as::<_, (i64, String)>("SELECT novel_id,payload FROM novel_override").fetch_all(&pool).await.unwrap(),
             [(1, payload.to_string())]);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn registered_v13_upgrade_converts_completed_overrides_to_canonical_status() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
+            SqlxMigration::new(migration.version, migration.description.into(),
+                MigrationType::ReversibleUp, migration.sql.into(), false)
+        }).collect();
+        let pool = bootstrap(&path, &migrations[..13]).await.unwrap();
+        sqlx::query("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,status,in_library) VALUES(1,'source','work-1','/one','One','Ongoing',1),(2,'source','work-2','/two','Two','Completed',1),(3,'source','work-3','/three','Three','Completed',1),(4,'source','work-4','/four','Four','Ongoing',1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO novel_override VALUES(1,?1),(2,?2),(3,?3),(4,?4)")
+            .bind(r#"{"fields":{"completed":{"value":true,"updatedAt":100},"note":{"value":"kept","updatedAt":5}}}"#)
+            .bind(r#"{"fields":{"completed":{"value":false,"updatedAt":200}}}"#)
+            .bind(r#"{"fields":{"completed":{"value":null,"updatedAt":300}}}"#)
+            .bind(r#"{"fields":{"completed":{"value":true,"updatedAt":100},"status":{"value":"On Hiatus","updatedAt":250}}}"#)
+            .execute(&pool).await.unwrap();
+        pool.close().await;
+
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        let rows = sqlx::query_as::<_, (i64, Option<String>, Option<i64>, Option<String>)>(
+            "SELECT novel_id, json_extract(payload, '$.fields.status.value'), json_extract(payload, '$.fields.status.updatedAt'), json_extract(payload, '$.fields.completed') FROM novel_override ORDER BY novel_id")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(rows, [
+            (1, Some("Completed".into()), Some(100), None),
+            (2, Some("Ongoing".into()), Some(200), None),
+            (3, None, Some(300), None),
+            (4, Some("On Hiatus".into()), Some(250), None),
+        ]);
+        let note: Option<String> = sqlx::query_scalar("SELECT json_extract(payload, '$.fields.note.value') FROM novel_override WHERE novel_id = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(note.as_deref(), Some("kept"));
         pool.close().await;
     }
 

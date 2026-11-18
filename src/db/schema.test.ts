@@ -312,5 +312,8 @@ it("upgrades populated v12 storage to one user override per novel without changi
     expect(db.prepare("SELECT novel_id AS novelId,payload FROM novel_override").all()).toEqual([{ novelId: 1, payload }]);
     expect(db.prepare("SELECT json_extract(payload,'$.fields.completed.value') AS completed FROM novel_override").get())
       .toEqual({ completed: 1 });
+    applyRegisteredMigrations(db, 13, 14);
+    expect(db.prepare("SELECT json_extract(payload,'$.fields.status.value') AS status, json_extract(payload,'$.fields.status.updatedAt') AS updatedAt, json_type(payload,'$.fields.completed') AS completedType FROM novel_override WHERE novel_id=1").get())
+      .toEqual({ status: "Completed", updatedAt: 1763350000000, completedType: null });
   } finally { db.close(); rmSync(directory, { recursive: true }); }
 });

@@ -5,7 +5,8 @@ import {
   getNovelOverride,
   listNovelOverrides,
   mergeNovelOverride,
-  setNovelCompletedOverride,
+  readNovelOverrideCover,
+  updateNovelOverride,
 } from "./novel-override";
 
 vi.mock("@tauri-apps/api/core", () => ({
@@ -17,7 +18,7 @@ const mockedInvoke = vi.mocked(invoke);
 const document: WorkOverrideV1 = {
   schemaVersion: 1,
   identity: { pluginId: "source", novelId: "book", novelPath: "/book" },
-  fields: { completed: { value: true, updatedAt: 1763350000000 } },
+  fields: { status: { value: "Completed", updatedAt: 1763350000000 } },
 };
 
 beforeEach(() => {
@@ -55,36 +56,71 @@ describe("listNovelOverrides", () => {
   });
 });
 
-describe("setNovelCompletedOverride", () => {
-  it("stores the flag with the current time and returns the document", async () => {
+describe("readNovelOverrideCover", () => {
+  it("decodes returned byte arrays into Uint8Array", async () => {
+    mockedInvoke.mockResolvedValueOnce({
+      fileName: "cover.override.png",
+      contentType: "image/png",
+      bytes: [1, 2, 3],
+    });
+
+    const cover = await readNovelOverrideCover(7, "committed");
+    expect(cover).toEqual({
+      fileName: "cover.override.png",
+      contentType: "image/png",
+      bytes: new Uint8Array([1, 2, 3]),
+    });
+    expect(mockedInvoke).toHaveBeenCalledWith("db_novel_override_read_cover", {
+      novelId: 7,
+      mode: "committed",
+    });
+  });
+
+  it("returns null when no override cover exists", async () => {
+    mockedInvoke.mockResolvedValueOnce(null);
+    expect(await readNovelOverrideCover(7)).toBeNull();
+  });
+});
+
+describe("updateNovelOverride", () => {
+  it("stores edited fields and cover bytes atomically", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(1763350000000);
     mockedInvoke.mockResolvedValueOnce({ value: document, effects: {} });
 
-    expect(await setNovelCompletedOverride(7, true)).toEqual(document);
-    expect(mockedInvoke).toHaveBeenCalledWith("db_novel_override_set_field", {
+    const bytes = new Uint8Array([137, 80, 78, 71]);
+    expect(
+      await updateNovelOverride(
+        7,
+        { name: "Renamed", status: "Completed" },
+        { mode: "set", fileName: "cover.override.png", bytes },
+      ),
+    ).toEqual(document);
+    expect(mockedInvoke).toHaveBeenCalledWith("db_novel_override_update", {
       novelId: 7,
-      field: "completed",
-      value: true,
+      fields: { name: "Renamed", status: "Completed" },
+      cover: { mode: "set", fileName: "cover.override.png", bytes: [137, 80, 78, 71] },
       updatedAt: 1763350000000,
     });
   });
 
-  it("sends null to follow the source status again", async () => {
+  it("sends null fields and clear cover action to revert to source", async () => {
     mockedInvoke.mockResolvedValueOnce({ value: document, effects: {} });
 
-    await setNovelCompletedOverride(7, null);
+    await updateNovelOverride(7, { status: null }, { mode: "clear" }, 1763350001000);
 
-    expect(mockedInvoke).toHaveBeenCalledWith(
-      "db_novel_override_set_field",
-      expect.objectContaining({ novelId: 7, field: "completed", value: null }),
-    );
+    expect(mockedInvoke).toHaveBeenCalledWith("db_novel_override_update", {
+      novelId: 7,
+      fields: { status: null },
+      cover: { mode: "clear" },
+      updatedAt: 1763350001000,
+    });
   });
 
   it("propagates a rejected edit", async () => {
     mockedInvoke.mockRejectedValueOnce(new Error("work override: novel not found"));
 
-    await expect(setNovelCompletedOverride(99, true)).rejects.toThrow(
+    await expect(updateNovelOverride(99, { status: "Completed" })).rejects.toThrow(
       "work override: novel not found",
     );
   });
@@ -101,6 +137,20 @@ describe("mergeNovelOverride", () => {
     expect(mockedInvoke).toHaveBeenCalledWith("db_novel_override_merge", {
       novelId: 7,
       document,
+    });
+  });
+
+  it("forwards optional override cover bytes", async () => {
+    mockedInvoke.mockResolvedValueOnce({
+      value: { document, changed: true },
+      effects: {},
+    });
+
+    await mergeNovelOverride(7, document, new Uint8Array([9, 8, 7]));
+    expect(mockedInvoke).toHaveBeenCalledWith("db_novel_override_merge", {
+      novelId: 7,
+      document,
+      coverBytes: [9, 8, 7],
     });
   });
 

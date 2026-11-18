@@ -25,6 +25,7 @@ export interface LibraryNovel {
   path: string;
   name: string;
   cover: string | null;
+  coverOverride?: string | null;
   author: string | null;
   inLibrary: boolean;
   isLocal: boolean;
@@ -48,6 +49,8 @@ export interface LibraryFilter {
   unreadOnly?: boolean;
   localOnly?: boolean;
   completedOnly?: boolean;
+  statuses?: string[];
+  tags?: string[];
   sortOrder?: LibrarySortOrder;
   /** Optional route-level guard for screens that render bounded library windows. */
   limit?: number;
@@ -84,6 +87,16 @@ export interface LibrarySourceFilter {
   totalNovels: number;
 }
 
+export interface LibraryStatusFilter {
+  status: string;
+  totalNovels: number;
+}
+
+export interface LibraryTagFilter {
+  tag: string;
+  totalNovels: number;
+}
+
 export interface LibraryNovelIdentity {
   pluginId: string;
   path: string;
@@ -112,6 +125,8 @@ export type LibraryNovelRefreshFilter = Pick<
   | "unreadOnly"
   | "localOnly"
   | "completedOnly"
+  | "statuses"
+  | "tags"
 >;
 
 const DEFAULT_LIBRARY_PAGE_LIMIT = Math.min(100, MAX_ROUTE_QUERY_ROWS);
@@ -204,6 +219,32 @@ export async function listLibrarySourceFilters(
   );
 }
 
+export async function listLibraryStatusFilters(
+  filter: Omit<LibraryFilter, "limit" | "sortOrder" | "statuses"> = {},
+  readMode: DatabaseReadMode = "queued",
+): Promise<LibraryStatusFilter[]> {
+  return invokeDbQuery<LibraryStatusFilter[]>(
+    "db_novel_list_library_status_filters",
+    {
+      filter,
+      mode: readMode,
+    },
+  );
+}
+
+export async function listLibraryTagFilters(
+  filter: Omit<LibraryFilter, "limit" | "sortOrder"> = {},
+  readMode: DatabaseReadMode = "queued",
+): Promise<LibraryTagFilter[]> {
+  return invokeDbQuery<LibraryTagFilter[]>(
+    "db_novel_list_library_tag_filters",
+    {
+      filter,
+      mode: readMode,
+    },
+  );
+}
+
 export async function listLibraryNovelRefreshTargets(
   filter: LibraryNovelRefreshFilter = {},
 ): Promise<LibraryNovelRefreshTarget[]> {
@@ -214,6 +255,15 @@ export async function listLibraryNovelRefreshTargets(
       mode: "queued",
     },
   );
+}
+
+export interface NovelSourceMetadata {
+  name: string;
+  author: string | null;
+  artist: string | null;
+  summary: string | null;
+  status: string | null;
+  genres: string | null;
 }
 
 /**
@@ -227,6 +277,7 @@ export interface NovelDetailRecord {
   path: string;
   name: string;
   cover: string | null;
+  coverOverride?: string | null;
   summary: string | null;
   author: string | null;
   artist: string | null;
@@ -239,8 +290,10 @@ export interface NovelDetailRecord {
   updatedAt: number;
   libraryAddedAt: number | null;
   lastReadAt: number | null;
-  /** The user's completion flag; null follows the source status. */
-  completedOverride: boolean | null;
+  /** Canonical status override when explicitly set; null follows the source status. */
+  statusOverride: string | null;
+  /** Raw source-owned metadata preserved underneath user overrides. */
+  sourceMetadata?: NovelSourceMetadata;
 }
 
 export async function getNovelById(

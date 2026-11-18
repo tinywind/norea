@@ -109,7 +109,7 @@ export function NovelWorkspace({
   );
   const hasHistory = hasReadingHistory(chapters, lastReadChapterId);
   const readCount = useMemo(() => countReadChapters(chapters), [chapters]);
-  const statusLabel = novelStatusLabel(novel.status, t, novel.completedOverride);
+  const statusLabel = novelStatusLabel(novel.status, t, novel.statusOverride);
   const byline = [
     novel.author,
     novel.artist && novel.artist !== novel.author ? novel.artist : null,

@@ -506,6 +506,7 @@ export interface LibraryUpdateEntry {
   isDownloaded: boolean;
   novelName: string;
   novelCover: string | null;
+  novelCoverOverride?: string | null;
   novelIsLocal: boolean;
 }
 
@@ -605,6 +606,7 @@ export interface RecentlyReadEntry {
   novelSourceNovelId: string | null;
   novelName: string;
   novelCover: string | null;
+  novelCoverOverride?: string | null;
   novelInLibrary: boolean;
   novelIsLocal: boolean;
   novelPath: string;

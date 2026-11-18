@@ -27,6 +27,7 @@ function UpdateCover({
   const { t } = useTranslation();
   const coverSource = useNovelCoverSource({
     cover: entry.novelCover,
+    coverOverride: entry.novelCoverOverride ?? null,
     id: entry.novelId,
     isLocal: entry.novelIsLocal,
     name: entry.novelName,

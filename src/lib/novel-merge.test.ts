@@ -157,7 +157,7 @@ const sourceNovel = {
   updatedAt: 1,
   libraryAddedAt: 1,
   lastReadAt: null,
-  completedOverride: null,
+  statusOverride: null,
 };
 
 const targetNovel = {

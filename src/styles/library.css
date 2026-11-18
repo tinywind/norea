@@ -209,11 +209,29 @@
 }
 
 /* Group names read as section labels, like the settings group labels, not as headings. */
-.norea-library-view-options .mantine-InputWrapper-label {
+.norea-library-view-options .mantine-InputWrapper-label,
+.norea-library-view-options .norea-library-option-group-label {
   color: var(--norea-color-ink-muted);
+  display: block;
   font-size: var(--norea-text-sm);
   font-weight: var(--norea-weight-medium);
   margin-bottom: var(--norea-space-1);
+}
+
+.norea-library-tag-selected {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--norea-space-1);
+  margin-bottom: var(--norea-space-2);
+}
+
+.norea-library-tag-search {
+  margin-bottom: var(--norea-space-2);
+}
+
+.norea-library-tag-list {
+  max-height: 15rem;
+  overflow-y: auto;
 }
 
 /* The count ends on the row's right edge, so counts line up down the list. */

@@ -26,7 +26,7 @@ import {
   type StoredNovelChapter,
   type StoredNovelNumberReconciliation,
 } from "../lib/work-metadata";
-import { completedOverrideInDb, overridePayloadsInDb } from "./sql/novel-override";
+import { coverOverrideInDb, overridePayloadsInDb, statusOverrideInDb } from "./sql/novel-override";
 import { sqliteBoolean } from "./sql/sqlite-value";
 import { stableCategoryIdInDb } from "./sql/user-state-core";
 import type { DbMutationEffects, DbMutationEnvelope } from "../db/ipc";
@@ -915,7 +915,8 @@ export function createWorkMetadataIpcHandler(
                 ...row,
                 inLibrary: Boolean(row.inLibrary),
                 isLocal: row.pluginId === "local" && Boolean(row.isLocal),
-                completedOverride: await completedOverrideInDb(db, row.id),
+                statusOverride: await statusOverrideInDb(db, row.id),
+                coverOverride: await coverOverrideInDb(db, row.id),
               }
             : null,
         };

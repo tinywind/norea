@@ -62,10 +62,12 @@ export interface NovelCoverStorageInput extends ChapterStorageNovelPathInput {
   path: string;
   pluginId: string;
   sourceNovelId: string | null;
+  coverOverride?: string | null;
 }
 
 export interface NovelCoverDisplayInput extends NovelCoverStorageInput {
   cover: string | null;
+  coverOverride?: string | null;
 }
 
 export interface NovelCoverDisplaySource {
@@ -252,9 +254,10 @@ function selectNovelCoverDisplayCacheKey(
   options: NovelCoverDisplayCacheOptions,
 ): string {
   const plugin = options.plugin ?? null;
-  const identity = [novel.pluginId, novel.path, novel.path.trim() ? null : novel.id];
+  const coverOverride = novel.coverOverride?.trim() || null;
+  const identity = [novel.pluginId, novel.path, novel.path.trim() ? null : novel.id, coverOverride];
   const storedKey = JSON.stringify(["stored", ...identity]);
-  if (!options.allowSourceFallback || !plugin || novelCoverDisplayCache.get(storedKey)?.source) {
+  if (!options.allowSourceFallback || !plugin || coverOverride || novelCoverDisplayCache.get(storedKey)?.source) {
     return storedKey;
   }
   return JSON.stringify([
@@ -450,7 +453,13 @@ async function storeNovelCoverFromSource(
     await storeNovelCover(novel, null);
     return true;
   }
-  if (!refresh && (peekCachedNovelCoverSrc({ ...novel, cover: sourceUrl }) || await readStoredNovelCover(novel))) return false;
+  if (
+    !refresh &&
+    (peekCachedNovelCoverSrc({ ...novel, cover: sourceUrl, coverOverride: null }) ||
+      (await readStoredNovelCover(novel, false)))
+  ) {
+    return false;
+  }
 
   const image = fetched ?? await fetchNovelCoverForStorage(plugin, sourceUrl, refresh);
   const body = new Uint8Array(await image.body.arrayBuffer());
@@ -523,6 +532,7 @@ function storedNovelCoverSrc(stored: StoredNovelCover, novelId: number): string 
 
 async function readStoredNovelCover(
   novel: NovelCoverStorageInput,
+  includeOverride = true,
 ): Promise<StoredNovelCover | null> {
   let metadataDirectory = resolvedNovelStorageDir(novel.id);
   if (!metadataDirectory) {
@@ -553,6 +563,12 @@ async function readStoredNovelCover(
   // Cover display may consult exact indexed/deterministic paths, but never scans storage.
   if (!metadataDirectory) return null;
   const { workMetadataOperation } = await import("./work-metadata");
+  if (includeOverride && novel.coverOverride?.trim()) {
+    const { cover: overrideCover } = await workMetadataOperation({ operation: "cover", path: `${metadataDirectory}/override.json` });
+    if (overrideCover) {
+      return { relativePath: `${metadataDirectory}/${overrideCover.fileName}`, modifiedAt: overrideCover.modifiedAt };
+    }
+  }
   const { cover } = await workMetadataOperation({ operation: "cover", path: `${metadataDirectory}/novel.json` });
   return cover ? { relativePath: `${metadataDirectory}/${cover.fileName}`, modifiedAt: cover.modifiedAt } : null;
 }

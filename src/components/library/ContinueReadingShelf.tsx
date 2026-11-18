@@ -52,6 +52,7 @@ function ContinueReadingCard({
   const coverSource = useNovelCoverSource(
     {
       cover: entry.novelCover,
+      coverOverride: entry.novelCoverOverride ?? null,
       id: entry.novelId,
       isLocal: entry.novelIsLocal,
       name: entry.novelName,

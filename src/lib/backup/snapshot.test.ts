@@ -287,18 +287,22 @@ describe("gatherBackupSnapshot", () => {
   });
 
   it("carries each novel's stored override and omits it for novels without one", async () => {
-    const override = { fields: {
+    const legacyOverride = { fields: {
       completed: { value: true, updatedAt: 1_763_350_000_000 },
       futureField: { value: "kept", updatedAt: 5 },
     } };
+    const expectedOverride = { fields: {
+      futureField: { value: "kept", updatedAt: 5 },
+      status: { value: "Completed", updatedAt: 1_763_350_000_000 },
+    } };
     primeGather([RAW_CHAPTER], [RAW_CATEGORY], [
-      { ...RAW_NOVEL, overridePayload: JSON.stringify(override) },
+      { ...RAW_NOVEL, overridePayload: JSON.stringify(legacyOverride) },
       { ...RAW_NOVEL, id: 2, path: "/n/2" },
     ]);
 
     const manifest = await gatherBackupSnapshot();
 
-    expect(manifest.novels[0]?.override).toEqual(override);
+    expect(manifest.novels[0]?.override).toEqual(expectedOverride);
     expect("override" in manifest.novels[1]!).toBe(false);
     expect(parseBackupManifest(encodeBackupManifest(manifest))).toEqual(manifest);
   });
@@ -396,16 +400,17 @@ describe("applyBackupSnapshot", () => {
     expect(writeStoredChapterContentMirrorMock).not.toHaveBeenCalled();
   });
 
-  it("sends a novel override to the native restore unchanged", async () => {
-    const override = { fields: { completed: { value: false, updatedAt: 1_763_350_000_000 } } };
-    primeGather([RAW_CHAPTER], [RAW_CATEGORY], [{ ...RAW_NOVEL, overridePayload: JSON.stringify(override) }]);
+  it("sends a novel override to the native restore upgraded to canonical status", async () => {
+    const legacyOverride = { fields: { completed: { value: false, updatedAt: 1_763_350_000_000 } } };
+    const canonicalOverride = { fields: { status: { value: "Ongoing", updatedAt: 1_763_350_000_000 } } };
+    primeGather([RAW_CHAPTER], [RAW_CATEGORY], [{ ...RAW_NOVEL, overridePayload: JSON.stringify(legacyOverride) }]);
     const manifest = parseBackupManifest(encodeBackupManifest(await gatherBackupSnapshot()));
     invokeMock.mockClear();
 
     await applyBackupSnapshot(manifest);
 
     const restore = invokeMock.mock.calls.find(([command]) => command === "backup_restore_snapshot");
-    expect(JSON.parse((restore![1] as { manifestJson: string }).manifestJson).novels[0].override).toEqual(override);
+    expect(JSON.parse((restore![1] as { manifestJson: string }).manifestJson).novels[0].override).toEqual(canonicalOverride);
   });
 
   it("preserves nullable creation times from server metadata through export and restore", async () => {

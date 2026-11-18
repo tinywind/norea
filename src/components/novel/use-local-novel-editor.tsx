@@ -1,4 +1,4 @@
-import { Button, SimpleGrid, Stack, Text, Textarea, TextInput } from "@mantine/core";
+import { Button, Select, SimpleGrid, Stack, Text, Textarea, TextInput } from "@mantine/core";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   useEffect,
@@ -21,11 +21,17 @@ import { syncLocalChapterStorageAfterOrderChange } from "../../lib/local-chapter
 import { pickLocalFiles } from "../../lib/local-file-picker";
 import { clearLocalImportFileCache, localImportFileSizeLimit } from "../../lib/local-import";
 import { importLocalFileToLibrary } from "../../lib/local-import-library";
+import { isNovelStatus, NovelStatus } from "../../lib/plugins/types";
 import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { type DefaultChapterSort } from "../../store/library";
 import { LocalCoverPicker } from "../LocalCoverPicker";
 import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
-import { chaptersKey, novelKey } from "./novel-detail-model";
+import {
+  CANONICAL_NOVEL_STATUSES,
+  canonicalNovelStatusLabel,
+  chaptersKey,
+  novelKey,
+} from "./novel-detail-model";
 const LOCAL_IMPORT_EXTENSIONS = ["txt", "html", "htm", "md", "markdown", "epub", "pdf"];
 const EMPTY_LOCAL_NOVEL_FORM: LocalNovelMetadataInput = {
   name: "",
@@ -33,7 +39,7 @@ const EMPTY_LOCAL_NOVEL_FORM: LocalNovelMetadataInput = {
   summary: "",
   author: "",
   artist: "",
-  status: "",
+  status: NovelStatus.Unknown,
   genres: "",
 };
 
@@ -49,7 +55,7 @@ function localMetadataFromNovel(
     summary: novel.summary ?? "",
     author: novel.author ?? "",
     artist: novel.artist ?? "",
-    status: novel.status ?? "",
+    status: isNovelStatus(novel.status) ? novel.status : NovelStatus.Unknown,
     genres: novel.genres ?? "",
   };
 }
@@ -300,16 +306,24 @@ export function useLocalNovelEditor(
               />
             </SimpleGrid>
             <SimpleGrid cols={{ base: 1, sm: 2 }} spacing="sm">
-              <TextInput
+              <Select
+                allowDeselect={false}
+                data={CANONICAL_NOVEL_STATUSES.map((status) => ({
+                  value: status,
+                  label: canonicalNovelStatusLabel(status, t),
+                }))}
                 label={t("library.localNovel.status")}
-                onChange={(event) => {
-                  const { value } = event.currentTarget;
+                onChange={(value) => {
                   setLocalMetadataForm((current) => ({
                     ...current,
-                    status: value,
+                    status: isNovelStatus(value) ? value : NovelStatus.Unknown,
                   }));
                 }}
-                value={localMetadataForm.status ?? ""}
+                value={
+                  isNovelStatus(localMetadataForm.status)
+                    ? localMetadataForm.status
+                    : NovelStatus.Unknown
+                }
               />
               <TextInput
                 label={t("library.localNovel.genres")}

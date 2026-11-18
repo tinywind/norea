@@ -129,20 +129,30 @@ interface WorkOverrideV1 {
 }
 ```
 
-The first field is `completed`: `true` or `false` when the user set whether the
-work is completed, and `null` to follow the source status again. A cleared field
-stays in the document so the clearing reaches other devices. Field names this
-version does not know are kept as they are. When two copies differ, each field
-takes the value with the later `updatedAt`, and an equal time keeps the stored
-one. The app keeps the fields in the `novel_override` table and derives the
-identity from the work; the file is written only for a work whose `novel.json`
-has been published.
+Editable metadata fields live under `fields`: `name`, `author`, `artist`,
+`summary`, `genres`, `status` (canonical `NovelStatus` strings: `Unknown`,
+`Ongoing`, `Completed`, `Licensed`, `Publishing Finished`, `Cancelled`,
+`On Hiatus`), and `cover` (`cover.override.<ext>` where `<ext>` is one of
+`avif|bmp|gif|img|jpg|jpeg|png|svg|webp`). Setting any field to `null` follows
+the source metadata again while retaining the `null` entry so the reset reaches
+other devices. Legacy `completed` entries (`true`/`false`/`null`) upgrade on read
+and via SQLite migration v14 into canonical `status` entries. Setting or
+clearing `cover.override.<ext>` never deletes the original source `cover.<ext>`
+file. Field names this version does not know are kept as they are. When two
+copies differ, each field takes the value with the later `updatedAt`, and an
+equal time keeps the stored one. The app keeps the fields in the
+`novel_override` table and derives the identity from the work; the file is
+written only for a work whose `novel.json` has been published.
 
 A content server that advertises `workOverrideVersion: 1` stores one override
-per work beside its `novel.json`. The app sends changed overrides and reads the
-ones changed on the server during content sync, and reads a work's override when
-the work is installed or opened. Without that capability the override stays on
-the device.
+per work beside its `novel.json`. A server advertising
+`workOverrideCoverVersion: 1` also stores and serves `cover.override.<ext>` via
+`/api/v1/works/:id/override/cover`, while keeping `GET /api/v1/works/:id/cover`
+restricted to the original source cover and projecting effective overridden
+metadata and cover onto `/api/v1/catalog/works`. The app sends changed overrides
+and reads the ones changed on the server during content sync, and reads a work's
+override when the work is installed or opened. Without those capabilities the
+override stays on the device.
 
 ## Server and synchronization
 

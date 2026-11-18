@@ -8,6 +8,8 @@ import {
   getLibraryNovelSummary,
   listLibraryNovelPage,
   listLibrarySourceFilters,
+  listLibraryStatusFilters,
+  listLibraryTagFilters,
   type LibraryNovelCursor,
   type LibraryNovelRefreshFilter,
   type LibraryNovelSummary,
@@ -76,6 +78,37 @@ export function useLibraryQuery(
     }),
     [debouncedSearch, selectedCategoryId],
   );
+  const libraryStatusFilter = useMemo(
+    () => ({
+      search: libraryFilter.search,
+      categoryId: libraryFilter.categoryId,
+      downloadedOnly: libraryFilter.downloadedOnly,
+      repairNeededOnly: libraryFilter.repairNeededOnly,
+      sourceId: libraryFilter.sourceId,
+      unreadOnly: libraryFilter.unreadOnly,
+      localOnly: libraryFilter.localOnly,
+      completedOnly: libraryFilter.completedOnly,
+      tags: libraryFilter.tags,
+    }),
+    [
+      libraryFilter.categoryId,
+      libraryFilter.completedOnly,
+      libraryFilter.downloadedOnly,
+      libraryFilter.localOnly,
+      libraryFilter.repairNeededOnly,
+      libraryFilter.search,
+      libraryFilter.sourceId,
+      libraryFilter.tags,
+      libraryFilter.unreadOnly,
+    ],
+  );
+  const libraryTagFilter = useMemo(
+    () => ({
+      ...libraryStatusFilter,
+      statuses: libraryFilter.statuses,
+    }),
+    [libraryFilter.statuses, libraryStatusFilter],
+  );
 
   const novels = useInfiniteQuery({
     meta: { errorPresentation: "inline" },
@@ -127,6 +160,20 @@ export function useLibraryQuery(
     enabled: active && libraryRowsLoaded,
     queryKey: ["novel", "library", "sources", librarySourceFilter] as const,
     queryFn: () => listLibrarySourceFilters(librarySourceFilter, "committed"),
+    staleTime: Infinity,
+  });
+
+  const statusFilters = useQuery({
+    enabled: active && libraryRowsLoaded,
+    queryKey: ["novel", "library", "statuses", libraryStatusFilter] as const,
+    queryFn: () => listLibraryStatusFilters(libraryStatusFilter, "committed"),
+    staleTime: Infinity,
+  });
+
+  const tagFilters = useQuery({
+    enabled: active && libraryRowsLoaded,
+    queryKey: ["novel", "library", "tags", libraryTagFilter] as const,
+    queryFn: () => listLibraryTagFilters(libraryTagFilter, "committed"),
     staleTime: Infinity,
   });
 
@@ -203,6 +250,8 @@ export function useLibraryQuery(
     summary,
     tagSummary: tagSummary.data ?? EMPTY_LIBRARY_SUMMARY,
     sourceFilters,
+    statusFilters,
+    tagFilters,
     categories,
     categoryCounts,
     rows,

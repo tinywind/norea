@@ -12,6 +12,7 @@ import {
   findContinueReadingChapter,
   NO_CHAPTER_LIST_FILTERS,
   novelStatusLabel,
+  splitGenres,
 } from "./novel-detail-model";
 
 function chapter(
@@ -239,12 +240,31 @@ describe("reader-facing episode numbers", () => {
 describe("novelStatusLabel", () => {
   const translate = (key: string) => key;
 
-  it("shows the source status until the user sets a completion flag", () => {
+  it("shows the source status until the user sets a canonical status override", () => {
     expect(novelStatusLabel("Ongoing", translate)).toBe("novel.status.ongoing");
     expect(novelStatusLabel("연재중", translate)).toBe("연재중");
     expect(novelStatusLabel("Unknown", translate)).toBeNull();
-    expect(novelStatusLabel("Ongoing", translate, true)).toBe("novel.status.completed");
-    expect(novelStatusLabel(null, translate, false)).toBe("novel.status.ongoing");
+    expect(novelStatusLabel("Ongoing", translate, "Completed")).toBe("novel.status.completed");
+    expect(novelStatusLabel("Ongoing", translate, "On Hiatus")).toBe("novel.status.onHiatus");
+    expect(novelStatusLabel("Completed", translate, "Unknown")).toBeNull();
+    expect(novelStatusLabel(null, translate, "Ongoing")).toBe("novel.status.ongoing");
     expect(novelStatusLabel("Completed", translate, null)).toBe("novel.status.completed");
+  });
+});
+
+describe("splitGenres", () => {
+  it("normalizes pipes, commas, whitespace, and leading hashtags without case duplicates", () => {
+    expect(splitGenres("#Drama #Adult #BL #Yuri #Toptoon")).toEqual([
+      "Drama",
+      "Adult",
+      "BL",
+      "Yuri",
+      "Toptoon",
+    ]);
+    expect(splitGenres("Fantasy | Action, fantasy, Drama")).toEqual([
+      "Fantasy",
+      "Action",
+      "Drama",
+    ]);
   });
 });

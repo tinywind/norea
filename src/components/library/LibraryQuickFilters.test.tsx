@@ -67,13 +67,17 @@ it.each([en, ko])("offers Unread and Downloaded as pressable chips without Clear
   expect(chip(strings["common.clear"])).toHaveLength(0);
 });
 
-it.each([en, ko])("counts every active filter, including the source, and offers Clear", async (strings) => {
+it.each([en, ko])("counts every active filter, including the source, status, and tag selections, and offers Clear", async (strings) => {
   locale.strings = strings;
   useLibraryStore.getState().setUnreadOnlyMode(true);
   useLibraryStore.getState().setLocalOnlyMode(true);
+  useLibraryStore.getState().toggleStatus("Completed");
+  useLibraryStore.getState().toggleTag("Romance");
   const chip = await render(true);
   expect(chip(strings["library.filter.unread"])[0]!.props.selected).toBe(true);
-  expect(chip(strings["library.filter.moreActive"].replace("{count}", "3"))).toHaveLength(1);
+  expect(chip(strings["novel.status.completed"])[0]!.props.selected).toBe(true);
+  expect(chip("Romance")[0]!.props.selected).toBe(true);
+  expect(chip(strings["library.filter.moreActive"].replace("{count}", "5"))).toHaveLength(1);
   expect(chip(strings["common.clear"])).toHaveLength(1);
 });
 

@@ -214,6 +214,18 @@ beforeEach(() => {
         params,
       );
     }
+    if (command === "db_novel_list_library_status_filters") {
+      const { conditions, params } = buildFilter(args.filter as never);
+      return db.select<Array<{ status: string; totalNovels: number }>>(
+        `SELECT COALESCE(NULLIF(trim(n.status), ''), 'Unknown') AS status, COUNT(*) AS totalNovels
+         FROM novel n LEFT JOIN novel_stats s ON s.novel_id = n.id
+         WHERE ${conditions.join(" AND ")} GROUP BY COALESCE(NULLIF(trim(n.status), ''), 'Unknown')`,
+        params,
+      );
+    }
+    if (command === "db_novel_list_library_tag_filters") {
+      return [];
+    }
     if (command === "db_novel_get_by_id") {
       const [row] = await db.select<Array<Record<string, unknown>>>(
         `SELECT n.id, n.source_novel_id AS sourceNovelId, n.plugin_id AS pluginId, ip.name AS pluginName,
@@ -263,6 +275,8 @@ it.each([false, true])("filters the library and its panels before a sync write s
       { totalNovels: 1 },
       { totalNovels: 1 },
       [{ pluginId: "source", totalNovels: 1 }],
+      [{ status: "Unknown", totalNovels: 1 }],
+      [],
       [{ id: 1, name: "Reading", novelCount: 1 }],
       { total: 1, uncategorized: 0 },
     ]);

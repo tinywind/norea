@@ -43,6 +43,8 @@ export function useLibrarySelection(
     localOnly,
     completedOnly,
     repairNeededOnly,
+    statuses,
+    tags,
   } = libraryFilter;
   const [selectedIds, setSelectedIds] = useState<ReadonlySet<number>>(
     () => new Set(),
@@ -50,6 +52,8 @@ export function useLibrarySelection(
   const [selecting, setSelecting] = useState(false);
   const selectionMode = selecting || selectedIds.size > 0;
   const selectionRequestRef = useRef(0);
+  const statusesKey = JSON.stringify(statuses ?? []);
+  const tagsKey = JSON.stringify(tags ?? []);
   const selectionScope = JSON.stringify([libraryFilter, sortOrder, active]);
   const selectionScopeRef = useRef(selectionScope);
   selectionScopeRef.current = selectionScope;
@@ -66,6 +70,8 @@ export function useLibrarySelection(
     localOnly,
     completedOnly,
     repairNeededOnly,
+    statusesKey,
+    tagsKey,
   ]);
 
   const invalidateLibraryCategories = useCallback(() => {

@@ -123,6 +123,7 @@ export function useNovelCoverSource(
   }, [
     coverSnapshot,
     novel.cover,
+    novel.coverOverride,
     novel.id,
     novel.isLocal,
     novel.inLibrary,

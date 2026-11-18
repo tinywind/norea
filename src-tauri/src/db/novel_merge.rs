@@ -21,7 +21,10 @@ use super::chapter_composition::{
     materialize_chapter_composition_in_tx, set_chapter_composition_in_tx,
     ChapterCompositionPreparedCopyDto, ChapterCompositionV1Dto,
 };
-use super::novel_override::{load_novel_override_fields_in_conn, merge_novel_override_in_tx};
+use super::novel_override::{
+    load_novel_override_fields_in_conn, merge_novel_override_with_cover_in_tx,
+    read_novel_override_cover_in_conn,
+};
 use super::tx::{with_write_tx, MetadataRoot, TxContext, TxOptions};
 use super::user_state::{
     core::{
@@ -1741,12 +1744,19 @@ pub async fn apply_novel_merge_in_tx(
     let source_override =
         load_novel_override_fields_in_conn(conn, input.source_novel_id).await?;
     if !source_override.is_empty() {
-        merge_novel_override_in_tx(
+        let source_cover = read_novel_override_cover_in_conn(
+            resolved_root.as_deref(),
+            conn,
+            input.source_novel_id,
+        )
+        .await?;
+        merge_novel_override_with_cover_in_tx(
             resolved_root.as_deref(),
             conn,
             ctx,
             input.target_novel_id,
             &source_override,
+            source_cover.as_ref().map(|cover| cover.bytes.as_slice()),
         )
         .await?;
     }
@@ -3112,7 +3122,7 @@ mod tests {
             merged_overrides,
             vec![(
                 2,
-                r#"{"fields":{"completed":{"value":true,"updatedAt":20},"note":{"value":"target","updatedAt":5},"sourceOnly":{"value":7,"updatedAt":3}}}"#
+                r#"{"fields":{"note":{"value":"target","updatedAt":5},"sourceOnly":{"value":7,"updatedAt":3},"status":{"value":"Completed","updatedAt":20}}}"#
                     .to_string()
             )]
         );

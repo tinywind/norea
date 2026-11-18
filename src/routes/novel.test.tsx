@@ -68,7 +68,7 @@ vi.mock("../components/ReaderSettingsPanel", () => ({ ReaderSettingsPanel: () =>
 vi.mock("../components/library/use-download-goal-offline-states", () => ({ useDownloadGoalOfflineStates: () => undefined }));
 vi.mock("../components/novel/NovelCheckPausedNotice", () => ({ NovelCheckPausedNotice: () => null }));
 vi.mock("../components/novel/ServerWorkCategories", () => ({ ServerWorkCategories: () => null }));
-vi.mock("../components/novel/NovelCompletionEditor", () => ({ NovelCompletionEditor: () => null }));
+vi.mock("../components/novel/NovelMetadataOverrideEditor", () => ({ NovelMetadataOverrideEditor: () => null }));
 vi.mock("../lib/plugins/manager", () => ({ pluginManager: { getPlugin: () => mocks.installed ? { id: "source-a", name: "Source", getBaseUrl: () => "https://source.example" } : undefined } }));
 vi.mock("../lib/tasks/source-tasks", () => ({ enqueueOpenSiteTask: vi.fn() }));
 vi.mock("../lib/content-sync/novel-source", () => ({ readServerNovelSource: vi.fn(), listServerChapterAvailability: vi.fn() }));
@@ -331,7 +331,7 @@ it("offers refresh, source and reader settings directly and keeps advanced work 
   mocks.novel.inLibrary = true;
   mocks.installed = true;
   try {
-    expect(await overflowLabels()).toEqual(["novel.refreshAllDetails", "novel.completion.edit", "novel.mergeSource"]);
+    expect(await overflowLabels()).toEqual(["novel.refreshAllDetails", "novel.metadataOverride.edit", "novel.mergeSource"]);
     await withPageTree(async (find, run) => {
       const refresh = find((props) => props.label === "novel.checkNewChapters")!;
       expect(refresh.props.disabled).toBe(false);

@@ -49,6 +49,10 @@ pub(crate) fn is_cover_file(name: &str) -> bool {
     name.strip_prefix("cover.").is_some_and(|extension| matches!(extension, "avif" | "bmp" | "gif" | "img" | "jpg" | "jpeg" | "png" | "svg" | "webp"))
 }
 
+pub(crate) fn is_override_cover_file(name: &str) -> bool {
+    name.strip_prefix("cover.override.").is_some_and(|extension| matches!(extension, "avif" | "bmp" | "gif" | "img" | "jpg" | "jpeg" | "png" | "svg" | "webp"))
+}
+
 fn safe_child(value: &str) -> bool {
     super::paths::is_storage_id(value)
 }
@@ -59,7 +63,7 @@ fn checked_path(root: &Path, relative: &str) -> Result<PathBuf, String> {
         return Err("work metadata: invalid file path".into());
     }
     let name = parts[3];
-    if name != "novel.json" && name != "override.json" && !is_cover_file(name) {
+    if name != "novel.json" && name != "override.json" && !is_cover_file(name) && !is_override_cover_file(name) {
         return Err("work metadata: unsupported file".into());
     }
     let mut path = root.to_path_buf();
@@ -191,7 +195,14 @@ fn operate(root: &Path, input: WorkMetadataOperation) -> Result<WorkMetadataResu
     let path = checked_path(root, &relative)?;
     let limit = if relative.ends_with(".json") { MAX_METADATA_BYTES } else { MAX_COVER_BYTES };
     match input.operation.as_str() {
-        "cover" => Ok(WorkMetadataResult { cover: discover_cover(&path)?, ..Default::default() }),
+        "cover" => {
+            let cover = if relative.ends_with("/override.json") {
+                discover_override_cover(&path)?
+            } else {
+                discover_cover(&path)?
+            };
+            Ok(WorkMetadataResult { cover, ..Default::default() })
+        }
         "read" => Ok(WorkMetadataResult { body: read_file(&path, limit)?, ..Default::default() }),
         "write" => {
             let body = input.body.ok_or("work metadata: missing body")?;
@@ -237,6 +248,37 @@ fn discover_cover(metadata_path: &Path) -> Result<Option<StoredCover>, String> {
     }
     covers.sort_by(|a, b| (preferred.as_ref() != Some(&a.file_name), &a.file_name).cmp(&(preferred.as_ref() != Some(&b.file_name), &b.file_name)));
     Ok(covers.into_iter().next())
+}
+
+fn discover_override_cover(override_path: &Path) -> Result<Option<StoredCover>, String> {
+    if override_path.file_name().is_none_or(|name| name != "override.json") {
+        return Err("work metadata: override cover lookup requires override.json".into());
+    }
+    let Some(bytes) = read_file(override_path, MAX_METADATA_BYTES)? else {
+        return Ok(None);
+    };
+    let Some(file_name) = serde_json::from_slice::<serde_json::Value>(&bytes)
+        .ok()
+        .and_then(|value| value["fields"]["cover"]["value"].as_str().map(str::to_owned))
+        .filter(|name| is_override_cover_file(name))
+    else {
+        return Ok(None);
+    };
+    let directory = override_path.parent().ok_or("work metadata: missing directory")?;
+    let cover_path = directory.join(&file_name);
+    let Ok(metadata) = fs::symlink_metadata(&cover_path) else {
+        return Ok(None);
+    };
+    if !metadata.file_type().is_file() || metadata.len() == 0 || metadata.len() > MAX_COVER_BYTES as u64 {
+        return Ok(None);
+    }
+    let modified_at = metadata
+        .modified()
+        .ok()
+        .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0);
+    Ok(Some(StoredCover { file_name, modified_at }))
 }
 
 pub(crate) fn read_work_metadata_bytes_at(
@@ -498,7 +540,7 @@ mod tests {
         for value in ["contents/a/../novel.json", "contents/a/b/content.html", "C:/a/b/novel.json", "contents/a/b/cover../oops", "contents/a/b/override.json.bak", "contents/a/../override.json"] {
             assert!(checked_path(root.path(), value).is_err());
         }
-        for value in ["contents/a/b/novel.json", "contents/a/b/override.json", "contents/a/b/cover.jpg"] {
+        for value in ["contents/a/b/novel.json", "contents/a/b/override.json", "contents/a/b/cover.jpg", "contents/a/b/cover.override.png"] {
             assert!(checked_path(root.path(), value).is_ok());
         }
     }

@@ -5,12 +5,17 @@ import {
   Switch,
   Tabs,
   Text,
+  TextInput,
 } from "@mantine/core";
+import { useId, useMemo, useState } from "react";
 import { SegmentedToggle } from "../SegmentedToggle";
+import { ChipButton } from "../ChipButton";
 import {
   LOCAL_PLUGIN_ID,
   type LibraryNovelSummary,
   type LibrarySourceFilter,
+  type LibraryStatusFilter,
+  type LibraryTagFilter,
 } from "../../db/queries/novel";
 import { useTranslation, type TranslationKey } from "../../i18n";
 import {
@@ -27,8 +32,9 @@ import {
 } from "../../lib/library-settings-options";
 import { useShallow } from "zustand/react/shallow";
 import { useLibraryStore, type LibraryDisplayMode } from "../../store/library";
+import { CANONICAL_NOVEL_STATUSES, canonicalNovelStatusLabel } from "../novel/novel-detail-model";
 import { IconButton } from "../IconButton";
-import { MinusIcon, PlusIcon } from "../ui/icons";
+import { CloseIcon, MinusIcon, PlusIcon } from "../ui/icons";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 
 export type TranslateFn = ReturnType<typeof useTranslation>["t"];
@@ -131,7 +137,11 @@ interface LibraryViewOptionsProps {
   opened: boolean;
   sources: readonly LibrarySourceFilter[];
   sourcesLoading: boolean;
+  statuses?: readonly LibraryStatusFilter[];
+  statusesLoading?: boolean;
   tab: LibraryViewOptionsTab;
+  tags?: readonly LibraryTagFilter[];
+  tagsLoading?: boolean;
 }
 
 /** Filter, sort and display choices for the library in one sheet. */
@@ -144,7 +154,11 @@ export function LibraryViewOptions({
   opened,
   sources,
   sourcesLoading,
+  statuses = [],
+  statusesLoading = false,
   tab,
+  tags = [],
+  tagsLoading = false,
 }: LibraryViewOptionsProps) {
   const { t } = useTranslation();
 
@@ -176,6 +190,10 @@ export function LibraryViewOptions({
             onSourceChange={onSourceChange}
             sources={sources}
             sourcesLoading={sourcesLoading}
+            statuses={statuses}
+            statusesLoading={statusesLoading}
+            tags={tags}
+            tagsLoading={tagsLoading}
           />
         </Tabs.Panel>
         <Tabs.Panel pt="md" value="sort">
@@ -189,18 +207,101 @@ export function LibraryViewOptions({
   );
 }
 
-function FilterOptions({
+export function FilterOptions({
   activeSourceId,
   counts,
   onSourceChange,
   sources,
   sourcesLoading,
+  statuses = [],
+  statusesLoading = false,
+  tags = [],
+  tagsLoading = false,
 }: Pick<
   LibraryViewOptionsProps,
-  "activeSourceId" | "counts" | "onSourceChange" | "sources" | "sourcesLoading"
+  | "activeSourceId"
+  | "counts"
+  | "onSourceChange"
+  | "sources"
+  | "sourcesLoading"
+  | "statuses"
+  | "statusesLoading"
+  | "tags"
+  | "tagsLoading"
 >) {
   const { t } = useTranslation();
   const flags = useLibraryFilterFlags(counts);
+  const {
+    selectedStatuses,
+    selectedTags,
+    setSelectedStatuses,
+    toggleTag,
+  } = useLibraryStore(
+    useShallow((s) => ({
+      selectedStatuses: s.selectedStatuses,
+      selectedTags: s.selectedTags,
+      setSelectedStatuses: s.setSelectedStatuses,
+      toggleTag: s.toggleTag,
+    })),
+  );
+  const [tagSearch, setTagSearch] = useState("");
+  const tagHeadingId = useId();
+
+  const statusOptions = useMemo(() => {
+    const countsByStatus = new Map(
+      statuses.map((entry) => [entry.status, entry.totalNovels]),
+    );
+    const ordered: string[] = [];
+    for (const status of CANONICAL_NOVEL_STATUSES) {
+      if ((countsByStatus.get(status) ?? 0) > 0 || selectedStatuses.includes(status)) {
+        ordered.push(status);
+      }
+    }
+    for (const entry of statuses) {
+      if (!ordered.includes(entry.status)) ordered.push(entry.status);
+    }
+    for (const selected of selectedStatuses) {
+      if (!ordered.includes(selected)) ordered.push(selected);
+    }
+    return ordered.map((status) => ({
+      status,
+      totalNovels: countsByStatus.get(status) ?? 0,
+    }));
+  }, [selectedStatuses, statuses]);
+
+  const mergedTagOptions = useMemo(() => {
+    const byKey = new Map<string, LibraryTagFilter>();
+    for (const entry of tags) {
+      byKey.set(entry.tag.toLowerCase(), entry);
+    }
+    const items: LibraryTagFilter[] = [];
+    const seen = new Set<string>();
+    for (const selected of selectedTags) {
+      const key = selected.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const found = byKey.get(key);
+      items.push({
+        tag: found?.tag ?? selected,
+        totalNovels: found?.totalNovels ?? 0,
+      });
+    }
+    for (const entry of tags) {
+      const key = entry.tag.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      items.push(entry);
+    }
+    const needle = tagSearch.trim().toLowerCase();
+    return needle
+      ? items.filter((entry) => entry.tag.toLowerCase().includes(needle))
+      : items;
+  }, [selectedTags, tagSearch, tags]);
+
+  const selectedTagKeys = useMemo(
+    () => new Set(selectedTags.map((tag) => tag.toLowerCase())),
+    [selectedTags],
+  );
 
   return (
     <Stack gap="lg">
@@ -221,6 +322,35 @@ function FilterOptions({
           />
         ))}
       </Stack>
+      {statusesLoading || statusOptions.length > 0 || selectedStatuses.length > 0 ? (
+        <Checkbox.Group
+          label={t("library.statusFilters.title")}
+          onChange={(values) => setSelectedStatuses(values)}
+          value={selectedStatuses}
+        >
+          <Stack className="norea-library-option-list" gap={0}>
+            {statusesLoading && statusOptions.length === 0 ? (
+              <Text c="dimmed" size="sm">
+                {t("library.statusFilters.loading")}
+              </Text>
+            ) : null}
+            {statusOptions.map((option) => (
+              <Checkbox
+                key={option.status}
+                label={
+                  <span className="norea-library-option-label">
+                    <span>{canonicalNovelStatusLabel(option.status, t)}</span>
+                    <span className="norea-library-option-count">
+                      {option.totalNovels.toLocaleString()}
+                    </span>
+                  </span>
+                }
+                value={option.status}
+              />
+            ))}
+          </Stack>
+        </Checkbox.Group>
+      ) : null}
       {sourcesLoading || sources.length > 0 || activeSourceId !== null ? (
         <Radio.Group
           label={t("library.sources.title")}
@@ -250,6 +380,76 @@ function FilterOptions({
             ))}
           </Stack>
         </Radio.Group>
+      ) : null}
+      {tagsLoading || tags.length > 0 || selectedTags.length > 0 ? (
+        <div aria-labelledby={tagHeadingId} role="group">
+          <span className="norea-library-option-group-label" id={tagHeadingId}>
+            {t("library.tagFilters.title")}
+          </span>
+          {selectedTags.length > 0 ? (
+            <div className="norea-library-tag-selected">
+              {selectedTags.map((tag) => (
+                <ChipButton
+                  className="norea-library-chip"
+                  key={tag}
+                  onClick={() => toggleTag(tag)}
+                  selected
+                >
+                  {tag}
+                </ChipButton>
+              ))}
+            </div>
+          ) : null}
+          <TextInput
+            aria-label={t("library.tagFilters.search")}
+            className="norea-library-tag-search"
+            onChange={(event) => setTagSearch(event.currentTarget.value)}
+            placeholder={t("library.tagFilters.searchPlaceholder")}
+            rightSection={
+              tagSearch ? (
+                <IconButton
+                  label={t("common.clear")}
+                  onClick={() => setTagSearch("")}
+                  size="sm"
+                >
+                  <CloseIcon size="0.875rem" />
+                </IconButton>
+              ) : undefined
+            }
+            size="sm"
+            value={tagSearch}
+          />
+          <Stack className="norea-library-option-list norea-library-tag-list" gap={0}>
+            {tagsLoading && mergedTagOptions.length === 0 ? (
+              <Text c="dimmed" size="sm">
+                {t("library.tagFilters.loading")}
+              </Text>
+            ) : null}
+            {!tagsLoading && mergedTagOptions.length === 0 && tagSearch.trim() !== "" ? (
+              <Text c="dimmed" size="sm">
+                {t("library.tagFilters.emptySearch")}
+              </Text>
+            ) : null}
+            {mergedTagOptions.map((entry) => {
+              const checked = selectedTagKeys.has(entry.tag.toLowerCase());
+              return (
+                <Checkbox
+                  checked={checked}
+                  key={entry.tag}
+                  label={
+                    <span className="norea-library-option-label">
+                      <span>{entry.tag}</span>
+                      <span className="norea-library-option-count">
+                        {entry.totalNovels.toLocaleString()}
+                      </span>
+                    </span>
+                  }
+                  onChange={() => toggleTag(entry.tag)}
+                />
+              );
+            })}
+          </Stack>
+        </div>
       ) : null}
     </Stack>
   );
