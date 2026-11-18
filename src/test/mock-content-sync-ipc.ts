@@ -695,8 +695,8 @@ export function createContentSyncIpcHandler(
         const chapters = (args.chapters ?? []) as ServerChapterSummary[];
         let seq = 0;
         const value = await options.runTransaction(async (db) => {
-          const [novel] = await db.select<{ pluginId: string }[]>(
-            "SELECT plugin_id AS pluginId FROM novel WHERE id=$1",
+          const [novel] = await db.select<{ pluginId: string; path: string }[]>(
+            "SELECT plugin_id AS pluginId, path FROM novel WHERE id=$1",
             [novelId],
           );
           const existing = await db.select<
@@ -728,9 +728,11 @@ export function createContentSyncIpcHandler(
                   .map((entry) => [entry.path, entry]),
               )
             : null;
+          const isLocalPlugin = novel?.pluginId === LOCAL_PLUGIN_ID;
           const incoming: Array<
             Omit<ServerChapterSummary, "contentType"> & { contentType: string }
           > = [];
+          let changed = false;
           for (const chapter of chapters) {
             if (included && !included.has(chapter.chapterPath)) continue;
             if (paths.has(chapter.chapterPath)) {
@@ -741,7 +743,7 @@ export function createContentSyncIpcHandler(
               continue;
             }
             const number =
-              novel?.pluginId !== LOCAL_PLUGIN_ID &&
+              !isLocalPlugin &&
               chapter.chapterNumber?.trim() &&
               Number.isFinite(Number(chapter.chapterNumber))
                 ? String(Number(chapter.chapterNumber))
@@ -752,6 +754,40 @@ export function createContentSyncIpcHandler(
                 throw new Error(
                   "Server chapter number matches multiple local chapters.",
                 );
+              }
+              const existingPath = matches[0]!;
+              if (
+                !composition &&
+                !isLocalPlugin &&
+                existingPath.startsWith("norea-folder:") &&
+                !chapter.chapterPath.startsWith("norea-folder:") &&
+                !paths.has(chapter.chapterPath)
+              ) {
+                const updated = await db.execute(
+                  "UPDATE chapter SET path=$1, page=CASE WHEN page='' THEN $2 ELSE page END WHERE novel_id=$3 AND path=$4",
+                  [chapter.chapterPath, chapter.page, novelId, existingPath],
+                );
+                if (updated.rowsAffected > 0) {
+                  changed = true;
+                  if (novel) {
+                    const existingState = await db.select<{ present: number }[]>(
+                      "SELECT EXISTS(SELECT 1 FROM work_metadata_reading_state WHERE plugin_id=$1 AND novel_path=$2 AND chapter_path=$3) AS present",
+                      [novel.pluginId, novel.path, chapter.chapterPath],
+                    );
+                    if (!existingState[0]?.present) {
+                      await db.execute(
+                        "UPDATE work_metadata_reading_state SET chapter_path=$1 WHERE plugin_id=$2 AND novel_path=$3 AND chapter_path=$4",
+                        [chapter.chapterPath, novel.pluginId, novel.path, existingPath],
+                      );
+                    }
+                  }
+                  paths.delete(existingPath);
+                  paths.add(chapter.chapterPath);
+                  const existingNum = byPath.get(existingPath) ?? null;
+                  byPath.delete(existingPath);
+                  byPath.set(chapter.chapterPath, existingNum);
+                  if (number !== null) numbers.set(number, [chapter.chapterPath]);
+                }
               }
               continue;
             }
@@ -775,7 +811,6 @@ export function createContentSyncIpcHandler(
             paths.add(chapter.chapterPath);
             if (number !== null) numbers.set(number, [chapter.chapterPath]);
           }
-          let inserted = false;
           for (let offset = 0; offset < incoming.length; offset += 100) {
             const batch = incoming.slice(offset, offset + 100);
             const result = await db.execute(
@@ -797,13 +832,33 @@ export function createContentSyncIpcHandler(
                 chapter.contentType,
               ]),
             );
-            inserted ||= result.rowsAffected > 0;
+            changed ||= result.rowsAffected > 0;
           }
-          if (inserted) {
+          if (changed && !composition && !isLocalPlugin) {
+            const rows = await db.select<{ id: number; chapterNumber: string | null; position: number }[]>(
+              "SELECT id, chapter_number AS chapterNumber, position FROM chapter WHERE novel_id=$1 ORDER BY position ASC, id ASC",
+              [novelId],
+            );
+            const parsed = rows.map((row) => {
+              const trimmed = row.chapterNumber?.trim();
+              if (!trimmed || !Number.isFinite(Number(trimmed))) return null;
+              return { id: row.id, num: Number(trimmed), position: row.position };
+            });
+            if (parsed.every((item): item is NonNullable<typeof item> => item !== null)) {
+              parsed.sort((lhs, rhs) => lhs.num - rhs.num || lhs.id - rhs.id);
+              for (const [idx, item] of parsed.entries()) {
+                const nextPos = idx + 1;
+                if (item.position !== nextPos) {
+                  await db.execute("UPDATE chapter SET position=$1 WHERE id=$2", [nextPos, item.id]);
+                }
+              }
+            }
+          }
+          if (changed) {
             await deferUserStateForNovelInDb(db, novelId);
           }
           seq = await readJournalSeq(db);
-          return inserted;
+          return changed;
         }, true);
         return {
           handled: true,

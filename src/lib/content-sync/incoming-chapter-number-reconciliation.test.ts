@@ -519,3 +519,57 @@ it("rejects a direct cache import with an explicit same-path number mismatch", a
   expect(metadata().chapters).toEqual(originalCatalog);
   expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()).toEqual({ count: 3 });
 });
+
+it("reconciles server chapter numbers without dropping an offline-downloaded chapter when opening the work", async () => {
+  sqlite.exec(
+    "INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,unread,read_at,is_downloaded,stored_content_type,content_bytes) " +
+    "VALUES (14,7,'/chapter/4','Fourth',4,'4',0,0,1,NULL,1,'html',14)",
+  );
+  state.payloads.set(directory + "/4", "fourth body");
+  await flushWorkMetadata(db, { novelId: 7, chapters: { ...originalCatalog, "4": "Fourth" } });
+
+  await syncServerNovelOnOpen(7);
+  expect(numbers()).toEqual([
+    { id: 11, path: "/chapter/1000", chapter_number: "1", position: 1 },
+    { id: 12, path: "/chapter/2000", chapter_number: "2", position: 2 },
+    { id: 13, path: "/chapter/3000", chapter_number: "3", position: 3 },
+    { id: 14, path: "/chapter/4", chapter_number: "4", position: 4 },
+  ]);
+  expect(metadata().chapters).toEqual({ ...canonicalCatalog, "4": "Fourth" });
+  expect(state.payloads.get(directory + "/4")).toBe("fourth body");
+});
+
+it("reconciles server chapter numbers and uploads offline-downloaded chapters on work metadata sync", async () => {
+  sqlite.exec(
+    "INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,unread,read_at,is_downloaded,stored_content_type,content_bytes) " +
+    "VALUES (14,7,'/chapter/4','Fourth',4,'4',0,0,1,NULL,1,'html',14)",
+  );
+  state.payloads.set(directory + "/4", "fourth body");
+  await flushWorkMetadata(db, { novelId: 7, chapters: { ...originalCatalog, "4": "Fourth" } });
+
+  const uploadedWorks: NovelMetadataV1[] = [];
+  const originalFetch = vi.mocked(nativeFetch).getMockImplementation()!;
+  vi.mocked(nativeFetch).mockImplementation(async (input, init) => {
+    const url = new URL(String(input));
+    if (init?.method === "PUT" && url.pathname.endsWith("/works/" + remote.id)) {
+      const body = JSON.parse(String(init.body)) as NovelMetadataV1;
+      uploadedWorks.push(body);
+      remote = { ...remote, metadata: body, sequence: remote.sequence + 1 };
+      return Response.json(remote);
+    }
+    if (init?.method === "PUT" && url.pathname.endsWith("/cover")) {
+      return Response.json({});
+    }
+    return originalFetch(input, init);
+  });
+
+  await syncWorkMetadata(server, "test-device", true);
+  expect(numbers()).toEqual([
+    { id: 11, path: "/chapter/1000", chapter_number: "1", position: 1 },
+    { id: 12, path: "/chapter/2000", chapter_number: "2", position: 2 },
+    { id: 13, path: "/chapter/3000", chapter_number: "3", position: 3 },
+    { id: 14, path: "/chapter/4", chapter_number: "4", position: 4 },
+  ]);
+  expect(uploadedWorks).toHaveLength(1);
+  expect(uploadedWorks[0]!.chapters).toEqual({ ...canonicalCatalog, "4": "Fourth" });
+});

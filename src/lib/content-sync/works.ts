@@ -172,13 +172,24 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       }
       delete cache.deleted[entry.id];
       const file = byIdentity.get(identity);
-      if (!file || cache.fileVersions[identity] !== workMetadataFileVersion(file) ||
-          file.fingerprint === await storedNovelMetadataFingerprint(metadata)) continue;
+      if (!file || file.fingerprint === await storedNovelMetadataFingerprint(metadata)) continue;
+      const localUnchanged = cache.fileVersions[identity] === workMetadataFileVersion(file);
       const current = await readStoredNovelMetadata(file.directory);
       if (!current || !Object.keys(current.metadata.chapters).some(number => !Object.hasOwn(metadata.chapters, number))) continue;
       const expectedFingerprint = await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata));
-      if (!matchesSyncedWork(cache, entry.id, file, expectedFingerprint)) continue;
-      const reconciliation = await (await import("./incoming-chapter-number-reconciliation")).prepareIncomingChapterNumberReconciliation(server, token, entry, current.metadata, assertCurrent);
+      if (localUnchanged) {
+        if (!matchesSyncedWork(cache, entry.id, file, expectedFingerprint)) continue;
+      } else if (await storedNovelMetadataFingerprint(current.metadata) !== file.fingerprint) {
+        continue;
+      }
+      const reconciliation = await (await import("./incoming-chapter-number-reconciliation")).prepareIncomingChapterNumberReconciliation(
+        server,
+        token,
+        entry,
+        current.metadata,
+        assertCurrent,
+        { allowUnmappedLocalAdditions: !localUnchanged },
+      );
       if (!reconciliation) continue;
       const stored = await reconciliation.install(reconciliation.renumberedLocalMetadata, undefined, async (latest) => {
         if (await isNovelMigrationSourceHeld(server, metadata.identity)) return false;
@@ -191,7 +202,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       assertCurrent();
       if (!stored) continue;
       byIdentity.set(identity, stored.syncFile);
-      await rememberInstalledWork(cache, stored, entry.hasCover);
+      if (localUnchanged) await rememberInstalledWork(cache, stored, entry.hasCover);
       installed = true;
     }
     dirty ||= cache.cursor !== cursor;

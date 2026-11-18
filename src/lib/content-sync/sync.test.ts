@@ -680,18 +680,34 @@ it("skips a recovered chapter already stored under the exact-work server identit
   expect(new URL(String(lookup?.[0])).searchParams.get("chapterNumber")).toBe("1");
 });
 
-it.each(["norea-folder:1", "/other-chapter/1", "/chapter/1"])("resolves a source upload against server chapter %s without merging different source paths", async remotePath => {
+it.each(["norea-folder:1", "/other-chapter/1", "/chapter/1"])("resolves a source upload against same-ordinal complete server chapter %s under prefer-complete", async remotePath => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "/work", chapterPath: "/chapter/1", chapterNumber: "1", novelName: "Novel", chapterName: "One", contentType: "html", position: 1, page: "1", isDownloaded: true, mediaRepairNeeded: false }] as never);
   const original = vi.mocked(appFetch).getMockImplementation()!;
   vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?")
     ? Promise.resolve(Response.json({ deleted: false, complete: true, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: remotePath }, chapter: { chapterNumber: remotePath === "/chapter/1" ? null : "1" } } })) : original(url, init));
-  if (remotePath.startsWith("norea-folder:") || remotePath === "/chapter/1") {
-    await syncContentServer();
-    expect(uploadContentChapter).not.toHaveBeenCalled();
-  } else {
-    await expect(syncContentServer()).rejects.toThrow("identity does not match");
-    expect(uploadContentChapter).not.toHaveBeenCalled();
-  }
+  await syncContentServer();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+});
+
+it("uploads over an incomplete same-ordinal server chapter using the server identity chapterPath", async () => {
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{
+    chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "/work", chapterPath: "/chapter/1",
+    chapterNumber: "1", novelName: "Novel", chapterName: "One", contentType: "html", position: 1, page: "1",
+    isDownloaded: true, mediaRepairNeeded: false, contentBytes: 12,
+  }] as never);
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?")
+    ? Promise.resolve(Response.json({
+      id: "existing-id", deleted: false, complete: false,
+      manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: "/other-chapter/1" }, chapter: { chapterNumber: "1" } },
+    })) : original(url, init));
+  await syncContentServer();
+  expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({
+    chapterId: 1,
+    manifest: expect.objectContaining({
+      identity: { pluginId: "p", novelId: "n", novelPath: "/work", chapterPath: "/other-chapter/1" },
+    }),
+  }));
 });
 
 it.each([404, 409])("handles recovered chapter lookup status %s without replacing ambiguous content", async status => {

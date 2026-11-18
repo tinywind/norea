@@ -289,12 +289,13 @@ pub async fn cache_server_chapters_in_tx(
     novel_id: i64,
     chapters: &[ServerChapterSummaryInputDto],
 ) -> Result<bool, String> {
-    let novel_plugin_id: Option<String> =
-        sqlx::query_scalar("SELECT plugin_id FROM novel WHERE id = ?1")
-            .bind(novel_id)
-            .fetch_optional(&mut *conn)
-            .await
-            .map_err(|err| format!("db content sync: load novel plugin id: {err}"))?;
+    let novel_row = sqlx::query("SELECT plugin_id, path FROM novel WHERE id = ?1")
+        .bind(novel_id)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|err| format!("db content sync: load novel plugin id: {err}"))?;
+    let novel_plugin_id: Option<String> = novel_row.as_ref().map(|r| r.get("plugin_id"));
+    let novel_path: Option<String> = novel_row.as_ref().map(|r| r.get("path"));
 
     let existing_rows =
         sqlx::query("SELECT path, chapter_number FROM chapter WHERE novel_id = ?1")
@@ -337,6 +338,7 @@ pub async fn cache_server_chapters_in_tx(
 
     let mut incoming: Vec<IncomingRow> = Vec::new();
     let is_local_plugin = novel_plugin_id.as_deref() == Some(LOCAL_PLUGIN_ID);
+    let mut changed = false;
 
     for chapter in chapters {
         if let Some(ref inc) = included {
@@ -363,6 +365,64 @@ pub async fn cache_server_chapters_in_tx(
                         return Err(
                             "Server chapter number matches multiple local chapters.".to_string()
                         );
+                    }
+                    let existing_path = matches[0].clone();
+                    if composition.is_none()
+                        && !is_local_plugin
+                        && existing_path.starts_with("norea-folder:")
+                        && !chapter.chapter_path.starts_with("norea-folder:")
+                        && !paths.contains(&chapter.chapter_path)
+                    {
+                        let res = sqlx::query(
+                            "UPDATE chapter SET path = ?1, page = CASE WHEN page = '' THEN ?2 ELSE page END \
+                             WHERE novel_id = ?3 AND path = ?4",
+                        )
+                        .bind(&chapter.chapter_path)
+                        .bind(&chapter.page)
+                        .bind(novel_id)
+                        .bind(&existing_path)
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(|err| format!("db content sync: upgrade placeholder chapter path: {err}"))?;
+                        if res.rows_affected() > 0 {
+                            changed = true;
+                            if let (Some(ref plugin_id), Some(ref n_path)) =
+                                (&novel_plugin_id, &novel_path)
+                            {
+                                let has_target_state: i64 = sqlx::query_scalar(
+                                    "SELECT EXISTS(SELECT 1 FROM work_metadata_reading_state \
+                                     WHERE plugin_id = ?1 AND novel_path = ?2 AND chapter_path = ?3)",
+                                )
+                                .bind(plugin_id)
+                                .bind(n_path)
+                                .bind(&chapter.chapter_path)
+                                .fetch_one(&mut *conn)
+                                .await
+                                .map_err(|err| {
+                                    format!("db content sync: check reading state target path: {err}")
+                                })?;
+                                if has_target_state == 0 {
+                                    sqlx::query(
+                                        "UPDATE work_metadata_reading_state SET chapter_path = ?1 \
+                                         WHERE plugin_id = ?2 AND novel_path = ?3 AND chapter_path = ?4",
+                                    )
+                                    .bind(&chapter.chapter_path)
+                                    .bind(plugin_id)
+                                    .bind(n_path)
+                                    .bind(&existing_path)
+                                    .execute(&mut *conn)
+                                    .await
+                                    .map_err(|err| {
+                                        format!("db content sync: upgrade reading state chapter path: {err}")
+                                    })?;
+                                }
+                            }
+                            paths.remove(&existing_path);
+                            paths.insert(chapter.chapter_path.clone());
+                            let existing_num = by_path.remove(&existing_path).flatten();
+                            by_path.insert(chapter.chapter_path.clone(), existing_num);
+                            numbers.insert(num.clone(), vec![chapter.chapter_path.clone()]);
+                        }
                     }
                     continue;
                 }
@@ -409,7 +469,6 @@ pub async fn cache_server_chapters_in_tx(
         }
     }
 
-    let mut inserted = false;
     for batch in incoming.chunks(100) {
         let values_sql: Vec<String> = (0..batch.len())
             .map(|idx| {
@@ -446,10 +505,45 @@ pub async fn cache_server_chapters_in_tx(
             .execute(&mut *conn)
             .await
             .map_err(|err| format!("db content sync: insert cached server chapters: {err}"))?;
-        inserted |= res.rows_affected() > 0;
+        changed |= res.rows_affected() > 0;
     }
 
-    Ok(inserted)
+    if changed && composition.is_none() && !is_local_plugin {
+        let ordered_rows = sqlx::query(
+            "SELECT id, chapter_number, position FROM chapter WHERE novel_id = ?1 ORDER BY position ASC, id ASC",
+        )
+        .bind(novel_id)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db content sync: list chapters for ordinal alignment: {err}"))?;
+        let parsed: Option<Vec<(i64, f64, i64)>> = ordered_rows
+            .iter()
+            .map(|row| {
+                let ch_num: Option<String> = row.get("chapter_number");
+                let canonical = canonical_finite_number_str(ch_num.as_deref())?;
+                let num = canonical.parse::<f64>().ok().filter(|n| n.is_finite())?;
+                Some((row.get::<i64, _>("id"), num, row.get::<i64, _>("position")))
+            })
+            .collect();
+        if let Some(mut items) = parsed {
+            items.sort_by(|lhs, rhs| lhs.1.total_cmp(&rhs.1).then_with(|| lhs.0.cmp(&rhs.0)));
+            for (idx, (id, _num, current_pos)) in items.into_iter().enumerate() {
+                let next_pos = (idx + 1) as i64;
+                if current_pos != next_pos {
+                    sqlx::query("UPDATE chapter SET position = ?1 WHERE id = ?2")
+                        .bind(next_pos)
+                        .bind(id)
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(|err| {
+                            format!("db content sync: resequence chapter position: {err}")
+                        })?;
+                }
+            }
+        }
+    }
+
+    Ok(changed)
 }
 
 pub async fn select_content_sync_chapters_in_conn(
@@ -2832,5 +2926,87 @@ mod tests {
             .await
             .unwrap_err();
         assert!(identity_err.contains("receipt cache identity"));
+    }
+
+    #[tokio::test]
+    async fn cache_server_chapters_upgrades_folder_placeholders_and_resequences_ordinals() {
+        let test = open_test_db().await;
+        let db = &test.db;
+        let mut conn = db.writer().acquire().await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, path, source_novel_id, name, in_library) \
+             VALUES (1, 'src', '/ordinal-work', 'book-1', 'Book', 1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO chapter(novel_id, path, name, chapter_number, position, is_downloaded) VALUES \
+             (1, 'norea-folder:1', 'Folder 1', '1', 1, 1), \
+             (1, '/ch-48', 'Offline 48', '48', 2, 1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO work_metadata_reading_state(plugin_id, novel_path, chapter_path, progress, bookmark, unread, read_at) \
+             VALUES ('src', '/ordinal-work', 'norea-folder:1', 40, 1, 0, 1000)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+        let summary = |path: &str, name: &str, num: &str, pos: i64| ServerChapterSummaryInputDto {
+            chapter_path: path.to_string(),
+            name: name.to_string(),
+            position: pos,
+            chapter_number: Some(num.to_string()),
+            content_type: "html".to_string(),
+            page: "1".to_string(),
+        };
+
+        let changed = cache_server_chapters_in_tx(
+            &mut conn,
+            1,
+            &[
+                summary("/ch-1", "Chapter 1", "1", 1),
+                summary("/ch-46", "Chapter 46", "46", 46),
+                summary("/ch-47", "Chapter 47", "47", 47),
+            ],
+        )
+        .await
+        .unwrap();
+        assert!(changed);
+
+        let rows = sqlx::query(
+            "SELECT path, chapter_number, position, is_downloaded FROM chapter WHERE novel_id = 1 ORDER BY position, id",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+        let actual: Vec<(String, Option<String>, i64, i64)> = rows
+            .into_iter()
+            .map(|r| (r.get("path"), r.get("chapter_number"), r.get("position"), r.get("is_downloaded")))
+            .collect();
+        assert_eq!(
+            actual,
+            vec![
+                ("/ch-1".to_string(), Some("1".to_string()), 1, 1),
+                ("/ch-46".to_string(), Some("46".to_string()), 2, 0),
+                ("/ch-47".to_string(), Some("47".to_string()), 3, 0),
+                ("/ch-48".to_string(), Some("48".to_string()), 4, 1),
+            ]
+        );
+
+        let upgraded_state_path: String = sqlx::query_scalar(
+            "SELECT chapter_path FROM work_metadata_reading_state WHERE plugin_id = 'src' AND novel_path = '/ordinal-work'",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(upgraded_state_path, "/ch-1");
     }
 }

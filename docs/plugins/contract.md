@@ -533,9 +533,11 @@ Every other download error stops the affected ordinary source queue or VPN
 range until an explicit resume. This includes HTTP failures, network loss during
 acquisition, timeouts, plugin parsing failures, and unknown exceptions. The notice
 preserves the redacted cause. Media requests run serially within each executor;
-non-404 failures stop further requests and preserve reusable partial files. A
-content-server cache miss may fall back to the source, but other server errors
-propagate. Local filesystem or database failures stop all download queues and
+non-404 failures stop further requests and preserve reusable partial files. Content-server
+cache misses and unreachable or failed server lookups or staging transfers fall
+back to an installed source plugin when the work has a source path; server-only
+works still propagate server errors, and local filesystem or database failures
+stop all download queues and
 VPN ranges, including new work admission. The native storage boundary tags actual
 file I/O failures as `chapter-storage-failed`; remote HTTP, network, and malformed
 payload failures keep their source error classification.

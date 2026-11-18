@@ -64,6 +64,7 @@ export async function prepareIncomingChapterNumberReconciliation(
   entry: WorkCatalogEntry,
   current: NovelMetadataV1,
   assertCurrent: () => void,
+  options: { allowUnmappedLocalAdditions?: boolean } = {},
 ): Promise<IncomingChapterNumberReconciliation | undefined> {
   if (!mayHaveIncomingChapterNumberChanges(current, entry.metadata)) return;
   let capabilities: { chapterNumberReconciliationVersion?: number; chapterNumberMappingsVersion?: number };
@@ -99,6 +100,8 @@ export async function prepareIncomingChapterNumberReconciliation(
   }
   const { work, storedChapters: stored } = inspected;
   const oldNumbers = new Set(proof.mappings.map(mapping => mapping.from));
+  const newNumbers = new Set(proof.mappings.map(mapping => mapping.to));
+  const mappedPaths = new Set(proof.mappings.map(mapping => mapping.chapterPath));
   const applicable = proof.mappings.some(mapping =>
     Object.hasOwn(current.chapters, mapping.from) ||
     stored.some(chapter => canonicalChapterNumber(chapter.chapterNumber) === mapping.from));
@@ -106,8 +109,17 @@ export async function prepareIncomingChapterNumberReconciliation(
 
   const removed = Object.keys(current.chapters).filter(number => !Object.hasOwn(entry.metadata.chapters, number));
   for (const number of removed) {
-    if (!oldNumbers.has(number) ||
-        stored.filter(chapter => canonicalChapterNumber(chapter.chapterNumber) === number).length !== 1) {
+    const matches = stored.filter(chapter => canonicalChapterNumber(chapter.chapterNumber) === number);
+    if (oldNumbers.has(number)) {
+      if (matches.length !== 1) {
+        throw new Error("Incoming chapter number proof is incomplete for the local catalog. Existing files were retained.");
+      }
+      continue;
+    }
+    const addedChapter = options.allowUnmappedLocalAdditions && !newNumbers.has(number) && matches.length === 1
+      ? matches[0]
+      : undefined;
+    if (!addedChapter || addedChapter.path.startsWith("norea-folder:") || mappedPaths.has(addedChapter.path)) {
       throw new Error("Incoming chapter number proof is incomplete for the local catalog. Existing files were retained.");
     }
   }

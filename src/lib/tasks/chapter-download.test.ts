@@ -3837,6 +3837,26 @@ describe("enqueueChapterMediaRepair", () => {
     expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 
+  it("falls back to the source plugin when server lookup or media fetch fails with a content-server transport error", async () => {
+    const { ContentServerTransportError } = await import("../content-sync/client");
+    serverMediaMocks.hasServerChapter.mockRejectedValueOnce(new ContentServerTransportError("The content server connection failed."));
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValueOnce("<p>Stored body</p>");
+    vi.mocked(cacheHtmlChapterMedia).mockImplementationOnce(async options => {
+      const serverAsset = await options.fetchMissingMedia!({
+        bytes: 3, fileName: "one.png", path: "media/one.png", sourceUrl: "https://source.test/one.png", status: "remote", updatedAt: 1,
+      });
+      expect(serverAsset).toBeNull();
+      return { html: "<p>Repaired</p>", mediaBytes: 3, mediaFailures: [], storedMediaCount: 1 };
+    });
+    enqueueChapterMediaRepair({ id: 7, pluginId: "source-a", title: "Chapter 7" });
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    const tryStartSourceAccess = vi.fn(() => true);
+    await capturedSpec.run({ setDetail: vi.fn(), setProgress: vi.fn(), signal: new AbortController().signal, taskId: "task-1", tryStartSourceAccess });
+    expect(tryStartSourceAccess).toHaveBeenCalledOnce();
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-a", "immediate");
+    expect(saveStoredChapterContent).toHaveBeenCalledWith(7, "<p>Repaired</p>", "html", { mediaBytes: 3 });
+  });
+
 });
 
 
@@ -3910,7 +3930,7 @@ describe("server-first chapter requests", () => {
     enqueueChapterDownload(job);
     expect(capturedSpec).toMatchObject({ serverLane: true });
     await capturedSpec!.run(context());
-    expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(job, expect.any(AbortSignal), undefined, { sourceFallback: false });
+    expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(job, expect.any(AbortSignal), undefined, { sourceFallback: true });
     expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
     expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
@@ -3953,14 +3973,23 @@ describe("server-first chapter requests", () => {
     expect(siteRecoveryMocks.reset).not.toHaveBeenCalled();
   });
 
-  it("does not use source recovery or the plugin when server lookup fails", async () => {
-    const failure = new Error("Content server lookup timed out.");
-    vi.mocked(tryDownloadServerChapter).mockRejectedValueOnce(failure);
+  it("falls back to the installed source plugin on server lookup failure and surfaces the failure otherwise", async () => {
+    const { ContentServerTransportError } = await import("../content-sync/client");
+    const timeoutFailure = new ContentServerTransportError("Content server lookup timed out.");
+    vi.mocked(tryDownloadServerChapter).mockRejectedValueOnce(timeoutFailure);
     enqueueChapterDownload(job);
-    await expect(capturedSpec!.run(context())).rejects.toBe(failure);
-    expect(pluginMocks.getPluginForExecutor).not.toHaveBeenCalled();
+    await capturedSpec!.run({ ...context(), executor: "pool:0" });
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-a", "pool:0");
+    expect(saveStoredChapterContent).toHaveBeenCalledOnce();
     expect(siteRecoveryMocks.reset).not.toHaveBeenCalled();
     expect(recoveryHarness.current.getSnapshot()).toEqual([]);
+
+    vi.mocked(tryDownloadServerChapter).mockRejectedValueOnce(timeoutFailure);
+    pluginMocks.getPlugin.mockReturnValueOnce(undefined);
+    enqueueChapterDownload(job);
+    await expect(capturedSpec!.run(context())).rejects.toBe(timeoutFailure);
+    expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledTimes(1);
+    expect(siteRecoveryMocks.reset).not.toHaveBeenCalled();
   });
 
   it("retains the source handoff when the server lane confirms a missing body", async () => {
@@ -4068,7 +4097,7 @@ describe("composed chapter source routing", () => {
     const run = context();
     enqueueChapterDownload(job);
     await capturedSpec!.run(run);
-    expect(tryDownloadServerChapter).toHaveBeenCalledWith(job, expect.any(AbortSignal), undefined, { sourceFallback: false });
+    expect(tryDownloadServerChapter).toHaveBeenCalledWith(job, expect.any(AbortSignal), undefined, { sourceFallback: true });
     expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith(source.pluginId, "pool:0");
     expect(pluginMocks.getChapterAcquisitionPlan).toHaveBeenCalledWith(source.chapterPath, "html");
     expect(pluginMocks.getChapterResource.mock.calls[0]![0]).toBe(source.chapterPath);
@@ -4090,7 +4119,7 @@ describe("composed chapter source routing", () => {
     const run = context();
     enqueueChapterDownload(targetJob);
     await capturedSpec!.run({ ...run, executor: "server:0" });
-    expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(targetJob, expect.any(AbortSignal), undefined, { sourceFallback: false });
+    expect(tryDownloadServerChapter).toHaveBeenCalledExactlyOnceWith(targetJob, expect.any(AbortSignal), undefined, { sourceFallback: true });
     expect(run.tryStartSourceAccess).not.toHaveBeenCalled();
     expect(pluginMocks.getPlugin).not.toHaveBeenCalled();
     expect(pluginMocks.loadInstalledFromDb).not.toHaveBeenCalled();
@@ -4181,7 +4210,7 @@ describe("composed chapter source routing", () => {
       await handles.at(-1)!.promise;
       expect(taskScheduler.resumeSourceQueue).toHaveBeenCalledWith("source-a");
       expect(taskScheduler.resumeSourceQueue).not.toHaveBeenCalledWith("source-b");
-      expect(tryDownloadServerChapter).toHaveBeenLastCalledWith(expect.objectContaining({ pluginId: "source-b", chapterPath: targetJob.chapterPath }), expect.any(AbortSignal), expect.any(Function), { sourceFallback: false });
+      expect(tryDownloadServerChapter).toHaveBeenLastCalledWith(expect.objectContaining({ pluginId: "source-b", chapterPath: targetJob.chapterPath }), expect.any(AbortSignal), expect.any(Function), { sourceFallback: true });
     } finally { scheduler.cancelActiveTasks({ discardQueued: true }); await waitForChapterDownloadQueueMutations(); }
   });
 });

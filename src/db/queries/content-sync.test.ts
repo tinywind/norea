@@ -122,6 +122,26 @@ it("caches a server chapter list without duplicating a source chapter or changin
   expect(sqlite.prepare("SELECT COUNT(*) AS count FROM chapter").get()?.count).toBe(2);
 });
 
+it("upgrades recovered folder placeholders and resequences chapter ordinals when server chapters arrive", async () => {
+  sqlite.exec("INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/ordinal-work','Book')");
+  sqlite.exec(
+    "INSERT INTO chapter(novel_id,path,name,chapter_number,position,is_downloaded) VALUES " +
+    "(1,'norea-folder:1','Folder 1','1',1,1), (1,'/ch-48','Offline 48','48',2,1)",
+  );
+  const incoming = [
+    { id: "c1", chapterPath: "/ch-1", name: "Chapter 1", chapterNumber: "1", position: 1, page: "1", contentType: "html" as const, complete: true },
+    { id: "c46", chapterPath: "/ch-46", name: "Chapter 46", chapterNumber: "46", position: 46, page: "1", contentType: "html" as const, complete: true },
+    { id: "c47", chapterPath: "/ch-47", name: "Chapter 47", chapterNumber: "47", position: 47, page: "1", contentType: "html" as const, complete: true },
+  ];
+  expect(await cacheServerChapters(1, incoming)).toBe(true);
+  expect(sqlite.prepare("SELECT path,chapter_number,position,is_downloaded FROM chapter ORDER BY position, id").all()).toEqual([
+    { path: "/ch-1", chapter_number: "1", position: 1, is_downloaded: 1 },
+    { path: "/ch-46", chapter_number: "46", position: 2, is_downloaded: 0 },
+    { path: "/ch-47", chapter_number: "47", position: 3, is_downloaded: 0 },
+    { path: "/ch-48", chapter_number: "48", position: 4, is_downloaded: 1 },
+  ]);
+});
+
 it("retains different local files with the same chapter number", async () => {
   sqlite.exec("INSERT INTO novel(id,plugin_id,path,name,is_local) VALUES(1,'local','local','local',1)");
   sqlite.exec("INSERT INTO chapter(novel_id,path,name,chapter_number,position,is_downloaded) VALUES(1,'local:file-a','A','1',1,1)");

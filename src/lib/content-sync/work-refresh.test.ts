@@ -25,6 +25,7 @@ vi.mock("../plugins/sync-novel", () => ({ syncNovelFromSource: mocks.sync }));
 vi.mock("../tasks/source-tasks", () => ({ enqueueSourceTask: mocks.enqueue }));
 vi.mock("../tasks/scheduler", () => ({ taskScheduler: { cancel: mocks.cancel } }));
 
+import { isNovelMigrationSourceHeld } from "../../db/queries/content-sync";
 import { contentServerRequest, ContentServerError } from "./client";
 import { contentWorkId } from "./works";
 import { recordServerWorkDeletionExclusion } from "./deletion-exclusions";
@@ -318,4 +319,11 @@ it("leaves server metadata intact when the original site rejects the request", a
   mocks.sync.mockRejectedValueOnce(new Error("Source unavailable"));
   await expect(refreshServerNovelFromSource(42, "Refresh Book")).rejects.toThrow("Source unavailable");
   expect(mocks.install).not.toHaveBeenCalled();
+});
+
+it("skips server refresh when the opened work is held for pending migration or renumber reconciliation", async () => {
+  vi.mocked(isNovelMigrationSourceHeld).mockResolvedValueOnce(true);
+  expect(await syncServerNovelOnOpen(42)).toBe(false);
+  expect(contentServerRequest).not.toHaveBeenCalled();
+  expect(mocks.cache).not.toHaveBeenCalled();
 });

@@ -7,7 +7,7 @@ import { taskScheduler } from "../tasks/scheduler";
 import { enqueueSourceTask } from "../tasks/source-tasks";
 import { isTauriRuntime } from "../tauri-runtime";
 import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
-import { availableNovelMetadataDirectory, installStoredNovelMetadata, parseNovelMetadata, readStoredNovelCover, readStoredNovelMetadata } from "../work-metadata";
+import { availableNovelMetadataDirectory, installStoredNovelMetadata, parseNovelMetadata, readStoredNovelCover, readStoredNovelMetadata, type StoredNovelMetadata } from "../work-metadata";
 import { readServerCover, refreshServerNovel } from "./browse";
 import { ContentServerError, contentServerRequest, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
@@ -30,6 +30,7 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
     const identity = { pluginId: novel.pluginId, novelId: novel.sourceNovelId!, novelPath: novel.path };
     const isDeleted = () => excluded.has(serverWorkDeletionKey(identity));
     if (isDeleted()) return false;
+    if (await isNovelMigrationSourceHeld(server, identity)) return false;
     const directory = knownNovelMetadataDirectory(identity) ?? await availableNovelMetadataDirectory({ identity, novel });
     const stored = await readStoredNovelMetadata(directory);
     // Removing a work's files from this device also removes its metadata and cover; the server still has them.
@@ -70,24 +71,27 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
         server, result.token, result.entry, local, () => {
           signal?.throwIfAborted();
           if (isDeleted() || !canApplyMetadata()) throw new Error("The work changed before incoming chapter numbers could be applied.");
-        })
+        }, { allowUnmappedLocalAdditions: !mayApplyMetadata })
       : undefined;
-    if (reconciliation && !mayApplyMetadata) {
-      throw new Error("Local work metadata changed before the server correction. Existing files were retained.");
-    }
     const metadata = { ...mergeIncomingNovelMetadata(reconciliation?.previousMetadata ?? local, remote), cover: result.cover ? remote.cover : local.cover };
     const coverBytes = result.cover?.bytes ?? localCover;
+    const beforeInstall = async (current: StoredNovelMetadata | null) => {
+      if (await isNovelMigrationSourceHeld(server, identity)) return false;
+      if (isDeleted() || signal?.aborted || !canApplyMetadata()) return false;
+      const currentFingerprint = current ? await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata)) : null;
+      if (isDeleted() || signal?.aborted || !canApplyMetadata() || currentFingerprint !== expected) return false;
+      const currentFile = await readWorkMetadataSyncFile(identity);
+      if (isDeleted() || signal?.aborted || !canApplyMetadata() || workMetadataFileVersion(currentFile) !== workMetadataFileVersion(file)) return false;
+    };
     let installed = false;
-    if (mayApplyMetadata && await workMetadataFingerprint(metadata, coverBytes) !== expected && canApplyMetadata()) {
+    if (reconciliation && !mayApplyMetadata && canApplyMetadata()) {
+      const storedReconciled = await reconciliation.install(reconciliation.renumberedLocalMetadata, undefined, beforeInstall);
+      if (storedReconciled) {
+        installed = true;
+      }
+    } else if (mayApplyMetadata && await workMetadataFingerprint(metadata, coverBytes) !== expected && canApplyMetadata()) {
       const install = reconciliation?.install ?? installStoredNovelMetadata;
-      const stored = await install(metadata, coverBytes ?? undefined, async (current) => {
-        if (await isNovelMigrationSourceHeld(server, metadata.identity)) return false;
-        if (isDeleted() || signal?.aborted || !canApplyMetadata()) return false;
-        const currentFingerprint = current ? await workMetadataFingerprint(current.metadata, await readStoredNovelCover(current.directory, current.metadata)) : null;
-        if (isDeleted() || signal?.aborted || !canApplyMetadata() || currentFingerprint !== expected) return false;
-        const currentFile = await readWorkMetadataSyncFile(identity);
-        if (isDeleted() || signal?.aborted || !canApplyMetadata() || workMetadataFileVersion(currentFile) !== workMetadataFileVersion(file)) return false;
-      });
+      const stored = await install(metadata, coverBytes ?? undefined, beforeInstall);
       if (stored) {
         await recordInstalledWorkMetadata(server, stored, result.cover !== null);
         installed = true;

@@ -9,10 +9,15 @@ import {
   listOrdinaryChapterDownloadJobs,
   type StoredQueuedChapterDownload,
 } from "../../db/queries/chapter-download-queue";
+import { ContentServerError, ContentServerTransportError } from "../content-sync/client";
 import { createServerChapterMediaFetcher } from "../content-sync/media-repair";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
-import { ChapterStorageError, withChapterStorageOperation } from "../chapter-storage-error";
+import {
+  ChapterStorageError,
+  isChapterStorageError,
+  withChapterStorageOperation,
+} from "../chapter-storage-error";
 import { isHttpNotFoundError } from "../http/status-error";
 import { clearScheduledChapterDownloadRetries } from "../../db/queries/chapter-download-failure";
 import { beginChapterDownloadQueueWrite, notifyChapterDownloadsSettled } from "./chapter-download-activity";
@@ -1085,6 +1090,53 @@ function chapterDownloadSourceJob<T extends Pick<ChapterDownloadJob, "pluginId" 
     novelPath: source.novelPath, chapterPath: source.chapterPath, contentType: source.contentType };
 }
 
+async function canFallbackChapterDownloadToSource(
+  chapter: ChapterRow,
+  ownerPluginId: string,
+  signal: AbortSignal,
+): Promise<boolean> {
+  if (chapter.compositionSource) {
+    if (
+      chapter.compositionSource.chapterPath.startsWith(RECOVERED_CHAPTER_PATH_PREFIX) ||
+      chapter.compositionSource.chapterPath.startsWith("norea-composed:")
+    ) {
+      return false;
+    }
+    if (isTauriRuntime()) {
+      await abortableStep(signal, pluginManager.loadInstalledFromDb());
+    }
+    return Boolean(pluginManager.getPlugin(chapter.compositionSource.pluginId));
+  }
+  if (ownerPluginId === LOCAL_PLUGIN_ID) return false;
+  const novel = await withChapterStorageOperation("Read chapter novel", () => getNovelById(chapter.novelId));
+  if (!novel || novel.isLocal || novel.path.startsWith(RECOVERED_CHAPTER_PATH_PREFIX)) {
+    return false;
+  }
+  if (isTauriRuntime()) {
+    await abortableStep(signal, pluginManager.loadInstalledFromDb());
+  }
+  return Boolean(pluginManager.getPlugin(ownerPluginId));
+}
+
+function isFallbackEligibleContentServerError(error: unknown, signal: AbortSignal): boolean {
+  if (
+    signal.aborted ||
+    isAbortError(error) ||
+    isChapterStorageError(error) ||
+    isServerChapterMissingFailure(error)
+  ) {
+    return false;
+  }
+  return (
+    error instanceof ContentServerError ||
+    error instanceof ContentServerTransportError ||
+    (error instanceof Error &&
+      (/^content sync: /.test(error.message) ||
+        error.message === "Content server lookup timed out." ||
+        error.message === "The content server connection failed."))
+  );
+}
+
 function tryStartChapterSourceAccess(
   start: TaskRunContext["tryStartSourceAccess"], ownerPluginId: string,
   sourceJob: Pick<ChapterDownloadJob, "id" | "pluginId" | "pluginName">,
@@ -1168,7 +1220,7 @@ function enqueueChapterDownloadForExecutor(
   const recoveryPolicy = options.recoveryPolicy ?? getDownloadRecoveryPolicy();
   let recoveryProfile = options.recoveryProfile;
   const sourceCooldownKey = options.vpnWorker?.rangeId ?? job.pluginId;
-  const sourceFallback = Boolean(options.vpnWorker) || job.sourceFallback === true || job.pluginId === LOCAL_PLUGIN_ID;
+  const sourceFallback = true;
   let serverChapterMissing = false;
   const completeJob = async (): Promise<void> => {
     await options.onCompleted?.();
@@ -1268,6 +1320,12 @@ function enqueueChapterDownloadForExecutor(
             try {
               return await tryDownloadServerChapter(storageJob, signal, setChapterDownloadPhase, { sourceFallback });
             } catch (error) {
+              if (
+                isFallbackEligibleContentServerError(error, signal) &&
+                await canFallbackChapterDownloadToSource(chapter, job.pluginId, signal)
+              ) {
+                return false;
+              }
               serverChapterMissing = isServerChapterMissingFailure(error);
               throw error;
             }
@@ -1953,9 +2011,27 @@ export function enqueueChapterMediaRepair(
         beforeAttempt: async (attemptContext) => {
           attemptContext.setChapterDownloadPhase?.("server-lookup");
           fetchServerMedia = createServerChapterMediaFetcher(job, attemptContext.signal);
-          if (await fetchServerMedia.hasServerChapter()) {
-            await repair(attemptContext, true);
-            return { handled: true, value: undefined };
+          try {
+            if (await fetchServerMedia.hasServerChapter()) {
+              await repair(attemptContext, true);
+              return { handled: true, value: undefined };
+            }
+          } catch (error) {
+            if (!isFallbackEligibleContentServerError(error, attemptContext.signal)) {
+              throw error;
+            }
+            await waitForChapterStorageOperation(job.pluginId, attemptContext.signal);
+            const fallbackChapter = await withChapterStorageOperation("Read chapter state", () => getChapterById(job.id));
+            if (!fallbackChapter) throw missingRepairChapterError(job);
+            if (!await canFallbackChapterDownloadToSource(fallbackChapter, job.pluginId, attemptContext.signal)) {
+              throw error;
+            }
+            sourceChapter = fallbackChapter;
+            sourceJob = chapterDownloadSourceJob({ ...job, chapterPath: fallbackChapter.path }, fallbackChapter);
+            sourcePluginId = sourceJob.pluginId;
+            downloadRecovery.setSource(sourceJob);
+            fetchServerMedia = Object.assign(async () => null, { hasServerChapter: async () => false });
+            return { handled: false };
           }
           await waitForChapterStorageOperation(job.pluginId, attemptContext.signal);
           const chapter = await withChapterStorageOperation("Read chapter state", () => getChapterById(job.id));

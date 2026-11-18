@@ -114,27 +114,29 @@ body and declared ZIP assets without finalizing or rewriting media. Deletions du
 cannot restore stale download flags. Detailed content recovery remains part of
 opening stored content and explicit storage rescans.
 For an unfinished chapter, Norea asks the server for that chapter. Matching files
-install into the existing local chapter; otherwise an available source plugin
-handles the download. A work opened from the content server is the exception:
-when the server lacks a chapter body, the download stops as "not on server"
-without source access, and only the user's retry of that failure (the queue row,
-the Needs attention action, the chapter row, or the reader) continues to the
-source. VPN download runs keep using the source directly. The chapter list marks
-undownloaded chapters of such a work as on the server or not on the server, and
-a failed queue row names the content server or the original site.
+install into the existing local chapter; otherwise, if the work has a source path
+and an installed source plugin, Norea automatically falls back to that plugin
+on a server miss, lookup timeout/failure, or failed staging transfer (including
+works originally opened from the content server). Only server-only chapters or
+works whose source plugin is not installed stop with "not on server" or surface
+the content-server error. VPN download runs keep using the source directly. The
+chapter list marks undownloaded chapters of a bound work as on the server or not
+on the server, and a failed queue row names the content server or the original site.
 The server lookup timeout defaults to 3 seconds
 and can be set from 1 to 120 seconds. This deadline includes device registration
 and metadata lookup, and also applies to work-home server refreshes. Chapter file
 transfers have their own timeout. Server-only chapters report unavailable-server
 errors instead of sending their folder identities to a source plugin. A recovered
 folder chapter of a work whose source plugin is installed is source-capable: when
-the server lacks it, the download refreshes that work once per session through the
-task's plugin fetch route, including a VPN download worker's route, so matching
-source chapter numbers replace folder identities, then downloads from the source.
+the server lacks it or is unreachable, the download refreshes that work once per
+session through the task's plugin fetch route, including a VPN download worker's
+route, so matching source chapter numbers replace folder identities, then downloads
+from the source.
 It fails as a content error only when the source has no matching chapter.
 After a server failure, source-capable chapters skip server attempts for 30 seconds;
-a missing chapter does not trigger this delay. A failed chapter transfer also falls
-back to the source plugin. Cancelling a transfer releases the download task without
+a missing chapter (`404`) does not trigger this delay. A failed chapter transfer
+in staging also falls back to the source plugin when source-capable. Cancelling a
+transfer releases the download task without
 publishing late results. Native HTTP may finish in its private staging directory,
 which is removed after the request ends.
 

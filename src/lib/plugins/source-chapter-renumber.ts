@@ -1,6 +1,7 @@
 import { useContentSyncStore } from "../../store/content-sync";
 import { prepareChapterStorageTransfer } from "../chapter-storage-transfer";
 import { normalizeContentServerUrl } from "../content-sync/client";
+import { readServerNovelSource } from "../content-sync/novel-source";
 import { runWorkContentStorageOperation } from "../content-sync/storage-operation";
 import { runContentSyncOperation } from "../content-sync/sync";
 import {
@@ -110,11 +111,15 @@ async function withChapterNumberReconciliation<T>(
           const flushed = await flushAndReadRenumberWork(work);
           const currentChanges = plan(flushed.work, flushed.storedChapters);
           if (!currentChanges.length) return publish(null);
-          const configuredServer = useContentSyncStore.getState().serverUrl;
+          const configuredServer = !serverMappings
+            ? useContentSyncStore.getState().serverUrl ||
+              (await readServerNovelSource(flushed.work.id))?.serverUrl ||
+              ""
+            : "";
           const journal = await createSourceChapterRenumberJournal(
             flushed.work,
             currentChanges,
-            !serverMappings && configuredServer
+            configuredServer
               ? normalizeContentServerUrl(configuredServer)
               : null,
             coverWrites,

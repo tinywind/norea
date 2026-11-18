@@ -18,7 +18,8 @@ vi.mock("../plugins/manager", () => ({ pluginManager: { getPlugin: vi.fn(), load
 import { getNovelById } from "../../db/queries/novel";
 import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { getChapterById } from "../../db/queries/chapter";
-import { ContentServerError, contentServerRequest } from "./client";
+import { ContentServerError, ContentServerTransportError, contentServerRequest } from "./client";
+import { ChapterStorageError } from "../chapter-storage-error";
 import { registerContentDevice } from "./device";
 import { pluginManager } from "../plugins/manager";
 import { downloadServerChapterFromServer } from "./sync";
@@ -44,7 +45,10 @@ beforeEach(async () => {
   vi.mocked(getChapterById).mockResolvedValue({ id: 7, novelId: 3, path: "/chapter/7", chapterNumber: "7", position: 7 } as never);
   vi.mocked(contentServerRequest).mockResolvedValue(entry);
 });
-afterEach(() => vi.useRealTimers());
+afterEach(() => {
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 it("checks the configured server before downloading an ordinary plugin chapter", async () => {
   settings.serverUrl = "http://configured";
@@ -85,12 +89,16 @@ it("uses an installed source for new chapters absent from a bound server work", 
   expect(await tryDownloadServerChapter(job)).toBe(false);
 });
 
-it("stops a bound server work's absent chapter until the source is explicitly allowed", async () => {
+it("falls back automatically for a bound server work with an installed plugin unless sourceFallback is disabled", async () => {
   await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
   vi.mocked(contentServerRequest).mockRejectedValue(new ContentServerError(404));
+  vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+  expect(await tryDownloadServerChapter(job)).toBe(false);
   await expect(tryDownloadServerChapter(job, undefined, undefined, { sourceFallback: false }))
     .rejects.toMatchObject({ code: "content-server-chapter-missing", message: "This chapter is not on the content server." });
-  expect(await tryDownloadServerChapter(job, undefined, undefined, { sourceFallback: true })).toBe(false);
+  vi.mocked(pluginManager.getPlugin).mockReturnValue(undefined);
+  await expect(tryDownloadServerChapter(job))
+    .rejects.toMatchObject({ code: "content-server-chapter-missing", message: "This chapter is not on the content server." });
   expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
 });
 
@@ -100,14 +108,15 @@ it("keeps the source route for an unbound work absent from the configured server
   expect(await tryDownloadServerChapter(job, undefined, undefined, { sourceFallback: false })).toBe(false);
 });
 
-it("leaves plugin initialization to the source attempt after a bound work misses", async () => {
+it("loads installed plugins when verifying fallback eligibility after a bound work misses", async () => {
   await rememberServerNovelSource(3, { serverUrl: "http://origin", workId: "work" });
+  vi.stubGlobal("window", { __TAURI_INTERNALS__: {} });
   vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
   vi.mocked(pluginManager.loadInstalledFromDb).mockImplementationOnce(async () => {
     vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
   });
   expect(await tryDownloadServerChapter(job)).toBe(false);
-  expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
+  expect(pluginManager.loadInstalledFromDb).toHaveBeenCalledOnce();
 });
 
 it("stops without installing mismatched content from an optional server", async () => {
@@ -214,33 +223,48 @@ describe("recovered folder chapters", () => {
   });
 
   it("leaves a chapter missing on the server to an installed source instead of failing", async () => {
+    vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
     vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
-    vi.mocked(pluginManager.loadInstalledFromDb).mockImplementationOnce(async () => {
-      vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
-    });
     expect(await tryDownloadServerChapter(folderJob)).toBe(false);
-    expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
     // A missing chapter does not delay the next server lookup.
     vi.mocked(contentServerRequest).mockResolvedValueOnce({ ...entry, manifest: { identity: { ...entry.manifest.identity, chapterPath: "norea-folder:7" }, chapter: { chapterNumber: "7" } } } as CatalogEntry);
     expect(await tryDownloadServerChapter(folderJob)).toBe(true);
   });
 
-  it("surfaces a server failure instead of silently skipping the server", async () => {
-    vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+  it("falls back with a 30s server cooldown when a source plugin is installed and surfaces failures otherwise", async () => {
+    vi.useFakeTimers();
     const failure = new ContentServerError(503);
+    vi.mocked(pluginManager.getPlugin).mockReturnValue(undefined);
     vi.mocked(contentServerRequest).mockRejectedValueOnce(failure);
     await expect(tryDownloadServerChapter(folderJob)).rejects.toBe(failure);
     expect(contentServerRequest).toHaveBeenCalledOnce();
+
+    vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+    vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(503));
+    expect(await tryDownloadServerChapter(folderJob)).toBe(false);
+    expect(contentServerRequest).toHaveBeenCalledTimes(2);
+
+    // Within 30 seconds, source-capable fallback skips the unavailable server immediately.
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(await tryDownloadServerChapter(folderJob)).toBe(false);
+    expect(contentServerRequest).toHaveBeenCalledTimes(2);
+
+    // Once the 30-second cooldown expires, the server is queried again.
+    await vi.advanceTimersByTimeAsync(20_001);
+    vi.mocked(contentServerRequest).mockResolvedValueOnce({ ...entry, manifest: { identity: { ...entry.manifest.identity, chapterPath: "norea-folder:7" }, chapter: { chapterNumber: "7" } } } as CatalogEntry);
+    expect(await tryDownloadServerChapter(folderJob)).toBe(true);
+    expect(contentServerRequest).toHaveBeenCalledTimes(3);
   });
 
   it.each([
     ["no installed source", { id: 3, pluginId: "source-a", path: "/novel/a", name: "A work" }, undefined],
     ["a local work", { id: 3, pluginId: "source-a", path: "/novel/a", name: "A work", isLocal: true }, { id: "source-a" }],
-  ])("reports an absent body without inspecting %s", async (_case, novel, plugin) => {
+    ["a server-only folder work", { id: 3, pluginId: "source-a", path: "norea-folder:book", name: "A work" }, { id: "source-a" }],
+  ])("stops with ServerChapterMissingError on 404 when source fallback is unavailable (%s)", async (_case, novel, plugin) => {
     vi.mocked(getNovelById).mockResolvedValue(novel as never);
     vi.mocked(pluginManager.getPlugin).mockReturnValue(plugin as never);
     vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
-    expect(await tryDownloadServerChapter(folderJob)).toBe(false);
+    await expect(tryDownloadServerChapter(folderJob)).rejects.toMatchObject({ code: "content-server-chapter-missing" });
   });
 });
 
@@ -363,7 +387,7 @@ describe("server work downloads", () => {
     vi.mocked(contentServerRequest).mockRejectedValueOnce(failure);
 
     expect(await tryDownloadServerChapter(job)).toBe(false);
-    expect(pluginManager.getPlugin).not.toHaveBeenCalled();
+    expect(pluginManager.getPlugin).toHaveBeenCalledWith("source-a");
     expect(pluginManager.loadInstalledFromDb).not.toHaveBeenCalled();
     expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
   });
@@ -424,5 +448,23 @@ describe("server-first download boundaries", () => {
     const requestedPath = vi.mocked(contentServerRequest).mock.calls[0]?.[1] ?? "";
     expect(requestedPath).toContain("chapterPath=%2Fprologue");
     expect(requestedPath).not.toContain("chapterNumber=");
+  });
+
+  it("falls back to an installed source when staging package transfer fails remotely", async () => {
+    settings.serverUrl = "http://configured";
+    vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+    vi.mocked(downloadServerChapterFromServer).mockRejectedValueOnce(new ContentServerError(502));
+    expect(await tryDownloadServerChapter(job)).toBe(false);
+
+    vi.mocked(downloadServerChapterFromServer).mockRejectedValueOnce(new ContentServerTransportError("Connection dropped"));
+    expect(await tryDownloadServerChapter(job)).toBe(false);
+  });
+
+  it("propagates ChapterStorageError during server package transfer without falling back to the source", async () => {
+    settings.serverUrl = "http://configured";
+    vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+    const storageFailure = new ChapterStorageError("install content", new Error("disk full"));
+    vi.mocked(downloadServerChapterFromServer).mockRejectedValueOnce(storageFailure);
+    await expect(tryDownloadServerChapter(job)).rejects.toBe(storageFailure);
   });
 });

@@ -99,9 +99,11 @@ async function findUploadedChapter(server: string, token: string, row: Pick<Cont
     available = false;
   }
   const remote = entry.manifest.identity;
+  const entryFolderNumber = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(remote.chapterPath)?.[1];
+  const rawEntryNumber = entry.manifest.chapter?.chapterNumber;
+  const entryChapterNumber = rawEntryNumber != null && /^\d+(?:\.\d+)?$/.test(rawEntryNumber) ? rawEntryNumber : entryFolderNumber;
   const sameChapter = remote.chapterPath === row.chapterPath ||
-    ((recovered || /^norea-folder:\d+(?:\.\d+)?$/.test(remote.chapterPath)) &&
-      entry.manifest.chapter.chapterNumber != null && Number(entry.manifest.chapter.chapterNumber) === Number(chapterNumber));
+    Boolean(chapterNumber && entryChapterNumber && Number(entryChapterNumber) === Number(chapterNumber));
   // Unavailable lookups exclude explicit deletions but may retain a missing-file catalog marker.
   if ((available && entry.deleted) || remote.pluginId !== row.pluginId || remote.novelPath !== row.novelPath || remote.novelId !== row.sourceNovelId ||
     !remote.chapterPath || !sameChapter) {
@@ -263,7 +265,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
             await uploadContentChapter({
               serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath, signal: activity.signal, conflictPolicy,
               manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelId: row.sourceNovelId!, novelPath: row.novelPath,
-                  chapterPath: existing?.manifest.identity.chapterPath.startsWith("norea-folder:") ? existing.manifest.identity.chapterPath : row.chapterPath },
+                  chapterPath: existing ? existing.manifest.identity.chapterPath : row.chapterPath },
                 novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
                 chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
             });

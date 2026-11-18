@@ -1,12 +1,21 @@
+import { isAbortError } from "../abort";
 import { getChapterById } from "../../db/queries/chapter";
 import { readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
 import { getNovelById } from "../../db/queries/novel";
 import { useContentSyncStore } from "../../store/content-sync";
-import { withChapterStorageOperation } from "../chapter-storage-error";
+import { isChapterStorageError, withChapterStorageOperation } from "../chapter-storage-error";
+import { pluginManager } from "../plugins/manager";
 import type { ChapterDownloadJob } from "../tasks/chapter-download";
 import { ServerChapterMissingError } from "../tasks/download-failure";
 import type { ChapterDownloadPhase } from "../tasks/task-types";
-import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
+import { isTauriRuntime } from "../tauri-runtime";
+import {
+  ContentServerError,
+  ContentServerTransportError,
+  contentServerRequest,
+  normalizeContentServerUrl,
+  withContentServerLookup,
+} from "./client";
 import { registerContentDevice } from "./device";
 import type { CatalogEntry } from "./native";
 import { fetchServerChapters } from "./chapters";
@@ -56,14 +65,63 @@ export async function listServerChapterAvailability(source: ServerNovelSource, s
 }
 
 /**
- * A work opened from the content server has no source to switch to while it waits, so its lookup gets
- * the ordinary request time instead of the short wait that bounds an optional server check.
+ * A work opened from the content server without an installed source plugin has no source to switch to
+ * while it waits, so its lookup gets the ordinary request time instead of the short lookup bound.
  */
 const BOUND_WORK_LOOKUP_SECONDS = 30;
+const SERVER_FAILURE_COOLDOWN_MS = 30_000;
+const unavailableServers = new Map<string, number>();
+
+async function hasInstalledSourceFallback(
+  novel: { isLocal?: boolean; pluginId: string; path: string },
+  chapter: { compositionSource?: { pluginId: string; chapterPath: string } },
+  signal?: AbortSignal,
+): Promise<boolean> {
+  if (chapter.compositionSource) {
+    if (
+      chapter.compositionSource.chapterPath.startsWith("norea-folder:") ||
+      chapter.compositionSource.chapterPath.startsWith("norea-composed:")
+    ) {
+      return false;
+    }
+    if (isTauriRuntime()) {
+      signal?.throwIfAborted();
+      await pluginManager.loadInstalledFromDb();
+      signal?.throwIfAborted();
+    }
+    return Boolean(pluginManager.getPlugin(chapter.compositionSource.pluginId));
+  }
+  if (novel.isLocal || novel.pluginId === "local" || novel.path.startsWith("norea-folder:")) {
+    return false;
+  }
+  if (isTauriRuntime()) {
+    signal?.throwIfAborted();
+    await pluginManager.loadInstalledFromDb();
+    signal?.throwIfAborted();
+  }
+  return Boolean(pluginManager.getPlugin(novel.pluginId));
+}
+
+function canFallbackLookupError(error: unknown, signal?: AbortSignal): boolean {
+  return !signal?.aborted && !isAbortError(error) && !isChapterStorageError(error);
+}
+
+function canFallbackTransferError(error: unknown, signal?: AbortSignal): boolean {
+  if (signal?.aborted || isAbortError(error) || isChapterStorageError(error)) {
+    return false;
+  }
+  return (
+    error instanceof ContentServerError ||
+    error instanceof ContentServerTransportError ||
+    (error instanceof Error && /^content sync: /.test(error.message))
+  );
+}
 
 /**
- * Returns false only when no server is configured or the exact chapter lookup confirms its body is absent.
- * With `sourceFallback: false`, a work opened from the content server throws ServerChapterMissingError instead.
+ * Returns false only when no server is configured, the chapter lookup confirms its body is absent with
+ * an available source plugin (or unbound work), or a failed server attempt can fall back to the source.
+ * When `sourceFallback: false` or no installed plugin fallback exists for a bound server work, missing
+ * server chapters throw ServerChapterMissingError and server errors propagate.
  */
 export async function tryDownloadServerChapter(
   job: Pick<ChapterDownloadJob, "id" | "novelId" | "pluginId" | "chapterPath">,
@@ -84,6 +142,13 @@ export async function tryDownloadServerChapter(
   if (novel.pluginId !== job.pluginId || chapter.path !== job.chapterPath) {
     throw new Error("Content server download identity does not match the local chapter.");
   }
+  const allowSourceFallback = options.sourceFallback !== false;
+  const normalizedServer = normalizeContentServerUrl(serverUrl);
+  if (allowSourceFallback && (unavailableServers.get(normalizedServer) ?? 0) > Date.now()) {
+    if (await hasInstalledSourceFallback(novel, chapter, signal)) {
+      return false;
+    }
+  }
   const target = { pluginId: novel.pluginId, novelPath: novel.path, chapterPath: chapter.path };
   const recoveredNumber = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(chapter.path)?.[1];
   const number = chapter.chapterNumber ?? recoveredNumber;
@@ -91,24 +156,43 @@ export async function tryDownloadServerChapter(
   const query = new URLSearchParams({ ...target, ...(chapterNumber ? { chapterNumber } : {}) });
   signal?.throwIfAborted();
   onPhase?.("server-lookup");
-  const found = await withContentServerLookup(async deadline => {
-    const token = await registerContentDevice(serverUrl, settings.deviceName, deadline);
-    deadline.throwIfAborted();
-    let entry: CatalogEntry;
-    try {
-      entry = await contentServerRequest<CatalogEntry>(serverUrl, `/catalog/chapter?${query}`, token, "GET", undefined, deadline);
-    } catch (error) {
+  const serverOnlyShape =
+    options.sourceFallback === false ||
+    ((novel.isLocal || novel.path.startsWith("norea-folder:")) && !chapter.compositionSource);
+  let found: { entry: CatalogEntry; token: string } | null;
+  try {
+    found = await withContentServerLookup(async deadline => {
+      const token = await registerContentDevice(serverUrl, settings.deviceName, deadline);
       deadline.throwIfAborted();
-      if (error instanceof ContentServerError && error.status === 404) return null;
-      throw error;
+      let entry: CatalogEntry;
+      try {
+        entry = await contentServerRequest<CatalogEntry>(serverUrl, `/catalog/chapter?${query}`, token, "GET", undefined, deadline);
+      } catch (error) {
+        deadline.throwIfAborted();
+        if (error instanceof ContentServerError && error.status === 404) return null;
+        throw error;
+      }
+      deadline.throwIfAborted();
+      return { entry, token };
+    }, source && serverOnlyShape
+      ? Math.max(BOUND_WORK_LOOKUP_SECONDS, settings.lookupTimeoutSeconds ?? 3)
+      : settings.lookupTimeoutSeconds ?? 3, signal);
+  } catch (error) {
+    if (
+      allowSourceFallback &&
+      canFallbackLookupError(error, signal) &&
+      await hasInstalledSourceFallback(novel, chapter, signal)
+    ) {
+      unavailableServers.set(normalizedServer, Date.now() + SERVER_FAILURE_COOLDOWN_MS);
+      return false;
     }
-    deadline.throwIfAborted();
-    return { entry, token };
-  }, source && options.sourceFallback === false
-    ? Math.max(BOUND_WORK_LOOKUP_SECONDS, settings.lookupTimeoutSeconds ?? 3)
-    : settings.lookupTimeoutSeconds ?? 3, signal);
+    throw error;
+  }
+  unavailableServers.delete(normalizedServer);
   if (!found) {
-    if (source && options.sourceFallback === false) throw new ServerChapterMissingError();
+    if (source && (!allowSourceFallback || !(await hasInstalledSourceFallback(novel, chapter, signal)))) {
+      throw new ServerChapterMissingError();
+    }
     return false;
   }
   const { entry, token } = found;
@@ -125,7 +209,18 @@ export async function tryDownloadServerChapter(
   const { downloadServerChapterFromServer } = await import("./sync");
   signal?.throwIfAborted();
   onPhase?.("server-download");
-  // A body remains a server hit even when some media are missing or its transfer later fails.
-  await downloadServerChapterFromServer(entry, serverUrl, { token, target, ...(signal ? { signal } : {}) });
+  try {
+    await downloadServerChapterFromServer(entry, serverUrl, { token, target, ...(signal ? { signal } : {}) });
+  } catch (error) {
+    if (
+      allowSourceFallback &&
+      canFallbackTransferError(error, signal) &&
+      await hasInstalledSourceFallback(novel, chapter, signal)
+    ) {
+      unavailableServers.set(normalizedServer, Date.now() + SERVER_FAILURE_COOLDOWN_MS);
+      return false;
+    }
+    throw error;
+  }
   return true;
 }
