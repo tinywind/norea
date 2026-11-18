@@ -359,11 +359,27 @@ export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: numbe
   const [work] = await db.select<{ pluginId: string; sourceNovelId: string | null; novelPath: string }[]>(
     "SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath FROM novel WHERE id=$1", [novelId]);
   if (work && work.pluginId !== "local") {
-    await db.execute(`UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE
+    const reopened = await db.execute(`UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE
+      deferred_reason IS NOT NULL AND
       json_extract(payload,'$.entity.work.pluginId')=$1 AND
       (json_extract(payload,'$.entity.work.novelPath')=$3 OR
         ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))`,
       [work.pluginId, work.sourceNovelId, work.novelPath]);
-    requestUserStateDeferredApply(db);
+    let hasWaiting = reopened.rowsAffected > 0;
+    if (!hasWaiting) {
+      const [waiting] = await db.select<{ waiting: number }[]>(
+        `SELECT 1 AS waiting FROM user_state_record
+         WHERE applied_revision<revision
+           AND json_extract(payload,'$.entity.work.pluginId')=$1
+           AND (json_extract(payload,'$.entity.work.novelPath')=$3
+             OR ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))
+         LIMIT 1`,
+        [work.pluginId, work.sourceNovelId, work.novelPath],
+      );
+      hasWaiting = Boolean(waiting);
+    }
+    if (hasWaiting) {
+      requestUserStateDeferredApply(db);
+    }
   }
 }

@@ -1681,6 +1681,23 @@ pub async fn delete_local_novel_records_in_tx(
         .await
         .map_err(|err| format!("db content deletion: delete novel: {err}"))?;
 
+    if cur_plugin != "local" && has_user_state_schema_in_tx(conn).await? {
+        sqlx::query(
+            "UPDATE user_state_record \
+             SET deferred_reason = 'missing-work', deferred_detail = NULL \
+             WHERE applied_revision >= revision AND deferred_reason IS NULL \
+               AND json_extract(payload, '$.entity.work.pluginId') = ?1 \
+               AND (json_extract(payload, '$.entity.work.novelPath') = ?3 \
+                    OR (?2 IS NOT NULL AND lower(json_extract(payload, '$.entity.work.sourceNovelId')) = lower(?2)))",
+        )
+        .bind(&cur_plugin)
+        .bind(&cur_source_id)
+        .bind(&cur_path)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db content deletion: park user state for deleted novel: {err}"))?;
+    }
+
     sqlx::query(
         "DELETE FROM work_metadata_reading_state WHERE plugin_id = ?1 AND novel_path = ?2",
     )

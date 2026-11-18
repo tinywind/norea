@@ -980,9 +980,10 @@ pub async fn defer_user_state_for_novel_in_tx(
         }
         let source_novel_id: Option<String> = w.get("source_novel_id");
         let novel_path: String = w.get("path");
-        sqlx::query(
+        let reopened = sqlx::query(
             "UPDATE user_state_record SET applied_revision = 0, deferred_reason = NULL, deferred_detail = NULL \
-             WHERE json_extract(payload, '$.entity.work.pluginId') = ?1 \
+             WHERE deferred_reason IS NOT NULL \
+               AND json_extract(payload, '$.entity.work.pluginId') = ?1 \
                AND (json_extract(payload, '$.entity.work.novelPath') = ?3 \
                     OR (?2 IS NOT NULL AND lower(json_extract(payload, '$.entity.work.sourceNovelId')) = lower(?2)))",
         )
@@ -992,7 +993,28 @@ pub async fn defer_user_state_for_novel_in_tx(
         .execute(&mut *conn)
         .await
         .map_err(|err| format!("db user state: reopen deferred work records: {err}"))?;
+        let has_waiting = if reopened.rows_affected() > 0 {
+            true
+        } else {
+            sqlx::query_scalar::<_, i64>(
+                "SELECT 1 FROM user_state_record \
+                 WHERE applied_revision < revision \
+                   AND json_extract(payload, '$.entity.work.pluginId') = ?1 \
+                   AND (json_extract(payload, '$.entity.work.novelPath') = ?3 \
+                        OR (?2 IS NOT NULL AND lower(json_extract(payload, '$.entity.work.sourceNovelId')) = lower(?2))) \
+                 LIMIT 1",
+            )
+            .bind(&plugin_id)
+            .bind(&source_novel_id)
+            .bind(&novel_path)
+            .fetch_optional(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: check waiting work records: {err}"))?
+            .is_some()
+        };
+        if has_waiting {
+            ctx.record_user_state_deferred_novel(novel_id);
+        }
     }
-    ctx.record_user_state_deferred_novel(novel_id);
     Ok(())
 }

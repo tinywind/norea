@@ -1335,3 +1335,288 @@ async fn work_categories_come_from_shared_state_until_the_work_has_local_categor
         vec!["Local shelf".to_string()]
     );
 }
+
+#[tokio::test]
+async fn defer_user_state_for_novel_reopens_only_deferred_records() {
+    use crate::db::content_sync::{delete_local_novel_records_in_tx, DeleteLocalNovelRecordsInputDto};
+
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let binding = sample_binding();
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+    let proj_opts = TxOptions {
+        remote_content_sync: true,
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) \
+         VALUES (1, 'source', 'book', '/book', 'Book', 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position) \
+         VALUES (11, 1, '/chapter/1', 'One', '1', 1)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let b1 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    let work = sample_work();
+    let remote = vec![
+        shared_record(
+            json!({ "kind": "library", "work": work }),
+            json!({ "inLibrary": true, "addedAt": 100 }),
+            1,
+            "op-lib",
+        ),
+        shared_record(
+            json!({
+                "kind": "reading",
+                "work": work,
+                "chapter": { "chapterPath": "/chapter/1", "name": "One" },
+            }),
+            json!({ "progress": 50, "unread": false, "readAt": 100 }),
+            2,
+            "op-read-1",
+        ),
+        shared_record(
+            json!({
+                "kind": "reading",
+                "work": work,
+                "chapter": { "chapterPath": "/chapter/2", "name": "Two" },
+            }),
+            json!({ "progress": 90, "unread": false, "readAt": 200 }),
+            3,
+            "op-read-2",
+        ),
+    ];
+    let page = json!({
+        "version": 1,
+        "workspaceId": binding.workspace_id,
+        "epoch": binding.epoch,
+        "headRevision": 3,
+        "through": 3,
+        "nextCursor": 3,
+        "hasMore": false,
+        "records": remote,
+    });
+    let b2 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { apply_user_state_read_page_in_tx(conn, ctx, &b2, &page).await })
+    })
+    .await
+    .unwrap();
+
+    let b3 = binding.clone();
+    with_write_tx(pool, proj_opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            project_pending_user_state_in_tx(None, conn, ctx, &b3, &HashSet::new()).await
+        })
+    })
+    .await
+    .unwrap();
+
+    let states = || async {
+        sqlx::query(
+            "SELECT revision, applied_revision, deferred_reason \
+             FROM user_state_record ORDER BY revision",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|row| {
+            (
+                row.get::<i64, _>("revision"),
+                row.get::<i64, _>("applied_revision"),
+                row.get::<Option<String>, _>("deferred_reason"),
+            )
+        })
+        .collect::<Vec<_>>()
+    };
+
+    assert_eq!(
+        states().await,
+        vec![
+            (1, 1, None),
+            (2, 2, None),
+            (3, 3, Some("missing-chapter".to_string())),
+        ]
+    );
+    let mut read_conn = pool.acquire().await.unwrap();
+    let initial_status = get_user_state_ledger_status_in_tx(&mut read_conn, Some(&binding))
+        .await
+        .unwrap();
+    drop(read_conn);
+    assert_eq!(initial_status.projection_pending, 0);
+    assert_eq!(initial_status.projection_failed, 0);
+
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position) \
+         VALUES (12, 1, '/chapter/2', 'Two', '2', 2)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let reopen_env = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { defer_user_state_for_novel_in_tx(conn, ctx, 1).await })
+    })
+    .await
+    .unwrap();
+    assert!(reopen_env.effects.user_state_deferred_ready);
+    assert_eq!(
+        states().await,
+        vec![(1, 1, None), (2, 2, None), (3, 0, None)]
+    );
+
+    let mut read_conn = pool.acquire().await.unwrap();
+    let pending_status = get_user_state_ledger_status_in_tx(&mut read_conn, Some(&binding))
+        .await
+        .unwrap();
+    drop(read_conn);
+    assert_eq!(pending_status.projection_pending, 1);
+
+    let b4 = binding.clone();
+    with_write_tx(pool, proj_opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            project_pending_user_state_in_tx(None, conn, ctx, &b4, &HashSet::new()).await
+        })
+    })
+    .await
+    .unwrap();
+
+    let ch12_progress: f64 =
+        sqlx::query_scalar("SELECT CAST(progress AS REAL) FROM chapter WHERE id = 12")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch12_progress, 90.0);
+
+    let mut read_conn = pool.acquire().await.unwrap();
+    let applied_status = get_user_state_ledger_status_in_tx(&mut read_conn, Some(&binding))
+        .await
+        .unwrap();
+    drop(read_conn);
+    assert_eq!(applied_status.projection_pending, 0);
+
+    let noop_env = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { defer_user_state_for_novel_in_tx(conn, ctx, 1).await })
+    })
+    .await
+    .unwrap();
+    assert!(!noop_env.effects.user_state_deferred_ready);
+    assert_eq!(
+        states().await,
+        vec![(1, 1, None), (2, 2, None), (3, 3, None)]
+    );
+
+    let mut read_conn = pool.acquire().await.unwrap();
+    let after_noop_status = get_user_state_ledger_status_in_tx(&mut read_conn, Some(&binding))
+        .await
+        .unwrap();
+    drop(read_conn);
+    assert_eq!(after_noop_status.projection_pending, 0);
+
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            delete_local_novel_records_in_tx(
+                conn,
+                ctx,
+                &DeleteLocalNovelRecordsInputDto {
+                    id: 1,
+                    plugin_id: "source".to_string(),
+                    source_novel_id: Some("book".to_string()),
+                    path: "/book".to_string(),
+                    record_user_state_removal: false,
+                },
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+
+    assert_eq!(
+        states().await,
+        vec![
+            (1, 1, Some("missing-work".to_string())),
+            (2, 2, Some("missing-work".to_string())),
+            (3, 3, Some("missing-work".to_string())),
+        ]
+    );
+    let mut read_conn = pool.acquire().await.unwrap();
+    let deleted_status = get_user_state_ledger_status_in_tx(&mut read_conn, Some(&binding))
+        .await
+        .unwrap();
+    drop(read_conn);
+    assert_eq!(deleted_status.projection_pending, 0);
+
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) \
+         VALUES (1, 'source', 'book', '/book', 'Book', 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position) \
+         VALUES (11, 1, '/chapter/1', 'One', '1', 1), \
+                (12, 1, '/chapter/2', 'Two', '2', 2)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let restore_env = with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move { defer_user_state_for_novel_in_tx(conn, ctx, 1).await })
+    })
+    .await
+    .unwrap();
+    assert!(restore_env.effects.user_state_deferred_ready);
+    assert_eq!(
+        states().await,
+        vec![(1, 0, None), (2, 0, None), (3, 0, None)]
+    );
+
+    let b5 = binding.clone();
+    with_write_tx(pool, proj_opts, move |conn, ctx| {
+        Box::pin(async move {
+            project_pending_user_state_in_tx(None, conn, ctx, &b5, &HashSet::new()).await
+        })
+    })
+    .await
+    .unwrap();
+
+    let in_library: i64 = sqlx::query_scalar("SELECT in_library FROM novel WHERE id = 1")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(in_library, 1);
+    let recovered_progress: Vec<(i64, f64)> = sqlx::query(
+        "SELECT id, CAST(progress AS REAL) AS progress FROM chapter WHERE novel_id = 1 ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap()
+    .into_iter()
+    .map(|row| (row.get("id"), row.get("progress")))
+    .collect();
+    assert_eq!(recovered_progress, vec![(11, 50.0), (12, 90.0)]);
+}

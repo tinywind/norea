@@ -1483,6 +1483,17 @@ export function createContentSyncIpcHandler(
             [input.id],
           );
           await db.execute("DELETE FROM novel WHERE id=$1", [input.id]);
+          if (current.pluginId !== "local" && (await hasUserStateSchema(db))) {
+            await db.execute(
+              `UPDATE user_state_record
+               SET deferred_reason='missing-work',deferred_detail=NULL
+               WHERE applied_revision>=revision AND deferred_reason IS NULL
+                 AND json_extract(payload,'$.entity.work.pluginId')=$1
+                 AND (json_extract(payload,'$.entity.work.novelPath')=$3
+                   OR ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))`,
+              [current.pluginId, current.sourceNovelId, current.path],
+            );
+          }
           await db.execute(
             "DELETE FROM work_metadata_reading_state WHERE plugin_id=$1 AND novel_path=$2",
             [input.pluginId, input.path],

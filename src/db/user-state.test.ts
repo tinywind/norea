@@ -572,6 +572,94 @@ describe("durable personal-state ledger", () => {
     expect(await prepare()).toEqual([]);
     expect(await listUserStateDeferredInDb(active.db, binding)).toEqual([]);
   });
+
+  it("reopens only deferred records when novel or chapter rows arrive", async () => {
+    await bind();
+    const chapterTwo = { chapterPath: "/chapter/2", name: "Two" };
+    await applyUserStateReadPage(binding, {
+      version: 1,
+      workspaceId: binding.workspaceId,
+      epoch: binding.epoch,
+      headRevision: 3,
+      through: 3,
+      nextCursor: 3,
+      hasMore: false,
+      records: [
+        shared({ kind: "library", work }, { inLibrary: true, addedAt: 100 }, 1, "remote-lib"),
+        shared(reading, readingValue(50), 2, "remote-read-1"),
+        shared({ kind: "reading", work, chapter: chapterTwo }, readingValue(90), 3, "remote-read-2"),
+      ],
+    });
+    await waitForUserStateDeferredApply();
+
+    expect(
+      active.sql.prepare("SELECT revision,applied_revision,deferred_reason FROM user_state_record ORDER BY revision").all(),
+    ).toEqual([
+      { revision: 1, applied_revision: 1, deferred_reason: null },
+      { revision: 2, applied_revision: 2, deferred_reason: null },
+      { revision: 3, applied_revision: 3, deferred_reason: "missing-chapter" },
+    ]);
+
+    active.sql.exec(
+      "INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(12,1,'/chapter/2','Two','2',2)",
+    );
+    await tx(active, async (db) => {
+      await deferUserStateForNovelInDb(db, 1);
+      expect(
+        active.sql.prepare("SELECT revision,applied_revision,deferred_reason FROM user_state_record ORDER BY revision").all(),
+      ).toEqual([
+        { revision: 1, applied_revision: 1, deferred_reason: null },
+        { revision: 2, applied_revision: 2, deferred_reason: null },
+        { revision: 3, applied_revision: 0, deferred_reason: null },
+      ]);
+      expect(await getUserStateLedgerStatusInDb(db, binding)).toMatchObject({
+        projectionPending: 1,
+        projectionFailed: 0,
+      });
+    });
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=12").get()).toEqual({ progress: 90 });
+
+    await tx(active, async (db) => {
+      await deferUserStateForNovelInDb(db, 1);
+      expect(
+        active.sql.prepare("SELECT revision,applied_revision,deferred_reason FROM user_state_record ORDER BY revision").all(),
+      ).toEqual([
+        { revision: 1, applied_revision: 1, deferred_reason: null },
+        { revision: 2, applied_revision: 2, deferred_reason: null },
+        { revision: 3, applied_revision: 3, deferred_reason: null },
+      ]);
+      expect(await getUserStateLedgerStatusInDb(db, binding)).toMatchObject({
+        projectionPending: 0,
+        projectionFailed: 0,
+      });
+    });
+    await waitForUserStateDeferredApply();
+
+    await deleteLocalNovelRecords(
+      { id: 1, pluginId: work.pluginId, sourceNovelId: work.sourceNovelId, path: work.novelPath },
+      { recordUserStateRemoval: false },
+    );
+    expect(
+      active.sql.prepare("SELECT revision,applied_revision,deferred_reason FROM user_state_record ORDER BY revision").all(),
+    ).toEqual([
+      { revision: 1, applied_revision: 1, deferred_reason: "missing-work" },
+      { revision: 2, applied_revision: 2, deferred_reason: "missing-work" },
+      { revision: 3, applied_revision: 3, deferred_reason: "missing-work" },
+    ]);
+
+    addWork(active, 1, 11, work);
+    active.sql.exec(
+      "INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(12,1,'/chapter/2','Two','2',2)",
+    );
+    await tx(active, db => deferUserStateForNovelInDb(db, 1));
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT in_library FROM novel WHERE id=1").get()).toEqual({ in_library: 1 });
+    expect(active.sql.prepare("SELECT id,progress FROM chapter WHERE novel_id=1 ORDER BY id").all()).toEqual([
+      { id: 11, progress: 50 },
+      { id: 12, progress: 90 },
+    ]);
+  });
 });
 
 describe("explicit command boundaries", () => {
