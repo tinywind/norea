@@ -322,7 +322,23 @@ beforeEach(() => {
         return Promise.resolve(undefined);
       }
       if (command === "chapter_download_queue_lease") {
-        const values = [...backendQueueValues.values()];
+        const excludedPlugins = new Set(
+          Array.isArray(args?.excludedPluginIds)
+            ? args.excludedPluginIds.filter((value): value is string => typeof value === "string")
+            : [],
+        );
+        const excludedChapters = new Set(
+          Array.isArray(args?.excludedChapterIds)
+            ? args.excludedChapterIds.filter((value): value is number => typeof value === "number")
+            : [],
+        );
+        const values = [...backendQueueValues.values()].filter((item) => {
+          if (!item || typeof item !== "object") return true;
+          const record = item as { id?: unknown; pluginId?: unknown };
+          if (typeof record.id === "number" && excludedChapters.has(record.id)) return false;
+          if (typeof record.pluginId === "string" && excludedPlugins.has(record.pluginId)) return false;
+          return true;
+        });
         if (typeof args?.limit !== "number") return Promise.resolve(values);
         return Promise.resolve(values.slice(0, args.limit));
       }
@@ -1848,6 +1864,84 @@ describe("startChapterDownloadQueueExecutor", () => {
       restoredScheduler.cancelActiveTasks({ discardQueued: true });
       for (const deferred of deferreds) {
         deferred.reject(new Error("executor failed"));
+      }
+      await flushMicrotasks(100);
+    }
+  });
+
+  it("restores unrelated sources immediately while another source holds a per-source storage operation", async () => {
+    vi.resetModules();
+    const downloads = await import("./chapter-download");
+    const storageOps = await import("./chapter-storage-operation");
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler();
+    scheduler.setBackgroundExecutionSuspended(true);
+    const deferreds = new Map<number, Deferred<void>>();
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) => {
+      const handle = scheduler.enqueueSource(spec);
+      void handle.promise.catch(() => undefined);
+      const deferred = createDeferred<void>();
+      deferreds.set(spec.subject?.chapterId ?? 0, deferred);
+      return { id: handle.id, promise: deferred.promise };
+    });
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    vi.mocked(listExistingChapterIds).mockImplementation(async (ids) => [...ids]);
+
+    backendQueueValues.set(1, {
+      id: 1,
+      pluginId: "source-a",
+      chapterPath: "/a/1",
+      chapterName: "A1",
+      novelId: 10,
+      novelName: "Novel A",
+      title: "A1",
+    });
+    backendQueueValues.set(2, {
+      id: 2,
+      pluginId: "source-b",
+      chapterPath: "/b/2",
+      chapterName: "B2",
+      novelId: 20,
+      novelName: "Novel B",
+      title: "B2",
+    });
+
+    const storageStarted = createDeferred<void>();
+    const releaseStorage = createDeferred<void>();
+    const blockingStorage = storageOps.runExclusiveChapterStorageOperation(
+      { kind: "sources", sourceIds: ["source-a"] },
+      undefined,
+      async () => {
+        storageStarted.resolve();
+        await releaseStorage.promise;
+      },
+    );
+    await storageStarted.promise;
+
+    downloads.startChapterDownloadQueueExecutor();
+    await downloads.waitForChapterDownloadQueueRestoration();
+
+    try {
+      expect(
+        schedulerMocks.enqueueSource.mock.calls.map(([spec]) => (spec as SourceTaskSpec<void>).subject?.chapterId),
+      ).toEqual([2]);
+
+      deferreds.get(2)!.resolve();
+      releaseStorage.resolve();
+      await blockingStorage;
+
+      await vi.waitFor(() => {
+        expect(
+          schedulerMocks.enqueueSource.mock.calls.map(([spec]) => (spec as SourceTaskSpec<void>).subject?.chapterId),
+        ).toEqual([2, 1]);
+      });
+
+      deferreds.get(1)!.resolve();
+      await flushMicrotasks(100);
+    } finally {
+      scheduler.cancelActiveTasks({ discardQueued: true });
+      for (const deferred of deferreds.values()) {
+        deferred.resolve();
       }
       await flushMicrotasks(100);
     }

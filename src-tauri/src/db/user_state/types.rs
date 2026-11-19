@@ -72,6 +72,10 @@ pub struct UserStateResumeEffectDto {
 #[serde(rename_all = "camelCase")]
 pub struct UserStateApplyEffectsDto {
     pub resumes: Vec<UserStateResumeEffectDto>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_more: bool,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub failed_entity_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

@@ -147,6 +147,8 @@ internal class AndroidTaskNotificationBridge(
   private val resumeBackgroundWorkWebViews: () -> Unit,
   private val releaseBackgroundWorkWebViews: () -> Unit,
 ) {
+  @Volatile
+  private var destroyed = false
   var isForegroundServiceActive = false
     private set
 
@@ -163,8 +165,10 @@ internal class AndroidTaskNotificationBridge(
 
   @JavascriptInterface
   fun update(payload: String) {
+    if (destroyed) return
     val update = runCatching { AndroidTaskNotificationPayload.parse(payload) }.getOrNull() ?: return
     activity.runOnUiThread {
+      if (destroyed || activity.isDestroyed) return@runOnUiThread
       if (update.requestPermission) {
         try {
           requestNotificationPermission()
@@ -188,13 +192,22 @@ internal class AndroidTaskNotificationBridge(
   @JavascriptInterface
   fun stop() {
     activity.runOnUiThread {
-      isForegroundServiceActive = false
-      releaseBackgroundWorkWebViews()
-      try {
-        AndroidTaskNotifications.stopRuntime(activity)
-      } catch (error: RuntimeException) {
-        AppLog.w("NoreaTasks", "Background execution cleanup failed", error)
-      }
+      stopRuntime()
+    }
+  }
+
+  fun destroy() {
+    destroyed = true
+    stopRuntime()
+  }
+
+  private fun stopRuntime() {
+    isForegroundServiceActive = false
+    releaseBackgroundWorkWebViews()
+    try {
+      AndroidTaskNotifications.stopRuntime(activity.applicationContext)
+    } catch (error: RuntimeException) {
+      AppLog.w("NoreaTasks", "Background execution cleanup failed", error)
     }
   }
 }

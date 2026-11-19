@@ -148,24 +148,50 @@ pub async fn load_current_held_sources_in_tx(
     server_url: &str,
 ) -> Result<CurrentHeldSources, String> {
     let rows = sqlx::query(
-        "SELECT \
-           CASE WHEN cache_key LIKE 'norea-content-novel-migration:%' THEN 'outgoing' \
-                WHEN cache_key LIKE 'norea-content-incoming-migration:%' THEN 'incoming' \
-                ELSE 'number' END AS kind, \
-           json_extract(payload, '$.status') AS status, \
-           json_extract(payload, '$.operationId') AS operationId, \
-           json_extract(payload, '$.lineage.legacyOperationId') AS legacyOperationId, \
-           COALESCE(json_extract(payload, '$.source.pluginId'), \
-                    json_extract(payload, '$.identity.pluginId')) AS pluginId, \
-           COALESCE(json_extract(payload, '$.source.novelId'), \
-                    json_extract(payload, '$.identity.novelId')) AS sourceNovelId, \
-           COALESCE(json_extract(payload, '$.source.novelPath'), \
-                    json_extract(payload, '$.identity.novelPath')) AS novelPath \
+        "SELECT 'outgoing' AS kind, \
+                json_extract(payload, '$.status') AS status, \
+                json_extract(payload, '$.operationId') AS operationId, \
+                json_extract(payload, '$.lineage.legacyOperationId') AS legacyOperationId, \
+                COALESCE(json_extract(payload, '$.source.pluginId'), \
+                         json_extract(payload, '$.identity.pluginId')) AS pluginId, \
+                COALESCE(json_extract(payload, '$.source.novelId'), \
+                         json_extract(payload, '$.identity.novelId')) AS sourceNovelId, \
+                COALESCE(json_extract(payload, '$.source.novelPath'), \
+                         json_extract(payload, '$.identity.novelPath')) AS novelPath \
          FROM content_sync_cache \
-         WHERE CASE WHEN cache_key LIKE 'norea-content-novel-migration:%' \
-                      OR cache_key LIKE 'norea-content-incoming-migration:%' \
-                      OR cache_key LIKE 'norea-content-chapter-number-reconciliation:%' \
-               THEN rtrim(json_extract(payload, '$.serverUrl'), '/') = rtrim(?1, '/') ELSE 0 END",
+         WHERE cache_key >= 'norea-content-novel-migration:' \
+           AND cache_key < 'norea-content-novel-migration;' \
+           AND rtrim(json_extract(payload, '$.serverUrl'), '/') = rtrim(?1, '/') \
+         UNION ALL \
+         SELECT 'incoming' AS kind, \
+                json_extract(payload, '$.status') AS status, \
+                json_extract(payload, '$.operationId') AS operationId, \
+                json_extract(payload, '$.lineage.legacyOperationId') AS legacyOperationId, \
+                COALESCE(json_extract(payload, '$.source.pluginId'), \
+                         json_extract(payload, '$.identity.pluginId')) AS pluginId, \
+                COALESCE(json_extract(payload, '$.source.novelId'), \
+                         json_extract(payload, '$.identity.novelId')) AS sourceNovelId, \
+                COALESCE(json_extract(payload, '$.source.novelPath'), \
+                         json_extract(payload, '$.identity.novelPath')) AS novelPath \
+         FROM content_sync_cache \
+         WHERE cache_key >= 'norea-content-incoming-migration:' \
+           AND cache_key < 'norea-content-incoming-migration;' \
+           AND rtrim(json_extract(payload, '$.serverUrl'), '/') = rtrim(?1, '/') \
+         UNION ALL \
+         SELECT 'number' AS kind, \
+                json_extract(payload, '$.status') AS status, \
+                json_extract(payload, '$.operationId') AS operationId, \
+                json_extract(payload, '$.lineage.legacyOperationId') AS legacyOperationId, \
+                COALESCE(json_extract(payload, '$.source.pluginId'), \
+                         json_extract(payload, '$.identity.pluginId')) AS pluginId, \
+                COALESCE(json_extract(payload, '$.source.novelId'), \
+                         json_extract(payload, '$.identity.novelId')) AS sourceNovelId, \
+                COALESCE(json_extract(payload, '$.source.novelPath'), \
+                         json_extract(payload, '$.identity.novelPath')) AS novelPath \
+         FROM content_sync_cache \
+         WHERE cache_key >= 'norea-content-chapter-number-reconciliation:' \
+           AND cache_key < 'norea-content-chapter-number-reconciliation;' \
+           AND rtrim(json_extract(payload, '$.serverUrl'), '/') = rtrim(?1, '/')",
     )
     .bind(server_url)
     .fetch_all(&mut *conn)

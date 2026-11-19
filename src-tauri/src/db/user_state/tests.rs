@@ -9,18 +9,23 @@ use crate::db::test_support::open_test_db;
 use crate::db::tx::{with_write_tx, MetadataRoot, TxOptions};
 use crate::db::ReadMode;
 
-use super::core::record_user_state_changes_in_tx;
+use super::core::{
+    load_user_chapter_rows_by_ids_in_tx, map_user_chapter_row,
+    populate_user_chapter_composition_ids_in_tx, record_user_state_changes_in_tx,
+    USER_CHAPTER_SELECT,
+};
 use super::current::{
     apply_current_snapshot_at, bind_current_workspace_in_tx, current_category_id,
-    export_current_snapshot_in_tx, get_current_status_in_tx, prepare_deferred_current_retry_in_tx,
+    export_current_snapshot_in_tx, get_current_status_in_tx, load_current_held_sources_in_tx,
+    prepare_deferred_current_retry_in_tx,
 };
 use super::ledger::{
     acknowledge_user_state_operations_in_tx, apply_user_state_read_page_in_tx,
     bind_user_state_workspace_in_tx, get_user_state_ledger_status_in_tx,
     list_user_state_conflicts_in_tx, prepare_user_state_operations_in_tx,
-    project_pending_user_state_in_tx, resolve_user_state_ledger_conflict_in_tx,
-    PrepareUserStateOperationsLimitsDto, ADVANCE_ACKNOWLEDGED_PROGRESS_SQL,
-    MARK_ACKNOWLEDGED_RECORDS_APPLIED_SQL,
+    project_pending_user_state_bounded_in_tx, project_pending_user_state_in_tx,
+    resolve_user_state_ledger_conflict_in_tx, PrepareUserStateOperationsLimitsDto,
+    ADVANCE_ACKNOWLEDGED_PROGRESS_SQL, MARK_ACKNOWLEDGED_RECORDS_APPLIED_SQL,
 };
 use super::materialize::{
     defer_user_state_for_novel_in_tx, refresh_unattempted_user_state_identities_in_tx,
@@ -1619,4 +1624,311 @@ async fn defer_user_state_for_novel_reopens_only_deferred_records() {
     .map(|row| (row.get("id"), row.get("progress")))
     .collect();
     assert_eq!(recovered_progress, vec![(11, 50.0), (12, 90.0)]);
+}
+
+#[tokio::test]
+async fn projects_pending_records_in_bounded_chunks_without_retrying_skipped_failures() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let binding = sample_binding();
+    let opts = TxOptions {
+        remote_content_sync: false,
+        notify_content_sync: false,
+        busy_begin_retries: 0,
+        publish_metadata: false,
+        metadata_root: MetadataRoot::None,
+    };
+
+    seed_sample_work(pool).await;
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position) \
+         VALUES (12, 1, '/chapter/2', 'Two', '2', 2), \
+                (13, 1, '/chapter/3', 'Three', '3', 3)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let b1 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    let missing_work = json!({
+        "pluginId": "other",
+        "sourceNovelId": "missing-book",
+        "novelPath": "/missing-book",
+        "name": "Missing",
+    });
+    let mut records = Vec::new();
+    for idx in 1..=20 {
+        records.push(shared_record(
+            json!({
+                "kind": "reading",
+                "work": missing_work,
+                "chapter": { "chapterPath": format!("/missing/{idx}"), "name": format!("M{idx}") },
+            }),
+            json!({ "progress": 10, "unread": true, "readAt": idx }),
+            idx,
+            &format!("op-miss-{idx}"),
+        ));
+    }
+    records.push(shared_record(
+        json!({ "kind": "category", "categoryId": "cat-1" }),
+        json!({ "name": "Favorites", "sort": 1, "deleted": false }),
+        21,
+        "op-cat",
+    ));
+    records.push(shared_record(
+        json!({
+            "kind": "reading",
+            "work": sample_work(),
+            "chapter": { "chapterPath": "/chapter/1", "name": "One" },
+        }),
+        json!({ "progress": 25, "unread": false, "readAt": 100 }),
+        22,
+        "op-read-1",
+    ));
+    records.push(shared_record(
+        json!({
+            "kind": "reading",
+            "work": sample_work(),
+            "chapter": { "chapterPath": "/chapter/2", "name": "Two" },
+        }),
+        json!({ "progress": 50, "unread": false, "readAt": 200 }),
+        23,
+        "op-read-2",
+    ));
+    records.push(shared_record(
+        json!({
+            "kind": "reading",
+            "work": sample_work(),
+            "chapter": { "chapterPath": "/chapter/3", "name": "Three" },
+        }),
+        json!({ "progress": 75, "unread": false, "readAt": 300 }),
+        24,
+        "op-read-3",
+    ));
+
+    let page = json!({
+        "version": 1,
+        "workspaceId": binding.workspace_id,
+        "epoch": binding.epoch,
+        "headRevision": 24,
+        "through": 24,
+        "nextCursor": 24,
+        "hasMore": false,
+        "records": records,
+    });
+    let b2 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { apply_user_state_read_page_in_tx(conn, ctx, &b2, &page).await })
+    })
+    .await
+    .unwrap();
+
+    // Inject one corrupted referenced category record so the valid pending membership triggers MaterializeError::Fatal.
+    let bad_cat_key = user_state_entity_key(&json!({ "kind": "category", "categoryId": "cat-corrupt" })).unwrap();
+    sqlx::query(
+        "INSERT INTO user_state_record(namespace, entity_key, revision, applied_revision, payload) \
+         VALUES (?1, ?2, 1, 1, 'not-json')",
+    )
+    .bind(super::types::namespace_for(&binding))
+    .bind(&bad_cat_key)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let bad_entity = json!({
+        "kind": "membership",
+        "work": sample_work(),
+        "categoryId": "cat-corrupt",
+    });
+    let bad_key = user_state_entity_key(&bad_entity).unwrap();
+    let bad_payload = json!({
+        "entity": bad_entity,
+        "value": { "included": true },
+        "revision": 25,
+        "operationId": "op-bad",
+        "updatedAt": 25,
+        "deviceId": "other",
+        "deviceName": "Other",
+    });
+    sqlx::query(
+        "INSERT INTO user_state_record(namespace, entity_key, revision, applied_revision, payload) \
+         VALUES (?1, ?2, 25, 0, ?3)",
+    )
+    .bind(super::types::namespace_for(&binding))
+    .bind(&bad_key)
+    .bind(bad_payload.to_string())
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let mut skipped = HashSet::new();
+    let mut chunks = 0_usize;
+    loop {
+        chunks += 1;
+        let b_loop = binding.clone();
+        let skip_clone = skipped.clone();
+        let fx = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+            Box::pin(async move {
+                project_pending_user_state_bounded_in_tx(
+                    None,
+                    conn,
+                    ctx,
+                    &b_loop,
+                    &HashSet::new(),
+                    Some(2),
+                    &skip_clone,
+                )
+                .await
+            })
+        })
+        .await
+        .unwrap()
+        .value;
+        for failed in &fx.failed_entity_keys {
+            assert!(skipped.insert(failed.clone()), "failed entity must not repeat within one drain");
+        }
+        if !fx.has_more {
+            break;
+        }
+        assert!(chunks < 10, "bounded projection failed to terminate");
+    }
+
+    assert!(chunks >= 2);
+    assert!(skipped.contains(&bad_key));
+    let progresses: Vec<f64> = sqlx::query_scalar(
+        "SELECT CAST(progress AS REAL) FROM chapter WHERE novel_id = 1 ORDER BY id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    assert_eq!(progresses, vec![25.0, 50.0, 75.0]);
+    let cat_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM category WHERE name = 'Favorites'")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(cat_count, 1);
+    let parked_missing: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_state_record WHERE deferred_reason = 'missing-work'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(parked_missing, 20);
+}
+
+#[tokio::test]
+async fn populates_composition_entry_ids_and_scans_content_sync_cache_by_prefix() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    seed_sample_work(pool).await;
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position) \
+         VALUES (12, 1, 'norea-composed:entry-2', 'Composed Two', '2', 2)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let comp_payload = json!({
+        "version": 1,
+        "updatedAt": 1,
+        "entries": [
+            {
+                "id": "entry-2",
+                "path": "norea-composed:entry-2",
+                "storageChapterNumber": "2",
+                "primarySource": 0,
+                "user": { "included": true, "order": 2, "name": null, "chapterNumber": null },
+                "sources": [
+                    {
+                        "pluginId": "source",
+                        "novelId": "book",
+                        "novelPath": "/book",
+                        "chapterPath": "/raw/2",
+                        "chapterNumber": "2",
+                        "name": "Raw Two",
+                        "position": 2,
+                        "page": "1",
+                        "contentType": "html",
+                        "releaseTime": null
+                    }
+                ]
+            }
+        ]
+    });
+    sqlx::query(
+        "INSERT INTO novel_chapter_composition(novel_id, payload) VALUES (1, ?1)",
+    )
+    .bind(comp_payload.to_string())
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // Add large unrelated cache blobs alongside migration and renumber entries.
+    sqlx::query("INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2)")
+        .bind("norea-novel-merge-storage:big")
+        .bind(format!("{{\"blob\":\"{}\"}}", "x".repeat(64_000)))
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2)")
+        .bind("norea-content-incoming-migration:op-1")
+        .bind(
+            json!({
+                "serverUrl": "https://state.example/",
+                "status": "pending",
+                "operationId": "op-1",
+                "source": { "pluginId": "source", "novelId": "book", "novelPath": "/book" }
+            })
+            .to_string(),
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2)")
+        .bind("norea-source-chapter-renumber:work-1")
+        .bind(json!({ "work": { "id": 1 } }).to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let mut conn = pool.acquire().await.unwrap();
+    let rows = load_user_chapter_rows_by_ids_in_tx(&mut conn, &[11, 12])
+        .await
+        .unwrap();
+    assert_eq!(rows[0].composition_entry_id, None);
+    assert_eq!(rows[1].composition_entry_id.as_deref(), Some("entry-2"));
+
+    let mut direct: Vec<_> = sqlx::query(&format!("{USER_CHAPTER_SELECT} ORDER BY c.id"))
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap()
+        .iter()
+        .map(map_user_chapter_row)
+        .collect();
+    populate_user_chapter_composition_ids_in_tx(&mut conn, &mut direct)
+        .await
+        .unwrap();
+    assert_eq!(direct[1].composition_entry_id.as_deref(), Some("entry-2"));
+
+    let held = load_current_held_sources_in_tx(&mut conn, "https://state.example")
+        .await
+        .unwrap();
+    assert!(held.id_pairs.contains(&("source".to_string(), "book".to_string())));
+
+    let is_held = crate::db::content_sync::is_novel_migration_source_held_in_conn(
+        &mut conn,
+        "https://state.example",
+        "source",
+        "/book",
+        "book",
+    )
+    .await
+    .unwrap();
+    assert!(is_held);
 }

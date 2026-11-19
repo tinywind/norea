@@ -9,7 +9,8 @@ use crate::db::tx::TxContext;
 
 use super::core::{
     chapter_reference_json, chapter_work_json, has_user_state_schema_in_tx, intent_from_row,
-    load_user_chapter_rows_by_ids_in_tx, map_user_chapter_row, record_resume_cleared_in_tx,
+    load_user_chapter_rows_by_ids_in_tx, map_user_chapter_row,
+    populate_user_chapter_composition_ids_in_tx, record_resume_cleared_in_tx,
     record_user_state_changes_in_tx, work_reference_in_tx, IntentRow, UserChapterRow,
     USER_CHAPTER_SELECT,
 };
@@ -81,7 +82,7 @@ pub async fn remap_pending_user_state_in_tx(
     let target_work_json = serde_json::to_value(&target).unwrap();
 
     let ch_sql = format!("{USER_CHAPTER_SELECT} WHERE c.novel_id IN (?1, ?2)");
-    let chapters: Vec<UserChapterRow> = sqlx::query(&ch_sql)
+    let mut chapters: Vec<UserChapterRow> = sqlx::query(&ch_sql)
         .bind(source_novel_id)
         .bind(target_novel_id)
         .fetch_all(&mut *conn)
@@ -90,6 +91,7 @@ pub async fn remap_pending_user_state_in_tx(
         .iter()
         .map(map_user_chapter_row)
         .collect();
+    populate_user_chapter_composition_ids_in_tx(conn, &mut chapters).await?;
 
     let by_id: HashMap<i64, &UserChapterRow> = chapters.iter().map(|r| (r.id, r)).collect();
     let by_source_path: HashMap<&str, &UserChapterRow> = chapters
@@ -605,7 +607,7 @@ pub async fn transfer_settled_novel_merge_resume_in_tx(
         .and_then(JsonValue::as_str);
 
     let ch_sql = format!("{USER_CHAPTER_SELECT} WHERE c.novel_id IN (?1, ?2)");
-    let chapters: Vec<UserChapterRow> = sqlx::query(&ch_sql)
+    let mut chapters: Vec<UserChapterRow> = sqlx::query(&ch_sql)
         .bind(source_novel_id)
         .bind(target_novel_id)
         .fetch_all(&mut *conn)
@@ -614,6 +616,7 @@ pub async fn transfer_settled_novel_merge_resume_in_tx(
         .iter()
         .map(map_user_chapter_row)
         .collect();
+    populate_user_chapter_composition_ids_in_tx(conn, &mut chapters).await?;
 
     let by_id: HashMap<i64, &UserChapterRow> = chapters.iter().map(|r| (r.id, r)).collect();
     let Some(original) = chapters

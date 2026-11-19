@@ -1,6 +1,10 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
+  getBlockedChapterStorageSources,
+  isChapterStorageBlockedForSource,
   runExclusiveChapterStorageOperation,
+  subscribeChapterStorageOperations,
+  waitForAllChapterStorageOperations,
   waitForChapterStorageOperation,
 } from "./chapter-storage-operation";
 
@@ -135,5 +139,66 @@ describe("chapter storage operation coordination", () => {
     finish.resolve();
     await first;
     await waitForChapterStorageOperation("source-a");
+  });
+
+  it("reports blocked sources and notifies listeners when exclusive operations change", async () => {
+    const finishSource = deferred();
+    const sourceStarted = deferred();
+    const listener = vi.fn();
+    const unsubscribe = subscribeChapterStorageOperations(listener);
+    try {
+      const exclusiveSource = runExclusiveChapterStorageOperation(
+        { kind: "sources", sourceIds: ["source-a", "source-c"] },
+        undefined,
+        async () => {
+          sourceStarted.resolve();
+          await finishSource.promise;
+        },
+      );
+      await sourceStarted.promise;
+
+      expect(isChapterStorageBlockedForSource("source-a")).toBe(true);
+      expect(isChapterStorageBlockedForSource("source-b")).toBe(false);
+      expect(getBlockedChapterStorageSources()).toEqual({
+        all: false,
+        sourceIds: new Set(["source-a", "source-c"]),
+      });
+      await waitForAllChapterStorageOperations();
+      expect(listener).toHaveBeenCalled();
+
+      const finishAll = deferred();
+      const allStarted = deferred();
+      const exclusiveAll = runExclusiveChapterStorageOperation(
+        { kind: "all" },
+        undefined,
+        async () => {
+          allStarted.resolve();
+          await finishAll.promise;
+        },
+      );
+      let allReleased = false;
+      const waitingAll = waitForAllChapterStorageOperations().then(() => {
+        allReleased = true;
+      });
+      await Promise.resolve();
+      expect(getBlockedChapterStorageSources().all).toBe(true);
+      expect(isChapterStorageBlockedForSource("source-b")).toBe(true);
+      expect(allReleased).toBe(false);
+
+      finishSource.resolve();
+      await exclusiveSource;
+      await allStarted.promise;
+      expect(allReleased).toBe(false);
+
+      finishAll.resolve();
+      await Promise.all([exclusiveAll, waitingAll]);
+      expect(allReleased).toBe(true);
+      expect(getBlockedChapterStorageSources()).toEqual({
+        all: false,
+        sourceIds: new Set(),
+      });
+    } finally {
+      unsubscribe();
+    }
   });
 });

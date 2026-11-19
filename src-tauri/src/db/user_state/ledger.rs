@@ -11,9 +11,9 @@ use crate::db::tx::TxContext;
 use super::core::{
     assert_user_state_available_in_tx, canonical_entity_in_tx, chapter_reference_json,
     chapter_work_json, has_user_state_schema_in_tx, intent_from_row, map_user_chapter_row,
-    record_user_state_changes_in_tx, require_binding_in_tx, resolve_category_alias_in_tx,
-    seed_user_state_in_tx, user_state_restore_paused_in_tx, workspace_rows_in_tx, IntentRow,
-    USER_CHAPTER_SELECT,
+    populate_user_chapter_composition_ids_in_tx, record_user_state_changes_in_tx,
+    require_binding_in_tx, resolve_category_alias_in_tx, seed_user_state_in_tx,
+    user_state_restore_paused_in_tx, workspace_rows_in_tx, IntentRow, USER_CHAPTER_SELECT,
 };
 use super::current::{is_current_work_held, load_current_held_sources_in_tx};
 use super::materialize::{
@@ -21,13 +21,14 @@ use super::materialize::{
 };
 use super::stored_chapter::portable_stored_user_state_intent_in_tx;
 use super::types::{
-    canonical_user_state_json, is_local_user_state_entity, namespace_for, parse_user_state_entity,
-    parse_user_state_merge_result, parse_user_state_operation, parse_user_state_read_response,
-    parse_user_state_record, random_uuid_v4, user_state_entity_key, user_state_json_bytes,
-    CategoryAliasPair, ParsedUserStateMergeResult, ParsedUserStateOperation,
-    ParsedUserStateRecord, ResolveUserStateLedgerConflictInputDto, UserStateApplyEffectsDto,
-    UserStateBindingDto, UserStateConflictDto, UserStateDeferredDto, UserStateLedgerStatusDto,
-    UserStateWorkReferenceDto, USER_STATE_CLIENT_BATCH_BYTES, USER_STATE_PRELINK_BASE_REVISION,
+    canonical_user_state_json, fold_ascii, is_local_user_state_entity, namespace_for,
+    parse_user_state_entity, parse_user_state_merge_result, parse_user_state_operation,
+    parse_user_state_read_response, parse_user_state_record, random_uuid_v4,
+    user_state_entity_key, user_state_json_bytes, CategoryAliasPair, ParsedUserStateMergeResult,
+    ParsedUserStateOperation, ParsedUserStateRecord, ResolveUserStateLedgerConflictInputDto,
+    UserStateApplyEffectsDto, UserStateBindingDto, UserStateConflictDto, UserStateDeferredDto,
+    UserStateLedgerStatusDto, UserStateWorkReferenceDto, USER_STATE_CLIENT_BATCH_BYTES,
+    USER_STATE_PRELINK_BASE_REVISION,
 };
 
 const USER_STATE_DB_BATCH_BYTES: usize = 8 * 1024 * 1024;
@@ -91,88 +92,196 @@ struct StoredRecordRow {
     deletion_revision: i64,
 }
 
+const LOCAL_OR_COMPOSITION_KEY_RANGES: [(&str, &str); 6] = [
+    (r#"["bookmark","[\"local","#, r#"["bookmark","[\"local\"-"#),
+    (r#"["composition","#, r#"["composition"-"#),
+    (r#"["library","[\"local","#, r#"["library","[\"local\"-"#),
+    (r#"["membership","[\"local","#, r#"["membership","[\"local\"-"#),
+    (r#"["reading","[\"local","#, r#"["reading","[\"local\"-"#),
+    (r#"["resume","[\"local","#, r#"["resume","[\"local\"-"#),
+];
+
+struct KnownNonLocalWorks {
+    by_source_id: HashSet<(String, String)>,
+    by_path: HashSet<(String, String)>,
+}
+
+impl KnownNonLocalWorks {
+    async fn load_in_tx(conn: &mut SqliteConnection) -> Result<Self, String> {
+        let rows = sqlx::query(
+            "SELECT plugin_id, source_novel_id, path \
+             FROM novel \
+             WHERE plugin_id <> 'local' AND is_local = 0",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: load known works: {err}"))?;
+        let mut by_source_id = HashSet::with_capacity(rows.len());
+        let mut by_path = HashSet::with_capacity(rows.len());
+        for row in rows {
+            let plugin_id: String = row.get("plugin_id");
+            let source_novel_id: Option<String> = row.get("source_novel_id");
+            let path: String = row.get("path");
+            if let Some(sid) = source_novel_id {
+                by_source_id.insert((plugin_id.clone(), fold_ascii(&sid)));
+            }
+            by_path.insert((plugin_id, path));
+        }
+        Ok(Self {
+            by_source_id,
+            by_path,
+        })
+    }
+
+    fn contains(
+        &self,
+        plugin_id: &str,
+        source_novel_id: Option<&str>,
+        novel_path: &str,
+    ) -> bool {
+        if plugin_id == "local" {
+            return false;
+        }
+        match source_novel_id {
+            Some(sid) => self
+                .by_source_id
+                .contains(&(plugin_id.to_string(), fold_ascii(sid))),
+            None => self
+                .by_path
+                .contains(&(plugin_id.to_string(), novel_path.to_string())),
+        }
+    }
+}
+
 pub async fn purge_and_settle_local_user_state_in_tx(
     conn: &mut SqliteConnection,
 ) -> Result<(), String> {
     sqlx::query(
-        "DELETE FROM user_state_operation \
-         WHERE json_extract(payload, '$.entity.work.pluginId') = 'local' \
-            OR (json_extract(payload, '$.entity.kind') = 'composition' \
-                AND EXISTS ( \
-                  SELECT 1 FROM json_each(payload, '$.value.composition.entries') e, \
-                                json_each(e.value, '$.sources') s \
-                  WHERE json_extract(s.value, '$.pluginId') = 'local' \
-                ))",
+        r#"DELETE FROM user_state_operation
+         WHERE (instr(entity_key, '[\"local\",') > 0
+                OR (entity_key >= '["composition",' AND entity_key < '["composition"-'))
+           AND (
+             json_extract(payload, '$.entity.work.pluginId') = 'local'
+             OR (json_extract(payload, '$.entity.kind') = 'composition'
+                 AND EXISTS (
+                   SELECT 1 FROM json_each(payload, '$.value.composition.entries') e,
+                                 json_each(e.value, '$.sources') s
+                   WHERE json_extract(s.value, '$.pluginId') = 'local'
+                 ))
+           )"#,
     )
     .execute(&mut *conn)
     .await
     .map_err(|err| format!("db user state: purge local operations: {err}"))?;
 
-    sqlx::query(
-        "DELETE FROM user_state_conflict \
-         WHERE entity_key IN ( \
-           SELECT entity_key FROM user_state_intent \
-           WHERE json_extract(entity_json, '$.work.pluginId') = 'local' \
-              OR (json_extract(entity_json, '$.kind') = 'composition' \
-                  AND EXISTS ( \
-                    SELECT 1 FROM json_each(value_json, '$.composition.entries') e, \
-                                  json_each(e.value, '$.sources') s \
-                    WHERE json_extract(s.value, '$.pluginId') = 'local' \
-                  )) \
-         )",
-    )
-    .execute(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: purge local conflicts: {err}"))?;
+    let intent_sql = (0..LOCAL_OR_COMPOSITION_KEY_RANGES.len())
+        .map(|idx| {
+            let base = idx * 2;
+            format!(
+                "SELECT entity_key FROM user_state_intent \
+                 WHERE entity_key >= ?{} AND entity_key < ?{} \
+                   AND (json_extract(entity_json, '$.work.pluginId') = 'local' \
+                        OR (json_extract(entity_json, '$.kind') = 'composition' \
+                            AND EXISTS ( \
+                              SELECT 1 FROM json_each(value_json, '$.composition.entries') e, \
+                                            json_each(e.value, '$.sources') s \
+                              WHERE json_extract(s.value, '$.pluginId') = 'local' \
+                            )))",
+                base + 1,
+                base + 2,
+            )
+        })
+        .collect::<Vec<_>>()
+        .join(" UNION ALL ");
+    let mut intent_query = sqlx::query_scalar::<_, String>(&intent_sql);
+    for (lower, upper) in LOCAL_OR_COMPOSITION_KEY_RANGES {
+        intent_query = intent_query.bind(lower).bind(upper);
+    }
+    let local_intent_keys = intent_query
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: find local intents: {err}"))?;
 
-    sqlx::query(
-        "DELETE FROM user_state_progress \
-         WHERE entity_key IN ( \
-           SELECT entity_key FROM user_state_intent \
-           WHERE json_extract(entity_json, '$.work.pluginId') = 'local' \
-              OR (json_extract(entity_json, '$.kind') = 'composition' \
-                  AND EXISTS ( \
-                    SELECT 1 FROM json_each(value_json, '$.composition.entries') e, \
-                                  json_each(e.value, '$.sources') s \
-                    WHERE json_extract(s.value, '$.pluginId') = 'local' \
-                  )) \
-         )",
-    )
-    .execute(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: purge local progress: {err}"))?;
+    for batch in json_batches(&local_intent_keys, |k| k.len() + 4) {
+        let encoded = serde_json::to_string(batch).unwrap();
+        sqlx::query(
+            "DELETE FROM user_state_conflict WHERE entity_key IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(&encoded)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: purge local conflicts: {err}"))?;
 
-    sqlx::query(
-        "DELETE FROM user_state_intent \
-         WHERE json_extract(entity_json, '$.work.pluginId') = 'local' \
-            OR (json_extract(entity_json, '$.kind') = 'composition' \
-                AND EXISTS ( \
-                  SELECT 1 FROM json_each(value_json, '$.composition.entries') e, \
-                                json_each(e.value, '$.sources') s \
-                  WHERE json_extract(s.value, '$.pluginId') = 'local' \
-                ))",
-    )
-    .execute(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: purge local intents: {err}"))?;
+        sqlx::query(
+            "DELETE FROM user_state_progress WHERE entity_key IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(&encoded)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: purge local progress: {err}"))?;
 
-    sqlx::query(
-        "UPDATE user_state_record \
-         SET applied_revision = revision, deferred_reason = NULL, deferred_detail = NULL \
-         WHERE (applied_revision < revision OR deferred_reason IS NOT NULL) \
-           AND ( \
-             json_extract(payload, '$.entity.work.pluginId') = 'local' \
-             OR (json_extract(payload, '$.entity.kind') = 'composition' \
-                 AND EXISTS ( \
-                   SELECT 1 FROM json_each(payload, '$.value.composition.entries') e, \
-                                 json_each(e.value, '$.sources') s \
-                   WHERE json_extract(s.value, '$.pluginId') = 'local' \
-                 )) \
-           )",
-    )
-    .execute(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: settle local records: {err}"))?;
+        sqlx::query(
+            "DELETE FROM user_state_intent WHERE entity_key IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(&encoded)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: purge local intents: {err}"))?;
+    }
+
+    let namespaces: Vec<String> = workspace_rows_in_tx(conn)
+        .await?
+        .into_iter()
+        .map(|ws| ws.namespace)
+        .collect();
+    if !namespaces.is_empty() {
+        let record_sql = (0..LOCAL_OR_COMPOSITION_KEY_RANGES.len())
+            .map(|idx| {
+                let base = idx * 2 + 1;
+                format!(
+                    "SELECT entity_key FROM user_state_record \
+                     WHERE namespace = ?1 \
+                       AND entity_key >= ?{} AND entity_key < ?{} \
+                       AND (applied_revision < revision OR deferred_reason IS NOT NULL) \
+                       AND ( \
+                         json_extract(payload, '$.entity.work.pluginId') = 'local' \
+                         OR (json_extract(payload, '$.entity.kind') = 'composition' \
+                             AND EXISTS ( \
+                               SELECT 1 FROM json_each(payload, '$.value.composition.entries') e, \
+                                             json_each(e.value, '$.sources') s \
+                               WHERE json_extract(s.value, '$.pluginId') = 'local' \
+                             )) \
+                       )",
+                    base + 1,
+                    base + 2,
+                )
+            })
+            .collect::<Vec<_>>()
+            .join(" UNION ALL ");
+        for ns in namespaces {
+            let mut record_query = sqlx::query_scalar::<_, String>(&record_sql).bind(&ns);
+            for (lower, upper) in LOCAL_OR_COMPOSITION_KEY_RANGES {
+                record_query = record_query.bind(lower).bind(upper);
+            }
+            let local_record_keys = record_query
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|err| format!("db user state: find local records: {err}"))?;
+            for batch in json_batches(&local_record_keys, |k| k.len() + 4) {
+                let encoded = serde_json::to_string(batch).unwrap();
+                sqlx::query(
+                    "UPDATE user_state_record \
+                     SET applied_revision = revision, deferred_reason = NULL, deferred_detail = NULL \
+                     WHERE namespace = ?1 AND entity_key IN (SELECT value FROM json_each(?2))",
+                )
+                .bind(&ns)
+                .bind(&encoded)
+                .execute(&mut *conn)
+                .await
+                .map_err(|err| format!("db user state: settle local records: {err}"))?;
+            }
+        }
+    }
 
     Ok(())
 }
@@ -196,13 +305,28 @@ async fn settle_held_source_records_in_tx(
         .iter()
         .map(|(plugin_id, novel_path)| json!({ "pluginId": plugin_id, "novelPath": novel_path }))
         .collect();
+    let plugin_needles: Vec<String> = held
+        .id_pairs
+        .iter()
+        .map(|(plugin_id, _)| plugin_id)
+        .chain(held.paths.iter().map(|(plugin_id, _)| plugin_id))
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .map(|plugin_id| {
+            let single = serde_json::to_string(plugin_id).unwrap();
+            let double = serde_json::to_string(&single).unwrap();
+            format!("[{},", &double[1..double.len() - 1])
+        })
+        .collect();
     let encoded_ids = serde_json::to_string(&id_json).unwrap();
     let encoded_paths = serde_json::to_string(&path_json).unwrap();
+    let encoded_needles = serde_json::to_string(&plugin_needles).unwrap();
     let res = sqlx::query(
         "UPDATE user_state_record \
          SET applied_revision = revision, deferred_reason = NULL, deferred_detail = NULL \
          WHERE namespace = ?1 \
            AND (applied_revision < revision OR deferred_reason IS NOT NULL) \
+           AND EXISTS (SELECT 1 FROM json_each(?4) hp WHERE instr(entity_key, hp.value) > 0) \
            AND json_extract(payload, '$.entity.kind') <> 'category' \
            AND ( \
              (json_extract(payload, '$.entity.work.sourceNovelId') IS NOT NULL \
@@ -221,6 +345,7 @@ async fn settle_held_source_records_in_tx(
     .bind(namespace)
     .bind(&encoded_ids)
     .bind(&encoded_paths)
+    .bind(&encoded_needles)
     .execute(&mut *conn)
     .await
     .map_err(|err| format!("db user state: settle held migration source records: {err}"))?;
@@ -435,6 +560,11 @@ pub async fn prepare_user_state_operations_in_tx(
     .await
     .map_err(|err| format!("db user state: load pending operations: {err}"))?;
 
+    let mut pending_op_keys: HashSet<String> = HashSet::with_capacity(retry_rows.len());
+    for r in &retry_rows {
+        pending_op_keys.insert(r.get("entity_key"));
+    }
+
     for r in retry_rows {
         let payload: String = r.get("payload");
         let raw_op: JsonValue = serde_json::from_str(&payload)
@@ -466,8 +596,6 @@ pub async fn prepare_user_state_operations_in_tx(
          FROM user_state_intent i \
          JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
          WHERE i.sequence > p.acknowledged_sequence \
-           AND NOT EXISTS(SELECT 1 FROM user_state_operation o \
-                          WHERE o.namespace = ?1 AND o.entity_key = i.entity_key AND o.status = 'pending') \
            AND NOT EXISTS(SELECT 1 FROM user_state_conflict c \
                           WHERE c.namespace = ?1 AND c.entity_key = i.entity_key)\
          {opaque_filter} \
@@ -476,7 +604,7 @@ pub async fn prepare_user_state_operations_in_tx(
     );
     let mut query = sqlx::query(&intent_sql).bind(&ws.namespace);
     if let Some(lim) = limit {
-        query = query.bind(lim as i64);
+        query = query.bind(lim.saturating_add(pending_op_keys.len()) as i64);
     }
     let intent_rows = query
         .fetch_all(&mut *conn)
@@ -502,6 +630,9 @@ pub async fn prepare_user_state_operations_in_tx(
             value_json: r.get("value_json"),
             seed: r.get("seed"),
         };
+        if pending_op_keys.contains(&intent_row.entity_key) {
+            continue;
+        }
         let base_revision: i64 = r.get("baseRevision");
         let (local_entity, local_value) = intent_from_row(&intent_row)?;
         let (entity, value) = portable_stored_user_state_intent_in_tx(
@@ -1329,24 +1460,16 @@ pub async fn get_user_state_ledger_status_in_tx(
     }
 
     let held_sources = load_current_held_sources_in_tx(conn, &binding.server_url).await?;
+    let known_works = KnownNonLocalWorks::load_in_tx(conn).await?;
     let proj_rows = sqlx::query(
         "SELECT entity_key, applied_revision < revision AS waiting, deferred_reason, \
            json_extract(payload, '$.entity.kind') AS kind, \
            json_extract(payload, '$.entity.work.pluginId') AS plugin_id, \
            json_extract(payload, '$.entity.work.sourceNovelId') AS novel_id, \
-           json_extract(payload, '$.entity.work.novelPath') AS novel_path, \
-           (json_extract(payload, '$.entity.kind') = 'category' OR EXISTS ( \
-             SELECT 1 FROM novel n \
-             WHERE n.plugin_id = json_extract(user_state_record.payload, '$.entity.work.pluginId') \
-               AND n.plugin_id <> 'local' AND n.is_local = 0 \
-               AND (CASE WHEN json_extract(user_state_record.payload, '$.entity.work.sourceNovelId') IS NULL \
-                    THEN n.path = json_extract(user_state_record.payload, '$.entity.work.novelPath') \
-                    ELSE lower(n.source_novel_id) = lower(json_extract(user_state_record.payload, '$.entity.work.sourceNovelId')) END) \
-           )) AS applicable \
+           json_extract(payload, '$.entity.work.novelPath') AS novel_path \
          FROM user_state_record \
          WHERE namespace = ?1 \
-           AND (applied_revision < revision OR deferred_reason = 'projection-error') \
-           AND COALESCE(json_extract(payload, '$.entity.work.pluginId'), '') <> 'local'",
+           AND (applied_revision < revision OR deferred_reason = 'projection-error')",
     )
     .bind(&workspace.namespace)
     .fetch_all(&mut *conn)
@@ -1356,12 +1479,18 @@ pub async fn get_user_state_ledger_status_in_tx(
     let mut projection_pending: i64 = 0;
     let mut projection_failed: i64 = 0;
     for r in proj_rows {
+        let kind: Option<String> = r.get("kind");
         let plugin_id: Option<String> = r.get("plugin_id");
-        if let Some(pid) = plugin_id {
+        if plugin_id.as_deref() == Some("local") {
+            continue;
+        }
+        let novel_id: Option<String> = r.get("novel_id");
+        let novel_path: Option<String> = r.get("novel_path");
+        if let Some(ref pid) = plugin_id {
             let work_ref = UserStateWorkReferenceDto {
-                plugin_id: pid,
-                source_novel_id: r.get("novel_id"),
-                novel_path: r.get::<Option<String>, _>("novel_path").unwrap_or_default(),
+                plugin_id: pid.clone(),
+                source_novel_id: novel_id.clone(),
+                novel_path: novel_path.clone().unwrap_or_default(),
                 name: String::new(),
             };
             if is_current_work_held(&held_sources, &work_ref) {
@@ -1373,10 +1502,13 @@ pub async fn get_user_state_ledger_status_in_tx(
             projection_failed += 1;
             continue;
         }
+        let applicable = kind.as_deref() == Some("category")
+            || plugin_id.as_deref().is_some_and(|pid| {
+                known_works.contains(pid, novel_id.as_deref(), novel_path.as_deref().unwrap_or(""))
+            });
         let waiting: i64 = r.get("waiting");
-        let applicable: i64 = r.get("applicable");
         let entity_key: String = r.get("entity_key");
-        if waiting != 0 && deferred_reason.is_none() && applicable != 0 && !held_keys.contains(&entity_key) {
+        if waiting != 0 && deferred_reason.is_none() && applicable && !held_keys.contains(&entity_key) {
             projection_pending += 1;
         }
     }
@@ -1566,15 +1698,19 @@ pub async fn resolve_user_state_ledger_conflict_in_tx(
                       ELSE lower(n.source_novel_id) = lower(?2) END) \
                  AND c.path = ?4 LIMIT 1"
             );
-            let local_ch = sqlx::query(&sql)
+            let mut matched_chapters = sqlx::query(&sql)
                 .bind(plugin_id)
                 .bind(source_novel_id)
                 .bind(novel_path)
                 .bind(ch_path)
-                .fetch_optional(&mut *conn)
+                .fetch_all(&mut *conn)
                 .await
                 .map_err(|err| format!("db user state: lookup local conflict chapter: {err}"))?
-                .map(|r| map_user_chapter_row(&r));
+                .iter()
+                .map(map_user_chapter_row)
+                .collect::<Vec<_>>();
+            populate_user_chapter_composition_ids_in_tx(conn, &mut matched_chapters).await?;
+            let local_ch = matched_chapters.into_iter().next();
             if let Some(ch) = local_ch {
                 entity["work"] = chapter_work_json(&ch);
                 entity["chapter"] = chapter_reference_json(&ch);
@@ -1705,67 +1841,37 @@ pub async fn project_pending_user_state_in_tx(
     binding: &UserStateBindingDto,
     skipped_chapter_ids: &HashSet<i64>,
 ) -> Result<UserStateApplyEffectsDto, String> {
+    project_pending_user_state_bounded_in_tx(
+        root,
+        conn,
+        ctx,
+        binding,
+        skipped_chapter_ids,
+        None,
+        &HashSet::new(),
+    )
+    .await
+}
+
+pub async fn project_pending_user_state_bounded_in_tx(
+    root: Option<&Path>,
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    binding: &UserStateBindingDto,
+    skipped_chapter_ids: &HashSet<i64>,
+    limit: Option<usize>,
+    skip_entity_keys: &HashSet<String>,
+) -> Result<UserStateApplyEffectsDto, String> {
     let ws = require_binding_in_tx(conn, binding).await?;
     assert_user_state_available_in_tx(conn).await?;
     let mut effects = UserStateApplyEffectsDto::default();
+    let max_actions = limit.filter(|n| *n > 0);
 
     purge_and_settle_local_user_state_in_tx(conn).await?;
     let settled_held =
         settle_held_source_records_in_tx(conn, &ws.namespace, &binding.server_url).await?;
 
-    let parked_missing = sqlx::query(
-        "UPDATE user_state_record \
-         SET applied_revision = revision, deferred_reason = 'missing-work', deferred_detail = NULL \
-         WHERE namespace = ?1 \
-           AND applied_revision < revision \
-           AND (deferred_reason IS NULL OR deferred_reason = 'projection-error') \
-           AND json_extract(payload, '$.entity.kind') <> 'category' \
-           AND NOT EXISTS ( \
-             SELECT 1 FROM novel n \
-             WHERE n.plugin_id = json_extract(user_state_record.payload, '$.entity.work.pluginId') \
-               AND n.plugin_id <> 'local' AND n.is_local = 0 \
-               AND (CASE WHEN json_extract(user_state_record.payload, '$.entity.work.sourceNovelId') IS NULL \
-                    THEN n.path = json_extract(user_state_record.payload, '$.entity.work.novelPath') \
-                    ELSE lower(n.source_novel_id) = lower(json_extract(user_state_record.payload, '$.entity.work.sourceNovelId')) END) \
-           )",
-    )
-    .bind(&ws.namespace)
-    .execute(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: bulk skip missing works: {err}"))?;
-
-    let pending_rows = sqlx::query(
-        "SELECT entity_key, revision, payload FROM user_state_record \
-         WHERE namespace = ?1 AND applied_revision < revision \
-           AND (deferred_reason IS NULL OR deferred_reason = 'projection-error') \
-         ORDER BY CASE json_extract(payload, '$.entity.kind') \
-                    WHEN 'category' THEN 0 \
-                    WHEN 'library' THEN 1 \
-                    WHEN 'composition' THEN 2 \
-                    ELSE 3 \
-                  END, revision",
-    )
-    .bind(&ws.namespace)
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: load pending projection records: {err}"))?;
-
-    if pending_rows.is_empty() {
-        if settled_held > 0 || parked_missing.rows_affected() > 0 {
-            ctx.record_user_state_ledger_change();
-        }
-        return Ok(effects);
-    }
-
-    let dirty_before: Vec<(String, String)> = sqlx::query(
-        "SELECT plugin_id, path FROM work_metadata_dirty ORDER BY plugin_id, path",
-    )
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: snapshot work_metadata_dirty: {err}"))?
-    .into_iter()
-    .map(|r| (r.get("plugin_id"), r.get("path")))
-    .collect();
+    let known_works = KnownNonLocalWorks::load_in_tx(conn).await?;
 
     let held_intents = sqlx::query(
         "SELECT i.entity_json FROM user_state_intent i \
@@ -1789,13 +1895,216 @@ pub async fn project_pending_user_state_in_tx(
         held_keys.insert(user_state_entity_key(&canon)?);
     }
 
+    let candidate_headers = sqlx::query(
+        "SELECT entity_key, revision, \
+                json_extract(payload, '$.entity.kind') AS kind, \
+                json_extract(payload, '$.entity.work.pluginId') AS plugin_id, \
+                json_extract(payload, '$.entity.work.sourceNovelId') AS source_novel_id, \
+                json_extract(payload, '$.entity.work.novelPath') AS novel_path, \
+                json_extract(payload, '$.entity.categoryId') AS category_id \
+         FROM user_state_record \
+         WHERE namespace = ?1 \
+           AND applied_revision < revision \
+           AND (deferred_reason IS NULL OR deferred_reason = 'projection-error')",
+    )
+    .bind(&ws.namespace)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: scan pending projection headers: {err}"))?;
+
+    let mut missing_work_targets: Vec<(String, i64)> = Vec::new();
+    let mut local_targets: Vec<(String, i64)> = Vec::new();
+    let mut actionable_targets: Vec<(u8, i64, String)> = Vec::new();
+    let mut alias_cache: HashMap<String, String> = HashMap::new();
+
+    for row in candidate_headers {
+        let key: String = row.get("entity_key");
+        let revision: i64 = row.get("revision");
+        let kind: Option<String> = row.get("kind");
+        let kind_str = kind.as_deref().unwrap_or("");
+        let plugin_id: Option<String> = row.get("plugin_id");
+        let source_novel_id: Option<String> = row.get("source_novel_id");
+        let novel_path: Option<String> = row.get("novel_path");
+        let category_id: Option<String> = row.get("category_id");
+
+        if plugin_id.as_deref() == Some("local") {
+            local_targets.push((key, revision));
+            continue;
+        }
+        if kind_str != "category"
+            && !plugin_id.as_deref().is_some_and(|pid| {
+                known_works.contains(
+                    pid,
+                    source_novel_id.as_deref(),
+                    novel_path.as_deref().unwrap_or(""),
+                )
+            })
+        {
+            missing_work_targets.push((key, revision));
+            continue;
+        }
+        if skip_entity_keys.contains(&key) || held_keys.contains(&key) {
+            continue;
+        }
+        if !held_keys.is_empty() {
+            if let Some(cat_id) = category_id {
+                let canon_cat_id = if let Some(cached) = alias_cache.get(&cat_id) {
+                    cached.clone()
+                } else {
+                    let resolved = resolve_category_alias_in_tx(conn, &ws.namespace, &cat_id).await?;
+                    alias_cache.insert(cat_id, resolved.clone());
+                    resolved
+                };
+                let canon_key = if kind_str == "category" {
+                    user_state_entity_key(&json!({ "kind": "category", "categoryId": canon_cat_id }))?
+                } else if kind_str == "membership" {
+                    if let Some(ref pid) = plugin_id {
+                        let work_ref = UserStateWorkReferenceDto {
+                            plugin_id: pid.clone(),
+                            source_novel_id: source_novel_id.clone(),
+                            novel_path: novel_path.clone().unwrap_or_default(),
+                            name: String::new(),
+                        };
+                        user_state_entity_key(&json!({
+                            "kind": "membership",
+                            "work": work_ref,
+                            "categoryId": canon_cat_id,
+                        }))?
+                    } else {
+                        key.clone()
+                    }
+                } else {
+                    key.clone()
+                };
+                if held_keys.contains(&canon_key) {
+                    continue;
+                }
+            }
+        }
+        let rank: u8 = match kind_str {
+            "category" => 0,
+            "library" => 1,
+            "composition" => 2,
+            _ => 3,
+        };
+        actionable_targets.push((rank, revision, key));
+    }
+
+    for batch in json_batches(&local_targets, |(k, _)| k.len() + 48) {
+        let items: Vec<JsonValue> = batch
+            .iter()
+            .map(|(k, rev)| json!({ "entityKey": k, "revision": rev }))
+            .collect();
+        let encoded = serde_json::to_string(&items).unwrap();
+        sqlx::query(
+            "WITH targets AS MATERIALIZED ( \
+               SELECT json_extract(value, '$.entityKey') AS entity_key, \
+                      json_extract(value, '$.revision') AS revision \
+               FROM json_each(?2) \
+             ) \
+             UPDATE user_state_record AS record SET \
+               applied_revision = targets.revision, \
+               deferred_reason = NULL, \
+               deferred_detail = NULL \
+             FROM targets \
+             WHERE record.namespace = ?1 \
+               AND record.entity_key = targets.entity_key \
+               AND record.revision = targets.revision",
+        )
+        .bind(&ws.namespace)
+        .bind(&encoded)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: settle local pending records: {err}"))?;
+    }
+
+    let park_cap = max_actions.map(|l| l.saturating_mul(8).max(l));
+    let more_missing = park_cap.is_some_and(|cap| missing_work_targets.len() > cap);
+    let park_len = park_cap.map_or(missing_work_targets.len(), |cap| {
+        missing_work_targets.len().min(cap)
+    });
+    let to_park = &missing_work_targets[..park_len];
+    for batch in json_batches(to_park, |(k, _)| k.len() + 48) {
+        let items: Vec<JsonValue> = batch
+            .iter()
+            .map(|(k, rev)| json!({ "entityKey": k, "revision": rev }))
+            .collect();
+        let encoded = serde_json::to_string(&items).unwrap();
+        sqlx::query(
+            "WITH targets AS MATERIALIZED ( \
+               SELECT json_extract(value, '$.entityKey') AS entity_key, \
+                      json_extract(value, '$.revision') AS revision \
+               FROM json_each(?2) \
+             ) \
+             UPDATE user_state_record AS record SET \
+               applied_revision = targets.revision, \
+               deferred_reason = 'missing-work', \
+               deferred_detail = NULL \
+             FROM targets \
+             WHERE record.namespace = ?1 \
+               AND record.entity_key = targets.entity_key \
+               AND record.revision = targets.revision",
+        )
+        .bind(&ws.namespace)
+        .bind(&encoded)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: bulk skip missing works: {err}"))?;
+    }
+
+    actionable_targets.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0).then(lhs.1.cmp(&rhs.1)));
+    let action_cap = max_actions.unwrap_or(actionable_targets.len());
+    let more_actionable = actionable_targets.len() > action_cap;
+    let to_project_keys: Vec<String> = actionable_targets
+        .into_iter()
+        .take(action_cap)
+        .map(|(_, _, k)| k)
+        .collect();
+    effects.has_more = more_missing || more_actionable;
+
+    if to_project_keys.is_empty() {
+        if settled_held > 0 || !to_park.is_empty() || !local_targets.is_empty() {
+            ctx.record_user_state_ledger_change();
+        }
+        return Ok(effects);
+    }
+
+    let mut fetched_by_key: HashMap<String, String> = HashMap::with_capacity(to_project_keys.len());
+    for batch in json_batches(&to_project_keys, |k| k.len() + 4) {
+        let encoded = serde_json::to_string(batch).unwrap();
+        let rows = sqlx::query(
+            "SELECT entity_key, payload \
+             FROM user_state_record \
+             WHERE namespace = ?1 AND entity_key IN (SELECT value FROM json_each(?2))",
+        )
+        .bind(&ws.namespace)
+        .bind(&encoded)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: load pending projection records: {err}"))?;
+        for r in rows {
+            fetched_by_key.insert(r.get("entity_key"), r.get("payload"));
+        }
+    }
+
+    let dirty_before: Vec<(String, String)> = sqlx::query(
+        "SELECT plugin_id, path FROM work_metadata_dirty ORDER BY plugin_id, path",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: snapshot work_metadata_dirty: {err}"))?
+    .into_iter()
+    .map(|r| (r.get("plugin_id"), r.get("path")))
+    .collect();
+
     let mut saw_composition = false;
     let mut touched_last_read_novels: HashSet<i64> = HashSet::new();
     let mut composition_entries = CompositionEntryCache::default();
 
-    for row in pending_rows {
-        let key: String = row.get("entity_key");
-        let payload: String = row.get("payload");
+    for key in to_project_keys {
+        let Some(payload) = fetched_by_key.remove(&key) else {
+            continue;
+        };
         let raw: JsonValue = serde_json::from_str(&payload)
             .map_err(|err| format!("db user state: parse pending projection record: {err}"))?;
         let record = parse_user_state_record(&raw)?;
@@ -1827,16 +2136,6 @@ pub async fn project_pending_user_state_in_tx(
             .await
             .map_err(|err| format!("db user state: recheck projection revision: {err}"))?;
             if applied_rev.is_none_or(|rev| rev >= record.revision) {
-                continue;
-            }
-        }
-
-        if held_keys.contains(&key) {
-            continue;
-        }
-        if record.entity.get("categoryId").is_some() {
-            let canon = canonical_entity_in_tx(conn, &ws.namespace, &record.entity).await?;
-            if held_keys.contains(&user_state_entity_key(&canon)?) {
                 continue;
             }
         }
@@ -1902,6 +2201,7 @@ pub async fn project_pending_user_state_in_tx(
                 .execute(&mut *conn)
                 .await
                 .map_err(|e| format!("db user state: record projection failure: {e}"))?;
+                effects.failed_entity_keys.push(key);
                 log::warn!(
                     "[user-state] stored shared state but could not project it into local content: {err}"
                 );

@@ -35,8 +35,9 @@ pub use ledger::{
     acknowledge_user_state_operations_in_tx, apply_user_state_read_page_in_tx,
     bind_user_state_workspace_in_tx, get_user_state_ledger_status_in_tx,
     list_user_state_conflicts_in_tx, list_user_state_deferred_in_tx,
-    prepare_user_state_operations_in_tx, project_pending_user_state_in_tx,
-    resolve_user_state_ledger_conflict_in_tx, PrepareUserStateOperationsLimitsDto,
+    prepare_user_state_operations_in_tx, project_pending_user_state_bounded_in_tx,
+    project_pending_user_state_in_tx, resolve_user_state_ledger_conflict_in_tx,
+    PrepareUserStateOperationsLimitsDto,
 };
 pub use materialize::{
     defer_user_state_for_novel_in_tx, refresh_unattempted_user_state_identities_in_tx,
@@ -279,9 +280,12 @@ pub async fn db_user_state_project_pending(
     db: State<'_, AppDatabase>,
     binding: UserStateBindingDto,
     skipped_chapter_ids: Option<Vec<i64>>,
+    limit: Option<usize>,
+    skip_entity_keys: Option<Vec<String>>,
 ) -> Result<DbMutationEnvelope<UserStateApplyEffectsDto>, String> {
     let resolved_root = crate::chapter_media::media_root(&app).ok();
     let skipped: HashSet<i64> = skipped_chapter_ids.unwrap_or_default().into_iter().collect();
+    let skipped_entities: HashSet<String> = skip_entity_keys.unwrap_or_default().into_iter().collect();
     let opts = TxOptions {
         remote_content_sync: true,
         notify_content_sync: false,
@@ -291,12 +295,14 @@ pub async fn db_user_state_project_pending(
     };
     with_write_tx(db.pool_for(ReadMode::Queued), opts, move |conn, ctx| {
         Box::pin(async move {
-            project_pending_user_state_in_tx(
+            project_pending_user_state_bounded_in_tx(
                 resolved_root.as_deref(),
                 conn,
                 ctx,
                 &binding,
                 &skipped,
+                limit,
+                &skipped_entities,
             )
             .await
         })

@@ -14,14 +14,15 @@ use super::novel::{
 };
 use super::novel_merge::{
     immutable_lineage_proof, normalize_content_server_url_strict, record_pending_novel_merge_in_tx,
-    RecordPendingNovelMergeInputDto, INCOMING_MIGRATION_CACHE_PREFIX, NOVEL_MIGRATION_CACHE_PREFIX,
+    RecordPendingNovelMergeInputDto, INCOMING_MIGRATION_CACHE_PREFIX,
 };
 use super::tx::{with_write_tx, MetadataRoot, TxContext, TxOptions};
 use super::user_state::{
     core::{
         chapter_reference_json, chapter_work_json, has_user_state_schema_in_tx,
-        map_user_chapter_row, record_chapter_rows_in_tx, record_library_in_tx,
-        record_membership_in_tx, record_resume_cleared_in_tx, USER_CHAPTER_SELECT,
+        map_user_chapter_row, populate_user_chapter_composition_ids_in_tx,
+        record_chapter_rows_in_tx, record_library_in_tx, record_membership_in_tx,
+        record_resume_cleared_in_tx, USER_CHAPTER_SELECT,
     },
     types::user_state_entity_key,
 };
@@ -249,29 +250,33 @@ pub async fn is_novel_migration_source_held_in_conn(
     }
     let normalized = normalize_content_server_url_strict(trimmed, true)?;
     let raw_trimmed = trimmed.trim_end_matches('/').to_string();
-    let migration_like = format!("{NOVEL_MIGRATION_CACHE_PREFIX}%");
 
     let held: i64 = sqlx::query_scalar(
         "SELECT EXISTS( \
-           SELECT 1 FROM content_sync_cache WHERE cache_key LIKE ?1 \
-           AND rtrim(json_extract(payload, '$.serverUrl'), '/') IN (?2, ?6) \
-           AND json_extract(payload, '$.source.pluginId') = ?3 \
-           AND (json_extract(payload, '$.source.novelPath') = ?4 OR json_extract(payload, '$.source.novelId') = ?5) \
+           SELECT 1 FROM content_sync_cache \
+           WHERE cache_key >= 'norea-content-novel-migration:' \
+             AND cache_key < 'norea-content-novel-migration;' \
+             AND rtrim(json_extract(payload, '$.serverUrl'), '/') IN (?1, ?5) \
+             AND json_extract(payload, '$.source.pluginId') = ?2 \
+             AND (json_extract(payload, '$.source.novelPath') = ?3 OR json_extract(payload, '$.source.novelId') = ?4) \
            UNION ALL \
-           SELECT 1 FROM content_sync_cache WHERE cache_key LIKE 'norea-content-incoming-migration:%' \
-           AND rtrim(json_extract(payload, '$.serverUrl'), '/') IN (?2, ?6) \
-           AND json_extract(payload, '$.status') <> 'inactive' \
-           AND json_extract(payload, '$.source.pluginId') = ?3 \
-           AND (json_extract(payload, '$.source.novelPath') = ?4 OR json_extract(payload, '$.source.novelId') = ?5) \
+           SELECT 1 FROM content_sync_cache \
+           WHERE cache_key >= 'norea-content-incoming-migration:' \
+             AND cache_key < 'norea-content-incoming-migration;' \
+             AND rtrim(json_extract(payload, '$.serverUrl'), '/') IN (?1, ?5) \
+             AND json_extract(payload, '$.status') <> 'inactive' \
+             AND json_extract(payload, '$.source.pluginId') = ?2 \
+             AND (json_extract(payload, '$.source.novelPath') = ?3 OR json_extract(payload, '$.source.novelId') = ?4) \
            UNION ALL \
-           SELECT 1 FROM content_sync_cache WHERE cache_key LIKE 'norea-content-chapter-number-reconciliation:%' \
-           AND rtrim(json_extract(payload, '$.serverUrl'), '/') IN (?2, ?6) \
-           AND json_extract(payload, '$.status') = 'pending' \
-           AND json_extract(payload, '$.identity.pluginId') = ?3 \
-           AND (json_extract(payload, '$.identity.novelPath') = ?4 OR json_extract(payload, '$.identity.novelId') = ?5) \
+           SELECT 1 FROM content_sync_cache \
+           WHERE cache_key >= 'norea-content-chapter-number-reconciliation:' \
+             AND cache_key < 'norea-content-chapter-number-reconciliation;' \
+             AND rtrim(json_extract(payload, '$.serverUrl'), '/') IN (?1, ?5) \
+             AND json_extract(payload, '$.status') = 'pending' \
+             AND json_extract(payload, '$.identity.pluginId') = ?2 \
+             AND (json_extract(payload, '$.identity.novelPath') = ?3 OR json_extract(payload, '$.identity.novelId') = ?4) \
          ) AS held",
     )
-    .bind(migration_like)
     .bind(&normalized)
     .bind(plugin_id)
     .bind(novel_path)
@@ -1707,7 +1712,8 @@ pub async fn delete_local_novel_records_in_tx(
             .fetch_all(&mut *conn)
             .await
             .map_err(|err| format!("db content deletion: list user state chapters: {err}"))?;
-        let chapters: Vec<_> = raw_chapters.iter().map(map_user_chapter_row).collect();
+        let mut chapters: Vec<_> = raw_chapters.iter().map(map_user_chapter_row).collect();
+        populate_user_chapter_composition_ids_in_tx(conn, &mut chapters).await?;
 
         if !chapters.is_empty() {
             let private_keys: HashSet<String> =

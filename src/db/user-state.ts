@@ -41,6 +41,7 @@ let activeGeneration = 0;
 
 const USER_STATE_BUSY_RETRIES = 3;
 const USER_STATE_LOCAL_ACK_CHUNK = 128;
+const USER_STATE_PROJECT_CHUNK = 256;
 const USER_STATE_LOCAL_ACK_YIELD_MS = 0;
 
 function isUserStateDatabaseBusy(error: unknown): boolean {
@@ -174,13 +175,32 @@ export async function materializePendingUserState(
     activeGeneration === generation &&
     (activeServer === null || activeServer === binding.serverUrl);
   if (!allowed()) return { resumes: [] };
-  const effects = await withGlobalChapterDownloadSnapshotReads(
-    skippedChapterIds =>
-      invokeDbMutation<UserStateApplyEffects>("db_user_state_project_pending", {
-        binding,
-        skippedChapterIds,
-      }),
-  );
+  const resumes: UserStateApplyEffects["resumes"] = [];
+  const failedEntityKeys = new Set<string>();
+  let chunkIndex = 0;
+  for (;;) {
+    if (!allowed()) break;
+    if (chunkIndex > 0) await yieldUserStateAck();
+    if (!allowed()) break;
+    const skipEntityKeys = failedEntityKeys.size > 0 ? [...failedEntityKeys] : undefined;
+    const chunk = await retryUserStateExclusive(() =>
+      withGlobalChapterDownloadSnapshotReads(skippedChapterIds =>
+        invokeDbMutation<UserStateApplyEffects>("db_user_state_project_pending", {
+          binding,
+          skippedChapterIds,
+          limit: USER_STATE_PROJECT_CHUNK,
+          ...(skipEntityKeys ? { skipEntityKeys } : {}),
+        }),
+      ),
+    );
+    resumes.push(...chunk.resumes);
+    for (const key of chunk.failedEntityKeys ?? []) {
+      failedEntityKeys.add(key);
+    }
+    chunkIndex += 1;
+    if (!chunk.hasMore) break;
+  }
+  const effects: UserStateApplyEffects = { resumes };
   emitUserStateApplied(effects);
   emitUserStateLedgerChanged();
   return effects;

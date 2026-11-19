@@ -174,9 +174,15 @@ class MainActivity : TauriActivity() {
     androidScraperBridge = null
     androidVpnDownloadWorkers?.destroy()
     androidVpnDownloadWorkers = null
-    mainWebView?.removeJavascriptInterface("__NoreaAndroidVpnWorkers")
+    taskNotificationBridge.destroy()
+    val webView = mainWebView
+    mainWebView = null
+    webView?.removeJavascriptInterface("__NoreaAndroidVpnWorkers")
+    webView?.removeJavascriptInterface("__NoreaAndroidTasks")
     AndroidNativeIo.detachActivity(this)
     super.onDestroy()
+    (webView?.parent as? ViewGroup)?.removeView(webView)
+    webView?.destroy()
     AndroidActivityLifecycle.publishDestruction(id, true)
   }
 

@@ -24,7 +24,11 @@ vi.mock("./chapter-download-failures", () => ({
   getChapterDownloadFailureSnapshot: vi.fn(() => []),
 }));
 vi.mock("./chapter-storage-operation", () => ({
+  getBlockedChapterStorageSources: vi.fn(() => ({ all: false, sourceIds: new Set<string>() })),
+  isChapterStorageBlockedForSource: vi.fn(() => false),
   runExclusiveChapterStorageOperation: vi.fn(),
+  subscribeChapterStorageOperations: vi.fn(() => () => undefined),
+  waitForAllChapterStorageOperations: vi.fn(async () => undefined),
   waitForChapterStorageOperation: vi.fn(() => new Promise(() => undefined)),
 }));
 

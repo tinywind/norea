@@ -55,6 +55,66 @@ describe("TaskScheduler", () => {
     }
   });
 
+  it("keeps blocked-source downloads off global server lanes until their storage operation finishes", async () => {
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    let releaseStorage!: () => void;
+    let storageStarted!: () => void;
+    const storageStartedPromise = new Promise<void>((resolve) => { storageStarted = resolve; });
+    const storageOp = runExclusiveChapterStorageOperation(
+      { kind: "sources", sourceIds: ["source-a"] },
+      undefined,
+      async () => {
+        storageStarted();
+        await new Promise<void>((resolve) => { releaseStorage = resolve; });
+      },
+    );
+    await storageStartedPromise;
+
+    const events: string[] = [];
+    const finishBlocked: Array<() => void> = [];
+    const finishUnblocked = new Promise<void>((resolve) => { finishBlocked.push(resolve); });
+    const blockedTasks = [1, 2, 3].map((idx) =>
+      scheduler.enqueueSource({
+        kind: "chapter.download",
+        title: `Blocked A ${idx}`,
+        source: { id: "source-a", name: "Source A" },
+        subject: { chapterId: idx, pluginId: "source-a" },
+        serverLane: true,
+        canCompleteWithoutSourceAccess: true,
+        run: async () => {
+          events.push(`a:${idx}`);
+        },
+      }),
+    );
+    const unblockedTask = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "Unblocked B",
+      source: { id: "source-b", name: "Source B" },
+      subject: { chapterId: 99, pluginId: "source-b" },
+      serverLane: true,
+      canCompleteWithoutSourceAccess: true,
+      run: async () => {
+        events.push("b:start");
+        await finishUnblocked;
+      },
+    });
+    await settle();
+    try {
+      expect(events).toEqual(["b:start"]);
+      expect(blockedTasks.every((task) => scheduler.getTask(task.id)?.status === "queued")).toBe(true);
+      finishBlocked[0]!();
+      await unblockedTask.promise;
+      releaseStorage();
+      await storageOp;
+      await Promise.all(blockedTasks.map((task) => task.promise));
+      expect(events).toEqual(["b:start", "a:1", "a:2", "a:3"]);
+    } finally {
+      finishBlocked[0]?.();
+      releaseStorage?.();
+      await Promise.allSettled([storageOp, unblockedTask.promise, ...blockedTasks.map((t) => t.promise)]);
+    }
+  });
+
   it("deletes downloaded files while downloads and an earlier cache barrier are pending", async () => {
     const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
     let finishDownload!: () => void;

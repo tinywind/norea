@@ -246,16 +246,34 @@ async fn remove_queue_jobs(pool: &SqlitePool, chapter_ids: &[i64]) -> Result<(),
 pub async fn chapter_download_queue_lease(
     db: State<'_, AppDatabase>,
     limit: Option<usize>,
+    excluded_plugin_ids: Option<Vec<String>>,
+    excluded_chapter_ids: Option<Vec<i64>>,
 ) -> Result<Vec<ChapterDownloadQueueJob>, String> {
-    lease_queue_jobs(db.writer(), limit).await
+    lease_queue_jobs_filtered(
+        db.writer(),
+        limit,
+        excluded_plugin_ids.as_deref().unwrap_or(&[]),
+        excluded_chapter_ids.as_deref().unwrap_or(&[]),
+    )
+    .await
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 async fn lease_queue_jobs(
     pool: &SqlitePool,
     limit: Option<usize>,
 ) -> Result<Vec<ChapterDownloadQueueJob>, String> {
+    lease_queue_jobs_filtered(pool, limit, &[], &[]).await
+}
+
+async fn lease_queue_jobs_filtered(
+    pool: &SqlitePool,
+    limit: Option<usize>,
+    excluded_plugin_ids: &[String],
+    excluded_chapter_ids: &[i64],
+) -> Result<Vec<ChapterDownloadQueueJob>, String> {
     for attempt in 0..=QUEUE_BUSY_RETRIES {
-        match lease_queue_jobs_once(pool, limit).await {
+        match lease_queue_jobs_once(pool, limit, excluded_plugin_ids, excluded_chapter_ids).await {
             Ok(jobs) => return Ok(jobs),
             Err(error)
                 if is_sqlite_busy_message(&error) && attempt < QUEUE_BUSY_RETRIES =>
@@ -274,6 +292,8 @@ async fn lease_queue_jobs(
 async fn lease_queue_jobs_once(
     pool: &SqlitePool,
     limit: Option<usize>,
+    excluded_plugin_ids: &[String],
+    excluded_chapter_ids: &[i64],
 ) -> Result<Vec<ChapterDownloadQueueJob>, String> {
     // This transaction reads candidate jobs and then marks them leased. Starting
     // deferred lets another writer commit after the SELECT, making SQLite reject
@@ -283,37 +303,69 @@ async fn lease_queue_jobs_once(
         .begin_with("BEGIN IMMEDIATE")
         .await
         .map_err(|err| format!("download queue: begin lease: {err}"))?;
-    let rows = match limit.filter(|value| *value > 0) {
-        Some(limit) => {
-            sqlx::query(
-                r#"
-                SELECT chapter_id, job_json
-                FROM chapter_download_queue
-                WHERE json_extract(job_json, '$.vpnPlanId') IS NULL
-                  AND json_extract(job_json, '$.vpnRangeId') IS NULL
-                  AND json_extract(job_json, '$.vpnBatchId') IS NULL
-                ORDER BY created_at_ms, chapter_id
-                LIMIT ?1
-                "#,
-            )
-            .bind(i64::try_from(limit).unwrap_or(i64::MAX))
-            .fetch_all(&mut *tx)
-            .await
+    let rows = if excluded_plugin_ids.is_empty() && excluded_chapter_ids.is_empty() {
+        match limit.filter(|value| *value > 0) {
+            Some(limit) => {
+                sqlx::query(
+                    r#"
+                    SELECT chapter_id, job_json
+                    FROM chapter_download_queue
+                    WHERE json_extract(job_json, '$.vpnPlanId') IS NULL
+                      AND json_extract(job_json, '$.vpnRangeId') IS NULL
+                      AND json_extract(job_json, '$.vpnBatchId') IS NULL
+                    ORDER BY created_at_ms, chapter_id
+                    LIMIT ?1
+                    "#,
+                )
+                .bind(i64::try_from(limit).unwrap_or(i64::MAX))
+                .fetch_all(&mut *tx)
+                .await
+            }
+            None => {
+                sqlx::query(
+                    r#"
+                    SELECT chapter_id, job_json
+                    FROM chapter_download_queue
+                    WHERE json_extract(job_json, '$.vpnPlanId') IS NULL
+                      AND json_extract(job_json, '$.vpnRangeId') IS NULL
+                      AND json_extract(job_json, '$.vpnBatchId') IS NULL
+                    ORDER BY created_at_ms, chapter_id
+                    "#,
+                )
+                .fetch_all(&mut *tx)
+                .await
+            }
         }
-        None => {
-            sqlx::query(
-                r#"
-                SELECT chapter_id, job_json
-                FROM chapter_download_queue
-                WHERE json_extract(job_json, '$.vpnPlanId') IS NULL
-                  AND json_extract(job_json, '$.vpnRangeId') IS NULL
-                  AND json_extract(job_json, '$.vpnBatchId') IS NULL
-                ORDER BY created_at_ms, chapter_id
-                "#,
-            )
-            .fetch_all(&mut *tx)
-            .await
+    } else {
+        let mut query = QueryBuilder::<Sqlite>::new(
+            "SELECT chapter_id, job_json FROM chapter_download_queue \
+             WHERE json_extract(job_json, '$.vpnPlanId') IS NULL \
+               AND json_extract(job_json, '$.vpnRangeId') IS NULL \
+               AND json_extract(job_json, '$.vpnBatchId') IS NULL",
+        );
+        if !excluded_plugin_ids.is_empty() {
+            let encoded = serde_json::to_string(excluded_plugin_ids)
+                .map_err(|err| format!("download queue: encode excluded plugins: {err}"))?;
+            query
+                .push(" AND COALESCE(json_extract(job_json, '$.pluginId'), '') NOT IN (SELECT value FROM json_each(")
+                .push_bind(encoded)
+                .push("))");
         }
+        if !excluded_chapter_ids.is_empty() {
+            let encoded = serde_json::to_string(excluded_chapter_ids)
+                .map_err(|err| format!("download queue: encode excluded chapters: {err}"))?;
+            query
+                .push(" AND chapter_id NOT IN (SELECT value FROM json_each(")
+                .push_bind(encoded)
+                .push("))");
+        }
+        query.push(" ORDER BY created_at_ms, chapter_id");
+        if let Some(limit) = limit.filter(|value| *value > 0) {
+            query
+                .push(" LIMIT ")
+                .push_bind(i64::try_from(limit).unwrap_or(i64::MAX));
+        }
+        query.build().fetch_all(&mut *tx).await
     }
     .map_err(|err| format!("download queue: lease jobs: {err}"))?;
 
@@ -629,6 +681,55 @@ mod tests {
             .fetch_all(&pool).await.unwrap(), vec![(1,None,0), (3,None,0), (4,None,0)]);
         assert_eq!(sqlx::query_scalar::<_, i64>("SELECT attempt_count FROM chapter_download_queue WHERE chapter_id=2")
             .fetch_one(&pool).await.unwrap(), 2);
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn filtered_lease_leaves_excluded_plugins_and_chapters_unleased() {
+        let pool = SqlitePoolOptions::new().max_connections(1).connect("sqlite::memory:").await.unwrap();
+        ensure_queue_schema(&pool).await.unwrap();
+        let make_job = |id: i64, plugin_id: &str| ChapterDownloadQueueJob {
+            id,
+            batch_id: None,
+            batch_title: None,
+            vpn_batch_id: None,
+            vpn_work_paused: None,
+            vpn_plan_id: None,
+            vpn_range_id: None,
+            plugin_id: plugin_id.to_string(),
+            plugin_name: None,
+            chapter_path: format!("/{plugin_id}/{id}"),
+            chapter_name: None,
+            chapter_number: None,
+            content_type: None,
+            novel_id: None,
+            novel_name: None,
+            novel_path: None,
+            priority: None,
+            retry_at: None,
+            goal: None,
+            server_lane: None,
+            source_fallback: None,
+            title: format!("Chapter {id}"),
+        };
+        insert_queue_job(&pool, &make_job(1, "source-a"), 1, 1).await.unwrap();
+        insert_queue_job(&pool, &make_job(2, "source-b"), 2, 2).await.unwrap();
+        insert_queue_job(&pool, &make_job(3, "source-b"), 3, 3).await.unwrap();
+
+        let leased = lease_queue_jobs_filtered(&pool, None, &["source-a".to_string()], &[2])
+            .await
+            .unwrap();
+        assert_eq!(leased.iter().map(|job| job.id).collect::<Vec<_>>(), vec![3]);
+        let states: Vec<(i64, bool, i64)> = sqlx::query_as::<_, (i64, Option<i64>, i64)>(
+            "SELECT chapter_id, leased_at_ms, attempt_count FROM chapter_download_queue ORDER BY chapter_id",
+        )
+        .fetch_all(&pool)
+        .await
+        .unwrap()
+        .into_iter()
+        .map(|(id, leased_at, attempts)| (id, leased_at.is_some(), attempts))
+        .collect();
+        assert_eq!(states, vec![(1, false, 0), (2, false, 0), (3, true, 1)]);
         pool.close().await;
     }
 

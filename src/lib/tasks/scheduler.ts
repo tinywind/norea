@@ -62,7 +62,11 @@ import { isVpnDownloadWorkerSlot, MAX_VPN_DOWNLOAD_WORKERS, type VpnDownloadWork
 import { redactUrlsForLog } from "../url-log";
 import { SourceExecutorLeases } from "./source-executor-leases";
 import { TaskHistory } from "./task-history";
-import { runExclusiveChapterStorageOperation } from "./chapter-storage-operation";
+import {
+  isChapterStorageBlockedForSource,
+  runExclusiveChapterStorageOperation,
+  subscribeChapterStorageOperations,
+} from "./chapter-storage-operation";
 import { SourceCooldowns } from "./source-cooldown";
 import {
   SourceAccessGate,
@@ -349,6 +353,7 @@ export class TaskScheduler {
     this.sourceExecutors = new SourceExecutorLeases(
       this.sourceForegroundConcurrency,
     );
+    subscribeChapterStorageOperations(() => this.requestDrain());
     this.snapshot = this.buildSnapshot();
   }
 
@@ -2190,6 +2195,12 @@ export class TaskScheduler {
   ): boolean {
     if (this.downloadFailureStops.globalError &&
       (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia")) return false;
+    if (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia") {
+      const storageSourceId = entry.record.subject?.pluginId ?? entry.record.source?.id;
+      if (storageSourceId !== undefined && isChapterStorageBlockedForSource(storageSourceId)) {
+        return false;
+      }
+    }
     if (this.backgroundExecutionSuspended || entry.retryTimer !== undefined) return false;
     if (this.automaticWorkPaused && entry.spec.automatic) return false;
     if (this.ordinaryChapterDownloadHolds > 0 && entry.record.kind === "chapter.download" &&

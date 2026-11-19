@@ -95,7 +95,9 @@ import {
   TASK_BATCH_MATERIALIZATION_WINDOW,
 } from "./batch-window";
 import {
+  getBlockedChapterStorageSources,
   runExclusiveChapterStorageOperation,
+  waitForAllChapterStorageOperations,
   waitForChapterStorageOperation,
 } from "./chapter-storage-operation";
 import { cancelInterceptedChapterDownloadBatch, interceptChapterDownload, interceptChapterDownloadBatch, isInterceptedChapterDownloadQueued } from "./chapter-download-batch-interceptor";
@@ -659,9 +661,17 @@ async function removeBackendChapterDownloadJobs(
 
 async function leaseBackendChapterDownloadJobs(
   limit?: number,
+  filters?: {
+    excludedPluginIds?: readonly string[];
+    excludedChapterIds?: readonly number[];
+  },
 ): Promise<ChapterDownloadJob[]> {
+  const excludedPluginIds = filters?.excludedPluginIds?.filter((id) => id.trim().length > 0);
+  const excludedChapterIds = filters?.excludedChapterIds?.filter((id) => Number.isSafeInteger(id) && id > 0);
   const jobs = await invoke<unknown[]>("chapter_download_queue_lease", {
     limit: Number.isFinite(limit) ? limit : null,
+    ...(excludedPluginIds?.length ? { excludedPluginIds } : {}),
+    ...(excludedChapterIds?.length ? { excludedChapterIds } : {}),
   });
   const pendingJobs: ChapterDownloadJob[] = [];
   const jobsById = new Map<number, ChapterDownloadJob>();
@@ -2336,11 +2346,14 @@ export function subscribeChapterMediaPatches(
   };
 }
 
-async function pendingBackendChapterDownloadJobs(): Promise<
+async function pendingBackendChapterDownloadJobs(filters?: {
+  excludedPluginIds?: readonly string[];
+  excludedChapterIds?: readonly number[];
+}): Promise<
   BackendChapterDownloadLease
 > {
   await waitForChapterDownloadQueueMutations();
-  const jobs = await leaseBackendChapterDownloadJobs();
+  const jobs = await leaseBackendChapterDownloadJobs(undefined, filters);
   if (jobs.length === 0) {
     return { leased: 0, pendingJobs: [] };
   }
@@ -2364,47 +2377,159 @@ async function pendingBackendChapterDownloadJobs(): Promise<
 }
 
 async function runBackendChapterDownloadExecutor(onRestored: () => void): Promise<void> {
+  const restoredChapterIds = new Set<number>();
+  const activeRestorePromises = new Set<Promise<void>>();
+  let restoredNotified = false;
+  const markRestored = () => {
+    if (restoredNotified) return;
+    restoredNotified = true;
+    onRestored();
+  };
+
   for (;;) {
-    const { leased, restoreHandle } =
-      await runExclusiveChapterStorageOperation(
-        { kind: "all" },
+    const blocked = getBlockedChapterStorageSources();
+    if (!blocked.all && blocked.sourceIds.size === 0 && activeRestorePromises.size === 0 && restoredChapterIds.size === 0) {
+      const { leased, restoreHandle } =
+        await runExclusiveChapterStorageOperation(
+          { kind: "all" },
+          undefined,
+          async () => {
+            const cancelledChapterIds = new Set<number>();
+            backendChapterDownloadRestorations.add(cancelledChapterIds);
+            try {
+              const { leased, pendingJobs } = await pendingBackendChapterDownloadJobs();
+              const jobs = pendingJobs.filter((job) => !cancelledChapterIds.has(job.id));
+              if (jobs.length === 0) {
+                return { leased, restoreHandle: null };
+              }
+              return {
+                leased,
+                restoreHandle: enqueueChapterDownloadBatch({
+                  jobs: jobs.map((job) => ({ ...job, priority: "background" })),
+                  materializeAllTasks: true,
+                  persist: false,
+                  removeBackendQueuedJobsOnCancel: true,
+                  title: "Queued chapter downloads",
+                  total: jobs.length,
+                }),
+              };
+            } finally {
+              backendChapterDownloadRestorations.delete(cancelledChapterIds);
+            }
+          },
+        );
+      await restoreHandle?.materialized;
+      markRestored();
+      if (!restoreHandle) {
+        if (leased === 0) return;
+        continue;
+      }
+      try {
+        await restoreHandle.promise;
+      } catch (error) {
+        console.warn("[chapter-download] queued downloads failed:", error);
+        return;
+      }
+      continue;
+    }
+
+    if (blocked.all) {
+      await waitForAllChapterStorageOperations();
+      continue;
+    }
+
+    await waitForChapterDownloadQueueMutations();
+    const leasedJobs = await leaseBackendChapterDownloadJobs(undefined, {
+      ...(blocked.sourceIds.size > 0 ? { excludedPluginIds: [...blocked.sourceIds] } : {}),
+      ...(restoredChapterIds.size > 0 ? { excludedChapterIds: [...restoredChapterIds] } : {}),
+    });
+
+    if (leasedJobs.length > 0) {
+      const sourceIds = [...new Set(leasedJobs.map((job) => job.pluginId))];
+      const restoreHandle = await runExclusiveChapterStorageOperation(
+        { kind: "sources", sourceIds },
         undefined,
         async () => {
           const cancelledChapterIds = new Set<number>();
           backendChapterDownloadRestorations.add(cancelledChapterIds);
           try {
-            const { leased, pendingJobs } = await pendingBackendChapterDownloadJobs();
-            const jobs = pendingJobs.filter((job) => !cancelledChapterIds.has(job.id));
-            if (jobs.length === 0) {
-              return { leased, restoreHandle: null };
+            const existingChapterIds = new Set(
+              await listExistingChapterIds(leasedJobs.map((job) => job.id)),
+            );
+            const jobs: ChapterDownloadJob[] = [];
+            const completedChapterIds: number[] = [];
+            for (const job of leasedJobs) {
+              if (!existingChapterIds.has(job.id)) {
+                completedChapterIds.push(job.id);
+              } else if (!cancelledChapterIds.has(job.id)) {
+                jobs.push({ ...job, priority: "background" });
+              }
             }
-            return {
-              leased,
-              restoreHandle: enqueueChapterDownloadBatch({
-                jobs: jobs.map((job) => ({ ...job, priority: "background" })),
-                materializeAllTasks: true,
-                persist: false,
-                removeBackendQueuedJobsOnCancel: true,
-                title: "Queued chapter downloads",
-                total: jobs.length,
-              }),
-            };
+            if (completedChapterIds.length > 0) {
+              await removeBackendChapterDownloadJobs(completedChapterIds);
+            }
+            if (jobs.length === 0) {
+              return null;
+            }
+            for (const job of jobs) {
+              restoredChapterIds.add(job.id);
+            }
+            return enqueueChapterDownloadBatch({
+              jobs,
+              materializeAllTasks: true,
+              persist: false,
+              removeBackendQueuedJobsOnCancel: true,
+              title: "Queued chapter downloads",
+              total: jobs.length,
+            });
           } finally {
             backendChapterDownloadRestorations.delete(cancelledChapterIds);
           }
         },
       );
-    await restoreHandle?.materialized;
-    onRestored();
-    if (!restoreHandle) {
-      if (leased === 0) return;
+      if (restoreHandle) {
+        await restoreHandle.materialized;
+        const tracked = restoreHandle.promise
+          .then(
+            () => undefined,
+            (error) => {
+              console.warn("[chapter-download] queued downloads failed:", error);
+            },
+          )
+          .finally(() => {
+            activeRestorePromises.delete(tracked);
+          });
+        activeRestorePromises.add(tracked);
+      }
+    }
+
+    const nextBlocked = getBlockedChapterStorageSources();
+    if (nextBlocked.all) {
+      if (leasedJobs.length > 0) markRestored();
+      await waitForAllChapterStorageOperations();
       continue;
     }
-    try {
-      await restoreHandle.promise;
-    } catch (error) {
-      console.warn("[chapter-download] queued downloads failed:", error);
-      return;
+    markRestored();
+    if (nextBlocked.sourceIds.size > 0) {
+      const waitController = new AbortController();
+      try {
+        await Promise.race(
+          [...nextBlocked.sourceIds].map((sourceId) =>
+            waitForChapterStorageOperation(sourceId, waitController.signal).catch(
+              (error) => {
+                if (!isAbortError(error)) throw error;
+              },
+            ),
+          ),
+        );
+      } finally {
+        waitController.abort();
+      }
+      continue;
+    }
+    if (leasedJobs.length === 0) {
+      if (activeRestorePromises.size === 0) return;
+      await Promise.race([...activeRestorePromises]);
     }
   }
 }

@@ -20,6 +20,90 @@ interface ChapterStorageOperationRequest {
 }
 
 const requests: ChapterStorageOperationRequest[] = [];
+const exclusiveListeners = new Set<() => void>();
+
+function notifyExclusiveListeners(): void {
+  for (const listener of [...exclusiveListeners]) {
+    listener();
+  }
+}
+
+export interface BlockedChapterStorageSources {
+  all: boolean;
+  sourceIds: Set<string>;
+}
+
+export function subscribeChapterStorageOperations(
+  listener: () => void,
+): () => void {
+  exclusiveListeners.add(listener);
+  return () => {
+    exclusiveListeners.delete(listener);
+  };
+}
+
+export function getBlockedChapterStorageSources(): BlockedChapterStorageSources {
+  let all = false;
+  const sourceIds = new Set<string>();
+  for (const request of requests) {
+    if (request.mode !== "exclusive") continue;
+    if (request.scope.all) {
+      all = true;
+    } else {
+      for (const sourceId of request.scope.sourceIds) {
+        sourceIds.add(sourceId);
+      }
+    }
+  }
+  return { all, sourceIds };
+}
+
+export function isChapterStorageBlockedForSource(sourceId: string): boolean {
+  const normalized = sourceId.trim();
+  if (!normalized) return false;
+  for (const request of requests) {
+    if (request.mode !== "exclusive") continue;
+    if (request.scope.all || request.scope.sourceIds.has(normalized)) {
+      return true;
+    }
+  }
+  return false;
+}
+
+export function waitForAllChapterStorageOperations(
+  signal?: AbortSignal,
+): Promise<void> {
+  if (signal?.aborted) return Promise.reject(abortReason(signal));
+  if (!getBlockedChapterStorageSources().all) return Promise.resolve();
+  return new Promise<void>((resolve, reject) => {
+    let settled = false;
+    const cleanup = () => {
+      unsubscribe();
+      signal?.removeEventListener("abort", onAbort);
+    };
+    const onAbort = () => {
+      if (settled) return;
+      settled = true;
+      cleanup();
+      reject(abortReason(signal!));
+    };
+    const check = () => {
+      if (settled) return;
+      if (signal?.aborted) {
+        onAbort();
+        return;
+      }
+      if (!getBlockedChapterStorageSources().all) {
+        settled = true;
+        cleanup();
+        resolve();
+      }
+    };
+    const unsubscribe = subscribeChapterStorageOperations(check);
+    signal?.addEventListener("abort", onAbort, { once: true });
+    check();
+  });
+}
 
 function abortReason(signal: AbortSignal): unknown {
   return (
@@ -109,6 +193,7 @@ function drainRequests(): void {
       released = true;
       removeRequest(request);
       drainRequests();
+      if (request.mode === "exclusive") notifyExclusiveListeners();
     });
   }
 }
@@ -134,11 +219,13 @@ function acquireChapterStorageOperation(
         removeRequest(request);
         reject(abortReason(signal));
         drainRequests();
+        if (request.mode === "exclusive") notifyExclusiveListeners();
       };
       signal.addEventListener("abort", request.abortListener, { once: true });
     }
     requests.push(request);
     drainRequests();
+    if (request.mode === "exclusive") notifyExclusiveListeners();
   });
 }
 

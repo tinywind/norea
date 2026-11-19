@@ -142,6 +142,8 @@ export interface UserStateResumeEffect {
 }
 export interface UserStateApplyEffects {
   resumes: UserStateResumeEffect[];
+  hasMore?: boolean;
+  failedEntityKeys?: string[];
 }
 
 export class UserStateProtocolError extends Error {

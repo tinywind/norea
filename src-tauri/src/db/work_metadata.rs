@@ -1778,7 +1778,8 @@ pub async fn scan_stored_novel_chapters_to_cache_in_tx(
     let reconciliation_pending: i64 = sqlx::query_scalar(
         "SELECT EXISTS( \
            SELECT 1 FROM content_sync_cache \
-           WHERE cache_key LIKE 'norea-source-chapter-renumber:%' \
+           WHERE cache_key >= 'norea-source-chapter-renumber:' \
+             AND cache_key < 'norea-source-chapter-renumber;' \
              AND json_extract(payload, '$.work.id') = ?1 \
          )",
     )

@@ -236,6 +236,51 @@ describe("user-state Rust IPC wrappers", () => {
     expect(batches).toEqual([128, 128, 4]);
   });
 
+  it("chunks materializePendingUserState while hasMore is true and skips failed entity keys", async () => {
+    const calls: unknown[] = [];
+    vi.mocked(invoke).mockImplementation(
+      async (command: string, args?: unknown) => {
+        if (command === "db_user_state_project_pending") {
+          calls.push(args);
+          if (calls.length === 1) {
+            return {
+              value: {
+                resumes: [{ novelId: 1, chapterId: 10, anchor: null, openedAt: 10 }],
+                hasMore: true,
+                failedEntityKeys: ["[\"reading\",\"err\"]"],
+              },
+              effects: { userStateLedgerChanged: true },
+            };
+          }
+          return {
+            value: {
+              resumes: [{ novelId: 2, chapterId: 20, anchor: null, openedAt: 20 }],
+              hasMore: false,
+            },
+            effects: { userStateLedgerChanged: true },
+          };
+        }
+        throw new Error(`Unexpected command: ${command}`);
+      },
+    );
+
+    const effects = await materializePendingUserState(binding);
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({ binding, limit: 256 });
+    expect((calls[0] as { skipEntityKeys?: unknown }).skipEntityKeys).toBeUndefined();
+    expect(calls[1]).toMatchObject({
+      binding,
+      limit: 256,
+      skipEntityKeys: ["[\"reading\",\"err\"]"],
+    });
+    expect(effects).toEqual({
+      resumes: [
+        { novelId: 1, chapterId: 10, anchor: null, openedAt: 10 },
+        { novelId: 2, chapterId: 20, anchor: null, openedAt: 20 },
+      ],
+    });
+  });
+
   it("syncs current-mode state to Rust and coordinates busy chapter writes with snapshot IPC", async () => {
     const calls: Array<{ command: string; args: unknown }> = [];
     let releaseExport!: () => void;

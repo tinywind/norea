@@ -54,10 +54,73 @@ pub const USER_CHAPTER_SELECT: &str = "\
 SELECT c.id, c.novel_id AS novelId, n.plugin_id AS pluginId, n.source_novel_id AS sourceNovelId, \
   n.path AS novelPath, n.name, c.path AS chapterPath, c.name AS chapterName, \
   c.progress, c.unread, c.read_at AS readAt, c.bookmark, \
-  (SELECT json_extract(entry.value, '$.id') \
-     FROM novel_chapter_composition comp, json_each(comp.payload, '$.entries') entry \
-     WHERE comp.novel_id = n.id AND json_extract(entry.value, '$.path') = c.path LIMIT 1) AS compositionEntryId \
+  NULL AS compositionEntryId \
 FROM chapter c JOIN novel n ON n.id = c.novel_id";
+
+pub async fn populate_user_chapter_composition_ids_in_tx(
+    conn: &mut SqliteConnection,
+    rows: &mut [UserChapterRow],
+) -> Result<(), String> {
+    let composed_novel_ids: Vec<i64> = rows
+        .iter()
+        .filter(|r| {
+            r.chapter_path.starts_with("norea-composed:")
+                || r.chapter_path.starts_with("norea-source:")
+        })
+        .map(|r| r.novel_id)
+        .collect::<HashSet<_>>()
+        .into_iter()
+        .collect();
+    if composed_novel_ids.is_empty() {
+        return Ok(());
+    }
+    let mut entry_ids: HashMap<(i64, String), String> = HashMap::new();
+    for chunk in composed_novel_ids.chunks(400) {
+        let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
+        let sql = format!(
+            "SELECT novel_id, payload FROM novel_chapter_composition WHERE novel_id IN ({})",
+            placeholders.join(",")
+        );
+        let mut q = sqlx::query(&sql);
+        for id in chunk {
+            q = q.bind(*id);
+        }
+        let comp_rows = q
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: load chapter compositions: {err}"))?;
+        for r in comp_rows {
+            let novel_id: i64 = r.get("novel_id");
+            let payload_str: String = r.get("payload");
+            let raw_val: JsonValue = serde_json::from_str(&payload_str)
+                .map_err(|err| format!("db user state: parse chapter composition JSON: {err}"))?;
+            let Some(entries) = raw_val.get("entries").and_then(JsonValue::as_array) else {
+                continue;
+            };
+            for entry in entries {
+                let Some(path) = entry.get("path").and_then(JsonValue::as_str) else {
+                    continue;
+                };
+                let Some(id) = entry.get("id").and_then(JsonValue::as_str) else {
+                    continue;
+                };
+                entry_ids
+                    .entry((novel_id, path.to_string()))
+                    .or_insert_with(|| id.to_string());
+            }
+        }
+    }
+    for row in rows {
+        if row.chapter_path.starts_with("norea-composed:")
+            || row.chapter_path.starts_with("norea-source:")
+        {
+            if let Some(entry_id) = entry_ids.get(&(row.novel_id, row.chapter_path.clone())) {
+                row.composition_entry_id = Some(entry_id.clone());
+            }
+        }
+    }
+    Ok(())
+}
 
 pub fn map_user_chapter_row(row: &sqlx::sqlite::SqliteRow) -> UserChapterRow {
     UserChapterRow {
@@ -410,6 +473,7 @@ pub async fn load_user_chapter_rows_by_ids_in_tx(
             .map_err(|err| format!("db user state: load chapters by ids: {err}"))?;
         out.extend(rows.iter().map(map_user_chapter_row));
     }
+    populate_user_chapter_composition_ids_in_tx(conn, &mut out).await?;
     Ok(out)
 }
 
@@ -554,7 +618,8 @@ pub async fn record_novel_chapters_in_tx(
                     .fetch_all(&mut *conn)
                     .await
                     .map_err(|err| format!("db user state: load novel chapters: {err}"))?;
-                let mapped: Vec<UserChapterRow> = rows.iter().map(map_user_chapter_row).collect();
+                let mut mapped: Vec<UserChapterRow> = rows.iter().map(map_user_chapter_row).collect();
+                populate_user_chapter_composition_ids_in_tx(conn, &mut mapped).await?;
                 record_chapter_rows_in_tx(conn, ctx, &mapped, "reading", false).await?;
             }
             Ok(())
@@ -564,7 +629,8 @@ pub async fn record_novel_chapters_in_tx(
                 .fetch_all(&mut *conn)
                 .await
                 .map_err(|err| format!("db user state: load all chapters: {err}"))?;
-            let mapped: Vec<UserChapterRow> = rows.iter().map(map_user_chapter_row).collect();
+            let mut mapped: Vec<UserChapterRow> = rows.iter().map(map_user_chapter_row).collect();
+            populate_user_chapter_composition_ids_in_tx(conn, &mut mapped).await?;
             record_chapter_rows_in_tx(conn, ctx, &mapped, "reading", false).await
         }
     }
@@ -1065,7 +1131,8 @@ pub async fn seed_user_state_in_tx(
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db user state: seed load chapters: {err}"))?;
-    let chapters: Vec<UserChapterRow> = ch_rows.iter().map(map_user_chapter_row).collect();
+    let mut chapters: Vec<UserChapterRow> = ch_rows.iter().map(map_user_chapter_row).collect();
+    populate_user_chapter_composition_ids_in_tx(conn, &mut chapters).await?;
 
     let private_keys: HashSet<String> =
         sqlx::query_scalar::<_, String>("SELECT entity_key FROM user_state_private")
@@ -1159,9 +1226,10 @@ pub async fn record_public_novel_reading_in_tx(
             .fetch_all(&mut *conn)
             .await
             .map_err(|err| format!("db user state: load public novel chapters: {err}"))?;
-        let mut entries = Vec::with_capacity(rows.len());
-        for raw_row in rows {
-            let row = map_user_chapter_row(&raw_row);
+        let mut chapters: Vec<UserChapterRow> = rows.iter().map(map_user_chapter_row).collect();
+        populate_user_chapter_composition_ids_in_tx(conn, &mut chapters).await?;
+        let mut entries = Vec::with_capacity(chapters.len());
+        for row in chapters {
             let entity = json!({
                 "kind": "reading",
                 "work": chapter_work_json(&row),
