@@ -59,10 +59,34 @@ function categoryTabsHarness() {
   const harness = mountBackNavigationHarness();
   const scrollBy = vi.fn();
   const scrollIntoView = vi.fn();
+  let wheelListener: ((event: WheelEvent) => void) | undefined;
+  let wheelOptions: boolean | AddEventListenerOptions | undefined;
+  const addEventListener = vi.fn(
+    (type: string, listener: EventListenerOrEventListenerObject, options?: boolean | AddEventListenerOptions) => {
+      if (type === "wheel" && typeof listener === "function") {
+        wheelListener = listener as (event: WheelEvent) => void;
+        wheelOptions = options;
+      }
+    },
+  );
+  const removeEventListener = vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+    if (type === "wheel" && listener === wheelListener) {
+      wheelListener = undefined;
+    }
+  });
   let bounds = { left: 280, right: 400 };
+  let scrollWidth = 480;
   const tab = { getBoundingClientRect: () => bounds, scrollIntoView } as unknown as HTMLButtonElement;
   const strip = {
-    clientLeft: 0, clientWidth: 160, getBoundingClientRect: () => ({ left: 100 }), scrollBy,
+    addEventListener,
+    clientLeft: 0,
+    clientWidth: 160,
+    getBoundingClientRect: () => ({ left: 100 }),
+    removeEventListener,
+    scrollBy,
+    get scrollWidth() {
+      return scrollWidth;
+    },
   };
   let resize: (() => void) | undefined;
   vi.stubGlobal("ResizeObserver", class {
@@ -81,10 +105,29 @@ function categoryTabsHarness() {
   }
   const buttons = () => collectElements(tree).filter((element) => "aria-pressed" in element.props);
   return {
-    onSelect, scrollBy, scrollIntoView,
+    addEventListener,
+    getWheelListener: () => wheelListener,
+    getWheelOptions: () => wheelOptions,
+    onSelect,
+    removeEventListener,
+    scrollBy,
+    scrollIntoView,
     render: (activeId: number | null, values = entries) => harness.render(<Probe activeId={activeId} values={values} />),
     resize: () => resize?.(),
     setBounds: (left: number, right: number) => { bounds = { left, right }; },
+    setScrollWidth: (width: number) => { scrollWidth = width; },
+    wheel: (init: Partial<WheelEvent>) => {
+      const preventDefault = vi.fn();
+      wheelListener?.({
+        ctrlKey: false,
+        deltaMode: 0,
+        deltaX: 0,
+        deltaY: 0,
+        preventDefault,
+        ...init,
+      } as unknown as WheelEvent);
+      return preventDefault;
+    },
     focusFirst: () => (buttons()[0]!.props.onFocus as (event: { currentTarget: HTMLButtonElement }) => void)({ currentTarget: tab }),
     selectLast: () => (buttons().at(-1)!.props.onClick as () => void)(),
     unmount: harness.unmount,
@@ -131,6 +174,61 @@ it("reveals a restored last category after its entries load and preserves its se
 
     harness.scrollBy.mockClear();
     await harness.render(15, manyEntries.map((entry) => ({ ...entry, count: entry.count + 1 })));
+    expect(harness.scrollBy).not.toHaveBeenCalled();
+  } finally {
+    await harness.unmount();
+  }
+});
+
+it("scrolls category tabs horizontally on vertical mouse wheel in pixel, line, and page modes", async () => {
+  const harness = categoryTabsHarness();
+  try {
+    await harness.render(null);
+    const registeredListener = harness.getWheelListener();
+    expect(registeredListener).toBeTypeOf("function");
+    expect(harness.addEventListener).toHaveBeenCalledWith("wheel", registeredListener, { passive: false });
+    expect(harness.getWheelOptions()).toEqual({ passive: false });
+
+    harness.scrollBy.mockClear();
+    const pixelPreventDefault = harness.wheel({ deltaMode: 0, deltaX: 0, deltaY: 96 });
+    expect(pixelPreventDefault).toHaveBeenCalledOnce();
+    expect(harness.scrollBy).toHaveBeenCalledExactlyOnceWith({ left: 96 });
+
+    harness.scrollBy.mockClear();
+    const linePreventDefault = harness.wheel({ deltaMode: 1, deltaX: 0, deltaY: 3 });
+    expect(linePreventDefault).toHaveBeenCalledOnce();
+    expect(harness.scrollBy).toHaveBeenCalledExactlyOnceWith({ left: 48 });
+
+    harness.scrollBy.mockClear();
+    const pagePreventDefault = harness.wheel({ deltaMode: 2, deltaX: 0, deltaY: 1 });
+    expect(pagePreventDefault).toHaveBeenCalledOnce();
+    expect(harness.scrollBy).toHaveBeenCalledExactlyOnceWith({ left: 160 });
+
+    await harness.unmount();
+    expect(harness.removeEventListener).toHaveBeenCalledWith("wheel", registeredListener);
+  } catch (error) {
+    await harness.unmount();
+    throw error;
+  }
+});
+
+it("leaves horizontal wheel, ctrl+wheel zoom, and non-overflowing category strips untouched", async () => {
+  const harness = categoryTabsHarness();
+  try {
+    await harness.render(null);
+    harness.scrollBy.mockClear();
+
+    const horizontalPreventDefault = harness.wheel({ deltaX: 24, deltaY: 96 });
+    expect(horizontalPreventDefault).not.toHaveBeenCalled();
+    expect(harness.scrollBy).not.toHaveBeenCalled();
+
+    const zoomPreventDefault = harness.wheel({ ctrlKey: true, deltaY: 96 });
+    expect(zoomPreventDefault).not.toHaveBeenCalled();
+    expect(harness.scrollBy).not.toHaveBeenCalled();
+
+    harness.setScrollWidth(160);
+    const noOverflowPreventDefault = harness.wheel({ deltaY: 96 });
+    expect(noOverflowPreventDefault).not.toHaveBeenCalled();
     expect(harness.scrollBy).not.toHaveBeenCalled();
   } finally {
     await harness.unmount();

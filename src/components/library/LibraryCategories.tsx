@@ -49,6 +49,23 @@ interface CategoryTabsProps {
   onSelect: (id: number | null) => void;
 }
 
+const WHEEL_DELTA_LINE = 1;
+const WHEEL_DELTA_PAGE = 2;
+const WHEEL_LINE_PIXELS = 16;
+
+function normalizeCategoryTabWheelDelta(
+  strip: HTMLDivElement,
+  event: Pick<WheelEvent, "deltaMode" | "deltaY">,
+): number {
+  if (event.deltaMode === WHEEL_DELTA_LINE) {
+    return event.deltaY * WHEEL_LINE_PIXELS;
+  }
+  if (event.deltaMode === WHEEL_DELTA_PAGE) {
+    return event.deltaY * strip.clientWidth;
+  }
+  return event.deltaY;
+}
+
 /** Reveals a tab without moving the page or any other scroll container. */
 function revealCategoryTab(strip: HTMLDivElement | null, tab: HTMLButtonElement | null): void {
   if (!strip || !tab || strip.clientWidth === 0) return;
@@ -77,6 +94,21 @@ export function CategoryTabs({ activeId, entries, onSelect }: CategoryTabsProps)
     observer.observe(strip);
     return () => observer.disconnect();
   }, [activeId, activeIndex]);
+
+  useEffect(() => {
+    const strip = stripRef.current;
+    if (!strip || typeof strip.addEventListener !== "function") return;
+    const handleWheel = (event: WheelEvent) => {
+      if (event.ctrlKey || event.deltaX !== 0 || event.deltaY === 0) return;
+      if (!(strip.scrollWidth > strip.clientWidth)) return;
+      const delta = normalizeCategoryTabWheelDelta(strip, event);
+      if (delta === 0) return;
+      event.preventDefault();
+      strip.scrollBy({ left: delta });
+    };
+    strip.addEventListener("wheel", handleWheel, { passive: false });
+    return () => strip.removeEventListener("wheel", handleWheel);
+  }, []);
 
   return (
     <div
