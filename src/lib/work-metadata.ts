@@ -247,8 +247,11 @@ export async function writeStoredNovelCover(directory: string, metadata: NovelMe
   const cover = await workMetadataOperation({ operation: "write", path: `${directory}/${metadata.cover.fileName}`, body: bytesToBase64(bytes) });
   const changed = Boolean(cover.changed);
   if (notifyChanges && changed) {
-    const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
-    invalidateAllNovelCoverSources();
+    const { notifyNovelCoverChangedByIdentity } = await import("./novel-cover-storage");
+    notifyNovelCoverChangedByIdentity({
+      pluginId: metadata.identity.pluginId,
+      path: metadata.identity.novelPath,
+    });
     notifyWorkMetadataChanges(metadata.identity);
   }
   return changed;
@@ -337,8 +340,16 @@ async function installStoredNovelMetadataInWorkOperation(input: NovelMetadataV1,
 export async function removeStoredNovelCover(directory: string, cover: NovelMetadataV1["cover"], notifyChanges = true, identity?: WorkMetadataChange): Promise<void> {
   if (cover) await workMetadataOperation({ operation: "remove", path: `${directory}/${cover.fileName}` });
   if (notifyChanges) {
-    const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
-    invalidateAllNovelCoverSources();
+    if (identity) {
+      const { notifyNovelCoverChangedByIdentity } = await import("./novel-cover-storage");
+      notifyNovelCoverChangedByIdentity({
+        pluginId: identity.pluginId,
+        path: identity.novelPath,
+      });
+    } else {
+      const { invalidateAllNovelCoverSources } = await import("./novel-cover-storage");
+      invalidateAllNovelCoverSources();
+    }
     notifyWorkMetadataChanges(identity);
   }
 }

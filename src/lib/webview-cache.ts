@@ -1,5 +1,9 @@
 import { invoke } from "@tauri-apps/api/core";
 import { androidScraperClearCache } from "./android-scraper";
+import {
+  clearPersistentSourceCoverCache,
+  invalidateAllNovelCoverSources,
+} from "./novel-cover-storage";
 import { isAndroidRuntime, isTauriRuntime } from "./tauri-runtime";
 
 export async function clearWebViewCache(): Promise<void> {
@@ -8,7 +12,9 @@ export async function clearWebViewCache(): Promise<void> {
   }
   if (isAndroidRuntime()) {
     await androidScraperClearCache();
-    return;
+  } else {
+    await invoke("scraper_clear_cache");
   }
-  await invoke("scraper_clear_cache");
+  await clearPersistentSourceCoverCache();
+  invalidateAllNovelCoverSources();
 }

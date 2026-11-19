@@ -125,4 +125,56 @@ class AndroidScraperVpnSessionTest {
     session.prepare("source", "https://source.test/", { it(Result.success(Unit)) }) { bypass = it.getOrThrow() }
     assertEquals(true, bypass)
   }
+
+  @Test
+  fun siteBrowserTransitionsResetVpnSessionOnlyOnRouteChangeOrPendingCookieClear() {
+    assertFalse(
+      shouldResetSiteBrowserVpnSession(
+        routeKnown = false,
+        previousIdentity = null,
+        nextIdentity = "direct",
+        clearingCookies = false,
+      ),
+    )
+    assertFalse(
+      shouldResetSiteBrowserVpnSession(
+        routeKnown = true,
+        previousIdentity = "direct",
+        nextIdentity = "direct",
+        clearingCookies = false,
+      ),
+    )
+    assertFalse(
+      shouldResetSiteBrowserVpnSession(
+        routeKnown = true,
+        previousIdentity = "a".repeat(64),
+        nextIdentity = "a".repeat(64),
+        clearingCookies = false,
+      ),
+    )
+    assertTrue(
+      shouldResetSiteBrowserVpnSession(
+        routeKnown = true,
+        previousIdentity = "direct",
+        nextIdentity = "a".repeat(64),
+        clearingCookies = false,
+      ),
+    )
+    assertTrue(
+      shouldResetSiteBrowserVpnSession(
+        routeKnown = true,
+        previousIdentity = "a".repeat(64),
+        nextIdentity = "b".repeat(64),
+        clearingCookies = false,
+      ),
+    )
+    assertTrue(
+      shouldResetSiteBrowserVpnSession(
+        routeKnown = true,
+        previousIdentity = "direct",
+        nextIdentity = "direct",
+        clearingCookies = true,
+      ),
+    )
+  }
 }

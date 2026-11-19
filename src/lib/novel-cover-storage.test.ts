@@ -8,8 +8,8 @@ vi.mock("./tauri-runtime", () => ({ isAndroidRuntime: vi.fn(), isTauriRuntime: v
 
 import { pluginMediaFetch } from "./http";
 import {
-  clearNovelCoverDisplayCache, acquireCachedNovelCoverSource, getNovelCoverSnapshot,
-  invalidateAllNovelCoverSources, notifyNovelCoverChanged, peekCachedNovelCoverSrc,
+  clearNovelCoverDisplayCache, acquireCachedNovelCoverSource, clearPersistentSourceCoverCache, getNovelCoverSnapshot,
+  invalidateAllNovelCoverSources, notifyNovelCoverChanged, notifyNovelCoverChangedByIdentity, peekCachedNovelCoverSrc,
   persistCachedNovelCoverSource,
   resolveCachedNovelCoverSrc, resolveNovelCoverDisplaySource, resolveStoredNovelCoverSrc,
   saveNovelCoverFromSource, subscribeNovelCoverChanges,
@@ -935,4 +935,174 @@ it("changes only the affected stored cover URL when its bytes change without a n
   notifyNovelCoverChanged(current.id);
   expect(await resolveStoredNovelCoverSrc(current)).not.toBe(before);
   expect(await resolveStoredNovelCoverSrc(other)).toBe(otherBefore);
+});
+
+describe("source cover caching across invalidations and restarts", () => {
+  function createMemoryCacheStorage(): CacheStorage {
+    const buckets = new Map<string, Map<string, Response>>();
+    const toKey = (request: RequestInfo | URL) =>
+      typeof request === "string"
+        ? request
+        : request instanceof URL
+          ? request.href
+          : request.url;
+    return {
+      async open(cacheName: string): Promise<Cache> {
+        let store = buckets.get(cacheName);
+        if (!store) {
+          store = new Map();
+          buckets.set(cacheName, store);
+        }
+        return {
+          async match(request: RequestInfo | URL) {
+            return store!.get(toKey(request))?.clone();
+          },
+          async put(request: RequestInfo | URL, response: Response) {
+            store!.set(toKey(request), response.clone());
+          },
+          async delete(request: RequestInfo | URL) {
+            return store!.delete(toKey(request));
+          },
+          async keys() {
+            return [...store!.keys()].map((url) => new Request(url));
+          },
+        } as unknown as Cache;
+      },
+      async delete(cacheName: string) {
+        return buckets.delete(cacheName);
+      },
+      async has(cacheName: string) {
+        return buckets.has(cacheName);
+      },
+      async keys() {
+        return [...buckets.keys()];
+      },
+      async match() {
+        return undefined;
+      },
+    } as unknown as CacheStorage;
+  }
+
+  it("clears only the matching browse cover when clearNovelCoverDisplayCache receives id 0", async () => {
+    const plugin = makePlugin();
+    const options = { allowSourceFallback: true, plugin };
+    const first = { ...novel, id: 0, path: "/first", cover: "/first.jpg" };
+    const second = { ...novel, id: 0, path: "/second", cover: "/second.jpg" };
+
+    const firstSrc = await resolveCachedNovelCoverSrc(first, options);
+    const secondSrc = await resolveCachedNovelCoverSrc(second, options);
+    expect(firstSrc).toEqual(expect.any(String));
+    expect(secondSrc).toEqual(expect.any(String));
+
+    clearNovelCoverDisplayCache(0, { pluginId: first.pluginId, path: first.path });
+
+    expect(peekCachedNovelCoverSrc(first, options)).toBeUndefined();
+    expect(peekCachedNovelCoverSrc(second, options)).toBe(secondSrc);
+    expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not notify or advance unrelated id-0 browse covers when another work changes", () => {
+    const first = { pluginId: "demo", path: "/first" };
+    const second = { pluginId: "demo", path: "/second" };
+    const firstListener = vi.fn();
+    const secondListener = vi.fn();
+    const unsubFirst = subscribeNovelCoverChanges(firstListener, { novelId: 0, ...first });
+    const unsubSecond = subscribeNovelCoverChanges(secondListener, { novelId: 0, ...second });
+    try {
+      const firstBefore = getNovelCoverSnapshot(0, first);
+      const secondBefore = getNovelCoverSnapshot(0, second);
+      notifyNovelCoverChanged(99, first);
+      expect(firstListener).toHaveBeenCalledExactlyOnceWith(99);
+      expect(secondListener).not.toHaveBeenCalled();
+      expect(getNovelCoverSnapshot(0, first)).toBeGreaterThan(firstBefore);
+      expect(getNovelCoverSnapshot(0, second)).toBe(secondBefore);
+    } finally {
+      unsubFirst();
+      unsubSecond();
+    }
+  });
+
+  it("invalidates only the matching work when notifyNovelCoverChangedByIdentity runs", async () => {
+    const plugin = makePlugin();
+    const options = { allowSourceFallback: true, plugin };
+    const target = { ...novel, id: 0, path: "/target", cover: "/target.jpg" };
+    const sibling = { ...novel, id: 0, path: "/sibling", cover: "/sibling.jpg" };
+    await resolveCachedNovelCoverSrc(target, options);
+    const siblingSrc = await resolveCachedNovelCoverSrc(sibling, options);
+    const targetLibrarySnapshot = getNovelCoverSnapshot(12, target);
+    const siblingLibrarySnapshot = getNovelCoverSnapshot(13, sibling);
+
+    notifyNovelCoverChangedByIdentity({ pluginId: target.pluginId, path: target.path });
+
+    expect(peekCachedNovelCoverSrc(target, options)).toBeUndefined();
+    expect(peekCachedNovelCoverSrc(sibling, options)).toBe(siblingSrc);
+    expect(getNovelCoverSnapshot(12, target)).toBeGreaterThan(targetLibrarySnapshot);
+    expect(getNovelCoverSnapshot(13, sibling)).toBe(siblingLibrarySnapshot);
+  });
+
+  it("reuses persisted browse covers across in-memory cache clears and non-refresh saves", async () => {
+    vi.stubGlobal("caches", createMemoryCacheStorage());
+    try {
+      const plugin = makePlugin();
+      const options = { allowSourceFallback: true, plugin };
+      const displayNovel = { ...novel, id: 0, path: "/persisted", cover: "/persisted.jpg" };
+
+      const firstSrc = await resolveCachedNovelCoverSrc(displayNovel, options);
+      expect(firstSrc).toMatch(/^blob:/);
+      expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
+
+      // Simulate leaving and restarting the app by wiping in-memory display cache.
+      clearNovelCoverDisplayCache();
+      expect(peekCachedNovelCoverSrc(displayNovel, options)).toBeUndefined();
+
+      const secondSrc = await resolveCachedNovelCoverSrc(displayNovel, options);
+      expect(secondSrc).toMatch(/^blob:/);
+      expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
+
+      // Adding the browsed novel to the library reuses the cached cover without another fetch.
+      await saveNovelCoverFromSource(plugin, { ...novel, path: "/persisted" }, "/persisted.jpg");
+      expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
+      expect(persistNovelCover).toHaveBeenCalledOnce();
+
+      // Explicit refresh still bypasses the persistent cover cache and refreshes it.
+      pluginMediaFetchMock.mockResolvedValueOnce(
+        new Response(new Uint8Array([9, 8, 7]), { headers: { "content-type": "image/png" }, status: 200 }),
+      );
+      await saveNovelCoverFromSource(plugin, { ...novel, path: "/persisted" }, "/persisted.jpg", { refresh: true });
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("clears persisted covers for one source or all sources", async () => {
+    vi.stubGlobal("caches", createMemoryCacheStorage());
+    try {
+      const firstPlugin = makePlugin({ id: "first" });
+      const secondPlugin = makePlugin({ id: "second" });
+      const firstNovel = { ...novel, id: 0, pluginId: "first", path: "/a", cover: "/a.jpg" };
+      const secondNovel = { ...novel, id: 0, pluginId: "second", path: "/b", cover: "/b.jpg" };
+
+      await resolveCachedNovelCoverSrc(firstNovel, { allowSourceFallback: true, plugin: firstPlugin });
+      await resolveCachedNovelCoverSrc(secondNovel, { allowSourceFallback: true, plugin: secondPlugin });
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+
+      clearNovelCoverDisplayCache();
+      await clearPersistentSourceCoverCache("first");
+
+      await resolveCachedNovelCoverSrc(secondNovel, { allowSourceFallback: true, plugin: secondPlugin });
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+
+      await resolveCachedNovelCoverSrc(firstNovel, { allowSourceFallback: true, plugin: firstPlugin });
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(3);
+
+      clearNovelCoverDisplayCache();
+      await clearPersistentSourceCoverCache();
+
+      await resolveCachedNovelCoverSrc(secondNovel, { allowSourceFallback: true, plugin: secondPlugin });
+      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(4);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
 });

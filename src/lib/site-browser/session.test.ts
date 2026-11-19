@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { androidScraperResetSiteData } from "../android-scraper";
+import { clearPersistentSourceCoverCache } from "../novel-cover-storage";
 import { isAndroidRuntime } from "../tauri-runtime";
 import { canResetSourceSiteData, canRotateBrowserFingerprint, resetSourceSiteData } from "./session";
 
 vi.mock("../android-scraper", () => ({ androidScraperResetSiteData: vi.fn() }));
+vi.mock("../novel-cover-storage", () => ({ clearPersistentSourceCoverCache: vi.fn(async () => undefined) }));
 vi.mock("../tauri-runtime", () => ({ isAndroidRuntime: vi.fn() }));
 
 describe("shared site browser session", () => {
@@ -38,6 +40,7 @@ describe("shared site browser session", () => {
     finish();
     await resetting;
     expect(completed).toBe(true);
+    expect(clearPersistentSourceCoverCache).toHaveBeenCalledExactlyOnceWith("newtoki-novel");
   });
 
   it.each(["file:///secret", "javascript:alert(1)", "https://user:password@example.test/", "not a URL"])(

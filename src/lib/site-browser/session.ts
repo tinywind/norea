@@ -1,4 +1,5 @@
 import { androidScraperResetSiteData } from "../android-scraper";
+import { clearPersistentSourceCoverCache } from "../novel-cover-storage";
 import { isAndroidRuntime } from "../tauri-runtime";
 
 /** Reports the installed WebView provider's native, site-scoped deletion support. */
@@ -35,4 +36,5 @@ export async function resetSourceSiteData(sourceId: string, url: string): Promis
     throw new Error("This WebView provider does not support site data reset.");
   }
   await androidScraperResetSiteData(parsed.origin, sourceId);
+  await clearPersistentSourceCoverCache(sourceId);
 }

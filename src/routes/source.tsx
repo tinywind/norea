@@ -283,7 +283,7 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     pluginId,
   ].join("|");
 
-  const lastKey = useRef("");
+  const lastKey = useRef(listingScopeKey);
   useEffect(() => {
     if (listingScopeKey !== lastKey.current) {
       lastKey.current = listingScopeKey;
@@ -390,15 +390,29 @@ export function SourcePage({ pluginId, query }: SourcePageProps) {
     });
   }, [listing.data, listingScopeKey, page]);
 
+  const visiblePages = useMemo<ListingPage[]>(() => {
+    if (loadedPages.length > 0 && loadedPages[0]?.scopeKey === listingScopeKey) {
+      return loadedPages;
+    }
+    if (
+      listing.data &&
+      listing.data.page === 1 &&
+      listing.data.scopeKey === listingScopeKey
+    ) {
+      return [listing.data];
+    }
+    return [];
+  }, [listing.data, listingScopeKey, loadedPages]);
+
   const accumulatedNovels = useMemo<AccumulatedNovel[]>(
     () =>
-      loadedPages.flatMap((entry) =>
+      visiblePages.flatMap((entry) =>
         entry.items.map((item, index) => ({
           item,
           key: `${entry.scopeKey}:${entry.page}:${index}:${item.path}`,
         })),
       ),
-    [loadedPages],
+    [visiblePages],
   );
 
   const open = useMutation({

@@ -133,6 +133,32 @@ describe("SourcePage", () => {
     expect(byType(elements, BlockingLoadingOverlay)).toHaveLength(0);
   });
 
+  it("renders cached first-page results immediately on the first render without a skeleton flash", async () => {
+    mocks.plugins = [plugin()];
+    mocks.listing = {
+      data: { items: [{ name: "Cached Book", path: "/cached" }], page: 1, scopeKey: "filters||{}|demo" },
+      error: null,
+      isFetching: false,
+      refetch: vi.fn(),
+    };
+    const renders: ReactNode[] = [];
+    function Probe() {
+      const rendered = SourcePage({ pluginId: "demo", query: "" });
+      renders.push(rendered);
+      return null;
+    }
+    harness = mountBackNavigationHarness();
+    await harness.render(<Probe />);
+    const firstRenderElements = collectElements(renders[0]);
+    expect(byType(firstRenderElements, CoverGridSkeleton)).toHaveLength(0);
+    expect(
+      firstRenderElements.some(
+        (element) =>
+          (element.props.item as { name?: string } | undefined)?.name === "Cached Book",
+      ),
+    ).toBe(true);
+  });
+
   it("offers Retry and Open site when the catalog fails", async () => {
     mocks.listing = { data: undefined, error: new Error("blocked"), isFetching: false, refetch: vi.fn() };
     const state = byType(await mountPage(), StateView)[0]!;

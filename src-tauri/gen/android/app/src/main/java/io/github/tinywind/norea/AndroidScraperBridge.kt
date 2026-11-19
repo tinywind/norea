@@ -296,7 +296,7 @@ class AndroidScraperBridge(
     state.busy || state.activeAction != null || !state.queue.isEmpty() || state.concurrentFetches.isNotEmpty()
   }
 
-  internal fun retireSiteDocuments() {
+  internal fun retireSiteDocuments(resetVpnSession: Boolean = true) {
     val wasVisible = browserVisible
     browserVisible = false
     queues.values.toList().forEach { state ->
@@ -324,7 +324,7 @@ class AndroidScraperBridge(
     }
     vpnFreshFetches.clear()
     vpnFreshNavigations.clear()
-    vpnSession.reset()
+    if (resetVpnSession) vpnSession.reset()
     if (wasVisible) emitSiteBrowserHidden()
   }
 

@@ -34,6 +34,16 @@ internal fun siteBrowserProfileHash(value: Any?): String? {
   return value
 }
 
+internal fun shouldResetSiteBrowserVpnSession(
+  routeKnown: Boolean,
+  previousIdentity: String?,
+  nextIdentity: String,
+  clearingCookies: Boolean,
+): Boolean {
+  val changed = routeKnown && previousIdentity != nextIdentity
+  return changed || clearingCookies
+}
+
 /**
  * Serializes the browser's network route and data mutations. VPN tunnels may stay connected,
  * but only one owner may use the shared browser profile at a time.
@@ -149,7 +159,7 @@ internal object AndroidSiteBrowserOwner {
             completion.countDown()
           }
         } else {
-          quiesce { result ->
+          quiesce(resetVpnSession = false) { result ->
             failure = result.exceptionOrNull()
             completion.countDown()
           }
@@ -194,7 +204,7 @@ internal object AndroidSiteBrowserOwner {
       foregroundDeferred = true
       // Releasing a worker is not a visit to the foreground route. This keeps
       // same-profile reconnects from becoming A -> direct -> A cookie resets.
-      quiesce { result -> releaseCallbacks.remove(owner)?.forEach { it(result) } }
+      quiesce(resetVpnSession = false) { result -> releaseCallbacks.remove(owner)?.forEach { it(result) } }
     }
     if (transitioning) deferredReleases.addLast(release) else release()
   }
@@ -229,7 +239,7 @@ internal object AndroidSiteBrowserOwner {
     if (exclusiveOwner != null) { done(Result.success(Unit)); return }
     // This is an explicit foreground configuration/reconnect boundary.
     foregroundDeferred = false
-    quiesce(done)
+    quiesce(resetVpnSession = true, done = done)
   }
 
   fun canResetSiteData(): Boolean =
@@ -250,7 +260,7 @@ internal object AndroidSiteBrowserOwner {
       check(bridges.keys.none { it.hasActiveSiteWork() }) { "Pause the active site browser task before resetting site data." }
     }.onFailure { done(Result.failure(it)); return }
     val previous = route
-    quiesce { settled ->
+    quiesce(resetVpnSession = true) { settled ->
       if (settled.isFailure) { done(settled); return@quiesce }
       val epoch = ++transitionEpoch
       transitioning = true
@@ -287,12 +297,12 @@ internal object AndroidSiteBrowserOwner {
     }
   }
 
-  private fun quiesce(done: (Result<Unit>) -> Unit) {
+  private fun quiesce(resetVpnSession: Boolean, done: (Result<Unit>) -> Unit) {
     requireMainThread()
     if (transitioning) { done(Result.failure(IllegalStateException("A site browser transition is already running."))); return }
     val epoch = ++transitionEpoch
     transitioning = true
-    runCatching { blockAndRetire() }.onFailure {
+    runCatching { blockAndRetire(resetVpnSession) }.onFailure {
       transitioning = false
       done(Result.failure(it))
       finishDeferredReleases()
@@ -324,8 +334,17 @@ internal object AndroidSiteBrowserOwner {
     transitioning = true
     val settings = preferences()
     val identity = next.hash ?: SITE_BROWSER_DIRECT_ROUTE
-    val changed = settings.getBoolean("routeKnown", false) && settings.getString("routeHash", null) != identity
-    val clearCookies = changed || settings.getBoolean("clearingCookies", false)
+    val routeKnown = settings.getBoolean("routeKnown", false)
+    val previousIdentity = settings.getString("routeHash", null)
+    val changed = routeKnown && previousIdentity != identity
+    val clearingCookies = settings.getBoolean("clearingCookies", false)
+    val clearCookies = changed || clearingCookies
+    val resetVpnSession = shouldResetSiteBrowserVpnSession(
+      routeKnown = routeKnown,
+      previousIdentity = previousIdentity,
+      nextIdentity = identity,
+      clearingCookies = clearingCookies,
+    )
     val oldPort = route?.port?.takeUnless { it == drainedPort }
     var completed = false
     lateinit var timeout: Runnable
@@ -342,7 +361,7 @@ internal object AndroidSiteBrowserOwner {
     timeout = Runnable { finish(Result.failure(IllegalStateException("Site browser transition timed out."))) }
     handler.postDelayed(timeout, SITE_BROWSER_TRANSITION_TIMEOUT_MS)
     runCatching {
-      blockAndRetire()
+      blockAndRetire(resetVpnSession)
       if (clearCookies) check(settings.edit().putBoolean("clearingCookies", true).commit()) {
         "Could not preserve the pending browser cookie reset."
       }
@@ -403,11 +422,11 @@ internal object AndroidSiteBrowserOwner {
     }
   }
 
-  private fun blockAndRetire() {
+  private fun blockAndRetire(resetVpnSession: Boolean) {
     networkAllowed = false
     setServiceWorkerNetworkBlocked(true)
     views.keys.toList().forEach { view -> runCatching { view.settings.blockNetworkLoads = true; view.stopLoading() } }
-    bridges.keys.toList().forEach { it.retireSiteDocuments() }
+    bridges.keys.toList().forEach { it.retireSiteDocuments(resetVpnSession) }
     // URL-test pages are not scraper bridges.
     views.keys.toList().forEach { view ->
       runCatching { view.stopLoading(); view.destroy() }

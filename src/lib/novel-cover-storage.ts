@@ -4,24 +4,41 @@ import { getPluginBaseUrl } from "./plugins/base-url";
 import type { Plugin } from "./plugins/types";
 import { isTauriRuntime } from "./tauri-runtime";
 import { resolvedNovelStorageDir } from "./chapter-storage-resolution";
-import { coverContentType } from "./work-metadata/schema";
+import { coverContentType, MAX_NOVEL_COVER_BYTES } from "./work-metadata/schema";
 import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
 
 const NOVEL_COVER_BASENAME = "cover";
 const DEFAULT_COVER_EXTENSION = "img";
 const NOREA_MEDIA_SRC_PREFIX = "http://norea-media.localhost/";
+const PERSISTENT_SOURCE_COVER_CACHE_NAME = "norea-source-covers-v1";
+const PERSISTENT_SOURCE_COVER_PATH_PREFIX = "/__norea-source-cover-cache__/v1/";
+const MAX_PERSISTENT_SOURCE_COVERS = 1000;
 // Object URLs pin fetched image bytes, while stored covers are plain URL strings
 // that let remounted cards render without another native lookup.
 const MAX_UNUSED_COVER_OBJECT_URLS = 100;
 const MAX_UNUSED_COVER_URLS = 1000;
 
 type NovelCoverChangeListener = (novelId: number) => void;
+type NovelCoverIdentity = Pick<NovelCoverStorageInput, "pluginId" | "path">;
 
-const novelCoverChangeListeners = new Set<NovelCoverChangeListener>();
+interface NovelCoverChangeSubscription {
+  filter?: {
+    novelId: number;
+    pluginId: string;
+    path: string;
+  };
+  listener: NovelCoverChangeListener;
+}
+
+const novelCoverChangeSubscriptions = new Set<NovelCoverChangeSubscription>();
 const novelCoverSnapshots = new Map<number, number>();
+const novelCoverIdentityOnlySnapshots = new Map<string, number>();
+const novelCoverSourceIdentitySnapshots = new Map<string, number>();
 const novelCoverSaveQueues = new Map<string, NovelCoverSaveQueue>();
 const novelCoverDisplayCache = new Map<string, NovelCoverDisplayCacheEntry>();
 let novelCoverStorageEpoch = 0;
+let novelCoverUnscopedEpoch = 0;
+let persistentCoverTrimPromise: Promise<void> | null = null;
 
 const IMAGE_EXTENSIONS = new Set([
   "avif",
@@ -87,17 +104,41 @@ export interface NovelCoverSaveOptions {
   clearMissing?: boolean;
 }
 
+function novelCoverIdentityKey(identity: NovelCoverIdentity): string {
+  return JSON.stringify([identity.pluginId, identity.path]);
+}
+
 export function subscribeNovelCoverChanges(
   listener: NovelCoverChangeListener,
+  filter?: { novelId: number; pluginId: string; path: string },
 ): () => void {
-  novelCoverChangeListeners.add(listener);
+  const subscription: NovelCoverChangeSubscription = { filter, listener };
+  novelCoverChangeSubscriptions.add(subscription);
   return () => {
-    novelCoverChangeListeners.delete(listener);
+    novelCoverChangeSubscriptions.delete(subscription);
   };
 }
 
-export function getNovelCoverSnapshot(novelId: number): number {
-  return novelCoverStorageEpoch + (novelCoverSnapshots.get(novelId) ?? 0);
+export function getNovelCoverSnapshot(
+  novelId: number,
+  identity?: NovelCoverIdentity,
+): number {
+  if (!identity) {
+    return novelCoverStorageEpoch + (novelCoverSnapshots.get(novelId) ?? 0);
+  }
+  const key = novelCoverIdentityKey(identity);
+  if (novelId > 0) {
+    return (
+      novelCoverStorageEpoch +
+      (novelCoverSnapshots.get(novelId) ?? 0) +
+      (novelCoverIdentityOnlySnapshots.get(key) ?? 0)
+    );
+  }
+  return (
+    novelCoverStorageEpoch +
+    novelCoverUnscopedEpoch +
+    (novelCoverSourceIdentitySnapshots.get(key) ?? 0)
+  );
 }
 
 export function peekCachedNovelCoverSrc(
@@ -158,14 +199,14 @@ function getOrCreateNovelCoverCacheEntry(
   const cacheKey = selectNovelCoverDisplayCacheKey(novel, options);
   const cached = novelCoverDisplayCache.get(cacheKey);
   if (cached) {
-    cached.novelIds.add(novel.id);
+    if (novel.id > 0) cached.novelIds.add(novel.id);
     novelCoverDisplayCache.delete(cacheKey);
     novelCoverDisplayCache.set(cacheKey, cached);
     return cached;
   }
 
   const entry: NovelCoverDisplayCacheEntry = {
-    novelIds: new Set([novel.id]),
+    novelIds: new Set(novel.id > 0 ? [novel.id] : []),
     identity: { pluginId: novel.pluginId, path: novel.path },
     consumers: 0,
     controller: new AbortController(),
@@ -218,9 +259,16 @@ export function clearNovelCoverDisplayCache(
   novelId?: number,
   identity?: Pick<NovelCoverStorageInput, "pluginId" | "path">,
 ): void {
+  const targeted = novelId !== undefined || identity !== undefined;
   for (const [cacheKey, entry] of novelCoverDisplayCache) {
-    const sameIdentity = identity && identity.pluginId === entry.identity.pluginId && identity.path === entry.identity.path;
-    if (novelId !== undefined && !entry.novelIds.has(novelId) && !sameIdentity) continue;
+    const sameNovelId =
+      novelId !== undefined && novelId > 0 && entry.novelIds.has(novelId);
+    const sameIdentity = Boolean(
+      identity &&
+        identity.pluginId === entry.identity.pluginId &&
+        identity.path === entry.identity.path,
+    );
+    if (targeted && !sameNovelId && !sameIdentity) continue;
     novelCoverDisplayCache.delete(cacheKey);
     entry.controller.abort();
     if (entry.resolved) entry.source?.dispose();
@@ -230,8 +278,36 @@ export function clearNovelCoverDisplayCache(
 export function invalidateAllNovelCoverSources(): void {
   clearNovelCoverDisplayCache();
   novelCoverStorageEpoch += 1;
-  for (const listener of novelCoverChangeListeners) {
-    listener(0);
+  notifyNovelCoverSubscriptions(0);
+}
+
+function notifyNovelCoverSubscriptions(
+  changedNovelId: number,
+  changedIdentity?: NovelCoverIdentity,
+): void {
+  for (const { filter, listener } of novelCoverChangeSubscriptions) {
+    if (!filter) {
+      listener(changedNovelId);
+      continue;
+    }
+    const sameIdentity = Boolean(
+      changedIdentity &&
+        changedIdentity.pluginId === filter.pluginId &&
+        changedIdentity.path === filter.path,
+    );
+    if (changedNovelId === 0) {
+      if (!changedIdentity || sameIdentity) listener(0);
+      continue;
+    }
+    if (filter.novelId > 0) {
+      if (filter.novelId === changedNovelId || sameIdentity) {
+        listener(changedNovelId);
+      }
+      continue;
+    }
+    if (!changedIdentity || sameIdentity) {
+      listener(changedNovelId);
+    }
   }
 }
 
@@ -300,6 +376,17 @@ export async function resolveNovelCoverDisplaySource(
   }
   if (!sourceUrl) return null;
 
+  const cached = await readPersistentSourceCover(plugin.id, sourceUrl);
+  throwIfCoverRequestAborted(signal);
+  if (cached) {
+    return createObjectUrlCoverDisplaySource(
+      plugin,
+      sourceUrl,
+      cached.body,
+      cached.contentType,
+    );
+  }
+
   const baseUrl = safePluginBaseUrl(plugin);
   const response = await pluginMediaFetch(sourceUrl, {
     ...(plugin.imageRequestInit ?? {}),
@@ -327,8 +414,18 @@ export async function resolveNovelCoverDisplaySource(
   if (body.size === 0) {
     throw new Error("novel cover: fetched cover image is empty");
   }
+  await writePersistentSourceCover(plugin.id, sourceUrl, body, contentType);
   throwIfCoverRequestAborted(signal);
 
+  return createObjectUrlCoverDisplaySource(plugin, sourceUrl, body, contentType);
+}
+
+function createObjectUrlCoverDisplaySource(
+  plugin: Plugin,
+  sourceUrl: string,
+  body: Blob,
+  contentType: string | null,
+): NovelCoverDisplaySource {
   const src = URL.createObjectURL(body);
   let disposed = false;
   return {
@@ -337,7 +434,11 @@ export async function resolveNovelCoverDisplaySource(
       disposed = true;
       URL.revokeObjectURL(src);
     },
-    persist: (storedNovel) => enqueueNovelCoverSave(plugin, storedNovel, sourceUrl, false, { body, contentType }),
+    persist: (storedNovel) =>
+      enqueueNovelCoverSave(plugin, storedNovel, sourceUrl, false, {
+        body,
+        contentType,
+      }),
     src,
   };
 }
@@ -478,6 +579,10 @@ async function fetchNovelCoverForStorage(
   sourceUrl: string,
   refresh: boolean,
 ): Promise<{ body: Blob; contentType: string | null }> {
+  if (!refresh) {
+    const cached = await readPersistentSourceCover(plugin.id, sourceUrl);
+    if (cached) return cached;
+  }
   const baseUrl = safePluginBaseUrl(plugin);
   const response = await pluginMediaFetch(sourceUrl, {
     ...(plugin.imageRequestInit ?? {}),
@@ -504,6 +609,7 @@ async function fetchNovelCoverForStorage(
   if (body.size === 0) {
     throw new Error("novel cover: fetched cover image is empty");
   }
+  await writePersistentSourceCover(plugin.id, sourceUrl, body, contentType);
   return { body, contentType };
 }
 
@@ -517,13 +623,20 @@ export async function resolveStoredNovelCoverSrc(
   );
   if (!stored) return null;
 
-  return storedNovelCoverSrc(stored, novel.id);
+  return storedNovelCoverSrc(stored, novel.id, {
+    pluginId: novel.pluginId,
+    path: novel.path,
+  });
 }
 
-function storedNovelCoverSrc(stored: StoredNovelCover, novelId: number): string {
+function storedNovelCoverSrc(
+  stored: StoredNovelCover,
+  novelId: number,
+  identity?: NovelCoverIdentity,
+): string {
   const src = noreaMediaSrc(stored.relativePath);
   const updatedAt = Math.max(0, Math.trunc(stored.modifiedAt));
-  const snapshot = getNovelCoverSnapshot(novelId);
+  const snapshot = getNovelCoverSnapshot(novelId, identity);
   const storageVersion = snapshot
     ? `${updatedAt}-${snapshot}`
     : String(updatedAt);
@@ -593,8 +706,173 @@ export function notifyNovelCoverChanged(
   clearNovelCoverDisplayCache(novelId, identity);
   novelCoverSnapshots.set(novelId, (novelCoverSnapshots.get(novelId) ?? 0) + 1);
   novelCoverSnapshots.set(0, (novelCoverSnapshots.get(0) ?? 0) + 1);
-  for (const listener of novelCoverChangeListeners) {
-    listener(novelId);
+  if (identity) {
+    const key = novelCoverIdentityKey(identity);
+    novelCoverSourceIdentitySnapshots.set(
+      key,
+      (novelCoverSourceIdentitySnapshots.get(key) ?? 0) + 1,
+    );
+  } else {
+    novelCoverUnscopedEpoch += 1;
+  }
+  notifyNovelCoverSubscriptions(novelId, identity);
+}
+
+export function notifyNovelCoverChangedByIdentity(
+  identity: Pick<NovelCoverStorageInput, "pluginId" | "path">,
+): void {
+  clearNovelCoverDisplayCache(undefined, identity);
+  const key = novelCoverIdentityKey(identity);
+  novelCoverIdentityOnlySnapshots.set(
+    key,
+    (novelCoverIdentityOnlySnapshots.get(key) ?? 0) + 1,
+  );
+  novelCoverSourceIdentitySnapshots.set(
+    key,
+    (novelCoverSourceIdentitySnapshots.get(key) ?? 0) + 1,
+  );
+  novelCoverSnapshots.set(0, (novelCoverSnapshots.get(0) ?? 0) + 1);
+  notifyNovelCoverSubscriptions(0, identity);
+}
+
+function getPersistentCoverCacheStorage(): CacheStorage | null {
+  try {
+    return typeof globalThis.caches !== "undefined" ? globalThis.caches : null;
+  } catch {
+    return null;
+  }
+}
+
+function persistentSourceCoverCacheUrl(
+  pluginId: string,
+  sourceUrl: string,
+): string {
+  const origin =
+    typeof globalThis.location?.origin === "string" &&
+    /^https?:\/\//i.test(globalThis.location.origin)
+      ? globalThis.location.origin
+      : "https://norea-cover-cache.local";
+  return `${origin}${PERSISTENT_SOURCE_COVER_PATH_PREFIX}${encodeURIComponent(pluginId)}?url=${encodeURIComponent(sourceUrl)}`;
+}
+
+async function openPersistentSourceCoverCache(): Promise<Cache | null> {
+  const storage = getPersistentCoverCacheStorage();
+  if (!storage) return null;
+  try {
+    return await storage.open(PERSISTENT_SOURCE_COVER_CACHE_NAME);
+  } catch (error) {
+    console.debug("[novel-cover] persistent source cover cache unavailable", {
+      error,
+    });
+    return null;
+  }
+}
+
+async function readPersistentSourceCover(
+  pluginId: string,
+  sourceUrl: string,
+): Promise<{ body: Blob; contentType: string | null } | null> {
+  const cache = await openPersistentSourceCoverCache();
+  if (!cache) return null;
+  const cacheUrl = persistentSourceCoverCacheUrl(pluginId, sourceUrl);
+  try {
+    const matched = await cache.match(cacheUrl);
+    if (!matched) return null;
+    const contentType = normalizeContentType(
+      matched.headers.get("content-type"),
+    );
+    if (contentType && isCoverDocumentContentType(contentType)) {
+      await cache.delete(cacheUrl).catch(() => undefined);
+      return null;
+    }
+    const body = await matched.blob();
+    if (body.size === 0 || body.size > MAX_NOVEL_COVER_BYTES) {
+      await cache.delete(cacheUrl).catch(() => undefined);
+      return null;
+    }
+    return { body, contentType };
+  } catch (error) {
+    console.debug("[novel-cover] persistent source cover read failed", {
+      error,
+      pluginId,
+    });
+    return null;
+  }
+}
+
+async function writePersistentSourceCover(
+  pluginId: string,
+  sourceUrl: string,
+  body: Blob,
+  contentType: string | null,
+): Promise<void> {
+  if (body.size === 0 || body.size > MAX_NOVEL_COVER_BYTES) return;
+  const cache = await openPersistentSourceCoverCache();
+  if (!cache) return;
+  const cacheUrl = persistentSourceCoverCacheUrl(pluginId, sourceUrl);
+  try {
+    const response = new Response(body, {
+      headers: contentType ? { "content-type": contentType } : undefined,
+      status: 200,
+    });
+    await cache.put(cacheUrl, response);
+    await trimPersistentSourceCoverCache(cache);
+  } catch (error) {
+    console.debug("[novel-cover] persistent source cover write failed", {
+      error,
+      pluginId,
+    });
+  }
+}
+
+async function trimPersistentSourceCoverCache(cache: Cache): Promise<void> {
+  if (persistentCoverTrimPromise) {
+    await persistentCoverTrimPromise;
+    return;
+  }
+  const run = (async () => {
+    const keys = await cache.keys();
+    const excess = keys.length - MAX_PERSISTENT_SOURCE_COVERS;
+    if (excess <= 0) return;
+    for (const key of keys.slice(0, excess)) {
+      await cache.delete(key);
+    }
+  })().finally(() => {
+    if (persistentCoverTrimPromise === run) {
+      persistentCoverTrimPromise = null;
+    }
+  });
+  persistentCoverTrimPromise = run;
+  await run;
+}
+
+export async function clearPersistentSourceCoverCache(
+  pluginId?: string,
+): Promise<void> {
+  const storage = getPersistentCoverCacheStorage();
+  if (!storage) return;
+  try {
+    if (!pluginId) {
+      await storage.delete(PERSISTENT_SOURCE_COVER_CACHE_NAME);
+      return;
+    }
+    const cache = await storage.open(PERSISTENT_SOURCE_COVER_CACHE_NAME);
+    const targetPath = `${PERSISTENT_SOURCE_COVER_PATH_PREFIX}${encodeURIComponent(pluginId)}`;
+    const keys = await cache.keys();
+    for (const key of keys) {
+      try {
+        if (new URL(key.url).pathname === targetPath) {
+          await cache.delete(key);
+        }
+      } catch {
+        // Ignore malformed cache keys.
+      }
+    }
+  } catch (error) {
+    console.debug("[novel-cover] persistent source cover clear failed", {
+      error,
+      pluginId,
+    });
   }
 }
 

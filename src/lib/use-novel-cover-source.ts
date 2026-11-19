@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
+import { useCallback, useEffect, useRef, useState, useSyncExternalStore } from "react";
 import {
   getNovelCoverSnapshot,
   acquireCachedNovelCoverSource,
@@ -31,18 +31,30 @@ export function useNovelCoverSource(
     initialNovelCoverSource(novel, options),
   );
   const [metadataRevision, setMetadataRevision] = useState(0);
+  const pendingRef = useRef(false);
   const subscribeToCover = useCallback(
     (onStoreChange: () => void) =>
-      subscribeNovelCoverChanges((changedNovelId) => {
-        if (changedNovelId === 0 || novel.id === 0 || changedNovelId === novel.id) {
-          onStoreChange();
-        }
-      }),
-    [novel.id],
+      subscribeNovelCoverChanges(
+        (changedNovelId) => {
+          if (changedNovelId === 0 || novel.id === 0 || changedNovelId === novel.id) {
+            onStoreChange();
+          }
+        },
+        {
+          novelId: novel.id,
+          path: novel.path,
+          pluginId: novel.pluginId,
+        },
+      ),
+    [novel.id, novel.path, novel.pluginId],
   );
   const getCoverSnapshot = useCallback(
-    () => getNovelCoverSnapshot(novel.id),
-    [novel.id],
+    () =>
+      getNovelCoverSnapshot(novel.id, {
+        path: novel.path,
+        pluginId: novel.pluginId,
+      }),
+    [novel.id, novel.path, novel.pluginId],
   );
   const coverSnapshot = useSyncExternalStore(
     subscribeToCover,
@@ -54,9 +66,10 @@ export function useNovelCoverSource(
     const exact = identity?.pluginId === novel.pluginId && identity.novelPath === novel.path;
     if (identity && !exact) return;
     // A global recovery event is frequent while the library storage index rebuilds.
-    // Retry placeholders only; already displayed covers stay stable. An exact work
-    // event always invalidates because that work's cover bytes/directory may change.
-    if (!exact && source !== null) return;
+    // Retry settled placeholders only; already displayed or in-flight covers stay
+    // stable. An exact work event always invalidates because that work's cover
+    // bytes/directory may change.
+    if (!exact && (source !== null || pendingRef.current)) return;
     clearNovelCoverDisplayCache(novel.id, { pluginId: novel.pluginId, path: novel.path });
     setMetadataRevision(revision => revision + 1);
   }), [novel.id, novel.path, novel.pluginId, source]);
@@ -77,8 +90,12 @@ export function useNovelCoverSource(
         : undefined;
     setSource(cachedSource === undefined ? localCover : cachedSource);
 
-    if (localCover || novel.pluginId.trim() === "") return;
+    if (localCover || novel.pluginId.trim() === "") {
+      pendingRef.current = false;
+      return;
+    }
 
+    pendingRef.current = cachedSource === undefined;
     const request = resolveCover();
 
     async function resolveCover(): Promise<string | null> {
@@ -101,6 +118,7 @@ export function useNovelCoverSource(
     void request
       .then((resolved) => {
         if (cancelled) return;
+        pendingRef.current = false;
         setSource(resolved);
         if (resolved) {
           void persist?.().catch((error: unknown) => {
@@ -113,11 +131,15 @@ export function useNovelCoverSource(
         }
       })
       .catch(() => {
-        if (!cancelled) setSource(null);
+        if (!cancelled) {
+          pendingRef.current = false;
+          setSource(null);
+        }
       });
 
     return () => {
       cancelled = true;
+      pendingRef.current = false;
       release?.();
     };
   }, [
