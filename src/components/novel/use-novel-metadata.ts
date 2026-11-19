@@ -13,7 +13,11 @@ import {
   getSourceDuplicateChapterInfo,
   type SourceDuplicateChapterInfo,
 } from "../../lib/plugins/sync-novel";
-import { enqueueFullNovelRefresh } from "../../lib/tasks/novel-full-refresh";
+import {
+  enqueueFullNovelRefresh,
+  enqueueServerNovelRefreshTask,
+} from "../../lib/tasks/novel-full-refresh";
+import { isTauriRuntime } from "../../lib/tauri-runtime";
 import { checkNovelForNewChapters } from "../../lib/updates/check-library-updates";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
 import {
@@ -25,7 +29,9 @@ import {
 type NovelMetadataSource = Pick<
   NovelDetailRecord,
   "id" | "name" | "path" | "pluginId" | "sourceNovelId" | "cover" | "isLocal" | "inLibrary"
->;
+> & {
+  pluginName?: string | null;
+};
 
 export function useNovelMetadata(
   id: number,
@@ -122,35 +128,57 @@ export function useNovelMetadata(
     if (!novel) return null;
     const serverSource = await readServerNovelSource(novel.id);
     if (serverSource) {
+      if (isTauriRuntime()) await pluginManager.loadInstalledFromDb();
       const { syncServerNovelOnOpen, refreshServerNovelFromSource } = await import("../../lib/content-sync/work-refresh");
+      const canUseSourcePlugin = !novel.isLocal && !novel.path.startsWith("norea-folder:");
+      const plugin = canUseSourcePlugin ? pluginManager.getPlugin(novel.pluginId) : undefined;
       let sourceRefreshed = false;
-      const serverRefresh = syncServerNovelOnOpen(novel.id, undefined, () => !sourceRefreshed).then(changed => {
-        if (changed) invalidateNovelMetadataRefresh();
-        return null;
-      }, error => ({ error }));
+      const taskTitle = mode === "since"
+        ? t("tasks.task.checkUpdates", { name: novel.name })
+        : t("tasks.task.refreshNovelMetadataFull", { name: novel.name });
+      // Keep the server metadata sync silent alongside a source task; without a source plugin,
+      // run the server sync itself through the scheduler so it is visible and cancellable in the queue.
+      const serverRefresh = plugin
+        ? syncServerNovelOnOpen(novel.id, undefined, () => !sourceRefreshed).then(changed => {
+            if (changed) invalidateNovelMetadataRefresh();
+            return null;
+          }, error => ({ error }))
+        : null;
       try {
         if (mode === "since") {
-          const plugin = novel.isLocal || novel.path.startsWith("norea-folder:")
-            ? undefined : pluginManager.getPlugin(novel.pluginId);
           if (plugin) {
             await checkNovelForNewChapters(plugin, novel, {
-              priority: "user", title: t("tasks.task.checkUpdates", { name: novel.name }),
+              priority: "user", title: taskTitle,
             }).promise;
             sourceRefreshed = true;
           }
         } else {
           sourceRefreshed = await refreshServerNovelFromSource(novel.id,
-            t("tasks.task.refreshNovelMetadataFull", { name: novel.name }), undefined, { priority: "user", refreshCover: true });
+            taskTitle, undefined, { priority: "user", refreshCover: true });
+        }
+        if (!sourceRefreshed) {
+          if (serverRefresh) {
+            const failure = await serverRefresh;
+            if (failure) throw failure.error;
+          } else {
+            await enqueueServerNovelRefreshTask(novel, {
+              kind: mode === "since" ? "source.checkLibraryUpdates" : "source.refreshNovel",
+              priority: "user",
+              title: taskTitle,
+              run: async (signal) => {
+                const changed = await syncServerNovelOnOpen(novel.id, signal, () => !sourceRefreshed);
+                if (changed) invalidateNovelMetadataRefresh();
+                return changed;
+              },
+            }).promise;
+          }
         }
       }
       finally { invalidateNovelMetadataRefresh(); }
-      if (!sourceRefreshed) {
-        const failure = await serverRefresh;
-        if (failure) throw failure.error;
-      }
       return { duplicateChapters: getSourceDuplicateChapterInfo(novel.id) };
     }
     if (novel.isLocal) return null;
+    if (isTauriRuntime()) await pluginManager.loadInstalledFromDb();
     const plugin = pluginManager.getPlugin(novel.pluginId);
     if (!plugin) {
       throw new Error(t("source.pluginNotLoaded"));

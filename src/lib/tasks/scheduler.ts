@@ -1935,7 +1935,7 @@ export class TaskScheduler {
       if (!verification.spec.vpnWorker) return;
     }
     const browse = this.pickSourceTask(
-      entry => !entry.spec.vpnWorker && isUiInteraction(entry) && !usesSearchExecutor(entry),
+      entry => !entry.spec.vpnWorker && !this.awaitsServerLane(entry) && isUiInteraction(entry) && !usesSearchExecutor(entry),
       { allowActiveSource: true },
     );
     if (browse) {
@@ -2012,6 +2012,7 @@ export class TaskScheduler {
           ? this.pickSourceTaskFromQueue(
               sourceId,
               (entry) =>
+                !this.awaitsServerLane(entry) &&
                 canUsePoolExecutorForImmediateInteraction(entry) &&
                 this.canUseExecutorForSource(entry, executorId),
               { allowActiveSource: true },

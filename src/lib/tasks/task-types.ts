@@ -21,6 +21,7 @@ export function taskNotificationGroupForKind(
     case "chapter.download":
     case "chapter.repairMedia":
       return "downloads";
+    case "library.refreshNovels":
     case "source.refreshNovel":
       return "libraryMetadata";
     case "library.checkUpdates":
@@ -54,6 +55,7 @@ export type MainTaskKind =
   | "backup.restore"
   | "library.addServerWorks"
   | "library.checkUpdates"
+  | "library.refreshNovels"
   | "maintenance.clearLibraryMembership"
   | "maintenance.clearDownloadedContent"
   | "maintenance.clearWebViewCache"

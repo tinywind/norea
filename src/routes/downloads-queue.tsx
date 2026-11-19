@@ -72,7 +72,7 @@ import {
 } from "../lib/tasks/hooks";
 import { vpnDownloadAttention } from "../lib/tasks/vpn-download-notifications";
 import { pauseVpnDownloadRun, resumeVpnDownloadRun, cancelVpnDownloadRun } from "../lib/tasks/vpn-download-runtime";
-import { workProgress } from "../lib/tasks/work-progress";
+import { isDownloadWorkTask, workProgress } from "../lib/tasks/work-progress";
 import { sourceAccessBlockSourceNames } from "../lib/tasks/source-access-coordinator";
 import {
   taskWorkQueueKey,
@@ -1029,9 +1029,10 @@ function OtherActivity({
 }) {
   const { t } = useTranslation();
   const running = tasks.filter((task) => task.status === "running").length;
+  const active = tasks.some(isActiveTask);
   const failed = tasks.some((task) => task.status === "failed");
   const [openOverride, setOpenOverride] = useState<boolean | null>(null);
-  const open = openOverride ?? (running > 0 || failed);
+  const open = openOverride ?? (active || failed);
   const toggleLabel = open ? t("tasks.collapse") : t("tasks.expand");
 
   return (
@@ -1225,14 +1226,22 @@ export function DownloadsQueueView({
     const works: NovelWork[] = [];
     const other: TaskRecord[] = tasks.filter((task) => task.lane === "main");
     for (const sourceGroup of sourceGroups) {
-      for (const item of groupSourceTasksByWork(sourceGroup.tasks)) {
+      const downloadTasks: TaskRecord[] = [];
+      for (const task of sourceGroup.tasks) {
+        if (isDownloadWorkTask(task)) {
+          downloadTasks.push(task);
+        } else {
+          other.push(task);
+        }
+      }
+      for (const item of groupSourceTasksByWork(downloadTasks)) {
         if (item.type === "work") {
           works.push({
             group: item.group,
             key: sourceWorkOpenKey(sourceGroup.sourceId, item.group.workKey),
             sourceId: sourceGroup.sourceId,
             sourceName: sourceGroup.sourceName,
-            sourceTasks: sourceGroup.tasks,
+            sourceTasks: downloadTasks,
           });
         } else {
           other.push(item.task);

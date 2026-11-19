@@ -9,6 +9,11 @@ interface WorkProgressState {
 const ACTIVE_STATUSES = new Set<TaskRecord["status"]>(["queued", "running"]);
 const progressByWork = new Map<string, WorkProgressState>();
 
+/** Chapter download and media repair tasks belong to a novel's download progress group. */
+export function isDownloadWorkTask(task: Pick<TaskRecord, "kind">): boolean {
+  return task.kind === "chapter.download" || task.kind === "chapter.repairMedia";
+}
+
 /**
  * Follows every scheduler snapshot, so a work's total survives finished tasks leaving the
  * snapshot even while the Downloads page is closed. The total grows when work is added.
@@ -16,6 +21,7 @@ const progressByWork = new Map<string, WorkProgressState>();
 export function updateWorkProgress(snapshot: Pick<TaskSnapshot, "records">): void {
   const counts = new Map<string, { active: number; all: number }>();
   for (const record of snapshot.records) {
+    if (!isDownloadWorkTask(record)) continue;
     const key = taskWorkQueueKey(record.subject);
     if (!key) continue;
     const count = counts.get(key) ?? { active: 0, all: 0 };

@@ -295,3 +295,20 @@ it("replaces an earlier source attempt origin when a retry finds server content"
   expect(report).not.toHaveBeenCalled();
   expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
 });
+
+it("keeps user-priority server-lane metadata refreshes on server executors instead of scraper executors", async () => {
+  scheduler.pauseSourceQueue();
+  const executors: string[] = [];
+  const refresh = scheduler.enqueueSource({
+    kind: "source.refreshNovel",
+    priority: "user",
+    title: "Refresh server work",
+    source,
+    serverLane: true,
+    canCompleteWithoutSourceAccess: true,
+    run: async ({ executor }) => { executors.push(executor!); },
+  });
+  await settle();
+  await refresh.promise;
+  expect(executors).toEqual(["server:0"]);
+});

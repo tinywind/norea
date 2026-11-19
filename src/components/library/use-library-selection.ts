@@ -8,16 +8,14 @@ import {
   type ChapterReadState,
 } from "../../db/queries/chapter";
 import {
-  getNovelById,
   listLibraryNovelIds,
   type LibraryNovelRefreshFilter,
 } from "../../db/queries/novel";
 import { useTranslation } from "../../i18n";
+import { isAbortError } from "../../lib/abort";
 import { useOverlayBackNavigation } from "../../lib/android-back-navigation";
 import { showErrorToast } from "../../lib/runtime/error-toast";
-import { readServerNovelSource } from "../../lib/content-sync/novel-source";
-import { pluginManager } from "../../lib/plugins/manager";
-import { enqueueFullNovelRefresh } from "../../lib/tasks/novel-full-refresh";
+import { refreshSelectedNovelsMetadata } from "../../lib/tasks/novel-full-refresh";
 import { MAX_CHAPTER_BULK_INPUT_ROWS } from "../../lib/performance-budgets";
 import { invalidateChapterReadStateQueries } from "../../lib/reader-query-invalidation";
 import { markUpdatesIndexDirty } from "../../lib/updates/update-index-events";
@@ -225,36 +223,17 @@ export function useLibrarySelection(
   });
 
   const refreshAllMetadataMutation = useMutation({
-    mutationFn: async ({ novelIds }: { novelIds: readonly number[] }) => {
-      let refreshed = 0;
-      let skippedLocal = 0;
-      const failedIds: number[] = [];
-      for (const novelId of new Set(novelIds)) {
-        try {
-          const novel = await getNovelById(novelId);
-          if (!novel) continue;
-          if (novel.isLocal) { skippedLocal++; continue; }
-          const title = t("tasks.task.refreshNovelMetadataFull", { name: novel.name });
-          if (await readServerNovelSource(novelId)) {
-            const { refreshServerNovelFromSource, syncServerNovelOnOpen } = await import("../../lib/content-sync/work-refresh");
-            if (!await refreshServerNovelFromSource(novelId, title, undefined, { priority: "user", refreshCover: true })) {
-              await syncServerNovelOnOpen(novelId);
-            }
-          } else {
-            const plugin = pluginManager.getPlugin(novel.pluginId);
-            if (!plugin) throw new Error(t("source.pluginNotLoaded"));
-            await enqueueFullNovelRefresh(plugin, novel, title).promise;
-          }
-          refreshed++;
-        } catch {
-          failedIds.push(novelId);
-        } finally {
+    mutationFn: ({ novelIds }: { novelIds: readonly number[] }) =>
+      refreshSelectedNovelsMetadata({
+        novelIds,
+        aggregateTaskTitle: t("novel.refreshAllDetails"),
+        pluginNotLoadedMessage: t("source.pluginNotLoaded"),
+        taskTitle: (novel) => t("tasks.task.refreshNovelMetadataFull", { name: novel.name }),
+        onNovelSettled: (novelId) => {
           void queryClient.invalidateQueries({ queryKey: novelKey(novelId) });
           void queryClient.invalidateQueries({ queryKey: chaptersKey(novelId) });
-        }
-      }
-      return { refreshed, skippedLocal, failedIds };
-    },
+        },
+      }).promise,
     onSuccess: ({ refreshed, skippedLocal, failedIds }) => {
       if (failedIds.length) setSelectedIds(new Set(failedIds));
       else exitSelection();
@@ -264,6 +243,9 @@ export function useLibrarySelection(
           count: refreshed, failed: failedIds.length, skipped: skippedLocal,
         }),
       });
+    },
+    onError: (error) => {
+      if (!isAbortError(error)) showErrorToast(t("novel.refreshAllDetails"), error);
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });

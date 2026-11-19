@@ -295,6 +295,39 @@ describe("task work group order", () => {
     expect($('button[aria-label="Resume downloads"]')).toHaveLength(1);
   });
 
+  it("shows novel update checks and full metadata refreshes under Other activity rather than Downloads", () => {
+    const checkTask: TaskRecord = {
+      id: "check-1", lane: "source", kind: "source.checkLibraryUpdates", priority: "user",
+      title: "Check for new chapters: Novel 1", source: { id: "source", name: "Source" },
+      subject: { novelId: 1, novelName: "Novel 1", pluginId: "source" }, status: "queued",
+      createdAt: 1, canCancel: true, canRetry: false, queueIndex: 0, queueSize: 2,
+    };
+    const refreshTask: TaskRecord = {
+      id: "refresh-2", lane: "source", kind: "source.refreshNovel", priority: "user",
+      title: "Refresh all details: Novel 2", source: { id: "source", name: "Source" },
+      subject: { novelId: 2, novelName: "Novel 2", pluginId: "source" }, status: "queued",
+      createdAt: 2, canCancel: true, canRetry: false, queueIndex: 1, queueSize: 2,
+    };
+    const batchTask: TaskRecord = {
+      id: "batch-1", lane: "main", kind: "library.refreshNovels", priority: "deferred",
+      title: "Refresh all details", status: "queued", progress: { current: 0, total: 2 },
+      createdAt: 0, canCancel: true, canRetry: false,
+    };
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [batchTask, checkTask, refreshTask], total: 3, queued: 3,
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($(".norea-downloads-work-section")).toHaveLength(0);
+    expect($(".norea-task-work-group")).toHaveLength(0);
+    expect($(".norea-downloads-other").attr("data-collapsed")).toBeUndefined();
+    expect($(".norea-downloads-other .norea-task-row-title").map((_, el) => $(el).text()).get()).toEqual([
+      "Check for new chapters: Novel 1",
+      "Refresh all details: Novel 2",
+      "Refresh all details",
+    ]);
+  });
+
   it("shows pause, sort and settings directly while keeping rare queue actions in the overflow", () => {
     state.snapshot = { ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1, records: [chapter(1, 1, "queued", 0)] };
     const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));

@@ -3,8 +3,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   mutations: [] as { mutationFn: () => Promise<unknown>; onSuccess: (result: never) => Promise<void> | void }[],
   queryClient: { setQueryData: vi.fn(), invalidateQueries: vi.fn(), cancelQueries: vi.fn(), getQueryData: vi.fn() },
-  source: vi.fn(), refresh: vi.fn(), refreshSource: vi.fn(), cover: vi.fn(), plugin: vi.fn(), library: vi.fn(),
-  enqueue: vi.fn(), sync: vi.fn(), confirmDeletion: vi.fn(), check: vi.fn(),
+  source: vi.fn(), refresh: vi.fn(), refreshSource: vi.fn(), cover: vi.fn(), plugin: vi.fn(), loadPlugins: vi.fn(), library: vi.fn(),
+  enqueue: vi.fn(), enqueueServer: vi.fn(), sync: vi.fn(), confirmDeletion: vi.fn(), check: vi.fn(), isTauri: false,
 }));
 vi.mock("@tanstack/react-query", () => ({
   useQueryClient: () => mocks.queryClient,
@@ -16,8 +16,10 @@ vi.mock("../../db/queries/novel", () => ({ setNovelInLibrary: mocks.library }));
 vi.mock("../../lib/content-sync/novel-source", () => ({ readServerNovelSource: mocks.source }));
 vi.mock("../../lib/content-sync/work-refresh", () => ({ syncServerNovelOnOpen: mocks.refresh, refreshServerNovelFromSource: mocks.refreshSource }));
 vi.mock("../../lib/novel-cover-storage", () => ({ saveNovelCoverFromSource: mocks.cover }));
-vi.mock("../../lib/plugins/manager", () => ({ pluginManager: { getPlugin: mocks.plugin, getPluginForExecutor: mocks.plugin } }));
+vi.mock("../../lib/plugins/manager", () => ({ pluginManager: { getPlugin: mocks.plugin, getPluginForExecutor: mocks.plugin, loadInstalledFromDb: mocks.loadPlugins } }));
 vi.mock("../../lib/plugins/sync-novel", () => ({ getSourceDuplicateChapterInfo: () => [], syncNovelFromSource: mocks.sync }));
+vi.mock("../../lib/tauri-runtime", () => ({ isTauriRuntime: () => mocks.isTauri }));
+vi.mock("../../lib/tasks/scheduler", () => ({ taskScheduler: { enqueueSource: mocks.enqueueServer } }));
 vi.mock("../../lib/tasks/source-tasks", () => ({ enqueueSourceTask: mocks.enqueue }));
 vi.mock("../../lib/updates/update-index-events", () => ({ markUpdatesIndexDirty: vi.fn() }));
 vi.mock("../../lib/updates/check-library-updates", () => ({ checkNovelForNewChapters: mocks.check }));
@@ -29,37 +31,60 @@ const novel = { id: 3, name: "Novel", path: "/novel", pluginId: "source-a", sour
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.mutations.length = 0;
+  mocks.isTauri = false;
   mocks.source.mockResolvedValue({ serverUrl: "http://original", workId: "work-a" });
   mocks.refresh.mockReset().mockResolvedValue(true);
   mocks.refreshSource.mockReset().mockResolvedValue(false);
   mocks.cover.mockResolvedValue(undefined);
   mocks.plugin.mockReturnValue(undefined);
+  mocks.loadPlugins.mockReset().mockResolvedValue(undefined);
   mocks.enqueue.mockImplementation(options => ({ promise: options.run({ signal: new AbortController().signal, executor: "background" }) }));
+  mocks.enqueueServer.mockImplementation(options => ({ id: "server-task", promise: options.run({ signal: new AbortController().signal, executor: "server:0" }) }));
   mocks.sync.mockResolvedValue({ duplicateChapters: [] });
   mocks.check.mockReset().mockReturnValue({ promise: Promise.resolve({ duplicateChapters: [] }) });
 });
 
-it("refreshes a bound work on its server without requiring an installed source plugin", async () => {
+it("refreshes a bound work on its server through the task queue without requiring an installed source plugin", async () => {
   useNovelMetadata(3, novel);
   await mocks.mutations[1]!.mutationFn();
-  expect(mocks.refresh).toHaveBeenCalledWith(3, undefined, expect.any(Function));
+  expect(mocks.refresh).toHaveBeenCalledWith(3, expect.any(AbortSignal), expect.any(Function));
+  expect(mocks.enqueueServer).toHaveBeenCalledWith(expect.objectContaining({
+    kind: "source.checkLibraryUpdates",
+    priority: "user",
+    serverLane: true,
+    title: "tasks.task.checkUpdates",
+    subject: expect.objectContaining({ novelId: 3, novelName: "Novel" }),
+  }));
   expect(mocks.check).not.toHaveBeenCalled();
   await mocks.mutations[2]!.mutationFn();
   expect(mocks.refreshSource).toHaveBeenCalledWith(3, "tasks.task.refreshNovelMetadataFull", undefined, { priority: "user", refreshCover: true });
+  expect(mocks.enqueueServer).toHaveBeenLastCalledWith(expect.objectContaining({
+    kind: "source.refreshNovel",
+    priority: "user",
+    serverLane: true,
+    title: "tasks.task.refreshNovelMetadataFull",
+  }));
 });
 
 it("checks a bound work's source for new chapters with the same check as Updates", async () => {
+  mocks.isTauri = true;
   mocks.plugin.mockReturnValue({ id: "source-a" });
   useNovelMetadata(3, novel);
   await mocks.mutations[1]!.mutationFn();
+  expect(mocks.loadPlugins).toHaveBeenCalledOnce();
   expect(mocks.check).toHaveBeenCalledWith({ id: "source-a" }, novel, { priority: "user", title: "tasks.task.checkUpdates" });
+  expect(mocks.enqueueServer).not.toHaveBeenCalled();
   expect(mocks.refreshSource).not.toHaveBeenCalled();
 });
 
 it("refreshes server-published local metadata through its server binding", async () => {
   useNovelMetadata(3, { ...novel, isLocal: true });
   await mocks.mutations[1]!.mutationFn();
-  expect(mocks.refresh).toHaveBeenCalledWith(3, undefined, expect.any(Function));
+  expect(mocks.refresh).toHaveBeenCalledWith(3, expect.any(AbortSignal), expect.any(Function));
+  expect(mocks.enqueueServer).toHaveBeenCalledWith(expect.objectContaining({
+    kind: "source.checkLibraryUpdates",
+    serverLane: true,
+  }));
   expect(mocks.plugin).not.toHaveBeenCalled();
 });
 
@@ -89,7 +114,7 @@ it("attempts source metadata even when the server refresh fails", async () => {
   useNovelMetadata(3, novel);
   await expect(mocks.mutations[2]!.mutationFn()).rejects.toThrow("Server offline");
   expect(mocks.refreshSource).toHaveBeenCalledWith(3, "tasks.task.refreshNovelMetadataFull", undefined, { priority: "user", refreshCover: true });
-  expect(mocks.plugin).not.toHaveBeenCalled();
+  expect(mocks.enqueueServer).toHaveBeenCalledWith(expect.objectContaining({ kind: "source.refreshNovel", serverLane: true }));
 });
 
 it("finishes a source refresh before a delayed optional server refresh", async () => {

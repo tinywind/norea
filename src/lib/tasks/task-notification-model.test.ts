@@ -143,6 +143,20 @@ describe("incremental task notifications", () => {
     ]);
   });
 
+  it("counts metadata refresh child outcomes under one aggregate batch task", () => {
+    const aggregate = task("aggregate", { lane: "main", kind: "library.refreshNovels", status: "running", progress: { current: 0, total: 2 } });
+    const first = task("first", { kind: "source.refreshNovel" });
+    const second = task("second", { kind: "source.refreshNovel" });
+    const tracker = new TaskNotificationTracker(snapshot([aggregate, first, second]));
+    tracker.update({ task: { ...first, status: "succeeded" }, previousStatus: "queued" });
+    tracker.update({ task: { ...second, status: "failed" }, previousStatus: "queued" });
+    expect(tracker.takeCompletions(t)).toEqual([]);
+    tracker.update({ task: { ...aggregate, status: "succeeded", progress: { current: 2, total: 2 } }, previousStatus: "running" });
+    expect(tracker.takeCompletions(t)).toMatchObject([
+      { key: "libraryMetadata", succeeded: 1, failed: 1, cancelled: 0, total: 2, route: "/downloads?view=queue" },
+    ]);
+  });
+
   it("does not replay historical completions and starts a fresh count for new work", () => {
     const old = task("old", { status: "succeeded" });
     const first = task("first");
@@ -177,6 +191,8 @@ describe("task notification routes", () => {
     ["source.search", "/downloads?view=queue"],
     ["source.globalSearch", "/downloads?view=queue"],
     ["library.checkUpdates", "/updates"],
+    ["library.refreshNovels", "/downloads?view=queue"],
+    ["source.refreshNovel", "/downloads?view=queue"],
     ["plugin.install", "/downloads?view=queue"],
   ] as const)("routes %s notifications to %s", (kind, route) => {
     expect(taskNotificationRouteForTask(task(kind, { kind }))).toBe(route);

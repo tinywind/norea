@@ -372,7 +372,7 @@ export function isActiveTaskNotificationCandidate(task: TaskRecord): boolean {
 }
 
 export function isAggregateTaskNotification(task: TaskRecord): boolean {
-  return task.kind === "library.checkUpdates";
+  return task.kind === "library.checkUpdates" || task.kind === "library.refreshNovels";
 }
 
 export function taskNotificationGroupKey(task: TaskRecord): TaskNotificationGroupKey | null {
@@ -475,7 +475,7 @@ function taskNotificationGroupRoute(key: TaskNotificationGroupKey): TaskNotifica
   if (key === "backup") return "/settings?section=backup";
   return key === "downloads"
     ? "/downloads?view=storage"
-    : key === "search"
+    : key === "search" || key === "libraryMetadata"
       ? "/downloads?view=queue"
       : "/updates";
 }
