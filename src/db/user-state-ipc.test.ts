@@ -17,6 +17,7 @@ import type { UserStateBinding, UserStateOperation } from "../lib/user-state/typ
 import type { DbMutationEnvelope } from "./ipc";
 import {
   acknowledgeUserStateOperations,
+  applyLocalUserStateRetention,
   applyUserStateReadPage,
   assertUserStateAvailable,
   bindUserStateWorkspace,
@@ -27,6 +28,9 @@ import {
   listUserStateDeferred,
   materializePendingUserState,
   prepareUserStateOperations,
+  pruneUserStateOperations,
+  rebindUserStateWorkspace,
+  reconcileUserStateSnapshot,
   recordUserResume,
   recordUserResumeCleared,
   resolveUserStateLedgerConflict,
@@ -35,6 +39,7 @@ import {
   subscribeUserStateApplied,
   subscribeUserStateChanges,
   subscribeUserStateLedgerChanges,
+  USER_STATE_OPERATION_RETENTION_SECS,
 } from "./user-state";
 import {
   applyUserStateCurrentSnapshot,
@@ -149,6 +154,11 @@ describe("user-state Rust IPC wrappers", () => {
               value: { resumes: [] },
               effects: { userStateLedgerChanged: true },
             };
+          case "db_user_state_prune_operations":
+            return {
+              value: 3,
+              effects: { userStateLedgerChanged: true },
+            };
           case "db_user_state_project_pending":
             return {
               value: {
@@ -203,7 +213,13 @@ describe("user-state Rust IPC wrappers", () => {
           resumes: [{ novelId: 7, chapterId: 70, anchor: null, openedAt: 42 }],
         },
       ]);
-      expect(ledgerEvents.length).toBeGreaterThanOrEqual(6);
+      expect(await pruneUserStateOperations(binding)).toBe(3);
+      expect(invoke).toHaveBeenCalledWith("db_user_state_prune_operations", {
+        binding,
+        olderThanSecs: USER_STATE_OPERATION_RETENTION_SECS,
+      });
+      await expect(pruneUserStateOperations(binding, -1)).rejects.toThrow(/non-negative/);
+      expect(ledgerEvents.length).toBeGreaterThanOrEqual(7);
     } finally {
       unsubLedger();
       unsubChanges();
@@ -383,5 +399,59 @@ describe("user-state Rust IPC wrappers", () => {
       items: [],
     });
     expect(applied.changed).toBe(true);
+  });
+
+  it("routes rebind, snapshot reconciliation, and local retention commands through typed Rust IPC", async () => {
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      switch (command) {
+        case "db_user_state_rebind_workspace":
+          return { value: null, effects: { userStateLedgerChanged: true } };
+        case "db_user_state_reconcile_snapshot":
+          return {
+            value: { resumes: [{ novelId: 3, chapterId: null, anchor: null, openedAt: null }] },
+            effects: { userStateLedgerChanged: true },
+          };
+        case "db_user_state_apply_local_retention":
+          return { value: 4, effects: { userStateLedgerChanged: true } };
+        default:
+          throw new Error(`Unexpected command: ${command}`);
+      }
+    });
+
+    await rebindUserStateWorkspace(binding, "reseed", { seedCutoffMs: 1_700_000_000_000, seedAllowed: true });
+    expect(invoke).toHaveBeenCalledWith("db_user_state_rebind_workspace", {
+      binding,
+      mode: "reseed",
+      seedCutoffMs: 1_700_000_000_000,
+      seedAllowed: true,
+    });
+
+    const effects = await reconcileUserStateSnapshot(binding, {
+      records: [],
+      snapshotRevision: 9,
+      seedAllowed: false,
+      seedCutoffMs: null,
+    });
+    expect(effects.resumes).toHaveLength(1);
+    expect(invoke).toHaveBeenCalledWith("db_user_state_reconcile_snapshot", {
+      binding,
+      records: [],
+      snapshotRevision: 9,
+      seedAllowed: false,
+      seedCutoffMs: null,
+      skippedChapterIds: [],
+    });
+
+    const affected = await applyLocalUserStateRetention({
+      pruneNonLibraryDays: 90,
+      stripTimestampsDays: 180,
+      nowMs: 1_750_000_000_000,
+    });
+    expect(affected).toBe(4);
+    expect(invoke).toHaveBeenCalledWith("db_user_state_apply_local_retention", {
+      pruneNonLibraryDays: 90,
+      stripTimestampsDays: 180,
+      nowMs: 1_750_000_000_000,
+    });
   });
 });

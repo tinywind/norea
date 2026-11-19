@@ -17,6 +17,8 @@ import {
   type UserStateMergeResult,
   type UserStateOperation,
   type UserStateReadResponse,
+  type UserStateRebindMode,
+  type UserStateRecord,
 } from "../lib/user-state/types";
 import {
   assertUserStateAvailableInDb,
@@ -26,13 +28,14 @@ import {
   namespaceFor,
   recordCategoryInDb,
   recordChapterUnreadFlagsInDb,
+  recordClearedReadingProgressInDb,
   recordLibraryInDb,
   recordMembershipInDb,
-  recordNovelChaptersInDb,
   recordResumeClearedInDb,
   recordUserStateChangesInDb,
   requestUserStateDeferredApply,
   requireBinding,
+  snapshotReadingProgressClearTargetsInDb,
   stableCategoryIdInDb,
   USER_CHAPTER_SELECT,
   userStateRestorePausedInDb,
@@ -49,12 +52,16 @@ import {
 } from "./sql/user-state-current-data";
 import {
   acknowledgeUserStateOperationsInDb,
+  applyLocalUserStateRetentionInDb,
   applyUserStateReadPageInDb,
   bindUserStateWorkspaceInDb,
   getUserStateLedgerStatusInDb,
   listUserStateConflictsInDb,
   listUserStateDeferredInDb,
   prepareUserStateOperationsInDb,
+  pruneAcknowledgedUserStateOperationsInDb,
+  rebindUserStateWorkspaceInDb,
+  reconcileUserStateSnapshotInDb,
   resolveUserStateLedgerConflictInDb,
   type UserStateLedgerStatus,
 } from "./sql/user-state-ledger";
@@ -112,8 +119,13 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
 
       if (command === "db_user_state_bind_workspace") {
         const binding = args.binding as UserStateBinding;
+        const seedAllowed = args.seedAllowed as boolean | undefined;
+        const seedCutoffMs = args.seedCutoffMs as number | null | undefined;
         await options.runTransaction(db =>
-          bindUserStateWorkspaceInDb(db, binding),
+          bindUserStateWorkspaceInDb(db, binding, {
+            ...(seedAllowed !== undefined ? { seedAllowed } : {}),
+            ...(seedCutoffMs !== undefined ? { seedCutoffMs } : {}),
+          }),
         );
         return {
           handled: true,
@@ -121,6 +133,73 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
             value: null,
             effects: { userStateLedgerChanged: true },
           } satisfies DbMutationEnvelope<null>,
+        };
+      }
+
+      if (command === "db_user_state_rebind_workspace") {
+        const binding = args.binding as UserStateBinding;
+        const mode = args.mode as UserStateRebindMode;
+        const headRevision = args.headRevision as number | undefined;
+        const seedCutoffMs = args.seedCutoffMs as number | null | undefined;
+        const seedAllowed = args.seedAllowed as boolean | undefined;
+        await options.runTransaction(db =>
+          rebindUserStateWorkspaceInDb(db, binding, mode, {
+            ...(headRevision !== undefined ? { headRevision } : {}),
+            ...(seedCutoffMs !== undefined ? { seedCutoffMs } : {}),
+            ...(seedAllowed !== undefined ? { seedAllowed } : {}),
+          }),
+        );
+        return {
+          handled: true,
+          result: {
+            value: null,
+            effects: { userStateLedgerChanged: true },
+          } satisfies DbMutationEnvelope<null>,
+        };
+      }
+
+      if (command === "db_user_state_reconcile_snapshot") {
+        const binding = args.binding as UserStateBinding;
+        const records = args.records as UserStateRecord[];
+        const snapshotRevision = args.snapshotRevision as number;
+        const seedAllowed = args.seedAllowed as boolean | undefined;
+        const seedCutoffMs = args.seedCutoffMs as number | null | undefined;
+        const applied = await options.runTransaction(
+          db =>
+            reconcileUserStateSnapshotInDb(db, binding, {
+              records,
+              snapshotRevision,
+              ...(seedAllowed !== undefined ? { seedAllowed } : {}),
+              ...(seedCutoffMs !== undefined ? { seedCutoffMs } : {}),
+            }),
+          true,
+        );
+        return {
+          handled: true,
+          result: {
+            value: applied,
+            effects: { userStateLedgerChanged: true },
+          } satisfies DbMutationEnvelope<UserStateApplyEffects>,
+        };
+      }
+
+      if (command === "db_user_state_apply_local_retention") {
+        const pruneNonLibraryDays = args.pruneNonLibraryDays as number | null | undefined;
+        const stripTimestampsDays = args.stripTimestampsDays as number | null | undefined;
+        const nowMs = args.nowMs as number | undefined;
+        const affected = await options.runTransaction(db =>
+          applyLocalUserStateRetentionInDb(db, {
+            ...(pruneNonLibraryDays !== undefined ? { pruneNonLibraryDays } : {}),
+            ...(stripTimestampsDays !== undefined ? { stripTimestampsDays } : {}),
+            ...(nowMs !== undefined ? { nowMs } : {}),
+          }),
+        );
+        return {
+          handled: true,
+          result: {
+            value: affected,
+            effects: { userStateLedgerChanged: affected > 0 },
+          } satisfies DbMutationEnvelope<number>,
         };
       }
 
@@ -241,6 +320,21 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
             value: { resumes: [] },
             effects: { userStateLedgerChanged: true },
           } satisfies DbMutationEnvelope<UserStateApplyEffects>,
+        };
+      }
+
+      if (command === "db_user_state_prune_operations") {
+        const binding = args.binding as UserStateBinding;
+        const olderThanSecs = (args.olderThanSecs as number | undefined) ?? undefined;
+        const pruned = await options.runTransaction(db =>
+          pruneAcknowledgedUserStateOperationsInDb(db, binding, olderThanSecs),
+        );
+        return {
+          handled: true,
+          result: {
+            value: pruned,
+            effects: { userStateLedgerChanged: pruned > 0 },
+          } satisfies DbMutationEnvelope<number>,
         };
       }
 
@@ -722,6 +816,7 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
 
       if (command === "db_maintenance_clear_reading_progress") {
         const rowsAffected = await options.runTransaction(async db => {
+          const targets = await snapshotReadingProgressClearTargetsInDb(db);
           const result = await db.execute(
             `UPDATE chapter
              SET progress = 0, unread = 1, read_at = NULL, updated_at = unixepoch()
@@ -732,8 +827,7 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
              SET last_read_at = NULL, updated_at = unixepoch()
              WHERE last_read_at IS NOT NULL`,
           );
-          await recordNovelChaptersInDb(db);
-          await recordResumeClearedInDb(db);
+          await recordClearedReadingProgressInDb(db, targets);
           return result.rowsAffected;
         });
         return {

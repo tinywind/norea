@@ -3,7 +3,11 @@ import { isAbortError } from "../abort";
 
 export class ContentServerError extends Error {
   readonly code = "content-server-request-failed";
-  constructor(public status: number, message = `Content server request failed (${status}).`) {
+  constructor(
+    public status: number,
+    message = `Content server request failed (${status}).`,
+    public readonly serverCode?: string,
+  ) {
     super(message);
   }
 }

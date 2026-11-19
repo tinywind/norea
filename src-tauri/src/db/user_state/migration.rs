@@ -780,7 +780,11 @@ pub async fn remap_unattempted_chapter_paths_in_tx(
 
             let attempt: Option<i64> = sqlx::query_scalar(
                 "SELECT 1 FROM user_state_operation \
-                 WHERE entity_key = ?1 AND intent_sequence = ?2 LIMIT 1",
+                 WHERE entity_key = ?1 AND intent_sequence = ?2 \
+                 UNION ALL \
+                 SELECT 1 FROM user_state_progress \
+                 WHERE entity_key = ?1 AND acknowledged_sequence >= ?2 \
+                 LIMIT 1",
             )
             .bind(&row.entity_key)
             .bind(row.sequence)

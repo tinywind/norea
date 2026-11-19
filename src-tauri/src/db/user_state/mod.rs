@@ -32,12 +32,14 @@ pub use current::{
     get_current_status_in_tx, prepare_deferred_current_retry_in_tx,
 };
 pub use ledger::{
-    acknowledge_user_state_operations_in_tx, apply_user_state_read_page_in_tx,
-    bind_user_state_workspace_in_tx, get_user_state_ledger_status_in_tx,
-    list_user_state_conflicts_in_tx, list_user_state_deferred_in_tx,
-    prepare_user_state_operations_in_tx, project_pending_user_state_bounded_in_tx,
-    project_pending_user_state_in_tx, resolve_user_state_ledger_conflict_in_tx,
-    PrepareUserStateOperationsLimitsDto,
+    acknowledge_user_state_operations_in_tx, apply_local_user_state_retention_in_tx,
+    apply_user_state_read_page_in_tx, bind_user_state_workspace_with_options_in_tx,
+    get_user_state_ledger_status_in_tx, list_user_state_conflicts_in_tx,
+    list_user_state_deferred_in_tx, prepare_user_state_operations_in_tx,
+    project_pending_user_state_bounded_in_tx, prune_acknowledged_user_state_operations_in_tx,
+    rebind_user_state_workspace_in_tx, reconcile_user_state_snapshot_in_tx,
+    resolve_user_state_ledger_conflict_in_tx, PrepareUserStateOperationsLimitsDto,
+    DEFAULT_USER_STATE_OPERATION_RETENTION_SECS,
 };
 pub use materialize::{
     defer_user_state_for_novel_in_tx, refresh_unattempted_user_state_identities_in_tx,
@@ -47,7 +49,7 @@ pub use types::{
     anchor_to_json, parse_portable_reader_anchor, CurrentSnapshotRetryDto,
     ResolveUserStateLedgerConflictInputDto, UserStateApplyEffectsDto, UserStateBindingDto,
     UserStateConflictDto, UserStateCurrentApplyResultDto, UserStateCurrentStatusDto,
-    UserStateDeferredDto, UserStateLedgerStatusDto,
+    UserStateDeferredDto, UserStateLedgerStatusDto, UserStateRebindMode,
 };
 
 const USER_STATE_BUSY_RETRIES: u32 = 3;
@@ -135,12 +137,124 @@ pub async fn db_user_state_get_binding(
 pub async fn db_user_state_bind_workspace(
     db: State<'_, AppDatabase>,
     binding: UserStateBindingDto,
+    seed_allowed: Option<bool>,
+    seed_cutoff_ms: Option<i64>,
 ) -> Result<DbMutationEnvelope<()>, String> {
     with_write_tx(
         db.pool_for(ReadMode::Queued),
         ledger_tx_options(),
         move |conn, ctx| {
-            Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &binding).await })
+            Box::pin(async move {
+                bind_user_state_workspace_with_options_in_tx(
+                    conn,
+                    ctx,
+                    &binding,
+                    seed_allowed,
+                    seed_cutoff_ms,
+                )
+                .await
+            })
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn db_user_state_rebind_workspace(
+    db: State<'_, AppDatabase>,
+    binding: UserStateBindingDto,
+    mode: UserStateRebindMode,
+    head_revision: Option<i64>,
+    seed_cutoff_ms: Option<i64>,
+    seed_allowed: Option<bool>,
+) -> Result<DbMutationEnvelope<()>, String> {
+    with_write_tx(
+        db.pool_for(ReadMode::Queued),
+        ledger_tx_options(),
+        move |conn, ctx| {
+            Box::pin(async move {
+                rebind_user_state_workspace_in_tx(
+                    conn,
+                    ctx,
+                    &binding,
+                    mode,
+                    head_revision,
+                    seed_cutoff_ms,
+                    seed_allowed,
+                )
+                .await
+            })
+        },
+    )
+    .await
+}
+
+#[tauri::command]
+pub async fn db_user_state_reconcile_snapshot(
+    app: AppHandle,
+    db: State<'_, AppDatabase>,
+    binding: UserStateBindingDto,
+    records: Vec<JsonValue>,
+    snapshot_revision: i64,
+    seed_allowed: Option<bool>,
+    seed_cutoff_ms: Option<i64>,
+    skipped_chapter_ids: Option<Vec<i64>>,
+) -> Result<DbMutationEnvelope<UserStateApplyEffectsDto>, String> {
+    let resolved_root = crate::chapter_media::media_root(&app).ok();
+    let skipped: HashSet<i64> = skipped_chapter_ids.unwrap_or_default().into_iter().collect();
+    let opts = TxOptions {
+        remote_content_sync: true,
+        notify_content_sync: false,
+        busy_begin_retries: USER_STATE_BUSY_RETRIES,
+        publish_metadata: false,
+        metadata_root: MetadataRoot::None,
+    };
+    with_write_tx(db.pool_for(ReadMode::Queued), opts, move |conn, ctx| {
+        Box::pin(async move {
+            reconcile_user_state_snapshot_in_tx(
+                resolved_root.as_deref(),
+                conn,
+                ctx,
+                &binding,
+                &records,
+                snapshot_revision,
+                seed_allowed,
+                seed_cutoff_ms,
+                &skipped,
+            )
+            .await
+        })
+    })
+    .await
+}
+
+#[tauri::command]
+pub async fn db_user_state_apply_local_retention(
+    db: State<'_, AppDatabase>,
+    prune_non_library_days: Option<i64>,
+    strip_timestamps_days: Option<i64>,
+    now_ms: Option<i64>,
+) -> Result<DbMutationEnvelope<u64>, String> {
+    let reference_now_ms = now_ms.unwrap_or_else(|| {
+        std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as i64)
+            .unwrap_or(0)
+    });
+    with_write_tx(
+        db.pool_for(ReadMode::Queued),
+        ledger_tx_options(),
+        move |conn, ctx| {
+            Box::pin(async move {
+                apply_local_user_state_retention_in_tx(
+                    conn,
+                    ctx,
+                    prune_non_library_days,
+                    strip_timestamps_days,
+                    reference_now_ms,
+                )
+                .await
+            })
         },
     )
     .await
@@ -253,6 +367,31 @@ pub async fn db_user_state_acknowledge_operations(
         },
     )
     .await
+}
+
+#[tauri::command]
+pub async fn db_user_state_prune_operations(
+    db: State<'_, AppDatabase>,
+    binding: UserStateBindingDto,
+    older_than_secs: Option<i64>,
+) -> Result<DbMutationEnvelope<u64>, String> {
+    let retention = older_than_secs.unwrap_or(DEFAULT_USER_STATE_OPERATION_RETENTION_SECS);
+    let envelope = with_write_tx(
+        db.pool_for(ReadMode::Queued),
+        ledger_tx_options(),
+        move |conn, ctx| {
+            Box::pin(async move {
+                prune_acknowledged_user_state_operations_in_tx(conn, ctx, &binding, retention).await
+            })
+        },
+    )
+    .await?;
+    if envelope.value > 0 {
+        if let Err(err) = db.reclaim_space(None).await {
+            log::warn!("[user-state] space reclaim after operation pruning failed: {err}");
+        }
+    }
+    Ok(envelope)
 }
 
 #[tauri::command]

@@ -279,7 +279,7 @@ pub async fn load_current_works_in_tx(conn: &mut SqliteConnection) -> Result<Vec
         .map(|r| CurrentWork {
             id: r.get("id"),
             plugin_id: r.get("plugin_id"),
-            source_novel_id: r.get("source_novel_id"),
+            source_novel_id: super::core::non_empty_source_id(r.get("source_novel_id")),
             novel_path: r.get("path"),
             name: r.get("name"),
             in_library: r.get("in_library"),
@@ -1348,7 +1348,7 @@ pub async fn prepare_deferred_current_retry_in_tx(
     let mut work_keys: Vec<String> = Vec::new();
     let mut seen: HashSet<String> = HashSet::new();
     for r in work_rows {
-        let source_novel_id: Option<String> = r.get("source_novel_id");
+        let source_novel_id = super::core::non_empty_source_id(r.get("source_novel_id"));
         if let Some(ref sid) = source_novel_id {
             let pid: String = r.get("plugin_id");
             let path: String = r.get("path");

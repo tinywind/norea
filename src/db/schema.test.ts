@@ -317,3 +317,85 @@ it("upgrades populated v12 storage to one user override per novel without changi
       .toEqual({ status: "Completed", updatedAt: 1763350000000, completedType: null });
   } finally { db.close(); rmSync(directory, { recursive: true }); }
 });
+
+it("upgrades populated v14 user_state_operation rows to track acknowledged_at without altering pending or conflict rows", () => {
+  mkdirSync(".tmp", { recursive: true });
+  const directory = mkdtempSync(".tmp/user-state-retention-migration-");
+  const file = join(directory, "norea.db");
+  let db = new DatabaseSync(file);
+  try {
+    applyRegisteredMigrations(db, 0, 14);
+    db.exec(`INSERT INTO user_state_operation(operation_id,namespace,entity_key,intent_sequence,payload,status,receipt) VALUES
+      ('op-ack','ns','["reading","k1"]',1,'{}','acknowledged','{"status":"applied"}'),
+      ('op-pending','ns','["reading","k2"]',2,'{}','pending',NULL),
+      ('op-conflict','ns','["reading","k3"]',3,'{}','conflict','{"status":"conflict"}')`);
+
+    applyRegisteredMigrations(db, 14, 15);
+    db.close();
+    db = new DatabaseSync(file);
+
+    const rows = db.prepare("SELECT operation_id AS id, status, receipt, acknowledged_at AS acknowledgedAt FROM user_state_operation ORDER BY intent_sequence").all() as {
+      id: string;
+      status: string;
+      receipt: string | null;
+      acknowledgedAt: number | null;
+    }[];
+    expect(rows).toHaveLength(3);
+    expect(rows[0]).toMatchObject({ id: "op-ack", status: "acknowledged", receipt: '{"status":"applied"}' });
+    expect(typeof rows[0]!.acknowledgedAt).toBe("number");
+    expect(rows[0]!.acknowledgedAt!).toBeGreaterThanOrEqual(0);
+    expect(rows[1]).toEqual({ id: "op-pending", status: "pending", receipt: null, acknowledgedAt: null });
+    expect(rows[2]).toEqual({ id: "op-conflict", status: "conflict", receipt: '{"status":"conflict"}', acknowledgedAt: null });
+
+    expect(() => db.exec(
+      "INSERT INTO user_state_operation(operation_id,namespace,entity_key,intent_sequence,payload,status,acknowledged_at) VALUES('op-bad','ns','k4',4,'{}','acknowledged',-1)",
+    )).toThrow();
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='user_state_operation_acknowledged_idx'").get())
+      .toEqual({ name: "user_state_operation_acknowledged_idx" });
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true });
+  }
+});
+
+it("upgrades populated v15 user_state_workspace rows with seed_suppressed and seed_cutoff_at checks", () => {
+  mkdirSync(".tmp", { recursive: true });
+  const directory = mkdtempSync(".tmp/user-state-epoch-retention-migration-");
+  const file = join(directory, "norea.db");
+  let db = new DatabaseSync(file);
+  try {
+    applyRegisteredMigrations(db, 0, 15);
+    db.exec(`INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch,cursor,read_through,last_success_at)
+      VALUES('https://state.example','["https://state.example","ws-1","epoch-1"]','ws-1','epoch-1',12,NULL,5000)`);
+
+    applyRegisteredMigrations(db, 15, 16);
+    db.close();
+    db = new DatabaseSync(file);
+
+    expect(
+      db.prepare("SELECT workspace_id AS workspaceId, epoch, cursor, seed_suppressed AS seedSuppressed, seed_cutoff_at AS seedCutoffAt FROM user_state_workspace").get(),
+    ).toEqual({
+      workspaceId: "ws-1",
+      epoch: "epoch-1",
+      cursor: 12,
+      seedSuppressed: 0,
+      seedCutoffAt: null,
+    });
+    expect(() =>
+      db.exec("UPDATE user_state_workspace SET seed_suppressed = 2 WHERE server_url = 'https://state.example'"),
+    ).toThrow();
+    expect(() =>
+      db.exec("UPDATE user_state_workspace SET seed_cutoff_at = -1 WHERE server_url = 'https://state.example'"),
+    ).toThrow();
+    db.exec("UPDATE user_state_workspace SET seed_suppressed = 1, seed_cutoff_at = 1700000000000 WHERE server_url = 'https://state.example'");
+    expect(
+      db.prepare("SELECT seed_suppressed AS seedSuppressed, seed_cutoff_at AS seedCutoffAt FROM user_state_workspace").get(),
+    ).toEqual({
+      seedSuppressed: 1,
+      seedCutoffAt: 1_700_000_000_000,
+    });
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true });
+  }
+});

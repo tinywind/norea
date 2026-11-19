@@ -1,18 +1,28 @@
 import { useEffect, useRef, useState } from "react";
-import { Button, Group, Paper, ScrollArea, SimpleGrid, Stack, Switch, Text, TextInput } from "@mantine/core";
+import { Button, Group, NumberInput, Paper, ScrollArea, SimpleGrid, Stack, Switch, Text, TextInput } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { formatDateTimeForLocale, useTranslation, type AppLocale, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
 import { ContentServerError } from "../lib/content-sync/client";
-import { getUserStateStatus, resolveUserStateConflict, resumeUserStateAfterRestore, synchronizeUserState } from "../lib/user-state/sync";
+import {
+  getUserStateStatus, rebindUserStateWorkspace, resolveUserStateConflict,
+  resumeUserStateAfterRestore, synchronizeUserState,
+} from "../lib/user-state/sync";
 import { subscribeUserStateLedgerChanges } from "../db/user-state";
 import type { ResolveUserStateConflictInput, UserStateConflict, UserStateEntity, UserStateKind, UserStateValue, UserStateValueMap } from "../lib/user-state/types";
 import { useContentSyncStore } from "../store/content-sync";
-import { USER_STATE_IDLE_RUNTIME, useUserStateStore } from "../store/user-state";
-import { SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
+import { USER_STATE_IDLE_RUNTIME, useUserStateStore, type UserStateLocalRetentionConfig } from "../store/user-state";
+import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
-import { ConnectIcon, SyncIcon } from "./ui/icons";
+import { ConnectIcon, SyncIcon, UploadIcon } from "./ui/icons";
+
+const DEFAULT_RETENTION_CONFIG: UserStateLocalRetentionConfig = {
+  pruneNonLibraryEnabled: false,
+  pruneNonLibraryDays: 90,
+  stripTimestampsEnabled: false,
+  stripTimestampsDays: 90,
+};
 
 type Translate = ReturnType<typeof useTranslation>["t"];
 
@@ -196,7 +206,9 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
   const deviceName = useContentSyncStore(state => state.deviceName);
   const enabled = useUserStateStore(state => state.enabledByServer[serverUrl] === true);
   const runtime = useUserStateStore(state => state.runtimeByServer[serverUrl] ?? USER_STATE_IDLE_RUNTIME);
+  const retentionConfig = useUserStateStore(state => state.retentionByServer?.[serverUrl] ?? DEFAULT_RETENTION_CONFIG);
   const setEnabled = useUserStateStore(state => state.setEnabled);
+  const setRetention = useUserStateStore(state => state.setRetention);
   const defaultName = useQuery({
     queryKey: ["device", "default-name"], queryFn: () => invoke<string>("get_default_device_name"),
     staleTime: Infinity, meta: { errorPresentation: "inline" },
@@ -247,6 +259,7 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
 
   const data = status.data;
   const pausedAfterRestore = data?.pausedAfterRestore === true;
+  const epochMismatch = data?.epochMismatch ?? null;
   const error = actionError || runtime.error || (status.error ? describeError(status.error) : null);
   return (
     <SettingsSection title={t("userState.title")} description={t("userState.description")}>
@@ -272,6 +285,28 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
           </Stack>
         </Paper>
       ) : null}
+      {epochMismatch ? (
+        <Paper withBorder p="md" role="status">
+          <Stack gap="sm">
+            <Text fw="var(--norea-weight-bold)">{t("userState.epochMismatchTitle")}</Text>
+            <Text size="sm">{t("userState.epochMismatchDescription")}</Text>
+            <Text size="sm">{t("userState.epochMismatchReseedDescription")}</Text>
+            <Text size="sm">{t("userState.epochMismatchFreshDescription")}</Text>
+            <Group gap="sm">
+              <Button styles={multilineButtonStyles} leftSection={<UploadIcon />} variant="default" loading={working}
+                disabled={!serverUrl || working || pausedAfterRestore}
+                onClick={() => { void run(() => rebindUserStateWorkspace("reseed")); }}>
+                {t("userState.epochMismatchReseed")}
+              </Button>
+              <Button styles={multilineButtonStyles} leftSection={<ConnectIcon />} variant="default" loading={working}
+                disabled={!serverUrl || working || pausedAfterRestore}
+                onClick={() => { void run(() => rebindUserStateWorkspace("start_fresh")); }}>
+                {t("userState.epochMismatchFresh")}
+              </Button>
+            </Group>
+          </Stack>
+        </Paper>
+      ) : null}
       <SettingsFieldRow label={t("userState.automatic")} description={t("userState.automaticDescription")}>
         <Switch checked={enabled} disabled={!serverUrl || pausedAfterRestore} aria-label={t("userState.automatic")}
           onChange={event => setEnabled(serverUrl, event.currentTarget.checked)} />
@@ -281,7 +316,7 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
           time: formatDateTimeForLocale(locale, data.lastSuccessAt),
         }) : t("userState.never")}>
         <SettingsInlineControls>
-          <IconButton label={t("userState.syncNow")} size="lg" loading={working} disabled={!serverUrl || working || pausedAfterRestore}
+          <IconButton label={t("userState.syncNow")} size="lg" loading={working} disabled={!serverUrl || working || pausedAfterRestore || Boolean(epochMismatch)}
             onClick={() => { void run(synchronizeUserState); }}><SyncIcon /></IconButton>
         </SettingsInlineControls>
       </SettingsFieldRow>
@@ -296,6 +331,13 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
                 pending: data.projectionPending ?? 0, failed: data.projectionFailed ?? 0,
               })}
             </Text>
+            {data.seedCutoffAt != null ? (
+              <Text size="sm" c="dimmed">
+                {t("userState.retentionCutoffStatus", {
+                  date: formatDateTimeForLocale(locale, data.seedCutoffAt),
+                })}
+              </Text>
+            ) : null}
             {data.conflicts.length ? <Text size="sm">{t("userState.conflictsDescription")}</Text> : null}
             {data.conflicts.map(conflict => (
               <UserStateConflictCard key={conflict.id + ":" + conflict.version} conflict={conflict} busy={working || pausedAfterRestore}
@@ -304,6 +346,32 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
           </Stack>
         </SettingsFieldRow>
       ) : null}
+      <SettingsAdvancedGroup>
+        <SettingsFieldRow label={t("userState.retentionPruneNonLibrary")} description={t("userState.retentionPruneNonLibraryDescription")}>
+          <Switch checked={retentionConfig.pruneNonLibraryEnabled} disabled={!serverUrl || pausedAfterRestore}
+            aria-label={t("userState.retentionPruneNonLibrary")}
+            onChange={event => setRetention?.(serverUrl, { pruneNonLibraryEnabled: event.currentTarget.checked })} />
+        </SettingsFieldRow>
+        {retentionConfig.pruneNonLibraryEnabled ? (
+          <SettingsFieldRow label={t("userState.retentionPruneNonLibraryDays")}>
+            <NumberInput aria-label={t("userState.retentionPruneNonLibraryDays")} value={retentionConfig.pruneNonLibraryDays}
+              min={1} max={3650} allowDecimal={false} allowNegative={false} disabled={!serverUrl || pausedAfterRestore}
+              onChange={value => { if (typeof value === "number") setRetention?.(serverUrl, { pruneNonLibraryDays: value }); }} />
+          </SettingsFieldRow>
+        ) : null}
+        <SettingsFieldRow label={t("userState.retentionStripTimestamps")} description={t("userState.retentionStripTimestampsDescription")}>
+          <Switch checked={retentionConfig.stripTimestampsEnabled} disabled={!serverUrl || pausedAfterRestore}
+            aria-label={t("userState.retentionStripTimestamps")}
+            onChange={event => setRetention?.(serverUrl, { stripTimestampsEnabled: event.currentTarget.checked })} />
+        </SettingsFieldRow>
+        {retentionConfig.stripTimestampsEnabled ? (
+          <SettingsFieldRow label={t("userState.retentionStripTimestampsDays")}>
+            <NumberInput aria-label={t("userState.retentionStripTimestampsDays")} value={retentionConfig.stripTimestampsDays}
+              min={1} max={3650} allowDecimal={false} allowNegative={false} disabled={!serverUrl || pausedAfterRestore}
+              onChange={value => { if (typeof value === "number") setRetention?.(serverUrl, { stripTimestampsDays: value }); }} />
+          </SettingsFieldRow>
+        ) : null}
+      </SettingsAdvancedGroup>
     </SettingsSection>
   );
 }

@@ -20,6 +20,13 @@ pub const STORED_CHAPTER_PREFIX: &str = "norea-stored:";
 const MAX_SAFE_INT_I64: i64 = 9_007_199_254_740_991;
 const MAX_SAFE_INT_F64: f64 = 9_007_199_254_740_991.0;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UserStateRebindMode {
+    Reseed,
+    StartFresh,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct UserStateBindingDto {
@@ -255,6 +262,29 @@ pub struct ParsedUserStateReadResponse {
     pub through: i64,
     pub next_cursor: i64,
     pub has_more: bool,
+    pub records: Vec<ParsedUserStateRecord>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedUserStateRetentionResponse {
+    pub workspace_id: String,
+    pub epoch: String,
+    pub head_revision: i64,
+    pub compacted_through: i64,
+    pub seed_allowed: bool,
+    pub seed_cutoff_at: Option<i64>,
+}
+
+#[derive(Debug, Clone)]
+pub struct ParsedUserStateSnapshotResponse {
+    pub workspace_id: String,
+    pub epoch: String,
+    pub head_revision: i64,
+    pub snapshot_revision: i64,
+    pub next_entity_key: Option<String>,
+    pub has_more: bool,
+    pub seed_allowed: bool,
+    pub seed_cutoff_at: Option<i64>,
     pub records: Vec<ParsedUserStateRecord>,
 }
 
@@ -1206,7 +1236,7 @@ pub fn parse_user_state_merge_result(
         Some(raw) => Some(parse_user_state_record(raw)?),
         None => return Err(protocol_err("invalid record")),
     };
-    if status != "conflict" && current.is_none() {
+    if status != "conflict" && status != "seed-skipped" && current.is_none() {
         return Err(protocol_err("an acknowledged change must include its record"));
     }
     let category_alias = match row.get("categoryAlias") {
@@ -1244,6 +1274,132 @@ pub fn parse_user_state_merge_result(
         current,
         reason,
         category_alias,
+    })
+}
+
+pub fn parse_user_state_retention_response(
+    value: &JsonValue,
+) -> Result<ParsedUserStateRetentionResponse, String> {
+    let row = expect_object_keys(
+        value,
+        &[
+            "version",
+            "workspaceId",
+            "epoch",
+            "headRevision",
+            "compactedThrough",
+            "seedAllowed",
+            "seedCutoffAt",
+        ],
+        "retention response",
+    )?;
+    let version = parse_safe_integer(row.get("version"), "protocol version", 0)?;
+    if version != USER_STATE_VERSION {
+        return Err(protocol_err("unsupported protocol version"));
+    }
+    let workspace_id = parse_identifier(row.get("workspaceId"), "workspace ID")?;
+    let epoch = parse_identifier(row.get("epoch"), "workspace epoch")?;
+    let head_revision = parse_safe_integer(row.get("headRevision"), "head revision", 0)?;
+    let compacted_through = parse_safe_integer(row.get("compactedThrough"), "compacted through", 0)?;
+    if compacted_through > head_revision {
+        return Err(protocol_err("compacted through exceeds the head revision"));
+    }
+    let seed_allowed = parse_bool(row.get("seedAllowed"), "seed allowed flag")?;
+    let seed_cutoff_at = parse_nullable_time(row.get("seedCutoffAt"), "seed cutoff time")?;
+    Ok(ParsedUserStateRetentionResponse {
+        workspace_id,
+        epoch,
+        head_revision,
+        compacted_through,
+        seed_allowed,
+        seed_cutoff_at,
+    })
+}
+
+pub fn parse_user_state_snapshot_response(
+    value: &JsonValue,
+) -> Result<ParsedUserStateSnapshotResponse, String> {
+    let row = expect_object_keys(
+        value,
+        &[
+            "version",
+            "workspaceId",
+            "epoch",
+            "headRevision",
+            "snapshotRevision",
+            "nextEntityKey",
+            "hasMore",
+            "seedAllowed",
+            "seedCutoffAt",
+            "records",
+        ],
+        "snapshot response",
+    )?;
+    let version = parse_safe_integer(row.get("version"), "protocol version", 0)?;
+    if version != USER_STATE_VERSION {
+        return Err(protocol_err("unsupported protocol version"));
+    }
+    let workspace_id = parse_identifier(row.get("workspaceId"), "workspace ID")?;
+    let epoch = parse_identifier(row.get("epoch"), "workspace epoch")?;
+    let head_revision = parse_safe_integer(row.get("headRevision"), "head revision", 0)?;
+    let snapshot_revision = parse_safe_integer(row.get("snapshotRevision"), "snapshot revision", 0)?;
+    if snapshot_revision > head_revision {
+        return Err(protocol_err(
+            "snapshot revision exceeds the head revision",
+        ));
+    }
+    let next_entity_key = match row.get("nextEntityKey") {
+        Some(JsonValue::Null) => None,
+        other => Some(parse_text_value(
+            other,
+            "next entity key",
+            131_072,
+            false,
+            false,
+        )?),
+    };
+    if next_entity_key.as_ref().is_some_and(|key| key.len() > 131_072) {
+        return Err(protocol_err("invalid next entity key"));
+    }
+    let has_more = parse_bool(row.get("hasMore"), "has more flag")?;
+    if has_more && next_entity_key.is_none() {
+        return Err(protocol_err(
+            "a continuing snapshot page must include a next entity key",
+        ));
+    }
+    if !has_more && next_entity_key.is_some() {
+        return Err(protocol_err(
+            "a final snapshot page must not include a next entity key",
+        ));
+    }
+    let seed_allowed = parse_bool(row.get("seedAllowed"), "seed allowed flag")?;
+    let seed_cutoff_at = parse_nullable_time(row.get("seedCutoffAt"), "seed cutoff time")?;
+    let Some(raw_records) = row.get("records").and_then(JsonValue::as_array) else {
+        return Err(protocol_err("invalid snapshot record page"));
+    };
+    let mut records = Vec::with_capacity(raw_records.len());
+    for raw in raw_records {
+        records.push(parse_user_state_record(raw)?);
+    }
+    if records
+        .iter()
+        .any(|record| record.revision > snapshot_revision)
+    {
+        return Err(protocol_err("record exceeds the snapshot revision"));
+    }
+    if has_more && records.is_empty() {
+        return Err(protocol_err("a continuing snapshot page must make progress"));
+    }
+    Ok(ParsedUserStateSnapshotResponse {
+        workspace_id,
+        epoch,
+        head_revision,
+        snapshot_revision,
+        next_entity_key,
+        has_more,
+        seed_allowed,
+        seed_cutoff_at,
+        records,
     })
 }
 

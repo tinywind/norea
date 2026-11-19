@@ -514,7 +514,12 @@ export const userStateWorkspaceTable = sqliteTable("user_state_workspace", {
   serverUrl: text("server_url").primaryKey(), namespace: text("namespace").notNull().unique(),
   workspaceId: text("workspace_id").notNull(), epoch: text("epoch").notNull(),
   cursor: integer("cursor").notNull().default(0), readThrough: integer("read_through"), lastSuccessAt: integer("last_success_at"),
-});
+  seedSuppressed: integer("seed_suppressed").notNull().default(0),
+  seedCutoffAt: integer("seed_cutoff_at"),
+}, t => ({
+  seedSuppressedCheck: check("user_state_workspace_seed_suppressed", sql`${t.seedSuppressed} IN (0, 1)`),
+  seedCutoffAtCheck: check("user_state_workspace_seed_cutoff_at", sql`${t.seedCutoffAt} IS NULL OR ${t.seedCutoffAt} >= 0`),
+}));
 export const userStateIntentTable = sqliteTable("user_state_intent", {
   sequence: integer("sequence").primaryKey({ autoIncrement: true }), entityKey: text("entity_key").notNull().unique(),
   entityJson: text("entity_json").notNull(), valueJson: text("value_json").notNull(), seed: integer("seed").notNull().default(0),
@@ -528,7 +533,12 @@ export const userStateOperationTable = sqliteTable("user_state_operation", {
   operationId: text("operation_id").primaryKey(), namespace: text("namespace").notNull(), entityKey: text("entity_key").notNull(),
   intentSequence: integer("intent_sequence").notNull(), payload: text("payload").notNull(),
   status: text("status").notNull().default("pending"), receipt: text("receipt"),
-}, t => ({ pendingIdx: index("user_state_operation_pending_idx").on(t.namespace, t.status, t.intentSequence) }));
+  acknowledgedAt: integer("acknowledged_at"),
+}, t => ({
+  pendingIdx: index("user_state_operation_pending_idx").on(t.namespace, t.status, t.intentSequence),
+  acknowledgedIdx: index("user_state_operation_acknowledged_idx").on(t.namespace, t.status, t.acknowledgedAt),
+  acknowledgedAtCheck: check("user_state_operation_acknowledged_at", sql`${t.acknowledgedAt} IS NULL OR ${t.acknowledgedAt} >= 0`),
+}));
 export const userStateRecordTable = sqliteTable("user_state_record", {
   namespace: text("namespace").notNull(), entityKey: text("entity_key").notNull(), revision: integer("revision").notNull(), payload: text("payload").notNull(),
   appliedRevision: integer("applied_revision").notNull().default(0), deletionRevision: integer("deletion_revision").notNull().default(0),

@@ -3,9 +3,14 @@ import { translate } from "../../i18n";
 import { holdDownloadGoalsAfterRestore } from "../download-goals/budget";
 import { useAppearanceStore } from "../../store/appearance";
 import { cancelWorkMetadataRecovery, initializeDatabaseSession } from "../../db/client";
+import { getUserStateRestorePaused } from "../../db/user-state";
 import { useContentSyncStore } from "../../store/content-sync";
+import { useUserStateStore } from "../../store/user-state";
 import { enqueueMainTask } from "../tasks/main-tasks";
 import { suspendVpnDownloadsForRestore } from "../tasks/vpn-download-runtime";
+import { waitForUserStateSynchronization } from "../user-state/maintenance";
+import { synchronizeUserState } from "../user-state/sync";
+import { USER_STATE_VERSION } from "../user-state/types";
 import { contentServerRequest, normalizeContentServerUrl } from "./client";
 import { registerContentDevice, type ContentCapabilities } from "./device";
 import { runContentStorageOperation } from "./storage-operation";
@@ -41,7 +46,7 @@ function assertServer(server: string): void {
 }
 export async function defaultBackupDeviceName(): Promise<string> {
   const name = useContentSyncStore.getState().deviceName || await invoke<string>("get_default_device_name");
-  if (!name.trim() || name.trim() !== name || [...name].length > 120 || /[\u0000-\u001f\u007f]/.test(name)) {
+  if (!name.trim() || name.trim() !== name || [...name].length > 120 || /[\u0000-\u001f\u007f]/.test(name) || name === "." || name === "..") {
     throw new DeviceBackupError("invalidName");
   }
   return name;
@@ -64,7 +69,10 @@ function validVaultInventory(vault: DeviceBackupManifest["vpnVault"]): boolean {
     typeof entry.sha256 === "string" && /^[a-f0-9]{64}$/.test(entry.sha256)) &&
     new Set(entries.map(entry => entry.path)).size === entries.length;
 }
-async function access(server: string, signal?: AbortSignal): Promise<string> {
+async function accessWithCapabilities(
+  server: string,
+  signal?: AbortSignal,
+): Promise<{ token: string; capabilities: ContentCapabilities & { deviceBackupVersion?: number } }> {
   assertServer(server);
   const capabilities = await contentServerRequest<ContentCapabilities & { deviceBackupVersion?: number }>(server, "/capabilities", undefined, "GET", undefined, signal);
   assertServer(server);
@@ -73,7 +81,10 @@ async function access(server: string, signal?: AbortSignal): Promise<string> {
   }
   const token = await registerContentDevice(server, useContentSyncStore.getState().deviceName, signal);
   assertServer(server);
-  return token;
+  return { token, capabilities };
+}
+async function access(server: string, signal?: AbortSignal): Promise<string> {
+  return (await accessWithCapabilities(server, signal)).token;
 }
 export async function listDeviceBackups(serverUrl: string, signal?: AbortSignal): Promise<DeviceBackupEntry[]> {
   const server = normalizeContentServerUrl(serverUrl);
@@ -126,8 +137,23 @@ export async function uploadDeviceBackup(serverUrl: string, onPhase?: (phase: De
   try {
     const server = normalizeContentServerUrl(serverUrl);
     const deviceName = await defaultBackupDeviceName();
-    const token = await access(server);
+    const { token, capabilities } = await accessWithCapabilities(server);
     onPhase?.("preparing");
+    if (
+      capabilities.userStateVersion === USER_STATE_VERSION &&
+      useUserStateStore.getState().enabledByServer[server] === true &&
+      !(await getUserStateRestorePaused())
+    ) {
+      try {
+        await synchronizeUserState();
+      } catch (error) {
+        assertServer(server);
+        throw error;
+      }
+    } else {
+      await waitForUserStateSynchronization();
+    }
+    assertServer(server);
     file = await exclusive("backup.export", async () => {
       assertServer(server);
       return invoke<BackupFile>("device_backup_create", { deviceName, settings: readDeviceSettings() });

@@ -9,8 +9,8 @@ use crate::database::AppDatabase;
 use super::tx::{with_write_tx, MetadataRoot, TxContext, TxOptions};
 use super::user_state::core::{
     has_user_state_schema_in_tx, record_category_in_tx, record_chapter_unread_flags_in_tx,
-    record_library_in_tx, record_membership_in_tx, record_novel_chapters_in_tx,
-    record_resume_cleared_in_tx, stable_category_id_in_tx, RecordCategoryOptions,
+    record_cleared_reading_progress_in_tx, record_library_in_tx, record_membership_in_tx,
+    snapshot_reading_progress_clear_targets_in_tx, stable_category_id_in_tx, RecordCategoryOptions,
 };
 use super::{DbMutationEffects, DbMutationEnvelope, ReadMode};
 
@@ -579,6 +579,8 @@ pub async fn clear_reading_progress_in_tx(
     conn: &mut SqliteConnection,
     ctx: &mut TxContext,
 ) -> Result<MaintenanceResultDto, String> {
+    let targets = snapshot_reading_progress_clear_targets_in_tx(conn).await?;
+
     let res = sqlx::query(
         "UPDATE chapter \
          SET progress = 0, unread = 1, read_at = NULL, updated_at = unixepoch() \
@@ -597,8 +599,7 @@ pub async fn clear_reading_progress_in_tx(
     .await
     .map_err(|err| format!("db maintenance: clear novel last_read_at: {err}"))?;
 
-    record_novel_chapters_in_tx(conn, ctx, None).await?;
-    record_resume_cleared_in_tx(conn, ctx, None).await?;
+    record_cleared_reading_progress_in_tx(conn, ctx, targets).await?;
 
     Ok(MaintenanceResultDto {
         rows_affected: res.rows_affected(),
@@ -1092,5 +1093,312 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(goal_count, 0);
+    }
+
+    #[tokio::test]
+    async fn clear_reading_progress_records_only_reset_or_shared_history_chapters_and_resumes() {
+        let harness = open_test_db().await;
+        let pool = harness.db.writer();
+        let dir = tempfile::tempdir().unwrap();
+        let opts = || TxOptions {
+            remote_content_sync: false,
+            notify_content_sync: false,
+            busy_begin_retries: 3,
+            publish_metadata: false,
+            metadata_root: MetadataRoot::Path(dir.path().to_path_buf()),
+        };
+
+        sqlx::query(
+            "INSERT INTO user_state_workspace(server_url, namespace, workspace_id, epoch, cursor) \
+             VALUES ('https://sync.example', 'ns', 'ws', 'ep', 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        // Novels:
+        // 1: has last_read_at = 500
+        // 2: last_read_at IS NULL, no resume history (should NOT emit resume clear)
+        // 3: last_read_at IS NULL, has shared resume in user_state_record (SHOULD emit resume clear)
+        // 4: last_read_at IS NULL, has pending resume intent (SHOULD emit resume clear)
+        // 5: local novel with last_read_at = 500 (should NOT emit any user_state_intent)
+        sqlx::query(
+            "INSERT INTO novel (id, plugin_id, source_novel_id, path, name, in_library, is_local, last_read_at) \
+             VALUES \
+               (1, 'src', 'n1', '/n1', 'Novel 1', 1, 0, 500), \
+               (2, 'src', 'n2', '/n2', 'Novel 2', 1, 0, NULL), \
+               (3, 'src', 'n3', '/n3', 'Novel 3', 1, 0, NULL), \
+               (4, 'src', 'n4', '/n4', 'Novel 4', 1, 0, NULL), \
+               (5, 'local', 'local-1', 'local-1', 'Local', 1, 1, 500)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        // Chapters:
+        // 10 (N1): untouched unread, no shared history, bookmarked=1 -> bookmark preserved, NO reading intent
+        // 11 (N1): progress=60, unread=1, read_at=NULL -> reset + reading intent
+        // 12 (N1): progress=0, unread=0, read_at=NULL -> reset + reading intent
+        // 13 (N1): progress=0, unread=1, read_at=500 -> reset + reading intent
+        // 14 (N2): untouched unread, has user_state_record -> reading intent
+        // 15 (N2): untouched unread, has user_state_intent -> reading intent updated
+        // 16 (N1): private chapter with progress=60 + user_state_private -> private marker deleted + reading intent
+        // 17 (N1): private chapter with progress=0, unread=1, read_at=NULL + user_state_private -> private marker deleted + reading intent
+        // 18 (N1): composed untouched chapter with user_state_private -> private marker deleted + compositionEntryId preserved
+        // 19 (N5): local chapter with progress=50, unread=0, read_at=500 -> local reset, NO reading intent
+        sqlx::query(
+            "INSERT INTO chapter (id, novel_id, path, name, position, progress, unread, read_at, bookmark) \
+             VALUES \
+               (10, 1, '/c10', 'Ch 10', 1, 0, 1, NULL, 1), \
+               (11, 1, '/c11', 'Ch 11', 2, 60, 1, NULL, 0), \
+               (12, 1, '/c12', 'Ch 12', 3, 0, 0, NULL, 0), \
+               (13, 1, '/c13', 'Ch 13', 4, 0, 1, 500, 0), \
+               (14, 2, '/c14', 'Ch 14', 1, 0, 1, NULL, 0), \
+               (15, 2, '/c15', 'Ch 15', 2, 0, 1, NULL, 0), \
+               (16, 1, '/c16', 'Ch 16', 5, 60, 1, NULL, 0), \
+               (17, 1, '/c17', 'Ch 17', 6, 0, 1, NULL, 0), \
+               (18, 1, 'norea-composed:entry-18', 'Ch 18', 7, 0, 1, NULL, 0), \
+               (19, 5, '/lc19', 'Local Ch', 1, 50, 0, 500, 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let comp_payload = serde_json::json!({
+            "version": 1,
+            "updatedAt": 1,
+            "entries": [{
+                "id": "entry-18",
+                "path": "norea-composed:entry-18",
+                "storageChapterNumber": "7",
+                "primarySource": 0,
+                "user": { "included": true, "order": 7, "name": null, "chapterNumber": null },
+                "sources": [{
+                    "pluginId": "src",
+                    "novelId": "n1",
+                    "novelPath": "/n1",
+                    "chapterPath": "/raw-18",
+                    "chapterNumber": "7",
+                    "name": "Ch 18",
+                    "position": 7,
+                    "page": "1",
+                    "contentType": "html",
+                    "releaseTime": null
+                }]
+            }]
+        });
+        sqlx::query("INSERT INTO novel_chapter_composition(novel_id, payload) VALUES (1, ?1)")
+            .bind(comp_payload.to_string())
+            .execute(pool)
+            .await
+            .unwrap();
+
+        let k_reading = |sid: &str, npath: &str, cpath: &str| {
+            let work = crate::db::user_state::types::user_state_work_key_parts(
+                "src",
+                Some(sid),
+                npath,
+            );
+            serde_json::to_string(&("reading", work, cpath)).unwrap()
+        };
+        let k_resume = |sid: &str, npath: &str| {
+            let work = crate::db::user_state::types::user_state_work_key_parts(
+                "src",
+                Some(sid),
+                npath,
+            );
+            serde_json::to_string(&("resume", work)).unwrap()
+        };
+
+        let rec_c14_key = k_reading("n2", "/n2", "/c14");
+        sqlx::query(
+            "INSERT INTO user_state_record(namespace, entity_key, revision, payload, applied_revision) \
+             VALUES ('ns', ?1, 1, '{}', 1)",
+        )
+        .bind(&rec_c14_key)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let int_c15_key = k_reading("n2", "/n2", "/c15");
+        let int_c15_ent = serde_json::json!({
+            "kind": "reading",
+            "work": { "pluginId": "src", "sourceNovelId": "n2", "novelPath": "/n2", "name": "Novel 2" },
+            "chapter": { "chapterPath": "/c15", "name": "Ch 15" }
+        })
+        .to_string();
+        sqlx::query(
+            "INSERT INTO user_state_intent(entity_key, entity_json, value_json, seed) \
+             VALUES (?1, ?2, '{\"progress\":50,\"unread\":false,\"readAt\":100}', 0)",
+        )
+        .bind(&int_c15_key)
+        .bind(&int_c15_ent)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        for (cpath, k) in [
+            ("/c16", k_reading("n1", "/n1", "/c16")),
+            ("/c17", k_reading("n1", "/n1", "/c17")),
+            ("norea-composed:entry-18", k_reading("n1", "/n1", "norea-composed:entry-18")),
+        ] {
+            let _ = cpath;
+            sqlx::query(
+                "INSERT INTO user_state_private(entity_key, public_value_json) \
+                 VALUES (?1, '{\"progress\":0,\"unread\":true,\"readAt\":null}')",
+            )
+            .bind(&k)
+            .execute(pool)
+            .await
+            .unwrap();
+        }
+
+        let rec_n3_resume_key = k_resume("n3", "/n3");
+        sqlx::query(
+            "INSERT INTO user_state_record(namespace, entity_key, revision, payload, applied_revision) \
+             VALUES ('ns', ?1, 2, '{}', 2)",
+        )
+        .bind(&rec_n3_resume_key)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let int_n4_resume_key = k_resume("n4", "/n4");
+        let int_n4_resume_ent = serde_json::json!({
+            "kind": "resume",
+            "work": { "pluginId": "src", "sourceNovelId": "n4", "novelPath": "/n4", "name": "Novel 4" }
+        })
+        .to_string();
+        sqlx::query(
+            "INSERT INTO user_state_intent(entity_key, entity_json, value_json, seed) \
+             VALUES (?1, ?2, '{\"chapter\":null,\"anchor\":null,\"openedAt\":null}', 0)",
+        )
+        .bind(&int_n4_resume_key)
+        .bind(&int_n4_resume_ent)
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let envelope = with_write_tx(pool, opts(), |conn, ctx| {
+            Box::pin(async move { clear_reading_progress_in_tx(conn, ctx).await })
+        })
+        .await
+        .unwrap();
+        assert_eq!(envelope.value.rows_affected, 5);
+        assert_eq!(
+            envelope.effects.user_state_priority,
+            Some(crate::db::UserStateCommitPriority::Reading)
+        );
+        assert!(envelope.effects.user_state_ledger_changed);
+
+        let c10_bookmark: i64 = sqlx::query_scalar("SELECT bookmark FROM chapter WHERE id = 10")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(c10_bookmark, 1);
+        let local_ch: (f64, i64, Option<i64>) =
+            sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 19")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(local_ch, (0.0, 1, None));
+
+        let remaining_private: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_private")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(remaining_private, 0);
+
+        let intents: Vec<(String, String, String)> = sqlx::query_as(
+            "SELECT entity_key, entity_json, value_json FROM user_state_intent ORDER BY entity_key",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+
+        let recorded_keys: HashSet<String> = intents.iter().map(|(k, _, _)| k.clone()).collect();
+        let expected_keys: HashSet<String> = [
+            k_reading("n1", "/n1", "/c11"),
+            k_reading("n1", "/n1", "/c12"),
+            k_reading("n1", "/n1", "/c13"),
+            k_reading("n2", "/n2", "/c14"),
+            k_reading("n2", "/n2", "/c15"),
+            k_reading("n1", "/n1", "/c16"),
+            k_reading("n1", "/n1", "/c17"),
+            k_reading("n1", "/n1", "norea-composed:entry-18"),
+            k_resume("n1", "/n1"),
+            k_resume("n3", "/n3"),
+            k_resume("n4", "/n4"),
+        ]
+        .into_iter()
+        .collect();
+        assert_eq!(recorded_keys, expected_keys);
+
+        let c18_key = k_reading("n1", "/n1", "norea-composed:entry-18");
+        let c18_ent_json: serde_json::Value = serde_json::from_str(
+            &intents.iter().find(|(k, _, _)| k == &c18_key).unwrap().1,
+        )
+        .unwrap();
+        assert_eq!(
+            c18_ent_json["chapter"]["compositionEntryId"].as_str(),
+            Some("entry-18")
+        );
+
+        let c15_val_json: serde_json::Value = serde_json::from_str(
+            &intents.iter().find(|(k, _, _)| k == &int_c15_key).unwrap().2,
+        )
+        .unwrap();
+        assert_eq!(
+            c15_val_json,
+            serde_json::json!({ "progress": 0, "unread": true, "readAt": null })
+        );
+    }
+
+    #[tokio::test]
+    async fn clear_reading_progress_leaves_user_state_effects_clean_when_only_untouched_or_local() {
+        let harness = open_test_db().await;
+        let pool = harness.db.writer();
+        let dir = tempfile::tempdir().unwrap();
+        let opts = || TxOptions {
+            remote_content_sync: false,
+            notify_content_sync: false,
+            busy_begin_retries: 3,
+            publish_metadata: false,
+            metadata_root: MetadataRoot::Path(dir.path().to_path_buf()),
+        };
+
+        sqlx::query(
+            "INSERT INTO novel (id, plugin_id, source_novel_id, path, name, in_library, is_local, last_read_at) \
+             VALUES \
+               (1, 'src', 'n1', '/n1', 'Untouched Remote', 1, 0, NULL), \
+               (2, 'local', 'local-1', 'local-1', 'Local', 1, 1, 500)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chapter (id, novel_id, path, name, position, progress, unread, read_at) \
+             VALUES \
+               (10, 1, '/c10', 'Untouched', 1, 0, 1, NULL), \
+               (20, 2, '/lc20', 'Local', 1, 75, 0, 500)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let envelope = with_write_tx(pool, opts(), |conn, ctx| {
+            Box::pin(async move { clear_reading_progress_in_tx(conn, ctx).await })
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(envelope.value.rows_affected, 1);
+        assert_eq!(envelope.effects.user_state_priority, None);
+        assert!(!envelope.effects.user_state_ledger_changed);
+        let intent_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_intent")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(intent_count, 0);
     }
 }

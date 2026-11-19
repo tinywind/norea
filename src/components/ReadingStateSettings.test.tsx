@@ -3,7 +3,7 @@ import { beforeEach, expect, it, vi } from "vitest";
 import type { UserStateConflict, UserStateStatus } from "../lib/user-state/types";
 
 const mocks = vi.hoisted(() => ({
-  sync: vi.fn(), resume: vi.fn(), resolve: vi.fn(), refetch: vi.fn(), setEnabled: vi.fn(),
+  sync: vi.fn(), resume: vi.fn(), resolve: vi.fn(), rebind: vi.fn(), refetch: vi.fn(), setEnabled: vi.fn(), setRetention: vi.fn(),
   categoryName: undefined as string | undefined,
   status: { workspaceId: "workspace", epoch: "epoch", pending: 2, conflicts: [], lastSuccessAt: null } as UserStateStatus,
   store: { enabledByServer: {} as Record<string, true>, runtimeByServer: {} },
@@ -33,11 +33,11 @@ vi.mock("../store/content-sync", () => ({
 }));
 vi.mock("../store/user-state", () => ({
   USER_STATE_IDLE_RUNTIME: { phase: "idle", error: null, revision: 0 },
-  useUserStateStore: (selector: (state: object) => unknown) => selector({ ...mocks.store, setEnabled: mocks.setEnabled }),
+  useUserStateStore: (selector: (state: object) => unknown) => selector({ ...mocks.store, setEnabled: mocks.setEnabled, setRetention: mocks.setRetention }),
 }));
 vi.mock("../db/user-state", () => ({ subscribeUserStateLedgerChanges: vi.fn(() => () => {}) }));
 vi.mock("../lib/user-state/sync", () => ({
-  getUserStateStatus: vi.fn(), synchronizeUserState: mocks.sync, resumeUserStateAfterRestore: mocks.resume, resolveUserStateConflict: mocks.resolve,
+  getUserStateStatus: vi.fn(), synchronizeUserState: mocks.sync, resumeUserStateAfterRestore: mocks.resume, resolveUserStateConflict: mocks.resolve, rebindUserStateWorkspace: mocks.rebind,
 }));
 import { ReadingStateSettings, userStateValueSummary } from "./ReadingStateSettings";
 import { useTranslation } from "../i18n";
@@ -77,6 +77,7 @@ beforeEach(() => {
   mocks.sync.mockResolvedValue(undefined);
   mocks.resume.mockResolvedValue(undefined);
   mocks.resolve.mockResolvedValue(undefined);
+  mocks.rebind.mockResolvedValue(undefined);
   mocks.refetch.mockResolvedValue({});
 });
 
@@ -175,4 +176,48 @@ it("shows only synchronization work, not local content projection backlog", () =
   const elements = view();
   expect(elements.some(item => item.props.children === "Changes waiting to be applied")).toBe(false);
   expect(elements.some(item => item.props.children === "Pending: 2 · Conflicts: 0")).toBe(true);
+});
+
+it("renders Mode A and Mode B rebind buttons when epochMismatch is active and triggers rebindUserStateWorkspace", async () => {
+  mocks.status.epochMismatch = {
+    serverUrl: "https://server.example",
+    localWorkspaceId: "workspace",
+    localEpoch: "epoch",
+    serverWorkspaceId: "workspace",
+    serverEpoch: "epoch-2",
+    headRevision: 5,
+    detectedAt: 1000,
+  };
+  mocks.status.seedCutoffAt = 1_700_000_000_000;
+  const elements = view();
+  const reseed = elements.find(item => item.props.children === "Re-seed local state")!;
+  const fresh = elements.find(item => item.props.children === "Start fresh")!;
+  const syncNow = elements.find(item => item.props.label === "Sync now" && item.props.onClick)!;
+  expect(reseed.props.disabled).toBe(false);
+  expect(fresh.props.disabled).toBe(false);
+  expect(syncNow.props.disabled).toBe(true);
+  expect(elements.some(item => typeof item.props.children === "string" && item.props.children.includes("Server retains reading history since"))).toBe(true);
+
+  reseed.props.onClick!();
+  await vi.waitFor(() => expect(mocks.rebind).toHaveBeenCalledWith("reseed"));
+  fresh.props.onClick!();
+  await vi.waitFor(() => expect(mocks.rebind).toHaveBeenCalledWith("start_fresh"));
+
+  mocks.status.pausedAfterRestore = true;
+  const pausedElements = view();
+  expect(pausedElements.find(item => item.props.children === "Re-seed local state")?.props.disabled).toBe(true);
+  expect(pausedElements.find(item => item.props.children === "Start fresh")?.props.disabled).toBe(true);
+});
+
+it("keeps client retention controls disabled by default and forwards explicit opt-in toggles", () => {
+  const elements = view();
+  const pruneSwitch = elements.find(item => item.props["aria-label"] === "Prune non-library reading history")!;
+  const stripSwitch = elements.find(item => item.props["aria-label"] === "Strip old reading timestamps")!;
+  expect(pruneSwitch.props.checked).toBe(false);
+  expect(stripSwitch.props.checked).toBe(false);
+
+  pruneSwitch.props.onChange!({ currentTarget: { checked: true } });
+  expect(mocks.setRetention).toHaveBeenCalledWith("https://server.example", { pruneNonLibraryEnabled: true });
+  stripSwitch.props.onChange!({ currentTarget: { checked: true } });
+  expect(mocks.setRetention).toHaveBeenCalledWith("https://server.example", { stripTimestampsEnabled: true });
 });

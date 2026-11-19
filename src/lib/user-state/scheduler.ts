@@ -40,7 +40,9 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
 
   function configured(): boolean {
     const serverUrl = useContentSyncStore.getState().serverUrl;
-    return !disposed && !!serverUrl && useUserStateStore.getState().enabledByServer[serverUrl] === true &&
+    const state = useUserStateStore.getState();
+    return !disposed && !!serverUrl && state.enabledByServer[serverUrl] === true &&
+      !state.runtimeByServer[serverUrl]?.epochMismatch &&
       isHostNetworkConnected();
   }
   function runnable(allowHidden: boolean): boolean {
@@ -142,7 +144,10 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
     if (state.serverUrl !== previous.serverUrl) restart();
   });
   const unsubscribeEnabled = useUserStateStore.subscribe((state, previous) => {
-    if (state.enabledByServer !== previous.enabledByServer) restart();
+    const serverUrl = useContentSyncStore.getState().serverUrl;
+    const hadMismatch = serverUrl ? Boolean(previous.runtimeByServer[serverUrl]?.epochMismatch) : false;
+    const hasMismatch = serverUrl ? Boolean(state.runtimeByServer[serverUrl]?.epochMismatch) : false;
+    if (state.enabledByServer !== previous.enabledByServer || (hadMismatch && !hasMismatch)) restart();
   });
   const unsubscribeChanges = subscribeUserStateChanges(onLocalChange);
   const unsubscribeFlush = subscribeUserStateFlush(() => request("immediate", document.visibilityState === "hidden"));

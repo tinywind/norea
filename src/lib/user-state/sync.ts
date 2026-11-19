@@ -1,6 +1,8 @@
 import {
-  acknowledgeUserStateOperations, applyUserStateReadPage, assertUserStateAvailable, bindUserStateWorkspace, getUserStateBinding,
-  getUserStateLedgerStatus, listUserStateConflicts, materializePendingUserState, prepareUserStateOperations,
+  acknowledgeUserStateOperations, applyLocalUserStateRetention, applyUserStateReadPage, assertUserStateAvailable,
+  bindUserStateWorkspace, getUserStateBinding, getUserStateLedgerStatus, listUserStateConflicts,
+  materializePendingUserState, prepareUserStateOperations, pruneUserStateOperations,
+  rebindUserStateWorkspace as rebindUserStateWorkspaceInDb, reconcileUserStateSnapshot,
   resolveUserStateLedgerConflict, resumeUserStateAfterRestore as resumeRestoredLedger, setUserStateActiveServer,
 } from "../../db/user-state";
 import { waitForUserStateDeferredApply } from "../../db/user-state-core";
@@ -8,17 +10,18 @@ import { setUserStateCurrentServer } from "../../db/user-state-current";
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
 import { isAbortError, requestAbortedError } from "../abort";
-import { serializeUserStateSynchronization, withUserStateRestore } from "./maintenance";
+import { serializeUserStateSynchronization, withUserStateRebind, withUserStateRestore } from "./maintenance";
 import {
   ContentServerError, contentServerFetch, contentServerRequest, normalizeContentServerUrl, withContentServerLookup,
 } from "../content-sync/client";
 import { forgetContentDeviceRegistration, registerContentDevice, type ContentCapabilities } from "../content-sync/device";
 import {
   canonicalUserStateJson, parseUserStateMergeResponse, parseUserStateOperation, parseUserStateReadResponse,
-  parseUserStateWorkspace, userStateEntityKey, userStateJsonBytes, UserStateProtocolError,
-  USER_STATE_CLIENT_BATCH_BYTES, USER_STATE_LEGACY_MAX_BATCH, USER_STATE_MAX_BYTES, USER_STATE_VERSION,
-  type ResolveUserStateConflictInput, type UserStateBinding, type UserStateMergeResponse, type UserStateOperation,
-  type UserStateReadResponse, type UserStateStatus, type UserStateWorkspace,
+  parseUserStateRetentionResponse, parseUserStateSnapshotResponse, parseUserStateWorkspace, userStateEntityKey,
+  userStateJsonBytes, UserStateProtocolError, USER_STATE_CLIENT_BATCH_BYTES, USER_STATE_LEGACY_MAX_BATCH,
+  USER_STATE_MAX_BYTES, USER_STATE_VERSION, type ResolveUserStateConflictInput, type UserStateBinding,
+  type UserStateMergeResponse, type UserStateOperation, type UserStateReadResponse, type UserStateRebindMode,
+  type UserStateRecord, type UserStateRetentionResponse, type UserStateStatus, type UserStateWorkspace,
 } from "./types";
 
 interface Synchronization {
@@ -88,17 +91,23 @@ async function request(serverUrl: string, path: string, token: string, signal: A
     if (!response.ok) {
       if (response.status === 401) forgetContentDeviceRegistration(serverUrl, token);
       let serverMessage: string | undefined;
+      let serverCode: string | undefined;
       try {
         const payload = await readUserStateResponse(response, 64 * 1024);
-        if (payload && typeof payload === "object" && "message" in payload && typeof payload.message === "string" && payload.message.trim()) {
-          serverMessage = payload.message.trim();
+        if (payload && typeof payload === "object") {
+          if ("message" in payload && typeof payload.message === "string" && payload.message.trim()) {
+            serverMessage = payload.message.trim();
+          }
+          if ("code" in payload && typeof payload.code === "string" && payload.code.trim()) {
+            serverCode = payload.code.trim();
+          }
         }
       } catch {
         await response.body?.cancel().catch(() => undefined);
       }
       throw new ContentServerError(response.status, serverMessage ?? (response.status === 409
         ? "User state: the workspace or retained cursor changed. Pending changes were retained."
-        : undefined));
+        : undefined), serverCode);
     }
     const result = await readUserStateResponse(response);
     deadline.throwIfAborted();
@@ -172,12 +181,40 @@ export async function getUserStateStatus(): Promise<UserStateStatus> {
   const binding = serverUrl ? await getUserStateBinding(serverUrl) : null;
   const status = await getUserStateLedgerStatus(binding ?? null);
   const conflicts = binding ? await listUserStateConflicts(binding) : [];
+  const store = useUserStateStore.getState();
+  const runtimeMismatch = serverUrl ? store.runtimeByServer[serverUrl]?.epochMismatch : undefined;
+  const epochMismatch =
+    binding &&
+    runtimeMismatch &&
+    runtimeMismatch.localWorkspaceId === binding.workspaceId &&
+    runtimeMismatch.localEpoch === binding.epoch
+      ? runtimeMismatch
+      : undefined;
+  const retentionStatus = serverUrl ? store.retentionStatusByServer?.[serverUrl] : undefined;
   return {
     workspaceId: binding?.workspaceId ?? null, epoch: binding?.epoch ?? null,
     pending: status.pending, conflicts,
     projectionPending: status.projectionPending, projectionFailed: status.projectionFailed,
     lastSuccessAt: status.lastSuccessAt, pausedAfterRestore: status.pausedAfterRestore === true,
+    ...(epochMismatch ? { epochMismatch } : {}),
+    ...(retentionStatus ? { seedAllowed: retentionStatus.seedAllowed, seedCutoffAt: retentionStatus.seedCutoffAt } : {}),
   };
+}
+
+function recordEpochMismatch(
+  serverUrl: string,
+  localBinding: UserStateBinding,
+  serverWorkspace: UserStateWorkspace,
+): void {
+  useUserStateStore.getState().setEpochMismatch(serverUrl, {
+    serverUrl,
+    localWorkspaceId: localBinding.workspaceId,
+    localEpoch: localBinding.epoch,
+    serverWorkspaceId: serverWorkspace.workspaceId,
+    serverEpoch: serverWorkspace.epoch,
+    headRevision: serverWorkspace.headRevision,
+    detectedAt: Date.now(),
+  });
 }
 
 async function runSynchronization(serverUrl: string, controller: AbortController): Promise<void> {
@@ -205,36 +242,172 @@ async function runSynchronization(serverUrl: string, controller: AbortController
     }
     const bulk = capabilities.userStateBulkVersion === 1;
     const opaqueIdentity = capabilities.userStateOpaqueIdentityVersion === 1;
+    const retentionSupported = capabilities.userStateRetentionVersion === 1;
     const token = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName, signal);
+    check();
+    const existingBinding = await getUserStateBinding(serverUrl);
     check();
     const workspace = parseUserStateWorkspace(await request(serverUrl, "/user-state", token, signal));
     check();
     const binding: UserStateBinding = { serverUrl, workspaceId: workspace.workspaceId, epoch: workspace.epoch };
-    await bindUserStateWorkspace(binding);
-    check();
+    if (existingBinding && (existingBinding.workspaceId !== workspace.workspaceId || existingBinding.epoch !== workspace.epoch)) {
+      recordEpochMismatch(serverUrl, existingBinding, workspace);
+      throw new UserStateProtocolError("the server workspace or epoch changed; pending changes were retained");
+    }
+    useUserStateStore.getState().setEpochMismatch(serverUrl, null);
     let observedHead = workspace.headRevision;
+    let retention: UserStateRetentionResponse | null = null;
 
-    async function pullThrough(target: number): Promise<void> {
-      let status = await getUserStateLedgerStatus(binding);
-      check();
-      if (status.cursor === target && status.through === null) return;
-      if (status.cursor > target || (status.through !== null && status.through > target)) {
-        throw new UserStateProtocolError("the retained cursor is ahead of this server; it was not reset");
+    const assertActiveWorkspace = (response: UserStateWorkspace): void => {
+      if (response.workspaceId !== binding.workspaceId || response.epoch !== binding.epoch) {
+        recordEpochMismatch(serverUrl, binding, response);
+        throw new UserStateProtocolError("the server workspace changed; pending changes were retained");
       }
+    };
+
+    const probe409Mismatch = async (error: unknown): Promise<never> => {
+      if (error instanceof ContentServerError && error.status === 409) {
+        try {
+          check();
+          const probed = parseUserStateWorkspace(await request(serverUrl, "/user-state", token, signal));
+          if (probed.workspaceId !== binding.workspaceId || probed.epoch !== binding.epoch) {
+            recordEpochMismatch(serverUrl, binding, probed);
+          }
+        } catch {
+          // Best-effort probe must never mask the original 409 error.
+        }
+      }
+      throw error;
+    };
+
+    if (retentionSupported) {
+      try {
+        retention = parseUserStateRetentionResponse(await request(serverUrl, "/user-state/retention", token, signal));
+      } catch (error) {
+        await probe409Mismatch(error);
+      }
+      check();
+      assertActiveWorkspace(retention!);
+      observedHead = Math.max(observedHead, retention!.headRevision);
+      useUserStateStore.getState().setRetentionStatus?.(serverUrl, {
+        seedAllowed: retention!.seedAllowed,
+        seedCutoffAt: retention!.seedCutoffAt,
+      });
+    }
+
+    await (retention
+      ? bindUserStateWorkspace(binding, { seedAllowed: retention.seedAllowed, seedCutoffMs: retention.seedCutoffAt })
+      : bindUserStateWorkspace(binding));
+    check();
+
+    const MAX_SNAPSHOT_RETRIES = 5;
+    let snapshotAttempts = 0;
+
+    async function reconcileFromSnapshot(): Promise<number> {
+      const collected: UserStateRecord[] = [];
+      let afterEntityKey: string | null = null;
+      let snapshotRevision: number | null = null;
+      let latestSeedAllowed = retention?.seedAllowed ?? true;
+      let latestSeedCutoffMs = retention?.seedCutoffAt ?? null;
       for (;;) {
+        check();
+        let page;
+        try {
+          page = parseUserStateSnapshotResponse(
+            await request(serverUrl, "/user-state/snapshot", token, signal, {
+              workspaceId: binding.workspaceId,
+              epoch: binding.epoch,
+              ...(afterEntityKey !== null ? { afterEntityKey } : {}),
+            }),
+          );
+        } catch (error) {
+          await probe409Mismatch(error);
+        }
+        check();
+        assertActiveWorkspace(page!);
+        snapshotRevision = snapshotRevision === null
+          ? page!.snapshotRevision
+          : Math.min(snapshotRevision, page!.snapshotRevision);
+        observedHead = Math.max(observedHead, page!.headRevision, page!.snapshotRevision);
+        latestSeedAllowed = page!.seedAllowed;
+        latestSeedCutoffMs = page!.seedCutoffAt;
+        collected.push(...page!.records);
+        if (!page!.hasMore) break;
+        afterEntityKey = page!.nextEntityKey;
+      }
+      await reconcileUserStateSnapshot(binding, {
+        records: collected,
+        snapshotRevision: snapshotRevision ?? 0,
+        seedAllowed: latestSeedAllowed,
+        seedCutoffMs: latestSeedCutoffMs,
+      });
+      check();
+      useUserStateStore.getState().setRetentionStatus?.(serverUrl, {
+        seedAllowed: latestSeedAllowed,
+        seedCutoffAt: latestSeedCutoffMs,
+      });
+      const latestWorkspace = parseUserStateWorkspace(await request(serverUrl, "/user-state", token, signal));
+      check();
+      assertActiveWorkspace(latestWorkspace);
+      observedHead = Math.max(observedHead, latestWorkspace.headRevision);
+      if (retention) {
+        retention = {
+          ...retention,
+          headRevision: observedHead,
+          compactedThrough: Math.max(retention.compactedThrough, snapshotRevision ?? 0),
+          seedAllowed: latestSeedAllowed,
+          seedCutoffAt: latestSeedCutoffMs,
+        };
+      }
+      return observedHead;
+    }
+
+    async function pullThrough(initialTarget: number): Promise<void> {
+      let target = initialTarget;
+      for (;;) {
+        const status = await getUserStateLedgerStatus(binding);
+        check();
+        if (status.cursor === target && status.through === null) return;
+        if (status.cursor > target || (status.through !== null && status.through > target)) {
+          throw new UserStateProtocolError("the retained cursor is ahead of this server; it was not reset");
+        }
+        if (retentionSupported && retention !== null && status.cursor < retention.compactedThrough) {
+          snapshotAttempts += 1;
+          if (snapshotAttempts > MAX_SNAPSHOT_RETRIES) {
+            throw new UserStateProtocolError("snapshot reconciliation exceeded retry limit");
+          }
+          target = await reconcileFromSnapshot();
+          continue;
+        }
         const through = status.through ?? target;
-        const page = parseUserStateReadResponse(await request(serverUrl, "/user-state/read", token, signal, {
-          workspaceId: binding.workspaceId, epoch: binding.epoch, after: status.cursor, through,
-          ...(bulk ? {} : { limit: USER_STATE_LEGACY_MAX_BATCH }),
-        }));
-        check();
-        validateUserStatePage(page, binding, status.cursor, through);
-        observedHead = Math.max(observedHead, page.headRevision);
-        await applyUserStateReadPage(binding, page);
-        check();
-        if (!page.hasMore && page.nextCursor === target) return;
-        status = await getUserStateLedgerStatus(binding);
-        check();
+        try {
+          const page = parseUserStateReadResponse(await request(serverUrl, "/user-state/read", token, signal, {
+            workspaceId: binding.workspaceId, epoch: binding.epoch, after: status.cursor, through,
+            ...(bulk ? {} : { limit: USER_STATE_LEGACY_MAX_BATCH }),
+          }));
+          check();
+          assertActiveWorkspace(page);
+          validateUserStatePage(page, binding, status.cursor, through);
+          observedHead = Math.max(observedHead, page.headRevision);
+          await applyUserStateReadPage(binding, page);
+          check();
+          if (!page.hasMore && page.nextCursor === target) return;
+        } catch (error) {
+          if (
+            retentionSupported &&
+            error instanceof ContentServerError &&
+            error.status === 410 &&
+            error.serverCode === "cursor-compacted"
+          ) {
+            snapshotAttempts += 1;
+            if (snapshotAttempts > MAX_SNAPSHOT_RETRIES) {
+              throw new UserStateProtocolError("snapshot reconciliation exceeded retry limit");
+            }
+            target = await reconcileFromSnapshot();
+            continue;
+          }
+          await probe409Mismatch(error);
+        }
       }
     }
 
@@ -255,20 +428,21 @@ async function runSynchronization(serverUrl: string, controller: AbortController
           await sendOperations(operations.slice(middle));
           return;
         }
-        throw error;
+        await probe409Mismatch(error);
       }
       check();
-      validateUserStateAcknowledgements(response, binding, operations);
-      if (response.headRevision < observedHead) throw new UserStateProtocolError("server revision moved backwards; pending changes were retained");
-      observedHead = response.headRevision;
-      await acknowledgeUserStateOperations(binding, response.results);
+      assertActiveWorkspace(response!);
+      validateUserStateAcknowledgements(response!, binding, operations);
+      if (response!.headRevision < observedHead) throw new UserStateProtocolError("server revision moved backwards; pending changes were retained");
+      observedHead = response!.headRevision;
+      await acknowledgeUserStateOperations(binding, response!.results);
       check();
       // This also receives deletion cascades and other changes committed before this receipt.
-      await pullThrough(response.headRevision);
+      await pullThrough(response!.headRevision);
       check();
     }
 
-    await pullThrough(workspace.headRevision);
+    await pullThrough(observedHead);
     // The received ledger is durable before its convenience tables are updated.
     // Drain applicable projections before any queued local edit is published.
     await waitForUserStateDeferredApply();
@@ -283,6 +457,14 @@ async function runSynchronization(serverUrl: string, controller: AbortController
     }
     if (projection.projectionPending || projection.projectionFailed) {
       throw new Error("Received personal state could not finish its applicable local projection. Pending edits were retained.");
+    }
+    const localRetention = useUserStateStore.getState().retentionByServer?.[serverUrl];
+    if (localRetention && (localRetention.pruneNonLibraryEnabled || localRetention.stripTimestampsEnabled)) {
+      await applyLocalUserStateRetention({
+        pruneNonLibraryDays: localRetention.pruneNonLibraryEnabled ? localRetention.pruneNonLibraryDays : null,
+        stripTimestampsDays: localRetention.stripTimestampsEnabled ? localRetention.stripTimestampsDays : null,
+      });
+      check();
     }
     let sentBatch = false;
     for (;;) {
@@ -301,6 +483,8 @@ async function runSynchronization(serverUrl: string, controller: AbortController
       await sendOperations(operations);
       sentBatch = true;
     }
+    check();
+    await pruneUserStateOperations(binding);
     check();
     useUserStateStore.getState().setRuntime(serverUrl, "idle");
   } catch (error) {
@@ -378,5 +562,42 @@ export async function resolveUserStateConflict(input: ResolveUserStateConflictIn
 /** Restored snapshot values are never converted into seeds by this explicit reconnection. */
 export async function resumeUserStateAfterRestore(): Promise<void> {
   await withUserStateRestore(() => resumeRestoredLedger());
+  await synchronizeUserState();
+}
+
+export async function rebindUserStateWorkspace(mode: UserStateRebindMode): Promise<void> {
+  const serverUrl = selectedServer();
+  if (!serverUrl) throw new Error("Configure the content server before sharing user changes.");
+  await withUserStateRebind(async () => {
+    await assertUserStateAvailable();
+    const capabilities = await contentServerRequest<ContentCapabilities>(serverUrl, "/capabilities", undefined, "GET");
+    if (capabilities.userStateVersion !== USER_STATE_VERSION) {
+      throw new Error("This content server does not support shared user changes. Update the server before sharing.");
+    }
+    const token = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
+    const controller = new AbortController();
+    const workspace = parseUserStateWorkspace(await request(serverUrl, "/user-state", token, controller.signal));
+    let seedCutoffMs: number | null = null;
+    let seedAllowed: boolean | undefined;
+    if (capabilities.userStateRetentionVersion === 1) {
+      const retention = parseUserStateRetentionResponse(
+        await request(serverUrl, "/user-state/retention", token, controller.signal),
+      );
+      assertWorkspace(retention, { serverUrl, workspaceId: workspace.workspaceId, epoch: workspace.epoch });
+      seedCutoffMs = retention.seedCutoffAt;
+      seedAllowed = retention.seedAllowed;
+    }
+    const binding: UserStateBinding = {
+      serverUrl,
+      workspaceId: workspace.workspaceId,
+      epoch: workspace.epoch,
+    };
+    await rebindUserStateWorkspaceInDb(binding, mode, {
+      ...(mode === "reseed"
+        ? { seedCutoffMs, seedAllowed }
+        : { headRevision: workspace.headRevision, seedCutoffMs }),
+    });
+    useUserStateStore.getState().setEpochMismatch(serverUrl, null);
+  });
   await synchronizeUserState();
 }

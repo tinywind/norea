@@ -2,14 +2,17 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserStateOperation, UserStateReadResponse, UserStateRecord } from "./types";
 
 const mocks = vi.hoisted(() => ({
-  available: vi.fn(), resumeRestored: vi.fn(), getBinding: vi.fn(), status: vi.fn(), bind: vi.fn(), prepare: vi.fn(), apply: vi.fn(), ack: vi.fn(),
+  available: vi.fn(), resumeRestored: vi.fn(), getBinding: vi.fn(), status: vi.fn(), bind: vi.fn(), rebind: vi.fn(), reconcile: vi.fn(), applyRetention: vi.fn(),
+  prepare: vi.fn(), apply: vi.fn(), ack: vi.fn(), prune: vi.fn(),
   conflicts: vi.fn(), deferred: vi.fn(), resolve: vi.fn(), active: vi.fn(), register: vi.fn(), forget: vi.fn(), fetch: vi.fn(),
   currentSet: vi.fn(), projection: vi.fn(), recoverProjection: vi.fn(),
 }));
 vi.mock("../../db/user-state", () => ({
   assertUserStateAvailable: mocks.available, resumeUserStateAfterRestore: mocks.resumeRestored,
   getUserStateBinding: mocks.getBinding, getUserStateLedgerStatus: mocks.status, bindUserStateWorkspace: mocks.bind,
+  rebindUserStateWorkspace: mocks.rebind, reconcileUserStateSnapshot: mocks.reconcile, applyLocalUserStateRetention: mocks.applyRetention,
   prepareUserStateOperations: mocks.prepare, applyUserStateReadPage: mocks.apply, acknowledgeUserStateOperations: mocks.ack,
+  pruneUserStateOperations: mocks.prune,
   materializePendingUserState: mocks.recoverProjection,
   listUserStateConflicts: mocks.conflicts, listUserStateDeferred: mocks.deferred, resolveUserStateLedgerConflict: mocks.resolve,
   setUserStateActiveServer: mocks.active,
@@ -23,7 +26,7 @@ vi.mock("@tauri-apps/plugin-http", () => ({ fetch: mocks.fetch }));
 
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
-import { getUserStateStatus, readUserStateResponse, synchronizeUserState, validateUserStateAcknowledgements, validateUserStatePage } from "./sync";
+import { getUserStateStatus, readUserStateResponse, rebindUserStateWorkspace, synchronizeUserState, validateUserStateAcknowledgements, validateUserStatePage } from "./sync";
 import { USER_STATE_MAX_BYTES, type UserStateMergeResponse } from "./types";
 
 const binding = { serverUrl: "http://server", workspaceId: "workspace", epoch: "epoch" };
@@ -48,6 +51,9 @@ beforeEach(() => {
   mocks.getBinding.mockResolvedValue(binding);
   mocks.status.mockImplementation(async () => ({ cursor, through, pending: outbox.length, conflicts: 0, deferred: 0, lastSuccessAt: null }));
   mocks.bind.mockResolvedValue(undefined);
+  mocks.rebind.mockResolvedValue(undefined);
+  mocks.reconcile.mockResolvedValue({ resumes: [] });
+  mocks.applyRetention.mockResolvedValue(0);
   mocks.prepare.mockImplementation(async () => outbox);
   mocks.apply.mockImplementation(async (_binding, page: UserStateReadResponse) => {
     cursor = page.nextCursor; through = page.hasMore ? page.through : null;
@@ -57,6 +63,7 @@ beforeEach(() => {
     outbox = outbox.filter(item => !results.some(result => result.operationId === item.operationId));
     return { resumes: [] };
   });
+  mocks.prune.mockResolvedValue(0);
   mocks.conflicts.mockResolvedValue([]); mocks.deferred.mockResolvedValue([]);
   mocks.register.mockResolvedValue("device-token");
   mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
@@ -200,6 +207,7 @@ describe("user state transport", () => {
     mocks.prepare.mockImplementation(async () => outbox);
     mocks.apply.mockImplementation(async (_binding, page: UserStateReadResponse) => { cursor = page.nextCursor; through = page.hasMore ? page.through : null; return { resumes: [] }; });
     mocks.ack.mockImplementation(async (_binding, results: { operationId: string }[]) => { outbox = outbox.filter(item => !results.some(result => result.operationId === item.operationId)); return { resumes: [] }; });
+    mocks.prune.mockResolvedValue(0);
     mocks.conflicts.mockResolvedValue([]); mocks.register.mockResolvedValue("device-token");
     mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
       const path = new URL(url).pathname;
@@ -371,4 +379,354 @@ it("keeps a shared sync alive when one caller aborts its signal while another ca
     status: 409,
     message: "Specific workspace epoch mismatch",
   });
+});
+
+it("prunes acknowledged operations after sync completion including idle pull-only runs", async () => {
+  await synchronizeUserState();
+  expect(mocks.prune).toHaveBeenCalledExactlyOnceWith(binding);
+  expect(mocks.ack.mock.invocationCallOrder[0]!).toBeLessThan(mocks.prune.mock.invocationCallOrder[0]!);
+
+  mocks.prune.mockClear();
+  outbox = [];
+  await synchronizeUserState();
+  expect(mocks.prune).toHaveBeenCalledExactlyOnceWith(binding);
+  expect(useUserStateStore.getState().runtimeByServer["http://server"].phase).toBe("idle");
+});
+
+it("negotiates userStateRetentionVersion, handles 410 Gone via paginated snapshot, and performs explicit Mode A/B rebinds", async () => {
+  const original = mocks.fetch.getMockImplementation()!;
+  let snapshotPage = 0;
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/capabilities")) {
+      return Response.json({
+        apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true,
+        userStateVersion: 1, userStateBulkVersion: 1, userStateOpaqueIdentityVersion: 1, userStateRetentionVersion: 1,
+      });
+    }
+    if (path.endsWith("/user-state/retention")) {
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 3,
+        compactedThrough: 0, seedAllowed: true, seedCutoffAt: 1_700_000_000_000,
+      });
+    }
+    if (path.endsWith("/user-state/read")) {
+      return Response.json({ code: "cursor-compacted", message: "Cursor compacted" }, { status: 410 });
+    }
+    if (path.endsWith("/user-state/snapshot")) {
+      snapshotPage += 1;
+      if (snapshotPage === 1) {
+        return Response.json({
+          version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 3, snapshotRevision: 3,
+          nextEntityKey: "k1", hasMore: true, seedAllowed: false, seedCutoffAt: 1_700_000_000_000, records: [published],
+        });
+      }
+      cursor = 3;
+      head = 3;
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 3, snapshotRevision: 3,
+        nextEntityKey: null, hasMore: false, seedAllowed: false, seedCutoffAt: 1_700_000_000_000, records: [],
+      });
+    }
+    if (path.endsWith("/user-state")) {
+      return Response.json({ version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 3 });
+    }
+    return original(url, init);
+  });
+  head = 3;
+  outbox = [];
+
+  await synchronizeUserState();
+  expect(mocks.bind).toHaveBeenCalledWith(binding, { seedAllowed: true, seedCutoffMs: 1_700_000_000_000 });
+  expect(mocks.reconcile).toHaveBeenCalledWith(binding, {
+    records: [published], snapshotRevision: 3, seedAllowed: false, seedCutoffMs: 1_700_000_000_000,
+  });
+  expect((await getUserStateStatus()).seedCutoffAt).toBe(1_700_000_000_000);
+
+  // Epoch change sets epochMismatch; Mode B rebind clears it and passes headRevision.
+  const nextBinding = { serverUrl: binding.serverUrl, workspaceId: binding.workspaceId, epoch: "epoch-2" };
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/capabilities")) {
+      return Response.json({
+        apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true,
+        userStateVersion: 1, userStateRetentionVersion: 1,
+      });
+    }
+    if (path.endsWith("/user-state")) {
+      return Response.json({ version: 1, workspaceId: nextBinding.workspaceId, epoch: nextBinding.epoch, headRevision: 5 });
+    }
+    if (path.endsWith("/user-state/retention")) {
+      return Response.json({
+        version: 1, workspaceId: nextBinding.workspaceId, epoch: nextBinding.epoch, headRevision: 5,
+        compactedThrough: 0, seedAllowed: true, seedCutoffAt: null,
+      });
+    }
+    if (path.endsWith("/user-state/read")) {
+      return Response.json({
+        version: 1, workspaceId: nextBinding.workspaceId, epoch: nextBinding.epoch, headRevision: 5,
+        through: 5, nextCursor: 5, hasMore: false, records: [],
+      });
+    }
+    return original(url, init);
+  });
+
+  await expect(synchronizeUserState()).rejects.toThrow(/workspace|epoch/i);
+  expect((await getUserStateStatus()).epochMismatch?.serverEpoch).toBe("epoch-2");
+
+  mocks.getBinding.mockResolvedValue(nextBinding);
+  cursor = 5;
+  await rebindUserStateWorkspace("start_fresh");
+  expect(mocks.rebind).toHaveBeenCalledWith(nextBinding, "start_fresh", { headRevision: 5, seedCutoffMs: null });
+  expect((await getUserStateStatus()).epochMismatch).toBeUndefined();
+});
+
+it("preserves epochMismatch when manual synchronizeUserState fails or is aborted", async () => {
+  const original = mocks.fetch.getMockImplementation()!;
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (new URL(url).pathname.endsWith("/user-state")) {
+      return Response.json({ version: 1, workspaceId: binding.workspaceId, epoch: "epoch-2", headRevision: 4 });
+    }
+    return original(url, init);
+  });
+  await expect(synchronizeUserState()).rejects.toThrow(/workspace|epoch/i);
+  const mismatch = useUserStateStore.getState().runtimeByServer[binding.serverUrl]?.epochMismatch;
+  expect(mismatch?.serverEpoch).toBe("epoch-2");
+
+  // Manual sync failing with 503 must keep epochMismatch intact.
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (new URL(url).pathname.endsWith("/capabilities")) {
+      return new Response("Unavailable", { status: 503 });
+    }
+    return original(url, init);
+  });
+  await expect(synchronizeUserState()).rejects.toThrow();
+  expect(useUserStateStore.getState().runtimeByServer[binding.serverUrl]?.epochMismatch).toEqual(mismatch);
+
+  // Aborting a manual sync during capabilities fetch must also keep epochMismatch intact.
+  const controller = new AbortController();
+  mocks.fetch.mockImplementation(async () => {
+    controller.abort(new DOMException("Cancelled", "AbortError"));
+    throw new DOMException("Cancelled", "AbortError");
+  });
+  await expect(synchronizeUserState({ signal: controller.signal })).rejects.toMatchObject({ name: "AbortError" });
+  expect(useUserStateStore.getState().runtimeByServer[binding.serverUrl]?.epochMismatch).toEqual(mismatch);
+});
+
+it("fails after exhausting MAX_SNAPSHOT_RETRIES on persistent 410 cursor-compacted", async () => {
+  const original = mocks.fetch.getMockImplementation()!;
+  let snapshotCalls = 0;
+  head = 3;
+  outbox = [];
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/capabilities")) {
+      return Response.json({
+        apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true,
+        userStateVersion: 1, userStateBulkVersion: 1, userStateOpaqueIdentityVersion: 1, userStateRetentionVersion: 1,
+      });
+    }
+    if (path.endsWith("/user-state")) {
+      return Response.json({ version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: head });
+    }
+    if (path.endsWith("/user-state/retention")) {
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: head,
+        compactedThrough: 0, seedAllowed: true, seedCutoffAt: null,
+      });
+    }
+    if (path.endsWith("/user-state/read")) {
+      return Response.json({ code: "cursor-compacted", message: "Cursor compacted" }, { status: 410 });
+    }
+    if (path.endsWith("/user-state/snapshot")) {
+      snapshotCalls += 1;
+      head += 1;
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: head, snapshotRevision: head - 1,
+        nextEntityKey: null, hasMore: false, seedAllowed: false, seedCutoffAt: null, records: [],
+      });
+    }
+    return original(url, init);
+  });
+  mocks.reconcile.mockImplementation(async (_b, args: { snapshotRevision: number }) => {
+    cursor = args.snapshotRevision;
+    return { resumes: [] };
+  });
+
+  await expect(synchronizeUserState()).rejects.toThrow("snapshot reconciliation exceeded retry limit");
+  expect(snapshotCalls).toBe(5);
+  expect(useUserStateStore.getState().runtimeByServer[binding.serverUrl]?.phase).toBe("error");
+});
+
+it("does not reconcile or mutate retentionStatusByServer if multi-page /snapshot fails mid-pagination", async () => {
+  const original = mocks.fetch.getMockImplementation()!;
+  let snapshotPage = 0;
+  head = 3;
+  outbox = [];
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/capabilities")) {
+      return Response.json({
+        apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true,
+        userStateVersion: 1, userStateRetentionVersion: 1,
+      });
+    }
+    if (path.endsWith("/user-state")) {
+      return Response.json({ version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 3 });
+    }
+    if (path.endsWith("/user-state/retention")) {
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 3,
+        compactedThrough: 2, seedAllowed: true, seedCutoffAt: null,
+      });
+    }
+    if (path.endsWith("/user-state/snapshot")) {
+      snapshotPage += 1;
+      if (snapshotPage === 1) {
+        return Response.json({
+          version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 3, snapshotRevision: 3,
+          nextEntityKey: "k1", hasMore: true, seedAllowed: false, seedCutoffAt: 1_700_000_000_000, records: [published],
+        });
+      }
+      return Response.json({ message: "Server failure" }, { status: 500 });
+    }
+    return original(url, init);
+  });
+
+  await expect(synchronizeUserState()).rejects.toMatchObject({ status: 500 });
+  expect(mocks.reconcile).not.toHaveBeenCalled();
+  expect(cursor).toBe(0);
+  expect(useUserStateStore.getState().retentionStatusByServer?.[binding.serverUrl]).toEqual({
+    seedAllowed: true,
+    seedCutoffAt: null,
+  });
+});
+
+it("reconciles multi-page /snapshot at min(snapshotRevision) and catches up via /read", async () => {
+  const original = mocks.fetch.getMockImplementation()!;
+  let snapshotPage = 0;
+  const readCalls: { after: number; through: number }[] = [];
+  head = 5;
+  outbox = [];
+  const rec7: UserStateRecord = { ...published, revision: 7, operationId: "op-7", value: { bookmarked: true } };
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/capabilities")) {
+      return Response.json({
+        apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true,
+        userStateVersion: 1, userStateBulkVersion: 1, userStateRetentionVersion: 1,
+      });
+    }
+    if (path.endsWith("/user-state")) {
+      return Response.json({ version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: head });
+    }
+    if (path.endsWith("/user-state/retention")) {
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 5,
+        compactedThrough: 2, seedAllowed: false, seedCutoffAt: null,
+      });
+    }
+    if (path.endsWith("/user-state/snapshot")) {
+      snapshotPage += 1;
+      if (snapshotPage === 1) {
+        return Response.json({
+          version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 5, snapshotRevision: 5,
+          nextEntityKey: "k1", hasMore: true, seedAllowed: false, seedCutoffAt: null, records: [published],
+        });
+      }
+      head = 7;
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 7, snapshotRevision: 7,
+        nextEntityKey: null, hasMore: false, seedAllowed: false, seedCutoffAt: null, records: [rec7],
+      });
+    }
+    if (path.endsWith("/user-state/read")) {
+      const body = JSON.parse(init?.body as string);
+      readCalls.push({ after: body.after, through: body.through });
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 7,
+        through: body.through, nextCursor: body.through, hasMore: false, records: [rec7],
+      });
+    }
+    return original(url, init);
+  });
+  mocks.reconcile.mockImplementation(async (_b, args: { snapshotRevision: number }) => {
+    cursor = args.snapshotRevision;
+    return { resumes: [] };
+  });
+
+  await synchronizeUserState();
+  expect(mocks.reconcile).toHaveBeenCalledWith(binding, {
+    records: [published, rec7], snapshotRevision: 5, seedAllowed: false, seedCutoffMs: null,
+  });
+  expect(readCalls).toEqual([{ after: 5, through: 7 }]);
+  expect(cursor).toBe(7);
+});
+
+it("records epochMismatch immediately when epoch rotates mid-sync on /retention or post-snapshot /user-state", async () => {
+  const original = mocks.fetch.getMockImplementation()!;
+  outbox = [];
+
+  // Case 1: epoch rotates before GET /user-state/retention
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/capabilities")) {
+      return Response.json({
+        apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true,
+        userStateVersion: 1, userStateRetentionVersion: 1,
+      });
+    }
+    if (path.endsWith("/user-state")) {
+      return Response.json({ version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 0 });
+    }
+    if (path.endsWith("/user-state/retention")) {
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: "epoch-2", headRevision: 0,
+        compactedThrough: 0, seedAllowed: true, seedCutoffAt: null,
+      });
+    }
+    return original(url, init);
+  });
+
+  await expect(synchronizeUserState()).rejects.toThrow(/workspace changed/i);
+  expect((await getUserStateStatus()).epochMismatch?.serverEpoch).toBe("epoch-2");
+
+  // Case 2: epoch rotates between /user-state/snapshot and post-snapshot GET /user-state
+  useUserStateStore.getState().setEpochMismatch(binding.serverUrl, null);
+  let userStateCalls = 0;
+  head = 3;
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/capabilities")) {
+      return Response.json({
+        apiVersion: 1, packageVersion: 1, authentication: "device-key", personalStateSync: true,
+        userStateVersion: 1, userStateRetentionVersion: 1,
+      });
+    }
+    if (path.endsWith("/user-state")) {
+      userStateCalls += 1;
+      return Response.json({
+        version: 1,
+        workspaceId: binding.workspaceId,
+        epoch: userStateCalls === 1 ? binding.epoch : "epoch-3",
+        headRevision: userStateCalls === 1 ? 3 : 0,
+      });
+    }
+    if (path.endsWith("/user-state/retention")) {
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 3,
+        compactedThrough: 2, seedAllowed: false, seedCutoffAt: null,
+      });
+    }
+    if (path.endsWith("/user-state/snapshot")) {
+      return Response.json({
+        version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch, headRevision: 3, snapshotRevision: 3,
+        nextEntityKey: null, hasMore: false, seedAllowed: false, seedCutoffAt: null, records: [],
+      });
+    }
+    return original(url, init);
+  });
+
+  await expect(synchronizeUserState()).rejects.toThrow(/workspace changed/i);
+  expect((await getUserStateStatus()).epochMismatch?.serverEpoch).toBe("epoch-3");
 });

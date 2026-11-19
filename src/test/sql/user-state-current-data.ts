@@ -14,7 +14,7 @@ import {
   mergeUserStateCurrentReading, mergeUserStateCurrentResume, parseUserStateCurrentItem,
   type UserStateCurrentApplyResult, type UserStateCurrentItem, type UserStateCurrentSnapshot,
 } from "../../lib/user-state/current-types";
-import { assertUserStateAvailableInDb, namespaceFor, requireBinding, type UserStateDb } from "./user-state-core";
+import { assertUserStateAvailableInDb, namespaceFor, nonEmptySourceId, requireBinding, type UserStateDb } from "./user-state-core";
 
 export interface CurrentWork extends UserStateWorkReference {
   id: number; inLibrary: number; addedAt: number | null;
@@ -100,7 +100,8 @@ export async function loadCurrentHeldSourcesInDb(db: UserStateDb, serverUrl: str
 }
 
 export async function loadCurrentWorksInDb(db: UserStateDb): Promise<CurrentWork[]> {
-  return db.select<CurrentWork[]>("SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name,in_library AS inLibrary,library_added_at AS addedAt FROM novel WHERE plugin_id<>'local' AND is_local=0");
+  const rows = await db.select<CurrentWork[]>("SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name,in_library AS inLibrary,library_added_at AS addedAt FROM novel WHERE plugin_id<>'local' AND is_local=0");
+  return rows.map(row => ({ ...row, sourceNovelId: nonEmptySourceId(row.sourceNovelId) }));
 }
 export async function loadCurrentDataInDb(
   db: UserStateDb, binding: UserStateBinding, hold: HoldChapterDownloadSnapshot, requested?: readonly UserStateCurrentItem[],

@@ -8,11 +8,12 @@ import { invoke } from "@tauri-apps/api/core";
 import { getDb, getReadOnlyDb, runDatabaseTransaction, runExclusiveDatabaseOperation } from "../test/sql/client";
 import { createUserStateIpcHandler } from "../test/mock-user-state-ipc";
 import {
-  acknowledgeUserStateOperationsInDb, applyUserStateReadPageInDb, bindUserStateWorkspaceInDb,
-  getUserStateLedgerStatusInDb, listUserStateConflictsInDb, listUserStateDeferredInDb, prepareUserStateOperationsInDb, resolveUserStateLedgerConflictInDb,
+  acknowledgeUserStateOperationsInDb, applyLocalUserStateRetentionInDb, applyUserStateReadPageInDb, bindUserStateWorkspaceInDb,
+  getUserStateLedgerStatusInDb, listUserStateConflictsInDb, listUserStateDeferredInDb, prepareUserStateOperationsInDb,
+  pruneAcknowledgedUserStateOperationsInDb, rebindUserStateWorkspaceInDb, reconcileUserStateSnapshotInDb, resolveUserStateLedgerConflictInDb,
 } from "../test/sql/user-state-ledger";
 import {
-  discardUserStateNotifications, notifyUserStateCommitted,
+  discardUserStateNotifications, markPrivateChapterProgressInDb, notifyUserStateCommitted,
   recordUserStateChangesInDb, stableCategoryIdInDb, subscribeUserStateChanges, waitForUserStateDeferredApply,
 } from "../test/sql/user-state-core";
 import { deferUserStateForNovelInDb, materializeUserStateRecordInDb, refreshUnattemptedUserStateIdentitiesInDb } from "../test/sql/user-state-materialize";
@@ -21,7 +22,7 @@ import {
 } from "./user-state";
 import { applyNovelMergeInDb } from "./queries/novel-merge";
 import { deleteLocalNovelRecords } from "./queries/content-deletion";
-import { remapPendingUserStateInDb } from "../test/sql/user-state-migration";
+import { remapPendingUserStateInDb, remapUnattemptedChapterPathsInDb } from "../test/sql/user-state-migration";
 import {
   canonicalUserStateJson, userStateEntityKey, type UserStateBinding, type UserStateEntity,
   type UserStateOperation, type UserStateRecord, type UserStateValue, type UserStateValueMap, type UserStateWorkReference,
@@ -705,11 +706,32 @@ describe("explicit command boundaries", () => {
     expect(first).toEqual({ count: 2 });
     await setRelativeChaptersReadState(11, "after", true);
     await restoreChapterReadStates([{ id: 11, progress: 0, unread: true }]);
+    await recordUserResume(11, null, 50);
     await clearReadingProgress(); await clearLibraryMembership();
     const operations = await prepare();
     expect(operations.filter(operation => operation.entity.kind === "reading")).toHaveLength(2);
     expect(operations.find(operation => operation.entity.kind === "resume")!.value).toEqual({ chapter: null, anchor: null, openedAt: null });
     expect(operations.find(operation => operation.entity.kind === "library")!.value).toEqual({ inLibrary: false, addedAt: null });
+  });
+
+  it("clearReadingProgress skips untouched unread chapters and novels without shared history or last_read_at", async () => {
+    active.sql.exec(`
+      INSERT INTO novel(id,plugin_id,source_novel_id,path,name) VALUES(2,'source','book-2','/book-2','Book 2');
+      INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(12,1,'/chapter/2','Two','2',2),(21,2,'/b2/ch1','B2 One','1',1);
+    `);
+    await bind();
+    await clearReadingProgress();
+    expect(await prepare()).toEqual([]);
+
+    await updateChapterProgress(11, 45);
+    await clearReadingProgress();
+    const operations = await prepare();
+    expect(operations.filter(operation => operation.entity.kind === "reading")).toHaveLength(1);
+    expect(operations[0]!.entity).toMatchObject({ kind: "reading", chapter: { chapterPath: "/chapter/1" } });
+    expect(operations[0]!.value).toEqual(readingValue(0, true));
+    const resumes = operations.filter(operation => operation.entity.kind === "resume");
+    expect(resumes).toHaveLength(1);
+    expect(resumes[0]!.entity).toMatchObject({ kind: "resume", work: { sourceNovelId: "book" } });
   });
 
   it("never seeds a new private progress value, including a chapter with older public history", async () => {
@@ -1368,4 +1390,341 @@ it("applies stored chapter progress before download, settles retired migration s
   const status = await getUserStateLedgerStatusInDb(active.db, binding);
   expect(status).toMatchObject({ pending: 0, projectionPending: 0, projectionFailed: 0 });
   expect("projectionParked" in status).toBe(false);
+});
+
+it("timestamps acknowledged operations idempotently, prunes expired rows, and preserves attempt history via user_state_progress", async () => {
+  active.sql.exec("UPDATE novel SET source_novel_id=NULL WHERE id=1");
+  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(12,1,'/chapter/2','Two','2',2)");
+  await bind();
+  await updateChapterProgress(11, 35);
+  await updateChapterProgress(12, 40);
+  const ops = await prepareUserStateOperationsInDb(active.db, binding, { allowOpaqueIdentity: true });
+  expect(ops).toHaveLength(2);
+  const [op1, op2] = ops as [UserStateOperation, UserStateOperation];
+
+  await ack(op1, 1);
+  const ackRow = active.sql.prepare("SELECT status, acknowledged_at AS acknowledgedAt FROM user_state_operation WHERE operation_id=?").get(op1.operationId) as {
+    status: string;
+    acknowledgedAt: number | null;
+  };
+  expect(ackRow.status).toBe("acknowledged");
+  expect(ackRow.acknowledgedAt).toBeTypeOf("number");
+  expect(ackRow.acknowledgedAt!).toBeGreaterThan(0);
+
+  // Backdate op1 past 7 days and insert a conflict row plus another namespace's acknowledged row.
+  const oldTs = Math.floor(Date.now() / 1000) - 8 * 24 * 60 * 60;
+  active.sql.prepare("UPDATE user_state_operation SET acknowledged_at=? WHERE operation_id=?").run(oldTs, op1.operationId);
+  await acknowledgeUserStateOperationsInDb(active.db, binding, [{ operationId: op2.operationId, status: "conflict", reason: "revision-mismatch", current: null }]);
+  expect(active.sql.prepare("SELECT status, acknowledged_at AS acknowledgedAt FROM user_state_operation WHERE operation_id=?").get(op2.operationId))
+    .toEqual({ status: "conflict", acknowledgedAt: null });
+
+  active.sql.prepare("INSERT INTO user_state_operation(operation_id,namespace,entity_key,intent_sequence,payload,status,acknowledged_at) VALUES('other-op','other-ns','k',1,'{}','acknowledged',?)").run(oldTs);
+
+  const pruned = await pruneAcknowledgedUserStateOperationsInDb(active.db, binding);
+  expect(pruned).toBe(1);
+  expect(active.sql.prepare("SELECT operation_id FROM user_state_operation ORDER BY operation_id").all())
+    .toEqual([{ operation_id: op2.operationId }, { operation_id: "other-op" }].sort((a, b) => a.operation_id.localeCompare(b.operation_id)));
+
+  // After op1 is pruned, refreshUnattemptedUserStateIdentitiesInDb and remapPendingUserStateInDb must still recognize op1 as attempted.
+  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position) VALUES(13,1,'/chapter/3','Three','3',3)");
+  await updateChapterProgress(13, 55);
+  active.sql.exec("UPDATE novel SET source_novel_id='book' WHERE id=1");
+  await tx(active, db => refreshUnattemptedUserStateIdentitiesInDb(db));
+  const intentsAfterUpgrade = active.sql.prepare("SELECT entity_key AS entityKey, entity_json AS entityJson FROM user_state_intent ORDER BY sequence").all() as {
+    entityKey: string;
+    entityJson: string;
+  }[];
+  expect(JSON.parse(intentsAfterUpgrade[0]!.entityJson).work.sourceNovelId).toBeNull();
+  expect(JSON.parse(intentsAfterUpgrade[2]!.entityJson).work.sourceNovelId).toBe("book");
+
+  // Capture path-remap before updating chapter 11's path while op1's sequence=1 was pruned.
+  active.sql.exec("UPDATE novel SET source_novel_id=NULL WHERE id=1");
+  const before = [{ id: 11, novelId: 1, path: "/chapter/1" }];
+  active.sql.exec("UPDATE chapter SET path='/chapter/1-renamed' WHERE id=11");
+  await tx(active, db => remapUnattemptedChapterPathsInDb(db, before));
+  const remappedCh1 = active.sql.prepare("SELECT entity_json AS entityJson FROM user_state_intent WHERE sequence=1").get() as { entityJson: string };
+  expect(JSON.parse(remappedCh1.entityJson).chapter.chapterPath).toBe("/chapter/1");
+
+  // A newer unattempted edit (sequence > acknowledged_sequence) on chapter 11 DOES remap.
+  await updateChapterProgress(11, 75);
+  const before2 = [{ id: 11, novelId: 1, path: "/chapter/1-renamed" }];
+  active.sql.exec("UPDATE chapter SET path='/chapter/1-final' WHERE id=11");
+  await tx(active, db => remapUnattemptedChapterPathsInDb(db, before2));
+  const preparedAfterRemap = await prepareUserStateOperationsInDb(active.db, binding, { allowOpaqueIdentity: true });
+  const [latest] = preparedAfterRemap.filter(op => op.entity.kind === "reading" && op.entity.chapter.chapterPath === "/chapter/1-final");
+  expect(latest).toBeTruthy();
+  expect(latest!.value).toMatchObject({ progress: 75 });
+});
+
+it("supports Mode A/B epoch rebind, snapshot reconciliation, and opt-in local 2-A/2-B retention", async () => {
+  active.sql.exec("UPDATE novel SET in_library=0 WHERE id=1");
+  active.sql.exec("UPDATE chapter SET progress=80, unread=0, read_at=1650000000 WHERE id=11");
+  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread,read_at) VALUES(12,1,'/chapter/2','Two','2',2,100,0,1750000000)");
+  await bind();
+  expect(await prepare()).toHaveLength(3); // 2 reading + 1 resume
+
+  // Mode A with seedCutoffMs skips /chapter/1 (1650s < 1700s*1000) and seeds /chapter/2 + resume.
+  const binding2: UserStateBinding = { ...binding, epoch: "epoch-2" };
+  await tx(active, db => rebindUserStateWorkspaceInDb(db, binding2, "reseed", { seedCutoffMs: 1_700_000_000_000, seedAllowed: true }));
+  const opsModeA = await tx(active, db => prepareUserStateOperationsInDb(db, binding2));
+  expect(opsModeA.some(op => op.entity.kind === "reading" && op.entity.chapter.chapterPath === "/chapter/1")).toBe(false);
+  expect(opsModeA.some(op => op.entity.kind === "reading" && op.entity.chapter.chapterPath === "/chapter/2")).toBe(true);
+
+  // Mode B suppresses seeding and clears prior intents/conflicts.
+  const binding3: UserStateBinding = { ...binding, epoch: "epoch-3" };
+  await tx(active, db => rebindUserStateWorkspaceInDb(db, binding3, "start_fresh", { headRevision: 4 }));
+  expect(await tx(active, db => prepareUserStateOperationsInDb(db, binding3))).toEqual([]);
+
+  // Apply local 2-B strip timestamps on chapter 12 (readAt 1750s) vs 2-A non-library prune on chapter 11 (readAt 1650s).
+  const affected = await tx(active, db =>
+    applyLocalUserStateRetentionInDb(db, {
+      pruneNonLibraryDays: 100,
+      stripTimestampsDays: 10,
+      nowMs: 1_755_000_000_000,
+    }),
+  );
+  expect(affected).toBeGreaterThanOrEqual(2);
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=11").get()).toEqual({
+    progress: 0,
+    unread: 1,
+    readAt: null,
+  });
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=12").get()).toEqual({
+    progress: 100,
+    unread: 0,
+    readAt: null,
+  });
+
+  // Snapshot reconciliation removes absent records, preserves pending local edits, and cleans dangling aliases.
+  const ns3 = JSON.stringify([binding3.serverUrl, binding3.workspaceId, binding3.epoch]);
+  const ch1Bookmark: UserStateEntity = { kind: "bookmark", work, chapter: { chapterPath: "/chapter/1", name: "One" } };
+  active.sql.exec("UPDATE chapter SET bookmark=1 WHERE id=11");
+  await tx(active, db => applyUserStateReadPageInDb(db, binding3, {
+    version: 1,
+    workspaceId: binding3.workspaceId,
+    epoch: binding3.epoch,
+    headRevision: 5,
+    through: 5,
+    nextCursor: 5,
+    hasMore: false,
+    records: [shared(ch1Bookmark, { bookmarked: true }, 5)],
+  }));
+  active.sql.prepare("INSERT INTO user_state_alias(namespace,alias_id,canonical_id) VALUES(?,?,?)").run(ns3, "alias-old", "cat-gone");
+  await tx(active, db =>
+    reconcileUserStateSnapshotInDb(db, binding3, {
+      records: [],
+      snapshotRevision: 6,
+      seedAllowed: false,
+      seedCutoffMs: null,
+    }),
+  );
+  expect(active.sql.prepare("SELECT bookmark FROM chapter WHERE id=11").get()).toEqual({ bookmark: 0 });
+  expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_alias").get()).toEqual({ c: 0 });
+  expect(active.sql.prepare("SELECT cursor FROM user_state_workspace").get()).toEqual({ cursor: 6 });
+});
+
+it("protects user_state_private during 2-A/2-B retention and snapshot reconciliation, enforces multi-workspace seedCutoffMs, clears Mode A cutoff, and clears stale pending ops on GC rebase", async () => {
+  // 1. Multi-workspace seed=1 intents must obey seedCutoffMs (and seedAllowed=false skips seed=1 intents).
+  active.sql.exec("UPDATE chapter SET progress=60, unread=0, read_at=1600000000 WHERE id=11");
+  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread,read_at) VALUES(12,1,'/chapter/2','Two','2',2,90,0,1750000000)");
+  await bind();
+  const ws2: UserStateBinding = { serverUrl: "https://other.example", workspaceId: "ws-2", epoch: "ep-1" };
+  await tx(active, db => bindUserStateWorkspaceInDb(db, ws2, { seedAllowed: true, seedCutoffMs: 1_700_000_000_000 }));
+  const ws2Ops = await tx(active, db => prepareUserStateOperationsInDb(db, ws2));
+  expect(ws2Ops.some(op => op.entity.kind === "reading" && op.entity.chapter.chapterPath === "/chapter/1")).toBe(false);
+  expect(ws2Ops.some(op => op.entity.kind === "reading" && op.entity.chapter.chapterPath === "/chapter/2")).toBe(true);
+
+  const ws3: UserStateBinding = { serverUrl: "https://third.example", workspaceId: "ws-3", epoch: "ep-1" };
+  await tx(active, db => bindUserStateWorkspaceInDb(db, ws3, { seedAllowed: false, seedCutoffMs: null }));
+  expect(await tx(active, db => prepareUserStateOperationsInDb(db, ws3))).toEqual([]);
+
+  // 2. Mode A idempotent rebind clears seed_cutoff_at back to NULL when seedCutoffMs transitions Some(ts) -> null.
+  await tx(active, db => rebindUserStateWorkspaceInDb(db, ws2, "reseed", { seedAllowed: true, seedCutoffMs: 1_700_000_000_000 }));
+  await tx(active, db => rebindUserStateWorkspaceInDb(db, ws2, "reseed", { seedAllowed: true, seedCutoffMs: null }));
+  const ws2Row = active.sql.prepare("SELECT seed_cutoff_at AS cutoff FROM user_state_workspace WHERE server_url=?").get(ws2.serverUrl) as { cutoff: number | null };
+  expect(ws2Row.cutoff).toBeNull();
+
+  // 3. Path-keyed incognito marker protects reading progress across 2-A/2-B retention and snapshot reconciliation after source_novel_id upgrade.
+  const privWork: UserStateWorkReference = { pluginId: "priv-src", sourceNovelId: null, novelPath: "/priv", name: "Private Book" };
+  addWork(active, 2, 21, privWork);
+  active.sql.exec("UPDATE novel SET in_library=0, last_read_at=1600000000 WHERE id=2");
+  active.sql.exec("UPDATE chapter SET progress=85, unread=0, read_at=1600000000 WHERE id=21");
+  await tx(active, db => markPrivateChapterProgressInDb(db, 21));
+  active.sql.exec("UPDATE novel SET source_novel_id='priv-id' WHERE id=2");
+
+  // Run 2-B stripTimestampsDays (and 2-A when non-library): private chapter is updated locally without deleting user_state_private or leaking intents.
+  active.sql.exec("DELETE FROM user_state_intent; DELETE FROM user_state_progress; DELETE FROM user_state_operation;");
+  await tx(active, db => applyLocalUserStateRetentionInDb(db, { stripTimestampsDays: 30, nowMs: 1_755_000_000_000 }));
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({ progress: 85, unread: 0, readAt: null });
+  expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_private").get()).toEqual({ c: 1 });
+  expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_intent WHERE entity_key LIKE '%priv-src%'").get()).toEqual({ c: 0 });
+
+  // Reset read_at and run 2-A + 2-B with stripTimestampsDays < pruneNonLibraryDays: 2-A runs first and prunes older non-library private chapter locally without leaking.
+  active.sql.exec("UPDATE chapter SET progress=85, unread=0, read_at=1600000000 WHERE id=21");
+  await tx(active, db => applyLocalUserStateRetentionInDb(db, {
+    pruneNonLibraryDays: 100,
+    stripTimestampsDays: 10,
+    nowMs: 1_755_000_000_000,
+  }));
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({ progress: 0, unread: 1, readAt: null });
+  expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_private").get()).toEqual({ c: 1 });
+  expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_intent WHERE entity_key LIKE '%priv-src%'").get()).toEqual({ c: 0 });
+
+  // 4. Reconcile snapshot with path-keyed user_state_private after source_novel_id upgrade preserves incognito progress.
+  active.sql.exec("DELETE FROM user_state_private");
+  active.sql.exec("UPDATE novel SET source_novel_id=NULL WHERE id=2");
+  active.sql.exec("UPDATE chapter SET progress=90, unread=0, read_at=1750000000 WHERE id=21");
+  await tx(active, db => markPrivateChapterProgressInDb(db, 21));
+  active.sql.exec("UPDATE novel SET source_novel_id='priv-id' WHERE id=2");
+  const upgradedPrivReading: UserStateEntity = {
+    kind: "reading",
+    work: { pluginId: "priv-src", sourceNovelId: "priv-id", novelPath: "/priv", name: "Private Book" },
+    chapter: { chapterPath: "/chapter/1", name: "One" },
+  };
+  await tx(active, db => applyUserStateReadPageInDb(db, binding, {
+    version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+    headRevision: 10, through: 10, nextCursor: 10, hasMore: false,
+    records: [shared(upgradedPrivReading, { progress: 10, unread: false, readAt: 1750000000 }, 10)],
+  }));
+  await tx(active, db => reconcileUserStateSnapshotInDb(db, binding, {
+    records: [], snapshotRevision: 11, seedAllowed: false, seedCutoffMs: null,
+  }));
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({
+    progress: 90, unread: 0, readAt: 1750000000,
+  });
+
+  // 5. Snapshot GC rebasing a pending local edit clears stale status='pending' user_state_operation rows.
+  active.sql.exec("DELETE FROM user_state_intent; DELETE FROM user_state_progress; DELETE FROM user_state_operation;");
+  const bmEnt: UserStateEntity = { kind: "bookmark", work, chapter: { chapterPath: "/chapter/1", name: "One" } };
+  await tx(active, db => applyUserStateReadPageInDb(db, binding, {
+    version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+    headRevision: 12, through: 12, nextCursor: 12, hasMore: false,
+    records: [shared(bmEnt, { bookmarked: false }, 12)],
+  }));
+  await capture({ bookmarked: true }, bmEnt);
+  const [pendingBeforeGc] = await prepare();
+  expect(pendingBeforeGc.baseRevision).toBe(12);
+  await tx(active, db => reconcileUserStateSnapshotInDb(db, binding, {
+    records: [], snapshotRevision: 13, seedAllowed: false, seedCutoffMs: null,
+  }));
+  const [rebasedOp] = await prepare();
+  expect(rebasedOp.baseRevision).toBe(0);
+  expect(rebasedOp.operationId).not.toBe(pendingBeforeGc.operationId);
+});
+
+it("preserves promoted incognito progress when path-keyed records are GC'd and clears resume on mixed public/private retention", async () => {
+  // 1. Path-keyed user_state_record GC after source_novel_id promotion must not wipe promoted incognito chapter progress.
+  const privWork: UserStateWorkReference = { pluginId: "priv-src", sourceNovelId: null, novelPath: "/priv", name: "Private Book" };
+  addWork(active, 2, 21, privWork);
+  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread,read_at) VALUES(22,2,'/chapter/2','Two','2',2,65,0,1740000000)");
+  active.sql.exec("UPDATE novel SET in_library=0,last_read_at=1750000000 WHERE id=2");
+  active.sql.exec("UPDATE chapter SET progress=91,unread=0,read_at=1750000000 WHERE id=21");
+  await tx(active, db => markPrivateChapterProgressInDb(db, 21));
+
+  await bind();
+  const pathPrivReading: UserStateEntity = {
+    kind: "reading",
+    work: privWork,
+    chapter: { chapterPath: "/chapter/1", name: "One" },
+  };
+  const pathPubReading: UserStateEntity = {
+    kind: "reading",
+    work: privWork,
+    chapter: { chapterPath: "/chapter/2", name: "Two" },
+  };
+  await tx(active, db => applyUserStateReadPageInDb(db, binding, {
+    version: 1,
+    workspaceId: binding.workspaceId,
+    epoch: binding.epoch,
+    headRevision: 10,
+    through: 10,
+    nextCursor: 10,
+    hasMore: false,
+    records: [
+      shared(pathPrivReading, { progress: 10, unread: false, readAt: 1750000000 }, 9, "r-9"),
+      shared(pathPubReading, { progress: 65, unread: false, readAt: 1740000000 }, 10, "r-10"),
+    ],
+  }));
+
+  active.sql.exec("UPDATE novel SET source_novel_id='priv-p-id' WHERE id=2");
+  await tx(active, db => reconcileUserStateSnapshotInDb(db, binding, {
+    records: [],
+    snapshotRevision: 11,
+    seedAllowed: false,
+    seedCutoffMs: null,
+  }));
+
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({
+    progress: 91,
+    unread: 0,
+    readAt: 1750000000,
+  });
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=22").get()).toEqual({
+    progress: 0,
+    unread: 1,
+    readAt: null,
+  });
+
+  // 2. Mixed public+private novel retention emits resume clear without exposing private chapters, while purely private novels stay silent.
+  active.sql.exec(`
+    INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library,last_read_at)
+    VALUES (3,'mixed-src','mixed-id','/mixed','Mixed Book',0,1754999000),
+           (4,'allpriv-src','allpriv-id','/allpriv','All Priv Book',0,1600000000),
+           (5,'mixed2b-src','mixed2b-id','/mixed2b','Mixed 2B Book',1,1754999000);
+    INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread,read_at)
+    VALUES (31,3,'/chapter/1','One','1',1,50,0,1600000000),
+           (32,3,'/chapter/2','Two','2',2,80,0,1754999000),
+           (41,4,'/chapter/1','One','1',1,75,0,1600000000),
+           (51,5,'/chapter/1','One','1',1,70,0,1750000000),
+           (52,5,'/chapter/2','Two','2',2,85,0,1754999000);
+  `);
+  await tx(active, async db => {
+    await markPrivateChapterProgressInDb(db, 32);
+    await markPrivateChapterProgressInDb(db, 41);
+    await markPrivateChapterProgressInDb(db, 52);
+  });
+  active.sql.exec("DELETE FROM user_state_intent; DELETE FROM user_state_progress;");
+
+  await tx(active, db => applyLocalUserStateRetentionInDb(db, {
+    pruneNonLibraryDays: 100,
+    stripTimestampsDays: 10,
+    nowMs: 1_755_000_000_000,
+  }));
+
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=31").get()).toEqual({
+    progress: 0, unread: 1, readAt: null,
+  });
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=32").get()).toEqual({
+    progress: 80, unread: 0, readAt: 1754999000,
+  });
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=41").get()).toEqual({
+    progress: 0, unread: 1, readAt: null,
+  });
+  expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_intent WHERE entity_key LIKE '%allpriv-src%'").get()).toEqual({ c: 0 });
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=51").get()).toEqual({
+    progress: 70, unread: 0, readAt: null,
+  });
+  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=52").get()).toEqual({
+    progress: 85, unread: 0, readAt: 1754999000,
+  });
+
+  const mixedIntents = active.sql.prepare(
+    "SELECT entity_json AS entityJson, value_json AS valueJson FROM user_state_intent WHERE entity_key LIKE '%mixed-src%' OR entity_key LIKE '%mixed2b-src%'",
+  ).all() as { entityJson: string; valueJson: string }[];
+  const parsedMixed = mixedIntents.map(row => ({ entity: JSON.parse(row.entityJson), value: JSON.parse(row.valueJson) }));
+  expect(parsedMixed.some(item => item.entity.kind === "reading" && item.entity.chapter.chapterPath === "/chapter/2")).toBe(false);
+  expect(parsedMixed.some(item =>
+    item.entity.kind === "resume" &&
+    item.entity.work.pluginId === "mixed-src" &&
+    item.value.chapter === null &&
+    item.value.anchor === null &&
+    item.value.openedAt === null,
+  )).toBe(true);
+  expect(parsedMixed.some(item =>
+    item.entity.kind === "resume" &&
+    item.entity.work.pluginId === "mixed2b-src" &&
+    item.value.chapter === null &&
+    item.value.anchor === null &&
+    item.value.openedAt === null,
+  )).toBe(true);
 });

@@ -1,6 +1,6 @@
 import { getChapterComposition, materializeChapterComposition, setChapterComposition } from "./chapter-composition";
 import {
-  assertUserStateAvailableInDb, canonicalEntity, hasUserStateSchema, intentFromRow, promotePrivateWorkIdentitiesInDb,
+  assertUserStateAvailableInDb, canonicalEntity, hasUserStateSchema, intentFromRow, nonEmptySourceId, promotePrivateWorkIdentitiesInDb,
   requestUserStateDeferredApply, requireBinding, resolveCategoryAlias, USER_STATE_PRELINK_BASE_REVISION,
   type IntentRow, type UserStateDb,
 } from "./user-state-core";
@@ -27,7 +27,8 @@ export async function findUserStateWorkInDb(db: UserStateDb, work: UserStateWork
       "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path FROM novel WHERE plugin_id=$1 AND lower(source_novel_id)=lower($2)",
       [work.pluginId, work.sourceNovelId]);
   if (rows.length > 1) throw new DeferredUserState("ambiguous-work-identity");
-  return rows[0] ?? null;
+  const row = rows[0];
+  return row ? { ...row, sourceNovelId: nonEmptySourceId(row.sourceNovelId) } : null;
 }
 async function findChapter(db: UserStateDb, novelId: number, chapter: UserStateChapterReference): Promise<number> {
   if (parseStoredChapterPath(chapter.chapterPath)) {
@@ -51,11 +52,12 @@ async function findChapter(db: UserStateDb, novelId: number, chapter: UserStateC
 export async function applySharedCompositionInDb(db: UserStateDb, novelId: number, shared: ChapterCompositionV1, namespace = ""): Promise<UserStateApplyEffects> {
   const current = await getChapterComposition(db, novelId);
   const [work] = await db.select<{ pluginId: string; sourceNovelId: string | null }[]>("SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId FROM novel WHERE id=$1", [novelId]);
-  if (!work?.sourceNovelId) throw new DeferredUserState("missing-work-identity");
-  const composition = mergeUserStateComposition(shared, current, { pluginId: work.pluginId, sourceNovelId: work.sourceNovelId });
+  const sourceNovelId = nonEmptySourceId(work?.sourceNovelId);
+  if (!work || !sourceNovelId) throw new DeferredUserState("missing-work-identity");
+  const composition = mergeUserStateComposition(shared, current, { pluginId: work.pluginId, sourceNovelId });
   await materializeChapterComposition(db, novelId, composition);
   await setChapterComposition(db, novelId, composition);
-  return reapplyComposedChapterUserStateInDb(db, namespace, { pluginId: work.pluginId, sourceNovelId: work.sourceNovelId });
+  return reapplyComposedChapterUserStateInDb(db, namespace, { pluginId: work.pluginId, sourceNovelId });
 }
 
 export async function hasPendingUserStateForRecordInDb(db: UserStateDb, namespace: string, record: UserStateRecord): Promise<boolean> {
@@ -194,11 +196,17 @@ export async function refreshUnattemptedUserStateIdentitiesInDb(db: UserStateDb,
     const workKey = JSON.stringify([intent.entity.work.pluginId, intent.entity.work.novelPath]);
     if (!works.has(workKey)) {
       const [row] = await db.select<{ sourceNovelId: string | null; name: string }[]>("SELECT source_novel_id AS sourceNovelId,name FROM novel WHERE plugin_id=$1 AND path=$2", [intent.entity.work.pluginId, intent.entity.work.novelPath]);
-      works.set(workKey, row ?? null);
+      works.set(workKey, row ? { sourceNovelId: nonEmptySourceId(row.sourceNovelId), name: row.name } : null);
     }
     const work = works.get(workKey);
     if (!work?.sourceNovelId) continue;
-    const [attempt] = await db.select<{ present: number }[]>("SELECT 1 AS present FROM user_state_operation WHERE entity_key=$1 LIMIT 1", [row.entityKey]);
+    const [attempt] = await db.select<{ present: number }[]>(
+      `SELECT 1 AS present FROM user_state_operation WHERE entity_key=$1
+       UNION ALL
+       SELECT 1 AS present FROM user_state_progress WHERE entity_key=$1 AND acknowledged_sequence>0
+       LIMIT 1`,
+      [row.entityKey],
+    );
     if (attempt) continue; // Null identities never enter the wire; retain unexpected imported data for inspection.
     const entity = { ...intent.entity, work: { ...intent.entity.work, sourceNovelId: work.sourceNovelId, name: work.name } };
     const nextKey = userStateEntityKey(entity);
@@ -359,12 +367,13 @@ export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: numbe
   const [work] = await db.select<{ pluginId: string; sourceNovelId: string | null; novelPath: string }[]>(
     "SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath FROM novel WHERE id=$1", [novelId]);
   if (work && work.pluginId !== "local") {
+    const sourceNovelId = nonEmptySourceId(work.sourceNovelId);
     const reopened = await db.execute(`UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE
       deferred_reason IS NOT NULL AND
       json_extract(payload,'$.entity.work.pluginId')=$1 AND
       (json_extract(payload,'$.entity.work.novelPath')=$3 OR
         ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))`,
-      [work.pluginId, work.sourceNovelId, work.novelPath]);
+      [work.pluginId, sourceNovelId, work.novelPath]);
     let hasWaiting = reopened.rowsAffected > 0;
     if (!hasWaiting) {
       const [waiting] = await db.select<{ waiting: number }[]>(
@@ -374,7 +383,7 @@ export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: numbe
            AND (json_extract(payload,'$.entity.work.novelPath')=$3
              OR ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))
          LIMIT 1`,
-        [work.pluginId, work.sourceNovelId, work.novelPath],
+        [work.pluginId, sourceNovelId, work.novelPath],
       );
       hasWaiting = Boolean(waiting);
     }

@@ -210,3 +210,59 @@ it("follows native host connectivity in Tauri even when navigator.onLine is stuc
   await vi.advanceTimersByTimeAsync(0);
   expect(mocks.sync).toHaveBeenCalledTimes(2);
 });
+
+it("pauses automatic retries while epochMismatch is active and resumes once cleared", async () => {
+  mocks.sync.mockRejectedValueOnce(new Error("epoch changed"));
+  useUserStateStore.getState().setEnabled("http://server", true);
+  cleanup = startUserStateScheduler();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+
+  useUserStateStore.getState().setEpochMismatch("http://server", {
+    serverUrl: "http://server",
+    localWorkspaceId: "ws-1",
+    localEpoch: "ep-1",
+    serverWorkspaceId: "ws-1",
+    serverEpoch: "ep-2",
+    headRevision: 0,
+    detectedAt: 1000,
+  });
+  mocks.localListener?.("normal");
+  requestUserStateFlush();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+
+  mocks.sync.mockResolvedValue(undefined);
+  useUserStateStore.getState().setEpochMismatch("http://server", null);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
+});
+
+it("pauses retries immediately when synchronizeUserState emits epochMismatch during a failing sync", async () => {
+  mocks.sync.mockImplementationOnce(async () => {
+    useUserStateStore.getState().setEpochMismatch("http://server", {
+      serverUrl: "http://server",
+      localWorkspaceId: "ws-1",
+      localEpoch: "ep-1",
+      serverWorkspaceId: "ws-1",
+      serverEpoch: "ep-2",
+      headRevision: 0,
+      detectedAt: 2000,
+    });
+    throw new Error("the server workspace changed; pending changes were retained");
+  });
+  useUserStateStore.getState().setEnabled("http://server", true);
+  cleanup = startUserStateScheduler();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+
+  mocks.localListener?.("normal");
+  requestUserStateFlush();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+
+  mocks.sync.mockResolvedValue(undefined);
+  useUserStateStore.getState().setEpochMismatch("http://server", null);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
+});

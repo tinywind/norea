@@ -2,7 +2,7 @@ use std::{borrow::Cow, fs, path::Path, time::Duration};
 
 use sqlx::migrate::{Migration as SqlxMigration, MigrationType, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::SqlitePool;
+use sqlx::{Row, SqlitePool};
 use tauri::{AppHandle, Manager};
 
 const DB_FILE: &str = "norea.db";
@@ -13,6 +13,16 @@ pub struct SchemaMigration {
     pub version: i64,
     pub description: &'static str,
     pub sql: &'static str,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SqliteReclaimStats {
+    pub auto_vacuum_mode: i64,
+    pub freelist_before: i64,
+    pub freelist_after: i64,
+    pub wal_checkpoint_busy: i64,
+    pub wal_log_frames: i64,
+    pub wal_checkpointed_frames: i64,
 }
 
 #[derive(Clone)]
@@ -52,6 +62,66 @@ impl AppDatabase {
     pub async fn close(&self) {
         self.reader.close().await;
         self.writer.close().await;
+    }
+
+    /// Reclaims freed pages and truncates WAL frames using the writer pool; must be called outside any write transaction.
+    pub async fn reclaim_space(&self, max_pages: Option<u32>) -> Result<SqliteReclaimStats, String> {
+        let mut conn = self
+            .writer
+            .acquire()
+            .await
+            .map_err(|err| format!("database: acquire writer for space reclaim: {err}"))?;
+        let auto_vacuum_mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|err| format!("database: read auto_vacuum mode: {err}"))?;
+        let freelist_before: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|err| format!("database: read freelist_count before reclaim: {err}"))?;
+        if auto_vacuum_mode == 2 && freelist_before > 0 {
+            match max_pages {
+                None => {
+                    sqlx::query("PRAGMA incremental_vacuum")
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(|err| format!("database: run incremental_vacuum: {err}"))?;
+                }
+                Some(0) => {}
+                Some(pages) => {
+                    let pragma = format!("PRAGMA incremental_vacuum({pages})");
+                    sqlx::query(&pragma)
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(|err| format!("database: run incremental_vacuum({pages}): {err}"))?;
+                }
+            }
+        }
+        let freelist_after: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|err| format!("database: read freelist_count after reclaim: {err}"))?;
+        let row = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|err| format!("database: run wal_checkpoint(TRUNCATE): {err}"))?;
+        let wal_checkpoint_busy: i64 = row
+            .try_get(0)
+            .map_err(|err| format!("database: read wal_checkpoint busy column: {err}"))?;
+        let wal_log_frames: i64 = row
+            .try_get(1)
+            .map_err(|err| format!("database: read wal_checkpoint log column: {err}"))?;
+        let wal_checkpointed_frames: i64 = row
+            .try_get(2)
+            .map_err(|err| format!("database: read wal_checkpoint checkpointed column: {err}"))?;
+        Ok(SqliteReclaimStats {
+            auto_vacuum_mode,
+            freelist_before,
+            freelist_after,
+            wal_checkpoint_busy,
+            wal_log_frames,
+            wal_checkpointed_frames,
+        })
     }
 }
 
@@ -142,6 +212,16 @@ pub fn schema_migrations() -> Vec<SchemaMigration> {
             description: "upgrade legacy completed work overrides to canonical status",
             sql: include_str!("migrations/0014_novel_override_status.sql"),
         },
+        SchemaMigration {
+            version: 15,
+            description: "track acknowledged user-state operation timestamps for retention",
+            sql: include_str!("migrations/0015_user_state_retention.sql"),
+        },
+        SchemaMigration {
+            version: 16,
+            description: "track workspace seed suppression and retention cutoff",
+            sql: include_str!("migrations/0016_user_state_epoch_retention.sql"),
+        },
     ]
 }
 
@@ -175,6 +255,46 @@ async fn open_sqlite_pools(path: &Path) -> Result<(SqlitePool, SqlitePool), sqlx
     Ok((writer, reader))
 }
 
+async fn ensure_incremental_auto_vacuum(
+    writer: &SqlitePool,
+    checkpoint_if_vacuumed: bool,
+) -> Result<(), String> {
+    let mut conn = writer
+        .acquire()
+        .await
+        .map_err(|err| format!("database: acquire writer for auto_vacuum: {err}"))?;
+    let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|err| format!("database: read auto_vacuum mode: {err}"))?;
+    if mode == 2 {
+        return Ok(());
+    }
+    sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("database: set auto_vacuum incremental: {err}"))?;
+    let updated_mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|err| format!("database: verify auto_vacuum mode: {err}"))?;
+    if updated_mode != 2 {
+        sqlx::query("VACUUM")
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("database: vacuum for auto_vacuum conversion: {err}"))?;
+        if checkpoint_if_vacuumed {
+            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+                .execute(&mut *conn)
+                .await
+                .map_err(|err| {
+                    format!("database: checkpoint after auto_vacuum conversion: {err}")
+                })?;
+        }
+    }
+    Ok(())
+}
+
 pub async fn open_and_migrate_pools(path: &Path) -> Result<AppDatabase, String> {
     let writer_options = SqliteConnectOptions::new()
         .filename(path)
@@ -186,6 +306,23 @@ pub async fn open_and_migrate_pools(path: &Path) -> Result<AppDatabase, String> 
         .await
         .map_err(|err| format!("database: open writer pool: {err}"))?;
 
+    let schema_objects = match sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM sqlite_master")
+        .fetch_one(&writer)
+        .await
+    {
+        Ok(count) => count,
+        Err(err) => {
+            writer.close().await;
+            return Err(format!("database: inspect schema objects: {err}"));
+        }
+    };
+    if schema_objects == 0 {
+        if let Err(err) = ensure_incremental_auto_vacuum(&writer, false).await {
+            writer.close().await;
+            return Err(err);
+        }
+    }
+
     let migrator = Migrator {
         migrations: Cow::Owned(sqlx_migrations()),
         ..Migrator::DEFAULT
@@ -195,17 +332,28 @@ pub async fn open_and_migrate_pools(path: &Path) -> Result<AppDatabase, String> 
         return Err(format!("database: run migrations: {err}"));
     }
 
+    if let Err(err) = ensure_incremental_auto_vacuum(&writer, true).await {
+        writer.close().await;
+        return Err(err);
+    }
+
     let reader_options = SqliteConnectOptions::new()
         .filename(path)
         .create_if_missing(false)
         .read_only(true)
         .journal_mode(SqliteJournalMode::Wal)
         .busy_timeout(Duration::from_millis(DB_BUSY_TIMEOUT_MS));
-    let reader = SqlitePoolOptions::new()
+    let reader = match SqlitePoolOptions::new()
         .max_connections(2)
         .connect_with(reader_options)
         .await
-        .map_err(|err| format!("database: open reader pool: {err}"))?;
+    {
+        Ok(pool) => pool,
+        Err(err) => {
+            writer.close().await;
+            return Err(format!("database: open reader pool: {err}"));
+        }
+    };
 
     Ok(AppDatabase::from_pools(writer, reader))
 }
@@ -833,6 +981,309 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(retained, ("Saved Book".to_string(), 1));
+        reopened.close().await;
+    }
+
+    #[tokio::test]
+    async fn open_and_migrate_pools_enables_incremental_auto_vacuum_for_new_and_legacy_dbs() {
+        let dir = tempfile::tempdir().unwrap();
+        let new_path = dir.path().join("new.db");
+
+        let new_db = open_and_migrate_pools(&new_path).await.unwrap();
+        let new_mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .fetch_one(new_db.writer())
+            .await
+            .unwrap();
+        assert_eq!(new_mode, 2);
+        new_db.close().await;
+
+        let legacy_path = dir.path().join("legacy.db");
+        let migrations: Vec<_> = sqlx_migrations().into_iter().take(14).collect();
+        let legacy_pool = bootstrap(&legacy_path, &migrations).await.unwrap();
+        let initial_mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .fetch_one(&legacy_pool)
+            .await
+            .unwrap();
+        assert_eq!(initial_mode, 0);
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, path, name, in_library) \
+             VALUES (1, 'source', '/legacy', 'Legacy Work', 1)",
+        )
+        .execute(&legacy_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO user_state_operation(operation_id, namespace, entity_key, intent_sequence, payload, status, receipt) \
+             VALUES \
+               ('op-ack', 'ns', 'k1', 1, '{}', 'acknowledged', '{\"status\":\"applied\"}'), \
+               ('op-pend', 'ns', 'k2', 2, '{}', 'pending', NULL)",
+        )
+        .execute(&legacy_pool)
+        .await
+        .unwrap();
+        legacy_pool.close().await;
+
+        let upgraded = open_and_migrate_pools(&legacy_path).await.unwrap();
+        let upgraded_mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .fetch_one(upgraded.writer())
+            .await
+            .unwrap();
+        assert_eq!(upgraded_mode, 2);
+        let novel_name: String = sqlx::query_scalar("SELECT name FROM novel WHERE id = 1")
+            .fetch_one(upgraded.reader())
+            .await
+            .unwrap();
+        assert_eq!(novel_name, "Legacy Work");
+        let ack_ts: Option<i64> = sqlx::query_scalar(
+            "SELECT acknowledged_at FROM user_state_operation WHERE operation_id = 'op-ack'",
+        )
+        .fetch_one(upgraded.reader())
+        .await
+        .unwrap();
+        assert!(ack_ts.is_some_and(|v| v >= 0));
+        let pend_ts: Option<i64> = sqlx::query_scalar(
+            "SELECT acknowledged_at FROM user_state_operation WHERE operation_id = 'op-pend'",
+        )
+        .fetch_one(upgraded.reader())
+        .await
+        .unwrap();
+        assert_eq!(pend_ts, None);
+        upgraded.close().await;
+
+        let reopened = open_and_migrate_pools(&legacy_path).await.unwrap();
+        let reopened_mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .fetch_one(reopened.writer())
+            .await
+            .unwrap();
+        assert_eq!(reopened_mode, 2);
+        reopened.close().await;
+    }
+
+    #[tokio::test]
+    async fn open_and_migrate_pools_does_not_vacuum_or_alter_invalid_existing_databases() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tampered.db");
+        let migrations: Vec<_> = sqlx_migrations().into_iter().take(14).collect();
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, path, name, in_library) \
+             VALUES (1, 'source', '/keep', 'Kept Work', 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query("UPDATE _sqlx_migrations SET checksum = X'00' WHERE version = 14")
+            .execute(&pool)
+            .await
+            .unwrap();
+        pool.close().await;
+
+        assert!(open_and_migrate_pools(&path).await.is_err());
+
+        let verify_pool = sqlite_pool_options()
+            .connect_with(
+                SqliteConnectOptions::new()
+                    .filename(&path)
+                    .create_if_missing(false),
+            )
+            .await
+            .unwrap();
+        let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .fetch_one(&verify_pool)
+            .await
+            .unwrap();
+        assert_eq!(mode, 0);
+        let name: String = sqlx::query_scalar("SELECT name FROM novel WHERE id = 1")
+            .fetch_one(&verify_pool)
+            .await
+            .unwrap();
+        assert_eq!(name, "Kept Work");
+        verify_pool.close().await;
+
+        let corrupt_path = dir.path().join("corrupt.db");
+        fs::write(&corrupt_path, b"not sqlite data").unwrap();
+        assert!(open_and_migrate_pools(&corrupt_path).await.is_err());
+        assert_eq!(fs::read(&corrupt_path).unwrap(), b"not sqlite data");
+    }
+
+    #[tokio::test]
+    async fn reclaim_space_vacuums_freelist_pages_and_truncates_wal() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("reclaim.db");
+        let db = open_and_migrate_pools(&path).await.unwrap();
+
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, path, name) VALUES (1, 'source', '/w', 'Work')",
+        )
+        .execute(db.writer())
+        .await
+        .unwrap();
+        let large_text = "x".repeat(4000);
+        for idx in 1..=80_i64 {
+            sqlx::query(
+                "INSERT INTO user_state_operation(operation_id, namespace, entity_key, intent_sequence, payload, status, acknowledged_at) \
+                 VALUES (?1, 'ns', ?2, ?3, ?4, 'acknowledged', 100)",
+            )
+            .bind(format!("op-{idx}"))
+            .bind(format!("k-{idx}"))
+            .bind(idx)
+            .bind(&large_text)
+            .execute(db.writer())
+            .await
+            .unwrap();
+        }
+        sqlx::query("DELETE FROM user_state_operation")
+            .execute(db.writer())
+            .await
+            .unwrap();
+
+        let freelist_initial: i64 = sqlx::query_scalar("PRAGMA freelist_count")
+            .fetch_one(db.writer())
+            .await
+            .unwrap();
+        assert!(freelist_initial > 2);
+
+        let bounded = db.reclaim_space(Some(1)).await.unwrap();
+        assert_eq!(bounded.auto_vacuum_mode, 2);
+        assert_eq!(bounded.freelist_before, freelist_initial);
+        assert!(bounded.freelist_after < bounded.freelist_before);
+        assert!(bounded.freelist_after > 0);
+        assert_eq!(bounded.wal_checkpoint_busy, 0);
+
+        let full = db.reclaim_space(None).await.unwrap();
+        assert_eq!(full.freelist_after, 0);
+        assert_eq!(full.wal_checkpoint_busy, 0);
+
+        let wal_path = dir.path().join("reclaim.db-wal");
+        if wal_path.exists() {
+            assert_eq!(fs::metadata(&wal_path).unwrap().len(), 0);
+        }
+        db.close().await;
+    }
+
+    #[tokio::test]
+    async fn registered_v15_upgrade_preserves_workspace_and_enforces_epoch_retention_checks() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations: Vec<_> = schema_migrations()
+            .into_iter()
+            .map(|migration| {
+                SqlxMigration::new(
+                    migration.version,
+                    migration.description.into(),
+                    MigrationType::ReversibleUp,
+                    migration.sql.into(),
+                    false,
+                )
+            })
+            .collect();
+        let pool = bootstrap(&path, &migrations[..15]).await.unwrap();
+        sqlx::query(
+            "INSERT INTO user_state_workspace(server_url, namespace, workspace_id, epoch, cursor, read_through, last_success_at) \
+             VALUES ('https://state.example', '[\"https://state.example\",\"ws-1\",\"epoch-1\"]', 'ws-1', 'epoch-1', 42, NULL, 9000)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        pool.close().await;
+
+        let pool = bootstrap(&path, &migrations).await.unwrap();
+        let row = sqlx::query_as::<_, (String, String, i64, i64, Option<i64>)>(
+            "SELECT workspace_id, epoch, cursor, seed_suppressed, seed_cutoff_at FROM user_state_workspace",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(row, ("ws-1".into(), "epoch-1".into(), 42, 0, None));
+
+        assert!(sqlx::query(
+            "UPDATE user_state_workspace SET seed_suppressed = 2 WHERE server_url = 'https://state.example'",
+        )
+        .execute(&pool)
+        .await
+        .is_err());
+        assert!(sqlx::query(
+            "UPDATE user_state_workspace SET seed_cutoff_at = -1 WHERE server_url = 'https://state.example'",
+        )
+        .execute(&pool)
+        .await
+        .is_err());
+
+        sqlx::query(
+            "UPDATE user_state_workspace SET seed_suppressed = 1, seed_cutoff_at = 1700000000000 WHERE server_url = 'https://state.example'",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        let updated = sqlx::query_as::<_, (i64, Option<i64>)>(
+            "SELECT seed_suppressed, seed_cutoff_at FROM user_state_workspace",
+        )
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(updated, (1, Some(1_700_000_000_000)));
+        pool.close().await;
+    }
+
+    #[tokio::test]
+    async fn open_and_migrate_pools_upgrades_populated_v15_to_v16_and_preserves_incremental_vacuum() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v15_populated.db");
+        let migrations: Vec<_> = sqlx_migrations().into_iter().take(15).collect();
+
+        let v15_pool = bootstrap(&path, &migrations).await.unwrap();
+        sqlx::query(
+            "INSERT INTO user_state_workspace(server_url, namespace, workspace_id, epoch, cursor, read_through, last_success_at) \
+             VALUES ('https://state.example', '[\"https://state.example\",\"ws-1\",\"ep-1\"]', 'ws-1', 'ep-1', 77, NULL, 9999)",
+        )
+        .execute(&v15_pool)
+        .await
+        .unwrap();
+        v15_pool.close().await;
+
+        let db = open_and_migrate_pools(&path).await.unwrap();
+        let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .fetch_one(db.writer())
+            .await
+            .unwrap();
+        assert_eq!(mode, 2);
+
+        let ws: (String, String, i64, i64, Option<i64>) = sqlx::query_as(
+            "SELECT workspace_id, epoch, cursor, seed_suppressed, seed_cutoff_at \
+             FROM user_state_workspace WHERE server_url = 'https://state.example'",
+        )
+        .fetch_one(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(ws, ("ws-1".into(), "ep-1".into(), 77, 0, None));
+
+        assert!(sqlx::query(
+            "UPDATE user_state_workspace SET seed_suppressed = -1 WHERE server_url = 'https://state.example'",
+        )
+        .execute(db.writer())
+        .await
+        .is_err());
+        sqlx::query(
+            "UPDATE user_state_workspace SET seed_cutoff_at = 0 WHERE server_url = 'https://state.example'",
+        )
+        .execute(db.writer())
+        .await
+        .unwrap();
+        db.close().await;
+
+        let reopened = open_and_migrate_pools(&path).await.unwrap();
+        let mode_after: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .fetch_one(reopened.writer())
+            .await
+            .unwrap();
+        assert_eq!(mode_after, 2);
+        let cutoff_after: Option<i64> = sqlx::query_scalar(
+            "SELECT seed_cutoff_at FROM user_state_workspace WHERE server_url = 'https://state.example'",
+        )
+        .fetch_one(reopened.reader())
+        .await
+        .unwrap();
+        assert_eq!(cutoff_after, Some(0));
         reopened.close().await;
     }
 }

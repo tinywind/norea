@@ -175,3 +175,10 @@ it("accepts a server advertising the shared user-state protocol without legacy p
     ? { ...capabilities, personalStateSync: true, userStateVersion: 1 } : { id: "device", deviceName: "Tablet" }));
   await expect(registerContentDevice("http://server", "Tablet")).resolves.toMatch(/^[a-f0-9]{64}$/);
 });
+
+it("accepts userStateRetentionVersion capability alongside userStateVersion", async () => {
+  vi.mocked(nativeFetch).mockImplementation(async url => Response.json(String(url).endsWith("/capabilities")
+    ? { ...capabilities, personalStateSync: true, userStateVersion: 1, userStateRetentionVersion: 1 }
+    : { id: "device", deviceName: "Tablet" }));
+  await expect(registerContentDevice("http://server", "Tablet")).resolves.toMatch(/^[a-f0-9]{64}$/);
+});

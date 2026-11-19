@@ -3,6 +3,8 @@ import { beforeEach, expect, it, vi } from "vitest";
 const mocks = vi.hoisted(() => ({
   invoke: vi.fn(), request: vi.fn(), register: vi.fn(), initSession: vi.fn(),
   suspendVpn: vi.fn(), releaseVpn: vi.fn(),
+  restorePaused: vi.fn(), syncUserState: vi.fn(), waitUserStateSync: vi.fn(),
+  enabledByServer: {} as Record<string, true>,
   values: new Map<string, string>(), server: "http://server", deviceName: "",
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
@@ -11,12 +13,20 @@ vi.mock("../../store/appearance", () => ({ useAppearanceStore: { getState: () =>
 vi.mock("../../store/content-sync", () => ({
   useContentSyncStore: { getState: () => ({ serverUrl: mocks.server, deviceName: mocks.deviceName }) },
 }));
+vi.mock("../../store/user-state", () => ({
+  useUserStateStore: { getState: () => ({ enabledByServer: mocks.enabledByServer }) },
+}));
 vi.mock("../../db/client", () => ({
   initializeDatabaseSession: mocks.initSession,
   cancelWorkMetadataRecovery: vi.fn(),
 }));
+vi.mock("../../db/user-state", () => ({
+  getUserStateRestorePaused: mocks.restorePaused,
+}));
 vi.mock("../tasks/main-tasks", () => ({ enqueueMainTask: ({ run }: { run: () => Promise<unknown> }) => ({ promise: run() }) }));
 vi.mock("../tasks/vpn-download-runtime", () => ({ suspendVpnDownloadsForRestore: mocks.suspendVpn }));
+vi.mock("../user-state/maintenance", () => ({ waitForUserStateSynchronization: mocks.waitUserStateSync }));
+vi.mock("../user-state/sync", () => ({ synchronizeUserState: mocks.syncUserState }));
 vi.mock("./sync", () => ({ runContentSyncOperation: (run: () => unknown) => run() }));
 vi.mock("./storage-operation", () => ({ runContentStorageOperation: (run: () => unknown) => run() }));
 vi.mock("./client", () => ({ contentServerRequest: mocks.request, normalizeContentServerUrl: (server: string) => server }));
@@ -34,6 +44,10 @@ const manifest = { format: "norea-device-backup", version: 2, deviceName: entry.
   settings: [{ key: "norea-content-server", value: "restored server settings" }, { key: "plugin-vpn-settings", value: "restored VPN settings" }] };
 beforeEach(() => {
   vi.clearAllMocks(); mocks.values.clear(); mocks.server = "http://server"; mocks.deviceName = "";
+  mocks.enabledByServer = {};
+  mocks.restorePaused.mockResolvedValue(false);
+  mocks.syncUserState.mockResolvedValue(undefined);
+  mocks.waitUserStateSync.mockResolvedValue(undefined);
   vi.stubGlobal("localStorage", {
     get length() { return mocks.values.size; },
     key: (index: number) => [...mocks.values.keys()][index] ?? null,
@@ -214,4 +228,92 @@ it("rejects an invalid retained-vault inventory before native restore", async ()
   await expect(restoreDeviceBackup("http://server", entry)).rejects.toMatchObject({ code: "invalidResponse" });
   expect(readDeviceSettings()).toEqual([{ key: "old", value: "retained" }]);
   expect(mocks.invoke).not.toHaveBeenCalledWith("device_backup_restore", expect.anything());
+});
+
+it("synchronizes shared user state before creating a device backup when enabled and unpaused", async () => {
+  mocks.enabledByServer = { "http://server": true };
+  mocks.request.mockImplementation(async (_server, path) => path === "/capabilities"
+    ? { apiVersion: 1, packageVersion: 1, authentication: "device-key", deviceBackupVersion: 1, userStateVersion: 1 }
+    : { items: [entry] });
+
+  let finishSync!: () => void;
+  const syncGate = new Promise<void>(resolve => { finishSync = resolve; });
+  mocks.syncUserState.mockImplementationOnce(() => syncGate);
+
+  const phases: string[] = [];
+  const uploading = uploadDeviceBackup("http://server", phase => phases.push(phase));
+  await vi.waitFor(() => expect(mocks.syncUserState).toHaveBeenCalledOnce());
+  expect(phases).toEqual(["preparing"]);
+  expect(mocks.initSession).not.toHaveBeenCalled();
+  expect(mocks.invoke).not.toHaveBeenCalledWith("device_backup_create", expect.anything());
+  expect(mocks.waitUserStateSync).not.toHaveBeenCalled();
+
+  finishSync();
+  await expect(uploading).resolves.toEqual(entry);
+  expect(mocks.syncUserState.mock.invocationCallOrder[0]!).toBeLessThan(mocks.initSession.mock.invocationCallOrder[0]!);
+  expect(mocks.invoke).toHaveBeenCalledWith("device_backup_create", expect.anything());
+});
+
+it("aborts uploadDeviceBackup before creating a snapshot when user-state synchronization fails and resets inFlight", async () => {
+  mocks.enabledByServer = { "http://server": true };
+  mocks.request.mockImplementation(async (_server, path) => path === "/capabilities"
+    ? { apiVersion: 1, packageVersion: 1, authentication: "device-key", deviceBackupVersion: 1, userStateVersion: 1 }
+    : { items: [entry] });
+  mocks.syncUserState.mockRejectedValueOnce(new Error("Sync conflict"));
+
+  await expect(uploadDeviceBackup("http://server")).rejects.toThrow("Sync conflict");
+  expect(mocks.invoke).not.toHaveBeenCalledWith("device_backup_create", expect.anything());
+  expect(mocks.invoke).not.toHaveBeenCalledWith("device_backup_upload", expect.anything());
+
+  mocks.syncUserState.mockResolvedValueOnce(undefined);
+  await expect(uploadDeviceBackup("http://server")).resolves.toEqual(entry);
+});
+
+it("converts a server-change abort during pre-backup sync to DeviceBackupError(changed)", async () => {
+  mocks.enabledByServer = { "http://server": true };
+  mocks.request.mockImplementation(async (_server, path) => path === "/capabilities"
+    ? { apiVersion: 1, packageVersion: 1, authentication: "device-key", deviceBackupVersion: 1, userStateVersion: 1 }
+    : { items: [entry] });
+  mocks.syncUserState.mockImplementationOnce(async () => {
+    mocks.server = "http://other";
+    throw new Error("aborted");
+  });
+
+  await expect(uploadDeviceBackup("http://server")).rejects.toMatchObject({ code: "changed" });
+  expect(mocks.invoke).not.toHaveBeenCalledWith("device_backup_create", expect.anything());
+});
+
+it.each(["disabled", "unsupported", "paused"] as const)(
+  "waits for active user-state synchronization without starting one when %s",
+  async mode => {
+    mocks.enabledByServer = mode === "disabled" ? {} : { "http://server": true };
+    if (mode === "paused") mocks.restorePaused.mockResolvedValue(true);
+    mocks.request.mockImplementation(async (_server, path) => path === "/capabilities"
+      ? {
+          apiVersion: 1,
+          packageVersion: 1,
+          authentication: "device-key",
+          deviceBackupVersion: 1,
+          ...(mode === "unsupported" ? {} : { userStateVersion: 1 }),
+        }
+      : { items: [entry] });
+
+    await expect(uploadDeviceBackup("http://server")).resolves.toEqual(entry);
+    expect(mocks.syncUserState).not.toHaveBeenCalled();
+    expect(mocks.waitUserStateSync).toHaveBeenCalledOnce();
+    expect(mocks.waitUserStateSync.mock.invocationCallOrder[0]!).toBeLessThan(mocks.initSession.mock.invocationCallOrder[0]!);
+  },
+);
+
+it("rejects dot-segment device names in defaultBackupDeviceName", async () => {
+  for (const invalidName of [".", ".."]) {
+    mocks.deviceName = invalidName;
+    await expect(defaultBackupDeviceName()).rejects.toMatchObject({ code: "invalidName" });
+  }
+  mocks.deviceName = "";
+  mocks.invoke.mockImplementation(async command => {
+    if (command === "get_default_device_name") return "..";
+    return undefined;
+  });
+  await expect(defaultBackupDeviceName()).rejects.toMatchObject({ code: "invalidName" });
 });

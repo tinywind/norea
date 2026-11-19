@@ -11,7 +11,7 @@ use crate::db::chapter_composition::{
 use crate::db::tx::TxContext;
 
 use super::core::{
-    canonical_entity_in_tx, has_user_state_schema_in_tx, intent_from_row,
+    canonical_entity_in_tx, has_user_state_schema_in_tx, intent_from_row, non_empty_source_id,
     promote_private_work_identities_in_tx, resolve_category_alias_in_tx, IntentRow,
 };
 use super::is_user_state_current_mode;
@@ -94,7 +94,7 @@ pub async fn find_user_state_work_in_tx(
     Ok(rows.into_iter().next().map(|r| LocalWork {
         id: r.get("id"),
         plugin_id: r.get("plugin_id"),
-        source_novel_id: r.get("source_novel_id"),
+        source_novel_id: non_empty_source_id(r.get("source_novel_id")),
         path: r.get("path"),
     }))
 }
@@ -333,7 +333,7 @@ pub async fn apply_shared_composition_in_tx(
         )));
     };
     let plugin_id: String = r.get("plugin_id");
-    let source_novel_id: Option<String> = r.get("source_novel_id");
+    let source_novel_id = non_empty_source_id(r.get("source_novel_id"));
     let Some(source_novel_id) = source_novel_id else {
         return Err(MaterializeError::Deferred(DeferredUserStateError::new(
             "missing-work-identity",
@@ -885,7 +885,12 @@ pub async fn refresh_unattempted_user_state_identities_in_tx(
             .fetch_optional(&mut *conn)
             .await
             .map_err(|err| format!("db user state: lookup upgraded work: {err}"))?
-            .map(|row| (row.get::<Option<String>, _>("source_novel_id"), row.get::<String, _>("name")));
+            .map(|row| {
+                (
+                    non_empty_source_id(row.get("source_novel_id")),
+                    row.get::<String, _>("name"),
+                )
+            });
             works.insert(cache_key, found.clone());
             found
         };
@@ -893,7 +898,10 @@ pub async fn refresh_unattempted_user_state_identities_in_tx(
             continue;
         };
         let has_attempt: Option<i64> = sqlx::query_scalar(
-            "SELECT 1 FROM user_state_operation WHERE entity_key = ?1 LIMIT 1",
+            "SELECT 1 FROM user_state_operation WHERE entity_key = ?1 \
+             UNION ALL \
+             SELECT 1 FROM user_state_progress WHERE entity_key = ?1 AND acknowledged_sequence > 0 \
+             LIMIT 1",
         )
         .bind(&intent_row.entity_key)
         .fetch_optional(&mut *conn)
@@ -978,7 +986,7 @@ pub async fn defer_user_state_for_novel_in_tx(
         if plugin_id == "local" {
             return Ok(());
         }
-        let source_novel_id: Option<String> = w.get("source_novel_id");
+        let source_novel_id = non_empty_source_id(w.get("source_novel_id"));
         let novel_path: String = w.get("path");
         let reopened = sqlx::query(
             "UPDATE user_state_record SET applied_revision = 0, deferred_reason = NULL, deferred_detail = NULL \

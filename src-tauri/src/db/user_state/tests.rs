@@ -5,13 +5,15 @@ use serde_json::{json, Value as JsonValue};
 use sqlx::Row;
 use tempfile::TempDir;
 
+use crate::db::chapter_composition::ChapterCompositionV1Dto;
 use crate::db::test_support::open_test_db;
 use crate::db::tx::{with_write_tx, MetadataRoot, TxOptions};
 use crate::db::ReadMode;
 
 use super::core::{
-    load_user_chapter_rows_by_ids_in_tx, map_user_chapter_row,
-    populate_user_chapter_composition_ids_in_tx, record_user_state_changes_in_tx,
+    load_user_chapter_rows_by_ids_in_tx, map_user_chapter_row, mark_private_chapter_progress_in_tx,
+    populate_user_chapter_composition_ids_in_tx, promote_private_work_identities_in_tx,
+    record_chapter_rows_in_tx, record_library_in_tx, record_user_state_changes_in_tx,
     USER_CHAPTER_SELECT,
 };
 use super::current::{
@@ -20,20 +22,27 @@ use super::current::{
     prepare_deferred_current_retry_in_tx,
 };
 use super::ledger::{
-    acknowledge_user_state_operations_in_tx, apply_user_state_read_page_in_tx,
-    bind_user_state_workspace_in_tx, get_user_state_ledger_status_in_tx,
+    acknowledge_user_state_operations_in_tx, apply_local_user_state_retention_in_tx,
+    apply_user_state_read_page_in_tx, bind_user_state_workspace_in_tx,
+    bind_user_state_workspace_with_options_in_tx, get_user_state_ledger_status_in_tx,
     list_user_state_conflicts_in_tx, prepare_user_state_operations_in_tx,
     project_pending_user_state_bounded_in_tx, project_pending_user_state_in_tx,
-    resolve_user_state_ledger_conflict_in_tx, PrepareUserStateOperationsLimitsDto,
-    ADVANCE_ACKNOWLEDGED_PROGRESS_SQL, MARK_ACKNOWLEDGED_RECORDS_APPLIED_SQL,
+    prune_acknowledged_user_state_operations_in_tx, rebind_user_state_workspace_in_tx,
+    reconcile_user_state_snapshot_in_tx, resolve_user_state_ledger_conflict_in_tx,
+    PrepareUserStateOperationsLimitsDto, ADVANCE_ACKNOWLEDGED_PROGRESS_SQL,
+    DEFAULT_USER_STATE_OPERATION_RETENTION_SECS, MARK_ACKNOWLEDGED_RECORDS_APPLIED_SQL,
 };
 use super::materialize::{
-    defer_user_state_for_novel_in_tx, refresh_unattempted_user_state_identities_in_tx,
+    apply_shared_composition_in_tx, defer_user_state_for_novel_in_tx, find_user_state_work_in_tx,
+    refresh_unattempted_user_state_identities_in_tx, MaterializeError,
 };
+use super::migration::{remap_unattempted_chapter_paths_in_tx, UserStateChapterPathBefore};
 use super::work_categories::{list_work_categories_in_conn, WorkCategoryLookupDto};
 use super::types::{
-    sha256_hex, stored_chapter_path, user_state_entity_key, CurrentSnapshotRetryDto,
-    ResolveUserStateLedgerConflictInputDto, UserStateBindingDto,
+    parse_user_state_merge_result, parse_user_state_retention_response,
+    parse_user_state_snapshot_response, sha256_hex, stored_chapter_path, user_state_entity_key,
+    CurrentSnapshotRetryDto, ResolveUserStateLedgerConflictInputDto, UserStateBindingDto,
+    UserStateRebindMode, UserStateWorkReferenceDto,
 };
 
 fn sample_binding() -> UserStateBindingDto {
@@ -1931,4 +1940,1954 @@ async fn populates_composition_entry_ids_and_scans_content_sync_cache_by_prefix(
     .await
     .unwrap();
     assert!(is_held);
+}
+
+#[tokio::test]
+async fn acknowledge_and_prune_operations_respects_retention_and_preserves_attempt_history() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    seed_sample_work(pool).await;
+    sqlx::query("UPDATE novel SET source_novel_id = NULL WHERE id = 1")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position) \
+         VALUES (12, 1, '/chapter/2', 'Two', '2', 2)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let binding = sample_binding();
+    let opts = TxOptions {
+        remote_content_sync: false,
+        notify_content_sync: false,
+        busy_begin_retries: 3,
+        publish_metadata: false,
+        metadata_root: MetadataRoot::None,
+    };
+
+    let b1 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    let work_no_id = json!({
+        "pluginId": "source",
+        "sourceNovelId": null,
+        "novelPath": "/book",
+        "name": "Book",
+    });
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            record_user_state_changes_in_tx(
+                conn,
+                ctx,
+                &[
+                    (
+                        json!({ "kind": "reading", "work": work_no_id.clone(), "chapter": { "chapterPath": "/chapter/1", "name": "One" } }),
+                        json!({ "progress": 25.0, "unread": true, "readAt": null }),
+                    ),
+                    (
+                        json!({ "kind": "reading", "work": work_no_id, "chapter": { "chapterPath": "/chapter/2", "name": "Two" } }),
+                        json!({ "progress": 50.0, "unread": true, "readAt": null }),
+                    ),
+                ],
+                false,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+
+    let b2 = binding.clone();
+    let ops = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(
+                None,
+                conn,
+                ctx,
+                &b2,
+                &PrepareUserStateOperationsLimitsDto {
+                    allow_opaque_identity: Some(true),
+                    ..Default::default()
+                },
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap()
+    .value;
+    assert_eq!(ops.len(), 2);
+
+    let op1 = &ops[0];
+    let op2 = &ops[1];
+    let op1_id = op1["operationId"].as_str().unwrap().to_string();
+    let op2_id = op2["operationId"].as_str().unwrap().to_string();
+    let op1_receipt = json!({
+        "operationId": op1_id,
+        "status": "applied",
+        "current": shared_record(op1["entity"].clone(), op1["value"].clone(), 1, &op1_id),
+    });
+    let op2_receipt = json!({
+        "operationId": op2_id,
+        "status": "conflict",
+        "reason": "revision-mismatch",
+        "current": null,
+    });
+
+    let b3 = binding.clone();
+    let r1 = op1_receipt.clone();
+    let r2 = op2_receipt.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            acknowledge_user_state_operations_in_tx(conn, ctx, &b3, &[r1, r2]).await
+        })
+    })
+    .await
+    .unwrap();
+
+    let (op1_status, op1_ack_at): (String, Option<i64>) = sqlx::query_as(
+        "SELECT status, acknowledged_at FROM user_state_operation WHERE operation_id = ?1",
+    )
+    .bind(&op1_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(op1_status, "acknowledged");
+    assert!(op1_ack_at.is_some_and(|v| v > 0));
+
+    let (op2_status, op2_ack_at): (String, Option<i64>) = sqlx::query_as(
+        "SELECT status, acknowledged_at FROM user_state_operation WHERE operation_id = ?1",
+    )
+    .bind(&op2_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(op2_status, "conflict");
+    assert_eq!(op2_ack_at, None);
+
+    // Idempotent replay preserves original acknowledged_at.
+    let fixed_ack_at = op1_ack_at.unwrap() - 100;
+    sqlx::query("UPDATE user_state_operation SET acknowledged_at = ?1 WHERE operation_id = ?2")
+        .bind(fixed_ack_at)
+        .bind(&op1_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    let b4 = binding.clone();
+    let r1_replay = op1_receipt.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            acknowledge_user_state_operations_in_tx(conn, ctx, &b4, &[r1_replay]).await
+        })
+    })
+    .await
+    .unwrap();
+    let replayed_ack_at: Option<i64> = sqlx::query_scalar(
+        "SELECT acknowledged_at FROM user_state_operation WHERE operation_id = ?1",
+    )
+    .bind(&op1_id)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(replayed_ack_at, Some(fixed_ack_at));
+
+    // Freshly acknowledged op1 is not pruned by default 7-day retention.
+    let b5 = binding.clone();
+    let pruned_fresh = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prune_acknowledged_user_state_operations_in_tx(
+                conn,
+                ctx,
+                &b5,
+                DEFAULT_USER_STATE_OPERATION_RETENTION_SECS,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    assert_eq!(pruned_fresh.value, 0);
+    assert!(!pruned_fresh.effects.user_state_ledger_changed);
+
+    // Negative retention age is rejected.
+    let b_bad = binding.clone();
+    let bad_res = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prune_acknowledged_user_state_operations_in_tx(conn, ctx, &b_bad, -1).await
+        })
+    })
+    .await;
+    assert!(bad_res.is_err());
+
+    // Add a pending op and an expired op in another namespace.
+    sqlx::query(
+        "INSERT INTO user_state_operation(operation_id, namespace, entity_key, intent_sequence, payload, status, acknowledged_at) \
+         VALUES \
+           ('op-pending', (SELECT namespace FROM user_state_workspace LIMIT 1), 'k-pend', 99, '{}', 'pending', NULL), \
+           ('op-other-ns', 'other-namespace', 'k-other', 1, '{}', 'acknowledged', 1)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // Backdate op1 past 7 days and prune.
+    sqlx::query("UPDATE user_state_operation SET acknowledged_at = 1 WHERE operation_id = ?1")
+        .bind(&op1_id)
+        .execute(pool)
+        .await
+        .unwrap();
+    let b6 = binding.clone();
+    let pruned_expired = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prune_acknowledged_user_state_operations_in_tx(
+                conn,
+                ctx,
+                &b6,
+                DEFAULT_USER_STATE_OPERATION_RETENTION_SECS,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    assert_eq!(pruned_expired.value, 1);
+    assert!(pruned_expired.effects.user_state_ledger_changed);
+
+    let remaining_ids: Vec<String> = sqlx::query_scalar(
+        "SELECT operation_id FROM user_state_operation ORDER BY operation_id",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    let mut expected_ids = vec![op2_id, "op-other-ns".to_string(), "op-pending".to_string()];
+    expected_ids.sort();
+    assert_eq!(remaining_ids, expected_ids);
+
+    // Insert an unattempted chapter 13 intent, upgrade novel.source_novel_id, and run refresh_unattempted_user_state_identities_in_tx.
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position) \
+         VALUES (13, 1, '/chapter/3', 'Three', '3', 3)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    let work_no_id_2 = json!({
+        "pluginId": "source",
+        "sourceNovelId": null,
+        "novelPath": "/book",
+        "name": "Book",
+    });
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            record_user_state_changes_in_tx(
+                conn,
+                ctx,
+                &[(
+                    json!({ "kind": "reading", "work": work_no_id_2, "chapter": { "chapterPath": "/chapter/3", "name": "Three" } }),
+                    json!({ "progress": 60.0, "unread": true, "readAt": null }),
+                )],
+                false,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    sqlx::query("UPDATE novel SET source_novel_id = 'book' WHERE id = 1")
+        .execute(pool)
+        .await
+        .unwrap();
+    with_write_tx(pool, opts.clone(), |conn, _ctx| {
+        Box::pin(async move { refresh_unattempted_user_state_identities_in_tx(conn, None).await })
+    })
+    .await
+    .unwrap();
+
+    let ch1_ent: String = sqlx::query_scalar("SELECT entity_json FROM user_state_intent WHERE sequence = 1")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    let ch3_ent: String = sqlx::query_scalar("SELECT entity_json FROM user_state_intent WHERE sequence = 3")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert!(serde_json::from_str::<JsonValue>(&ch1_ent).unwrap()["work"]["sourceNovelId"].is_null());
+    assert_eq!(
+        serde_json::from_str::<JsonValue>(&ch3_ent).unwrap()["work"]["sourceNovelId"].as_str(),
+        Some("book")
+    );
+
+    // remap_unattempted_chapter_paths_in_tx must NOT remap seq 1 (pruned acknowledged) when acknowledged_sequence == 1.
+    // Note: restore novel.source_novel_id = NULL so chapter 1's work_key matches intent seq 1.
+    sqlx::query("UPDATE novel SET source_novel_id = NULL WHERE id = 1")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("UPDATE chapter SET path = '/chapter/1-renamed' WHERE id = 11")
+        .execute(pool)
+        .await
+        .unwrap();
+    with_write_tx(pool, opts.clone(), |conn, _ctx| {
+        Box::pin(async move {
+            remap_unattempted_chapter_paths_in_tx(
+                conn,
+                &[UserStateChapterPathBefore {
+                    id: 11,
+                    novel_id: 1,
+                    path: "/chapter/1".to_string(),
+                }],
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let ch1_ent_after: String =
+        sqlx::query_scalar("SELECT entity_json FROM user_state_intent WHERE sequence = 1")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(
+        serde_json::from_str::<JsonValue>(&ch1_ent_after).unwrap()["chapter"]["chapterPath"]
+            .as_str(),
+        Some("/chapter/1")
+    );
+
+    // A newer unattempted edit (sequence = 4 > acknowledged_sequence = 1) DOES remap on path rename.
+    let work_no_id_3 = json!({
+        "pluginId": "source",
+        "sourceNovelId": null,
+        "novelPath": "/book",
+        "name": "Book",
+    });
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            record_user_state_changes_in_tx(
+                conn,
+                ctx,
+                &[(
+                    json!({ "kind": "reading", "work": work_no_id_3, "chapter": { "chapterPath": "/chapter/1-renamed", "name": "One" } }),
+                    json!({ "progress": 80.0, "unread": false, "readAt": 200 }),
+                )],
+                false,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    sqlx::query("UPDATE chapter SET path = '/chapter/1-final' WHERE id = 11")
+        .execute(pool)
+        .await
+        .unwrap();
+    with_write_tx(pool, opts, |conn, _ctx| {
+        Box::pin(async move {
+            remap_unattempted_chapter_paths_in_tx(
+                conn,
+                &[UserStateChapterPathBefore {
+                    id: 11,
+                    novel_id: 1,
+                    path: "/chapter/1-renamed".to_string(),
+                }],
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let ch1_latest: (i64, String) = sqlx::query_as(
+        "SELECT sequence, entity_json FROM user_state_intent WHERE entity_key LIKE '%/chapter/1-final%'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert!(ch1_latest.0 > 1);
+    assert_eq!(
+        serde_json::from_str::<JsonValue>(&ch1_latest.1).unwrap()["chapter"]["chapterPath"]
+            .as_str(),
+        Some("/chapter/1-final")
+    );
+
+    // Reclaim space after pruning works cleanly outside write tx.
+    let reclaim = test_db.db.reclaim_space(None).await.unwrap();
+    assert_eq!(reclaim.auto_vacuum_mode, 2);
+    assert_eq!(reclaim.freelist_after, 0);
+}
+
+#[test]
+fn strict_parsers_accept_seed_skipped_null_and_validate_retention_and_snapshot() {
+    let skipped = parse_user_state_merge_result(&json!({
+        "operationId": "op-1",
+        "status": "seed-skipped",
+        "current": null,
+    }))
+    .unwrap();
+    assert_eq!(skipped.status, "seed-skipped");
+    assert!(skipped.current.is_none());
+
+    let retention = parse_user_state_retention_response(&json!({
+        "version": 1,
+        "workspaceId": "ws-1",
+        "epoch": "ep-1",
+        "headRevision": 5,
+        "compactedThrough": 3,
+        "seedAllowed": false,
+        "seedCutoffAt": 1_700_000_000_000_i64,
+    }))
+    .unwrap();
+    assert_eq!(retention.compacted_through, 3);
+    assert!(!retention.seed_allowed);
+    assert_eq!(retention.seed_cutoff_at, Some(1_700_000_000_000));
+    assert!(parse_user_state_retention_response(&json!({
+        "version": 1,
+        "workspaceId": "ws-1",
+        "epoch": "ep-1",
+        "headRevision": 2,
+        "compactedThrough": 3,
+        "seedAllowed": true,
+        "seedCutoffAt": null,
+    }))
+    .is_err());
+
+    let rec = shared_record(
+        json!({ "kind": "bookmark", "work": sample_work(), "chapter": { "chapterPath": "/ch/1", "name": "One" } }),
+        json!({ "bookmarked": true }),
+        1,
+        "op-1",
+    );
+    let max_key = "k".repeat(131_072);
+    let snap = parse_user_state_snapshot_response(&json!({
+        "version": 1,
+        "workspaceId": "ws-1",
+        "epoch": "ep-1",
+        "headRevision": 5,
+        "snapshotRevision": 5,
+        "nextEntityKey": max_key,
+        "hasMore": true,
+        "seedAllowed": true,
+        "seedCutoffAt": null,
+        "records": [rec],
+    }))
+    .unwrap();
+    assert_eq!(snap.next_entity_key.as_deref().map(str::len), Some(131_072));
+    assert!(parse_user_state_snapshot_response(&json!({
+        "version": 1,
+        "workspaceId": "ws-1",
+        "epoch": "ep-1",
+        "headRevision": 5,
+        "snapshotRevision": 5,
+        "nextEntityKey": "k".repeat(131_073),
+        "hasMore": true,
+        "seedAllowed": true,
+        "seedCutoffAt": null,
+        "records": [rec],
+    }))
+    .is_err());
+}
+
+#[tokio::test]
+async fn rebind_modes_seed_cutoff_and_snapshot_reconciliation_preserve_invariants() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    seed_sample_work(pool).await;
+    sqlx::query(
+        "UPDATE novel SET in_library = 0 WHERE id = 1; \
+         UPDATE chapter SET progress = 80.0, unread = 0, read_at = 1650000000 WHERE id = 11;",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, read_at) \
+         VALUES (12, 1, '/chapter/2', 'Two', '2', 2, 100.0, 0, 1750000000)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // Initial bind with seed_cutoff_ms skips /chapter/1 (1650s < 1700s*1000) and seeds /chapter/2.
+    let b1 = sample_binding();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            bind_user_state_workspace_with_options_in_tx(
+                conn,
+                ctx,
+                &b1,
+                Some(true),
+                Some(1_700_000_000_000),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+
+    let b1_prep = sample_binding();
+    let ops = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(
+                None,
+                conn,
+                ctx,
+                &b1_prep,
+                &PrepareUserStateOperationsLimitsDto::default(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    assert!(!ops.value.iter().any(|op| op["entity"]["kind"] == "reading"
+        && op["entity"]["chapter"]["chapterPath"] == "/chapter/1"));
+    assert!(ops.value.iter().any(|op| op["entity"]["kind"] == "reading"
+        && op["entity"]["chapter"]["chapterPath"] == "/chapter/2"));
+    let ch1_read_at: Option<i64> = sqlx::query_scalar("SELECT read_at FROM chapter WHERE id = 11")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(ch1_read_at, Some(1_650_000_000));
+
+    // Mode A rebind idempotency & cutoff enforcement.
+    let b2 = UserStateBindingDto {
+        epoch: "epoch-2".to_string(),
+        ..sample_binding()
+    };
+    let b2_a = b2.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(
+                conn,
+                ctx,
+                &b2_a,
+                UserStateRebindMode::Reseed,
+                None,
+                Some(1_700_000_000_000),
+                Some(true),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let intent_count_after_first: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM user_state_intent")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    let b2_b = b2.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(
+                conn,
+                ctx,
+                &b2_b,
+                UserStateRebindMode::Reseed,
+                None,
+                Some(1_700_000_000_000),
+                Some(true),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let intent_count_after_second: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM user_state_intent")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(intent_count_after_first, intent_count_after_second);
+
+    // Mode B start_fresh suppresses seeding, clears prior intents/conflicts, and allows post-rebind edits.
+    let b3 = UserStateBindingDto {
+        epoch: "epoch-3".to_string(),
+        ..sample_binding()
+    };
+    let b3_a = b3.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(
+                conn,
+                ctx,
+                &b3_a,
+                UserStateRebindMode::StartFresh,
+                Some(4),
+                None,
+                None,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let b3_prep = b3.clone();
+    let ops_b = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(
+                None,
+                conn,
+                ctx,
+                &b3_prep,
+                &PrepareUserStateOperationsLimitsDto::default(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    assert!(ops_b.value.is_empty());
+
+    // Local retention 2-A (non-library prune) and 2-B (timestamp strip) update chapters cleanly.
+    with_write_tx(pool, opts.clone(), |conn, ctx| {
+        Box::pin(async move {
+            apply_local_user_state_retention_in_tx(
+                conn,
+                ctx,
+                Some(100),
+                Some(10),
+                1_755_000_000_000,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let ch1_after_2a: (i64, i64, Option<i64>) =
+        sqlx::query_as("SELECT progress, unread, read_at FROM chapter WHERE id = 11")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch1_after_2a, (0, 1, None));
+    let ch2_after_2b: (i64, i64, Option<i64>) =
+        sqlx::query_as("SELECT progress, unread, read_at FROM chapter WHERE id = 12")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch2_after_2b, (100, 0, None));
+
+    // Snapshot reconciliation: removes absent bookmark record + resets chapter.bookmark, preserves pending edit, cleans dangling alias.
+    let bm1 = json!({ "kind": "bookmark", "work": sample_work(), "chapter": { "chapterPath": "/chapter/1", "name": "One" } });
+    let bm1_rec = shared_record(bm1.clone(), json!({ "bookmarked": true }), 5, "remote-5");
+    sqlx::query("UPDATE chapter SET bookmark = 1 WHERE id = 11")
+        .execute(pool)
+        .await
+        .unwrap();
+    let b3_read = b3.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            apply_user_state_read_page_in_tx(
+                conn,
+                ctx,
+                &b3_read,
+                &json!({
+                    "version": 1,
+                    "workspaceId": b3_read.workspace_id,
+                    "epoch": b3_read.epoch,
+                    "headRevision": 5,
+                    "through": 5,
+                    "nextCursor": 5,
+                    "hasMore": false,
+                    "records": [bm1_rec],
+                }),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let ns3 = serde_json::to_string(&(&b3.server_url, &b3.workspace_id, &b3.epoch)).unwrap();
+    sqlx::query("INSERT INTO user_state_alias(namespace, alias_id, canonical_id) VALUES (?1, 'alias-1', 'cat-gone')")
+        .bind(&ns3)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let b3_rec = b3.clone();
+    with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move {
+            reconcile_user_state_snapshot_in_tx(
+                None,
+                conn,
+                ctx,
+                &b3_rec,
+                &[],
+                6,
+                Some(false),
+                None,
+                &HashSet::new(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+
+    let bm_after: i64 = sqlx::query_scalar("SELECT bookmark FROM chapter WHERE id = 11")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(bm_after, 0);
+    let alias_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_alias")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(alias_count, 0);
+    let cursor_after: i64 = sqlx::query_scalar("SELECT cursor FROM user_state_workspace")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(cursor_after, 6);
+}
+
+#[tokio::test]
+async fn retention_privacy_multi_workspace_cutoff_mode_a_clear_and_gc_pending_op_rebase() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    seed_sample_work(pool).await;
+    sqlx::query("UPDATE chapter SET progress = 60.0, unread = 0, read_at = 1600000000 WHERE id = 11")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, read_at) \
+         VALUES (12, 1, '/chapter/2', 'Two', '2', 2, 90.0, 0, 1750000000)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // 1. Multi-workspace seed=1 intents must obey seed_cutoff_ms (and seed_allowed=Some(false) inserts no seed=1 intents).
+    let b1 = sample_binding();
+    let b1_bind = b1.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            bind_user_state_workspace_with_options_in_tx(conn, ctx, &b1_bind, Some(true), None)
+                .await
+        })
+    })
+    .await
+    .unwrap();
+
+    let b2 = UserStateBindingDto {
+        server_url: "https://other.example".to_string(),
+        workspace_id: "ws-2".to_string(),
+        epoch: "ep-1".to_string(),
+    };
+    let b2_bind = b2.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            bind_user_state_workspace_with_options_in_tx(
+                conn,
+                ctx,
+                &b2_bind,
+                Some(true),
+                Some(1_700_000_000_000),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+
+    let b2_prep = b2.clone();
+    let ws2_ops = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(
+                None,
+                conn,
+                ctx,
+                &b2_prep,
+                &PrepareUserStateOperationsLimitsDto::default(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap()
+    .value;
+    assert!(!ws2_ops.iter().any(|op| op["entity"]["kind"] == "reading"
+        && op["entity"]["chapter"]["chapterPath"] == "/chapter/1"));
+    assert!(ws2_ops.iter().any(|op| op["entity"]["kind"] == "reading"
+        && op["entity"]["chapter"]["chapterPath"] == "/chapter/2"));
+
+    let b3 = UserStateBindingDto {
+        server_url: "https://third.example".to_string(),
+        workspace_id: "ws-3".to_string(),
+        epoch: "ep-1".to_string(),
+    };
+    let b3_bind = b3.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            bind_user_state_workspace_with_options_in_tx(conn, ctx, &b3_bind, Some(false), None)
+                .await
+        })
+    })
+    .await
+    .unwrap();
+    let b3_prep = b3.clone();
+    let ws3_ops = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(
+                None,
+                conn,
+                ctx,
+                &b3_prep,
+                &PrepareUserStateOperationsLimitsDto::default(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap()
+    .value;
+    assert!(ws3_ops.is_empty());
+
+    // 2. Mode A idempotent rebind clears seed_cutoff_at to NULL when seed_cutoff_ms transitions Some(ts) -> None.
+    let b2_re1 = b2.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(
+                conn,
+                ctx,
+                &b2_re1,
+                UserStateRebindMode::Reseed,
+                None,
+                Some(1_700_000_000_000),
+                Some(true),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let b2_re2 = b2.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(
+                conn,
+                ctx,
+                &b2_re2,
+                UserStateRebindMode::Reseed,
+                None,
+                None,
+                Some(true),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let cleared_cutoff: Option<i64> = sqlx::query_scalar(
+        "SELECT seed_cutoff_at FROM user_state_workspace WHERE server_url = ?1",
+    )
+    .bind(&b2.server_url)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(cleared_cutoff, None);
+
+    // 3. Opt-in 2-B and 2-A preserve user_state_private without leaking intents (even after source_novel_id upgrade).
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library, last_read_at) \
+         VALUES (2, 'priv-src', NULL, '/priv', 'Private Book', 0, 1600000000)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, read_at) \
+         VALUES (21, 2, '/chapter/1', 'One', '1', 1, 85.0, 0, 1600000000)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    with_write_tx(pool, opts.clone(), |conn, _ctx| {
+        Box::pin(async move { mark_private_chapter_progress_in_tx(conn, 21).await })
+    })
+    .await
+    .unwrap();
+    sqlx::query("UPDATE novel SET source_novel_id = 'priv-id' WHERE id = 2")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query("DELETE FROM user_state_intent; DELETE FROM user_state_progress; DELETE FROM user_state_operation;")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    with_write_tx(pool, opts.clone(), |conn, ctx| {
+        Box::pin(async move {
+            apply_local_user_state_retention_in_tx(conn, ctx, None, Some(30), 1_755_000_000_000)
+                .await
+        })
+    })
+    .await
+    .unwrap();
+    let ch21_after_2b: (f64, i64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 21")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch21_after_2b, (85.0, 0, None));
+    let priv_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_private")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(priv_count, 1);
+    let priv_intent_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_state_intent WHERE entity_key LIKE '%priv-src%'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(priv_intent_count, 0);
+
+    // 2-A runs before 2-B when both enabled with strip < prune.
+    sqlx::query("UPDATE chapter SET progress = 85.0, unread = 0, read_at = 1600000000 WHERE id = 21")
+        .execute(pool)
+        .await
+        .unwrap();
+    with_write_tx(pool, opts.clone(), |conn, ctx| {
+        Box::pin(async move {
+            apply_local_user_state_retention_in_tx(
+                conn,
+                ctx,
+                Some(100),
+                Some(10),
+                1_755_000_000_000,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let ch21_after_2a: (f64, i64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 21")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch21_after_2a, (0.0, 1, None));
+    let priv_count_after_2a: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_private")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(priv_count_after_2a, 1);
+    let priv_intent_count_after_2a: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_state_intent WHERE entity_key LIKE '%priv-src%'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(priv_intent_count_after_2a, 0);
+
+    // 4. reconcile_user_state_snapshot_in_tx promotes path-keyed user_state_private before loading private keys.
+    sqlx::query("DELETE FROM user_state_private; UPDATE novel SET source_novel_id = NULL WHERE id = 2; UPDATE chapter SET progress = 90.0, unread = 0, read_at = 1750000000 WHERE id = 21;")
+        .execute(pool)
+        .await
+        .unwrap();
+    with_write_tx(pool, opts.clone(), |conn, _ctx| {
+        Box::pin(async move { mark_private_chapter_progress_in_tx(conn, 21).await })
+    })
+    .await
+    .unwrap();
+    sqlx::query("UPDATE novel SET source_novel_id = 'priv-id' WHERE id = 2")
+        .execute(pool)
+        .await
+        .unwrap();
+    let priv_ent = json!({
+        "kind": "reading",
+        "work": { "pluginId": "priv-src", "sourceNovelId": "priv-id", "novelPath": "/priv", "name": "Private Book" },
+        "chapter": { "chapterPath": "/chapter/1", "name": "One" },
+    });
+    let b1_read = b1.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            apply_user_state_read_page_in_tx(
+                conn,
+                ctx,
+                &b1_read,
+                &json!({
+                    "version": 1,
+                    "workspaceId": b1_read.workspace_id,
+                    "epoch": b1_read.epoch,
+                    "headRevision": 10,
+                    "through": 10,
+                    "nextCursor": 10,
+                    "hasMore": false,
+                    "records": [shared_record(priv_ent, json!({ "progress": 10.0, "unread": false, "readAt": 1750000000 }), 10, "r-10")],
+                }),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let b1_rec = b1.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            reconcile_user_state_snapshot_in_tx(
+                None,
+                conn,
+                ctx,
+                &b1_rec,
+                &[],
+                11,
+                Some(false),
+                None,
+                &HashSet::new(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let ch21_after_snap: (f64, i64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 21")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch21_after_snap, (90.0, 0, Some(1_750_000_000)));
+
+    // 5. rebase_pending_progress_to_zero_in_tx clears stale status='pending' user_state_operation rows.
+    sqlx::query("DELETE FROM user_state_intent; DELETE FROM user_state_progress; DELETE FROM user_state_operation;")
+        .execute(pool)
+        .await
+        .unwrap();
+    let bm_ent = json!({
+        "kind": "bookmark",
+        "work": sample_work(),
+        "chapter": { "chapterPath": "/chapter/1", "name": "One" },
+    });
+    let bm_rec = shared_record(bm_ent.clone(), json!({ "bookmarked": false }), 12, "r-12");
+    let b1_read2 = b1.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            apply_user_state_read_page_in_tx(
+                conn,
+                ctx,
+                &b1_read2,
+                &json!({
+                    "version": 1,
+                    "workspaceId": b1_read2.workspace_id,
+                    "epoch": b1_read2.epoch,
+                    "headRevision": 12,
+                    "through": 12,
+                    "nextCursor": 12,
+                    "hasMore": false,
+                    "records": [bm_rec],
+                }),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            record_user_state_changes_in_tx(
+                conn,
+                ctx,
+                &[(bm_ent, json!({ "bookmarked": true }))],
+                false,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let b1_prep1 = b1.clone();
+    let before_gc = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(
+                None,
+                conn,
+                ctx,
+                &b1_prep1,
+                &PrepareUserStateOperationsLimitsDto::default(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap()
+    .value;
+    assert_eq!(before_gc.len(), 1);
+    assert_eq!(before_gc[0]["baseRevision"], json!(12));
+
+    let b1_rec2 = b1.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            reconcile_user_state_snapshot_in_tx(
+                None,
+                conn,
+                ctx,
+                &b1_rec2,
+                &[],
+                13,
+                Some(false),
+                None,
+                &HashSet::new(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let b1_prep2 = b1.clone();
+    let after_gc = with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(
+                None,
+                conn,
+                ctx,
+                &b1_prep2,
+                &PrepareUserStateOperationsLimitsDto::default(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap()
+    .value;
+    assert_eq!(after_gc.len(), 1);
+    assert_eq!(after_gc[0]["baseRevision"], json!(0));
+    assert_ne!(after_gc[0]["operationId"], before_gc[0]["operationId"]);
+}
+
+#[tokio::test]
+async fn snapshot_gc_preserves_promoted_private_reading_for_path_keyed_record() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    let b = sample_binding();
+    let b_bind = b.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            bind_user_state_workspace_with_options_in_tx(conn, ctx, &b_bind, Some(false), None)
+                .await
+        })
+    })
+    .await
+    .unwrap();
+
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library, last_read_at) \
+         VALUES (2, 'priv-src', NULL, '/priv', 'Private Book', 0, 1750000000)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, read_at) \
+         VALUES (21, 2, '/chapter/1', 'One', '1', 1, 91.0, 0, 1750000000), \
+                (22, 2, '/chapter/2', 'Two', '2', 2, 65.0, 0, 1740000000)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    // Mark chapter 21 private while source_novel_id is NULL (stores path-keyed user_state_private).
+    with_write_tx(pool, opts.clone(), |conn, _ctx| {
+        Box::pin(async move { mark_private_chapter_progress_in_tx(conn, 21).await })
+    })
+    .await
+    .unwrap();
+
+    // Store legacy path-keyed reading records (sourceNovelId: null) for both chapters before ID upgrade.
+    let path_work = json!({
+        "pluginId": "priv-src",
+        "sourceNovelId": null,
+        "novelPath": "/priv",
+        "name": "Private Book",
+    });
+    let priv_path_ent = json!({
+        "kind": "reading",
+        "work": path_work,
+        "chapter": { "chapterPath": "/chapter/1", "name": "One" },
+    });
+    let pub_path_ent = json!({
+        "kind": "reading",
+        "work": path_work,
+        "chapter": { "chapterPath": "/chapter/2", "name": "Two" },
+    });
+    let b_read = b.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            apply_user_state_read_page_in_tx(
+                conn,
+                ctx,
+                &b_read,
+                &json!({
+                    "version": 1,
+                    "workspaceId": b_read.workspace_id,
+                    "epoch": b_read.epoch,
+                    "headRevision": 10,
+                    "through": 10,
+                    "nextCursor": 10,
+                    "hasMore": false,
+                    "records": [
+                        shared_record(priv_path_ent, json!({ "progress": 10.0, "unread": false, "readAt": 1750000000 }), 9, "r-9"),
+                        shared_record(pub_path_ent, json!({ "progress": 65.0, "unread": false, "readAt": 1740000000 }), 10, "r-10"),
+                    ],
+                }),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+
+    // Novel acquires source_novel_id before snapshot GC runs.
+    sqlx::query("UPDATE novel SET source_novel_id = 'priv-p-id' WHERE id = 2")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let b_rec = b.clone();
+    with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move {
+            reconcile_user_state_snapshot_in_tx(
+                None,
+                conn,
+                ctx,
+                &b_rec,
+                &[],
+                11,
+                Some(false),
+                None,
+                &HashSet::new(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+
+    let ch21_after: (f64, i64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 21")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch21_after, (91.0, 0, Some(1_750_000_000)));
+
+    let ch22_after: (f64, i64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 22")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch22_after, (0.0, 1, None));
+}
+
+#[tokio::test]
+async fn retention_mixed_public_and_private_novel_emits_resume_clear_without_leaking_private() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    // Novel 3: mixed (old public chapter 31 + fresh private chapter 32).
+    // Novel 4: purely private (old private chapter 41).
+    // Novel 5: mixed for 2-B timestamp strip (mid-age public chapter 51 + fresh private chapter 52).
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library, last_read_at) \
+         VALUES (3, 'mixed-src', 'mixed-id', '/mixed', 'Mixed Book', 0, 1754999000), \
+                (4, 'allpriv-src', 'allpriv-id', '/allpriv', 'All Priv Book', 0, 1600000000), \
+                (5, 'mixed2b-src', 'mixed2b-id', '/mixed2b', 'Mixed 2B Book', 1, 1754999000)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, read_at) \
+         VALUES (31, 3, '/chapter/1', 'One', '1', 1, 50.0, 0, 1600000000), \
+                (32, 3, '/chapter/2', 'Two', '2', 2, 80.0, 0, 1754999000), \
+                (41, 4, '/chapter/1', 'One', '1', 1, 75.0, 0, 1600000000), \
+                (51, 5, '/chapter/1', 'One', '1', 1, 70.0, 0, 1750000000), \
+                (52, 5, '/chapter/2', 'Two', '2', 2, 85.0, 0, 1754999000)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    with_write_tx(pool, opts.clone(), |conn, _ctx| {
+        Box::pin(async move {
+            mark_private_chapter_progress_in_tx(conn, 32).await?;
+            mark_private_chapter_progress_in_tx(conn, 41).await?;
+            mark_private_chapter_progress_in_tx(conn, 52).await
+        })
+    })
+    .await
+    .unwrap();
+    sqlx::query("DELETE FROM user_state_intent; DELETE FROM user_state_progress;")
+        .execute(pool)
+        .await
+        .unwrap();
+
+    with_write_tx(pool, opts, |conn, ctx| {
+        Box::pin(async move {
+            apply_local_user_state_retention_in_tx(
+                conn,
+                ctx,
+                Some(100),
+                Some(10),
+                1_755_000_000_000,
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+
+    // Mixed 2-A novel: public chapter 31 pruned, private chapter 32 untouched.
+    let ch31: (f64, i64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 31")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch31, (0.0, 1, None));
+    let ch32: (f64, i64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 32")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch32, (80.0, 0, Some(1_754_999_000)));
+
+    // Purely private novel: chapter 41 pruned locally, zero intents emitted.
+    let ch41: (f64, i64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 41")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch41, (0.0, 1, None));
+    let allpriv_intents: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM user_state_intent WHERE entity_key LIKE '%allpriv-src%'",
+    )
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(allpriv_intents, 0);
+
+    // Mixed 2-B novel: public chapter 51 stripped (progress preserved), private chapter 52 untouched.
+    let ch51: (f64, i64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 51")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch51, (70.0, 0, None));
+    let ch52: (f64, i64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 52")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(ch52, (85.0, 0, Some(1_754_999_000)));
+
+    // Both mixed novels emitted clean resume clears without leaking private chapters.
+    let mixed_rows = sqlx::query(
+        "SELECT entity_json, value_json FROM user_state_intent \
+         WHERE entity_key LIKE '%mixed-src%' OR entity_key LIKE '%mixed2b-src%'",
+    )
+    .fetch_all(pool)
+    .await
+    .unwrap();
+    let mut saw_mixed_resume = false;
+    let mut saw_mixed2b_resume = false;
+    for r in mixed_rows {
+        let ent: JsonValue = serde_json::from_str(r.get("entity_json")).unwrap();
+        let val: JsonValue = serde_json::from_str(r.get("value_json")).unwrap();
+        if ent["kind"] == "reading" {
+            assert_eq!(ent["chapter"]["chapterPath"], "/chapter/1");
+        } else if ent["kind"] == "resume" {
+            assert_eq!(val, json!({ "chapter": null, "anchor": null, "openedAt": null }));
+            if ent["work"]["pluginId"] == "mixed-src" {
+                saw_mixed_resume = true;
+            } else if ent["work"]["pluginId"] == "mixed2b-src" {
+                saw_mixed2b_resume = true;
+            }
+        }
+    }
+    assert!(saw_mixed_resume);
+    assert!(saw_mixed2b_resume);
+}
+
+#[test]
+fn snapshot_parser_rejects_revision_inversion_and_multibyte_key_over_utf8_cap() {
+    let rec = shared_record(
+        json!({ "kind": "bookmark", "work": sample_work(), "chapter": { "chapterPath": "/ch/1", "name": "One" } }),
+        json!({ "bookmarked": true }),
+        5,
+        "op-5",
+    );
+    assert!(parse_user_state_snapshot_response(&json!({
+        "version": 1,
+        "workspaceId": "ws-1",
+        "epoch": "ep-1",
+        "headRevision": 4,
+        "snapshotRevision": 5,
+        "nextEntityKey": null,
+        "hasMore": false,
+        "seedAllowed": true,
+        "seedCutoffAt": null,
+        "records": [rec],
+    }))
+    .is_err());
+
+    assert!(parse_user_state_snapshot_response(&json!({
+        "version": 1,
+        "workspaceId": "ws-1",
+        "epoch": "ep-1",
+        "headRevision": 5,
+        "snapshotRevision": 4,
+        "nextEntityKey": null,
+        "hasMore": false,
+        "seedAllowed": true,
+        "seedCutoffAt": null,
+        "records": [rec],
+    }))
+    .is_err());
+
+    assert!(parse_user_state_snapshot_response(&json!({
+        "version": 1,
+        "workspaceId": "ws-1",
+        "epoch": "ep-1",
+        "headRevision": 5,
+        "snapshotRevision": 5,
+        "nextEntityKey": "가".repeat(70_000),
+        "hasMore": true,
+        "seedAllowed": true,
+        "seedCutoffAt": null,
+        "records": [rec],
+    }))
+    .is_err());
+}
+
+#[tokio::test]
+async fn rebind_start_fresh_post_edit_mode_a_same_epoch_and_validation_guards() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    seed_sample_work(pool).await;
+    sqlx::query("UPDATE chapter SET progress = 75.0, unread = 0, read_at = 1750000000 WHERE id = 11")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position) \
+         VALUES (12, 1, '/chapter/2', 'Two', '2', 2)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let b1 = sample_binding();
+    let b1_bind = b1.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1_bind).await })
+    })
+    .await
+    .unwrap();
+    let ns1 = super::types::namespace_for(&b1);
+    sqlx::query("INSERT INTO user_state_conflict(id, namespace, entity_key, reason) VALUES ('c1', ?1, 'k1', 'revision-mismatch')")
+        .bind(&ns1).execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO user_state_alias(namespace, alias_id, canonical_id) VALUES (?1, 'a1', 'cat-1')")
+        .bind(&ns1).execute(pool).await.unwrap();
+
+    let bad_rev = b1.clone();
+    assert!(with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(conn, ctx, &bad_rev, UserStateRebindMode::StartFresh, Some(-1), None, None).await
+        })
+    }).await.is_err());
+    let bad_cutoff = b1.clone();
+    assert!(with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(conn, ctx, &bad_cutoff, UserStateRebindMode::Reseed, None, Some(-1), None).await
+        })
+    }).await.is_err());
+    assert!(with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(
+                conn,
+                ctx,
+                &UserStateBindingDto { server_url: "".into(), workspace_id: "ws".into(), epoch: "ep".into() },
+                UserStateRebindMode::StartFresh,
+                Some(0),
+                None,
+                None,
+            ).await
+        })
+    }).await.is_err());
+
+    sqlx::query("UPDATE user_state_restore_state SET paused = 1 WHERE id = 1").execute(pool).await.unwrap();
+    let b2 = UserStateBindingDto { epoch: "epoch-2".into(), ..sample_binding() };
+    let b2_paused = b2.clone();
+    assert!(with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(conn, ctx, &b2_paused, UserStateRebindMode::StartFresh, Some(10), None, None).await
+        })
+    }).await.is_err());
+    sqlx::query("UPDATE user_state_restore_state SET paused = 0 WHERE id = 1").execute(pool).await.unwrap();
+
+    let b2_fresh = b2.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(conn, ctx, &b2_fresh, UserStateRebindMode::StartFresh, Some(10), None, None).await
+        })
+    }).await.unwrap();
+
+    for table in ["user_state_conflict", "user_state_alias", "user_state_intent", "user_state_progress", "user_state_operation", "user_state_record"] {
+        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}")).fetch_one(pool).await.unwrap();
+        assert_eq!(count, 0, "{table} must be empty after Mode B");
+    }
+
+    let b2_rebind_check = b2.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            bind_user_state_workspace_with_options_in_tx(conn, ctx, &b2_rebind_check, Some(true), None).await
+        })
+    }).await.unwrap();
+    let intent_after_bind: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_intent").fetch_one(pool).await.unwrap();
+    assert_eq!(intent_after_bind, 0);
+
+    with_write_tx(pool, opts.clone(), |conn, ctx| {
+        Box::pin(async move {
+            record_user_state_changes_in_tx(
+                conn,
+                ctx,
+                &[(
+                    json!({ "kind": "bookmark", "work": sample_work(), "chapter": { "chapterPath": "/chapter/2", "name": "Two" } }),
+                    json!({ "bookmarked": true }),
+                )],
+                false,
+            ).await
+        })
+    }).await.unwrap();
+    let b2_prep = b2.clone();
+    let post_edit_ops = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(None, conn, ctx, &b2_prep, &PrepareUserStateOperationsLimitsDto::default()).await
+        })
+    }).await.unwrap().value;
+    assert_eq!(post_edit_ops.len(), 1);
+    assert_eq!(post_edit_ops[0]["entity"]["kind"], "bookmark");
+    assert_eq!(post_edit_ops[0]["entity"]["chapter"]["chapterPath"], "/chapter/2");
+    assert!(post_edit_ops[0].get("seed").is_none());
+
+    let b2_reseed = b2.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(conn, ctx, &b2_reseed, UserStateRebindMode::Reseed, None, None, Some(true)).await
+        })
+    }).await.unwrap();
+    let b2_prep2 = b2.clone();
+    let reseed_ops = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(None, conn, ctx, &b2_prep2, &PrepareUserStateOperationsLimitsDto::default()).await
+        })
+    }).await.unwrap().value;
+    assert!(reseed_ops.iter().any(|op| op["entity"]["kind"] == "reading"
+        && op["entity"]["chapter"]["chapterPath"] == "/chapter/1"
+        && op["seed"] == json!(true)));
+
+    let b3 = UserStateBindingDto { epoch: "epoch-3".into(), ..sample_binding() };
+    let b3_reseed_blocked = b3.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            rebind_user_state_workspace_in_tx(conn, ctx, &b3_reseed_blocked, UserStateRebindMode::Reseed, None, None, Some(false)).await
+        })
+    }).await.unwrap();
+    let b3_prep = b3.clone();
+    let blocked_ops = with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(None, conn, ctx, &b3_prep, &PrepareUserStateOperationsLimitsDto::default()).await
+        })
+    }).await.unwrap().value;
+    assert!(blocked_ops.is_empty());
+}
+
+#[tokio::test]
+async fn reconcile_snapshot_held_vs_revoked_lineage_dirty_set_cutoff_seed_purge_and_alias_rebase() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) VALUES \
+           (1, 'source', 'book', '/book', 'Held Book', 1), \
+           (2, 'rev-src', 'rev-id', '/rev', 'Revoked Book', 1), \
+           (3, 'cut-src', 'cut-id', '/cut', 'Cutoff Book', 1)",
+    ).execute(pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, position, progress, unread, read_at, bookmark) VALUES \
+           (11, 1, '/ch/1', 'H1', 1, 50, 0, 1750000000, 1), \
+           (21, 2, '/ch/1', 'R1', 1, 0, 1, NULL, 1), \
+           (31, 3, '/ch/1', 'C1', 1, 88, 0, 1600000000, 0)",
+    ).execute(pool).await.unwrap();
+
+    sqlx::query(
+        "INSERT INTO content_sync_cache(cache_key, payload) VALUES \
+           ('norea-content-novel-migration:mig-held', ?1), \
+           ('norea-content-novel-migration:mig-rev', ?2), \
+           ('norea-content-incoming-migration:inc-rev', ?3)",
+    )
+    .bind(json!({ "operationId": "mig-held", "serverUrl": "https://state.example", "status": "completed", "source": { "pluginId": "source", "novelId": "book", "novelPath": "/book" } }).to_string())
+    .bind(json!({ "operationId": "mig-rev", "serverUrl": "https://state.example", "status": "completed", "source": { "pluginId": "rev-src", "novelId": "rev-id", "novelPath": "/rev" } }).to_string())
+    .bind(json!({ "operationId": "inc-rev", "serverUrl": "https://state.example", "status": "inactive", "lineage": { "legacyOperationId": "mig-rev" }, "source": { "pluginId": "rev-src", "novelId": "rev-id", "novelPath": "/rev" } }).to_string())
+    .execute(pool).await.unwrap();
+
+    let b = sample_binding();
+    let b_bind = b.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_with_options_in_tx(conn, ctx, &b_bind, Some(true), None).await })
+    }).await.unwrap();
+
+    let held_ent = json!({ "kind": "bookmark", "work": sample_work(), "chapter": { "chapterPath": "/ch/1", "name": "H1" } });
+    let rev_ent = json!({ "kind": "bookmark", "work": { "pluginId": "rev-src", "sourceNovelId": "rev-id", "novelPath": "/rev", "name": "Revoked Book" }, "chapter": { "chapterPath": "/ch/1", "name": "R1" } });
+    let cut_ent = json!({ "kind": "reading", "work": { "pluginId": "cut-src", "sourceNovelId": "cut-id", "novelPath": "/cut", "name": "Cutoff Book" }, "chapter": { "chapterPath": "/ch/1", "name": "C1" } });
+    let cat_kept = json!({ "kind": "category", "categoryId": "cat-kept" });
+    let cat_gone = json!({ "kind": "category", "categoryId": "cat-gone" });
+    let b_read = b.clone();
+    let cat_kept_for_read = cat_kept.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            apply_user_state_read_page_in_tx(conn, ctx, &b_read, &json!({
+                "version": 1, "workspaceId": b_read.workspace_id, "epoch": b_read.epoch,
+                "headRevision": 5, "through": 5, "nextCursor": 5, "hasMore": false,
+                "records": [
+                    shared_record(held_ent, json!({ "bookmarked": true }), 1, "r1"),
+                    shared_record(rev_ent, json!({ "bookmarked": true }), 2, "r2"),
+                    shared_record(cut_ent, json!({ "progress": 88, "unread": false, "readAt": 1600000000 }), 3, "r3"),
+                    shared_record(cat_kept_for_read, json!({ "name": "Kept", "sort": 0, "deleted": false }), 4, "r4"),
+                    shared_record(cat_gone, json!({ "name": "Gone", "sort": 1, "deleted": false }), 5, "r5"),
+                ],
+            })).await
+        })
+    }).await.unwrap();
+
+    let ns = super::types::namespace_for(&b);
+    sqlx::query("INSERT INTO user_state_alias(namespace, alias_id, canonical_id) VALUES (?1, 'alias-kept', 'cat-kept'), (?1, 'alias-gone', 'cat-gone'), (?1, 'alias-dead', 'cat-missing')")
+        .bind(&ns).execute(pool).await.unwrap();
+    with_write_tx(pool, opts.clone(), |conn, ctx| {
+        Box::pin(async move {
+            record_user_state_changes_in_tx(
+                conn,
+                ctx,
+                &[(json!({ "kind": "category", "categoryId": "alias-gone" }), json!({ "name": "Renamed", "sort": 2, "deleted": false }))],
+                false,
+            ).await
+        })
+    }).await.unwrap();
+
+    sqlx::query("INSERT INTO user_state_intent(entity_key, entity_json, value_json, seed) VALUES ('[\"bookmark\",\"[\\\"cut-src\\\",\\\"id\\\",\\\"cut-id\\\"]\",\"/ch/1\"]', ?1, '{\"bookmarked\":true}', 1)")
+        .bind(json!({ "kind": "bookmark", "work": { "pluginId": "cut-src", "sourceNovelId": "cut-id", "novelPath": "/cut", "name": "Cutoff Book" }, "chapter": { "chapterPath": "/ch/1", "name": "C1" } }).to_string())
+        .execute(pool).await.unwrap();
+    sqlx::query("INSERT INTO user_state_progress(namespace, entity_key, local_sequence, acknowledged_sequence, base_revision) VALUES (?1, '[\"bookmark\",\"[\\\"cut-src\\\",\\\"id\\\",\\\"cut-id\\\"]\",\"/ch/1\"]', 999, 0, -1)")
+        .bind(&ns).execute(pool).await.unwrap();
+
+    sqlx::query("DELETE FROM work_metadata_dirty; INSERT INTO work_metadata_dirty(plugin_id, path) VALUES ('sentinel', '/keep');")
+        .execute(pool).await.unwrap();
+
+    let kept_rec = shared_record(cat_kept, json!({ "name": "Kept", "sort": 0, "deleted": false }), 4, "r4");
+    let b_rec = b.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            reconcile_user_state_snapshot_in_tx(
+                None, conn, ctx, &b_rec, &[kept_rec], 6, Some(false), Some(1_700_000_000_000), &HashSet::new(),
+            ).await
+        })
+    }).await.unwrap();
+
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT bookmark FROM chapter WHERE id = 11").fetch_one(pool).await.unwrap(), 1);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT bookmark FROM chapter WHERE id = 21").fetch_one(pool).await.unwrap(), 0);
+    assert_eq!(sqlx::query_as::<_, (i64, i64, Option<i64>)>("SELECT progress, unread, read_at FROM chapter WHERE id = 31").fetch_one(pool).await.unwrap(), (88, 0, Some(1_600_000_000)));
+
+    let dirty: Vec<(String, String)> = sqlx::query_as("SELECT plugin_id, path FROM work_metadata_dirty").fetch_all(pool).await.unwrap();
+    assert_eq!(dirty, vec![("sentinel".into(), "/keep".into())]);
+
+    // alias-kept retained; alias-gone & alias-dead cleaned (canonical categories absent from snapshot);
+    // aliased pending edit rebased to base_revision = 0 before alias cleanup.
+    let aliases: Vec<String> = sqlx::query_scalar("SELECT alias_id FROM user_state_alias ORDER BY alias_id").fetch_all(pool).await.unwrap();
+    assert_eq!(aliases, vec!["alias-kept".to_string()]);
+    let aliased_base: i64 = sqlx::query_scalar("SELECT base_revision FROM user_state_progress WHERE entity_key = '[\"category\",\"alias-gone\"]'")
+        .fetch_one(pool).await.unwrap();
+    assert_eq!(aliased_base, 0);
+
+    let b_prep = b.clone();
+    let ops = with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(None, conn, ctx, &b_prep, &PrepareUserStateOperationsLimitsDto::default()).await
+        })
+    }).await.unwrap().value;
+    assert!(!ops.iter().any(|op| op.get("seed") == Some(&json!(true))));
+}
+
+#[tokio::test]
+async fn promote_private_skips_empty_source_id_and_retention_validates_boundaries() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    assert_eq!(
+        with_write_tx(pool, opts.clone(), |conn, ctx| {
+            Box::pin(async move { apply_local_user_state_retention_in_tx(conn, ctx, None, None, 1_755_000_000_000).await })
+        }).await.unwrap().value,
+        0
+    );
+    assert!(with_write_tx(pool, opts.clone(), |conn, ctx| {
+        Box::pin(async move { apply_local_user_state_retention_in_tx(conn, ctx, Some(0), None, 1_755_000_000_000).await })
+    }).await.is_err());
+    assert!(with_write_tx(pool, opts.clone(), |conn, ctx| {
+        Box::pin(async move { apply_local_user_state_retention_in_tx(conn, ctx, None, Some(0), 1_755_000_000_000).await })
+    }).await.is_err());
+
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library, is_local) VALUES \
+           (1, 'priv-empty', '', '/priv-empty', 'Empty Source ID', 0, 0), \
+           (2, 'local', NULL, '/local', 'Local Book', 0, 1), \
+           (3, 'pub-src', 'pub-id', '/pub', 'Pub Book', 0, 0), \
+           (4, 'priv-ws', '   ', '/priv-ws', 'Whitespace Source ID', 0, 0)",
+    ).execute(pool).await.unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, position, progress, unread, read_at) VALUES \
+           (11, 1, '/ch/1', 'Priv', 1, 77, 0, 1600000000), \
+           (21, 2, '/ch/1', 'Loc', 1, 66, 0, 1600000000), \
+           (31, 3, '/ch/exact', 'Exact', 1, 55, 0, 1754136000), \
+           (32, 3, '/ch/older', 'Older', 2, 55, 0, 1754135999)",
+    ).execute(pool).await.unwrap();
+    let path_key = serde_json::to_string(&(
+        "reading",
+        super::types::user_state_work_key_parts("priv-empty", None, "/priv-empty"),
+        "/ch/1",
+    )).unwrap();
+    let ws_path_key = serde_json::to_string(&(
+        "reading",
+        super::types::user_state_work_key_parts("priv-ws", None, "/priv-ws"),
+        "/ch/1",
+    )).unwrap();
+    sqlx::query("INSERT INTO user_state_private(entity_key, public_value_json) VALUES (?1, '{\"progress\":0,\"unread\":true,\"readAt\":null}'), (?2, '{\"progress\":0,\"unread\":true,\"readAt\":null}')")
+        .bind(&path_key).bind(&ws_path_key).execute(pool).await.unwrap();
+
+    with_write_tx(pool, opts.clone(), |conn, _ctx| {
+        Box::pin(async move { promote_private_work_identities_in_tx(conn).await })
+    }).await.unwrap();
+    let kept_keys: Vec<String> = sqlx::query_scalar("SELECT entity_key FROM user_state_private ORDER BY entity_key").fetch_all(pool).await.unwrap();
+    let mut expected_keys = vec![path_key, ws_path_key];
+    expected_keys.sort();
+    assert_eq!(kept_keys, expected_keys);
+
+    with_write_tx(pool, opts, |conn, ctx| {
+        Box::pin(async move {
+            apply_local_user_state_retention_in_tx(conn, ctx, Some(10), None, 1_755_000_000_000).await
+        })
+    }).await.unwrap();
+
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT progress FROM chapter WHERE id = 21").fetch_one(pool).await.unwrap(), 66);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT progress FROM chapter WHERE id = 31").fetch_one(pool).await.unwrap(), 55);
+    assert_eq!(sqlx::query_scalar::<_, i64>("SELECT progress FROM chapter WHERE id = 32").fetch_one(pool).await.unwrap(), 0);
+}
+
+#[tokio::test]
+async fn refresh_and_materialize_normalize_empty_and_whitespace_source_novel_ids() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    sqlx::query(
+        "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library, library_added_at, is_local) VALUES \
+           (1, 'src-empty', '', '/empty', 'Empty Source Book', 1, 1000, 0), \
+           (2, 'src-ws', '   ', '/ws', 'Whitespace Source Book', 1, 2000, 0)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "INSERT INTO chapter(id, novel_id, path, name, position, progress, unread, read_at) VALUES \
+           (11, 1, '/ch/1', 'E1', 1, 40, 0, 1750000000), \
+           (21, 2, '/ch/1', 'W1', 1, 80, 0, 1750000001)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let b = sample_binding();
+    let b_bind = b.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            bind_user_state_workspace_with_options_in_tx(conn, ctx, &b_bind, Some(false), None)
+                .await
+        })
+    })
+    .await
+    .unwrap();
+
+    with_write_tx(pool, opts.clone(), |conn, ctx| {
+        Box::pin(async move {
+            record_library_in_tx(conn, ctx, Some(&[1, 2]), false).await?;
+            let rows = load_user_chapter_rows_by_ids_in_tx(conn, &[11, 21]).await?;
+            record_chapter_rows_in_tx(conn, ctx, &rows, "reading", false).await
+        })
+    })
+    .await
+    .unwrap();
+
+    with_write_tx(pool, opts.clone(), |conn, ctx| {
+        Box::pin(async move {
+            refresh_unattempted_user_state_identities_in_tx(conn, None).await?;
+            defer_user_state_for_novel_in_tx(conn, ctx, 2).await?;
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
+
+    let intent_entities: Vec<String> =
+        sqlx::query_scalar("SELECT entity_json FROM user_state_intent ORDER BY sequence")
+            .fetch_all(pool)
+            .await
+            .unwrap();
+    assert_eq!(intent_entities.len(), 4);
+    for raw in &intent_entities {
+        let entity: JsonValue = serde_json::from_str(raw).unwrap();
+        assert!(
+            entity["work"]["sourceNovelId"].is_null(),
+            "expected sourceNovelId to remain null, got {entity}"
+        );
+    }
+
+    let b_prep = b.clone();
+    let default_ops = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(
+                None,
+                conn,
+                ctx,
+                &b_prep,
+                &PrepareUserStateOperationsLimitsDto::default(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap()
+    .value;
+    assert!(default_ops.is_empty());
+
+    let b_prep_opaque = b.clone();
+    let ops = with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            prepare_user_state_operations_in_tx(
+                None,
+                conn,
+                ctx,
+                &b_prep_opaque,
+                &PrepareUserStateOperationsLimitsDto {
+                    allow_opaque_identity: Some(true),
+                    ..PrepareUserStateOperationsLimitsDto::default()
+                },
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap()
+    .value;
+    assert_eq!(ops.len(), 4);
+    for op in &ops {
+        assert!(op["entity"]["work"]["sourceNovelId"].is_null());
+    }
+
+    let ns = super::types::namespace_for(&b);
+    let ns_clone = ns.clone();
+    with_write_tx(pool, opts, move |conn, _ctx| {
+        Box::pin(async move {
+            let empty_comp = ChapterCompositionV1Dto {
+                version: 1,
+                updated_at: 1,
+                entries: Vec::new(),
+            };
+            for novel_id in [1_i64, 2_i64] {
+                let err = apply_shared_composition_in_tx(
+                    None,
+                    conn,
+                    novel_id,
+                    &empty_comp,
+                    &ns_clone,
+                    &HashSet::new(),
+                )
+                .await
+                .unwrap_err();
+                match err {
+                    MaterializeError::Deferred(d) => {
+                        assert_eq!(d.reason, "missing-work-identity");
+                    }
+                    MaterializeError::Fatal(msg) => {
+                        panic!("expected deferred missing-work-identity, got fatal: {msg}")
+                    }
+                }
+            }
+
+            let found = find_user_state_work_in_tx(
+                conn,
+                &UserStateWorkReferenceDto {
+                    plugin_id: "src-ws".to_string(),
+                    source_novel_id: None,
+                    novel_path: "/ws".to_string(),
+                    name: "Whitespace Source Book".to_string(),
+                },
+            )
+            .await
+            .map_err(|err| match err {
+                MaterializeError::Deferred(d) => d.reason,
+                MaterializeError::Fatal(msg) => msg,
+            })?
+            .expect("expected work by path");
+            assert_eq!(found.source_novel_id, None);
+            Ok(())
+        })
+    })
+    .await
+    .unwrap();
 }

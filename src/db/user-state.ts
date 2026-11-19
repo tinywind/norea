@@ -15,6 +15,8 @@ import {
   type UserStateMergeResult,
   type UserStateOperation,
   type UserStateReadResponse,
+  type UserStateRebindMode,
+  type UserStateRecord,
 } from "../lib/user-state/types";
 
 export interface UserStateLedgerStatus {
@@ -43,6 +45,7 @@ const USER_STATE_BUSY_RETRIES = 3;
 const USER_STATE_LOCAL_ACK_CHUNK = 128;
 const USER_STATE_PROJECT_CHUNK = 256;
 const USER_STATE_LOCAL_ACK_YIELD_MS = 0;
+export const USER_STATE_OPERATION_RETENTION_SECS = 7 * 24 * 60 * 60;
 
 function isUserStateDatabaseBusy(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -114,8 +117,60 @@ export async function getUserStateBinding(
 
 export async function bindUserStateWorkspace(
   binding: UserStateBinding,
+  options?: { seedAllowed?: boolean; seedCutoffMs?: number | null },
 ): Promise<void> {
-  await invokeDbMutation("db_user_state_bind_workspace", { binding });
+  await invokeDbMutation("db_user_state_bind_workspace", {
+    binding,
+    ...(options?.seedAllowed !== undefined ? { seedAllowed: options.seedAllowed } : {}),
+    ...(options?.seedCutoffMs !== undefined ? { seedCutoffMs: options.seedCutoffMs } : {}),
+  });
+}
+
+export async function rebindUserStateWorkspace(
+  binding: UserStateBinding,
+  mode: UserStateRebindMode,
+  options?: { headRevision?: number; seedCutoffMs?: number | null; seedAllowed?: boolean },
+): Promise<void> {
+  await invokeDbMutation("db_user_state_rebind_workspace", {
+    binding,
+    mode,
+    ...(options?.headRevision !== undefined ? { headRevision: options.headRevision } : {}),
+    ...(options?.seedCutoffMs !== undefined ? { seedCutoffMs: options.seedCutoffMs } : {}),
+    ...(options?.seedAllowed !== undefined ? { seedAllowed: options.seedAllowed } : {}),
+  });
+}
+
+export async function reconcileUserStateSnapshot(
+  binding: UserStateBinding,
+  input: {
+    records: UserStateRecord[];
+    snapshotRevision: number;
+    seedAllowed?: boolean;
+    seedCutoffMs?: number | null;
+  },
+): Promise<UserStateApplyEffects> {
+  return withGlobalChapterDownloadSnapshotReads(skippedChapterIds =>
+    invokeDbMutation<UserStateApplyEffects>("db_user_state_reconcile_snapshot", {
+      binding,
+      records: input.records,
+      snapshotRevision: input.snapshotRevision,
+      ...(input.seedAllowed !== undefined ? { seedAllowed: input.seedAllowed } : {}),
+      ...(input.seedCutoffMs !== undefined ? { seedCutoffMs: input.seedCutoffMs } : {}),
+      skippedChapterIds,
+    }),
+  );
+}
+
+export async function applyLocalUserStateRetention(options: {
+  pruneNonLibraryDays?: number | null;
+  stripTimestampsDays?: number | null;
+  nowMs?: number;
+}): Promise<number> {
+  return invokeDbMutation<number>("db_user_state_apply_local_retention", {
+    ...(options.pruneNonLibraryDays != null ? { pruneNonLibraryDays: options.pruneNonLibraryDays } : {}),
+    ...(options.stripTimestampsDays != null ? { stripTimestampsDays: options.stripTimestampsDays } : {}),
+    ...(options.nowMs !== undefined ? { nowMs: options.nowMs } : {}),
+  });
 }
 
 export async function prepareUserStateOperations(
@@ -242,6 +297,19 @@ export async function acknowledgeUserStateOperations(
     );
   }
   return { resumes: [] };
+}
+
+export async function pruneUserStateOperations(
+  binding: UserStateBinding,
+  olderThanSecs = USER_STATE_OPERATION_RETENTION_SECS,
+): Promise<number> {
+  if (!Number.isSafeInteger(olderThanSecs) || olderThanSecs < 0) {
+    throw new Error("Operation retention age must be a non-negative number of seconds.");
+  }
+  return invokeDbMutation<number>("db_user_state_prune_operations", {
+    binding,
+    olderThanSecs,
+  });
 }
 
 export async function resolveUserStateLedgerConflict(

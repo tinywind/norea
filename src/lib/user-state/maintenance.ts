@@ -24,9 +24,19 @@ export function serializeUserStateSynchronization<T>(
   });
 }
 
+export function waitForUserStateSynchronization(): Promise<void> {
+  return enqueue(() => Promise.resolve());
+}
+
 /** A restore aborts active traffic, awaits its settlement, then installs its durable DB fence. */
 export function withUserStateRestore<T>(run: () => Promise<T>): Promise<T> {
   restoreRequests++;
   for (const cancel of activeCancellations) cancel();
   return enqueue(run).finally(() => { restoreRequests--; });
+}
+
+/** An explicit workspace rebind aborts active sync traffic and runs exclusively before resuming sync. */
+export function withUserStateRebind<T>(run: () => Promise<T>): Promise<T> {
+  for (const cancel of activeCancellations) cancel();
+  return enqueue(run);
 }

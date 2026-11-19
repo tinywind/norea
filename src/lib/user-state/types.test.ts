@@ -1,7 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   canonicalUserStateJson, parsePortableReaderAnchor, parseUserStateEntity, parseUserStateMergeResponse,
-  parseUserStateOperation, parseUserStateReadResponse, parseUserStateRecord, userStateEntityKey,
+  parseUserStateMergeResult, parseUserStateOperation, parseUserStateReadResponse, parseUserStateRecord,
+  parseUserStateRetentionResponse, parseUserStateSnapshotResponse, userStateEntityKey,
   userStateJsonBytes, userStateWorkKey, type UserStateEntity, type UserStateOperation, type UserStateRecord,
 } from "./types";
 
@@ -101,5 +102,41 @@ describe("portable user state protocol", () => {
     expect(canonicalUserStateJson({ b: false, a: [0, null] })).toBe('{"a":[0,null],"b":false}');
     expect(() => canonicalUserStateJson({ credentials: undefined })).toThrow("portable JSON");
     expect(() => userStateJsonBytes(undefined)).toThrow("portable JSON");
+  });
+
+  it("accepts seed-skipped with null current and strictly validates retention and snapshot responses", () => {
+    expect(parseUserStateMergeResult({ operationId: "op-skip", status: "seed-skipped", current: null })).toEqual({
+      operationId: "op-skip", status: "seed-skipped", current: null,
+    });
+
+    const retention = {
+      ...workspace,
+      compactedThrough: 2,
+      seedAllowed: false,
+      seedCutoffAt: 1_700_000_000_000,
+    };
+    expect(parseUserStateRetentionResponse(retention)).toEqual(retention);
+    expect(() => parseUserStateRetentionResponse({ ...retention, compactedThrough: 4 })).toThrow("compacted through");
+    expect(() => parseUserStateRetentionResponse({ ...retention, extra: 1 })).toThrow("unexpected field");
+
+    const snap = {
+      ...workspace,
+      snapshotRevision: 3,
+      nextEntityKey: "k-1",
+      hasMore: true,
+      seedAllowed: true,
+      seedCutoffAt: null,
+      records: [record],
+    };
+    expect(parseUserStateSnapshotResponse(snap).nextEntityKey).toBe("k-1");
+    expect(parseUserStateSnapshotResponse({ ...snap, nextEntityKey: "k".repeat(131_072) }).nextEntityKey).toHaveLength(131_072);
+    expect(() => parseUserStateSnapshotResponse({ ...snap, nextEntityKey: "k".repeat(131_073) })).toThrow("next entity key");
+    expect(() => parseUserStateSnapshotResponse({ ...snap, nextEntityKey: null })).toThrow("next entity key");
+    expect(() => parseUserStateSnapshotResponse({ ...snap, hasMore: false })).toThrow("next entity key");
+    expect(() => parseUserStateSnapshotResponse({ ...snap, records: [] })).toThrow("progress");
+    expect(() => parseUserStateSnapshotResponse({ ...snap, extra: true })).toThrow("unexpected field");
+    expect(() => parseUserStateSnapshotResponse({ ...snap, snapshotRevision: 4 })).toThrow("head revision");
+    expect(() => parseUserStateSnapshotResponse({ ...snap, snapshotRevision: 2, records: [{ ...record, revision: 3 }] })).toThrow("snapshot revision");
+    expect(() => parseUserStateSnapshotResponse({ ...snap, nextEntityKey: "가".repeat(70_000) })).toThrow("next entity key");
   });
 });

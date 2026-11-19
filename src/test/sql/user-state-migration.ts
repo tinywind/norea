@@ -252,7 +252,15 @@ export async function remapUnattemptedChapterPathsInDb(db: UserStateDb, before: 
         if (value.chapter?.chapterPath === oldPath) next = { ...intent, value: { ...value, chapter: chapterReference(chapter) } };
       }
       if (!next) continue;
-      const [attempt] = await db.select<{ present: number }[]>("SELECT 1 AS present FROM user_state_operation WHERE entity_key=$1 AND intent_sequence=$2 LIMIT 1", [row.entityKey, row.sequence]);
+      const [attempt] = await db.select<{ present: number }[]>(
+        `SELECT 1 AS present FROM user_state_operation
+         WHERE entity_key=$1 AND intent_sequence=$2
+         UNION ALL
+         SELECT 1 AS present FROM user_state_progress
+         WHERE entity_key=$1 AND acknowledged_sequence>=$2
+         LIMIT 1`,
+        [row.entityKey, row.sequence],
+      );
       if (attempt) continue;
       const nextKey = userStateEntityKey(next.entity);
       await db.execute("UPDATE user_state_intent SET entity_json=$2,value_json=$3 WHERE entity_key=$1", [row.entityKey, JSON.stringify(next.entity), JSON.stringify(next.value)]);

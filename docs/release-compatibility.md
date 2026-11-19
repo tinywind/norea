@@ -18,8 +18,13 @@ The SQLite schema is persistent user data.
   migration says otherwise.
 - Runtime startup may rebuild caches from authoritative files, but schema changes
   never use opportunistic runtime DDL.
+- Newly initialized databases configure `PRAGMA auto_vacuum = INCREMENTAL` before
+  applying migrations. Existing databases convert to `INCREMENTAL` once on open
+  after migration validation succeeds (`PRAGMA auto_vacuum = INCREMENTAL; VACUUM;`),
+  and maintenance pruning reclaims freed pages and WAL frames via
+  `PRAGMA incremental_vacuum` and `PRAGMA wal_checkpoint(TRUNCATE)`.
 
-The current migration set extends through 0014_novel_override_status.sql.
+The current migration set extends through 0016_user_state_epoch_retention.sql.
 
 ## Filesystem metadata
 
@@ -123,6 +128,19 @@ delta protocol.
 - Cursors advance only after durable local application/acknowledgement.
 - Missing content does not erase shared user-state records.
 - Opaque identities are retained only when the server advertises support.
+- Acknowledged `user_state_operation` receipts record `acknowledged_at` and are
+  pruned after synchronization once past the client retention window;
+  `user_state_progress.acknowledged_sequence` remains authoritative for whether
+  an intent was already attempted or acknowledged.
+- Workspace `(workspace_id, epoch)` mismatches require explicit user rebind via
+  Mode A (`reseed`) or Mode B (`start_fresh`), which persists
+  `seed_suppressed = 1` on `user_state_workspace` so pre-epoch local history is
+  never re-uploaded.
+- When the server advertises `userStateRetentionVersion: 1`, `410 Gone`
+  (`cursor-compacted`) triggers full-set `/user-state/snapshot` reconciliation
+  (removing absent tombstoned records, cleaning dangling category aliases, and
+  preserving pending edits, held migration sources, and pre-`seed_cutoff_at`
+  local reading history) without resurrecting deleted items via `seed: true`.
 
 The detailed merge contract is in [user-state.md](user-state.md).
 

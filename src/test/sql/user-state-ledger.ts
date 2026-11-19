@@ -1,15 +1,16 @@
 import {
   canonicalUserStateJson, isLocalUserStateEntity, parseUserStateEntity, parseUserStateMergeResult, parseUserStateOperation, parseUserStateReadResponse, parseUserStateRecord,
   USER_STATE_CLIENT_BATCH_BYTES, userStateEntityKey, userStateJsonBytes,
-  type UserStateBinding, type UserStateConflict, type UserStateDeferred, type UserStateEntity,
-  type UserStateMergeResult, type UserStateOperation, type UserStateReadResponse, type UserStateRecord, type UserStateValueMap,
+  type UserStateApplyEffects, type UserStateBinding, type UserStateConflict, type UserStateDeferred, type UserStateEntity,
+  type UserStateMergeResult, type UserStateOperation, type UserStateReadResponse, type UserStateRebindMode, type UserStateRecord, type UserStateValue, type UserStateValueMap,
 } from "../../lib/user-state/types";
 import {
-  assertUserStateAvailableInDb, canonicalEntity, chapterReference, chapterWork, intentFromRow, namespaceFor, recordUserStateChangesInDb, requireBinding,
+  assertUserStateAvailableInDb, canonicalEntity, chapterReference, chapterWork, hasUserStateSchema, intentFromRow, isBeforeSeedCutoff, namespaceFor, nonEmptySourceId, promotePrivateWorkIdentitiesInDb, recordChapterRowsInDb, recordResumeClearedInDb, recordUserStateChangesInDb, requireBinding,
   resolveCategoryAlias, seedUserStateInDb, USER_CHAPTER_SELECT, USER_STATE_PRELINK_BASE_REVISION, userStateRestorePausedInDb, workspaceRows,
   type IntentRow, type UserChapterRow, type UserStateDb,
 } from "./user-state-core";
 import { isCurrentWorkHeld, loadCurrentHeldSourcesInDb } from "./user-state-current-data";
+import { DeferredUserState, hasPendingUserStateForRecordInDb, materializeUserStateRecordInDb } from "./user-state-materialize";
 import { portableStoredUserStateIntentInDb } from "./user-state-stored-chapter";
 
 interface PendingRow extends IntentRow { baseRevision: number; acknowledgedSequence: number }
@@ -86,14 +87,75 @@ export interface UserStateLedgerStatus { cursor: number; through: number | null;
   projectionPending: number; projectionFailed: number;
   lastSuccessAt: number | null; pausedAfterRestore: boolean }
 
-export async function bindUserStateWorkspaceInDb(db: UserStateDb, binding: UserStateBinding): Promise<void> {
+function intentTimestampForCutoff(entity: UserStateEntity, value: UserStateValue): number | null {
+  if (entity.kind === "reading") return (value as UserStateValueMap["reading"]).readAt;
+  if (entity.kind === "resume") {
+    const resume = value as UserStateValueMap["resume"];
+    if (resume.openedAt !== null && resume.anchor?.savedAt !== undefined) return Math.max(resume.openedAt, resume.anchor.savedAt);
+    return resume.openedAt ?? resume.anchor?.savedAt ?? null;
+  }
+  return null;
+}
+
+async function insertSeedProgressForIntentsInDb(db: UserStateDb, namespace: string, seedCutoffMs: number | null): Promise<void> {
+  if (seedCutoffMs === null) {
+    await db.execute(`INSERT INTO user_state_progress(namespace,entity_key,local_sequence,base_revision)
+      SELECT $1,entity_key,sequence,CASE WHEN seed=0 THEN $2 ELSE 0 END
+      FROM user_state_intent WHERE true ON CONFLICT(namespace,entity_key) DO NOTHING`, [namespace, USER_STATE_PRELINK_BASE_REVISION]);
+    return;
+  }
+  const rows = await db.select<IntentRow[]>(
+    "SELECT sequence,entity_key AS entityKey,entity_json AS entityJson,value_json AS valueJson,seed FROM user_state_intent",
+  );
+  const eligible: { entityKey: string; sequence: number; baseRevision: number }[] = [];
+  for (const row of rows) {
+    try {
+      const intent = intentFromRow(row);
+      if (isBeforeSeedCutoff(intentTimestampForCutoff(intent.entity, intent.value), seedCutoffMs)) continue;
+    } catch {
+      // Ignore malformed legacy intent timestamp checks.
+    }
+    eligible.push({
+      entityKey: row.entityKey,
+      sequence: row.sequence,
+      baseRevision: row.seed === 0 ? USER_STATE_PRELINK_BASE_REVISION : 0,
+    });
+  }
+  for (const batch of jsonBatches(eligible, row => row.entityKey.length + 64)) {
+    await db.execute(
+      `INSERT INTO user_state_progress(namespace,entity_key,local_sequence,base_revision)
+       SELECT $1,json_extract(value,'$.entityKey'),json_extract(value,'$.sequence'),json_extract(value,'$.baseRevision')
+       FROM json_each($2) WHERE true
+       ON CONFLICT(namespace,entity_key) DO NOTHING`,
+      [namespace, JSON.stringify(batch)],
+    );
+  }
+}
+
+export async function bindUserStateWorkspaceInDb(
+  db: UserStateDb,
+  binding: UserStateBinding,
+  options: { seedAllowed?: boolean; seedCutoffMs?: number | null } = {},
+): Promise<void> {
   await assertUserStateAvailableInDb(db);
   if (!binding.serverUrl || !binding.workspaceId || !binding.epoch) throw new Error("A complete personal state workspace is required.");
+  const seedCutoffMs = options.seedCutoffMs ?? null;
+  if (seedCutoffMs !== null && seedCutoffMs < 0) throw new Error("Seed cutoff time must be non-negative.");
   const namespace = namespaceFor(binding);
   const existing = (await workspaceRows(db)).find(row => row.serverUrl === binding.serverUrl);
-  if (existing) await requireBinding(db, binding);
-  else await db.execute("INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch) VALUES($1,$2,$3,$4)",
-    [binding.serverUrl, namespace, binding.workspaceId, binding.epoch]);
+  let seedSuppressed = false;
+  if (existing) {
+    const ws = await requireBinding(db, binding);
+    seedSuppressed = ws.seedSuppressed !== 0;
+    if (options.seedAllowed !== undefined) {
+      await db.execute("UPDATE user_state_workspace SET seed_cutoff_at=$2 WHERE namespace=$1", [namespace, seedCutoffMs]);
+    }
+  } else {
+    await db.execute(
+      "INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch,seed_suppressed,seed_cutoff_at) VALUES($1,$2,$3,$4,0,$5)",
+      [binding.serverUrl, namespace, binding.workspaceId, binding.epoch, seedCutoffMs],
+    );
+  }
 
   // Pre-LWW clients could leave compare-and-swap conflicts that permanently block
   // the next explicit edit. The workspace is single-user now, so retry those intents.
@@ -105,16 +167,24 @@ export async function bindUserStateWorkspaceInDb(db: UserStateDb, binding: UserS
   const readyKey = "user-state-delta-ready:" + namespace;
   const [ready] = await db.select<{ ready: number }[]>(
     "SELECT COUNT(*) AS ready FROM content_sync_cache WHERE cache_key=$1", [readyKey]);
-  if (ready?.ready) return;
-  // Local explicit intents predating the first workspace binding have no server
-  // order. Treat them as soft baselines; later offline edits remain explicit.
-  await db.execute(`INSERT INTO user_state_progress(namespace,entity_key,local_sequence,base_revision)
-    SELECT $1,entity_key,sequence,$2 FROM user_state_intent WHERE seed=0 AND true
-    ON CONFLICT(namespace,entity_key) DO NOTHING`, [namespace, USER_STATE_PRELINK_BASE_REVISION]);
-  await seedUserStateInDb(db);
-  await db.execute(`INSERT INTO user_state_progress(namespace,entity_key,local_sequence,base_revision)
-    SELECT $1,entity_key,sequence,CASE WHEN seed=0 THEN $2 ELSE 0 END
-    FROM user_state_intent WHERE true ON CONFLICT(namespace,entity_key) DO NOTHING`, [namespace, USER_STATE_PRELINK_BASE_REVISION]);
+  if (ready?.ready || seedSuppressed) {
+    if (!ready?.ready && seedSuppressed) {
+      await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO NOTHING",
+        [readyKey, JSON.stringify({ version: 1 })]);
+    }
+    return;
+  }
+  if (options.seedAllowed !== false) {
+    if (seedCutoffMs === null) {
+      // Local explicit intents predating the first workspace binding have no server
+      // order. Treat them as soft baselines; later offline edits remain explicit.
+      await db.execute(`INSERT INTO user_state_progress(namespace,entity_key,local_sequence,base_revision)
+        SELECT $1,entity_key,sequence,$2 FROM user_state_intent WHERE seed=0 AND true
+        ON CONFLICT(namespace,entity_key) DO NOTHING`, [namespace, USER_STATE_PRELINK_BASE_REVISION]);
+    }
+    await seedUserStateInDb(db, { seedAllowed: true, seedCutoffMs });
+    await insertSeedProgressForIntentsInDb(db, namespace, seedCutoffMs);
+  }
   await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO NOTHING",
     [readyKey, JSON.stringify({ version: 1 })]);
 }
@@ -353,7 +423,13 @@ export async function acknowledgeUserStateOperationsInDb(db: UserStateDb, bindin
         json_extract(value,'$.status') AS status,json_extract(value,'$.receipt') AS receipt
       FROM json_each($1)
     )
-    UPDATE user_state_operation AS operation SET status=incoming.status,receipt=incoming.receipt
+    UPDATE user_state_operation AS operation
+    SET status=incoming.status,
+      receipt=incoming.receipt,
+      acknowledged_at=CASE
+        WHEN incoming.status='acknowledged' THEN COALESCE(operation.acknowledged_at, unixepoch())
+        ELSE NULL
+      END
     FROM incoming WHERE operation.operation_id=incoming.operation_id`, [JSON.stringify(batch)]);
   }
 
@@ -390,6 +466,28 @@ export async function acknowledgeUserStateOperationsInDb(db: UserStateDb, bindin
     [namespace, JSON.stringify(batch)]);
   }
   await db.execute("UPDATE user_state_workspace SET last_success_at=$2 WHERE namespace=$1", [namespace, Date.now()]);
+}
+
+export async function pruneAcknowledgedUserStateOperationsInDb(
+  db: UserStateDb,
+  binding: UserStateBinding,
+  olderThanSecs = 7 * 24 * 60 * 60,
+): Promise<number> {
+  if (!Number.isSafeInteger(olderThanSecs) || olderThanSecs < 0) {
+    throw new Error("Operation retention age must be a non-negative number of seconds.");
+  }
+  await assertUserStateAvailableInDb(db);
+  const { namespace } = await requireBinding(db, binding);
+  const nowSecs = Math.floor(Date.now() / 1000);
+  const cutoff = Math.max(0, nowSecs - olderThanSecs);
+  const result = await db.execute(
+    `DELETE FROM user_state_operation
+     WHERE namespace=$1
+       AND status='acknowledged'
+       AND (acknowledged_at IS NULL OR acknowledged_at<=$2)`,
+    [namespace, cutoff],
+  );
+  return result.rowsAffected;
 }
 
 async function categoryNameInDb(db: UserStateDb, namespace: string, entity: UserStateEntity): Promise<string | undefined> {
@@ -573,4 +671,459 @@ export async function resolveUserStateLedgerConflictInDb(db: UserStateDb, bindin
     await db.execute("UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND deferred_reason IN ('category-name-conflict','missing-category')", [namespace]);
   }
   await db.execute("DELETE FROM user_state_conflict WHERE namespace=$1 AND id=$2", [namespace, input.id]);
+}
+
+async function clearNamespaceLedgerInDb(db: UserStateDb, namespace: string): Promise<void> {
+  for (const table of [
+    "user_state_conflict",
+    "user_state_operation",
+    "user_state_record",
+    "user_state_progress",
+    "user_state_alias",
+  ]) {
+    await db.execute(`DELETE FROM ${table} WHERE namespace=$1`, [namespace]);
+  }
+}
+
+export async function rebindUserStateWorkspaceInDb(
+  db: UserStateDb,
+  binding: UserStateBinding,
+  mode: UserStateRebindMode,
+  options: { headRevision?: number; seedCutoffMs?: number | null; seedAllowed?: boolean } = {},
+): Promise<void> {
+  await assertUserStateAvailableInDb(db);
+  if (!binding.serverUrl || !binding.workspaceId || !binding.epoch) {
+    throw new Error("A complete personal state workspace is required.");
+  }
+  if (options.headRevision !== undefined && options.headRevision < 0) {
+    throw new Error("Workspace head revision must be non-negative.");
+  }
+  const seedCutoffMs = options.seedCutoffMs ?? null;
+  if (seedCutoffMs !== null && seedCutoffMs < 0) {
+    throw new Error("Seed cutoff time must be non-negative.");
+  }
+
+  const newNs = namespaceFor(binding);
+  const existing = (await workspaceRows(db)).find(row => row.serverUrl === binding.serverUrl);
+  const readyKey = "user-state-delta-ready:" + newNs;
+
+  if (mode === "reseed" && existing && existing.namespace === newNs && existing.seedSuppressed === 0) {
+    const [ready] = await db.select<{ ready: number }[]>(
+      "SELECT COUNT(*) AS ready FROM content_sync_cache WHERE cache_key=$1",
+      [readyKey],
+    );
+    if (ready?.ready) {
+      if (options.seedAllowed !== undefined || options.seedCutoffMs !== undefined) {
+        await db.execute("UPDATE user_state_workspace SET seed_cutoff_at=$2 WHERE namespace=$1", [newNs, seedCutoffMs]);
+      }
+      return;
+    }
+  }
+
+  const namespacesToClear = [newNs];
+  if (existing && existing.namespace !== newNs) namespacesToClear.push(existing.namespace);
+  for (const ns of namespacesToClear) {
+    await clearNamespaceLedgerInDb(db, ns);
+    await db.execute("DELETE FROM content_sync_cache WHERE cache_key=$1", ["user-state-delta-ready:" + ns]);
+  }
+
+  await db.execute(
+    "DELETE FROM user_state_intent WHERE NOT EXISTS (SELECT 1 FROM user_state_progress p WHERE p.entity_key=user_state_intent.entity_key)",
+  );
+
+  const cursor = mode === "reseed" ? 0 : (options.headRevision ?? 0);
+  const seedSuppressed = mode === "start_fresh" ? 1 : 0;
+  await db.execute(
+    `INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch,cursor,read_through,last_success_at,seed_suppressed,seed_cutoff_at)
+     VALUES($1,$2,$3,$4,$5,NULL,NULL,$6,$7)
+     ON CONFLICT(server_url) DO UPDATE SET
+       namespace=excluded.namespace,
+       workspace_id=excluded.workspace_id,
+       epoch=excluded.epoch,
+       cursor=excluded.cursor,
+       read_through=NULL,
+       last_success_at=NULL,
+       seed_suppressed=excluded.seed_suppressed,
+       seed_cutoff_at=excluded.seed_cutoff_at`,
+    [binding.serverUrl, newNs, binding.workspaceId, binding.epoch, cursor, seedSuppressed, seedCutoffMs],
+  );
+
+  await purgeAndSettleLocalUserStateInDb(db);
+
+  if (mode === "reseed" && options.seedAllowed !== false) {
+    await seedUserStateInDb(db, { seedAllowed: true, seedCutoffMs });
+    await insertSeedProgressForIntentsInDb(db, newNs, seedCutoffMs);
+  }
+
+  await db.execute("INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO NOTHING", [
+    readyKey,
+    JSON.stringify({ version: 1 }),
+  ]);
+}
+
+function canonicalTombstoneForEntity(entity: UserStateEntity, prevValue: UserStateValue): UserStateValue | null {
+  switch (entity.kind) {
+    case "library":
+      return { inLibrary: false, addedAt: null };
+    case "category": {
+      const prevName = (prevValue as UserStateValueMap["category"]).name;
+      return { name: prevName?.trim() ? prevName : "Deleted", sort: 0, deleted: true };
+    }
+    case "membership":
+      return { included: false };
+    case "reading":
+      return { progress: 0, unread: true, readAt: null };
+    case "bookmark":
+      return { bookmarked: false };
+    case "resume":
+      return { chapter: null, anchor: null, openedAt: null };
+    default:
+      return null;
+  }
+}
+
+async function rebasePendingProgressToZeroInDb(db: UserStateDb, namespace: string, record: UserStateRecord): Promise<void> {
+  const key = userStateEntityKey(record.entity);
+  await db.execute("UPDATE user_state_progress SET base_revision=0 WHERE namespace=$1 AND entity_key=$2", [namespace, key]);
+  await db.execute("DELETE FROM user_state_operation WHERE namespace=$1 AND entity_key=$2 AND status='pending'", [namespace, key]);
+  if ("categoryId" in record.entity) {
+    const rows = await db.select<IntentRow[]>(
+      `SELECT i.sequence,i.entity_key AS entityKey,i.entity_json AS entityJson,i.value_json AS valueJson,i.seed
+       FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1
+       WHERE i.seed=0 AND p.base_revision<>$3 AND i.sequence>p.acknowledged_sequence
+         AND json_extract(i.entity_json,'$.kind')=$2`,
+      [namespace, record.entity.kind, USER_STATE_PRELINK_BASE_REVISION],
+    );
+    for (const row of rows) {
+      const intent = intentFromRow(row);
+      const canonical = await canonicalEntity(db, namespace, intent.entity);
+      if (userStateEntityKey(canonical) === key) {
+        await db.execute("UPDATE user_state_progress SET base_revision=0 WHERE namespace=$1 AND entity_key=$2", [
+          namespace,
+          row.entityKey,
+        ]);
+        await db.execute("DELETE FROM user_state_operation WHERE namespace=$1 AND entity_key=$2 AND status='pending'", [
+          namespace,
+          row.entityKey,
+        ]);
+      }
+    }
+  }
+}
+
+async function clearNonPendingOrSeedIntentInDb(
+  db: UserStateDb,
+  namespace: string,
+  entityKey: string,
+  removeAnySeed: boolean,
+): Promise<void> {
+  await db.execute(
+    `DELETE FROM user_state_operation
+     WHERE namespace=$1 AND entity_key=$2
+       AND (status<>'pending' OR ($3=1 AND json_extract(payload,'$.seed')=1))`,
+    [namespace, entityKey, removeAnySeed ? 1 : 0],
+  );
+  await db.execute(
+    `DELETE FROM user_state_progress
+     WHERE namespace=$1 AND entity_key=$2
+       AND (
+         base_revision=$3
+         OR acknowledged_sequence>=local_sequence
+         OR ($4=1 AND EXISTS (SELECT 1 FROM user_state_intent i WHERE i.entity_key=user_state_progress.entity_key AND i.seed=1))
+       )`,
+    [namespace, entityKey, USER_STATE_PRELINK_BASE_REVISION, removeAnySeed ? 1 : 0],
+  );
+  await db.execute(
+    "DELETE FROM user_state_intent WHERE entity_key=$1 AND NOT EXISTS (SELECT 1 FROM user_state_progress p WHERE p.entity_key=user_state_intent.entity_key)",
+    [entityKey],
+  );
+}
+
+export async function reconcileUserStateSnapshotInDb(
+  db: UserStateDb,
+  binding: UserStateBinding,
+  input: {
+    records: readonly UserStateRecord[];
+    snapshotRevision: number;
+    seedAllowed?: boolean;
+    seedCutoffMs?: number | null;
+  },
+): Promise<UserStateApplyEffects> {
+  await assertUserStateAvailableInDb(db);
+  if (!Number.isSafeInteger(input.snapshotRevision) || input.snapshotRevision < 0) {
+    throw new Error("Snapshot revision must be non-negative.");
+  }
+  const seedCutoffMs = input.seedCutoffMs ?? null;
+  if (seedCutoffMs !== null && seedCutoffMs < 0) {
+    throw new Error("Seed cutoff time must be non-negative.");
+  }
+  const ws = await requireBinding(db, binding);
+
+  const snapshotRecords = input.records.map(parseUserStateRecord);
+  const snapshotKeys = new Set(snapshotRecords.map(rec => userStateEntityKey(rec.entity)));
+
+  const heldSources = await loadCurrentHeldSourcesInDb(db, binding.serverUrl);
+  const dirtyBefore = await db.select<{ pluginId: string; path: string }[]>(
+    "SELECT plugin_id AS pluginId,path FROM work_metadata_dirty ORDER BY plugin_id,path",
+  );
+  const existingRows = await db.select<{ entityKey: string; payload: string }[]>(
+    "SELECT entity_key AS entityKey,payload FROM user_state_record WHERE namespace=$1",
+    [ws.namespace],
+  );
+  await promotePrivateWorkIdentitiesInDb(db);
+  const privateKeys = new Set(
+    (await db.select<{ entityKey: string }[]>("SELECT entity_key AS entityKey FROM user_state_private")).map(
+      row => row.entityKey,
+    ),
+  );
+
+  const effects: UserStateApplyEffects = { resumes: [] };
+
+  for (const row of existingRows) {
+    if (snapshotKeys.has(row.entityKey)) continue;
+    await db.execute("DELETE FROM user_state_record WHERE namespace=$1 AND entity_key=$2", [ws.namespace, row.entityKey]);
+    const rec = parseUserStateRecord(JSON.parse(row.payload));
+
+    if (isLocalUserStateEntity(rec.entity, rec.value)) continue;
+    if ("work" in rec.entity && isCurrentWorkHeld(heldSources, rec.entity.work)) {
+      await clearNonPendingOrSeedIntentInDb(db, ws.namespace, row.entityKey, true);
+      continue;
+    }
+    if (await hasPendingUserStateForRecordInDb(db, ws.namespace, rec)) {
+      await rebasePendingProgressToZeroInDb(db, ws.namespace, rec);
+      continue;
+    }
+
+    let isPrivateReading = rec.entity.kind === "reading" && (
+      privateKeys.has(row.entityKey) ||
+      (rec.entity.work.sourceNovelId !== null && privateKeys.has(userStateEntityKey({
+        kind: "reading",
+        work: { ...rec.entity.work, sourceNovelId: null },
+        chapter: rec.entity.chapter,
+      })))
+    );
+    if (!isPrivateReading && rec.entity.kind === "reading" && rec.entity.work.sourceNovelId === null && privateKeys.size > 0) {
+      const [localNovel] = await db.select<{ sourceNovelId: string | null }[]>(
+        "SELECT source_novel_id AS sourceNovelId FROM novel WHERE plugin_id=$1 AND path=$2 LIMIT 1",
+        [rec.entity.work.pluginId, rec.entity.work.novelPath],
+      );
+      const sourceNovelId = nonEmptySourceId(localNovel?.sourceNovelId);
+      if (sourceNovelId) {
+        isPrivateReading = privateKeys.has(userStateEntityKey({
+          kind: "reading",
+          work: { ...rec.entity.work, sourceNovelId },
+          chapter: rec.entity.chapter,
+        }));
+      }
+    }
+    const preserveLocal =
+      (seedCutoffMs !== null && isBeforeSeedCutoff(intentTimestampForCutoff(rec.entity, rec.value), seedCutoffMs)) ||
+      isPrivateReading;
+
+    if (!preserveLocal) {
+      const tombstoneValue = canonicalTombstoneForEntity(rec.entity, rec.value);
+      if (tombstoneValue) {
+        try {
+          const next = await materializeUserStateRecordInDb(db, ws.namespace, {
+            entity: rec.entity,
+            value: tombstoneValue,
+            revision: Math.max(1, rec.revision),
+            operationId: "snapshot-gc-tombstone",
+            updatedAt: rec.updatedAt,
+            deviceId: rec.deviceId,
+            deviceName: rec.deviceName,
+          });
+          effects.resumes.push(...next.resumes);
+        } catch (error) {
+          if (!(error instanceof DeferredUserState)) {
+            console.warn("[user-state] failed to materialize GC tombstone", error);
+          }
+        }
+      }
+    }
+
+    await db.execute("DELETE FROM user_state_conflict WHERE namespace=$1 AND entity_key=$2", [ws.namespace, row.entityKey]);
+    await clearNonPendingOrSeedIntentInDb(db, ws.namespace, row.entityKey, true);
+  }
+
+  await storeUserStateRecordsInDb(db, ws.namespace, snapshotRecords);
+
+  if (input.seedAllowed === false) {
+    await db.execute(
+      "DELETE FROM user_state_operation WHERE namespace=$1 AND json_extract(payload,'$.seed')=1",
+      [ws.namespace],
+    );
+    await db.execute(
+      `DELETE FROM user_state_progress
+       WHERE namespace=$1
+         AND (base_revision=$2 OR EXISTS (SELECT 1 FROM user_state_intent i WHERE i.entity_key=user_state_progress.entity_key AND i.seed=1))`,
+      [ws.namespace, USER_STATE_PRELINK_BASE_REVISION],
+    );
+    await db.execute(
+      "DELETE FROM user_state_intent WHERE seed=1 AND NOT EXISTS (SELECT 1 FROM user_state_progress p WHERE p.entity_key=user_state_intent.entity_key)",
+    );
+  }
+
+  await db.execute(
+    `DELETE FROM user_state_alias
+     WHERE namespace=$1
+       AND NOT EXISTS (
+         SELECT 1 FROM user_state_record r
+         WHERE r.namespace=$1 AND r.entity_key=json_array('category',user_state_alias.canonical_id)
+       )`,
+    [ws.namespace],
+  );
+
+  await db.execute(
+    "UPDATE user_state_workspace SET cursor=$2,read_through=NULL,last_success_at=$3,seed_cutoff_at=$4 WHERE namespace=$1",
+    [ws.namespace, input.snapshotRevision, Date.now(), seedCutoffMs],
+  );
+
+  await db.execute("DELETE FROM work_metadata_dirty");
+  if (dirtyBefore.length) {
+    await db.execute(
+      `INSERT INTO work_metadata_dirty(plugin_id,path)
+       SELECT json_extract(value,'$.pluginId'),json_extract(value,'$.path') FROM json_each($1) WHERE true
+       ON CONFLICT(plugin_id,path) DO NOTHING`,
+      [JSON.stringify(dirtyBefore)],
+    );
+  }
+
+  return effects;
+}
+
+export async function applyLocalUserStateRetentionInDb(
+  db: UserStateDb,
+  options: { pruneNonLibraryDays?: number | null; stripTimestampsDays?: number | null; nowMs?: number } = {},
+): Promise<number> {
+  const pruneDays = options.pruneNonLibraryDays ?? null;
+  const stripDays = options.stripTimestampsDays ?? null;
+  if (pruneDays !== null && (!Number.isSafeInteger(pruneDays) || pruneDays < 1)) {
+    throw new Error("Non-library retention days must be at least 1.");
+  }
+  if (stripDays !== null && (!Number.isSafeInteger(stripDays) || stripDays < 1)) {
+    throw new Error("Reading timestamp retention days must be at least 1.");
+  }
+  if (pruneDays === null && stripDays === null) return 0;
+
+  const hasSchema = await hasUserStateSchema(db);
+  let privateKeys = new Set<string>();
+  if (hasSchema) {
+    await promotePrivateWorkIdentitiesInDb(db);
+    privateKeys = new Set(
+      (await db.select<{ entityKey: string }[]>("SELECT entity_key AS entityKey FROM user_state_private")).map(
+        row => row.entityKey,
+      ),
+    );
+  }
+
+  const nowMs = options.nowMs ?? Date.now();
+  let affected = 0;
+  const touchedNovels = new Set<number>();
+  const publicTouchedNovels = new Set<number>();
+
+  // Run 2-A (prune non-library) before 2-B (strip timestamps) so 2-B does not clear read_at
+  // before 2-A checks older non-library chapters when both policies are enabled together.
+  if (pruneDays !== null) {
+    const cutoffMs = nowMs - pruneDays * 86_400_000;
+    const rows = await db.select<UserChapterRow[]>(
+      USER_CHAPTER_SELECT + " WHERE n.in_library=0 AND n.plugin_id<>'local' AND n.is_local=0 AND c.read_at IS NOT NULL",
+    );
+    const targetRows = rows.filter(row => isBeforeSeedCutoff(row.readAt, cutoffMs));
+    if (targetRows.length) {
+      const ids = targetRows.map(row => row.id);
+      const publicRows: UserChapterRow[] = [];
+      for (const row of targetRows) {
+        touchedNovels.add(row.novelId);
+        const key = hasSchema
+          ? userStateEntityKey({ kind: "reading", work: chapterWork(row), chapter: chapterReference(row) })
+          : "";
+        if (!hasSchema || !privateKeys.has(key)) {
+          publicTouchedNovels.add(row.novelId);
+          publicRows.push({ ...row, progress: 0, unread: 1, readAt: null });
+        }
+      }
+      const res = await db.execute(
+        "UPDATE chapter SET progress=0,unread=1,read_at=NULL,updated_at=unixepoch() WHERE id IN (SELECT value FROM json_each($1))",
+        [JSON.stringify(ids)],
+      );
+      affected += res.rowsAffected;
+      if (hasSchema && publicRows.length) {
+        await recordChapterRowsInDb(db, publicRows, "reading", false);
+      }
+    }
+  }
+
+  if (stripDays !== null) {
+    const cutoffMs = nowMs - stripDays * 86_400_000;
+    const rows = await db.select<UserChapterRow[]>(
+      USER_CHAPTER_SELECT + " WHERE n.plugin_id<>'local' AND n.is_local=0 AND c.read_at IS NOT NULL",
+    );
+    const targetRows = rows.filter(row => isBeforeSeedCutoff(row.readAt, cutoffMs));
+    if (targetRows.length) {
+      const ids = targetRows.map(row => row.id);
+      const publicRows: UserChapterRow[] = [];
+      for (const row of targetRows) {
+        touchedNovels.add(row.novelId);
+        const key = hasSchema
+          ? userStateEntityKey({ kind: "reading", work: chapterWork(row), chapter: chapterReference(row) })
+          : "";
+        if (!hasSchema || !privateKeys.has(key)) {
+          publicTouchedNovels.add(row.novelId);
+          publicRows.push({ ...row, readAt: null });
+        }
+      }
+      const res = await db.execute(
+        "UPDATE chapter SET read_at=NULL,updated_at=unixepoch() WHERE id IN (SELECT value FROM json_each($1))",
+        [JSON.stringify(ids)],
+      );
+      affected += res.rowsAffected;
+      if (hasSchema && publicRows.length) {
+        await recordChapterRowsInDb(db, publicRows, "reading", false);
+      }
+    }
+  }
+
+  if (touchedNovels.size) {
+    const novelIds = [...touchedNovels];
+    const encoded = JSON.stringify(novelIds);
+    await db.execute(
+      "UPDATE novel SET last_read_at=(SELECT MAX(read_at) FROM chapter WHERE novel_id=novel.id),updated_at=unixepoch() WHERE id IN (SELECT value FROM json_each($1))",
+      [encoded],
+    );
+    if (hasSchema && publicTouchedNovels.size) {
+      const publicIds = [...publicTouchedNovels];
+      const encodedPublic = JSON.stringify(publicIds);
+      let clearedIds: number[];
+      if (privateKeys.size === 0) {
+        const cleared = await db.select<{ id: number }[]>(
+          "SELECT id FROM novel WHERE id IN (SELECT value FROM json_each($1)) AND last_read_at IS NULL",
+          [encodedPublic],
+        );
+        clearedIds = cleared.map(r => r.id);
+      } else {
+        const remaining = await db.select<UserChapterRow[]>(
+          USER_CHAPTER_SELECT + " WHERE c.novel_id IN (SELECT value FROM json_each($1)) AND c.read_at IS NOT NULL",
+          [encodedPublic],
+        );
+        const novelsWithPublicReadAt = new Set<number>();
+        for (const row of remaining) {
+          const key = userStateEntityKey({
+            kind: "reading",
+            work: chapterWork(row),
+            chapter: chapterReference(row),
+          });
+          if (!privateKeys.has(key)) {
+            novelsWithPublicReadAt.add(row.novelId);
+          }
+        }
+        clearedIds = publicIds.filter(id => !novelsWithPublicReadAt.has(id));
+      }
+      if (clearedIds.length) {
+        await recordResumeClearedInDb(db, clearedIds);
+      }
+    }
+  }
+
+  return affected;
 }

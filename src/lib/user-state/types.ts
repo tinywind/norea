@@ -73,6 +73,29 @@ export interface UserStateReadResponse extends UserStateWorkspace {
   hasMore: boolean;
   records: UserStateRecord[];
 }
+export interface UserStateRetentionResponse extends UserStateWorkspace {
+  compactedThrough: number;
+  seedAllowed: boolean;
+  seedCutoffAt: number | null;
+}
+export interface UserStateSnapshotResponse extends UserStateWorkspace {
+  snapshotRevision: number;
+  nextEntityKey: string | null;
+  hasMore: boolean;
+  seedAllowed: boolean;
+  seedCutoffAt: number | null;
+  records: UserStateRecord[];
+}
+export type UserStateRebindMode = "reseed" | "start_fresh";
+export interface UserStateEpochMismatch {
+  serverUrl: string;
+  localWorkspaceId: string;
+  localEpoch: string;
+  serverWorkspaceId: string;
+  serverEpoch: string;
+  headRevision: number;
+  detectedAt: number;
+}
 export type UserStateMergeStatus = "applied" | "unchanged" | "seed-skipped" | "conflict" | "aliased";
 export interface UserStateMergeResult {
   operationId: string;
@@ -109,6 +132,9 @@ export interface UserStateStatus {
   projectionPending?: number;
   projectionFailed?: number;
   lastSuccessAt: number | null;
+  epochMismatch?: UserStateEpochMismatch;
+  seedAllowed?: boolean;
+  seedCutoffAt?: number | null;
 }
 
 export function isLocalUserStateEntity(
@@ -346,7 +372,7 @@ export function parseUserStateMergeResult(value: unknown): UserStateMergeResult 
   const statuses: readonly unknown[] = ["applied", "unchanged", "seed-skipped", "conflict", "aliased"];
   if (!statuses.includes(row.status)) fail("invalid merge result status");
   const current = row.current === null ? null : parseUserStateRecord(row.current);
-  if (row.status !== "conflict" && !current) fail("an acknowledged change must include its record");
+  if (row.status !== "conflict" && row.status !== "seed-skipped" && !current) fail("an acknowledged change must include its record");
   let categoryAlias: { from: string; to: string } | undefined;
   if (row.categoryAlias !== undefined) {
     const alias = object(row.categoryAlias, ["from", "to"], "category alias");
@@ -370,6 +396,43 @@ export function parseUserStateMergeResponse(value: unknown): UserStateMergeRespo
   if (new Set(results.map(result => result.operationId)).size !== results.length) fail("duplicate operation acknowledgement");
   if (results.some(result => result.current && result.current.revision > workspace.headRevision)) fail("record exceeds the acknowledged head");
   return { ...workspace, results };
+}
+export function parseUserStateRetentionResponse(value: unknown): UserStateRetentionResponse {
+  const row = object(
+    value,
+    ["version", "workspaceId", "epoch", "headRevision", "compactedThrough", "seedAllowed", "seedCutoffAt"],
+    "retention response",
+  );
+  const workspace = workspaceFields(row);
+  const compactedThrough = integer(row.compactedThrough, "compacted through");
+  if (compactedThrough > workspace.headRevision) fail("compacted through exceeds the head revision");
+  const seedAllowed = bool(row.seedAllowed, "seed allowed flag");
+  const seedCutoffAt = nullableTime(row.seedCutoffAt, "seed cutoff time");
+  return { ...workspace, compactedThrough, seedAllowed, seedCutoffAt };
+}
+export function parseUserStateSnapshotResponse(value: unknown): UserStateSnapshotResponse {
+  const row = object(
+    value,
+    ["version", "workspaceId", "epoch", "headRevision", "snapshotRevision", "nextEntityKey", "hasMore", "seedAllowed", "seedCutoffAt", "records"],
+    "snapshot response",
+  );
+  const workspace = workspaceFields(row);
+  const snapshotRevision = integer(row.snapshotRevision, "snapshot revision");
+  if (snapshotRevision > workspace.headRevision) fail("snapshot revision exceeds the head revision");
+  const nextEntityKey = row.nextEntityKey === null ? null : textValue(row.nextEntityKey, "next entity key", 131_072);
+  if (nextEntityKey !== null && new TextEncoder().encode(nextEntityKey).byteLength > 131_072) {
+    fail("invalid next entity key");
+  }
+  const hasMore = bool(row.hasMore, "has more flag");
+  if (hasMore && nextEntityKey === null) fail("a continuing snapshot page must include a next entity key");
+  if (!hasMore && nextEntityKey !== null) fail("a final snapshot page must not include a next entity key");
+  const seedAllowed = bool(row.seedAllowed, "seed allowed flag");
+  const seedCutoffAt = nullableTime(row.seedCutoffAt, "seed cutoff time");
+  if (!Array.isArray(row.records)) fail("invalid snapshot record page");
+  const records = row.records.map(parseUserStateRecord);
+  if (records.some(record => record.revision > snapshotRevision)) fail("record exceeds the snapshot revision");
+  if (hasMore && !records.length) fail("a continuing snapshot page must make progress");
+  return { ...workspace, snapshotRevision, nextEntityKey, hasMore, seedAllowed, seedCutoffAt, records };
 }
 
 /** Stable encoding also rejects values the transport must never serialize. */

@@ -31,6 +31,8 @@ pub struct WorkspaceRow {
     pub cursor: i64,
     pub through: Option<i64>,
     pub last_success_at: Option<i64>,
+    pub seed_suppressed: bool,
+    pub seed_cutoff_at: Option<i64>,
 }
 
 #[derive(Debug, Clone)]
@@ -122,12 +124,16 @@ pub async fn populate_user_chapter_composition_ids_in_tx(
     Ok(())
 }
 
+pub(super) fn non_empty_source_id(value: Option<String>) -> Option<String> {
+    value.filter(|id| !id.trim().is_empty())
+}
+
 pub fn map_user_chapter_row(row: &sqlx::sqlite::SqliteRow) -> UserChapterRow {
     UserChapterRow {
         id: row.get("id"),
         novel_id: row.get("novelId"),
         plugin_id: row.get("pluginId"),
-        source_novel_id: row.get("sourceNovelId"),
+        source_novel_id: non_empty_source_id(row.get("sourceNovelId")),
         novel_path: row.get("novelPath"),
         name: row.get("name"),
         chapter_path: row.get("chapterPath"),
@@ -197,7 +203,8 @@ pub async fn require_user_state_schema_in_tx(conn: &mut SqliteConnection) -> Res
 
 pub async fn workspace_rows_in_tx(conn: &mut SqliteConnection) -> Result<Vec<WorkspaceRow>, String> {
     let rows = sqlx::query(
-        "SELECT server_url, namespace, workspace_id, epoch, cursor, read_through, last_success_at \
+        "SELECT server_url, namespace, workspace_id, epoch, cursor, read_through, last_success_at, \
+                seed_suppressed, seed_cutoff_at \
          FROM user_state_workspace",
     )
     .fetch_all(&mut *conn)
@@ -213,6 +220,8 @@ pub async fn workspace_rows_in_tx(conn: &mut SqliteConnection) -> Result<Vec<Wor
             cursor: r.get("cursor"),
             through: r.get("read_through"),
             last_success_at: r.get("last_success_at"),
+            seed_suppressed: r.get::<i64, _>("seed_suppressed") != 0,
+            seed_cutoff_at: r.get("seed_cutoff_at"),
         })
         .collect())
 }
@@ -223,7 +232,8 @@ pub async fn require_binding_in_tx(
 ) -> Result<WorkspaceRow, String> {
     require_user_state_schema_in_tx(conn).await?;
     let row = sqlx::query(
-        "SELECT server_url, namespace, workspace_id, epoch, cursor, read_through, last_success_at \
+        "SELECT server_url, namespace, workspace_id, epoch, cursor, read_through, last_success_at, \
+                seed_suppressed, seed_cutoff_at \
          FROM user_state_workspace WHERE server_url = ?1",
     )
     .bind(&binding.server_url)
@@ -243,6 +253,8 @@ pub async fn require_binding_in_tx(
         cursor: r.get("cursor"),
         through: r.get("read_through"),
         last_success_at: r.get("last_success_at"),
+        seed_suppressed: r.get::<i64, _>("seed_suppressed") != 0,
+        seed_cutoff_at: r.get("seed_cutoff_at"),
     };
     if ws.namespace != namespace_for(binding) {
         return Err(
@@ -443,7 +455,7 @@ pub async fn work_reference_in_tx(
     .map_err(|err| format!("db user state: lookup work reference: {err}"))?;
     Ok(row.map(|r| UserStateWorkReferenceDto {
         plugin_id: r.get("plugin_id"),
-        source_novel_id: r.get("source_novel_id"),
+        source_novel_id: non_empty_source_id(r.get("source_novel_id")),
         novel_path: r.get("path"),
         name: r.get("name"),
     }))
@@ -636,6 +648,183 @@ pub async fn record_novel_chapters_in_tx(
     }
 }
 
+#[derive(Debug, Default)]
+pub struct ReadingProgressClearTargets {
+    pub chapter_rows: Vec<UserChapterRow>,
+    pub novel_ids: Vec<i64>,
+}
+
+pub async fn snapshot_reading_progress_clear_targets_in_tx(
+    conn: &mut SqliteConnection,
+) -> Result<ReadingProgressClearTargets, String> {
+    if !has_user_state_schema_in_tx(conn).await? {
+        return Ok(ReadingProgressClearTargets::default());
+    }
+    promote_private_work_identities_in_tx(conn).await?;
+
+    let existing_reading_keys: HashSet<String> = sqlx::query_scalar(
+        "SELECT entity_key FROM user_state_intent \
+           WHERE entity_key >= '[\"reading\",' AND entity_key < '[\"reading\"-' \
+         UNION \
+         SELECT entity_key FROM user_state_record \
+           WHERE entity_key >= '[\"reading\",' AND entity_key < '[\"reading\"-' \
+         UNION \
+         SELECT entity_key FROM user_state_private",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: load reading progress clear keys: {err}"))?
+    .into_iter()
+    .collect();
+
+    let reset_sql = format!(
+        "{USER_CHAPTER_SELECT} \
+         WHERE n.plugin_id <> 'local' AND n.is_local = 0 \
+           AND (c.progress <> 0 OR c.unread = 0 OR c.read_at IS NOT NULL)"
+    );
+    let reset_rows = sqlx::query(&reset_sql)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: load reset reading chapters: {err}"))?;
+    let mut chapter_rows: Vec<UserChapterRow> =
+        reset_rows.iter().map(map_user_chapter_row).collect();
+    let mut seen_chapter_ids: HashSet<i64> = chapter_rows.iter().map(|row| row.id).collect();
+
+    let mut shared_chapter_paths: Vec<String> = existing_reading_keys
+        .iter()
+        .filter_map(|key| {
+            serde_json::from_str::<(String, String, String)>(key)
+                .ok()
+                .and_then(|(kind, _, chapter_path)| (kind == "reading").then_some(chapter_path))
+        })
+        .collect();
+    shared_chapter_paths.sort_unstable();
+    shared_chapter_paths.dedup();
+
+    if !shared_chapter_paths.is_empty() {
+        let encoded_paths = serde_json::to_string(&shared_chapter_paths)
+            .map_err(|err| format!("db user state: encode shared reading paths: {err}"))?;
+        let untouched_sql = format!(
+            "{USER_CHAPTER_SELECT} \
+             WHERE n.plugin_id <> 'local' AND n.is_local = 0 \
+               AND c.progress = 0 AND c.unread = 1 AND c.read_at IS NULL \
+               AND c.path IN (SELECT value FROM json_each(?1))"
+        );
+        let candidate_rows = sqlx::query(&untouched_sql)
+            .bind(&encoded_paths)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: load shared reading clear targets: {err}"))?;
+        for raw_row in candidate_rows {
+            let row = map_user_chapter_row(&raw_row);
+            if seen_chapter_ids.contains(&row.id) {
+                continue;
+            }
+            let canonical_key = user_state_entity_key(&json!({
+                "kind": "reading",
+                "work": chapter_work_json(&row),
+                "chapter": chapter_reference_json(&row),
+            }))?;
+            let mut matches = existing_reading_keys.contains(&canonical_key);
+            if !matches && row.source_novel_id.is_some() {
+                let path_work = user_state_work_key_parts(&row.plugin_id, None, &row.novel_path);
+                let path_key = serde_json::to_string(&("reading", path_work, &row.chapter_path))
+                    .map_err(|err| format!("db user state: encode reading path key: {err}"))?;
+                matches = existing_reading_keys.contains(&path_key);
+            }
+            if matches && seen_chapter_ids.insert(row.id) {
+                chapter_rows.push(row);
+            }
+        }
+    }
+
+    if !chapter_rows.is_empty() {
+        populate_user_chapter_composition_ids_in_tx(conn, &mut chapter_rows).await?;
+    }
+
+    let existing_resume_keys: HashSet<String> = sqlx::query_scalar(
+        "SELECT entity_key FROM user_state_intent \
+           WHERE entity_key >= '[\"resume\",' AND entity_key < '[\"resume\"-' \
+         UNION \
+         SELECT entity_key FROM user_state_record \
+           WHERE entity_key >= '[\"resume\",' AND entity_key < '[\"resume\"-'",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: load resume clear keys: {err}"))?
+    .into_iter()
+    .collect();
+
+    let novel_ids = if existing_resume_keys.is_empty() {
+        sqlx::query_scalar(
+            "SELECT id FROM novel \
+             WHERE plugin_id <> 'local' AND is_local = 0 AND last_read_at IS NOT NULL",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: load reset resume novels: {err}"))?
+    } else {
+        let rows = sqlx::query(
+            "SELECT id, plugin_id, source_novel_id, path, last_read_at \
+             FROM novel \
+             WHERE plugin_id <> 'local' AND is_local = 0",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: load candidate resume clear novels: {err}"))?;
+        let mut ids = Vec::new();
+        for row in rows {
+            let id: i64 = row.get("id");
+            let last_read_at: Option<i64> = row.get("last_read_at");
+            if last_read_at.is_some() {
+                ids.push(id);
+                continue;
+            }
+            let plugin_id: String = row.get("plugin_id");
+            let source_novel_id = non_empty_source_id(row.get("source_novel_id"));
+            let path: String = row.get("path");
+            let canonical_work =
+                user_state_work_key_parts(&plugin_id, source_novel_id.as_deref(), &path);
+            let canonical_key = serde_json::to_string(&("resume", canonical_work))
+                .map_err(|err| format!("db user state: encode resume key: {err}"))?;
+            let mut matches = existing_resume_keys.contains(&canonical_key);
+            if !matches && source_novel_id.is_some() {
+                let path_work = user_state_work_key_parts(&plugin_id, None, &path);
+                let path_key = serde_json::to_string(&("resume", path_work))
+                    .map_err(|err| format!("db user state: encode resume path key: {err}"))?;
+                matches = existing_resume_keys.contains(&path_key);
+            }
+            if matches {
+                ids.push(id);
+            }
+        }
+        ids
+    };
+
+    Ok(ReadingProgressClearTargets {
+        chapter_rows,
+        novel_ids,
+    })
+}
+
+pub async fn record_cleared_reading_progress_in_tx(
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    mut targets: ReadingProgressClearTargets,
+) -> Result<(), String> {
+    if !has_user_state_schema_in_tx(conn).await? {
+        return Ok(());
+    }
+    for row in &mut targets.chapter_rows {
+        row.progress = 0.0;
+        row.unread = 1;
+        row.read_at = None;
+    }
+    record_chapter_rows_in_tx(conn, ctx, &targets.chapter_rows, "reading", false).await?;
+    record_resume_cleared_in_tx(conn, ctx, Some(&targets.novel_ids)).await?;
+    Ok(())
+}
+
 pub async fn record_library_in_tx(
     conn: &mut SqliteConnection,
     ctx: &mut TxContext,
@@ -681,7 +870,7 @@ pub async fn record_library_in_tx(
         for r in rows {
             let work = UserStateWorkReferenceDto {
                 plugin_id: r.get("plugin_id"),
-                source_novel_id: r.get("source_novel_id"),
+                source_novel_id: non_empty_source_id(r.get("source_novel_id")),
                 novel_path: r.get("path"),
                 name: r.get("name"),
             };
@@ -822,7 +1011,7 @@ pub async fn record_membership_in_tx(
         for r in rows {
             works.push(UserStateWorkReferenceDto {
                 plugin_id: r.get("plugin_id"),
-                source_novel_id: r.get("source_novel_id"),
+                source_novel_id: non_empty_source_id(r.get("source_novel_id")),
                 novel_path: r.get("path"),
                 name: r.get("name"),
             });
@@ -932,7 +1121,7 @@ pub async fn record_resume_cleared_in_tx(
         for r in rows {
             let work = UserStateWorkReferenceDto {
                 plugin_id: r.get("plugin_id"),
-                source_novel_id: r.get("source_novel_id"),
+                source_novel_id: non_empty_source_id(r.get("source_novel_id")),
                 novel_path: r.get("path"),
                 name: r.get("name"),
             };
@@ -1004,7 +1193,7 @@ pub async fn promote_private_work_identities_in_tx(
         .await
         .map_err(|err| format!("db user state: lookup private marker work: {err}"))?
         .flatten();
-        let Some(source_novel_id) = source_novel_id else {
+        let Some(source_novel_id) = non_empty_source_id(source_novel_id) else {
             continue;
         };
         let upgraded_work =
@@ -1028,16 +1217,41 @@ pub async fn promote_private_work_identities_in_tx(
     Ok(())
 }
 
+pub fn to_epoch_ms_i128(ts: i64) -> i128 {
+    let v = ts as i128;
+    if v < 100_000_000_000 {
+        v * 1000
+    } else {
+        v
+    }
+}
+
+pub fn is_before_seed_cutoff(ts: Option<i64>, seed_cutoff_ms: Option<i64>) -> bool {
+    match (ts, seed_cutoff_ms) {
+        (Some(raw), Some(cutoff)) => to_epoch_ms_i128(raw) < (cutoff as i128),
+        _ => false,
+    }
+}
+
 pub async fn seed_user_state_in_tx(
     conn: &mut SqliteConnection,
     ctx: &mut TxContext,
+) -> Result<(), String> {
+    seed_user_state_with_options_in_tx(conn, ctx, true, None).await
+}
+
+pub async fn seed_user_state_with_options_in_tx(
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    seed_allowed: bool,
+    seed_cutoff_ms: Option<i64>,
 ) -> Result<(), String> {
     let restored: Option<i64> =
         sqlx::query_scalar("SELECT restored FROM user_state_restore_state WHERE id = 1")
             .fetch_optional(&mut *conn)
             .await
             .map_err(|err| format!("db user state: check restore state: {err}"))?;
-    if restored.unwrap_or(0) != 0 {
+    if restored.unwrap_or(0) != 0 || !seed_allowed {
         return Ok(());
     }
     promote_private_work_identities_in_tx(conn).await?;
@@ -1057,7 +1271,7 @@ pub async fn seed_user_state_in_tx(
         let added_at: Option<i64> = r.get("library_added_at");
         let work = UserStateWorkReferenceDto {
             plugin_id: r.get("plugin_id"),
-            source_novel_id: r.get("source_novel_id"),
+            source_novel_id: non_empty_source_id(r.get("source_novel_id")),
             novel_path: r.get("path"),
             name: r.get("name"),
         };
@@ -1152,7 +1366,11 @@ pub async fn seed_user_state_in_tx(
             "chapter": chapter_reference_json(ch),
         });
         let is_private = private_keys.contains(&user_state_entity_key(&reading_ent)?);
-        if (ch.progress > 0.0 || ch.unread == 0 || ch.read_at.is_some()) && !is_private {
+        let cutoff_blocked = is_before_seed_cutoff(ch.read_at, seed_cutoff_ms);
+        if (ch.progress > 0.0 || ch.unread == 0 || ch.read_at.is_some())
+            && !is_private
+            && !cutoff_blocked
+        {
             reading_rows.push(ch.clone());
         }
         if ch.bookmark != 0 {
@@ -1160,6 +1378,7 @@ pub async fn seed_user_state_in_tx(
         }
         if let Some(read_at) = ch.read_at {
             if !is_private
+                && !is_before_seed_cutoff(Some(read_at), seed_cutoff_ms)
                 && resumes
                     .get(&ch.novel_id)
                     .and_then(|prev| prev.read_at)

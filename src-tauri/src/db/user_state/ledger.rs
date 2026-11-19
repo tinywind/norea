@@ -10,28 +10,33 @@ use crate::db::tx::TxContext;
 
 use super::core::{
     assert_user_state_available_in_tx, canonical_entity_in_tx, chapter_reference_json,
-    chapter_work_json, has_user_state_schema_in_tx, intent_from_row, map_user_chapter_row,
-    populate_user_chapter_composition_ids_in_tx, record_user_state_changes_in_tx,
-    require_binding_in_tx, resolve_category_alias_in_tx, seed_user_state_in_tx,
-    user_state_restore_paused_in_tx, workspace_rows_in_tx, IntentRow, USER_CHAPTER_SELECT,
+    chapter_work_json, has_user_state_schema_in_tx, intent_from_row, is_before_seed_cutoff,
+    map_user_chapter_row, populate_user_chapter_composition_ids_in_tx,
+    promote_private_work_identities_in_tx, record_chapter_rows_in_tx,
+    record_resume_cleared_in_tx, record_user_state_changes_in_tx, require_binding_in_tx,
+    resolve_category_alias_in_tx, seed_user_state_with_options_in_tx,
+    user_state_restore_paused_in_tx, workspace_rows_in_tx, IntentRow, UserChapterRow,
+    USER_CHAPTER_SELECT,
 };
 use super::current::{is_current_work_held, load_current_held_sources_in_tx};
 use super::materialize::{
-    materialize_user_state_record_with_options_in_tx, CompositionEntryCache, MaterializeError,
+    has_pending_user_state_for_record_in_tx, materialize_user_state_record_with_options_in_tx,
+    CompositionEntryCache, MaterializeError,
 };
 use super::stored_chapter::portable_stored_user_state_intent_in_tx;
 use super::types::{
     canonical_user_state_json, fold_ascii, is_local_user_state_entity, namespace_for,
     parse_user_state_entity, parse_user_state_merge_result, parse_user_state_operation,
-    parse_user_state_read_response, parse_user_state_record, random_uuid_v4,
-    user_state_entity_key, user_state_json_bytes, CategoryAliasPair, ParsedUserStateMergeResult,
-    ParsedUserStateOperation, ParsedUserStateRecord, ResolveUserStateLedgerConflictInputDto,
-    UserStateApplyEffectsDto, UserStateBindingDto, UserStateConflictDto, UserStateDeferredDto,
-    UserStateLedgerStatusDto, UserStateWorkReferenceDto, USER_STATE_CLIENT_BATCH_BYTES,
-    USER_STATE_PRELINK_BASE_REVISION,
+    parse_user_state_read_response, parse_user_state_record, parse_work_reference,
+    random_uuid_v4, user_state_entity_key, user_state_json_bytes, user_state_work_key_parts,
+    CategoryAliasPair, ParsedUserStateMergeResult, ParsedUserStateOperation, ParsedUserStateRecord,
+    ResolveUserStateLedgerConflictInputDto, UserStateApplyEffectsDto, UserStateBindingDto,
+    UserStateConflictDto, UserStateDeferredDto, UserStateLedgerStatusDto, UserStateRebindMode,
+    UserStateWorkReferenceDto, USER_STATE_CLIENT_BATCH_BYTES, USER_STATE_PRELINK_BASE_REVISION,
 };
 
 const USER_STATE_DB_BATCH_BYTES: usize = 8 * 1024 * 1024;
+pub const DEFAULT_USER_STATE_OPERATION_RETENTION_SECS: i64 = 7 * 24 * 60 * 60;
 
 #[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -120,7 +125,7 @@ impl KnownNonLocalWorks {
         let mut by_path = HashSet::with_capacity(rows.len());
         for row in rows {
             let plugin_id: String = row.get("plugin_id");
-            let source_novel_id: Option<String> = row.get("source_novel_id");
+            let source_novel_id = super::core::non_empty_source_id(row.get("source_novel_id"));
             let path: String = row.get("path");
             if let Some(sid) = source_novel_id {
                 by_source_id.insert((plugin_id.clone(), fold_ascii(&sid)));
@@ -386,31 +391,146 @@ pub async fn bind_user_state_workspace_in_tx(
     ctx: &mut TxContext,
     binding: &UserStateBindingDto,
 ) -> Result<(), String> {
+    bind_user_state_workspace_with_options_in_tx(conn, ctx, binding, None, None).await
+}
+
+fn intent_timestamp_for_cutoff(entity: &JsonValue, value: &JsonValue) -> Option<i64> {
+    match entity.get("kind").and_then(JsonValue::as_str) {
+        Some("reading") => value.get("readAt").and_then(JsonValue::as_i64),
+        Some("resume") => {
+            let opened = value.get("openedAt").and_then(JsonValue::as_i64);
+            let saved = value
+                .get("anchor")
+                .and_then(|a| a.get("savedAt"))
+                .and_then(JsonValue::as_i64);
+            match (opened, saved) {
+                (Some(a), Some(b)) => Some(a.max(b)),
+                (Some(a), None) | (None, Some(a)) => Some(a),
+                (None, None) => None,
+            }
+        }
+        _ => None,
+    }
+}
+
+async fn insert_seed_progress_for_intents_in_tx(
+    conn: &mut SqliteConnection,
+    namespace: &str,
+    seed_cutoff_ms: Option<i64>,
+) -> Result<(), String> {
+    if seed_cutoff_ms.is_none() {
+        sqlx::query(
+            "INSERT INTO user_state_progress(namespace, entity_key, local_sequence, base_revision) \
+             SELECT ?1, entity_key, sequence, CASE WHEN seed = 0 THEN ?2 ELSE 0 END \
+             FROM user_state_intent WHERE true \
+             ON CONFLICT(namespace, entity_key) DO NOTHING",
+        )
+        .bind(namespace)
+        .bind(USER_STATE_PRELINK_BASE_REVISION)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: seed progress: {err}"))?;
+        return Ok(());
+    }
+    let rows = sqlx::query(
+        "SELECT sequence, entity_key, entity_json, value_json, seed FROM user_state_intent",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: load intents for cutoff progress: {err}"))?;
+    let mut eligible: Vec<(String, i64, i64)> = Vec::with_capacity(rows.len());
+    for r in rows {
+        let row = IntentRow {
+            sequence: r.get("sequence"),
+            entity_key: r.get("entity_key"),
+            entity_json: r.get("entity_json"),
+            value_json: r.get("value_json"),
+            seed: r.get("seed"),
+        };
+        if let Ok((ent, val)) = intent_from_row(&row) {
+            if is_before_seed_cutoff(intent_timestamp_for_cutoff(&ent, &val), seed_cutoff_ms) {
+                continue;
+            }
+        }
+        let base_rev = if row.seed == 0 {
+            USER_STATE_PRELINK_BASE_REVISION
+        } else {
+            0
+        };
+        eligible.push((row.entity_key, row.sequence, base_rev));
+    }
+    for batch in json_batches(&eligible, |(k, _, _)| k.len() + 64) {
+        let items: Vec<JsonValue> = batch
+            .iter()
+            .map(|(k, seq, rev)| {
+                json!({ "entityKey": k, "sequence": seq, "baseRevision": rev })
+            })
+            .collect();
+        let encoded = serde_json::to_string(&items).unwrap();
+        sqlx::query(
+            "INSERT INTO user_state_progress(namespace, entity_key, local_sequence, base_revision) \
+             SELECT ?1, json_extract(value, '$.entityKey'), json_extract(value, '$.sequence'), \
+                    json_extract(value, '$.baseRevision') \
+             FROM json_each(?2) WHERE true \
+             ON CONFLICT(namespace, entity_key) DO NOTHING",
+        )
+        .bind(namespace)
+        .bind(&encoded)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: insert cutoff progress: {err}"))?;
+    }
+    Ok(())
+}
+
+pub async fn bind_user_state_workspace_with_options_in_tx(
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    binding: &UserStateBindingDto,
+    seed_allowed: Option<bool>,
+    seed_cutoff_ms: Option<i64>,
+) -> Result<(), String> {
     assert_user_state_available_in_tx(conn).await?;
     if binding.server_url.is_empty() || binding.workspace_id.is_empty() || binding.epoch.is_empty()
     {
         return Err("A complete personal state workspace is required.".to_string());
     }
+    if seed_cutoff_ms.is_some_and(|v| v < 0) {
+        return Err("Seed cutoff time must be non-negative.".to_string());
+    }
     let namespace = namespace_for(binding);
     let existing = workspace_rows_in_tx(conn)
         .await?
         .into_iter()
-        .any(|row| row.server_url == binding.server_url);
-    if existing {
-        require_binding_in_tx(conn, binding).await?;
+        .find(|row| row.server_url == binding.server_url);
+    let seed_suppressed = if existing.is_some() {
+        let ws = require_binding_in_tx(conn, binding).await?;
+        if seed_allowed.is_some() {
+            sqlx::query(
+                "UPDATE user_state_workspace SET seed_cutoff_at = ?2 WHERE namespace = ?1",
+            )
+            .bind(&namespace)
+            .bind(seed_cutoff_ms)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: update workspace seed cutoff: {err}"))?;
+        }
+        ws.seed_suppressed
     } else {
         sqlx::query(
-            "INSERT INTO user_state_workspace(server_url, namespace, workspace_id, epoch) \
-             VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO user_state_workspace(server_url, namespace, workspace_id, epoch, seed_suppressed, seed_cutoff_at) \
+             VALUES (?1, ?2, ?3, ?4, 0, ?5)",
         )
         .bind(&binding.server_url)
         .bind(&namespace)
         .bind(&binding.workspace_id)
         .bind(&binding.epoch)
+        .bind(seed_cutoff_ms)
         .execute(&mut *conn)
         .await
         .map_err(|err| format!("db user state: insert workspace: {err}"))?;
-    }
+        false
+    };
 
     sqlx::query(
         "DELETE FROM user_state_conflict WHERE namespace = ?1 AND reason = 'revision-mismatch'",
@@ -430,35 +550,40 @@ pub async fn bind_user_state_workspace_in_tx(
     .fetch_one(&mut *conn)
     .await
     .map_err(|err| format!("db user state: check delta ready: {err}"))?;
-    if ready != 0 {
+    if ready != 0 || seed_suppressed {
+        if ready == 0 && seed_suppressed {
+            sqlx::query(
+                "INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2) \
+                 ON CONFLICT(cache_key) DO NOTHING",
+            )
+            .bind(&ready_key)
+            .bind(r#"{"version":1}"#)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: save delta ready flag: {err}"))?;
+        }
         ctx.record_user_state_ledger_change();
         return Ok(());
     }
 
-    sqlx::query(
-        "INSERT INTO user_state_progress(namespace, entity_key, local_sequence, base_revision) \
-         SELECT ?1, entity_key, sequence, ?2 FROM user_state_intent WHERE seed = 0 AND true \
-         ON CONFLICT(namespace, entity_key) DO NOTHING",
-    )
-    .bind(&namespace)
-    .bind(USER_STATE_PRELINK_BASE_REVISION)
-    .execute(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: mark prelink progress: {err}"))?;
+    if seed_allowed != Some(false) {
+        if seed_cutoff_ms.is_none() {
+            sqlx::query(
+                "INSERT INTO user_state_progress(namespace, entity_key, local_sequence, base_revision) \
+                 SELECT ?1, entity_key, sequence, ?2 FROM user_state_intent WHERE seed = 0 AND true \
+                 ON CONFLICT(namespace, entity_key) DO NOTHING",
+            )
+            .bind(&namespace)
+            .bind(USER_STATE_PRELINK_BASE_REVISION)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: mark prelink progress: {err}"))?;
+        }
 
-    seed_user_state_in_tx(conn, ctx).await?;
+        seed_user_state_with_options_in_tx(conn, ctx, true, seed_cutoff_ms).await?;
 
-    sqlx::query(
-        "INSERT INTO user_state_progress(namespace, entity_key, local_sequence, base_revision) \
-         SELECT ?1, entity_key, sequence, CASE WHEN seed = 0 THEN ?2 ELSE 0 END \
-         FROM user_state_intent WHERE true \
-         ON CONFLICT(namespace, entity_key) DO NOTHING",
-    )
-    .bind(&namespace)
-    .bind(USER_STATE_PRELINK_BASE_REVISION)
-    .execute(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: seed progress: {err}"))?;
+        insert_seed_progress_for_intents_in_tx(conn, &namespace, seed_cutoff_ms).await?;
+    }
 
     sqlx::query(
         "INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2) \
@@ -1128,7 +1253,12 @@ pub async fn acknowledge_user_state_operations_in_tx(
                FROM json_each(?1) \
              ) \
              UPDATE user_state_operation AS operation \
-             SET status = incoming.status, receipt = incoming.receipt \
+             SET status = incoming.status, \
+                 receipt = incoming.receipt, \
+                 acknowledged_at = CASE \
+                   WHEN incoming.status = 'acknowledged' THEN COALESCE(operation.acknowledged_at, unixepoch()) \
+                   ELSE NULL \
+                 END \
              FROM incoming WHERE operation.operation_id = incoming.operation_id",
         )
         .bind(&encoded)
@@ -1225,6 +1355,41 @@ pub async fn acknowledge_user_state_operations_in_tx(
     ctx.request_user_state_deferred_apply();
     ctx.record_user_state_ledger_change();
     Ok(())
+}
+
+pub async fn prune_acknowledged_user_state_operations_in_tx(
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    binding: &UserStateBindingDto,
+    older_than_secs: i64,
+) -> Result<u64, String> {
+    if !(0..=super::MAX_SAFE_INT_I64).contains(&older_than_secs) {
+        return Err("Operation retention age must be a non-negative number of seconds.".to_string());
+    }
+    assert_user_state_available_in_tx(conn).await?;
+    let ws = require_binding_in_tx(conn, binding).await?;
+    let now_secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let now_i64 = i64::try_from(now_secs).unwrap_or(i64::MAX);
+    let cutoff = now_i64.saturating_sub(older_than_secs);
+    let res = sqlx::query(
+        "DELETE FROM user_state_operation \
+         WHERE namespace = ?1 \
+           AND status = 'acknowledged' \
+           AND (acknowledged_at IS NULL OR acknowledged_at <= ?2)",
+    )
+    .bind(&ws.namespace)
+    .bind(cutoff)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: prune acknowledged operations: {err}"))?;
+    let pruned = res.rows_affected();
+    if pruned > 0 {
+        ctx.record_user_state_ledger_change();
+    }
+    Ok(pruned)
 }
 
 async fn category_name_in_tx(
@@ -2247,4 +2412,825 @@ pub async fn project_pending_user_state_bounded_in_tx(
 
     ctx.record_user_state_ledger_change();
     Ok(effects)
+}
+
+async fn clear_namespace_ledger_in_tx(
+    conn: &mut SqliteConnection,
+    namespace: &str,
+) -> Result<(), String> {
+    for table in [
+        "user_state_conflict",
+        "user_state_operation",
+        "user_state_record",
+        "user_state_progress",
+        "user_state_alias",
+    ] {
+        let sql = format!("DELETE FROM {table} WHERE namespace = ?1");
+        sqlx::query(&sql)
+            .bind(namespace)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: clear {table}: {err}"))?;
+    }
+    Ok(())
+}
+
+pub async fn rebind_user_state_workspace_in_tx(
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    binding: &UserStateBindingDto,
+    mode: UserStateRebindMode,
+    head_revision: Option<i64>,
+    seed_cutoff_ms: Option<i64>,
+    seed_allowed: Option<bool>,
+) -> Result<(), String> {
+    assert_user_state_available_in_tx(conn).await?;
+    if binding.server_url.is_empty() || binding.workspace_id.is_empty() || binding.epoch.is_empty()
+    {
+        return Err("A complete personal state workspace is required.".to_string());
+    }
+    if let Some(rev) = head_revision {
+        if rev < 0 {
+            return Err("Workspace head revision must be non-negative.".to_string());
+        }
+    }
+    if let Some(cutoff) = seed_cutoff_ms {
+        if cutoff < 0 {
+            return Err("Seed cutoff time must be non-negative.".to_string());
+        }
+    }
+
+    let new_ns = namespace_for(binding);
+    let existing = workspace_rows_in_tx(conn)
+        .await?
+        .into_iter()
+        .find(|row| row.server_url == binding.server_url);
+
+    let ready_key = format!("user-state-delta-ready:{new_ns}");
+    if mode == UserStateRebindMode::Reseed {
+        if let Some(ref ws) = existing {
+            if ws.namespace == new_ns && !ws.seed_suppressed {
+                let ready: i64 = sqlx::query_scalar(
+                    "SELECT COUNT(*) FROM content_sync_cache WHERE cache_key = ?1",
+                )
+                .bind(&ready_key)
+                .fetch_one(&mut *conn)
+                .await
+                .map_err(|err| format!("db user state: check rebind delta ready: {err}"))?;
+                if ready != 0 {
+                    if seed_allowed.is_some() || seed_cutoff_ms.is_some() {
+                        sqlx::query(
+                            "UPDATE user_state_workspace SET seed_cutoff_at = ?2 WHERE namespace = ?1",
+                        )
+                        .bind(&new_ns)
+                        .bind(seed_cutoff_ms)
+                        .execute(&mut *conn)
+                        .await
+                        .map_err(|err| format!("db user state: update rebind seed cutoff: {err}"))?;
+                    }
+                    ctx.record_user_state_ledger_change();
+                    return Ok(());
+                }
+            }
+        }
+    }
+
+    let mut namespaces_to_clear = vec![new_ns.clone()];
+    if let Some(ref old_ws) = existing {
+        if old_ws.namespace != new_ns {
+            namespaces_to_clear.push(old_ws.namespace.clone());
+        }
+    }
+    for ns in &namespaces_to_clear {
+        clear_namespace_ledger_in_tx(conn, ns).await?;
+        let old_ready_key = format!("user-state-delta-ready:{ns}");
+        sqlx::query("DELETE FROM content_sync_cache WHERE cache_key = ?1")
+            .bind(&old_ready_key)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: clear delta ready flag: {err}"))?;
+    }
+
+    sqlx::query(
+        "DELETE FROM user_state_intent \
+         WHERE NOT EXISTS (SELECT 1 FROM user_state_progress p WHERE p.entity_key = user_state_intent.entity_key)",
+    )
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: clear orphaned intents on rebind: {err}"))?;
+
+    let (cursor, seed_suppressed) = match mode {
+        UserStateRebindMode::Reseed => (0_i64, 0_i64),
+        UserStateRebindMode::StartFresh => (head_revision.unwrap_or(0), 1_i64),
+    };
+    sqlx::query(
+        "INSERT INTO user_state_workspace(server_url, namespace, workspace_id, epoch, cursor, read_through, last_success_at, seed_suppressed, seed_cutoff_at) \
+         VALUES (?1, ?2, ?3, ?4, ?5, NULL, NULL, ?6, ?7) \
+         ON CONFLICT(server_url) DO UPDATE SET \
+           namespace = excluded.namespace, \
+           workspace_id = excluded.workspace_id, \
+           epoch = excluded.epoch, \
+           cursor = excluded.cursor, \
+           read_through = NULL, \
+           last_success_at = NULL, \
+           seed_suppressed = excluded.seed_suppressed, \
+           seed_cutoff_at = excluded.seed_cutoff_at",
+    )
+    .bind(&binding.server_url)
+    .bind(&new_ns)
+    .bind(&binding.workspace_id)
+    .bind(&binding.epoch)
+    .bind(cursor)
+    .bind(seed_suppressed)
+    .bind(seed_cutoff_ms)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: upsert rebound workspace: {err}"))?;
+
+    purge_and_settle_local_user_state_in_tx(conn).await?;
+
+    if mode == UserStateRebindMode::Reseed && seed_allowed != Some(false) {
+        seed_user_state_with_options_in_tx(conn, ctx, true, seed_cutoff_ms).await?;
+        insert_seed_progress_for_intents_in_tx(conn, &new_ns, seed_cutoff_ms).await?;
+    }
+
+    sqlx::query(
+        "INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2) \
+         ON CONFLICT(cache_key) DO NOTHING",
+    )
+    .bind(&ready_key)
+    .bind(r#"{"version":1}"#)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: save rebound delta ready flag: {err}"))?;
+
+    ctx.record_user_state_ledger_change();
+    Ok(())
+}
+
+fn canonical_tombstone_for_entity(entity: &JsonValue, prev_value: &JsonValue) -> Option<JsonValue> {
+    match entity.get("kind").and_then(JsonValue::as_str)? {
+        "library" => Some(json!({ "inLibrary": false, "addedAt": null })),
+        "category" => {
+            let name = prev_value
+                .get("name")
+                .and_then(JsonValue::as_str)
+                .filter(|s| !s.trim().is_empty())
+                .unwrap_or("Deleted");
+            Some(json!({ "name": name, "sort": 0, "deleted": true }))
+        }
+        "membership" => Some(json!({ "included": false })),
+        "reading" => Some(json!({ "progress": 0, "unread": true, "readAt": null })),
+        "bookmark" => Some(json!({ "bookmarked": false })),
+        "resume" => Some(json!({ "chapter": null, "anchor": null, "openedAt": null })),
+        _ => None,
+    }
+}
+
+fn is_record_before_seed_cutoff(
+    entity: &JsonValue,
+    value: &JsonValue,
+    seed_cutoff_ms: Option<i64>,
+) -> bool {
+    let Some(cutoff) = seed_cutoff_ms else {
+        return false;
+    };
+    is_before_seed_cutoff(intent_timestamp_for_cutoff(entity, value), Some(cutoff))
+}
+
+async fn rebase_pending_progress_to_zero_in_tx(
+    conn: &mut SqliteConnection,
+    namespace: &str,
+    record: &ParsedUserStateRecord,
+) -> Result<(), String> {
+    let key = user_state_entity_key(&record.entity)?;
+    sqlx::query(
+        "UPDATE user_state_progress SET base_revision = 0 \
+         WHERE namespace = ?1 AND entity_key = ?2",
+    )
+    .bind(namespace)
+    .bind(&key)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: rebase pending progress: {err}"))?;
+    sqlx::query(
+        "DELETE FROM user_state_operation \
+         WHERE namespace = ?1 AND entity_key = ?2 AND status = 'pending'",
+    )
+    .bind(namespace)
+    .bind(&key)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: clear stale pending operation on rebase: {err}"))?;
+
+    if record.entity.get("categoryId").is_some() {
+        let kind = record.entity["kind"].as_str().unwrap_or("");
+        let rows = sqlx::query(
+            "SELECT i.sequence, i.entity_key, i.entity_json, i.value_json, i.seed \
+             FROM user_state_intent i \
+             JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
+             WHERE i.seed = 0 AND p.base_revision <> ?3 AND i.sequence > p.acknowledged_sequence \
+               AND json_extract(i.entity_json, '$.kind') = ?2",
+        )
+        .bind(namespace)
+        .bind(kind)
+        .bind(USER_STATE_PRELINK_BASE_REVISION)
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: load aliased pending intents for rebase: {err}"))?;
+        for r in rows {
+            let intent_row = IntentRow {
+                sequence: r.get("sequence"),
+                entity_key: r.get("entity_key"),
+                entity_json: r.get("entity_json"),
+                value_json: r.get("value_json"),
+                seed: r.get("seed"),
+            };
+            let (ent, _) = intent_from_row(&intent_row)?;
+            let canonical = canonical_entity_in_tx(conn, namespace, &ent).await?;
+            if user_state_entity_key(&canonical)? == key {
+                sqlx::query(
+                    "UPDATE user_state_progress SET base_revision = 0 \
+                     WHERE namespace = ?1 AND entity_key = ?2",
+                )
+                .bind(namespace)
+                .bind(&intent_row.entity_key)
+                .execute(&mut *conn)
+                .await
+                .map_err(|err| format!("db user state: rebase aliased pending progress: {err}"))?;
+                sqlx::query(
+                    "DELETE FROM user_state_operation \
+                     WHERE namespace = ?1 AND entity_key = ?2 AND status = 'pending'",
+                )
+                .bind(namespace)
+                .bind(&intent_row.entity_key)
+                .execute(&mut *conn)
+                .await
+                .map_err(|err| {
+                    format!("db user state: clear stale aliased pending operation on rebase: {err}")
+                })?;
+            }
+        }
+    }
+    Ok(())
+}
+
+async fn clear_non_pending_or_seed_intent_in_tx(
+    conn: &mut SqliteConnection,
+    namespace: &str,
+    entity_key: &str,
+    remove_any_seed: bool,
+) -> Result<(), String> {
+    sqlx::query(
+        "DELETE FROM user_state_operation \
+         WHERE namespace = ?1 AND entity_key = ?2 \
+           AND (status <> 'pending' OR (?3 = 1 AND json_extract(payload, '$.seed') = 1))",
+    )
+    .bind(namespace)
+    .bind(entity_key)
+    .bind(if remove_any_seed { 1_i64 } else { 0_i64 })
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: clear settled operations for absent entity: {err}"))?;
+
+    sqlx::query(
+        "DELETE FROM user_state_progress \
+         WHERE namespace = ?1 AND entity_key = ?2 \
+           AND ( \
+             base_revision = ?3 \
+             OR acknowledged_sequence >= local_sequence \
+             OR (?4 = 1 AND EXISTS (SELECT 1 FROM user_state_intent i WHERE i.entity_key = user_state_progress.entity_key AND i.seed = 1)) \
+           )",
+    )
+    .bind(namespace)
+    .bind(entity_key)
+    .bind(USER_STATE_PRELINK_BASE_REVISION)
+    .bind(if remove_any_seed { 1_i64 } else { 0_i64 })
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: clear settled progress for absent entity: {err}"))?;
+
+    sqlx::query(
+        "DELETE FROM user_state_intent \
+         WHERE entity_key = ?1 \
+           AND NOT EXISTS (SELECT 1 FROM user_state_progress p WHERE p.entity_key = user_state_intent.entity_key)",
+    )
+    .bind(entity_key)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: clear orphaned intent for absent entity: {err}"))?;
+    Ok(())
+}
+
+pub async fn reconcile_user_state_snapshot_in_tx(
+    root: Option<&Path>,
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    binding: &UserStateBindingDto,
+    raw_records: &[JsonValue],
+    snapshot_revision: i64,
+    seed_allowed: Option<bool>,
+    seed_cutoff_ms: Option<i64>,
+    skipped_chapter_ids: &HashSet<i64>,
+) -> Result<UserStateApplyEffectsDto, String> {
+    assert_user_state_available_in_tx(conn).await?;
+    if snapshot_revision < 0 {
+        return Err("Snapshot revision must be non-negative.".to_string());
+    }
+    if seed_cutoff_ms.is_some_and(|v| v < 0) {
+        return Err("Seed cutoff time must be non-negative.".to_string());
+    }
+    let ws = require_binding_in_tx(conn, binding).await?;
+
+    let mut snapshot_records = Vec::with_capacity(raw_records.len());
+    let mut snapshot_keys = HashSet::with_capacity(raw_records.len());
+    for raw in raw_records {
+        let parsed = parse_user_state_record(raw)?;
+        snapshot_keys.insert(user_state_entity_key(&parsed.entity)?);
+        snapshot_records.push(parsed);
+    }
+
+    let held_sources = load_current_held_sources_in_tx(conn, &binding.server_url).await?;
+    let dirty_before: Vec<(String, String)> = sqlx::query(
+        "SELECT plugin_id, path FROM work_metadata_dirty ORDER BY plugin_id, path",
+    )
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: snapshot work_metadata_dirty before reconcile: {err}"))?
+    .into_iter()
+    .map(|r| (r.get("plugin_id"), r.get("path")))
+    .collect();
+
+    let existing_rows = sqlx::query(
+        "SELECT entity_key, payload FROM user_state_record WHERE namespace = ?1",
+    )
+    .bind(&ws.namespace)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: load existing records for reconcile: {err}"))?;
+
+    promote_private_work_identities_in_tx(conn).await?;
+
+    let private_keys: HashSet<String> =
+        sqlx::query_scalar::<_, String>("SELECT entity_key FROM user_state_private")
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: load private keys for reconcile: {err}"))?
+            .into_iter()
+            .collect();
+
+    let mut effects = UserStateApplyEffectsDto::default();
+    let mut touched_last_read_novels: HashSet<i64> = HashSet::new();
+    let mut composition_entries = CompositionEntryCache::default();
+
+    for row in existing_rows {
+        let entity_key: String = row.get("entity_key");
+        if snapshot_keys.contains(&entity_key) {
+            continue;
+        }
+        let payload: String = row.get("payload");
+        sqlx::query("DELETE FROM user_state_record WHERE namespace = ?1 AND entity_key = ?2")
+            .bind(&ws.namespace)
+            .bind(&entity_key)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: delete absent record: {err}"))?;
+
+        let raw: JsonValue = serde_json::from_str(&payload)
+            .map_err(|err| format!("db user state: parse absent record: {err}"))?;
+        let rec = parse_user_state_record(&raw)?;
+
+        if is_local_user_state_entity(&rec.entity, Some(&rec.value)) {
+            continue;
+        }
+        if let Some(work_val) = rec.entity.get("work") {
+            if let Ok(work_ref) = parse_work_reference(work_val) {
+                if is_current_work_held(&held_sources, &work_ref) {
+                    clear_non_pending_or_seed_intent_in_tx(conn, &ws.namespace, &entity_key, true)
+                        .await?;
+                    continue;
+                }
+            }
+        }
+        if has_pending_user_state_for_record_in_tx(conn, &ws.namespace, &rec).await? {
+            rebase_pending_progress_to_zero_in_tx(conn, &ws.namespace, &rec).await?;
+            continue;
+        }
+
+        let is_private_reading = if rec.entity["kind"].as_str() == Some("reading") {
+            if private_keys.contains(&entity_key) {
+                true
+            } else if let (Some(plugin_id), Some(novel_path), Some(chapter_path)) = (
+                rec.entity["work"]["pluginId"].as_str(),
+                rec.entity["work"]["novelPath"].as_str(),
+                rec.entity["chapter"]["chapterPath"].as_str(),
+            ) {
+                if rec.entity["work"]["sourceNovelId"].is_string() {
+                    let path_work = user_state_work_key_parts(plugin_id, None, novel_path);
+                    let path_key =
+                        serde_json::to_string(&("reading", path_work, chapter_path)).unwrap();
+                    private_keys.contains(&path_key)
+                } else if !private_keys.is_empty() {
+                    let source_novel_id: Option<String> = sqlx::query_scalar(
+                        "SELECT source_novel_id FROM novel WHERE plugin_id = ?1 AND path = ?2 LIMIT 1",
+                    )
+                    .bind(plugin_id)
+                    .bind(novel_path)
+                    .fetch_optional(&mut *conn)
+                    .await
+                    .map_err(|err| {
+                        format!(
+                            "db user state: lookup novel source id for private reconcile: {err}"
+                        )
+                    })?
+                    .flatten();
+                    if let Some(source_novel_id) = super::core::non_empty_source_id(source_novel_id) {
+                        let id_work = user_state_work_key_parts(
+                            plugin_id,
+                            Some(&source_novel_id),
+                            novel_path,
+                        );
+                        let id_key =
+                            serde_json::to_string(&("reading", id_work, chapter_path)).unwrap();
+                        private_keys.contains(&id_key)
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                }
+            } else {
+                false
+            }
+        } else {
+            false
+        };
+        let preserve_local = is_record_before_seed_cutoff(&rec.entity, &rec.value, seed_cutoff_ms)
+            || is_private_reading;
+
+        if !preserve_local {
+            if let Some(tombstone_val) = canonical_tombstone_for_entity(&rec.entity, &rec.value) {
+                let tombstone_rec = ParsedUserStateRecord {
+                    entity: rec.entity.clone(),
+                    value: tombstone_val,
+                    revision: rec.revision.max(1),
+                    operation_id: "snapshot-gc-tombstone".to_string(),
+                    updated_at: rec.updated_at,
+                    device_id: rec.device_id.clone(),
+                    device_name: rec.device_name.clone(),
+                };
+                match materialize_user_state_record_with_options_in_tx(
+                    root,
+                    conn,
+                    &ws.namespace,
+                    &tombstone_rec,
+                    skipped_chapter_ids,
+                    true,
+                    Some(&mut composition_entries),
+                )
+                .await
+                {
+                    Ok((next, touched_novel_id)) => {
+                        if let Some(novel_id) = touched_novel_id {
+                            touched_last_read_novels.insert(novel_id);
+                        }
+                        effects.resumes.extend(next.resumes);
+                    }
+                    Err(MaterializeError::Deferred(_)) => {}
+                    Err(MaterializeError::Fatal(err)) => {
+                        log::warn!("[user-state] failed to materialize GC tombstone for {entity_key}: {err}");
+                    }
+                }
+            }
+        }
+
+        sqlx::query("DELETE FROM user_state_conflict WHERE namespace = ?1 AND entity_key = ?2")
+            .bind(&ws.namespace)
+            .bind(&entity_key)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: clear conflict for absent record: {err}"))?;
+        clear_non_pending_or_seed_intent_in_tx(conn, &ws.namespace, &entity_key, true).await?;
+    }
+
+    if !touched_last_read_novels.is_empty() {
+        let ids: Vec<i64> = touched_last_read_novels.into_iter().collect();
+        let encoded = serde_json::to_string(&ids).unwrap();
+        sqlx::query(
+            "UPDATE novel \
+             SET last_read_at = (SELECT MAX(read_at) FROM chapter WHERE novel_id = novel.id) \
+             WHERE id IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(&encoded)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: update novel last_read_at on reconcile: {err}"))?;
+    }
+
+    store_user_state_records_in_tx(conn, &ws.namespace, &snapshot_records).await?;
+
+    if seed_allowed == Some(false) {
+        sqlx::query(
+            "DELETE FROM user_state_operation \
+             WHERE namespace = ?1 AND json_extract(payload, '$.seed') = 1",
+        )
+        .bind(&ws.namespace)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: clear seed operations on reconcile: {err}"))?;
+
+        sqlx::query(
+            "DELETE FROM user_state_progress \
+             WHERE namespace = ?1 \
+               AND ( \
+                 base_revision = ?2 \
+                 OR EXISTS (SELECT 1 FROM user_state_intent i WHERE i.entity_key = user_state_progress.entity_key AND i.seed = 1) \
+               )",
+        )
+        .bind(&ws.namespace)
+        .bind(USER_STATE_PRELINK_BASE_REVISION)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: clear seed progress on reconcile: {err}"))?;
+
+        sqlx::query(
+            "DELETE FROM user_state_intent \
+             WHERE seed = 1 \
+               AND NOT EXISTS (SELECT 1 FROM user_state_progress p WHERE p.entity_key = user_state_intent.entity_key)",
+        )
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: clear orphaned seed intents on reconcile: {err}"))?;
+    }
+
+    sqlx::query(
+        "DELETE FROM user_state_alias \
+         WHERE namespace = ?1 \
+           AND NOT EXISTS ( \
+             SELECT 1 FROM user_state_record r \
+             WHERE r.namespace = ?1 \
+               AND r.entity_key = json_array('category', user_state_alias.canonical_id) \
+           )",
+    )
+    .bind(&ws.namespace)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: clean dangling category aliases: {err}"))?;
+
+    sqlx::query(
+        "UPDATE user_state_workspace \
+         SET cursor = ?2, read_through = NULL, last_success_at = ?3, seed_cutoff_at = ?4 \
+         WHERE namespace = ?1",
+    )
+    .bind(&ws.namespace)
+    .bind(snapshot_revision)
+    .bind(now_ms())
+    .bind(seed_cutoff_ms)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: update workspace cursor on reconcile: {err}"))?;
+
+    sqlx::query("DELETE FROM work_metadata_dirty")
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: reset work_metadata_dirty on reconcile: {err}"))?;
+    if !dirty_before.is_empty() {
+        let dirty_json: Vec<JsonValue> = dirty_before
+            .into_iter()
+            .map(|(plugin_id, path)| json!({ "pluginId": plugin_id, "path": path }))
+            .collect();
+        let encoded = serde_json::to_string(&dirty_json).unwrap();
+        sqlx::query(
+            "INSERT INTO work_metadata_dirty(plugin_id, path) \
+             SELECT json_extract(value, '$.pluginId'), json_extract(value, '$.path') \
+             FROM json_each(?1) WHERE true \
+             ON CONFLICT(plugin_id, path) DO NOTHING",
+        )
+        .bind(&encoded)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: restore work_metadata_dirty on reconcile: {err}"))?;
+    }
+
+    ctx.request_user_state_deferred_apply();
+    ctx.record_user_state_ledger_change();
+    Ok(effects)
+}
+
+pub async fn apply_local_user_state_retention_in_tx(
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    prune_non_library_days: Option<i64>,
+    strip_timestamps_days: Option<i64>,
+    reference_now_ms: i64,
+) -> Result<u64, String> {
+    if let Some(days) = prune_non_library_days {
+        if days < 1 {
+            return Err("Non-library retention days must be at least 1.".to_string());
+        }
+    }
+    if let Some(days) = strip_timestamps_days {
+        if days < 1 {
+            return Err("Reading timestamp retention days must be at least 1.".to_string());
+        }
+    }
+    if prune_non_library_days.is_none() && strip_timestamps_days.is_none() {
+        return Ok(0);
+    }
+
+    let has_schema = has_user_state_schema_in_tx(conn).await?;
+    let private_keys: HashSet<String> = if has_schema {
+        promote_private_work_identities_in_tx(conn).await?;
+        sqlx::query_scalar::<_, String>("SELECT entity_key FROM user_state_private")
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: load private keys for retention: {err}"))?
+            .into_iter()
+            .collect()
+    } else {
+        HashSet::new()
+    };
+
+    let mut affected: u64 = 0;
+    let mut touched_novels: HashSet<i64> = HashSet::new();
+    let mut public_touched_novels: HashSet<i64> = HashSet::new();
+
+    // Run 2-A (prune non-library) before 2-B (strip timestamps) so 2-B does not clear read_at
+    // before 2-A checks older non-library chapters when both policies are enabled together.
+    if let Some(days) = prune_non_library_days {
+        let cutoff_ms = reference_now_ms.saturating_sub(days.saturating_mul(86_400_000));
+        let sql = format!(
+            "{USER_CHAPTER_SELECT} WHERE n.in_library = 0 AND n.plugin_id <> 'local' AND n.is_local = 0 \
+             AND c.read_at IS NOT NULL"
+        );
+        let rows = sqlx::query(&sql)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: load non-library retention chapters: {err}"))?;
+        let mut target_rows: Vec<UserChapterRow> = rows
+            .iter()
+            .map(map_user_chapter_row)
+            .filter(|ch| is_before_seed_cutoff(ch.read_at, Some(cutoff_ms)))
+            .collect();
+        if !target_rows.is_empty() {
+            populate_user_chapter_composition_ids_in_tx(conn, &mut target_rows).await?;
+            let ch_ids: Vec<i64> = target_rows.iter().map(|ch| ch.id).collect();
+            let mut public_rows = Vec::with_capacity(target_rows.len());
+            for ch in &mut target_rows {
+                touched_novels.insert(ch.novel_id);
+                let is_private = if has_schema && !private_keys.is_empty() {
+                    let key = user_state_entity_key(&json!({
+                        "kind": "reading",
+                        "work": chapter_work_json(ch),
+                        "chapter": chapter_reference_json(ch),
+                    }))?;
+                    private_keys.contains(&key)
+                } else {
+                    false
+                };
+                ch.progress = 0.0;
+                ch.unread = 1;
+                ch.read_at = None;
+                if !is_private {
+                    public_touched_novels.insert(ch.novel_id);
+                    public_rows.push(ch.clone());
+                }
+            }
+            let encoded_ids = serde_json::to_string(&ch_ids).unwrap();
+            let res = sqlx::query(
+                "UPDATE chapter \
+                 SET progress = 0, unread = 1, read_at = NULL, updated_at = unixepoch() \
+                 WHERE id IN (SELECT value FROM json_each(?1))",
+            )
+            .bind(&encoded_ids)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: prune non-library chapters: {err}"))?;
+            affected = affected.saturating_add(res.rows_affected());
+            if has_schema && !public_rows.is_empty() {
+                record_chapter_rows_in_tx(conn, ctx, &public_rows, "reading", false).await?;
+            }
+        }
+    }
+
+    if let Some(days) = strip_timestamps_days {
+        let cutoff_ms = reference_now_ms.saturating_sub(days.saturating_mul(86_400_000));
+        let sql = format!(
+            "{USER_CHAPTER_SELECT} WHERE n.plugin_id <> 'local' AND n.is_local = 0 AND c.read_at IS NOT NULL"
+        );
+        let rows = sqlx::query(&sql)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: load timestamp retention chapters: {err}"))?;
+        let mut target_rows: Vec<UserChapterRow> = rows
+            .iter()
+            .map(map_user_chapter_row)
+            .filter(|ch| is_before_seed_cutoff(ch.read_at, Some(cutoff_ms)))
+            .collect();
+        if !target_rows.is_empty() {
+            populate_user_chapter_composition_ids_in_tx(conn, &mut target_rows).await?;
+            let ch_ids: Vec<i64> = target_rows.iter().map(|ch| ch.id).collect();
+            let mut public_rows = Vec::with_capacity(target_rows.len());
+            for ch in &mut target_rows {
+                touched_novels.insert(ch.novel_id);
+                let is_private = if has_schema && !private_keys.is_empty() {
+                    let key = user_state_entity_key(&json!({
+                        "kind": "reading",
+                        "work": chapter_work_json(ch),
+                        "chapter": chapter_reference_json(ch),
+                    }))?;
+                    private_keys.contains(&key)
+                } else {
+                    false
+                };
+                ch.read_at = None;
+                if !is_private {
+                    public_touched_novels.insert(ch.novel_id);
+                    public_rows.push(ch.clone());
+                }
+            }
+            let encoded_ids = serde_json::to_string(&ch_ids).unwrap();
+            let res = sqlx::query(
+                "UPDATE chapter SET read_at = NULL, updated_at = unixepoch() \
+                 WHERE id IN (SELECT value FROM json_each(?1))",
+            )
+            .bind(&encoded_ids)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: strip reading timestamps: {err}"))?;
+            affected = affected.saturating_add(res.rows_affected());
+            if has_schema && !public_rows.is_empty() {
+                record_chapter_rows_in_tx(conn, ctx, &public_rows, "reading", false).await?;
+            }
+        }
+    }
+
+    if !touched_novels.is_empty() {
+        let novel_ids: Vec<i64> = touched_novels.into_iter().collect();
+        let encoded = serde_json::to_string(&novel_ids).unwrap();
+        sqlx::query(
+            "UPDATE novel \
+             SET last_read_at = (SELECT MAX(read_at) FROM chapter WHERE novel_id = novel.id), \
+                 updated_at = unixepoch() \
+             WHERE id IN (SELECT value FROM json_each(?1))",
+        )
+        .bind(&encoded)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: update novel last_read_at on retention: {err}"))?;
+
+        if has_schema && !public_touched_novels.is_empty() {
+            let public_ids: Vec<i64> = public_touched_novels.into_iter().collect();
+            let encoded_public = serde_json::to_string(&public_ids).unwrap();
+            let cleared_resumes: Vec<i64> = if private_keys.is_empty() {
+                sqlx::query_scalar(
+                    "SELECT id FROM novel \
+                     WHERE id IN (SELECT value FROM json_each(?1)) AND last_read_at IS NULL",
+                )
+                .bind(&encoded_public)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|err| {
+                    format!("db user state: find cleared resume novels on retention: {err}")
+                })?
+            } else {
+                let sql = format!(
+                    "{USER_CHAPTER_SELECT} \
+                     WHERE c.novel_id IN (SELECT value FROM json_each(?1)) AND c.read_at IS NOT NULL"
+                );
+                let remaining_rows = sqlx::query(&sql)
+                    .bind(&encoded_public)
+                    .fetch_all(&mut *conn)
+                    .await
+                    .map_err(|err| {
+                        format!(
+                            "db user state: check remaining public chapters on retention: {err}"
+                        )
+                    })?;
+                let mut remaining: Vec<UserChapterRow> =
+                    remaining_rows.iter().map(map_user_chapter_row).collect();
+                populate_user_chapter_composition_ids_in_tx(conn, &mut remaining).await?;
+                let mut novels_with_public_read_at: HashSet<i64> = HashSet::new();
+                for ch in &remaining {
+                    let key = user_state_entity_key(&json!({
+                        "kind": "reading",
+                        "work": chapter_work_json(ch),
+                        "chapter": chapter_reference_json(ch),
+                    }))?;
+                    if !private_keys.contains(&key) {
+                        novels_with_public_read_at.insert(ch.novel_id);
+                    }
+                }
+                public_ids
+                    .into_iter()
+                    .filter(|id| !novels_with_public_read_at.contains(id))
+                    .collect()
+            };
+            if !cleared_resumes.is_empty() {
+                record_resume_cleared_in_tx(conn, ctx, Some(&cleared_resumes)).await?;
+            }
+        }
+    }
+
+    Ok(affected)
 }
