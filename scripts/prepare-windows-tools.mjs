@@ -91,12 +91,28 @@ export async function downloadToolAsset(destination, asset, {
   await writeFile(destination, bytes, { flag: "wx" });
 }
 
-async function extractToolArchive(archive, destination) {
-  await runFile("powershell.exe", ["-NoProfile", "-NonInteractive", "-Command",
-    "$ErrorActionPreference = 'Stop'; Expand-Archive -LiteralPath $env:NOREA_TOOL_ARCHIVE -DestinationPath $env:NOREA_TOOL_DESTINATION"], {
-    env: { ...process.env, NOREA_TOOL_ARCHIVE: archive, NOREA_TOOL_DESTINATION: destination },
-    timeout: 120_000, windowsHide: true,
-  });
+const EXTRACT_ZIP_COMMAND =
+  "$ErrorActionPreference = 'Stop'; " +
+  "if (-not ('System.IO.Compression.ZipFile' -as [type])) { Add-Type -AssemblyName System.IO.Compression.FileSystem }; " +
+  "[System.IO.Compression.ZipFile]::ExtractToDirectory($env:NOREA_TOOL_ARCHIVE, $env:NOREA_TOOL_DESTINATION)";
+
+export async function extractToolArchive(archive, destination, { run = runFile } = {}) {
+  const args = ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", EXTRACT_ZIP_COMMAND];
+  const options = {
+    env: {
+      ...process.env,
+      NOREA_TOOL_ARCHIVE: path.resolve(archive),
+      NOREA_TOOL_DESTINATION: path.resolve(destination),
+    },
+    timeout: 120_000,
+    windowsHide: true,
+  };
+  try {
+    await run("pwsh", args, options);
+  } catch (error) {
+    if (error?.code !== "ENOENT") throw error;
+    await run("powershell.exe", args, options);
+  }
 }
 
 /** Prepare a verified replacement, including plugins, before touching the installed cache. */

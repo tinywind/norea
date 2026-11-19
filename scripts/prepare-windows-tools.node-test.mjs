@@ -4,7 +4,7 @@ import { mkdtemp, mkdir, readFile, readdir, rm, writeFile } from "node:fs/promis
 import os from "node:os";
 import path from "node:path";
 import { test } from "node:test";
-import { downloadToolAsset, prepareToolset, WINDOWS_TOOL_ASSETS, WINDOWS_TOOLSETS } from "./prepare-windows-tools.mjs";
+import { downloadToolAsset, extractToolArchive, prepareToolset, WINDOWS_TOOL_ASSETS, WINDOWS_TOOLSETS } from "./prepare-windows-tools.mjs";
 
 async function cacheFixture(tool, run) {
   const root = await mkdtemp(path.join(os.tmpdir(), "norea-windows-tools-test-"));
@@ -118,3 +118,43 @@ for (const tool of WINDOWS_TOOLSETS) {
     });
   });
 }
+
+test("extractToolArchive runs pwsh with ZipFile.ExtractToDirectory instead of Expand-Archive", async () => {
+  const calls = [];
+  await extractToolArchive("./archive.zip", "./extracted", {
+    run: async (command, args, options) => {
+      calls.push({ command, args, options });
+    },
+  });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].command, "pwsh");
+  const script = calls[0].args.at(-1);
+  assert.match(script, /\[System\.IO\.Compression\.ZipFile\]::ExtractToDirectory/);
+  assert.doesNotMatch(script, /Expand-Archive/);
+  assert.equal(calls[0].options.env.NOREA_TOOL_ARCHIVE, path.resolve("./archive.zip"));
+  assert.equal(calls[0].options.env.NOREA_TOOL_DESTINATION, path.resolve("./extracted"));
+});
+
+test("extractToolArchive falls back to powershell.exe only when pwsh is missing", async () => {
+  const calls = [];
+  await extractToolArchive("archive.zip", "extracted", {
+    run: async (command, args, options) => {
+      calls.push({ command, args, options });
+      if (command === "pwsh") {
+        throw Object.assign(new Error("spawn pwsh ENOENT"), { code: "ENOENT" });
+      }
+    },
+  });
+  assert.deepEqual(calls.map(call => call.command), ["pwsh", "powershell.exe"]);
+  assert.deepEqual(calls[1].args, calls[0].args);
+  assert.deepEqual(calls[1].options, calls[0].options);
+
+  const nonMissingCalls = [];
+  await assert.rejects(extractToolArchive("archive.zip", "extracted", {
+    run: async command => {
+      nonMissingCalls.push(command);
+      throw new Error("corrupted zip archive");
+    },
+  }), /corrupted zip archive/);
+  assert.deepEqual(nonMissingCalls, ["pwsh"]);
+});
