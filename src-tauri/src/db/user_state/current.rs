@@ -37,8 +37,6 @@ pub struct CurrentWork {
     pub source_novel_id: Option<String>,
     pub novel_path: String,
     pub name: String,
-    pub in_library: i64,
-    pub added_at: Option<i64>,
 }
 
 impl CurrentWork {
@@ -268,7 +266,7 @@ pub async fn load_current_held_sources_in_tx(
 
 pub async fn load_current_works_in_tx(conn: &mut SqliteConnection) -> Result<Vec<CurrentWork>, String> {
     let rows = sqlx::query(
-        "SELECT id, plugin_id, source_novel_id, path, name, in_library, library_added_at \
+        "SELECT id, plugin_id, source_novel_id, path, name \
          FROM novel WHERE plugin_id <> 'local' AND is_local = 0",
     )
     .fetch_all(&mut *conn)
@@ -282,8 +280,6 @@ pub async fn load_current_works_in_tx(conn: &mut SqliteConnection) -> Result<Vec
             source_novel_id: super::core::non_empty_source_id(r.get("source_novel_id")),
             novel_path: r.get("path"),
             name: r.get("name"),
-            in_library: r.get("in_library"),
-            added_at: r.get("library_added_at"),
         })
         .collect())
 }
@@ -979,21 +975,6 @@ pub async fn build_current_snapshot_in_tx(
     let mut category_ids: HashMap<i64, String> = HashMap::new();
     let mut category_mappings: Vec<(String, i64)> = Vec::new();
 
-    for work in &data.works {
-        if work.in_library != 0 {
-            add_snapshot_item(
-                &data.held_sources,
-                &mut ordered_keys,
-                &mut items,
-                &mut missing,
-                json!({
-                    "entity": { "kind": "library", "work": serde_json::to_value(work.work_ref()).unwrap() },
-                    "value": { "inLibrary": true, "addedAt": work.added_at },
-                }),
-            )?;
-        }
-    }
-
     for category in &data.categories {
         if category.is_system != 0 || category.name.trim().is_empty() {
             continue;
@@ -1368,14 +1349,6 @@ pub async fn prepare_deferred_current_retry_in_tx(
     )))
 }
 
-fn minimum_time(left: Option<i64>, right: Option<i64>) -> Option<i64> {
-    match (left, right) {
-        (None, r) => r,
-        (l, None) => l,
-        (Some(l), Some(r)) => Some(l.min(r)),
-    }
-}
-
 async fn load_current_categories_in_tx(
     conn: &mut SqliteConnection,
 ) -> Result<Vec<CurrentCategory>, String> {
@@ -1416,104 +1389,13 @@ async fn install_current_structure_in_tx(
         items.push(item);
     }
 
-    let mut works = load_current_works_in_tx(conn).await?;
-    let mut by_key: HashMap<String, CurrentWork> = works
+    let works = load_current_works_in_tx(conn).await?;
+    let by_key: HashMap<String, CurrentWork> = works
         .iter()
         .filter(|w| w.source_novel_id.is_some())
         .map(|w| (w.work_key(), w.clone()))
         .collect();
-    let mut occupied_paths: HashSet<(String, String)> = works
-        .iter()
-        .map(|w| (w.plugin_id.clone(), w.novel_path.clone()))
-        .collect();
-    let mut planned: HashSet<String> = HashSet::new();
-    let mut additions: Vec<JsonValue> = Vec::new();
     let mut changed = false;
-
-    for (ent, _) in &items {
-        if ent["kind"].as_str() != Some("library") {
-            continue;
-        }
-        let work = parse_work_reference(&ent["work"])?;
-        let key = user_state_work_key(&work);
-        if by_key.contains_key(&key) || planned.contains(&key) {
-            continue;
-        }
-        let path_key = (work.plugin_id.clone(), work.novel_path.clone());
-        let Some(ref source_novel_id) = work.source_novel_id else {
-            missing.insert(user_state_entity_key(ent)?);
-            continue;
-        };
-        if occupied_paths.contains(&path_key) {
-            missing.insert(user_state_entity_key(ent)?);
-            continue;
-        }
-        additions.push(json!({
-            "pluginId": work.plugin_id,
-            "sourceNovelId": source_novel_id,
-            "novelPath": work.novel_path,
-            "name": work.name,
-            "isLocal": if work.plugin_id == "local" { 1 } else { 0 },
-        }));
-        occupied_paths.insert(path_key);
-        planned.insert(key);
-    }
-
-    if !additions.is_empty() {
-        let encoded = serde_json::to_string(&additions).unwrap();
-        sqlx::query(
-            "INSERT INTO novel(plugin_id, source_novel_id, path, name, is_local) \
-             SELECT json_extract(value, '$.pluginId'), json_extract(value, '$.sourceNovelId'), \
-                    json_extract(value, '$.novelPath'), json_extract(value, '$.name'), \
-                    json_extract(value, '$.isLocal') \
-             FROM json_each(?1)",
-        )
-        .bind(&encoded)
-        .execute(&mut *conn)
-        .await
-        .map_err(|err| format!("db user state current: insert library works: {err}"))?;
-        works = load_current_works_in_tx(conn).await?;
-        by_key = works
-            .iter()
-            .filter(|w| w.source_novel_id.is_some())
-            .map(|w| (w.work_key(), w.clone()))
-            .collect();
-        changed = true;
-    }
-
-    let mut library_updates: Vec<JsonValue> = Vec::new();
-    for (ent, val) in &items {
-        if ent["kind"].as_str() != Some("library") {
-            continue;
-        }
-        let w_ref = parse_work_reference(&ent["work"])?;
-        let Some(work) = by_key.get(&user_state_work_key(&w_ref)) else {
-            missing.insert(user_state_entity_key(ent)?);
-            continue;
-        };
-        let val_added = val.get("addedAt").and_then(JsonValue::as_i64);
-        let added_at = minimum_time(work.added_at, val_added);
-        if work.in_library == 0 || work.added_at != added_at {
-            library_updates.push(json!({ "id": work.id, "addedAt": added_at }));
-        }
-    }
-    if !library_updates.is_empty() {
-        let encoded = serde_json::to_string(&library_updates).unwrap();
-        sqlx::query(
-            "WITH incoming AS ( \
-               SELECT json_extract(value, '$.id') AS id, \
-                      json_extract(value, '$.addedAt') AS added_at \
-               FROM json_each(?1) \
-             ) \
-             UPDATE novel SET in_library = 1, library_added_at = incoming.added_at \
-             FROM incoming WHERE novel.id = incoming.id",
-        )
-        .bind(&encoded)
-        .execute(&mut *conn)
-        .await
-        .map_err(|err| format!("db user state current: update library flags: {err}"))?;
-        changed = true;
-    }
 
     let mut categories = load_current_categories_in_tx(conn).await?;
     let build_names = |cats: &[CurrentCategory]| -> HashMap<String, CurrentCategory> {

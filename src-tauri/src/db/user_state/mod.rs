@@ -556,7 +556,8 @@ pub async fn db_user_state_resume_after_restore(
                     .map_err(|err| format!("db user state: clear restore pause: {err}"))?;
                 sqlx::query(
                     "UPDATE user_state_record \
-                     SET applied_revision = 0, deferred_reason = NULL, deferred_detail = NULL",
+                     SET applied_revision = 0, deferred_reason = NULL, deferred_detail = NULL \
+                     WHERE COALESCE(json_extract(payload, '$.entity.kind'), '') <> 'library'",
                 )
                 .execute(&mut *conn)
                 .await

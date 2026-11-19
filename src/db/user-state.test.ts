@@ -121,7 +121,7 @@ describe("durable personal-state ledger", () => {
     }
   });
 
-  it("accepts pre-link reading, library and category edits only as soft seeds, then projects the shared deletions", async () => {
+  it("accepts pre-link reading and category edits only as soft seeds while keeping library membership device-local", async () => {
     const library: UserStateEntity = { kind: "library", work };
     const resume: UserStateEntity = { kind: "resume", work };
     const category: UserStateEntity = { kind: "category", categoryId: "local-prelink" };
@@ -139,7 +139,8 @@ describe("durable personal-state ledger", () => {
     ]));
     await bind();
     const baseline = await prepare();
-    expect(baseline).toHaveLength(5);
+    expect(baseline).toHaveLength(4);
+    expect(baseline.some(item => item.entity.kind === "library")).toBe(false);
     expect(baseline.every(item => item.seed === true && item.baseRevision === 0)).toBe(true);
     const remote = [
       shared(category, { name: "Pinned", sort: 1, deleted: true }, 1),
@@ -154,7 +155,7 @@ describe("durable personal-state ledger", () => {
     });
     await waitForUserStateDeferredApply();
     expect(active.sql.prepare("SELECT progress,unread FROM chapter WHERE id=11").get()).toEqual({ progress: 0, unread: 1 });
-    expect(active.sql.prepare("SELECT in_library FROM novel WHERE id=1").get()).toEqual({ in_library: 0 });
+    expect(active.sql.prepare("SELECT in_library FROM novel WHERE id=1").get()).toEqual({ in_library: 1 });
     expect(active.sql.prepare("SELECT COUNT(*) count FROM category WHERE id=80").get()).toEqual({ count: 0 });
     await tx(active, db => acknowledgeUserStateOperationsInDb(db, binding, baseline.map(operation => ({
       operationId: operation.operationId, status: "seed-skipped" as const,
@@ -644,7 +645,7 @@ describe("durable personal-state ledger", () => {
     expect(
       active.sql.prepare("SELECT revision,applied_revision,deferred_reason FROM user_state_record ORDER BY revision").all(),
     ).toEqual([
-      { revision: 1, applied_revision: 1, deferred_reason: "missing-work" },
+      { revision: 1, applied_revision: 1, deferred_reason: null },
       { revision: 2, applied_revision: 2, deferred_reason: "missing-work" },
       { revision: 3, applied_revision: 3, deferred_reason: "missing-work" },
     ]);
@@ -655,11 +656,45 @@ describe("durable personal-state ledger", () => {
     );
     await tx(active, db => deferUserStateForNovelInDb(db, 1));
     await waitForUserStateDeferredApply();
-    expect(active.sql.prepare("SELECT in_library FROM novel WHERE id=1").get()).toEqual({ in_library: 1 });
+    expect(active.sql.prepare("SELECT in_library FROM novel WHERE id=1").get()).toEqual({ in_library: 0 });
     expect(active.sql.prepare("SELECT id,progress FROM chapter WHERE novel_id=1 ORDER BY id").all()).toEqual([
       { id: 11, progress: 50 },
       { id: 12, progress: 90 },
     ]);
+  });
+
+  it("keeps library membership and download goals isolated across devices and purges legacy library intents", async () => {
+    active.sql.exec("UPDATE novel SET in_library=1, library_added_at=100 WHERE id=1");
+    active.sql.exec("INSERT INTO novel_download_goal(novel_id,kind,count,updated_at) VALUES(1,'keep_ahead',5,100)");
+    const libraryEntity: UserStateEntity = { kind: "library", work };
+    const libraryKey = userStateEntityKey(libraryEntity);
+    // Simulate legacy pre-upgrade library intent and pending operation sitting in SQLite.
+    active.sql.prepare("INSERT INTO user_state_intent(sequence,entity_key,entity_json,value_json,seed) VALUES(1,?,?,?,0)")
+      .run(libraryKey, JSON.stringify(libraryEntity), JSON.stringify({ inLibrary: false, addedAt: null }));
+    await bind();
+    expect(await prepare()).toEqual([]);
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_intent WHERE entity_key=?").get(libraryKey)).toEqual({ count: 0 });
+
+    // Remote library removal must not remove this device's work or clear its download goal.
+    await applyUserStateReadPage(binding, {
+      version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false,
+      records: [shared(libraryEntity, { inLibrary: false, addedAt: null }, 1, "remote-remove")],
+    });
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT in_library,library_added_at FROM novel WHERE id=1").get()).toEqual({ in_library: 1, library_added_at: 100 });
+    expect(active.sql.prepare("SELECT kind,count FROM novel_download_goal WHERE novel_id=1").get()).toEqual({ kind: "keep_ahead", count: 5 });
+
+    // Remote library addition must not re-add a work removed from this device's library.
+    await setNovelInLibrary(1, false);
+    expect(await prepare()).toEqual([]);
+    await applyUserStateReadPage(binding, {
+      version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
+      headRevision: 2, through: 2, nextCursor: 2, hasMore: false,
+      records: [shared(libraryEntity, { inLibrary: true, addedAt: 200 }, 2, "remote-add")],
+    });
+    await waitForUserStateDeferredApply();
+    expect(active.sql.prepare("SELECT in_library,library_added_at FROM novel WHERE id=1").get()).toEqual({ in_library: 0, library_added_at: null });
   });
 });
 
@@ -679,14 +714,14 @@ describe("explicit command boundaries", () => {
     unsubscribe();
   });
 
-  it("records default no-op unread, bookmark removal and library removal as explicit changes", async () => {
+  it("records default no-op unread and bookmark removal as explicit changes without sharing library removal", async () => {
     await bind(); await setChaptersReadState([11], true); await setChapterBookmark(11, false); await setNovelInLibrary(1, false);
     const operations = await prepare();
-    expect(operations).toHaveLength(3);
+    expect(operations).toHaveLength(2);
     expect(operations.every(operation => !operation.seed)).toBe(true);
     expect(operations.find(operation => operation.entity.kind === "reading")!.value).toEqual(readingValue(0));
     expect(operations.find(operation => operation.entity.kind === "bookmark")!.value).toEqual({ bookmarked: false });
-    expect(operations.find(operation => operation.entity.kind === "library")!.value).toEqual({ inLibrary: false, addedAt: null });
+    expect(operations.some(operation => operation.entity.kind === "library")).toBe(false);
   });
 
   it("rolls back the user mutation when its durable intent cannot be recorded", async () => {
@@ -711,7 +746,7 @@ describe("explicit command boundaries", () => {
     const operations = await prepare();
     expect(operations.filter(operation => operation.entity.kind === "reading")).toHaveLength(2);
     expect(operations.find(operation => operation.entity.kind === "resume")!.value).toEqual({ chapter: null, anchor: null, openedAt: null });
-    expect(operations.find(operation => operation.entity.kind === "library")!.value).toEqual({ inLibrary: false, addedAt: null });
+    expect(operations.some(operation => operation.entity.kind === "library")).toBe(false);
   });
 
   it("clearReadingProgress skips untouched unread chapters and novels without shared history or last_read_at", async () => {
@@ -893,7 +928,7 @@ describe("archive recovery and exact command integration", () => {
     expect(await prepare()).toEqual([]);
   });
 
-  it("preserves an unread reset through the actual source-merge transaction and records the intentional library migration", async () => {
+  it("preserves an unread reset through the actual source-merge transaction without sharing library membership", async () => {
     addWork(active, 2, 21, { ...work, pluginId: "target", sourceNovelId: "other-book", novelPath: "/target" });
     active.sql.exec("UPDATE chapter SET progress=100,unread=0,bookmark=1");
     await bind(); await setChaptersReadState([11], true); await setChapterBookmark(11, false);
@@ -901,7 +936,7 @@ describe("archive recovery and exact command integration", () => {
       decisions: [{ kind: "map", sourceChapterId: 11, targetChapterPath: "/chapter/1" }], preparedDownloads: [] });
     expect(active.sql.prepare("SELECT id,progress,unread,bookmark FROM chapter").get()).toEqual({ id: 21, progress: 0, unread: 1, bookmark: 0 });
     const operations = await prepare();
-    expect(operations.find(operation => operation.entity.kind === "library" && operation.entity.work.pluginId === "source")!.value).toEqual({ inLibrary: false, addedAt: null });
+    expect(operations.some(operation => operation.entity.kind === "library")).toBe(false);
     expect(operations.find(operation => operation.entity.kind === "reading" && operation.entity.work.pluginId === "target")!.value).toMatchObject({ progress: 0, unread: true });
   });
 

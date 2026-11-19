@@ -21,7 +21,7 @@ use super::user_state::{
     core::{
         chapter_reference_json, chapter_work_json, has_user_state_schema_in_tx,
         map_user_chapter_row, populate_user_chapter_composition_ids_in_tx,
-        record_chapter_rows_in_tx, record_library_in_tx, record_membership_in_tx,
+        record_chapter_rows_in_tx, record_membership_in_tx,
         record_resume_cleared_in_tx, USER_CHAPTER_SELECT,
     },
     types::user_state_entity_key,
@@ -1614,7 +1614,7 @@ pub async fn delete_local_novel_records_in_tx(
     input: &DeleteLocalNovelRecordsInputDto,
 ) -> Result<(), String> {
     let current = sqlx::query(
-        "SELECT plugin_id, source_novel_id, path, name, in_library, last_read_at \
+        "SELECT plugin_id, source_novel_id, path, name, last_read_at \
          FROM novel WHERE id = ?1",
     )
     .bind(input.id)
@@ -1629,7 +1629,6 @@ pub async fn delete_local_novel_records_in_tx(
     let cur_source_id: Option<String> = current.get("source_novel_id");
     let cur_path: String = current.get("path");
     let cur_name: String = current.get("name");
-    let cur_in_library: i64 = current.get("in_library");
     let cur_last_read_at: Option<i64> = current.get("last_read_at");
 
     if cur_plugin != input.plugin_id
@@ -1656,27 +1655,6 @@ pub async fn delete_local_novel_records_in_tx(
 
         for cat_id in category_ids {
             record_membership_in_tx(conn, ctx, &[input.id], cat_id, false, false).await?;
-        }
-
-        let library_key = user_state_entity_key(&json!({
-            "kind": "library",
-            "work": work_json,
-        }))?;
-        let has_library_state = if cur_in_library != 0 {
-            true
-        } else {
-            let exists: i64 = sqlx::query_scalar(
-                "SELECT EXISTS(SELECT 1 FROM user_state_intent WHERE entity_key = ?1) \
-                 OR EXISTS(SELECT 1 FROM user_state_record WHERE entity_key = ?1)",
-            )
-            .bind(&library_key)
-            .fetch_one(&mut *conn)
-            .await
-            .map_err(|err| format!("db content deletion: check library user state: {err}"))?;
-            exists != 0
-        };
-        if has_library_state {
-            record_library_in_tx(conn, ctx, Some(&[input.id]), true).await?;
         }
 
         let resume_key = user_state_entity_key(&json!({
@@ -1786,6 +1764,7 @@ pub async fn delete_local_novel_records_in_tx(
             "UPDATE user_state_record \
              SET deferred_reason = 'missing-work', deferred_detail = NULL \
              WHERE applied_revision >= revision AND deferred_reason IS NULL \
+               AND COALESCE(json_extract(payload, '$.entity.kind'), '') <> 'library' \
                AND json_extract(payload, '$.entity.work.pluginId') = ?1 \
                AND (json_extract(payload, '$.entity.work.novelPath') = ?3 \
                     OR (?2 IS NOT NULL AND lower(json_extract(payload, '$.entity.work.sourceNovelId')) = lower(?2)))",
@@ -2530,6 +2509,101 @@ pub async fn db_content_deletion_verify_download_clear(
     Ok(true)
 }
 
+async fn commit_download_clear_in_tx(
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    input: &NovelIdentityGuardInputDto,
+) -> Result<(), String> {
+    let row = sqlx::query(
+        "SELECT plugin_id, source_novel_id, path, is_local FROM novel WHERE id = ?1",
+    )
+    .bind(input.id)
+    .fetch_optional(&mut *conn)
+    .await
+    .map_err(|err| format!("db content deletion: re-verify download clear: {err}"))?;
+    let Some(row) = row else {
+        return Ok(());
+    };
+    verify_download_clear_row(
+        &row,
+        input,
+        "Local work identity changed during download deletion.",
+    )?;
+
+    let chapter_ids: Vec<i64> =
+        sqlx::query_scalar("SELECT id FROM chapter WHERE novel_id = ?1")
+            .bind(input.id)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db content deletion: list cleared chapters: {err}"))?;
+
+    // Remember explicitly deleted downloaded chapters so automatic download goals
+    // do not re-download them if the work is later added back to the library.
+    sqlx::query(
+        "INSERT INTO chapter_download_goal_exclusion (chapter_id, created_at) \
+         SELECT id, unixepoch() FROM chapter \
+         WHERE novel_id = ?1 \
+           AND (is_downloaded = 1 OR content_bytes > 0 OR media_bytes > 0 OR media_repair_needed = 1) \
+         ON CONFLICT(chapter_id) DO NOTHING",
+    )
+    .bind(input.id)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| {
+        format!("db content deletion: exclude cleared chapters from download goals: {err}")
+    })?;
+
+    sqlx::query(
+        "UPDATE chapter \
+         SET is_downloaded = 0, content_bytes = 0, media_bytes = 0, \
+             media_repair_needed = 0, media_bytes_checked_at = NULL, \
+             updated_at = unixepoch() \
+         WHERE novel_id = ?1",
+    )
+    .bind(input.id)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db content deletion: clear chapter downloads: {err}"))?;
+
+    sqlx::query("DELETE FROM work_metadata_directory_cache WHERE novel_id = ?1")
+        .bind(input.id)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db content deletion: clear chapter directory cache: {err}"))?;
+
+    for table in [
+        "work_metadata_file_cache",
+        "work_metadata_sync_journal",
+        "work_metadata_dirty",
+    ] {
+        sqlx::query(&format!(
+            "DELETE FROM {table} WHERE plugin_id = ?1 AND path = ?2"
+        ))
+        .bind(&input.plugin_id)
+        .bind(&input.path)
+        .execute(&mut *conn)
+        .await
+        .map_err(|err| format!("db content deletion: clear {table}: {err}"))?;
+    }
+
+    ctx.record_work_directory(WorkDirectoryUpdateDto {
+        novel_id: input.id,
+        plugin_id: input.plugin_id.clone(),
+        novel_path: input.path.clone(),
+        directory: None,
+        fingerprint: None,
+    });
+    for chapter_id in chapter_ids {
+        ctx.record_chapter_directory(ChapterDirectoryUpdateDto {
+            chapter_id,
+            directory: None,
+        });
+    }
+
+    let _ = canonical_json_value;
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn db_content_deletion_commit_download_clear(
     db: State<'_, AppDatabase>,
@@ -2541,88 +2615,7 @@ pub async fn db_content_deletion_commit_download_clear(
             publish_metadata: false,
             ..TxOptions::default()
         },
-        move |conn, ctx| {
-            Box::pin(async move {
-                let row = sqlx::query(
-                    "SELECT plugin_id, source_novel_id, path, is_local FROM novel WHERE id = ?1",
-                )
-                .bind(input.id)
-                .fetch_optional(&mut *conn)
-                .await
-                .map_err(|err| {
-                    format!("db content deletion: re-verify download clear: {err}")
-                })?;
-                let Some(row) = row else {
-                    return Ok(());
-                };
-                verify_download_clear_row(
-                    &row,
-                    &input,
-                    "Local work identity changed during download deletion.",
-                )?;
-
-                let chapter_ids: Vec<i64> =
-                    sqlx::query_scalar("SELECT id FROM chapter WHERE novel_id = ?1")
-                        .bind(input.id)
-                        .fetch_all(&mut *conn)
-                        .await
-                        .map_err(|err| {
-                            format!("db content deletion: list cleared chapters: {err}")
-                        })?;
-
-                sqlx::query(
-                    "UPDATE chapter \
-                     SET is_downloaded = 0, content_bytes = 0, media_bytes = 0, \
-                         media_repair_needed = 0, media_bytes_checked_at = NULL, \
-                         updated_at = unixepoch() \
-                     WHERE novel_id = ?1",
-                )
-                .bind(input.id)
-                .execute(&mut *conn)
-                .await
-                .map_err(|err| format!("db content deletion: clear chapter downloads: {err}"))?;
-
-                sqlx::query("DELETE FROM work_metadata_directory_cache WHERE novel_id = ?1")
-                    .bind(input.id)
-                    .execute(&mut *conn)
-                    .await
-                    .map_err(|err| {
-                        format!("db content deletion: clear chapter directory cache: {err}")
-                    })?;
-
-                for table in [
-                    "work_metadata_file_cache",
-                    "work_metadata_sync_journal",
-                    "work_metadata_dirty",
-                ] {
-                    sqlx::query(&format!(
-                        "DELETE FROM {table} WHERE plugin_id = ?1 AND path = ?2"
-                    ))
-                    .bind(&input.plugin_id)
-                    .bind(&input.path)
-                    .execute(&mut *conn)
-                    .await
-                    .map_err(|err| format!("db content deletion: clear {table}: {err}"))?;
-                }
-
-                ctx.record_work_directory(WorkDirectoryUpdateDto {
-                    novel_id: input.id,
-                    plugin_id: input.plugin_id.clone(),
-                    novel_path: input.path.clone(),
-                    directory: None,
-                    fingerprint: None,
-                });
-                for chapter_id in chapter_ids {
-                    ctx.record_chapter_directory(ChapterDirectoryUpdateDto {
-                        chapter_id,
-                        directory: None,
-                    });
-                }
-
-                let _ = canonical_json_value;
-                Ok(())
-            })
-        },
+        move |conn, ctx| Box::pin(async move { commit_download_clear_in_tx(conn, ctx, &input).await }),
     )
     .await
 }
@@ -3014,5 +3007,61 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(upgraded_state_path, "/ch-1");
+    }
+
+    #[tokio::test]
+    async fn commit_download_clear_excludes_cleared_chapters_from_download_goals() {
+        let test_db = open_test_db().await;
+        let pool = test_db.db.writer();
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library, is_local) \
+             VALUES (1, 'src', 'work-1', '/work-1', 'Work 1', 0, 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chapter(id, novel_id, path, name, position, is_downloaded, content_bytes, media_bytes, media_repair_needed) VALUES \
+             (11, 1, '/c1', 'Ch 1', 1, 1, 500, 0, 0), \
+             (12, 1, '/c2', 'Ch 2', 2, 0, 0, 0, 0), \
+             (13, 1, '/c3', 'Ch 3', 3, 0, 120, 0, 0), \
+             (14, 1, '/c4', 'Ch 4', 4, 0, 0, 0, 1)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let input = NovelIdentityGuardInputDto {
+            id: 1,
+            plugin_id: "src".to_string(),
+            source_novel_id: Some("work-1".to_string()),
+            path: "/work-1".to_string(),
+        };
+        with_write_tx(
+            pool,
+            TxOptions {
+                publish_metadata: false,
+                ..TxOptions::default()
+            },
+            move |conn, ctx| Box::pin(async move { commit_download_clear_in_tx(conn, ctx, &input).await }),
+        )
+        .await
+        .unwrap();
+
+        let excluded: Vec<i64> = sqlx::query_scalar(
+            "SELECT chapter_id FROM chapter_download_goal_exclusion ORDER BY chapter_id",
+        )
+        .fetch_all(pool)
+        .await
+        .unwrap();
+        assert_eq!(excluded, vec![11, 13, 14]);
+
+        let remaining_downloaded: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM chapter WHERE novel_id = 1 AND (is_downloaded = 1 OR content_bytes > 0 OR media_repair_needed = 1)",
+        )
+        .fetch_one(pool)
+        .await
+        .unwrap();
+        assert_eq!(remaining_downloaded, 0);
     }
 }

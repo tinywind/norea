@@ -10,7 +10,7 @@ use crate::database::AppDatabase;
 use super::category::UNCATEGORIZED_CATEGORY_ID;
 use super::tx::{with_write_tx, MetadataRoot, TxContext, TxOptions};
 use super::user_state::{
-    core::{has_user_state_schema_in_tx, record_library_in_tx},
+    core::has_user_state_schema_in_tx,
     defer_user_state_for_novel_in_tx,
 };
 use super::work_metadata::persist_work_chapter_directories_in_tx;
@@ -1604,7 +1604,7 @@ pub async fn count_novels_in_conn(conn: &mut SqliteConnection) -> Result<i64, St
 
 pub async fn set_novel_in_library_in_tx(
     conn: &mut SqliteConnection,
-    ctx: &mut TxContext,
+    _ctx: &mut TxContext,
     id: i64,
     in_library: bool,
 ) -> Result<(), String> {
@@ -1640,7 +1640,7 @@ pub async fn set_novel_in_library_in_tx(
             .map_err(|err| format!("db novel: delete novel download goal: {err}"))?;
     }
 
-    record_library_in_tx(conn, ctx, Some(&[id]), false).await
+    Ok(())
 }
 
 pub async fn reconcile_imported_novel_identity_in_tx(
@@ -1801,9 +1801,6 @@ pub async fn insert_novel_if_absent_in_tx(
         .await
         .map_err(|err| format!("db novel: select inserted novel id: {err}"))?
         {
-            if in_library == 1 {
-                record_library_in_tx(conn, ctx, Some(&[created_id]), false).await?;
-            }
             defer_user_state_for_novel_in_tx(conn, ctx, created_id).await?;
         }
     }
@@ -2393,7 +2390,6 @@ pub async fn upsert_local_novel_in_tx(
         changed_chapters += renumbered.rows_affected;
     }
 
-    record_library_in_tx(conn, ctx, Some(&[novel_id]), false).await?;
     defer_user_state_for_novel_in_tx(conn, ctx, novel_id).await?;
 
     Ok(LocalNovelImportResultDto {

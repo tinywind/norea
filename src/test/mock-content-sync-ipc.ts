@@ -14,7 +14,6 @@ import {
   chapterWork,
   hasUserStateSchema,
   recordChapterRowsInDb,
-  recordLibraryInDb,
   recordMembershipInDb,
   recordResumeClearedInDb,
   USER_CHAPTER_SELECT,
@@ -1461,17 +1460,6 @@ export function createContentSyncIpcHandler(
               await recordMembershipInDb(db, [input.id], category.id, false);
               recordedAny = true;
             }
-            const libraryKey = userStateEntityKey({ kind: "library", work });
-            const [hasLibraryState] = current.inLibrary
-              ? [{ present: 1 }]
-              : await db.select<{ present: number }[]>(
-                  "SELECT 1 AS present WHERE EXISTS(SELECT 1 FROM user_state_intent WHERE entity_key=$1) OR EXISTS(SELECT 1 FROM user_state_record WHERE entity_key=$1)",
-                  [libraryKey],
-                );
-            if (hasLibraryState) {
-              await recordLibraryInDb(db, [input.id], true);
-              recordedAny = true;
-            }
             const resumeKey = userStateEntityKey({ kind: "resume", work });
             const [hasResumeState] =
               current.lastReadAt !== null
@@ -1543,6 +1531,7 @@ export function createContentSyncIpcHandler(
               `UPDATE user_state_record
                SET deferred_reason='missing-work',deferred_detail=NULL
                WHERE applied_revision>=revision AND deferred_reason IS NULL
+                 AND COALESCE(json_extract(payload,'$.entity.kind'),'')<>'library'
                  AND json_extract(payload,'$.entity.work.pluginId')=$1
                  AND (json_extract(payload,'$.entity.work.novelPath')=$3
                    OR ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))`,
@@ -1646,6 +1635,19 @@ export function createContentSyncIpcHandler(
             "SELECT id FROM chapter WHERE novel_id=$1",
             [input.id],
           );
+          const [exclusionTable] = await db.select<{ name: string }[]>(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='chapter_download_goal_exclusion'",
+          );
+          if (exclusionTable) {
+            await db.execute(
+              `INSERT INTO chapter_download_goal_exclusion (chapter_id, created_at)
+               SELECT id, unixepoch() FROM chapter
+               WHERE novel_id=$1
+                 AND (is_downloaded=1 OR content_bytes>0 OR media_bytes>0 OR media_repair_needed=1)
+               ON CONFLICT(chapter_id) DO NOTHING`,
+              [input.id],
+            );
+          }
           await db.execute(
             `UPDATE chapter SET is_downloaded=0,content_bytes=0,media_bytes=0,media_repair_needed=0,
              media_bytes_checked_at=NULL,updated_at=unixepoch() WHERE novel_id=$1`,

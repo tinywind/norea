@@ -29,7 +29,7 @@ use super::tx::{with_write_tx, MetadataRoot, TxContext, TxOptions};
 use super::user_state::{
     core::{
         has_user_state_schema_in_tx, record_chapters_in_tx, record_composition_in_tx,
-        record_library_in_tx, record_membership_in_tx, record_public_novel_reading_in_tx,
+        record_membership_in_tx, record_public_novel_reading_in_tx,
     },
     defer_user_state_for_novel_in_tx,
     migration::{remap_pending_user_state_in_tx, transfer_settled_novel_merge_resume_in_tx},
@@ -2020,8 +2020,6 @@ pub async fn apply_novel_merge_in_tx(
         {
             preferred_last_read_chapter_id = settled_resume.chapter_id;
         }
-        record_library_in_tx(conn, ctx, Some(&[input.source_novel_id]), true).await?;
-        record_library_in_tx(conn, ctx, Some(&[input.target_novel_id]), false).await?;
         record_public_novel_reading_in_tx(conn, ctx, &[input.target_novel_id], false).await?;
         if has_user_state_schema_in_tx(conn).await? {
             let target_ids: Vec<i64> =

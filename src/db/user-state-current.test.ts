@@ -482,7 +482,7 @@ describe("bulk current personal state", () => {
     expect(active.sql.prepare("SELECT progress FROM chapter").get()).toEqual({ progress: 0 });
     await expect(applyUserStateCurrentSnapshot(binding, snapshot([reading("/chapter/1", 10), reading("/chapter/1", 80)]))).rejects.toThrow("duplicate");
     const conflict = { ...work, sourceNovelId: "different" };
-    const result = await applyUserStateCurrentSnapshot(binding, snapshot([{ entity: { kind: "library", work: conflict }, value: { inLibrary: true, addedAt: null } }]));
+    const result = await applyUserStateCurrentSnapshot(binding, snapshot([{ entity: { kind: "reading", work: conflict, chapter: { chapterPath: "/chapter/1" } }, value: { progress: 50, unread: false, readAt: 10 } }]));
     expect(result.missingMetadataCount).toBe(1);
     expect(active.sql.prepare("SELECT source_novel_id,in_library FROM novel").get()).toEqual({ source_novel_id: "book", in_library: 0 });
   });
@@ -496,23 +496,23 @@ describe("bulk current personal state", () => {
     }));
     const exported = await exportUserStateCurrentSnapshot(binding);
     expect(exported.items.filter(item => "work" in item.entity)).toEqual([]);
-    active.sql.exec("DELETE FROM novel");
-    const retired = snapshot([{ entity: { kind: "library", work }, value: { inLibrary: true, addedAt: 10 } }, reading("/chapter/1", 65)]);
+    active.sql.exec("UPDATE chapter SET progress=0, bookmark=0");
+    const retired = snapshot([reading("/chapter/1", 65), { entity: { kind: "bookmark", work, chapter: { chapterPath: "/chapter/1" } }, value: { bookmarked: true } }]);
     const held = await applyUserStateCurrentSnapshot(binding, retired);
     expect(held.missingMetadataCount).toBe(2);
-    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM novel").get()).toEqual({ count: 0 });
+    expect(active.sql.prepare("SELECT progress,bookmark FROM chapter WHERE id=11").get()).toEqual({ progress: 0, bookmark: 0 });
     const otherBinding = { ...binding, serverUrl: "https://another.example" };
     setUserStateCurrentServer(otherBinding.serverUrl);
     await bindUserStateCurrentWorkspace(otherBinding);
     await applyUserStateCurrentSnapshot(otherBinding, retired);
-    expect(active.sql.prepare("SELECT source_novel_id FROM novel").get()).toEqual({ source_novel_id: "book" });
-    active.sql.exec("DELETE FROM novel");
+    expect(active.sql.prepare("SELECT progress,bookmark FROM chapter WHERE id=11").get()).toEqual({ progress: 65, bookmark: 1 });
+    active.sql.exec("UPDATE chapter SET progress=0, bookmark=0");
     setUserStateCurrentServer(binding.serverUrl);
     active.sql.prepare("INSERT INTO content_sync_cache(cache_key,payload) VALUES(?,?)").run("norea-content-incoming-migration:revocation", JSON.stringify({
       operationId: "modern-operation", serverUrl: binding.serverUrl, source, status: "inactive", lineage: { legacyOperationId: "old-operation" },
     }));
     await applyUserStateCurrentSnapshot(binding, retired);
-    expect(active.sql.prepare("SELECT source_novel_id FROM novel").get()).toEqual({ source_novel_id: "book" });
+    expect(active.sql.prepare("SELECT progress,bookmark FROM chapter WHERE id=11").get()).toEqual({ progress: 65, bookmark: 1 });
   });
 
   it("preserves raw source order and storage ownership while applying the user's chapter order", async () => {

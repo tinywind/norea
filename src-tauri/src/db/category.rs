@@ -9,7 +9,7 @@ use crate::database::AppDatabase;
 use super::tx::{with_write_tx, MetadataRoot, TxContext, TxOptions};
 use super::user_state::core::{
     has_user_state_schema_in_tx, record_category_in_tx, record_chapter_unread_flags_in_tx,
-    record_cleared_reading_progress_in_tx, record_library_in_tx, record_membership_in_tx,
+    record_cleared_reading_progress_in_tx, record_membership_in_tx,
     snapshot_reading_progress_clear_targets_in_tx, stable_category_id_in_tx, RecordCategoryOptions,
 };
 use super::{DbMutationEffects, DbMutationEnvelope, ReadMode};
@@ -482,7 +482,7 @@ pub async fn set_novel_categories_in_tx(
 
 pub async fn clear_library_membership_in_tx(
     conn: &mut SqliteConnection,
-    ctx: &mut TxContext,
+    _ctx: &mut TxContext,
 ) -> Result<MaintenanceResultDto, String> {
     sqlx::query(
         "DELETE FROM novel_download_goal WHERE novel_id IN (SELECT id FROM novel WHERE in_library = 1)",
@@ -500,7 +500,6 @@ pub async fn clear_library_membership_in_tx(
     .await
     .map_err(|err| format!("db maintenance: clear library membership: {err}"))?;
 
-    record_library_in_tx(conn, ctx, None, false).await?;
     Ok(MaintenanceResultDto {
         rows_affected: res.rows_affected(),
     })

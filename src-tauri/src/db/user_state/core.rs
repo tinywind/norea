@@ -825,70 +825,6 @@ pub async fn record_cleared_reading_progress_in_tx(
     Ok(())
 }
 
-pub async fn record_library_in_tx(
-    conn: &mut SqliteConnection,
-    ctx: &mut TxContext,
-    novel_ids: Option<&[i64]>,
-    removed: bool,
-) -> Result<(), String> {
-    if !has_user_state_schema_in_tx(conn).await? {
-        return Ok(());
-    }
-    if novel_ids.is_some_and(|ids| ids.is_empty()) {
-        return Ok(());
-    }
-    let batches: Vec<Option<&[i64]>> = match novel_ids {
-        Some(ids) => ids.chunks(400).map(Some).collect(),
-        None => vec![None],
-    };
-    for batch in batches {
-        let rows = match batch {
-            Some(ids) => {
-                let placeholders: Vec<String> = (1..=ids.len()).map(|i| format!("?{i}")).collect();
-                let sql = format!(
-                    "SELECT plugin_id, source_novel_id, path, name, in_library, library_added_at \
-                     FROM novel WHERE id IN ({}) AND plugin_id <> 'local' AND is_local = 0",
-                    placeholders.join(",")
-                );
-                let mut q = sqlx::query(&sql);
-                for id in ids {
-                    q = q.bind(*id);
-                }
-                q.fetch_all(&mut *conn)
-                    .await
-                    .map_err(|err| format!("db user state: load library works: {err}"))?
-            }
-            None => sqlx::query(
-                "SELECT plugin_id, source_novel_id, path, name, in_library, library_added_at \
-                 FROM novel WHERE plugin_id <> 'local' AND is_local = 0",
-            )
-            .fetch_all(&mut *conn)
-            .await
-            .map_err(|err| format!("db user state: load all library works: {err}"))?,
-        };
-        let mut entries = Vec::with_capacity(rows.len());
-        for r in rows {
-            let work = UserStateWorkReferenceDto {
-                plugin_id: r.get("plugin_id"),
-                source_novel_id: non_empty_source_id(r.get("source_novel_id")),
-                novel_path: r.get("path"),
-                name: r.get("name"),
-            };
-            let in_lib: i64 = r.get("in_library");
-            let added_at: Option<i64> = r.get("library_added_at");
-            entries.push((
-                json!({ "kind": "library", "work": serde_json::to_value(work).unwrap() }),
-                json!({
-                    "inLibrary": if removed { false } else { in_lib != 0 },
-                    "addedAt": if removed { None } else { added_at },
-                }),
-            ));
-        }
-        record_user_state_changes_in_tx(conn, ctx, &entries, false).await?;
-    }
-    Ok(())
-}
-
 pub async fn stable_category_id_in_tx(
     conn: &mut SqliteConnection,
     id: i64,
@@ -1257,33 +1193,23 @@ pub async fn seed_user_state_with_options_in_tx(
     promote_private_work_identities_in_tx(conn).await?;
 
     let novels = sqlx::query(
-        "SELECT id, plugin_id, source_novel_id, path, name, in_library, library_added_at \
+        "SELECT id, plugin_id, source_novel_id, path, name \
          FROM novel WHERE plugin_id <> 'local' AND is_local = 0",
     )
     .fetch_all(&mut *conn)
     .await
     .map_err(|err| format!("db user state: seed load novels: {err}"))?;
-    let mut lib_entries = Vec::new();
     let mut novel_works = Vec::with_capacity(novels.len());
     for r in novels {
         let id: i64 = r.get("id");
-        let in_lib: i64 = r.get("in_library");
-        let added_at: Option<i64> = r.get("library_added_at");
         let work = UserStateWorkReferenceDto {
             plugin_id: r.get("plugin_id"),
             source_novel_id: non_empty_source_id(r.get("source_novel_id")),
             novel_path: r.get("path"),
             name: r.get("name"),
         };
-        if in_lib != 0 {
-            lib_entries.push((
-                json!({ "kind": "library", "work": serde_json::to_value(&work).unwrap() }),
-                json!({ "inLibrary": true, "addedAt": added_at }),
-            ));
-        }
         novel_works.push((id, work));
     }
-    record_user_state_changes_in_tx(conn, ctx, &lib_entries, true).await?;
 
     let composed_ids: HashSet<i64> = sqlx::query_scalar::<_, i64>(
         "SELECT novel_id FROM novel_chapter_composition",

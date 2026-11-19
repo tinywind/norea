@@ -99,7 +99,7 @@ it("lists the stored chapters a device download deletion removes, skipping local
   expect(await listDeletionDownloadedChapterIds([])).toEqual([]);
 });
 
-it("records library, category, resume, and public chapter user-state removals when requested", async () => {
+it("records category, resume, and public chapter user-state removals without sharing library membership", async () => {
   const registration = readFileSync("src-tauri/src/database.rs", "utf8");
   for (const match of registration.matchAll(/version:\s*(\d+),\s*description:[\s\S]*?sql:\s*include_str!\("([^"]+)"\)/g)) {
     if (Number(match[1]) > 1) sqlite.exec(readFileSync(`src-tauri/src/${match[2]}`, "utf8"));
@@ -128,10 +128,6 @@ it("records library, category, resume, and public chapter user-state removals wh
       value: { included: false },
     },
     {
-      entity: { kind: "library", work: { name: "Book", novelPath: "/book", pluginId: "source", sourceNovelId: "42" } },
-      value: { addedAt: null, inLibrary: false },
-    },
-    {
       entity: { kind: "resume", work: { name: "Book", novelPath: "/book", pluginId: "source", sourceNovelId: "42" } },
       value: { anchor: null, chapter: null, openedAt: null },
     },
@@ -144,6 +140,22 @@ it("records library, category, resume, and public chapter user-state removals wh
       value: { bookmarked: false },
     },
   ]);
+});
+
+it("excludes cleared downloaded chapters from automatic download goals so re-adding does not re-download them", async () => {
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0005_novel_download_goals.sql", "utf8"));
+  sqlite.exec(readFileSync("src-tauri/src/migrations/0006_download_goal_opt_out.sql", "utf8"));
+  sqlite.exec(`
+    UPDATE chapter SET is_downloaded=1, content_bytes=120 WHERE id=91;
+    INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,content_bytes) VALUES
+      (93,12,'/ch/2','Two',2,0,0),
+      (94,12,'/ch/3','Three',3,0,50);
+  `);
+  await clearNovelDownloadFiles(identity, async () => undefined);
+  expect(
+    sqlite.prepare("SELECT chapter_id AS chapterId FROM chapter_download_goal_exclusion ORDER BY chapter_id").all(),
+  ).toEqual([{ chapterId: 91 }, { chapterId: 94 }]);
+  expect(sqlite.prepare("SELECT is_downloaded,content_bytes FROM chapter WHERE id=91").get()).toEqual({ is_downloaded: 0, content_bytes: 0 });
 });
 
 

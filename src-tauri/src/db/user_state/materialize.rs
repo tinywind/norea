@@ -644,22 +644,8 @@ pub fn materialize_user_state_record_with_options_in_tx<'a>(
 
         match kind {
             "library" => {
-                let in_library = record.value["inLibrary"].as_bool().unwrap_or(false);
-                let added_at = record.value.get("addedAt").and_then(JsonValue::as_i64);
-                sqlx::query("UPDATE novel SET in_library = ?2, library_added_at = ?3 WHERE id = ?1")
-                    .bind(work.id)
-                    .bind(if in_library { 1_i64 } else { 0_i64 })
-                    .bind(if in_library { added_at } else { None })
-                    .execute(&mut *conn)
-                    .await
-                    .map_err(|err| format!("db user state: project library: {err}"))?;
-                if !in_library {
-                    sqlx::query("DELETE FROM novel_download_goal WHERE novel_id = ?1")
-                        .bind(work.id)
-                        .execute(&mut *conn)
-                        .await
-                        .map_err(|err| format!("db user state: delete download goal: {err}"))?;
-                }
+                // Library membership is strictly device-local; historical remote library records
+                // must never add or remove works on this device.
             }
             "membership" => {
                 let included = record.value["included"].as_bool().unwrap_or(false);
@@ -991,6 +977,7 @@ pub async fn defer_user_state_for_novel_in_tx(
         let reopened = sqlx::query(
             "UPDATE user_state_record SET applied_revision = 0, deferred_reason = NULL, deferred_detail = NULL \
              WHERE deferred_reason IS NOT NULL \
+               AND COALESCE(json_extract(payload, '$.entity.kind'), '') <> 'library' \
                AND json_extract(payload, '$.entity.work.pluginId') = ?1 \
                AND (json_extract(payload, '$.entity.work.novelPath') = ?3 \
                     OR (?2 IS NOT NULL AND lower(json_extract(payload, '$.entity.work.sourceNovelId')) = lower(?2)))",
@@ -1007,6 +994,7 @@ pub async fn defer_user_state_for_novel_in_tx(
             sqlx::query_scalar::<_, i64>(
                 "SELECT 1 FROM user_state_record \
                  WHERE applied_revision < revision \
+                   AND COALESCE(json_extract(payload, '$.entity.kind'), '') <> 'library' \
                    AND json_extract(payload, '$.entity.work.pluginId') = ?1 \
                    AND (json_extract(payload, '$.entity.work.novelPath') = ?3 \
                         OR (?2 IS NOT NULL AND lower(json_extract(payload, '$.entity.work.sourceNovelId')) = lower(?2))) \

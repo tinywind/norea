@@ -17,7 +17,6 @@ import {
   hasUserStateSchema,
   recordChaptersInDb,
   recordCompositionInDb,
-  recordLibraryInDb,
   recordMembershipInDb,
   recordPublicNovelReadingInDb,
 } from "./sql/user-state-core";
@@ -740,8 +739,6 @@ async function applyNovelMergeTx(
       Boolean(explicitResume),
     );
     if (settledResume) preferredLastReadChapterId = settledResume.chapterId;
-    await recordLibraryInDb(db, [sourceNovelId], true);
-    await recordLibraryInDb(db, [targetNovelId]);
     await recordPublicNovelReadingInDb(db, [targetNovelId]);
     if (await hasUserStateSchema(db)) {
       const targetIds = await db.select<{ id: number }[]>(

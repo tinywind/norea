@@ -13,7 +13,7 @@ use crate::db::ReadMode;
 use super::core::{
     load_user_chapter_rows_by_ids_in_tx, map_user_chapter_row, mark_private_chapter_progress_in_tx,
     populate_user_chapter_composition_ids_in_tx, promote_private_work_identities_in_tx,
-    record_chapter_rows_in_tx, record_library_in_tx, record_user_state_changes_in_tx,
+    record_chapter_rows_in_tx, record_user_state_changes_in_tx,
     USER_CHAPTER_SELECT,
 };
 use super::current::{
@@ -357,7 +357,8 @@ async fn prelink_edits_become_soft_seeds_and_project_shared_deletions_preserving
     .unwrap()
     .value;
 
-    assert_eq!(baseline.len(), 5);
+    assert_eq!(baseline.len(), 4);
+    assert!(baseline.iter().all(|op| op["entity"]["kind"] != json!("library")));
     assert!(baseline
         .iter()
         .all(|op| op["seed"] == json!(true) && op["baseRevision"] == json!(0)));
@@ -414,7 +415,7 @@ async fn prelink_edits_become_soft_seeds_and_project_shared_deletions_preserving
         .await
         .unwrap();
     drop(read_conn);
-    assert_eq!(status_before.projection_pending, 5);
+    assert_eq!(status_before.projection_pending, 4);
 
     let b4 = binding.clone();
     let proj_opts = TxOptions {
@@ -445,7 +446,7 @@ async fn prelink_edits_become_soft_seeds_and_project_shared_deletions_preserving
         .fetch_one(pool)
         .await
         .unwrap();
-    assert_eq!(in_lib, 0);
+    assert_eq!(in_lib, 1);
 
     let cat_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM category WHERE id = 80")
         .fetch_one(pool)
@@ -825,7 +826,7 @@ async fn current_snapshot_exports_applies_and_retries_deferred_metadata() {
     .value;
 
     let items = exported["items"].as_array().unwrap();
-    assert!(items.iter().any(|i| i["entity"]["kind"] == "library"));
+    assert!(items.iter().all(|i| i["entity"]["kind"] != "library"));
     assert!(items.iter().any(|i| i["entity"]["kind"] == "reading"));
     assert!(items.iter().any(|i| i["entity"]["kind"] == "bookmark"));
     assert!(items.iter().any(|i| {
@@ -833,7 +834,7 @@ async fn current_snapshot_exports_applies_and_retries_deferred_metadata() {
             && i["entity"]["categoryId"] == json!(current_category_id("Completed"))
     }));
 
-    // Apply onto an empty peer DB where chapter /chapter/1 does not exist yet -> missingMetadataCount > 0
+    // Apply onto an empty peer DB where the work and chapter do not exist yet -> missingMetadataCount > 0
     let peer_db = open_test_db().await;
     let peer_pool = peer_db.db.pool_for(ReadMode::Queued);
     let pb1 = binding.clone();
@@ -856,13 +857,20 @@ async fn current_snapshot_exports_applies_and_retries_deferred_metadata() {
     .value;
     assert!(applied.changed);
     assert!(applied.missing_metadata_count > 0);
+    let inserted_novels: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM novel")
+        .fetch_one(peer_pool)
+        .await
+        .unwrap();
+    assert_eq!(inserted_novels, 0);
 
-    // Insert the missing chapter on peer DB and run deferred retry
-    let peer_novel_id: i64 =
-        sqlx::query_scalar("SELECT id FROM novel WHERE plugin_id = 'source' AND source_novel_id = 'book'")
-            .fetch_one(peer_pool)
-            .await
-            .unwrap();
+    // Insert the missing work (not in library) and chapter on peer DB and run deferred retry
+    let peer_novel_id: i64 = sqlx::query_scalar(
+        "INSERT INTO novel(plugin_id, source_novel_id, path, name, in_library) \
+         VALUES ('source', 'book', '/book', 'Book', 0) RETURNING id",
+    )
+    .fetch_one(peer_pool)
+    .await
+    .unwrap();
     sqlx::query(
         "INSERT INTO chapter(novel_id, path, name, chapter_number, position) \
          VALUES (?1, '/chapter/1', 'One', '1', 1)",
@@ -1019,7 +1027,7 @@ async fn bulk_projection_skips_missing_works_applies_pre_download_stored_progres
     .fetch_one(pool)
     .await
     .unwrap();
-    assert_eq!(row.get::<i64, _>("in_library"), 1);
+    assert_eq!(row.get::<i64, _>("in_library"), 0);
     assert_eq!(row.get::<Option<i64>, _>("last_read_at"), Some(250));
     assert_eq!(row.get::<f64, _>("progress"), 64.0);
     assert_eq!(row.get::<i64, _>("unread"), 0);
@@ -1570,7 +1578,7 @@ async fn defer_user_state_for_novel_reopens_only_deferred_records() {
     assert_eq!(
         states().await,
         vec![
-            (1, 1, Some("missing-work".to_string())),
+            (1, 1, None),
             (2, 2, Some("missing-work".to_string())),
             (3, 3, Some("missing-work".to_string())),
         ]
@@ -1606,7 +1614,7 @@ async fn defer_user_state_for_novel_reopens_only_deferred_records() {
     assert!(restore_env.effects.user_state_deferred_ready);
     assert_eq!(
         states().await,
-        vec![(1, 0, None), (2, 0, None), (3, 0, None)]
+        vec![(1, 1, None), (2, 0, None), (3, 0, None)]
     );
 
     let b5 = binding.clone();
@@ -1622,7 +1630,7 @@ async fn defer_user_state_for_novel_reopens_only_deferred_records() {
         .fetch_one(pool)
         .await
         .unwrap();
-    assert_eq!(in_library, 1);
+    assert_eq!(in_library, 0);
     let recovered_progress: Vec<(i64, f64)> = sqlx::query(
         "SELECT id, CAST(progress AS REAL) AS progress FROM chapter WHERE novel_id = 1 ORDER BY id",
     )
@@ -3765,7 +3773,6 @@ async fn refresh_and_materialize_normalize_empty_and_whitespace_source_novel_ids
 
     with_write_tx(pool, opts.clone(), |conn, ctx| {
         Box::pin(async move {
-            record_library_in_tx(conn, ctx, Some(&[1, 2]), false).await?;
             let rows = load_user_chapter_rows_by_ids_in_tx(conn, &[11, 21]).await?;
             record_chapter_rows_in_tx(conn, ctx, &rows, "reading", false).await
         })
@@ -3788,7 +3795,7 @@ async fn refresh_and_materialize_normalize_empty_and_whitespace_source_novel_ids
             .fetch_all(pool)
             .await
             .unwrap();
-    assert_eq!(intent_entities.len(), 4);
+    assert_eq!(intent_entities.len(), 2);
     for raw in &intent_entities {
         let entity: JsonValue = serde_json::from_str(raw).unwrap();
         assert!(
@@ -3834,7 +3841,7 @@ async fn refresh_and_materialize_normalize_empty_and_whitespace_source_novel_ids
     .await
     .unwrap()
     .value;
-    assert_eq!(ops.len(), 4);
+    assert_eq!(ops.len(), 2);
     for op in &ops {
         assert!(op["entity"]["work"]["sourceNovelId"].is_null());
     }
@@ -3890,4 +3897,188 @@ async fn refresh_and_materialize_normalize_empty_and_whitespace_source_novel_ids
     })
     .await
     .unwrap();
+}
+
+#[tokio::test]
+async fn library_membership_stays_device_local_and_purges_legacy_library_intents() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    seed_sample_work(pool).await;
+    sqlx::query("UPDATE novel SET in_library = 1, library_added_at = 100 WHERE id = 1")
+        .execute(pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "INSERT INTO novel_download_goal(novel_id, kind, count, updated_at) VALUES (1, 'keep_ahead', 5, 100)",
+    )
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let work = sample_work();
+    let library_ent = json!({ "kind": "library", "work": work });
+    let library_key = super::types::user_state_entity_key(&library_ent).unwrap();
+    let binding = sample_binding();
+    let ns = super::types::namespace_for(&binding);
+
+    // Seed legacy pre-upgrade library intent, operation, and conflict rows.
+    sqlx::query(
+        "INSERT INTO user_state_intent(sequence, entity_key, entity_json, value_json, seed) \
+         VALUES (1, ?1, ?2, ?3, 0)",
+    )
+    .bind(&library_key)
+    .bind(library_ent.to_string())
+    .bind(r#"{"inLibrary":false,"addedAt":null}"#)
+    .execute(pool)
+    .await
+    .unwrap();
+
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    // Unlinked status must ignore pre-upgrade library intents.
+    let mut read_conn = pool.acquire().await.unwrap();
+    let unlinked = get_user_state_ledger_status_in_tx(&mut read_conn, None)
+        .await
+        .unwrap();
+    drop(read_conn);
+    assert_eq!(unlinked.pending, 0);
+
+    // Binding purges legacy library intents and does not seed library entries.
+    let b1 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    let intent_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_intent")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(intent_count, 0);
+
+    // Remote library removal must not remove this device's work or clear its download goal.
+    let remove_page = json!({
+        "version": 1,
+        "workspaceId": binding.workspace_id,
+        "epoch": binding.epoch,
+        "headRevision": 1,
+        "through": 1,
+        "nextCursor": 1,
+        "hasMore": false,
+        "records": [shared_record(library_ent.clone(), json!({ "inLibrary": false, "addedAt": null }), 1, "op-rm")],
+    });
+    let b2 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { apply_user_state_read_page_in_tx(conn, ctx, &b2, &remove_page).await })
+    })
+    .await
+    .unwrap();
+    let b3 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            project_pending_user_state_in_tx(None, conn, ctx, &b3, &HashSet::new()).await
+        })
+    })
+    .await
+    .unwrap();
+    let lib_after_rm: (i64, Option<i64>) =
+        sqlx::query_as("SELECT in_library, library_added_at FROM novel WHERE id = 1")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(lib_after_rm, (1, Some(100)));
+    let goal_after_rm: Option<(String, Option<i64>)> =
+        sqlx::query_as("SELECT kind, count FROM novel_download_goal WHERE novel_id = 1")
+            .fetch_optional(pool)
+            .await
+            .unwrap();
+    assert_eq!(goal_after_rm, Some(("keep_ahead".to_string(), Some(5))));
+
+    // Snapshot GC of a retired library record must not remove the work from this device's library.
+    let b4 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move {
+            reconcile_user_state_snapshot_in_tx(
+                None,
+                conn,
+                ctx,
+                &b4,
+                &[],
+                2,
+                Some(true),
+                None,
+                &HashSet::new(),
+            )
+            .await
+        })
+    })
+    .await
+    .unwrap();
+    let lib_after_gc: i64 = sqlx::query_scalar("SELECT in_library FROM novel WHERE id = 1")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(lib_after_gc, 1);
+
+    // Local removal emits no library intent, and remote library addition must not re-add it.
+    with_write_tx(pool, opts.clone(), |conn, ctx| {
+        Box::pin(async move {
+            crate::db::novel::set_novel_in_library_in_tx(conn, ctx, 1, false).await
+        })
+    })
+    .await
+    .unwrap();
+    let intent_after_local_rm: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_intent")
+        .fetch_one(pool)
+        .await
+        .unwrap();
+    assert_eq!(intent_after_local_rm, 0);
+
+    let add_page = json!({
+        "version": 1,
+        "workspaceId": binding.workspace_id,
+        "epoch": binding.epoch,
+        "headRevision": 3,
+        "through": 3,
+        "nextCursor": 3,
+        "hasMore": false,
+        "records": [shared_record(library_ent, json!({ "inLibrary": true, "addedAt": 200 }), 3, "op-add")],
+    });
+    let b5 = binding.clone();
+    with_write_tx(pool, opts.clone(), move |conn, ctx| {
+        Box::pin(async move { apply_user_state_read_page_in_tx(conn, ctx, &b5, &add_page).await })
+    })
+    .await
+    .unwrap();
+    let b6 = binding.clone();
+    with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move {
+            project_pending_user_state_in_tx(None, conn, ctx, &b6, &HashSet::new()).await
+        })
+    })
+    .await
+    .unwrap();
+    let lib_after_add: (i64, Option<i64>) =
+        sqlx::query_as("SELECT in_library, library_added_at FROM novel WHERE id = 1")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+    assert_eq!(lib_after_add, (0, None));
+
+    // Verify stored remote library record is settled with no deferred reason.
+    let rec_state: (i64, i64, Option<String>) = sqlx::query_as(
+        "SELECT revision, applied_revision, deferred_reason FROM user_state_record \
+         WHERE namespace = ?1 AND entity_key = ?2",
+    )
+    .bind(&ns)
+    .bind(&library_key)
+    .fetch_one(pool)
+    .await
+    .unwrap();
+    assert_eq!(rec_state, (3, 3, None));
 }

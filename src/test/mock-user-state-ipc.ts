@@ -29,7 +29,6 @@ import {
   recordCategoryInDb,
   recordChapterUnreadFlagsInDb,
   recordClearedReadingProgressInDb,
-  recordLibraryInDb,
   recordMembershipInDb,
   recordResumeClearedInDb,
   recordUserStateChangesInDb,
@@ -249,7 +248,7 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
           return { handled: true, result: status };
         }
         const [row] = await db.select<{ pending: number }[]>(
-          "SELECT COUNT(*) AS pending FROM user_state_intent WHERE COALESCE(json_extract(entity_json,'$.work.pluginId'),'')<>'local'",
+          "SELECT COUNT(*) AS pending FROM user_state_intent WHERE COALESCE(json_extract(entity_json,'$.kind'),'')<>'library' AND COALESCE(json_extract(entity_json,'$.work.pluginId'),'')<>'local'",
         );
         const status: UserStateLedgerStatus = {
           cursor: 0,
@@ -435,7 +434,7 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
             "UPDATE user_state_restore_state SET paused=0 WHERE id=1",
           );
           await db.execute(
-            "UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL",
+            "UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE COALESCE(json_extract(payload,'$.entity.kind'),'')<>'library'",
           );
         });
         return {
@@ -771,14 +770,13 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
              SET in_library = 0, library_added_at = NULL, updated_at = unixepoch()
              WHERE in_library = 1 OR library_added_at IS NOT NULL`,
           );
-          await recordLibraryInDb(db);
           return result.rowsAffected;
         });
         return {
           handled: true,
           result: {
             value: { rowsAffected },
-            effects: { userStatePriority: "normal", userStateLedgerChanged: true },
+            effects: {},
           } satisfies DbMutationEnvelope<{ rowsAffected: number }>,
         };
       }
@@ -863,13 +861,12 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
           } else {
             await db.execute("DELETE FROM novel_download_goal WHERE novel_id = $1", [id]);
           }
-          await recordLibraryInDb(db, [id]);
         }, false);
         return {
           handled: true,
           result: {
             value: null,
-            effects: { userStatePriority: "normal", userStateLedgerChanged: true },
+            effects: {},
           } satisfies DbMutationEnvelope<null>,
         };
       }

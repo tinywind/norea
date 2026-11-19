@@ -100,7 +100,7 @@ struct StoredRecordRow {
 const LOCAL_OR_COMPOSITION_KEY_RANGES: [(&str, &str); 6] = [
     (r#"["bookmark","[\"local","#, r#"["bookmark","[\"local\"-"#),
     (r#"["composition","#, r#"["composition"-"#),
-    (r#"["library","[\"local","#, r#"["library","[\"local\"-"#),
+    (r#"["library","#, r#"["library"-"#),
     (r#"["membership","[\"local","#, r#"["membership","[\"local\"-"#),
     (r#"["reading","[\"local","#, r#"["reading","[\"local\"-"#),
     (r#"["resume","[\"local","#, r#"["resume","[\"local\"-"#),
@@ -164,9 +164,11 @@ pub async fn purge_and_settle_local_user_state_in_tx(
     sqlx::query(
         r#"DELETE FROM user_state_operation
          WHERE (instr(entity_key, '[\"local\",') > 0
+                OR (entity_key >= '["library",' AND entity_key < '["library"-')
                 OR (entity_key >= '["composition",' AND entity_key < '["composition"-'))
            AND (
-             json_extract(payload, '$.entity.work.pluginId') = 'local'
+             json_extract(payload, '$.entity.kind') = 'library'
+             OR json_extract(payload, '$.entity.work.pluginId') = 'local'
              OR (json_extract(payload, '$.entity.kind') = 'composition'
                  AND EXISTS (
                    SELECT 1 FROM json_each(payload, '$.value.composition.entries') e,
@@ -185,7 +187,8 @@ pub async fn purge_and_settle_local_user_state_in_tx(
             format!(
                 "SELECT entity_key FROM user_state_intent \
                  WHERE entity_key >= ?{} AND entity_key < ?{} \
-                   AND (json_extract(entity_json, '$.work.pluginId') = 'local' \
+                   AND (json_extract(entity_json, '$.kind') = 'library' \
+                        OR json_extract(entity_json, '$.work.pluginId') = 'local' \
                         OR (json_extract(entity_json, '$.kind') = 'composition' \
                             AND EXISTS ( \
                               SELECT 1 FROM json_each(value_json, '$.composition.entries') e, \
@@ -249,7 +252,8 @@ pub async fn purge_and_settle_local_user_state_in_tx(
                        AND entity_key >= ?{} AND entity_key < ?{} \
                        AND (applied_revision < revision OR deferred_reason IS NOT NULL) \
                        AND ( \
-                         json_extract(payload, '$.entity.work.pluginId') = 'local' \
+                         json_extract(payload, '$.entity.kind') = 'library' \
+                         OR json_extract(payload, '$.entity.work.pluginId') = 'local' \
                          OR (json_extract(payload, '$.entity.kind') = 'composition' \
                              AND EXISTS ( \
                                SELECT 1 FROM json_each(payload, '$.value.composition.entries') e, \
@@ -1554,7 +1558,8 @@ pub async fn get_user_state_ledger_status_in_tx(
         }
         let pending: i64 = sqlx::query_scalar(
             "SELECT COUNT(*) FROM user_state_intent \
-             WHERE COALESCE(json_extract(entity_json, '$.work.pluginId'), '') <> 'local'",
+             WHERE COALESCE(json_extract(entity_json, '$.kind'), '') <> 'library' \
+               AND COALESCE(json_extract(entity_json, '$.work.pluginId'), '') <> 'local'",
         )
         .fetch_one(&mut *conn)
         .await
@@ -1577,6 +1582,7 @@ pub async fn get_user_state_ledger_status_in_tx(
         "SELECT COUNT(*) FROM user_state_intent i \
          JOIN user_state_progress p ON p.entity_key = i.entity_key \
          WHERE p.namespace = ?1 AND i.sequence > p.acknowledged_sequence \
+           AND COALESCE(json_extract(i.entity_json, '$.kind'), '') <> 'library' \
            AND COALESCE(json_extract(i.entity_json, '$.work.pluginId'), '') <> 'local'",
     )
     .bind(&workspace.namespace)
@@ -1588,6 +1594,7 @@ pub async fn get_user_state_ledger_status_in_tx(
         "SELECT COUNT(*) FROM user_state_intent i \
          JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
          WHERE i.sequence > p.acknowledged_sequence \
+           AND COALESCE(json_extract(i.entity_json, '$.kind'), '') <> 'library' \
            AND COALESCE(json_extract(i.entity_json, '$.work.pluginId'), '') <> 'local' \
            AND ((json_type(i.entity_json, '$.work') = 'object' \
                  AND json_extract(i.entity_json, '$.work.sourceNovelId') IS NULL) \
@@ -1605,6 +1612,7 @@ pub async fn get_user_state_ledger_status_in_tx(
         "SELECT i.entity_json FROM user_state_intent i \
          JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
          WHERE i.seed = 0 AND p.base_revision <> ?2 AND i.sequence > p.acknowledged_sequence \
+           AND COALESCE(json_extract(i.entity_json, '$.kind'), '') <> 'library' \
            AND COALESCE(json_extract(i.entity_json, '$.work.pluginId'), '') <> 'local'",
     )
     .bind(&workspace.namespace)
@@ -1646,7 +1654,7 @@ pub async fn get_user_state_ledger_status_in_tx(
     for r in proj_rows {
         let kind: Option<String> = r.get("kind");
         let plugin_id: Option<String> = r.get("plugin_id");
-        if plugin_id.as_deref() == Some("local") {
+        if kind.as_deref() == Some("library") || plugin_id.as_deref() == Some("local") {
             continue;
         }
         let novel_id: Option<String> = r.get("novel_id");
@@ -2092,7 +2100,7 @@ pub async fn project_pending_user_state_bounded_in_tx(
         let novel_path: Option<String> = row.get("novel_path");
         let category_id: Option<String> = row.get("category_id");
 
-        if plugin_id.as_deref() == Some("local") {
+        if kind_str == "library" || plugin_id.as_deref() == Some("local") {
             local_targets.push((key, revision));
             continue;
         }
@@ -2570,7 +2578,6 @@ pub async fn rebind_user_state_workspace_in_tx(
 
 fn canonical_tombstone_for_entity(entity: &JsonValue, prev_value: &JsonValue) -> Option<JsonValue> {
     match entity.get("kind").and_then(JsonValue::as_str)? {
-        "library" => Some(json!({ "inLibrary": false, "addedAt": null })),
         "category" => {
             let name = prev_value
                 .get("name")

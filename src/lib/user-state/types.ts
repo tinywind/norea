@@ -141,6 +141,9 @@ export function isLocalUserStateEntity(
   entity: UserStateEntity,
   value?: UserStateValue,
 ): boolean {
+  // Library membership is device-local; adding or removing a work on one device
+  // must never mutate another device's library shelf or download goals.
+  if (entity.kind === "library") return true;
   if ("work" in entity && entity.work.pluginId === "local") return true;
   if (
     entity.kind === "composition" &&

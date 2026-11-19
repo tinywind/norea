@@ -308,20 +308,6 @@ export async function recordClearedReadingProgressInDb(db: UserStateDb, targets:
   await recordChapterRowsInDb(db, clearedRows, "reading", false);
   await recordResumeClearedInDb(db, targets.novelIds);
 }
-export async function recordLibraryInDb(db: UserStateDb, novelIds?: readonly number[], removed = false): Promise<void> {
-  if (novelIds && novelIds.length > 400) {
-    for (let start = 0; start < novelIds.length; start += 400) await recordLibraryInDb(db, novelIds.slice(start, start + 400), removed);
-    return;
-  }
-  if (!await hasUserStateSchema(db) || novelIds?.length === 0) return;
-  const rows = await db.select<(UserStateWorkReference & { inLibrary: number; addedAt: number | null })[]>(
-    "SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name,in_library AS inLibrary,library_added_at AS addedAt FROM novel" +
-    (novelIds ? " WHERE plugin_id<>'local' AND is_local=0 AND id IN (" + novelIds.map((_, index) => "$" + (index + 1)).join(",") + ")" : " WHERE plugin_id<>'local' AND is_local=0"), novelIds ? [...novelIds] : []);
-  await recordUserStateChangesInDb(db, rows.map(row => ({
-    entity: { kind: "library", work: { pluginId: row.pluginId, sourceNovelId: nonEmptySourceId(row.sourceNovelId), novelPath: row.novelPath, name: row.name } },
-    value: { inLibrary: removed ? false : !!row.inLibrary, addedAt: removed ? null : row.addedAt },
-  })));
-}
 export async function stableCategoryIdInDb(db: UserStateDb, id: number, create = false): Promise<string | null> {
   if (!await hasUserStateSchema(db)) return null;
   const [existing] = await db.select<{ categoryId: string }[]>("SELECT category_id AS categoryId FROM user_state_category WHERE local_id=$1 ORDER BY rowid LIMIT 1", [id]);
@@ -414,14 +400,11 @@ export async function seedUserStateInDb(
   if (restore?.restored || options.seedAllowed === false) return;
   const seedCutoffMs = options.seedCutoffMs ?? null;
   await promotePrivateWorkIdentitiesInDb(db);
-  const novels = (await db.select<(UserStateWorkReference & { id: number; inLibrary: number; addedAt: number | null })[]>(
-    "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name,in_library AS inLibrary,library_added_at AS addedAt FROM novel WHERE plugin_id<>'local' AND is_local=0"))
+  const novels = (await db.select<(UserStateWorkReference & { id: number })[]>(
+    "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name FROM novel WHERE plugin_id<>'local' AND is_local=0"))
     .map(row => ({ ...row, sourceNovelId: nonEmptySourceId(row.sourceNovelId) }));
-  await recordUserStateChangesInDb(db, novels.filter(row => row.inLibrary).map(({ id: _id, inLibrary: _inLibrary, addedAt, ...work }) => ({
-    entity: { kind: "library", work }, value: { inLibrary: true, addedAt },
-  })), true);
   const composed = new Set((await db.select<{ id: number }[]>("SELECT novel_id AS id FROM novel_chapter_composition")).map(row => row.id));
-  for (const { id, inLibrary: _inLibrary, addedAt: _addedAt, ...work } of novels) {
+  for (const { id, ...work } of novels) {
     if (!composed.has(id)) continue;
     const composition = await getChapterComposition(db, id);
     if (composition) await recordUserStateChangesInDb(db, [{ entity: { kind: "composition", work }, value: { composition } }], true);

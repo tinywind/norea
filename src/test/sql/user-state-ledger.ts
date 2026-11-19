@@ -20,31 +20,36 @@ const USER_STATE_DB_BATCH_BYTES = 8 * 1024 * 1024;
 
 export async function purgeAndSettleLocalUserStateInDb(db: UserStateDb): Promise<void> {
   await db.execute(`DELETE FROM user_state_operation
-    WHERE json_extract(payload,'$.entity.work.pluginId')='local'
+    WHERE json_extract(payload,'$.entity.kind')='library'
+      OR json_extract(payload,'$.entity.work.pluginId')='local'
       OR (json_extract(payload,'$.entity.kind')='composition'
           AND EXISTS (SELECT 1 FROM json_each(payload,'$.value.composition.entries') e,json_each(e.value,'$.sources') s
                       WHERE json_extract(s.value,'$.pluginId')='local'))`);
   await db.execute(`DELETE FROM user_state_conflict WHERE entity_key IN (
     SELECT entity_key FROM user_state_intent
-    WHERE json_extract(entity_json,'$.work.pluginId')='local'
+    WHERE json_extract(entity_json,'$.kind')='library'
+      OR json_extract(entity_json,'$.work.pluginId')='local'
       OR (json_extract(entity_json,'$.kind')='composition'
           AND EXISTS (SELECT 1 FROM json_each(value_json,'$.composition.entries') e,json_each(e.value,'$.sources') s
                       WHERE json_extract(s.value,'$.pluginId')='local')))`);
   await db.execute(`DELETE FROM user_state_progress WHERE entity_key IN (
     SELECT entity_key FROM user_state_intent
-    WHERE json_extract(entity_json,'$.work.pluginId')='local'
+    WHERE json_extract(entity_json,'$.kind')='library'
+      OR json_extract(entity_json,'$.work.pluginId')='local'
       OR (json_extract(entity_json,'$.kind')='composition'
           AND EXISTS (SELECT 1 FROM json_each(value_json,'$.composition.entries') e,json_each(e.value,'$.sources') s
                       WHERE json_extract(s.value,'$.pluginId')='local')))`);
   await db.execute(`DELETE FROM user_state_intent
-    WHERE json_extract(entity_json,'$.work.pluginId')='local'
+    WHERE json_extract(entity_json,'$.kind')='library'
+      OR json_extract(entity_json,'$.work.pluginId')='local'
       OR (json_extract(entity_json,'$.kind')='composition'
           AND EXISTS (SELECT 1 FROM json_each(value_json,'$.composition.entries') e,json_each(e.value,'$.sources') s
                       WHERE json_extract(s.value,'$.pluginId')='local'))`);
   await db.execute(`UPDATE user_state_record
     SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL
     WHERE (applied_revision<revision OR deferred_reason IS NOT NULL)
-      AND (json_extract(payload,'$.entity.work.pluginId')='local'
+      AND (json_extract(payload,'$.entity.kind')='library'
+        OR json_extract(payload,'$.entity.work.pluginId')='local'
         OR (json_extract(payload,'$.entity.kind')='composition'
             AND EXISTS (SELECT 1 FROM json_each(payload,'$.value.composition.entries') e,json_each(e.value,'$.sources') s
                         WHERE json_extract(s.value,'$.pluginId')='local')))`);
@@ -530,16 +535,17 @@ export async function listUserStateDeferredInDb(db: UserStateDb, binding: UserSt
 export async function getUserStateLedgerStatusInDb(db: UserStateDb, binding: UserStateBinding): Promise<UserStateLedgerStatus> {
   const workspace = await requireBinding(db, binding);
   const [count] = await db.select<{ pending: number }[]>(
-    "SELECT COUNT(*) AS pending FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key WHERE p.namespace=$1 AND i.sequence>p.acknowledged_sequence AND COALESCE(json_extract(i.entity_json,'$.work.pluginId'),'')<>'local'",
+    "SELECT COUNT(*) AS pending FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key WHERE p.namespace=$1 AND i.sequence>p.acknowledged_sequence AND COALESCE(json_extract(i.entity_json,'$.kind'),'')<>'library' AND COALESCE(json_extract(i.entity_json,'$.work.pluginId'),'')<>'local'",
     [workspace.namespace],
   );
   const [held] = await db.select<{ deferred: number }[]>(
-    "SELECT COUNT(*) AS deferred FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1 WHERE i.sequence>p.acknowledged_sequence AND COALESCE(json_extract(i.entity_json,'$.work.pluginId'),'')<>'local' AND ((json_type(i.entity_json,'$.work')='object' AND json_extract(i.entity_json,'$.work.sourceNovelId') IS NULL) OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'norea-folder:%' OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'local-folder:%')",
+    "SELECT COUNT(*) AS deferred FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1 WHERE i.sequence>p.acknowledged_sequence AND COALESCE(json_extract(i.entity_json,'$.kind'),'')<>'library' AND COALESCE(json_extract(i.entity_json,'$.work.pluginId'),'')<>'local' AND ((json_type(i.entity_json,'$.work')='object' AND json_extract(i.entity_json,'$.work.sourceNovelId') IS NULL) OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'norea-folder:%' OR COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') LIKE 'local-folder:%')",
     [workspace.namespace],
   );
   const heldIntents = await db.select<{ entityKey: string; entityJson: string }[]>(`SELECT i.entity_key AS entityKey,i.entity_json AS entityJson
     FROM user_state_intent i JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1
     WHERE i.seed=0 AND p.base_revision<>$2 AND i.sequence>p.acknowledged_sequence
+      AND COALESCE(json_extract(i.entity_json,'$.kind'),'')<>'library'
       AND COALESCE(json_extract(i.entity_json,'$.work.pluginId'),'')<>'local'`,
     [workspace.namespace, USER_STATE_PRELINK_BASE_REVISION]);
   const heldKeys = new Set<string>();
@@ -570,6 +576,7 @@ export async function getUserStateLedgerStatusInDb(db: UserStateDb, binding: Use
       )) AS applicable
     FROM user_state_record WHERE namespace=$1
       AND (applied_revision<revision OR deferred_reason='projection-error')
+      AND COALESCE(json_extract(payload,'$.entity.kind'),'')<>'library'
       AND COALESCE(json_extract(payload,'$.entity.work.pluginId'),'')<>'local'`, [workspace.namespace]);
   let projectionPending = 0;
   let projectionFailed = 0;
@@ -763,8 +770,6 @@ export async function rebindUserStateWorkspaceInDb(
 
 function canonicalTombstoneForEntity(entity: UserStateEntity, prevValue: UserStateValue): UserStateValue | null {
   switch (entity.kind) {
-    case "library":
-      return { inLibrary: false, addedAt: null };
     case "category": {
       const prevName = (prevValue as UserStateValueMap["category"]).name;
       return { name: prevName?.trim() ? prevName : "Deleted", sort: 0, deleted: true };

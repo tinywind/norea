@@ -138,12 +138,9 @@ async function materializeUserStateRecordWithOptionsInDb(
   // content metadata later appears.
   if (!work) throw new DeferredUserState("missing-work");
   switch (entity.kind) {
-    case "library": {
-      const value = record.value as UserStateValueMap["library"];
-      await db.execute("UPDATE novel SET in_library=$2,library_added_at=$3 WHERE id=$1", [work.id, value.inLibrary ? 1 : 0, value.inLibrary ? value.addedAt : null]);
-      if (!value.inLibrary) await db.execute("DELETE FROM novel_download_goal WHERE novel_id=$1", [work.id]);
+    case "library":
+      // Library membership is strictly device-local; remote library records never mutate local shelves.
       break;
-    }
     case "membership": {
       const value = record.value as UserStateValueMap["membership"];
       const categoryId = await resolveCategoryAlias(db, namespace, entity.categoryId);
@@ -269,6 +266,7 @@ export async function projectPendingUserStateInDb(
       AND applied_revision<revision
       AND (deferred_reason IS NULL OR deferred_reason='projection-error')
       AND json_extract(payload,'$.entity.kind')<>'category'
+      AND json_extract(payload,'$.entity.kind')<>'library'
       AND NOT EXISTS (
         SELECT 1 FROM novel n
         WHERE n.plugin_id=json_extract(user_state_record.payload,'$.entity.work.pluginId')
@@ -370,6 +368,7 @@ export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: numbe
     const sourceNovelId = nonEmptySourceId(work.sourceNovelId);
     const reopened = await db.execute(`UPDATE user_state_record SET applied_revision=0,deferred_reason=NULL,deferred_detail=NULL WHERE
       deferred_reason IS NOT NULL AND
+      COALESCE(json_extract(payload,'$.entity.kind'),'')<>'library' AND
       json_extract(payload,'$.entity.work.pluginId')=$1 AND
       (json_extract(payload,'$.entity.work.novelPath')=$3 OR
         ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))`,
@@ -379,6 +378,7 @@ export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: numbe
       const [waiting] = await db.select<{ waiting: number }[]>(
         `SELECT 1 AS waiting FROM user_state_record
          WHERE applied_revision<revision
+           AND COALESCE(json_extract(payload,'$.entity.kind'),'')<>'library'
            AND json_extract(payload,'$.entity.work.pluginId')=$1
            AND (json_extract(payload,'$.entity.work.novelPath')=$3
              OR ($2 IS NOT NULL AND lower(json_extract(payload,'$.entity.work.sourceNovelId'))=lower($2)))

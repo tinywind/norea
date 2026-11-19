@@ -2139,7 +2139,10 @@ describe("Client E2E — Tier 2: Boundary & Corner Cases", () => {
   });
 
   it("T2-G4: interrupted Mode A rebind resumes idempotently on the next sync without duplicating intents", async () => {
-    addWorkToClient(activeClient, 1, DEFAULT_WORK, { inLibrary: true });
+    addWorkToClient(activeClient, 1, DEFAULT_WORK, {
+      inLibrary: true,
+      chapters: [{ id: 11, path: "/chapter/1", name: "Ch 1", progress: 50, unread: 0, readAt: 1_750_000_000 }],
+    });
     await synchronizeUserState();
     activeServer.resetWorkspace("epoch-2");
 
@@ -2992,6 +2995,62 @@ describe("Client E2E — Tier 4: Multi-Client & Multi-Step Workflows", () => {
       { id: 11, bookmark: 1 },
       { id: 12, bookmark: 1 },
     ]);
+  });
+
+  it("T4-13: library add and remove stay device-local across devices while reading progress still syncs", async () => {
+    const workA: UserStateWorkReference = { ...DEFAULT_WORK, sourceNovelId: "work-a", novelPath: "/work/a", name: "Work A" };
+    const workB: UserStateWorkReference = { ...DEFAULT_WORK, sourceNovelId: "work-b", novelPath: "/work/b", name: "Work B" };
+
+    const clientA = activeClient;
+    addWorkToClient(clientA, 1, workA, {
+      inLibrary: true,
+      chapters: [{ id: 11, path: "/ch/1", name: "A1", progress: 40, unread: 0, readAt: 1_750_000_000 }],
+    });
+    addWorkToClient(clientA, 2, workB, {
+      inLibrary: false,
+      chapters: [{ id: 21, path: "/ch/1", name: "B1" }],
+    });
+
+    const clientB = createSqliteFixture("Client B");
+    addWorkToClient(clientB, 1, workA, {
+      inLibrary: true,
+      chapters: [{ id: 11, path: "/ch/1", name: "A1" }],
+    });
+    addWorkToClient(clientB, 2, workB, {
+      inLibrary: false,
+      chapters: [{ id: 21, path: "/ch/1", name: "B1" }],
+    });
+    clientB.sql.exec("INSERT INTO novel_download_goal(novel_id,kind,count,updated_at) VALUES(1,'keep_ahead',3,100)");
+
+    // Sync initial state from A, then A removes Work A from library and adds Work B to library.
+    activateClient(clientA, SERVER_URL);
+    await synchronizeUserState();
+    await mocks.invoke("db_novel_set_in_library", { id: 1, inLibrary: false });
+    await mocks.invoke("db_novel_set_in_library", { id: 2, inLibrary: true });
+    await synchronizeUserState();
+
+    // Even if a legacy older client wrote library records directly on the server, Device B ignores them.
+    activeServer.seedRemoteRecord({ kind: "library", work: workA }, { inLibrary: false, addedAt: null });
+    activeServer.seedRemoteRecord({ kind: "library", work: workB }, { inLibrary: true, addedAt: 1_750_000_100 });
+
+    activateClient(clientB, SERVER_URL);
+    await synchronizeUserState();
+    await waitForUserStateDeferredApply();
+
+    // Device B keeps Work A in library with its download goal, and keeps Work B out of library.
+    expect(clientB.sql.prepare("SELECT id,in_library FROM novel ORDER BY id").all()).toEqual([
+      { id: 1, in_library: 1 },
+      { id: 2, in_library: 0 },
+    ]);
+    expect(clientB.sql.prepare("SELECT kind,count FROM novel_download_goal WHERE novel_id=1").get()).toEqual({
+      kind: "keep_ahead",
+      count: 3,
+    });
+    // Reading progress from Device A still synced to Device B.
+    expect(clientB.sql.prepare("SELECT progress,unread FROM chapter WHERE id=11").get()).toEqual({
+      progress: 40,
+      unread: 0,
+    });
   });
 });
 

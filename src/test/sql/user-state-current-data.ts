@@ -315,7 +315,6 @@ export async function buildCurrentSnapshotInDb(
     if ("work" in item.entity && (!item.entity.work.sourceNovelId || isCurrentWorkHeld(data.heldSources, item.entity.work))) { missing.add(key); return; }
     items.set(key, parseUserStateCurrentItem(item));
   };
-  for (const work of data.works) if (work.inLibrary) add({ entity: { kind: "library", work: currentWorkReference(work) }, value: { inLibrary: true, addedAt: work.addedAt } });
   for (const category of data.categories) {
     if (category.isSystem || !category.name.trim()) continue;
     const categoryId = await currentCategoryId(category.name);
@@ -368,9 +367,6 @@ export async function buildCurrentSnapshotInDb(
 }
 export const sameCurrentValue = (left: unknown, right: unknown): boolean => canonicalUserStateJson(left) === canonicalUserStateJson(right);
 
-const minimumTime = (left: number | null, right: number | null): number | null =>
-  left === null ? right : right === null ? left : Math.min(left, right);
-
 export async function installCurrentStructureInDb(
   db: UserStateDb, binding: UserStateBinding, items: readonly UserStateCurrentItem[],
 ): Promise<{ works: CurrentWork[]; heldSources: CurrentHeldSources; missing: Set<string>; changed: boolean }> {
@@ -379,44 +375,10 @@ export async function installCurrentStructureInDb(
   const heldSources = await loadCurrentHeldSourcesInDb(db, binding.serverUrl);
   const heldItems = items.filter(item => "work" in item.entity && isCurrentWorkHeld(heldSources, item.entity.work));
   items = items.filter(item => !("work" in item.entity) || !isCurrentWorkHeld(heldSources, item.entity.work));
-  let works = await loadCurrentWorksInDb(db);
-  let byKey = new Map(works.filter(work => work.sourceNovelId).map(work => [userStateWorkKey(work), work]));
-  const occupiedPaths = new Set(works.map(work => JSON.stringify([work.pluginId, work.novelPath])));
-  const planned = new Set<string>();
-  const additions: { pluginId: string; sourceNovelId: string; novelPath: string; name: string; isLocal: number }[] = [];
+  const works = await loadCurrentWorksInDb(db);
+  const byKey = new Map(works.filter(work => work.sourceNovelId).map(work => [userStateWorkKey(work), work]));
   const missing = new Set(heldItems.map(item => userStateEntityKey(item.entity)));
   let changed = false;
-  for (const item of items) {
-    if (item.entity.kind !== "library") continue;
-    const work = item.entity.work;
-    const key = userStateWorkKey(work);
-    if (byKey.has(key) || planned.has(key)) continue;
-    const pathKey = JSON.stringify([work.pluginId, work.novelPath]);
-    if (!work.sourceNovelId || occupiedPaths.has(pathKey)) { missing.add(userStateEntityKey(item.entity)); continue; }
-    additions.push({ pluginId: work.pluginId, sourceNovelId: work.sourceNovelId, novelPath: work.novelPath, name: work.name, isLocal: work.pluginId === "local" ? 1 : 0 });
-    occupiedPaths.add(pathKey); planned.add(key);
-  }
-  if (additions.length) {
-    await db.execute(`INSERT INTO novel(plugin_id,source_novel_id,path,name,is_local)
-      SELECT json_extract(value,'$.pluginId'),json_extract(value,'$.sourceNovelId'),json_extract(value,'$.novelPath'),json_extract(value,'$.name'),json_extract(value,'$.isLocal') FROM json_each($1)`, [JSON.stringify(additions)]);
-    works = await loadCurrentWorksInDb(db);
-    byKey = new Map(works.filter(work => work.sourceNovelId).map(work => [userStateWorkKey(work), work]));
-    changed = true;
-  }
-  const libraryUpdates: { id: number; addedAt: number | null }[] = [];
-  for (const item of items) {
-    if (item.entity.kind !== "library") continue;
-    const work = byKey.get(userStateWorkKey(item.entity.work));
-    if (!work) { missing.add(userStateEntityKey(item.entity)); continue; }
-    const value = item.value as UserStateValueMap["library"];
-    const addedAt = minimumTime(work.addedAt, value.addedAt);
-    if (!work.inLibrary || work.addedAt !== addedAt) libraryUpdates.push({ id: work.id, addedAt });
-  }
-  if (libraryUpdates.length) {
-    await db.execute(`WITH incoming AS (SELECT json_extract(value,'$.id') AS id,json_extract(value,'$.addedAt') AS added_at FROM json_each($1))
-      UPDATE novel SET in_library=1,library_added_at=incoming.added_at FROM incoming WHERE novel.id=incoming.id`, [JSON.stringify(libraryUpdates)]);
-    changed = true;
-  }
   let categories = await db.select<CurrentCategory[]>("SELECT id,name,sort,is_system AS isSystem FROM category");
   const categoriesByName = () => {
     const map = new Map<string, CurrentCategory>();

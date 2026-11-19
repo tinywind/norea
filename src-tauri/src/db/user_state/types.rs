@@ -100,6 +100,11 @@ pub struct UserStateLedgerStatusDto {
 }
 
 pub fn is_local_user_state_entity(entity: &JsonValue, value: Option<&JsonValue>) -> bool {
+    // Library membership is device-local; adding or removing a work on one device must never
+    // mutate another device's library shelf or download goals.
+    if entity.get("kind").and_then(JsonValue::as_str) == Some("library") {
+        return true;
+    }
     if entity
         .get("work")
         .and_then(|w| w.get("pluginId"))
