@@ -31,10 +31,15 @@ use super::{
 const COMMAND_CAPACITY: usize = 256;
 const INBOUND_PACKET_CAPACITY: usize = 512;
 const CONNECTION_DATA_CAPACITY: usize = 32;
+const MAX_DNS_SERVERS: usize = 8;
 const TCP_BUFFER_BYTES: usize = 64 * 1024;
 const STREAM_BUFFER_BYTES: usize = 64 * 1024;
 const STREAM_CHUNK_BYTES: usize = 16 * 1024;
 const DIAL_TIMEOUT: Duration = Duration::from_secs(30);
+// Keep DNS lookup under Chromium/WebView's 10s proxy CONNECT timeout so the
+// local proxy records the DNS failure and replies 502 before WebView aborts.
+const DNS_LOOKUP_TIMEOUT: Duration = Duration::from_secs(8);
+const DNS_SERVER_HEDGE_DELAY: Duration = Duration::from_millis(1_500);
 const DNS_FAMILY_GRACE: Duration = Duration::from_millis(250);
 const TCP_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(8);
 const TCP_IDLE_TIMEOUT: SmolDuration = SmolDuration::from_secs(5 * 60);
@@ -137,7 +142,8 @@ struct Netstack {
     interface: Interface,
     device: PacketDevice,
     sockets: SocketSet<'static>,
-    dns_handle: SocketHandle,
+    dns_sockets: Vec<SocketHandle>,
+    preferred_dns_server: usize,
     commands: mpsc::Sender<Command>,
     command_receiver: mpsc::Receiver<Command>,
     inbound_receiver: mpsc::Receiver<Vec<u8>>,
@@ -150,13 +156,22 @@ struct Netstack {
     started_at: StdInstant,
 }
 
+struct ActiveDnsQuery {
+    server_index: usize,
+    handle: dns::QueryHandle,
+}
+
 struct Resolution {
+    host: String,
     port: u16,
     reply: oneshot::Sender<Result<DuplexStream, ProxyConnectError>>,
-    queries: Vec<dns::QueryHandle>,
+    queries: Vec<ActiveDnsQuery>,
+    remaining_servers: VecDeque<usize>,
+    next_server_at: Option<StdInstant>,
     addresses: Vec<IpAddr>,
     grace_deadline: Option<StdInstant>,
-    deadline: StdInstant,
+    dns_deadline: StdInstant,
+    dial_deadline: StdInstant,
 }
 
 struct Connection {
@@ -225,20 +240,29 @@ impl Netstack {
                 .map_err(|_| "could not install the VPN IPv6 route".to_string())?;
         }
 
-        let dns_servers = configuration
-            .dns_servers
-            .iter()
-            .copied()
-            .map(IpAddress::from)
-            .collect::<Vec<_>>();
+        let mut unique_dns_servers = Vec::new();
+        for server in configuration.dns_servers {
+            if !unique_dns_servers.contains(&server) {
+                unique_dns_servers.push(server);
+                if unique_dns_servers.len() >= MAX_DNS_SERVERS {
+                    break;
+                }
+            }
+        }
         let mut sockets = SocketSet::new(Vec::new());
-        let dns_handle = sockets.add(dns::Socket::new(&dns_servers, Vec::new()));
+        // Keep one smoltcp DNS socket per pushed server so failover across
+        // stalled servers can hedge before smoltcp's 10s per-server timeout.
+        let dns_sockets = unique_dns_servers
+            .into_iter()
+            .map(|server| sockets.add(dns::Socket::new(&[IpAddress::from(server)], Vec::new())))
+            .collect::<Vec<_>>();
 
         Ok(Self {
             interface,
             device,
             sockets,
-            dns_handle,
+            dns_sockets,
+            preferred_dns_server: 0,
             commands,
             command_receiver,
             inbound_receiver,
@@ -269,6 +293,7 @@ impl Netstack {
                 .poll_delay(now, &self.sockets)
                 .map(|delay| Duration::from_micros(delay.total_micros()))
                 .unwrap_or(MAX_TIMER_DELAY)
+                .min(self.next_resolution_delay())
                 .min(MAX_TIMER_DELAY);
             tokio::select! {
                 command = self.command_receiver.recv() => match command {
@@ -340,40 +365,124 @@ impl Netstack {
             );
         }
 
+        if self.dns_sockets.is_empty() {
+            let _ = reply.send(Err(ProxyConnectError::dns(
+                "OpenVPN supplied no usable in-tunnel DNS server",
+            )));
+            return Ok(());
+        }
+
+        let server_count = self.dns_sockets.len();
+        let start_index = self.preferred_dns_server % server_count;
+        let mut remaining_servers = (0..server_count)
+            .map(|offset| (start_index + offset) % server_count)
+            .collect::<VecDeque<_>>();
+        let mut queries = Vec::new();
+        let query_error = self.start_next_dns_server(&host, &mut remaining_servers, &mut queries);
+        if queries.is_empty() {
+            let error = query_error.unwrap_or_else(|| {
+                ProxyConnectError::tunnel("VPN has no usable address family")
+            });
+            let _ = reply.send(Err(error));
+            return Ok(());
+        }
+
+        let now = StdInstant::now();
+        let dial_deadline = now + DIAL_TIMEOUT;
+        let dns_deadline = (now + DNS_LOOKUP_TIMEOUT).min(dial_deadline);
+        let next_server_at = (!remaining_servers.is_empty())
+            .then(|| (now + DNS_SERVER_HEDGE_DELAY).min(dns_deadline));
+        self.resolutions.push(Resolution {
+            host,
+            port,
+            reply,
+            queries,
+            remaining_servers,
+            next_server_at,
+            addresses: Vec::new(),
+            grace_deadline: None,
+            dns_deadline,
+            dial_deadline,
+        });
+        Ok(())
+    }
+
+    fn start_dns_queries_on_server(
+        &mut self,
+        server_index: usize,
+        host: &str,
+    ) -> Result<Vec<ActiveDnsQuery>, ProxyConnectError> {
         let mut queries = Vec::new();
         let mut query_error = None;
-        let dns = self.sockets.get_mut::<dns::Socket>(self.dns_handle);
+        let socket = self.dns_sockets[server_index];
+        let dns = self.sockets.get_mut::<dns::Socket>(socket);
         if self.local_ipv4.is_some() {
-            match dns.start_query(self.interface.context(), &host, DnsQueryType::A) {
-                Ok(query) => queries.push(query),
+            match dns.start_query(self.interface.context(), host, DnsQueryType::A) {
+                Ok(handle) => queries.push(ActiveDnsQuery {
+                    server_index,
+                    handle,
+                }),
                 Err(error) => {
                     query_error = Some(format!("could not start VPN DNS lookup: {error}"));
                 }
             }
         }
         if self.local_ipv6.is_some() {
-            match dns.start_query(self.interface.context(), &host, DnsQueryType::Aaaa) {
-                Ok(query) => queries.push(query),
+            match dns.start_query(self.interface.context(), host, DnsQueryType::Aaaa) {
+                Ok(handle) => queries.push(ActiveDnsQuery {
+                    server_index,
+                    handle,
+                }),
                 Err(error) => {
                     query_error = Some(format!("could not start VPN DNS lookup: {error}"));
                 }
             }
         }
         if queries.is_empty() {
-            let error = query_error.map(ProxyConnectError::dns)
-                .unwrap_or_else(|| ProxyConnectError::tunnel("VPN has no usable address family"));
-            let _ = reply.send(Err(error));
-            return Ok(());
+            Err(query_error
+                .map(ProxyConnectError::dns)
+                .unwrap_or_else(|| ProxyConnectError::tunnel("VPN has no usable address family")))
+        } else {
+            Ok(queries)
         }
-        self.resolutions.push(Resolution {
-            port,
-            reply,
-            queries,
-            addresses: Vec::new(),
-            grace_deadline: None,
-            deadline: StdInstant::now() + DIAL_TIMEOUT,
-        });
-        Ok(())
+    }
+
+    fn start_next_dns_server(
+        &mut self,
+        host: &str,
+        remaining_servers: &mut VecDeque<usize>,
+        active: &mut Vec<ActiveDnsQuery>,
+    ) -> Option<ProxyConnectError> {
+        let mut last_error = None;
+        while let Some(server_index) = remaining_servers.pop_front() {
+            match self.start_dns_queries_on_server(server_index, host) {
+                Ok(started) => {
+                    active.extend(started);
+                    return None;
+                }
+                Err(error) => {
+                    last_error = Some(error);
+                }
+            }
+        }
+        last_error
+    }
+
+    fn next_resolution_delay(&self) -> Duration {
+        let now = StdInstant::now();
+        self.resolutions
+            .iter()
+            .flat_map(|resolution| {
+                [
+                    Some(resolution.dns_deadline),
+                    resolution.next_server_at,
+                    resolution.grace_deadline,
+                ]
+            })
+            .flatten()
+            .map(|deadline| deadline.saturating_duration_since(now))
+            .min()
+            .unwrap_or(MAX_TIMER_DELAY)
     }
 
     fn process_resolutions(&mut self) -> Result<(), String> {
@@ -384,16 +493,22 @@ impl Netstack {
                 continue;
             }
             let mut active = Vec::new();
+            let mut winning_server = None;
             for query in resolution.queries {
+                let socket = self.dns_sockets[query.server_index];
                 match self
                     .sockets
-                    .get_mut::<dns::Socket>(self.dns_handle)
-                    .get_query_result(query)
+                    .get_mut::<dns::Socket>(socket)
+                    .get_query_result(query.handle)
                 {
                     Ok(addresses) => {
+                        let previous_len = resolution.addresses.len();
                         for address in addresses {
                             let address = IpAddr::from(address);
                             add_usable_dns_address(&mut resolution.addresses, address);
+                        }
+                        if resolution.addresses.len() > previous_len && winning_server.is_none() {
+                            winning_server = Some(query.server_index);
                         }
                     }
                     Err(dns::GetQueryResultError::Pending) => active.push(query),
@@ -402,26 +517,58 @@ impl Netstack {
                     Err(dns::GetQueryResultError::Failed) => {}
                 }
             }
+            if let Some(winner) = winning_server {
+                self.preferred_dns_server = winner;
+                let mut winner_queries = Vec::new();
+                let mut other_queries = Vec::new();
+                for query in active {
+                    if query.server_index == winner {
+                        winner_queries.push(query);
+                    } else {
+                        other_queries.push(query);
+                    }
+                }
+                self.cancel_queries(&other_queries);
+                active = winner_queries;
+                resolution.remaining_servers.clear();
+                resolution.next_server_at = None;
+            }
             let now = StdInstant::now();
             let grace_expired = resolution
                 .grace_deadline
                 .is_some_and(|deadline| now >= deadline);
             if !resolution.addresses.is_empty()
-                && (active.is_empty() || grace_expired || now >= resolution.deadline)
+                && (active.is_empty() || grace_expired || now >= resolution.dns_deadline)
             {
                 self.cancel_queries(&active);
                 self.start_tcp_candidates(
                     interleave_address_families(resolution.addresses),
                     resolution.port,
                     resolution.reply,
-                    resolution.deadline,
+                    resolution.dial_deadline,
                     None,
                 )?;
-            } else if active.is_empty() {
+                continue;
+            }
+            if resolution.addresses.is_empty()
+                && now < resolution.dns_deadline
+                && !resolution.remaining_servers.is_empty()
+                && (active.is_empty()
+                    || resolution.next_server_at.is_some_and(|at| now >= at))
+            {
+                let _ = self.start_next_dns_server(
+                    &resolution.host,
+                    &mut resolution.remaining_servers,
+                    &mut active,
+                );
+                resolution.next_server_at = (!resolution.remaining_servers.is_empty())
+                    .then(|| (now + DNS_SERVER_HEDGE_DELAY).min(resolution.dns_deadline));
+            }
+            if active.is_empty() {
                 let _ = resolution
                     .reply
                     .send(Err(ProxyConnectError::dns("VPN DNS lookup failed or returned no usable address")));
-            } else if now >= resolution.deadline {
+            } else if now >= resolution.dns_deadline {
                 self.cancel_queries(&active);
                 let _ = resolution
                     .reply
@@ -429,7 +576,7 @@ impl Netstack {
             } else {
                 if !resolution.addresses.is_empty() && resolution.grace_deadline.is_none() {
                     resolution.grace_deadline =
-                        Some((now + DNS_FAMILY_GRACE).min(resolution.deadline));
+                        Some((now + DNS_FAMILY_GRACE).min(resolution.dns_deadline));
                 }
                 resolution.queries = active;
                 pending.push(resolution);
@@ -439,10 +586,12 @@ impl Netstack {
         Ok(())
     }
 
-    fn cancel_queries(&mut self, queries: &[dns::QueryHandle]) {
-        let dns = self.sockets.get_mut::<dns::Socket>(self.dns_handle);
+    fn cancel_queries(&mut self, queries: &[ActiveDnsQuery]) {
         for query in queries {
-            dns.cancel_query(*query);
+            let socket = self.dns_sockets[query.server_index];
+            self.sockets
+                .get_mut::<dns::Socket>(socket)
+                .cancel_query(query.handle);
         }
     }
 
@@ -879,7 +1028,14 @@ impl TxToken for PacketTxToken {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::net::{Ipv4Addr, Ipv6Addr};
+    use smoltcp::{
+        phy::ChecksumCapabilities,
+        wire::{IpProtocol, Ipv4Packet, Ipv4Repr, UdpPacket, UdpRepr},
+    };
+    use std::{
+        net::{Ipv4Addr, Ipv6Addr},
+        sync::Mutex,
+    };
 
     struct DiscardSink;
 
@@ -889,8 +1045,32 @@ mod tests {
         }
     }
 
+    #[derive(Default)]
+    struct CaptureSink {
+        packets: Mutex<Vec<Vec<u8>>>,
+    }
+
+    impl CaptureSink {
+        fn take_packets(&self) -> Vec<Vec<u8>> {
+            std::mem::take(&mut *self.packets.lock().expect("capture sink lock"))
+        }
+    }
+
+    impl PacketSink for CaptureSink {
+        fn send(&self, packet: &[u8]) -> bool {
+            self.packets
+                .lock()
+                .expect("capture sink lock")
+                .push(packet.to_vec());
+            true
+        }
+    }
 
     fn dns_test_stack() -> Netstack {
+        dns_test_stack_with_servers(vec![IpAddr::V4(Ipv4Addr::new(10, 8, 0, 53))], Arc::new(DiscardSink))
+    }
+
+    fn dns_test_stack_with_servers(dns_servers: Vec<IpAddr>, sink: Arc<dyn PacketSink>) -> Netstack {
         let (commands, receiver) = mpsc::channel(4);
         let (_, inbound) = mpsc::channel(4);
         Netstack::new(
@@ -899,14 +1079,76 @@ mod tests {
                 gateway_ipv4: Some(Ipv4Addr::new(10, 8, 0, 1)),
                 ipv6: None,
                 gateway_ipv6: None,
-                dns_servers: vec![IpAddr::V4(Ipv4Addr::new(10, 8, 0, 53))],
+                dns_servers,
                 mtu: 1500,
             },
-            Arc::new(DiscardSink),
+            sink,
             commands,
             receiver,
             inbound,
         ).expect("test stack")
+    }
+
+    fn parse_ipv4_dns_query(packet: &[u8]) -> Option<(Ipv4Addr, u16, Vec<u8>)> {
+        let ip = Ipv4Packet::new_checked(packet).ok()?;
+        if ip.next_header() != IpProtocol::Udp {
+            return None;
+        }
+        let udp = UdpPacket::new_checked(ip.payload()).ok()?;
+        if udp.dst_port() != 53 {
+            return None;
+        }
+        Some((Ipv4Addr::from(ip.dst_addr().octets()), udp.src_port(), udp.payload().to_vec()))
+    }
+
+    fn build_ipv4_dns_response(
+        server: Ipv4Addr,
+        client: Ipv4Addr,
+        client_port: u16,
+        query: &[u8],
+        rcode: u8,
+        answers: &[Ipv4Addr],
+    ) -> Vec<u8> {
+        let mut dns = Vec::with_capacity(query.len() + answers.len() * 16);
+        dns.extend_from_slice(&query[..2]);
+        dns.extend_from_slice(&[0x81, 0x80 | (rcode & 0x0f)]);
+        dns.extend_from_slice(&1u16.to_be_bytes());
+        dns.extend_from_slice(&(answers.len() as u16).to_be_bytes());
+        dns.extend_from_slice(&0u16.to_be_bytes());
+        dns.extend_from_slice(&0u16.to_be_bytes());
+        dns.extend_from_slice(&query[12..]);
+        for answer in answers {
+            dns.extend_from_slice(&[0xc0, 0x0c]);
+            dns.extend_from_slice(&1u16.to_be_bytes());
+            dns.extend_from_slice(&1u16.to_be_bytes());
+            dns.extend_from_slice(&60u32.to_be_bytes());
+            dns.extend_from_slice(&4u16.to_be_bytes());
+            dns.extend_from_slice(&answer.octets());
+        }
+        let udp_repr = UdpRepr {
+            src_port: 53,
+            dst_port: client_port,
+        };
+        let ip_repr = Ipv4Repr {
+            src_addr: server.into(),
+            dst_addr: client.into(),
+            next_header: IpProtocol::Udp,
+            payload_len: udp_repr.header_len() + dns.len(),
+            hop_limit: 64,
+        };
+        let mut packet = vec![0u8; ip_repr.buffer_len() + ip_repr.payload_len];
+        let mut ip = Ipv4Packet::new_unchecked(&mut packet);
+        ip_repr.emit(&mut ip, &ChecksumCapabilities::default());
+        let mut udp = UdpPacket::new_unchecked(ip.payload_mut());
+        udp_repr.emit(
+            &mut udp,
+            &ip_repr.src_addr.into(),
+            &ip_repr.dst_addr.into(),
+            dns.len(),
+            |payload| payload.copy_from_slice(&dns),
+            &ChecksumCapabilities::default(),
+        );
+        packet
     }
 
     #[test]
@@ -930,11 +1172,160 @@ mod tests {
         let mut stack = dns_test_stack();
         let (reply, mut response) = oneshot::channel();
         stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
-        stack.resolutions[0].deadline = StdInstant::now();
+        stack.resolutions[0].dns_deadline = StdInstant::now();
         stack.process_resolutions().expect("per-request timeout is not a tunnel failure");
         let error = response.try_recv().expect("DNS result").err().expect("expired lookup");
         assert_eq!(error.kind, super::super::transport::PluginVpnTransportFailureKind::Dns);
         assert_eq!(error.message, "VPN DNS lookup timed out");
+        assert!(stack.connections.is_empty());
+    }
+
+    #[test]
+    fn hedges_to_secondary_pushed_dns_server_preserves_multiple_answers_and_prefers_healthy_server() {
+        let primary = Ipv4Addr::new(10, 211, 254, 254);
+        let secondary = Ipv4Addr::new(8, 8, 8, 8);
+        let sink = Arc::new(CaptureSink::default());
+        let mut stack = dns_test_stack_with_servers(
+            vec![IpAddr::V4(primary), IpAddr::V4(secondary)],
+            sink.clone(),
+        );
+
+        let (reply, _response) = oneshot::channel();
+        stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+        stack.interface.poll(Instant::from_millis(0), &mut stack.device, &mut stack.sockets);
+
+        let initial_queries = sink
+            .take_packets()
+            .into_iter()
+            .filter_map(|packet| parse_ipv4_dns_query(&packet))
+            .collect::<Vec<_>>();
+        assert_eq!(initial_queries.len(), 1);
+        assert_eq!(initial_queries[0].0, primary);
+
+        // Simulate primary dropping packets until the hedge timer fires.
+        stack.resolutions[0].next_server_at = Some(StdInstant::now());
+        stack.process_resolutions().expect("hedge to secondary DNS");
+        stack.interface.poll(Instant::from_millis(1_500), &mut stack.device, &mut stack.sockets);
+
+        let hedged_queries = sink
+            .take_packets()
+            .into_iter()
+            .filter_map(|packet| parse_ipv4_dns_query(&packet))
+            .collect::<Vec<_>>();
+        let secondary_query = hedged_queries
+            .iter()
+            .find(|(dst, _, _)| *dst == secondary)
+            .expect("secondary DNS query emitted");
+
+        let answer_a = Ipv4Addr::new(198, 51, 100, 10);
+        let answer_b = Ipv4Addr::new(198, 51, 100, 11);
+        stack.device.packets.push_back(build_ipv4_dns_response(
+            secondary,
+            Ipv4Addr::new(10, 8, 0, 2),
+            secondary_query.1,
+            &secondary_query.2,
+            0,
+            &[answer_a, answer_b],
+        ));
+        stack.interface.poll(Instant::from_millis(1_700), &mut stack.device, &mut stack.sockets);
+        stack.process_resolutions().expect("complete DNS from secondary");
+
+        assert!(stack.resolutions.is_empty());
+        assert_eq!(stack.preferred_dns_server, 1);
+        assert_eq!(stack.connections.len(), 1);
+        let connection = stack.connections.values().next().expect("TCP connection started");
+        assert_eq!(connection.remaining_addresses, VecDeque::from([IpAddr::V4(answer_b)]));
+
+        // Next dial should start immediately on the healthy secondary server.
+        let (next_reply, _next_response) = oneshot::channel();
+        stack.start_dial("next.example".into(), 443, next_reply).expect("start next DNS");
+        stack.interface.poll(Instant::from_millis(1_800), &mut stack.device, &mut stack.sockets);
+        let next_queries = sink
+            .take_packets()
+            .into_iter()
+            .filter_map(|packet| parse_ipv4_dns_query(&packet))
+            .collect::<Vec<_>>();
+        assert_eq!(next_queries.len(), 1);
+        assert_eq!(next_queries[0].0, secondary);
+    }
+
+    #[test]
+    fn fails_over_immediately_when_primary_dns_returns_unusable_address() {
+        let primary = Ipv4Addr::new(10, 211, 254, 254);
+        let secondary = Ipv4Addr::new(8, 8, 8, 8);
+        let sink = Arc::new(CaptureSink::default());
+        let mut stack = dns_test_stack_with_servers(
+            vec![IpAddr::V4(primary), IpAddr::V4(secondary)],
+            sink.clone(),
+        );
+
+        let (reply, _response) = oneshot::channel();
+        stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+        stack.interface.poll(Instant::from_millis(0), &mut stack.device, &mut stack.sockets);
+        let primary_query = sink
+            .take_packets()
+            .into_iter()
+            .find_map(|packet| parse_ipv4_dns_query(&packet))
+            .expect("primary DNS query");
+        assert_eq!(primary_query.0, primary);
+
+        // Primary returns disallowed loopback address; failover must not wait for hedge delay.
+        stack.device.packets.push_back(build_ipv4_dns_response(
+            primary,
+            Ipv4Addr::new(10, 8, 0, 2),
+            primary_query.1,
+            &primary_query.2,
+            0,
+            &[Ipv4Addr::LOCALHOST],
+        ));
+        stack.interface.poll(Instant::from_millis(50), &mut stack.device, &mut stack.sockets);
+        stack.process_resolutions().expect("failover to secondary DNS");
+        stack.interface.poll(Instant::from_millis(60), &mut stack.device, &mut stack.sockets);
+
+        let secondary_query = sink
+            .take_packets()
+            .into_iter()
+            .find_map(|packet| parse_ipv4_dns_query(&packet))
+            .expect("immediate secondary DNS query");
+        assert_eq!(secondary_query.0, secondary);
+
+        stack.device.packets.push_back(build_ipv4_dns_response(
+            secondary,
+            Ipv4Addr::new(10, 8, 0, 2),
+            secondary_query.1,
+            &secondary_query.2,
+            0,
+            &[Ipv4Addr::new(198, 51, 100, 42)],
+        ));
+        stack.interface.poll(Instant::from_millis(120), &mut stack.device, &mut stack.sockets);
+        stack.process_resolutions().expect("resolve via secondary DNS");
+        assert_eq!(stack.connections.len(), 1);
+        assert_eq!(stack.preferred_dns_server, 1);
+    }
+
+    #[test]
+    fn dns_lookup_timeout_is_shorter_than_browser_proxy_connect_timeout() {
+        assert!(DNS_SERVER_HEDGE_DELAY < DNS_LOOKUP_TIMEOUT);
+        assert!(DNS_LOOKUP_TIMEOUT < Duration::from_secs(10));
+
+        let primary = Ipv4Addr::new(10, 211, 254, 254);
+        let secondary = Ipv4Addr::new(8, 8, 8, 8);
+        let mut stack = dns_test_stack_with_servers(
+            vec![IpAddr::V4(primary), IpAddr::V4(secondary)],
+            Arc::new(DiscardSink),
+        );
+        let (reply, mut response) = oneshot::channel();
+        stack.start_dial("source.example".into(), 443, reply).expect("start DNS");
+        stack.resolutions[0].next_server_at = Some(StdInstant::now());
+        stack.process_resolutions().expect("hedge before timeout");
+        assert_eq!(stack.resolutions[0].queries.len(), 2);
+
+        stack.resolutions[0].dns_deadline = StdInstant::now();
+        stack.process_resolutions().expect("expire both stalled servers");
+        let error = response.try_recv().expect("DNS timeout result").err().expect("timeout error");
+        assert_eq!(error.kind, super::super::transport::PluginVpnTransportFailureKind::Dns);
+        assert_eq!(error.message, "VPN DNS lookup timed out");
+        assert!(stack.resolutions.is_empty());
         assert!(stack.connections.is_empty());
     }
 
