@@ -268,6 +268,35 @@ describe("durable recovery execution", () => {
     await expect(held.run({ job, url, policy: policy({ notFoundAction: "pause" }) }, context(), async () => { throw partial; })).rejects.toBeInstanceOf(DownloadRecoveryHoldError);
     expect(held.getSnapshot()[0]?.status).toBe("held");
   });
+
+  it("retries transient incomplete media when configured and clears its episode once exhausted so manual retry works", async () => {
+    const partial = new ChapterMediaIncompleteError([
+      { fileName: "0009.jpg", message: "scraper: browser fetch to https://img.goodtoon9001.top timed out after 30000ms", url: "https://img.goodtoon9001.top/0009.jpg" },
+    ]);
+    const paused = new DownloadRecoveryController(memoryStorage());
+    await expect(paused.run({ job, url, policy: policy() }, context(), async () => { throw partial; })).rejects.toBe(partial);
+    expect(paused.getSnapshot()).toEqual([]);
+
+    const retried = new DownloadRecoveryController(memoryStorage());
+    const operation = vi.fn(async () => { throw partial; });
+    const run = retried.run({ job, url, policy: policy({ transientAction: "retry", maxRetries: 1 }) }, context(), operation);
+    const rejected = expect(run).rejects.toBe(partial);
+    await tick();
+    await rejected;
+    expect(operation).toHaveBeenCalledTimes(2);
+    expect(retried.getSnapshot()).toEqual([]);
+  });
+
+  it("holds mixed 404 and transient incomplete media when notFoundAction is pause", async () => {
+    const mixed = new ChapterMediaIncompleteError([
+      { status: 404, message: "HTTP 404", url: "https://example.test/missing" },
+      { status: 503, message: "HTTP 503", url: "https://example.test/unavailable" },
+    ]);
+    const held = new DownloadRecoveryController(memoryStorage());
+    await expect(held.run({ job, url, policy: policy({ notFoundAction: "pause" }) }, context(), async () => { throw mixed; }))
+      .rejects.toBeInstanceOf(DownloadRecoveryHoldError);
+    expect(held.getSnapshot()[0]?.status).toBe("held");
+  });
 });
 
 

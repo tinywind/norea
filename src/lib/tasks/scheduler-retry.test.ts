@@ -23,9 +23,6 @@ const failures = [
   new Error("manual-action-required: The source page requires manual action."),
   new Error("content-not-found: Captured chapter content is empty."),
   new PluginVpnUnavailableError(),
-  new ChapterMediaIncompleteError([
-    { fileName: "missing.jpg", message: "Failed to fetch", url: "https://media.test/missing.jpg" },
-  ]),
 ];
 
 describe("manual download retries", () => {
@@ -49,6 +46,23 @@ describe("manual download retries", () => {
     scheduler.resumeSourceQueue("a");
     await settle();
     await expect(next.promise).resolves.toBeUndefined();
+    expect(nextRun).toHaveBeenCalledOnce();
+  });
+
+  it("keeps manual retry available for incomplete chapter media without stopping the source queue", async () => {
+    const error = new ChapterMediaIncompleteError([
+      { fileName: "missing.jpg", message: "scraper: browser fetch to https://img.example.test timed out after 30000ms", url: "https://img.example.test/missing.jpg" },
+    ]);
+    const run = vi.fn().mockRejectedValue(error);
+    const handle = scheduler.enqueueSource(spec(run));
+    const checked = expect(handle.promise).rejects.toBe(error);
+    const nextRun = vi.fn(async () => undefined);
+    const next = scheduler.enqueueSource({ ...spec(nextRun), dedupeKey: "download:next" });
+    await settle();
+    await checked;
+    await expect(next.promise).resolves.toBeUndefined();
+    expect(scheduler.getTask(handle.id)).toMatchObject({ status: "failed", canRetry: true });
+    expect(scheduler.getSnapshot().pausedSourceIds).toEqual([]);
     expect(nextRun).toHaveBeenCalledOnce();
   });
 

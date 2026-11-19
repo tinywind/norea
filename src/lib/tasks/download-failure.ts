@@ -1,4 +1,5 @@
 import {
+  isChapterMediaIncompleteError,
   isTransientMediaHttpStatus,
   isTransientMediaNetworkError,
 } from "../chapter-media/errors";
@@ -88,6 +89,31 @@ export function isSourceForbiddenFailure(error: unknown): boolean {
   if (errorCode(error) === "content-server-request-failed") return false;
   const access = normalizeSourceAccessRequiredError(error);
   return access ? access.challenge.kind === "forbidden" : errorHttpStatus(error) === 403;
+}
+
+/**
+ * Whether an incomplete-media chapter failure only reflects unavailable per-asset
+ * resources rather than a storage, source-access, forbidden, or rate-limit block.
+ */
+export function isSkippableIncompleteMediaFailure(error: unknown): boolean {
+  if (!isChapterMediaIncompleteError(error)) return false;
+  const failure = classifyDownloadFailure(error);
+  if (failure.failureClass === "storage" || failure.failureClass === "challenge") {
+    return false;
+  }
+  if (
+    isSourceForbiddenFailure(error) ||
+    error.failures.some((item) => errorHttpStatus(item) === 403)
+  ) {
+    return false;
+  }
+  if (
+    error.failures.length > 0 &&
+    error.failures.every((item) => errorHttpStatus(item) === 429)
+  ) {
+    return false;
+  }
+  return true;
 }
 
 /**

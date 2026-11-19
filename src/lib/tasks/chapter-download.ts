@@ -68,7 +68,7 @@ import {
   validateChapterAcquisitionPlan,
 } from "../plugins/chapter-acquisition";
 import { pluginManager } from "../plugins/manager";
-import { ChapterMediaIncompleteError } from "../chapter-media/errors";
+import { ChapterMediaIncompleteError, isChapterMediaIncompleteError } from "../chapter-media/errors";
 import { isTaskUserCancelledError } from "./task-errors";
 import type {
   ChapterBinaryResource,
@@ -1585,49 +1585,62 @@ function enqueueChapterDownloadForExecutor(
             } else {
               await persistPartialHtml(partialHtml);
             }
-            const media = await cacheHtmlChapterMedia({
-              requireComplete: true,
-              ...(baseUrl ? { baseUrl, contextUrl: baseUrl } : {}),
-              ...(trustedAccessUrl
-                ? { sourceAccessUrl: trustedAccessUrl }
-                : {}),
-              chapterId: job.id,
-              chapterName: chapter.name,
-              chapterNumber: chapter.chapterNumber ?? String(chapter.position),
-              chapterPosition: chapter.position,
-              html,
-              novelId: chapter.novelId,
-              novelName: novel?.name ?? job.novelName,
-              sourceNovelId: novel?.sourceNovelId,
-              onHtmlUpdate: liveReaderUpdates
-                ? (partialHtml) =>
-                    persistAndEmitPartialHtml(
-                      protectRemoteChapterMediaForPartialHtml(
-                        partialHtml,
-                        baseUrl,
-                      ),
-                    )
-                : undefined,
-              onMediaPatch: liveReaderUpdates
-                ? (patches) => {
-                    emitChapterMediaPatchUpdate({
-                      chapterId: job.id,
-                      patches,
-                    });
-                  }
-                : undefined,
-              onProgress: ({ current, total }) => {
-                progressTotal = total + 1;
-                reportProgress({ current, total: progressTotal });
-              },
-              requestInit: plugin.imageRequestInit,
-              repair: usesStoredHtmlSource,
-              scraperExecutor: executor ?? "immediate",
-              shouldYield,
-              signal,
-              sourceId: job.pluginId,
-              ...(sourceJob.pluginId !== job.pluginId ? { requestSourceId: sourceJob.pluginId } : {}),
-            });
+            let media: Awaited<ReturnType<typeof cacheHtmlChapterMedia>>;
+            try {
+              media = await cacheHtmlChapterMedia({
+                requireComplete: true,
+                ...(baseUrl ? { baseUrl, contextUrl: baseUrl } : {}),
+                ...(trustedAccessUrl
+                  ? { sourceAccessUrl: trustedAccessUrl }
+                  : {}),
+                chapterId: job.id,
+                chapterName: chapter.name,
+                chapterNumber: chapter.chapterNumber ?? String(chapter.position),
+                chapterPosition: chapter.position,
+                html,
+                novelId: chapter.novelId,
+                novelName: novel?.name ?? job.novelName,
+                sourceNovelId: novel?.sourceNovelId,
+                onHtmlUpdate: liveReaderUpdates
+                  ? (partialHtml) =>
+                      persistAndEmitPartialHtml(
+                        protectRemoteChapterMediaForPartialHtml(
+                          partialHtml,
+                          baseUrl,
+                        ),
+                      )
+                  : undefined,
+                onMediaPatch: liveReaderUpdates
+                  ? (patches) => {
+                      emitChapterMediaPatchUpdate({
+                        chapterId: job.id,
+                        patches,
+                      });
+                    }
+                  : undefined,
+                onProgress: ({ current, total }) => {
+                  progressTotal = total + 1;
+                  reportProgress({ current, total: progressTotal });
+                },
+                requestInit: plugin.imageRequestInit,
+                repair: usesStoredHtmlSource,
+                scraperExecutor: executor ?? "immediate",
+                shouldYield,
+                signal,
+                sourceId: job.pluginId,
+                ...(sourceJob.pluginId !== job.pluginId ? { requestSourceId: sourceJob.pluginId } : {}),
+              });
+            } catch (error) {
+              if (!liveReaderUpdates && isChapterMediaIncompleteError(error) && error.partialHtml) {
+                await persistPartialHtml(
+                  protectRemoteChapterMediaForPartialHtml(
+                    error.partialHtml,
+                    baseUrl,
+                  ),
+                );
+              }
+              throw error;
+            }
             if (usesStoredHtmlSource) confirmSourceAccess?.();
             html = media.html;
             mediaBytes = media.mediaBytes;
@@ -1778,6 +1791,9 @@ export async function retryFailedChapterDownloads(chapterIds: readonly number[])
     .filter((job): job is ChapterDownloadJob => job !== null);
   const storageRetry = getChapterDownloadFailureSnapshot().some(row => wanted.has(row.chapterId) && row.failureClass === "storage");
   await forgetChapterDownloadFailures(jobs.map((job) => job.id));
+  if (jobs.length > 0) {
+    downloadRecovery.resume(undefined, new Set(jobs.map(downloadRecoveryKey)));
+  }
   for (const job of jobs) {
     void enqueueChapterDownload({ ...explicitChapterDownloadJob(job), priority: "user" }).promise.catch(() => undefined);
   }

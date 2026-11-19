@@ -152,6 +152,7 @@ vi.mock("./scheduler", () => ({
 import { getChapterById, listExistingChapterIds } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { refreshStoredNovelChapterDownloads } from "../../db/work-metadata";
+import { ChapterMediaIncompleteError } from "../chapter-media/errors";
 import {
   cacheHtmlChapterMedia,
   clearChapterMedia,
@@ -3568,6 +3569,53 @@ describe("enqueueChapterDownload", () => {
     })).rejects.toMatchObject({ code: "chapter-media-incomplete" });
 
     expect(cacheHtmlChapterMedia).toHaveBeenCalledWith(expect.objectContaining({ requireComplete: true }));
+    expect(saveStoredChapterContent).not.toHaveBeenCalled();
+  });
+
+  it("persists updated partial HTML with resolved local media when a background download has incomplete media", async () => {
+    pluginMocks.getChapterResource.mockResolvedValueOnce(
+      contentResource(`<img src="/page-1.png"><img src="/page-2.png">`),
+    );
+    vi.mocked(getChapterById).mockResolvedValueOnce({
+      content: null,
+      contentType: "html",
+      id: 7,
+      path: "/chapter/7",
+    } as never);
+    vi.mocked(cacheHtmlChapterMedia).mockRejectedValueOnce(
+      new ChapterMediaIncompleteError(
+        [
+          {
+            fileName: "0001-page-1.png",
+            message: "scraper: browser fetch to https://img.goodtoon9001.top timed out after 30000ms",
+            url: "https://source.test/page-1.png",
+          },
+        ],
+        `<img src="https://source.test/page-1.png"><img src="norea-media://reader-asset/0002-page-2.png">`,
+      ),
+    );
+
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "source-a",
+      chapterPath: "/chapter/7",
+      contentType: "html",
+      title: "Chapter 7",
+    });
+
+    if (!capturedSpec) throw new Error("Task spec was not captured.");
+    await expect(capturedSpec.run({
+      setDetail: vi.fn(),
+      setProgress: vi.fn(),
+      signal: new AbortController().signal,
+      taskId: "task-1",
+    })).rejects.toMatchObject({ code: "chapter-media-incomplete" });
+
+    expect(saveStoredChapterPartialContent).toHaveBeenLastCalledWith(
+      7,
+      expect.stringContaining('src="norea-media://reader-asset/0002-page-2.png"'),
+      "html",
+    );
     expect(saveStoredChapterContent).not.toHaveBeenCalled();
   });
 

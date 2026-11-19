@@ -4,7 +4,7 @@ import { cloudflareAccessError } from "../http/response";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import { ContentServerError, ContentServerTransportError } from "../content-sync/client";
 import {
-  automaticRetryDelayMs, classifyDownloadFailure, isServerChapterMissingFailure, isSourceForbiddenFailure, ServerChapterMissingError,
+  automaticRetryDelayMs, classifyDownloadFailure, isServerChapterMissingFailure, isSkippableIncompleteMediaFailure, isSourceForbiddenFailure, ServerChapterMissingError,
 } from "./download-failure";
 
 const cdnChallenge = cloudflareAccessError(
@@ -150,4 +150,29 @@ it.each([
   expect(classifyDownloadFailure(error)).toMatchObject({ failureClass: "transient", retryAfterMs: 0 });
   expect(classifyDownloadFailure(error).challengeUrl).toBeUndefined();
   expect(isSourceForbiddenFailure(error)).toBe(false);
+});
+
+describe("isSkippableIncompleteMediaFailure", () => {
+  it("allows continuing past per-asset timeouts, 5xx, network errors, and 404s", () => {
+    expect(isSkippableIncompleteMediaFailure(new ChapterMediaIncompleteError([
+      { fileName: "0009.jpg", message: "scraper: browser fetch to https://img.goodtoon9001.top timed out after 30000ms", url: "https://img.goodtoon9001.top/0009.jpg" },
+    ]))).toBe(true);
+    expect(isSkippableIncompleteMediaFailure(new ChapterMediaIncompleteError([
+      { status: 503, message: "HTTP 503", url: "https://img.example/a.jpg" },
+      { status: 404, message: "HTTP 404", url: "https://img.example/b.jpg" },
+    ]))).toBe(true);
+  });
+
+  it("blocks skipping for challenges, 403, all-429 rate limits, or non-media errors", () => {
+    expect(isSkippableIncompleteMediaFailure(new ChapterMediaIncompleteError([
+      { status: 403, message: "HTTP 403", url: "https://img.example/a.jpg" },
+    ]))).toBe(false);
+    expect(isSkippableIncompleteMediaFailure(new ChapterMediaIncompleteError([
+      { status: 429, message: "HTTP 429", url: "https://img.example/a.jpg" },
+    ]))).toBe(false);
+    expect(isSkippableIncompleteMediaFailure(new ChapterMediaIncompleteError([
+      { status: 503, message: cdnChallenge!.message, url: "https://cdn.example.net/a.jpg" },
+    ]))).toBe(false);
+    expect(isSkippableIncompleteMediaFailure(new Error("webview_extract: timeout after 35000ms"))).toBe(false);
+  });
 });

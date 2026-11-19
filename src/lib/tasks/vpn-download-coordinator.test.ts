@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { ChapterMediaIncompleteError } from "../chapter-media/errors";
 import type { SavedVpnProfile } from "../plugin-vpn-profiles";
 import { SourceAccessRequiredError, sourceAccessScopeKey } from "../plugins/source-access";
 import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
@@ -559,6 +560,22 @@ describe("VPN download coordinator", () => {
     const runtime = new Runtime(); const coordinator = new VpnDownloadCoordinator(runtime); const value = plan();
     await coordinator.start(value, jobsFor(value)); await until(() => expect(runtime.tasks.size).toBe(1));
     const [, first] = runtime.task("a"); first.result.reject(new Error("HTTP 404 Not Found")); first.cleanup.resolve(undefined);
+    await until(() => expect(runtime.tasks.size).toBe(2));
+    expect(current(coordinator, "a").checkpoint).toBe(1);
+    expect(runtime.task("a", 1)[1].job.id).toBe(value.ranges[0]!.selectedChapterIds[1]);
+    expect(runtime.chapterFailures.map(item => item.chapterId)).toEqual([9]);
+    expect(runtime.events.filter(event => event.startsWith("connect:"))).toHaveLength(1);
+    await coordinator.cancelPlan(value.id);
+  });
+
+  it("settles an incomplete-media chapter timeout without marking it downloaded and continues on the same worker", async () => {
+    const runtime = new Runtime(); const coordinator = new VpnDownloadCoordinator(runtime); const value = plan();
+    await coordinator.start(value, jobsFor(value)); await until(() => expect(runtime.tasks.size).toBe(1));
+    const [, first] = runtime.task("a");
+    first.result.reject(new ChapterMediaIncompleteError([
+      { fileName: "0009-page.jpg", message: "scraper: browser fetch to https://img.goodtoon9001.top timed out after 30000ms", url: "https://img.goodtoon9001.top/0009.jpg" },
+    ]));
+    first.cleanup.resolve(undefined);
     await until(() => expect(runtime.tasks.size).toBe(2));
     expect(current(coordinator, "a").checkpoint).toBe(1);
     expect(runtime.task("a", 1)[1].job.id).toBe(value.ranges[0]!.selectedChapterIds[1]);

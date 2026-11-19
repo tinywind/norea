@@ -1,8 +1,12 @@
 import { throwIfAborted } from "../abort";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
+import { isChapterStorageError } from "../chapter-storage-error";
 import { pluginMediaFetch, takeCapturedMediaHandle } from "../http";
-import { HttpStatusError, isHttpNotFoundError } from "../http/status-error";
+import { errorHttpStatus, isHttpNotFoundError } from "../http/status-error";
 import { cancelNativeStream } from "../native-stream";
+import { isNetworkUnavailableError } from "../network";
+import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
+import { isSourceAccessRequiredError } from "../plugins/source-access";
 import { runBoundedTaskBatch } from "../tasks/batch-window";
 import { isTauriRuntime } from "../tauri-runtime";
 import {
@@ -13,6 +17,8 @@ import {
   ChapterMediaFinalizationError,
   ChapterMediaIncompleteError,
   isMediaAbortError,
+  isTransientMediaHttpStatus,
+  mediaRetryAfterMs,
   recordChapterMediaFailure,
 } from "./errors";
 import {
@@ -62,6 +68,36 @@ const DEFAULT_MEDIA_ACCEPT =
   "image/avif,image/webp,image/apng,image/svg+xml,image/*,video/*,audio/*,*/*;q=0.8";
 
 const CHAPTER_MEDIA_STORE_WINDOW = 1;
+
+function isFatalContentServerError(error: unknown): boolean {
+  return (
+    error !== null &&
+    typeof error === "object" &&
+    "code" in error &&
+    error.code === "content-server-request-failed" &&
+    !isHttpNotFoundError(error)
+  );
+}
+
+function isFatalChapterMediaError(error: unknown): boolean {
+  return (
+    isChapterStorageError(error) ||
+    isSourceAccessRequiredError(error) ||
+    isPluginVpnUnavailableError(error) ||
+    isNetworkUnavailableError(error) ||
+    isFatalContentServerError(error)
+  );
+}
+
+function errorRetryAfterMs(error: unknown): number | undefined {
+  if (error === null || typeof error !== "object" || !("retryAfterMs" in error)) {
+    return undefined;
+  }
+  const value = (error as { retryAfterMs?: unknown }).retryAfterMs;
+  return typeof value === "number" && Number.isFinite(value) && value > 0
+    ? value
+    : undefined;
+}
 
 export async function cacheHtmlChapterMedia({
   baseUrl,
@@ -325,9 +361,13 @@ export async function cacheHtmlChapterMedia({
         ? capturedHandle.status >= 200 && capturedHandle.status < 300
         : response?.ok === true;
       if (!responseOk) {
-        if (status !== 404) {
-          throw new HttpStatusError(status, `Chapter media request failed (HTTP ${status} ${statusText}).`);
-        }
+        const retryAfterMs = isTransientMediaHttpStatus(status)
+          ? mediaRetryAfterMs(
+              capturedHandle
+                ? new Headers(capturedHandle.headers).get("retry-after")
+                : (response?.headers.get("retry-after") ?? null),
+            )
+          : 0;
         if (capturedHandle) {
           await cancelNativeStream(capturedHandle.bodyHandle).catch(
             () => undefined,
@@ -337,8 +377,9 @@ export async function cacheHtmlChapterMedia({
         await session.runUpdate(async () => {
           recordChapterMediaFailure(mediaFailures, {
             contextUrl: mediaContextUrl ?? url,
-            error: `HTTP ${status} ${statusText}`,
+            error: statusText ? `HTTP ${status} ${statusText}` : `HTTP ${status}`,
             fileName: mediaFilesBySourceUrl.get(url)?.fileName,
+            ...(retryAfterMs > 0 ? { retryAfterMs } : {}),
             scraperExecutor,
             sourceId: requestSourceId,
             status,
@@ -460,17 +501,20 @@ export async function cacheHtmlChapterMedia({
         releaseMediaAcquisition();
         return;
       }
-      if (!isHttpNotFoundError(error)) {
+      if (isFatalChapterMediaError(error)) {
         session.fail(error);
         releaseMediaAcquisition();
         return;
       }
+      const status = errorHttpStatus(error);
+      const retryAfterMs = errorRetryAfterMs(error);
       try {
         await session.runUpdate(async () => {
           recordChapterMediaFailure(mediaFailures, {
             contextUrl: mediaContextUrl ?? url,
             error,
-            status: 404,
+            ...(status ? { status } : {}),
+            ...(retryAfterMs !== undefined ? { retryAfterMs } : {}),
             fileName: mediaFilesBySourceUrl.get(url)?.fileName,
             scraperExecutor,
             sourceId: requestSourceId,
@@ -542,13 +586,14 @@ export async function cacheHtmlChapterMedia({
     });
     throw finalizationError;
   }
-  if (requireComplete && mediaFailures.length > 0) {
-    throw new ChapterMediaIncompleteError(mediaFailures);
-  }
   clearMediaSourceMetadata(template.content);
+  const resolvedHtml = normalizeLocalChapterMediaOutput(template.innerHTML);
+  if (requireComplete && mediaFailures.length > 0) {
+    throw new ChapterMediaIncompleteError(mediaFailures, resolvedHtml);
+  }
 
   return {
-    html: normalizeLocalChapterMediaOutput(template.innerHTML),
+    html: resolvedHtml,
     mediaFailures,
     mediaBytes,
     storedMediaCount,

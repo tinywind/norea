@@ -523,17 +523,26 @@ explicit resume. Download errors do not grant automatic retries or profile
 rotation. Preserved queue records and partial media remain available for manual
 recovery. Missing or unsupported VPN configuration also requires user action.
 
-Offline download and repair tasks require complete media. HTTP 404 skips only
-the missing resource and records a failed or incomplete chapter; remaining
-resources and chapters may proceed. Missing assets stay in the manifest, and
-partial packages are never marked complete. A VPN range advances its checkpoint
-past a missing chapter without marking that chapter downloaded.
+Offline download and repair tasks require complete media. Per-asset media
+failures (including HTTP errors, timeouts, transient network errors, and empty
+responses) skip only the failing resource, keep acquiring the remaining
+resources in the chapter, archive all stored assets into a reusable partial
+`media.zip`, and record a failed/incomplete chapter; remaining chapters in the
+ordinary queue or VPN range may proceed unless the failure is a source-access
+challenge, HTTP 403 refusal, HTTP 429 rate limit, or an explicit `notFoundAction: "pause"`
+hold. Missing assets stay in the manifest, and partial packages are never marked
+complete. A VPN range advances its checkpoint past a missing or incomplete-media
+chapter without marking that chapter downloaded.
 
 Every other download error stops the affected ordinary source queue or VPN
-range until an explicit resume. This includes HTTP failures, network loss during
-acquisition, timeouts, plugin parsing failures, and unknown exceptions. The notice
+range until an explicit resume. This includes chapter-page HTTP failures,
+network loss during acquisition, chapter-page timeouts, plugin parsing failures,
+source-access challenges, VPN unavailability, and unknown exceptions. The notice
 preserves the redacted cause. Media requests run serially within each executor;
-non-404 failures stop further requests and preserve reusable partial files. Content-server
+fatal media errors (cancellation, local storage failures, source-access
+challenges / HTTP 403, VPN unavailability, device offline, or non-404
+content-server repair errors) stop further requests and preserve reusable
+partial files. Content-server
 cache misses and unreachable or failed server lookups or staging transfers fall
 back to an installed source plugin when the work has a source path; server-only
 works still propagate server errors, and local filesystem or database failures

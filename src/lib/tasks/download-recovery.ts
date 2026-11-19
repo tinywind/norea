@@ -1,9 +1,10 @@
 import { getDownloadRecoveryPolicy, normalizeDownloadRecoveryPolicy, type DownloadRecoveryAction, type DownloadRecoveryPolicy } from "../../store/download-recovery";
 import { isAbortError } from "../abort";
+import { isChapterMediaIncompleteError } from "../chapter-media/errors";
 import { ChapterStorageError } from "../chapter-storage-error";
 import { errorHttpStatus, isHttpNotFoundError } from "../http/status-error";
 import { normalizeSourceAccessRequiredError } from "../plugins/source-access";
-import { classifyDownloadFailure, isSourceForbiddenFailure } from "./download-failure";
+import { classifyDownloadFailure, isSkippableIncompleteMediaFailure, isSourceForbiddenFailure } from "./download-failure";
 import type { TaskRunContext } from "./task-types";
 
 export const DOWNLOAD_RECOVERY_STORAGE_KEY = "download-recovery-runtime";
@@ -521,6 +522,15 @@ export class DownloadRecoveryController {
             vpn: options.vpn === true, canResetSite: origin !== null,
           });
           if (decision.action === "skip") { this.forget([key]); throw error; }
+          const notFoundPolicyHold =
+            isHttpNotFoundError(error) ||
+            (registration.policy.notFoundAction === "pause" &&
+              isChapterMediaIncompleteError(error) &&
+              error.failures.some(isHttpNotFoundError));
+          if (decision.action === "pause" && !notFoundPolicyHold && isSkippableIncompleteMediaFailure(error)) {
+            this.forget([key]);
+            throw error;
+          }
           const next: RecoveryEpisode = {
             key, sourceId: registration.sourceId, title: registration.title, origin,
             status: decision.action === "pause" ? "held" : "waiting", action: decision.action,
@@ -545,7 +555,7 @@ export class DownloadRecoveryController {
           // Persist the reservation before waiting, resetting site data, or selecting another VPN.
           this.persist();
           if (decision.action === "pause") {
-            if (isHttpNotFoundError(error)) throw new DownloadRecoveryHoldError(failure.summary, error);
+            if (notFoundPolicyHold) throw new DownloadRecoveryHoldError(failure.summary, error);
             throw error;
           }
         }

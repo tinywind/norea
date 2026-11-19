@@ -1,4 +1,6 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { ChapterMediaIncompleteError } from "../chapter-media/errors";
+import { DownloadRecoveryHoldError } from "./download-recovery";
 import { TaskScheduler } from "./scheduler";
 
 const source = {id:"source-a", name:"Source A"};
@@ -35,6 +37,36 @@ describe("download error stop policy", () => {
     const next=scheduler.enqueueSource({kind:"chapter.download",title:"Next",source,run:async()=>"stored"});
     await expect(next.promise).resolves.toBe("stored");
     expect(scheduler.getSnapshot().pausedSourceIds).toEqual([]);
+  });
+  it("continues the source queue when a chapter fails with per-asset media timeouts or 5xx", async () => {
+    const scheduler = new TaskScheduler(); schedulers.push(scheduler);
+    const incomplete = new ChapterMediaIncompleteError([
+      { fileName: "0009-page.jpg", message: "scraper: browser fetch to https://img.goodtoon9001.top timed out after 30000ms", url: "https://img.goodtoon9001.top/0009.jpg" },
+      { fileName: "0010-page.jpg", message: "HTTP 503", status: 503, url: "https://img.goodtoon9001.top/0010.jpg" },
+    ]);
+    const failed = scheduler.enqueueSource({ kind: "chapter.download", title: "Chapter 2", source, run: async () => { throw incomplete; } });
+    const rejected = expect(failed.promise).rejects.toBe(incomplete);
+    const next = scheduler.enqueueSource({ kind: "chapter.download", title: "Chapter 3", source, run: async () => "stored" });
+    await rejected;
+    await expect(next.promise).resolves.toBe("stored");
+    expect(scheduler.getSnapshot().pausedSourceIds).toEqual([]);
+    expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+  });
+  it.each([
+    ["403 media failure", new ChapterMediaIncompleteError([{ status: 403, message: "HTTP 403", url: "https://img.example/a.jpg" }])],
+    ["429 rate-limited media", new ChapterMediaIncompleteError([{ status: 429, message: "HTTP 429", url: "https://img.example/a.jpg" }])],
+    ["external CDN challenge", new ChapterMediaIncompleteError([{ status: 503, message: "External resource at cdn.example.net requires Cloudflare verification (HTTP 503).", url: "https://cdn.example.net/a.jpg" }])],
+    ["explicit 404 pause hold", new DownloadRecoveryHoldError("HTTP 404", new ChapterMediaIncompleteError([{ status: 404, message: "HTTP 404", url: "https://img.example/a.jpg" }]))],
+  ])("still stops the source queue on %s", async (_label, error) => {
+    const scheduler = new TaskScheduler(); schedulers.push(scheduler);
+    const failed = scheduler.enqueueSource({ kind: "chapter.download", title: "Chapter 2", source, run: async () => { throw error; } });
+    void failed.promise.catch(() => undefined);
+    const nextRun = vi.fn(async () => "stored");
+    const next = scheduler.enqueueSource({ kind: "chapter.download", title: "Chapter 3", source, run: nextRun });
+    void next.promise.catch(() => undefined);
+    await expect(failed.promise).rejects.toBe(error);
+    expect(scheduler.getSnapshot().pausedSourceIds).toContain(source.id);
+    expect(nextRun).not.toHaveBeenCalled();
   });
   it("holds every source on storage failures while preserving other queued work", async()=> {
     vi.useFakeTimers();const scheduler=new TaskScheduler();schedulers.push(scheduler);

@@ -48,7 +48,7 @@ import { isNetworkUnavailableError } from "../network";
 import { TaskUserCancelledError } from "./task-errors";
 import { describeError } from "../errors";
 import { isHttpNotFoundError } from "../http/status-error";
-import { classifyDownloadFailure } from "./download-failure";
+import { classifyDownloadFailure, isSkippableIncompleteMediaFailure } from "./download-failure";
 import type { DownloadFailureStops } from "./download-failure-stop";
 import { downloadRecovery, downloadRecoveryKey, isDownloadRecoveryHold, isDownloadRecoveryNextProfile } from "./download-recovery";
 import { recordPerformanceObservation } from "../observability";
@@ -1404,7 +1404,13 @@ export class TaskScheduler {
   reportDownloadFailure(
     error: unknown, sourceId?: string, worker?: VpnDownloadWorkerRef, failedTaskId?: string,
   ): void {
-    if (isAbortError(error) || isDownloadRecoveryNextProfile(error) || (isHttpNotFoundError(error) && !isDownloadRecoveryHold(error))) return;
+    if (
+      isAbortError(error) ||
+      isDownloadRecoveryNextProfile(error) ||
+      ((isHttpNotFoundError(error) || isSkippableIncompleteMediaFailure(error)) && !isDownloadRecoveryHold(error))
+    ) {
+      return;
+    }
     const failure = classifyDownloadFailure(error);
     if (failure.failureClass === "storage" || !sourceId) {
       this.downloadFailureStops = { ...this.downloadFailureStops, globalError: failure.summary };

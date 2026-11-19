@@ -40,7 +40,10 @@ export class ChapterMediaIncompleteError extends Error {
   readonly code = "chapter-media-incomplete" as const;
   readonly retryAfterMs: number;
 
-  constructor(readonly failures: readonly ChapterMediaFailure[]) {
+  constructor(
+    readonly failures: readonly ChapterMediaFailure[],
+    readonly partialHtml?: string,
+  ) {
     const statuses = [...new Set(failures.map((failure) => failure.status).filter(Boolean))];
     const assets = failures.slice(0, 3).map((failure) =>
       [failure.fileName, mediaFailureHost(failure.url)].filter(Boolean).join(" @ "),
@@ -53,6 +56,17 @@ export class ChapterMediaIncompleteError extends Error {
   }
 }
 
+export function isChapterMediaIncompleteError(
+  value: unknown,
+): value is ChapterMediaIncompleteError {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { code?: unknown }).code === "chapter-media-incomplete" &&
+    Array.isArray((value as { failures?: unknown }).failures)
+  );
+}
+
 export class ChapterMediaHttpRetryError extends Error {
   readonly code = "chapter-media-http-retry" as const;
 
@@ -60,6 +74,13 @@ export class ChapterMediaHttpRetryError extends Error {
     super(`Media server temporarily unavailable (HTTP ${status}).`);
     this.name = "ChapterMediaHttpRetryError";
   }
+}
+
+export function mediaRetryAfterMs(value: string | null, now = Date.now()): number {
+  if (!value?.trim()) return 0;
+  const seconds = Number(value);
+  const delay = Number.isFinite(seconds) ? seconds * 1_000 : Date.parse(value) - now;
+  return Number.isFinite(delay) ? Math.max(0, Math.min(86_400_000, delay)) : 0;
 }
 
 export function isTransientMediaHttpStatus(status: number): boolean {

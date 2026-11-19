@@ -3,7 +3,7 @@ import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { PluginVpnTransportError } from "../plugin-vpn-transport";
 import { sourceAccessScopeKey, type SourceAccessChallenge } from "../plugins/source-access";
 import type { ChapterDownloadJob } from "./chapter-download";
-import { classifyDownloadFailure, isSourceForbiddenFailure, type DownloadFailureClass } from "./download-failure";
+import { classifyDownloadFailure, isSkippableIncompleteMediaFailure, isSourceForbiddenFailure, type DownloadFailureClass } from "./download-failure";
 import { isHttpNotFoundError } from "../http/status-error";
 import { isDownloadRecoveryHold, isDownloadRecoveryNextProfile, isDownloadRecoveryReconnect } from "./download-recovery";
 import type { SourceAccessBlock } from "./source-access-gate";
@@ -1007,7 +1007,10 @@ export class VpnDownloadCoordinator {
         }
         const serverFailure = outcome.error !== null && typeof outcome.error === "object" &&
           "code" in outcome.error && outcome.error.code === "content-server-request-failed";
-        const sourceMissing = isHttpNotFoundError(outcome.error) && !serverFailure && !isDownloadRecoveryHold(outcome.error);
+        const sourceMissing =
+          (isHttpNotFoundError(outcome.error) || isSkippableIncompleteMediaFailure(outcome.error)) &&
+          !serverFailure &&
+          !isDownloadRecoveryHold(outcome.error);
         if (!sourceMissing) range.failureReason = isSourceForbiddenFailure(outcome.error) ? "site-forbidden" : "chapter-failed";
         if (isSourceForbiddenFailure(outcome.error)) {
           await this.excludeProfile(range, lease, "site-forbidden");

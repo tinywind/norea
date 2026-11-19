@@ -34,6 +34,8 @@ import {
 } from "./chapter-media";
 import { pluginMediaFetch, takeCapturedMediaHandle } from "./http";
 import { storeChapterMedia } from "./chapter-media/storage";
+import { NetworkUnavailableError } from "./network";
+import { PluginVpnUnavailableError } from "./plugin-vpn-traffic";
 import { SourceAccessRequiredError } from "./plugins/source-access";
 import { waitForChapterDownloadWrites } from "./chapter-download-writes";
 
@@ -1143,30 +1145,85 @@ describe("cacheHtmlChapterMedia", () => {
       expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_prepare_workspace", expect.anything());
     });
 
-    it.each([401, 403, 408, 410, 429, 500, 502, 503, 504])("stops before later media after HTTP %i", async status => {
-      pluginMediaFetchMock.mockResolvedValue(new Response(null, { status }));
-      await expect(cacheHtmlChapterMedia({
-        baseUrl: "https://source.test/", chapterId: 42,
-        html: '<img src="/first.png"><img src="/later.png">', requireComplete: true,
-      })).rejects.toMatchObject({ status });
-      expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
-      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+    it.each([401, 403, 408, 410, 429, 500, 502, 503, 504])("continues downloading later media after HTTP %i", async status => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+      const stored: string[] = [];
+      pluginMediaFetchMock.mockImplementation(async url =>
+        String(url).endsWith("/first.png")
+          ? new Response(null, { status })
+          : new Response(new Uint8Array([1, 2, 3]), { headers: { "content-type": "image/png" }, status: 200 }),
+      );
+      mockChapterMediaInvoke(async (command, args) => {
+        if (command === "chapter_media_read_manifest") return null;
+        if (command === "chapter_media_store_handle") {
+          const { fileName } = args as { fileName: string };
+          stored.push(fileName);
+          return `norea-media://reader-asset/${fileName}`;
+        }
+        if (command === "chapter_media_archive_cache") return 3;
+        return null;
+      });
+      try {
+        await expect(cacheHtmlChapterMedia({
+          baseUrl: "https://source.test/", chapterId: 42,
+          html: '<img src="/first.png"><img src="/later.png">', requireComplete: true,
+        })).rejects.toMatchObject({
+          code: "chapter-media-incomplete",
+          failures: [expect.objectContaining({ fileName: "0001-first.png", status })],
+          partialHtml: expect.stringContaining('src="norea-media://reader-asset/0002-later.png"'),
+        });
+        expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+        expect(stored).toEqual(["0002-later.png"]);
+        expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
 
-    it("does not retry a network failure or request later media", async () => {
+    it("continues requesting later media without retrying a failed network asset", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       vi.useFakeTimers();
       try {
         const failure = new TypeError("Failed to fetch");
-        pluginMediaFetchMock.mockRejectedValue(failure);
+        pluginMediaFetchMock
+          .mockRejectedValueOnce(failure)
+          .mockResolvedValueOnce(new Response(new Uint8Array([1, 2, 3]), { status: 200 }));
+        mockChapterMediaInvoke(async (command, args) => {
+          if (command === "chapter_media_read_manifest") return null;
+          if (command === "chapter_media_store_handle") {
+            return `norea-media://reader-asset/${(args as { fileName: string }).fileName}`;
+          }
+          if (command === "chapter_media_archive_cache") return 3;
+          return null;
+        });
         const pending = cacheHtmlChapterMedia({
           baseUrl: "https://source.test/", chapterId: 42,
           html: '<img src="/first.png"><img src="/later.png">', requireComplete: true,
         }).catch(error => error);
         await vi.runAllTimersAsync();
-        expect(await pending).toBe(failure);
-        expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
-        expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
-      } finally { vi.useRealTimers(); }
+        expect(await pending).toMatchObject({
+          code: "chapter-media-incomplete",
+          failures: [expect.objectContaining({ fileName: "0001-first.png", message: "Failed to fetch" })],
+        });
+        expect(pluginMediaFetchMock).toHaveBeenCalledTimes(2);
+        expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      } finally {
+        vi.useRealTimers();
+        warnSpy.mockRestore();
+      }
+    });
+
+    it.each([
+      ["VPN unavailable", new PluginVpnUnavailableError()],
+      ["network offline", new NetworkUnavailableError()],
+    ])("stops immediately without archiving when %s occurs", async (_label, fatalError) => {
+      pluginMediaFetchMock.mockRejectedValue(fatalError);
+      await expect(cacheHtmlChapterMedia({
+        baseUrl: "https://source.test/", chapterId: 42,
+        html: '<img src="/first.png"><img src="/later.png">', requireComplete: true,
+      })).rejects.toBe(fatalError);
+      expect(pluginMediaFetchMock).toHaveBeenCalledOnce();
+      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
     });
 
     it("cancels an active source fetch when a deferred manifest write fails", async () => {
@@ -1221,17 +1278,20 @@ describe("cacheHtmlChapterMedia", () => {
   });
 
   describe("strict offline completion", () => {
-    it.each(["permanent HTTP"])(
+    it.each(["permanent HTTP", "temporary HTTP", "network", "browser fetch timeout"] as const)(
       "stores later assets and archives them after a %s failure",
       async failure => {
         vi.useFakeTimers();
-        vi.spyOn(console, "warn").mockImplementation(() => undefined);
+        const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
         const stored: string[] = [];
         let archived: string[] | undefined;
         let files: Array<{ fileName: string; status: string }> = [];
         pluginMediaFetchMock.mockImplementation(async url => {
           if (url.endsWith("/page-1.png")) {
             if (failure === "network") throw new TypeError("Failed to fetch");
+            if (failure === "browser fetch timeout") {
+              throw new Error("scraper: browser fetch to https://img.goodtoon9001.top timed out after 30000ms");
+            }
             return new Response(null, { status: failure === "temporary HTTP" ? 503 : 404 });
           }
           return new Response(new Uint8Array([1, 2, 3]), { status: 200 });
@@ -1265,10 +1325,14 @@ describe("cacheHtmlChapterMedia", () => {
           expect(archived?.sort()).toEqual(["0002-page-2.png", "0003-page-3.png", "0004-page-4.png", "0005-page-5.png"]);
           expect(files.filter(file => file.status === "remote").map(file => file.fileName)).toEqual(["0001-page-1.png"]);
           expect(new Set(pluginMediaFetchMock.mock.calls.map(([url]) => url)).size).toBe(5);
-        } finally { vi.useRealTimers(); }
+        } finally {
+          vi.useRealTimers();
+          warnSpy.mockRestore();
+        }
       },
     );
-    it.each([false, true])("releases captured response streams before stopping (cleanup fails: %s)", async cleanupFails => {
+    it.each([false, true])("releases captured response streams and continues archiving on HTTP 503 (cleanup fails: %s)", async cleanupFails => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       takeCapturedMediaHandleMock.mockResolvedValueOnce({
         bodyBytes: 3, bodyHandle: "retry-response", finalUrl: "https://source.test/page.png",
         headers: { "content-type": "text/plain", "retry-after": "30" }, status: 503, statusText: "Unavailable",
@@ -1276,36 +1340,59 @@ describe("cacheHtmlChapterMedia", () => {
       mockChapterMediaInvoke(async command => {
         if (command === "chapter_media_read_manifest") return null;
         if (command === "native_stream_cancel" && cleanupFails) throw new Error("already closed");
+        if (command === "chapter_media_archive_cache") return 0;
         return null;
       });
-      await expect(cacheHtmlChapterMedia({
-        baseUrl: "https://source.test/", chapterId: 42, scraperExecutor: "pool:1",
-        html: '<img src="/page.png">', requireComplete: true,
-      })).rejects.toMatchObject({ status: 503 });
-      expect(invokeMock.mock.calls.filter(([command]) => command === "native_stream_cancel")).toEqual([
-        ["native_stream_cancel", { handle: "retry-response" }],
-      ]);
-      expect(pluginMediaFetchMock).not.toHaveBeenCalled();
-      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      try {
+        await expect(cacheHtmlChapterMedia({
+          baseUrl: "https://source.test/", chapterId: 42, scraperExecutor: "pool:1",
+          html: '<img src="/page.png">', requireComplete: true,
+        })).rejects.toMatchObject({
+          code: "chapter-media-incomplete",
+          retryAfterMs: 30_000,
+          failures: [expect.objectContaining({ status: 503, retryAfterMs: 30_000 })],
+        });
+        expect(invokeMock.mock.calls.filter(([command]) => command === "native_stream_cancel")).toEqual([
+          ["native_stream_cancel", { handle: "retry-response" }],
+        ]);
+        expect(pluginMediaFetchMock).not.toHaveBeenCalled();
+        expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
 
     it("archives available assets without reporting a missing image as complete", async () => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       pluginMediaFetchMock.mockResolvedValue(new Response(null, { status: 404 }));
-      await expect(cacheHtmlChapterMedia({
-        baseUrl: "https://source.test/", chapterId: 42,
-        html: '<img src="./missing.png">', requireComplete: true,
-      })).rejects.toMatchObject({ code: "chapter-media-incomplete" });
-      expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
-      expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      try {
+        await expect(cacheHtmlChapterMedia({
+          baseUrl: "https://source.test/", chapterId: 42,
+          html: '<img src="./missing.png">', requireComplete: true,
+        })).rejects.toMatchObject({ code: "chapter-media-incomplete" });
+        expect(pluginMediaFetchMock).toHaveBeenCalledTimes(1);
+        expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
 
-    it.each([408, 429, 502, 503, 504])("stops immediately for HTTP %i", async status => {
+    it.each([408, 429, 502, 503, 504])("records Retry-After and archives partial results for HTTP %i", async status => {
+      const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
       pluginMediaFetchMock.mockResolvedValue(new Response(null, { status, headers: { "Retry-After": "30" } }));
-      await expect(cacheHtmlChapterMedia({
-        baseUrl: "https://source.test/", chapterId: 42,
-        html: '<img src="./page.png">', requireComplete: true,
-      })).rejects.toMatchObject({ status });
-      expect(invokeMock).not.toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      try {
+        await expect(cacheHtmlChapterMedia({
+          baseUrl: "https://source.test/", chapterId: 42,
+          html: '<img src="./page.png">', requireComplete: true,
+        })).rejects.toMatchObject({
+          code: "chapter-media-incomplete",
+          retryAfterMs: 30_000,
+          failures: [expect.objectContaining({ status, retryAfterMs: 30_000 })],
+        });
+        expect(invokeMock).toHaveBeenCalledWith("chapter_media_archive_cache", expect.anything());
+      } finally {
+        warnSpy.mockRestore();
+      }
     });
 
   });
