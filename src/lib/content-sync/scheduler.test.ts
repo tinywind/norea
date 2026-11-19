@@ -26,6 +26,7 @@ import { startContentServerSync } from "./scheduler";
 import { listNovelMigrations } from "../../db/queries/content-sync";
 import { PendingNovelMigrationError } from "./novel-migration";
 import { PendingIncomingMigrationError } from "./migration-feed";
+import { useNetworkStore } from "../network";
 import { notifyChapterDownloadsSettled } from "../tasks/chapter-download-activity";
 
 let cleanup: (() => void) | undefined;
@@ -49,6 +50,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup?.();
   cleanup = undefined;
+  useNetworkStore.setState({ connectivity: "online", revision: -1 });
   vi.useRealTimers();
   vi.unstubAllGlobals();
 });
@@ -384,4 +386,28 @@ it("retries a pending incoming transfer with backoff while leaving ordinary manu
   expect(syncReceivedWorkMigrations).toHaveBeenCalledTimes(2);
   expect(useContentSyncStore.getState()).toMatchObject({ status: "idle", error: null });
   expect(syncContentServer).not.toHaveBeenCalled();
+});
+
+it("follows native host connectivity in Tauri even when navigator.onLine is stuck at false", async () => {
+  vi.mocked(syncReceivedWorkMigrations).mockImplementation(signal => new Promise((_resolve, reject) => {
+    signal?.addEventListener("abort", () => reject(signal.reason), { once: true });
+  }));
+  const tauriWindow = Object.assign(new EventTarget(), { __TAURI_INTERNALS__: {} });
+  vi.stubGlobal("window", tauriWindow);
+  vi.stubGlobal("navigator", { onLine: false });
+  useNetworkStore.setState({ connectivity: "online", revision: 8 });
+
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(syncReceivedWorkMigrations).toHaveBeenCalledTimes(1);
+  const first = vi.mocked(syncReceivedWorkMigrations).mock.calls[0]![0]!;
+
+  useNetworkStore.setState({ connectivity: "offline", revision: 9 });
+  expect(first.aborted).toBe(true);
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(syncReceivedWorkMigrations).toHaveBeenCalledTimes(1);
+
+  useNetworkStore.setState({ connectivity: "online", revision: 10 });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(syncReceivedWorkMigrations).toHaveBeenCalledTimes(2);
 });

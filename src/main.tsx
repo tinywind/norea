@@ -83,7 +83,11 @@ const queryClient = new QueryClient({
   }),
   defaultOptions: {
     queries: {
+      networkMode: "always",
       staleTime: 30_000,
+    },
+    mutations: {
+      networkMode: "always",
     },
   },
 });

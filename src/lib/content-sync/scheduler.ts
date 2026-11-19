@@ -6,6 +6,7 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { ContentServerError, contentServerRequest } from "./client";
 import { getContentSyncCursors, syncContentServer, syncReceivedWorkMigrations } from "./sync";
 import { subscribeWorkMetadataChanges } from "../work-metadata";
+import { isHostNetworkConnected, subscribeHostNetworkConnection } from "../network";
 import { subscribeChapterDownloadsSettled } from "../tasks/chapter-download-activity";
 
 export function startContentServerSync(): () => void {
@@ -24,7 +25,7 @@ export function startContentServerSync(): () => void {
   function active(): boolean {
     const state = useContentSyncStore.getState();
     return !disposed && !!state.serverUrl
-      && document.visibilityState !== "hidden" && navigator.onLine !== false;
+      && document.visibilityState !== "hidden" && isHostNetworkConnected();
   }
 
   function cancelWait(): void {
@@ -191,8 +192,7 @@ export function startContentServerSync(): () => void {
   const unsubscribeDownloads = subscribeChapterDownloadsSettled(() => {
     if (useContentSyncStore.getState().syncMode === "changes") requestSync();
   });
-  window.addEventListener("online", restart);
-  window.addEventListener("offline", restart);
+  const unsubscribeNetwork = subscribeHostNetworkConnection(() => restart());
   document.addEventListener("visibilitychange", restart);
   restart();
   return () => {
@@ -203,8 +203,7 @@ export function startContentServerSync(): () => void {
     unsubscribeChanges();
     unsubscribeMetadata();
     unsubscribeDownloads();
-    window.removeEventListener("online", restart);
-    window.removeEventListener("offline", restart);
+    unsubscribeNetwork();
     document.removeEventListener("visibilitychange", restart);
   };
 }

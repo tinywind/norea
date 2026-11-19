@@ -1,3 +1,4 @@
+import { onlineManager } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { create } from "zustand";
@@ -30,6 +31,42 @@ export function isNetworkUnavailableError(error: unknown): boolean {
 
 export function isNetworkOnline(): boolean {
   return useNetworkStore.getState().connectivity === "online";
+}
+
+/**
+ * Whether the host has an active network route. Android WebView can leave
+ * `navigator.onLine` stuck at `false` across VPN or Wi-Fi transitions while
+ * Android's ConnectivityManager reports `online`, so Tauri runtimes read the
+ * native status store instead of `navigator.onLine`.
+ */
+export function isHostNetworkConnected(): boolean {
+  if (isTauriRuntime()) {
+    return useNetworkStore.getState().connectivity !== "offline";
+  }
+  return typeof navigator === "undefined" || navigator.onLine !== false;
+}
+
+export function subscribeHostNetworkConnection(
+  onChange: (connected: boolean) => void,
+): () => void {
+  if (isTauriRuntime()) {
+    return useNetworkStore.subscribe((status, previous) => {
+      const connected = status.connectivity !== "offline";
+      const wasConnected = previous.connectivity !== "offline";
+      if (connected !== wasConnected) {
+        onChange(connected);
+      }
+    });
+  }
+  if (typeof window === "undefined") return () => undefined;
+  const handleOnline = () => onChange(true);
+  const handleOffline = () => onChange(false);
+  window.addEventListener("online", handleOnline);
+  window.addEventListener("offline", handleOffline);
+  return () => {
+    window.removeEventListener("online", handleOnline);
+    window.removeEventListener("offline", handleOffline);
+  };
 }
 
 export function requireNetworkOnline(): void {
@@ -69,6 +106,10 @@ export async function withNetworkRequest<T>(
 export async function initializeNetworkStatus(): Promise<void> {
   if (!isTauriRuntime()) return;
   useNetworkStore.setState({ connectivity: "unknown" });
+  onlineManager.setEventListener((setOnline) => {
+    setOnline(isHostNetworkConnected());
+    return subscribeHostNetworkConnection(setOnline);
+  });
   const update = (status: NetworkStatus) => {
     if (status.revision >= useNetworkStore.getState().revision) {
       useNetworkStore.setState(status);

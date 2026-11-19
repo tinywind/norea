@@ -1,5 +1,5 @@
 import { notifications, notificationsStore } from "@mantine/notifications";
-import { QueryClient } from "@tanstack/react-query";
+import { onlineManager, QueryClient, QueryObserver } from "@tanstack/react-query";
 import { afterAll, afterEach, beforeEach, expect, it, vi } from "vitest";
 import { showErrorToast } from "./error-toast";
 
@@ -22,7 +22,10 @@ vi.mock("react-dom/client", () => ({ createRoot: () => ({ render: () => undefine
 vi.mock("../../components/runtime/ChapterMediaStorageGate", () => ({ ChapterMediaStorageGate: () => null }));
 vi.mock("../../components/runtime/PluginVpnProxyGate", () => ({ PluginVpnProxyGate: () => null }));
 vi.mock("../content-sync/scheduler", () => ({ startContentServerSync: vi.fn() }));
-vi.mock("../network", () => ({ initializeNetworkStatus: vi.fn() }));
+vi.mock("../network", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../network")>()),
+  initializeNetworkStatus: vi.fn(),
+}));
 vi.mock("../tasks/network-lifecycle", () => ({ initializeTaskNetworkState: vi.fn() }));
 vi.mock("../tasks/vpn-download-runtime", () => ({ initializeVpnDownloadRuntime: vi.fn(async () => undefined) }));
 vi.mock("../tasks/source-access-coordinator", () => ({ initializeSourceAccessCoordinator: vi.fn() }));
@@ -44,6 +47,7 @@ beforeEach(async () => {
 afterAll(() => vi.unstubAllGlobals());
 
 afterEach(() => {
+  onlineManager.setOnline(true);
   notifications.clean();
   client.clear();
   vi.useRealTimers();
@@ -159,4 +163,33 @@ it("leaves inline query errors to their screen", async () => {
   })).rejects.toBe(failure);
 
   expect(notificationsStore.getState().notifications).toHaveLength(0);
+});
+
+it("executes queries and mutations without pausing when WebView reports offline", async () => {
+  onlineManager.setOnline(false);
+
+  const observer = new QueryObserver(client, {
+    queryKey: ["local-library-while-offline"],
+    queryFn: async () => "local-row",
+  });
+  let latest = observer.getCurrentResult();
+  const unsubscribe = observer.subscribe((result) => {
+    latest = result;
+  });
+
+  try {
+    await vi.waitFor(() => {
+      expect(latest.status).toBe("success");
+    });
+    expect(latest.fetchStatus).toBe("idle");
+    expect(latest.data).toBe("local-row");
+
+    const mutation = client.getMutationCache().build(client, {
+      mutationFn: async () => "updated",
+    });
+    await expect(mutation.execute(undefined)).resolves.toBe("updated");
+  } finally {
+    unsubscribe();
+    observer.destroy();
+  }
 });

@@ -7,6 +7,7 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { useReaderStore } from "../../store/reader";
 import { useUserStateStore } from "../../store/user-state";
 import { isAbortError, requestAbortedError } from "../abort";
+import { isHostNetworkConnected, subscribeHostNetworkConnection } from "../network";
 import { subscribeUserStateFlush } from "./events";
 import { synchronizeUserState } from "./sync";
 
@@ -40,7 +41,7 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
   function configured(): boolean {
     const serverUrl = useContentSyncStore.getState().serverUrl;
     return !disposed && !!serverUrl && useUserStateStore.getState().enabledByServer[serverUrl] === true &&
-      navigator.onLine !== false;
+      isHostNetworkConnected();
   }
   function runnable(allowHidden: boolean): boolean {
     return configured() && (allowHidden || document.visibilityState !== "hidden");
@@ -156,8 +157,10 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
       }
     }, 150);
   });
-  window.addEventListener("online", onOnline);
-  window.addEventListener("offline", onOffline);
+  const unsubscribeNetwork = subscribeHostNetworkConnection((connected) => {
+    if (connected) onOnline();
+    else onOffline();
+  });
   document.addEventListener("visibilitychange", onVisibilityChange);
   restart();
   return () => {
@@ -172,8 +175,7 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
     unsubscribeFlush();
     unsubscribeApplied();
     setUserStateActiveServer(null);
-    window.removeEventListener("online", onOnline);
-    window.removeEventListener("offline", onOffline);
+    unsubscribeNetwork();
     document.removeEventListener("visibilitychange", onVisibilityChange);
   };
 }

@@ -19,6 +19,7 @@ vi.mock("../../db/user-state", () => ({
 vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ applySharedResume: mocks.applyResume }) } }));
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
+import { useNetworkStore } from "../network";
 import { requestUserStateFlush } from "./events";
 import {
   startUserStateScheduler, USER_STATE_COMMAND_DEBOUNCE_MS, USER_STATE_POLL_MS, USER_STATE_READING_DEBOUNCE_MS,
@@ -44,7 +45,13 @@ beforeEach(() => {
   });
   vi.stubGlobal("navigator", network);
 });
-afterEach(() => { cleanup?.(); cleanup = undefined; vi.useRealTimers(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  cleanup?.();
+  cleanup = undefined;
+  useNetworkStore.setState({ connectivity: "online", revision: -1 });
+  vi.useRealTimers();
+  vi.unstubAllGlobals();
+});
 
 it("performs no automatic traffic until this specific server is enabled", async () => {
   cleanup = startUserStateScheduler();
@@ -176,4 +183,30 @@ it("keeps exponential failure backoff even while reading generates edits", async
   expect(mocks.sync).toHaveBeenCalledTimes(2);
   await vi.advanceTimersByTimeAsync(1);
   expect(mocks.sync).toHaveBeenCalledTimes(3);
+});
+
+it("follows native host connectivity in Tauri even when navigator.onLine is stuck at false", async () => {
+  mocks.sync.mockImplementation(({ signal }: { signal: AbortSignal }) => new Promise<void>((_resolve, reject) => {
+    signal.addEventListener("abort", () => reject(signal.reason), { once: true });
+  }));
+  const tauriWindow = Object.assign(new EventTarget(), { __TAURI_INTERNALS__: {} });
+  vi.stubGlobal("window", tauriWindow);
+  network.onLine = false;
+  useNetworkStore.setState({ connectivity: "online", revision: 8 });
+  useUserStateStore.getState().setEnabled("http://server", true);
+
+  cleanup = startUserStateScheduler();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+  const firstSignal = mocks.sync.mock.calls[0][0].signal as AbortSignal;
+
+  useNetworkStore.setState({ connectivity: "offline", revision: 9 });
+  expect(firstSignal.aborted).toBe(true);
+  mocks.localListener?.("reading");
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+
+  useNetworkStore.setState({ connectivity: "online", revision: 10 });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
 });
