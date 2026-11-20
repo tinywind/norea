@@ -317,31 +317,11 @@ object AndroidNativeIo {
     return if (extension.isNullOrBlank()) "opened-file" else "opened-file.$extension"
   }
 
-  private fun allowedUpdateApk(context: Context, path: String): File {
-    val apk = File(path).canonicalFile
-    require(apk.isFile) { "APK file does not exist." }
-    require(apk.extension.equals("apk", ignoreCase = true)) {
-      "Update file is not an APK."
-    }
-    require(allowedUpdateRoots(context).any { root -> isContainedBy(apk, root) }) {
-      "APK file is outside the Android update folder."
-    }
-    return apk
-  }
-
-  private fun allowedUpdateRoots(context: Context): List<File> {
-    val roots = mutableListOf<File>()
-    fun addUpdateRoots(base: File?) {
-      if (base == null) return
-      roots.add(File(base, UPDATE_DOWNLOAD_DIR))
-      roots.add(File(File(base, "native-stream"), "update"))
-    }
-    addUpdateRoots(context.cacheDir)
-    addUpdateRoots(context.externalCacheDir)
-    addUpdateRoots(context.filesDir)
-    addUpdateRoots(context.getExternalFilesDir(null))
-    return roots.map { it.canonicalFile }
-  }
+  private fun allowedUpdateApk(context: Context, path: String): File =
+    requireAllowedUpdateApk(
+      path,
+      allowedInternalUpdateRoots(context.cacheDir, context.filesDir),
+    )
 
   private fun verifyUpdateApkIntegrity(apk: File, expectedSize: Long, expectedSha256: String) {
     val fileSize = apk.length().coerceAtLeast(0L)
@@ -445,10 +425,30 @@ object AndroidNativeIo {
       (byte.toInt() and 0xff).toString(16).padStart(2, '0')
     }
   }
+}
 
-  private fun isContainedBy(file: File, root: File): Boolean {
-    val filePath = file.path
-    val rootPath = root.path
-    return filePath == rootPath || filePath.startsWith(rootPath + File.separator)
+internal fun allowedInternalUpdateRoots(cacheDir: File, filesDir: File): List<File> =
+  listOf(cacheDir, filesDir).flatMap { base ->
+    listOf(
+      File(base, UPDATE_DOWNLOAD_DIR),
+      File(File(base, "native-stream"), "update"),
+    )
+  }.map { it.canonicalFile }
+
+internal fun requireAllowedUpdateApk(path: String, allowedRoots: List<File>): File {
+  val apk = File(path).canonicalFile
+  require(apk.isFile) { "APK file does not exist." }
+  require(apk.extension.equals("apk", ignoreCase = true)) {
+    "Update file is not an APK."
   }
+  require(allowedRoots.any { root -> isContainedBy(apk, root) }) {
+    "APK file is outside the Android update folder."
+  }
+  return apk
+}
+
+private fun isContainedBy(file: File, root: File): Boolean {
+  val filePath = file.path
+  val rootPath = root.path
+  return filePath == rootPath || filePath.startsWith(rootPath + File.separator)
 }

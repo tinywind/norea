@@ -247,7 +247,13 @@ abstract class AndroidVpnDownloadWorkerService(private val slot: Int) : Service(
           onSuccess = {
             runCatching {
               val surface = FrameLayout(this)
-              val host = WebView(this).apply { visibility = View.INVISIBLE }
+              val host = WebView(this).apply {
+                visibility = View.INVISIBLE
+                settings.apply {
+                  allowContentAccess = false
+                  allowFileAccess = false
+                }
+              }
               surface.addView(host, FrameLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT))
               container = surface
               dummy = host
