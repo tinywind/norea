@@ -4,7 +4,8 @@ use super::archives::clear_content_media_artifacts;
 use super::chapter_media_blocking;
 use super::content::content_chapter_dir_from_context;
 use super::media::{
-    media_path_in_chapter_dir, media_src_chapter_id, parse_media_src, regular_file_len,
+    media_path_in_chapter_dir, media_src_chapter_id, open_archive_reader, parse_media_src,
+    regular_file_len, ArchiveReaderOpenError, MAX_CHAPTER_MEDIA_ARCHIVE_BYTES,
 };
 use super::paths::{
     content_chapter_dir_at, content_chapter_dirs_matching_identity, ensure_contents_nomedia,
@@ -16,8 +17,8 @@ use super::publication::archive_backup_path;
 use super::types::ChapterMediaClearContext;
 use std::{
     collections::{HashMap, HashSet},
-    fs::{self, File},
-    io::{BufReader, ErrorKind},
+    fs,
+    io::ErrorKind,
     path::Path,
 };
 use tauri::{AppHandle, Runtime};
@@ -87,7 +88,11 @@ fn chapter_media_total_size_sync(
                 if let Some(path) = media_path_in_chapter_dir(&chapter_dir, &file_name) {
                     match fs::metadata(&path) {
                         Ok(metadata) if metadata.is_file() => {
-                            total += metadata.len();
+                            total += regular_file_len(
+                                &path,
+                                &metadata,
+                                "chapter media: read media size",
+                            )?;
                             found = true;
                         }
                         Ok(_) => {}
@@ -109,7 +114,11 @@ fn chapter_media_total_size_sync(
                         }
                         match fs::metadata(&archive_path) {
                             Ok(metadata) if metadata.is_file() => {
-                                total += metadata.len();
+                                total += regular_file_len(
+                                    &archive_path,
+                                    &metadata,
+                                    "chapter media: read archive size",
+                                )?;
                                 counted_archives.insert(archive_key);
                                 break;
                             }
@@ -198,9 +207,18 @@ fn chapter_media_stored_entry_sizes_in_dir(
     if !pending_archive.is_empty() {
         let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
         if archive_path.is_file() {
-            let archive_file = File::open(&archive_path)
-                .map_err(|err| format!("chapter media: open archive: {err}"))?;
-            let mut archive = ZipArchive::new(BufReader::new(archive_file))
+            let archive_reader =
+                open_archive_reader(&archive_path, MAX_CHAPTER_MEDIA_ARCHIVE_BYTES).map_err(
+                    |err| match err {
+                        ArchiveReaderOpenError::TooLarge => {
+                            "chapter media: archive exceeds byte limit".to_string()
+                        }
+                        ArchiveReaderOpenError::Io(io_err) => {
+                            format!("chapter media: open archive: {io_err}")
+                        }
+                    },
+                )?;
+            let mut archive = ZipArchive::new(archive_reader)
                 .map_err(|err| format!("chapter media: read archive: {err}"))?;
             for file_name in pending_archive {
                 match archive.by_name(&file_name) {
@@ -557,6 +575,7 @@ mod tests {
 
     #[test]
     fn stored_entry_sizes_resolves_direct_files_and_uncompressed_archive_entries() {
+        use std::fs::File;
         use std::io::Write;
         use zip::{write::SimpleFileOptions, ZipWriter};
 

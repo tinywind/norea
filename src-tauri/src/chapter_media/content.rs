@@ -1,6 +1,7 @@
 //! Authoritative chapter content mirrors and their inspection.
 
 use super::chapter_media_blocking;
+use super::media::regular_file_len;
 use super::paths::{
     chapter_number_segment, content_chapter_dir_at, content_chapter_dirs_matching_identity,
     content_chapter_dirs_matching_segments, content_chapter_relative_dir, ensure_contents_nomedia,
@@ -51,10 +52,15 @@ fn stored_content_path_in_dir(
 }
 
 fn stored_media_archive_bytes(chapter_dir: &Path) -> u64 {
-    fs::symlink_metadata(chapter_dir.join(MEDIA_ARCHIVE_FILE))
+    let archive_path = chapter_dir.join(MEDIA_ARCHIVE_FILE);
+    fs::symlink_metadata(&archive_path)
         .ok()
         .filter(|metadata| metadata.file_type().is_file())
-        .map_or(0, |metadata| metadata.len())
+        .and_then(|metadata| {
+            regular_file_len(&archive_path, &metadata, "chapter media: read stored archive size")
+                .ok()
+        })
+        .unwrap_or(0)
 }
 
 pub(super) fn inspect_content_chapter_dir(
@@ -73,7 +79,11 @@ pub(super) fn inspect_content_chapter_dir(
             content_path.display()
         ));
     }
-    let content_bytes = content_metadata.len();
+    let content_bytes = regular_file_len(
+        &content_path,
+        &content_metadata,
+        "chapter media: read stored chapter size",
+    )?;
     let media_complete = match crate::content_sync::validate_chapter_media(chapter_dir) {
         Ok(()) => true,
         Err(reason) => {

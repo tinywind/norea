@@ -2,6 +2,7 @@
 
 use super::cache::remove_existing_path;
 use super::chapter_media_blocking;
+use super::media::{copy_file_without_copy_file_range, regular_file_len};
 use super::paths::{
     ensure_contents_nomedia, media_root, relative_storage_path, safe_relative_storage_path,
     CONTENTS_ROOT_DIR, MEDIA_ARCHIVE_FILE, MEDIA_DOWNLOAD_DIR,
@@ -144,7 +145,7 @@ fn copy_storage_tree(source: &Path, target: &Path) -> Result<(), String> {
     let metadata = storage_metadata(source, "chapter media: inspect transfer source")?
         .ok_or_else(|| "chapter media: transfer source disappeared".to_string())?;
     if metadata.is_file() {
-        fs::copy(source, target)
+        copy_file_without_copy_file_range(source, target)
             .map(|_| ())
             .map_err(|err| format!("chapter media: copy transfer file: {err}"))?;
         return Ok(());
@@ -175,7 +176,7 @@ fn storage_tree_file_bytes(path: &Path) -> Result<u64, String> {
         return Ok(0);
     };
     if metadata.is_file() {
-        return Ok(metadata.len());
+        return regular_file_len(path, &metadata, "chapter media: read transfer media size");
     }
     if !metadata.is_dir() {
         return Err("chapter media: transfer media contains an unsupported entry".to_string());

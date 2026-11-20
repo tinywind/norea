@@ -10,7 +10,7 @@ use super::paths::{
 use crate::native_stream::{self, NativeStreamState, CHAPTER_MEDIA_STREAM_DOMAIN};
 use std::{
     fs::{self, File},
-    io::{self, BufReader, Read, Write},
+    io::{self, BufReader, Cursor, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
 };
 use tauri::{AppHandle, State};
@@ -58,10 +58,18 @@ fn media_body_from_archive(
     archive_path: &Path,
     file_name: &str,
 ) -> Result<Option<Vec<u8>>, String> {
-    let archive_file =
-        File::open(archive_path).map_err(|err| format!("chapter media: open archive: {err}"))?;
-    let mut archive = ZipArchive::new(BufReader::new(archive_file))
-        .map_err(|err| format!("chapter media: read archive: {err}"))?;
+    let reader = open_archive_reader(archive_path, MAX_CHAPTER_MEDIA_ARCHIVE_BYTES).map_err(
+        |err| match err {
+            ArchiveReaderOpenError::TooLarge => {
+                "chapter media: archive exceeds byte limit".to_string()
+            }
+            ArchiveReaderOpenError::Io(io_err) => {
+                format!("chapter media: open archive: {io_err}")
+            }
+        },
+    )?;
+    let mut archive =
+        ZipArchive::new(reader).map_err(|err| format!("chapter media: read archive: {err}"))?;
     let mut entry = match archive.by_name(file_name) {
         Ok(entry) => entry,
         Err(ZipError::FileNotFound) => return Ok(None),
@@ -198,6 +206,79 @@ struct ChapterMediaStoreInput {
 }
 
 const MEDIA_IO_BUFFER_BYTES: usize = 64 * 1024;
+pub(crate) const MAX_CHAPTER_MEDIA_ARCHIVE_BYTES: u64 = 512 * 1024 * 1024;
+
+pub(crate) enum StaleZeroSafeArchiveReader {
+    File(BufReader<File>),
+    Memory(Cursor<Vec<u8>>),
+}
+
+impl Read for StaleZeroSafeArchiveReader {
+    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
+        match self {
+            Self::File(reader) => reader.read(buf),
+            Self::Memory(cursor) => cursor.read(buf),
+        }
+    }
+}
+
+impl Seek for StaleZeroSafeArchiveReader {
+    fn seek(&mut self, pos: SeekFrom) -> io::Result<u64> {
+        match self {
+            Self::File(reader) => reader.seek(pos),
+            Self::Memory(cursor) => cursor.seek(pos),
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) enum ArchiveReaderOpenError {
+    TooLarge,
+    Io(io::Error),
+}
+
+pub(super) fn open_archive_reader_with_reported_len(
+    path: &Path,
+    file: File,
+    reported_len: u64,
+    max_bytes: u64,
+) -> Result<StaleZeroSafeArchiveReader, ArchiveReaderOpenError> {
+    if reported_len > max_bytes {
+        return Err(ArchiveReaderOpenError::TooLarge);
+    }
+    if reported_len > 0 {
+        return Ok(StaleZeroSafeArchiveReader::File(BufReader::new(file)));
+    }
+    let mut bytes = Vec::new();
+    file.take(max_bytes.saturating_add(1))
+        .read_to_end(&mut bytes)
+        .map_err(ArchiveReaderOpenError::Io)?;
+    if bytes.len() as u64 > max_bytes {
+        return Err(ArchiveReaderOpenError::TooLarge);
+    }
+    if !bytes.is_empty() {
+        log::warn!(
+            "[chapter-media] stat reported 0 bytes for non-empty archive path={} actual_bytes={}",
+            path.display(),
+            bytes.len()
+        );
+    }
+    Ok(StaleZeroSafeArchiveReader::Memory(Cursor::new(bytes)))
+}
+
+/// Opens a ZIP archive reader, buffering sequentially via `read(2)` only when
+/// `stat()` reports zero bytes so `lseek(SEEK_END)` cannot fail on Android 15 FUSE.
+pub(crate) fn open_archive_reader(
+    path: &Path,
+    max_bytes: u64,
+) -> Result<StaleZeroSafeArchiveReader, ArchiveReaderOpenError> {
+    let file = File::open(path).map_err(ArchiveReaderOpenError::Io)?;
+    let reported_len = file
+        .metadata()
+        .map_err(ArchiveReaderOpenError::Io)?
+        .len();
+    open_archive_reader_with_reported_len(path, file, reported_len, max_bytes)
+}
 
 fn measure_readable_file_len(path: &Path) -> io::Result<u64> {
     let mut file = File::open(path)?;
@@ -233,7 +314,7 @@ pub(super) fn resolve_regular_file_len(
 
 /// Returns the file length, falling back to a direct read when `stat()` reports
 /// zero bytes (Android 15 FUSE passthrough can cache stale `st_size == 0`).
-pub(super) fn regular_file_len(
+pub(crate) fn regular_file_len(
     path: &Path,
     metadata: &fs::Metadata,
     context: &str,
@@ -241,7 +322,7 @@ pub(super) fn regular_file_len(
     resolve_regular_file_len(path, metadata.len(), context)
 }
 
-fn copy_file_without_copy_file_range(source_path: &Path, part_path: &Path) -> io::Result<u64> {
+pub(crate) fn copy_file_without_copy_file_range(source_path: &Path, part_path: &Path) -> io::Result<u64> {
     let mut input = File::open(source_path)?;
     let mut output = File::options()
         .write(true)

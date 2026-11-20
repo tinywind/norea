@@ -125,3 +125,49 @@ fn copy_file_without_copy_file_range_preserves_multi_buffer_payload() {
     assert_eq!(fs::read(&part).expect("read part"), payload);
     assert_eq!(fs::metadata(&part).expect("stat part").len(), payload.len() as u64);
 }
+
+#[test]
+fn open_archive_reader_reads_valid_zip_when_stat_reports_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let archive_path = dir.path().join(MEDIA_ARCHIVE_FILE);
+    {
+        let file = File::create(&archive_path).expect("create archive");
+        let mut writer = ZipWriter::new(file);
+        writer
+            .start_file("0007-7.jpg", SimpleFileOptions::default())
+            .expect("start entry");
+        writer
+            .write_all(&vec![0xabu8; 70_000])
+            .expect("write entry");
+        writer.finish().expect("finish archive");
+    }
+
+    let file = File::open(&archive_path).expect("open archive");
+    let reader =
+        open_archive_reader_with_reported_len(&archive_path, file, 0, MAX_CHAPTER_MEDIA_ARCHIVE_BYTES)
+            .expect("open archive with stale zero stat");
+    let mut archive = ZipArchive::new(reader).expect("parse archive");
+    let mut entry = archive.by_name("0007-7.jpg").expect("find entry");
+    let mut body = Vec::new();
+    entry.read_to_end(&mut body).expect("read entry");
+    assert_eq!(body.len(), 70_000);
+    assert!(body.iter().all(|byte| *byte == 0xab));
+
+    let oversized = File::open(&archive_path).expect("reopen archive");
+    assert!(matches!(
+        open_archive_reader_with_reported_len(&archive_path, oversized, 0, 32),
+        Err(ArchiveReaderOpenError::TooLarge)
+    ));
+
+    let empty_path = dir.path().join("empty.zip");
+    fs::write(&empty_path, []).expect("write empty archive");
+    let empty_file = File::open(&empty_path).expect("open empty archive");
+    let empty_reader = open_archive_reader_with_reported_len(
+        &empty_path,
+        empty_file,
+        0,
+        MAX_CHAPTER_MEDIA_ARCHIVE_BYTES,
+    )
+    .expect("open empty archive reader");
+    assert!(ZipArchive::new(empty_reader).is_err());
+}

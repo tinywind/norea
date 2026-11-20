@@ -8,7 +8,9 @@ use super::manifest::{
     ChapterMediaArtifactState, ChapterMediaFinalization, ExpectedStoredChapterMedia,
     ValidChapterMediaArchiveManifest,
 };
-use super::media::regular_file_len;
+use super::media::{
+    open_archive_reader, regular_file_len, ArchiveReaderOpenError, MAX_CHAPTER_MEDIA_ARCHIVE_BYTES,
+};
 use super::paths::{
     content_chapter_dir_at, ensure_contents_nomedia, media_root,
     validate_chapter_dir_under_storage_root, MEDIA_ARCHIVE_FILE,
@@ -24,7 +26,7 @@ use super::publication::{
 use std::{
     collections::{HashMap, HashSet},
     fs::{self, File},
-    io::{self, BufReader, BufWriter, ErrorKind, Write},
+    io::{self, BufWriter, ErrorKind, Write},
     path::{Path, PathBuf},
     sync::{Arc, Mutex, OnceLock, Weak},
     time::{SystemTime, UNIX_EPOCH},
@@ -212,9 +214,18 @@ fn validate_chapter_media_archive(
         Err(err) => return Err(format!("chapter media: inspect media archive: {err}")),
     }
 
-    let archive_file = File::open(archive_path)
-        .map_err(|err| format!("chapter media: open media archive: {err}"))?;
-    let mut archive = match ZipArchive::new(BufReader::new(archive_file)) {
+    let archive_reader = match open_archive_reader(archive_path, MAX_CHAPTER_MEDIA_ARCHIVE_BYTES) {
+        Ok(reader) => reader,
+        Err(ArchiveReaderOpenError::TooLarge) => {
+            return Ok(ChapterMediaArtifactState::Invalid(
+                "media archive exceeds byte limit".to_string(),
+            ));
+        }
+        Err(ArchiveReaderOpenError::Io(err)) => {
+            return Err(format!("chapter media: open media archive: {err}"));
+        }
+    };
+    let mut archive = match ZipArchive::new(archive_reader) {
         Ok(archive) => archive,
         Err(err) => {
             return Ok(ChapterMediaArtifactState::Invalid(format!(
@@ -378,10 +389,17 @@ fn build_validated_chapter_media_archive(
         .iter()
         .any(|file| !loose_file_names.contains(&file.file_name));
     let mut existing_archive = if needs_existing_archive {
-        let archive_file = File::open(archive_source_path)
-            .map_err(|err| format!("chapter media: reopen media archive: {err}"))?;
+        let archive_reader = open_archive_reader(archive_source_path, MAX_CHAPTER_MEDIA_ARCHIVE_BYTES)
+            .map_err(|err| match err {
+                ArchiveReaderOpenError::TooLarge => {
+                    "chapter media: reopen media archive: archive exceeds byte limit".to_string()
+                }
+                ArchiveReaderOpenError::Io(io_err) => {
+                    format!("chapter media: reopen media archive: {io_err}")
+                }
+            })?;
         Some(
-            ZipArchive::new(BufReader::new(archive_file))
+            ZipArchive::new(archive_reader)
                 .map_err(|err| format!("chapter media: reopen media archive: {err}"))?,
         )
     } else {

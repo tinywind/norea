@@ -4,7 +4,7 @@ use super::manifest::{
     parse_chapter_media_archive_manifest, read_chapter_media_archive_manifest,
     ChapterMediaArchiveManifestState, ExpectedStoredChapterMedia,
 };
-use super::media::regular_file_len;
+use super::media::{open_archive_reader, regular_file_len, ArchiveReaderOpenError};
 use super::paths::{MEDIA_ARCHIVE_FILE, MEDIA_DOWNLOAD_DIR};
 use std::{
     collections::{HashMap, HashSet},
@@ -51,17 +51,30 @@ pub(super) fn prepare_chapter_media_repair(chapter_dir: &Path) -> Result<HashMap
     let mut ambiguous = HashSet::new();
     let mut expanded = 0;
     for archive_path in archives {
-        let source = match File::open(&archive_path) {
+        let source = match open_archive_reader(&archive_path, MAX_ARCHIVE_BYTES) {
             Ok(source) => source,
-            Err(err) if err.kind() == io::ErrorKind::NotFound => continue,
-            Err(err) => return Err(format!("chapter media: open repair archive: {err}")),
+            Err(ArchiveReaderOpenError::TooLarge) => {
+                return Err("chapter media: repair archive exceeds byte limit".into());
+            }
+            Err(ArchiveReaderOpenError::Io(err)) if err.kind() == io::ErrorKind::NotFound => {
+                continue;
+            }
+            Err(ArchiveReaderOpenError::Io(err)) => {
+                return Err(format!("chapter media: open repair archive: {err}"));
+            }
         };
-        if source.metadata().map_err(|err| format!("chapter media: inspect repair archive: {err}"))?.len() > MAX_ARCHIVE_BYTES {
-            return Err("chapter media: repair archive exceeds byte limit".into());
-        }
         match ZipArchive::new(source) {
             Ok(mut archive) => {
-                let mut source = File::open(&archive_path).map_err(|err| format!("chapter media: read repair inventory: {err}"))?;
+                let mut source = open_archive_reader(&archive_path, MAX_ARCHIVE_BYTES).map_err(
+                    |err| match err {
+                        ArchiveReaderOpenError::TooLarge => {
+                            "chapter media: repair archive exceeds byte limit".to_string()
+                        }
+                        ArchiveReaderOpenError::Io(io_err) => {
+                            format!("chapter media: read repair inventory: {io_err}")
+                        }
+                    },
+                )?;
                 let duplicates = repair_archive_duplicates(&mut source, archive.central_directory_start())?;
                 ambiguous.extend(duplicates.iter().cloned());
                 for file in &expected {
@@ -105,7 +118,7 @@ pub(super) fn prepare_chapter_media_repair(chapter_dir: &Path) -> Result<HashMap
 }
 
 // The ZIP library indexes by name and hides duplicate central-directory records.
-pub(super) fn repair_archive_duplicates(source: &mut File, start: u64) -> Result<HashSet<String>, String> {
+pub(super) fn repair_archive_duplicates(source: &mut (impl Read + Seek), start: u64) -> Result<HashSet<String>, String> {
     source.seek(SeekFrom::Start(start)).map_err(|err| format!("chapter media: seek repair directory: {err}"))?;
     let mut names = HashSet::new();
     let mut duplicates = HashSet::new();

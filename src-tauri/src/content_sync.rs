@@ -191,17 +191,23 @@ fn inspect_chapter_media_with_io_failure(
     if !archive_exists {
         return Ok(media.is_empty());
     }
-    let zip_file = File::open(source.join("media.zip")).map_err(|error| io_failure(&error))?;
-    if zip_file.metadata().map_err(|error| io_failure(&error))?.len() > MAX_MEDIA_ZIP_BYTES {
-        return Err(failure("chapter media archive exceeds byte limit"));
-    }
+    let zip_path = source.join("media.zip");
+    let zip_reader = match crate::chapter_media::open_archive_reader(&zip_path, MAX_MEDIA_ZIP_BYTES) {
+        Ok(reader) => reader,
+        Err(crate::chapter_media::ArchiveReaderOpenError::TooLarge) => {
+            return Err(failure("chapter media archive exceeds byte limit"));
+        }
+        Err(crate::chapter_media::ArchiveReaderOpenError::Io(error)) => {
+            return Err(io_failure(&error));
+        }
+    };
     let archive_failure = |error| match error {
         zip::result::ZipError::Io(error) if !matches!(error.kind(),
             std::io::ErrorKind::UnexpectedEof | std::io::ErrorKind::InvalidData | std::io::ErrorKind::InvalidInput
         ) => io_failure(&error),
         error => failure(error),
     };
-    let mut archive = ZipArchive::new(zip_file).map_err(&archive_failure)?;
+    let mut archive = ZipArchive::new(zip_reader).map_err(&archive_failure)?;
     if archive.len() > MAX_FILES {
         return Err(failure("too many chapter media files"));
     }
@@ -338,8 +344,17 @@ fn install_directory(source: &Path, destination: &Path) -> Result<(), String> {
                 return Err(failure("invalid installed artifact"));
             }
             let target = stage.join(entry.file_name());
+            let source_path = entry.path();
             let original = entry.metadata().map_err(&io_failure)?;
-            if fs::copy(entry.path(), &target).map_err(&io_failure)? != original.len() {
+            let original_len = crate::chapter_media::regular_file_len(
+                &source_path,
+                &original,
+                "chapter-storage-failed: inspect staged chapter",
+            )?;
+            if crate::chapter_media::copy_file_without_copy_file_range(&source_path, &target)
+                .map_err(&io_failure)?
+                != original_len
+            {
                 return Err(chapter_storage_failure("copy installed chapter", "storage copy size mismatch"));
             }
             let stored = File::options()
@@ -354,7 +369,13 @@ fn install_directory(source: &Path, destination: &Path) -> Result<(), String> {
                 Err(error) => return Err(io_failure(error)),
             }
             stored.sync_all().map_err(&io_failure)?;
-            if stored.metadata().map_err(&io_failure)?.len() != original.len() {
+            let stored_metadata = stored.metadata().map_err(&io_failure)?;
+            let stored_len = crate::chapter_media::regular_file_len(
+                &target,
+                &stored_metadata,
+                "chapter-storage-failed: verify installed chapter",
+            )?;
+            if stored_len != original_len {
                 return Err(chapter_storage_failure("copy installed chapter", "storage copy size mismatch"));
             }
         }
@@ -807,11 +828,23 @@ fn download_chapter_files(server_url: &str, token: Option<&str>, entry: &Value, 
     }
     let media_complete = inspect_chapter_media_with_io_failure(destination, &|error|
         chapter_storage_failure("inspect downloaded media", error))?;
-    let content_bytes = fs::metadata(destination.join(body))
-        .map_err(|error| chapter_storage_failure("inspect downloaded content size", error))?.len();
+    let body_path = destination.join(body);
+    let body_metadata = fs::metadata(&body_path)
+        .map_err(|error| chapter_storage_failure("inspect downloaded content size", error))?;
+    let content_bytes = crate::chapter_media::regular_file_len(
+        &body_path,
+        &body_metadata,
+        "chapter-storage-failed: inspect downloaded content size",
+    )?;
     let media_bytes = if names.contains("media.zip") {
-        fs::metadata(destination.join("media.zip"))
-            .map_err(|error| chapter_storage_failure("inspect downloaded media size", error))?.len()
+        let archive_path = destination.join("media.zip");
+        let archive_metadata = fs::metadata(&archive_path)
+            .map_err(|error| chapter_storage_failure("inspect downloaded media size", error))?;
+        crate::chapter_media::regular_file_len(
+            &archive_path,
+            &archive_metadata,
+            "chapter-storage-failed: inspect downloaded media size",
+        )?
     } else { 0 };
     Ok(json!({"mediaComplete": media_complete, "contentBytes": content_bytes, "mediaBytes": media_bytes}))
 }

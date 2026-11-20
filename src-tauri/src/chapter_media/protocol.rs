@@ -3,7 +3,7 @@
 use super::chapter_media_blocking;
 use super::media::{
     chapter_media_body_from_src_with_context, chapter_media_path_from_src_with_context,
-    parse_media_src,
+    open_archive_reader, parse_media_src, ArchiveReaderOpenError, MAX_CHAPTER_MEDIA_ARCHIVE_BYTES,
 };
 use super::paths::{
     media_root, safe_media_relative_path, safe_relative_storage_path, CONTENTS_ROOT_DIR,
@@ -11,7 +11,7 @@ use super::paths::{
 };
 use std::{
     fs::{self, File},
-    io::{BufReader, Read, Write},
+    io::{Read, Write},
     path::{Component, Path, PathBuf},
 };
 use tauri::{
@@ -330,9 +330,18 @@ fn copy_media_archive_to_reader_cache(
     if !archive_path.is_file() {
         return Ok(());
     }
-    let archive_file = File::open(archive_path)
-        .map_err(|err| format!("chapter media: open reader media archive: {err}"))?;
-    let mut archive = ZipArchive::new(BufReader::new(archive_file))
+    let archive_reader =
+        open_archive_reader(archive_path, MAX_CHAPTER_MEDIA_ARCHIVE_BYTES).map_err(|err| {
+            match err {
+                ArchiveReaderOpenError::TooLarge => {
+                    "chapter media: reader media archive exceeds byte limit".to_string()
+                }
+                ArchiveReaderOpenError::Io(io_err) => {
+                    format!("chapter media: open reader media archive: {io_err}")
+                }
+            }
+        })?;
+    let mut archive = ZipArchive::new(archive_reader)
         .map_err(|err| format!("chapter media: read reader media archive: {err}"))?;
     if archive.len() > MAX_READER_CACHE_ENTRIES {
         return Err("chapter media: reader media archive exceeds entry limit".to_string());
@@ -579,9 +588,18 @@ fn norea_media_content_type(path: &Path, body: &[u8]) -> &'static str {
 }
 
 pub(super) fn archive_contains_file(archive_path: &Path, file_name: &str) -> Result<bool, String> {
-    let archive_file =
-        File::open(archive_path).map_err(|err| format!("chapter media: open archive: {err}"))?;
-    let mut archive = ZipArchive::new(BufReader::new(archive_file))
+    let archive_reader =
+        open_archive_reader(archive_path, MAX_CHAPTER_MEDIA_ARCHIVE_BYTES).map_err(|err| {
+            match err {
+                ArchiveReaderOpenError::TooLarge => {
+                    "chapter media: archive exceeds byte limit".to_string()
+                }
+                ArchiveReaderOpenError::Io(io_err) => {
+                    format!("chapter media: open archive: {io_err}")
+                }
+            }
+        })?;
+    let mut archive = ZipArchive::new(archive_reader)
         .map_err(|err| format!("chapter media: read archive: {err}"))?;
     let contains_file = match archive.by_name(file_name) {
         Ok(entry) => Ok(entry.is_file()),

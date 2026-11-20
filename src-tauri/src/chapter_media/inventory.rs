@@ -1,5 +1,8 @@
 use super::chapter_media_blocking;
 use super::manifest::is_safe_manifest_media_file_name;
+use super::media::{
+    open_archive_reader_with_reported_len, regular_file_len, ArchiveReaderOpenError,
+};
 use super::paths::{
     media_root, safe_relative_storage_path, validate_chapter_dir_under_storage_root,
 };
@@ -296,19 +299,39 @@ fn inspect_inventory(dir: &Path) -> Result<ChapterPayloadSnapshot, String> {
     let mut keys = declarations(dir)?;
     let mut stored = HashMap::<String, StoredAsset>::new();
     {
-        if let Some(file) = regular_file(&dir.join("media.zip"))? {
-            if file.metadata().map_err(|e| e.to_string())?.len() > MAX_ARCHIVE {
-                return Err("media archive exceeds size limit".into());
-            }
-            match ZipArchive::new(file) {
+        let archive_path = dir.join("media.zip");
+        if let Some(file) = regular_file(&archive_path)? {
+            let reported_len = file.metadata().map_err(|e| e.to_string())?.len();
+            let reader =
+                open_archive_reader_with_reported_len(&archive_path, file, reported_len, MAX_ARCHIVE)
+                    .map_err(|err| match err {
+                        ArchiveReaderOpenError::TooLarge => {
+                            "media archive exceeds size limit".to_string()
+                        }
+                        ArchiveReaderOpenError::Io(io_err) => io_err.to_string(),
+                    })?;
+            match ZipArchive::new(reader) {
                 Ok(mut zip) => {
                     if zip.len() > MAX_FILES {
                         return Err("too many archive entries".into());
                     }
-                    let mut archive_file =
-                        regular_file(&dir.join("media.zip"))?.ok_or("archive disappeared")?;
+                    let archive_file =
+                        regular_file(&archive_path)?.ok_or("archive disappeared")?;
+                    let archive_reported_len = archive_file.metadata().map_err(|e| e.to_string())?.len();
+                    let mut archive_reader = open_archive_reader_with_reported_len(
+                        &archive_path,
+                        archive_file,
+                        archive_reported_len,
+                        MAX_ARCHIVE,
+                    )
+                    .map_err(|err| match err {
+                        ArchiveReaderOpenError::TooLarge => {
+                            "media archive exceeds size limit".to_string()
+                        }
+                        ArchiveReaderOpenError::Io(io_err) => io_err.to_string(),
+                    })?;
                     if !super::repair::repair_archive_duplicates(
-                        &mut archive_file,
+                        &mut archive_reader,
                         zip.central_directory_start(),
                     )?
                     .is_empty()
@@ -394,11 +417,11 @@ fn inspect_inventory(dir: &Path) -> Result<ChapterPayloadSnapshot, String> {
     let mut stored_assets: Vec<_> = stored.into_values().collect();
     stored_assets.sort_by(|a, b| a.key.cmp(&b.key));
     let content_bytes = body.as_ref().map_or(0, |item| item.bytes);
-    let media_bytes = regular_file(&dir.join("media.zip"))?
+    let archive_path = dir.join("media.zip");
+    let media_bytes = regular_file(&archive_path)?
         .map(|file| {
-            file.metadata()
-                .map(|metadata| metadata.len())
-                .map_err(|e| e.to_string())
+            let metadata = file.metadata().map_err(|e| e.to_string())?;
+            regular_file_len(&archive_path, &metadata, "inspect media archive size")
         })
         .transpose()?
         .unwrap_or(0);
