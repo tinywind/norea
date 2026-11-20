@@ -528,28 +528,39 @@ failures (including HTTP errors, timeouts, transient network errors, and empty
 responses) skip only the failing resource, keep acquiring the remaining
 resources in the chapter, archive all stored assets into a reusable partial
 `media.zip`, and record a failed/incomplete chapter; remaining chapters in the
-ordinary queue or VPN range may proceed unless the failure is a source-access
-challenge, HTTP 403 refusal, HTTP 429 rate limit, or an explicit `notFoundAction: "pause"`
-hold. Missing assets stay in the manifest, and partial packages are never marked
-complete. A VPN range advances its checkpoint past a missing or incomplete-media
-chapter without marking that chapter downloaded.
+ordinary queue or VPN range may proceed unless any failing asset triggers a
+source-access challenge, HTTP 403 refusal, HTTP 429 rate limit (including when
+mixed with HTTP 404), or an explicit `notFoundAction: "pause"` hold. Missing
+assets stay in the manifest, and partial packages are never marked complete. A
+VPN range advances its checkpoint past a missing or incomplete-media chapter
+without marking that chapter downloaded.
 
-Every other download error stops the affected ordinary source queue or VPN
-range until an explicit resume. This includes chapter-page HTTP failures,
-network loss during acquisition, chapter-page timeouts, plugin parsing failures,
-source-access challenges, VPN unavailability, and unknown exceptions. The notice
-preserves the redacted cause. Media requests run serially within each executor;
-fatal media errors (cancellation, local storage failures, source-access
-challenges / HTTP 403, VPN unavailability, device offline, or non-404
-content-server repair errors) stop further requests and preserve reusable
-partial files. Content-server
-cache misses and unreachable or failed server lookups or staging transfers fall
+In an ordinary source queue, source-wide or environment errors stop the
+affected queue immediately until an explicit resume: HTTP 401, 403, or 429
+responses, source-access challenges, site-moved or manual-action-required
+errors, network loss during acquisition, VPN unavailability, explicit recovery
+holds, and real local storage failures. Other isolated single-chapter errors
+(such as chapter-page timeouts, 5xx responses, plugin parsing failures, or
+single-chapter metadata and media-verification mismatches) fail that chapter
+and allow subsequent chapters in the source queue to continue until three
+consecutive failures occur (`CONSECUTIVE_SOURCE_DOWNLOAD_FAILURE_LIMIT`), at
+which point the source queue stops until an explicit resume; any completed
+chapter or explicit resume resets the streak. In a VPN range, every
+non-skippable download error stops the affected range until an explicit resume.
+The notice preserves the redacted cause. Media requests run serially within
+each executor; fatal media errors (cancellation, local storage failures,
+source-access challenges / HTTP 403, VPN unavailability, device offline, or
+non-404 content-server repair errors) stop further requests and preserve
+reusable partial files. Content-server cache misses, incomplete-media repair
+responses, and unreachable or failed server lookups or staging transfers fall
 back to an installed source plugin when the work has a source path; server-only
-works still propagate server errors, and local filesystem or database failures
-stop all download queues and
-VPN ranges, including new work admission. The native storage boundary tags actual
-file I/O failures as `chapter-storage-failed`; remote HTTP, network, and malformed
-payload failures keep their source error classification.
+works still propagate server errors. Genuine local filesystem or database I/O
+failures stop all download queues and VPN ranges, including new work admission,
+while single-chapter metadata mismatches and media-verification mismatches
+without underlying storage I/O errors stay isolated to the failing chapter. The
+native storage boundary tags actual file I/O failures as
+`chapter-storage-failed`; remote HTTP, network, and malformed payload failures
+keep their source error classification.
 
 Ordinary source holds and the global storage hold persist across app restarts.
 VPN plans preserve their failure reason, queued chapters, and checkpoint. Network
