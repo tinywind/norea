@@ -31,4 +31,4 @@
 | Android Java interfaces and JavaScript | The main application and the separate scraper have different interfaces and navigation policies. The scraper exposes result/document notifications, not storage or application-command interfaces. Their intentional presence is not evidence that a remote page may invoke the main application's interfaces. |
 | GLib pointer operations | Review each upstream ownership and transfer contract. A pointer-operation report alone does not prove that the app calls an unsafe API with an invalid pointer. No vendor-wide exclusion is used. |
 
-The advanced CodeQL workflow analyzes Actions, JavaScript/TypeScript, Rust, and an actual Android Java/Kotlin build. Its verification phase keeps uploads disabled until the reviewed setup transition. A successful dependency audit does not replace source analysis or platform checks.
+The advanced CodeQL workflow analyzes Actions, JavaScript/TypeScript, Rust, and an actual Android Java/Kotlin build, uploading SARIF results to GitHub code scanning by default. A successful dependency audit does not replace source analysis or platform checks.
