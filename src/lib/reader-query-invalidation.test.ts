@@ -308,6 +308,69 @@ describe("reader query invalidation", () => {
     expect(getChapterById).not.toHaveBeenCalled();
   });
 
+  it("refetches active novel chapters when a newly published chapter finishes downloading", async () => {
+    const queryClient = createQueryClient();
+    let storedChapters = [{ id: 11, isDownloaded: true }];
+    const chaptersQuery = vi.fn(async () => storedChapters);
+    const libraryQuery = vi.fn().mockResolvedValue([{ id: 7 }]);
+
+    await observeQuery(
+      queryClient,
+      novelChaptersQueryKey(7),
+      chaptersQuery,
+    );
+    await observeQuery(
+      queryClient,
+      ["novel", "library", { sortOrder: "nameAsc" }],
+      libraryQuery,
+    );
+
+    storedChapters = [
+      { id: 11, isDownloaded: true },
+      { id: 12, isDownloaded: true },
+    ];
+    await applyNovelChapterDownloadCompletion(queryClient, {
+      chapterId: 12,
+      novelId: 7,
+    });
+
+    expect(chaptersQuery).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toEqual([
+      { id: 11, isDownloaded: true },
+      { id: 12, isDownloaded: true },
+    ]);
+    expect(libraryQuery).toHaveBeenCalledTimes(1);
+    expect(getChapterById).not.toHaveBeenCalled();
+  });
+
+  it("refetches active novel chapters when a batch includes both cached and newly published chapters", async () => {
+    const queryClient = createQueryClient();
+    let storedChapters = [{ id: 11, isDownloaded: false }];
+    const chaptersQuery = vi.fn(async () => storedChapters);
+
+    await observeQuery(
+      queryClient,
+      novelChaptersQueryKey(7),
+      chaptersQuery,
+    );
+
+    storedChapters = [
+      { id: 11, ...completedDownload },
+      { id: 12, ...completedDownload },
+    ];
+    await applyNovelChapterDownloadCompletions(
+      queryClient,
+      new Map([[7, new Set([11, 12])]]),
+    );
+
+    expect(getChapterById).toHaveBeenCalledWith(11);
+    expect(chaptersQuery).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toEqual([
+      { id: 11, ...completedDownload },
+      { id: 12, ...completedDownload },
+    ]);
+  });
+
   it("applies batched download completions once per novel and library", async () => {
     const queryClient = createQueryClient();
     const firstNovelChapters = [

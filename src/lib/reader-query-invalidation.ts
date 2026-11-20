@@ -72,10 +72,16 @@ export async function applyNovelChapterDownloadCompletions(
     const cachedChapters = queryClient.getQueryData<ChapterListRow[]>(
       novelChaptersQueryKey(novelId),
     );
+    const cachedChapterIds = cachedChapters
+      ? new Set(cachedChapters.map((chapter) => chapter.id))
+      : null;
+    const hasMissingCachedChapter =
+      cachedChapterIds !== null &&
+      [...chapterIds].some((chapterId) => !cachedChapterIds.has(chapterId));
     const storedChapters = await Promise.all(
       (cachedChapters ?? [])
-        .filter(chapter => chapterIds.has(chapter.id))
-        .map(chapter => getChapterById(chapter.id)),
+        .filter((chapter) => chapterIds.has(chapter.id))
+        .map((chapter) => getChapterById(chapter.id)),
     );
     const storedById = new Map(
       storedChapters.flatMap(chapter => chapter ? [[chapter.id, chapter] as const] : []),
@@ -109,11 +115,18 @@ export async function applyNovelChapterDownloadCompletions(
       },
     );
     invalidations.push(
-      queryClient.invalidateQueries({
-        exact: true,
-        queryKey: novelChaptersQueryKey(novelId),
-        refetchType: "none",
-      }),
+      queryClient.invalidateQueries(
+        hasMissingCachedChapter
+          ? {
+              exact: true,
+              queryKey: novelChaptersQueryKey(novelId),
+            }
+          : {
+              exact: true,
+              queryKey: novelChaptersQueryKey(novelId),
+              refetchType: "none",
+            },
+      ),
     );
   }
 

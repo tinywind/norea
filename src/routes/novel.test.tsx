@@ -825,3 +825,75 @@ it.each([
     }
   });
 });
+
+it("opens the up-next chapter row from the start when advancing from a finished chapter", async () => {
+  const first = {
+    ...chapter,
+    id: 1,
+    position: 1,
+    unread: false,
+    progress: 100,
+    readAt: 100,
+    isDownloaded: true,
+  };
+  const second = {
+    ...chapter,
+    id: 2,
+    position: 2,
+    unread: true,
+    progress: 35,
+    readAt: null,
+    isDownloaded: true,
+  };
+  mocks.chapters = [first, second];
+
+  await withPageTree(async (find, run) => {
+    const list = chapterList(find);
+    expect(list.props.continueChapterId).toBe(2);
+    const open = list.props.onOpen as (row: ChapterListRow) => void;
+    await run(() => open(second));
+    expect(mocks.navigate).toHaveBeenLastCalledWith({
+      to: "/reader",
+      search: { chapterId: 2, fromStart: true },
+    });
+
+    await run(() => open(first));
+    expect(mocks.navigate).toHaveBeenLastCalledWith({
+      to: "/reader",
+      search: { chapterId: 1 },
+    });
+  });
+});
+
+it("resumes an in-progress up-next chapter row without forcing fromStart", async () => {
+  const first = {
+    ...chapter,
+    id: 1,
+    position: 1,
+    unread: true,
+    progress: 40,
+    readAt: 100,
+    isDownloaded: true,
+  };
+  const second = {
+    ...chapter,
+    id: 2,
+    position: 2,
+    unread: true,
+    progress: 0,
+    readAt: null,
+    isDownloaded: true,
+  };
+  mocks.chapters = [first, second];
+
+  await withPageTree(async (find, run) => {
+    const list = chapterList(find);
+    expect(list.props.continueChapterId).toBe(1);
+    const open = list.props.onOpen as (row: ChapterListRow) => void;
+    await run(() => open(first));
+    expect(mocks.navigate).toHaveBeenLastCalledWith({
+      to: "/reader",
+      search: { chapterId: 1 },
+    });
+  });
+});

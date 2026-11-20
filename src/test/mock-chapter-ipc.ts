@@ -1462,7 +1462,7 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
                c.path        AS chapterPath,
                c.position    AS position,
                c.read_at     AS readAt,
-               c.progress    AS progress,
+               CASE WHEN c.unread = 0 THEN 100.0 ELSE c.progress END AS progress,
                n.plugin_id   AS pluginId,
                n.source_novel_id AS novelSourceNovelId,
                n.name        AS novelName,

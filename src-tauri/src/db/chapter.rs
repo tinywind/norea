@@ -2151,7 +2151,7 @@ pub async fn list_recently_read_in_conn(
            c.path AS chapter_path, \
            c.position, \
            c.read_at, \
-           c.progress, \
+           CASE WHEN c.unread = 0 THEN 100.0 ELSE c.progress END AS progress, \
            n.plugin_id, \
            n.source_novel_id AS novel_source_novel_id, \
            {effective_name} AS novel_name, \
@@ -2356,7 +2356,7 @@ pub async fn list_reading_history_page_in_conn(
              c.chapter_number, \
              c.position, \
              c.read_at, \
-             c.progress, \
+             CASE WHEN c.unread = 0 THEN 100.0 ELSE c.progress END AS progress, \
              n.plugin_id, \
              n.source_novel_id AS novel_source_novel_id, \
              {effective_name} AS novel_name, \
@@ -4556,7 +4556,8 @@ mod tests {
         assert_eq!(cont[0].progress, 100.0);
 
         // Even if a read chapter (unread = 0) had stored progress < 100, continue reading
-        // reports it as finished (100.0) so callers advance to the downloaded next chapter.
+        // and history queries report it as finished (100.0) so callers advance to the
+        // downloaded next chapter.
         sqlx::query("UPDATE chapter SET unread = 0, progress = 50.0 WHERE id = 11")
             .execute(&mut *conn)
             .await
@@ -4566,6 +4567,32 @@ mod tests {
         assert_eq!(cont_read_low_progress[0].chapter_id, 11);
         assert_eq!(cont_read_low_progress[0].progress, 100.0);
         assert_eq!(cont_read_low_progress[0].next_chapter_id, Some(12));
+        let recent_read_low_progress = list_recently_read_in_conn(&mut conn, None).await.unwrap();
+        assert_eq!(recent_read_low_progress.len(), 1);
+        assert_eq!(recent_read_low_progress[0].chapter_id, 11);
+        assert_eq!(recent_read_low_progress[0].progress, 100.0);
+        let hist_finished_low_progress = list_reading_history_page_in_conn(
+            &mut conn,
+            &ListReadingHistoryPageInputDto {
+                progress: Some("finished".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(hist_finished_low_progress.entries.len(), 1);
+        assert_eq!(hist_finished_low_progress.entries[0].chapter_id, 11);
+        assert_eq!(hist_finished_low_progress.entries[0].progress, 100.0);
+        let hist_in_progress_low_progress = list_reading_history_page_in_conn(
+            &mut conn,
+            &ListReadingHistoryPageInputDto {
+                progress: Some("inProgress".to_string()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+        assert!(hist_in_progress_low_progress.entries.is_empty());
         sqlx::query("UPDATE chapter SET progress = 100.0 WHERE id = 11")
             .execute(&mut *conn)
             .await

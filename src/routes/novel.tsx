@@ -40,7 +40,7 @@ import {
   EMPTY_CHAPTERS,
   filterChapterList,
   findChapterForJump,
-  findContinueReadingChapter,
+  findContinueReadingTarget,
   FINISHED_PROGRESS,
   hasChapterListFilters,
   hasReadingHistory,
@@ -217,12 +217,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     () => (defaultChapterSort === "desc" ? [...rows].reverse() : rows),
     [defaultChapterSort, rows],
   );
-  const continueChapterId = useMemo(
+  const continueReadingTarget = useMemo(
     () => hasReadingHistory(rows, lastReadChapterId)
-      ? findContinueReadingChapter(rows, lastReadChapterId)?.id
-      : undefined,
+      ? findContinueReadingTarget(rows, lastReadChapterId)
+      : null,
     [lastReadChapterId, rows],
   );
+  const continueChapterId = continueReadingTarget?.chapter.id;
   const {
     sourceDuplicateChapters,
     toggle,
@@ -1121,7 +1122,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                   selectionMode={chapterSelectionMode}
                   statuses={statuses}
                   onOpen={(chapter) => {
-                    void openChapter(chapter);
+                    openChapter(
+                      chapter,
+                      continueReadingTarget?.fromStart &&
+                        chapter.id === continueReadingTarget.chapter.id
+                        ? { fromStart: true }
+                        : undefined,
+                    );
                   }}
                   onDownload={downloadChapter}
                   onExtendSelection={extendChapterSelection}
