@@ -5,7 +5,7 @@ import {
   type StoredChapterDownloadFailure,
 } from "../../db/queries/chapter-download-failure";
 import type { ChapterDownloadJob } from "./chapter-download";
-import { automaticRetryDelayMs, classifyDownloadFailure } from "./download-failure";
+import { automaticRetryDelayMs, classifyDownloadFailure, isIncompleteMediaFailure } from "./download-failure";
 
 let snapshot: readonly StoredChapterDownloadFailure[] = [];
 let loaded = false;
@@ -42,11 +42,15 @@ export async function recordFailedChapterDownloadAttempt(
   sourceId = job.pluginId,
 ): Promise<StoredChapterDownloadFailure | null> {
   const failure = classifyDownloadFailure(error);
+  const failureClass =
+    failure.failureClass === "transient" && isIncompleteMediaFailure(error)
+      ? "media-incomplete"
+      : failure.failureClass;
   const { retryAt: _retryAt, ...storedJob } = job;
   const stored = await recordChapterDownloadFailure({
     chapterId: job.id,
     pluginId: sourceId,
-    failureClass: failure.failureClass,
+    failureClass,
     messageSummary: failure.summary,
     ...(failure.challengeUrl ? { challengeUrl: failure.challengeUrl } : {}),
     jobJson: JSON.stringify(storedJob),

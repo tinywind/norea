@@ -48,3 +48,15 @@ it("separates chapters a content-server work lacks from other content failures",
   expect(attention.groups.map((group) => [group.serverMissing, group.action, group.chapterIds]))
     .toEqual([[false, "retry", [1]], [true, "retry", [2, 3]]]);
 });
+
+it("groups legacy transient incomplete-media rows as media-incomplete with repair action", () => {
+  const attention = chapterDownloadFailureAttention([
+    row(1, { failureClass: "transient", messageSummary: "Offline download is incomplete: 2 media assets unavailable." }),
+    row(2, { failureClass: "media-incomplete", messageSummary: "Offline download is incomplete: 1 media assets unavailable (HTTP 404)." }),
+    row(3, { failureClass: "transient", messageSummary: "webview_extract: timeout after 35000ms" }),
+  ]);
+  expect(attention.groups.map((group) => [group.failureClass, group.action, group.chapterIds])).toEqual([
+    ["media-incomplete", "repair", [1, 2]],
+    ["transient", "retry", [3]],
+  ]);
+});

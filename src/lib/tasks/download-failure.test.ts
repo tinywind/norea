@@ -1,10 +1,13 @@
 import { describe, expect, it } from "vitest";
 import { ChapterMediaFinalizationError, ChapterMediaHttpRetryError, ChapterMediaIncompleteError } from "../chapter-media/errors";
+import { ChapterStorageError } from "../chapter-storage-error";
 import { cloudflareAccessError } from "../http/response";
+import { PluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { SourceAccessRequiredError } from "../plugins/source-access";
 import { ContentServerError, ContentServerTransportError } from "../content-sync/client";
 import {
-  automaticRetryDelayMs, classifyDownloadFailure, isServerChapterMissingFailure, isSkippableIncompleteMediaFailure, isSourceForbiddenFailure, ServerChapterMissingError,
+  automaticRetryDelayMs, classifyDownloadFailure, isChapterMediaVerificationFailure, isImmediateSourceStopFailure,
+  isIncompleteMediaFailure, isServerChapterMissingFailure, isSkippableIncompleteMediaFailure, isSourceForbiddenFailure, ServerChapterMissingError,
 } from "./download-failure";
 
 const cdnChallenge = cloudflareAccessError(
@@ -163,7 +166,7 @@ describe("isSkippableIncompleteMediaFailure", () => {
     ]))).toBe(true);
   });
 
-  it("blocks skipping for challenges, 403, all-429 rate limits, or non-media errors", () => {
+  it("blocks skipping for challenges, 403, any 429 rate limit (including mixed 404+429), or non-media errors", () => {
     expect(isSkippableIncompleteMediaFailure(new ChapterMediaIncompleteError([
       { status: 403, message: "HTTP 403", url: "https://img.example/a.jpg" },
     ]))).toBe(false);
@@ -171,8 +174,67 @@ describe("isSkippableIncompleteMediaFailure", () => {
       { status: 429, message: "HTTP 429", url: "https://img.example/a.jpg" },
     ]))).toBe(false);
     expect(isSkippableIncompleteMediaFailure(new ChapterMediaIncompleteError([
+      { status: 404, message: "HTTP 404", url: "https://img.example/missing.jpg" },
+      { status: 429, message: "HTTP 429", url: "https://img.example/limited.jpg" },
+    ]))).toBe(false);
+    expect(isSkippableIncompleteMediaFailure(new ChapterMediaIncompleteError([
+      { status: 503, message: "HTTP 503", url: "https://img.example/unavailable.jpg" },
+      { status: 429, message: "HTTP 429", url: "https://img.example/limited.jpg" },
+    ]))).toBe(false);
+    expect(isSkippableIncompleteMediaFailure(new ChapterMediaIncompleteError([
       { status: 503, message: cdnChallenge!.message, url: "https://cdn.example.net/a.jpg" },
     ]))).toBe(false);
     expect(isSkippableIncompleteMediaFailure(new Error("webview_extract: timeout after 35000ms"))).toBe(false);
+  });
+});
+
+describe("single-chapter verification and immediate stop classification", () => {
+  it("separates single-chapter archive/manifest verification failures and metadata mismatches from global storage stops", () => {
+    const verification = new ChapterMediaFinalizationError(
+      new ChapterStorageError(
+        "archive chapter media",
+        "chapter media: media archive finalization incomplete: loose media file '0007-7.jpg' has 0 bytes, expected 183222",
+      ),
+    );
+    expect(isChapterMediaVerificationFailure(verification)).toBe(true);
+    expect(classifyDownloadFailure(verification).failureClass).toBe("media-incomplete");
+
+    const diskFullFinalization = new ChapterMediaFinalizationError(
+      new ChapterStorageError("archive chapter media", "chapter media: media archive finalization incomplete: No space left on device (os error 28)"),
+    );
+    expect(isChapterMediaVerificationFailure(diskFullFinalization)).toBe(false);
+    expect(classifyDownloadFailure(diskFullFinalization).failureClass).toBe("storage");
+
+    expect(classifyDownloadFailure(new Error("Downloaded chapter metadata is missing.")).failureClass).toBe("content");
+    expect(classifyDownloadFailure(new Error("Server chapter novel ID does not match the local work.")).failureClass).toBe("content");
+  });
+
+  it("identifies immediate source stops vs isolated chapter failures", () => {
+    expect(isImmediateSourceStopFailure(new Error("HTTP 403 Forbidden"))).toBe(true);
+    expect(isImmediateSourceStopFailure(new Error("HTTP 429 Too Many Requests"))).toBe(true);
+    expect(isImmediateSourceStopFailure(new Error("HTTP 401 Unauthorized"))).toBe(true);
+    expect(isImmediateSourceStopFailure(new Error("webview_extract: timeout after 35000ms; the page moved to https://new.example, outside the source site https://old.example"))).toBe(true);
+    expect(isImmediateSourceStopFailure(new Error("manual-action-required: Solve challenge"))).toBe(true);
+    expect(isImmediateSourceStopFailure(new PluginVpnUnavailableError())).toBe(true);
+    expect(isImmediateSourceStopFailure(new ChapterMediaIncompleteError([
+      { status: 404, message: "HTTP 404", url: "https://img.example/a.jpg" },
+      { status: 429, message: "HTTP 429", url: "https://img.example/b.jpg" },
+    ]))).toBe(true);
+
+    expect(isImmediateSourceStopFailure(new Error("HTTP 503 Service Unavailable"))).toBe(false);
+    expect(isImmediateSourceStopFailure(new Error("webview_extract: timeout after 35000ms"))).toBe(false);
+    expect(isImmediateSourceStopFailure(new TypeError("Failed to fetch"))).toBe(false);
+    expect(isImmediateSourceStopFailure(new Error("content-not-found: Empty chapter body"))).toBe(false);
+    expect(isImmediateSourceStopFailure(new Error("Downloaded chapter metadata is missing."))).toBe(false);
+  });
+
+  it("recognizes incomplete media errors and stored failure summaries", () => {
+    const error = new ChapterMediaIncompleteError([
+      { fileName: "0009.jpg", message: "scraper: browser fetch timed out", url: "https://img.example/0009.jpg" },
+    ]);
+    expect(isIncompleteMediaFailure(error)).toBe(true);
+    expect(isIncompleteMediaFailure(classifyDownloadFailure(error).summary)).toBe(true);
+    expect(isIncompleteMediaFailure("HTTP 404: Offline download is incomplete: 1 media assets unavailable (HTTP 404).")).toBe(true);
+    expect(isIncompleteMediaFailure("Failed to fetch")).toBe(false);
   });
 });

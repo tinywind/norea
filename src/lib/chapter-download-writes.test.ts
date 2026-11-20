@@ -195,6 +195,14 @@ describe("chapter download writes", () => {
     await waitForChapterDownloadWrites([42]);
   });
 
+  it("propagates non-storage errors unwrapped when wrapStorageError is disabled", async () => {
+    const metadataError = new Error("Downloaded chapter metadata is missing.");
+    await expect(
+      withChapterDownloadWrite(42, undefined, async () => { throw metadataError; }, { wrapStorageError: false }),
+    ).rejects.toBe(metadataError);
+    await waitForChapterDownloadWrites([42]);
+  });
+
   it("holds a snapshot until its entire callback settles while allowing writes to other chapters", async () => {
     const inspected = deferred<void>();
     const finish = deferred<void>();

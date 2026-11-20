@@ -1342,6 +1342,32 @@ it("preserves a device body edited since the chapter difference comparison", asy
   expect(markContentInstalled).not.toHaveBeenCalled();
 });
 
+it("keeps missing chapter metadata during server install out of ChapterStorageError while still wrapping DB failures", async () => {
+  const target = { pluginId: "source", novelId: "work", novelPath: "/work", chapterPath: "/chapter" };
+  const row = { chapterId: 7092, novelId: 3, pluginId: "source", sourceNovelId: "work", novelPath: "/work", chapterPath: "/chapter",
+    novelName: "Book", chapterName: "Two", chapterNumber: "2", position: 2, page: "1", contentType: "html" };
+  vi.mocked(listContentSyncChapters)
+    .mockResolvedValueOnce([row] as never)
+    .mockResolvedValueOnce([] as never);
+  native.download.mockResolvedValue({ contentBytes: 10, mediaBytes: 0, mediaComplete: true });
+  const entry = { id: "two", deleted: false, manifest: { identity: target, chapter: { contentType: "html" } } } as never;
+  const missingError = await downloadServerChapterFromServer(entry, "http://server", {
+    token: "registered", target,
+  }).catch((error: unknown) => error);
+  expect(missingError).toBeInstanceOf(Error);
+  expect((missingError as Error).message).toBe("Downloaded chapter metadata is missing.");
+  expect((missingError as { code?: unknown }).code).toBeUndefined();
+
+  const dbFailure = new Error("SQLITE_IOERR");
+  vi.mocked(listContentSyncChapters)
+    .mockResolvedValueOnce([row] as never)
+    .mockResolvedValueOnce([row] as never);
+  vi.mocked(markContentInstalled).mockRejectedValueOnce(dbFailure);
+  await expect(downloadServerChapterFromServer(entry, "http://server", {
+    token: "registered", target,
+  })).rejects.toMatchObject({ code: "chapter-storage-failed", cause: dbFailure });
+});
+
 it("never uploads local works or chapters during server synchronization", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{
     chapterId: 901, novelId: 90, pluginId: "local", sourceNovelId: "local-book",

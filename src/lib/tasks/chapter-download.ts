@@ -128,12 +128,15 @@ export interface ChapterDownloadJob {
   serverLane?: true;
   /** The user accepted the source for a content-server work's chapter that the server lacks. */
   sourceFallback?: true;
+  /** Marks a persisted failure row that originated from chapter media repair. */
+  repairMedia?: true;
   title: string;
 }
 
 export interface ChapterMediaRepairJob {
   id: number;
   novelId?: number;
+  novelName?: string;
   pluginId: string;
   pluginName?: string;
   priority?: TaskPriority;
@@ -338,11 +341,17 @@ export async function beginChapterDownloadVpnHandover(): Promise<ChapterDownload
   }
 }
 
+interface ChapterDownloadProgressReporter {
+  (progress: TaskProgress, options?: { force?: boolean }): void;
+  flush: () => void;
+}
+
 function createChapterDownloadProgressReporter(
   setProgress: (progress: TaskProgress) => void,
-): (progress: TaskProgress, options?: { force?: boolean }) => void {
+): ChapterDownloadProgressReporter {
   let lastPublishedAt = 0;
-  return (progress, options) => {
+  let pending: TaskProgress | null = null;
+  const report = ((progress: TaskProgress, options?: { force?: boolean }) => {
     const terminal =
       progress.total !== undefined && progress.current >= progress.total;
     const now = Date.now();
@@ -351,11 +360,43 @@ function createChapterDownloadProgressReporter(
       !terminal &&
       now - lastPublishedAt < CHAPTER_DOWNLOAD_PROGRESS_PUBLISH_INTERVAL_MS
     ) {
+      pending = progress;
       return;
     }
+    pending = null;
     lastPublishedAt = now;
     setProgress(progress);
+  }) as ChapterDownloadProgressReporter;
+  report.flush = () => {
+    if (!pending) return;
+    const next = pending;
+    pending = null;
+    lastPublishedAt = Date.now();
+    setProgress(next);
   };
+  return report;
+}
+
+function settledChapterTaskIds(chapterId: number): string[] {
+  const ids: string[] = [];
+  for (const key of [
+    chapterDownloadDedupeKey(chapterId),
+    chapterMediaRepairDedupeKey(chapterId),
+  ]) {
+    const task = taskScheduler.getTaskByDedupeKey?.(key);
+    if (task && (task.status === "failed" || task.status === "cancelled")) {
+      ids.push(task.id);
+    }
+  }
+  return ids;
+}
+
+function forgetSettledChapterTaskIds(ids: readonly string[], keepTaskId: string): void {
+  for (const id of ids) {
+    if (id !== keepTaskId) {
+      taskScheduler.forgetSettledTask(id);
+    }
+  }
 }
 
 function shouldEmitLiveChapterDownloadUpdates(job: ChapterDownloadJob): boolean {
@@ -1140,6 +1181,7 @@ function isFallbackEligibleContentServerError(error: unknown, signal: AbortSigna
   return (
     error instanceof ContentServerError ||
     error instanceof ContentServerTransportError ||
+    (error !== null && typeof error === "object" && "code" in error && error.code === "content-server-request-failed") ||
     (error instanceof Error &&
       (/^content sync: /.test(error.message) ||
         error.message === "Content server lookup timed out." ||
@@ -1249,6 +1291,7 @@ function enqueueChapterDownloadForExecutor(
   const registration = backendChapterDownloadRegistrations.get(job.id);
   const queueOwnerId = registration?.ownerId ?? requestedQueueOwnerId;
   const backendQueueWrite = registration?.write ?? requestedQueueWrite;
+  const priorSettledTaskIds = settledChapterTaskIds(job.id);
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.download",
     ...(!options.vpnWorker ? {
@@ -1640,6 +1683,8 @@ function enqueueChapterDownloadForExecutor(
                 );
               }
               throw error;
+            } finally {
+              reportProgress.flush();
             }
             if (usesStoredHtmlSource) confirmSourceAccess?.();
             html = media.html;
@@ -1697,6 +1742,7 @@ function enqueueChapterDownloadForExecutor(
       removeQueuedChapterDownloadJob(job, queueOwnerId);
     },
   );
+  forgetSettledChapterTaskIds(priorSettledTaskIds, handle.id);
   if (!options.vpnWorker) {
     ordinaryChapterDownloadHandles.set(job.id, handle);
     const clear = () => {
@@ -1756,7 +1802,7 @@ async function restoreChapterDownloadFailureStops(): Promise<void> {
       const error = row.failureClass === "storage"
         ? new ChapterStorageError("Restore failed chapter", new Error(row.messageSummary))
         : new Error(row.messageSummary);
-      if (row.failureClass === "storage" || failedChapterDownloadJob(row.jobJson)) {
+      if (row.failureClass === "storage" || failedChapterDownloadJob(row.jobJson) || failedChapterMediaRepairJob(row.jobJson)) {
         taskScheduler.reportDownloadFailure(error, row.pluginId);
       }
     }
@@ -1768,15 +1814,38 @@ async function restoreChapterDownloadFailureStops(): Promise<void> {
   }
 }
 
-/** The ordinary job a failure row recorded, or null for VPN-owned or unreadable jobs. */
+/** The ordinary job a failure row recorded, or null for VPN-owned, repair, or unreadable jobs. */
 export function failedChapterDownloadJob(jobJson: string): ChapterDownloadJob | null {
   let value: unknown;
   try { value = JSON.parse(jobJson); } catch { return null; }
   if (value === null || typeof value !== "object") return null;
   const record = value as Record<string, unknown>;
-  if (record.vpnPlanId !== undefined || record.vpnRangeId !== undefined || record.vpnBatchId !== undefined) return null;
+  if (record.vpnPlanId !== undefined || record.vpnRangeId !== undefined || record.vpnBatchId !== undefined || record.repairMedia === true) return null;
   const job = normalizeQueuedChapterDownloadJob(value);
   return job ? withoutRetryTime(job) : null;
+}
+
+function failedChapterMediaRepairJob(jobJson: string): ChapterMediaRepairJob | null {
+  let value: unknown;
+  try { value = JSON.parse(jobJson); } catch { return null; }
+  if (value === null || typeof value !== "object") return null;
+  const record = value as Record<string, unknown>;
+  if (record.repairMedia !== true) return null;
+  const id = readPositiveIntegerField(record, "id");
+  const pluginId = readStringField(record, "pluginId");
+  const title = readStringField(record, "title") ?? readStringField(record, "chapterName");
+  if (!id || !pluginId || !title) return null;
+  const novelId = readPositiveIntegerField(record, "novelId");
+  const novelName = readStringField(record, "novelName");
+  const pluginName = readStringField(record, "pluginName");
+  return {
+    id,
+    pluginId,
+    ...(pluginName ? { pluginName } : {}),
+    ...(novelId !== undefined ? { novelId } : {}),
+    ...(novelName ? { novelName } : {}),
+    title,
+  };
 }
 
 /** Manual "Retry all": clears the recorded failures and queues each chapter for an explicit attempt. */
@@ -1789,17 +1858,24 @@ export async function retryFailedChapterDownloads(chapterIds: readonly number[])
       return job && isServerChapterMissingFailure(row.messageSummary) ? { ...job, sourceFallback: true as const } : job;
     })
     .filter((job): job is ChapterDownloadJob => job !== null);
+  const repairJobs = failures
+    .map((row) => failedChapterMediaRepairJob(row.jobJson))
+    .filter((job): job is ChapterMediaRepairJob => job !== null);
+  const retriedIds = [...jobs.map((job) => job.id), ...repairJobs.map((job) => job.id)];
   const storageRetry = getChapterDownloadFailureSnapshot().some(row => wanted.has(row.chapterId) && row.failureClass === "storage");
-  await forgetChapterDownloadFailures(jobs.map((job) => job.id));
-  if (jobs.length > 0) {
-    downloadRecovery.resume(undefined, new Set(jobs.map(downloadRecoveryKey)));
+  await forgetChapterDownloadFailures(retriedIds);
+  if (retriedIds.length > 0) {
+    downloadRecovery.resume(undefined, new Set([...jobs, ...repairJobs].map(downloadRecoveryKey)));
   }
   for (const job of jobs) {
     void enqueueChapterDownload({ ...explicitChapterDownloadJob(job), priority: "user" }).promise.catch(() => undefined);
   }
+  for (const job of repairJobs) {
+    void enqueueChapterMediaRepair({ ...job, priority: "user" }).promise.catch(() => undefined);
+  }
   if (storageRetry) taskScheduler.resumeSourceQueue();
   else for (const sourceId of new Set(failures.map(row => row.pluginId))) taskScheduler.resumeSourceQueue(sourceId);
-  return jobs.length;
+  return retriedIds.length;
 }
 
 export function enqueueChapterDownload(
@@ -1853,7 +1929,11 @@ export function enqueueChapterMediaRepair(
 ): TaskHandle<void> {
   const sourceName = job.pluginName?.trim() || job.pluginId;
   let sourcePluginId = job.pluginId;
+  let serverFallbackAttempted = false;
+  let recordedChapter: ChapterRow | undefined;
+  let recordedNovelName = job.novelName;
   const sourceCooldownKey = job.pluginId;
+  const priorSettledTaskIds = settledChapterTaskIds(job.id);
   const handle = taskScheduler.enqueueSource<void>({
     kind: "chapter.repairMedia",
     retryManually: () => {
@@ -1867,6 +1947,7 @@ export function enqueueChapterMediaRepair(
       chapterId: job.id,
       pluginId: job.pluginId,
       ...(job.novelId !== undefined ? { novelId: job.novelId } : {}),
+      ...(job.novelName ? { novelName: job.novelName } : {}),
     },
     dedupeKey: chapterMediaRepairDedupeKey(job.id),
     canCompleteWithoutSourceAccess: true,
@@ -1891,6 +1972,7 @@ export function enqueueChapterMediaRepair(
       if (!chapter) {
         throw missingRepairChapterError(job);
       }
+      recordedChapter = chapter;
       if (signal.aborted) throw abortReason(signal);
       if (!serverAvailable && isTauriRuntime()) {
         await abortableStep(signal, pluginManager.loadInstalledFromDb());
@@ -1923,6 +2005,7 @@ export function enqueueChapterMediaRepair(
       const pending = await withChapterDownloadWrite(chapter.id, signal, () => markChapterMediaRepairPending(chapter.id));
       if (pending.rowsAffected <= 0) throw missingRepairChapterError(job);
       const novel = await withChapterStorageOperation("Read chapter novel", () => getNovelById(chapter.novelId));
+      if (novel?.name) recordedNovelName = novel.name;
       const storageContext = {
         chapterId: chapter.id,
         chapterName: chapter.name,
@@ -1951,6 +2034,7 @@ export function enqueueChapterMediaRepair(
               throw new Error("Chapter source access URL does not match the verification scope.");
             }
             sourceAccessStarted = true;
+            serverFallbackAttempted = false;
           }
           return null;
         },
@@ -2007,6 +2091,8 @@ export function enqueueChapterMediaRepair(
           setChapterDownloadPhase?.("server-download");
         }
         throw error;
+      }).finally(() => {
+        reportProgress.flush();
       });
       if (!media) return;
       if (sourceAccessStarted) confirmSourceAccess?.();
@@ -2035,33 +2121,43 @@ export function enqueueChapterMediaRepair(
       };
       return downloadRecovery.run({ job,
         beforeAttempt: async (attemptContext) => {
-          attemptContext.setChapterDownloadPhase?.("server-lookup");
-          fetchServerMedia = createServerChapterMediaFetcher(job, attemptContext.signal);
-          try {
-            if (await fetchServerMedia.hasServerChapter()) {
-              await repair(attemptContext, true);
-              return { handled: true, value: undefined };
+          if (!serverFallbackAttempted) {
+            attemptContext.setChapterDownloadPhase?.("server-lookup");
+            fetchServerMedia = createServerChapterMediaFetcher(job, attemptContext.signal);
+            try {
+              if (await fetchServerMedia.hasServerChapter()) {
+                await repair(attemptContext, true);
+                return { handled: true, value: undefined };
+              }
+            } catch (error) {
+              const fallbackEligible =
+                isFallbackEligibleContentServerError(error, attemptContext.signal) ||
+                (!attemptContext.signal.aborted && isChapterMediaIncompleteError(error));
+              if (!fallbackEligible) {
+                throw error;
+              }
+              await waitForChapterStorageOperation(job.pluginId, attemptContext.signal);
+              const fallbackChapter = await withChapterStorageOperation("Read chapter state", () => getChapterById(job.id));
+              if (!fallbackChapter) throw missingRepairChapterError(job);
+              recordedChapter = fallbackChapter;
+              if (!await canFallbackChapterDownloadToSource(fallbackChapter, job.pluginId, attemptContext.signal)) {
+                throw error;
+              }
+              serverFallbackAttempted = true;
+              sourceChapter = fallbackChapter;
+              sourceJob = chapterDownloadSourceJob({ ...job, chapterPath: fallbackChapter.path }, fallbackChapter);
+              sourcePluginId = sourceJob.pluginId;
+              downloadRecovery.setSource(sourceJob);
+              fetchServerMedia = Object.assign(async () => null, { hasServerChapter: async () => false });
+              return { handled: false };
             }
-          } catch (error) {
-            if (!isFallbackEligibleContentServerError(error, attemptContext.signal)) {
-              throw error;
-            }
-            await waitForChapterStorageOperation(job.pluginId, attemptContext.signal);
-            const fallbackChapter = await withChapterStorageOperation("Read chapter state", () => getChapterById(job.id));
-            if (!fallbackChapter) throw missingRepairChapterError(job);
-            if (!await canFallbackChapterDownloadToSource(fallbackChapter, job.pluginId, attemptContext.signal)) {
-              throw error;
-            }
-            sourceChapter = fallbackChapter;
-            sourceJob = chapterDownloadSourceJob({ ...job, chapterPath: fallbackChapter.path }, fallbackChapter);
-            sourcePluginId = sourceJob.pluginId;
-            downloadRecovery.setSource(sourceJob);
+          } else {
             fetchServerMedia = Object.assign(async () => null, { hasServerChapter: async () => false });
-            return { handled: false };
           }
           await waitForChapterStorageOperation(job.pluginId, attemptContext.signal);
           const chapter = await withChapterStorageOperation("Read chapter state", () => getChapterById(job.id));
           if (!chapter) throw missingRepairChapterError(job);
+          recordedChapter = chapter;
           sourceChapter = chapter;
           sourceJob = chapterDownloadSourceJob({ ...job, chapterPath: chapter.path }, chapter);
           sourcePluginId = sourceJob.pluginId;
@@ -2071,11 +2167,36 @@ export function enqueueChapterMediaRepair(
       }, context, attemptContext => repair(attemptContext, false));
     },
   });
+  forgetSettledChapterTaskIds(priorSettledTaskIds, handle.id);
   void handle.promise.then(notifyChapterDownloadsSettled, error => {
     const current = taskScheduler.getTaskByDedupeKey(chapterMediaRepairDedupeKey(job.id));
     if (isTaskUserCancelledError(error) && (!current || current.id === handle.id)) {
       try { downloadRecovery.forget([downloadRecoveryKey(job)], true); }
       catch (recoveryError) { taskScheduler.reportDownloadFailure(recoveryError); }
+    } else if (
+      isTauriRuntime() &&
+      !isTaskUserCancelledError(error) &&
+      !isAbortError(error) &&
+      !isDownloadRecoveryNextProfile(error)
+    ) {
+      const failureJob: ChapterDownloadJob = {
+        id: job.id,
+        pluginId: job.pluginId,
+        ...(job.pluginName ? { pluginName: job.pluginName } : {}),
+        chapterPath: recordedChapter?.path ?? "",
+        ...(recordedChapter?.name ? { chapterName: recordedChapter.name } : {}),
+        ...(recordedChapter?.chapterNumber ? { chapterNumber: recordedChapter.chapterNumber } : {}),
+        ...(recordedChapter?.contentType ? { contentType: normalizeChapterContentType(recordedChapter.contentType) } : {}),
+        ...(job.novelId !== undefined || recordedChapter?.novelId !== undefined
+          ? { novelId: job.novelId ?? recordedChapter?.novelId }
+          : {}),
+        ...(recordedNovelName ? { novelName: recordedNovelName } : {}),
+        repairMedia: true,
+        title: job.title,
+      };
+      void queueBackendChapterDownloadMutation("record failed chapter media repair", async () => {
+        await recordFailedChapterDownloadAttempt(failureJob, error, Date.now(), sourcePluginId);
+      });
     }
     notifyChapterDownloadsSettled();
   });

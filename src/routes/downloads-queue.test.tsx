@@ -224,6 +224,20 @@ describe("task work group order", () => {
     expect(error.find("button.norea-task-row-error-details").text()).toBe("Details");
     expect($.text()).not.toContain("browser fetch failed");
   });
+
+  it("explains partial missing images separately from generic download failures", () => {
+    const failed = {
+      ...chapter(4, 3, "failed"),
+      error: "Offline download is incomplete: 2 media assets unavailable. Missing assets: 0009.jpg @ img.example.",
+    };
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [failed],
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    const error = $(".norea-task-row[data-status='failed'] .norea-task-row-error");
+    expect(error.find(".norea-task-row-error-text").text()).toBe("Some images in this chapter could not be downloaded.");
+  });
   it("shows a promoted work above the work whose transfer is still running", () => {
     expect(workTitles([
       chapter(1, 1, "running", 2), chapter(2, 1, "queued", 3),

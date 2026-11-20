@@ -11,6 +11,7 @@ vi.mock("../../db/queries/chapter-download-failure", () => ({
   listChapterDownloadFailures: queries.list,
 }));
 
+import { ChapterMediaIncompleteError } from "../chapter-media/errors";
 import {
   forgetChapterDownloadFailures,
   getChapterDownloadFailureSnapshot,
@@ -64,4 +65,17 @@ it("records the original source failure while preserving the target owner's dura
   const input = queries.record.mock.calls[0]![0];
   expect(input).toMatchObject({ chapterId: 7, pluginId: "original-a", now: 100 });
   expect(JSON.parse(input.jobJson)).toEqual({ id: 7, pluginId: "target-b", chapterPath: "norea-composed:entry-a", title: "Seven" });
+});
+
+it("persists transient incomplete-media failures under media-incomplete so attention offers repair", async () => {
+  queries.record.mockImplementation(async input => input);
+  const error = new ChapterMediaIncompleteError([
+    { fileName: "0009.jpg", message: "scraper: browser fetch to https://img.example timed out after 30000ms", url: "https://img.example/0009.jpg" },
+  ]);
+  await recordFailedChapterDownloadAttempt(job, error, 200);
+  expect(queries.record.mock.calls[0]![0]).toMatchObject({
+    chapterId: 7,
+    failureClass: "media-incomplete",
+    messageSummary: expect.stringContaining("Offline download is incomplete:"),
+  });
 });

@@ -249,7 +249,7 @@ it("keeps global storage failure protection during local server finalization", a
 });
 
 it.each([false, true])("keeps source failures after actual source admission (display phase: %s)", async displaySource => {
-  const failure = new Error("Source parsing failed");
+  const failure = new Error("HTTP 429 Too Many Requests");
   let attempts = 0;
   const copy = scheduler.enqueueSource({
     kind: "chapter.download", title: "Source fallback", source, serverLane: true,
@@ -267,7 +267,7 @@ it.each([false, true])("keeps source failures after actual source admission (dis
   await settle();
   expect(attempts).toBe(2);
   expect(await outcome).toBe(failure);
-  expect(scheduler.getDownloadFailureStops().sourceErrors).toEqual({ "source-a": "Source parsing failed" });
+  expect(scheduler.getDownloadFailureStops().sourceErrors).toEqual({ "source-a": "HTTP 429 Too Many Requests" });
 });
 
 it("replaces an earlier source attempt origin when a retry finds server content", async () => {

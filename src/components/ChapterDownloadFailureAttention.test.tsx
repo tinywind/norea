@@ -53,3 +53,13 @@ it("keeps waiting retries out of Needs attention", () => {
   const $ = load(renderToStaticMarkup(<MantineProvider><ChapterDownloadFailureAttention /></MantineProvider>));
   expect($("[data-download-failures]")).toHaveLength(0);
 });
+
+it("renders transient incomplete-media rows as missing images with Repair all", () => {
+  state.rows = [
+    row(6, { failureClass: "transient", messageSummary: "Offline download is incomplete: 2 media assets unavailable." }),
+  ];
+  const $ = render();
+  expect($('[data-download-failures="media-incomplete"]').text()).toContain("Foo: 1 chapters are missing images.");
+  expect($('[data-download-failures="media-incomplete"] button').attr("aria-label")).toBe("Repair all");
+  expect($('[data-download-failures="transient"]')).toHaveLength(0);
+});

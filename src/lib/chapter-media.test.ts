@@ -822,6 +822,50 @@ describe("cacheHtmlChapterMedia", () => {
     );
   });
 
+  it("counts only stored media assets in progress and excludes failed assets", async () => {
+    const progressEvents: Array<{ current: number; total: number }> = [];
+    const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    pluginMediaFetchMock.mockImplementation(async (url: string) => {
+      if (url.endsWith("page-2.png")) {
+        return new Response(null, { status: 404, statusText: "Not Found" });
+      }
+      if (url.endsWith("page-3.png")) {
+        throw new Error("scraper: browser fetch timed out after 30000ms");
+      }
+      return new Response(new Uint8Array([1, 2, 3]), {
+        headers: { "content-type": "image/png" },
+        status: 200,
+      });
+    });
+    mockChapterMediaInvoke(async (command, args) => {
+      if (command === "chapter_media_read_manifest") return null;
+      if (command === "chapter_media_archive_cache") return 6;
+      if (command === "chapter_media_store_handle") {
+        const input = args as { fileName: string };
+        return `norea-media://reader-asset/${input.fileName}`;
+      }
+      return null;
+    });
+
+    try {
+      await expect(
+        cacheHtmlChapterMedia({
+          baseUrl: "https://source.test/chapter/1",
+          chapterId: 42,
+          html: `<img src="/page-1.png"><img src="/page-2.png"><img src="/page-3.png"><img src="/page-4.png">`,
+          onProgress: (progress) => progressEvents.push(progress),
+          requireComplete: true,
+        }),
+      ).rejects.toMatchObject({ code: "chapter-media-incomplete" });
+      expect(progressEvents).toEqual([
+        { current: 1, total: 4 },
+        { current: 2, total: 4 },
+      ]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it("rewrites lazy and responsive image sources through the media cache", async () => {
     pluginMediaFetchMock.mockImplementation(async () => {
       return new Response(new Uint8Array([4, 5, 6]), {

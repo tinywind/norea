@@ -355,8 +355,8 @@ beforeEach(() => {
     getChapterAcquisitionPlan: pluginMocks.getChapterAcquisitionPlan,
     getChapterResource: pluginMocks.getChapterResource,
   };
-  pluginMocks.getPlugin.mockReturnValue(plugin);
-  pluginMocks.getPluginForExecutor.mockReturnValue(plugin);
+  pluginMocks.getPlugin.mockReset().mockReturnValue(plugin);
+  pluginMocks.getPluginForExecutor.mockReset().mockReturnValue(plugin);
   pluginMocks.getChapterAcquisitionPlan.mockReturnValue({ type: "resource" });
   pluginMocks.getChapterResource.mockResolvedValue({
     type: "content",
@@ -3688,7 +3688,7 @@ describe("explicit retries after a failed chapter download", () => {
 
   it("retains the failed record and source hold until manual retry despite a legacy retry deadline", async () => {
     const scheduler = await realScheduler();
-    const error = new Error("Failed to fetch");
+    const error = new Error("HTTP 429 Too Many Requests");
     pluginMocks.getChapterResource.mockRejectedValueOnce(error);
     failureMocks.record.mockResolvedValueOnce({ nextRetryAt: Date.now() + 30_000 });
     const original = enqueueChapterDownload(job);
@@ -3700,7 +3700,7 @@ describe("explicit retries after a failed chapter download", () => {
       expect(failureMocks.record).toHaveBeenCalledWith(expect.objectContaining({ id: 7, pluginId: "source-a" }), error);
       expect(scheduler.getTask(original.id)).toMatchObject({ status: "failed", canRetry: true });
       expect(scheduler.getSnapshot().pausedSourceIds).toContain("source-a");
-      expect(scheduler.getDownloadFailureStops()).toMatchObject({ sourceErrors: { "source-a": "Failed to fetch" } });
+      expect(scheduler.getDownloadFailureStops()).toMatchObject({ sourceErrors: { "source-a": "HTTP 429 Too Many Requests" } });
       expect(schedulerMocks.enqueueSource).toHaveBeenCalledTimes(1);
       expect(backendQueueValues.has(7)).toBe(false);
       expect(pluginMocks.getChapterResource).toHaveBeenCalledTimes(1);
@@ -3761,6 +3761,8 @@ describe("enqueueChapterMediaRepair", () => {
       scheduler.enqueueSource({ ...spec, sourceCooldownMs: 0 }));
     vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation(key => scheduler.getTaskByDedupeKey(key));
     vi.mocked(isTauriRuntime).mockReturnValue(true);
+    pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
+    pluginMocks.getPlugin.mockReturnValue(undefined);
     Object.defineProperty(document, "createElement", {
       configurable: true,
       // This fixture has only a paragraph; its missing asset is declared in the manifest.
@@ -3997,6 +3999,127 @@ describe("enqueueChapterMediaRepair", () => {
     expect(tryStartSourceAccess).toHaveBeenCalledOnce();
     expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-a", "immediate");
     expect(saveStoredChapterContent).toHaveBeenCalledWith(7, "<p>Repaired</p>", "html", { mediaBytes: 3 });
+  });
+
+  it("falls back to the source plugin when content server media repair returns 404 for an asset", async () => {
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) =>
+      scheduler.enqueueSource({ ...spec, sourceCooldownMs: 0 }));
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation(key => scheduler.getTaskByDedupeKey(key));
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
+    serverMediaMocks.hasServerChapter.mockResolvedValue(true);
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValue("<p>Stored body</p>");
+    vi.mocked(cacheHtmlChapterMedia)
+      .mockRejectedValueOnce(new ChapterMediaIncompleteError([
+        { fileName: "missing.png", status: 404, message: "Content server request failed (404).", url: "https://source.test/missing.png" },
+      ]))
+      .mockImplementationOnce(async options => {
+        const serverAsset = await options.fetchMissingMedia!({
+          bytes: 3, fileName: "missing.png", path: "media/missing.png", sourceUrl: "https://source.test/missing.png", status: "remote", updatedAt: 1,
+        });
+        expect(serverAsset).toBeNull();
+        return { html: "<p>Repaired</p>", mediaBytes: 3, mediaFailures: [], storedMediaCount: 1 };
+      })
+      .mockImplementationOnce(async options => {
+        const serverAsset = await options.fetchMissingMedia!({
+          bytes: 3, fileName: "missing.png", path: "media/missing.png", sourceUrl: "https://source.test/missing.png", status: "remote", updatedAt: 1,
+        });
+        expect(serverAsset).toBeNull();
+        return { html: "<p>Repaired</p>", mediaBytes: 3, mediaFailures: [], storedMediaCount: 1 };
+      });
+
+    const handle = enqueueChapterMediaRepair({
+      id: 7, novelId: 11, novelName: "Novel Eleven", pluginId: "source-a", title: "Repair Chapter 7",
+    });
+    try {
+      await handle.promise;
+      expect(scheduler.getTask(handle.id)).toMatchObject({
+        status: "succeeded",
+        subject: { chapterId: 7, novelId: 11, novelName: "Novel Eleven", pluginId: "source-a" },
+      });
+      // Only checks the server once; after deferring from server:0 to pool:0 it proceeds straight to the source.
+      expect(serverMediaMocks.hasServerChapter).toHaveBeenCalledTimes(1);
+      expect(pluginMocks.getPluginForExecutor).toHaveBeenCalledWith("source-a", "pool:0");
+      expect(saveStoredChapterContent).toHaveBeenCalledWith(7, "<p>Repaired</p>", "html", { mediaBytes: 3 });
+      expect(recoveryHarness.current.getSnapshot()).toEqual([]);
+    } finally {
+      scheduler.cancelActiveTasks({ discardQueued: true });
+    }
+  });
+
+  it("records failed media repair in download failures and retries it via repairMedia without leaking recovery state", async () => {
+    const storageValues = new Map<string, string>();
+    recoveryHarness.current = new DownloadRecoveryController({
+      getItem: key => storageValues.get(key) ?? null,
+      setItem: (key, value) => { storageValues.set(key, value); },
+    });
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) =>
+      scheduler.enqueueSource({ ...spec, sourceCooldownMs: 0 }));
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation(key => scheduler.getTaskByDedupeKey(key));
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
+    pluginMocks.getPlugin.mockReturnValue(undefined);
+    serverMediaMocks.hasServerChapter.mockResolvedValue(true);
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValue("<p>Stored body</p>");
+    vi.mocked(getNovelById).mockResolvedValueOnce({
+      id: 11, pluginId: "source-a", sourceNovelId: "novel", path: "/novel", name: "Novel Eleven",
+      cover: null, summary: null, author: null, artist: null, status: null, genres: null, rating: null,
+      inLibrary: true, isLocal: false, createdAt: 1, updatedAt: 1, libraryAddedAt: 1, lastReadAt: null, statusOverride: null,
+    });
+    const incomplete = new ChapterMediaIncompleteError([
+      { fileName: "missing.png", status: 404, message: "Content server request failed (404).", url: "https://source.test/missing.png" },
+    ]);
+    vi.mocked(cacheHtmlChapterMedia).mockRejectedValueOnce(incomplete);
+
+    const handle = enqueueChapterMediaRepair({
+      id: 7, novelId: 11, novelName: "Novel Eleven", pluginId: "source-a", title: "Repair Chapter 7",
+    });
+    try {
+      await expect(handle.promise).rejects.toBe(incomplete);
+      await waitForChapterDownloadQueueMutations();
+      expect(failureMocks.record).toHaveBeenCalledWith(
+        expect.objectContaining({
+          id: 7,
+          novelId: 11,
+          novelName: "Novel Eleven",
+          pluginId: "source-a",
+          repairMedia: true,
+          title: "Repair Chapter 7",
+        }),
+        incomplete,
+        expect.any(Number),
+        "source-a",
+      );
+      const savedRecovery = JSON.parse(storageValues.get("download-recovery-runtime") ?? '{"jobs":[],"episodes":[]}');
+      expect(savedRecovery.jobs).toEqual([]);
+      expect(savedRecovery.episodes).toEqual([]);
+
+      const recordedJob = (failureMocks.record.mock.calls[0] as unknown[])[0];
+      failureMocks.snapshot.mockReturnValue([{
+        chapterId: 7,
+        pluginId: "source-a",
+        failureClass: "media-incomplete",
+        messageSummary: incomplete.message,
+        challengeUrl: null,
+        attempts: 1,
+        nextRetryAt: null,
+        jobJson: JSON.stringify(recordedJob),
+        updatedAt: 1,
+      }]);
+      const { retryFailedChapterDownloads } = await import("./chapter-download");
+      const callsBefore = schedulerMocks.enqueueSource.mock.calls.length;
+      expect(await retryFailedChapterDownloads([7])).toBe(1);
+      expect(schedulerMocks.enqueueSource.mock.calls[callsBefore]![0]).toMatchObject({
+        kind: "chapter.repairMedia",
+        subject: { chapterId: 7, novelId: 11, novelName: "Novel Eleven", pluginId: "source-a" },
+      });
+    } finally {
+      scheduler.cancelActiveTasks({ discardQueued: true });
+    }
   });
 
 });
@@ -4336,7 +4459,7 @@ describe("composed chapter source routing", () => {
     fixture();
     const { scheduler, handles } = await schedulerFixture();
     vi.mocked(isTauriRuntime).mockReturnValue(true);
-    const failure = new Error("HTTP 503 Service Unavailable");
+    const failure = new Error("HTTP 429 Too Many Requests");
     pluginMocks.getChapterResource.mockRejectedValueOnce(failure);
     const first = enqueueChapterDownload(targetJob);
     await expect(first.promise).rejects.toBe(failure);
@@ -4354,5 +4477,38 @@ describe("composed chapter source routing", () => {
       expect(taskScheduler.resumeSourceQueue).not.toHaveBeenCalledWith("source-b");
       expect(tryDownloadServerChapter).toHaveBeenLastCalledWith(expect.objectContaining({ pluginId: "source-b", chapterPath: targetJob.chapterPath }), expect.any(AbortSignal), expect.any(Function), { sourceFallback: true });
     } finally { scheduler.cancelActiveTasks({ discardQueued: true }); await waitForChapterDownloadQueueMutations(); }
+  });
+
+  it("forgets prior settled failed tasks for the same chapter when re-enqueuing download or repair", async () => {
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation((key) => {
+      if (key === "chapter.download:7") {
+        return { id: "old-failed-7", kind: "chapter.download", status: "failed", subject: { chapterId: 7 } } as never;
+      }
+      if (key === "chapter.repairMedia:7") {
+        return { id: "active-repair-7", kind: "chapter.repairMedia", status: "running", subject: { chapterId: 7 } } as never;
+      }
+      return undefined;
+    });
+    enqueueChapterDownload({
+      id: 7,
+      pluginId: "demo",
+      chapterPath: "/c7",
+      title: "Download 7",
+    });
+    expect(taskScheduler.forgetSettledTask).toHaveBeenCalledWith("old-failed-7");
+    expect(taskScheduler.forgetSettledTask).not.toHaveBeenCalledWith("active-repair-7");
+
+    vi.mocked(taskScheduler.forgetSettledTask).mockClear();
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation((key) =>
+      key === "chapter.repairMedia:7"
+        ? ({ id: "old-repair-7", kind: "chapter.repairMedia", status: "failed", subject: { chapterId: 7 } } as never)
+        : undefined,
+    );
+    enqueueChapterMediaRepair({
+      id: 7,
+      pluginId: "demo",
+      title: "Repair 7",
+    });
+    expect(taskScheduler.forgetSettledTask).toHaveBeenCalledWith("old-repair-7");
   });
 });

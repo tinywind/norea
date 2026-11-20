@@ -584,6 +584,21 @@ describe("VPN download coordinator", () => {
     await coordinator.cancelPlan(value.id);
   });
 
+  it("halts the VPN range instead of skipping when incomplete media mixes 404 with 429", async () => {
+    const runtime = new Runtime(); const coordinator = new VpnDownloadCoordinator(runtime); const value = plan();
+    await coordinator.start(value, jobsFor(value)); await until(() => expect(runtime.tasks.size).toBe(1));
+    const [, first] = runtime.task("a");
+    first.result.reject(new ChapterMediaIncompleteError([
+      { fileName: "0001.jpg", status: 404, message: "HTTP 404", url: "https://img.example/0001.jpg" },
+      { fileName: "0002.jpg", status: 429, message: "HTTP 429", url: "https://img.example/0002.jpg" },
+    ]));
+    first.cleanup.resolve(undefined);
+    await until(() => expect(current(coordinator, "a").pauseReason).toBe("chapter-failed"));
+    expect(current(coordinator, "a").checkpoint).toBe(0);
+    expect(runtime.tasks.size).toBe(1);
+    await coordinator.cancelPlan(value.id);
+  });
+
   it.each(["chapter-failed", "download-failed", "runtime-error", "authentication-required", "verification-unavailable"])(
     "preserves the %s hold through restore, run Pause and work Resume", async pauseReason => {
       const runtime = new Runtime(); const value = plan();

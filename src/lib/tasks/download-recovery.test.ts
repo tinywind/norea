@@ -66,7 +66,8 @@ describe("recovery decisions", () => {
 describe("durable recovery execution", () => {
 
   it("does not recover the source or choose a VPN profile after a server transport failure", async () => {
-    const controller = new DownloadRecoveryController(memoryStorage());
+    const storage = memoryStorage();
+    const controller = new DownloadRecoveryController(storage);
     const transport = new ContentServerTransportError("Content server connection failed (HTTP 403).");
     const operation = vi.fn(async () => "source body");
     const resetSite = vi.fn(async () => undefined);
@@ -80,6 +81,9 @@ describe("durable recovery execution", () => {
     expect(resetSite).not.toHaveBeenCalled();
     expect(profileId).not.toHaveBeenCalled();
     expect(controller.getSnapshot()).toEqual([]);
+    const persisted = JSON.parse(storage.getItem(DOWNLOAD_RECOVERY_STORAGE_KEY) ?? '{"jobs":[],"episodes":[]}');
+    expect(persisted.jobs).toEqual([]);
+    expect(persisted.episodes).toEqual([]);
   });
 
   it.each(["resetSite", "nextProfile"] as const)("rechecks the server after a retry delay before %s touches the source", async action => {
@@ -347,4 +351,27 @@ it("forwards a composed source route through recovery and preserves a deferred h
   expect(tryStartSourceAccess).toHaveBeenCalledExactlyOnceWith(route);
   expect(controller.getSnapshot()).toMatchObject([{ sourceId: "original-source", status: "held" }]);
   expect(operation).not.toHaveBeenCalled();
+});
+
+it("applies the rate-limit policy when 429 is mixed with 404 or 503 media failures", () => {
+  const mixed = new ChapterMediaIncompleteError([
+    { status: 404, message: "HTTP 404", url: "https://example.test/missing" },
+    { status: 503, message: "HTTP 503", url: "https://example.test/unavailable" },
+    { status: 429, message: "HTTP 429", url: "https://example.test/limited", retryAfterMs: 30_000 },
+  ]);
+  expect(decideDownloadRecovery(policy({ rateLimitAction: "retry", transientAction: "pause" }), mixed, zero, { vpn: false, canResetSite: true }))
+    .toMatchObject({ action: "retry", delayMs: 30_000 });
+});
+
+it("preserves an existing recovery episode when beforeAttempt fails", async () => {
+  const storage = memoryStorage();
+  const controller = new DownloadRecoveryController(storage);
+  controller.register([job]);
+  controller.networkLost(downloadRecoveryKey(job), new Error("Original failure"));
+  const serverFailure = new ContentServerTransportError("Server unreachable");
+  await expect(controller.run({
+    job,
+    beforeAttempt: async () => { throw serverFailure; },
+  }, context(), vi.fn(async () => undefined))).rejects.toBe(serverFailure);
+  expect(controller.getSnapshot()).toMatchObject([{ key: downloadRecoveryKey(job), status: "held" }]);
 });

@@ -77,13 +77,25 @@ export async function withGlobalChapterDownloadSnapshotReads<T>(
   }
 }
 
+export interface ChapterDownloadWriteOptions {
+  expectedRevision?: number;
+  /** Wrap callback failures as ChapterStorageError unless the callback manages its own storage boundaries. */
+  wrapStorageError?: boolean;
+}
+
 /** Tracks local filesystem or database writes; keep network waits outside. */
 export async function withChapterDownloadWrite<T>(
   chapterId: number,
   signal: AbortSignal | undefined,
   write: () => Promise<T>,
-  expectedRevision?: number,
+  expectedRevisionOrOptions?: number | ChapterDownloadWriteOptions,
 ): Promise<T> {
+  const expectedRevision = typeof expectedRevisionOrOptions === "number"
+    ? expectedRevisionOrOptions
+    : expectedRevisionOrOptions?.expectedRevision;
+  const wrapStorageError = typeof expectedRevisionOrOptions === "number"
+    ? true
+    : expectedRevisionOrOptions?.wrapStorageError !== false;
   throwIfAborted(signal, "Chapter download was cancelled.");
   for (;;) {
     const pending = [
@@ -111,7 +123,7 @@ export async function withChapterDownloadWrite<T>(
     throwIfAborted(signal, "Chapter download was cancelled.");
     return result;
   } catch (error) {
-    if (isAbortError(error) || isChapterStorageError(error)) throw error;
+    if (!wrapStorageError || isAbortError(error) || isChapterStorageError(error)) throw error;
     throw new ChapterStorageError("Read or write chapter storage", error);
   } finally {
     downloadRevisions.set(chapterId, ++downloadRevision);

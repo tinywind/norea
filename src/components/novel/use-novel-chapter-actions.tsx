@@ -137,6 +137,7 @@ export function useNovelChapterActions(
       await enqueueChapterMediaRepair({
         id: chapter.id,
         novelId: novel.id,
+        novelName: novel.name,
         pluginId: novel.pluginId,
         priority: "user",
         title: t("tasks.task.repairChapterMedia", { name: chapter.name }),

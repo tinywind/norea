@@ -4,7 +4,12 @@ import { isChapterMediaIncompleteError } from "../chapter-media/errors";
 import { ChapterStorageError } from "../chapter-storage-error";
 import { errorHttpStatus, isHttpNotFoundError } from "../http/status-error";
 import { normalizeSourceAccessRequiredError } from "../plugins/source-access";
-import { classifyDownloadFailure, isSkippableIncompleteMediaFailure, isSourceForbiddenFailure } from "./download-failure";
+import {
+  classifyDownloadFailure,
+  isChapterMediaVerificationFailure,
+  isSkippableIncompleteMediaFailure,
+  isSourceForbiddenFailure,
+} from "./download-failure";
 import type { TaskRunContext } from "./task-types";
 
 export const DOWNLOAD_RECOVERY_STORAGE_KEY = "download-recovery-runtime";
@@ -80,7 +85,7 @@ export function decideDownloadRecovery(
     : failure;
   const mediaStatuses = pendingMedia.map(errorHttpStatus);
   if (isSourceForbiddenFailure(error) || errorHttpStatus(error) === 403 || mediaStatuses.includes(403)) action = policy.forbiddenAction;
-  else if (errorHttpStatus(error) === 429 || (mediaStatuses.length > 0 && mediaStatuses.every(status => status === 429))) action = policy.rateLimitAction;
+  else if (errorHttpStatus(error) === 429 || mediaStatuses.includes(429)) action = policy.rateLimitAction;
   else if (pendingFailure.failureClass === "transient") action = policy.transientAction;
   else return result("pause", "content");
   if (action === "pause") return result(action, "policy");
@@ -426,7 +431,19 @@ export class DownloadRecoveryController {
     const prepare = async () => {
       context.signal.throwIfAborted();
       deferred = false;
-      const result = await options.beforeAttempt?.(attemptContext);
+      let result: { handled: false } | { handled: true; value: T } | undefined;
+      try {
+        result = await options.beforeAttempt?.(attemptContext);
+      } catch (error) {
+        if (!context.signal.aborted && !isAbortError(error) && !this.episodes.has(key) && !options.retainOnSuccess) {
+          try {
+            this.forget([key]);
+          } catch {
+            // Preserve the original beforeAttempt error when storage cleanup fails.
+          }
+        }
+        throw error;
+      }
       context.signal.throwIfAborted();
       if (result?.handled && !deferred && !options.retainOnSuccess) this.forget([key], true);
       return result;
@@ -527,7 +544,11 @@ export class DownloadRecoveryController {
             (registration.policy.notFoundAction === "pause" &&
               isChapterMediaIncompleteError(error) &&
               error.failures.some(isHttpNotFoundError));
-          if (decision.action === "pause" && !notFoundPolicyHold && isSkippableIncompleteMediaFailure(error)) {
+          if (
+            decision.action === "pause" &&
+            !notFoundPolicyHold &&
+            (isSkippableIncompleteMediaFailure(error) || isChapterMediaVerificationFailure(error))
+          ) {
             this.forget([key]);
             throw error;
           }

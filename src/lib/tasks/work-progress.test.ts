@@ -43,3 +43,87 @@ it("ignores non-download source tasks for the same novel", () => {
   updateWorkProgress({ records: [chapter(1, "queued"), refresh, check] });
   expect(workProgress("novel:9", [chapter(1, "queued")])).toEqual({ done: 0, total: 1 });
 });
+
+it("preserves completed chapter count when the final chapter fails after earlier chapters leave the snapshot", () => {
+  expect(observe(queued(3))).toEqual({ done: 0, total: 3 });
+  expect(observe([chapter(3, "running")])).toEqual({ done: 2, total: 3 });
+  expect(observe([chapter(3, "failed")])).toEqual({ done: 2, total: 3 });
+
+  // Retrying that failed chapter keeps the original total instead of inflating it to 4.
+  expect(observe([chapter(3, "queued")])).toEqual({ done: 2, total: 3 });
+  expect(observe([chapter(3, "succeeded")])).toEqual({ done: 3, total: 3 });
+  updateWorkProgress({ records: [] });
+  expect(observe(queued(2, 10))).toEqual({ done: 0, total: 2 });
+});
+
+it("reduces total instead of counting cancelled chapters as completed", () => {
+  expect(observe(queued(3))).toEqual({ done: 0, total: 3 });
+  expect(observe([chapter(1, "failed"), chapter(2, "cancelled"), chapter(3, "cancelled")])).toEqual({ done: 0, total: 1 });
+  expect(observe([chapter(1, "failed")])).toEqual({ done: 0, total: 1 });
+});
+
+it("deduplicates retries for the same chapterId instead of inflating work total", () => {
+  const chTask = (
+    taskId: string,
+    chapterId: number,
+    status: TaskRecord["status"],
+    createdAt: number,
+  ) =>
+    ({
+      id: taskId,
+      kind: "chapter.download",
+      status,
+      createdAt,
+      subject: { novelId: 9, chapterId },
+    }) as unknown as TaskRecord;
+
+  expect(
+    observe([
+      chTask("t1", 1, "queued", 10),
+      chTask("t2", 2, "queued", 11),
+      chTask("t3", 3, "queued", 12),
+      chTask("t4", 4, "queued", 13),
+    ]),
+  ).toEqual({ done: 0, total: 4 });
+
+  // Chapters 1 and 4 finish and leave snapshot; 2 and 3 remain failed.
+  expect(
+    observe([chTask("t2", 2, "failed", 11), chTask("t3", 3, "failed", 12)]),
+  ).toEqual({ done: 2, total: 4 });
+
+  // Retrying chapter 2 while t2 is still present must keep total at 4 (not 5).
+  expect(
+    observe([
+      chTask("t2", 2, "failed", 11),
+      chTask("t3", 3, "failed", 12),
+      chTask("t5", 2, "running", 20),
+    ]),
+  ).toEqual({ done: 2, total: 4 });
+
+  // Retry fails too -> still 2 / 4.
+  expect(
+    observe([
+      chTask("t2", 2, "failed", 11),
+      chTask("t3", 3, "failed", 12),
+      chTask("t5", 2, "failed", 20),
+    ]),
+  ).toEqual({ done: 2, total: 4 });
+
+  // Cancelling a retry while chapter 2 still has a failed record must not drop total.
+  expect(
+    observe([
+      chTask("t2", 2, "failed", 11),
+      chTask("t3", 3, "failed", 12),
+      chTask("t6", 2, "cancelled", 25),
+    ]),
+  ).toEqual({ done: 2, total: 4 });
+
+  // Later retry succeeds -> newest status for chapter 2 is succeeded -> 3 / 4.
+  expect(
+    observe([
+      chTask("t2", 2, "failed", 11),
+      chTask("t3", 3, "failed", 12),
+      chTask("t7", 2, "succeeded", 30),
+    ]),
+  ).toEqual({ done: 3, total: 4 });
+});

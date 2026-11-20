@@ -272,7 +272,9 @@ function DownloadCacheChapters({
       await enqueueChapterMediaRepair({
         id: chapter.id,
         novelId: novel.novelId,
+        novelName: novel.novelName,
         pluginId: novel.pluginId,
+        ...(novel.pluginName ? { pluginName: novel.pluginName } : {}),
         priority: "user",
         title: t("tasks.task.repairChapterMedia", { name: chapter.name }),
       }).promise;

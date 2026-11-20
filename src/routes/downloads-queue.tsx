@@ -61,7 +61,7 @@ import {
 import { describeError, userFacingErrorKey } from "../lib/errors";
 import { parseDownloadsSearch } from "../lib/route-search";
 import { cancelChapterDownloadBatches, resumeChapterDownloadQueueAfterFailure } from "../lib/tasks/chapter-download";
-import { isServerChapterMissingFailure } from "../lib/tasks/download-failure";
+import { isIncompleteMediaFailure, isServerChapterMissingFailure } from "../lib/tasks/download-failure";
 import { chapterDownloadFailureAttention } from "../lib/tasks/chapter-download-failure-attention";
 import { cancelChapterDownloadRequest } from "../lib/tasks/chapter-download-requests";
 import {
@@ -102,6 +102,7 @@ const ACTIVE_STATUSES = new Set<TaskStatus>(["queued", "running"]);
 
 function taskErrorSummaryKey(error: string, kind: TaskRecord["kind"]): TranslationKey {
   if (isServerChapterMissingFailure(error)) return "tasks.error.serverMissing";
+  if (isIncompleteMediaFailure(error)) return "tasks.error.mediaIncomplete";
   const key = userFacingErrorKey(error);
   if (key !== "errors.generic") return key;
   return kind === "chapter.download" ? "tasks.error.download" : "tasks.error.generic";

@@ -48,7 +48,12 @@ import { isNetworkUnavailableError } from "../network";
 import { TaskUserCancelledError } from "./task-errors";
 import { describeError } from "../errors";
 import { isHttpNotFoundError } from "../http/status-error";
-import { classifyDownloadFailure, isSkippableIncompleteMediaFailure } from "./download-failure";
+import {
+  CONSECUTIVE_SOURCE_DOWNLOAD_FAILURE_LIMIT,
+  classifyDownloadFailure,
+  isImmediateSourceStopFailure,
+  isSkippableIncompleteMediaFailure,
+} from "./download-failure";
 import type { DownloadFailureStops } from "./download-failure-stop";
 import { downloadRecovery, downloadRecoveryKey, isDownloadRecoveryHold, isDownloadRecoveryNextProfile } from "./download-recovery";
 import { recordPerformanceObservation } from "../observability";
@@ -285,6 +290,7 @@ export class TaskScheduler {
   private readonly sourceBackgroundConcurrencyFollowsForeground: boolean;
   private sourceQueuesPaused: boolean;
   private downloadFailureStops: DownloadFailureStops = { sourceErrors: {} };
+  private readonly consecutiveDownloadFailures = new Map<string, number>();
   private backgroundExecutionSuspended = false;
   private backgroundExecutionDetail: string | undefined;
   private networkAvailable = true;
@@ -1402,7 +1408,11 @@ export class TaskScheduler {
 
   /** Stops subsequent downloads before the failing executor is released. */
   reportDownloadFailure(
-    error: unknown, sourceId?: string, worker?: VpnDownloadWorkerRef, failedTaskId?: string,
+    error: unknown,
+    sourceId?: string,
+    worker?: VpnDownloadWorkerRef,
+    failedTaskId?: string,
+    options?: { allowConsecutiveTolerance?: boolean },
   ): void {
     if (
       isAbortError(error) ||
@@ -1418,6 +1428,24 @@ export class TaskScheduler {
       this.pauseRunningSourceTasks(undefined, candidate => candidate.record.id !== failedTaskId &&
         (candidate.record.kind === "chapter.download" || candidate.record.kind === "chapter.repairMedia"));
     } else if (!worker) {
+      if (
+        options?.allowConsecutiveTolerance &&
+        !isImmediateSourceStopFailure(error) &&
+        !isDownloadRecoveryHold(error)
+      ) {
+        const consecutive = (this.consecutiveDownloadFailures.get(sourceId) ?? 0) + 1;
+        this.consecutiveDownloadFailures.set(sourceId, consecutive);
+        if (consecutive < CONSECUTIVE_SOURCE_DOWNLOAD_FAILURE_LIMIT) {
+          const chapterId = failedTaskId
+            ? this.entries.get(failedTaskId)?.record.subject?.chapterId
+            : undefined;
+          if (chapterId !== undefined) {
+            downloadRecovery.forget([downloadRecoveryKey({ id: chapterId })]);
+          }
+          return;
+        }
+      }
+      this.consecutiveDownloadFailures.delete(sourceId);
       this.downloadFailureStops = { ...this.downloadFailureStops, sourceErrors: {
         ...this.downloadFailureStops.sourceErrors, [sourceId]: failure.summary,
       } };
@@ -1452,6 +1480,7 @@ export class TaskScheduler {
       downloadRecovery.resume();
       this.sourceQueuesPaused = false;
       this.pausedSourceIds.clear();
+      this.consecutiveDownloadFailures.clear();
       this.downloadFailureStops = { sourceErrors: {} };
       this.debug("all source queues resumed");
       this.publishSnapshot();
@@ -1463,6 +1492,7 @@ export class TaskScheduler {
     if (!paused && !Object.hasOwn(this.downloadFailureStops.sourceErrors, sourceId)) return false;
     downloadRecovery.resume(sourceId);
     this.pausedSourceIds.delete(sourceId);
+    this.consecutiveDownloadFailures.delete(sourceId);
     const sourceErrors = { ...this.downloadFailureStops.sourceErrors };
     delete sourceErrors[sourceId];
     this.downloadFailureStops = { ...this.downloadFailureStops, sourceErrors };
@@ -2410,6 +2440,13 @@ export class TaskScheduler {
         ) {
           return;
         }
+        if (
+          !this.isServerDownloadOrigin(entry) &&
+          entry.record.source?.id &&
+          (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia")
+        ) {
+          this.consecutiveDownloadFailures.delete(entry.record.source.id);
+        }
         this.finishRunning(entry, "succeeded", {
           canCancel: false,
           canRetry: false,
@@ -2435,7 +2472,13 @@ export class TaskScheduler {
         }
         if (!cancelled && (!this.isServerDownloadOrigin(entry) || classifyDownloadFailure(error).failureClass === "storage") &&
             (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia")) {
-          this.reportDownloadFailure(error, entry.record.source?.id, entry.spec.vpnWorker, entry.record.id);
+          this.reportDownloadFailure(
+            error,
+            entry.record.source?.id,
+            entry.spec.vpnWorker,
+            entry.record.id,
+            { allowConsecutiveTolerance: true },
+          );
         }
         if (this.requiresNetwork(entry) && entry.record.status === "running" &&
             (!entry.spec.vpnWorker || cancelled) &&

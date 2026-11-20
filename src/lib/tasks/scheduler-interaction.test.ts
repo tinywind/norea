@@ -190,11 +190,11 @@ describe("UI interactions independent of download settings", () => {
       dedupeKey: "chapter:retry", retry,
       run: async context => {
         events.push(`chapter:${context.executor}`);
-        if (events.length === 1) throw new TypeError("Failed to fetch");
+        if (events.length === 1) throw new Error("HTTP 429 Too Many Requests");
       },
     };
     const failed = enqueue(spec);
-    await expect(failed.promise).rejects.toThrow("Failed to fetch");
+    await expect(failed.promise).rejects.toThrow("HTTP 429 Too Many Requests");
     await settle();
     expect(scheduler.getTask(failed.id)?.status).toBe("failed");
     expect(scheduler.getSnapshot().pausedSourceIds).toContain(source.id);

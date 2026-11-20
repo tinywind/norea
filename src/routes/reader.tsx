@@ -190,6 +190,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       await enqueueChapterMediaRepair({
         id: chapter.id,
         novelId: currentNovel.id,
+        novelName: currentNovel.name,
         pluginId: currentNovel.pluginId,
         pluginName: currentSourceName ?? currentNovel.pluginId,
         priority: "user",

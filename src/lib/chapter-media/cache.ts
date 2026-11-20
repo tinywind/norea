@@ -316,6 +316,7 @@ export async function cacheHtmlChapterMedia({
     index: number,
   ): Promise<void> => {
     if (session.failed) return;
+    let stored = false;
     let capturedHandle: Awaited<ReturnType<typeof takeCapturedMediaHandle>> =
       null;
     let releaseFallbackAcquisition: (() => void) | undefined;
@@ -483,6 +484,7 @@ export async function cacheHtmlChapterMedia({
           await emitHtmlUpdate(onHtmlUpdate, template);
           await emitMediaPatchUpdate(onMediaPatch, template, changedElements);
         });
+        stored = true;
       }
     } catch (error) {
       if (capturedHandle) {
@@ -539,7 +541,7 @@ export async function cacheHtmlChapterMedia({
       session.fail(new DOMException("Task was cancelled.", "AbortError"));
       return;
     }
-    session.reportProgress();
+    if (stored) session.reportProgress();
   };
 
   try {

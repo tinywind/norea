@@ -1,5 +1,5 @@
 import type { StoredChapterDownloadFailure } from "../../db/queries/chapter-download-failure";
-import { isServerChapterMissingFailure, type DownloadFailureClass } from "./download-failure";
+import { isIncompleteMediaFailure, isServerChapterMissingFailure, type DownloadFailureClass } from "./download-failure";
 
 export interface VpnFailureRange {
   planId: string;
@@ -54,14 +54,18 @@ export function chapterDownloadFailureAttention(
       retrying += 1;
       continue;
     }
-    const host = row.failureClass === "challenge" ? challengeHost(row.challengeUrl) : "";
+    const failureClass: DownloadFailureClass =
+      row.failureClass === "transient" && isIncompleteMediaFailure(row.messageSummary)
+        ? "media-incomplete"
+        : row.failureClass;
+    const host = failureClass === "challenge" ? challengeHost(row.challengeUrl) : "";
     const serverMissing = isServerChapterMissingFailure(row.messageSummary);
-    const key = JSON.stringify(serverMissing ? [row.pluginId, row.failureClass, host, "server-missing"] : [row.pluginId, row.failureClass, host]);
+    const key = JSON.stringify(serverMissing ? [row.pluginId, failureClass, host, "server-missing"] : [row.pluginId, failureClass, host]);
     let group = groups.get(key);
     if (!group) {
       group = {
-        key, pluginId: row.pluginId, failureClass: row.failureClass,
-        action: row.failureClass === "challenge" ? "verify" : row.failureClass === "media-incomplete" ? "repair" : "retry",
+        key, pluginId: row.pluginId, failureClass,
+        action: failureClass === "challenge" ? "verify" : failureClass === "media-incomplete" ? "repair" : "retry",
         serverMissing,
         chapterIds: [], vpnRanges: [], challengeUrl: row.challengeUrl, challengeHost: host, latestSummary: row.messageSummary, updatedAt: row.updatedAt,
       };

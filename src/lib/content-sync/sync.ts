@@ -17,6 +17,7 @@ import {
 } from "./client";
 import { withDownloadedContentChapter, fingerprintContentChapter, uploadContentChapter, withContentChapterStage, type CatalogEntry, type ContentIdentity, type UploadConflictPolicy } from "./native";
 import { currentChapterDownloadRevision, withChapterDownloadWrite } from "../chapter-download-writes";
+import { withChapterStorageOperation } from "../chapter-storage-error";
 import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity";
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
@@ -444,8 +445,10 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
   const target = options?.target ?? entry.manifest.identity;
   const imported = options ? undefined : await importContentMetadata(entry.manifest, normalizeContentServerUrl(serverUrl));
   const findTarget = async () => {
-    const row = (await listContentSyncChapters([contentIdentity(target.pluginId, target.novelPath, target.chapterPath)]))
-      .find((item) => !imported || item.chapterId === imported.chapterId);
+    const rows = await withChapterStorageOperation("Read downloaded chapter metadata", () =>
+      listContentSyncChapters([contentIdentity(target.pluginId, target.novelPath, target.chapterPath)]),
+    );
+    const row = rows.find((item) => !imported || item.chapterId === imported.chapterId);
     if (!row) throw new Error("Downloaded chapter metadata is missing.");
     if (entry.manifest.identity.novelId !== row.sourceNovelId) throw new Error("Server chapter novel ID does not match the local work.");
     return row;
@@ -459,26 +462,32 @@ export async function downloadServerChapterFromServer(entry: CatalogEntry, serve
         const current = await findTarget();
         if (current.chapterId !== row.chapterId) throw new Error("Downloaded chapter identity changed during transfer.");
         if (options?.expectedLocalFingerprint !== undefined) {
-          const snapshot = await inspectChapterPayloadInventory({
+          const snapshot = await withChapterStorageOperation("Inspect downloaded chapter payload", () => inspectChapterPayloadInventory({
             novel: { id: current.novelId, pluginId: current.pluginId, sourceNovelId: current.sourceNovelId, path: current.novelPath, name: current.novelName },
             chapter: { id: current.chapterId, chapterNumber: current.chapterNumber, position: current.position, name: current.chapterName, contentType: current.contentType },
-          });
+          }));
           if (snapshot.fingerprint !== options.expectedLocalFingerprint) throw new Error("Device chapter changed during transfer. Compare again.");
         }
         options?.signal?.throwIfAborted();
-        if (current.isLocal) await clearServerChapterDownloadProof(current.chapterId);
+        if (current.isLocal) {
+          await withChapterStorageOperation("Clear server chapter download proof", () => clearServerChapterDownloadProof(current.chapterId));
+        }
         options?.signal?.throwIfAborted();
         await install(storageDir(current));
-        await markContentInstalled(current.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes, result.mediaComplete);
+        await withChapterStorageOperation("Mark downloaded chapter installed", () =>
+          markContentInstalled(current.chapterId, entry.manifest.chapter.contentType, result.contentBytes, result.mediaBytes, result.mediaComplete),
+        );
         if (current.isLocal) {
-          const snapshot = await inspectChapterPayloadInventory({
+          const snapshot = await withChapterStorageOperation("Inspect installed chapter payload", () => inspectChapterPayloadInventory({
             novel: { id: current.novelId, pluginId: current.pluginId, sourceNovelId: current.sourceNovelId, path: current.novelPath, name: current.novelName },
             chapter: { id: current.chapterId, chapterNumber: current.chapterNumber, position: current.position, name: current.chapterName, contentType: current.contentType },
-          });
-          await rememberServerChapterDownload(current, normalizeContentServerUrl(serverUrl), snapshot.fingerprint);
+          }));
+          await withChapterStorageOperation("Record server chapter download proof", () =>
+            rememberServerChapterDownload(current, normalizeContentServerUrl(serverUrl), snapshot.fingerprint),
+          );
         }
         return { novelId: current.novelId, chapterId: current.chapterId };
-      }), downloadRevision);
+      }), { expectedRevision: downloadRevision, wrapStorageError: false });
   });
 }
 

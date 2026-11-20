@@ -7,8 +7,13 @@ import type { ChapterMediaFailure } from "../chapter-media/types";
 import type { CHAPTER_DOWNLOAD_FAILURE_CLASSES } from "../../db/schema";
 import { describeError } from "../errors";
 import { errorHttpStatus, isHttpNotFoundError } from "../http/status-error";
+import { isNetworkUnavailableError } from "../network";
+import { isPluginVpnUnavailableError } from "../plugin-vpn-traffic";
 import { normalizeSourceAccessRequiredError } from "../plugins/source-access";
 import { redactUrlsForLog } from "../url-log";
+
+/** Consecutive single-chapter failures allowed before pausing a source queue. */
+export const CONSECUTIVE_SOURCE_DOWNLOAD_FAILURE_LIMIT = 3;
 
 export type DownloadFailureClass = (typeof CHAPTER_DOWNLOAD_FAILURE_CLASSES)[number];
 
@@ -27,12 +32,18 @@ const MAX_SUMMARY_LENGTH = 300;
 
 const EXTERNAL_CHALLENGE =
   /External resource at (\S+?) requires Cloudflare verification/i;
+const STORAGE_IO_FAILURE =
+  /\b(?:no space left on device|disk (?:i\/o error|is full)|database or disk is full|database disk image is malformed|SQLITE_(?:FULL|IOERR|CORRUPT|READONLY|CANTOPEN)|read-only file system|os error (?:28|30)|storage (?:root|folder) (?:is )?(?:unavailable|not available))\b/i;
 const STORAGE_FAILURE =
   /^Chapter storage failed\b|\b(?:no space left on device|disk (?:i\/o error|is full)|database or disk is full|database disk image is malformed|SQLITE_(?:FULL|IOERR|CORRUPT|READONLY|CANTOPEN)|read-only file system|os error (?:28|30)|storage (?:root|folder) (?:is )?(?:unavailable|not available))\b/i;
+const CHAPTER_MEDIA_VERIFICATION_FAILURE =
+  /chapter media: (?:media archive finalization incomplete:|media manifest is missing\b|a valid manifest is required for repair\b)|Cannot read chapter media manifest\.|Chapter media manifest is (?:invalid|missing asset:)|Cannot repair media asset without a source URL:/i;
 const CONTENT_FAILURE =
-  /^(?:chapter-download: local chapter \d+ was not found|Chapter acquisition |Plugin must declare a resource acquisition plan|content-not-found:)|This chapter is not on the content server, and its source has no matching chapter\./i;
+  /^(?:chapter-download: local chapter \d+ was not found|chapter-media-repair: local chapter \d+ was not found|Chapter acquisition |Plugin must declare a resource acquisition plan|content-not-found:)|This chapter is not on the content server, and its source has no matching chapter\.|Downloaded chapter metadata is missing\.|Server chapter novel ID does not match the local work\.|Content server (?:chapter|repair chapter) no longer exists locally\.|Content server (?:download|repair|media) identity does not match /i;
 /** The source site now lives at another address; retrying the old one cannot succeed. */
 const SOURCE_SITE_MOVED = /; the page moved to \S+, outside the source site /;
+const MANUAL_ACTION_REQUIRED = /manual-action-required:/i;
+const INCOMPLETE_MEDIA_SUMMARY = /^(?:HTTP 404: )?Offline download is incomplete:/i;
 const PLUGIN_PARSE_ERROR_NAMES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError"]);
 const SERVER_CHAPTER_MISSING = "This chapter is not on the content server.";
 
@@ -49,6 +60,17 @@ export class ServerChapterMissingError extends Error {
 /** Recognizes the error, a task's error text, or a stored failure summary. */
 export function isServerChapterMissingFailure(error: unknown): boolean {
   return describeError(error) === SERVER_CHAPTER_MISSING;
+}
+
+/** Recognizes an incomplete-media error, task error text, or stored failure summary. */
+export function isIncompleteMediaFailure(error: unknown): boolean {
+  return isChapterMediaIncompleteError(error) || INCOMPLETE_MEDIA_SUMMARY.test(describeError(error));
+}
+
+/** Single-chapter media manifest or archive verification mismatch, not a global storage outage. */
+export function isChapterMediaVerificationFailure(error: unknown): boolean {
+  const message = describeError(error);
+  return CHAPTER_MEDIA_VERIFICATION_FAILURE.test(message) && !STORAGE_IO_FAILURE.test(message);
 }
 
 function errorName(error: unknown): string | undefined {
@@ -107,13 +129,39 @@ export function isSkippableIncompleteMediaFailure(error: unknown): boolean {
   ) {
     return false;
   }
-  if (
-    error.failures.length > 0 &&
-    error.failures.every((item) => errorHttpStatus(item) === 429)
-  ) {
+  if (error.failures.some((item) => errorHttpStatus(item) === 429)) {
     return false;
   }
   return true;
+}
+
+/**
+ * Whether a failure indicates a source-wide or environment block that must pause
+ * the source queue immediately instead of consuming the consecutive-failure budget.
+ */
+export function isImmediateSourceStopFailure(error: unknown): boolean {
+  const failure = classifyDownloadFailure(error);
+  if (failure.failureClass === "storage" || failure.failureClass === "challenge") {
+    return true;
+  }
+  const status = errorHttpStatus(error);
+  if (isSourceForbiddenFailure(error) || status === 401 || status === 403 || status === 429) {
+    return true;
+  }
+  if (
+    isChapterMediaIncompleteError(error) &&
+    error.failures.some((item) => {
+      const itemStatus = errorHttpStatus(item);
+      return itemStatus === 403 || itemStatus === 429;
+    })
+  ) {
+    return true;
+  }
+  const message = describeError(error);
+  if (SOURCE_SITE_MOVED.test(message) || MANUAL_ACTION_REQUIRED.test(message)) {
+    return true;
+  }
+  return isPluginVpnUnavailableError(error) || isNetworkUnavailableError(error);
 }
 
 /**
@@ -126,6 +174,12 @@ export function classifyDownloadFailure(error: unknown): DownloadFailure {
   const failure = (failureClass: DownloadFailureClass, extra: Partial<DownloadFailure> = {}): DownloadFailure =>
     ({ failureClass, summary, retryAfterMs: 0, ...extra });
 
+  if (
+    (errorCode(error) === "chapter-storage-failed" || errorCode(error) === "chapter-media-finalization-failed") &&
+    isChapterMediaVerificationFailure(error)
+  ) {
+    return failure("media-incomplete");
+  }
   if (errorCode(error) === "chapter-storage-failed" || errorCode(error) === "chapter-media-finalization-failed") return failure("storage");
   if (isServerChapterMissingFailure(error)) return failure("content");
   if (errorCode(error) === "content-server-request-failed") {
@@ -149,7 +203,8 @@ export function classifyDownloadFailure(error: unknown): DownloadFailure {
   if (errorCode(error) === "chapter-media-http-retry") {
     return failure("transient", { retryAfterMs: retryAfter((error as { retryAfterMs?: unknown }).retryAfterMs) });
   }
-  if (errorCode(error) === "chapter-media-finalization-failed" || errorCode(error) === "chapter-storage-failed" || STORAGE_FAILURE.test(message)) return failure("storage");
+  if (isChapterMediaVerificationFailure(error)) return failure("media-incomplete");
+  if (STORAGE_FAILURE.test(message)) return failure("storage");
   if (CONTENT_FAILURE.test(message) || SOURCE_SITE_MOVED.test(message)) return failure("content");
   const name = errorName(error);
   if (name && PLUGIN_PARSE_ERROR_NAMES.has(name)) return failure("content");

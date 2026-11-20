@@ -17,16 +17,21 @@ beforeEach(() => {
 });
 afterEach(() => { vi.useRealTimers(); vi.restoreAllMocks(); });
 
-const failures = [
-  networkError(),
-  new Error("webview_extract: timeout after 30000ms"),
+const immediateStopFailures = [
+  new Error("HTTP 403 Forbidden"),
+  new Error("HTTP 429 Too Many Requests"),
   new Error("manual-action-required: The source page requires manual action."),
-  new Error("content-not-found: Captured chapter content is empty."),
   new PluginVpnUnavailableError(),
 ];
 
+const isolatedChapterFailures = [
+  networkError(),
+  new Error("webview_extract: timeout after 30000ms"),
+  new Error("content-not-found: Captured chapter content is empty."),
+];
+
 describe("manual download retries", () => {
-  it.each(failures)("fails immediately and keeps manual retry available for %s", async (error) => {
+  it.each(immediateStopFailures)("fails immediately and stops the source with manual retry available for %s", async (error) => {
     const run = vi.fn().mockRejectedValue(error);
     const handle = scheduler.enqueueSource(spec(run));
     const checked = expect(handle.promise).rejects.toBe(error);
@@ -47,6 +52,37 @@ describe("manual download retries", () => {
     await settle();
     await expect(next.promise).resolves.toBeUndefined();
     expect(nextRun).toHaveBeenCalledOnce();
+  });
+
+  it.each(isolatedChapterFailures)("keeps manual retry available for isolated %s without stopping until three consecutive failures", async (error) => {
+    const run = vi.fn().mockRejectedValue(error);
+    const handle = scheduler.enqueueSource(spec(run));
+    const checked = expect(handle.promise).rejects.toBe(error);
+    await settle();
+    await checked;
+    expect(scheduler.getTask(handle.id)).toMatchObject({ status: "failed", canRetry: true });
+    expect(scheduler.getSnapshot().pausedSourceIds).toEqual([]);
+    const nextRun = vi.fn(async () => undefined);
+    const next = scheduler.enqueueSource({ ...spec(nextRun), dedupeKey: "download:next" });
+    await settle();
+    await expect(next.promise).resolves.toBeUndefined();
+    expect(nextRun).toHaveBeenCalledOnce();
+    await vi.advanceTimersByTimeAsync(600_000);
+    expect(run).toHaveBeenCalledTimes(1);
+
+    for (let index = 0; index < 3; index += 1) {
+      const consecutive = scheduler.enqueueSource({ ...spec(vi.fn().mockRejectedValue(error)), dedupeKey: `download:fail-${index}` });
+      void consecutive.promise.catch(() => undefined);
+    }
+    const blockedRun = vi.fn(async () => undefined);
+    const blocked = scheduler.enqueueSource({ ...spec(blockedRun), dedupeKey: "download:blocked" });
+    await settle();
+    expect(scheduler.getSnapshot().pausedSourceIds).toContain("a");
+    expect(blockedRun).not.toHaveBeenCalled();
+    scheduler.resumeSourceQueue("a");
+    await settle();
+    await expect(blocked.promise).resolves.toBeUndefined();
+    expect(blockedRun).toHaveBeenCalledOnce();
   });
 
   it("keeps manual retry available for incomplete chapter media without stopping the source queue", async () => {
