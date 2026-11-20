@@ -573,3 +573,130 @@ it("reconciles server chapter numbers and uploads offline-downloaded chapters on
   expect(uploadedWorks).toHaveLength(1);
   expect(uploadedWorks[0]!.chapters).toEqual({ ...canonicalCatalog, "4": "Fourth" });
 });
+
+describe("superseded legacy folder placeholders", () => {
+  const clearNovelChapters = () => {
+    sqlite.exec("DELETE FROM chapter WHERE novel_id = 7");
+    sqlite.exec("DELETE FROM work_metadata_directory_cache WHERE novel_id = 7");
+    sqlite.exec("DELETE FROM work_metadata_reading_state");
+    state.payloads.clear();
+  };
+
+  it("cleans up empty legacy folder placeholders when target chapters already exist and upgrades target folder paths", async () => {
+    clearNovelChapters();
+    sqlite.exec(
+      "INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,read_at,is_downloaded,stored_content_type,content_bytes) VALUES " +
+        "(21,7,'norea-folder:1000','Old First',4,'1000',0,0,NULL,0,NULL,0)," +
+        "(22,7,'norea-folder:2000','Old Second',5,'2000',0,0,NULL,0,NULL,0)," +
+        "(23,7,'norea-folder:3000','Old Third',6,'3000',0,0,NULL,0,NULL,0)," +
+        "(31,7,'/chapter/1000','First',1,'1',100,1,789,1,'html',15)," +
+        "(32,7,'/chapter/2000','Second',2,'2',50,0,NULL,1,'html',16)," +
+        "(33,7,'norea-folder:3','Third',3,'3',0,0,NULL,0,NULL,0)",
+    );
+    state.payloads.set(directory + "/1", "first body");
+    state.payloads.set(directory + "/2", "second body");
+    await restoreWorkMetadataDirectories(db, false);
+    await flushWorkMetadata(db, {
+      novelId: 7,
+      chapters: {
+        "1": "First",
+        "2": "Second",
+        "3": "Third",
+        "1000": "Old First",
+        "2000": "Old Second",
+        "3000": "Old Third",
+      },
+    });
+
+    await pull();
+
+    expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();
+    expect(numbers()).toEqual([
+      { id: 31, path: "/chapter/1000", chapter_number: "1", position: 1 },
+      { id: 32, path: "/chapter/2000", chapter_number: "2", position: 2 },
+      { id: 33, path: "/chapter/3000", chapter_number: "3", position: 3 },
+    ]);
+    expect(personalState()).toEqual([
+      { id: 31, progress: 100, bookmark: 1, read_at: 789, is_downloaded: 1, stored_content_type: "html", content_bytes: 15, media_bytes: 0 },
+      { id: 32, progress: 50, bookmark: 0, read_at: null, is_downloaded: 1, stored_content_type: "html", content_bytes: 16, media_bytes: 0 },
+      { id: 33, progress: 0, bookmark: 0, read_at: null, is_downloaded: 0, stored_content_type: null, content_bytes: 0, media_bytes: 0 },
+    ]);
+    expect(metadata().chapters).toEqual(canonicalCatalog);
+    expect([...state.payloads]).toEqual([
+      [directory + "/1", "first body"],
+      [directory + "/2", "second body"],
+    ]);
+    expect(sqlite.prepare("SELECT chapter_path FROM work_metadata_reading_state").all()).toEqual([]);
+    expect(sqlite.prepare("SELECT chapter_id FROM work_metadata_directory_cache WHERE chapter_id IN (21,22,23)").all()).toEqual([]);
+    expect(await getWorkSyncCursor(server)).toBe(remote.sequence);
+  });
+
+  it("handles a mix of superseded empty placeholders and chapters that still need renumbering", async () => {
+    clearNovelChapters();
+    sqlite.exec(
+      "INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,read_at,is_downloaded,stored_content_type,content_bytes) VALUES " +
+        "(21,7,'norea-folder:1000','Old First',1,'1000',0,0,NULL,0,NULL,0)," +
+        "(22,7,'/chapter/2000','Second',2,'2000',60,1,321,1,'html',20)," +
+        "(23,7,'norea-folder:3000','Third',3,'3000',0,0,NULL,0,NULL,0)," +
+        "(31,7,'/chapter/1000','First',4,'1',100,0,999,1,'html',15)",
+    );
+    state.payloads.set(directory + "/1", "existing first");
+    state.payloads.set(directory + "/2000", "moving second");
+    await restoreWorkMetadataDirectories(db, false);
+    await flushWorkMetadata(db, {
+      novelId: 7,
+      chapters: { "1": "First", "1000": "Old First", "2000": "Second", "3000": "Third" },
+    });
+
+    await pull();
+
+    expect(prepareChapterStorageTransfer).toHaveBeenCalledOnce();
+    expect(numbers()).toEqual([
+      { id: 22, path: "/chapter/2000", chapter_number: "2", position: 2 },
+      { id: 23, path: "/chapter/3000", chapter_number: "3", position: 3 },
+      { id: 31, path: "/chapter/1000", chapter_number: "1", position: 1 },
+    ]);
+    expect(metadata().chapters).toEqual(canonicalCatalog);
+    expect([...state.payloads].sort()).toEqual([
+      [directory + "/1", "existing first"],
+      [directory + "/2", "moving second"],
+    ]);
+  });
+
+  it.each([
+    { label: "downloaded placeholder", sql: "UPDATE chapter SET is_downloaded = 1, stored_content_type = 'html', content_bytes = 5 WHERE id = 21" },
+    { label: "reading progress", sql: "UPDATE chapter SET progress = 25 WHERE id = 21" },
+    { label: "bookmark", sql: "UPDATE chapter SET bookmark = 1 WHERE id = 21" },
+    { label: "read timestamp", sql: "UPDATE chapter SET read_at = 100 WHERE id = 21" },
+    { label: "queued download", sql: "INSERT INTO chapter_download_queue(chapter_id,job_json,created_at_ms,updated_at_ms) VALUES(21,'{}',1,1)" },
+    { label: "saved reading state", sql: "INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,read_at) VALUES('source','/book','norea-folder:1000',10,0,NULL)" },
+    { label: "unrelated target path", sql: "UPDATE chapter SET path = '/chapter/unrelated' WHERE id = 31" },
+  ])("refuses to drop a colliding legacy placeholder with $label", async ({ sql }) => {
+    clearNovelChapters();
+    sqlite.exec(
+      "INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,read_at,is_downloaded,stored_content_type,content_bytes) VALUES " +
+        "(21,7,'norea-folder:1000','Old First',4,'1000',0,0,NULL,0,NULL,0)," +
+        "(22,7,'norea-folder:2000','Old Second',5,'2000',0,0,NULL,0,NULL,0)," +
+        "(23,7,'norea-folder:3000','Old Third',6,'3000',0,0,NULL,0,NULL,0)," +
+        "(31,7,'/chapter/1000','First',1,'1',100,0,NULL,1,'html',15)," +
+        "(32,7,'/chapter/2000','Second',2,'2',0,0,NULL,0,NULL,0)," +
+        "(33,7,'/chapter/3000','Third',3,'3',0,0,NULL,0,NULL,0)",
+    );
+    sqlite.exec(sql);
+    await restoreWorkMetadataDirectories(db, false);
+    await flushWorkMetadata(db, {
+      novelId: 7,
+      chapters: {
+        "1": "First", "2": "Second", "3": "Third",
+        "1000": "Old First", "2000": "Old Second", "3000": "Old Third",
+      },
+    });
+    const beforeNumbers = numbers();
+    const beforeMetadata = metadata();
+
+    await expect(pull()).rejects.toThrow(/ambiguous|already assigned|conflicts/i);
+    expect(numbers()).toEqual(beforeNumbers);
+    expect(metadata()).toEqual(beforeMetadata);
+    expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();
+  });
+});

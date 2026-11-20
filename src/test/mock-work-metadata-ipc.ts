@@ -545,14 +545,14 @@ export function createWorkMetadataIpcHandler(
                 db,
                 work.id,
               );
-              const changes = renumber.planServerChapterNumberChanges(
+              const plan = renumber.planServerChapterNumberReconciliation(
                 work,
                 currentChapters,
                 reconciliation.mappings,
               );
               if (reconciliation.journal) {
                 if (
-                  JSON.stringify(changes) !==
+                  JSON.stringify(plan.changes) !==
                   JSON.stringify(reconciliation.journal.changes)
                 ) {
                   throw new Error(
@@ -570,10 +570,41 @@ export function createWorkMetadataIpcHandler(
                     ),
                   );
                 }
-                await applySourceChapterNumberChangesInDb(db, work.id, journal);
-              } else if (changes.length) {
+              } else if (plan.changes.length) {
                 throw new Error(
                   "Incoming chapter numbers changed before their storage could be prepared.",
+                );
+              }
+              if (plan.supersededPlaceholderIds.length) {
+                const byId = new Map(currentChapters.map((row) => [row.id, row]));
+                for (const id of plan.supersededPlaceholderIds) {
+                  const row = byId.get(id);
+                  const deleted = await db.execute(
+                    "DELETE FROM chapter WHERE id=$1 AND novel_id=$2",
+                    [id, work.id],
+                  );
+                  if (deleted.rowsAffected !== 1) {
+                    throw new Error(
+                      "Local chapter state changed while the server correction was prepared.",
+                    );
+                  }
+                  await db.execute(
+                    "DELETE FROM work_metadata_directory_cache WHERE chapter_id=$1",
+                    [id],
+                  );
+                  if (row) {
+                    await db.execute(
+                      "DELETE FROM work_metadata_reading_state WHERE plugin_id=$1 AND novel_path=$2 AND chapter_path=$3 AND progress=0 AND bookmark=0 AND read_at IS NULL",
+                      [work.pluginId, work.path, row.path],
+                    );
+                  }
+                }
+              }
+              if (reconciliation.journal) {
+                await applySourceChapterNumberChangesInDb(
+                  db,
+                  work.id,
+                  reconciliation.journal,
                 );
               }
               const chapters = { ...previous?.chapters };

@@ -129,7 +129,9 @@ export async function prepareIncomingChapterNumberReconciliation(
   const previousMetadata = { ...current, chapters };
   const renumberedChapters = { ...chapters };
   for (const mapping of proof.mappings) {
-    if (Object.hasOwn(current.chapters, mapping.from)) renumberedChapters[mapping.to] = current.chapters[mapping.from]!;
+    if (!Object.hasOwn(renumberedChapters, mapping.to) && Object.hasOwn(current.chapters, mapping.from)) {
+      renumberedChapters[mapping.to] = current.chapters[mapping.from]!;
+    }
   }
   const isCurrent = () => {
     try { assertCurrent(); return true; }

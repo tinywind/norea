@@ -93,11 +93,26 @@ export async function readRenumberChaptersInDb(
   db: Pick<Database, "select">,
   novelId: number,
 ): Promise<StoredRenumberChapter[]> {
-  return db.select<StoredRenumberChapter[]>(
-    "SELECT c.id,c.path,c.chapter_number AS chapterNumber,c.position,c.is_downloaded AS isDownloaded,d.directory " +
-      "FROM chapter c LEFT JOIN work_metadata_directory_cache d ON d.chapter_id=c.id WHERE c.novel_id=$1 ORDER BY c.id",
+  const rows = await db.select<
+    Array<Omit<StoredRenumberChapter, "isStatelessPlaceholder"> & { isStatelessPlaceholder: number }>
+  >(
+    "SELECT c.id,c.path,c.chapter_number AS chapterNumber,c.position,c.is_downloaded AS isDownloaded,d.directory," +
+      "CASE WHEN substr(c.path,1,13)='norea-folder:'" +
+      " AND c.is_downloaded=0 AND c.content_bytes=0 AND c.media_bytes=0 AND c.media_repair_needed=0" +
+      " AND c.stored_content_type IS NULL AND c.progress=0 AND c.bookmark=0 AND c.read_at IS NULL" +
+      " AND NOT EXISTS(SELECT 1 FROM novel_chapter_composition nc WHERE nc.novel_id=c.novel_id)" +
+      " AND NOT EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id=c.id)" +
+      " AND NOT EXISTS(SELECT 1 FROM work_metadata_reading_state s" +
+      " WHERE s.plugin_id=n.plugin_id AND s.novel_path=n.path AND s.chapter_path=c.path" +
+      " AND (s.progress<>0 OR s.bookmark<>0 OR s.read_at IS NOT NULL))" +
+      " THEN 1 ELSE 0 END AS isStatelessPlaceholder " +
+      "FROM chapter c JOIN novel n ON n.id=c.novel_id LEFT JOIN work_metadata_directory_cache d ON d.chapter_id=c.id WHERE c.novel_id=$1 ORDER BY c.id",
     [novelId],
   );
+  return rows.map((row) => ({
+    ...row,
+    isStatelessPlaceholder: Boolean(row.isStatelessPlaceholder),
+  }));
 }
 
 export async function applySourceChapterNumberChangesInDb(

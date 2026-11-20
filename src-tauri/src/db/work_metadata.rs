@@ -3144,12 +3144,152 @@ fn assert_chapter_number_mappings(
     Ok(())
 }
 
-fn plan_server_chapter_number_changes(
+struct SupersededServerPlaceholder {
+    id: i64,
+    path: String,
+    chapter_number: String,
+    position: i64,
+    has_cached_directory: bool,
+}
+
+struct ServerChapterNumberReconciliationPlan {
+    changes: Vec<super::chapter::SourceChapterNumberChangeDto>,
+    superseded_placeholders: Vec<SupersededServerPlaceholder>,
+}
+
+fn assert_superseded_placeholder_storage_empty(
+    root: &Path,
+    relative_dir: &str,
+) -> Result<(), String> {
+    let mut current = root.to_path_buf();
+    for segment in relative_dir.split('/') {
+        if segment.is_empty() || segment == "." || segment == ".." {
+            return Err("Chapter storage path is invalid.".to_string());
+        }
+        current.push(segment);
+        match std::fs::symlink_metadata(&current) {
+            Ok(meta) => {
+                if meta.file_type().is_symlink() {
+                    return Err(
+                        "A stored chapter directory is a symbolic link; existing files were retained."
+                            .to_string(),
+                    );
+                }
+                if !meta.is_dir() {
+                    return Err(
+                        "Existing chapter storage conflicts with incoming chapter number reconciliation; existing files were retained."
+                            .to_string(),
+                    );
+                }
+            }
+            Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+            Err(err) => {
+                return Err(format!(
+                    "db work metadata: inspect superseded placeholder storage: {err}"
+                ));
+            }
+        }
+    }
+    let mut entries = std::fs::read_dir(&current).map_err(|err| {
+        format!("db work metadata: read superseded placeholder storage: {err}")
+    })?;
+    if entries
+        .next()
+        .transpose()
+        .map_err(|err| format!("db work metadata: scan superseded placeholder storage: {err}"))?
+        .is_some()
+    {
+        return Err(
+            "Existing chapter storage conflicts with incoming chapter number reconciliation; existing files were retained."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
+fn plan_server_chapter_number_reconciliation(
     work: &super::chapter::RenumberWorkDto,
     stored: &[super::chapter::StoredRenumberChapterDto],
     mappings: &[ChapterNumberMappingInputDto],
-) -> Result<Vec<super::chapter::SourceChapterNumberChangeDto>, String> {
+) -> Result<ServerChapterNumberReconciliationPlan, String> {
     assert_chapter_number_mappings(mappings)?;
+    let mut by_number: HashMap<String, Vec<&super::chapter::StoredRenumberChapterDto>> =
+        HashMap::new();
+    let mut stored_by_path: HashMap<&str, Vec<&super::chapter::StoredRenumberChapterDto>> =
+        HashMap::new();
+    for row in stored {
+        if let Some(number) = row
+            .chapter_number
+            .as_deref()
+            .and_then(canonical_chapter_number_str)
+        {
+            by_number.entry(number).or_default().push(row);
+        }
+        stored_by_path.entry(row.path.as_str()).or_default().push(row);
+    }
+
+    let mut superseded_placeholders = Vec::new();
+    let mut superseded_ids = HashSet::new();
+    for mapping in mappings {
+        let Some(from_rows) = by_number.get(mapping.from.as_str()) else {
+            continue;
+        };
+        let Some(to_rows) = by_number.get(mapping.to.as_str()) else {
+            continue;
+        };
+        if from_rows.len() != 1 || to_rows.len() != 1 {
+            continue;
+        }
+        let from_row = from_rows[0];
+        let to_row = to_rows[0];
+        if from_row.id == to_row.id {
+            continue;
+        }
+        let expected_from_path = format!("norea-folder:{}", mapping.from);
+        if from_row.path != expected_from_path {
+            continue;
+        }
+        if from_row.is_downloaded != 0 || !from_row.is_stateless_placeholder {
+            continue;
+        }
+        let path_matches = stored_by_path
+            .get(mapping.chapter_path.as_str())
+            .map_or(0, Vec::len);
+        let expected_to_placeholder = format!("norea-folder:{}", mapping.to);
+        let target_matches_path = to_row.path == mapping.chapter_path && path_matches == 1;
+        let target_matches_placeholder =
+            to_row.path == expected_to_placeholder && path_matches == 0;
+        if !target_matches_path && !target_matches_placeholder {
+            continue;
+        }
+        let expected_source_dir = super::chapter::chapter_storage_relative_dir_for_work(
+            &work.plugin_id,
+            &work.source_novel_id,
+            Some(&mapping.from),
+            from_row.position,
+        )?;
+        if from_row
+            .directory
+            .as_deref()
+            .is_some_and(|dir| dir != expected_source_dir)
+        {
+            continue;
+        }
+        if superseded_ids.insert(from_row.id) {
+            superseded_placeholders.push(SupersededServerPlaceholder {
+                id: from_row.id,
+                path: from_row.path.clone(),
+                chapter_number: mapping.from.clone(),
+                position: from_row.position,
+                has_cached_directory: from_row.directory.is_some(),
+            });
+        }
+    }
+
+    let remaining: Vec<&super::chapter::StoredRenumberChapterDto> = stored
+        .iter()
+        .filter(|row| !superseded_ids.contains(&row.id))
+        .collect();
     let by_from: HashMap<&str, &ChapterNumberMappingInputDto> =
         mappings.iter().map(|m| (m.from.as_str(), m)).collect();
     let by_path: HashMap<&str, &ChapterNumberMappingInputDto> = mappings
@@ -3157,10 +3297,10 @@ fn plan_server_chapter_number_changes(
         .map(|m| (m.chapter_path.as_str(), m))
         .collect();
     let original: HashMap<i64, &super::chapter::StoredRenumberChapterDto> =
-        stored.iter().map(|r| (r.id, r)).collect();
+        remaining.iter().map(|r| (r.id, *r)).collect();
 
-    let mut translated = Vec::with_capacity(stored.len());
-    for row in stored {
+    let mut translated = Vec::with_capacity(remaining.len());
+    for row in &remaining {
         let number = row
             .chapter_number
             .as_deref()
@@ -3179,14 +3319,14 @@ fn plan_server_chapter_number_changes(
             .and_then(|num| by_from.get(num))
             .copied()
         else {
-            translated.push(row.clone());
+            translated.push((*row).clone());
             continue;
         };
         let legacy_folder = format!("norea-folder:{}", mapping.from);
         if row.path != mapping.chapter_path && row.path != legacy_folder {
             return Err("Server chapter mapping conflicts with a stored source path.".to_string());
         }
-        let mut copy = row.clone();
+        let mut copy = (*row).clone();
         copy.path = mapping.chapter_path.clone();
         translated.push(copy);
     }
@@ -3217,7 +3357,10 @@ fn plan_server_chapter_number_changes(
             change.path = orig.path.clone();
         }
     }
-    Ok(planned)
+    Ok(ServerChapterNumberReconciliationPlan {
+        changes: planned,
+        superseded_placeholders,
+    })
 }
 
 fn verify_and_guard_renumber_metadata_files_at(
@@ -3623,11 +3766,21 @@ pub async fn install_stored_novel_metadata_at(
                     };
                     let current_chapters =
                         super::chapter::read_renumber_chapters_in_conn(&mut *conn, work.id).await?;
-                    let planned = plan_server_chapter_number_changes(
+                    let plan = plan_server_chapter_number_reconciliation(
                         &work,
                         &current_chapters,
                         &rec.mappings,
                     )?;
+                    for placeholder in &plan.superseded_placeholders {
+                        let source_relative_dir =
+                            super::chapter::chapter_storage_relative_dir_for_work(
+                                &work.plugin_id,
+                                &work.source_novel_id,
+                                Some(&placeholder.chapter_number),
+                                placeholder.position,
+                            )?;
+                        assert_superseded_placeholder_storage_empty(&root, &source_relative_dir)?;
+                    }
                     if let Some(ref raw_journal) = rec.journal {
                         let journal_changes: Vec<super::chapter::SourceChapterNumberChangeDto> =
                             serde_json::from_value(
@@ -3639,13 +3792,83 @@ pub async fn install_stored_novel_metadata_at(
                             .map_err(|_| {
                                 "Stored chapter number reconciliation is invalid.".to_string()
                             })?;
-                        if planned != journal_changes {
+                        if plan.changes != journal_changes {
                             return Err(
                                 "Local chapter state changed while the server correction was prepared."
                                     .to_string(),
                             );
                         }
                         verify_and_guard_renumber_metadata_files_at(&root, raw_journal, ctx)?;
+                    } else if !plan.changes.is_empty() {
+                        return Err(
+                            "Incoming chapter numbers changed before their storage could be prepared."
+                                .to_string(),
+                        );
+                    }
+
+                    if !plan.superseded_placeholders.is_empty() {
+                        let mut removed_cached_dir = false;
+                        for placeholder in &plan.superseded_placeholders {
+                            let deleted = sqlx::query(
+                                "DELETE FROM chapter WHERE id = ?1 AND novel_id = ?2",
+                            )
+                            .bind(placeholder.id)
+                            .bind(work.id)
+                            .execute(&mut *conn)
+                            .await
+                            .map_err(|err| {
+                                format!(
+                                    "db work metadata: delete superseded placeholder chapter: {err}"
+                                )
+                            })?;
+                            if deleted.rows_affected() != 1 {
+                                return Err(
+                                    "Local chapter state changed while the server correction was prepared."
+                                        .to_string(),
+                                );
+                            }
+                            sqlx::query(
+                                "DELETE FROM work_metadata_directory_cache WHERE chapter_id = ?1",
+                            )
+                            .bind(placeholder.id)
+                            .execute(&mut *conn)
+                            .await
+                            .map_err(|err| {
+                                format!(
+                                    "db work metadata: delete superseded placeholder directory: {err}"
+                                )
+                            })?;
+                            // The BEFORE DELETE trigger records a zero-state row in
+                            // work_metadata_reading_state; remove that dead placeholder entry.
+                            sqlx::query(
+                                "DELETE FROM work_metadata_reading_state \
+                                 WHERE plugin_id = ?1 AND novel_path = ?2 AND chapter_path = ?3 \
+                                   AND progress = 0 AND bookmark = 0 AND read_at IS NULL",
+                            )
+                            .bind(&work.plugin_id)
+                            .bind(&work.path)
+                            .bind(&placeholder.path)
+                            .execute(&mut *conn)
+                            .await
+                            .map_err(|err| {
+                                format!(
+                                    "db work metadata: clean superseded placeholder reading state: {err}"
+                                )
+                            })?;
+                            if placeholder.has_cached_directory {
+                                removed_cached_dir = true;
+                                ctx.record_chapter_directory(ChapterDirectoryUpdateDto {
+                                    chapter_id: placeholder.id,
+                                    directory: None,
+                                });
+                            }
+                        }
+                        if removed_cached_dir {
+                            ctx.mark_native_directories_dirty(&root);
+                        }
+                    }
+
+                    if let Some(ref raw_journal) = rec.journal {
                         super::chapter::apply_source_chapter_number_changes_in_tx(
                             Some(&root),
                             &mut *conn,
@@ -3654,11 +3877,6 @@ pub async fn install_stored_novel_metadata_at(
                             raw_journal,
                         )
                         .await?;
-                    } else if !planned.is_empty() {
-                        return Err(
-                            "Incoming chapter numbers changed before their storage could be prepared."
-                                .to_string(),
-                        );
                     }
 
                     for mapping in &rec.mappings {
@@ -4610,6 +4828,152 @@ mod tests {
             ch1_downloaded, 0,
             "skipped_chapter_ids must prevent stale snapshot from restoring deleted flag"
         );
+
+        test_db.db.close().await;
+    }
+
+    #[tokio::test]
+    async fn install_reconciliation_cleans_superseded_empty_placeholders_and_guards_disk_files() {
+        let test_db = open_test_db().await;
+        let root = test_db.dir.path().join("media");
+        fs::create_dir_all(root.join("contents/source/book/1")).unwrap();
+        fs::write(root.join("contents/source/book/1/content.html"), b"<p>ch1</p>").unwrap();
+
+        let disk_doc = serde_json::json!({
+            "schemaVersion": 1,
+            "identity": { "pluginId": "source", "novelId": "book", "novelPath": "/book" },
+            "novel": { "name": "Superseded Book", "isLocal": false },
+            "cover": null,
+            "chapters": {
+                "1": "Chapter 1",
+                "2": "Chapter 2",
+                "1000": "Old 1",
+                "2000": "Old 2"
+            }
+        });
+        crate::chapter_media::write_work_metadata_bytes_at(
+            &root,
+            "contents/source/book/novel.json",
+            &serde_json::to_vec_pretty(&disk_doc).unwrap(),
+        )
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) \
+             VALUES(1, 'source', 'book', '/book', 'Superseded Book', 1)",
+        )
+        .execute(test_db.db.writer())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chapter(id, novel_id, path, name, position, chapter_number, progress, bookmark, read_at, is_downloaded, stored_content_type, content_bytes) VALUES \
+             (11, 1, 'norea-folder:1000', 'Old 1', 3, '1000', 0, 0, NULL, 0, NULL, 0), \
+             (12, 1, 'norea-folder:2000', 'Old 2', 4, '2000', 0, 0, NULL, 0, NULL, 0), \
+             (21, 1, '/chapter/1000', 'Chapter 1', 1, '1', 100, 1, 777, 1, 'html', 10), \
+             (22, 1, 'norea-folder:2', 'Chapter 2', 2, '2', 0, 0, NULL, 0, NULL, 0)",
+        )
+        .execute(test_db.db.writer())
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO work_metadata_directory_cache(chapter_id, novel_id, directory) VALUES \
+             (11, 1, 'contents/source/book/1000'), \
+             (12, 1, 'contents/source/book/2000'), \
+             (21, 1, 'contents/source/book/1'), \
+             (22, 1, 'contents/source/book/2')",
+        )
+        .execute(test_db.db.writer())
+        .await
+        .unwrap();
+
+        let make_input = || -> InstallStoredNovelMetadataInputDto {
+            serde_json::from_value(serde_json::json!({
+                "metadata": {
+                    "schemaVersion": 1,
+                    "identity": { "pluginId": "source", "novelId": "book", "novelPath": "/book" },
+                    "novel": { "name": "Superseded Book", "isLocal": false },
+                    "cover": null,
+                    "chapters": { "1": "Chapter 1", "2": "Chapter 2" }
+                },
+                "reconciliation": {
+                    "journal": null,
+                    "mappings": [
+                        { "chapterPath": "/chapter/1000", "from": "1000", "to": "1" },
+                        { "chapterPath": "/chapter/2000", "from": "2000", "to": "2" }
+                    ]
+                }
+            }))
+            .unwrap()
+        };
+
+        // First: if an unexpected file exists on disk under the legacy folder, reconciliation
+        // must reject without deleting any DB row or modifying novel.json.
+        fs::create_dir_all(root.join("contents/source/book/1000")).unwrap();
+        fs::write(root.join("contents/source/book/1000/content.html"), b"<p>unindexed</p>").unwrap();
+
+        let err = install_stored_novel_metadata_at(test_db.db.writer(), root.clone(), make_input())
+            .await
+            .unwrap_err();
+        assert!(
+            err.contains("Existing chapter storage conflicts"),
+            "unexpected error: {err}"
+        );
+        let count_after_err: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chapter WHERE novel_id = 1")
+                .fetch_one(test_db.db.writer())
+                .await
+                .unwrap();
+        assert_eq!(count_after_err, 4);
+
+        // Remove the unexpected file; now reconciliation succeeds cleanly.
+        fs::remove_dir_all(root.join("contents/source/book/1000")).unwrap();
+        let installed =
+            install_stored_novel_metadata_at(test_db.db.writer(), root.clone(), make_input())
+                .await
+                .expect("reconciliation should succeed")
+                .value
+                .expect("should return installed metadata");
+        assert_eq!(installed.metadata.chapters.0.len(), 2);
+
+        let rows: Vec<(i64, String, Option<String>, i64, i64)> = sqlx::query_as(
+            "SELECT id, path, chapter_number, progress, is_downloaded \
+             FROM chapter WHERE novel_id = 1 ORDER BY id",
+        )
+        .fetch_all(test_db.db.writer())
+        .await
+        .unwrap();
+        assert_eq!(
+            rows,
+            vec![
+                (21, "/chapter/1000".to_string(), Some("1".to_string()), 100, 1),
+                (22, "/chapter/2000".to_string(), Some("2".to_string()), 0, 0),
+            ]
+        );
+
+        let stale_dirs: Vec<i64> = sqlx::query_scalar(
+            "SELECT chapter_id FROM work_metadata_directory_cache WHERE chapter_id IN (11, 12)",
+        )
+        .fetch_all(test_db.db.writer())
+        .await
+        .unwrap();
+        assert!(stale_dirs.is_empty());
+
+        let reading_state_rows: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM work_metadata_reading_state")
+                .fetch_one(test_db.db.writer())
+                .await
+                .unwrap();
+        assert_eq!(
+            reading_state_rows, 0,
+            "zero-state trigger rows for deleted placeholders must be cleaned up"
+        );
+
+        let total_chapters_stat: i64 =
+            sqlx::query_scalar("SELECT total_chapters FROM novel_stats WHERE novel_id = 1")
+                .fetch_one(test_db.db.writer())
+                .await
+                .unwrap();
+        assert_eq!(total_chapters_stat, 2);
 
         test_db.db.close().await;
     }

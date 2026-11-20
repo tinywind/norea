@@ -30,6 +30,12 @@ export interface StoredRenumberChapter {
   position: number;
   directory: string | null;
   isDownloaded: number;
+  isStatelessPlaceholder?: boolean;
+}
+
+export interface ServerChapterNumberReconciliationPlan {
+  changes: SourceChapterNumberChange[];
+  supersededPlaceholderIds: number[];
 }
 
 export interface SourceRenumberWorkInspection {
@@ -216,16 +222,52 @@ export function assertChapterNumberMappings(mappings: readonly ChapterNumberMapp
   if ([...from].some(number => to.has(number))) throw new Error("Server chapter number mapping overlaps.");
 }
 
-export function planServerChapterNumberChanges(
+export function planServerChapterNumberReconciliation(
   work: RenumberWork,
   stored: readonly StoredRenumberChapter[],
   mappings: readonly ChapterNumberMapping[],
-): SourceChapterNumberChange[] {
+): ServerChapterNumberReconciliationPlan {
   assertChapterNumberMappings(mappings);
+  const byNumber = new Map<string, StoredRenumberChapter[]>();
+  const storedByPath = new Map<string, StoredRenumberChapter[]>();
+  for (const row of stored) {
+    const number = canonicalChapterNumber(row.chapterNumber);
+    if (number !== null) {
+      const list = byNumber.get(number);
+      if (list) list.push(row);
+      else byNumber.set(number, [row]);
+    }
+    const pathList = storedByPath.get(row.path);
+    if (pathList) pathList.push(row);
+    else storedByPath.set(row.path, [row]);
+  }
+  const supersededPlaceholderIds: number[] = [];
+  const supersededIdSet = new Set<number>();
+  for (const mapping of mappings) {
+    const fromRows = byNumber.get(mapping.from);
+    const toRows = byNumber.get(mapping.to);
+    if (fromRows?.length !== 1 || toRows?.length !== 1) continue;
+    const fromRow = fromRows[0]!;
+    const toRow = toRows[0]!;
+    if (fromRow.id === toRow.id) continue;
+    if (fromRow.path !== "norea-folder:" + mapping.from) continue;
+    if (fromRow.isDownloaded || !fromRow.isStatelessPlaceholder) continue;
+    const targetMatchesPath = toRow.path === mapping.chapterPath && (storedByPath.get(mapping.chapterPath)?.length ?? 0) === 1;
+    const targetMatchesPlaceholder = toRow.path === "norea-folder:" + mapping.to && (storedByPath.get(mapping.chapterPath)?.length ?? 0) === 0;
+    if (!targetMatchesPath && !targetMatchesPlaceholder) continue;
+    const expectedSourceDir = chapterStorageRelativeDir(
+      { pluginId: work.pluginId, sourceNovelId: work.sourceNovelId },
+      { chapterNumber: mapping.from, position: fromRow.position },
+    );
+    if (fromRow.directory && fromRow.directory !== expectedSourceDir) continue;
+    supersededIdSet.add(fromRow.id);
+    supersededPlaceholderIds.push(fromRow.id);
+  }
+  const remaining = supersededIdSet.size ? stored.filter(row => !supersededIdSet.has(row.id)) : stored;
   const byFrom = new Map(mappings.map(mapping => [mapping.from, mapping]));
   const byPath = new Map(mappings.map(mapping => [mapping.chapterPath, mapping]));
-  const original = new Map(stored.map(row => [row.id, row]));
-  const translated = stored.map(row => {
+  const original = new Map(remaining.map(row => [row.id, row]));
+  const translated = remaining.map(row => {
     const number = canonicalChapterNumber(row.chapterNumber);
     const pathMapping = byPath.get(row.path);
     if (pathMapping && number !== pathMapping.from && number !== pathMapping.to) {
@@ -238,9 +280,18 @@ export function planServerChapterNumberChanges(
     }
     return { ...row, path: mapping.chapterPath };
   });
-  return planSourceChapterNumberChanges(work, translated, mappings.map(mapping => ({
+  const changes = planSourceChapterNumberChanges(work, translated, mappings.map(mapping => ({
     path: mapping.chapterPath, chapterNumber: Number(mapping.to), sourceChapterId: mapping.from,
   }))).map(change => ({ ...change, path: original.get(change.id)!.path }));
+  return { changes, supersededPlaceholderIds };
+}
+
+export function planServerChapterNumberChanges(
+  work: RenumberWork,
+  stored: readonly StoredRenumberChapter[],
+  mappings: readonly ChapterNumberMapping[],
+): SourceChapterNumberChange[] {
+  return planServerChapterNumberReconciliation(work, stored, mappings).changes;
 }
 
 export function assertSourceChapterNumberChangesSupported(changes: readonly Pick<SourceChapterNumberChange, "chapterNumber" | "nextChapterNumber" | "nextPath">[]): void {

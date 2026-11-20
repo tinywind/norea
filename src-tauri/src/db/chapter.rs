@@ -541,6 +541,8 @@ pub struct StoredRenumberChapterDto {
     pub position: i64,
     pub directory: Option<String>,
     pub is_downloaded: i64,
+    #[serde(default)]
+    pub is_stateless_placeholder: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -2801,7 +2803,7 @@ fn is_valid_plugin_dir_id(plugin_id: &str) -> bool {
         })
 }
 
-fn chapter_storage_relative_dir_for_work(
+pub(crate) fn chapter_storage_relative_dir_for_work(
     plugin_id: &str,
     source_novel_id: &str,
     chapter_number: Option<&str>,
@@ -3072,8 +3074,30 @@ pub async fn read_renumber_chapters_in_conn(
     novel_id: i64,
 ) -> Result<Vec<StoredRenumberChapterDto>, String> {
     let rows = sqlx::query(
-        "SELECT c.id, c.path, c.chapter_number, c.position, c.is_downloaded, d.directory \
+        "SELECT c.id, c.path, c.chapter_number, c.position, c.is_downloaded, d.directory, \
+                CASE \
+                  WHEN substr(c.path, 1, 13) = 'norea-folder:' \
+                   AND c.is_downloaded = 0 \
+                   AND c.content_bytes = 0 \
+                   AND c.media_bytes = 0 \
+                   AND c.media_repair_needed = 0 \
+                   AND c.stored_content_type IS NULL \
+                   AND c.progress = 0 \
+                   AND c.bookmark = 0 \
+                   AND c.read_at IS NULL \
+                   AND NOT EXISTS (SELECT 1 FROM novel_chapter_composition nc WHERE nc.novel_id = c.novel_id) \
+                   AND NOT EXISTS (SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id = c.id) \
+                   AND NOT EXISTS ( \
+                     SELECT 1 FROM work_metadata_reading_state s \
+                     WHERE s.plugin_id = n.plugin_id \
+                       AND s.novel_path = n.path \
+                       AND s.chapter_path = c.path \
+                       AND (s.progress <> 0 OR s.bookmark <> 0 OR s.read_at IS NOT NULL) \
+                   ) \
+                  THEN 1 ELSE 0 \
+                END AS is_stateless_placeholder \
          FROM chapter c \
+         JOIN novel n ON n.id = c.novel_id \
          LEFT JOIN work_metadata_directory_cache d ON d.chapter_id = c.id \
          WHERE c.novel_id = ?1 \
          ORDER BY c.id",
@@ -3092,6 +3116,7 @@ pub async fn read_renumber_chapters_in_conn(
             position: r.get("position"),
             directory: r.get("directory"),
             is_downloaded: r.get("is_downloaded"),
+            is_stateless_placeholder: r.get::<i64, _>("is_stateless_placeholder") != 0,
         })
         .collect())
 }
