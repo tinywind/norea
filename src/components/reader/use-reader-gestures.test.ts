@@ -109,16 +109,40 @@ function pointerDown(handlers: Handlers, pointerType = "touch") {
   handlers.handlePointerDown({ pointerType } as unknown as Parameters<Handlers["handlePointerDown"]>[0]);
 }
 
+function mouseDown(
+  handlers: Handlers,
+  point: { clientX: number; clientY: number },
+  target: FakeElement = new FakeElement("p"),
+  {
+    button = 0,
+    detail = 1,
+    pointerType = "mouse",
+  }: { button?: number; detail?: number; pointerType?: string } = {},
+) {
+  const event = { ...point, button, detail, target, preventDefault: vi.fn() };
+  pointerDown(handlers, pointerType);
+  handlers.handleMouseDown(event as unknown as Parameters<Handlers["handleMouseDown"]>[0]);
+  return event;
+}
+
 function tap(
   handlers: Handlers,
   point: { clientX: number; clientY: number },
   target: FakeElement = new FakeElement("p"),
-  { detail = 1, pointerType = "touch" }: { detail?: number; pointerType?: string } = {},
+  {
+    button = 0,
+    detail = 1,
+    pointerType = "touch",
+  }: { button?: number; detail?: number; pointerType?: string } = {},
 ) {
-  const event = { ...point, detail, target, preventDefault: vi.fn() };
-  pointerDown(handlers, pointerType);
+  const mouseDownEvent = mouseDown(handlers, point, target, {
+    button,
+    detail,
+    pointerType,
+  });
+  const event = { ...point, button, detail, target, preventDefault: vi.fn() };
   handlers.handleClick(event as unknown as Parameters<Handlers["handleClick"]>[0]);
-  return event;
+  return { ...event, mouseDownEvent };
 }
 
 function swipe(handlers: Handlers, from: { x: number; y: number }, to: { x: number; y: number }) {
@@ -275,42 +299,172 @@ describe("reader tap contract", () => {
     expect(scrollByPage).toHaveBeenCalledWith(1, "tap-next");
   });
 
-  it("waits out a double-click before a mouse tap pages", () => {
-    const { handlers, scrollByPage } = mountGestures();
-    tap(handlers, ZONE_POINTS.middleRight, undefined, { pointerType: "mouse" });
-    expect(scrollByPage).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(299);
-    expect(scrollByPage).not.toHaveBeenCalled();
-    vi.advanceTimersByTime(1);
+  it("pages and toggles chrome immediately on mouse click without waiting for a timer", () => {
+    const { handlers, scrollByPage, onToggleChrome } = mountGestures();
+    const first = tap(handlers, ZONE_POINTS.middleRight, undefined, { pointerType: "mouse" });
+    expect(first.mouseDownEvent.preventDefault).not.toHaveBeenCalled();
     expect(scrollByPage).toHaveBeenCalledWith(1, "tap-next");
+    const center = tap(handlers, ZONE_POINTS.middleCenter, undefined, { pointerType: "mouse" });
+    expect(center.mouseDownEvent.preventDefault).not.toHaveBeenCalled();
+    expect(onToggleChrome).toHaveBeenCalledOnce();
   });
 
-  it("pages on every quick touch tap even though the click count keeps rising", () => {
+  it("pages on every rapid mouse click and suppresses multi-click text selection in active zones", () => {
     const { handlers, scrollByPage } = mountGestures();
     for (let detail = 1; detail <= 5; detail += 1) {
-      tap(handlers, ZONE_POINTS.middleRight, undefined, { detail });
+      const event = tap(handlers, ZONE_POINTS.middleRight, undefined, {
+        detail,
+        pointerType: "mouse",
+      });
+      if (detail === 1) {
+        expect(event.mouseDownEvent.preventDefault).not.toHaveBeenCalled();
+      } else {
+        expect(event.mouseDownEvent.preventDefault).toHaveBeenCalledOnce();
+      }
     }
     expect(scrollByPage).toHaveBeenCalledTimes(5);
     expect(scrollByPage).toHaveBeenLastCalledWith(1, "tap-next");
   });
 
-  it("leaves a mouse double-click to select a word instead of paging or toggling chrome", () => {
-    const { handlers, scrollByPage, onToggleChrome } = mountGestures();
-    tap(handlers, ZONE_POINTS.middleRight, undefined, { pointerType: "mouse" });
-    tap(handlers, ZONE_POINTS.middleRight, undefined, { detail: 2, pointerType: "mouse" });
-    tap(handlers, ZONE_POINTS.middleCenter, undefined, { pointerType: "mouse" });
-    tap(handlers, ZONE_POINTS.middleCenter, undefined, { detail: 2, pointerType: "mouse" });
-    vi.advanceTimersByTime(1000);
-    expect(scrollByPage).not.toHaveBeenCalled();
-    expect(onToggleChrome).not.toHaveBeenCalled();
+  it("pages on every quick touch tap without preventing compatibility mousedown", () => {
+    const { handlers, scrollByPage } = mountGestures();
+    for (let detail = 1; detail <= 5; detail += 1) {
+      const event = tap(handlers, ZONE_POINTS.middleRight, undefined, { detail });
+      expect(event.mouseDownEvent.preventDefault).not.toHaveBeenCalled();
+    }
+    expect(scrollByPage).toHaveBeenCalledTimes(5);
+    expect(scrollByPage).toHaveBeenLastCalledWith(1, "tap-next");
   });
 
-  it("drops a pending mouse tap once the click has selected text", () => {
+  it("keeps mouse drag text selection working in active tap zones", () => {
     const { handlers, scrollByPage } = mountGestures();
-    tap(handlers, ZONE_POINTS.middleRight, undefined, { pointerType: "mouse" });
-    selectionText = "word";
-    vi.advanceTimersByTime(1000);
+    const down = mouseDown(handlers, ZONE_POINTS.middleRight, undefined, {
+      detail: 1,
+      pointerType: "mouse",
+    });
+    expect(down.preventDefault).not.toHaveBeenCalled();
+    selectionText = "dragged selection";
+    handlers.handleClick({
+      ...ZONE_POINTS.middleRight,
+      button: 0,
+      detail: 1,
+      target: new FakeElement("p"),
+      preventDefault: vi.fn(),
+    } as unknown as Parameters<Handlers["handleClick"]>[0]);
     expect(scrollByPage).not.toHaveBeenCalled();
+  });
+
+  it("preserves mouse double-click selection when tap paging is off or the zone action is none", () => {
+    const off = mountGestures({ general: { tapToScroll: false } });
+    const leftDouble = mouseDown(off.handlers, ZONE_POINTS.middleLeft, undefined, {
+      detail: 2,
+      pointerType: "mouse",
+    });
+    const rightDouble = mouseDown(off.handlers, ZONE_POINTS.middleRight, undefined, {
+      detail: 2,
+      pointerType: "mouse",
+    });
+    const centerDouble = mouseDown(off.handlers, ZONE_POINTS.middleCenter, undefined, {
+      detail: 2,
+      pointerType: "mouse",
+    });
+    expect(leftDouble.preventDefault).not.toHaveBeenCalled();
+    expect(rightDouble.preventDefault).not.toHaveBeenCalled();
+    expect(centerDouble.preventDefault).toHaveBeenCalledOnce();
+
+    const custom = mountGestures({
+      general: { tapZones: { ...TAP_ZONE_DEFAULTS, middleRight: "none" } },
+    });
+    const noneZoneDouble = mouseDown(custom.handlers, ZONE_POINTS.middleRight, undefined, {
+      detail: 2,
+      pointerType: "mouse",
+    });
+    expect(noneZoneDouble.preventDefault).not.toHaveBeenCalled();
+  });
+
+  it("suppresses mouse multi-click selection everywhere while dismissible chrome is visible", () => {
+    const { handlers } = mountGestures({
+      chromeDismissible: true,
+      general: { tapToScroll: false },
+    });
+    const down = mouseDown(handlers, ZONE_POINTS.middleRight, undefined, {
+      detail: 2,
+      pointerType: "mouse",
+    });
+    expect(down.preventDefault).toHaveBeenCalledOnce();
+  });
+
+  it("does not prevent multi-click mousedown for non-primary buttons, active selection, interactive targets, or blocked interaction", () => {
+    const { handlers } = mountGestures();
+    expect(
+      mouseDown(handlers, ZONE_POINTS.middleRight, undefined, {
+        button: 2,
+        detail: 2,
+        pointerType: "mouse",
+      }).preventDefault,
+    ).not.toHaveBeenCalled();
+    expect(
+      mouseDown(handlers, ZONE_POINTS.middleRight, new FakeElement("input"), {
+        detail: 2,
+        pointerType: "mouse",
+      }).preventDefault,
+    ).not.toHaveBeenCalled();
+    const anchor = new FakeElement("a", null, null, "https://example.com");
+    expect(
+      mouseDown(handlers, ZONE_POINTS.middleRight, new FakeElement("span", anchor), {
+        detail: 2,
+        pointerType: "mouse",
+      }).preventDefault,
+    ).not.toHaveBeenCalled();
+    expect(
+      mouseDown(handlers, ZONE_POINTS.middleRight, new FakeElement("img", anchor), {
+        detail: 2,
+        pointerType: "mouse",
+      }).preventDefault,
+    ).toHaveBeenCalledOnce();
+
+    selectionText = "existing selection";
+    expect(
+      mouseDown(handlers, ZONE_POINTS.middleRight, undefined, {
+        detail: 2,
+        pointerType: "mouse",
+      }).preventDefault,
+    ).not.toHaveBeenCalled();
+    selectionText = "";
+
+    const blocked = mountGestures({ interactionBlocked: true });
+    expect(
+      mouseDown(blocked.handlers, ZONE_POINTS.middleRight, undefined, {
+        detail: 2,
+        pointerType: "mouse",
+      }).preventDefault,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("clears an existing selection with a mouse click, then pages immediately on a rapid follow-up click", () => {
+    const { handlers, scrollByPage } = mountGestures();
+    selectionText = "selected words";
+    const clearDown = mouseDown(handlers, ZONE_POINTS.middleRight, undefined, {
+      detail: 1,
+      pointerType: "mouse",
+    });
+    expect(clearDown.preventDefault).not.toHaveBeenCalled();
+    selectionText = "";
+    handlers.handleClick({
+      ...ZONE_POINTS.middleRight,
+      button: 0,
+      detail: 1,
+      target: new FakeElement("p"),
+      preventDefault: vi.fn(),
+    } as unknown as Parameters<Handlers["handleClick"]>[0]);
+    expect(scrollByPage).not.toHaveBeenCalled();
+
+    const nextTap = tap(handlers, ZONE_POINTS.middleRight, undefined, {
+      detail: 2,
+      pointerType: "mouse",
+    });
+    expect(nextTap.mouseDownEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(scrollByPage).toHaveBeenCalledWith(1, "tap-next");
   });
 
   it("opens a chapter link outside the app instead of paging or toggling chrome", () => {

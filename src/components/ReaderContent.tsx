@@ -319,6 +319,7 @@ function ReaderContentInner(
 
   const {
     handleClick,
+    handleMouseDown,
     handlePointerDown,
     handleWheel,
     handleTouchStart,
@@ -477,6 +478,7 @@ function ReaderContentInner(
         onClickCapture={stopReaderMediaClick}
         onDoubleClickCapture={stopReaderMediaClick}
         onClick={handleClick}
+        onMouseDown={handleMouseDown}
         onPointerDown={handlePointerDown}
         onScroll={isPagedReader ? undefined : updateProgressFromScroll}
         onWheel={handleWheel}

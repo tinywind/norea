@@ -18,6 +18,14 @@ const mocks = vi.hoisted(() => ({
   general: {} as ReaderGeneralSettings,
   appearance: {} as ReaderAppearanceSettings,
   wake: vi.fn(), auto: vi.fn(), progress: vi.fn(), gestures: vi.fn(), layout: vi.fn(),
+  gestureHandlers: {
+    handleClick: vi.fn(),
+    handleMouseDown: vi.fn(),
+    handlePointerDown: vi.fn(),
+    handleWheel: vi.fn(),
+    handleTouchStart: vi.fn(),
+    handleTouchEnd: vi.fn(),
+  },
 }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
@@ -43,7 +51,19 @@ vi.mock("./reader/use-reader-wake-lock", () => ({ useReaderWakeLock: (enabled: b
 vi.mock("./reader/use-reader-auto-scroll", () => ({ useReaderAutoScroll: (...args: unknown[]) => mocks.auto(...args) }));
 vi.mock("./reader/use-reader-layout-revision", () => ({ useReaderLayoutRevision: () => mocks.revision }));
 vi.mock("./reader/use-reader-content-style", () => ({ useReaderContentStyle: () => ({ contentBoxStyle: {}, readerContentRuntimeCss: mocks.css }) }));
-vi.mock("./reader/use-reader-gestures", () => ({ useReaderGestures: (options: unknown) => { mocks.gestures(options); return {}; } }));
+vi.mock("./reader/use-reader-gestures", () => ({
+  useReaderGestures: (options: unknown) => {
+    mocks.gestures(options);
+    return {
+      handleClick: mocks.gestureHandlers.handleClick,
+      handleMouseDown: mocks.gestureHandlers.handleMouseDown,
+      handlePointerDown: mocks.gestureHandlers.handlePointerDown,
+      handleWheel: mocks.gestureHandlers.handleWheel,
+      handleTouchStart: mocks.gestureHandlers.handleTouchStart,
+      handleTouchEnd: mocks.gestureHandlers.handleTouchEnd,
+    };
+  },
+}));
 vi.mock("./reader/use-reader-content-media", () => ({ useReaderContentMedia: () => ({
   patchMediaElements: vi.fn(), restoreMediaPatches: vi.fn(), resolvedLocalMediaMap: new Map(), hasLocalMediaContext: false,
 }) }));
@@ -113,6 +133,12 @@ it("scopes generated layout CSS to its own stage while both readers are mounted"
 it("activates normal reader behavior only after promotion", () => {
   const elements = render(false);
   expect(elements[0]!.props.inert).toBe(false);
+  const viewport = elements.find(element => typeof element.props.className === "string" && element.props.className.includes("reader-viewport"))!;
+  expect(viewport.props).toMatchObject({
+    onClick: mocks.gestureHandlers.handleClick,
+    onMouseDown: mocks.gestureHandlers.handleMouseDown,
+    onPointerDown: mocks.gestureHandlers.handlePointerDown,
+  });
   expect(mocks.wake).toHaveBeenCalledWith(true);
   expect(mocks.auto.mock.calls[0]![1]).toBe(true);
   expect(mocks.progress.mock.calls[0]![0].onProgressChange).toBeTypeOf("function");

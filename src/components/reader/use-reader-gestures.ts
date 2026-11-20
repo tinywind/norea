@@ -17,8 +17,6 @@ import { getReaderLinkElement, openReaderLink } from "./reader-links";
 const WHEEL_PAGE_COOLDOWN_MS = 220;
 const WHEEL_PAGE_DELTA_THRESHOLD = 20;
 const NATIVE_WHEEL_ACTION_LOCK_MS = 240;
-/** A mouse tap waits this long, so the first click of a double-click that selects a word does not page. */
-const MOUSE_TAP_SETTLE_MS = 300;
 
 interface ReaderGestureOptions {
   /** While dismissible chrome is visible, any tap hides it instead of paging. */
@@ -52,16 +50,41 @@ export function useReaderGestures({
   const touchStartRef = useRef<{ x: number; y: number } | null>(null);
   const selectionAtPointerDownRef = useRef(false);
   const pointerTypeRef = useRef("");
-  const pendingMouseTapTimerRef = useRef<number | null>(null);
-  const clearPendingMouseTap = () => {
-    if (pendingMouseTapTimerRef.current === null) return;
-    window.clearTimeout(pendingMouseTapTimerRef.current);
-    pendingMouseTapTimerRef.current = null;
+
+  const resolveTapAction = (
+    clientX: number,
+    clientY: number,
+  ): ReaderTapAction => {
+    if (chromeDismissible) return "menu";
+    const node = viewportRef.current;
+    if (!node) return "none";
+    const rect = node.getBoundingClientRect();
+
+    const zone = getTapZone(rect, clientX, clientY);
+    if (zone === "middleCenter") return "menu";
+    return general.tapToScroll ? general.tapZones[zone] : "none";
   };
+
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
     pointerTypeRef.current = event.pointerType;
     selectionAtPointerDownRef.current = hasReaderTextSelection();
   };
+
+  const handleMouseDown = (event: MouseEvent<HTMLDivElement>) => {
+    if (
+      event.button !== 0 ||
+      event.detail <= 1 ||
+      pointerTypeRef.current !== "mouse"
+    ) {
+      return;
+    }
+    if (interactionBlocked || isInteractiveTarget(event.target)) return;
+    if (selectionAtPointerDownRef.current || hasReaderTextSelection()) return;
+    if (resolveTapAction(event.clientX, event.clientY) === "none") return;
+    // Prevent browser multi-click word selection in active tap zones while preserving single-click drag selection.
+    event.preventDefault();
+  };
+
   const handleClick = (event: MouseEvent<HTMLDivElement>) => {
     const link = isReaderMediaEventTarget(event.target)
       ? null
@@ -73,52 +96,22 @@ export function useReaderGestures({
     }
     if (interactionBlocked) return;
     if (isInteractiveTarget(event.target)) return;
-    // Only a mouse double-click selects a word; quick touch taps also count up `detail` and each one pages.
-    if (event.detail > 1 && pointerTypeRef.current === "mouse") {
-      clearPendingMouseTap();
-      selectionAtPointerDownRef.current = false;
-      return;
-    }
     const selectionTap =
       selectionAtPointerDownRef.current || hasReaderTextSelection();
     selectionAtPointerDownRef.current = false;
     if (selectionTap) return;
-    const runTap = resolveTap(event.clientX, event.clientY);
-    if (!runTap) return;
-    if (pointerTypeRef.current !== "mouse") {
-      runTap();
-      return;
-    }
-    clearPendingMouseTap();
-    pendingMouseTapTimerRef.current = window.setTimeout(() => {
-      pendingMouseTapTimerRef.current = null;
-      if (!hasReaderTextSelection()) runTap();
-    }, MOUSE_TAP_SETTLE_MS);
-  };
-
-  const resolveTap = (clientX: number, clientY: number): (() => void) | null => {
-    if (chromeDismissible) return () => onToggleChrome?.();
-    const node = viewportRef.current;
-    if (!node) return null;
-    const rect = node.getBoundingClientRect();
-
-    const zone = getTapZone(rect, clientX, clientY);
-    const action: ReaderTapAction =
-      zone === "middleCenter"
-        ? "menu"
-        : general.tapToScroll
-          ? general.tapZones[zone]
-          : "none";
-
-    switch (action) {
+    switch (resolveTapAction(event.clientX, event.clientY)) {
       case "previous":
-        return () => scrollByPage(-1, "tap-previous");
+        scrollByPage(-1, "tap-previous");
+        break;
       case "next":
-        return () => scrollByPage(1, "tap-next");
+        scrollByPage(1, "tap-next");
+        break;
       case "menu":
-        return () => onToggleChrome?.();
+        onToggleChrome?.();
+        break;
       case "none":
-        return null;
+        break;
     }
   };
 
@@ -178,9 +171,6 @@ export function useReaderGestures({
       if (wheelCooldownTimerRef.current !== null) {
         window.clearTimeout(wheelCooldownTimerRef.current);
       }
-      if (pendingMouseTapTimerRef.current !== null) {
-        window.clearTimeout(pendingMouseTapTimerRef.current);
-      }
     },
     [],
   );
@@ -207,6 +197,7 @@ export function useReaderGestures({
   };
   return {
     handleClick,
+    handleMouseDown,
     handlePointerDown,
     handleWheel,
     handleTouchStart,
