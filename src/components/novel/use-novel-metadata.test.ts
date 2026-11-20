@@ -47,7 +47,7 @@ beforeEach(() => {
 it("refreshes a bound work on its server through the task queue without requiring an installed source plugin", async () => {
   useNovelMetadata(3, novel);
   await mocks.mutations[1]!.mutationFn();
-  expect(mocks.refresh).toHaveBeenCalledWith(3, expect.any(AbortSignal), expect.any(Function));
+  expect(mocks.refresh).toHaveBeenCalledWith(3, expect.any(AbortSignal), expect.any(Function), 30);
   expect(mocks.enqueueServer).toHaveBeenCalledWith(expect.objectContaining({
     kind: "source.checkLibraryUpdates",
     priority: "user",
@@ -80,7 +80,7 @@ it("checks a bound work's source for new chapters with the same check as Updates
 it("refreshes server-published local metadata through its server binding", async () => {
   useNovelMetadata(3, { ...novel, isLocal: true });
   await mocks.mutations[1]!.mutationFn();
-  expect(mocks.refresh).toHaveBeenCalledWith(3, expect.any(AbortSignal), expect.any(Function));
+  expect(mocks.refresh).toHaveBeenCalledWith(3, expect.any(AbortSignal), expect.any(Function), 30);
   expect(mocks.enqueueServer).toHaveBeenCalledWith(expect.objectContaining({
     kind: "source.checkLibraryUpdates",
     serverLane: true,

@@ -1187,6 +1187,7 @@ function isFallbackEligibleContentServerError(error: unknown, signal: AbortSigna
     (error instanceof Error &&
       (/^content sync: /.test(error.message) ||
         error.message === "Content server lookup timed out." ||
+        error.message === "Content server request timed out." ||
         error.message === "The content server connection failed."))
   );
 }

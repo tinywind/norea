@@ -6,7 +6,7 @@ import type { ServerNovelSource } from "../../lib/content-sync/novel-source";
 
 export function useChapterDifferences(
   novel: { id: number; pluginId: string; path: string } | undefined,
-  chapters: readonly ChapterListRow[] | undefined, source: ServerNovelSource | null, active: boolean,
+  chapters: readonly ChapterListRow[] | undefined, source: ServerNovelSource | null,
 ) {
   const [progress, setProgress] = useState({ checked: 0, total: 0 });
   const query = useQuery({
@@ -14,11 +14,12 @@ export function useChapterDifferences(
       chapters?.map(chapter => `${chapter.id}:${chapter.updatedAt}:${chapter.contentBytes}:${chapter.mediaBytes}`).join(",")],
     queryFn: ({ signal }) => {
       if (!novel || !source) throw new Error("Chapter comparison requires a server work.");
+      setProgress({ checked: 0, total: 0 });
       return scanChapterDifferences(novel, source, signal, (checked, total) => {
         if (checked % 10 === 0 || checked === total) setProgress({ checked, total });
       });
     },
-    enabled: active && !!novel && !!source && !!chapters,
+    enabled: false,
     staleTime: 60_000,
     refetchOnWindowFocus: false,
     retry: false,

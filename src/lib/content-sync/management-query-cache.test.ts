@@ -41,7 +41,7 @@ it("cancels old chapter and presence responses before clearing deleted server da
   const cover = ["content-server", source.serverUrl, "cover", source.workId, 1];
   client.setQueryData(presence, source);
   client.setQueryData(chapters, { items: [{ id: "chapter" }], total: 1, hasMore: false });
-  client.setQueryData(availability, { paths: new Set(["/chapter"]), numbers: new Set([1]) });
+  client.setQueryData(availability, { paths: new Map([["/chapter", true]]), numbers: new Map([[1, true]]) });
   client.setQueryData(cover, "old-cover");
   let release!: (value: typeof source) => void;
   let aborted = false;
@@ -55,7 +55,7 @@ it("cancels old chapter and presence responses before clearing deleted server da
   await oldRequest;
   expect(client.getQueryData(presence)).toBeNull();
   expect(client.getQueryData(chapters)).toEqual({ items: [], total: 0, hasMore: false });
-  expect(client.getQueryData(availability)).toEqual({ paths: new Set(), numbers: new Set() });
+  expect(client.getQueryData(availability)).toEqual({ paths: new Map(), numbers: new Map() });
   expect(client.getQueryData(cover)).toBeUndefined();
   client.clear();
 });

@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import { persist } from "zustand/middleware";
 import { normalizeContentServerUrl } from "../lib/content-sync/client";
+import { forgetContentServerCapabilities } from "../lib/content-sync/device";
 import type { UploadConflictPolicy } from "../lib/content-sync/native";
 
 export type ContentSyncMode = "manual" | "periodic" | "changes";
@@ -35,9 +36,12 @@ export const useContentSyncStore = create<ContentSyncStore>()(persist((set) => (
   lookupTimeoutSeconds: 3,
   setServerUrl: (value) => {
     const serverUrl = value.trim() ? normalizeContentServerUrl(value) : "";
-    set((state) => serverUrl === state.serverUrl ? {} : ({
-      serverUrl, deviceKey: null, error: null, blocked: false, backgroundError: null, backgroundBlocked: false, status: "idle", progress: null,
-    }));
+    set((state) => {
+      if (serverUrl === state.serverUrl) return {};
+      if (state.serverUrl) forgetContentServerCapabilities(state.serverUrl);
+      if (serverUrl) forgetContentServerCapabilities(serverUrl);
+      return { serverUrl, deviceKey: null, error: null, blocked: false, backgroundError: null, backgroundBlocked: false, status: "idle", progress: null };
+    });
   },
   setDeviceName: (deviceName) => set({ deviceName: deviceName.trim() }),
   setSyncMode: (syncMode) => set({ syncMode }),

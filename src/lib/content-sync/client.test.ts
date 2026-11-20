@@ -112,6 +112,18 @@ it("marks only its own lookup deadline as a retryable transport failure", async 
   expect(vi.getTimerCount()).toBe(0);
 });
 
+it("reports the request deadline and retains machine-readable server error codes", async () => {
+  vi.useFakeTimers();
+  vi.mocked(nativeFetch).mockImplementationOnce(() => new Promise(() => undefined));
+  const pending = contentServerRequest("http://content.test", "/works", undefined, "DELETE", undefined, undefined, 2);
+  const rejected = expect(pending).rejects.toMatchObject({ message: "Content server request timed out." });
+  await vi.advanceTimersByTimeAsync(2000);
+  await rejected;
+  vi.mocked(nativeFetch).mockResolvedValueOnce(Response.json({ code: "work-identity-mismatch" }, { status: 409 }));
+  await expect(contentServerRequest("http://content.test", "/works/example", undefined, "DELETE"))
+    .rejects.toMatchObject({ status: 409, serverCode: "work-identity-mismatch" });
+});
+
 it("keeps the caller cancellation reason when native fetch reports its own cancellation", async () => {
   const controller = new AbortController();
   vi.mocked(nativeFetch).mockImplementation(async (_url, init) => new Promise((_resolve, reject) => {

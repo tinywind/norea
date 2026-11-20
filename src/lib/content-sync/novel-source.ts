@@ -47,7 +47,10 @@ export async function listServerChapterAvailability(source: ServerNovelSource, s
   const settings = useContentSyncStore.getState();
   return withContentServerLookup(async deadline => {
     const token = await registerContentDevice(source.serverUrl, settings.deviceName, deadline);
-    const chapters = await fetchServerChapters(source, token, deadline);
+    const chapters = await fetchServerChapters(source, token, deadline).catch(error => {
+      if (error instanceof ContentServerError && error.status === 404) return [];
+      throw error;
+    });
     const paths = new Map(chapters.map(chapter => [chapter.chapterPath, chapter.complete]));
     const numbers = new Map<number, boolean>();
     const counts = new Map<number, number>();

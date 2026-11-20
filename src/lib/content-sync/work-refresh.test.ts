@@ -90,6 +90,17 @@ it("refreshes only the opened work and retains locally known chapters", async ()
   expect(mocks.record).toHaveBeenCalledWith("http://server", expect.objectContaining({ metadata }), false);
 });
 
+it("skips metadata and cover transfers on 304 while refreshing chapter availability", async () => {
+  vi.mocked(contentServerRequest).mockResolvedValue(undefined);
+  expect(await syncServerNovelOnOpen(42)).toBe(true);
+  expect(vi.mocked(contentServerRequest).mock.calls[0]?.[7]).toEqual({
+    headers: { "If-None-Match": expect.stringMatching(/^"[a-f0-9]{64}"$/) }, acceptNotModified: true,
+  });
+  expect(mocks.cover).not.toHaveBeenCalled();
+  expect(mocks.install).not.toHaveBeenCalled();
+  expect(mocks.cache).toHaveBeenCalledWith(42, [chapter], undefined);
+});
+
 it("retains known metadata when an opened work receives empty server fields", async () => {
   const stored = {
     ...local,

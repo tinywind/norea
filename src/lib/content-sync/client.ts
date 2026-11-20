@@ -48,13 +48,13 @@ export function normalizeContentServerUrl(value: string): string {
   return url.toString().replace(/\/+$/, "");
 }
 
-export async function withContentServerLookup<T>(run: (signal: AbortSignal) => Promise<T>, seconds: number, signal?: AbortSignal): Promise<T> {
+export async function withContentServerLookup<T>(run: (signal: AbortSignal) => Promise<T>, seconds: number, signal?: AbortSignal, timeoutMessage = "Content server lookup timed out."): Promise<T> {
   signal?.throwIfAborted();
   const controller = new AbortController();
   const deadline = controller.signal;
   const cancel = () => controller.abort(signal?.reason);
   signal?.addEventListener("abort", cancel, { once: true });
-  const timer = setTimeout(() => controller.abort(new ContentServerTransportError("Content server lookup timed out.")), seconds * 1000);
+  const timer = setTimeout(() => controller.abort(new ContentServerTransportError(timeoutMessage)), seconds * 1000);
   let abort: () => void = () => undefined;
   try {
     const interrupted = new Promise<never>((_, reject) => {
@@ -69,28 +69,30 @@ export async function withContentServerLookup<T>(run: (signal: AbortSignal) => P
   }
 }
 
-export async function contentServerRequest<T>(serverUrl: string, path: string, token?: string, method = "GET", body?: unknown, signal?: AbortSignal, timeoutSeconds = 30): Promise<T> {
+export async function contentServerRequest<T>(serverUrl: string, path: string, token?: string, method = "GET", body?: unknown, signal?: AbortSignal, timeoutSeconds = 30, options?: { headers?: Record<string, string>; acceptNotModified?: boolean }): Promise<T> {
   return withContentServerLookup(async deadline => {
     const response = await contentServerFetch(`${normalizeContentServerUrl(serverUrl)}/api/v1${path}`, {
       method,
-      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}), ...(body === undefined ? {} : { "Content-Type": "application/json" }), ...options?.headers },
       body: body === undefined ? undefined : JSON.stringify(body),
       connectTimeout: 10_000,
       maxRedirections: 0,
       signal: deadline,
     });
+    if (response.status === 304 && options?.acceptNotModified) return undefined as T;
     if (!response.ok) {
       if (response.status === 401 && token) {
         const { forgetContentDeviceRegistration } = await import("./device");
         forgetContentDeviceRegistration(serverUrl, token);
       }
+      const detail = await response.json().catch(() => null) as { message?: unknown; code?: unknown } | null;
+      const serverCode = typeof detail?.code === "string" ? detail.code : undefined;
       let message: string | undefined;
       if (response.status === 409 && /^\/works\/[^/]+\/(?:finalize-migration|migration-snapshot|reconcile-chapter-numbers|chapter-number-mappings)$/.test(path)) {
-        const detail = await response.json().catch(() => null) as { message?: unknown } | null;
         if (typeof detail?.message === "string" && (detail.message.startsWith("Work migration: ") || detail.message.startsWith("Chapter number reconciliation conflict: "))) message = detail.message.slice(0, 1500);
       }
-      throw new ContentServerError(response.status, message);
+      throw new ContentServerError(response.status, message, serverCode);
     }
     return response.status === 204 ? undefined as T : response.json() as Promise<T>;
-  }, timeoutSeconds, signal);
+  }, timeoutSeconds, signal, "Content server request timed out.");
 }

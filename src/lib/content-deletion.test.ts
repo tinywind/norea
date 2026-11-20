@@ -6,11 +6,18 @@ vi.mock("../db/queries/chapter", () => ({ getChapterById: vi.fn(), listChaptersB
 vi.mock("../db/queries/content-deletion", () => ({ findLocalDeletionNovel: vi.fn(), deleteLocalNovelRecords: vi.fn(), listStoredDeletionNovelIds: vi.fn(), listDeletionDownloadedChapterIds: vi.fn(async () => []) }));
 vi.mock("./tasks/unshelved-novel-download-delete", () => ({ deleteUnshelvedNovelDownloads: vi.fn() }));
 vi.mock("./tasks/download-cache-delete", () => ({ deleteDownloadCache: vi.fn(), cancelNovelChapterDownloadWork: vi.fn() }));
-vi.mock("./content-sync/management", () => ({ findServerWork: vi.fn(), deleteServerWork: vi.fn(), deleteSelectedServerChapters: vi.fn() }));
+vi.mock("./content-sync/management", () => ({
+  deleteServerWork: vi.fn(), deleteSelectedServerChapters: vi.fn(),
+  loadServerWorkIdentity: vi.fn(async (source: { serverUrl: string; workId: string }, token: string) => {
+    const entry = await contentServerRequest<{ id: string; metadata: { identity: unknown } }>(source.serverUrl, `/works/${source.workId}`, token);
+    if (entry.id !== source.workId) throw new Error("Server work identity does not match the selected work.");
+    return entry.metadata.identity;
+  }),
+}));
 vi.mock("./content-sync/sync", () => ({ runContentSyncOperation: vi.fn((run: () => Promise<unknown>) => run()) }));
 vi.mock("./content-sync/client", () => ({ contentServerRequest: vi.fn(), ContentServerError: class extends Error { constructor(public status: number) { super(String(status)); } } }));
 vi.mock("./content-sync/deletion-exclusions", () => ({ setServerChapterDeletionExclusion: vi.fn() }));
-vi.mock("./content-sync/works", () => ({ recordDeletedWorkMetadata: vi.fn() }));
+vi.mock("./content-sync/works", () => ({ recordDeletedWorkMetadata: vi.fn(), contentWorkId: vi.fn(async () => "work-42") }));
 vi.mock("./content-sync/device", () => ({ registerContentDevice: vi.fn(async () => "token") }));
 vi.mock("../store/reader", () => ({ useReaderStore: { getState: () => ({ removeNovelReaderState: vi.fn() }) } }));
 vi.mock("./novel-cover-storage", () => ({ clearNovelCoverDisplayCache: vi.fn() }));
@@ -22,7 +29,7 @@ import { getNovelById, setNovelInLibrary } from "../db/queries/novel";
 import { getChapterById, listChaptersByNovel } from "../db/queries/chapter";
 import { findLocalDeletionNovel, deleteLocalNovelRecords, listDeletionDownloadedChapterIds } from "../db/queries/content-deletion";
 import { deleteDownloadCache } from "./tasks/download-cache-delete";
-import { deleteServerWork, deleteSelectedServerChapters, findServerWork } from "./content-sync/management";
+import { deleteServerWork, deleteSelectedServerChapters } from "./content-sync/management";
 import { setServerChapterDeletionExclusion } from "./content-sync/deletion-exclusions";
 import { recordDeletedWorkMetadata } from "./content-sync/works";
 import { ContentServerError, contentServerRequest } from "./content-sync/client";
@@ -40,7 +47,6 @@ beforeEach(() => {
   vi.mocked(getNovelById).mockResolvedValue(novel as never);
   vi.mocked(getChapterById).mockResolvedValue(chapter as never);
   vi.mocked(listChaptersByNovel).mockResolvedValue([chapter] as never);
-  vi.mocked(findServerWork).mockResolvedValue(source);
   vi.mocked(deleteDownloadCache).mockResolvedValue({ workId: "delete", total: 1, deleted: 1, failed: 0, cancelled: false });
 });
 
@@ -148,6 +154,19 @@ it("keeps successful sides complete and retries only the failed server deletion"
   expect(setNovelInLibrary).toHaveBeenCalledOnce();
   expect(deleteUnshelvedNovelDownloads).toHaveBeenCalledOnce();
   expect(deleteServerWork).toHaveBeenCalledTimes(2);
+});
+
+it("passes the local work identity directly to deletion and logs a failed action", async () => {
+  const error = new Error("offline");
+  const warning = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  try {
+    vi.mocked(deleteServerWork).mockRejectedValueOnce(error);
+    const actions = await prepareContentDeletion({ kind: "library", ids: [12], title: "Remove", serverUrl: source.serverUrl }, { local: false, server: true });
+    expect((await runContentDeletion(actions)).at(-1)?.status).toBe("failed");
+    expect(deleteServerWork).toHaveBeenCalledExactlyOnceWith(source, expect.any(Function),
+      { pluginId: novel.pluginId, novelPath: novel.path, novelId: novel.sourceNovelId });
+    expect(warning).toHaveBeenCalledWith("[content-deletion] action failed", { id: "server:12", side: "server", elapsedMs: expect.any(Number), error });
+  } finally { warning.mockRestore(); }
 });
 
 it.each(["library", "server-work"] as const)("retries only local persistence after %s server deletion succeeds", async kind => {

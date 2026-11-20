@@ -17,29 +17,26 @@ import { BackIcon, DeselectIcon, RefreshIcon, SelectAllIcon, TrashIcon } from ".
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import { StatusAlert } from "../ui/StatusAlert";
 
-/**
- * The content-server work that "Manage server data" opens for this novel, or
- * null when the server holds none. Discovery stays silent on failure.
- */
 export function useManagedServerWork(
   novel: Pick<NovelDetailRecord, "pluginId" | "path"> | undefined,
   source: ServerNovelSource | null | undefined,
   active: boolean,
-): ServerNovelSource | null {
+) {
   const server = useContentSyncStore(state => state.serverUrl);
   const sourceServer = source?.serverUrl ?? server;
   const presence = useQuery({
     queryKey: ["content-server", "manage-work", sourceServer, novel?.pluginId, novel?.path],
     queryFn: async ({ signal }) => {
       if (!novel) return null;
-      try { return await findServerWork(sourceServer, { pluginId: novel.pluginId, novelPath: novel.path }, signal); }
-      catch { return source ?? null; } // Background discovery must not surface server errors on the work page.
+      return findServerWork(sourceServer, { pluginId: novel.pluginId, novelPath: novel.path }, signal);
     },
     enabled: active && !!novel && !!sourceServer,
     staleTime: 30_000,
     retry: false,
+    meta: { errorPresentation: "inline" },
   });
-  return (presence.data === undefined ? source : presence.data) ?? null;
+  const confirmedAbsent = presence.isSuccess && !presence.isFetching && presence.data === null;
+  return { work: confirmedAbsent ? null : presence.data ?? source ?? null, confirmedAbsent };
 }
 
 /** Full-screen management of one work's chapters on the content server. */

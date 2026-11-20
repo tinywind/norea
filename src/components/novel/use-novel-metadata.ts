@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useContentSyncStore } from "../../store/content-sync";
 import { useEffect, useState } from "react";
 import {
   setNovelInLibrary,
@@ -130,6 +131,7 @@ export function useNovelMetadata(
     if (serverSource) {
       if (isTauriRuntime()) await pluginManager.loadInstalledFromDb();
       const { syncServerNovelOnOpen, refreshServerNovelFromSource } = await import("../../lib/content-sync/work-refresh");
+      const serverTimeoutSeconds = Math.max(30, useContentSyncStore.getState().lookupTimeoutSeconds);
       const canUseSourcePlugin = !novel.isLocal && !novel.path.startsWith("norea-folder:");
       const plugin = canUseSourcePlugin ? pluginManager.getPlugin(novel.pluginId) : undefined;
       let sourceRefreshed = false;
@@ -139,7 +141,7 @@ export function useNovelMetadata(
       // Keep the server metadata sync silent alongside a source task; without a source plugin,
       // run the server sync itself through the scheduler so it is visible and cancellable in the queue.
       const serverRefresh = plugin
-        ? syncServerNovelOnOpen(novel.id, undefined, () => !sourceRefreshed).then(changed => {
+        ? syncServerNovelOnOpen(novel.id, undefined, () => !sourceRefreshed, serverTimeoutSeconds).then(changed => {
             if (changed) invalidateNovelMetadataRefresh();
             return null;
           }, error => ({ error }))
@@ -166,7 +168,7 @@ export function useNovelMetadata(
               priority: "user",
               title: taskTitle,
               run: async (signal) => {
-                const changed = await syncServerNovelOnOpen(novel.id, signal, () => !sourceRefreshed);
+                const changed = await syncServerNovelOnOpen(novel.id, signal, () => !sourceRefreshed, serverTimeoutSeconds);
                 if (changed) invalidateNovelMetadataRefresh();
                 return changed;
               },

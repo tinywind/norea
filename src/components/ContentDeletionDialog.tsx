@@ -54,6 +54,10 @@ function DeletionConfirmation({ id, request }: { id: number; request: ContentDel
     try {
       const plan = actions ?? await prepareContentDeletion(request, options);
       setActions(plan);
+      if (plan.some(action => action.side === "server")) {
+        await Promise.all(["chapter-differences", "manage-work", "novel-chapters"].map(key =>
+          queryClient.cancelQueries({ queryKey: ["content-server", key] })));
+      }
       const next = await runContentDeletion(plan, results, setResults);
       const actionsById = new Map(plan.map(action => [action.id, action]));
       const previouslySucceeded = new Set(results.filter(result => result.status === "succeeded").map(result => result.id));

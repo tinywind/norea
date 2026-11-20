@@ -13,11 +13,11 @@ import { ContentServerError, contentServerRequest, withContentServerLookup } fro
 import { registerContentDevice } from "./device";
 import { serverWorkDeletionKey, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 import { readServerNovelSource } from "./novel-source";
-import { canPullWorkMetadata, contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, workMetadataFileVersion, workMetadataFingerprint, type WorkCatalogEntry } from "./works";
+import { canPullWorkMetadata, contentWorkId, recordInstalledWorkMetadata, runWorkMetadataSyncOperation, workMetadataFileVersion, workMetadataFingerprint, workResponseETag, type WorkCatalogEntry } from "./works";
 import { cacheServerChapters, isNovelMigrationSourceHeld } from "../../db/queries/content-sync";
 import { fetchServerChapters } from "./chapters";
 
-export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSignal, canApplyMetadata: () => boolean = () => true): Promise<boolean> {
+export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSignal, canApplyMetadata: () => boolean = () => true, timeoutSeconds?: number): Promise<boolean> {
   signal?.throwIfAborted();
   const settings = useContentSyncStore.getState();
   const source = await readServerNovelSource(novelId);
@@ -40,30 +40,34 @@ export async function syncServerNovelOnOpen(novelId: number, signal?: AbortSigna
     const expected = await workMetadataFingerprint(stored.metadata, localCover);
     const file = await readWorkMetadataSyncFile(identity);
     const mayApplyMetadata = await canPullWorkMetadata(server, file, expected);
+    const workId = source?.workId ?? await contentWorkId(identity);
+    const etag = await workResponseETag(stored.metadata, localCover);
     const result = await withContentServerLookup(async deadline => {
       const token = await registerContentDevice(server, settings.deviceName, deadline);
       deadline.throwIfAborted();
-      const ids = [source?.workId ?? await contentWorkId(identity)];
-      for (const id of ids) {
-        let entry: WorkCatalogEntry;
-        try { entry = await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}`, token, "GET", undefined, deadline); }
-        catch (error) { if (error instanceof ContentServerError && error.status === 404) continue; throw error; }
-        deadline.throwIfAborted();
-        const metadata = parseNovelMetadata(entry.metadata);
-        if (entry.id !== id || await contentWorkId(metadata.identity) !== id || metadata.identity.pluginId !== identity.pluginId ||
-          metadata.identity.novelPath !== identity.novelPath) {
-          throw new Error("Server work identity does not match the local work.");
-        }
-        const cover = entry.hasCover ? await readServerCover(server, token, id, deadline) : null;
-        deadline.throwIfAborted();
-        const chapters = await fetchServerChapters({ serverUrl: server, workId: id }, token, deadline);
-        return { entry, metadata, cover, chapters, token };
+      let entry: WorkCatalogEntry | undefined;
+      try {
+        entry = await contentServerRequest<WorkCatalogEntry | undefined>(server, `/works/${workId}`, token, "GET", undefined, deadline, 30,
+          { headers: { "If-None-Match": etag }, acceptNotModified: true });
+      } catch (error) {
+        if (error instanceof ContentServerError && error.status === 404) return null;
+        throw error;
       }
-      return null;
-    }, settings.lookupTimeoutSeconds, signal);
-    await waitForServerWorkDeletion(server, source?.workId ?? await contentWorkId(identity));
+      deadline.throwIfAborted();
+      const metadata = entry ? parseNovelMetadata(entry.metadata) : stored.metadata;
+      if (await contentWorkId(metadata.identity) !== workId || (entry && entry.id !== workId) ||
+          metadata.identity.pluginId !== identity.pluginId || metadata.identity.novelPath !== identity.novelPath) {
+        throw new Error("Server work identity does not match the local work.");
+      }
+      const cover = entry?.hasCover ? await readServerCover(server, token, workId, deadline) : null;
+      deadline.throwIfAborted();
+      const chapters = await fetchServerChapters({ serverUrl: server, workId }, token, deadline);
+      return { entry, metadata, cover, chapters, token };
+    }, timeoutSeconds ?? settings.lookupTimeoutSeconds, signal);
+    await waitForServerWorkDeletion(server, workId);
     if (!result || isDeleted()) return false;
     signal?.throwIfAborted();
+    if (!result.entry) return cacheServerChapters(novelId, result.chapters, signal);
     const local = stored.metadata;
     const remote = result.metadata;
     const reconciliation = Object.keys(local.chapters).some(number => !Object.hasOwn(remote.chapters, number))

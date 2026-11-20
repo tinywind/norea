@@ -71,6 +71,32 @@ it("reuses completed registration for subsequent requests with independent looku
   expect(nativeFetch).toHaveBeenCalledTimes(2);
 });
 
+it("shares registration across signals and preserves it when one caller cancels", async () => {
+  const controller = new AbortController();
+  const first = registerContentDevice("http://shared-server", "Tablet", controller.signal);
+  const second = registerContentDevice("http://shared-server", "Tablet", new AbortController().signal);
+  controller.abort();
+  await expect(first).rejects.toMatchObject({ name: "AbortError" });
+  await expect(second).resolves.toMatch(/^[a-f0-9]{64}$/);
+  expect(nativeFetch).toHaveBeenCalledTimes(2);
+});
+
+it("does not send registration when all callers cancel before the capability response", async () => {
+  const first = new AbortController();
+  const second = new AbortController();
+  vi.mocked(nativeFetch).mockImplementationOnce(async () => {
+    first.abort();
+    second.abort();
+    return Response.json(capabilities);
+  });
+  const result = await Promise.allSettled([
+    registerContentDevice("http://cancelled-server", "Tablet", first.signal),
+    registerContentDevice("http://cancelled-server", "Tablet", second.signal),
+  ]);
+  expect(result.map(value => value.status)).toEqual(["rejected", "rejected"]);
+  expect(nativeFetch).toHaveBeenCalledOnce();
+});
+
 it("updates a changed device name using the saved key before caching it again", async () => {
   const key = await registerContentDevice("http://server", "Tablet");
   expect(await registerContentDevice("http://server", "Renamed tablet")).toBe(key);

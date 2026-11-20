@@ -331,6 +331,14 @@ it("keeps per-path completeness without assigning ambiguous chapter numbers", as
   });
 });
 
+it("keeps the open local work usable after its server chapter catalog is deleted", async () => {
+  const source = { serverUrl: "http://origin", workId: "deleted-work" };
+  vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(404));
+  await expect(listServerChapterAvailability(source)).resolves.toEqual({ paths: new Map(), numbers: new Map() });
+  vi.mocked(contentServerRequest).mockRejectedValueOnce(new ContentServerError(403));
+  await expect(listServerChapterAvailability(source)).rejects.toMatchObject({ status: 403 });
+});
+
 it("pages only the selected work when reading available server chapter paths", async () => {
   vi.mocked(contentServerRequest)
     .mockResolvedValueOnce({ items: [{ id: "first", chapterPath: "/chapter/7", chapterNumber: "7", position: 7, name: "Seven", complete: false }], total: 2, hasMore: true })

@@ -181,13 +181,13 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   const offlineStates = useDownloadGoalOfflineStates(active && Boolean(novelQuery.data?.inLibrary));
   // Download goals cover only library works; a disabled query still holds the state from before removal.
   const offlineState = novelQuery.data?.inLibrary ? offlineStates?.get(id) : undefined;
-  const managedServerWork = useManagedServerWork(
+  const { work: managedServerWork, confirmedAbsent: serverWorkAbsent } = useManagedServerWork(
     novelQuery.data ?? undefined,
     serverSourceQuery.data,
     active,
   );
 
-  const differenceQuery = useChapterDifferences(novelQuery.data ?? undefined, chaptersQuery.data, managedServerWork, active);
+  const differenceQuery = useChapterDifferences(novelQuery.data ?? undefined, chaptersQuery.data, managedServerWork);
   const differentIds = useMemo(() => new Set(differenceQuery.data?.differences.map(row => row.chapter.chapterId)), [differenceQuery.data]);
 
   const rows = useMemo<ServerAwareChapterListRow[]>(() => {
@@ -892,7 +892,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                 onToggleLibrary={() =>
                   toggle.mutate(novel.inLibrary ? {
                     downloadedCount: chapterStats.downloaded,
-                    serverWork: managedServerWork !== null,
+                    serverWork: !serverWorkAbsent,
                   } : undefined, {
                     onSuccess: (result) => {
                       if (result?.inLibrary) showAddedToLibrary(result.novel.id);
@@ -925,9 +925,12 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                         unread: chapterStats.unread,
                       })}
                 </h2>
-                {managedServerWork && (differenceQuery.isFetching || differenceQuery.error || differentIds.size > 0 || (differenceQuery.data?.errors.length ?? 0) > 0) ? <ChipButton
-                  disabled={differenceQuery.isFetching && !differenceQuery.data}
-                  onClick={() => setDifferenceManagerOpen(true)}
+                {managedServerWork ? <ChipButton
+                  disabled={!chaptersQuery.data}
+                  onClick={() => {
+                    setDifferenceManagerOpen(true);
+                    if (!differenceQuery.isFetching) void differenceQuery.refetch();
+                  }}
                 >{differenceQuery.isFetching && !differenceQuery.data
                     ? t("chapterDifference.checking", differenceQuery.progress)
                     : differenceQuery.error ? t("chapterDifference.checkFailed")

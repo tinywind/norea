@@ -189,6 +189,14 @@ it("pauses detail, chapter, and server queries while its page slot is hidden", (
   expect(pageQueries().every(query => query.enabled === true)).toBe(true);
 });
 
+it("offers server chapter comparison without automatically starting its query", () => {
+  mocks.source.data = { serverUrl: "http://server", workId: "work" };
+  mocks.chapters = [{ ...chapter, isDownloaded: true }];
+  const $ = renderPage();
+  expect(mocks.queries.find(query => query.queryKey[1] === "chapter-differences")?.enabled).toBe(false);
+  expect($("button").filter((_, button) => $(button).text() === "chapterDifference.none")).toHaveLength(1);
+});
+
 it("presents server-published local works as downloadable without changing stored metadata", async () => {
   mocks.source.data = { serverUrl: "http://server", workId: "work" };
   const $ = renderPage();

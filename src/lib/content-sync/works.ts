@@ -52,6 +52,20 @@ export function contentWorkId(identity: Pick<NovelMetadataV1["identity"], "plugi
 export async function workMetadataFingerprint(metadata: NovelMetadataV1, cover: Uint8Array | null): Promise<string> {
   return hash(new TextEncoder().encode(JSON.stringify([canonicalMetadataValue(metadata), cover ? await hash(cover) : null])));
 }
+
+function canonicalWorkJson(value: unknown): string {
+  if (Array.isArray(value)) return "[" + value.map(canonicalWorkJson).join(",") + "]";
+  if (value === null || typeof value !== "object") return JSON.stringify(value);
+  const object = value as Record<string, unknown>;
+  return "{" + Object.keys(object).sort().filter(key => object[key] !== undefined)
+    .map(key => JSON.stringify(key) + ":" + canonicalWorkJson(object[key])).join(",") + "}";
+}
+
+export async function workResponseETag(metadata: NovelMetadataV1, cover: Uint8Array | null): Promise<string> {
+  const coverDigest = cover?.length ? await hash(cover) : "";
+  const fingerprint = await hash(new TextEncoder().encode(canonicalWorkJson(metadata) + "\n" + coverDigest));
+  return `"${fingerprint}"`;
+}
 async function readCache(server: string): Promise<WorkSyncCache> {
   const saved = await readContentSyncCache(cacheKey(server));
   return saved ? JSON.parse(saved) as WorkSyncCache : { cursor: 0, fingerprints: {}, fileVersions: {}, deleted: {} };

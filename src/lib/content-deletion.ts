@@ -12,12 +12,12 @@ import type { ServerChapterSummary } from "./content-sync/chapters";
 import { ContentServerError, contentServerRequest } from "./content-sync/client";
 import { registerContentDevice } from "./content-sync/device";
 import { setServerChapterDeletionExclusion } from "./content-sync/deletion-exclusions";
-import { deleteSelectedServerChapters, deleteServerWork, findServerWork } from "./content-sync/management";
+import { deleteSelectedServerChapters, deleteServerWork, loadServerWorkIdentity } from "./content-sync/management";
 import type { CatalogEntry } from "./content-sync/native";
 import type { ServerNovelSource } from "./content-sync/novel-source";
 import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
 import { runContentSyncOperation } from "./content-sync/sync";
-import { recordDeletedWorkMetadata, type WorkCatalogEntry } from "./content-sync/works";
+import { contentWorkId, recordDeletedWorkMetadata, type WorkCatalogEntry } from "./content-sync/works";
 import { describeError } from "./errors";
 import { clearNovelCoverDisplayCache } from "./novel-cover-storage";
 import { cancelNovelChapterDownloadWork, deleteDownloadCache } from "./tasks/download-cache-delete";
@@ -121,7 +121,7 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
     let local: { novel: NovelDetailRecord; directory: string; chapterIds: number[] } | null | undefined;
     actions.push({ id: "server-work", side: "server", name: request.title, source: request.source, run: async () => {
       if (deleted) await recordDeletedWorkMetadata(request.source.serverUrl, deleted);
-      else deleted = await deleteServerWork(request.source, entry => { deleted = entry; });
+      else deleted = await deleteServerWork(request.source, entry => { deleted = entry; }) ?? undefined;
       return deleted;
     } });
     if (options.local) actions.push({ id: "local-work", side: "device", name: request.title, requires: "server-work", run: async () => {
@@ -144,24 +144,24 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
   }
   if (request.kind === "server-chapters") {
     // Capture work identity before chapter deletion; a chapter ID is not a local database ID.
-    let work: WorkCatalogEntry | undefined;
-    const getWork = async () => {
-      if (work) return work;
+    let identity: WorkCatalogEntry["metadata"]["identity"] | undefined;
+    const getIdentity = async () => {
+      if (identity) return identity;
       const token = await registerContentDevice(request.source.serverUrl, useContentSyncStore.getState().deviceName);
-      const loaded = await contentServerRequest<WorkCatalogEntry>(request.source.serverUrl, `/works/${encodeURIComponent(request.source.workId)}`, token);
-      if (loaded.id !== request.source.workId) throw new Error("Server work identity does not match the selected work.");
-      work = loaded;
-      return work;
+      const loaded = await loadServerWorkIdentity(request.source, token);
+      if (!loaded) throw new Error("Server work no longer exists.");
+      identity = loaded;
+      return identity;
     };
     for (const chapter of new Map(request.chapters.map(row => [row.id, row])).values()) {
       const id = `server:${chapter.id}`;
       actions.push({ id, side: "server", name: chapter.name, waitForSync: true, run: async () => {
-        const identity = (await getWork()).metadata.identity;
+        const identity = await getIdentity();
         await deleteSelectedServerChapters(request.source, [chapter.id]);
         await setServerChapterDeletionExclusion(request.source.serverUrl, { ...identity, chapterPath: chapter.chapterPath }, chapter.chapterNumber, true);
       } });
       if (options.local) actions.push({ id: `device:${chapter.id}`, side: "device", name: chapter.name, requires: id, run: async () => {
-        const novel = await findLocalDeletionNovel((await getWork()).metadata.identity);
+        const novel = await findLocalDeletionNovel(await getIdentity());
         if (!novel) return;
         const localChapter = matchDeletionChapter(await listChaptersByNovel(novel.id), chapter);
         if (localChapter) await deleteLocalDownloads("chapter", [localChapter.id], request.title);
@@ -217,10 +217,10 @@ export async function prepareContentDeletion(request: ContentDeletionRequest, op
           await recordDeletedWorkMetadata(request.serverUrl, deleted);
           return deleted;
         }
-        const source = await findServerWork(request.serverUrl, { pluginId: novel.pluginId, novelId: novel.sourceNovelId, novelPath: novel.path });
-        if (!source) return;
+        const identity = { pluginId: novel.pluginId, novelId: novel.sourceNovelId, novelPath: novel.path };
+        const source = { serverUrl: request.serverUrl, workId: await contentWorkId(identity) };
         action.source = source;
-        deleted = await deleteServerWork(source, entry => { deleted = entry; });
+        deleted = await deleteServerWork(source, entry => { deleted = entry; }, identity) ?? undefined;
         return deleted;
       } };
       actions.push(action);
@@ -239,10 +239,14 @@ export async function runContentDeletion(actions: readonly ContentDeletionAction
     if (action.requires && results.get(action.requires)?.status !== "succeeded") {
       results.set(action.id, { id: action.id, status: "failed", error: "Waiting for the server deletion to succeed." });
     } else {
+      const startedAt = Date.now();
       try {
         const deletedWork = await (action.waitForSync ? runContentSyncOperation(action.run) : action.run());
         results.set(action.id, { id: action.id, status: "succeeded", ...(deletedWork ? { deletedWork } : {}) });
-      } catch (error) { results.set(action.id, { id: action.id, status: "failed", error: describeError(error) }); }
+      } catch (error) {
+        console.warn("[content-deletion] action failed", { id: action.id, side: action.side, elapsedMs: Date.now() - startedAt, error });
+        results.set(action.id, { id: action.id, status: "failed", error: describeError(error) });
+      }
     }
     if (Date.now() - reportedAt >= 100) { onResult?.([...results.values()]); reportedAt = Date.now(); }
   }

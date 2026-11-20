@@ -1,7 +1,7 @@
 import type { InfiniteData, QueryClient, QueryKey } from "@tanstack/react-query";
 import type { ServerSourceSummary, ServerWorkPage } from "./browse";
 import type { ServerChapterPage } from "./chapters";
-import type { ServerNovelSource } from "./novel-source";
+import type { listServerChapterAvailability, ServerNovelSource } from "./novel-source";
 import type { WorkCatalogEntry } from "./works";
 
 export async function removeDeletedServerWorkFromQueries(queryClient: QueryClient, source: ServerNovelSource, entry: WorkCatalogEntry): Promise<void> {
@@ -30,7 +30,9 @@ export async function removeDeletedServerWorkFromQueries(queryClient: QueryClien
       .filter(item => item.workCount > 0),
   } : data);
   queryClient.setQueriesData<ServerChapterPage>({ queryKey: chaptersKey }, { items: [], total: 0, hasMore: false });
-  queryClient.setQueryData(availabilityKey, { paths: new Set<string>(), numbers: new Set<number>() });
+  queryClient.setQueryData<Awaited<ReturnType<typeof listServerChapterAvailability>>>(availabilityKey, {
+    paths: new Map(), numbers: new Map(),
+  });
   queryClient.setQueryData(presenceKey, null);
   queryClient.removeQueries({ queryKey: coverKey });
   for (const queryKey of [browseKey, sourcesKey]) void queryClient.invalidateQueries({ queryKey });
