@@ -38,7 +38,7 @@ export function effectiveDownloadGoal(
     : { goal: null, isDefault: false };
 }
 
-export type GoalChapter = Pick<ChapterListRow, "id" | "isDownloaded" | "contentBytes" | "mediaRepairNeeded" | "readAt">;
+export type GoalChapter = Pick<ChapterListRow, "id" | "isDownloaded" | "contentBytes" | "mediaRepairNeeded" | "readAt" | "progress">;
 
 export interface GoalTargets<C extends GoalChapter> {
   /** Every chapter the goal covers, in reading order. */
@@ -55,7 +55,10 @@ export interface GoalTargets<C extends GoalChapter> {
   pending: C[];
 }
 
-/** The chapter the reader last opened, or the most recently read chapter when no position is remembered. */
+/**
+ * The chapter the reader last opened, else the most recently read chapter by `readAt`,
+ * else the furthest finished chapter (`progress >= 100`) when chapters lack `readAt`.
+ */
 export function goalReadingChapterId(
   chapters: readonly GoalChapter[],
   rememberedChapterId: number | undefined,
@@ -67,7 +70,12 @@ export function goalReadingChapterId(
   for (const chapter of chapters) {
     if (chapter.readAt !== null && (latest === undefined || chapter.readAt > (latest.readAt ?? 0))) latest = chapter;
   }
-  return latest?.id;
+  if (latest !== undefined) return latest.id;
+  let furthestFinished: GoalChapter | undefined;
+  for (const chapter of chapters) {
+    if (chapter.progress >= 100) furthestFinished = chapter;
+  }
+  return furthestFinished?.id;
 }
 
 /** Chapters a goal covers: after the reading position for keep-ahead and all-remaining, or every chapter. */

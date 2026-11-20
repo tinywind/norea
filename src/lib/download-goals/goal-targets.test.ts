@@ -4,7 +4,7 @@ import {
 } from "./goal-targets";
 
 const chapter = (id: number, extra: Partial<GoalChapter> = {}): GoalChapter =>
-  ({ id, isDownloaded: false, contentBytes: 0, mediaRepairNeeded: false, readAt: null, ...extra });
+  ({ id, isDownloaded: false, contentBytes: 0, mediaRepairNeeded: false, readAt: null, progress: 0, ...extra });
 const ids = (chapters: readonly GoalChapter[]) => chapters.map((row) => row.id);
 const order = [1, 2, 3, 4, 5, 6].map((id) => chapter(id));
 
@@ -17,11 +17,27 @@ it("covers the chapters after the reading position, or every chapter for the ent
   expect(goalTargetChapters({ kind: "none" }, order, 2)).toEqual([]);
 });
 
-it("uses the remembered position, else the latest read chapter", () => {
-  const read = [chapter(1, { readAt: 50 }), chapter(2, { readAt: 90 }), chapter(3, { readAt: 70 })];
+it("uses the remembered position, else the latest read chapter, else furthest finished progress", () => {
+  const read = [chapter(1, { readAt: 50, progress: 100 }), chapter(2, { readAt: 90, progress: 100 }), chapter(3, { readAt: 70, progress: 100 })];
   expect(goalReadingChapterId(read, 3)).toBe(3);
   expect(goalReadingChapterId(read, 99)).toBe(2);
   expect(goalReadingChapterId([chapter(1)], undefined)).toBeUndefined();
+
+  // Imported/synced chapters with progress >= 100 but null readAt advance past finished chapters,
+  // while leaving a partially-read chapter (< 100) eligible for download.
+  const noTimestamps = [
+    chapter(1, { progress: 100 }),
+    chapter(2, { progress: 100 }),
+    chapter(3, { progress: 45 }),
+    chapter(4, { progress: 0 }),
+  ];
+  expect(goalReadingChapterId(noTimestamps, undefined)).toBe(2);
+  expect(ids(goalTargetChapters({ kind: "all_remaining" }, noTimestamps, goalReadingChapterId(noTimestamps, undefined)))).toEqual([3, 4]);
+  expect(goalReadingChapterId([chapter(1, { progress: 45 }), chapter(2, { progress: 0 })], undefined)).toBeUndefined();
+
+  // Explicit readAt still takes precedence over a later finished chapter without readAt.
+  const mixed = [chapter(1, { readAt: 50, progress: 100 }), chapter(2, { readAt: null, progress: 100 })];
+  expect(goalReadingChapterId(mixed, undefined)).toBe(1);
 });
 
 it("counts stored chapters, reports missing images separately and requests only unowned, unexcluded gaps", () => {
