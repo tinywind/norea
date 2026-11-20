@@ -15,10 +15,10 @@ interface AppFetchSendResult {
 
 const EMPTY_BODY_STATUS = new Set([101, 103, 204, 205, 304]);
 
-function encodeAppFetchBody(body: unknown): number[] | null {
+function encodeAppFetchBody(body: unknown): Uint8Array {
   const serialized = serializeBody(body);
-  if (serialized === undefined) return null;
-  return Array.from(new TextEncoder().encode(serialized));
+  if (serialized === undefined) return new Uint8Array(0);
+  return new TextEncoder().encode(serialized);
 }
 
 function appFetchHeaders(
@@ -44,9 +44,12 @@ async function readAppFetchBody(rid: number, signal: AbortSignal): Promise<Uint8
   const chunks: Uint8Array<ArrayBuffer>[] = [];
   while (true) {
     if (signal.aborted) throw requestAbortedError();
-    const data = await invoke<number[]>("plugin:http|fetch_read_body", {
-      rid,
-    });
+    const data = await invoke<ArrayBuffer | number[]>(
+      "plugin:http|fetch_read_body",
+      {
+        rid,
+      },
+    );
     const bytes = new Uint8Array(data);
     if (bytes.byteLength === 0) {
       throw new Error("App fetch body chunk is missing the completion flag.");
@@ -79,12 +82,20 @@ export async function appFetch(
     };
     signal.addEventListener("abort", cancel, { once: true });
     try {
-      requestRid = await invoke<number>("plugin:http|fetch", {
-        clientConfig: {
-          method: init.method ?? "GET", url,
-          headers: appFetchHeaders(init.headers), data: encodeAppFetchBody(init.body),
+      const clientConfig = {
+        method: init.method ?? "GET",
+        url,
+        headers: appFetchHeaders(init.headers),
+      };
+      requestRid = await invoke<number>(
+        "plugin:http|fetch",
+        encodeAppFetchBody(init.body),
+        {
+          headers: {
+            "client-config": encodeURIComponent(JSON.stringify(clientConfig)),
+          },
         },
-      });
+      );
       if (signal.aborted) { cancel(); throw requestAbortedError(); }
       const result = await invoke<AppFetchSendResult>("plugin:http|fetch_send", { rid: requestRid });
       requestRid = null;

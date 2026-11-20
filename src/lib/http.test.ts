@@ -113,14 +113,22 @@ describe("appFetchText", () => {
 
     await expect(appFetchText(url)).resolves.toBe("[]");
 
-    expect(invokeMock).toHaveBeenNthCalledWith(1, "plugin:http|fetch", {
-      clientConfig: {
-        data: null,
-        headers: [],
-        method: "GET",
-        url,
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      1,
+      "plugin:http|fetch",
+      new Uint8Array(0),
+      {
+        headers: {
+          "client-config": encodeURIComponent(
+            JSON.stringify({
+              method: "GET",
+              url,
+              headers: [],
+            }),
+          ),
+        },
       },
-    });
+    );
     expect(invokeMock).toHaveBeenNthCalledWith(2, "plugin:http|fetch_send", {
       rid: 100,
     });
@@ -138,14 +146,51 @@ describe("appFetchText", () => {
       "ok",
     );
 
-    expect(invokeMock).toHaveBeenNthCalledWith(1, "plugin:http|fetch", {
-      clientConfig: {
-        data: null,
-        headers: [],
-        method: "GET",
-        url: "https://example.test/plugin.js",
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      1,
+      "plugin:http|fetch",
+      new Uint8Array(0),
+      {
+        headers: {
+          "client-config": encodeURIComponent(
+            JSON.stringify({
+              method: "GET",
+              url: "https://example.test/plugin.js",
+              headers: [],
+            }),
+          ),
+        },
       },
-    });
+    );
+  });
+
+  it("sends serialized request body bytes and headers in tauri-plugin-http 2.9 wire format", async () => {
+    mockAppFetch("created", { url: "https://example.test/submit" });
+
+    await expect(
+      appFetchText("https://example.test/submit", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: "{\"ok\":true}",
+      }),
+    ).resolves.toBe("created");
+
+    expect(invokeMock).toHaveBeenNthCalledWith(
+      1,
+      "plugin:http|fetch",
+      new TextEncoder().encode("{\"ok\":true}"),
+      {
+        headers: {
+          "client-config": encodeURIComponent(
+            JSON.stringify({
+              method: "POST",
+              url: "https://example.test/submit",
+              headers: [["Content-Type", "application/json"]],
+            }),
+          ),
+        },
+      },
+    );
   });
 
   it("throws on a non-2xx app fetch response with a status-aware message", async () => {
