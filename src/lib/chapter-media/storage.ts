@@ -298,7 +298,13 @@ export async function prepareLocalChapterMediaSources(
     mediaRelativePath: mediaPath,
   })
     .then(() => true)
-    .catch(() => false);
+    .catch((error: unknown) => {
+      console.warn("[chapter-media] failed to prepare reader media cache", {
+        archiveRelativePath: archivePath,
+        error: error instanceof Error ? error.message : String(error),
+      });
+      return false;
+    });
   for (const source of sources) {
     const fileName = localChapterMediaFileName(source, context);
     resolved.set(

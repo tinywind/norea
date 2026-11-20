@@ -1389,6 +1389,7 @@
   "reader.openSettings": "Open reader settings",
   "reader.settingsShort": "Settings",
   "reader.repairMedia": "Repair missing images",
+  "reader.missingMediaNotice": "Some images in this chapter are missing.",
   "reader.closeSettings": "Close reader settings",
   "reader.chapters": "Chapters",
   "reader.loadingIndex": "Loading chapters…",

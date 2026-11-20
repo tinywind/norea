@@ -17,6 +17,7 @@ import {
   countBlankReaderMedia,
   countDataUrlReaderMedia,
   hasLocalMediaSourceAttributes,
+  isLocalReaderMediaUrl,
   isRemoteMediaUrl,
   localMediaPatchSignature,
   logReaderMediaDebug,
@@ -58,6 +59,8 @@ export function useReaderContentMedia({
   const pendingLocalMediaSignatureRef = useRef<string | null>(null);
   const unresolvedLocalMediaSignatureRef = useRef<string | null>(null);
   const latestRenderedHtmlRef = useRef<string | null>(null);
+  const onMediaErrorRef = useRef(onMediaError);
+  onMediaErrorRef.current = onMediaError;
   const [resolvedLocalMedia, setResolvedLocalMedia] = useState<
     Record<string, string>
   >({});
@@ -276,6 +279,22 @@ export function useReaderContentMedia({
           }));
           unresolvedLocalMediaSignatureRef.current = scopedSignature;
         }
+        if (!cancelled && patches.length < rawPatches.length) {
+          const resolvedIndices = new Set(patches.map((patch) => patch.index));
+          const unresolvedPatch = rawPatches.find(
+            (patch) => !resolvedIndices.has(patch.index),
+          );
+          const unresolvedSource = unresolvedPatch
+            ? (READER_MEDIA_PATCH_ATTRIBUTES.map(
+                (attribute) => unresolvedPatch.sourceAttributes?.[attribute],
+              ).find(Boolean) ?? null)
+            : null;
+          logReaderMediaPipeline("local-media-unresolved", {
+            rawPatchCount: rawPatches.length,
+            resolvedPatchCount: patches.length,
+          });
+          onMediaErrorRef.current?.(unresolvedSource);
+        }
       } finally {
         if (pendingLocalMediaSignatureRef.current === scopedSignature) {
           pendingLocalMediaSignatureRef.current = null;
@@ -302,11 +321,20 @@ export function useReaderContentMedia({
     if (!content || !onMediaError) return;
     const handleMediaError = (event: Event) => {
       const source = mediaErrorSource(event.target);
-      if (!source || !isRemoteMediaUrl(source)) return;
-      logReaderMediaPipeline("remote-media-error", {
-        host: mediaLogHost(source),
-      });
-      onMediaError(source);
+      if (!source) return;
+      if (isRemoteMediaUrl(source)) {
+        logReaderMediaPipeline("remote-media-error", {
+          host: mediaLogHost(source),
+        });
+        onMediaError(source);
+        return;
+      }
+      if (isLocalReaderMediaUrl(source)) {
+        logReaderMediaPipeline("local-media-error", {
+          host: mediaLogHost(source),
+        });
+        onMediaError(source);
+      }
     };
     content.addEventListener("error", handleMediaError, true);
     return () => {

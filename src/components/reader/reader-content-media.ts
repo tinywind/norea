@@ -222,6 +222,16 @@ export function isRemoteMediaUrl(value: string): boolean {
   }
 }
 
+export function isLocalReaderMediaUrl(value: string): boolean {
+  if (value.startsWith("norea-media://")) return true;
+  try {
+    const parsed = new URL(value, window.location.href);
+    return parsed.host === "norea-media.localhost";
+  } catch {
+    return false;
+  }
+}
+
 export function mediaErrorSource(target: EventTarget | null): string | null {
   if (target instanceof HTMLImageElement) {
     return target.currentSrc || target.src || target.getAttribute("src");

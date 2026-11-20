@@ -69,7 +69,9 @@ type ReaderChapterDocument = Pick<
   | "content"
   | "contentType"
   | "mediaRepairNeeded"
->;
+> & {
+  mediaBytes?: number;
+};
 type ReaderNovelDocument = Pick<
   NovelDetailRecord,
   "id" | "name" | "path" | "pluginId" | "sourceNovelId"
@@ -326,6 +328,12 @@ export function useReaderChapterDocument({
     ],
   );
 
+  const mediaRepairAttention = Boolean(
+    showMediaRepair &&
+      (remoteMediaError ||
+        (chapter?.mediaRepairNeeded && chapter.mediaBytes === 0)),
+  );
+
   const hasChapterContent = Boolean(activeReaderHtml);
   const content = activeReaderHtml ?? "";
   const isPdfChapter = hasChapterContent && activeContentType === "pdf";
@@ -363,6 +371,7 @@ export function useReaderChapterDocument({
     isPdfChapter,
     readerPreparation,
     showMediaRepair,
+    mediaRepairAttention,
     remoteMediaError,
     setRemoteMediaError,
     handleRemoteMediaError,

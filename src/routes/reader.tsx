@@ -10,6 +10,7 @@ import {
   ReaderBottomBar,
   ReaderChapterPanel,
   ReaderChapterSheet,
+  ReaderMediaRepairNotice,
   ReaderSettingsSheet,
   ReaderSettingsSidePanel,
   ReaderTopBar,
@@ -108,7 +109,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     isPdfChapter,
     readerPreparation,
     showMediaRepair,
-    remoteMediaError,
+    mediaRepairAttention,
     setRemoteMediaError,
     handleRemoteMediaError,
   } = useReaderChapterDocument({
@@ -144,6 +145,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     chapterIndex >= 0 &&
     chapterIndex === chapters.length - 1;
   const [endReachedChapterId, setEndReachedChapterId] = useState<number | null>(null);
+  const [dismissedMediaNoticeChapterId, setDismissedMediaNoticeChapterId] = useState<number | null>(null);
   const chapterPosition = chapter?.position;
   const { refetch: refetchChapterList } = chapterListQuery;
   const countNewChapters = useCallback(async () => {
@@ -636,7 +638,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         onToggleBookmark={() => bookmarkMutation.mutate()}
         repairMediaDisabled={!chapter || !currentNovel}
         repairMediaLoading={repairMediaMutation.isPending}
-        repairMediaAttention={remoteMediaError}
+        repairMediaAttention={mediaRepairAttention}
         settingsOpen={readerSettingsOpen}
         showMediaRepair={showMediaRepair}
       />
@@ -651,6 +653,17 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
         ) : null}
         <Box className="norea-reader-content-frame">
           {readerContent}
+          {hasChapterContent &&
+          !isPdfChapter &&
+          mediaRepairAttention &&
+          dismissedMediaNoticeChapterId !== activeChapterId ? (
+            <ReaderMediaRepairNotice
+              disabled={!chapter || !currentNovel}
+              loading={repairMediaMutation.isPending}
+              onDismiss={() => setDismissedMediaNoticeChapterId(activeChapterId ?? null)}
+              onRepairMedia={() => repairMediaMutation.mutate()}
+            />
+          ) : null}
           {preparedNextChapter && currentNovel && effectiveReaderAppearance.customJs.trim() === "" ? (
             <ReaderContent
               key={getReaderContentPhaseKey(preparedNextChapter.chapter.id, true)}

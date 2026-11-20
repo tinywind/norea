@@ -118,8 +118,33 @@ it("enables progress and history for a saved body with incomplete media after re
   expect(current!.content).toBe("<p>Saved final body</p>");
   expect(current!.readerProgressPersistenceReady).toBe(true);
   expect(current!.showMediaRepair).toBe(true);
+  expect(current!.mediaRepairAttention).toBe(false);
   expect(markChapterOpened).toHaveBeenCalledExactlyOnceWith(chapter.id);
   expect(useReaderStore.getState().lastReadChapterByNovel[chapter.novelId]).toBe(chapter.id);
+});
+
+it("flags mediaRepairAttention immediately when a media-repair chapter has zero archived media bytes", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  root = mountNullRenderer();
+  let current: ReturnType<typeof useReaderChapterDocument> | undefined;
+  const chapter = {
+    id: 41, novelId: 37, name: "Missing archive", chapterNumber: "5", position: 5,
+    content: "<img src=\"norea-media://reader-asset/0001-001.jpg\" />",
+    contentType: "html" as const, isDownloaded: false, mediaRepairNeeded: true, mediaBytes: 0,
+  };
+  const novel = { id: 37, name: "Stored work", path: "/work", pluginId: "source", sourceNovelId: "work" };
+  const contentRef = { current: null };
+  function Probe() {
+    current = useReaderChapterDocument({
+      chapterId: chapter.id, chapter, currentNovel: novel, bionicReading: false, contentRef,
+    });
+    return null;
+  }
+  await act(async () => {
+    root!.render(<QueryClientProvider client={queryClient}><Probe /></QueryClientProvider>);
+  });
+  expect(current!.showMediaRepair).toBe(true);
+  expect(current!.mediaRepairAttention).toBe(true);
 });
 
 it("uses the plugin novel ID for reader media and refreshes both context and patch subscriptions when it changes", async () => {

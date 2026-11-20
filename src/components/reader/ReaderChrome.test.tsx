@@ -9,7 +9,7 @@ vi.mock("react", async (importOriginal) => ({
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
 vi.mock("./ReaderQuickSettings", () => ({ ReaderQuickSettings: () => null }));
 
-import { ReaderBottomBar, ReaderTopBar } from "./ReaderChrome";
+import { ReaderBottomBar, ReaderMediaRepairNotice, ReaderTopBar } from "./ReaderChrome";
 
 interface ElementProps {
   children?: ReactNode;
@@ -73,6 +73,24 @@ it.each([false, true])("toggles paused history directly and reports its current 
 it("shows the repair button only while chapter media needs repair", () => {
   expect(withLabel(topBar(), "reader.repairMedia")).toHaveLength(0);
   expect(withLabel(topBar({ showMediaRepair: true }), "reader.repairMedia")).toHaveLength(1);
+});
+
+it("wires the missing media notice repair and dismiss actions", () => {
+  const onRepairMedia = vi.fn();
+  const onDismiss = vi.fn();
+  const tree = elements(ReaderMediaRepairNotice({
+    disabled: false,
+    loading: false,
+    onDismiss,
+    onRepairMedia,
+  }));
+  expect(withClass(tree, "norea-reader-media-notice-text")).toBe("reader.missingMediaNotice");
+  const repair = tree.find((element) => element.props.children === "reader.repairMedia")!;
+  repair.props.onClick!();
+  expect(onRepairMedia).toHaveBeenCalledOnce();
+  const dismiss = withLabel(tree, "common.close")[0]!;
+  dismiss.props.onClick!();
+  expect(onDismiss).toHaveBeenCalledOnce();
 });
 
 it("reports the bookmark as a pressed toggle", () => {

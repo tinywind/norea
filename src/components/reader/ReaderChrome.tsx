@@ -156,6 +156,52 @@ export function ReaderTopBar({
   );
 }
 
+export function ReaderMediaRepairNotice({
+  disabled,
+  loading,
+  onDismiss,
+  onRepairMedia,
+}: {
+  disabled: boolean;
+  loading: boolean;
+  onDismiss: () => void;
+  onRepairMedia: () => void;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <div
+      aria-live="polite"
+      className="norea-reader-media-notice"
+      role="status"
+    >
+      <p className="norea-reader-media-notice-text">
+        {t("reader.missingMediaNotice")}
+      </p>
+      <div className="norea-reader-media-notice-actions">
+        <Button
+          disabled={disabled}
+          leftSection={<RepairIcon />}
+          loading={loading}
+          onClick={onRepairMedia}
+          size="compact-sm"
+          variant="filled"
+        >
+          {t("reader.repairMedia")}
+        </Button>
+        <IconButton
+          className="norea-reader-icon-button norea-state-layer"
+          label={t("common.close")}
+          onClick={onDismiss}
+          size="sm"
+        >
+          <CloseIcon />
+        </IconButton>
+      </div>
+    </div>
+  );
+}
+
 export function ReaderBottomBar({
   focusHandlers,
   hasNextChapter,
