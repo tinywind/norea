@@ -20,9 +20,10 @@ The SQLite schema is persistent user data.
   never use opportunistic runtime DDL.
 - Newly initialized databases configure `PRAGMA auto_vacuum = INCREMENTAL` before
   applying migrations. Existing databases convert to `INCREMENTAL` once on open
-  after migration validation succeeds (`PRAGMA auto_vacuum = INCREMENTAL; VACUUM;`),
-  and maintenance pruning reclaims freed pages and WAL frames via
-  `PRAGMA incremental_vacuum` and `PRAGMA wal_checkpoint(TRUNCATE)`.
+  after migration validation succeeds (`PRAGMA auto_vacuum = INCREMENTAL` via a
+  verified disk-backed `VACUUM INTO` swap), and maintenance pruning reclaims
+  freed pages and WAL frames via `PRAGMA incremental_vacuum` and
+  `PRAGMA wal_checkpoint(TRUNCATE)`.
 
 The current migration set extends through 0016_user_state_epoch_retention.sql.
 

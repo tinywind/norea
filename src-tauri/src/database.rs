@@ -1,4 +1,11 @@
-use std::{borrow::Cow, fs, path::Path, time::Duration};
+use std::{
+    borrow::Cow,
+    ffi::OsString,
+    fs,
+    io::ErrorKind,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 
 use sqlx::migrate::{Migration as SqlxMigration, MigrationType, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
@@ -255,54 +262,214 @@ async fn open_sqlite_pools(path: &Path) -> Result<(SqlitePool, SqlitePool), sqlx
     Ok((writer, reader))
 }
 
-async fn ensure_incremental_auto_vacuum(
-    writer: &SqlitePool,
-    checkpoint_if_vacuumed: bool,
-) -> Result<(), String> {
-    let mut conn = writer
-        .acquire()
-        .await
-        .map_err(|err| format!("database: acquire writer for auto_vacuum: {err}"))?;
-    let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|err| format!("database: read auto_vacuum mode: {err}"))?;
-    if mode == 2 {
-        return Ok(());
+fn sqlite_sidecar_path(path: &Path, suffix: &str) -> PathBuf {
+    let mut os = OsString::from(path.as_os_str());
+    os.push(suffix);
+    PathBuf::from(os)
+}
+
+fn remove_file_if_exists(path: &Path) -> Result<(), String> {
+    match fs::remove_file(path) {
+        Ok(()) => Ok(()),
+        Err(err) if err.kind() == ErrorKind::NotFound => Ok(()),
+        Err(err) => Err(format!("database: remove {}: {err}", path.display())),
     }
-    sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
-        .execute(&mut *conn)
-        .await
-        .map_err(|err| format!("database: set auto_vacuum incremental: {err}"))?;
-    let updated_mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
-        .fetch_one(&mut *conn)
-        .await
-        .map_err(|err| format!("database: verify auto_vacuum mode: {err}"))?;
-    if updated_mode != 2 {
-        sqlx::query("VACUUM")
-            .execute(&mut *conn)
-            .await
-            .map_err(|err| format!("database: vacuum for auto_vacuum conversion: {err}"))?;
-        if checkpoint_if_vacuumed {
-            sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
-                .execute(&mut *conn)
-                .await
-                .map_err(|err| {
-                    format!("database: checkpoint after auto_vacuum conversion: {err}")
-                })?;
-        }
+}
+
+fn remove_sqlite_files_if_exists(path: &Path) -> Result<(), String> {
+    remove_file_if_exists(path)?;
+    remove_file_if_exists(&sqlite_sidecar_path(path, "-wal"))?;
+    remove_file_if_exists(&sqlite_sidecar_path(path, "-shm"))?;
+    Ok(())
+}
+
+fn recover_interrupted_auto_vacuum_swap(path: &Path) -> Result<(), String> {
+    let tmp_path = sqlite_sidecar_path(path, ".auto-vacuum.tmp");
+    let bak_path = sqlite_sidecar_path(path, ".auto-vacuum.bak");
+    remove_sqlite_files_if_exists(&tmp_path)?;
+    if !path.exists() && bak_path.exists() {
+        let _ = remove_file_if_exists(&sqlite_sidecar_path(path, "-wal"));
+        let _ = remove_file_if_exists(&sqlite_sidecar_path(path, "-shm"));
+        fs::rename(&bak_path, path)
+            .map_err(|err| format!("database: restore interrupted auto_vacuum backup: {err}"))?;
+    } else if path.exists() && bak_path.exists() {
+        remove_sqlite_files_if_exists(&bak_path)?;
     }
     Ok(())
 }
 
-pub async fn open_and_migrate_pools(path: &Path) -> Result<AppDatabase, String> {
-    let writer_options = SqliteConnectOptions::new()
+fn writer_connect_options(path: &Path, create_if_missing: bool) -> SqliteConnectOptions {
+    SqliteConnectOptions::new()
         .filename(path)
-        .create_if_missing(true)
+        .create_if_missing(create_if_missing)
         .journal_mode(SqliteJournalMode::Wal)
-        .busy_timeout(Duration::from_millis(DB_BUSY_TIMEOUT_MS));
+        .busy_timeout(Duration::from_millis(DB_BUSY_TIMEOUT_MS))
+}
+
+async fn verify_vacuumed_incremental_database(path: &Path) -> Result<(), String> {
+    let verify_pool = sqlite_pool_options()
+        .connect_with(
+            SqliteConnectOptions::new()
+                .filename(path)
+                .create_if_missing(false)
+                .read_only(true),
+        )
+        .await
+        .map_err(|err| format!("database: open vacuumed copy for verification: {err}"))?;
+    let verify_result = async {
+        let mode: i64 = sqlx::query_scalar("PRAGMA auto_vacuum")
+            .fetch_one(&verify_pool)
+            .await
+            .map_err(|err| format!("database: read vacuumed auto_vacuum mode: {err}"))?;
+        if mode != 2 {
+            return Err(format!(
+                "database: vacuumed copy has auto_vacuum mode {mode}, expected 2"
+            ));
+        }
+        let check: String = sqlx::query_scalar("PRAGMA quick_check")
+            .fetch_one(&verify_pool)
+            .await
+            .map_err(|err| format!("database: quick_check vacuumed copy: {err}"))?;
+        if check != "ok" {
+            return Err(format!(
+                "database: vacuumed copy failed quick_check: {check}"
+            ));
+        }
+        Ok(())
+    }
+    .await;
+    verify_pool.close().await;
+    verify_result
+}
+
+async fn ensure_incremental_auto_vacuum(
+    path: &Path,
+    writer: SqlitePool,
+    allow_rebuild: bool,
+) -> Result<SqlitePool, String> {
+    let mut conn = match writer.acquire().await {
+        Ok(conn) => conn,
+        Err(err) => {
+            writer.close().await;
+            return Err(format!("database: acquire writer for auto_vacuum: {err}"));
+        }
+    };
+    let mode: i64 = match sqlx::query_scalar("PRAGMA auto_vacuum")
+        .fetch_one(&mut *conn)
+        .await
+    {
+        Ok(mode) => mode,
+        Err(err) => {
+            drop(conn);
+            writer.close().await;
+            return Err(format!("database: read auto_vacuum mode: {err}"));
+        }
+    };
+    if mode == 2 {
+        return Ok(writer);
+    }
+    if let Err(err) = sqlx::query("PRAGMA auto_vacuum = INCREMENTAL")
+        .execute(&mut *conn)
+        .await
+    {
+        drop(conn);
+        writer.close().await;
+        return Err(format!("database: set auto_vacuum incremental: {err}"));
+    }
+    let updated_mode: i64 = match sqlx::query_scalar("PRAGMA auto_vacuum")
+        .fetch_one(&mut *conn)
+        .await
+    {
+        Ok(mode) => mode,
+        Err(err) => {
+            drop(conn);
+            writer.close().await;
+            return Err(format!("database: verify auto_vacuum mode: {err}"));
+        }
+    };
+    if updated_mode == 2 || !allow_rebuild {
+        return Ok(writer);
+    }
+
+    // Android's bundled SQLite compiles with SQLITE_TEMP_STORE=3 (always memory),
+    // so an in-place VACUUM copies the entire database into RAM and hits Scudo OOM
+    // on large user databases. VACUUM INTO streams directly to disk with cache spill
+    // while applying the pending PRAGMA auto_vacuum = INCREMENTAL setting.
+    let tmp_path = sqlite_sidecar_path(path, ".auto-vacuum.tmp");
+    let bak_path = sqlite_sidecar_path(path, ".auto-vacuum.bak");
+    if let Err(err) = remove_sqlite_files_if_exists(&tmp_path) {
+        drop(conn);
+        writer.close().await;
+        return Err(err);
+    }
+    let tmp_path_str = match tmp_path.to_str() {
+        Some(value) => value.to_owned(),
+        None => {
+            drop(conn);
+            writer.close().await;
+            return Err("database: non-UTF-8 path for auto_vacuum staging file".into());
+        }
+    };
+    if let Err(err) = sqlx::query("VACUUM INTO ?")
+        .bind(&tmp_path_str)
+        .execute(&mut *conn)
+        .await
+    {
+        let _ = remove_sqlite_files_if_exists(&tmp_path);
+        drop(conn);
+        writer.close().await;
+        return Err(format!(
+            "database: vacuum into disk copy for auto_vacuum conversion: {err}"
+        ));
+    }
+    if let Err(err) = verify_vacuumed_incremental_database(&tmp_path).await {
+        let _ = remove_sqlite_files_if_exists(&tmp_path);
+        drop(conn);
+        writer.close().await;
+        return Err(err);
+    }
+    if let Err(err) = sqlx::query("PRAGMA wal_checkpoint(TRUNCATE)")
+        .execute(&mut *conn)
+        .await
+    {
+        let _ = remove_sqlite_files_if_exists(&tmp_path);
+        drop(conn);
+        writer.close().await;
+        return Err(format!(
+            "database: checkpoint before auto_vacuum swap: {err}"
+        ));
+    }
+    drop(conn);
+    writer.close().await;
+
+    if let Err(err) = remove_sqlite_files_if_exists(&bak_path) {
+        let _ = remove_sqlite_files_if_exists(&tmp_path);
+        return Err(err);
+    }
+    if let Err(err) = fs::rename(path, &bak_path) {
+        let _ = remove_sqlite_files_if_exists(&tmp_path);
+        return Err(format!("database: stage original db before auto_vacuum swap: {err}"));
+    }
+    let _ = remove_file_if_exists(&sqlite_sidecar_path(path, "-wal"));
+    let _ = remove_file_if_exists(&sqlite_sidecar_path(path, "-shm"));
+    if let Err(err) = fs::rename(&tmp_path, path) {
+        let _ = fs::rename(&bak_path, path);
+        let _ = remove_sqlite_files_if_exists(&tmp_path);
+        return Err(format!("database: finalize auto_vacuum swap: {err}"));
+    }
+    let _ = remove_sqlite_files_if_exists(&bak_path);
+
+    sqlite_pool_options()
+        .connect_with(writer_connect_options(path, false))
+        .await
+        .map_err(|err| format!("database: reopen writer pool after auto_vacuum swap: {err}"))
+}
+
+pub async fn open_and_migrate_pools(path: &Path) -> Result<AppDatabase, String> {
+    recover_interrupted_auto_vacuum_swap(path)?;
+
     let writer = sqlite_pool_options()
-        .connect_with(writer_options)
+        .connect_with(writer_connect_options(path, true))
         .await
         .map_err(|err| format!("database: open writer pool: {err}"))?;
 
@@ -316,12 +483,11 @@ pub async fn open_and_migrate_pools(path: &Path) -> Result<AppDatabase, String> 
             return Err(format!("database: inspect schema objects: {err}"));
         }
     };
-    if schema_objects == 0 {
-        if let Err(err) = ensure_incremental_auto_vacuum(&writer, false).await {
-            writer.close().await;
-            return Err(err);
-        }
-    }
+    let writer = if schema_objects == 0 {
+        ensure_incremental_auto_vacuum(path, writer, false).await?
+    } else {
+        writer
+    };
 
     let migrator = Migrator {
         migrations: Cow::Owned(sqlx_migrations()),
@@ -332,10 +498,7 @@ pub async fn open_and_migrate_pools(path: &Path) -> Result<AppDatabase, String> 
         return Err(format!("database: run migrations: {err}"));
     }
 
-    if let Err(err) = ensure_incremental_auto_vacuum(&writer, true).await {
-        writer.close().await;
-        return Err(err);
-    }
+    let writer = ensure_incremental_auto_vacuum(path, writer, true).await?;
 
     let reader_options = SqliteConnectOptions::new()
         .filename(path)
@@ -1284,6 +1447,39 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(cutoff_after, Some(0));
+        assert!(!sqlite_sidecar_path(&path, ".auto-vacuum.tmp").exists());
+        assert!(!sqlite_sidecar_path(&path, ".auto-vacuum.bak").exists());
         reopened.close().await;
+    }
+
+    #[tokio::test]
+    async fn open_and_migrate_pools_recovers_interrupted_auto_vacuum_swap_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("recover.db");
+        let db = open_and_migrate_pools(&path).await.unwrap();
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, path, name, in_library) \
+             VALUES (1, 'source', '/recovered', 'Recovered Work', 1)",
+        )
+        .execute(db.writer())
+        .await
+        .unwrap();
+        db.reclaim_space(None).await.unwrap();
+        db.close().await;
+
+        let bak_path = sqlite_sidecar_path(&path, ".auto-vacuum.bak");
+        let tmp_path = sqlite_sidecar_path(&path, ".auto-vacuum.tmp");
+        fs::rename(&path, &bak_path).unwrap();
+        fs::write(&tmp_path, b"partial-temp-data").unwrap();
+
+        let recovered = open_and_migrate_pools(&path).await.unwrap();
+        let name: String = sqlx::query_scalar("SELECT name FROM novel WHERE id = 1")
+            .fetch_one(recovered.reader())
+            .await
+            .unwrap();
+        assert_eq!(name, "Recovered Work");
+        assert!(!bak_path.exists());
+        assert!(!tmp_path.exists());
+        recovered.close().await;
     }
 }
