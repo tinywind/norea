@@ -45,10 +45,9 @@ Tester builds are published from the 0.2 branch in the
 | Windows ARM64 | NSIS or MSI |
 | Android ARM64 | norea-arm64.apk |
 | Android x86_64 | norea-x86_64.apk |
-| Android diagnostics | tracing APK |
 
-Tracing APKs are debuggable and install over the matching release build without
-clearing app data when the signing key matches.
+Current `0.2` Android APKs are built with tracing enabled (`android:debuggable="true"`)
+for device diagnostics and install over matching signed builds without clearing app data.
 
 Norea does not publish Linux, macOS, or iOS builds. Android background behavior
 varies by firmware, and protected source sites may require the in-app site browser

@@ -14,9 +14,9 @@ Android (`ARM64`, `x86_64`).
 
 Linux, macOS, and iOS builds are not published or supported.
 
-Android **tracing APKs** (`*-tracing.apk`) are intentionally built with
-`android:debuggable="true"` for local diagnostics and are not intended for
-everyday use.
+Current `0.2` development Android APKs (`norea-arm64.apk`, `norea-x86_64.apk`)
+are intentionally built with `NOREA_TRACING_BUILD=true`
+(`android:debuggable="true"`) for local diagnostics.
 
 ## Reporting a Vulnerability
 
@@ -79,7 +79,7 @@ Issues in the Norea application (`tinywind/norea`), including:
 - Malicious third-party plugins explicitly installed by a user from an untrusted
   repository or local file (however, escapes of Norea's documented host or
   WebView boundaries are in scope).
-- Debuggability of explicitly labeled Android `tracing` APKs.
+- Debuggability of `0.2` development Android APKs built with `NOREA_TRACING_BUILD=true`.
 - Attacks requiring physical, root, or local administrator access to an already
   compromised device.
 - Unsupported platforms (Linux, macOS, iOS) or upstream `lnreader/lnreader`
