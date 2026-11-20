@@ -78,8 +78,11 @@ are allowed. A body-only chapter without a media manifest has no declared assets
 Valid incomplete chapters remain visible in server catalogs and the library,
 and can be downloaded. Completeness is shown as status, without restricting
 availability. Downloads preserve the body, manifest and available media bytes;
-local inspection records missing assets as needing media repair. Invalid
-manifests and unsafe archives remain errors.
+local inspection records missing assets as needing media repair. When an
+installed source plugin can handle the chapter and the server copy is incomplete
+with a media manifest but no non-empty `media.zip`, ordinary chapter downloads
+fall back to the source plugin instead of installing the media-less copy.
+Invalid manifests and unsafe archives remain errors.
 
 All works are synchronization targets; library membership does not select the
 sync scope. Opening any work refreshes that work from the connected server in
@@ -275,9 +278,13 @@ a private snapshot of stored files and never hold download locks during HTTP.
 Native code sends the original `content.html`
 or `content.pdf`, with `manifest.json` and `media.zip` when present, in one multipart
 request. It streams the saved bytes without creating an extra ZIP, rewriting HTML
-or media references, or extracting and recompressing media. A leftover `media/`
-download or repair workspace is not sent; its loose files are not part of the
-stored chapter, so completeness follows `media.zip` and the chapter uploads as
+or media references, or extracting and recompressing media. Unfinalized partial
+bodies (`.chapter-content.partial`) are only snapshotted after their media is
+archived into a non-empty `media.zip` with no unarchived `media/` files left
+behind; unfinished partial chapters without archived media are skipped until
+download or repair finishes. For finalized bodies, a leftover `media/` download
+or repair workspace is not sent; its loose files are not part of the stored
+chapter, so completeness follows `media.zip` and the chapter uploads as
 incomplete when assets are missing there.
 The upload deadline is 10 minutes, extended for large chapters to allow at least
 64 KiB/s. A dropped connection, a client timeout, or HTTP 408, 502, 503 or 504
@@ -334,7 +341,9 @@ or archive. Current app and server versions must both support this endpoint.
 Media repair preserves the saved body and validates existing ZIP entries before
 requesting missing or corrupt assets. Server copies supply individual assets
 through `GET /api/v1/chapters/:id/media`, with the revision, filename, and original
-source URL identifying the requested entry. The server checks the entry's size
+source URL identifying the requested entry. Server copies without a non-empty
+`media.zip` in their manifest are skipped so repair falls back directly to the
+source plugin without per-asset 404 requests. The server checks the entry's size
 and CRC before returning it. Repair can use server assets without an installed
 source plugin; source-site fallback still requires the plugin fetch path.
 

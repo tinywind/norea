@@ -7,7 +7,7 @@ import type { ChapterMediaManifestFile } from "../chapter-media/types";
 import type { ChapterMediaRepairJob } from "../tasks/chapter-download";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { forgetContentDeviceRegistration, registerContentDevice } from "./device";
-import type { CatalogEntry } from "./native";
+import { hasUsableServerMediaArchive, type CatalogEntry } from "./native";
 import { readServerNovelSource } from "./novel-source";
 
 interface ServerChapterMediaSource {
@@ -58,6 +58,9 @@ export function createServerChapterMediaFetcher(
       if (entry.deleted || identity.pluginId !== novel.pluginId || identity.novelId !== novel.sourceNovelId
         || identity.novelPath !== novel.path || !sameChapter) {
         throw new Error("Content server media identity does not match the requested chapter.");
+      }
+      if (!hasUsableServerMediaArchive(entry)) {
+        return null;
       }
       return { serverUrl, token, entry };
     }, settings.lookupTimeoutSeconds ?? 3, signal);

@@ -25,7 +25,7 @@ const entry: CatalogEntry = {
   id: "a".repeat(64), revision: "b".repeat(64), fileBytes: 123, complete: false, deleted: false, sequence: 1,
   manifest: { packageVersion: 1, layout: "chapter-files", identity: { pluginId: "source-a", novelId: "work", novelPath: "/work", chapterPath: "/chapter/7" },
     novel: { name: "Work", isLocal: false }, chapter: { name: "Seven", chapterNumber: "7", position: 7, page: "1", contentType: "html" }, bodyPath: "content.html",
-    files: [{ path: "content.html", size: 4, modifiedAt: 1 }, { path: "manifest.json", size: 100, modifiedAt: 1 }, { path: "media.zip", size: 19, modifiedAt: 1 }] },
+    files: [{ path: "content.html", size: 4, modifiedAt: 1 }, { path: "manifest.json", size: 100, modifiedAt: 1 }, { path: "media.zip", size: 128, modifiedAt: 1 }] },
 };
 
 beforeEach(() => {
@@ -173,4 +173,17 @@ it("does not request a source asset when the server has the body but the asset r
   vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
   vi.mocked(nativeFetch).mockImplementation(async url => String(url).includes("/catalog/chapter?") ? Response.json(entry) : new Response(null, { status: 404 }));
   await expect(createServerChapterMediaFetcher(job)({ ...file, sourceUrl: "https://source.test/page.png" })).rejects.toMatchObject({ status: 404 });
+});
+
+it.each([
+  ["missing media.zip", [{ path: "content.html", size: 4, modifiedAt: 1 }, { path: "manifest.json", size: 100, modifiedAt: 1 }]],
+  ["empty 22-byte media.zip", [{ path: "content.html", size: 4, modifiedAt: 1 }, { path: "manifest.json", size: 100, modifiedAt: 1 }, { path: "media.zip", size: 22, modifiedAt: 1 }]],
+])("skips server media repair without requesting assets when the server copy has %s", async (_label, files) => {
+  vi.mocked(nativeFetch).mockResolvedValueOnce(
+    Response.json({ ...entry, manifest: { ...entry.manifest, files } }),
+  );
+  const fetchAsset = createServerChapterMediaFetcher(job);
+  expect(await fetchAsset.hasServerChapter()).toBe(false);
+  await expect(fetchAsset({ ...file, sourceUrl: "https://source.test/page.png" })).resolves.toBeNull();
+  expect(nativeFetch).toHaveBeenCalledOnce();
 });

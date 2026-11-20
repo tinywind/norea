@@ -596,8 +596,6 @@ fn finalize_chapter_media_artifacts_locked(
         if let ChapterMediaArtifactState::Invalid(reason) = &archive_state {
             return Ok(ChapterMediaFinalization::Incomplete(reason.clone()));
         }
-    }
-    if manifest.stored_files.is_empty() && manifest.all_files_stored {
         if matches!(&archive_state, ChapterMediaArtifactState::Valid(_)) {
             if archive_source_path != archive_path {
                 let empty_file_names = HashSet::new();

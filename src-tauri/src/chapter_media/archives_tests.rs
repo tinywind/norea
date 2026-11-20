@@ -198,7 +198,7 @@ fn partial_media_archive_keeps_missing_assets_incomplete() {
 }
 
 #[test]
-fn partial_media_archive_keeps_an_empty_zip_when_all_assets_fail() {
+fn partial_media_archive_omits_empty_zip_when_all_assets_fail() {
     let dir = tempfile::tempdir().expect("tempdir");
     let chapter_dir = recovery_chapter_dir(dir.path());
     fs::create_dir_all(&chapter_dir).expect("create chapter dir");
@@ -209,17 +209,21 @@ fn partial_media_archive_keeps_an_empty_zip_when_all_assets_fail() {
     );
     let result =
         finalize_chapter_media_artifacts(dir.path(), &chapter_dir).expect("archive partial media");
-    assert!(matches!(result, ChapterMediaFinalization::Ready(bytes) if bytes > 0));
-    let archive = ZipArchive::new(
-        File::open(chapter_dir.join(MEDIA_ARCHIVE_FILE)).expect("open empty archive"),
-    )
-    .expect("read empty archive");
-    assert!(archive.is_empty());
+    assert!(matches!(result, ChapterMediaFinalization::Ready(0)));
+    assert!(!chapter_dir.join(MEDIA_ARCHIVE_FILE).exists());
     let manifest: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(chapter_media_manifest_path(&chapter_dir)).expect("read manifest"),
     )
     .expect("parse manifest");
     assert_eq!(manifest["complete"], false);
+
+    // An existing valid empty 22-byte archive is also removed when no stored files remain.
+    write_test_media_archive(&chapter_dir, &[]);
+    assert!(chapter_dir.join(MEDIA_ARCHIVE_FILE).exists());
+    let cleaned =
+        finalize_chapter_media_artifacts(dir.path(), &chapter_dir).expect("clean empty archive");
+    assert!(matches!(cleaned, ChapterMediaFinalization::Ready(0)));
+    assert!(!chapter_dir.join(MEDIA_ARCHIVE_FILE).exists());
 }
 
 #[test]
@@ -971,7 +975,7 @@ fn stale_archive_publication_symlink_is_preserved() {
 }
 
 #[test]
-fn chapter_media_recovery_retains_an_empty_archive_for_remote_only_manifest() {
+fn chapter_media_recovery_omits_empty_archive_for_remote_only_manifest() {
     let dir = tempfile::tempdir().expect("tempdir");
     let chapter_dir = recovery_chapter_dir(dir.path());
     let media_dir = chapter_dir.join(MEDIA_DOWNLOAD_DIR);
@@ -987,9 +991,11 @@ fn chapter_media_recovery_retains_an_empty_archive_for_remote_only_manifest() {
         .expect("inspect chapter")
         .expect("recovered chapter");
 
-    assert!(inspection.media_bytes > 0);
+    assert_eq!(inspection.status, "present");
+    assert_eq!(inspection.media_bytes, 0);
+    assert!(!inspection.media_complete);
     assert!(!media_dir.exists());
-    assert!(chapter_dir.join(MEDIA_ARCHIVE_FILE).is_file());
+    assert!(!chapter_dir.join(MEDIA_ARCHIVE_FILE).exists());
     let manifest: serde_json::Value = serde_json::from_str(
         &fs::read_to_string(chapter_media_manifest_path(&chapter_dir))
             .expect("read finalized manifest"),

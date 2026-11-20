@@ -153,14 +153,32 @@ pub(crate) fn validate_chapter_media(source: &Path) -> Result<(), String> {
     Ok(())
 }
 
+struct ChapterMediaInventory {
+    declared_count: usize,
+    archived_count: usize,
+    complete: bool,
+}
+
 fn inspect_chapter_media(source: &Path) -> Result<bool, String> {
     inspect_chapter_media_with_io_failure(source, &|error| failure(error))
+}
+
+fn inspect_chapter_media_inventory(source: &Path) -> Result<ChapterMediaInventory, String> {
+    inspect_chapter_media_inventory_with_io_failure(source, &|error| failure(error))
 }
 
 fn inspect_chapter_media_with_io_failure(
     source: &Path,
     io_failure: &impl Fn(&dyn std::fmt::Display) -> String,
 ) -> Result<bool, String> {
+    inspect_chapter_media_inventory_with_io_failure(source, io_failure)
+        .map(|inventory| inventory.complete)
+}
+
+fn inspect_chapter_media_inventory_with_io_failure(
+    source: &Path,
+    io_failure: &impl Fn(&dyn std::fmt::Display) -> String,
+) -> Result<ChapterMediaInventory, String> {
     let metadata = fs::symlink_metadata(source).map_err(|error| io_failure(&error))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
         return Err(failure("invalid chapter directory"));
@@ -181,7 +199,11 @@ fn inspect_chapter_media_with_io_failure(
         return if archive_exists {
             Err(failure("chapter media manifest is missing"))
         } else {
-            Ok(true)
+            Ok(ChapterMediaInventory {
+                declared_count: 0,
+                archived_count: 0,
+                complete: true,
+            })
         };
     }
     let media = media_files(&read_json(&source.join("manifest.json"), io_failure)?)?;
@@ -189,7 +211,11 @@ fn inspect_chapter_media_with_io_failure(
         return Err(failure("too many chapter media files"));
     }
     if !archive_exists {
-        return Ok(media.is_empty());
+        return Ok(ChapterMediaInventory {
+            declared_count: media.len(),
+            archived_count: 0,
+            complete: media.is_empty(),
+        });
     }
     let zip_path = source.join("media.zip");
     let zip_reader = match crate::chapter_media::open_archive_reader(&zip_path, MAX_MEDIA_ZIP_BYTES) {
@@ -230,7 +256,12 @@ fn inspect_chapter_media_with_io_failure(
         media_bytes += file.size();
         if !directory { found.insert(file_name.into_owned()); }
     }
-    Ok(media.iter().all(|name| found.contains(name)))
+    let archived_count = media.iter().filter(|name| found.contains(*name)).count();
+    Ok(ChapterMediaInventory {
+        declared_count: media.len(),
+        archived_count,
+        complete: archived_count == media.len(),
+    })
 }
 
 fn checked_storage_directory(root: &Path, relative: &str) -> Result<PathBuf, String> {
@@ -420,6 +451,20 @@ fn stage_token() -> String {
     )
 }
 
+fn has_unarchived_loose_media(source: &Path) -> Result<bool, String> {
+    let media_dir = source.join("media");
+    let metadata = match fs::symlink_metadata(&media_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(failure(error)),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err(failure("invalid chapter media workspace"));
+    }
+    let mut entries = fs::read_dir(&media_dir).map_err(failure)?;
+    Ok(entries.next().transpose().map_err(failure)?.is_some())
+}
+
 fn chapter_files(source: &Path) -> Result<Vec<String>, String> {
     let metadata = fs::symlink_metadata(source).map_err(failure)?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -443,6 +488,13 @@ fn chapter_files(source: &Path) -> Result<Vec<String>, String> {
         }
         if !source.join("manifest.json").is_file() {
             return Err(failure("partial chapter media manifest is missing"));
+        }
+        if has_unarchived_loose_media(source)? {
+            return Err(failure("partial chapter media has not been archived"));
+        }
+        let inventory = inspect_chapter_media_inventory(source)?;
+        if inventory.declared_count > 0 && inventory.archived_count == 0 {
+            return Err(failure("partial chapter media archive is missing"));
         }
         paths.push(".chapter-content.partial".to_string());
     }
@@ -1539,6 +1591,38 @@ mod tests {
         assert_eq!(fs::read_to_string(snapshot.join("manifest.json")).unwrap(), manifest);
         assert!(!source.join("content.html").exists());
         assert_eq!(fs::read_to_string(source.join(".chapter-content.partial")).unwrap(), "partial body");
+    }
+
+    #[test]
+    fn snapshot_rejects_partial_body_when_declared_media_is_missing_or_unarchived() {
+        let root = workspace();
+        let source = root.path().join("chapter");
+        let stage = root.path().join("stage");
+        fs::create_dir(&source).unwrap();
+        fs::create_dir(&stage).unwrap();
+        fs::write(source.join(".chapter-content.partial"), "partial body").unwrap();
+        let manifest = json!({"version":1,"complete":false,"media":{"files":[
+            {"fileName":"page.png","path":"media/page.png","status":"stored","bytes":5},
+            {"fileName":"missing.png","path":"","status":"remote"}]}}).to_string();
+        fs::write(source.join("manifest.json"), &manifest).unwrap();
+
+        let missing_archive_error = snapshot_directory(&source, &stage).unwrap_err();
+        assert_eq!(missing_archive_error, "content sync: partial chapter media archive is missing");
+        assert!(!stage.join("source").exists());
+
+        let mut empty_zip = Vec::new();
+        ZipWriter::new(std::io::Cursor::new(&mut empty_zip)).finish().unwrap();
+        fs::write(source.join("media.zip"), &empty_zip).unwrap();
+        let empty_archive_error = snapshot_directory(&source, &stage).unwrap_err();
+        assert_eq!(empty_archive_error, "content sync: partial chapter media archive is missing");
+        assert!(!stage.join("source").exists());
+
+        fs::write(source.join("media.zip"), original_media_archive()).unwrap();
+        fs::create_dir(source.join("media")).unwrap();
+        fs::write(source.join("media/page.png"), b"image").unwrap();
+        let unarchived_error = snapshot_directory(&source, &stage).unwrap_err();
+        assert_eq!(unarchived_error, "content sync: partial chapter media has not been archived");
+        assert!(!stage.join("source").exists());
     }
 
     #[test]

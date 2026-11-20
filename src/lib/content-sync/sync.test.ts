@@ -204,6 +204,28 @@ it.each(["prefer-complete", "keep-server", "replace-server"] as const)("uploads 
   expect(uploadContentChapter).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ conflictPolicy: uploadConflictPolicy }));
 });
 
+it.each([
+  "content sync: partial chapter media has not been archived",
+  "content sync: partial chapter media archive is missing",
+])("skips unready partial chapter snapshots (%s) without failing content sync", async (snapshotError) => {
+  const row = {
+    chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "n", chapterPath: "c",
+    novelName: "Novel", chapterName: "Chapter", position: 1, chapterNumber: "1", contentType: "html",
+    isDownloaded: false, mediaRepairNeeded: true, contentBytes: 12,
+  };
+  vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
+  native.stage.mockImplementationOnce(() => {
+    throw new Error(snapshotError);
+  });
+
+  await syncContentServer(true, true);
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  expect(useContentSyncStore.getState()).toMatchObject({ status: "idle", error: null });
+  const savedCatalog = JSON.parse(memory.get("norea-content-catalog:http://localhost:7788")!);
+  expect(savedCatalog.pendingUploads).toEqual([]);
+  expect(savedCatalog.downloads).toEqual({});
+});
+
 it("discovers previously skipped incomplete chapters once when upgrading a saved upload cursor", async () => {
   const row = { chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", novelPath: "n", chapterPath: "c",
     position: 1, chapterNumber: "1", contentType: "html", isDownloaded: false, mediaRepairNeeded: true, contentBytes: 12 };

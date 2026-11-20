@@ -112,6 +112,11 @@ async function findUploadedChapter(server: string, token: string, row: Pick<Cont
   }
   return { entry, available };
 }
+function isUnreadyPartialChapterSnapshotError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /^content sync: partial chapter media (?:has not been archived|archive is missing)$/.test(message);
+}
+
 function assertDevice(server: string, token: string | null): void {
   const current = useContentSyncStore.getState();
   if (current.serverUrl !== server || current.deviceKey !== token) throw new Error("Content server changed during synchronization.");
@@ -284,6 +289,10 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
           await waitForServerWorkDeletion(server, workId!);
           if (activity.signal.aborted || isDeletedWork(row)) continue;
           assertDevice(server, token);
+          if (isUnreadyPartialChapterSnapshotError(error)) {
+            pending.delete(id);
+            continue;
+          }
           failures.push(`${row.novelName} / ${row.chapterName}: ${error instanceof Error ? error.message : String(error)}`);
           useContentSyncStore.setState({ error: failures.at(-1) });
         } finally {

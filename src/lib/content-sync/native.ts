@@ -31,6 +31,24 @@ export interface CatalogEntry {
   sequence: number;
 }
 
+// An empty ZIP End-of-Central-Directory record is 22 bytes; any archive containing entries is larger.
+export const EMPTY_ZIP_ARCHIVE_BYTES = 22;
+
+export function hasUsableServerMediaArchive(entry: Pick<CatalogEntry, "manifest">): boolean {
+  return Boolean(
+    entry.manifest.files?.some(
+      (file) => file.path === "media.zip" && file.size > EMPTY_ZIP_ARCHIVE_BYTES,
+    ),
+  );
+}
+
+export function hasServerMediaManifestWithoutArchive(entry: Pick<CatalogEntry, "manifest">): boolean {
+  return Boolean(
+    entry.manifest.files?.some((file) => file.path === "manifest.json") &&
+      !hasUsableServerMediaArchive(entry),
+  );
+}
+
 export async function withContentChapterStage<T>(input: { storageDir: string; identity: Pick<ContentIdentity, "pluginId" | "novelPath">; signal?: AbortSignal; verifySource?: () => Promise<void> }, run: (stagePath: string) => Promise<T>): Promise<T> {
   input.signal?.throwIfAborted();
   const stagePath = await invoke<string>("content_sync_create_stage");

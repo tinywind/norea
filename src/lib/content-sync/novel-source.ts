@@ -17,7 +17,7 @@ import {
   withContentServerLookup,
 } from "./client";
 import { registerContentDevice } from "./device";
-import type { CatalogEntry } from "./native";
+import { hasServerMediaManifestWithoutArchive, type CatalogEntry } from "./native";
 import { fetchServerChapters } from "./chapters";
 
 export interface ServerNovelSource {
@@ -204,6 +204,14 @@ export async function tryDownloadServerChapter(
   const sameChapter = identity.chapterPath === chapter.path || Boolean(chapterNumber && entryChapterNumber && Number(entryChapterNumber) === Number(chapterNumber));
   if (entry.deleted || identity.pluginId !== novel.pluginId || !sameWork || !sameChapter) {
     throw new Error("Content server download identity does not match the requested chapter.");
+  }
+  if (
+    entry.complete === false &&
+    allowSourceFallback &&
+    hasServerMediaManifestWithoutArchive(entry) &&
+    await hasInstalledSourceFallback(novel, chapter, signal)
+  ) {
+    return false;
   }
   signal?.throwIfAborted();
   const { downloadServerChapterFromServer } = await import("./sync");

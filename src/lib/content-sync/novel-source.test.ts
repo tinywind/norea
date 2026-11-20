@@ -467,4 +467,53 @@ describe("server-first download boundaries", () => {
     vi.mocked(downloadServerChapterFromServer).mockRejectedValueOnce(storageFailure);
     await expect(tryDownloadServerChapter(job)).rejects.toBe(storageFailure);
   });
+
+  it.each([
+    ["missing media.zip", [{ path: "content.html", size: 120, modifiedAt: 1 }, { path: "manifest.json", size: 400, modifiedAt: 1 }]],
+    ["empty 22-byte media.zip", [{ path: "content.html", size: 120, modifiedAt: 1 }, { path: "manifest.json", size: 400, modifiedAt: 1 }, { path: "media.zip", size: 22, modifiedAt: 1 }]],
+  ])("falls back to an installed source when an incomplete server chapter has a media manifest with %s", async (_label, files) => {
+    settings.serverUrl = "http://configured";
+    vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+    const mediaLessCopy = {
+      ...entry,
+      complete: false,
+      manifest: { ...entry.manifest, files },
+    } as CatalogEntry;
+    vi.mocked(contentServerRequest).mockResolvedValueOnce(mediaLessCopy);
+
+    expect(await tryDownloadServerChapter(job)).toBe(false);
+    expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
+
+    // Without an installed plugin or with sourceFallback disabled, keep installing the server body.
+    vi.mocked(contentServerRequest).mockResolvedValueOnce(mediaLessCopy);
+    expect(await tryDownloadServerChapter(job, undefined, undefined, { sourceFallback: false })).toBe(true);
+    vi.mocked(pluginManager.getPlugin).mockReturnValue(undefined);
+    vi.mocked(contentServerRequest).mockResolvedValueOnce(mediaLessCopy);
+    expect(await tryDownloadServerChapter(job)).toBe(true);
+    expect(downloadServerChapterFromServer).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps installing an incomplete server chapter from the server when its media.zip has archived entries", async () => {
+    settings.serverUrl = "http://configured";
+    vi.mocked(pluginManager.getPlugin).mockReturnValue({ id: "source-a" } as never);
+    const partialCopy = {
+      ...entry,
+      complete: false,
+      manifest: {
+        ...entry.manifest,
+        files: [
+          { path: "content.html", size: 120, modifiedAt: 1 },
+          { path: "manifest.json", size: 400, modifiedAt: 1 },
+          { path: "media.zip", size: 4096, modifiedAt: 1 },
+        ],
+      },
+    } as CatalogEntry;
+    vi.mocked(contentServerRequest).mockResolvedValueOnce(partialCopy);
+
+    expect(await tryDownloadServerChapter(job)).toBe(true);
+    expect(downloadServerChapterFromServer).toHaveBeenCalledExactlyOnceWith(partialCopy, "http://configured", {
+      token: "device-key",
+      target: entry.manifest.identity,
+    });
+  });
 });
