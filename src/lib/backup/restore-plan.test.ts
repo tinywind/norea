@@ -50,11 +50,11 @@ function save(path: string, value: unknown) {
   storage.files.set(path, [...new TextEncoder().encode(typeof value === "string" ? value : JSON.stringify(value, null, 2))]);
 }
 function manifest(): BackupManifest {
-  return { version: 6, exportedAt: 1, novels: [{ id: 1, pluginId: "source", sourceNovelId: "book", path: "/book", name: "Stale title", cover: "data:image/png;base64,c3RhbGU=",
+  return { version: 7, exportedAt: 1, novels: [{ id: 1, pluginId: "source", sourceNovelId: "book", path: "/book", name: "Stale title", cover: "data:image/png;base64,c3RhbGU=",
     summary: "Stale summary", author: "Old author", artist: null, status: null, genres: null, inLibrary: true, isLocal: false,
     createdAt: 1, updatedAt: 1, libraryAddedAt: 42, lastReadAt: 73 }],
     chapters: [1, 2].map(number => ({ id: number, novelId: 1, path: `/chapter/${number}`, name: `Old chapter ${number}`, chapterNumber: String(number), position: number,
-      page: "5", progress: 64, bookmark: true, unread: false, readAt: 70, isDownloaded: true, contentType: "html" as const, sourceContentType: "text" as const,
+      page: "5", progress: 64, bookmark: true, readAt: 70, isDownloaded: true, contentType: "html" as const, sourceContentType: "text" as const,
       content: null, contentBytes: 999, mediaBytes: 111, releaseTime: null, createdAt: 1, foundAt: 2, foundByCheck: false, updatedAt: 3 })),
     categories: [{ id: 1, name: "Favourites", sort: 0, isSystem: false }], novelCategories: [{ id: 1, novelId: 1, categoryId: 1 }],
     repositories: [], installedPlugins: [], settings: [], vpnGateServerVerdicts: [], downloadGoals: [] };
@@ -82,7 +82,7 @@ it("keeps every original byte and uses current metadata while restoring library 
   expect(plan.manifest.novels[0]).toMatchObject({ id: 1, name: "Current title", summary: "Current summary", author: "Current author", rating: 4.5,
     cover: "data:image/png;base64,AQQIAA==", inLibrary: true, libraryAddedAt: 42, lastReadAt: 73 });
   expect(plan.manifest.chapters[0]).toMatchObject({ id: 1, path: "/chapter/1", name: "Current opening", isDownloaded: true,
-    page: "5", progress: 64, bookmark: true, unread: false, readAt: 70 });
+    page: "5", progress: 64, bookmark: true, readAt: 70 });
   expect(plan.manifest.novelCategories).toEqual(snapshot.novelCategories);
   expect(plan.cache.chapters).toContainEqual({ chapterId: 1, novelId: 1, directory: `${first}/1` });
   expect(storage.files).toEqual(originalFiles);
@@ -190,7 +190,7 @@ it("restores local titles from the current disk catalog while retaining backup r
   const plan = await prepareBackupRestore(snapshot);
   const local = plan.manifest.chapters.filter(chapter => chapter.novelId === 1);
   expect(local.find(chapter => chapter.id === 1)).toMatchObject({
-    name: "New local title", isDownloaded: true, contentType: "pdf", progress: 64, bookmark: true, unread: false, readAt: 70,
+    name: "New local title", isDownloaded: true, contentType: "pdf", progress: 64, bookmark: true, readAt: 70,
   });
   expect(local.find(chapter => chapter.chapterNumber === "2")).toMatchObject({
     path: "local-folder:2", name: "Catalog without a body", isDownloaded: false,

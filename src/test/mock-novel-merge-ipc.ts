@@ -73,7 +73,7 @@ import { parseNovelMetadata } from "../lib/work-metadata/schema";
 
 const NOVEL_MERGE_STORAGE_PREFIX = "norea-novel-merge-storage:";
 const SQLITE_BIND_PARAMETER_BUDGET = 900;
-const NOVEL_MERGE_UPDATE_PARAM_COUNT = 10;
+const NOVEL_MERGE_UPDATE_PARAM_COUNT = 9;
 const NOVEL_MERGE_UPDATE_CHUNK_SIZE = Math.floor(
   SQLITE_BIND_PARAMETER_BUDGET / NOVEL_MERGE_UPDATE_PARAM_COUNT,
 );
@@ -287,7 +287,6 @@ interface NovelMergeChapterRow {
   novelId: number;
   path: string;
   bookmark: unknown;
-  unread: unknown;
   progress: number;
   isDownloaded: unknown;
   sourceContentType: ChapterContentType;
@@ -370,7 +369,6 @@ async function applyNovelMergeTx(
        novel_id AS novelId,
        path,
        bookmark,
-       unread,
        progress,
        is_downloaded AS isDownloaded,
        content_type AS sourceContentType,
@@ -526,7 +524,6 @@ async function applyNovelMergeTx(
     mediaComplete: number;
     progress: number;
     readAt: number | null;
-    unread: number;
   }> = [];
 
   for (const [targetId, mappedSources] of sourcesByTargetId) {
@@ -535,9 +532,6 @@ async function applyNovelMergeTx(
       bookmark:
         sqliteBoolean(targetChapter.bookmark) ||
         mappedSources.some((source) => sqliteBoolean(source.bookmark)),
-      unread:
-        sqliteBoolean(targetChapter.unread) &&
-        mappedSources.every((source) => sqliteBoolean(source.unread)),
       progress: Math.max(
         targetChapter.progress,
         ...mappedSources.map((source) => source.progress),
@@ -570,7 +564,6 @@ async function applyNovelMergeTx(
     chapterUpdates.push({
       id: targetId,
       bookmark: booleanParam(mergedState.bookmark),
-      unread: booleanParam(mergedState.unread),
       progress: mergedState.progress,
       readAt: mergedState.readAt,
       applyDownloadMetadata: booleanParam(Boolean(applyDownloadMetadata)),
@@ -593,13 +586,12 @@ async function applyNovelMergeTx(
     const valuesSql = chunk
       .map((_, index) => {
         const base = index * NOVEL_MERGE_UPDATE_PARAM_COUNT;
-        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9}, $${base + 10})`;
+        return `($${base + 1}, $${base + 2}, $${base + 3}, $${base + 4}, $${base + 5}, $${base + 6}, $${base + 7}, $${base + 8}, $${base + 9})`;
       })
       .join(", ");
     const params = chunk.flatMap((row) => [
       row.id,
       row.bookmark,
-      row.unread,
       row.progress,
       row.readAt,
       row.applyDownloadMetadata,
@@ -613,7 +605,6 @@ async function applyNovelMergeTx(
       `WITH merge_updates(
          id,
          bookmark,
-         unread,
          progress,
          read_at,
          apply_download_metadata,
@@ -627,7 +618,6 @@ async function applyNovelMergeTx(
        UPDATE chapter
        SET
          bookmark = (SELECT bookmark FROM merge_updates WHERE merge_updates.id = chapter.id),
-         unread = (SELECT unread FROM merge_updates WHERE merge_updates.id = chapter.id),
          progress = (SELECT progress FROM merge_updates WHERE merge_updates.id = chapter.id),
          read_at = (SELECT read_at FROM merge_updates WHERE merge_updates.id = chapter.id),
          is_downloaded = CASE

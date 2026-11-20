@@ -1328,7 +1328,7 @@ mod tests {
         for migration in crate::database::schema_migrations() {
             pool.execute(migration.sql).await.unwrap();
         }
-        pool.execute("INSERT INTO repository(url,priority,enabled) VALUES('https://plugins.example.test/index.json',1,1),('https://second.example.test/index.json',2,0); INSERT INTO installed_plugin(id,name,lang,version,icon_url,source_url,source_code,repository_url) VALUES('test','Test','en','1','','https://plugins.example.test/test.js','full plugin source','https://plugins.example.test/index.json'); INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'test','/novel','Saved novel',1); INSERT INTO category(id,name,sort) VALUES(1,'Saved category',0); INSERT INTO novel_category(novel_id,category_id) VALUES(1,1); INSERT INTO chapter(novel_id,path,name,position,progress,bookmark,unread,is_downloaded,content_bytes,media_bytes,stored_content_type) VALUES(1,'/chapter','Saved chapter',1,42,1,0,1,123,456,'html');").await.unwrap();
+        pool.execute("INSERT INTO repository(url,priority,enabled) VALUES('https://plugins.example.test/index.json',1,1),('https://second.example.test/index.json',2,0); INSERT INTO installed_plugin(id,name,lang,version,icon_url,source_url,source_code,repository_url) VALUES('test','Test','en','1','','https://plugins.example.test/test.js','full plugin source','https://plugins.example.test/index.json'); INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'test','/novel','Saved novel',1); INSERT INTO category(id,name,sort) VALUES(1,'Saved category',0); INSERT INTO novel_category(novel_id,category_id) VALUES(1,1); INSERT INTO chapter(novel_id,path,name,position,progress,bookmark,is_downloaded,content_bytes,media_bytes,stored_content_type) VALUES(1,'/chapter','Saved chapter',1,42,1,1,123,456,'html');").await.unwrap();
         let snapshot = dir.path().join("snapshot.db");
         sqlx::query("VACUUM INTO ?")
             .bind(snapshot.to_str().unwrap())
@@ -1338,13 +1338,13 @@ mod tests {
         pool.execute("UPDATE chapter SET progress=0,bookmark=0; DELETE FROM repository; DELETE FROM installed_plugin; UPDATE novel SET in_library=0;").await.unwrap();
         restore_database(&snapshot, &pool).await.unwrap();
         assert_eq!(
-            sqlx::query_as::<_, (i64, i64, i64, i64, i64)>(
-                "SELECT progress,bookmark,unread,is_downloaded,content_bytes FROM chapter"
+            sqlx::query_as::<_, (i64, i64, i64, i64)>(
+                "SELECT progress,bookmark,is_downloaded,content_bytes FROM chapter"
             )
             .fetch_one(&pool)
             .await
             .unwrap(),
-            (42, 1, 0, 0, 0)
+            (42, 1, 0, 0)
         );
         assert_eq!(
             sqlx::query_as::<_, (i64, i64, i64)>(

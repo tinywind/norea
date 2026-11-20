@@ -69,6 +69,7 @@ export const SETTINGS_SEARCH_ROWS: readonly SettingsSearchRow[] = [
 
   { section: "downloads", label: "settings.data.mediaStorage.folder.label", synonyms: "settingsSearch.synonyms.storage" },
   { section: "downloads", label: "settings.downloads.automaticGoal.label" },
+  { section: "downloads", label: "settings.downloads.automaticActiveWindow.label" },
   { section: "downloads", label: "settings.downloads.pausedWorks.label" },
   { section: "downloads", label: "settings.downloads.finishedCleanup.label", synonyms: "settingsSearch.synonyms.finishedCleanup" },
   { section: "downloads", label: "settings.downloads.mobileData.label", synonyms: "settingsSearch.synonyms.mobileData" },

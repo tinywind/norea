@@ -502,6 +502,14 @@ pub struct StoredNovelDownloadGoalDto {
     pub updated_at: i64,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase")]
+pub enum DownloadGoalActiveFilterDto {
+    None,
+    Since { seconds: i64 },
+    All,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DownloadGoalNovelDto {
@@ -2683,11 +2691,13 @@ pub async fn set_novel_download_goal_in_tx(
 
 pub async fn list_download_goal_novels_in_conn(
     conn: &mut SqliteConnection,
-    active_since: Option<i64>,
+    active_filter: DownloadGoalActiveFilterDto,
     novel_ids: Option<&[i64]>,
 ) -> Result<Vec<DownloadGoalNovelDto>, String> {
-    let Some(active_since) = active_since else {
-        return Ok(Vec::new());
+    let active_since: Option<i64> = match active_filter {
+        DownloadGoalActiveFilterDto::None => return Ok(Vec::new()),
+        DownloadGoalActiveFilterDto::Since { seconds } => Some(seconds),
+        DownloadGoalActiveFilterDto::All => None,
     };
     let filtered_ids: Option<Vec<i64>> = novel_ids.map(|ids| {
         let mut seen = HashSet::new();
@@ -2700,8 +2710,8 @@ pub async fn list_download_goal_novels_in_conn(
         return Ok(Vec::new());
     }
 
-    let rows = match filtered_ids {
-        Some(ref ids) => {
+    let rows = match (active_since, filtered_ids) {
+        (Some(since), Some(ref ids)) => {
             let ids_json = serde_json::to_string(ids)
                 .map_err(|err| format!("db novel goal: serialize novel ids: {err}"))?;
             sqlx::query(
@@ -2715,13 +2725,13 @@ pub async fn list_download_goal_novels_in_conn(
                    AND n.id IN (SELECT value FROM json_each(?2)) \
                  ORDER BY COALESCE(n.last_read_at, 0) DESC, n.id",
             )
-            .bind(active_since)
+            .bind(since)
             .bind(&ids_json)
             .fetch_all(&mut *conn)
             .await
             .map_err(|err| format!("db novel goal: list goal novels by ids: {err}"))?
         }
-        None => sqlx::query(
+        (Some(since), None) => sqlx::query(
             "SELECT n.id, n.plugin_id AS pluginId, n.path, n.name, n.last_read_at AS lastReadAt, \
                     g.kind, g.count \
              FROM novel n \
@@ -2731,10 +2741,40 @@ pub async fn list_download_goal_novels_in_conn(
                AND (g.novel_id IS NULL OR g.kind <> 'none') \
              ORDER BY COALESCE(n.last_read_at, 0) DESC, n.id",
         )
-        .bind(active_since)
+        .bind(since)
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db novel goal: list goal novels: {err}"))?,
+        (None, Some(ref ids)) => {
+            let ids_json = serde_json::to_string(ids)
+                .map_err(|err| format!("db novel goal: serialize novel ids: {err}"))?;
+            sqlx::query(
+                "SELECT n.id, n.plugin_id AS pluginId, n.path, n.name, n.last_read_at AS lastReadAt, \
+                        g.kind, g.count \
+                 FROM novel n \
+                 LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
+                 WHERE n.is_local = 0 AND n.in_library = 1 \
+                   AND (g.novel_id IS NULL OR g.kind <> 'none') \
+                   AND n.id IN (SELECT value FROM json_each(?1)) \
+                 ORDER BY COALESCE(n.last_read_at, 0) DESC, n.id",
+            )
+            .bind(&ids_json)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db novel goal: list all goal novels by ids: {err}"))?
+        }
+        (None, None) => sqlx::query(
+            "SELECT n.id, n.plugin_id AS pluginId, n.path, n.name, n.last_read_at AS lastReadAt, \
+                    g.kind, g.count \
+             FROM novel n \
+             LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
+             WHERE n.is_local = 0 AND n.in_library = 1 \
+               AND (g.novel_id IS NULL OR g.kind <> 'none') \
+             ORDER BY COALESCE(n.last_read_at, 0) DESC, n.id",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db novel goal: list all goal novels: {err}"))?,
     };
 
     let mut out = Vec::with_capacity(rows.len());
@@ -2761,24 +2801,38 @@ pub async fn list_goal_novel_ids_for_scope_in_conn(
     conn: &mut SqliteConnection,
     scope: &str,
     ids: &[i64],
-    active_since: Option<i64>,
+    active_filter: DownloadGoalActiveFilterDto,
 ) -> Result<Vec<i64>, String> {
-    let Some(active_since) = active_since else {
-        return Ok(Vec::new());
+    let active_since: Option<i64> = match active_filter {
+        DownloadGoalActiveFilterDto::None => return Ok(Vec::new()),
+        DownloadGoalActiveFilterDto::Since { seconds } => Some(seconds),
+        DownloadGoalActiveFilterDto::All => None,
     };
     if scope == "all" {
-        return sqlx::query_scalar(
-            "SELECT n.id FROM novel n \
-             LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
-             WHERE n.in_library = 1 AND n.is_local = 0 \
-               AND n.last_read_at >= ?1 \
-               AND (g.novel_id IS NULL OR g.kind <> 'none') \
-             ORDER BY n.id",
-        )
-        .bind(active_since)
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|err| format!("db novel goal: list scope all: {err}"));
+        return match active_since {
+            Some(since) => sqlx::query_scalar(
+                "SELECT n.id FROM novel n \
+                 LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
+                 WHERE n.in_library = 1 AND n.is_local = 0 \
+                   AND n.last_read_at >= ?1 \
+                   AND (g.novel_id IS NULL OR g.kind <> 'none') \
+                 ORDER BY n.id",
+            )
+            .bind(since)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db novel goal: list scope all: {err}")),
+            None => sqlx::query_scalar(
+                "SELECT n.id FROM novel n \
+                 LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
+                 WHERE n.in_library = 1 AND n.is_local = 0 \
+                   AND (g.novel_id IS NULL OR g.kind <> 'none') \
+                 ORDER BY n.id",
+            )
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db novel goal: list scope all unlimited: {err}")),
+        };
     }
 
     let mut seen = HashSet::new();
@@ -2791,28 +2845,58 @@ pub async fn list_goal_novel_ids_for_scope_in_conn(
     for chunk in unique.chunks(500) {
         let chunk_json = serde_json::to_string(chunk)
             .map_err(|err| format!("db novel goal: serialize scope chunk: {err}"))?;
-        let sql = if scope == "novel" {
-            "SELECT n.id FROM novel n \
-             LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
-             WHERE n.in_library = 1 AND n.is_local = 0 \
-               AND n.last_read_at >= ?1 \
-               AND (g.novel_id IS NULL OR g.kind <> 'none') \
-               AND n.id IN (SELECT value FROM json_each(?2))"
-        } else {
-            "SELECT DISTINCT n.id FROM chapter c \
-             JOIN novel n ON n.id = c.novel_id \
-             LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
-             WHERE n.in_library = 1 AND n.is_local = 0 \
-               AND n.last_read_at >= ?1 \
-               AND (g.novel_id IS NULL OR g.kind <> 'none') \
-               AND c.id IN (SELECT value FROM json_each(?2))"
-        };
-        let rows: Vec<i64> = sqlx::query_scalar(sql)
-            .bind(active_since)
+        let rows: Vec<i64> = match (active_since, scope == "novel") {
+            (Some(since), true) => sqlx::query_scalar(
+                "SELECT n.id FROM novel n \
+                 LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
+                 WHERE n.in_library = 1 AND n.is_local = 0 \
+                   AND n.last_read_at >= ?1 \
+                   AND (g.novel_id IS NULL OR g.kind <> 'none') \
+                   AND n.id IN (SELECT value FROM json_each(?2))",
+            )
+            .bind(since)
             .bind(&chunk_json)
             .fetch_all(&mut *conn)
             .await
-            .map_err(|err| format!("db novel goal: list scope {scope}: {err}"))?;
+            .map_err(|err| format!("db novel goal: list scope {scope}: {err}"))?,
+            (Some(since), false) => sqlx::query_scalar(
+                "SELECT DISTINCT n.id FROM chapter c \
+                 JOIN novel n ON n.id = c.novel_id \
+                 LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
+                 WHERE n.in_library = 1 AND n.is_local = 0 \
+                   AND n.last_read_at >= ?1 \
+                   AND (g.novel_id IS NULL OR g.kind <> 'none') \
+                   AND c.id IN (SELECT value FROM json_each(?2))",
+            )
+            .bind(since)
+            .bind(&chunk_json)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db novel goal: list scope {scope}: {err}"))?,
+            (None, true) => sqlx::query_scalar(
+                "SELECT n.id FROM novel n \
+                 LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
+                 WHERE n.in_library = 1 AND n.is_local = 0 \
+                   AND (g.novel_id IS NULL OR g.kind <> 'none') \
+                   AND n.id IN (SELECT value FROM json_each(?1))",
+            )
+            .bind(&chunk_json)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db novel goal: list scope {scope} unlimited: {err}"))?,
+            (None, false) => sqlx::query_scalar(
+                "SELECT DISTINCT n.id FROM chapter c \
+                 JOIN novel n ON n.id = c.novel_id \
+                 LEFT JOIN novel_download_goal g ON g.novel_id = n.id \
+                 WHERE n.in_library = 1 AND n.is_local = 0 \
+                   AND (g.novel_id IS NULL OR g.kind <> 'none') \
+                   AND c.id IN (SELECT value FROM json_each(?1))",
+            )
+            .bind(&chunk_json)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db novel goal: list scope {scope} unlimited: {err}"))?,
+        };
         found.extend(rows);
     }
     let mut sorted: Vec<i64> = found.into_iter().collect();
@@ -3384,7 +3468,7 @@ pub async fn db_novel_goal_set(
 #[tauri::command]
 pub async fn db_novel_goal_list_novels(
     db: State<'_, AppDatabase>,
-    active_since: Option<i64>,
+    active_filter: DownloadGoalActiveFilterDto,
     novel_ids: Option<Vec<i64>>,
     mode: Option<ReadMode>,
 ) -> Result<Vec<DownloadGoalNovelDto>, String> {
@@ -3393,7 +3477,7 @@ pub async fn db_novel_goal_list_novels(
         .acquire()
         .await
         .map_err(|err| format!("db novel goal: acquire connection: {err}"))?;
-    list_download_goal_novels_in_conn(&mut conn, active_since, novel_ids.as_deref()).await
+    list_download_goal_novels_in_conn(&mut conn, active_filter, novel_ids.as_deref()).await
 }
 
 #[tauri::command]
@@ -3401,7 +3485,7 @@ pub async fn db_novel_goal_list_ids_for_scope(
     db: State<'_, AppDatabase>,
     scope: String,
     ids: Vec<i64>,
-    active_since: Option<i64>,
+    active_filter: DownloadGoalActiveFilterDto,
     mode: Option<ReadMode>,
 ) -> Result<Vec<i64>, String> {
     let mut conn = db
@@ -3409,7 +3493,7 @@ pub async fn db_novel_goal_list_ids_for_scope(
         .acquire()
         .await
         .map_err(|err| format!("db novel goal: acquire connection: {err}"))?;
-    list_goal_novel_ids_for_scope_in_conn(&mut conn, &scope, &ids, active_since).await
+    list_goal_novel_ids_for_scope_in_conn(&mut conn, &scope, &ids, active_filter).await
 }
 
 #[tauri::command]
@@ -3502,11 +3586,11 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chapter (id, novel_id, path, name, position, chapter_number, is_downloaded, content_bytes, unread, progress) \
+            "INSERT INTO chapter (id, novel_id, path, name, position, chapter_number, is_downloaded, content_bytes, progress) \
              VALUES \
-               (10, 1, '/c1', 'Ch 1', 1, '1', 1, 120, 0, 100), \
-               (11, 1, '/c2', 'Ch 2', 2, '2', 0, 80, 1, 0), \
-               (20, 2, '/b1', 'Ch 1', 1, '1', 0, 0, 0, 100)",
+               (10, 1, '/c1', 'Ch 1', 1, '1', 1, 120, 100), \
+               (11, 1, '/c2', 'Ch 2', 2, '2', 0, 80, 0), \
+               (20, 2, '/b1', 'Ch 1', 1, '1', 0, 0, 100)",
         )
         .execute(pool)
         .await
@@ -3729,14 +3813,62 @@ mod tests {
         assert_eq!(candidates.len(), 1);
         assert!(candidates[0].has_goal);
 
-        let goal_novels = list_download_goal_novels_in_conn(&mut conn, Some(900), None)
-            .await
-            .unwrap();
+        let goal_novels = list_download_goal_novels_in_conn(
+            &mut conn,
+            DownloadGoalActiveFilterDto::Since { seconds: 900 },
+            None,
+        )
+        .await
+        .unwrap();
         assert_eq!(goal_novels.len(), 1);
         assert_eq!(
             goal_novels[0].goal,
             Some(NovelDownloadGoalDto::KeepAhead { count: 5 })
         );
+        // Never-opened library novel (last_read_at IS NULL) is excluded by Since but included by All.
+        sqlx::query(
+            "INSERT INTO novel (id, plugin_id, path, name, in_library, is_local, last_read_at) \
+             VALUES (51, 'src', '/unopened', 'Unopened Novel', 1, 0, NULL)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        let since_only = list_download_goal_novels_in_conn(
+            &mut conn,
+            DownloadGoalActiveFilterDto::Since { seconds: 900 },
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(since_only.iter().map(|n| n.id).collect::<Vec<_>>(), vec![50]);
+        let all_novels = list_download_goal_novels_in_conn(
+            &mut conn,
+            DownloadGoalActiveFilterDto::All,
+            None,
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            all_novels.iter().map(|n| n.id).collect::<Vec<_>>(),
+            vec![50, 51]
+        );
+        let scope_all = list_goal_novel_ids_for_scope_in_conn(
+            &mut conn,
+            "all",
+            &[],
+            DownloadGoalActiveFilterDto::All,
+        )
+        .await
+        .unwrap();
+        assert_eq!(scope_all, vec![50, 51]);
+        let none_novels = list_download_goal_novels_in_conn(
+            &mut conn,
+            DownloadGoalActiveFilterDto::None,
+            None,
+        )
+        .await
+        .unwrap();
+        assert!(none_novels.is_empty());
         assert_eq!(
             list_download_goal_excluded_chapter_ids_in_conn(&mut conn, 50)
                 .await

@@ -1,13 +1,14 @@
 import { listChapterCleanupCandidates, type ChapterCleanupCandidate, type ChapterCleanupSelection } from "../db/queries/chapter-cleanup";
 import { useContentSyncStore } from "../store/content-sync";
 import { inspectChapterPayloadInventory } from "./chapter-content/storage-platform";
-import { compareChapterInventories, type ChapterPayloadSnapshot } from "./chapter-content/inventory";
+import { compareChapterInventories, type ChapterPayloadInventory, type ChapterPayloadSnapshot } from "./chapter-content/inventory";
 import { cleanupServerUrl, fetchCleanupServerInventory, type ServerChapterInventory } from "./content-sync/chapter-inventory";
 import { ContentServerError } from "./content-sync/client";
+import { getActiveReaderChapterIds } from "./reader-active-chapters";
 
-export type ChapterCleanupServerMode = "server-present" | "server-coverage" | "server-contains-local" | "any";
+export type ChapterCleanupServerMode = "server-present" | "server-complete" | "server-coverage" | "server-contains-local" | "any";
 export interface ChapterCleanupFilters extends ChapterCleanupSelection { server: ChapterCleanupServerMode }
-export type ChapterCleanupSkipReason = "no-payload" | "no-server" | "server-missing" | "server-conflict" | "server-auth" | "server-unavailable" | "server-timeout" | "server-error" | "storage-error" | "not-covered" | "not-contained" | "not-comparable" | "changed" | "ambiguous-storage";
+export type ChapterCleanupSkipReason = "no-payload" | "no-server" | "server-missing" | "server-conflict" | "server-auth" | "server-unavailable" | "server-timeout" | "server-error" | "not-complete" | "pending-upload" | "active-reader" | "storage-error" | "not-covered" | "not-contained" | "not-comparable" | "changed" | "ambiguous-storage";
 export interface ChapterCleanupTarget {
   candidate: ChapterCleanupCandidate;
   snapshot: ChapterPayloadSnapshot;
@@ -28,8 +29,25 @@ export function chapterCleanupInventorySkip(mode: ChapterCleanupServerMode, loca
   if (local.payloadBytes <= 0) return "no-payload";
   if (mode === "any") return null;
   if (!server?.inventory.body) return "server-missing";
-  if (mode === "server-present") return null;
-  const comparison = compareChapterInventories(local, server.inventory);
+  if (mode === "server-present" || mode === "server-complete") return null;
+  // Text and PDF chapters without media omit manifest.json/media.zip, leaving
+  // expectedAssetKeys as null on both ends. Normalize only when both local and
+  // server evidence confirm no media manifest/archive exists so corrupt manifests
+  // still fail closed as not-comparable.
+  const normalizedLocal: ChapterPayloadInventory =
+    local.expectedAssetKeys === null &&
+    local.mediaComplete &&
+    local.mediaBytes === 0 &&
+    local.storedAssets.length === 0
+      ? { ...local, expectedAssetKeys: [] }
+      : local;
+  const normalizedRemote: ChapterPayloadInventory =
+    server.inventory.expectedAssetKeys === null &&
+    server.noMediaDeclared === true &&
+    server.inventory.storedAssets.length === 0
+      ? { ...server.inventory, expectedAssetKeys: [] }
+      : server.inventory;
+  const comparison = compareChapterInventories(normalizedLocal, normalizedRemote);
   if (mode === "server-coverage") return comparison.coverageEligible ? null : comparison.coverageReason ? "not-comparable" : "not-covered";
   return comparison.containsLocal ? null : comparison.containmentReason ? "not-comparable" : "not-contained";
 }
@@ -71,6 +89,7 @@ export async function previewChapterCleanup(filters: ChapterCleanupFilters, sign
     for (const candidate of page) {
       signal?.throwIfAborted();
       checked++;
+      if (getActiveReaderChapterIds().has(candidate.identity.chapter.id)) { skip("active-reader"); continue; }
       if (candidate.storageAmbiguous) { skip("ambiguous-storage"); continue; }
       let snapshot: ChapterPayloadSnapshot;
       try { snapshot = await inspectChapterPayloadInventory(candidate.identity, signal); }
@@ -110,7 +129,7 @@ export interface ChapterCleanupApproval {
 /** How many previewed chapters need the user's explicit inclusion before they are deleted. */
 export function chapterCleanupProtectedCounts(preview: ChapterCleanupPreview, goalKeptIds: ReadonlySet<number>): { unread: number; goalKept: number } {
   return {
-    unread: preview.targets.filter(target => target.candidate.unread).length,
+    unread: preview.targets.filter(target => target.candidate.progress < 100).length,
     goalKept: preview.targets.filter(target => goalKeptIds.has(target.candidate.identity.chapter.id)).length,
   };
 }
@@ -121,7 +140,7 @@ export function approveChapterCleanupTargets(
   goalKeptIds: ReadonlySet<number>,
   approval: ChapterCleanupApproval,
 ): ChapterCleanupPreview {
-  const targets = preview.targets.filter(target => (approval.includeUnread || !target.candidate.unread)
+  const targets = preview.targets.filter(target => (approval.includeUnread || target.candidate.progress >= 100)
     && (approval.includeGoalKept || !goalKeptIds.has(target.candidate.identity.chapter.id)));
   if (targets.length === preview.targets.length) return preview;
   return Object.freeze({ ...preview, targets: Object.freeze(targets),

@@ -10,7 +10,7 @@ const b = { id: 2, pluginId: "source-b", sourceNovelId: "work-b", path: "/b" } a
 function chapter(side: "a" | "b", number: number, downloaded = false): ChapterListRow {
   return { id: (side === "a" ? 10_000 : 20_000) + number, novelId: side === "a" ? 1 : 2,
     path: `/${side}/${number}`, name: `${side} chapter ${number}`, chapterNumber: String(number), position: number,
-    page: "1", bookmark: false, unread: true, progress: 0, isDownloaded: downloaded,
+    page: "1", bookmark: false, progress: 0, isDownloaded: downloaded,
     sourceContentType: "html", contentType: "html", contentBytes: downloaded ? 120 : 0, mediaBytes: 0,
     mediaRepairNeeded: false, releaseTime: null, readAt: null, createdAt: null, foundAt: 0, updatedAt: 0 };
 }

@@ -486,7 +486,7 @@ function ReaderChapterList({
               const status =
                 item.progress >= FINISHED_PROGRESS
                   ? "done"
-                  : item.unread
+                  : item.progress === 0
                     ? "unread"
                     : "idle";
               return (

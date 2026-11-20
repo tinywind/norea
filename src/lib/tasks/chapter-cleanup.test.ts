@@ -1,13 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { NovelDownloadGoal } from "../../db/queries/novel-download-goal";
 import type { ChapterCleanupCandidate } from "../../db/queries/chapter-cleanup";
 import type { ChapterCleanupFilters } from "../chapter-cleanup";
 import { approveChapterCleanupTargets, chapterCleanupProtectedCounts, previewChapterCleanup } from "../chapter-cleanup";
 import { ContentServerError } from "../content-sync/client";
-import { runChapterCleanup } from "./chapter-cleanup";
+import { clearActiveReaderChapters, setActiveReaderChapters } from "../reader-active-chapters";
+import { runChapterCleanup, runFinishedChapterCleanupTask } from "./chapter-cleanup";
 
 const mocks = vi.hoisted(() => ({
-  candidates: vi.fn(), reconcile: vi.fn(), inspect: vi.fn(), remove: vi.fn(), fetch: vi.fn(),
+  candidates: vi.fn(), reconcile: vi.fn(), inspect: vi.fn(), remove: vi.fn(), removeFast: vi.fn(),
+  fetch: vi.fn(), verifyComplete: vi.fn(), pendingUpload: vi.fn(),
   cancel: vi.fn(), discard: vi.fn(), queueWait: vi.fn(), writesWait: vi.fn(),
   state: { serverUrl: "https://server" },
   automaticGoal: { kind: "keep_ahead", count: 3 } as NovelDownloadGoal,
@@ -17,17 +19,28 @@ vi.mock("../../db/queries/chapter-cleanup", () => ({ listChapterCleanupCandidate
 vi.mock("../../store/download-goals", () => ({ useDownloadGoalSettingsStore: { getState: () => ({ automaticGoal: mocks.automaticGoal }) } }));
 vi.mock("../download-goals/goal-protection", () => ({ listGoalProtectedChapterIds: mocks.protectedIds }));
 vi.mock("../../store/content-sync", () => ({ useContentSyncStore: { getState: () => mocks.state } }));
-vi.mock("../chapter-content/storage-platform", () => ({ inspectChapterPayloadInventory: mocks.inspect, deleteChapterPayload: mocks.remove }));
-vi.mock("../content-sync/chapter-inventory", () => ({ cleanupServerUrl: (_candidate: unknown, fallback: string) => fallback, fetchCleanupServerInventory: mocks.fetch }));
+vi.mock("../chapter-content/storage-platform", () => ({
+  inspectChapterPayloadInventory: mocks.inspect,
+  deleteChapterPayload: mocks.remove,
+  deleteChapterPayloadFast: mocks.removeFast,
+}));
+vi.mock("../content-sync/chapter-inventory", () => ({
+  cleanupServerUrl: (_candidate: unknown, fallback: string) => fallback,
+  fetchCleanupServerInventory: mocks.fetch,
+  verifyServerCompleteChapter: mocks.verifyComplete,
+}));
+vi.mock("../content-sync/sync", () => ({
+  hasPendingReplaceServerUpload: mocks.pendingUpload,
+}));
 vi.mock("../chapter-download-writes", () => ({ waitForChapterDownloadWrites: mocks.writesWait, withChapterDownloadDeletion: (_ids: number[], fn: () => unknown) => fn() }));
 vi.mock("../content-sync/storage-operation", () => ({ runWorkContentStorageOperation: (_plugin: string, _path: string, fn: () => unknown) => fn() }));
 vi.mock("./chapter-download", () => ({ cancelChapterDownloadTasks: mocks.cancel, discardQueuedChapterDownloads: mocks.discard, waitForChapterDownloadQueueMutations: mocks.queueWait }));
 vi.mock("../tauri-runtime", () => ({ isTauriRuntime: () => false }));
 vi.mock("./scheduler", () => ({ taskScheduler: {} }));
-const candidate = {
+const candidate: ChapterCleanupCandidate = {
   identity: { novel: { id: 1, pluginId: "source", sourceNovelId: "work", path: "/work", name: "Work" }, chapter: { id: 3, name: "Chapter", position: 2, chapterNumber: "2", contentType: "html" } },
-  novelPath: "/work", chapterPath: "/chapter", novelName: "Work", chapterName: "Chapter", serverSource: null, storageAmbiguous: false, unread: false,
-} as ChapterCleanupCandidate;
+  novelPath: "/work", chapterPath: "/chapter", novelName: "Work", chapterName: "Chapter", serverSource: null, storageAmbiguous: false, localServerFingerprint: null, progress: 100,
+};
 const body = { sha256: "a".repeat(64), bytes: 3 };
 const expectedAssetKeys = Array.from({ length: 10 }, (_, i) => `media/${i}`);
 const asset = (key: string) => ({ key, sha256: "b".repeat(64), bytes: 4 });
@@ -38,12 +51,19 @@ const filters = (mode: ChapterCleanupFilters["server"]): ChapterCleanupFilters =
 
 beforeEach(() => {
   vi.clearAllMocks(); mocks.state.serverUrl = "https://server";
+  clearActiveReaderChapters();
   mocks.automaticGoal = { kind: "keep_ahead", count: 3 };
   mocks.protectedIds.mockResolvedValue(new Set());
   mocks.candidates.mockImplementation(async (_filter, options) => options.chapterId ? [candidate] : options.afterId ? [] : [candidate]);
   mocks.inspect.mockResolvedValue(snapshot); mocks.fetch.mockResolvedValue(server); mocks.reconcile.mockResolvedValue(1);
   mocks.remove.mockResolvedValue({ snapshot: empty, errors: [] });
+  mocks.removeFast.mockResolvedValue({ bytesFreed: 35, snapshot: { payloadBytes: 0, contentBytes: 0, mediaBytes: 0, mediaComplete: true }, errors: [] });
+  mocks.verifyComplete.mockResolvedValue({ ok: true, chapter: { serverUrl: "https://server", id: "package", revision: "revision" } });
+  mocks.pendingUpload.mockResolvedValue(false);
   mocks.cancel.mockResolvedValue(undefined); mocks.queueWait.mockResolvedValue(undefined); mocks.writesWait.mockResolvedValue(undefined);
+});
+afterEach(() => {
+  clearActiveReaderChapters();
 });
 
 describe("cleanup preview", () => {
@@ -107,7 +127,7 @@ describe("cleanup ambiguous storage", () => {
 
 describe("cleanup approval", () => {
   it("leaves unread and goal-kept chapters out until the user includes each kind", async () => {
-    const other = { ...candidate, identity: { ...candidate.identity, chapter: { ...candidate.identity.chapter, id: 4 } }, unread: true };
+    const other = { ...candidate, identity: { ...candidate.identity, chapter: { ...candidate.identity.chapter, id: 4 } }, progress: 0 };
     const kept = { ...candidate, identity: { ...candidate.identity, novel: { ...candidate.identity.novel, id: 2 }, chapter: { ...candidate.identity.chapter, id: 5 } } };
     mocks.candidates.mockImplementation(async (_filter, options) => options.afterId ? [] : [candidate, other, kept]);
     const preview = await previewChapterCleanup({ ...filters("any"), reading: "all" });
@@ -143,7 +163,7 @@ describe("cleanup execution", () => {
   });
   it("skips a chapter marked unread after the preview approved it as read", async () => {
     const preview = await previewChapterCleanup(filters("any"));
-    mocks.candidates.mockResolvedValue([{ ...candidate, unread: true }]);
+    mocks.candidates.mockResolvedValue([{ ...candidate, progress: 0 }]);
     expect(await runChapterCleanup(preview)).toMatchObject({ skipped: 1, deleted: 0, results: [{ chapterId: 3, reason: "changed" }] });
     expect(mocks.remove).not.toHaveBeenCalled();
   });
@@ -259,4 +279,121 @@ it("keeps an explicitly approved manual cleanup independent of the global entire
   expect(await runChapterCleanup(approved)).toMatchObject({ deleted: 1, skipped: 0 });
   expect(mocks.remove).toHaveBeenCalledOnce();
   expect(mocks.protectedIds).not.toHaveBeenCalled();
+});
+
+describe("manual text/PDF cleanup without media manifest and active reader protection", () => {
+  it("treats text/PDF chapters with null expectedAssetKeys as comparable only when both local and server prove no media", async () => {
+    const textSnapshot = {
+      fingerprint: "fp-text",
+      payloadBytes: 3,
+      contentBytes: 3,
+      mediaBytes: 0,
+      mediaComplete: true,
+      body,
+      expectedAssetKeys: null,
+      storedAssets: [],
+    };
+    const textServer = {
+      ...server,
+      noMediaDeclared: true,
+      inventory: { body, expectedAssetKeys: null, storedAssets: [] },
+    };
+    mocks.inspect.mockResolvedValue(textSnapshot);
+    mocks.fetch.mockResolvedValue(textServer);
+    expect((await previewChapterCleanup(filters("server-contains-local"))).targets).toHaveLength(1);
+
+    // Corrupt manifest on server (noMediaDeclared: false) must still fail closed as not-comparable.
+    mocks.fetch.mockResolvedValue({ ...textServer, noMediaDeclared: false });
+    expect(await previewChapterCleanup(filters("server-contains-local"))).toMatchObject({
+      targets: [],
+      skipped: { "not-comparable": 1 },
+    });
+  });
+
+  it("skips active reader chapters in both preview and execution", async () => {
+    setActiveReaderChapters([3]);
+    expect(await previewChapterCleanup(filters("any"))).toMatchObject({
+      targets: [],
+      skipped: { "active-reader": 1 },
+    });
+    expect(mocks.inspect).not.toHaveBeenCalled();
+
+    clearActiveReaderChapters();
+    const preview = await previewChapterCleanup(filters("any"));
+    setActiveReaderChapters([3]);
+    expect(await runChapterCleanup(preview)).toMatchObject({
+      deleted: 0,
+      skipped: 1,
+      results: [{ chapterId: 3, status: "skipped", reason: "active-reader" }],
+    });
+    expect(mocks.remove).not.toHaveBeenCalled();
+  });
+});
+
+describe("lightweight 1-pass automatic finished-chapter cleanup", () => {
+  const autoFilters: ChapterCleanupFilters = {
+    reading: "read",
+    categories: { mode: "all" },
+    server: "server-complete",
+    finished: { keepLast: 0, requireInstalledPlugin: false },
+  };
+
+  it("verifies server-complete and deletes via fast path without SHA-256 inspection or /storage-inventory", async () => {
+    const result = await runFinishedChapterCleanupTask(autoFilters, "https://server", [candidate]);
+    expect(result).toMatchObject({ deleted: 1, skipped: 0, failed: 0, bytesFreed: 35 });
+    expect(mocks.verifyComplete).toHaveBeenCalledTimes(2);
+    expect(mocks.removeFast).toHaveBeenCalledOnce();
+    expect(mocks.inspect).not.toHaveBeenCalled();
+    expect(mocks.fetch).not.toHaveBeenCalled();
+  });
+
+  it("defers chapters with pending replace-server uploads or incomplete server copies", async () => {
+    mocks.pendingUpload.mockResolvedValueOnce(true);
+    expect(await runFinishedChapterCleanupTask(autoFilters, "https://server", [candidate])).toMatchObject({
+      deleted: 0,
+      skipped: 1,
+      results: [{ chapterId: 3, status: "skipped", reason: "pending-upload" }],
+    });
+    expect(mocks.removeFast).not.toHaveBeenCalled();
+
+    mocks.pendingUpload.mockResolvedValue(false);
+    mocks.verifyComplete.mockResolvedValueOnce({ ok: false, reason: "not-complete" });
+    expect(await runFinishedChapterCleanupTask(autoFilters, "https://server", [candidate])).toMatchObject({
+      deleted: 0,
+      skipped: 1,
+      results: [{ chapterId: 3, status: "skipped", reason: "not-complete" }],
+    });
+    expect(mocks.removeFast).not.toHaveBeenCalled();
+  });
+
+  it("skips when server revision changes between initial check and pre-delete verification", async () => {
+    mocks.verifyComplete
+      .mockResolvedValueOnce({ ok: true, chapter: { serverUrl: "https://server", id: "package", revision: "rev-1" } })
+      .mockResolvedValueOnce({ ok: true, chapter: { serverUrl: "https://server", id: "package", revision: "rev-2" } });
+    expect(await runFinishedChapterCleanupTask(autoFilters, "https://server", [candidate])).toMatchObject({
+      deleted: 0,
+      skipped: 1,
+      results: [{ chapterId: 3, status: "skipped", reason: "changed" }],
+    });
+    expect(mocks.removeFast).not.toHaveBeenCalled();
+  });
+
+  it("rechecks all automatic goals (not only entire) and active reader immediately before fast deletion", async () => {
+    mocks.automaticGoal = { kind: "keep_ahead", count: 3 };
+    mocks.protectedIds.mockResolvedValueOnce(new Set([3]));
+    expect(await runFinishedChapterCleanupTask(autoFilters, "https://server", [candidate])).toMatchObject({
+      deleted: 0,
+      skipped: 1,
+      results: [{ chapterId: 3, status: "skipped", reason: "changed" }],
+    });
+
+    mocks.protectedIds.mockResolvedValue(new Set());
+    setActiveReaderChapters([3]);
+    expect(await runFinishedChapterCleanupTask(autoFilters, "https://server", [candidate])).toMatchObject({
+      deleted: 0,
+      skipped: 1,
+      results: [{ chapterId: 3, status: "skipped", reason: "active-reader" }],
+    });
+    expect(mocks.removeFast).not.toHaveBeenCalled();
+  });
 });

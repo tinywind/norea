@@ -696,7 +696,6 @@ pub struct DownloadCacheChapterDto {
     pub novel_id: i64,
     pub name: String,
     pub position: i64,
-    pub unread: bool,
     pub progress: i64,
     pub read_at: Option<i64>,
     pub downloaded_at: Option<i64>,
@@ -712,7 +711,6 @@ struct RawDownloadCacheChapterRow {
     novel_id: i64,
     name: String,
     position: i64,
-    unread: i64,
     progress: i64,
     read_at: Option<i64>,
     downloaded_at: Option<i64>,
@@ -814,8 +812,8 @@ pub async fn list_download_cache_novels_in_conn(
             FROM chapter all_chapters
             WHERE all_chapters.novel_id = n.id
           ) AS total_chapters,
-          COALESCE(SUM(CASE WHEN c.unread = 1 THEN 1 ELSE 0 END), 0) AS unread_downloaded,
-          COALESCE(SUM(CASE WHEN c.unread = 0 THEN 1 ELSE 0 END), 0) AS read_downloaded,
+          COALESCE(SUM(CASE WHEN c.progress < 100 THEN 1 ELSE 0 END), 0) AS unread_downloaded,
+          COALESCE(SUM(CASE WHEN c.progress >= 100 THEN 1 ELSE 0 END), 0) AS read_downloaded,
           COALESCE(SUM(CASE WHEN c.media_repair_needed = 1 THEN 1 ELSE 0 END), 0) AS media_repair_needed_chapters,
           COALESCE(SUM(c.content_bytes + c.media_bytes), 0) AS total_bytes,
           MAX(c.updated_at) AS last_downloaded_at
@@ -866,7 +864,6 @@ pub async fn list_download_cache_chapters_in_conn(
           c.novel_id,
           c.name,
           c.position,
-          c.unread,
           c.progress,
           c.read_at,
           c.updated_at AS downloaded_at,
@@ -895,7 +892,6 @@ pub async fn list_download_cache_chapters_in_conn(
             novel_id: row.novel_id,
             name: row.name,
             position: row.position,
-            unread: row.unread != 0,
             progress: row.progress,
             read_at: row.read_at,
             downloaded_at: row.downloaded_at,
@@ -1574,7 +1570,7 @@ mod tests {
             .execute(pool)
             .await
             .unwrap();
-        sqlx::query("INSERT INTO chapter(id, novel_id, path, name, position, is_downloaded, content_bytes, media_bytes, unread) VALUES (1, 1, '/1', 'One', 1, 1, 512, 0, 1), (2, 1, '/2', 'Two', 2, 0, 0, 0, 1)")
+        sqlx::query("INSERT INTO chapter(id, novel_id, path, name, position, is_downloaded, content_bytes, media_bytes, progress) VALUES (1, 1, '/1', 'One', 1, 1, 512, 0, 0), (2, 1, '/2', 'Two', 2, 0, 0, 0, 0)")
             .execute(pool)
             .await
             .unwrap();

@@ -273,24 +273,24 @@ describe("reader query invalidation", () => {
     const queryClient = createQueryClient();
     const key = novelChaptersQueryKey(7);
     queryClient.setQueryData(key, [{
-      id: 11, ...completedDownload, unread: false, progress: 42, readAt: 123,
+      id: 11, ...completedDownload, progress: 42, readAt: 123,
     }]);
     vi.mocked(getChapterById).mockResolvedValueOnce({
       id: 11, ...completedDownload, isDownloaded: false,
       mediaRepairNeeded: true, contentBytes: 80, mediaBytes: 5,
-      unread: true, progress: 0, readAt: null,
+      progress: 0, readAt: null,
     } as ChapterRow);
 
     await applyNovelChapterDownloadCompletion(queryClient, { chapterId: 11, novelId: 7 });
     expect(queryClient.getQueryData(key)).toEqual([{
       id: 11, isDownloaded: false, mediaRepairNeeded: true,
       contentBytes: 80, mediaBytes: 5, contentType: "html",
-      unread: false, progress: 42, readAt: 123,
+      progress: 42, readAt: 123,
     }]);
 
     await applyNovelChapterDownloadCompletion(queryClient, { chapterId: 11, novelId: 7 });
     expect(queryClient.getQueryData(key)).toEqual([{
-      id: 11, ...completedDownload, unread: false, progress: 42, readAt: 123,
+      id: 11, ...completedDownload, progress: 42, readAt: 123,
     }]);
   });
 

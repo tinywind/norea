@@ -110,7 +110,7 @@ export function downloadedChapterToRead(
 ): DownloadCacheChapter | undefined {
   const ordered = [...chapters].sort((left, right) => left.position - right.position);
   return ordered.find((chapter) => chapter.id === rememberedChapterId)
-    ?? ordered.find((chapter) => chapter.unread)
+    ?? ordered.find((chapter) => chapter.progress < 100)
     ?? ordered[0];
 }
 
@@ -168,7 +168,7 @@ function DownloadCacheChapterRow({
 }) {
   const { locale, t } = useTranslation();
   const size = formatBytes(chapter.totalBytes, locale);
-  const readState = chapter.unread
+  const readState = chapter.progress < 100
     ? t("downloads.unreadState")
     : t("downloads.readState");
   const chapterStatusText = [
@@ -588,9 +588,11 @@ function FinishedChapterCleanupRow({ onOpenSetting }: { onOpenSetting: () => voi
         time: formatRelativeTimeForLocale(locale, lastRemoval.at),
       }) : undefined}
       title={t("finishedCleanup.storageRow", {
-        state: keep === 0
+        state: keep === "off"
           ? t("settings.downloads.finishedCleanup.off")
-          : t("settings.downloads.finishedCleanup.keep", { count: keep }),
+          : keep === 0
+            ? t("settings.downloads.finishedCleanup.keepZero")
+            : t("settings.downloads.finishedCleanup.keep", { count: keep }),
       })}
       trailing={<ChevronRightIcon size="1.125rem" />}
     />

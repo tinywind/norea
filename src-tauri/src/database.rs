@@ -229,6 +229,11 @@ pub fn schema_migrations() -> Vec<SchemaMigration> {
             description: "track workspace seed suppression and retention cutoff",
             sql: include_str!("migrations/0016_user_state_epoch_retention.sql"),
         },
+        SchemaMigration {
+            version: 17,
+            description: "unify chapter reading state on progress and remove unread columns",
+            sql: include_str!("migrations/0017_single_progress_model.sql"),
+        },
     ]
 }
 
@@ -1481,5 +1486,195 @@ mod tests {
         assert!(!bak_path.exists());
         assert!(!tmp_path.exists());
         recovered.close().await;
+    }
+
+    #[tokio::test]
+    async fn open_and_migrate_pools_upgrades_populated_v16_to_v17_single_progress_model() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v16_populated.db");
+        let migrations: Vec<_> = sqlx_migrations().into_iter().take(16).collect();
+
+        let v16_pool = bootstrap(&path, &migrations).await.unwrap();
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, path, name, in_library) \
+             VALUES (1, 'source', '/n1', 'Novel One', 1)",
+        )
+        .execute(&v16_pool)
+        .await
+        .unwrap();
+        // c1: unread=0, progress=35 -> becomes progress=100
+        // c2: unread=1, progress=55 -> stays progress=55
+        // c3: unread=1, progress=0  -> stays progress=0
+        sqlx::query(
+            "INSERT INTO chapter(id, novel_id, path, name, position, unread, progress, read_at) VALUES \
+             (1, 1, '/c1', 'Ch 1', 1, 0, 35, 100), \
+             (2, 1, '/c2', 'Ch 2', 2, 1, 55, 200), \
+             (3, 1, '/c3', 'Ch 3', 3, 1, 0, NULL)",
+        )
+        .execute(&v16_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO work_metadata_reading_state(plugin_id, novel_path, chapter_path, progress, bookmark, unread, read_at) VALUES \
+             ('source', '/n1', '/deleted-read', 20, 0, 0, 50), \
+             ('source', '/n1', '/deleted-partial', 40, 1, 1, 60)",
+        )
+        .execute(&v16_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO user_state_intent(entity_key, entity_json, value_json, seed) VALUES \
+             ('k1', '{\"kind\":\"reading\",\"work\":{\"pluginId\":\"source\",\"novelPath\":\"/n1\",\"name\":\"N\"},\"chapter\":{\"chapterPath\":\"/c1\"}}', '{\"progress\":35,\"unread\":false,\"readAt\":100}', 0), \
+             ('k2', '{\"kind\":\"reading\",\"work\":{\"pluginId\":\"source\",\"novelPath\":\"/n1\",\"name\":\"N\"},\"chapter\":{\"chapterPath\":\"/c2\"}}', '{\"progress\":55,\"unread\":true,\"readAt\":200}', 0)",
+        )
+        .execute(&v16_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO user_state_record(namespace, entity_key, revision, payload) VALUES \
+             ('ns', 'k1', 1, '{\"entity\":{\"kind\":\"reading\"},\"value\":{\"progress\":10,\"unread\":false,\"readAt\":90}}')",
+        )
+        .execute(&v16_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO user_state_private(entity_key, public_value_json) VALUES \
+             ('k1', '{\"progress\":25,\"unread\":false,\"readAt\":80}')",
+        )
+        .execute(&v16_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO user_state_operation(operation_id, namespace, entity_key, intent_sequence, payload, status, receipt) VALUES \
+             ('op-pending', 'ns', 'k1', 1, '{\"entity\":{\"kind\":\"reading\"},\"value\":{\"progress\":35,\"unread\":false,\"readAt\":100}}', 'pending', NULL), \
+             ('op-ack', 'ns', 'k2', 2, '{\"entity\":{\"kind\":\"reading\"},\"value\":{\"progress\":35,\"unread\":false,\"readAt\":100}}', 'acknowledged', '{\"status\":\"applied\",\"current\":{\"entity\":{\"kind\":\"reading\"},\"value\":{\"progress\":35,\"unread\":false,\"readAt\":100}}}')",
+        )
+        .execute(&v16_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO content_sync_cache(cache_key, payload) VALUES \
+             ('user-state-current:ns', '{}'), \
+             ('user-state-current-status:ns', '{}'), \
+             ('keep-me', '{}')",
+        )
+        .execute(&v16_pool)
+        .await
+        .unwrap();
+        v16_pool.close().await;
+
+        let db = open_and_migrate_pools(&path).await.unwrap();
+        let chapter_has_unread: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM pragma_table_info('chapter') WHERE name = 'unread'",
+        )
+        .fetch_one(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(chapter_has_unread, 0);
+
+        let progresses: Vec<(i64, i64)> =
+            sqlx::query_as("SELECT id, progress FROM chapter ORDER BY id")
+                .fetch_all(db.reader())
+                .await
+                .unwrap();
+        assert_eq!(progresses, vec![(1, 100), (2, 55), (3, 0)]);
+
+        let stats: (i64, i64, i64, i64) = sqlx::query_as(
+            "SELECT total_chapters, chapters_unread, progress_sum, reading_progress \
+             FROM novel_stats WHERE novel_id = 1",
+        )
+        .fetch_one(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(stats, (3, 2, 155, 52));
+
+        let preserved: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT chapter_path, progress FROM work_metadata_reading_state ORDER BY chapter_path",
+        )
+        .fetch_all(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(
+            preserved,
+            vec![
+                ("/deleted-partial".to_string(), 40),
+                ("/deleted-read".to_string(), 100),
+            ]
+        );
+
+        let intent_vals: Vec<(String, String)> =
+            sqlx::query_as("SELECT entity_key, value_json FROM user_state_intent ORDER BY entity_key")
+                .fetch_all(db.reader())
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&intent_vals[0].1).unwrap(),
+            serde_json::json!({ "progress": 100, "readAt": 100 })
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&intent_vals[1].1).unwrap(),
+            serde_json::json!({ "progress": 55, "readAt": 200 })
+        );
+
+        let rec_payload: String =
+            sqlx::query_scalar("SELECT payload FROM user_state_record WHERE entity_key = 'k1'")
+                .fetch_one(db.reader())
+                .await
+                .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&rec_payload).unwrap()["value"],
+            serde_json::json!({ "progress": 100, "readAt": 90 })
+        );
+
+        let priv_val: String = sqlx::query_scalar(
+            "SELECT public_value_json FROM user_state_private WHERE entity_key = 'k1'",
+        )
+        .fetch_one(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&priv_val).unwrap(),
+            serde_json::json!({ "progress": 100, "readAt": 80 })
+        );
+
+        // Pending legacy reading op dropped; acknowledged op normalized.
+        let ops: Vec<(String, String, Option<String>)> = sqlx::query_as(
+            "SELECT operation_id, payload, receipt FROM user_state_operation ORDER BY operation_id",
+        )
+        .fetch_all(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(ops.len(), 1);
+        assert_eq!(ops[0].0, "op-ack");
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(&ops[0].1).unwrap()["value"],
+            serde_json::json!({ "progress": 100, "readAt": 100 })
+        );
+        assert_eq!(
+            serde_json::from_str::<serde_json::Value>(ops[0].2.as_deref().unwrap()).unwrap()
+                ["current"]["value"],
+            serde_json::json!({ "progress": 100, "readAt": 100 })
+        );
+
+        let cache_keys: Vec<String> =
+            sqlx::query_scalar("SELECT cache_key FROM content_sync_cache ORDER BY cache_key")
+                .fetch_all(db.reader())
+                .await
+                .unwrap();
+        assert_eq!(cache_keys, vec!["keep-me".to_string()]);
+
+        // Verify triggers work after dropping unread column (delete chapter -> preserves reading state + updates novel_stats).
+        sqlx::query("DELETE FROM chapter WHERE id = 2")
+            .execute(db.writer())
+            .await
+            .unwrap();
+        let after_del: (i64, i64, i64) = sqlx::query_as(
+            "SELECT total_chapters, chapters_unread, progress_sum FROM novel_stats WHERE novel_id = 1",
+        )
+        .fetch_one(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(after_del, (2, 1, 100));
+        db.close().await;
     }
 }

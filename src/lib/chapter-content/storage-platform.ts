@@ -38,6 +38,19 @@ export interface ChapterPayloadDeleteResult {
   errors: { path: string; message: string }[];
 }
 
+export interface FastPayloadSnapshot {
+  payloadBytes: number;
+  contentBytes: number;
+  mediaBytes: number;
+  mediaComplete: boolean;
+}
+
+export interface FastPayloadDeleteResult {
+  bytesFreed: number;
+  snapshot: FastPayloadSnapshot;
+  errors: { path: string; message: string }[];
+}
+
 function cleanupChapterDir(identity: ChapterContentStorageIdentity): string {
   const canonical = chapterStorageRelativeDir(
     { ...identity.novel, id: undefined },
@@ -71,6 +84,17 @@ export async function deleteChapterPayload(
   return invoke<ChapterPayloadDeleteResult>("chapter_payload_delete", {
     chapterDir,
     expectedFingerprint,
+  });
+}
+
+export async function deleteChapterPayloadFast(
+  identity: ChapterContentStorageIdentity,
+  signal?: AbortSignal,
+): Promise<FastPayloadDeleteResult> {
+  signal?.throwIfAborted();
+  const chapterDir = cleanupChapterDir(identity);
+  return invoke<FastPayloadDeleteResult>("chapter_payload_delete_fast", {
+    chapterDir,
   });
 }
 

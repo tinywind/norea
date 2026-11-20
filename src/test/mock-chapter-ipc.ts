@@ -113,7 +113,6 @@ const CHAPTER_LIST_SELECT_FIELDS = `
   position,
   page,
   bookmark,
-  unread,
   progress,
   is_downloaded  AS isDownloaded,
   content_type   AS sourceContentType,
@@ -136,19 +135,17 @@ const RELEASE_OR_FOUND_AT_SQL = `MIN(COALESCE(CASE
   END, c.found_at), c.found_at)`;
 
 const KEEP_FINISHED_PROGRESS_SQL =
-  "CASE WHEN progress >= 100 THEN progress ELSE $2 END";
+  "CASE WHEN $3 = 1 AND $2 > 0 THEN $2 WHEN progress >= 100 THEN progress ELSE $2 END";
 
 type RawChapterListRow = Omit<
   ChapterListRow,
   | "bookmark"
-  | "unread"
   | "isDownloaded"
   | "sourceContentType"
   | "contentType"
   | "mediaRepairNeeded"
 > & {
   bookmark: unknown;
-  unread: unknown;
   isDownloaded: unknown;
   sourceContentType: string | null;
   storedContentType: string | null;
@@ -178,7 +175,6 @@ function normalizeChapterListRow(row: RawChapterListRow): ChapterListRow {
   return {
     ...chapter,
     bookmark: sqliteBoolean(row.bookmark),
-    unread: sqliteBoolean(row.unread),
     isDownloaded: sqliteBoolean(row.isDownloaded),
     sourceContentType,
     contentType: storedContentType ?? sourceContentType,
@@ -766,20 +762,21 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
           chapterId: number;
           progress: number;
           recordHistory?: boolean;
+          allowProgressReset?: boolean;
         };
         const clamped = Math.max(0, Math.min(100, Math.round(input.progress)));
         const recordHistory = input.recordHistory ?? true;
+        const allowReset = input.allowProgressReset ? 1 : 0;
         await options.runTransaction(async (db) => {
           if (recordHistory) {
             await db.execute(
               `UPDATE chapter
                SET
                  progress   = ${KEEP_FINISHED_PROGRESS_SQL},
-                 unread     = CASE WHEN $2 >= 100 THEN 0 ELSE unread END,
                  read_at    = CASE WHEN $2 > 0 THEN unixepoch() ELSE read_at END,
                  updated_at = unixepoch()
                WHERE id = $1`,
-              [input.chapterId, clamped],
+              [input.chapterId, clamped, allowReset],
             );
             await db.execute(
               `UPDATE novel
@@ -797,10 +794,9 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
             `UPDATE chapter
              SET
                progress   = ${KEEP_FINISHED_PROGRESS_SQL},
-               unread     = CASE WHEN $2 >= 100 THEN 0 ELSE unread END,
                updated_at = unixepoch()
              WHERE id = $1`,
-            [input.chapterId, clamped],
+            [input.chapterId, clamped, allowReset],
           );
         });
         return {
@@ -811,7 +807,6 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
 
       if (command === "db_chapter_set_read_state") {
         const input = args.input as { chapterIds: number[]; unread: boolean };
-        const unreadFlag = input.unread ? 1 : 0;
         const progress = input.unread ? 0 : FINISHED_PROGRESS;
         const value = await options.runTransaction(async (db) => {
           let rowsAffected = 0;
@@ -822,27 +817,25 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
             CHAPTER_ID_CHUNK_SIZE,
           )) {
             const rows = await db.select<
-              Array<{ id: number; progress: number; unread: unknown }>
+              Array<{ id: number; progress: number }>
             >(
-              `SELECT id, unread, progress FROM chapter WHERE id IN (${chapterIdPlaceholders(1, chunk.length)})`,
+              `SELECT id, progress FROM chapter WHERE id IN (${chapterIdPlaceholders(1, chunk.length)})`,
               chunk,
             );
             previous.push(
               ...rows.map((row) => ({
                 id: row.id,
                 progress: row.progress,
-                unread: sqliteBoolean(row.unread),
               })),
             );
             const result = await db.execute(
               `UPDATE chapter
                SET
                  progress   = $1,
-                 unread     = $2,
                  updated_at = unixepoch()
-               WHERE id IN (${chapterIdPlaceholders(3, chunk.length)})
-                 AND (progress <> $1 OR unread <> $2)`,
-              [progress, unreadFlag, ...chunk],
+               WHERE id IN (${chapterIdPlaceholders(2, chunk.length)})
+                 AND progress <> $1`,
+              [progress, ...chunk],
             );
             rowsAffected += result.rowsAffected;
             chunks += 1;
@@ -860,7 +853,6 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
 
       if (command === "db_chapter_set_novels_read_state") {
         const input = args.input as { novelIds: number[]; unread: boolean };
-        const unreadFlag = input.unread ? 1 : 0;
         const progress = input.unread ? 0 : FINISHED_PROGRESS;
         const value = await options.runTransaction(async (db) => {
           let rowsAffected = 0;
@@ -871,29 +863,27 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
             CHAPTER_ID_CHUNK_SIZE,
           )) {
             const rows = await db.select<
-              Array<{ id: number; progress: number; unread: unknown }>
+              Array<{ id: number; progress: number }>
             >(
-              `SELECT id, unread, progress FROM chapter
-               WHERE novel_id IN (${chapterIdPlaceholders(3, chunk.length)})
-                 AND (progress <> $1 OR unread <> $2)`,
-              [progress, unreadFlag, ...chunk],
+              `SELECT id, progress FROM chapter
+               WHERE novel_id IN (${chapterIdPlaceholders(2, chunk.length)})
+                 AND progress <> $1`,
+              [progress, ...chunk],
             );
             previous.push(
               ...rows.map((row) => ({
                 id: row.id,
                 progress: row.progress,
-                unread: sqliteBoolean(row.unread),
               })),
             );
             const result = await db.execute(
               `UPDATE chapter
                SET
                  progress   = $1,
-                 unread     = $2,
                  updated_at = unixepoch()
-               WHERE novel_id IN (${chapterIdPlaceholders(3, chunk.length)})
-                 AND (progress <> $1 OR unread <> $2)`,
-              [progress, unreadFlag, ...chunk],
+               WHERE novel_id IN (${chapterIdPlaceholders(2, chunk.length)})
+                 AND progress <> $1`,
+              [progress, ...chunk],
             );
             rowsAffected += result.rowsAffected;
             chunks += 1;
@@ -922,15 +912,13 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
         const states = (args.states ?? []) as ChapterReadState[];
         const groups = new Map<
           string,
-          { ids: number[]; progress: number; unread: number }
+          { ids: number[]; progress: number }
         >();
         for (const state of states) {
-          const unread = state.unread ? 1 : 0;
-          const key = `${unread}:${state.progress}`;
+          const key = `${state.progress}`;
           const group = groups.get(key) ?? {
             ids: [],
             progress: state.progress,
-            unread,
           };
           group.ids.push(state.id);
           groups.set(key, group);
@@ -947,10 +935,9 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
                 `UPDATE chapter
                  SET
                    progress   = $1,
-                   unread     = $2,
                    updated_at = unixepoch()
-                 WHERE id IN (${chapterIdPlaceholders(3, chunk.length)})`,
-                [group.progress, group.unread, ...chunk],
+                 WHERE id IN (${chapterIdPlaceholders(2, chunk.length)})`,
+                [group.progress, ...chunk],
               );
               rowsAffected += result.rowsAffected;
               chunks += 1;
@@ -983,24 +970,23 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
                 OR (candidate.position = reference.position
                     AND candidate.id > reference.id))`;
         const progress = input.unread ? 0 : FINISHED_PROGRESS;
-        const unreadFlag = input.unread ? 1 : 0;
         const value = await options.runTransaction(async (db) => {
           const previous = await db.select<
-            Array<{ id: number; progress: number; unread: unknown }>
+            Array<{ id: number; progress: number }>
           >(
             `WITH reference AS (
                SELECT id, novel_id, position
                FROM chapter
                WHERE id = $1
              )
-             SELECT candidate.id, candidate.unread, candidate.progress
+             SELECT candidate.id, candidate.progress
              FROM chapter AS candidate
              CROSS JOIN reference
              WHERE candidate.novel_id = reference.novel_id
                AND candidate.id <> reference.id
                AND ${rangePredicate}
-               AND (candidate.progress <> $2 OR candidate.unread <> $3)`,
-            [input.anchorChapterId, progress, unreadFlag],
+               AND candidate.progress <> $2`,
+            [input.anchorChapterId, progress],
           );
           const result = await db.execute(
             `WITH reference AS (
@@ -1011,7 +997,6 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
              UPDATE chapter
              SET
                progress   = $2,
-               unread     = $3,
                updated_at = unixepoch()
              WHERE id IN (
                SELECT candidate.id
@@ -1021,8 +1006,8 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
                  AND candidate.id <> reference.id
                  AND ${rangePredicate}
              )
-               AND (progress <> $2 OR unread <> $3)`,
-            [input.anchorChapterId, progress, unreadFlag],
+               AND progress <> $2`,
+            [input.anchorChapterId, progress],
           );
           if (await hasUserStateSchema(db)) {
             const targets = await db.select<{ id: number }[]>(
@@ -1041,7 +1026,6 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
             previous: previous.map((row) => ({
               id: row.id,
               progress: row.progress,
-              unread: sqliteBoolean(row.unread),
             })),
           };
         });
@@ -1376,7 +1360,7 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
            LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id
            WHERE
              n.in_library = 1
-             AND c.unread = 1
+             AND c.progress < 100
              ${scope === "new" ? "AND c.found_by_check = 1" : ""}
              ${cursorClause}
            ORDER BY sortAt DESC, c.position DESC, c.id DESC
@@ -1398,7 +1382,7 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
         const db = await resolveReader(args.readMode);
         const [row] = await db.select<{ count: number }[]>(
           `SELECT COUNT(*) AS count FROM chapter c JOIN novel n ON n.id = c.novel_id
-           WHERE n.in_library = 1 AND c.unread = 1 AND c.found_by_check = 1 AND c.found_at > $1`,
+           WHERE n.in_library = 1 AND c.progress < 100 AND c.found_by_check = 1 AND c.found_at > $1`,
           [args.seenAt],
         );
         return { handled: true, result: row?.count ?? 0 };
@@ -1462,7 +1446,7 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
                c.path        AS chapterPath,
                c.position    AS position,
                c.read_at     AS readAt,
-               CASE WHEN c.unread = 0 THEN 100.0 ELSE c.progress END AS progress,
+               c.progress    AS progress,
                n.plugin_id   AS pluginId,
                n.source_novel_id AS novelSourceNovelId,
                n.name        AS novelName,

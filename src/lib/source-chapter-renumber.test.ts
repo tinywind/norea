@@ -116,7 +116,7 @@ const chapters: ChapterItem[] = [
 let sqlite: DatabaseSync;
 let db: Database;
 const metadata = () => JSON.parse(new TextDecoder().decode(new Uint8Array(state.metadata.get(metadataPath)!)));
-const personalState = () => sqlite.prepare("SELECT id,progress,bookmark,unread,read_at,is_downloaded,stored_content_type,content_bytes,media_bytes FROM chapter ORDER BY id").all();
+const personalState = () => sqlite.prepare("SELECT id,progress,bookmark,read_at,is_downloaded,stored_content_type,content_bytes,media_bytes FROM chapter ORDER BY id").all();
 
 beforeEach(async () => {
   vi.clearAllMocks();
@@ -154,10 +154,10 @@ beforeEach(async () => {
     }
   });
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library) VALUES(7,'source','book','/book','Book',1)");
-  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,unread,read_at,is_downloaded,stored_content_type,content_bytes) VALUES " +
-    "(11,7,'/chapter/1000','First',1,'1000',0.75,1,0,123,1,'html',11)," +
-    "(12,7,'/chapter/2000','Second',2,'2000',0,0,1,NULL,0,NULL,0)," +
-    "(13,7,'norea-folder:3000','Third',3,'3000',1,1,0,456,1,'html',13)");
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,read_at,is_downloaded,stored_content_type,content_bytes) VALUES " +
+    "(11,7,'/chapter/1000','First',1,'1000',75,1,123,1,'html',11)," +
+    "(12,7,'/chapter/2000','Second',2,'2000',0,0,NULL,0,NULL,0)," +
+    "(13,7,'norea-folder:3000','Third',3,'3000',100,1,456,1,'html',13)");
   state.payloads.set(directory + "/1000", "first body with retained media");
   state.payloads.set(directory + "/3000", "third body with retained media");
   await restoreWorkMetadataDirectories(db, false);

@@ -62,7 +62,7 @@ export function userStateValueSummary(kind: UserStateKind, value: UserStateValue
       const reading = value as UserStateValueMap["reading"];
       return t("userState.value.reading", {
         progress: reading.progress,
-        state: t(reading.unread ? "userState.value.unread" : "userState.value.read"),
+        state: t(reading.progress >= 100 ? "userState.value.read" : "userState.value.unread"),
         time: reading.readAt === null ? t("userState.value.noHistory") : formatDateTimeForLocale(locale, reading.readAt * 1000),
       });
     }

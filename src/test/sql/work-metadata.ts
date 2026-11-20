@@ -116,8 +116,8 @@ export async function applyNovelMetadataToCache(db: Database, metadata: NovelMet
       const params = batch.flatMap(chapter => [row.id, chapter.paths[0] ?? `${n.isLocal ? "local-folder" : "norea-folder"}:${chapter.number}`, chapter.name, chapter.number, chapter.position]);
       await db.execute(`WITH catalog(novel_id,path,name,number,position) AS (VALUES
         ${batch.map((_, index) => `(${Array.from({ length: 5 }, (_, column) => `$${index * 5 + column + 1}`).join(",")})`).join(",")})
-        INSERT INTO chapter(novel_id,path,name,chapter_number,position,progress,bookmark,unread,read_at)
-        SELECT c.novel_id,c.path,c.name,c.number,c.position,COALESCE(state.progress,0),COALESCE(state.bookmark,0),COALESCE(state.unread,1),state.read_at
+        INSERT INTO chapter(novel_id,path,name,chapter_number,position,progress,bookmark,read_at)
+        SELECT c.novel_id,c.path,c.name,c.number,c.position,COALESCE(state.progress,0),COALESCE(state.bookmark,0),state.read_at
         FROM catalog c JOIN novel n ON n.id=c.novel_id LEFT JOIN work_metadata_reading_state state
         ON state.plugin_id=n.plugin_id AND state.novel_path=n.path AND state.chapter_path=c.path WHERE true
         ON CONFLICT(novel_id,path) DO UPDATE SET name=excluded.name,position=excluded.position
@@ -202,8 +202,8 @@ export async function scanStoredNovelChaptersToCache(db: Database, novelId: numb
       return `(${Array.from({ length: 8 }, (_, index) => `$${first + index}`).join(",")})`;
     });
     await db.execute(`WITH discovered(path,name,number,position,type,complete,content_bytes,media_bytes) AS (VALUES ${values.join(",")})
-      INSERT INTO chapter(novel_id,path,name,chapter_number,position,content_type,stored_content_type,is_downloaded,media_repair_needed,content_bytes,media_bytes,media_bytes_checked_at,progress,bookmark,unread,read_at)
-      SELECT n.id,d.path,d.name,d.number,d.position,d.type,d.type,d.complete,1-d.complete,d.content_bytes,d.media_bytes,unixepoch(),COALESCE(state.progress,0),COALESCE(state.bookmark,0),COALESCE(state.unread,1),state.read_at
+      INSERT INTO chapter(novel_id,path,name,chapter_number,position,content_type,stored_content_type,is_downloaded,media_repair_needed,content_bytes,media_bytes,media_bytes_checked_at,progress,bookmark,read_at)
+      SELECT n.id,d.path,d.name,d.number,d.position,d.type,d.type,d.complete,1-d.complete,d.content_bytes,d.media_bytes,unixepoch(),COALESCE(state.progress,0),COALESCE(state.bookmark,0),state.read_at
       FROM discovered d JOIN novel n ON n.id=$1 LEFT JOIN work_metadata_reading_state state
       ON state.plugin_id=n.plugin_id AND state.novel_path=n.path AND state.chapter_path=d.path`, params);
   }

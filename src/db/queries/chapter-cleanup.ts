@@ -6,11 +6,12 @@ export interface ChapterCleanupSelection {
   reading: "read" | "all";
   categories: { mode: "all" } | { mode: "selected"; ids: readonly number[] };
   /**
-   * Automatic removal of finished chapters: only downloaded, finished, unbookmarked source
-   * chapters of an installed source, behind the most recently opened chapter with at least
-   * `keepLast` finished chapters between them and it, in novels no "entire novel" goal keeps.
+   * Automatic removal of finished chapters: downloaded, finished (`progress >= 100`),
+   * unbookmarked source chapters keeping the latest `keepLast` finished chapters by position
+   * (`0` selects every finished chapter). When `requireInstalledPlugin` is true (no content
+   * server configured), chapters belonging to uninstalled plugins are skipped.
    */
-  finished?: { keepLast: number };
+  finished?: { keepLast: number; requireInstalledPlugin?: boolean };
 }
 
 export interface ChapterCleanupCandidate {
@@ -22,8 +23,8 @@ export interface ChapterCleanupCandidate {
   serverSource: string | null;
   storageAmbiguous: boolean;
   localServerFingerprint: string | null;
-  /** The chapter is not finished; a cleanup removes it only when the user includes unread chapters. */
-  unread: boolean;
+  /** Reading progress percentage in `[0, 100]`; chapters below `100` are unfinished. */
+  progress: number;
 }
 
 export async function reconcileCleanedChapter(
@@ -58,7 +59,14 @@ export async function listChapterCleanupCandidates(
           }
         : { mode: "all" as const },
     ...(selection.finished
-      ? { finished: { keepLast: Math.max(1, Math.floor(selection.finished.keepLast)) } }
+      ? {
+          finished: {
+            keepLast: Math.max(0, Math.floor(selection.finished.keepLast)),
+            ...(selection.finished.requireInstalledPlugin !== undefined
+              ? { requireInstalledPlugin: selection.finished.requireInstalledPlugin }
+              : {}),
+          },
+        }
       : {}),
   };
   return invokeDbQuery<ChapterCleanupCandidate[]>(

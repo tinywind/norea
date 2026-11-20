@@ -263,7 +263,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     let unread = 0;
     for (const chapter of rows) {
       if (hasStoredChapterContent(chapter)) downloaded += 1;
-      if (chapter.unread) unread += 1;
+      if (chapter.progress < FINISHED_PROGRESS) unread += 1;
     }
     return { downloaded, unread };
   }, [rows]);
@@ -291,10 +291,10 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     [chapters, selectedChapterIds, statuses],
   );
   const selectedUnreadCount = selectedChapters.filter(
-    (chapter) => chapter.unread || chapter.progress < FINISHED_PROGRESS,
+    (chapter) => chapter.progress < FINISHED_PROGRESS,
   ).length;
   const selectedReadCount = selectedChapters.filter(
-    (chapter) => !chapter.unread || chapter.progress > 0,
+    (chapter) => chapter.progress > 0,
   ).length;
   const selectedChapterCount = selectedChapters.length;
   const selectedAnchorChapter =

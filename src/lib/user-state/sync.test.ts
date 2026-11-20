@@ -18,9 +18,6 @@ vi.mock("../../db/user-state", () => ({
   setUserStateActiveServer: mocks.active,
 }));
 vi.mock("../../db/user-state-core", () => ({ waitForUserStateDeferredApply: mocks.projection }));
-vi.mock("../../db/user-state-current", () => ({
-  setUserStateCurrentServer: mocks.currentSet,
-}));
 vi.mock("../content-sync/device", () => ({ registerContentDevice: mocks.register, forgetContentDeviceRegistration: mocks.forget }));
 vi.mock("@tauri-apps/plugin-http", () => ({ fetch: mocks.fetch }));
 
@@ -186,7 +183,6 @@ describe("user state transport", () => {
 
     await synchronizeUserState();
 
-    expect(mocks.currentSet).toHaveBeenCalledWith(null);
     const paths = mocks.fetch.mock.calls.map(([url]) => new URL(url).pathname);
     expect(paths.some(path => path.endsWith("/user-state/current"))).toBe(false);
     expect(paths).toEqual(["/api/v1/capabilities", "/api/v1/user-state"]);

@@ -41,7 +41,6 @@ const VALID_MANIFEST: BackupManifest = {
       position: 1,
       page: "1",
       bookmark: false,
-      unread: true,
       progress: 0,
       isDownloaded: false,
       contentType: "html",

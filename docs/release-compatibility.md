@@ -25,7 +25,7 @@ The SQLite schema is persistent user data.
   freed pages and WAL frames via `PRAGMA incremental_vacuum` and
   `PRAGMA wal_checkpoint(TRUNCATE)`.
 
-The current migration set extends through 0016_user_state_epoch_retention.sql.
+The current migration set extends through 0017_single_progress_model.sql.
 
 ## Filesystem metadata
 
@@ -55,7 +55,8 @@ discarded merely because media is incomplete.
 
 ## Portable backup
 
-The portable app backup format is version 6.
+The portable app backup format is version 7 (chapter reading state uses the
+single `progress` percentage model without a separate `unread` boolean).
 
 A portable backup contains app/library state and download metadata but not the
 downloaded chapter bodies themselves. Restore rechecks the selected content folder
@@ -67,7 +68,7 @@ permissions are not portable backup state.
 Older portable manifest versions that the current parser does not support are
 rejected instead of being silently reinterpreted.
 
-A novel's override is an optional per-novel field. Version-6 files without it
+A novel's override is an optional per-novel field. Version-7 files without it
 restore as novels without an override.
 
 ## Full device backup

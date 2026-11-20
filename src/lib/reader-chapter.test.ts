@@ -25,7 +25,6 @@ const chapter: ChapterRow = {
   position: 2,
   page: "1",
   bookmark: false,
-  unread: true,
   progress: 0,
   isDownloaded: true,
   sourceContentType: "html",
@@ -64,7 +63,6 @@ describe("reader chapter preloading", () => {
     expect(getChapterById).toHaveBeenNthCalledWith(2, chapter.id, "committed");
     expect(getChapterById).toHaveBeenCalledTimes(2);
     expect(result?.progress).toBe(0);
-    expect(result?.unread).toBe(true);
   });
 
   it("reloads content and reconciled metadata after invalidation", async () => {

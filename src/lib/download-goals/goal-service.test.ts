@@ -234,7 +234,11 @@ it("keeps deleted and cancelled chapters out of later goal work", async () => {
   mocks.submitted = [];
 
   expect(await noteDownloadDeletion([11])).toEqual([5]);
-  expect(listGoalNovelIdsForDownloadScope).toHaveBeenCalledWith("chapter", [11], expect.any(Number));
+  expect(listGoalNovelIdsForDownloadScope).toHaveBeenCalledWith(
+    "chapter",
+    [11],
+    { kind: "since", seconds: expect.any(Number) },
+  );
   mocks.downloadListener?.({ job: { id: 13, goal: true }, status: { kind: "cancelled" } });
   reconcileDownloadGoals([1]);
   await settle();

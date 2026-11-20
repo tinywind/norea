@@ -102,6 +102,8 @@ import {
   notifyUserStateCommitted,
   recordUserStateChangesInDb,
   waitForUserStateDeferredApply,
+  isCurrentWorkHeld,
+  loadCurrentHeldSourcesInDb,
 } from "../../test/sql/user-state-core";
 import {
   acknowledgeUserStateOperationsInDb,
@@ -111,7 +113,6 @@ import {
   storeUserStateRecordInDb,
 } from "../../test/sql/user-state-ledger";
 import { refreshUnattemptedUserStateIdentitiesInDb } from "../../test/sql/user-state-materialize";
-import { isCurrentWorkHeld, loadCurrentHeldSourcesInDb } from "../../test/sql/user-state-current-data";
 import {
   getUserStateBinding,
   getUserStateLedgerStatus,
@@ -272,7 +273,7 @@ class SimulatedContentServer {
         return !(value as UserStateValueMap["membership"]).included;
       case "reading": {
         const r = value as UserStateValueMap["reading"];
-        return r.progress === 0 && r.unread && r.readAt === null;
+        return r.progress === 0 && r.readAt === null;
       }
       case "resume": {
         const r = value as UserStateValueMap["resume"];
@@ -404,7 +405,7 @@ class SimulatedContentServer {
       const value = current.value as UserStateValueMap["reading"];
       return this.publishRecord(
         current.entity,
-        { progress: value.progress, unread: value.unread, readAt: null },
+        { progress: value.progress, readAt: null },
         `policy2b-${crypto.randomUUID()}`,
         "server-retention",
         "Retention Policy",
@@ -779,7 +780,7 @@ function addWorkToClient(
     const ch = chapters[i]!;
     client.sql
       .prepare(
-        "INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread,read_at,bookmark) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at,bookmark) VALUES(?,?,?,?,?,?,?,?,?)",
       )
       .run(
         ch.id,
@@ -789,7 +790,6 @@ function addWorkToClient(
         String(i + 1),
         i + 1,
         ch.progress ?? 0,
-        ch.unread ?? 1,
         ch.readAt ?? null,
         ch.bookmark ?? 0,
       );
@@ -1251,12 +1251,12 @@ describe("Client E2E — Tier 1: Feature Coverage", () => {
       through: 1,
       nextCursor: 1,
       hasMore: false,
-      records: [makeRemoteRecord(ch3Entity, { progress: 0, unread: true, readAt: null }, 1)],
+      records: [makeRemoteRecord(ch3Entity, { progress: 0, readAt: null }, 1)],
     });
     const ch4Key = userStateEntityKey({ kind: "reading", work: DEFAULT_WORK, chapter: { chapterPath: "/ch/4", name: "Private Record" } });
     activeClient.sql
       .prepare("INSERT INTO user_state_private(entity_key,public_value_json) VALUES(?,?)")
-      .run(ch4Key, JSON.stringify({ progress: 0, unread: true, readAt: null }));
+      .run(ch4Key, JSON.stringify({ progress: 0, readAt: null }));
 
     await clearReadingProgress();
 
@@ -1815,7 +1815,7 @@ describe("Client E2E — Tier 2: Boundary & Corner Cases", () => {
     const ns = JSON.stringify([binding.serverUrl, binding.workspaceId, binding.epoch]);
 
     await runTx(activeClient, (db) =>
-      storeUserStateRecordInDb(db, ns, makeRemoteRecord(entity, { progress: 40, unread: false, readAt: 100 }, 5)),
+      storeUserStateRecordInDb(db, ns, makeRemoteRecord(entity, { progress: 40, readAt: 100 }, 5)),
     );
 
     await expect(
@@ -1827,7 +1827,7 @@ describe("Client E2E — Tier 2: Boundary & Corner Cases", () => {
         through: 5,
         nextCursor: 5,
         hasMore: false,
-        records: [makeRemoteRecord(entity, { progress: 90, unread: false, readAt: 100 }, 5)],
+        records: [makeRemoteRecord(entity, { progress: 90, readAt: 100 }, 5)],
       }),
     ).rejects.toThrow(/changed its contents/i);
   });
@@ -1992,7 +1992,7 @@ describe("Client E2E — Tier 2: Boundary & Corner Cases", () => {
       through: 1,
       nextCursor: 1,
       hasMore: false,
-      records: [makeRemoteRecord(targetEntity, { progress: 0, unread: true, readAt: null }, 1)],
+      records: [makeRemoteRecord(targetEntity, { progress: 0, readAt: null }, 1)],
     });
 
     await clearReadingProgress();
@@ -2269,7 +2269,7 @@ describe("Client E2E — Tier 3: Cross-Feature Pairwise Combinations", () => {
         .get(userStateEntityKey(retiredEntity)),
     ).toEqual({ c: 1 });
 
-    activeServer.seedRemoteRecord({ kind: "reading", work: targetWork, chapter: { chapterPath: "/ch/1", name: "Ch 1" } }, { progress: 80, unread: false, readAt: 1_700_000_000 });
+    activeServer.seedRemoteRecord({ kind: "reading", work: targetWork, chapter: { chapterPath: "/ch/1", name: "Ch 1" } }, { progress: 80, readAt: 1_700_000_000 });
     activeServer.seedRemoteRecord(retiredEntity, { bookmarked: false });
     activeServer.physicalGcTombstones();
 
@@ -2432,17 +2432,17 @@ describe("Client E2E — Tier 3: Cross-Feature Pairwise Combinations", () => {
     const savedValue = activeServer.records.get(
       userStateEntityKey({ kind: "reading", work: DEFAULT_WORK, chapter: { chapterPath: "/ch/2", name: "Ch 2" } }),
     )?.value;
-    expect(savedValue).toEqual({ progress: 80, unread: true, readAt: expect.any(Number) });
+    expect(savedValue).toEqual({ progress: 80, readAt: expect.any(Number) });
     expect((savedValue as { readAt: number }).readAt).toBeGreaterThan(1_700_000_000);
     expect((savedValue as { readAt: number }).readAt).toBe(localCh2.readAt);
   });
 
-  it("T3-18: Policy 2-B new revision clears readAt while preserving progress=90, unread=false and ReadingStateSettings summary", async () => {
+  it("T3-18: Policy 2-B new revision clears readAt while preserving progress=90 and ReadingStateSettings summary", async () => {
     addWorkToClient(activeClient, 1, DEFAULT_WORK, {
       chapters: [{ id: 11, path: "/ch/1", name: "Ch 1" }],
     });
     const entity: UserStateEntity = { kind: "reading", work: DEFAULT_WORK, chapter: { chapterPath: "/ch/1", name: "Ch 1" } };
-    activeServer.seedRemoteRecord(entity, { progress: 90, unread: false, readAt: 1_700_000_000 });
+    activeServer.seedRemoteRecord(entity, { progress: 90, readAt: 1_700_000_000 });
     await synchronizeUserState();
     await waitForUserStateDeferredApply();
 
@@ -2450,14 +2450,13 @@ describe("Client E2E — Tier 3: Cross-Feature Pairwise Combinations", () => {
     await synchronizeUserState();
     await waitForUserStateDeferredApply();
 
-    expect(activeClient.sql.prepare("SELECT progress,unread,read_at FROM chapter WHERE id=11").get()).toEqual({
+    expect(activeClient.sql.prepare("SELECT progress,read_at FROM chapter WHERE id=11").get()).toEqual({
       progress: 90,
-      unread: 0,
       read_at: null,
     });
     const summary = userStateValueSummary(
       "reading",
-      { progress: 90, unread: false, readAt: null },
+      { progress: 90, readAt: null },
       ((key: keyof typeof enMessages, vals?: Record<string, string | number>) => {
         let out = enMessages[key];
         for (const [k, v] of Object.entries(vals ?? {})) out = out.replaceAll(`{${k}}`, String(v));
@@ -2465,7 +2464,7 @@ describe("Client E2E — Tier 3: Cross-Feature Pairwise Combinations", () => {
       }) as ReturnType<typeof useTranslation>["t"],
       "en",
     );
-    expect(summary).toBe("90% · Read · No reading history");
+    expect(summary).toBe("90% · Unread · No reading history");
   });
 
   it("T3-19: uploadDeviceBackup serializes synchronizeUserState + post-sync operation pruning before device_backup_create", async () => {
@@ -2927,8 +2926,8 @@ describe("Client E2E — Tier 4: Multi-Client & Multi-Step Workflows", () => {
     const libRead: UserStateEntity = { kind: "reading", work: libWork, chapter: { chapterPath: "/ch/1", name: "L1" } };
     const nonLibRead: UserStateEntity = { kind: "reading", work: nonLibWork, chapter: { chapterPath: "/ch/1", name: "N1" } };
     activeServer.seedRemoteRecord({ kind: "library", work: libWork }, { inLibrary: true, addedAt: 100 });
-    activeServer.seedRemoteRecord(libRead, { progress: 80, unread: false, readAt: 1_650_000_000 });
-    activeServer.seedRemoteRecord(nonLibRead, { progress: 40, unread: true, readAt: 1_650_000_000 });
+    activeServer.seedRemoteRecord(libRead, { progress: 80, readAt: 1_650_000_000 });
+    activeServer.seedRemoteRecord(nonLibRead, { progress: 40, readAt: 1_650_000_000 });
     await synchronizeUserState();
     await waitForUserStateDeferredApply();
 
@@ -2940,9 +2939,8 @@ describe("Client E2E — Tier 4: Multi-Client & Multi-Step Workflows", () => {
     await synchronizeUserState();
     await waitForUserStateDeferredApply();
 
-    expect(activeClient.sql.prepare("SELECT progress,unread,read_at FROM chapter WHERE id=11").get()).toEqual({
+    expect(activeClient.sql.prepare("SELECT progress,read_at FROM chapter WHERE id=11").get()).toEqual({
       progress: 80,
-      unread: 0,
       read_at: null,
     });
     expect(
@@ -3047,9 +3045,8 @@ describe("Client E2E — Tier 4: Multi-Client & Multi-Step Workflows", () => {
       count: 3,
     });
     // Reading progress from Device A still synced to Device B.
-    expect(clientB.sql.prepare("SELECT progress,unread FROM chapter WHERE id=11").get()).toEqual({
+    expect(clientB.sql.prepare("SELECT progress FROM chapter WHERE id=11").get()).toEqual({
       progress: 40,
-      unread: 0,
     });
   });
 });

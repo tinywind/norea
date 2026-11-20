@@ -39,7 +39,6 @@ export interface ChapterRow {
   position: number;
   page: string;
   bookmark: boolean;
-  unread: boolean;
   progress: number;
   isDownloaded: boolean;
   sourceContentType: ChapterContentType;
@@ -276,29 +275,28 @@ export async function upsertChapter(
 }
 
 /**
- * Reader position saves never lower a finished chapter: reopening it lands near the end and
- * lazily loaded images then shift that position, which would otherwise overwrite "read" with
- * a partial value. Explicit read-state changes go through setChaptersReadState instead.
+ * Reader position saves preserve a finished chapter unless `allowProgressReset` is explicitly set
+ * (for example, when re-reading from the start or continuing into a finished next chapter and moving).
  */
 export async function updateChapterProgress(
   chapterId: number,
   progress: number,
-  options: { recordHistory?: boolean } = {},
+  options: { recordHistory?: boolean; allowProgressReset?: boolean } = {},
 ): Promise<void> {
   await invokeDbMutation<null>("db_chapter_update_progress", {
     input: {
       chapterId,
       progress,
       recordHistory: options.recordHistory ?? true,
+      ...(options.allowProgressReset ? { allowProgressReset: true } : {}),
     },
   });
 }
 
-/** A chapter's read flag and progress, as captured before a bulk read-state change. */
+/** A chapter's progress, as captured before a bulk read-state change. */
 export interface ChapterReadState {
   id: number;
   progress: number;
-  unread: boolean;
 }
 
 export async function setChaptersReadState(

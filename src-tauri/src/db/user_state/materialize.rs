@@ -14,7 +14,6 @@ use super::core::{
     canonical_entity_in_tx, has_user_state_schema_in_tx, intent_from_row, non_empty_source_id,
     promote_private_work_identities_in_tx, resolve_category_alias_in_tx, IntentRow,
 };
-use super::is_user_state_current_mode;
 use super::stored_chapter::resolve_stored_chapter_reference_in_tx;
 use super::types::{
     is_local_user_state_entity, merge_user_state_composition, parse_chapter_reference,
@@ -457,6 +456,7 @@ async fn reapply_composed_chapter_user_state_in_tx(
         {
             Ok((next, _)) => {
                 effects.resumes.extend(next.resumes);
+                effects.has_finished_reading |= next.has_finished_reading;
                 if !is_local {
                     sqlx::query(
                         "UPDATE user_state_record SET applied_revision = revision, \
@@ -721,18 +721,17 @@ pub fn materialize_user_state_record_with_options_in_tx<'a>(
                 )
                 .await?;
                 let progress = record.value["progress"].as_f64().unwrap_or(0.0);
-                let unread = record.value["unread"].as_bool().unwrap_or(true);
                 let read_at = record.value.get("readAt").and_then(JsonValue::as_i64);
-                sqlx::query(
-                    "UPDATE chapter SET progress = ?2, unread = ?3, read_at = ?4 WHERE id = ?1",
-                )
-                .bind(chapter_id)
-                .bind(progress)
-                .bind(if unread { 1_i64 } else { 0_i64 })
-                .bind(read_at)
-                .execute(&mut *conn)
-                .await
-                .map_err(|err| format!("db user state: project reading: {err}"))?;
+                sqlx::query("UPDATE chapter SET progress = ?2, read_at = ?3 WHERE id = ?1")
+                    .bind(chapter_id)
+                    .bind(progress)
+                    .bind(read_at)
+                    .execute(&mut *conn)
+                    .await
+                    .map_err(|err| format!("db user state: project reading: {err}"))?;
+                if progress >= 100.0 {
+                    effects.has_finished_reading = true;
+                }
                 if defer_last_read_at {
                     return Ok((effects, Some(work.id)));
                 }
@@ -809,6 +808,7 @@ pub fn materialize_user_state_record_with_options_in_tx<'a>(
                 )
                 .await?;
                 effects.resumes.extend(next.resumes);
+                effects.has_finished_reading |= next.has_finished_reading;
             }
             _ => {}
         }
@@ -955,10 +955,6 @@ pub async fn defer_user_state_for_novel_in_tx(
     novel_id: i64,
 ) -> Result<(), String> {
     if !has_user_state_schema_in_tx(conn).await? {
-        return Ok(());
-    }
-    if is_user_state_current_mode() {
-        ctx.record_user_state_deferred_novel(novel_id);
         return Ok(());
     }
     refresh_unattempted_user_state_identities_in_tx(conn, Some(novel_id)).await?;

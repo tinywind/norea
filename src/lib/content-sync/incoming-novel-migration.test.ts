@@ -82,10 +82,10 @@ function initializeDevice(idOffset = 0) {
   const registration = readFileSync("src-tauri/src/database.rs", "utf8");
   for (const match of registration.matchAll(/include_str!\("([^"]+)"\)/g)) sqlite.exec(readFileSync("src-tauri/src/" + match[1], "utf8"));
   sqlite.exec(`INSERT INTO novel(id,plugin_id,source_novel_id,path,name,author,in_library,library_added_at) VALUES(${1+idOffset},'alpha','a-work','/old','Original','Old author',1,10);
-    INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,is_downloaded,progress,unread,bookmark,read_at) VALUES
-    (${11+idOffset},${1+idOffset},'/a/1','Old first','1',1,1,100,0,1,40),
-    (${12+idOffset},${1+idOffset},'/a/2','Old second','2',2,0,42,1,0,50),
-    (${13+idOffset},${1+idOffset},'/a/note','Note','3',3,0,0,1,0,NULL)`);
+    INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,is_downloaded,progress,bookmark,read_at) VALUES
+    (${11+idOffset},${1+idOffset},'/a/1','Old first','1',1,1,100,1,40),
+    (${12+idOffset},${1+idOffset},'/a/2','Old second','2',2,0,42,0,50),
+    (${13+idOffset},${1+idOffset},'/a/note','Note','3',3,0,0,0,NULL)`);
   const bindings = (values: unknown[]) => Object.fromEntries(values.map((value,index) => ["$"+(index+1),value])) as never;
   db = { select: async (sql:string, values:unknown[]=[]) => sqlite.prepare(sql).all(bindings(values)), execute: async (sql:string, values:unknown[]=[]) => {
     const result = sqlite.prepare(sql).run(bindings(values)); return { rowsAffected:Number(result.changes), lastInsertId:Number(result.lastInsertRowid) };
@@ -204,8 +204,8 @@ it("replays the same migration on two devices with distinct local IDs and preser
     const result=await apply();
     expect(result!.sourceNovelId).toBe(1+offset);
     expect(sqlite.prepare("SELECT plugin_id,author,in_library FROM novel").all()).toEqual([{plugin_id:"beta",author:null,in_library:1}]);
-    expect(sqlite.prepare("SELECT path,progress,unread,bookmark,is_downloaded FROM chapter ORDER BY position").all()).toEqual([
-      {path:"/b/11",progress:100,unread:0,bookmark:1,is_downloaded:1},{path:"/b/12",progress:42,unread:1,bookmark:0,is_downloaded:0},
+    expect(sqlite.prepare("SELECT path,progress,bookmark,is_downloaded FROM chapter ORDER BY position").all()).toEqual([
+      {path:"/b/11",progress:100,bookmark:1,is_downloaded:1},{path:"/b/12",progress:42,bookmark:0,is_downloaded:0},
     ]);
     expect(files.has("contents/beta/b-work/11")).toBe(true);expect(files.has("contents/alpha/a-work/1")).toBe(false);
     expect((await listIncomingMigrations("http://server", true))[0]?.status).toBe("completed");
@@ -426,8 +426,8 @@ it("keeps target-primary body choice on a recipient with only an A download whil
   expect(files.has("contents/beta/b-work/11")).toBe(false);
   expect(files.has("contents/alpha/a-work/1")).toBe(false);
   expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
-  expect(sqlite.prepare("SELECT progress,bookmark,unread,is_downloaded FROM chapter WHERE path='/b/11'").get())
-    .toEqual({ progress: 100, bookmark: 1, unread: 0, is_downloaded: 0 });
+  expect(sqlite.prepare("SELECT progress,bookmark,is_downloaded FROM chapter WHERE path='/b/11'").get())
+    .toEqual({ progress: 100, bookmark: 1, is_downloaded: 0 });
 });
 
 it("preserves the composed target order during incoming replay without source-number upserts", async () => {
@@ -456,10 +456,10 @@ async function prepareCompositionReplacement() {
   sqlite.exec("PRAGMA foreign_keys=ON");
   await applyNovelMetadataToCache(db, resolved.targetWork.metadata);
   const target = await findNovelBySource("beta", "/new");
-  await db.execute("UPDATE chapter SET path='/b/11',progress=72,unread=0,bookmark=1,read_at=80,is_downloaded=1,stored_content_type='html',content_bytes=10 WHERE novel_id=$1 AND chapter_number='11'", [target!.id]);
+  await db.execute("UPDATE chapter SET path='/b/11',progress=72,bookmark=1,read_at=80,is_downloaded=1,stored_content_type='html',content_bytes=10 WHERE novel_id=$1 AND chapter_number='11'", [target!.id]);
   await db.execute("UPDATE chapter SET path='/b/12',is_downloaded=1,stored_content_type='html',content_bytes=10 WHERE novel_id=$1 AND chapter_number='12'", [target!.id]);
   await db.execute("INSERT INTO chapter_download_goal_exclusion(chapter_id,created_at) SELECT id,123 FROM chapter WHERE novel_id=$1 AND path='/b/11'", [target!.id]);
-  sqlite.exec("UPDATE chapter SET progress=20,unread=1,bookmark=0,read_at=30 WHERE id=11");
+  sqlite.exec("UPDATE chapter SET progress=20,bookmark=0,read_at=30 WHERE id=11");
   files.set("contents/beta/b-work/11", payload("d"));
   files.set("contents/beta/b-work/12", payload("e"));
   const a = { pluginId:"alpha",novelId:"a-work",novelPath:"/old",chapterPath:"/a/1",chapterNumber:"1",name:"Old first",position:1,page:"1",contentType:"html" as const,releaseTime:null };
@@ -482,8 +482,8 @@ async function prepareCompositionReplacement() {
 it("metadata import retains paired B reading state and automatic exclusion on new A-primary row",async()=>{
   const target=await prepareCompositionReplacement();
   await applyNovelMetadataToCache(db,live.work.metadata);
-  const rows=sqlite.prepare("SELECT c.path,c.progress,c.unread,c.bookmark,c.read_at,c.is_downloaded,c.content_bytes,e.created_at AS excludedAt FROM chapter c LEFT JOIN chapter_download_goal_exclusion e ON e.chapter_id=c.id WHERE c.novel_id=? ORDER BY c.position").all(target.id);
-  expect.soft(rows[0]).toMatchObject({path:"norea-composed:replacement",progress:72,unread:0,bookmark:1,read_at:80,excludedAt:123,is_downloaded:0,content_bytes:0});
+  const rows=sqlite.prepare("SELECT c.path,c.progress,c.bookmark,c.read_at,c.is_downloaded,c.content_bytes,e.created_at AS excludedAt FROM chapter c LEFT JOIN chapter_download_goal_exclusion e ON e.chapter_id=c.id WHERE c.novel_id=? ORDER BY c.position").all(target.id);
+  expect.soft(rows[0]).toMatchObject({path:"norea-composed:replacement",progress:72,bookmark:1,read_at:80,excludedAt:123,is_downloaded:0,content_bytes:0});
   expect.soft(rows[1]).toMatchObject({path:"/b/12",is_downloaded:1,content_bytes:10});
   expect.soft(sqlite.prepare("SELECT id FROM chapter WHERE novel_id=? AND path='/b/11'").get(target.id)).toBeUndefined();
 });
@@ -491,8 +491,8 @@ it("metadata import retains paired B reading state and automatic exclusion on ne
 it("incoming replay merges A20 with B72 and keeps selected edition bytes separate",async()=>{
   await prepareCompositionReplacement();
   await apply();
-  const rows=sqlite.prepare("SELECT c.path,c.progress,c.unread,c.bookmark,c.read_at,c.is_downloaded,c.content_bytes,e.created_at AS excludedAt FROM chapter c LEFT JOIN chapter_download_goal_exclusion e ON e.chapter_id=c.id ORDER BY c.position").all();
-  expect.soft(rows[0]).toMatchObject({path:"norea-composed:replacement",progress:72,unread:0,bookmark:1,read_at:80,excludedAt:123,is_downloaded:1,content_bytes:10});
+  const rows=sqlite.prepare("SELECT c.path,c.progress,c.bookmark,c.read_at,c.is_downloaded,c.content_bytes,e.created_at AS excludedAt FROM chapter c LEFT JOIN chapter_download_goal_exclusion e ON e.chapter_id=c.id ORDER BY c.position").all();
+  expect.soft(rows[0]).toMatchObject({path:"norea-composed:replacement",progress:72,bookmark:1,read_at:80,excludedAt:123,is_downloaded:1,content_bytes:10});
   expect.soft(rows[1]).toMatchObject({path:"/b/12",is_downloaded:1,content_bytes:10});
   expect.soft(files.get("contents/beta/b-work/11")?.body?.sha256).toBe("d".repeat(64));
   expect.soft(files.get("contents/beta/b-work/13")?.body?.sha256).toBe("a".repeat(64));

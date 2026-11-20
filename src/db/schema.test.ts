@@ -54,7 +54,10 @@ it("upgrades populated v1 storage and reopens without losing library, chapters o
     db = new DatabaseSync(path);
     expect(db.prepare("SELECT * FROM novel").all()).toEqual(library);
     expect(db.prepare("SELECT * FROM chapter").all())
-      .toEqual(chapters.map((row) => ({ ...(row as object), found_by_check: 0 })));
+      .toEqual(chapters.map((row) => {
+        const { unread: _dropped, ...rest } = row as Record<string, unknown>;
+        return { ...rest, found_by_check: 0 };
+      }));
     expect(db.prepare("SELECT * FROM chapter_download_queue").all()).toEqual(queue);
     expect(db.prepare("SELECT * FROM vpn_download_plan").all())
       .toEqual([{ id: "plan", payload: "retained payload", revision: 3 }]);
@@ -182,7 +185,10 @@ it("upgrades populated v6 storage to freshness records without flagging any exis
     applyRegisteredMigrations(db, 6);
     expect(tables.map((table) => db.prepare(`SELECT * FROM ${table}`).all())).toEqual(before);
     expect(db.prepare("SELECT * FROM chapter ORDER BY id").all())
-      .toEqual(chapters.map((row) => ({ ...(row as object), found_by_check: 0 })));
+      .toEqual(chapters.map((row) => {
+        const { unread: _dropped, ...rest } = row as Record<string, unknown>;
+        return { ...rest, found_by_check: 0 };
+      }));
     expect(() => db.exec("UPDATE chapter SET found_by_check=2 WHERE id=1")).toThrow();
     db.exec("INSERT INTO novel_freshness(novel_id,last_checked_at,consecutive_failures) VALUES(1,100,2),(2,200,0)");
     expect(() => db.exec("INSERT INTO novel_freshness(novel_id) VALUES(99)")).toThrow();
@@ -242,7 +248,8 @@ it("upgrades v9 with durable chapter composition without changing library, conte
     expect(db.prepare("SELECT * FROM work_metadata_dirty").all()).toEqual([{ plugin_id: "source", path: "/book" }]);
     db.close(); db = new DatabaseSync(file);
     expect(db.prepare("SELECT * FROM novel").get()).toEqual(novel);
-    expect(db.prepare("SELECT * FROM chapter").get()).toEqual(chapter);
+    const { unread: _droppedUnread, ...expectedChapter } = chapter as Record<string, unknown>;
+    expect(db.prepare("SELECT * FROM chapter").get()).toEqual({ ...expectedChapter, progress: 100 });
     expect(JSON.parse((db.prepare("SELECT payload FROM novel_chapter_composition").get() as { payload: string }).payload))
       .toEqual({ version: 1, updatedAt: 42, entries: [] });
   } finally { db.close(); rmSync(directory, { recursive: true }); }
@@ -394,6 +401,80 @@ it("upgrades populated v15 user_state_workspace rows with seed_suppressed and se
       seedSuppressed: 1,
       seedCutoffAt: 1_700_000_000_000,
     });
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true });
+  }
+});
+
+it("upgrades populated v16 storage to the single-progress model, normalizes unread=0 rows to 100, and strips unread from user-state JSON", () => {
+  mkdirSync(".tmp", { recursive: true });
+  const directory = mkdtempSync(".tmp/single-progress-migration-");
+  const file = join(directory, "norea.db");
+  let db = new DatabaseSync(file);
+  try {
+    applyRegisteredMigrations(db, 0, 16);
+    db.exec(`INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library)
+      VALUES(1,'source','work-1','/work','Work',1);
+      INSERT INTO chapter(id,novel_id,path,name,position,progress,unread,read_at) VALUES
+        (1,1,'/c1','Done partial',1,40,0,100),
+        (2,1,'/c2','In progress',2,55,1,200),
+        (3,1,'/c3','Unread zero',3,0,1,NULL),
+        (4,1,'/c4','Already 100',4,100,0,300);
+      INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,unread,read_at) VALUES
+        ('source','/work','/old1',30,1,0,50),
+        ('source','/work','/old2',60,0,1,60);
+      INSERT INTO user_state_intent(entity_key,entity_json,value_json,seed)
+      VALUES('["reading","k1"]','{"kind":"reading"}','{"progress":45,"unread":false,"readAt":100}',0),
+            ('["reading","k2"]','{"kind":"reading"}','{"progress":45,"unread":true,"readAt":110}',0);
+      INSERT INTO user_state_record(namespace,entity_key,revision,payload)
+      VALUES('ns','["reading","k1"]',1,'{"entity":{"kind":"reading"},"value":{"progress":20,"unread":false,"readAt":90}}');
+      INSERT INTO user_state_operation(operation_id,namespace,entity_key,intent_sequence,payload,status,receipt)
+      VALUES('op-ack','ns','["reading","k1"]',1,'{"operationId":"op-ack","entity":{"kind":"reading"},"value":{"progress":45,"unread":false,"readAt":100}}','acknowledged','{"status":"applied","current":{"entity":{"kind":"reading"},"value":{"progress":45,"unread":false,"readAt":100}}}'),
+            ('op-pend','ns','["reading","k2"]',2,'{"operationId":"op-pend","entity":{"kind":"reading"},"value":{"progress":45,"unread":true,"readAt":110}}','pending',NULL);
+      INSERT INTO user_state_private(entity_key,public_value_json)
+      VALUES('["reading","k1"]','{"progress":10,"unread":false,"readAt":80}');
+      INSERT INTO content_sync_cache(cache_key,payload)
+      VALUES('user-state-current:http://example','{}'),('keep-key','{}');`);
+
+    applyRegisteredMigrations(db, 16, 17);
+    db.close();
+    db = new DatabaseSync(file);
+
+    expect(db.prepare("PRAGMA table_info('chapter')").all().map((c) => c.name)).not.toContain("unread");
+    expect(db.prepare("PRAGMA table_info('work_metadata_reading_state')").all().map((c) => c.name)).not.toContain("unread");
+    expect(db.prepare("SELECT id, progress, read_at AS readAt FROM chapter ORDER BY id").all()).toEqual([
+      { id: 1, progress: 100, readAt: 100 },
+      { id: 2, progress: 55, readAt: 200 },
+      { id: 3, progress: 0, readAt: null },
+      { id: 4, progress: 100, readAt: 300 },
+    ]);
+    expect(db.prepare("SELECT chapter_path AS path, progress, bookmark, read_at AS readAt FROM work_metadata_reading_state ORDER BY chapter_path").all()).toEqual([
+      { path: "/old1", progress: 100, bookmark: 1, readAt: 50 },
+      { path: "/old2", progress: 60, bookmark: 0, readAt: 60 },
+    ]);
+    expect(db.prepare("SELECT entity_key AS key, value_json AS value FROM user_state_intent ORDER BY sequence").all()
+      .map((r) => ({ key: r.key, value: JSON.parse(String(r.value)) }))).toEqual([
+      { key: '["reading","k1"]', value: { progress: 100, readAt: 100 } },
+      { key: '["reading","k2"]', value: { progress: 45, readAt: 110 } },
+    ]);
+    expect(JSON.parse(String((db.prepare("SELECT payload FROM user_state_record").get() as { payload: string }).payload)).value)
+      .toEqual({ progress: 100, readAt: 90 });
+    expect(db.prepare("SELECT operation_id FROM user_state_operation ORDER BY operation_id").all())
+      .toEqual([{ operation_id: "op-ack" }]);
+    const opRow = db.prepare("SELECT payload, receipt FROM user_state_operation WHERE operation_id='op-ack'").get() as { payload: string; receipt: string };
+    expect(JSON.parse(opRow.payload).value).toEqual({ progress: 100, readAt: 100 });
+    expect(JSON.parse(opRow.receipt).current.value).toEqual({ progress: 100, readAt: 100 });
+    expect(JSON.parse(String((db.prepare("SELECT public_value_json FROM user_state_private").get() as { public_value_json: string }).public_value_json)))
+      .toEqual({ progress: 100, readAt: 80 });
+    expect(db.prepare("SELECT cache_key FROM content_sync_cache").all()).toEqual([{ cache_key: "keep-key" }]);
+    expect(db.prepare("SELECT total_chapters AS total, chapters_unread AS unread FROM novel_stats WHERE novel_id=1").get())
+      .toEqual({ total: 4, unread: 2 });
+    db.exec("UPDATE chapter SET progress=100 WHERE id=2");
+    expect(db.prepare("SELECT chapters_unread AS unread FROM novel_stats WHERE novel_id=1").get())
+      .toEqual({ unread: 1 });
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='chapter_progress_found_position_idx'").get())
+      .toEqual({ name: "chapter_progress_found_position_idx" });
   } finally {
     db.close();
     rmSync(directory, { recursive: true });

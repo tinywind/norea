@@ -40,7 +40,7 @@ function storageIdentity(row: ContentSyncChapter): ChapterContentStorageIdentity
 async function serverInventory(row: ContentSyncChapter, source: ServerNovelSource, signal?: AbortSignal) {
   return fetchCleanupServerInventory({ identity: storageIdentity(row), novelPath: row.novelPath, chapterPath: row.chapterPath,
     novelName: row.novelName, chapterName: row.chapterName, serverSource: null, storageAmbiguous: false,
-    localServerFingerprint: null, unread: false }, source.serverUrl, signal);
+    localServerFingerprint: null, progress: 100 }, source.serverUrl, signal);
 }
 
 export async function scanChapterDifferences(

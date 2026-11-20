@@ -474,6 +474,9 @@ fn chapter_files(source: &Path) -> Result<Vec<String>, String> {
     for name in ["content.html", "content.pdf", "manifest.json", "media.zip"] {
         match fs::symlink_metadata(source.join(name)) {
             Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                if (name == "content.html" || name == "content.pdf") && metadata.len() == 0 {
+                    return Err(failure("chapter body must not be empty"));
+                }
                 paths.push(name.to_string());
             }
             Ok(_) => return Err(failure("invalid chapter artifact")),
@@ -701,8 +704,11 @@ fn chapter_file_manifest(source: &Path, mut manifest: Value) -> Result<Value, St
         let (size, modified_at) = file_size_and_modified_at(&source.join(&path))?;
         records.push(json!({"path":path,"size":size,"modifiedAt":modified_at}));
     }
-    if !records.iter().any(|record| record["path"] == body) {
+    let Some(body_record) = records.iter().find(|record| record["path"] == body) else {
         return Err(failure("chapter body is missing"));
+    };
+    if body_record["size"].as_u64().unwrap_or(0) == 0 {
+        return Err(failure("chapter body must not be empty"));
     }
     inspect_chapter_media(source)?;
     manifest["layout"] = json!("chapter-files");
@@ -1756,4 +1762,16 @@ mod tests {
         );
     }
 
+    #[test]
+    fn chapter_files_rejects_zero_byte_html_and_pdf_bodies() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("content.html"), b"").unwrap();
+        let err = chapter_files(dir.path()).unwrap_err();
+        assert!(err.contains("must not be empty"), "unexpected error: {err}");
+
+        fs::remove_file(dir.path().join("content.html")).unwrap();
+        fs::write(dir.path().join("content.pdf"), b"").unwrap();
+        let pdf_err = chapter_files(dir.path()).unwrap_err();
+        assert!(pdf_err.contains("must not be empty"), "unexpected error: {pdf_err}");
+    }
 }

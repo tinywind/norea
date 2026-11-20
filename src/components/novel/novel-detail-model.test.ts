@@ -19,13 +19,13 @@ import {
 function chapter(
   id: number,
   position: number,
-  state: { progress?: number; unread?: boolean; isDownloaded?: boolean; contentBytes?: number; readAt?: number | null } = {},
+  state: { progress?: number; isDownloaded?: boolean; contentBytes?: number; readAt?: number | null } = {},
 ): ChapterListRow {
   const progress = state.progress ?? 0;
   return {
     id, novelId: 1, path: `/chapter/${id}`, name: `Chapter ${id}`,
     chapterNumber: String(position), position, page: "1", bookmark: false,
-    unread: state.unread ?? progress < 100, progress,
+    progress,
     isDownloaded: state.isDownloaded ?? false,
     sourceContentType: "html", contentType: "html",
     contentBytes: state.contentBytes ?? 0,
@@ -166,11 +166,11 @@ describe("findChapterForJump", () => {
 
 describe("filterChapterList", () => {
   const rows = [
-    chapter(1, 1, { unread: false }),
+    chapter(1, 1, { progress: 100 }),
     { ...chapter(2, 2), isDownloaded: true },
     { ...chapter(3, 3), contentBytes: 40, mediaRepairNeeded: true },
     chapter(4, 4),
-    { ...chapter(5, 5, { unread: false }), isDownloaded: true },
+    { ...chapter(5, 5, { progress: 100 }), isDownloaded: true },
     chapter(6, 6),
   ];
   const statuses = new Map([

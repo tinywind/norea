@@ -37,7 +37,6 @@ const chapter: ChapterListRow = {
   position: 1,
   page: "1",
   bookmark: false,
-  unread: true,
   progress: 0,
   isDownloaded: false,
   sourceContentType: "html",
@@ -185,11 +184,8 @@ describe("chapter row structure", () => {
     expect(unread.attr("style") ?? "").not.toContain("--norea-chapter-progress");
   });
 
-  it.each([
-    ["marked read", { unread: false, progress: 0 }],
-    ["read to the end", { unread: true, progress: 100 }],
-  ])("marks a finished row read when %s", (_label, row) => {
-    const $ = renderRow(row);
+  it("marks a finished row read when progress reaches 100%", () => {
+    const $ = renderRow({ progress: 100 });
     const finished = $(".norea-novel-chapter");
     expect(finished.attr("data-progress")).toBe("read");
     expect(finished.attr("style")).toContain("--norea-chapter-progress:100%");
@@ -207,7 +203,7 @@ describe("chapter row structure", () => {
 
   it("marks the chapter Continue opens with a visible Up next label and dims read titles", () => {
     const $ = renderList({
-      chapters: [{ ...chapter, unread: false }, { ...chapter, id: 2, name: "Second chapter", position: 2 }],
+      chapters: [{ ...chapter, progress: 100 }, { ...chapter, id: 2, name: "Second chapter", position: 2 }],
       continueChapterId: 2,
     });
     const next = $("button[aria-current='step']");

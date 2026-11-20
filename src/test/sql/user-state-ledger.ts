@@ -5,11 +5,10 @@ import {
   type UserStateMergeResult, type UserStateOperation, type UserStateReadResponse, type UserStateRebindMode, type UserStateRecord, type UserStateValue, type UserStateValueMap,
 } from "../../lib/user-state/types";
 import {
-  assertUserStateAvailableInDb, canonicalEntity, chapterReference, chapterWork, hasUserStateSchema, intentFromRow, isBeforeSeedCutoff, namespaceFor, nonEmptySourceId, promotePrivateWorkIdentitiesInDb, recordChapterRowsInDb, recordResumeClearedInDb, recordUserStateChangesInDb, requireBinding,
+  assertUserStateAvailableInDb, canonicalEntity, chapterReference, chapterWork, hasUserStateSchema, intentFromRow, isBeforeSeedCutoff, isCurrentWorkHeld, loadCurrentHeldSourcesInDb, namespaceFor, nonEmptySourceId, promotePrivateWorkIdentitiesInDb, recordChapterRowsInDb, recordResumeClearedInDb, recordUserStateChangesInDb, requireBinding,
   resolveCategoryAlias, seedUserStateInDb, USER_CHAPTER_SELECT, USER_STATE_PRELINK_BASE_REVISION, userStateRestorePausedInDb, workspaceRows,
   type IntentRow, type UserChapterRow, type UserStateDb,
 } from "./user-state-core";
-import { isCurrentWorkHeld, loadCurrentHeldSourcesInDb } from "./user-state-current-data";
 import { DeferredUserState, hasPendingUserStateForRecordInDb, materializeUserStateRecordInDb } from "./user-state-materialize";
 import { portableStoredUserStateIntentInDb } from "./user-state-stored-chapter";
 
@@ -777,7 +776,7 @@ function canonicalTombstoneForEntity(entity: UserStateEntity, prevValue: UserSta
     case "membership":
       return { included: false };
     case "reading":
-      return { progress: 0, unread: true, readAt: null };
+      return { progress: 0, readAt: null };
     case "bookmark":
       return { bookmarked: false };
     case "resume":
@@ -1045,11 +1044,11 @@ export async function applyLocalUserStateRetentionInDb(
           : "";
         if (!hasSchema || !privateKeys.has(key)) {
           publicTouchedNovels.add(row.novelId);
-          publicRows.push({ ...row, progress: 0, unread: 1, readAt: null });
+          publicRows.push({ ...row, progress: 0, readAt: null });
         }
       }
       const res = await db.execute(
-        "UPDATE chapter SET progress=0,unread=1,read_at=NULL,updated_at=unixepoch() WHERE id IN (SELECT value FROM json_each($1))",
+        "UPDATE chapter SET progress=0,read_at=NULL,updated_at=unixepoch() WHERE id IN (SELECT value FROM json_each($1))",
         [JSON.stringify(ids)],
       );
       affected += res.rowsAffected;

@@ -155,7 +155,7 @@ export function TaskNotifications() {
     restoreQueue();
     startDownloadGoals();
     startFreshnessChecks();
-    startFinishedChapterCleanup();
+    startFinishedChapterCleanup(queryClient);
     if (typeof window !== "undefined") {
       window.addEventListener("norea-app-resumed", restoreQueue);
       window.addEventListener("focus", restoreQueue);

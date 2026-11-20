@@ -57,18 +57,23 @@ export interface DownloadGoalNovel {
   goal: Exclude<NovelDownloadGoal, { kind: "none" }> | null;
 }
 
+export type DownloadGoalActiveFilter =
+  | { kind: "none" }
+  | { kind: "since"; seconds: number }
+  | { kind: "all" };
+
 /** Active library source novels covered by the global policy, except explicit pauses; most recently read first. */
 export async function listDownloadGoalNovels(
-  activeSince: number | null,
+  activeFilter: DownloadGoalActiveFilter,
   novelIds?: readonly number[],
 ): Promise<DownloadGoalNovel[]> {
-  if (activeSince === null) return [];
+  if (activeFilter.kind === "none") return [];
   const ids = novelIds
     ? [...new Set(novelIds)].filter(Number.isSafeInteger)
     : undefined;
   if (ids?.length === 0) return [];
   return invokeDbQuery<DownloadGoalNovel[]>("db_novel_goal_list_novels", {
-    activeSince,
+    activeFilter,
     novelIds: ids ?? null,
     mode: "queued",
   });
@@ -78,15 +83,15 @@ export async function listDownloadGoalNovels(
 export async function listGoalNovelIdsForDownloadScope(
   scope: "chapter" | "novel" | "all",
   ids: readonly number[],
-  activeSince: number | null = null,
+  activeFilter: DownloadGoalActiveFilter = { kind: "none" },
 ): Promise<number[]> {
-  if (activeSince === null) return [];
+  if (activeFilter.kind === "none") return [];
   const unique = [...new Set(ids)].filter(Number.isSafeInteger);
   if (scope !== "all" && unique.length === 0) return [];
   return invokeDbQuery<number[]>("db_novel_goal_list_ids_for_scope", {
     scope,
     ids: unique,
-    activeSince,
+    activeFilter,
     mode: "queued",
   });
 }

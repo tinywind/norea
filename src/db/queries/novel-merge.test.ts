@@ -46,7 +46,6 @@ function sourceChapter(overrides: Record<string, unknown> = {}) {
     novelId: 1,
     path: "/a/1",
     bookmark: 1,
-    unread: 0,
     progress: 70,
     isDownloaded: 1,
     sourceContentType: "html",
@@ -66,7 +65,6 @@ function targetChapter(overrides: Record<string, unknown> = {}) {
     novelId: 2,
     path: "/b/1",
     bookmark: 0,
-    unread: 1,
     progress: 20,
     isDownloaded: 0,
     sourceContentType: "pdf",
@@ -146,7 +144,6 @@ describe("applyNovelMergeInDb", () => {
     expect(targetUpdateCall?.[1]).toEqual([
       21,
       1,
-      0,
       70,
       40,
       1,
@@ -187,8 +184,8 @@ describe("applyNovelMergeInDb", () => {
     const targetUpdateCall = mockExecute.mock.calls.find(([sql]) =>
       String(sql).includes("UPDATE chapter") && String(sql).includes("stored_content_type"),
     );
-    expect(targetUpdateCall?.[1]?.[5]).toBe(0);
-    expect(targetUpdateCall?.[1]?.[6]).toBeNull();
+    expect(targetUpdateCall?.[1]?.[4]).toBe(0);
+    expect(targetUpdateCall?.[1]?.[5]).toBeNull();
   });
 
   it("adopts retained B metadata when its download flag was stale", async () => {
@@ -220,7 +217,7 @@ describe("applyNovelMergeInDb", () => {
     const targetUpdateCall = mockExecute.mock.calls.find(([sql]) =>
       String(sql).includes("UPDATE chapter") && String(sql).includes("stored_content_type"),
     );
-    expect(targetUpdateCall?.[1]?.slice(5, 9)).toEqual([1, "pdf", 900, 0]);
+    expect(targetUpdateCall?.[1]?.slice(4, 8)).toEqual([1, "pdf", 900, 0]);
     expect(result.transferredDownloads).toBe(0);
   });
 
@@ -257,8 +254,8 @@ describe("applyNovelMergeInDb", () => {
     const targetUpdateCall = mockExecute.mock.calls.find(([sql]) =>
       String(sql).includes("UPDATE chapter") && String(sql).includes("stored_content_type"),
     );
-    expect(targetUpdateCall?.[1]?.[5]).toBe(1);
-    expect(targetUpdateCall?.[1]?.[6]).toBe("html");
+    expect(targetUpdateCall?.[1]?.[4]).toBe(1);
+    expect(targetUpdateCall?.[1]?.[5]).toBe("html");
     expect(result.transferredDownloads).toBe(1);
   });
 
@@ -287,7 +284,7 @@ describe("applyNovelMergeInDb", () => {
       String(sql).includes("UPDATE chapter") && String(sql).includes("merge_updates"),
     );
     expect(chapterUpdateCalls).toHaveLength(1);
-    expect(chapterUpdateCalls[0]?.[1]).toHaveLength(20);
+    expect(chapterUpdateCalls[0]?.[1]).toHaveLength(18);
   });
 
   it("requires an explicit decision for every A chapter", async () => {
@@ -399,7 +396,7 @@ describe("applyNovelMergeInDb user state transaction", () => {
     }
     sqlite.exec("INSERT INTO novel(id,plugin_id,path,name,in_library,library_added_at) VALUES(1,'source-a','/a','Source',1,10),(2,'source-b','/b','Target',0,NULL)");
     sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position) VALUES(11,1,'/a/1','1화',1),(12,1,'/a/2','2화',2),(13,1,'/a/note','Note',3),(21,2,'/b/1','1화',1),(22,2,'/b/2','2화',2)");
-    sqlite.exec("UPDATE chapter SET unread=0,progress=100,bookmark=1,read_at=40 WHERE id=11");
+    sqlite.exec("UPDATE chapter SET progress=100,bookmark=1,read_at=40 WHERE id=11");
     sqlite.exec("UPDATE chapter SET progress=11,read_at=50 WHERE id=12");
     sqlite.exec("UPDATE chapter SET progress=20,read_at=30 WHERE id=21");
     sqlite.exec("UPDATE novel SET source_novel_id=CASE id WHEN 1 THEN '101' ELSE '202' END");
@@ -497,9 +494,9 @@ describe("applyNovelMergeInDb user state transaction", () => {
     const result = await applyNovelMergeInDb(input());
     expect(result.chapterIdMap).toEqual({ 11: 21, 12: 22 });
     expect(result.preferredLastReadChapterId).toBe(22);
-    expect(sqlite.prepare("SELECT id,novel_id,path,name,unread,progress,bookmark,read_at FROM chapter ORDER BY id").all()).toEqual([
-      { id: 21, novel_id: 2, path: "/b/1", name: "1화", unread: 0, progress: 100, bookmark: 1, read_at: 40 },
-      { id: 22, novel_id: 2, path: "/b/2", name: "2화", unread: 1, progress: 11, bookmark: 0, read_at: 50 },
+    expect(sqlite.prepare("SELECT id,novel_id,path,name,progress,bookmark,read_at FROM chapter ORDER BY id").all()).toEqual([
+      { id: 21, novel_id: 2, path: "/b/1", name: "1화", progress: 100, bookmark: 1, read_at: 40 },
+      { id: 22, novel_id: 2, path: "/b/2", name: "2화", progress: 11, bookmark: 0, read_at: 50 },
     ]);
     expect(sqlite.prepare("SELECT id,plugin_id,path,in_library,library_added_at,last_read_at FROM novel").all()).toEqual([
       { id: 2, plugin_id: "source-b", path: "/b", in_library: 1, library_added_at: 10, last_read_at: 50 },
@@ -655,7 +652,7 @@ describe("applyNovelMergeInDb user state transaction", () => {
       },
     });
     expect(sqlite.prepare("SELECT id FROM novel ORDER BY id").all()).toEqual([{ id: 2 }]);
-    expect(sqlite.prepare("SELECT unread,progress,bookmark FROM chapter WHERE id=21").get()).toEqual({ unread: 0, progress: 100, bookmark: 1 });
+    expect(sqlite.prepare("SELECT progress,bookmark FROM chapter WHERE id=21").get()).toEqual({ progress: 100, bookmark: 1 });
     expect(sqlite.prepare("SELECT json_extract(payload,'$.status') AS status FROM content_sync_cache").all()).toEqual([{ status: "completed" }]);
   });
   it("rolls recipient receipt and reading state back when the source cannot be removed", async () => {

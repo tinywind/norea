@@ -17,14 +17,14 @@ beforeEach(() => {
   invokeMock.mockReset();
 });
 
-it("deduplicates selected categories, clamps limits, and defaults to committed readMode", async () => {
+it("deduplicates selected categories, preserves keepLast 0, clamps limits, and defaults to committed readMode", async () => {
   invokeMock.mockResolvedValueOnce([]);
 
   await listChapterCleanupCandidates(
     {
       reading: "read",
       categories: { mode: "selected", ids: [10, 11, 10] },
-      finished: { keepLast: 0 },
+      finished: { keepLast: 0, requireInstalledPlugin: false },
     },
     { afterId: 2, limit: 500 },
   );
@@ -36,7 +36,7 @@ it("deduplicates selected categories, clamps limits, and defaults to committed r
         selection: {
           reading: "read",
           categories: { mode: "selected", ids: [10, 11] },
-          finished: { keepLast: 1 },
+          finished: { keepLast: 0, requireInstalledPlugin: false },
         },
         afterId: 2,
         limit: 100,
@@ -81,7 +81,7 @@ it("forwards queued per-ID rechecks and reconcileCleanedChapter mutations", asyn
     serverSource: null,
     storageAmbiguous: false,
     localServerFingerprint: null,
-    unread: false,
+    progress: 100,
   };
   invokeMock
     .mockResolvedValueOnce([candidate])

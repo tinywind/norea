@@ -14,13 +14,11 @@ use super::core::{
     record_user_state_changes_in_tx, work_reference_in_tx, IntentRow, UserChapterRow,
     USER_CHAPTER_SELECT,
 };
-use super::current::current_resume_values;
-use super::is_user_state_current_mode;
 use super::materialize::{materialize_user_state_record_in_tx, MaterializeError};
 use super::types::{
-    merge_user_state_current_resume, parse_portable_reader_anchor, parse_user_state_current_item,
-    parse_user_state_record, parse_user_state_value, parse_work_reference, user_state_entity_key,
-    user_state_work_key, ParsedUserStateRecord, UserStateApplyEffectsDto, UserStateResumeEffectDto,
+    merge_user_state_resume, parse_user_state_record, parse_user_state_value,
+    parse_work_reference, user_state_entity_key, user_state_work_key, ParsedUserStateRecord,
+    UserStateApplyEffectsDto, UserStateResumeEffectDto,
 };
 
 const MAX_SAFE_INT_I64: i64 = 9_007_199_254_740_991;
@@ -170,132 +168,6 @@ pub async fn remap_pending_user_state_in_tx(
     let source_key = user_state_work_key(&source);
     let target_key = user_state_work_key(&target);
 
-    if is_user_state_current_mode() {
-        let local_rows = sqlx::query(
-            "SELECT sequence, entity_key, entity_json, value_json, seed \
-             FROM user_state_intent WHERE json_extract(entity_json, '$.kind') = 'resume'",
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|err| format!("db user state migration: load current resumes: {err}"))?;
-        let mut local_resumes: Vec<(JsonValue, JsonValue)> = Vec::with_capacity(local_rows.len());
-        for r in local_rows {
-            let intent_row = IntentRow {
-                sequence: r.get("sequence"),
-                entity_key: r.get("entity_key"),
-                entity_json: r.get("entity_json"),
-                value_json: r.get("value_json"),
-                seed: r.get("seed"),
-            };
-            let (mut ent, val) = intent_from_row(&intent_row)?;
-            if ent["kind"].as_str() == Some("resume") && ent["work"]["sourceNovelId"].is_null() {
-                let prev_work = parse_work_reference(&ent["work"])?;
-                if let Some(owner) = [&source, &target].into_iter().find(|w| {
-                    w.plugin_id == prev_work.plugin_id && w.novel_path == prev_work.novel_path
-                }) {
-                    ent = json!({ "kind": "resume", "work": serde_json::to_value(owner).unwrap() });
-                }
-            }
-            local_resumes.push((ent, val));
-        }
-
-        let shared_rows: Vec<Option<String>> = sqlx::query_scalar(
-            "SELECT json_extract(payload, '$.resumes') FROM content_sync_cache \
-             WHERE cache_key LIKE 'user-state-current-status:%'",
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|err| format!("db user state migration: load shared current resumes: {err}"))?;
-        let mut applied_resumes: Vec<(JsonValue, JsonValue)> = Vec::new();
-        for opt_json in shared_rows.into_iter().flatten() {
-            let arr: Vec<JsonValue> = serde_json::from_str(&opt_json)
-                .map_err(|err| format!("db user state migration: parse shared resumes: {err}"))?;
-            for item in arr {
-                applied_resumes.push(parse_user_state_current_item(&item)?);
-            }
-        }
-
-        let public_resumes = current_resume_values(&local_resumes, &applied_resumes)?;
-        let mut selected: Option<(&UserChapterRow, JsonValue)> = None;
-        for (key, is_source) in [(&target_key, false), (&source_key, true)] {
-            let Some((_, val)) = public_resumes.get(key) else {
-                continue;
-            };
-            let Some(raw_ch) = val.get("chapter").filter(|v| !v.is_null()) else {
-                continue;
-            };
-            let ch_path = raw_ch["chapterPath"].as_str().unwrap_or("");
-            let val_entry_id = raw_ch.get("compositionEntryId").and_then(JsonValue::as_str);
-            if is_source {
-                if let Some(&orig) = by_source_path.get(ch_path) {
-                    let orig_ref = chapter_reference_json(orig);
-                    let orig_entry_id = orig_ref
-                        .get("compositionEntryId")
-                        .and_then(JsonValue::as_str);
-                    if orig_entry_id.is_some() && orig_entry_id != val_entry_id {
-                        continue;
-                    }
-                }
-            }
-            let mapped = if is_source {
-                remap_chapter(ch_path)
-            } else {
-                let lookup = target_paths_by_old_path
-                    .get(ch_path)
-                    .map_or(ch_path, String::as_str);
-                target_by_path.get(lookup).copied()
-            };
-            let Some(mapped) = mapped else {
-                continue;
-            };
-            let next_ref = chapter_reference_json(mapped);
-            let next_ref_path = next_ref["chapterPath"].as_str().unwrap_or("");
-            let next_entry_id = next_ref
-                .get("compositionEntryId")
-                .and_then(JsonValue::as_str);
-            let unchanged_path = !is_source && next_ref_path == ch_path;
-            if unchanged_path && next_entry_id.is_some() && next_entry_id != val_entry_id {
-                continue;
-            }
-            let mut next_val = val.clone();
-            next_val["chapter"] = next_ref;
-            if is_source {
-                next_val["anchor"] = JsonValue::Null;
-            }
-            let wins = match &selected {
-                None => true,
-                Some((_, prev_sel)) => {
-                    merge_user_state_current_resume(prev_sel, &next_val)? == next_val
-                }
-            };
-            if wins {
-                selected = Some((mapped, next_val));
-            }
-        }
-
-        if let Some((chapter, val)) = selected {
-            let anchor = match val.get("anchor").filter(|v| !v.is_null()) {
-                Some(raw_a) => Some(parse_portable_reader_anchor(raw_a)?),
-                None => None,
-            };
-            let opened_at = val.get("openedAt").and_then(JsonValue::as_i64);
-            record_user_state_changes_in_tx(
-                conn,
-                ctx,
-                &[(json!({ "kind": "resume", "work": target_work_json }), val)],
-                false,
-            )
-            .await?;
-            effects.resumes.push(UserStateResumeEffectDto {
-                novel_id: target_novel_id,
-                chapter_id: Some(chapter.id),
-                anchor,
-                opened_at,
-            });
-        }
-        return Ok(effects);
-    }
-
     struct PendingRemap {
         entity: JsonValue,
         value: JsonValue,
@@ -398,12 +270,9 @@ pub async fn remap_pending_user_state_in_tx(
                 if kind == "reading" {
                     let lp = prev.value["progress"].as_f64().unwrap_or(0.0);
                     let rp = mapped_val["progress"].as_f64().unwrap_or(0.0);
-                    let lu = prev.value["unread"].as_bool().unwrap_or(true);
-                    let ru = mapped_val["unread"].as_bool().unwrap_or(true);
                     let lr = prev.value.get("readAt").and_then(JsonValue::as_i64);
                     let rr = mapped_val.get("readAt").and_then(JsonValue::as_i64);
-                    let any_positive =
-                        lp > 0.0 || !lu || lr.is_some() || rp > 0.0 || !ru || rr.is_some();
+                    let any_positive = lp > 0.0 || lr.is_some() || rp > 0.0 || rr.is_some();
                     merged_val = if any_positive {
                         let max_read = match (lr, rr) {
                             (None, r) => r,
@@ -414,12 +283,11 @@ pub async fn remap_pending_user_state_in_tx(
                             "reading",
                             &json!({
                                 "progress": lp.max(rp),
-                                "unread": lu && ru,
                                 "readAt": max_read,
                             }),
                         )?
                     } else {
-                        json!({ "progress": 0, "unread": true, "readAt": null })
+                        json!({ "progress": 0, "readAt": null })
                     };
                 } else if kind == "bookmark" {
                     let lb = prev.value["bookmarked"].as_bool().unwrap_or(false);
@@ -486,7 +354,10 @@ pub async fn remap_pending_user_state_in_tx(
         match materialize_user_state_record_in_tx(root, conn, "", &local_rec, skipped_chapter_ids)
             .await
         {
-            Ok(res) => effects.resumes.extend(res.resumes),
+            Ok(res) => {
+                effects.resumes.extend(res.resumes);
+                effects.has_finished_reading |= res.has_finished_reading;
+            }
             Err(MaterializeError::Deferred(_)) => {}
             Err(MaterializeError::Fatal(err)) => return Err(err),
         }
@@ -647,7 +518,7 @@ pub async fn transfer_settled_novel_merge_resume_in_tx(
     });
     if let Some(target_resume) = read_latest_resume(conn, &target_resume_key).await? {
         if target_resume.get("chapter").is_some_and(|c| !c.is_null())
-            && merge_user_state_current_resume(&target_resume, &next_val)? != next_val
+            && merge_user_state_resume(&target_resume, &next_val)? != next_val
         {
             return Ok(None);
         }

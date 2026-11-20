@@ -34,7 +34,7 @@ export interface UserStateValueMap {
   library: { inLibrary: boolean; addedAt: number | null };
   category: { name: string; sort: number; deleted: boolean };
   membership: { included: boolean };
-  reading: { progress: number; unread: boolean; readAt: number | null };
+  reading: { progress: number; readAt: number | null };
   bookmark: { bookmarked: boolean };
   resume: { chapter: UserStateChapterReference | null; anchor: PortableReaderAnchor | null; openedAt: number | null };
   composition: { composition: ChapterCompositionV1 };
@@ -173,6 +173,7 @@ export interface UserStateApplyEffects {
   resumes: UserStateResumeEffect[];
   hasMore?: boolean;
   failedEntityKeys?: string[];
+  hasFinishedReading?: boolean;
 }
 
 export class UserStateProtocolError extends Error {
@@ -282,8 +283,8 @@ export function parseUserStateValue(kind: UserStateKind, value: unknown): UserSt
       return { included: bool(row.included, "category membership") };
     }
     case "reading": {
-      const row = object(value, ["progress", "unread", "readAt"], "reading value");
-      return { progress: numberRange(row.progress, "reading progress", 0, 100), unread: bool(row.unread, "unread flag"), readAt: nullableTime(row.readAt, "read time") };
+      const row = object(value, ["progress", "readAt"], "reading value");
+      return { progress: numberRange(row.progress, "reading progress", 0, 100), readAt: nullableTime(row.readAt, "read time") };
     }
     case "bookmark": {
       const row = object(value, ["bookmarked"], "bookmark value");
@@ -456,4 +457,18 @@ export function userStateJsonBytes(value: unknown): number {
   const encoded = JSON.stringify(value);
   if (encoded === undefined) fail("value is not portable JSON");
   return new TextEncoder().encode(encoded).byteLength;
+}
+export function mergeUserStateResume(
+  left: UserStateValueMap["resume"],
+  right: UserStateValueMap["resume"],
+): UserStateValueMap["resume"] {
+  if (!left.chapter) return right;
+  if (!right.chapter) return left;
+  const leftTime = left.openedAt ?? -1;
+  const rightTime = right.openedAt ?? -1;
+  if (leftTime !== rightTime) return leftTime > rightTime ? left : right;
+  const leftAnchor = left.anchor?.savedAt ?? -1;
+  const rightAnchor = right.anchor?.savedAt ?? -1;
+  if (leftAnchor !== rightAnchor) return leftAnchor > rightAnchor ? left : right;
+  return canonicalUserStateJson(left) <= canonicalUserStateJson(right) ? left : right;
 }

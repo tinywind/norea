@@ -159,7 +159,6 @@ export interface NovelMergeSummarySourceChapter {
   id: number;
   isDownloaded: boolean;
   progress: number;
-  unread: boolean;
 }
 
 export interface NovelMergeDecisionSummary {
@@ -192,7 +191,7 @@ export function summarizeNovelMergeDecisions(
   for (const chapter of sourceChapters) {
     const decision = decisions[chapter.id];
     if (!decision) continue;
-    const hasProgress = !chapter.unread || chapter.progress > 0;
+    const hasProgress = chapter.progress > 0;
     if (chapter.isDownloaded) downloaded += 1;
     if (decision.kind === "map") {
       summary.mapped += 1;

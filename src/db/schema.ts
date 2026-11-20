@@ -50,7 +50,6 @@ export const workMetadataReadingStateTable = sqliteTable("work_metadata_reading_
   chapterPath: text("chapter_path").notNull(),
   progress: integer("progress").notNull(),
   bookmark: integer("bookmark", { mode: "boolean" }).notNull(),
-  unread: integer("unread", { mode: "boolean" }).notNull(),
   readAt: integer("read_at"),
 }, (table) => ({ identity: primaryKey({ columns: [table.pluginId, table.novelPath, table.chapterPath] }) }));
 
@@ -125,7 +124,6 @@ export const chapterTable = sqliteTable(
     bookmark: integer("bookmark", { mode: "boolean" })
       .notNull()
       .default(false),
-    unread: integer("unread", { mode: "boolean" }).notNull().default(true),
     progress: integer("progress").notNull().default(0),
     isDownloaded: integer("is_downloaded", { mode: "boolean" })
       .notNull()
@@ -153,7 +151,7 @@ export const chapterTable = sqliteTable(
       .default(false),
   },
   (t) => ({
-    foundByCheckIdx: index("chapter_found_by_check_idx").on(t.foundByCheck, t.unread, t.foundAt),
+    foundByCheckIdx: index("chapter_found_by_check_idx").on(t.foundByCheck, t.progress, t.foundAt),
     foundByCheckCheck: check("chapter_found_by_check", sql`${t.foundByCheck} IN (0, 1)`),
     novelPathUniq: uniqueIndex("chapter_novel_path_uniq").on(
       t.novelId,
@@ -170,8 +168,8 @@ export const chapterTable = sqliteTable(
     ),
     novelDownloadedPositionIdx: index("chapter_novel_downloaded_position_idx")
       .on(t.novelId, t.isDownloaded, t.position, t.id),
-    unreadFoundPositionIdx: index("chapter_unread_found_position_idx").on(
-      t.unread,
+    progressFoundPositionIdx: index("chapter_progress_found_position_idx").on(
+      t.progress,
       t.foundAt,
       t.position,
       t.id,

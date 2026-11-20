@@ -16,7 +16,7 @@ import { isStorageId } from "../storage-id";
 import type { ChapterContentType } from "../chapter-content";
 import { parseWorkOverride, type WorkOverrideField } from "../work-metadata/override";
 
-export const BACKUP_FORMAT_VERSION = 6 as const;
+export const BACKUP_FORMAT_VERSION = 7 as const;
 
 /** A novel's user-set metadata; the work identity comes from the novel that carries it. */
 export interface BackupNovelOverride {
@@ -55,7 +55,6 @@ export interface BackupChapter {
   position: number;
   page: string;
   bookmark: boolean;
-  unread: boolean;
   progress: number;
   isDownloaded: boolean;
   /** Plugin acquisition type. */
@@ -207,7 +206,6 @@ function isChapter(value: unknown): value is BackupChapter {
     typeof value.position === "number" &&
     typeof value.page === "string" &&
     typeof value.bookmark === "boolean" &&
-    typeof value.unread === "boolean" &&
     typeof value.progress === "number" &&
     typeof value.isDownloaded === "boolean" &&
     (value.contentType === "html" ||

@@ -1,6 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChapterCleanupCandidate } from "../../db/queries/chapter-cleanup";
-import { cleanupServerUrl, fetchCleanupServerInventory } from "./chapter-inventory";
+import { cleanupServerUrl, fetchCleanupServerInventory, verifyServerCompleteChapter } from "./chapter-inventory";
 
 const mocks = vi.hoisted(() => ({ request: vi.fn(), register: vi.fn(async () => "token"), state: { deviceName: "Device", lookupTimeoutSeconds: 10 } }));
 vi.mock("../../store/content-sync", () => ({ useContentSyncStore: { getState: () => mocks.state } }));
@@ -58,5 +58,76 @@ describe("server cleanup inventory boundary", () => {
     const failure = new Error("404 or unavailable");
     mocks.request.mockReset().mockRejectedValueOnce(failure);
     await expect(fetchCleanupServerInventory(candidate, "https://server")).rejects.toBe(failure);
+  });
+  it("reports noMediaDeclared only when manifest files omit both manifest.json and media.zip", async () => {
+    const textEntry = { ...entry, manifest: { ...entry.manifest, bodyPath: "content.html", files: [{ path: "content.html", size: 120, modifiedAt: 1 }] } };
+    mocks.request.mockReset().mockResolvedValueOnce(textEntry).mockResolvedValueOnce(response);
+    expect((await fetchCleanupServerInventory(candidate, "https://server")).noMediaDeclared).toBe(true);
+
+    const mediaEntry = { ...entry, manifest: { ...entry.manifest, bodyPath: "content.html", files: [{ path: "content.html", size: 120, modifiedAt: 1 }, { path: "manifest.json", size: 50, modifiedAt: 1 }] } };
+    mocks.request.mockReset().mockResolvedValueOnce(mediaEntry).mockResolvedValueOnce(response);
+    expect((await fetchCleanupServerInventory(candidate, "https://server")).noMediaDeclared).toBe(false);
+  });
+});
+
+describe("verifyServerCompleteChapter", () => {
+  const completeEntry = {
+    id: "package",
+    revision: "revision-1",
+    complete: true,
+    deleted: false,
+    manifest: {
+      identity,
+      chapter: { chapterNumber: "2" },
+      bodyPath: "content.html",
+      files: [{ path: "content.html", size: 42, modifiedAt: 1 }],
+    },
+  };
+
+  it("verifies complete non-empty catalog chapters with a single /catalog/chapter call", async () => {
+    mocks.request.mockReset().mockResolvedValueOnce(completeEntry);
+    const result = await verifyServerCompleteChapter(candidate, "https://server");
+    expect(result).toEqual({
+      ok: true,
+      chapter: { serverUrl: "https://server", id: "package", revision: "revision-1" },
+    });
+    expect(mocks.request).toHaveBeenCalledTimes(1);
+    expect(mocks.request.mock.calls[0]![1]).toMatch(/^\/catalog\/chapter\?/);
+  });
+
+  it("allows chapterNumber fallback only for norea-folder:<N> aliases and rejects unrelated paths", async () => {
+    const folderEntry = {
+      ...completeEntry,
+      manifest: {
+        ...completeEntry.manifest,
+        identity: { ...identity, chapterPath: "norea-folder:2" },
+      },
+    };
+    mocks.request.mockReset().mockResolvedValueOnce(folderEntry);
+    expect(await verifyServerCompleteChapter(candidate, "https://server")).toMatchObject({ ok: true });
+
+    const differentRealPath = {
+      ...completeEntry,
+      manifest: {
+        ...completeEntry.manifest,
+        identity: { ...identity, chapterPath: "/other-chapter-same-number" },
+      },
+    };
+    mocks.request.mockReset().mockResolvedValueOnce(differentRealPath);
+    await expect(verifyServerCompleteChapter(candidate, "https://server")).rejects.toThrow("identity does not match");
+  });
+
+  it("returns not-complete when entry.complete is false or body file is missing/empty, and server-missing when deleted", async () => {
+    mocks.request.mockReset().mockResolvedValueOnce({ ...completeEntry, complete: false });
+    expect(await verifyServerCompleteChapter(candidate, "https://server")).toEqual({ ok: false, reason: "not-complete" });
+
+    mocks.request.mockReset().mockResolvedValueOnce({
+      ...completeEntry,
+      manifest: { ...completeEntry.manifest, files: [{ path: "content.html", size: 0, modifiedAt: 1 }] },
+    });
+    expect(await verifyServerCompleteChapter(candidate, "https://server")).toEqual({ ok: false, reason: "not-complete" });
+
+    mocks.request.mockReset().mockResolvedValueOnce({ ...completeEntry, deleted: true });
+    expect(await verifyServerCompleteChapter(candidate, "https://server")).toEqual({ ok: false, reason: "server-missing" });
   });
 });

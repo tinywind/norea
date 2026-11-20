@@ -145,8 +145,9 @@ it("checks a content-server work outside the library but never a browsed novel o
   expect(mocks.checkNovel).toHaveBeenCalledOnce();
 });
 
-it("passes the current global automatic eligibility into check priority", async () => {
+it("passes the current global automatic eligibility into check priority using a fixed active window", async () => {
   const now = 20 * ACTIVE_NOVEL_WINDOW_SECONDS;
+  useDownloadGoalSettingsStore.getState().setAutomaticActiveWindow("unlimited");
   await runDueChecks(now * 1000);
   expect(listCheckCandidates).toHaveBeenLastCalledWith(now - ACTIVE_NOVEL_WINDOW_SECONDS);
   useDownloadGoalSettingsStore.getState().setAutomaticGoal({ kind: "none" });

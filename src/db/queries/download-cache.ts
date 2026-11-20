@@ -32,7 +32,6 @@ export interface DownloadCacheChapter {
   novelId: number;
   name: string;
   position: number;
-  unread: boolean;
   progress: number;
   readAt: number | null;
   downloadedAt: number | null;

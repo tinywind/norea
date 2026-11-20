@@ -1,10 +1,15 @@
 import { MantineProvider } from "@mantine/core";
 import { load } from "cheerio";
 import { readFileSync } from "node:fs";
+import type { ReactNode } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import { expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 import type { ChapterListRow } from "../../db/queries/chapter";
+import {
+  collectElements,
+  mountBackNavigationHarness,
+} from "../../lib/android-back-navigation.test-support";
 
 vi.mock("../../i18n", () => ({
   useTranslation: () => ({
@@ -21,7 +26,7 @@ import { NovelWorkspace } from "./NovelWorkspace";
 
 const chapter: ChapterListRow = {
   id: 1, novelId: 3, name: "One", path: "/1", chapterNumber: "1", position: 1, page: "1",
-  bookmark: false, unread: true, progress: 0, isDownloaded: false, sourceContentType: "html", contentType: "html",
+  bookmark: false, progress: 0, isDownloaded: false, sourceContentType: "html", contentType: "html",
   contentBytes: 0, mediaBytes: 0, mediaRepairNeeded: false, releaseTime: null, readAt: null,
   createdAt: null, foundAt: 1, updatedAt: 1,
 };
@@ -67,21 +72,38 @@ it("starts reading without history and offers no separate From start", () => {
   expect(buttonTexts($)).not.toContain("novel.fromStart");
 });
 
-it("continues at the downloaded next chapter by number and offers From start", () => {
+it("continues at the downloaded next chapter by number and offers From start", async () => {
+  const chapters = [
+    { ...chapter, progress: 100 },
+    { ...chapter, id: 2, position: 2, chapterNumber: "52", isDownloaded: true },
+  ];
   const $ = render({
-    chapters: [
-      { ...chapter, unread: false, progress: 100 },
-      { ...chapter, id: 2, position: 2, chapterNumber: "52", isDownloaded: true },
-    ],
+    chapters,
     lastReadChapterId: 1,
   });
   expect(buttonTexts($)).toContain("novel.continueChapter:52");
   expect(buttonTexts($)).toContain("novel.fromStart");
+
+  const onRead = vi.fn();
+  let tree: ReactNode = null;
+  function Probe() {
+    tree = NovelWorkspace({ ...props, chapters, lastReadChapterId: 1, onRead });
+    return null;
+  }
+  const harness = mountBackNavigationHarness();
+  try {
+    await harness.render(<Probe />);
+    const fromStartButton = collectElements(tree).find((el) => el.props.children === "novel.fromStart")!;
+    (fromStartButton.props.onClick as () => void)();
+    expect(onRead).toHaveBeenCalledExactlyOnceWith(chapters[0], { fromStart: true });
+  } finally {
+    await harness.unmount();
+  }
 });
 
 it("shows nothing to continue when finished with no downloaded next chapter", () => {
   const caughtUp = render({
-    chapters: [{ ...chapter, unread: false, progress: 100 }],
+    chapters: [{ ...chapter, progress: 100 }],
     lastReadChapterId: 1,
   });
   const caughtUpButton = caughtUp("button").filter(
@@ -93,7 +115,7 @@ it("shows nothing to continue when finished with no downloaded next chapter", ()
 
   const undownloaded = render({
     chapters: [
-      { ...chapter, unread: false, progress: 100 },
+      { ...chapter, progress: 100 },
       { ...chapter, id: 2, position: 2, chapterNumber: "52", isDownloaded: false },
     ],
     lastReadChapterId: 1,
@@ -141,7 +163,7 @@ it("counts read chapters instead of averaging progress over every chapter", () =
 
   const $ = render({
     chapters: [
-      { ...chapter, unread: false, progress: 100 },
+      { ...chapter, progress: 100 },
       { ...chapter, id: 2, position: 2, progress: 30 },
       { ...chapter, id: 3, position: 3 },
     ],

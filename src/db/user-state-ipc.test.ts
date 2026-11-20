@@ -12,7 +12,6 @@ vi.mock("../lib/tauri-runtime", () => ({
 }));
 
 import { invoke } from "@tauri-apps/api/core";
-import { withChapterDownloadWrite } from "../lib/chapter-download-writes";
 import type { UserStateBinding, UserStateOperation } from "../lib/user-state/types";
 import type { DbMutationEnvelope } from "./ipc";
 import {
@@ -41,13 +40,6 @@ import {
   subscribeUserStateLedgerChanges,
   USER_STATE_OPERATION_RETENTION_SECS,
 } from "./user-state";
-import {
-  applyUserStateCurrentSnapshot,
-  bindUserStateCurrentWorkspace,
-  exportUserStateCurrentSnapshot,
-  getUserStateCurrentStatus,
-  setUserStateCurrentServer,
-} from "./user-state-current";
 import { waitForUserStateDeferredApply } from "./user-state-core";
 
 const binding: UserStateBinding = {
@@ -61,14 +53,12 @@ describe("user-state Rust IPC wrappers", () => {
     runtimeState.tauri = true;
     vi.mocked(invoke).mockReset().mockResolvedValue(undefined);
     setUserStateActiveServer(null);
-    setUserStateCurrentServer(null);
     vi.mocked(invoke).mockClear();
   });
 
   afterEach(async () => {
     vi.mocked(invoke).mockReset().mockResolvedValue(undefined);
     setUserStateActiveServer(null);
-    setUserStateCurrentServer(null);
     await waitForUserStateDeferredApply();
   });
 
@@ -113,7 +103,7 @@ describe("user-state Rust IPC wrappers", () => {
                     chapter: { chapterPath: "/ch/1", name: "Ch 1" },
                   },
                   baseRevision: 0,
-                  value: { progress: 50, unread: true, readAt: null },
+                  value: { progress: 50, readAt: null },
                 },
               ],
               effects: { userStateLedgerChanged: true },
@@ -295,110 +285,6 @@ describe("user-state Rust IPC wrappers", () => {
         { novelId: 2, chapterId: 20, anchor: null, openedAt: 20 },
       ],
     });
-  });
-
-  it("syncs current-mode state to Rust and coordinates busy chapter writes with snapshot IPC", async () => {
-    const calls: Array<{ command: string; args: unknown }> = [];
-    let releaseExport!: () => void;
-    const exportPaused = new Promise<void>(resolve => {
-      releaseExport = resolve;
-    });
-    let exportStarted!: () => void;
-    const reachedExport = new Promise<void>(resolve => {
-      exportStarted = resolve;
-    });
-
-    vi.mocked(invoke).mockImplementation(
-      async (command: string, args?: unknown) => {
-        calls.push({ command, args });
-        if (command === "db_user_state_set_current_mode") {
-          return null;
-        }
-        if (command === "db_user_state_bind_current_workspace") {
-          return { value: null, effects: { userStateLedgerChanged: true } };
-        }
-        if (command === "db_user_state_get_current_status") {
-          return {
-            workspaceId: binding.workspaceId,
-            epoch: binding.epoch,
-            lastSuccessAt: 500,
-            pausedAfterRestore: false,
-            missingMetadataCount: 0,
-          };
-        }
-        if (command === "db_user_state_export_current_snapshot") {
-          exportStarted();
-          await exportPaused;
-          return {
-            value: {
-              version: 2,
-              workspaceId: binding.workspaceId,
-              epoch: binding.epoch,
-              items: [],
-            },
-            effects: {},
-          };
-        }
-        if (command === "db_user_state_apply_current_snapshot") {
-          return {
-            value: { resumes: [], missingMetadataCount: 0, changed: true },
-            effects: { userStateLedgerChanged: true },
-          };
-        }
-        throw new Error(`Unexpected command: ${command}`);
-      },
-    );
-
-    setUserStateCurrentServer(binding.serverUrl);
-    expect(calls[0]).toEqual({
-      command: "db_user_state_set_current_mode",
-      args: { enabled: true },
-    });
-
-    await bindUserStateCurrentWorkspace(binding);
-    expect(await getUserStateCurrentStatus()).toMatchObject({
-      workspaceId: binding.workspaceId,
-    });
-
-    let activeBusyRelease!: () => void;
-    const activeBusyGate = new Promise<void>(resolve => {
-      activeBusyRelease = resolve;
-    });
-    const activeBusyWrite = withChapterDownloadWrite(99, undefined, () => activeBusyGate);
-
-    const exporting = exportUserStateCurrentSnapshot(binding);
-    await reachedExport;
-
-    const exportCall = calls.find(
-      entry => entry.command === "db_user_state_export_current_snapshot",
-    );
-    expect(exportCall?.args).toMatchObject({
-      binding,
-      skippedChapterIds: [99],
-    });
-
-    const timeline: string[] = [];
-    const blockedNewWrite = withChapterDownloadWrite(55, undefined, async () => {
-      timeline.push("new-write");
-    });
-    expect(timeline).toEqual([]);
-
-    timeline.push("release-export");
-    releaseExport();
-    await exporting;
-    await blockedNewWrite;
-    expect(timeline).toEqual(["release-export", "new-write"]);
-
-    activeBusyRelease();
-    await activeBusyWrite;
-
-    const applied = await applyUserStateCurrentSnapshot(binding, {
-      version: 2,
-      workspaceId: binding.workspaceId,
-      epoch: binding.epoch,
-      items: [],
-    });
-    expect(applied.changed).toBe(true);
   });
 
   it("routes rebind, snapshot reconciliation, and local retention commands through typed Rust IPC", async () => {

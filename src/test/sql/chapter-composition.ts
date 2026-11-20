@@ -48,9 +48,9 @@ export async function materializeChapterComposition(
   );
   if (!novel) throw new Error("Chapter composition: target work no longer exists");
   const previousComposition = await getChapterComposition(db, novelId);
-  type ReadingState = { progress: number; bookmark: number; unread: number; readAt: number | null; excludedAt?: number | null };
+  type ReadingState = { progress: number; bookmark: number; readAt: number | null; excludedAt?: number | null };
   const existing = await db.select<(ReadingState & { path: string; chapterNumber: string | null; position: number; isDownloaded: number; contentBytes: number; mediaBytes: number; mediaRepairNeeded: number })[]>(
-    "SELECT path,chapter_number AS chapterNumber,position,progress,bookmark,unread,read_at AS readAt," +
+    "SELECT path,chapter_number AS chapterNumber,position,progress,bookmark,read_at AS readAt," +
     "is_downloaded AS isDownloaded,content_bytes AS contentBytes,media_bytes AS mediaBytes,media_repair_needed AS mediaRepairNeeded," +
     "(SELECT created_at FROM chapter_download_goal_exclusion WHERE chapter_id=chapter.id) AS excludedAt " +
     "FROM chapter WHERE novel_id=$1", [novelId],
@@ -110,8 +110,8 @@ export async function materializeChapterComposition(
       WHERE novel_id=$2 AND path IN (SELECT old_path FROM aliases)`, [JSON.stringify(aliasEntries.slice(start, start + 100)), novelId]);
   }
   const reading = await db.select<{
-    path: string; progress: number; bookmark: number; unread: number; readAt: number | null;
-  }[]>("SELECT chapter_path AS path,progress,bookmark,unread,read_at AS readAt " +
+    path: string; progress: number; bookmark: number; readAt: number | null;
+  }[]>("SELECT chapter_path AS path,progress,bookmark,read_at AS readAt " +
     "FROM work_metadata_reading_state WHERE plugin_id=$1 AND novel_path=$2", [novel.pluginId, novel.path]);
   const readingByPath = new Map(reading.map(row => [row.path, row]));
   const originKey = (source: ChapterSourceSnapshot) =>
@@ -139,13 +139,12 @@ export async function materializeChapterComposition(
       // synthetic local path. Its origin links survive subsequent composition imports.
       for (const path of previousPathsByOrigin.get(originKey(source)) ?? []) paths.add(path);
     }
-    const state: ReadingState = { progress: 0, bookmark: 0, unread: 1, readAt: null, excludedAt: null };
+    const state: ReadingState = { progress: 0, bookmark: 0, readAt: null, excludedAt: null };
     for (const path of paths) {
       for (const previous of [byPath.get(path), readingByPath.get(path)]) {
         if (!previous) continue;
         state.progress = Math.max(state.progress, previous.progress);
         state.bookmark = state.bookmark || previous.bookmark ? 1 : 0;
-        state.unread = state.unread && previous.unread ? 1 : 0;
         if (previous.readAt !== null) state.readAt = Math.max(state.readAt ?? 0, previous.readAt);
         const excludedAt = "excludedAt" in previous ? previous.excludedAt : null;
         if (typeof excludedAt === "number") state.excludedAt = Math.min(state.excludedAt ?? excludedAt, excludedAt);
@@ -163,12 +162,12 @@ export async function materializeChapterComposition(
       const offset = params.length;
       params.push(novelId, entry.path, entry.user.name ?? source.name, entry.storageChapterNumber,
         entry.user.order, source.page, source.contentType, source.releaseTime,
-        state?.progress ?? 0, state?.bookmark ?? 0, state?.unread ?? 1, state?.readAt ?? null, now);
-      return "(" + Array.from({ length: 13 }, (_, index) => "$" + (offset + index + 1)).join(",") + ")";
+        state?.progress ?? 0, state?.bookmark ?? 0, state?.readAt ?? null, now);
+      return "(" + Array.from({ length: 12 }, (_, index) => "$" + (offset + index + 1)).join(",") + ")";
     });
     await db.execute(
       "INSERT INTO chapter(novel_id,path,name,chapter_number,position,page,content_type,release_time," +
-      "progress,bookmark,unread,read_at,found_at) VALUES " + values.join(",") +
+      "progress,bookmark,read_at,found_at) VALUES " + values.join(",") +
       " ON CONFLICT(novel_id,path) DO UPDATE SET name=excluded.name,chapter_number=excluded.chapter_number," +
       "position=excluded.position,page=excluded.page,content_type=excluded.content_type,release_time=excluded.release_time " +
       "WHERE chapter.name IS NOT excluded.name OR chapter.chapter_number IS NOT excluded.chapter_number " +

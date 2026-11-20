@@ -359,7 +359,7 @@ export function NovelMergePage({ sourceNovelId }: NovelMergePageProps) {
     const excluded = reviewedSourceChapters.filter(chapter => !includedSources.has(chapter.id));
     const keptBodies = new Set(composition.filter(entry => entry.primary === "source").map(entry => entry.sourceChapterIds[0]));
     const downloads = reviewedSourceChapters.filter(chapter => chapter.isDownloaded || chapter.contentBytes > 0);
-    const hasReadingState = (chapter: (typeof reviewedSourceChapters)[number]) => !chapter.unread || chapter.progress > 0;
+    const hasReadingState = (chapter: (typeof reviewedSourceChapters)[number]) => chapter.progress > 0;
     return {
       copyChoices: 0,
       downloadsMoved: downloads.filter(chapter => keptBodies.has(chapter.id)).length,

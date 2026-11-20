@@ -9,7 +9,6 @@ export interface CompositionSourceChapter {
   chapterNumber: string | null;
   isDownloaded: boolean;
   contentBytes?: number;
-  unread: boolean;
   progress: number;
 }
 

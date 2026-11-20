@@ -24,7 +24,10 @@ import { useTranslation } from "../../i18n";
 import { useBrowseStore } from "../../store/browse";
 import { useContentSyncStore } from "../../store/content-sync";
 import {
+  AUTOMATIC_ACTIVE_WINDOW_CHOICES,
   FINISHED_CHAPTER_KEEP_CHOICES,
+  type AutomaticActiveWindowChoice,
+  type FinishedChapterKeepChoice,
   useDownloadGoalSettingsStore,
 } from "../../store/download-goals";
 import { showSettingsToast } from "./settings-toast";
@@ -188,11 +191,12 @@ function FinishedChapterCleanupRow() {
   const confirm = useConfirm();
   const keep = useDownloadGoalSettingsStore((state) => state.finishedChapterKeep);
   const withoutServer = useDownloadGoalSettingsStore((state) => state.finishedCleanupWithoutServer);
+  const automaticGoal = useDownloadGoalSettingsStore((state) => state.automaticGoal);
   const hasServer = useContentSyncStore((state) => Boolean(state.serverUrl));
 
-  async function choose(next: number): Promise<void> {
+  async function choose(next: FinishedChapterKeepChoice): Promise<void> {
     const { setFinishedChapterCleanup } = useDownloadGoalSettingsStore.getState();
-    if (next === 0 || hasServer || withoutServer) {
+    if (next === "off" || hasServer || withoutServer) {
       setFinishedChapterCleanup(next, withoutServer);
       return;
     }
@@ -212,18 +216,25 @@ function FinishedChapterCleanupRow() {
       description={t(hasServer
         ? "settings.downloads.finishedCleanup.serverDescription"
         : "settings.downloads.finishedCleanup.description")}
+      status={automaticGoal.kind === "entire" && keep !== "off"
+        ? t("settings.downloads.finishedCleanup.entireGoalNotice")
+        : null}
     >
       <Select
         allowDeselect={false}
-        data={FINISHED_CHAPTER_KEEP_CHOICES.map((count) => ({
-          value: String(count),
-          label: count === 0
+        data={FINISHED_CHAPTER_KEEP_CHOICES.map((choice) => ({
+          value: String(choice),
+          label: choice === "off"
             ? t("settings.downloads.finishedCleanup.off")
-            : t("settings.downloads.finishedCleanup.keep", { count }),
+            : choice === 0
+              ? t("settings.downloads.finishedCleanup.keepZero")
+              : t("settings.downloads.finishedCleanup.keep", { count: choice }),
         }))}
         value={String(keep)}
         onChange={(value) => {
-          if (value !== null) void choose(Number(value));
+          if (value !== null) {
+            void choose(value === "off" ? "off" : (Number(value) as FinishedChapterKeepChoice));
+          }
         }}
       />
     </SettingsFieldRow>
@@ -257,6 +268,31 @@ export function DownloadsSection({ isBusy }: { isBusy: boolean }) {
         >
           <DownloadGoalChoices current={goalSettings.automaticGoal} disabled={isBusy}
             onChoose={goalSettings.setAutomaticGoal} />
+        </SettingsFieldRow>
+        <SettingsFieldRow
+          label={t("settings.downloads.automaticActiveWindow.label")}
+          description={t("settings.downloads.automaticActiveWindow.description")}
+        >
+          <Select
+            allowDeselect={false}
+            disabled={isBusy || goalSettings.automaticGoal.kind === "none"}
+            data={AUTOMATIC_ACTIVE_WINDOW_CHOICES.map((choice) => ({
+              value: String(choice),
+              label: choice === "unlimited"
+                ? t("settings.downloads.automaticActiveWindow.unlimited")
+                : t("settings.downloads.automaticActiveWindow.days", { days: choice }),
+            }))}
+            value={String(goalSettings.automaticActiveWindow)}
+            onChange={(value) => {
+              if (value !== null) {
+                goalSettings.setAutomaticActiveWindow(
+                  value === "unlimited"
+                    ? "unlimited"
+                    : (Number(value) as AutomaticActiveWindowChoice),
+                );
+              }
+            }}
+          />
         </SettingsFieldRow>
         {isAndroidRuntime() ? (
           <SettingsFieldRow

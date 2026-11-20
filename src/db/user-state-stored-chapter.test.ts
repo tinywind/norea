@@ -103,7 +103,7 @@ describe("delta stored chapter identity", () => {
   it("upgrades reading and resume wire values without rewriting unrelated intent fields", async () => {
     const reading = await portableStoredUserStateIntentInDb(db, {
       entity: { kind: "reading", work, chapter: { chapterPath: "norea-folder:1", name: "One" } },
-      value: { progress: 82, unread: true, readAt: 10 },
+      value: { progress: 82, readAt: 10 },
     });
     expect(reading.entity).toMatchObject({
       kind: "reading",

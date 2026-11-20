@@ -232,6 +232,7 @@ export async function materializePendingUserState(
   if (!allowed()) return { resumes: [] };
   const resumes: UserStateApplyEffects["resumes"] = [];
   const failedEntityKeys = new Set<string>();
+  let hasFinishedReading = false;
   let chunkIndex = 0;
   for (;;) {
     if (!allowed()) break;
@@ -249,13 +250,19 @@ export async function materializePendingUserState(
       ),
     );
     resumes.push(...chunk.resumes);
+    if (chunk.hasFinishedReading) {
+      hasFinishedReading = true;
+    }
     for (const key of chunk.failedEntityKeys ?? []) {
       failedEntityKeys.add(key);
     }
     chunkIndex += 1;
     if (!chunk.hasMore) break;
   }
-  const effects: UserStateApplyEffects = { resumes };
+  const effects: UserStateApplyEffects = {
+    resumes,
+    ...(hasFinishedReading ? { hasFinishedReading: true } : {}),
+  };
   emitUserStateApplied(effects);
   emitUserStateLedgerChanged();
   return effects;
@@ -348,13 +355,6 @@ export async function recordUserResumeCleared(novelId: number): Promise<void> {
 }
 
 export async function applyDeferredUserState(): Promise<void> {
-  const current = await import("./user-state-current");
-  if (current.isUserStateCurrentMode()) {
-    if (!(await getUserStateRestorePaused())) {
-      await current.applyDeferredUserStateCurrent();
-    }
-    return;
-  }
   const server = activeServer;
   const generation = activeGeneration;
   if (server === null) return;

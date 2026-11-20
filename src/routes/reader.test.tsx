@@ -43,9 +43,10 @@ const mocks = vi.hoisted(() => ({
     hasChapterContent: false,
     isPdfChapter: false,
     readerContentKey: "0:partial",
-    readerPreparation: { document: null, error: null, isPending: false },
+    readerPreparation: { document: null as unknown, error: null, isPending: false },
     readerProgressPersistenceReady: false,
   },
+  initialProgressOverride: null as { chapterId: number; progress: number; allowProgressReset?: boolean } | null,
   persistProgress: vi.fn(),
   completeIfAtEnd: vi.fn(() => true),
   scrollToStart: vi.fn(),
@@ -108,7 +109,7 @@ vi.mock("../components/reader/use-reader-chapter-navigation", () => ({
       autoDownloadingChapterId: null,
       awaitingChapterDownload: false,
       chapterUnavailable: null,
-      initialProgressOverride: null,
+      initialProgressOverride: mocks.initialProgressOverride,
       setInitialProgressOverride: mocks.setInitialProgressOverride,
       handleReaderBack: mocks.handleReaderBack,
       handleBackToNovel: mocks.handleBackToNovel,
@@ -160,6 +161,7 @@ beforeEach(() => {
   mocks.setInitialProgressOverride.mockReset();
   mocks.onBeforeBack = undefined;
   mocks.queryOptions = [];
+  mocks.initialProgressOverride = null;
   useReaderStore.getState().resetReadingProgress();
 });
 
@@ -216,7 +218,7 @@ it("shows a missing stored chapter with a retry action instead of reader content
 it("forces completion at forward boundary on the last chapter and routes Back to novel cleanly", async () => {
   const lastChapter = {
     id: 10, novelId: 7, name: "Ch 10", position: 10, chapterNumber: "10",
-    progress: 0, unread: true, isDownloaded: true, contentBytes: 100, contentType: "html",
+    progress: 0, isDownloaded: true, contentBytes: 100, contentType: "html",
     content: "<p>End</p>", bookmark: false,
   };
   mocks.chapterQuery.data = lastChapter;
@@ -250,7 +252,7 @@ it("forces completion at forward boundary on the last chapter and routes Back to
 it("opens a chapter from 0% with fromStart, clears stale anchor/progress, and resets on reactivation", async () => {
   const nextChapter = {
     id: 11, novelId: 7, name: "Ch 11", position: 11, chapterNumber: "11",
-    progress: 45, unread: true, isDownloaded: true, contentBytes: 100, contentType: "html",
+    progress: 45, isDownloaded: true, contentBytes: 100, contentType: "html",
     content: "<p>Next</p>", bookmark: false,
   };
   useReaderStore.getState().setChapterScrollAnchor(11, {
@@ -276,4 +278,66 @@ it("opens a chapter from 0% with fromStart, clears stale anchor/progress, and re
   await render(11, { fromStart: true, active: false });
   await render(11, { fromStart: true, active: true });
   expect(mocks.scrollToStart).toHaveBeenCalledOnce();
+});
+
+it("resets a re-read finished chapter only once real positive movement occurs and keeps 0% reads non-destructive", async () => {
+  const finishedChapter = {
+    id: 42,
+    novelId: 7,
+    name: "Chapter 2",
+    path: "/ch/2",
+    chapterNumber: "2",
+    position: 2,
+    progress: 100,
+    bookmark: false,
+    contentType: "html",
+    content: "<p>Body</p>",
+    isDownloaded: true,
+    mediaRepairNeeded: false,
+  };
+  mocks.chapterQuery.data = finishedChapter;
+  mocks.chapterListQuery.data = [finishedChapter];
+  mocks.novelQuery.data = { id: 7, name: "Novel", isLocal: false, pluginId: "src" };
+  mocks.initialProgressOverride = { chapterId: 42, progress: 0, allowProgressReset: true };
+  mocks.docState = {
+    activeChapterId: 42,
+    content: "<p>Body</p>",
+    hasChapterContent: true,
+    isPdfChapter: false,
+    readerContentKey: "42:stored",
+    readerPreparation: { document: { html: "<p>Body</p>" }, error: null, isPending: false },
+    readerProgressPersistenceReady: true,
+  };
+
+  const elements = await render(42, { fromStart: true });
+  const content = elements.find((element) => element.type === ReaderContent)!;
+  const onProgressChange = content.props.onProgressChange as (nextProgress: number) => void;
+
+  // Simply opening a 100% chapter with fromStart must NOT reset it to 0%.
+  expect(mocks.persistProgress).not.toHaveBeenCalled();
+
+  // Reporting 0% without real movement must NOT consume or trigger allowProgressReset.
+  onProgressChange(0);
+  expect(mocks.persistProgress).toHaveBeenLastCalledWith({
+    chapterId: 42,
+    novelId: 7,
+    progress: 0,
+  });
+
+  // First positive scroll/page turn resets progress once.
+  onProgressChange(18);
+  expect(mocks.persistProgress).toHaveBeenLastCalledWith({
+    chapterId: 42,
+    novelId: 7,
+    progress: 18,
+    allowProgressReset: true,
+  });
+
+  // Subsequent movement in the same session no longer requests allowProgressReset.
+  onProgressChange(45);
+  expect(mocks.persistProgress).toHaveBeenLastCalledWith({
+    chapterId: 42,
+    novelId: 7,
+    progress: 45,
+  });
 });

@@ -11,15 +11,10 @@ use crate::db::tx::{with_write_tx, MetadataRoot, TxOptions};
 use crate::db::ReadMode;
 
 use super::core::{
-    load_user_chapter_rows_by_ids_in_tx, map_user_chapter_row, mark_private_chapter_progress_in_tx,
-    populate_user_chapter_composition_ids_in_tx, promote_private_work_identities_in_tx,
-    record_chapter_rows_in_tx, record_user_state_changes_in_tx,
-    USER_CHAPTER_SELECT,
-};
-use super::current::{
-    apply_current_snapshot_at, bind_current_workspace_in_tx, current_category_id,
-    export_current_snapshot_in_tx, get_current_status_in_tx, load_current_held_sources_in_tx,
-    prepare_deferred_current_retry_in_tx,
+    load_held_migration_sources_in_tx, load_user_chapter_rows_by_ids_in_tx, map_user_chapter_row,
+    mark_private_chapter_progress_in_tx, populate_user_chapter_composition_ids_in_tx,
+    promote_private_work_identities_in_tx, record_chapter_rows_in_tx,
+    record_user_state_changes_in_tx, USER_CHAPTER_SELECT,
 };
 use super::ledger::{
     acknowledge_user_state_operations_in_tx, apply_local_user_state_retention_in_tx,
@@ -41,8 +36,8 @@ use super::work_categories::{list_work_categories_in_conn, WorkCategoryLookupDto
 use super::types::{
     parse_user_state_merge_result, parse_user_state_retention_response,
     parse_user_state_snapshot_response, sha256_hex, stored_chapter_path, user_state_entity_key,
-    CurrentSnapshotRetryDto, ResolveUserStateLedgerConflictInputDto, UserStateBindingDto,
-    UserStateRebindMode, UserStateWorkReferenceDto,
+    ResolveUserStateLedgerConflictInputDto, UserStateBindingDto, UserStateRebindMode,
+    UserStateWorkReferenceDto,
 };
 
 fn sample_binding() -> UserStateBindingDto {
@@ -201,7 +196,7 @@ async fn projection_checks_composed_chapter_ownership_for_every_record_of_a_work
                     "compositionEntryId": owner,
                 },
             }),
-            json!({ "progress": 10 * revision, "unread": false, "readAt": 100 + revision }),
+            json!({ "progress": 10 * revision, "readAt": 100 + revision }),
             revision,
             &format!("op-{revision}"),
         )
@@ -281,7 +276,7 @@ async fn prelink_edits_become_soft_seeds_and_project_shared_deletions_preserving
         .execute(pool)
         .await
         .unwrap();
-    sqlx::query("UPDATE chapter SET progress = 100, unread = 0 WHERE id = 11")
+    sqlx::query("UPDATE chapter SET progress = 100 WHERE id = 11")
         .execute(pool)
         .await
         .unwrap();
@@ -309,7 +304,7 @@ async fn prelink_edits_become_soft_seeds_and_project_shared_deletions_preserving
         "categoryId": "local-prelink",
     });
 
-    let c1 = (reading_ent.clone(), json!({ "progress": 100, "unread": false, "readAt": null }));
+    let c1 = (reading_ent.clone(), json!({ "progress": 100, "readAt": null }));
     let c2 = (library_ent.clone(), json!({ "inLibrary": true, "addedAt": 20 }));
     let c3 = (
         resume_ent.clone(),
@@ -379,7 +374,7 @@ async fn prelink_edits_become_soft_seeds_and_project_shared_deletions_preserving
         shared_record(membership_ent, json!({ "included": false }), 3, "r-3"),
         shared_record(
             reading_ent,
-            json!({ "progress": 0, "unread": true, "readAt": null }),
+            json!({ "progress": 0, "readAt": null }),
             4,
             "r-4",
         ),
@@ -435,12 +430,11 @@ async fn prelink_edits_become_soft_seeds_and_project_shared_deletions_preserving
     assert_eq!(proj_res.resumes.len(), 1);
     assert_eq!(proj_res.resumes[0].chapter_id, None);
 
-    let ch_state = sqlx::query("SELECT CAST(progress AS REAL) AS progress, unread FROM chapter WHERE id = 11")
+    let ch_state = sqlx::query("SELECT CAST(progress AS REAL) AS progress FROM chapter WHERE id = 11")
         .fetch_one(pool)
         .await
         .unwrap();
     assert_eq!(ch_state.get::<f64, _>("progress"), 0.0);
-    assert_eq!(ch_state.get::<i64, _>("unread"), 1);
 
     let in_lib: i64 = sqlx::query_scalar("SELECT in_library FROM novel WHERE id = 1")
         .fetch_one(pool)
@@ -557,7 +551,7 @@ async fn portable_stored_chapter_digest_upgrades_norea_folder_and_resolves_on_pr
         "work": sample_work(),
         "chapter": { "chapterPath": "norea-folder:19", "name": "Nineteen" },
     });
-    let local_val = json!({ "progress": 75, "unread": true, "readAt": 100 });
+    let local_val = json!({ "progress": 75, "readAt": 100 });
     with_write_tx(pool, opts.clone(), move |conn, ctx| {
         Box::pin(async move {
             record_user_state_changes_in_tx(conn, ctx, &[(local_ent, local_val)], false).await
@@ -781,140 +775,6 @@ async fn conflict_recording_and_local_resolution_rebases_progress() {
 }
 
 #[tokio::test]
-async fn current_snapshot_exports_applies_and_retries_deferred_metadata() {
-    let test_db = open_test_db().await;
-    let pool = test_db.db.pool_for(ReadMode::Queued);
-    seed_sample_work(pool).await;
-    sqlx::query("UPDATE novel SET in_library = 1 WHERE id = 1")
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query("UPDATE chapter SET progress = 80, unread = 0, bookmark = 1, read_at = 50 WHERE id = 11")
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO category(id, name, sort, is_system) VALUES (7, 'Completed', 0, 0)")
-        .execute(pool)
-        .await
-        .unwrap();
-    sqlx::query("INSERT INTO novel_category(novel_id, category_id) VALUES (1, 7)")
-        .execute(pool)
-        .await
-        .unwrap();
-
-    let binding = sample_binding();
-    let opts = TxOptions {
-        publish_metadata: false,
-        notify_content_sync: false,
-        ..TxOptions::default()
-    };
-    let b1 = binding.clone();
-    with_write_tx(pool, opts.clone(), move |conn, ctx| {
-        Box::pin(async move { bind_current_workspace_in_tx(conn, ctx, &b1).await })
-    })
-    .await
-    .unwrap();
-
-    let b2 = binding.clone();
-    let exported = with_write_tx(pool, opts.clone(), move |conn, _ctx| {
-        Box::pin(async move {
-            export_current_snapshot_in_tx(None, conn, &b2, &HashSet::new()).await
-        })
-    })
-    .await
-    .unwrap()
-    .value;
-
-    let items = exported["items"].as_array().unwrap();
-    assert!(items.iter().all(|i| i["entity"]["kind"] != "library"));
-    assert!(items.iter().any(|i| i["entity"]["kind"] == "reading"));
-    assert!(items.iter().any(|i| i["entity"]["kind"] == "bookmark"));
-    assert!(items.iter().any(|i| {
-        i["entity"]["kind"] == "category"
-            && i["entity"]["categoryId"] == json!(current_category_id("Completed"))
-    }));
-
-    // Apply onto an empty peer DB where the work and chapter do not exist yet -> missingMetadataCount > 0
-    let peer_db = open_test_db().await;
-    let peer_pool = peer_db.db.pool_for(ReadMode::Queued);
-    let pb1 = binding.clone();
-    with_write_tx(peer_pool, opts, move |conn, ctx| {
-        Box::pin(async move { bind_current_workspace_in_tx(conn, ctx, &pb1).await })
-    })
-    .await
-    .unwrap();
-
-    let applied = apply_current_snapshot_at(
-        peer_pool,
-        MetadataRoot::None,
-        &binding,
-        &exported,
-        None,
-        &HashSet::new(),
-    )
-    .await
-    .unwrap()
-    .value;
-    assert!(applied.changed);
-    assert!(applied.missing_metadata_count > 0);
-    let inserted_novels: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM novel")
-        .fetch_one(peer_pool)
-        .await
-        .unwrap();
-    assert_eq!(inserted_novels, 0);
-
-    // Insert the missing work (not in library) and chapter on peer DB and run deferred retry
-    let peer_novel_id: i64 = sqlx::query_scalar(
-        "INSERT INTO novel(plugin_id, source_novel_id, path, name, in_library) \
-         VALUES ('source', 'book', '/book', 'Book', 0) RETURNING id",
-    )
-    .fetch_one(peer_pool)
-    .await
-    .unwrap();
-    sqlx::query(
-        "INSERT INTO chapter(novel_id, path, name, chapter_number, position) \
-         VALUES (?1, '/chapter/1', 'One', '1', 1)",
-    )
-    .bind(peer_novel_id)
-    .execute(peer_pool)
-    .await
-    .unwrap();
-
-    let mut read_conn = peer_pool.acquire().await.unwrap();
-    let (_, retry_plan) = prepare_deferred_current_retry_in_tx(
-        &mut read_conn,
-        &binding.server_url,
-        &[peer_novel_id],
-    )
-    .await
-    .unwrap()
-    .unwrap();
-    drop(read_conn);
-
-    let retried = apply_current_snapshot_at(
-        peer_pool,
-        MetadataRoot::None,
-        &binding,
-        &retry_plan.snapshot,
-        Some(CurrentSnapshotRetryDto {
-            work_keys: retry_plan.work_keys,
-            previous_missing: retry_plan.missing_keys,
-        }),
-        &HashSet::new(),
-    )
-    .await
-    .unwrap()
-    .value;
-    assert_eq!(retried.missing_metadata_count, 0);
-
-    let mut read_conn = peer_pool.acquire().await.unwrap();
-    let status = get_current_status_in_tx(&mut read_conn, Some(&binding.server_url))
-        .await
-        .unwrap();
-    assert_eq!(status.missing_metadata_count, 0);
-}
-
-#[tokio::test]
 async fn bulk_projection_skips_missing_works_applies_pre_download_stored_progress_and_reopens_via_b_route() {
     let test_db = open_test_db().await;
     let pool = test_db.db.pool_for(ReadMode::Queued);
@@ -948,7 +808,7 @@ async fn bulk_projection_skips_missing_works_applies_pre_download_stored_progres
                 "work": work,
                 "chapter": { "chapterPath": stored_path, "name": "Nineteen" },
             }),
-            json!({ "progress": 64, "unread": false, "readAt": 250 }),
+            json!({ "progress": 64, "readAt": 250 }),
             2,
             "op-read",
         ),
@@ -1021,7 +881,7 @@ async fn bulk_projection_skips_missing_works_applies_pre_download_stored_progres
     .unwrap();
 
     let row = sqlx::query(
-        "SELECT n.in_library, n.last_read_at, CAST(c.progress AS REAL) AS progress, c.unread, c.read_at \
+        "SELECT n.in_library, n.last_read_at, CAST(c.progress AS REAL) AS progress, c.read_at \
          FROM novel n JOIN chapter c ON c.novel_id = n.id WHERE n.id = 1 AND c.id = 19",
     )
     .fetch_one(pool)
@@ -1030,7 +890,6 @@ async fn bulk_projection_skips_missing_works_applies_pre_download_stored_progres
     assert_eq!(row.get::<i64, _>("in_library"), 0);
     assert_eq!(row.get::<Option<i64>, _>("last_read_at"), Some(250));
     assert_eq!(row.get::<f64, _>("progress"), 64.0);
-    assert_eq!(row.get::<i64, _>("unread"), 0);
     assert_eq!(row.get::<Option<i64>, _>("read_at"), Some(250));
 }
 
@@ -1054,8 +913,8 @@ async fn retired_migration_sources_and_local_works_are_excluded_and_settled() {
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, bookmark) \
-         VALUES (101, 10, 'local-ch-1', 'Local One', '1', 1, 88, 0, 1)",
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, bookmark) \
+         VALUES (101, 10, 'local-ch-1', 'Local One', '1', 1, 88, 1)",
     )
     .execute(pool)
     .await
@@ -1413,7 +1272,7 @@ async fn defer_user_state_for_novel_reopens_only_deferred_records() {
                 "work": work,
                 "chapter": { "chapterPath": "/chapter/1", "name": "One" },
             }),
-            json!({ "progress": 50, "unread": false, "readAt": 100 }),
+            json!({ "progress": 50, "readAt": 100 }),
             2,
             "op-read-1",
         ),
@@ -1423,7 +1282,7 @@ async fn defer_user_state_for_novel_reopens_only_deferred_records() {
                 "work": work,
                 "chapter": { "chapterPath": "/chapter/2", "name": "Two" },
             }),
-            json!({ "progress": 90, "unread": false, "readAt": 200 }),
+            json!({ "progress": 90, "readAt": 200 }),
             3,
             "op-read-2",
         ),
@@ -1687,7 +1546,7 @@ async fn projects_pending_records_in_bounded_chunks_without_retrying_skipped_fai
                 "work": missing_work,
                 "chapter": { "chapterPath": format!("/missing/{idx}"), "name": format!("M{idx}") },
             }),
-            json!({ "progress": 10, "unread": true, "readAt": idx }),
+            json!({ "progress": 10, "readAt": idx }),
             idx,
             &format!("op-miss-{idx}"),
         ));
@@ -1704,7 +1563,7 @@ async fn projects_pending_records_in_bounded_chunks_without_retrying_skipped_fai
             "work": sample_work(),
             "chapter": { "chapterPath": "/chapter/1", "name": "One" },
         }),
-        json!({ "progress": 25, "unread": false, "readAt": 100 }),
+        json!({ "progress": 25, "readAt": 100 }),
         22,
         "op-read-1",
     ));
@@ -1714,7 +1573,7 @@ async fn projects_pending_records_in_bounded_chunks_without_retrying_skipped_fai
             "work": sample_work(),
             "chapter": { "chapterPath": "/chapter/2", "name": "Two" },
         }),
-        json!({ "progress": 50, "unread": false, "readAt": 200 }),
+        json!({ "progress": 50, "readAt": 200 }),
         23,
         "op-read-2",
     ));
@@ -1724,7 +1583,7 @@ async fn projects_pending_records_in_bounded_chunks_without_retrying_skipped_fai
             "work": sample_work(),
             "chapter": { "chapterPath": "/chapter/3", "name": "Three" },
         }),
-        json!({ "progress": 75, "unread": false, "readAt": 300 }),
+        json!({ "progress": 75, "readAt": 300 }),
         24,
         "op-read-3",
     ));
@@ -1933,7 +1792,7 @@ async fn populates_composition_entry_ids_and_scans_content_sync_cache_by_prefix(
         .unwrap();
     assert_eq!(direct[1].composition_entry_id.as_deref(), Some("entry-2"));
 
-    let held = load_current_held_sources_in_tx(&mut conn, "https://state.example")
+    let held = load_held_migration_sources_in_tx(&mut conn, "https://state.example")
         .await
         .unwrap();
     assert!(held.id_pairs.contains(&("source".to_string(), "book".to_string())));
@@ -1997,11 +1856,11 @@ async fn acknowledge_and_prune_operations_respects_retention_and_preserves_attem
                 &[
                     (
                         json!({ "kind": "reading", "work": work_no_id.clone(), "chapter": { "chapterPath": "/chapter/1", "name": "One" } }),
-                        json!({ "progress": 25.0, "unread": true, "readAt": null }),
+                        json!({ "progress": 25.0, "readAt": null }),
                     ),
                     (
                         json!({ "kind": "reading", "work": work_no_id, "chapter": { "chapterPath": "/chapter/2", "name": "Two" } }),
-                        json!({ "progress": 50.0, "unread": true, "readAt": null }),
+                        json!({ "progress": 50.0, "readAt": null }),
                     ),
                 ],
                 false,
@@ -2199,7 +2058,7 @@ async fn acknowledge_and_prune_operations_respects_retention_and_preserves_attem
                 ctx,
                 &[(
                     json!({ "kind": "reading", "work": work_no_id_2, "chapter": { "chapterPath": "/chapter/3", "name": "Three" } }),
-                    json!({ "progress": 60.0, "unread": true, "readAt": null }),
+                    json!({ "progress": 60.0, "readAt": null }),
                 )],
                 false,
             )
@@ -2282,7 +2141,7 @@ async fn acknowledge_and_prune_operations_respects_retention_and_preserves_attem
                 ctx,
                 &[(
                     json!({ "kind": "reading", "work": work_no_id_3, "chapter": { "chapterPath": "/chapter/1-renamed", "name": "One" } }),
-                    json!({ "progress": 80.0, "unread": false, "readAt": 200 }),
+                    json!({ "progress": 80.0, "readAt": 200 }),
                 )],
                 false,
             )
@@ -2413,14 +2272,14 @@ async fn rebind_modes_seed_cutoff_and_snapshot_reconciliation_preserve_invariant
     seed_sample_work(pool).await;
     sqlx::query(
         "UPDATE novel SET in_library = 0 WHERE id = 1; \
-         UPDATE chapter SET progress = 80.0, unread = 0, read_at = 1650000000 WHERE id = 11;",
+         UPDATE chapter SET progress = 80.0, read_at = 1650000000 WHERE id = 11;",
     )
     .execute(pool)
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, read_at) \
-         VALUES (12, 1, '/chapter/2', 'Two', '2', 2, 100.0, 0, 1750000000)",
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, read_at) \
+         VALUES (12, 1, '/chapter/2', 'Two', '2', 2, 100.0, 1750000000)",
     )
     .execute(pool)
     .await
@@ -2573,18 +2432,18 @@ async fn rebind_modes_seed_cutoff_and_snapshot_reconciliation_preserve_invariant
     })
     .await
     .unwrap();
-    let ch1_after_2a: (i64, i64, Option<i64>) =
-        sqlx::query_as("SELECT progress, unread, read_at FROM chapter WHERE id = 11")
+    let ch1_after_2a: (i64, Option<i64>) =
+        sqlx::query_as("SELECT progress, read_at FROM chapter WHERE id = 11")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch1_after_2a, (0, 1, None));
-    let ch2_after_2b: (i64, i64, Option<i64>) =
-        sqlx::query_as("SELECT progress, unread, read_at FROM chapter WHERE id = 12")
+    assert_eq!(ch1_after_2a, (0, None));
+    let ch2_after_2b: (i64, Option<i64>) =
+        sqlx::query_as("SELECT progress, read_at FROM chapter WHERE id = 12")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch2_after_2b, (100, 0, None));
+    assert_eq!(ch2_after_2b, (100, None));
 
     // Snapshot reconciliation: removes absent bookmark record + resets chapter.bookmark, preserves pending edit, cleans dangling alias.
     let bm1 = json!({ "kind": "bookmark", "work": sample_work(), "chapter": { "chapterPath": "/chapter/1", "name": "One" } });
@@ -2671,13 +2530,13 @@ async fn retention_privacy_multi_workspace_cutoff_mode_a_clear_and_gc_pending_op
     };
 
     seed_sample_work(pool).await;
-    sqlx::query("UPDATE chapter SET progress = 60.0, unread = 0, read_at = 1600000000 WHERE id = 11")
+    sqlx::query("UPDATE chapter SET progress = 60.0, read_at = 1600000000 WHERE id = 11")
         .execute(pool)
         .await
         .unwrap();
     sqlx::query(
-        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, read_at) \
-         VALUES (12, 1, '/chapter/2', 'Two', '2', 2, 90.0, 0, 1750000000)",
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, read_at) \
+         VALUES (12, 1, '/chapter/2', 'Two', '2', 2, 90.0, 1750000000)",
     )
     .execute(pool)
     .await
@@ -2822,8 +2681,8 @@ async fn retention_privacy_multi_workspace_cutoff_mode_a_clear_and_gc_pending_op
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, read_at) \
-         VALUES (21, 2, '/chapter/1', 'One', '1', 1, 85.0, 0, 1600000000)",
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, read_at) \
+         VALUES (21, 2, '/chapter/1', 'One', '1', 1, 85.0, 1600000000)",
     )
     .execute(pool)
     .await
@@ -2850,12 +2709,12 @@ async fn retention_privacy_multi_workspace_cutoff_mode_a_clear_and_gc_pending_op
     })
     .await
     .unwrap();
-    let ch21_after_2b: (f64, i64, Option<i64>) =
-        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 21")
+    let ch21_after_2b: (f64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 21")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch21_after_2b, (85.0, 0, None));
+    assert_eq!(ch21_after_2b, (85.0, None));
     let priv_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_private")
         .fetch_one(pool)
         .await
@@ -2870,7 +2729,7 @@ async fn retention_privacy_multi_workspace_cutoff_mode_a_clear_and_gc_pending_op
     assert_eq!(priv_intent_count, 0);
 
     // 2-A runs before 2-B when both enabled with strip < prune.
-    sqlx::query("UPDATE chapter SET progress = 85.0, unread = 0, read_at = 1600000000 WHERE id = 21")
+    sqlx::query("UPDATE chapter SET progress = 85.0, read_at = 1600000000 WHERE id = 21")
         .execute(pool)
         .await
         .unwrap();
@@ -2888,12 +2747,12 @@ async fn retention_privacy_multi_workspace_cutoff_mode_a_clear_and_gc_pending_op
     })
     .await
     .unwrap();
-    let ch21_after_2a: (f64, i64, Option<i64>) =
-        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 21")
+    let ch21_after_2a: (f64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 21")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch21_after_2a, (0.0, 1, None));
+    assert_eq!(ch21_after_2a, (0.0, None));
     let priv_count_after_2a: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_private")
         .fetch_one(pool)
         .await
@@ -2908,7 +2767,7 @@ async fn retention_privacy_multi_workspace_cutoff_mode_a_clear_and_gc_pending_op
     assert_eq!(priv_intent_count_after_2a, 0);
 
     // 4. reconcile_user_state_snapshot_in_tx promotes path-keyed user_state_private before loading private keys.
-    sqlx::query("DELETE FROM user_state_private; UPDATE novel SET source_novel_id = NULL WHERE id = 2; UPDATE chapter SET progress = 90.0, unread = 0, read_at = 1750000000 WHERE id = 21;")
+    sqlx::query("DELETE FROM user_state_private; UPDATE novel SET source_novel_id = NULL WHERE id = 2; UPDATE chapter SET progress = 90.0, read_at = 1750000000 WHERE id = 21;")
         .execute(pool)
         .await
         .unwrap();
@@ -2941,7 +2800,7 @@ async fn retention_privacy_multi_workspace_cutoff_mode_a_clear_and_gc_pending_op
                     "through": 10,
                     "nextCursor": 10,
                     "hasMore": false,
-                    "records": [shared_record(priv_ent, json!({ "progress": 10.0, "unread": false, "readAt": 1750000000 }), 10, "r-10")],
+                    "records": [shared_record(priv_ent, json!({ "progress": 10.0, "readAt": 1750000000 }), 10, "r-10")],
                 }),
             )
             .await
@@ -2968,12 +2827,12 @@ async fn retention_privacy_multi_workspace_cutoff_mode_a_clear_and_gc_pending_op
     })
     .await
     .unwrap();
-    let ch21_after_snap: (f64, i64, Option<i64>) =
-        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 21")
+    let ch21_after_snap: (f64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 21")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch21_after_snap, (90.0, 0, Some(1_750_000_000)));
+    assert_eq!(ch21_after_snap, (90.0, Some(1_750_000_000)));
 
     // 5. rebase_pending_progress_to_zero_in_tx clears stale status='pending' user_state_operation rows.
     sqlx::query("DELETE FROM user_state_intent; DELETE FROM user_state_progress; DELETE FROM user_state_operation;")
@@ -3110,9 +2969,9 @@ async fn snapshot_gc_preserves_promoted_private_reading_for_path_keyed_record() 
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, read_at) \
-         VALUES (21, 2, '/chapter/1', 'One', '1', 1, 91.0, 0, 1750000000), \
-                (22, 2, '/chapter/2', 'Two', '2', 2, 65.0, 0, 1740000000)",
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, read_at) \
+         VALUES (21, 2, '/chapter/1', 'One', '1', 1, 91.0, 1750000000), \
+                (22, 2, '/chapter/2', 'Two', '2', 2, 65.0, 1740000000)",
     )
     .execute(pool)
     .await
@@ -3158,8 +3017,8 @@ async fn snapshot_gc_preserves_promoted_private_reading_for_path_keyed_record() 
                     "nextCursor": 10,
                     "hasMore": false,
                     "records": [
-                        shared_record(priv_path_ent, json!({ "progress": 10.0, "unread": false, "readAt": 1750000000 }), 9, "r-9"),
-                        shared_record(pub_path_ent, json!({ "progress": 65.0, "unread": false, "readAt": 1740000000 }), 10, "r-10"),
+                        shared_record(priv_path_ent, json!({ "progress": 10.0, "readAt": 1750000000 }), 9, "r-9"),
+                        shared_record(pub_path_ent, json!({ "progress": 65.0, "readAt": 1740000000 }), 10, "r-10"),
                     ],
                 }),
             )
@@ -3195,19 +3054,19 @@ async fn snapshot_gc_preserves_promoted_private_reading_for_path_keyed_record() 
     .await
     .unwrap();
 
-    let ch21_after: (f64, i64, Option<i64>) =
-        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 21")
+    let ch21_after: (f64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 21")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch21_after, (91.0, 0, Some(1_750_000_000)));
+    assert_eq!(ch21_after, (91.0, Some(1_750_000_000)));
 
-    let ch22_after: (f64, i64, Option<i64>) =
-        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 22")
+    let ch22_after: (f64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 22")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch22_after, (0.0, 1, None));
+    assert_eq!(ch22_after, (0.0, None));
 }
 
 #[tokio::test]
@@ -3233,12 +3092,12 @@ async fn retention_mixed_public_and_private_novel_emits_resume_clear_without_lea
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, unread, read_at) \
-         VALUES (31, 3, '/chapter/1', 'One', '1', 1, 50.0, 0, 1600000000), \
-                (32, 3, '/chapter/2', 'Two', '2', 2, 80.0, 0, 1754999000), \
-                (41, 4, '/chapter/1', 'One', '1', 1, 75.0, 0, 1600000000), \
-                (51, 5, '/chapter/1', 'One', '1', 1, 70.0, 0, 1750000000), \
-                (52, 5, '/chapter/2', 'Two', '2', 2, 85.0, 0, 1754999000)",
+        "INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, progress, read_at) \
+         VALUES (31, 3, '/chapter/1', 'One', '1', 1, 50.0, 1600000000), \
+                (32, 3, '/chapter/2', 'Two', '2', 2, 80.0, 1754999000), \
+                (41, 4, '/chapter/1', 'One', '1', 1, 75.0, 1600000000), \
+                (51, 5, '/chapter/1', 'One', '1', 1, 70.0, 1750000000), \
+                (52, 5, '/chapter/2', 'Two', '2', 2, 85.0, 1754999000)",
     )
     .execute(pool)
     .await
@@ -3274,26 +3133,26 @@ async fn retention_mixed_public_and_private_novel_emits_resume_clear_without_lea
     .unwrap();
 
     // Mixed 2-A novel: public chapter 31 pruned, private chapter 32 untouched.
-    let ch31: (f64, i64, Option<i64>) =
-        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 31")
+    let ch31: (f64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 31")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch31, (0.0, 1, None));
-    let ch32: (f64, i64, Option<i64>) =
-        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 32")
+    assert_eq!(ch31, (0.0, None));
+    let ch32: (f64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 32")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch32, (80.0, 0, Some(1_754_999_000)));
+    assert_eq!(ch32, (80.0, Some(1_754_999_000)));
 
     // Purely private novel: chapter 41 pruned locally, zero intents emitted.
-    let ch41: (f64, i64, Option<i64>) =
-        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 41")
+    let ch41: (f64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 41")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch41, (0.0, 1, None));
+    assert_eq!(ch41, (0.0, None));
     let allpriv_intents: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM user_state_intent WHERE entity_key LIKE '%allpriv-src%'",
     )
@@ -3303,18 +3162,18 @@ async fn retention_mixed_public_and_private_novel_emits_resume_clear_without_lea
     assert_eq!(allpriv_intents, 0);
 
     // Mixed 2-B novel: public chapter 51 stripped (progress preserved), private chapter 52 untouched.
-    let ch51: (f64, i64, Option<i64>) =
-        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 51")
+    let ch51: (f64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 51")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch51, (70.0, 0, None));
-    let ch52: (f64, i64, Option<i64>) =
-        sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 52")
+    assert_eq!(ch51, (70.0, None));
+    let ch52: (f64, Option<i64>) =
+        sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 52")
             .fetch_one(pool)
             .await
             .unwrap();
-    assert_eq!(ch52, (85.0, 0, Some(1_754_999_000)));
+    assert_eq!(ch52, (85.0, Some(1_754_999_000)));
 
     // Both mixed novels emitted clean resume clears without leaking private chapters.
     let mixed_rows = sqlx::query(
@@ -3406,7 +3265,7 @@ async fn rebind_start_fresh_post_edit_mode_a_same_epoch_and_validation_guards() 
     };
 
     seed_sample_work(pool).await;
-    sqlx::query("UPDATE chapter SET progress = 75.0, unread = 0, read_at = 1750000000 WHERE id = 11")
+    sqlx::query("UPDATE chapter SET progress = 75.0, read_at = 1750000000 WHERE id = 11")
         .execute(pool)
         .await
         .unwrap();
@@ -3561,10 +3420,10 @@ async fn reconcile_snapshot_held_vs_revoked_lineage_dirty_set_cutoff_seed_purge_
            (3, 'cut-src', 'cut-id', '/cut', 'Cutoff Book', 1)",
     ).execute(pool).await.unwrap();
     sqlx::query(
-        "INSERT INTO chapter(id, novel_id, path, name, position, progress, unread, read_at, bookmark) VALUES \
-           (11, 1, '/ch/1', 'H1', 1, 50, 0, 1750000000, 1), \
-           (21, 2, '/ch/1', 'R1', 1, 0, 1, NULL, 1), \
-           (31, 3, '/ch/1', 'C1', 1, 88, 0, 1600000000, 0)",
+        "INSERT INTO chapter(id, novel_id, path, name, position, progress, read_at, bookmark) VALUES \
+           (11, 1, '/ch/1', 'H1', 1, 50, 1750000000, 1), \
+           (21, 2, '/ch/1', 'R1', 1, 0, NULL, 1), \
+           (31, 3, '/ch/1', 'C1', 1, 88, 1600000000, 0)",
     ).execute(pool).await.unwrap();
 
     sqlx::query(
@@ -3599,7 +3458,7 @@ async fn reconcile_snapshot_held_vs_revoked_lineage_dirty_set_cutoff_seed_purge_
                 "records": [
                     shared_record(held_ent, json!({ "bookmarked": true }), 1, "r1"),
                     shared_record(rev_ent, json!({ "bookmarked": true }), 2, "r2"),
-                    shared_record(cut_ent, json!({ "progress": 88, "unread": false, "readAt": 1600000000 }), 3, "r3"),
+                    shared_record(cut_ent, json!({ "progress": 88, "readAt": 1600000000 }), 3, "r3"),
                     shared_record(cat_kept_for_read, json!({ "name": "Kept", "sort": 0, "deleted": false }), 4, "r4"),
                     shared_record(cat_gone, json!({ "name": "Gone", "sort": 1, "deleted": false }), 5, "r5"),
                 ],
@@ -3642,7 +3501,7 @@ async fn reconcile_snapshot_held_vs_revoked_lineage_dirty_set_cutoff_seed_purge_
 
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT bookmark FROM chapter WHERE id = 11").fetch_one(pool).await.unwrap(), 1);
     assert_eq!(sqlx::query_scalar::<_, i64>("SELECT bookmark FROM chapter WHERE id = 21").fetch_one(pool).await.unwrap(), 0);
-    assert_eq!(sqlx::query_as::<_, (i64, i64, Option<i64>)>("SELECT progress, unread, read_at FROM chapter WHERE id = 31").fetch_one(pool).await.unwrap(), (88, 0, Some(1_600_000_000)));
+    assert_eq!(sqlx::query_as::<_, (i64, Option<i64>)>("SELECT progress, read_at FROM chapter WHERE id = 31").fetch_one(pool).await.unwrap(), (88, Some(1_600_000_000)));
 
     let dirty: Vec<(String, String)> = sqlx::query_as("SELECT plugin_id, path FROM work_metadata_dirty").fetch_all(pool).await.unwrap();
     assert_eq!(dirty, vec![("sentinel".into(), "/keep".into())]);
@@ -3695,11 +3554,11 @@ async fn promote_private_skips_empty_source_id_and_retention_validates_boundarie
            (4, 'priv-ws', '   ', '/priv-ws', 'Whitespace Source ID', 0, 0)",
     ).execute(pool).await.unwrap();
     sqlx::query(
-        "INSERT INTO chapter(id, novel_id, path, name, position, progress, unread, read_at) VALUES \
-           (11, 1, '/ch/1', 'Priv', 1, 77, 0, 1600000000), \
-           (21, 2, '/ch/1', 'Loc', 1, 66, 0, 1600000000), \
-           (31, 3, '/ch/exact', 'Exact', 1, 55, 0, 1754136000), \
-           (32, 3, '/ch/older', 'Older', 2, 55, 0, 1754135999)",
+        "INSERT INTO chapter(id, novel_id, path, name, position, progress, read_at) VALUES \
+           (11, 1, '/ch/1', 'Priv', 1, 77, 1600000000), \
+           (21, 2, '/ch/1', 'Loc', 1, 66, 1600000000), \
+           (31, 3, '/ch/exact', 'Exact', 1, 55, 1754136000), \
+           (32, 3, '/ch/older', 'Older', 2, 55, 1754135999)",
     ).execute(pool).await.unwrap();
     let path_key = serde_json::to_string(&(
         "reading",
@@ -3711,7 +3570,7 @@ async fn promote_private_skips_empty_source_id_and_retention_validates_boundarie
         super::types::user_state_work_key_parts("priv-ws", None, "/priv-ws"),
         "/ch/1",
     )).unwrap();
-    sqlx::query("INSERT INTO user_state_private(entity_key, public_value_json) VALUES (?1, '{\"progress\":0,\"unread\":true,\"readAt\":null}'), (?2, '{\"progress\":0,\"unread\":true,\"readAt\":null}')")
+    sqlx::query("INSERT INTO user_state_private(entity_key, public_value_json) VALUES (?1, '{\"progress\":0,\"readAt\":null}'), (?2, '{\"progress\":0,\"readAt\":null}')")
         .bind(&path_key).bind(&ws_path_key).execute(pool).await.unwrap();
 
     with_write_tx(pool, opts.clone(), |conn, _ctx| {
@@ -3752,9 +3611,9 @@ async fn refresh_and_materialize_normalize_empty_and_whitespace_source_novel_ids
     .await
     .unwrap();
     sqlx::query(
-        "INSERT INTO chapter(id, novel_id, path, name, position, progress, unread, read_at) VALUES \
-           (11, 1, '/ch/1', 'E1', 1, 40, 0, 1750000000), \
-           (21, 2, '/ch/1', 'W1', 1, 80, 0, 1750000001)",
+        "INSERT INTO chapter(id, novel_id, path, name, position, progress, read_at) VALUES \
+           (11, 1, '/ch/1', 'E1', 1, 40, 1750000000), \
+           (21, 2, '/ch/1', 'W1', 1, 80, 1750000001)",
     )
     .execute(pool)
     .await

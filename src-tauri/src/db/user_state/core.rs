@@ -8,10 +8,151 @@ use crate::db::tx::TxContext;
 use crate::db::UserStateCommitPriority;
 
 use super::types::{
-    canonical_user_state_json, is_local_user_state_entity, namespace_for, parse_user_state_entity,
-    parse_user_state_value, random_uuid_v4, sha256_hex, user_state_entity_key,
-    user_state_work_key_parts, UserStateBindingDto, UserStateWorkReferenceDto,
+    canonical_user_state_json, fold_ascii, is_local_user_state_entity, namespace_for,
+    parse_user_state_entity, parse_user_state_value, random_uuid_v4, sha256_hex,
+    user_state_entity_key, user_state_work_key, user_state_work_key_parts, UserStateBindingDto,
+    UserStateWorkReferenceDto,
 };
+
+#[derive(Debug, Clone, Default)]
+pub struct HeldMigrationSources {
+    pub ids: HashSet<String>,
+    pub id_pairs: HashSet<(String, String)>,
+    pub paths: HashSet<(String, String)>,
+}
+
+pub fn is_migration_source_held(
+    held: &HeldMigrationSources,
+    work: &UserStateWorkReferenceDto,
+) -> bool {
+    held.ids.contains(&user_state_work_key(work))
+        || held
+            .paths
+            .contains(&(work.plugin_id.clone(), work.novel_path.clone()))
+}
+
+pub async fn load_held_migration_sources_in_tx(
+    conn: &mut SqliteConnection,
+    server_url: &str,
+) -> Result<HeldMigrationSources, String> {
+    let rows = sqlx::query(
+        "SELECT 'outgoing' AS kind, \
+                json_extract(payload, '$.status') AS status, \
+                json_extract(payload, '$.operationId') AS operationId, \
+                json_extract(payload, '$.lineage.legacyOperationId') AS legacyOperationId, \
+                COALESCE(json_extract(payload, '$.source.pluginId'), \
+                         json_extract(payload, '$.identity.pluginId')) AS pluginId, \
+                COALESCE(json_extract(payload, '$.source.novelId'), \
+                         json_extract(payload, '$.identity.novelId')) AS sourceNovelId, \
+                COALESCE(json_extract(payload, '$.source.novelPath'), \
+                         json_extract(payload, '$.identity.novelPath')) AS novelPath \
+         FROM content_sync_cache \
+         WHERE cache_key >= 'norea-content-novel-migration:' \
+           AND cache_key < 'norea-content-novel-migration;' \
+           AND rtrim(json_extract(payload, '$.serverUrl'), '/') = rtrim(?1, '/') \
+         UNION ALL \
+         SELECT 'incoming' AS kind, \
+                json_extract(payload, '$.status') AS status, \
+                json_extract(payload, '$.operationId') AS operationId, \
+                json_extract(payload, '$.lineage.legacyOperationId') AS legacyOperationId, \
+                COALESCE(json_extract(payload, '$.source.pluginId'), \
+                         json_extract(payload, '$.identity.pluginId')) AS pluginId, \
+                COALESCE(json_extract(payload, '$.source.novelId'), \
+                         json_extract(payload, '$.identity.novelId')) AS sourceNovelId, \
+                COALESCE(json_extract(payload, '$.source.novelPath'), \
+                         json_extract(payload, '$.identity.novelPath')) AS novelPath \
+         FROM content_sync_cache \
+         WHERE cache_key >= 'norea-content-incoming-migration:' \
+           AND cache_key < 'norea-content-incoming-migration;' \
+           AND rtrim(json_extract(payload, '$.serverUrl'), '/') = rtrim(?1, '/') \
+         UNION ALL \
+         SELECT 'number' AS kind, \
+                json_extract(payload, '$.status') AS status, \
+                json_extract(payload, '$.operationId') AS operationId, \
+                json_extract(payload, '$.lineage.legacyOperationId') AS legacyOperationId, \
+                COALESCE(json_extract(payload, '$.source.pluginId'), \
+                         json_extract(payload, '$.identity.pluginId')) AS pluginId, \
+                COALESCE(json_extract(payload, '$.source.novelId'), \
+                         json_extract(payload, '$.identity.novelId')) AS sourceNovelId, \
+                COALESCE(json_extract(payload, '$.source.novelPath'), \
+                         json_extract(payload, '$.identity.novelPath')) AS novelPath \
+         FROM content_sync_cache \
+         WHERE cache_key >= 'norea-content-chapter-number-reconciliation:' \
+           AND cache_key < 'norea-content-chapter-number-reconciliation;' \
+           AND rtrim(json_extract(payload, '$.serverUrl'), '/') = rtrim(?1, '/')",
+    )
+    .bind(server_url)
+    .fetch_all(&mut *conn)
+    .await
+    .map_err(|err| format!("db user state: load held migration sources: {err}"))?;
+
+    #[derive(Clone)]
+    struct RawHold {
+        kind: String,
+        status: Option<String>,
+        operation_id: Option<String>,
+        legacy_operation_id: Option<String>,
+        plugin_id: Option<String>,
+        source_novel_id: Option<String>,
+        novel_path: Option<String>,
+    }
+
+    let parsed: Vec<RawHold> = rows
+        .into_iter()
+        .map(|r| RawHold {
+            kind: r.get("kind"),
+            status: r.get("status"),
+            operation_id: r.get("operationId"),
+            legacy_operation_id: r.get("legacyOperationId"),
+            plugin_id: r.get("pluginId"),
+            source_novel_id: r.get("sourceNovelId"),
+            novel_path: r.get("novelPath"),
+        })
+        .collect();
+
+    let mut revoked: HashSet<String> = HashSet::new();
+    for r in &parsed {
+        if r.kind == "incoming" && r.status.as_deref() == Some("inactive") {
+            if let Some(ref op) = r.operation_id {
+                revoked.insert(op.clone());
+            }
+            if let Some(ref leg) = r.legacy_operation_id {
+                revoked.insert(leg.clone());
+            }
+        }
+    }
+
+    let mut result = HeldMigrationSources::default();
+    for r in parsed {
+        let Some(plugin_id) = r.plugin_id.filter(|s| !s.is_empty()) else {
+            continue;
+        };
+        if (r.kind == "number" && r.status.as_deref() != Some("pending"))
+            || (r.kind == "incoming" && r.status.as_deref() == Some("inactive"))
+            || r.operation_id.as_ref().is_some_and(|op| revoked.contains(op))
+            || r.legacy_operation_id
+                .as_ref()
+                .is_some_and(|op| revoked.contains(op))
+        {
+            continue;
+        }
+        let novel_path_str = r.novel_path.as_deref().unwrap_or("");
+        if let Some(ref source_novel_id) = r.source_novel_id.filter(|s| !s.is_empty()) {
+            result.ids.insert(user_state_work_key_parts(
+                &plugin_id,
+                Some(source_novel_id),
+                novel_path_str,
+            ));
+            result
+                .id_pairs
+                .insert((plugin_id.clone(), fold_ascii(source_novel_id)));
+        }
+        if let Some(novel_path) = r.novel_path.filter(|s| !s.is_empty()) {
+            result.paths.insert((plugin_id, novel_path));
+        }
+    }
+    Ok(result)
+}
 
 #[derive(Debug, Clone)]
 pub struct IntentRow {
@@ -47,7 +188,6 @@ pub struct UserChapterRow {
     pub chapter_name: String,
     pub composition_entry_id: Option<String>,
     pub progress: f64,
-    pub unread: i64,
     pub read_at: Option<i64>,
     pub bookmark: i64,
 }
@@ -55,7 +195,7 @@ pub struct UserChapterRow {
 pub const USER_CHAPTER_SELECT: &str = "\
 SELECT c.id, c.novel_id AS novelId, n.plugin_id AS pluginId, n.source_novel_id AS sourceNovelId, \
   n.path AS novelPath, n.name, c.path AS chapterPath, c.name AS chapterName, \
-  c.progress, c.unread, c.read_at AS readAt, c.bookmark, \
+  c.progress, c.read_at AS readAt, c.bookmark, \
   NULL AS compositionEntryId \
 FROM chapter c JOIN novel n ON n.id = c.novel_id";
 
@@ -140,7 +280,6 @@ pub fn map_user_chapter_row(row: &sqlx::sqlite::SqliteRow) -> UserChapterRow {
         chapter_name: row.get("chapterName"),
         composition_entry_id: row.get("compositionEntryId"),
         progress: crate::db::decode_sqlite_f64(row, "progress"),
-        unread: row.get("unread"),
         read_at: row.get("readAt"),
         bookmark: row.get("bookmark"),
     }
@@ -510,7 +649,6 @@ pub async fn mark_private_chapter_progress_in_tx(
             "reading",
             &json!({
                 "progress": row.progress,
-                "unread": row.unread != 0,
                 "readAt": row.read_at,
             }),
         )?;
@@ -576,7 +714,6 @@ pub async fn record_chapter_rows_in_tx(
         let val = if kind == "reading" {
             json!({
                 "progress": row.progress,
-                "unread": row.unread != 0,
                 "readAt": row.read_at,
             })
         } else {
@@ -680,7 +817,7 @@ pub async fn snapshot_reading_progress_clear_targets_in_tx(
     let reset_sql = format!(
         "{USER_CHAPTER_SELECT} \
          WHERE n.plugin_id <> 'local' AND n.is_local = 0 \
-           AND (c.progress <> 0 OR c.unread = 0 OR c.read_at IS NOT NULL)"
+           AND (c.progress <> 0 OR c.read_at IS NOT NULL)"
     );
     let reset_rows = sqlx::query(&reset_sql)
         .fetch_all(&mut *conn)
@@ -707,7 +844,7 @@ pub async fn snapshot_reading_progress_clear_targets_in_tx(
         let untouched_sql = format!(
             "{USER_CHAPTER_SELECT} \
              WHERE n.plugin_id <> 'local' AND n.is_local = 0 \
-               AND c.progress = 0 AND c.unread = 1 AND c.read_at IS NULL \
+               AND c.progress = 0 AND c.read_at IS NULL \
                AND c.path IN (SELECT value FROM json_each(?1))"
         );
         let candidate_rows = sqlx::query(&untouched_sql)
@@ -817,7 +954,6 @@ pub async fn record_cleared_reading_progress_in_tx(
     }
     for row in &mut targets.chapter_rows {
         row.progress = 0.0;
-        row.unread = 1;
         row.read_at = None;
     }
     record_chapter_rows_in_tx(conn, ctx, &targets.chapter_rows, "reading", false).await?;
@@ -1265,7 +1401,7 @@ pub async fn seed_user_state_with_options_in_tx(
 
     let ch_sql = format!(
         "{USER_CHAPTER_SELECT} WHERE n.plugin_id <> 'local' AND n.is_local = 0 \
-         AND (c.progress > 0 OR c.unread = 0 OR c.read_at IS NOT NULL OR c.bookmark = 1)"
+         AND (c.progress > 0 OR c.read_at IS NOT NULL OR c.bookmark = 1)"
     );
     let ch_rows = sqlx::query(&ch_sql)
         .fetch_all(&mut *conn)
@@ -1293,7 +1429,7 @@ pub async fn seed_user_state_with_options_in_tx(
         });
         let is_private = private_keys.contains(&user_state_entity_key(&reading_ent)?);
         let cutoff_blocked = is_before_seed_cutoff(ch.read_at, seed_cutoff_ms);
-        if (ch.progress > 0.0 || ch.unread == 0 || ch.read_at.is_some())
+        if (ch.progress > 0.0 || ch.read_at.is_some())
             && !is_private
             && !cutoff_blocked
         {
@@ -1402,67 +1538,6 @@ pub async fn record_public_novel_reading_in_tx(
                     entity,
                     json!({
                         "progress": row.progress,
-                        "unread": row.unread != 0,
-                        "readAt": row.read_at,
-                    }),
-                ));
-            }
-        }
-        record_user_state_changes_in_tx(conn, ctx, &entries, false).await?;
-    }
-    Ok(())
-}
-
-pub async fn record_chapter_unread_flags_in_tx(
-    conn: &mut SqliteConnection,
-    ctx: &mut TxContext,
-    ids: &[i64],
-    unread: bool,
-) -> Result<(), String> {
-    if ids.is_empty() || !has_user_state_schema_in_tx(conn).await? {
-        return Ok(());
-    }
-    let private_rows = sqlx::query("SELECT entity_key, public_value_json FROM user_state_private")
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|err| format!("db user state: load private unread values: {err}"))?;
-    let mut private_values: HashMap<String, JsonValue> = HashMap::new();
-    for r in private_rows {
-        let k: String = r.get("entity_key");
-        let v: String = r.get("public_value_json");
-        if let Ok(parsed) = serde_json::from_str::<JsonValue>(&v) {
-            private_values.insert(k, parsed);
-        }
-    }
-    for chunk in ids.chunks(400) {
-        let rows = load_user_chapter_rows_by_ids_in_tx(conn, chunk).await?;
-        let mut entries = Vec::with_capacity(rows.len());
-        for row in rows {
-            let entity = json!({
-                "kind": "reading",
-                "work": chapter_work_json(&row),
-                "chapter": chapter_reference_json(&row),
-            });
-            let key = user_state_entity_key(&entity)?;
-            if let Some(prev) = private_values.get(&key) {
-                let mut updated = prev.clone();
-                updated["unread"] = JsonValue::Bool(unread);
-                let normalized = parse_user_state_value("reading", &updated)?;
-                sqlx::query(
-                    "UPDATE user_state_private SET public_value_json = ?2 WHERE entity_key = ?1",
-                )
-                .bind(&key)
-                .bind(serde_json::to_string(&normalized).unwrap())
-                .execute(&mut *conn)
-                .await
-                .map_err(|err| format!("db user state: update private unread flag: {err}"))?;
-                entries.push((entity, normalized));
-            } else {
-                entries.push((
-                    entity,
-                    json!({
-                        "progress": row.progress,
-                        "unread": unread,
                         "readAt": row.read_at,
                     }),
                 ));

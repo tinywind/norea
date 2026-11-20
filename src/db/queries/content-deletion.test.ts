@@ -107,16 +107,16 @@ it("records category, resume, and public chapter user-state removals without sha
   sqlite.exec(`INSERT INTO category(id,name,sort,is_system) VALUES(5,'Shelf',1,0);
     INSERT INTO novel_category(novel_id,category_id) VALUES(12,5);
     UPDATE novel SET last_read_at=100 WHERE id=12;
-    UPDATE chapter SET unread=0,read_at=100 WHERE id=91;
-    INSERT INTO chapter(id,novel_id,path,name,position,progress,unread,read_at,bookmark)
-    VALUES(99,12,'/private','Private',2,80,0,120,0)`);
+    UPDATE chapter SET progress=100,read_at=100 WHERE id=91;
+    INSERT INTO chapter(id,novel_id,path,name,position,progress,read_at,bookmark)
+    VALUES(99,12,'/private','Private',2,80,120,0)`);
   const privateKey = userStateEntityKey({
     kind: "reading",
     work: { pluginId: "source", sourceNovelId: "42", novelPath: "/book", name: "Book" },
     chapter: { chapterPath: "/private", name: "Private" },
   });
   sqlite.prepare("INSERT INTO user_state_private(entity_key,public_value_json) VALUES(?,?)")
-    .run(privateKey, '{"progress":0,"unread":true,"readAt":null}');
+    .run(privateKey, '{"progress":0,"readAt":null}');
 
   await deleteLocalNovelRecords(identity, { recordUserStateRemoval: true });
 
@@ -133,7 +133,7 @@ it("records category, resume, and public chapter user-state removals without sha
     },
     {
       entity: { chapter: { chapterPath: "/chapter", name: "One" }, kind: "reading", work: { name: "Book", novelPath: "/book", pluginId: "source", sourceNovelId: "42" } },
-      value: { progress: 0, readAt: null, unread: true },
+      value: { progress: 0, readAt: null },
     },
     {
       entity: { chapter: { chapterPath: "/chapter", name: "One" }, kind: "bookmark", work: { name: "Book", novelPath: "/book", pluginId: "source", sourceNovelId: "42" } },

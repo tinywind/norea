@@ -1,11 +1,24 @@
 import { hasStoredChapterContent, type ChapterListRow } from "../../db/queries/chapter";
-import type { NovelDownloadGoal } from "../../db/queries/novel-download-goal";
+import type { DownloadGoalActiveFilter, NovelDownloadGoal } from "../../db/queries/novel-download-goal";
+import { DEFAULT_AUTOMATIC_ACTIVE_WINDOW, type AutomaticActiveWindowChoice } from "../../store/download-goals";
 
-/** Automatic policies apply to library novels opened within this window. */
-export const ACTIVE_NOVEL_WINDOW_SECONDS = 14 * 24 * 60 * 60;
+const DAY_SECONDS = 24 * 60 * 60;
+
+/** Fixed active window for source freshness checks (decoupled from automatic download active window). */
+export const ACTIVE_NOVEL_WINDOW_SECONDS = 14 * DAY_SECONDS;
 
 export function automaticDownloadActiveSince(goal: NovelDownloadGoal, nowSeconds = Math.floor(Date.now() / 1000)): number | null {
   return goal.kind === "none" ? null : nowSeconds - ACTIVE_NOVEL_WINDOW_SECONDS;
+}
+
+export function automaticDownloadActiveFilter(
+  goal: NovelDownloadGoal,
+  activeWindow: AutomaticActiveWindowChoice = DEFAULT_AUTOMATIC_ACTIVE_WINDOW,
+  nowSeconds = Math.floor(Date.now() / 1000),
+): DownloadGoalActiveFilter {
+  if (goal.kind === "none") return { kind: "none" };
+  if (activeWindow === "unlimited") return { kind: "all" };
+  return { kind: "since", seconds: nowSeconds - activeWindow * DAY_SECONDS };
 }
 
 /** The global automatic policy applies to every active library source novel except an explicit pause. */
@@ -14,10 +27,12 @@ export function effectiveDownloadGoal(
   novel: { inLibrary: boolean; isLocal: boolean; lastReadAt: number | null },
   automaticGoal: NovelDownloadGoal,
   nowSeconds: number,
+  activeWindow: AutomaticActiveWindowChoice = DEFAULT_AUTOMATIC_ACTIVE_WINDOW,
 ): { goal: NovelDownloadGoal | null; isDefault: boolean } {
-  const activeSince = automaticDownloadActiveSince(automaticGoal, nowSeconds);
-  const active = activeSince !== null && novel.inLibrary && !novel.isLocal && novel.lastReadAt !== null &&
-    novel.lastReadAt >= activeSince;
+  const filter = automaticDownloadActiveFilter(automaticGoal, activeWindow, nowSeconds);
+  const withinWindow = filter.kind === "all" ||
+    (filter.kind === "since" && novel.lastReadAt !== null && novel.lastReadAt >= filter.seconds);
+  const active = filter.kind !== "none" && novel.inLibrary && !novel.isLocal && withinWindow;
   return active && own?.kind !== "none"
     ? { goal: automaticGoal, isDefault: true }
     : { goal: null, isDefault: false };

@@ -184,7 +184,7 @@ export function compileNovelMergeComposition(input: {
       path, chapterNumber: storageChapterNumber, position: index + 1, name: entry.user.name ?? primary.name,
       page: primary.page, releaseTime: primary.releaseTime, sourceContentType: primary.contentType,
       ...(retainTarget ? {} : { isDownloaded: false, contentBytes: 0, mediaBytes: 0, mediaRepairNeeded: false,
-        contentType: primary.contentType, bookmark: false, unread: true, progress: 0, readAt: null }),
+        contentType: primary.contentType, bookmark: false, progress: 0, readAt: null }),
     });
     if (target) {
       if (!retainTarget) readingStateSourcePathByTargetPath[path] = target.path;

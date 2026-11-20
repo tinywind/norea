@@ -124,3 +124,20 @@ it("captures privacy mode when the save is requested instead of publishing it af
   await vi.waitFor(() => expect(updateChapterProgress).toHaveBeenCalledWith(71, 10, { recordHistory: false }));
   expect(recordUserResume).not.toHaveBeenCalled();
 });
+
+it("passes allowProgressReset to reset a finished chapter on re-read movement and keeps finished chapters intact otherwise", async () => {
+  await render();
+  queryClient.setQueryData(["chapter", 71], { id: 71, novelId: 7, progress: 100, readAt: 500 });
+  queryClient.setQueryData(["novel-chapters", 7], [{ id: 71, novelId: 7, progress: 100, readAt: 500 }]);
+
+  await act(async () => current.persistProgress({ chapterId: 71, novelId: 7, progress: 18 }));
+  await vi.waitFor(() => expect(updateChapterProgress).toHaveBeenCalledWith(71, 18, { recordHistory: true }));
+  expect((queryClient.getQueryData(["chapter", 71]) as { progress: number }).progress).toBe(100);
+
+  vi.mocked(updateChapterProgress).mockClear();
+  await act(async () => current.persistProgress({ chapterId: 71, novelId: 7, progress: 22, allowProgressReset: true }));
+  await vi.waitFor(() =>
+    expect(updateChapterProgress).toHaveBeenCalledWith(71, 22, { recordHistory: true, allowProgressReset: true }),
+  );
+  expect((queryClient.getQueryData(["chapter", 71]) as { progress: number }).progress).toBe(22);
+});

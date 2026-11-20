@@ -167,7 +167,7 @@ function ChapterListItem({
     disabled: !canDrag,
   });
   const progress = getChapterReadingProgress(chapter);
-  const finished = !chapter.unread || progress >= FINISHED_PROGRESS;
+  const finished = progress >= FINISHED_PROGRESS;
   const partlyRead = !finished && progress > 0;
   const readFill = finished ? "100%" : partlyRead ? `${progress}%` : null;
   const style = {

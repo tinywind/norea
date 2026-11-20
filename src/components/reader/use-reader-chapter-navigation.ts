@@ -51,6 +51,7 @@ type ReaderChapterUnavailable =
   | { reason: "offline" };
 interface ReaderChapterNavigationOptions {
   chapterId: number;
+  routeInitialProgress?: number;
   chapter: ReaderNavigationChapter | undefined;
   previousChapter: ReaderNavigationChapter | undefined;
   nextChapter: ReaderNavigationChapter | undefined;
@@ -74,6 +75,7 @@ function isNovelHrefForId(href: string, novelId: number): boolean {
 
 export function useReaderChapterNavigation({
   chapterId,
+  routeInitialProgress,
   chapter,
   previousChapter,
   nextChapter,
@@ -108,7 +110,33 @@ export function useReaderChapterNavigation({
   const [initialProgressOverride, setInitialProgressOverride] = useState<{
     chapterId: number;
     progress: number;
-  } | null>(null);
+    allowProgressReset?: boolean;
+  } | null>(() =>
+    active && chapterId > 0 && routeInitialProgress !== undefined
+      ? {
+          chapterId,
+          progress: routeInitialProgress,
+          allowProgressReset: routeInitialProgress === 0,
+        }
+      : null,
+  );
+  useEffect(() => {
+    if (!active) {
+      setInitialProgressOverride(null);
+      return;
+    }
+    if (chapterId > 0 && routeInitialProgress !== undefined) {
+      setInitialProgressOverride({
+        chapterId,
+        progress: routeInitialProgress,
+        allowProgressReset: routeInitialProgress === 0,
+      });
+      return;
+    }
+    setInitialProgressOverride((current) =>
+      current?.chapterId === chapterId ? current : null,
+    );
+  }, [active, chapterId, routeInitialProgress]);
   useLayoutEffect(() => {
     readerContentReadyRef.current = readerProgressPersistenceReady;
   }, [readerProgressPersistenceReady]);
@@ -139,6 +167,7 @@ export function useReaderChapterNavigation({
         setInitialProgressOverride({
           chapterId: targetChapter.id,
           progress: options.initialProgress,
+          allowProgressReset: options.initialProgress === 0,
         });
       } else if (targetChapter.id !== chapterId) {
         setInitialProgressOverride(null);
@@ -159,7 +188,10 @@ export function useReaderChapterNavigation({
         openedChapterRef.current = null;
         void navigate({
           to: "/reader",
-          search: { chapterId: targetChapter.id },
+          search:
+            options?.initialProgress === 0
+              ? { chapterId: targetChapter.id, fromStart: true }
+              : { chapterId: targetChapter.id },
           replace: true,
         });
       }

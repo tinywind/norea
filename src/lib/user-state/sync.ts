@@ -6,7 +6,6 @@ import {
   resolveUserStateLedgerConflict, resumeUserStateAfterRestore as resumeRestoredLedger, setUserStateActiveServer,
 } from "../../db/user-state";
 import { waitForUserStateDeferredApply } from "../../db/user-state-core";
-import { setUserStateCurrentServer } from "../../db/user-state-current";
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
 import { isAbortError, requestAbortedError } from "../abort";
@@ -226,9 +225,6 @@ async function runSynchronization(serverUrl: string, controller: AbortController
   const unsubscribe = useContentSyncStore.subscribe((state, previous) => {
     if (state.serverUrl !== previous.serverUrl) controller.abort(requestAbortedError());
   });
-  // Current snapshot v2 is compatibility-only. New clients keep the delta ledger
-  // active so normal sync cost is proportional to changed revisions.
-  setUserStateCurrentServer(null);
   setUserStateActiveServer(serverUrl);
   useUserStateStore.getState().setRuntime(serverUrl, "syncing");
   try {

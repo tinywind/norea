@@ -120,7 +120,7 @@ it("shows outstanding local projection and failures separately from uploads", ()
 
 it("keeps negative reading and bookmark edits readable instead of hiding them as absent values", () => {
   const { t } = useTranslation();
-  expect(userStateValueSummary("reading", { progress: 0, unread: true, readAt: null }, t, "en")).toBe("0% · Unread · No reading history");
+  expect(userStateValueSummary("reading", { progress: 0, readAt: null }, t, "en")).toBe("0% · Unread · No reading history");
   expect(userStateValueSummary("bookmark", { bookmarked: false }, t, "en")).toBe("Bookmark removed");
   expect(userStateValueSummary("resume", { chapter: null, anchor: null, openedAt: null }, t, "en")).toBe("Continue-reading position cleared");
   expect(userStateValueSummary("library", { inLibrary: false, addedAt: null }, t, "en")).toBe("Removed from the library");

@@ -135,7 +135,7 @@ let serverCover: number[] | null;
 let proofReads: number;
 let proofTransform: ((value: unknown) => unknown) | undefined;
 const metadata = (): NovelMetadataV1 => JSON.parse(new TextDecoder().decode(new Uint8Array(state.metadata.get(metadataPath)!)));
-const personalState = () => sqlite.prepare("SELECT id,progress,bookmark,unread,read_at,is_downloaded,stored_content_type,content_bytes,media_bytes FROM chapter ORDER BY id").all();
+const personalState = () => sqlite.prepare("SELECT id,progress,bookmark,read_at,is_downloaded,stored_content_type,content_bytes,media_bytes FROM chapter ORDER BY id").all();
 const numbers = () => sqlite.prepare("SELECT id,path,chapter_number,position FROM chapter ORDER BY id").all();
 const journals = () => sqlite.prepare("SELECT cache_key,payload FROM content_sync_cache WHERE cache_key LIKE 'norea-source-chapter-renumber:%'").all();
 const sha256 = async (body: number[]) => Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", new Uint8Array(body))), byte => byte.toString(16).padStart(2, "0")).join("");
@@ -190,10 +190,10 @@ beforeEach(async () => {
     }
   });
   sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library) VALUES(7,'source','book','/book','Book',1)");
-  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,unread,read_at,is_downloaded,stored_content_type,content_bytes) VALUES " +
-    "(11,7,'/chapter/1000','First',1,'1000',0.75,1,0,123,1,'html',11)," +
-    "(12,7,'/chapter/2000','Second',2,'2000',0,0,1,NULL,0,NULL,0)," +
-    "(13,7,'norea-folder:3000','Third',3,'3000',1,1,0,456,1,'html',13)");
+  sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,read_at,is_downloaded,stored_content_type,content_bytes) VALUES " +
+    "(11,7,'/chapter/1000','First',1,'1000',75,1,123,1,'html',11)," +
+    "(12,7,'/chapter/2000','Second',2,'2000',0,0,NULL,0,NULL,0)," +
+    "(13,7,'norea-folder:3000','Third',3,'3000',100,1,456,1,'html',13)");
   state.payloads.set(directory + "/1000", "first body with retained media");
   state.payloads.set(directory + "/3000", "third body with retained media");
   state.metadata.set(coverPath, [...oldCover]);
@@ -522,8 +522,8 @@ it("rejects a direct cache import with an explicit same-path number mismatch", a
 
 it("reconciles server chapter numbers without dropping an offline-downloaded chapter when opening the work", async () => {
   sqlite.exec(
-    "INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,unread,read_at,is_downloaded,stored_content_type,content_bytes) " +
-    "VALUES (14,7,'/chapter/4','Fourth',4,'4',0,0,1,NULL,1,'html',14)",
+    "INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,read_at,is_downloaded,stored_content_type,content_bytes) " +
+    "VALUES (14,7,'/chapter/4','Fourth',4,'4',0,0,NULL,1,'html',14)",
   );
   state.payloads.set(directory + "/4", "fourth body");
   await flushWorkMetadata(db, { novelId: 7, chapters: { ...originalCatalog, "4": "Fourth" } });
@@ -541,8 +541,8 @@ it("reconciles server chapter numbers without dropping an offline-downloaded cha
 
 it("reconciles server chapter numbers and uploads offline-downloaded chapters on work metadata sync", async () => {
   sqlite.exec(
-    "INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,unread,read_at,is_downloaded,stored_content_type,content_bytes) " +
-    "VALUES (14,7,'/chapter/4','Fourth',4,'4',0,0,1,NULL,1,'html',14)",
+    "INSERT INTO chapter(id,novel_id,path,name,position,chapter_number,progress,bookmark,read_at,is_downloaded,stored_content_type,content_bytes) " +
+    "VALUES (14,7,'/chapter/4','Fourth',4,'4',0,0,NULL,1,'html',14)",
   );
   state.payloads.set(directory + "/4", "fourth body");
   await flushWorkMetadata(db, { novelId: 7, chapters: { ...originalCatalog, "4": "Fourth" } });

@@ -58,3 +58,19 @@ it("keeps an explicit work pause and a global off policy authoritative over reta
   expect(effectiveDownloadGoal({ kind: "none" }, active, { kind: "entire" }, now)).toEqual({ goal: null, isDefault: false });
   expect(effectiveDownloadGoal({ kind: "entire" }, active, { kind: "none" }, now)).toEqual({ goal: null, isDefault: false });
 });
+
+it("supports unlimited active window including never-opened library works and custom day windows", () => {
+  const now = 100 * 86_400;
+  const neverOpened = { inLibrary: true, isLocal: false, lastReadAt: null };
+  const oldRead = { inLibrary: true, isLocal: false, lastReadAt: now - 20 * 86_400 };
+  const goal = { kind: "keep_ahead", count: 5 } as const;
+
+  expect(effectiveDownloadGoal(null, neverOpened, goal, now, "unlimited")).toEqual({ goal, isDefault: true });
+  expect(effectiveDownloadGoal(null, oldRead, goal, now, "unlimited")).toEqual({ goal, isDefault: true });
+  expect(effectiveDownloadGoal({ kind: "none" }, neverOpened, goal, now, "unlimited")).toEqual({ goal: null, isDefault: false });
+  expect(effectiveDownloadGoal(null, { ...neverOpened, inLibrary: false }, goal, now, "unlimited")).toEqual({ goal: null, isDefault: false });
+  expect(effectiveDownloadGoal(null, { ...neverOpened, isLocal: true }, goal, now, "unlimited")).toEqual({ goal: null, isDefault: false });
+
+  expect(effectiveDownloadGoal(null, oldRead, goal, now, 30)).toEqual({ goal, isDefault: true });
+  expect(effectiveDownloadGoal(null, oldRead, goal, now, 7)).toEqual({ goal: null, isDefault: false });
+});

@@ -12,7 +12,7 @@ only. Content metadata/chapter files and portable backups remain separate flows.
 | Library registration or removal | One work |
 | Category name, order, or deletion | One stable category |
 | Inclusion or removal from a category | One work/category pair |
-| Progress, read/unread, and history time | One atomic chapter reading tuple |
+| Progress percentage (`0` unread, `1-99` reading, `100` read) and history time | One atomic chapter reading tuple (`{ progress, readAt }`) |
 | Bookmark or bookmark removal | One chapter bookmark |
 | Resume chapter, document anchor, or explicit clear | One work resume |
 | Chapter composition, including exclusions and provenance | One complete composition document |

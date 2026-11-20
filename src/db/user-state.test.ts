@@ -40,7 +40,7 @@ let active: Fixture;
 const binding: UserStateBinding = { serverUrl: "https://state.example", workspaceId: "workspace-1", epoch: "epoch-1" };
 const work: UserStateWorkReference = { pluginId: "source", sourceNovelId: "book", novelPath: "/book", name: "Book" };
 const reading: UserStateEntity = { kind: "reading", work, chapter: { chapterPath: "/chapter/1", name: "One" } };
-const readingValue = (progress: number, unread = progress < 100): UserStateValueMap["reading"] => ({ progress, unread, readAt: null });
+const readingValue = (progress: number): UserStateValueMap["reading"] => ({ progress, readAt: null });
 function fixture(): Fixture {
   const sql = new DatabaseSync(":memory:");
   sql.exec("PRAGMA foreign_keys=ON");
@@ -129,9 +129,9 @@ describe("durable personal-state ledger", () => {
     active.sql.exec("INSERT INTO category(id,name,sort,is_system) VALUES(80,'Pinned',1,0)");
     active.sql.exec("INSERT INTO user_state_category(category_id,local_id) VALUES('local-prelink',80)");
     active.sql.exec("INSERT INTO novel_category(novel_id,category_id) VALUES(1,80)");
-    active.sql.exec("UPDATE novel SET in_library=1; UPDATE chapter SET progress=100,unread=0");
+    active.sql.exec("UPDATE novel SET in_library=1; UPDATE chapter SET progress=100");
     await tx(active, db => recordUserStateChangesInDb(db, [
-      { entity: reading, value: readingValue(100, false) },
+      { entity: reading, value: readingValue(100) },
       { entity: library, value: { inLibrary: true, addedAt: 20 } },
       { entity: resume, value: { chapter: reading.chapter, anchor: null, openedAt: 20 } },
       { entity: category, value: { name: "Pinned", sort: 1, deleted: false } },
@@ -146,7 +146,7 @@ describe("durable personal-state ledger", () => {
       shared(category, { name: "Pinned", sort: 1, deleted: true }, 1),
       shared(library, { inLibrary: false, addedAt: null }, 2),
       shared(membership, { included: false }, 3),
-      shared(reading, readingValue(0, true), 4),
+      shared(reading, readingValue(0), 4),
       shared(resume, { chapter: null, anchor: null, openedAt: null }, 5),
     ];
     await applyUserStateReadPage(binding, {
@@ -154,7 +154,7 @@ describe("durable personal-state ledger", () => {
       headRevision: 5, through: 5, nextCursor: 5, hasMore: false, records: remote,
     });
     await waitForUserStateDeferredApply();
-    expect(active.sql.prepare("SELECT progress,unread FROM chapter WHERE id=11").get()).toEqual({ progress: 0, unread: 1 });
+    expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=11").get()).toEqual({ progress: 0 });
     expect(active.sql.prepare("SELECT in_library FROM novel WHERE id=1").get()).toEqual({ in_library: 1 });
     expect(active.sql.prepare("SELECT COUNT(*) count FROM category WHERE id=80").get()).toEqual({ count: 0 });
     await tx(active, db => acknowledgeUserStateOperationsInDb(db, binding, baseline.map(operation => ({
@@ -166,13 +166,13 @@ describe("durable personal-state ledger", () => {
   });
 
   it("keeps the first actual command after binding explicit even when a pre-link baseline is unsent", async () => {
-    await capture(readingValue(100, false));
+    await capture(readingValue(100));
     await bind();
-    await capture(readingValue(0, true));
+    await capture(readingValue(0));
     const [operation] = await prepare();
     expect(operation.seed).toBeUndefined();
     expect(operation.baseRevision).toBe(0);
-    expect(operation.value).toEqual(readingValue(0, true));
+    expect(operation.value).toEqual(readingValue(0));
   });
 
   it("keeps genuine offline edits explicit after an acknowledged workspace sync", async () => {
@@ -195,9 +195,9 @@ describe("durable personal-state ledger", () => {
     });
     const [operation] = await prepare();
     expect(operation.seed).toBeUndefined();
-    expect(operation.value).toMatchObject({ progress: 100, unread: false });
+    expect(operation.value).toMatchObject({ progress: 100 });
     expect(operation.baseRevision).toBe(1);
-    expect(active.sql.prepare("SELECT progress,unread FROM chapter WHERE id=11").get()).toEqual({ progress: 100, unread: 0 });
+    expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=11").get()).toEqual({ progress: 100 });
   });
 
   it("parks a received chapter with no local content and reprojects when the work appears", async () => {
@@ -314,7 +314,7 @@ describe("durable personal-state ledger", () => {
     const namespace = canonicalUserStateJson([binding.serverUrl, binding.workspaceId, binding.epoch]);
     active.sql.prepare("INSERT INTO user_state_workspace(server_url,namespace,workspace_id,epoch) VALUES(?,?,?,?)")
       .run(binding.serverUrl, namespace, binding.workspaceId, binding.epoch);
-    active.sql.exec("UPDATE chapter SET bookmark=1,progress=64,unread=0,read_at=10");
+    active.sql.exec("UPDATE chapter SET bookmark=1,progress=64,read_at=10");
     await bind();
     const first = await prepare();
     expect(first.map(operation => operation.entity.kind).sort()).toEqual(["bookmark", "reading", "resume"]);
@@ -329,7 +329,7 @@ describe("durable personal-state ledger", () => {
   it("seeds only positive state and never fabricates default resets", async () => {
     await bind();
     expect(await prepare()).toEqual([]);
-    active.sql.exec("UPDATE chapter SET bookmark=1,progress=100,unread=0,read_at=10");
+    active.sql.exec("UPDATE chapter SET bookmark=1,progress=100,read_at=10");
     const second = { ...binding, serverUrl: "https://second.example" };
     await tx(active, db => bindUserStateWorkspaceInDb(db, second));
     const operations = await tx(active, db => prepareUserStateOperationsInDb(db, second));
@@ -436,13 +436,13 @@ describe("durable personal-state ledger", () => {
   it("freezes attempted bytes across retries and preserves a newer edit while acknowledging its ancestor", async () => {
     await bind(); await capture(readingValue(60));
     const [first] = await prepare();
-    await capture(readingValue(0, true));
+    await capture(readingValue(0));
     expect(canonicalUserStateJson(await prepare())).toBe(canonicalUserStateJson([first]));
     await ack(first, 1);
     const [second] = await prepare();
     expect(second.operationId).not.toBe(first.operationId);
     expect(second.baseRevision).toBe(1);
-    expect(second.value).toEqual(readingValue(0, true));
+    expect(second.value).toEqual(readingValue(0));
     const attempted = active.sql.prepare("SELECT payload FROM user_state_operation WHERE operation_id=?").get(first.operationId) as { payload: string };
     expect(attempted.payload).toBe(canonicalUserStateJson(first));
   });
@@ -472,7 +472,7 @@ describe("durable personal-state ledger", () => {
   it("retains conflicting values and rejects a stale conflict resolution after another local edit", async () => {
     await bind(); await capture(readingValue(0)); const [operation] = await prepare();
     await tx(active, db => acknowledgeUserStateOperationsInDb(db, binding, [{ operationId: operation.operationId,
-      status: "conflict", current: shared(reading, readingValue(100, false), 8), reason: "revision-mismatch" }]));
+      status: "conflict", current: shared(reading, readingValue(100), 8), reason: "revision-mismatch" }]));
     const [conflict] = await listUserStateConflictsInDb(active.db, binding);
     await capture(readingValue(20));
     await expect(tx(active, db => resolveUserStateLedgerConflictInDb(db, binding, { id: conflict.id, version: conflict.version, choice: "shared" }))).rejects.toThrow(/conflict changed/);
@@ -490,14 +490,14 @@ describe("durable personal-state ledger", () => {
     };
     const opaqueResume: UserStateEntity = { kind: "resume", work: opaqueWork };
     await tx(active, db => recordUserStateChangesInDb(db, [
-      { entity: opaqueReading, value: readingValue(63, false) },
+      { entity: opaqueReading, value: readingValue(63) },
       { entity: opaqueResume, value: { chapter: { chapterPath: "local-folder:7", name: "Recovered local" }, anchor: null, openedAt: 77 } },
     ]));
     expect(await prepare()).toEqual([]);
     const operations = await tx(active, db => prepareUserStateOperationsInDb(db, binding, { allowOpaqueIdentity: true }));
     expect(operations).toHaveLength(2);
     expect(operations).toEqual(expect.arrayContaining([
-      expect.objectContaining({ entity: opaqueReading, value: readingValue(63, false) }),
+      expect.objectContaining({ entity: opaqueReading, value: readingValue(63) }),
       expect.objectContaining({ entity: opaqueResume, value: { chapter: { chapterPath: "local-folder:7", name: "Recovered local" }, anchor: null, openedAt: 77 } }),
     ]));
   });
@@ -508,9 +508,9 @@ describe("durable personal-state ledger", () => {
     const opaqueWork = { ...work, sourceNovelId: null };
     const opaque: UserStateEntity = { kind: "reading", work: opaqueWork, chapter: { chapterPath: "/chapter/1", name: "One" } };
     await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
-      headRevision: 1, through: 1, nextCursor: 1, hasMore: false, records: [shared(opaque, readingValue(54, false), 1)] });
+      headRevision: 1, through: 1, nextCursor: 1, hasMore: false, records: [shared(opaque, readingValue(54), 1)] });
     await waitForUserStateDeferredApply();
-    expect(active.sql.prepare("SELECT progress,unread FROM chapter WHERE id=11").get()).toEqual({ progress: 54, unread: 0 });
+    expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=11").get()).toEqual({ progress: 54 });
   });
 
   it("never creates a content row from a shared library record, even with a resolved source ID", async () => {
@@ -541,7 +541,7 @@ describe("durable personal-state ledger", () => {
     const recovered: UserStateEntity = { kind: "reading", work, chapter: { chapterPath: "norea-folder:1", name: "Recovered" } };
     await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
       headRevision: 2, through: 2, nextCursor: 2, hasMore: false,
-      records: [shared(recovered, readingValue(88, false), 2)] });
+      records: [shared(recovered, readingValue(88), 2)] });
     await waitForUserStateDeferredApply();
     expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=11").get()).toEqual({ progress: 0 });
     expect(active.sql.prepare("SELECT revision,applied_revision FROM user_state_record WHERE revision=2").get()).toEqual({ revision: 2, applied_revision: 2 });
@@ -740,7 +740,7 @@ describe("explicit command boundaries", () => {
     const first = active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_intent").get();
     expect(first).toEqual({ count: 2 });
     await setRelativeChaptersReadState(11, "after", true);
-    await restoreChapterReadStates([{ id: 11, progress: 0, unread: true }]);
+    await restoreChapterReadStates([{ id: 11, progress: 0 }]);
     await recordUserResume(11, null, 50);
     await clearReadingProgress(); await clearLibraryMembership();
     const operations = await prepare();
@@ -763,7 +763,7 @@ describe("explicit command boundaries", () => {
     const operations = await prepare();
     expect(operations.filter(operation => operation.entity.kind === "reading")).toHaveLength(1);
     expect(operations[0]!.entity).toMatchObject({ kind: "reading", chapter: { chapterPath: "/chapter/1" } });
-    expect(operations[0]!.value).toEqual(readingValue(0, true));
+    expect(operations[0]!.value).toEqual(readingValue(0));
     const resumes = operations.filter(operation => operation.entity.kind === "resume");
     expect(resumes).toHaveLength(1);
     expect(resumes[0]!.entity).toMatchObject({ kind: "resume", work: { sourceNovelId: "book" } });
@@ -792,7 +792,7 @@ describe("explicit command boundaries", () => {
     await updateChapterProgress(11, 90, { recordHistory: false });
     await clearNovelHistory(1); await bind();
     const operation = (await prepare()).find(item => item.entity.kind === "reading")!;
-    expect(operation.value).toEqual({ progress: 15, unread: true, readAt: null });
+    expect(operation.value).toEqual({ progress: 15, readAt: null });
   });
 
   it("records portable resume anchors without local integer IDs or reader settings", async () => {
@@ -854,23 +854,23 @@ describe("categories and source migration", () => {
   it("replays an explicit pending reset after an A-to-B MAX/OR preservation merge", async () => {
     const targetWork = { ...work, pluginId: "target", sourceNovelId: "other-book", novelPath: "/target" };
     addWork(active, 2, 21, targetWork);
-    active.sql.exec("UPDATE chapter SET progress=100,bookmark=1,unread=0,read_at=10");
+    active.sql.exec("UPDATE chapter SET progress=100,bookmark=1,read_at=10");
     await bind();
     await setChaptersReadState([11], true); await setChapterBookmark(11, false);
     const frozen = await prepare();
     await tx(active, db => remapPendingUserStateInDb(db, 1, 2, { 11: 21 }));
-    expect(active.sql.prepare("SELECT progress,unread,bookmark FROM chapter WHERE id=21").get()).toEqual({ progress: 0, unread: 1, bookmark: 0 });
+    expect(active.sql.prepare("SELECT progress,bookmark FROM chapter WHERE id=21").get()).toEqual({ progress: 0, bookmark: 0 });
     expect(active.sql.prepare("SELECT payload FROM user_state_operation WHERE operation_id=?").get(frozen[0].operationId)).toEqual({ payload: canonicalUserStateJson(frozen[0]) });
     const targetIntent = active.sql.prepare("SELECT entity_json,value_json FROM user_state_intent WHERE json_extract(entity_json,'$.work.pluginId')='target' AND json_extract(entity_json,'$.kind')='reading'").get() as { value_json: string };
-    expect(JSON.parse(targetIntent.value_json)).toMatchObject({ progress: 0, unread: true });
+    expect(JSON.parse(targetIntent.value_json)).toMatchObject({ progress: 0 });
   });
 
   it("retains a newer target reset when an older source progress change is remapped", async () => {
     addWork(active, 2, 21, { ...work, pluginId: "target", sourceNovelId: "other", novelPath: "/target" });
     await bind(); await updateChapterProgress(11, 70); await setChaptersReadState([21], true);
-    active.sql.exec("UPDATE chapter SET progress=70,unread=0 WHERE id=21");
+    active.sql.exec("UPDATE chapter SET progress=70 WHERE id=21");
     await tx(active, db => remapPendingUserStateInDb(db, 1, 2, { 11: 21 }));
-    expect(active.sql.prepare("SELECT progress,unread FROM chapter WHERE id=21").get()).toEqual({ progress: 0, unread: 1 });
+    expect(active.sql.prepare("SELECT progress FROM chapter WHERE id=21").get()).toEqual({ progress: 0 });
   });
 
   it("preserves source snapshots and discovered chapters when shared composition choices are reapplied", async () => {
@@ -912,13 +912,13 @@ describe("archive recovery and exact command integration", () => {
     expect(active.sql.prepare("SELECT paused,restored FROM user_state_restore_state").get()).toEqual({ paused: 0, restored: 1 });
   });
 
-  it("clears update flags without exposing a private position or losing its marker", async () => {
+  it("clears updates tab by marking chapters as read (progress=100)", async () => {
     active.sql.exec("UPDATE novel SET in_library=1,library_added_at=0; UPDATE chapter SET progress=15,read_at=20");
     await updateChapterProgress(11, 90, { recordHistory: false });
     await clearUpdatesTab(); await bind();
-    expect((await prepare()).find(operation => operation.entity.kind === "reading")!.value).toEqual({ progress: 15, unread: false, readAt: 20 });
-    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_private").get()).toEqual({ count: 1 });
-    expect(active.sql.prepare("SELECT progress,unread FROM chapter").get()).toEqual({ progress: 90, unread: 0 });
+    expect((await prepare()).find(operation => operation.entity.kind === "reading")!.value).toEqual({ progress: 100, readAt: 20 });
+    expect(active.sql.prepare("SELECT COUNT(*) AS count FROM user_state_private").get()).toEqual({ count: 0 });
+    expect(active.sql.prepare("SELECT progress FROM chapter").get()).toEqual({ progress: 100 });
   });
 
   it("does not publish a personal deletion when the device-only content cleanup removes its cached work row", async () => {
@@ -930,14 +930,14 @@ describe("archive recovery and exact command integration", () => {
 
   it("preserves an unread reset through the actual source-merge transaction without sharing library membership", async () => {
     addWork(active, 2, 21, { ...work, pluginId: "target", sourceNovelId: "other-book", novelPath: "/target" });
-    active.sql.exec("UPDATE chapter SET progress=100,unread=0,bookmark=1");
+    active.sql.exec("UPDATE chapter SET progress=100,bookmark=1");
     await bind(); await setChaptersReadState([11], true); await setChapterBookmark(11, false);
     await applyNovelMergeInDb({ sourceNovelId: 1, targetNovelId: 2,
       decisions: [{ kind: "map", sourceChapterId: 11, targetChapterPath: "/chapter/1" }], preparedDownloads: [] });
-    expect(active.sql.prepare("SELECT id,progress,unread,bookmark FROM chapter").get()).toEqual({ id: 21, progress: 0, unread: 1, bookmark: 0 });
+    expect(active.sql.prepare("SELECT id,progress,bookmark FROM chapter").get()).toEqual({ id: 21, progress: 0, bookmark: 0 });
     const operations = await prepare();
     expect(operations.some(operation => operation.entity.kind === "library")).toBe(false);
-    expect(operations.find(operation => operation.entity.kind === "reading" && operation.entity.work.pluginId === "target")!.value).toMatchObject({ progress: 0, unread: true });
+    expect(operations.find(operation => operation.entity.kind === "reading" && operation.entity.work.pluginId === "target")!.value).toMatchObject({ progress: 0 });
   });
 
   it("does not echo an incoming migration as new manual library or reading commands", async () => {
@@ -1079,19 +1079,19 @@ describe("source changes after settled personal state", () => {
         chapterNumber: "1", name: "One", position: 1, page: "1", contentType: "text", releaseTime: null })),
     }] };
     await setChapterComposition(active.db, 1, composition);
-    active.sql.exec("INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,unread,read_at) VALUES('source','/book','/old-path',100,1,0,90)");
+    active.sql.exec("INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,read_at) VALUES('source','/book','/old-path',100,1,90)");
     await bind();
     const readPage = async (record: UserStateRecord) => {
       await applyUserStateReadPage(binding, { version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
         headRevision: record.revision, through: record.revision, nextCursor: record.revision, hasMore: false, records: [record] });
       await waitForUserStateDeferredApply();
     };
-    await readPage(shared(reading, readingValue(0, true), 1));
+    await readPage(shared(reading, readingValue(0), 1));
     const excluded = structuredClone(composition); excluded.updatedAt = 2; excluded.entries[0].user = { included: false, order: 0, name: null, chapterNumber: null };
     await readPage(shared({ kind: "composition", work }, { composition: excluded }, 2));
     const restored = structuredClone(composition); restored.updatedAt = 3;
     await readPage(shared({ kind: "composition", work }, { composition: restored }, 3));
-    expect(active.sql.prepare("SELECT progress,unread,read_at FROM chapter").get()).toEqual({ progress: 0, unread: 1, read_at: null });
+    expect(active.sql.prepare("SELECT progress,read_at FROM chapter").get()).toEqual({ progress: 0, read_at: null });
   });
 });
 
@@ -1109,7 +1109,7 @@ it("does not use an old baseline name match to silently alias an explicit rename
 it("remaps B's own pending reset when an approved merge replaces its path with a composed entry", async () => {
   const targetWork = { ...work, pluginId: "target", sourceNovelId: "other-book", novelPath: "/target" };
   addWork(active, 2, 21, targetWork);
-  active.sql.exec("UPDATE chapter SET progress=100,unread=0");
+  active.sql.exec("UPDATE chapter SET progress=100");
   await bind(); await setChaptersReadState([21], true);
   const source = (reference: UserStateWorkReference) => ({ pluginId: reference.pluginId, novelId: reference.sourceNovelId!, novelPath: reference.novelPath,
     chapterPath: "/chapter/1", chapterNumber: "1", name: "One", position: 1, page: "1", contentType: "text" as const, releaseTime: null });
@@ -1122,10 +1122,10 @@ it("remaps B's own pending reset when an approved merge replaces its path with a
   await applyNovelMergeInDb({ sourceNovelId: 1, targetNovelId: 2, composition,
     decisions: [{ kind: "map", sourceChapterId: 11, targetChapterPath: "norea-composed:new-target" }], preparedDownloads: [],
     readingStateSourcePathByTargetPath: { "norea-composed:new-target": "/chapter/1" } });
-  expect(active.sql.prepare("SELECT path,progress,unread FROM chapter").get()).toEqual({ path: "norea-composed:new-target", progress: 0, unread: 1 });
+  expect(active.sql.prepare("SELECT path,progress FROM chapter").get()).toEqual({ path: "norea-composed:new-target", progress: 0 });
   const operation = (await prepare()).find(item => item.entity.kind === "reading" && item.entity.work.pluginId === "target")!;
   expect(operation.entity).toMatchObject({ chapter: { chapterPath: "norea-composed:new-target", compositionEntryId: "new-target" } });
-  expect(operation.value).toMatchObject({ progress: 0, unread: true });
+  expect(operation.value).toMatchObject({ progress: 0 });
 });
 
 it("records a missing category creation intent before membership when assigning to a restored category", async () => {
@@ -1199,7 +1199,7 @@ it("retains structural conflicts across rebinding and resolves category-name-exi
   const staleOwnedEntity: UserStateEntity = {
     kind: "reading", work, chapter: { chapterPath: "norea-composed:entry-new", name: "One", compositionEntryId: "entry-old" },
   };
-  await capture(readingValue(55, false), staleOwnedEntity);
+  await capture(readingValue(55), staleOwnedEntity);
   const [ownershipAttempt] = await prepare();
   const sharedOwnedEntity: UserStateEntity = {
     kind: "reading", work, chapter: { chapterPath: "norea-composed:entry-new", name: "One", compositionEntryId: "entry-new" },
@@ -1208,7 +1208,7 @@ it("retains structural conflicts across rebinding and resolves category-name-exi
     operationId: ownershipAttempt.operationId,
     status: "conflict",
     reason: "chapter-ownership-conflict",
-    current: shared(sharedOwnedEntity, readingValue(10, false), 5),
+    current: shared(sharedOwnedEntity, readingValue(10), 5),
   }]));
   const [ownershipConflict] = await listUserStateConflictsInDb(active.db, binding);
   await tx(active, db => resolveUserStateLedgerConflictInDb(db, binding, {
@@ -1268,7 +1268,7 @@ it("clears cross-work resume anchors, merges N:1 source chapter intents, and tra
   const secondSource = { pluginId: "settled-src", sourceNovelId: "settled-1", novelPath: "/settled", name: "Settled" };
   addWork(active, 3, 31, secondSource);
   active.sql.exec("UPDATE novel SET in_library=1,last_read_at=500 WHERE id=3");
-  active.sql.exec("UPDATE chapter SET progress=70,unread=0,read_at=500 WHERE id=31");
+  active.sql.exec("UPDATE chapter SET progress=70,read_at=500 WHERE id=31");
   await recordUserResume(31, { segmentIndex: 1, segmentCount: 4, offset: 0.2, progress: 70, savedAt: 500 }, 500);
   for (const op of await prepare()) await ack(op, 11);
   const sourceRef = (reference: UserStateWorkReference, chapterPath = "/chapter/1") => ({
@@ -1389,8 +1389,8 @@ it("applies stored chapter progress before download, settles retired migration s
   active.sql.exec(`
     INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library,is_local)
       VALUES(6,'local','local-1','/local-1','Local Work',1,1);
-    INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread)
-      VALUES(61,6,'/local-ch-1','Local Chapter 1','1',1,55,0);
+    INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress)
+      VALUES(61,6,'/local-ch-1','Local Chapter 1','1',1,55);
   `);
   await setNovelInLibrary(6, true);
   await recordUserResume(61, null, 900);
@@ -1493,8 +1493,8 @@ it("timestamps acknowledged operations idempotently, prunes expired rows, and pr
 
 it("supports Mode A/B epoch rebind, snapshot reconciliation, and opt-in local 2-A/2-B retention", async () => {
   active.sql.exec("UPDATE novel SET in_library=0 WHERE id=1");
-  active.sql.exec("UPDATE chapter SET progress=80, unread=0, read_at=1650000000 WHERE id=11");
-  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread,read_at) VALUES(12,1,'/chapter/2','Two','2',2,100,0,1750000000)");
+  active.sql.exec("UPDATE chapter SET progress=80, read_at=1650000000 WHERE id=11");
+  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at) VALUES(12,1,'/chapter/2','Two','2',2,100,1750000000)");
   await bind();
   expect(await prepare()).toHaveLength(3); // 2 reading + 1 resume
 
@@ -1519,14 +1519,12 @@ it("supports Mode A/B epoch rebind, snapshot reconciliation, and opt-in local 2-
     }),
   );
   expect(affected).toBeGreaterThanOrEqual(2);
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=11").get()).toEqual({
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=11").get()).toEqual({
     progress: 0,
-    unread: 1,
     readAt: null,
   });
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=12").get()).toEqual({
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=12").get()).toEqual({
     progress: 100,
-    unread: 0,
     readAt: null,
   });
 
@@ -1560,8 +1558,8 @@ it("supports Mode A/B epoch rebind, snapshot reconciliation, and opt-in local 2-
 
 it("protects user_state_private during 2-A/2-B retention and snapshot reconciliation, enforces multi-workspace seedCutoffMs, clears Mode A cutoff, and clears stale pending ops on GC rebase", async () => {
   // 1. Multi-workspace seed=1 intents must obey seedCutoffMs (and seedAllowed=false skips seed=1 intents).
-  active.sql.exec("UPDATE chapter SET progress=60, unread=0, read_at=1600000000 WHERE id=11");
-  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread,read_at) VALUES(12,1,'/chapter/2','Two','2',2,90,0,1750000000)");
+  active.sql.exec("UPDATE chapter SET progress=60, read_at=1600000000 WHERE id=11");
+  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at) VALUES(12,1,'/chapter/2','Two','2',2,90,1750000000)");
   await bind();
   const ws2: UserStateBinding = { serverUrl: "https://other.example", workspaceId: "ws-2", epoch: "ep-1" };
   await tx(active, db => bindUserStateWorkspaceInDb(db, ws2, { seedAllowed: true, seedCutoffMs: 1_700_000_000_000 }));
@@ -1583,32 +1581,32 @@ it("protects user_state_private during 2-A/2-B retention and snapshot reconcilia
   const privWork: UserStateWorkReference = { pluginId: "priv-src", sourceNovelId: null, novelPath: "/priv", name: "Private Book" };
   addWork(active, 2, 21, privWork);
   active.sql.exec("UPDATE novel SET in_library=0, last_read_at=1600000000 WHERE id=2");
-  active.sql.exec("UPDATE chapter SET progress=85, unread=0, read_at=1600000000 WHERE id=21");
+  active.sql.exec("UPDATE chapter SET progress=85, read_at=1600000000 WHERE id=21");
   await tx(active, db => markPrivateChapterProgressInDb(db, 21));
   active.sql.exec("UPDATE novel SET source_novel_id='priv-id' WHERE id=2");
 
   // Run 2-B stripTimestampsDays (and 2-A when non-library): private chapter is updated locally without deleting user_state_private or leaking intents.
   active.sql.exec("DELETE FROM user_state_intent; DELETE FROM user_state_progress; DELETE FROM user_state_operation;");
   await tx(active, db => applyLocalUserStateRetentionInDb(db, { stripTimestampsDays: 30, nowMs: 1_755_000_000_000 }));
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({ progress: 85, unread: 0, readAt: null });
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({ progress: 85, readAt: null });
   expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_private").get()).toEqual({ c: 1 });
   expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_intent WHERE entity_key LIKE '%priv-src%'").get()).toEqual({ c: 0 });
 
   // Reset read_at and run 2-A + 2-B with stripTimestampsDays < pruneNonLibraryDays: 2-A runs first and prunes older non-library private chapter locally without leaking.
-  active.sql.exec("UPDATE chapter SET progress=85, unread=0, read_at=1600000000 WHERE id=21");
+  active.sql.exec("UPDATE chapter SET progress=85, read_at=1600000000 WHERE id=21");
   await tx(active, db => applyLocalUserStateRetentionInDb(db, {
     pruneNonLibraryDays: 100,
     stripTimestampsDays: 10,
     nowMs: 1_755_000_000_000,
   }));
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({ progress: 0, unread: 1, readAt: null });
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({ progress: 0, readAt: null });
   expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_private").get()).toEqual({ c: 1 });
   expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_intent WHERE entity_key LIKE '%priv-src%'").get()).toEqual({ c: 0 });
 
   // 4. Reconcile snapshot with path-keyed user_state_private after source_novel_id upgrade preserves incognito progress.
   active.sql.exec("DELETE FROM user_state_private");
   active.sql.exec("UPDATE novel SET source_novel_id=NULL WHERE id=2");
-  active.sql.exec("UPDATE chapter SET progress=90, unread=0, read_at=1750000000 WHERE id=21");
+  active.sql.exec("UPDATE chapter SET progress=90, read_at=1750000000 WHERE id=21");
   await tx(active, db => markPrivateChapterProgressInDb(db, 21));
   active.sql.exec("UPDATE novel SET source_novel_id='priv-id' WHERE id=2");
   const upgradedPrivReading: UserStateEntity = {
@@ -1619,13 +1617,13 @@ it("protects user_state_private during 2-A/2-B retention and snapshot reconcilia
   await tx(active, db => applyUserStateReadPageInDb(db, binding, {
     version: 1, workspaceId: binding.workspaceId, epoch: binding.epoch,
     headRevision: 10, through: 10, nextCursor: 10, hasMore: false,
-    records: [shared(upgradedPrivReading, { progress: 10, unread: false, readAt: 1750000000 }, 10)],
+    records: [shared(upgradedPrivReading, { progress: 10, readAt: 1750000000 }, 10)],
   }));
   await tx(active, db => reconcileUserStateSnapshotInDb(db, binding, {
     records: [], snapshotRevision: 11, seedAllowed: false, seedCutoffMs: null,
   }));
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({
-    progress: 90, unread: 0, readAt: 1750000000,
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({
+    progress: 90, readAt: 1750000000,
   });
 
   // 5. Snapshot GC rebasing a pending local edit clears stale status='pending' user_state_operation rows.
@@ -1651,9 +1649,9 @@ it("preserves promoted incognito progress when path-keyed records are GC'd and c
   // 1. Path-keyed user_state_record GC after source_novel_id promotion must not wipe promoted incognito chapter progress.
   const privWork: UserStateWorkReference = { pluginId: "priv-src", sourceNovelId: null, novelPath: "/priv", name: "Private Book" };
   addWork(active, 2, 21, privWork);
-  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread,read_at) VALUES(22,2,'/chapter/2','Two','2',2,65,0,1740000000)");
+  active.sql.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at) VALUES(22,2,'/chapter/2','Two','2',2,65,1740000000)");
   active.sql.exec("UPDATE novel SET in_library=0,last_read_at=1750000000 WHERE id=2");
-  active.sql.exec("UPDATE chapter SET progress=91,unread=0,read_at=1750000000 WHERE id=21");
+  active.sql.exec("UPDATE chapter SET progress=91,read_at=1750000000 WHERE id=21");
   await tx(active, db => markPrivateChapterProgressInDb(db, 21));
 
   await bind();
@@ -1676,8 +1674,8 @@ it("preserves promoted incognito progress when path-keyed records are GC'd and c
     nextCursor: 10,
     hasMore: false,
     records: [
-      shared(pathPrivReading, { progress: 10, unread: false, readAt: 1750000000 }, 9, "r-9"),
-      shared(pathPubReading, { progress: 65, unread: false, readAt: 1740000000 }, 10, "r-10"),
+      shared(pathPrivReading, { progress: 10, readAt: 1750000000 }, 9, "r-9"),
+      shared(pathPubReading, { progress: 65, readAt: 1740000000 }, 10, "r-10"),
     ],
   }));
 
@@ -1689,14 +1687,12 @@ it("preserves promoted incognito progress when path-keyed records are GC'd and c
     seedCutoffMs: null,
   }));
 
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=21").get()).toEqual({
     progress: 91,
-    unread: 0,
     readAt: 1750000000,
   });
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=22").get()).toEqual({
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=22").get()).toEqual({
     progress: 0,
-    unread: 1,
     readAt: null,
   });
 
@@ -1706,12 +1702,12 @@ it("preserves promoted incognito progress when path-keyed records are GC'd and c
     VALUES (3,'mixed-src','mixed-id','/mixed','Mixed Book',0,1754999000),
            (4,'allpriv-src','allpriv-id','/allpriv','All Priv Book',0,1600000000),
            (5,'mixed2b-src','mixed2b-id','/mixed2b','Mixed 2B Book',1,1754999000);
-    INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread,read_at)
-    VALUES (31,3,'/chapter/1','One','1',1,50,0,1600000000),
-           (32,3,'/chapter/2','Two','2',2,80,0,1754999000),
-           (41,4,'/chapter/1','One','1',1,75,0,1600000000),
-           (51,5,'/chapter/1','One','1',1,70,0,1750000000),
-           (52,5,'/chapter/2','Two','2',2,85,0,1754999000);
+    INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at)
+    VALUES (31,3,'/chapter/1','One','1',1,50,1600000000),
+           (32,3,'/chapter/2','Two','2',2,80,1754999000),
+           (41,4,'/chapter/1','One','1',1,75,1600000000),
+           (51,5,'/chapter/1','One','1',1,70,1750000000),
+           (52,5,'/chapter/2','Two','2',2,85,1754999000);
   `);
   await tx(active, async db => {
     await markPrivateChapterProgressInDb(db, 32);
@@ -1726,21 +1722,21 @@ it("preserves promoted incognito progress when path-keyed records are GC'd and c
     nowMs: 1_755_000_000_000,
   }));
 
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=31").get()).toEqual({
-    progress: 0, unread: 1, readAt: null,
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=31").get()).toEqual({
+    progress: 0, readAt: null,
   });
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=32").get()).toEqual({
-    progress: 80, unread: 0, readAt: 1754999000,
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=32").get()).toEqual({
+    progress: 80, readAt: 1754999000,
   });
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=41").get()).toEqual({
-    progress: 0, unread: 1, readAt: null,
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=41").get()).toEqual({
+    progress: 0, readAt: null,
   });
   expect(active.sql.prepare("SELECT COUNT(*) AS c FROM user_state_intent WHERE entity_key LIKE '%allpriv-src%'").get()).toEqual({ c: 0 });
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=51").get()).toEqual({
-    progress: 70, unread: 0, readAt: null,
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=51").get()).toEqual({
+    progress: 70, readAt: null,
   });
-  expect(active.sql.prepare("SELECT progress, unread, read_at AS readAt FROM chapter WHERE id=52").get()).toEqual({
-    progress: 85, unread: 0, readAt: 1754999000,
+  expect(active.sql.prepare("SELECT progress, read_at AS readAt FROM chapter WHERE id=52").get()).toEqual({
+    progress: 85, readAt: 1754999000,
   });
 
   const mixedIntents = active.sql.prepare(

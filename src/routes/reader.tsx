@@ -36,6 +36,10 @@ import { hasStoredChapterContent, listChaptersByNovel, setChapterBookmark } from
 import { getNovelById } from "../db/queries/novel";
 import { useTranslation } from "../i18n";
 import { usePageActivity } from "../lib/page-activity";
+import {
+  clearActiveReaderChapters,
+  setActiveReaderChapters,
+} from "../lib/reader-active-chapters";
 import { useReaderSystemBarBackground } from "../lib/runtime/system-bars";
 import { useBodyFlag } from "../lib/use-body-flag";
 import { pluginManager } from "../lib/plugins/manager";
@@ -129,6 +133,7 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
   );
   const clearedFromStartChapterRef = useRef<number | null>(null);
   const resetFromStartProgressRef = useRef<number | null>(null);
+  const consumedFromStartResetRef = useRef<number | null>(null);
   const wasActiveRef = useRef(active);
   useLayoutEffect(() => {
     if (!active || !fromStart) {
@@ -239,6 +244,7 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     handleBackToNovel,
   } = useReaderChapterNavigation({
     chapterId,
+    routeInitialProgress: fromStart ? 0 : undefined,
     chapter,
     previousChapter,
     nextChapter,
@@ -247,6 +253,8 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     openedChapterRef,
     onBeforeBack: handleBeforeReaderBack,
   });
+  const initialProgressOverrideRef = useRef(initialProgressOverride);
+  initialProgressOverrideRef.current = initialProgressOverride;
   const preparedNextChapter = useNextReaderChapter({
     active,
     nextChapter,
@@ -256,6 +264,20 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
       Boolean(chapter && hasStoredChapterContent(chapter)) &&
       (isPdfChapter || Boolean(readerPreparation.document)),
   });
+  const preparedNextChapterId = preparedNextChapter?.chapter.id ?? null;
+  useEffect(() => {
+    if (!active) {
+      clearActiveReaderChapters();
+      return;
+    }
+    const ids: number[] = [];
+    if (chapterId > 0) ids.push(chapterId);
+    if (preparedNextChapterId && preparedNextChapterId > 0) {
+      ids.push(preparedNextChapterId);
+    }
+    setActiveReaderChapters(ids);
+  }, [active, chapterId, preparedNextChapterId]);
+  useEffect(() => () => clearActiveReaderChapters(), []);
   const readerBusy =
     readerPreparation.isPending ||
     (chapterId > 0 &&
@@ -406,11 +428,45 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
       ) {
         return;
       }
+      const currentOverride = initialProgressOverrideRef.current;
+      const overrideAllowsReset = Boolean(
+        currentOverride?.chapterId === targetChapterId &&
+          currentOverride.allowProgressReset,
+      );
+      const routeFromStartAllowsReset = Boolean(
+        fromStart &&
+          targetChapterId === chapterId &&
+          consumedFromStartResetRef.current !== targetChapterId &&
+          currentOverride?.chapterId !== targetChapterId,
+      );
+      const allowProgressReset = Boolean(
+        nextProgress > 0 && (overrideAllowsReset || routeFromStartAllowsReset),
+      );
+      if (allowProgressReset) {
+        consumedFromStartResetRef.current = targetChapterId;
+        if (currentOverride && currentOverride.chapterId === targetChapterId) {
+          initialProgressOverrideRef.current = {
+            ...currentOverride,
+            progress: nextProgress,
+            allowProgressReset: false,
+          };
+        }
+      }
       setInitialProgressOverride((current) =>
         current?.chapterId === targetChapterId
-          ? { ...current, progress: nextProgress }
+          ? {
+              ...current,
+              progress: nextProgress,
+              ...(allowProgressReset ? { allowProgressReset: false } : {}),
+            }
           : fromStart && targetChapterId === chapterId
-            ? { chapterId: targetChapterId, progress: nextProgress }
+            ? {
+                chapterId: targetChapterId,
+                progress: nextProgress,
+                allowProgressReset:
+                  !allowProgressReset &&
+                  consumedFromStartResetRef.current !== targetChapterId,
+              }
             : current,
       );
       setEndReachedChapterId(
@@ -420,6 +476,7 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
         chapterId: targetChapterId,
         novelId: currentNovelId,
         progress: nextProgress,
+        ...(allowProgressReset ? { allowProgressReset: true } : {}),
       });
     },
     [
@@ -493,7 +550,7 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
         !readerProgressPersistenceReady ||
         !chapter ||
         completedEndChapterRef.current === chapter.id ||
-        (!chapter.unread && chapter.progress >= FINISHED_PROGRESS)
+        chapter.progress >= FINISHED_PROGRESS
       ) {
         return;
       }
@@ -505,6 +562,7 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
       wasActiveRef.current = false;
       completedEndChapterRef.current = null;
       resetFromStartProgressRef.current = null;
+      consumedFromStartResetRef.current = null;
       setEndReachedChapterId(null);
       setInitialProgressOverride(null);
       return;
@@ -518,6 +576,9 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
   useEffect(() => {
     if (completedEndChapterRef.current !== chapterId) {
       completedEndChapterRef.current = null;
+    }
+    if (consumedFromStartResetRef.current !== chapterId) {
+      consumedFromStartResetRef.current = null;
     }
   }, [chapterId]);
   useEffect(() => {
@@ -557,7 +618,7 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
       !readerProgressPersistenceReady ||
       !chapter ||
       completedEndChapterRef.current === chapter.id ||
-      (!chapter.unread && chapter.progress >= FINISHED_PROGRESS)
+      chapter.progress >= FINISHED_PROGRESS
     ) {
       return;
     }

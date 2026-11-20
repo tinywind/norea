@@ -198,11 +198,11 @@ describe("nextUndecidedSourceChapterId", () => {
 
 describe("summarizeNovelMergeDecisions", () => {
   const chapters = [
-    { id: 1, isDownloaded: true, progress: 0, unread: false },
-    { id: 2, isDownloaded: true, progress: 40, unread: true },
-    { id: 3, isDownloaded: true, progress: 0, unread: true },
-    { id: 4, isDownloaded: false, progress: 0, unread: false },
-    { id: 5, isDownloaded: true, progress: 0, unread: true },
+    { id: 1, isDownloaded: true, progress: 100 },
+    { id: 2, isDownloaded: true, progress: 40 },
+    { id: 3, isDownloaded: true, progress: 0 },
+    { id: 4, isDownloaded: false, progress: 100 },
+    { id: 5, isDownloaded: true, progress: 0 },
   ];
 
   it("counts mapped and excluded chapters, moved and removed downloads, and progress", () => {

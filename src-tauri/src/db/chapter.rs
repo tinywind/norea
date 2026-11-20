@@ -66,7 +66,6 @@ const CHAPTER_SELECT_FIELDS: &str = "\
   position, \
   page, \
   bookmark, \
-  unread, \
   progress, \
   is_downloaded, \
   content_type, \
@@ -129,7 +128,6 @@ pub struct ChapterRowDto {
     pub position: i64,
     pub page: String,
     pub bookmark: bool,
-    pub unread: bool,
     pub progress: f64,
     pub is_downloaded: bool,
     pub source_content_type: String,
@@ -195,7 +193,6 @@ pub struct ChapterMutationResultDto {
 pub struct ChapterReadStateDto {
     pub id: i64,
     pub progress: f64,
-    pub unread: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
@@ -220,6 +217,8 @@ pub struct UpdateChapterProgressInputDto {
     pub progress: f64,
     #[serde(default)]
     pub record_history: Option<bool>,
+    #[serde(default)]
+    pub allow_progress_reset: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -408,6 +407,8 @@ pub enum CleanupCategoriesSelectionDto {
 #[serde(rename_all = "camelCase")]
 pub struct CleanupFinishedSelectionDto {
     pub keep_last: i64,
+    #[serde(default)]
+    pub require_installed_plugin: Option<bool>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -458,7 +459,7 @@ pub struct ChapterContentStorageIdentityDto {
     pub chapter: CleanupChapterIdentityDto,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ChapterCleanupCandidateDto {
     pub identity: ChapterContentStorageIdentityDto,
@@ -469,7 +470,7 @@ pub struct ChapterCleanupCandidateDto {
     pub server_source: Option<String>,
     pub storage_ambiguous: bool,
     pub local_server_fingerprint: Option<String>,
-    pub unread: bool,
+    pub progress: f64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -480,7 +481,7 @@ pub struct ReconcileCleanedChapterSnapshotDto {
     pub media_complete: bool,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct ReconcileCleanedChapterInputDto {
     pub candidate: ChapterCleanupCandidateDto,
@@ -730,7 +731,6 @@ fn map_chapter_row(row: &sqlx::sqlite::SqliteRow) -> ChapterRowDto {
         position: row.get("position"),
         page: row.get("page"),
         bookmark: row.get::<i64, _>("bookmark") != 0,
-        unread: row.get::<i64, _>("unread") != 0,
         progress: decode_sqlite_f64(row, "progress"),
         is_downloaded: row.get::<i64, _>("is_downloaded") != 0,
         source_content_type,
@@ -1418,18 +1418,23 @@ pub async fn update_chapter_progress_in_tx(
 ) -> Result<(), String> {
     let clamped = js_math_round_clamped(input.progress);
     let record_history = input.record_history.unwrap_or(true);
+    let allow_reset: i64 = if input.allow_progress_reset.unwrap_or(false) {
+        1
+    } else {
+        0
+    };
     if record_history {
         sqlx::query(
             "UPDATE chapter \
              SET \
-               progress   = CASE WHEN progress >= 100 THEN progress ELSE ?2 END, \
-               unread     = CASE WHEN ?2 >= 100 THEN 0 ELSE unread END, \
+               progress   = CASE WHEN ?3 = 0 AND progress >= 100 THEN progress ELSE ?2 END, \
                read_at    = CASE WHEN ?2 > 0 THEN unixepoch() ELSE read_at END, \
                updated_at = unixepoch() \
              WHERE id = ?1",
         )
         .bind(input.chapter_id)
         .bind(clamped)
+        .bind(allow_reset)
         .execute(&mut *conn)
         .await
         .map_err(|err| format!("db chapter: update progress: {err}"))?;
@@ -1452,13 +1457,13 @@ pub async fn update_chapter_progress_in_tx(
     sqlx::query(
         "UPDATE chapter \
          SET \
-           progress   = CASE WHEN progress >= 100 THEN progress ELSE ?2 END, \
-           unread     = CASE WHEN ?2 >= 100 THEN 0 ELSE unread END, \
+           progress   = CASE WHEN ?3 = 0 AND progress >= 100 THEN progress ELSE ?2 END, \
            updated_at = unixepoch() \
          WHERE id = ?1",
     )
     .bind(input.chapter_id)
     .bind(clamped)
+    .bind(allow_reset)
     .execute(&mut *conn)
     .await
     .map_err(|err| format!("db chapter: update private progress: {err}"))?;
@@ -1487,7 +1492,6 @@ pub async fn set_chapters_read_state_in_tx(
     }
     assert_chapter_bulk_count(unique_ids.len(), "Chapter read state update")?;
 
-    let unread_flag: i64 = if unread { 1 } else { 0 };
     let progress: f64 = if unread { 0.0 } else { FINISHED_PROGRESS };
     let mut rows_affected = 0u64;
     let mut chunks = 0usize;
@@ -1496,7 +1500,7 @@ pub async fn set_chapters_read_state_in_tx(
     for chunk in unique_ids.chunks(CHAPTER_ID_CHUNK_SIZE) {
         let sel_placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
         let select_sql = format!(
-            "SELECT id, unread, progress FROM chapter WHERE id IN ({})",
+            "SELECT id, progress FROM chapter WHERE id IN ({})",
             sel_placeholders.join(", ")
         );
         let mut sel_q = sqlx::query(&select_sql);
@@ -1511,19 +1515,18 @@ pub async fn set_chapters_read_state_in_tx(
             previous.push(ChapterReadStateDto {
                 id: r.get("id"),
                 progress: decode_sqlite_f64(&r, "progress"),
-                unread: r.get::<i64, _>("unread") != 0,
             });
         }
 
         let upd_placeholders: Vec<String> =
-            (1..=chunk.len()).map(|i| format!("?{}", i + 2)).collect();
+            (1..=chunk.len()).map(|i| format!("?{}", i + 1)).collect();
         let update_sql = format!(
             "UPDATE chapter \
-             SET progress = ?1, unread = ?2, updated_at = unixepoch() \
+             SET progress = ?1, updated_at = unixepoch() \
              WHERE id IN ({})",
             upd_placeholders.join(", ")
         );
-        let mut upd_q = sqlx::query(&update_sql).bind(progress).bind(unread_flag);
+        let mut upd_q = sqlx::query(&update_sql).bind(progress);
         for id in chunk {
             upd_q = upd_q.bind(*id);
         }
@@ -1565,20 +1568,19 @@ pub async fn set_novels_read_state_in_tx(
     }
 
     let progress: f64 = if unread { 0.0 } else { FINISHED_PROGRESS };
-    let unread_flag: i64 = if unread { 1 } else { 0 };
     let mut rows_affected = 0u64;
     let mut chunks = 0usize;
     let mut previous = Vec::new();
 
     for chunk in unique_ids.chunks(CHAPTER_ID_CHUNK_SIZE) {
         let novel_placeholders: Vec<String> =
-            (1..=chunk.len()).map(|i| format!("?{}", i + 2)).collect();
+            (1..=chunk.len()).map(|i| format!("?{}", i + 1)).collect();
         let in_clause = novel_placeholders.join(", ");
         let select_sql = format!(
-            "SELECT id, unread, progress FROM chapter \
-             WHERE novel_id IN ({in_clause}) AND (progress <> ?1 OR unread <> ?2)"
+            "SELECT id, progress FROM chapter \
+             WHERE novel_id IN ({in_clause}) AND progress <> ?1"
         );
-        let mut sel_q = sqlx::query(&select_sql).bind(progress).bind(unread_flag);
+        let mut sel_q = sqlx::query(&select_sql).bind(progress);
         for id in chunk {
             sel_q = sel_q.bind(*id);
         }
@@ -1590,16 +1592,15 @@ pub async fn set_novels_read_state_in_tx(
             previous.push(ChapterReadStateDto {
                 id: r.get("id"),
                 progress: decode_sqlite_f64(&r, "progress"),
-                unread: r.get::<i64, _>("unread") != 0,
             });
         }
 
         let update_sql = format!(
             "UPDATE chapter \
-             SET progress = ?1, unread = ?2, updated_at = unixepoch() \
-             WHERE novel_id IN ({in_clause}) AND (progress <> ?1 OR unread <> ?2)"
+             SET progress = ?1, updated_at = unixepoch() \
+             WHERE novel_id IN ({in_clause}) AND progress <> ?1"
         );
-        let mut upd_q = sqlx::query(&update_sql).bind(progress).bind(unread_flag);
+        let mut upd_q = sqlx::query(&update_sql).bind(progress);
         for id in chunk {
             upd_q = upd_q.bind(*id);
         }
@@ -1624,14 +1625,13 @@ pub async fn restore_chapter_read_states_in_tx(
     ctx: &mut TxContext,
     states: &[ChapterReadStateDto],
 ) -> Result<BulkChapterMutationResultDto, String> {
-    let mut group_order: Vec<(i64, u64)> = Vec::new();
-    let mut groups: HashMap<(i64, u64), (f64, Vec<i64>)> = HashMap::new();
+    let mut group_order: Vec<u64> = Vec::new();
+    let mut groups: HashMap<u64, (f64, Vec<i64>)> = HashMap::new();
     for state in states {
         if state.id <= 0 {
             continue;
         }
-        let unread_flag: i64 = if state.unread { 1 } else { 0 };
-        let key = (unread_flag, state.progress.to_bits());
+        let key = state.progress.to_bits();
         let entry = groups.entry(key).or_insert_with(|| {
             group_order.push(key);
             (state.progress, Vec::new())
@@ -1649,18 +1649,17 @@ pub async fn restore_chapter_read_states_in_tx(
     let mut rows_affected = 0u64;
     let mut chunks = 0usize;
     for key in &group_order {
-        let (unread_flag, _) = *key;
         let (progress, ref ids) = groups[key];
         for chunk in ids.chunks(CHAPTER_ID_CHUNK_SIZE) {
             let placeholders: Vec<String> =
-                (1..=chunk.len()).map(|i| format!("?{}", i + 2)).collect();
+                (1..=chunk.len()).map(|i| format!("?{}", i + 1)).collect();
             let sql = format!(
                 "UPDATE chapter \
-                 SET progress = ?1, unread = ?2, updated_at = unixepoch() \
+                 SET progress = ?1, updated_at = unixepoch() \
                  WHERE id IN ({})",
                 placeholders.join(", ")
             );
-            let mut q = sqlx::query(&sql).bind(progress).bind(unread_flag);
+            let mut q = sqlx::query(&sql).bind(progress);
             for id in chunk {
                 q = q.bind(*id);
             }
@@ -1708,22 +1707,20 @@ pub async fn set_relative_chapters_read_state_in_tx(
         }
     };
     let progress: f64 = if input.unread { 0.0 } else { FINISHED_PROGRESS };
-    let unread_flag: i64 = if input.unread { 1 } else { 0 };
 
     let select_sql = format!(
         "WITH reference AS (SELECT id, novel_id, position FROM chapter WHERE id = ?1) \
-         SELECT candidate.id, candidate.unread, candidate.progress \
+         SELECT candidate.id, candidate.progress \
          FROM chapter AS candidate \
          CROSS JOIN reference \
          WHERE candidate.novel_id = reference.novel_id \
            AND candidate.id <> reference.id \
            AND {range_predicate} \
-           AND (candidate.progress <> ?2 OR candidate.unread <> ?3)"
+           AND candidate.progress <> ?2"
     );
     let prev_rows = sqlx::query(&select_sql)
         .bind(input.anchor_chapter_id)
         .bind(progress)
-        .bind(unread_flag)
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db chapter: select relative previous read states: {err}"))?;
@@ -1732,14 +1729,13 @@ pub async fn set_relative_chapters_read_state_in_tx(
         .map(|r| ChapterReadStateDto {
             id: r.get("id"),
             progress: decode_sqlite_f64(r, "progress"),
-            unread: r.get::<i64, _>("unread") != 0,
         })
         .collect();
 
     let update_sql = format!(
         "WITH reference AS (SELECT id, novel_id, position FROM chapter WHERE id = ?1) \
          UPDATE chapter \
-         SET progress = ?2, unread = ?3, updated_at = unixepoch() \
+         SET progress = ?2, updated_at = unixepoch() \
          WHERE id IN ( \
            SELECT candidate.id \
            FROM chapter AS candidate \
@@ -1748,12 +1744,11 @@ pub async fn set_relative_chapters_read_state_in_tx(
              AND candidate.id <> reference.id \
              AND {range_predicate} \
          ) \
-           AND (progress <> ?2 OR unread <> ?3)"
+           AND progress <> ?2"
     );
     let result = sqlx::query(&update_sql)
         .bind(input.anchor_chapter_id)
         .bind(progress)
-        .bind(unread_flag)
         .execute(&mut *conn)
         .await
         .map_err(|err| format!("db chapter: update relative read states: {err}"))?;
@@ -2074,7 +2069,7 @@ pub async fn list_library_updates_in_conn(
          JOIN novel n ON n.id = c.novel_id \
          LEFT JOIN novel_override o ON o.novel_id = n.id \
          LEFT JOIN installed_plugin ip ON ip.id = n.plugin_id \
-         WHERE n.in_library = 1 AND c.unread = 1 \
+         WHERE n.in_library = 1 AND c.progress < 100 \
            {found_clause} \
            {cursor_clause} \
          ORDER BY sort_at DESC, c.position DESC, c.id DESC \
@@ -2129,7 +2124,7 @@ pub async fn count_new_library_chapters_since_in_conn(
 ) -> Result<i64, String> {
     sqlx::query_scalar(
         "SELECT COUNT(*) FROM chapter c JOIN novel n ON n.id = c.novel_id \
-         WHERE n.in_library = 1 AND c.unread = 1 AND c.found_by_check = 1 AND c.found_at > ?1",
+         WHERE n.in_library = 1 AND c.progress < 100 AND c.found_by_check = 1 AND c.found_at > ?1",
     )
     .bind(seen_at)
     .fetch_one(&mut *conn)
@@ -2151,7 +2146,7 @@ pub async fn list_recently_read_in_conn(
            c.path AS chapter_path, \
            c.position, \
            c.read_at, \
-           CASE WHEN c.unread = 0 THEN 100.0 ELSE c.progress END AS progress, \
+           c.progress, \
            n.plugin_id, \
            n.source_novel_id AS novel_source_novel_id, \
            {effective_name} AS novel_name, \
@@ -2244,7 +2239,7 @@ pub async fn list_continue_reading_in_conn(
              c.name AS chapter_name, \
              c.chapter_number, \
              c.position, \
-             CASE WHEN c.unread = 0 THEN 100.0 ELSE c.progress END AS progress, \
+             c.progress, \
              c.read_at, \
              CASE WHEN nc.id IS NOT NULL AND (nc.is_downloaded = 1 OR nc.content_bytes > 0) THEN nc.id ELSE NULL END AS next_chapter_id, \
              CASE WHEN nc.id IS NOT NULL AND (nc.is_downloaded = 1 OR nc.content_bytes > 0) THEN nc.name ELSE NULL END AS next_chapter_name, \
@@ -2356,7 +2351,7 @@ pub async fn list_reading_history_page_in_conn(
              c.chapter_number, \
              c.position, \
              c.read_at, \
-             CASE WHEN c.unread = 0 THEN 100.0 ELSE c.progress END AS progress, \
+             c.progress, \
              n.plugin_id, \
              n.source_novel_id AS novel_source_novel_id, \
              {effective_name} AS novel_name, \
@@ -2472,7 +2467,7 @@ pub async fn list_chapter_cleanup_candidates_in_conn(
     ];
 
     if input.selection.reading == "read" {
-        predicates.push("c.unread = 0".to_string());
+        predicates.push("c.progress >= 100".to_string());
     }
 
     if let CleanupCategoriesSelectionDto::Selected { ref ids } = input.selection.categories {
@@ -2511,19 +2506,27 @@ pub async fn list_chapter_cleanup_candidates_in_conn(
     }
 
     if let Some(ref finished) = input.selection.finished {
-        let keep_last = next_bind(finished.keep_last.max(1));
-        let reading_position = "(SELECT r.position FROM chapter r \
-            WHERE r.novel_id = c.novel_id AND r.read_at IS NOT NULL \
-            ORDER BY r.read_at DESC, r.id DESC LIMIT 1)";
-        predicates.push(format!(
-            "c.unread = 0 AND c.bookmark = 0 AND n.is_local = 0 \
-               AND (c.is_downloaded = 1 OR c.media_repair_needed = 1) \
-               AND EXISTS (SELECT 1 FROM installed_plugin p WHERE p.id = n.plugin_id) \
-               AND NOT EXISTS (SELECT 1 FROM novel_download_goal g WHERE g.novel_id = n.id AND g.kind = 'entire') \
-               AND c.position < {reading_position} \
-               AND (SELECT COUNT(*) FROM chapter f WHERE f.novel_id = c.novel_id AND f.unread = 0 \
-                 AND f.position > c.position AND f.position <= {reading_position}) >= {keep_last}"
-        ));
+        let keep_last = finished.keep_last.max(0);
+        let require_plugin = finished.require_installed_plugin.unwrap_or(true);
+        let mut finished_predicates = vec![
+            "c.progress >= 100".to_string(),
+            "c.bookmark = 0".to_string(),
+            "n.is_local = 0".to_string(),
+            "(c.is_downloaded = 1 OR c.media_repair_needed = 1)".to_string(),
+        ];
+        if require_plugin {
+            finished_predicates
+                .push("EXISTS (SELECT 1 FROM installed_plugin p WHERE p.id = n.plugin_id)".to_string());
+        }
+        if keep_last > 0 {
+            let keep_param = next_bind(keep_last);
+            finished_predicates.push(format!(
+                "(SELECT COUNT(*) FROM chapter f \
+                  WHERE f.novel_id = c.novel_id AND f.progress >= 100 \
+                    AND (f.position > c.position OR (f.position = c.position AND f.id > c.id))) >= {keep_param}"
+            ));
+        }
+        predicates.push(finished_predicates.join(" AND "));
     }
 
     if let Some(chapter_id) = input.chapter_id {
@@ -2548,7 +2551,7 @@ pub async fn list_chapter_cleanup_candidates_in_conn(
            c.name AS chapter_name, \
            c.chapter_number, \
            c.position, \
-           c.unread, \
+           c.progress, \
            COALESCE(c.stored_content_type, c.content_type) AS content_type, \
            source.payload AS server_source, \
            CASE WHEN n.is_local = 1 THEN json_extract(proof.payload, '$.fingerprint') ELSE NULL END AS local_server_fingerprint, \
@@ -2613,7 +2616,7 @@ pub async fn list_chapter_cleanup_candidates_in_conn(
                 server_source: r.get("server_source"),
                 storage_ambiguous: r.get::<i64, _>("storage_ambiguous") != 0,
                 local_server_fingerprint: r.get("local_server_fingerprint"),
-                unread: r.get::<i64, _>("unread") != 0,
+                progress: decode_sqlite_f64(&r, "progress"),
             }
         })
         .collect())
@@ -4453,10 +4456,10 @@ mod tests {
                 .await
                 .unwrap();
                 sqlx::query(
-                    "INSERT INTO chapter (id, novel_id, path, name, chapter_number, position, unread, progress) VALUES \
-                     (11, 1, '/c1', 'Prologue', '1', 1, 1, 0), \
-                     (12, 1, '/c2', 'Chapter Two', '2', 2, 1, 0), \
-                     (13, 1, '/c3', 'Chapter Three', '3', 3, 1, 0)",
+                    "INSERT INTO chapter (id, novel_id, path, name, chapter_number, position, progress) VALUES \
+                     (11, 1, '/c1', 'Prologue', '1', 1, 0), \
+                     (12, 1, '/c2', 'Chapter Two', '2', 2, 0), \
+                     (13, 1, '/c3', 'Chapter Three', '3', 3, 0)",
                 )
                 .execute(&mut *conn)
                 .await
@@ -4469,10 +4472,11 @@ mod tests {
                         chapter_id: 11,
                         progress: 100.0,
                         record_history: Some(true),
+                        allow_progress_reset: None,
                     },
                 )
                 .await?;
-                // Reopening a finished chapter at 35% must keep progress at 100%.
+                // Reopening a finished chapter at 35% without allow_progress_reset keeps progress at 100%.
                 update_chapter_progress_in_tx(
                     conn,
                     ctx,
@@ -4480,6 +4484,7 @@ mod tests {
                         chapter_id: 11,
                         progress: 35.0,
                         record_history: Some(true),
+                        allow_progress_reset: None,
                     },
                 )
                 .await?;
@@ -4492,6 +4497,7 @@ mod tests {
                         chapter_id: 12,
                         progress: 45.0,
                         record_history: Some(false),
+                        allow_progress_reset: None,
                     },
                 )
                 .await?;
@@ -4524,7 +4530,6 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(ch11.progress, 100.0);
-        assert!(!ch11.unread);
         assert!(ch11.read_at.is_some());
 
         let ch12 = get_chapter_by_id_in_conn(&mut conn, 12)
@@ -4538,7 +4543,7 @@ mod tests {
             .await
             .unwrap()
             .unwrap();
-        assert!(ch13.unread);
+        assert!(ch13.progress < 100.0);
         assert!(ch13.bookmark);
 
         let cont_undownloaded = list_continue_reading_in_conn(&mut conn, None).await.unwrap();
@@ -4554,49 +4559,6 @@ mod tests {
         assert_eq!(cont[0].chapter_id, 11);
         assert_eq!(cont[0].next_chapter_id, Some(12));
         assert_eq!(cont[0].progress, 100.0);
-
-        // Even if a read chapter (unread = 0) had stored progress < 100, continue reading
-        // and history queries report it as finished (100.0) so callers advance to the
-        // downloaded next chapter.
-        sqlx::query("UPDATE chapter SET unread = 0, progress = 50.0 WHERE id = 11")
-            .execute(&mut *conn)
-            .await
-            .unwrap();
-        let cont_read_low_progress = list_continue_reading_in_conn(&mut conn, None).await.unwrap();
-        assert_eq!(cont_read_low_progress.len(), 1);
-        assert_eq!(cont_read_low_progress[0].chapter_id, 11);
-        assert_eq!(cont_read_low_progress[0].progress, 100.0);
-        assert_eq!(cont_read_low_progress[0].next_chapter_id, Some(12));
-        let recent_read_low_progress = list_recently_read_in_conn(&mut conn, None).await.unwrap();
-        assert_eq!(recent_read_low_progress.len(), 1);
-        assert_eq!(recent_read_low_progress[0].chapter_id, 11);
-        assert_eq!(recent_read_low_progress[0].progress, 100.0);
-        let hist_finished_low_progress = list_reading_history_page_in_conn(
-            &mut conn,
-            &ListReadingHistoryPageInputDto {
-                progress: Some("finished".to_string()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert_eq!(hist_finished_low_progress.entries.len(), 1);
-        assert_eq!(hist_finished_low_progress.entries[0].chapter_id, 11);
-        assert_eq!(hist_finished_low_progress.entries[0].progress, 100.0);
-        let hist_in_progress_low_progress = list_reading_history_page_in_conn(
-            &mut conn,
-            &ListReadingHistoryPageInputDto {
-                progress: Some("inProgress".to_string()),
-                ..Default::default()
-            },
-        )
-        .await
-        .unwrap();
-        assert!(hist_in_progress_low_progress.entries.is_empty());
-        sqlx::query("UPDATE chapter SET progress = 100.0 WHERE id = 11")
-            .execute(&mut *conn)
-            .await
-            .unwrap();
 
         let hist = list_reading_history_page_in_conn(
             &mut conn,
@@ -4814,5 +4776,134 @@ mod tests {
 
         write_tx.commit().await.unwrap();
         test_db.db.close().await;
+    }
+
+    #[tokio::test]
+    async fn progress_reset_flag_and_finished_cleanup_selection_semantics() {
+        let test_db = open_test_db().await;
+        let pool = test_db.db.writer();
+
+        with_write_tx(pool, TxOptions::default(), |conn, ctx| {
+            Box::pin(async move {
+                sqlx::query(
+                    "INSERT INTO novel (id, plugin_id, source_novel_id, path, name, in_library) \
+                     VALUES (1, 'missing-plugin', 'b1', '/b1', 'Book One', 1)",
+                )
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+                // Legacy novel_download_goal.kind = 'entire' must NOT hide candidates in SQL.
+                sqlx::query(
+                    "INSERT INTO novel_download_goal (novel_id, kind, count, updated_at) \
+                     VALUES (1, 'entire', NULL, 100)",
+                )
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+                // 4 downloaded chapters: c1..c3 finished (c3 manually marked read with read_at=NULL), c4 unfinished.
+                sqlx::query(
+                    "INSERT INTO chapter (id, novel_id, path, name, position, progress, read_at, is_downloaded, bookmark) VALUES \
+                     (1, 1, '/c1', 'Ch 1', 1, 100, 100, 1, 0), \
+                     (2, 1, '/c2', 'Ch 2', 2, 100, 200, 1, 0), \
+                     (3, 1, '/c3', 'Ch 3', 3, 100, NULL, 1, 0), \
+                     (4, 1, '/c4', 'Ch 4', 4, 50, 300, 1, 0), \
+                     (5, 1, '/c5', 'Ch 5', 5, 100, NULL, 1, 1)",
+                )
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+
+                // allow_progress_reset = true rewinds a 100% chapter on explicit reread movement.
+                update_chapter_progress_in_tx(
+                    conn,
+                    ctx,
+                    &UpdateChapterProgressInputDto {
+                        chapter_id: 1,
+                        progress: 18.0,
+                        record_history: Some(true),
+                        allow_progress_reset: Some(true),
+                    },
+                )
+                .await?;
+                Ok(())
+            })
+        })
+        .await
+        .unwrap();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let ch1 = get_chapter_by_id_in_conn(&mut conn, 1).await.unwrap().unwrap();
+        assert_eq!(ch1.progress, 18.0);
+
+        // Restore c1 to 100% so c1, c2, c3, c5 are finished (c5 is bookmarked).
+        sqlx::query("UPDATE chapter SET progress = 100 WHERE id = 1")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+
+        // With require_installed_plugin = true and plugin not installed -> empty.
+        let req_plugin = list_chapter_cleanup_candidates_in_conn(
+            &mut conn,
+            &ListChapterCleanupCandidatesInputDto {
+                selection: ChapterCleanupSelectionDto {
+                    reading: "all".into(),
+                    categories: CleanupCategoriesSelectionDto::All,
+                    finished: Some(CleanupFinishedSelectionDto {
+                        keep_last: 0,
+                        require_installed_plugin: Some(true),
+                    }),
+                },
+                after_id: None,
+                limit: Some(50),
+                chapter_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert!(req_plugin.is_empty());
+
+        // With require_installed_plugin = false and keep_last = 0 -> returns all non-bookmarked finished (1, 2, 3), including last manually-read chapter c3 (read_at IS NULL).
+        let keep_zero = list_chapter_cleanup_candidates_in_conn(
+            &mut conn,
+            &ListChapterCleanupCandidatesInputDto {
+                selection: ChapterCleanupSelectionDto {
+                    reading: "all".into(),
+                    categories: CleanupCategoriesSelectionDto::All,
+                    finished: Some(CleanupFinishedSelectionDto {
+                        keep_last: 0,
+                        require_installed_plugin: Some(false),
+                    }),
+                },
+                after_id: None,
+                limit: Some(50),
+                chapter_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let ids_zero: Vec<i64> = keep_zero.iter().map(|c| c.identity.chapter.id).collect();
+        assert_eq!(ids_zero, vec![1, 2, 3]);
+
+        // With keep_last = 2 -> finished chapters are [1, 2, 3, 5]; latest 2 finished are 3 and 5 -> eligible non-bookmarked are [1, 2].
+        let keep_two = list_chapter_cleanup_candidates_in_conn(
+            &mut conn,
+            &ListChapterCleanupCandidatesInputDto {
+                selection: ChapterCleanupSelectionDto {
+                    reading: "all".into(),
+                    categories: CleanupCategoriesSelectionDto::All,
+                    finished: Some(CleanupFinishedSelectionDto {
+                        keep_last: 2,
+                        require_installed_plugin: Some(false),
+                    }),
+                },
+                after_id: None,
+                limit: Some(50),
+                chapter_id: None,
+            },
+        )
+        .await
+        .unwrap();
+        let ids_two: Vec<i64> = keep_two.iter().map(|c| c.identity.chapter.id).collect();
+        assert_eq!(ids_two, vec![1, 2]);
     }
 }

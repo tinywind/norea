@@ -1683,7 +1683,7 @@ pub async fn delete_local_novel_records_in_tx(
 
         let chapter_sql = format!(
             "{USER_CHAPTER_SELECT} WHERE c.novel_id = ?1 \
-             AND (c.progress > 0 OR c.unread = 0 OR c.read_at IS NOT NULL OR c.bookmark = 1)"
+             AND (c.progress > 0 OR c.read_at IS NOT NULL OR c.bookmark = 1)"
         );
         let raw_chapters = sqlx::query(&chapter_sql)
             .bind(input.id)
@@ -1704,7 +1704,7 @@ pub async fn delete_local_novel_records_in_tx(
 
             let mut reading_resets = Vec::new();
             for row in &chapters {
-                if row.progress > 0.0 || row.unread == 0 || row.read_at.is_some() {
+                if row.progress > 0.0 || row.read_at.is_some() {
                     let key = user_state_entity_key(&json!({
                         "kind": "reading",
                         "work": chapter_work_json(row),
@@ -1713,7 +1713,6 @@ pub async fn delete_local_novel_records_in_tx(
                     if !private_keys.contains(&key) {
                         let mut reset = row.clone();
                         reset.progress = 0.0;
-                        reset.unread = 1;
                         reset.read_at = None;
                         reading_resets.push(reset);
                     }
@@ -2746,8 +2745,8 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chapter(id, novel_id, path, name, position, progress, unread, bookmark, is_downloaded, content_bytes) \
-             VALUES (50, 5, '/del-ch-1', 'Ch 1', 0, 75, 0, 1, 1, 128)",
+            "INSERT INTO chapter(id, novel_id, path, name, position, progress, bookmark, is_downloaded, content_bytes) \
+             VALUES (50, 5, '/del-ch-1', 'Ch 1', 0, 75, 1, 1, 128)",
         )
         .execute(db.writer())
         .await
@@ -2951,8 +2950,8 @@ mod tests {
         .unwrap();
 
         sqlx::query(
-            "INSERT INTO work_metadata_reading_state(plugin_id, novel_path, chapter_path, progress, bookmark, unread, read_at) \
-             VALUES ('src', '/ordinal-work', 'norea-folder:1', 40, 1, 0, 1000)",
+            "INSERT INTO work_metadata_reading_state(plugin_id, novel_path, chapter_path, progress, bookmark, read_at) \
+             VALUES ('src', '/ordinal-work', 'norea-folder:1', 40, 1, 1000)",
         )
         .execute(&mut *conn)
         .await

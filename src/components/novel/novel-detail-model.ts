@@ -105,7 +105,7 @@ export function filterChapterList<T extends ChapterListRow>(
 ): readonly T[] {
   if (!hasChapterListFilters(filters)) return chapters;
   return chapters.filter((chapter) => {
-    if (filters.unread && !chapter.unread) return false;
+    if (filters.unread && chapter.progress >= FINISHED_PROGRESS) return false;
     if (filters.downloaded && !hasStoredChapterContent(chapter)) return false;
     if (filters.queued) {
       const kind = downloadStatuses.get(chapter.id)?.kind;
@@ -330,7 +330,7 @@ export function getChapterReadingProgress(chapter: ChapterListRow): number {
 
 /** How many of the chapters are marked read. */
 export function countReadChapters(chapters: readonly ChapterListRow[]): number {
-  return chapters.reduce((count, chapter) => (chapter.unread ? count : count + 1), 0);
+  return chapters.reduce((count, chapter) => (chapter.progress >= FINISHED_PROGRESS ? count + 1 : count), 0);
 }
 
 export function findFirstChapter(
@@ -389,7 +389,7 @@ export function findContinueReadingTarget(
       : readingOrder.findIndex((chapter) => chapter.id === effectiveLastReadId);
   if (lastReadIndex >= 0) {
     const lastRead = readingOrder[lastReadIndex]!;
-    if (lastRead.unread && lastRead.progress < FINISHED_PROGRESS) {
+    if (lastRead.progress < FINISHED_PROGRESS) {
       return { chapter: lastRead, fromStart: false };
     }
     const next = readingOrder[lastReadIndex + 1];
@@ -398,7 +398,7 @@ export function findContinueReadingTarget(
       : null;
   }
   const initial =
-    readingOrder.find((chapter) => chapter.unread) ?? readingOrder[0] ?? null;
+    readingOrder.find((chapter) => chapter.progress < FINISHED_PROGRESS) ?? readingOrder[0] ?? null;
   return initial ? { chapter: initial, fromStart: false } : null;
 }
 

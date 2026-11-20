@@ -1521,9 +1521,9 @@ pub async fn apply_novel_metadata_to_cache_in_tx(
                 .collect();
             let sql = format!(
                 "WITH catalog(novel_id, path, name, number, position) AS (VALUES {}) \
-                 INSERT INTO chapter(novel_id, path, name, chapter_number, position, progress, bookmark, unread, read_at) \
+                 INSERT INTO chapter(novel_id, path, name, chapter_number, position, progress, bookmark, read_at) \
                  SELECT c.novel_id, c.path, c.name, c.number, c.position, \
-                        COALESCE(state.progress, 0), COALESCE(state.bookmark, 0), COALESCE(state.unread, 1), state.read_at \
+                        COALESCE(state.progress, 0), COALESCE(state.bookmark, 0), state.read_at \
                  FROM catalog c \
                  JOIN novel n ON n.id = c.novel_id \
                  LEFT JOIN work_metadata_reading_state state \
@@ -2005,10 +2005,10 @@ pub async fn scan_stored_novel_chapters_to_cache_in_tx(
              INSERT INTO chapter(novel_id, path, name, chapter_number, position, content_type, \
                                  stored_content_type, is_downloaded, media_repair_needed, \
                                  content_bytes, media_bytes, media_bytes_checked_at, \
-                                 progress, bookmark, unread, read_at) \
+                                 progress, bookmark, read_at) \
              SELECT n.id, d.path, d.name, d.number, d.position, d.type, d.type, \
                     d.complete, 1 - d.complete, d.content_bytes, d.media_bytes, unixepoch(), \
-                    COALESCE(state.progress, 0), COALESCE(state.bookmark, 0), COALESCE(state.unread, 1), state.read_at \
+                    COALESCE(state.progress, 0), COALESCE(state.bookmark, 0), state.read_at \
              FROM discovered d \
              JOIN novel n ON n.id = ?1 \
              LEFT JOIN work_metadata_reading_state state \

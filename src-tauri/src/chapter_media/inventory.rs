@@ -71,6 +71,21 @@ pub struct PayloadDeleteResult {
     snapshot: ChapterPayloadSnapshot,
     errors: Vec<PayloadFileError>,
 }
+#[derive(Clone, Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FastPayloadSnapshot {
+    pub payload_bytes: u64,
+    pub content_bytes: u64,
+    pub media_bytes: u64,
+    pub media_complete: bool,
+}
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FastPayloadDeleteResult {
+    pub bytes_freed: u64,
+    pub snapshot: FastPayloadSnapshot,
+    pub errors: Vec<PayloadFileError>,
+}
 
 fn digest_reader(mut reader: impl Read, limit: u64) -> Result<PayloadDigest, String> {
     let mut hasher = Sha256::new();
@@ -523,6 +538,82 @@ pub async fn chapter_payload_delete(
     .await
 }
 
+#[tauri::command]
+pub async fn chapter_payload_delete_fast(
+    app: AppHandle,
+    chapter_dir: String,
+) -> Result<FastPayloadDeleteResult, String> {
+    chapter_media_blocking("delete chapter payload fast", move || {
+        delete_inventory_fast(&resolved_dir(&app, &chapter_dir)?)
+    })
+    .await
+}
+
+fn sum_payload_bytes(paths: &[PathBuf]) -> Result<u64, String> {
+    let mut total = 0u64;
+    for path in paths {
+        let len = match fs::symlink_metadata(path) {
+            Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+                metadata.len()
+            }
+            Ok(_) => return Err("payload file is not a regular file".into()),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(format!("inspect payload size: {e}")),
+        };
+        total = total.checked_add(len).ok_or("payload size overflow")?;
+    }
+    Ok(total)
+}
+
+fn regular_file_size_or_zero(path: &Path) -> Result<u64, String> {
+    match fs::symlink_metadata(path) {
+        Ok(metadata) if metadata.is_file() && !metadata.file_type().is_symlink() => {
+            Ok(metadata.len())
+        }
+        Ok(_) => Err("payload file is not a regular file".into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(format!("inspect payload size: {e}")),
+    }
+}
+
+fn delete_inventory_fast(dir: &Path) -> Result<FastPayloadDeleteResult, String> {
+    let before_paths = payload_paths(dir)?;
+    let before_bytes = sum_payload_bytes(&before_paths)?;
+    let mut errors = Vec::new();
+    for path in before_paths {
+        match fs::remove_file(&path) {
+            Ok(()) => {}
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => errors.push(PayloadFileError {
+                path: path
+                    .strip_prefix(dir)
+                    .unwrap_or(&path)
+                    .to_string_lossy()
+                    .into_owned(),
+                message: e.to_string(),
+            }),
+        }
+    }
+    let after_paths = payload_paths(dir)?;
+    let after_bytes = sum_payload_bytes(&after_paths)?;
+    let html_bytes = regular_file_size_or_zero(&dir.join("content.html"))?;
+    let pdf_bytes = regular_file_size_or_zero(&dir.join("content.pdf"))?;
+    let content_bytes = html_bytes.max(pdf_bytes);
+    let media_bytes = regular_file_size_or_zero(&dir.join("media.zip"))?;
+    let media_complete =
+        content_bytes > 0 && !dir.join("manifest.json").exists() && media_bytes == 0;
+    Ok(FastPayloadDeleteResult {
+        bytes_freed: before_bytes.saturating_sub(after_bytes),
+        snapshot: FastPayloadSnapshot {
+            payload_bytes: after_bytes,
+            content_bytes,
+            media_bytes,
+            media_complete,
+        },
+        errors,
+    })
+}
+
 fn delete_inventory(dir: &Path, expected_fingerprint: &str) -> Result<PayloadDeleteResult, String> {
     let snapshot = inspect_inventory(dir)?;
     if snapshot.fingerprint != expected_fingerprint {
@@ -643,5 +734,33 @@ mod tests {
         assert_eq!(snapshot.body.unwrap().bytes, 4);
         assert_eq!(snapshot.expected_asset_keys.unwrap(), vec!["media/a.png"]);
         assert_eq!(snapshot.stored_assets[0].bytes, 5);
+    }
+
+    #[test]
+    fn fast_delete_removes_payload_without_hashing_and_preserves_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::write(dir.path().join("manifest.json"), b"malformed-json-not-parsed").unwrap();
+        fs::write(dir.path().join("content.html"), b"chapter-body").unwrap();
+        fs::write(dir.path().join("media.zip"), b"not-a-valid-zip-never-decompressed").unwrap();
+        fs::create_dir_all(dir.path().join("media")).unwrap();
+        fs::write(dir.path().join("media/loose.png"), b"loose").unwrap();
+        fs::write(dir.path().join("keep.txt"), b"keep").unwrap();
+
+        let result = delete_inventory_fast(dir.path()).unwrap();
+        assert!(result.errors.is_empty());
+        assert_eq!(
+            result.bytes_freed,
+            (b"chapter-body".len()
+                + b"not-a-valid-zip-never-decompressed".len()
+                + b"loose".len()) as u64
+        );
+        assert_eq!(result.snapshot.payload_bytes, 0);
+        assert_eq!(result.snapshot.content_bytes, 0);
+        assert_eq!(result.snapshot.media_bytes, 0);
+        assert!(!dir.path().join("content.html").exists());
+        assert!(!dir.path().join("media.zip").exists());
+        assert!(!dir.path().join("media/loose.png").exists());
+        assert!(dir.path().join("manifest.json").exists());
+        assert_eq!(fs::read(dir.path().join("keep.txt")).unwrap(), b"keep");
     }
 }

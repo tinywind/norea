@@ -204,7 +204,13 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         ...recheckRows.map(identity),
       ].filter(id => !isLocalIdentity(id)),
     );
-    if (!pending.size && cache.includesIncompleteChapters && cache.localCursor === head && !deletedIds.length) {
+    if (
+      !pending.size &&
+      cache.includesIncompleteChapters &&
+      cache.localCursor === head &&
+      cache.uploadConflictPolicy === conflictPolicy &&
+      !deletedIds.length
+    ) {
       if (needsLocalDiscovery) {
         cache.localDiscoveryVersion = LOCAL_CONTENT_DISCOVERY_VERSION;
         await saveCatalog(server, cache);
@@ -318,6 +324,62 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
   });
 }
 
+const uploadSettledListeners = new Set<() => void>();
+
+export function subscribeContentSyncUploadSettled(listener: () => void): () => void {
+  uploadSettledListeners.add(listener);
+  return () => {
+    uploadSettledListeners.delete(listener);
+  };
+}
+
+function emitContentSyncUploadSettled(): void {
+  for (const listener of uploadSettledListeners) {
+    listener();
+  }
+}
+
+/**
+ * Under `replace-server`, local modifications on this device are authoritative over the server's
+ * current copy. Defer automatic cleanup until the local catalog cursor is established under
+ * `replace-server`, the chapter is no longer queued in `pendingUploads`, and no newer
+ * `content_sync_journal` entry exists for the chapter.
+ */
+export async function hasPendingReplaceServerUpload(
+  serverUrl: string,
+  chapter: { pluginId: string; novelPath: string; chapterPath: string },
+): Promise<boolean> {
+  if (useContentSyncStore.getState().uploadConflictPolicy !== "replace-server") {
+    return false;
+  }
+  const normalizedServer = normalizeContentServerUrl(serverUrl);
+  const saved = await readContentSyncCache(`norea-content-catalog:${normalizedServer}`);
+  if (!saved) return true;
+  let cache: CatalogCache;
+  try {
+    cache = JSON.parse(saved) as CatalogCache;
+  } catch {
+    return true;
+  }
+  if (
+    cache.localCursor === undefined ||
+    cache.uploadConflictPolicy !== "replace-server"
+  ) {
+    return true;
+  }
+  const id = contentIdentity(chapter.pluginId, chapter.novelPath, chapter.chapterPath);
+  if (Array.isArray(cache.pendingUploads) && cache.pendingUploads.includes(id)) {
+    return true;
+  }
+  const head = await contentJournalHead();
+  if (head <= cache.localCursor) {
+    return false;
+  }
+  const journalKey = `content:${id}`;
+  const entries = await readContentJournal(cache.localCursor, head);
+  return entries.some((entry) => entry.key === journalKey);
+}
+
 let running: Promise<void> | null = null;
 let pendingSync: {
   uploadContent: boolean;
@@ -373,11 +435,15 @@ async function performSync(uploadContent = true, rescan = false, retryBlockedMig
     await syncWorkOverrides(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token));
     await pullCatalog(serverUrl, token, cache);
     if (uploadContent) {
-      await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks, uploadConflictPolicy);
-      await pullCatalog(serverUrl, token, cache);
-      if (Object.keys(cache.tombstones).length) {
-        // Handle deletions consumed after the first upload phase without another catalog loop.
-        await uploadLocalContent(serverUrl, token, cache, false, deletedWorks, uploadConflictPolicy);
+      try {
+        await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks, uploadConflictPolicy);
+        await pullCatalog(serverUrl, token, cache);
+        if (Object.keys(cache.tombstones).length) {
+          // Handle deletions consumed after the first upload phase without another catalog loop.
+          await uploadLocalContent(serverUrl, token, cache, false, deletedWorks, uploadConflictPolicy);
+        }
+      } finally {
+        emitContentSyncUploadSettled();
       }
     }
     assertDevice(serverUrl, token);

@@ -36,6 +36,7 @@ interface ReaderProgressUpdate {
   chapterId: number;
   novelId: number;
   progress: number;
+  allowProgressReset?: boolean;
 }
 export function useReaderPersistence(
   chapter: Pick<ReaderChapterRow, "id" | "novelId" | "content"> | undefined,
@@ -62,6 +63,7 @@ export function useReaderPersistence(
       chapterId: targetChapterId,
       progress,
       recordHistory,
+      allowProgressReset,
       anchor,
       openedAt,
     }: {
@@ -69,11 +71,15 @@ export function useReaderPersistence(
       novelId: number;
       progress: number;
       recordHistory: boolean;
+      allowProgressReset?: boolean;
       anchor: PortableReaderAnchor | null;
       openedAt: number;
     }) =>
       enqueueReaderWrite(async () => {
-        await updateChapterProgress(targetChapterId, progress, { recordHistory });
+        await updateChapterProgress(targetChapterId, progress, {
+          recordHistory,
+          allowProgressReset,
+        });
         if (recordHistory) await recordUserResume(targetChapterId, anchor, openedAt);
       }),
     onMutate: ({
@@ -81,11 +87,14 @@ export function useReaderPersistence(
       novelId: targetNovelId,
       progress,
       recordHistory,
+      allowProgressReset,
     }) => {
       const applyProgress = <T extends ChapterListRow>(chapter: T): T => ({
         ...chapter,
-        progress: chapter.progress >= FINISHED_PROGRESS ? chapter.progress : progress,
-        unread: progress >= FINISHED_PROGRESS ? false : chapter.unread,
+        progress:
+          !allowProgressReset && chapter.progress >= FINISHED_PROGRESS
+            ? chapter.progress
+            : progress,
         readAt:
           !recordHistory || progress <= 0
             ? chapter.readAt
@@ -112,14 +121,14 @@ export function useReaderPersistence(
     },
     onSuccess: (
       _result,
-      { novelId: targetNovelId, progress, recordHistory },
+      { novelId: targetNovelId, progress, recordHistory, allowProgressReset },
     ) => {
       void invalidateReaderProgressQueries(queryClient, {
         novelId: targetNovelId,
         progress,
         recordHistory,
       });
-      if (progress >= FINISHED_PROGRESS) {
+      if (progress >= FINISHED_PROGRESS || allowProgressReset) {
         markUpdatesIndexDirty("read-progress");
       }
     },

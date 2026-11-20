@@ -1,16 +1,8 @@
 import type { TestSqliteDatabase as Database } from "./sql/types";
 import type { DbMutationEnvelope } from "../db/ipc";
-import { withChapterDownloadSnapshotReads } from "../lib/chapter-download-writes";
 import { createChapterIpcHandler } from "./mock-chapter-ipc";
 import {
-  parseUserStateCurrentSnapshot,
-  type UserStateCurrentApplyResult,
-  type UserStateCurrentSnapshot,
-  type UserStateCurrentStatus,
-} from "../lib/user-state/current-types";
-import {
   parsePortableReaderAnchor,
-  userStateWorkKey,
   type PortableReaderAnchor,
   type UserStateApplyEffects,
   type UserStateBinding,
@@ -27,7 +19,7 @@ import {
   hasUserStateSchema,
   namespaceFor,
   recordCategoryInDb,
-  recordChapterUnreadFlagsInDb,
+  recordChaptersInDb,
   recordClearedReadingProgressInDb,
   recordMembershipInDb,
   recordResumeClearedInDb,
@@ -41,14 +33,6 @@ import {
   workspaceRows,
   type UserChapterRow,
 } from "./sql/user-state-core";
-import {
-  applyCurrentSnapshotWithTransactionsInDb,
-  buildCurrentSnapshotInDb,
-  currentCacheKey,
-  currentExportKey,
-  loadCurrentDataInDb,
-  type CurrentWork,
-} from "./sql/user-state-current-data";
 import {
   acknowledgeUserStateOperationsInDb,
   applyLocalUserStateRetentionInDb,
@@ -91,9 +75,6 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
     ): Promise<{ handled: true; result: unknown } | { handled: false }> {
       const chapterHandled = await chapterIpc.handle(command, args);
       if (chapterHandled.handled) return chapterHandled;
-      if (command === "db_user_state_set_current_mode") {
-        return { handled: true, result: null };
-      }
 
       if (command === "db_user_state_get_binding") {
         const serverUrl = (args.serverUrl ?? null) as string | null;
@@ -482,155 +463,6 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
         };
       }
 
-      if (command === "db_user_state_get_current_status") {
-        const db = await options.getDb();
-        const serverUrl = (args.serverUrl ?? null) as string | null;
-        const empty: UserStateCurrentStatus = {
-          workspaceId: null,
-          epoch: null,
-          lastSuccessAt: null,
-          pausedAfterRestore: false,
-          missingMetadataCount: 0,
-        };
-        if (!(await hasUserStateSchema(db))) {
-          return { handled: true, result: empty };
-        }
-        const [row] = await db.select<
-          Array<{
-            workspaceId: string | null;
-            epoch: string | null;
-            lastSuccessAt: number | null;
-            paused: number;
-            missingMetadataCount: number;
-          }>
-        >(
-          `SELECT w.workspace_id AS workspaceId,w.epoch,w.last_success_at AS lastSuccessAt,r.paused,
-            COALESCE(json_extract(c.payload,'$.missingMetadataCount'),0)+COALESCE(json_extract(e.payload,'$.missingMetadataCount'),0) AS missingMetadataCount
-          FROM user_state_restore_state r LEFT JOIN user_state_workspace w ON w.server_url=$1
-          LEFT JOIN content_sync_cache c ON c.cache_key='user-state-current-status:'||w.namespace
-          LEFT JOIN content_sync_cache e ON e.cache_key='user-state-current-export:'||w.namespace WHERE r.id=1`,
-          [serverUrl],
-        );
-        return {
-          handled: true,
-          result: row
-            ? {
-                workspaceId: row.workspaceId,
-                epoch: row.epoch,
-                lastSuccessAt: row.lastSuccessAt,
-                pausedAfterRestore: !!row.paused,
-                missingMetadataCount: row.missingMetadataCount,
-              }
-            : empty,
-        };
-      }
-
-      if (command === "db_user_state_export_current_snapshot") {
-        const binding = args.binding as UserStateBinding;
-        const skipped = new Set<number>(
-          (args.skippedChapterIds as number[] | undefined) ?? [],
-        );
-        const snapshot = await withChapterDownloadSnapshotReads(hold =>
-          options.runTransaction(async db => {
-            await assertUserStateAvailableInDb(db);
-            await requireBinding(db, binding);
-            const result = await buildCurrentSnapshotInDb(
-              db,
-              binding,
-              await loadCurrentDataInDb(
-                db,
-                binding,
-                chapterId => !skipped.has(chapterId) && hold(chapterId),
-              ),
-            );
-            const parsed = parseUserStateCurrentSnapshot(result.snapshot);
-            await db.execute(
-              "INSERT INTO content_sync_cache(cache_key,payload) VALUES($1,$2) ON CONFLICT(cache_key) DO UPDATE SET payload=excluded.payload",
-              [
-                currentExportKey(binding),
-                JSON.stringify({
-                  missingMetadataCount: result.missingMetadataCount,
-                }),
-              ],
-            );
-            return parsed;
-          }),
-        );
-        return {
-          handled: true,
-          result: {
-            value: snapshot,
-            effects: {},
-          } satisfies DbMutationEnvelope<UserStateCurrentSnapshot>,
-        };
-      }
-
-      if (command === "db_user_state_prepare_deferred_current_retry") {
-        const db = await options.getDb();
-        const serverUrl = args.serverUrl as string;
-        const novelIds = (args.novelIds ?? []) as number[];
-        const [binding] = await db.select<UserStateBinding[]>(
-          "SELECT server_url AS serverUrl,workspace_id AS workspaceId,epoch FROM user_state_workspace WHERE server_url=$1",
-          [serverUrl],
-        );
-        if (!binding) return { handled: true, result: null };
-        const [row] = await db.select<{ payload: string }[]>(
-          "SELECT payload FROM content_sync_cache WHERE cache_key=$1",
-          [currentCacheKey(binding)],
-        );
-        if (!row) return { handled: true, result: null };
-        const cached = JSON.parse(row.payload) as {
-          snapshot: unknown;
-          missingKeys?: string[];
-        };
-        const works = await db.select<CurrentWork[]>(
-          "SELECT id,plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath,name,in_library AS inLibrary,library_added_at AS addedAt FROM novel WHERE id IN (SELECT value FROM json_each($1))",
-          [JSON.stringify(novelIds)],
-        );
-        const workKeys = [
-          ...new Set(
-            works.filter(work => work.sourceNovelId).map(userStateWorkKey),
-          ),
-        ];
-        return {
-          handled: true,
-          result: {
-            binding,
-            snapshot: cached.snapshot,
-            missingKeys: cached.missingKeys ?? [],
-            workKeys,
-          },
-        };
-      }
-
-      if (command === "db_user_state_apply_current_snapshot") {
-        const binding = args.binding as UserStateBinding;
-        const snapshot = parseUserStateCurrentSnapshot(args.snapshot);
-        const retry = (args.retry ?? null) as {
-          workKeys: string[];
-          previousMissing: string[];
-        } | null;
-        const skipped = new Set<number>(
-          (args.skippedChapterIds as number[] | undefined) ?? [],
-        );
-        const applied = await withChapterDownloadSnapshotReads(hold =>
-          applyCurrentSnapshotWithTransactionsInDb(
-            binding,
-            snapshot,
-            options.runTransaction,
-            chapterId => !skipped.has(chapterId) && hold(chapterId),
-            retry,
-          ),
-        );
-        return {
-          handled: true,
-          result: {
-            value: applied,
-            effects: { userStateLedgerChanged: true },
-          } satisfies DbMutationEnvelope<UserStateCurrentApplyResult>,
-        };
-      }
-
       if (command === "db_category_insert") {
         const input = args.input as { name: string; sort?: number | null };
         await options.runTransaction(async db => {
@@ -785,8 +617,8 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
         const rowsAffected = await options.runTransaction(async db => {
           const result = await db.execute(
             `UPDATE chapter
-             SET unread = 0, updated_at = unixepoch()
-             WHERE unread = 1
+             SET progress = 100, updated_at = unixepoch()
+             WHERE progress < 100
                AND novel_id IN (SELECT id FROM novel WHERE in_library = 1)
                AND COALESCE(created_at, updated_at) >= (
                  SELECT COALESCE(library_added_at, updated_at, created_at)
@@ -799,7 +631,7 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
               `SELECT c.id FROM chapter c JOIN novel n ON n.id=c.novel_id
                WHERE n.in_library=1 AND COALESCE(c.created_at,c.updated_at)>=COALESCE(n.library_added_at,n.updated_at,n.created_at)`,
             );
-            await recordChapterUnreadFlagsInDb(db, rows.map(row => row.id), false);
+            await recordChaptersInDb(db, rows.map(row => row.id));
           }
           return result.rowsAffected;
         });
@@ -817,8 +649,8 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
           const targets = await snapshotReadingProgressClearTargetsInDb(db);
           const result = await db.execute(
             `UPDATE chapter
-             SET progress = 0, unread = 1, read_at = NULL, updated_at = unixepoch()
-             WHERE progress <> 0 OR unread = 0 OR read_at IS NOT NULL`,
+             SET progress = 0, read_at = NULL, updated_at = unixepoch()
+             WHERE progress <> 0 OR read_at IS NOT NULL`,
           );
           await db.execute(
             `UPDATE novel

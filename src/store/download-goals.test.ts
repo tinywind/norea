@@ -10,7 +10,15 @@ const storage = vi.hoisted(() => {
   vi.stubGlobal("window", { localStorage: globalThis.localStorage });
   return values;
 });
-import { DOWNLOAD_GOAL_SETTINGS_KEY, AUTOMATIC_KEEP_AHEAD_CHOICES, normalizeDownloadGoalSettings, useDownloadGoalSettingsStore } from "./download-goals";
+import {
+  AUTOMATIC_ACTIVE_WINDOW_CHOICES,
+  AUTOMATIC_KEEP_AHEAD_CHOICES,
+  DOWNLOAD_GOAL_SETTINGS_KEY,
+  FINISHED_CHAPTER_KEEP_CHOICES,
+  normalizeDownloadGoalSettings,
+  useDownloadGoalSettingsStore,
+  type FinishedChapterKeepChoice,
+} from "./download-goals";
 
 beforeEach(() => {
   storage.clear();
@@ -18,12 +26,22 @@ beforeEach(() => {
 });
 afterAll(() => { vi.unstubAllGlobals(); });
 
-it("keeps 3 chapters ahead and waits for unmetered networks by default", () => {
+it("keeps 3 chapters ahead, 14-day active window, and waits for unmetered networks by default", () => {
   expect(normalizeDownloadGoalSettings(null)).toEqual({
-    automaticGoal: { kind: "keep_ahead", count: 3 }, automaticOnMobileData: false,
-    legacyReadAheadMigrated: false, finishedChapterKeep: 0, finishedCleanupWithoutServer: false,
+    automaticGoal: { kind: "keep_ahead", count: 3 },
+    automaticActiveWindow: 14,
+    automaticOnMobileData: false,
+    legacyReadAheadMigrated: false,
+    finishedChapterKeep: "off",
+    finishedChapterKeepOffMigrated: true,
+    finishedCleanupWithoutServer: false,
   });
-  expect(normalizeDownloadGoalSettings({ automaticGoal: { kind: "keep_ahead", count: 7 }, automaticOnMobileData: "yes", legacyReadAheadMigrated: 1 }))
+  expect(normalizeDownloadGoalSettings({
+    automaticGoal: { kind: "keep_ahead", count: 7 },
+    automaticActiveWindow: 99,
+    automaticOnMobileData: "yes",
+    legacyReadAheadMigrated: 1,
+  }))
     .toEqual(normalizeDownloadGoalSettings(null));
 });
 
@@ -34,17 +52,30 @@ it.each([0, 1, 3, 5, 10])("carries the saved keep-ahead count %s into the global
 
 it("gives a valid global policy precedence over the older count and keeps the other settings", () => {
   expect(normalizeDownloadGoalSettings({
-    automaticGoal: { kind: "entire" }, defaultKeepAhead: 0, automaticOnMobileData: true,
-    legacyReadAheadMigrated: true, finishedChapterKeep: 10, finishedCleanupWithoutServer: true,
+    automaticGoal: { kind: "entire" }, defaultKeepAhead: 0, automaticActiveWindow: "unlimited",
+    automaticOnMobileData: true, legacyReadAheadMigrated: true, finishedChapterKeep: 10,
+    finishedChapterKeepOffMigrated: true, finishedCleanupWithoutServer: true,
   })).toEqual({
-    automaticGoal: { kind: "entire" }, automaticOnMobileData: true,
-    legacyReadAheadMigrated: true, finishedChapterKeep: 10, finishedCleanupWithoutServer: true,
+    automaticGoal: { kind: "entire" }, automaticActiveWindow: "unlimited", automaticOnMobileData: true,
+    legacyReadAheadMigrated: true, finishedChapterKeep: 10, finishedChapterKeepOffMigrated: true,
+    finishedCleanupWithoutServer: true,
   });
   expect(normalizeDownloadGoalSettings({ automaticGoal: { kind: "none" }, defaultKeepAhead: 10 }).automaticGoal).toEqual({ kind: "none" });
   expect(normalizeDownloadGoalSettings({ automaticGoal: { kind: "unknown" }, defaultKeepAhead: 0 }).automaticGoal).toEqual({ kind: "none" });
 });
 
-it("accepts the global ranges and only the offered keep-ahead counts", () => {
+it("migrates legacy finishedChapterKeep 0 to off while preserving explicit migrated 0", () => {
+  expect(normalizeDownloadGoalSettings({ finishedChapterKeep: 0 })).toMatchObject({
+    finishedChapterKeep: "off",
+    finishedChapterKeepOffMigrated: true,
+  });
+  expect(normalizeDownloadGoalSettings({ finishedChapterKeep: 0, finishedChapterKeepOffMigrated: true })).toMatchObject({
+    finishedChapterKeep: 0,
+    finishedChapterKeepOffMigrated: true,
+  });
+});
+
+it("accepts the global ranges, active windows, and only the offered keep-ahead counts", () => {
   for (const count of AUTOMATIC_KEEP_AHEAD_CHOICES) {
     useDownloadGoalSettingsStore.getState().setAutomaticGoal({ kind: "keep_ahead", count });
     expect(useDownloadGoalSettingsStore.getState().automaticGoal).toEqual({ kind: "keep_ahead", count });
@@ -55,6 +86,11 @@ it("accepts the global ranges and only the offered keep-ahead counts", () => {
   }
   useDownloadGoalSettingsStore.getState().setAutomaticGoal({ kind: "keep_ahead", count: 7 });
   expect(useDownloadGoalSettingsStore.getState().automaticGoal).toEqual({ kind: "keep_ahead", count: 3 });
+
+  for (const window of AUTOMATIC_ACTIVE_WINDOW_CHOICES) {
+    useDownloadGoalSettingsStore.getState().setAutomaticActiveWindow(window);
+    expect(useDownloadGoalSettingsStore.getState().automaticActiveWindow).toBe(window);
+  }
 });
 
 it("persists only the global policy and leaves unrelated settings intact when it changes", () => {
@@ -69,11 +105,15 @@ it("persists only the global policy and leaves unrelated settings intact when it
 
 it("keeps finished-chapter removal off unless an offered choice is stored", () => {
   expect(normalizeDownloadGoalSettings({ finishedChapterKeep: 7, finishedCleanupWithoutServer: "yes" }))
-    .toMatchObject({ finishedChapterKeep: 0, finishedCleanupWithoutServer: false });
-  for (const choice of [5, 10, 20, 0]) {
+    .toMatchObject({ finishedChapterKeep: "off", finishedCleanupWithoutServer: false });
+  for (const choice of FINISHED_CHAPTER_KEEP_CHOICES) {
     useDownloadGoalSettingsStore.getState().setFinishedChapterCleanup(choice, true);
-    expect(useDownloadGoalSettingsStore.getState()).toMatchObject({ finishedChapterKeep: choice, finishedCleanupWithoutServer: true });
+    expect(useDownloadGoalSettingsStore.getState()).toMatchObject({
+      finishedChapterKeep: choice,
+      finishedChapterKeepOffMigrated: true,
+      finishedCleanupWithoutServer: true,
+    });
   }
-  useDownloadGoalSettingsStore.getState().setFinishedChapterCleanup(3, false);
-  expect(useDownloadGoalSettingsStore.getState()).toMatchObject({ finishedChapterKeep: 0, finishedCleanupWithoutServer: false });
+  useDownloadGoalSettingsStore.getState().setFinishedChapterCleanup(3 as FinishedChapterKeepChoice, false);
+  expect(useDownloadGoalSettingsStore.getState()).toMatchObject({ finishedChapterKeep: "off", finishedCleanupWithoutServer: false });
 });

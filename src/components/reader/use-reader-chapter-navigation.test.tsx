@@ -44,7 +44,7 @@ type NavigationChapter = NonNullable<Parameters<typeof useReaderChapterNavigatio
 const chapter = {
   id: 11, novelId: 7, position: 1, name: "Chapter", path: "/chapter/1",
   chapterNumber: "1", contentType: "html", isDownloaded: false, contentBytes: 80,
-  page: "1", bookmark: false, unread: true, progress: 0, sourceContentType: "html",
+  page: "1", bookmark: false, progress: 0, sourceContentType: "html",
   mediaBytes: 5, mediaRepairNeeded: true, releaseTime: null, readAt: null,
   createdAt: null, foundAt: 1, updatedAt: 1,
 } as const;
@@ -121,7 +121,11 @@ it("navigates to an adjacent stored incomplete body without scheduling a downloa
   const nextChapter = { ...chapter, id: 12, position: 2, chapterNumber: "2", path: "/chapter/2" };
   await render({ ...chapter, isDownloaded: true }, nextChapter);
   await act(async () => current.openAdjacent(1));
-  expect(navigation.navigate).toHaveBeenCalledWith({ to: "/reader", search: { chapterId: 12 }, replace: true });
+  expect(navigation.navigate).toHaveBeenCalledWith({
+    to: "/reader",
+    search: { chapterId: 12, fromStart: true },
+    replace: true,
+  });
   expect(enqueueChapterDownload).not.toHaveBeenCalled();
 });
 
@@ -215,7 +219,11 @@ it("uses the common downloader for an adjacent content-server chapter", async ()
   const nextChapter = { ...chapter, id: 12, position: 2, chapterNumber: "2", path: "/chapter/2", contentBytes: 0 };
   await render(chapter, nextChapter);
   await act(async () => current.openAdjacent(1));
-  expect(navigation.navigate).toHaveBeenCalledWith({ to: "/reader", search: { chapterId: 12 }, replace: true });
+  expect(navigation.navigate).toHaveBeenCalledWith({
+    to: "/reader",
+    search: { chapterId: 12, fromStart: true },
+    replace: true,
+  });
   expect(enqueueChapterDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 12, chapterPath: "/chapter/2", priority: "interactive" }));
   expect(vi.mocked(enqueueChapterDownload).mock.calls[0][0]).not.toHaveProperty("serverOnly");
 });

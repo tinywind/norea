@@ -80,7 +80,7 @@ import { collectElements, mountBackNavigationHarness } from "../lib/android-back
 
 const chapter: ChapterListRow = {
   id: 1, novelId: 3, name: "Saved chapter", path: "/chapter", chapterNumber: "1", position: 1, page: "1",
-  bookmark: false, unread: true, progress: 0, isDownloaded: false, sourceContentType: "html", contentType: "html",
+  bookmark: false, progress: 0, isDownloaded: false, sourceContentType: "html", contentType: "html",
   contentBytes: 0, mediaBytes: 0, mediaRepairNeeded: false, releaseTime: null, readAt: null,
   createdAt: null, foundAt: 1, updatedAt: 1,
 };
@@ -536,7 +536,7 @@ async function withPageTree(check: (find: (predicate: (props: Record<string, unk
 
 it("replaces the app bar with a labeled selection bar from the visible Select icon", async () => {
   mocks.novel.isLocal = false;
-  mocks.chapters = [{ ...chapter, unread: true }, { ...chapter, id: 2, position: 2, isDownloaded: true, unread: false }];
+  mocks.chapters = [{ ...chapter, progress: 0 }, { ...chapter, id: 2, position: 2, isDownloaded: true, progress: 100 }];
   await withPageTree(async (find, run) => {
     expect(find((props) => typeof props.onSelectAll === "function")).toBeUndefined();
     const select = find((props) => props.label === "novel.select")!;
@@ -744,7 +744,7 @@ it("jumps to a chapter by number or title and reports a miss inline", async () =
 
 it("filters the chapter list and keeps select all, range selection and jump on the shown rows", async () => {
   mocks.novel.isLocal = false;
-  mocks.chapters = numberedChapters().map((row) => ({ ...row, unread: row.id % 2 === 0 }));
+  mocks.chapters = numberedChapters().map((row) => ({ ...row, progress: row.id % 2 === 0 ? 0 : 100 }));
   await withPageTree(async (find, run) => {
     const shownIds = () => (chapterList(find).props.chapters as ChapterListRow[]).map((row) => row.id);
     const title = () => find((props) => props.className === "norea-novel-chapters-title")!.props.children;
@@ -831,7 +831,6 @@ it("opens the up-next chapter row from the start when advancing from a finished 
     ...chapter,
     id: 1,
     position: 1,
-    unread: false,
     progress: 100,
     readAt: 100,
     isDownloaded: true,
@@ -840,7 +839,6 @@ it("opens the up-next chapter row from the start when advancing from a finished 
     ...chapter,
     id: 2,
     position: 2,
-    unread: true,
     progress: 35,
     readAt: null,
     isDownloaded: true,
@@ -870,7 +868,6 @@ it("resumes an in-progress up-next chapter row without forcing fromStart", async
     ...chapter,
     id: 1,
     position: 1,
-    unread: true,
     progress: 40,
     readAt: 100,
     isDownloaded: true,
@@ -879,7 +876,6 @@ it("resumes an in-progress up-next chapter row without forcing fromStart", async
     ...chapter,
     id: 2,
     position: 2,
-    unread: true,
     progress: 0,
     readAt: null,
     isDownloaded: true,

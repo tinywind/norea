@@ -1,8 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseStoredChapterPath, storedChapterDigest, storedChapterNumber, storedChapterPath } from "./stored-chapter";
 import type { ChapterPayloadInventory } from "../chapter-content/inventory";
-import { parseUserStateCurrentItem } from "./current-types";
-import { userStateEntityKey } from "./types";
+import { parseUserStateEntity, userStateEntityKey } from "./types";
 
 const hash = "a".repeat(64);
 const work = { pluginId: "source", sourceNovelId: "book", novelPath: "/book", name: "Book" };
@@ -55,7 +54,7 @@ describe("recovered stored chapter references", () => {
     expect(userStateEntityKey(entity)).not.toBe(userStateEntityKey({ ...entity, chapter: { chapterPath: storedChapterPath("20", hash)! } }));
     expect(userStateEntityKey(entity)).not.toBe(userStateEntityKey({ ...entity, chapter: { chapterPath: storedChapterPath("19", "b".repeat(64))! } }));
     expect(userStateEntityKey(entity)).not.toBe(userStateEntityKey({ ...entity, work: { ...work, sourceNovelId: "other" } }));
-    expect(parseUserStateCurrentItem({ entity, value: { progress: 100, unread: false, readAt: null } }).entity).toEqual(entity);
+    expect(parseUserStateEntity(entity)).toEqual(entity);
   });
 
   it.each([null, "", " ", "1e2", "-1", "Infinity", "NaN", "1/2", "../19", "1." ])("rejects invalid storage key %s", value => {
@@ -78,8 +77,5 @@ describe("recovered stored chapter references", () => {
     "norea-stored:" + "A".repeat(64) + ":norea-folder%3A19",
   ])("rejects unverified or noncanonical wire path %s", chapterPath => {
     expect(parseStoredChapterPath(chapterPath)).toBeNull();
-    expect(() => parseUserStateCurrentItem({
-      entity: { kind: "reading", work, chapter: { chapterPath } }, value: { progress: 100, unread: false, readAt: null },
-    })).toThrow("unresolved current chapter identity");
   });
 });

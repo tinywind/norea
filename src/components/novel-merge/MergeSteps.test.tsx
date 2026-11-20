@@ -58,7 +58,6 @@ function sourceChapter(
     readAt: null,
     releaseTime: null,
     sourceContentType: "html",
-    unread: true,
     updatedAt: 0,
     ...overrides,
   };

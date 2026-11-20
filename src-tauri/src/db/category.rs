@@ -8,7 +8,7 @@ use crate::database::AppDatabase;
 
 use super::tx::{with_write_tx, MetadataRoot, TxContext, TxOptions};
 use super::user_state::core::{
-    has_user_state_schema_in_tx, record_category_in_tx, record_chapter_unread_flags_in_tx,
+    has_user_state_schema_in_tx, record_category_in_tx, record_chapters_in_tx,
     record_cleared_reading_progress_in_tx, record_membership_in_tx,
     snapshot_reading_progress_clear_targets_in_tx, stable_category_id_in_tx, RecordCategoryOptions,
 };
@@ -542,10 +542,24 @@ pub async fn clear_updates_tab_in_tx(
     conn: &mut SqliteConnection,
     ctx: &mut TxContext,
 ) -> Result<MaintenanceResultDto, String> {
+    let ids: Vec<i64> = if has_user_state_schema_in_tx(conn).await? {
+        sqlx::query_scalar(
+            "SELECT c.id FROM chapter c JOIN novel n ON n.id = c.novel_id \
+             WHERE c.progress < 100 \
+               AND n.in_library = 1 \
+               AND COALESCE(c.created_at, c.updated_at) >= COALESCE(n.library_added_at, n.updated_at, n.created_at)",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db maintenance: load cleared update chapter ids: {err}"))?
+    } else {
+        Vec::new()
+    };
+
     let res = sqlx::query(
         "UPDATE chapter \
-         SET unread = 0, updated_at = unixepoch() \
-         WHERE unread = 1 \
+         SET progress = 100, updated_at = unixepoch() \
+         WHERE progress < 100 \
            AND novel_id IN (SELECT id FROM novel WHERE in_library = 1) \
            AND COALESCE(created_at, updated_at) >= ( \
              SELECT COALESCE(library_added_at, updated_at, created_at) \
@@ -557,16 +571,8 @@ pub async fn clear_updates_tab_in_tx(
     .await
     .map_err(|err| format!("db maintenance: clear updates tab: {err}"))?;
 
-    if has_user_state_schema_in_tx(conn).await? {
-        let ids: Vec<i64> = sqlx::query_scalar(
-            "SELECT c.id FROM chapter c JOIN novel n ON n.id = c.novel_id \
-             WHERE n.in_library = 1 \
-               AND COALESCE(c.created_at, c.updated_at) >= COALESCE(n.library_added_at, n.updated_at, n.created_at)",
-        )
-        .fetch_all(&mut *conn)
-        .await
-        .map_err(|err| format!("db maintenance: load cleared update chapter ids: {err}"))?;
-        record_chapter_unread_flags_in_tx(conn, ctx, &ids, false).await?;
+    if !ids.is_empty() {
+        record_chapters_in_tx(conn, ctx, &ids, "reading").await?;
     }
 
     Ok(MaintenanceResultDto {
@@ -582,8 +588,8 @@ pub async fn clear_reading_progress_in_tx(
 
     let res = sqlx::query(
         "UPDATE chapter \
-         SET progress = 0, unread = 1, read_at = NULL, updated_at = unixepoch() \
-         WHERE progress <> 0 OR unread = 0 OR read_at IS NOT NULL",
+         SET progress = 0, read_at = NULL, updated_at = unixepoch() \
+         WHERE progress <> 0 OR read_at IS NOT NULL",
     )
     .execute(&mut *conn)
     .await
@@ -1035,10 +1041,10 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chapter (id, novel_id, path, name, position, is_downloaded, content_bytes, progress, unread, read_at, created_at, updated_at) \
+            "INSERT INTO chapter (id, novel_id, path, name, position, is_downloaded, content_bytes, progress, read_at, created_at, updated_at) \
              VALUES \
-               (10, 1, '/c1', 'Ch 1', 1, 1, 200, 80, 1, 500, 200, 200), \
-               (20, 2, '/lc1', 'Local Ch 1', 1, 1, 300, 50, 0, 500, 200, 200)",
+               (10, 1, '/c1', 'Ch 1', 1, 1, 200, 80, 500, 200, 200), \
+               (20, 2, '/lc1', 'Local Ch 1', 1, 1, 300, 100, 500, 200, 200)",
         )
         .execute(pool)
         .await
@@ -1072,6 +1078,12 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(updates_cleared.value.rows_affected, 1);
+        let ch10_progress: i64 =
+            sqlx::query_scalar("SELECT progress FROM chapter WHERE id = 10")
+                .fetch_one(pool)
+                .await
+                .unwrap();
+        assert_eq!(ch10_progress, 100);
 
         let progress_cleared = with_write_tx(pool, opts(), |conn, ctx| {
             Box::pin(async move { clear_reading_progress_in_tx(conn, ctx).await })
@@ -1135,29 +1147,29 @@ mod tests {
         .unwrap();
 
         // Chapters:
-        // 10 (N1): untouched unread, no shared history, bookmarked=1 -> bookmark preserved, NO reading intent
-        // 11 (N1): progress=60, unread=1, read_at=NULL -> reset + reading intent
-        // 12 (N1): progress=0, unread=0, read_at=NULL -> reset + reading intent
-        // 13 (N1): progress=0, unread=1, read_at=500 -> reset + reading intent
-        // 14 (N2): untouched unread, has user_state_record -> reading intent
-        // 15 (N2): untouched unread, has user_state_intent -> reading intent updated
+        // 10 (N1): untouched (progress=0), no shared history, bookmarked=1 -> bookmark preserved, NO reading intent
+        // 11 (N1): progress=60, read_at=NULL -> reset + reading intent
+        // 12 (N1): progress=100, read_at=NULL -> reset + reading intent
+        // 13 (N1): progress=0, read_at=500 -> reset + reading intent
+        // 14 (N2): untouched, has user_state_record -> reading intent
+        // 15 (N2): untouched, has user_state_intent -> reading intent updated
         // 16 (N1): private chapter with progress=60 + user_state_private -> private marker deleted + reading intent
-        // 17 (N1): private chapter with progress=0, unread=1, read_at=NULL + user_state_private -> private marker deleted + reading intent
+        // 17 (N1): private chapter with progress=0, read_at=NULL + user_state_private -> private marker deleted + reading intent
         // 18 (N1): composed untouched chapter with user_state_private -> private marker deleted + compositionEntryId preserved
-        // 19 (N5): local chapter with progress=50, unread=0, read_at=500 -> local reset, NO reading intent
+        // 19 (N5): local chapter with progress=50, read_at=500 -> local reset, NO reading intent
         sqlx::query(
-            "INSERT INTO chapter (id, novel_id, path, name, position, progress, unread, read_at, bookmark) \
+            "INSERT INTO chapter (id, novel_id, path, name, position, progress, read_at, bookmark) \
              VALUES \
-               (10, 1, '/c10', 'Ch 10', 1, 0, 1, NULL, 1), \
-               (11, 1, '/c11', 'Ch 11', 2, 60, 1, NULL, 0), \
-               (12, 1, '/c12', 'Ch 12', 3, 0, 0, NULL, 0), \
-               (13, 1, '/c13', 'Ch 13', 4, 0, 1, 500, 0), \
-               (14, 2, '/c14', 'Ch 14', 1, 0, 1, NULL, 0), \
-               (15, 2, '/c15', 'Ch 15', 2, 0, 1, NULL, 0), \
-               (16, 1, '/c16', 'Ch 16', 5, 60, 1, NULL, 0), \
-               (17, 1, '/c17', 'Ch 17', 6, 0, 1, NULL, 0), \
-               (18, 1, 'norea-composed:entry-18', 'Ch 18', 7, 0, 1, NULL, 0), \
-               (19, 5, '/lc19', 'Local Ch', 1, 50, 0, 500, 0)",
+               (10, 1, '/c10', 'Ch 10', 1, 0, NULL, 1), \
+               (11, 1, '/c11', 'Ch 11', 2, 60, NULL, 0), \
+               (12, 1, '/c12', 'Ch 12', 3, 100, NULL, 0), \
+               (13, 1, '/c13', 'Ch 13', 4, 0, 500, 0), \
+               (14, 2, '/c14', 'Ch 14', 1, 0, NULL, 0), \
+               (15, 2, '/c15', 'Ch 15', 2, 0, NULL, 0), \
+               (16, 1, '/c16', 'Ch 16', 5, 60, NULL, 0), \
+               (17, 1, '/c17', 'Ch 17', 6, 0, NULL, 0), \
+               (18, 1, 'norea-composed:entry-18', 'Ch 18', 7, 0, NULL, 0), \
+               (19, 5, '/lc19', 'Local Ch', 1, 50, 500, 0)",
         )
         .execute(pool)
         .await
@@ -1228,7 +1240,7 @@ mod tests {
         .to_string();
         sqlx::query(
             "INSERT INTO user_state_intent(entity_key, entity_json, value_json, seed) \
-             VALUES (?1, ?2, '{\"progress\":50,\"unread\":false,\"readAt\":100}', 0)",
+             VALUES (?1, ?2, '{\"progress\":50,\"readAt\":100}', 0)",
         )
         .bind(&int_c15_key)
         .bind(&int_c15_ent)
@@ -1244,7 +1256,7 @@ mod tests {
             let _ = cpath;
             sqlx::query(
                 "INSERT INTO user_state_private(entity_key, public_value_json) \
-                 VALUES (?1, '{\"progress\":0,\"unread\":true,\"readAt\":null}')",
+                 VALUES (?1, '{\"progress\":0,\"readAt\":null}')",
             )
             .bind(&k)
             .execute(pool)
@@ -1295,12 +1307,12 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(c10_bookmark, 1);
-        let local_ch: (f64, i64, Option<i64>) =
-            sqlx::query_as("SELECT CAST(progress AS REAL), unread, read_at FROM chapter WHERE id = 19")
+        let local_ch: (f64, Option<i64>) =
+            sqlx::query_as("SELECT CAST(progress AS REAL), read_at FROM chapter WHERE id = 19")
                 .fetch_one(pool)
                 .await
                 .unwrap();
-        assert_eq!(local_ch, (0.0, 1, None));
+        assert_eq!(local_ch, (0.0, None));
 
         let remaining_private: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_private")
             .fetch_one(pool)
@@ -1349,7 +1361,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             c15_val_json,
-            serde_json::json!({ "progress": 0, "unread": true, "readAt": null })
+            serde_json::json!({ "progress": 0, "readAt": null })
         );
     }
 
@@ -1376,10 +1388,10 @@ mod tests {
         .await
         .unwrap();
         sqlx::query(
-            "INSERT INTO chapter (id, novel_id, path, name, position, progress, unread, read_at) \
+            "INSERT INTO chapter (id, novel_id, path, name, position, progress, read_at) \
              VALUES \
-               (10, 1, '/c10', 'Untouched', 1, 0, 1, NULL), \
-               (20, 2, '/lc20', 'Local', 1, 75, 0, 500)",
+               (10, 1, '/c10', 'Untouched', 1, 0, NULL), \
+               (20, 2, '/lc20', 'Local', 1, 75, 500)",
         )
         .execute(pool)
         .await

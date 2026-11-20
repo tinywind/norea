@@ -159,7 +159,8 @@ async function materializeUserStateRecordWithOptionsInDb(
     case "reading": {
       const chapterId = await findChapter(db, work.id, entity.chapter);
       const value = record.value as UserStateValueMap["reading"];
-      await db.execute("UPDATE chapter SET progress=$2,unread=$3,read_at=$4 WHERE id=$1", [chapterId, value.progress, value.unread ? 1 : 0, value.readAt]);
+      await db.execute("UPDATE chapter SET progress=$2,read_at=$3 WHERE id=$1", [chapterId, value.progress, value.readAt]);
+      if (value.progress >= 100) effects.hasFinishedReading = true;
       if (deferLastReadAt) return { effects, touchedNovelId: work.id };
       await db.execute("UPDATE novel SET last_read_at=(SELECT MAX(read_at) FROM chapter WHERE novel_id=$1) WHERE id=$1", [work.id]);
       break;
@@ -323,6 +324,7 @@ export async function projectPendingUserStateInDb(
       if (record.entity.kind === "composition") sawComposition = true;
       if (touchedNovelId !== null) touchedLastReadNovels.add(touchedNovelId);
       effects.resumes.push(...next.resumes);
+      if (next.hasFinishedReading) effects.hasFinishedReading = true;
       await db.execute("UPDATE user_state_record SET applied_revision=revision,deferred_reason=NULL,deferred_detail=NULL WHERE namespace=$1 AND entity_key=$2 AND revision=$3",
         [namespace, row.entityKey, record.revision]);
     } catch (error) {
@@ -355,12 +357,6 @@ export async function projectPendingUserStateInDb(
 /** Metadata/import callers use this inside their existing transaction. */
 export async function deferUserStateForNovelInDb(db: UserStateDb, novelId: number): Promise<void> {
   if (!await hasUserStateSchema(db)) return;
-  const current = await import("../../db/user-state-current");
-  if (current.isUserStateCurrentMode()) {
-    current.recordDeferredUserStateCurrentNovelIds([novelId]);
-    requestUserStateDeferredApply(db);
-    return;
-  }
   await refreshUnattemptedUserStateIdentitiesInDb(db, novelId);
   const [work] = await db.select<{ pluginId: string; sourceNovelId: string | null; novelPath: string }[]>(
     "SELECT plugin_id AS pluginId,source_novel_id AS sourceNovelId,path AS novelPath FROM novel WHERE id=$1", [novelId]);

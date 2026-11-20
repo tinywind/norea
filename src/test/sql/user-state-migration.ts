@@ -2,10 +2,8 @@ import {
   chapterReference, chapterWork, hasUserStateSchema, intentFromRow, recordResumeClearedInDb, recordUserStateChangesInDb,
   USER_CHAPTER_SELECT, workReferenceInDb, type IntentRow, type UserChapterRow, type UserStateDb, type UserStateIntent,
 } from "./user-state-core";
-import { currentResumeValues } from "./user-state-current-data";
-import { mergeUserStateCurrentResume, parseUserStateCurrentItem } from "../../lib/user-state/current-types";
 import { DeferredUserState, materializeUserStateRecordInDb } from "./user-state-materialize";
-import { parseUserStateRecord, userStateEntityKey, userStateWorkKey, type UserStateApplyEffects, type UserStateResumeEffect, type UserStateValueMap } from "../../lib/user-state/types";
+import { mergeUserStateResume, parseUserStateRecord, userStateEntityKey, userStateWorkKey, type UserStateApplyEffects, type UserStateResumeEffect, type UserStateValueMap } from "../../lib/user-state/types";
 
 async function pendingIntents(db: UserStateDb): Promise<IntentRow[]> {
   return db.select<IntentRow[]>(`SELECT i.sequence,i.entity_key AS entityKey,i.entity_json AS entityJson,i.value_json AS valueJson,i.seed FROM user_state_intent i
@@ -45,46 +43,6 @@ export async function remapPendingUserStateInDb(db: UserStateDb, sourceNovelId: 
   }
   const sourceKey = userStateWorkKey(source);
   const targetKey = userStateWorkKey(target);
-  if ((await import("../../db/user-state-current")).isUserStateCurrentMode()) {
-    const local = await db.select<IntentRow[]>("SELECT sequence,entity_key AS entityKey,entity_json AS entityJson,value_json AS valueJson,seed FROM user_state_intent WHERE json_extract(entity_json,'$.kind')='resume'");
-    const shared = await db.select<{ resumes: string | null }[]>("SELECT json_extract(payload,'$.resumes') AS resumes FROM content_sync_cache WHERE cache_key LIKE 'user-state-current-status:%'");
-    const publicResumes = currentResumeValues({
-      resumes: local.map(row => {
-        const intent = intentFromRow(row);
-        if (intent.entity.kind === "resume" && intent.entity.work.sourceNovelId === null) {
-          const previousWork = intent.entity.work;
-          const owner = [source, target].find(work => work.pluginId === previousWork.pluginId && work.novelPath === previousWork.novelPath);
-          if (owner) return { ...intent, entity: { kind: "resume" as const, work: owner } };
-        }
-        return intent;
-      }),
-      appliedResumes: shared.flatMap(row => row.resumes ? (JSON.parse(row.resumes) as unknown[]).map(parseUserStateCurrentItem) : []),
-    });
-    let selected: { chapter: UserChapterRow; value: UserStateValueMap["resume"] } | null = null;
-    for (const [key, isSource] of [[targetKey, false], [sourceKey, true]] as const) {
-      const item = publicResumes.get(key);
-      if (!item) continue;
-      const value = item.value as UserStateValueMap["resume"];
-      if (!value.chapter) continue;
-      const original = isSource ? bySourcePath.get(value.chapter.chapterPath) : null;
-      const originalReference = original && chapterReference(original);
-      if (originalReference?.compositionEntryId && originalReference.compositionEntryId !== value.chapter.compositionEntryId) continue;
-      const mapped = isSource ? remapChapter(value.chapter.chapterPath) :
-        targetByPath.get(targetPathsByOldPath.get(value.chapter.chapterPath) ?? value.chapter.chapterPath);
-      if (!mapped) continue;
-      const reference = chapterReference(mapped);
-      const unchangedPath = !isSource && reference.chapterPath === value.chapter.chapterPath;
-      if (unchangedPath && reference.compositionEntryId && reference.compositionEntryId !== value.chapter.compositionEntryId) continue;
-      // Chapter correspondence alone does not prove that A and B retained the same body.
-      const next = { ...value, chapter: reference, anchor: isSource ? null : value.anchor };
-      if (!selected || mergeUserStateCurrentResume(selected.value, next) === next) selected = { chapter: mapped, value: next };
-    }
-    if (selected) {
-      await recordUserStateChangesInDb(db, [{ entity: { kind: "resume", work: target }, value: selected.value }]);
-      effects.resumes.push({ novelId: targetNovelId, chapterId: selected.chapter.id, anchor: selected.value.anchor, openedAt: selected.value.openedAt });
-    }
-    return effects;
-  }
   const latest = new Map<string, { intent: UserStateIntent; sequence: number; fromSource: boolean; fromKeys: Set<string>; rewrite: boolean }>();
   for (const row of await pendingIntents(db)) {
     const intent = intentFromRow(row);
@@ -122,16 +80,15 @@ export async function remapPendingUserStateInDb(db: UserStateDb, sourceNovelId: 
       if (previous.intent.entity.kind === "reading" && mapped.entity.kind === "reading") {
         const left = previous.intent.value as UserStateValueMap["reading"];
         const right = mapped.value as UserStateValueMap["reading"];
-        const anyPositive = left.progress > 0 || !left.unread || left.readAt !== null || right.progress > 0 || !right.unread || right.readAt !== null;
+        const anyPositive = left.progress > 0 || left.readAt !== null || right.progress > 0 || right.readAt !== null;
         mergedIntent = {
           entity: mapped.entity,
           value: anyPositive
             ? {
                 progress: Math.max(left.progress, right.progress),
-                unread: left.unread && right.unread,
                 readAt: left.readAt === null ? right.readAt : right.readAt === null ? left.readAt : Math.max(left.readAt, right.readAt),
               }
-            : { progress: 0, unread: true, readAt: null },
+            : { progress: 0, readAt: null },
         };
       } else if (previous.intent.entity.kind === "bookmark" && mapped.entity.kind === "bookmark") {
         const left = previous.intent.value as UserStateValueMap["bookmark"];
@@ -218,7 +175,7 @@ export async function transferSettledNovelMergeResumeInDb(
     openedAt: sourceResume.openedAt,
   };
   const targetResume = await readLatestResume(targetResumeKey);
-  if (targetResume?.chapter && mergeUserStateCurrentResume(targetResume, nextValue) !== nextValue) {
+  if (targetResume?.chapter && mergeUserStateResume(targetResume, nextValue) !== nextValue) {
     return null;
   }
   await recordUserStateChangesInDb(db, [{ entity: { kind: "resume", work: target }, value: nextValue }]);

@@ -39,7 +39,7 @@ import {
   readDownloadBudgetStatus,
   type DownloadGoalPause,
 } from "./budget";
-import { automaticDownloadActiveSince, goalReadingChapterId, resolveGoalTargets } from "./goal-targets";
+import { automaticDownloadActiveFilter, goalReadingChapterId, resolveGoalTargets } from "./goal-targets";
 import { recordChapterDownloadDuration } from "./download-eta";
 import { migrateLegacyReadAhead } from "./legacy-read-ahead";
 
@@ -136,8 +136,9 @@ function isOwned(chapter: LibraryDownloadChapter): boolean {
   return chapter.isDownloadQueued || preparingChapterIds.has(chapter.id) || isChapterDownloadQueued(chapter.id);
 }
 
-function activeSinceSeconds(): number | null {
-  return automaticDownloadActiveSince(useDownloadGoalSettingsStore.getState().automaticGoal);
+function activeFilterNow() {
+  const { automaticGoal, automaticActiveWindow } = useDownloadGoalSettingsStore.getState();
+  return automaticDownloadActiveFilter(automaticGoal, automaticActiveWindow);
 }
 
 function persistExclusions(chapterIds: readonly number[]): Promise<void> {
@@ -158,18 +159,19 @@ async function runReconcile(novelIds: number[] | undefined): Promise<void> {
     if (pause !== "restore") schedulePausedRecheck();
     return;
   }
-  const goal = useDownloadGoalSettingsStore.getState().automaticGoal;
+  const { automaticGoal: goal, automaticActiveWindow: activeWindow } = useDownloadGoalSettingsStore.getState();
   if (goal.kind === "none") return;
-  const activeSince = automaticDownloadActiveSince(goal);
-  const novels = await listDownloadGoalNovels(activeSince, novelIds);
+  const activeFilter = automaticDownloadActiveFilter(goal, activeWindow);
+  const novels = await listDownloadGoalNovels(activeFilter, novelIds);
   if (novels.length === 0) return;
   await pluginManager.loadInstalledFromDb();
   const failed = new Set(getChapterDownloadFailureSnapshot().map((row) => row.chapterId));
   // Candidates come most recently read first, so the first read one is the novel to keep ready first.
-  const [latest] = novelIds ? await listDownloadGoalNovels(activeSince) : novels;
+  const [latest] = novelIds ? await listDownloadGoalNovels(activeFilter) : novels;
   const focusNovelId = latest?.lastReadAt != null ? latest.id : undefined;
   for (const novel of novels) {
-    if (useDownloadGoalSettingsStore.getState().automaticGoal !== goal) return;
+    const currentSettings = useDownloadGoalSettingsStore.getState();
+    if (currentSettings.automaticGoal !== goal || currentSettings.automaticActiveWindow !== activeWindow) return;
     const plugin = pluginManager.getPlugin(novel.pluginId);
     if (!plugin) continue;
     const chapters = await listLibraryDownloadChapters(novel.id);
@@ -177,7 +179,8 @@ async function runReconcile(novelIds: number[] | undefined): Promise<void> {
     const readingChapterId = goalReadingChapterId(chapters, useReaderStore.getState().lastReadChapterByNovel[novel.id]);
     const targets = resolveGoalTargets(goal, chapters, readingChapterId, isOwned,
       (chapter) => excluded.has(chapter.id) || failed.has(chapter.id));
-    if (useDownloadGoalSettingsStore.getState().automaticGoal !== goal) return;
+    const afterSettings = useDownloadGoalSettingsStore.getState();
+    if (afterSettings.automaticGoal !== goal || afterSettings.automaticActiveWindow !== activeWindow) return;
     if (targets.pending.length > 0) submitGoalWork(novel, plugin.name, targets.pending, novel.id === focusNovelId);
   }
 }
@@ -296,7 +299,7 @@ async function withdrawGoalWork(novelIds: readonly number[]): Promise<void> {
  */
 export async function noteDownloadDeletion(chapterIds: readonly number[]): Promise<number[]> {
   await persistExclusions(chapterIds);
-  return listGoalNovelIdsForDownloadScope("chapter", chapterIds, activeSinceSeconds());
+  return listGoalNovelIdsForDownloadScope("chapter", chapterIds, activeFilterNow());
 }
 
 /** "Allow once": lifts the mobile-data and battery budgets until the app restarts. */
@@ -333,6 +336,7 @@ export function startDownloadGoals(): void {
     }),
     useDownloadGoalSettingsStore.subscribe((state, previous) => {
       if (state.automaticGoal !== previous.automaticGoal ||
+          state.automaticActiveWindow !== previous.automaticActiveWindow ||
           state.automaticOnMobileData !== previous.automaticOnMobileData) reconcileDownloadGoals();
     }),
     useNetworkStore.subscribe((state, previous) => {

@@ -46,7 +46,7 @@ pub const INCOMING_MIGRATION_CACHE_PREFIX: &str = "norea-content-incoming-migrat
 pub const WORK_SYNC_CACHE_PREFIX: &str = "norea-content-work-sync:";
 
 const SQLITE_BIND_PARAMETER_BUDGET: usize = 900;
-const NOVEL_MERGE_UPDATE_PARAM_COUNT: usize = 10;
+const NOVEL_MERGE_UPDATE_PARAM_COUNT: usize = 9;
 const NOVEL_MERGE_UPDATE_CHUNK_SIZE: usize =
     SQLITE_BIND_PARAMETER_BUDGET / NOVEL_MERGE_UPDATE_PARAM_COUNT;
 const MAX_SAFE_INT_I64: i64 = 9_007_199_254_740_991;
@@ -1481,13 +1481,12 @@ pub async fn apply_novel_merge_in_tx(
         #[derive(Clone, Copy)]
         struct PreviousState {
             bookmark: i64,
-            unread: i64,
             progress: f64,
             read_at: Option<i64>,
             excluded_at: Option<i64>,
         }
         let prev_rows = sqlx::query(
-            "SELECT path, bookmark, unread, progress, read_at, \
+            "SELECT path, bookmark, progress, read_at, \
                     (SELECT created_at FROM chapter_download_goal_exclusion WHERE chapter_id = chapter.id) AS excluded_at \
              FROM chapter WHERE novel_id = ?1",
         )
@@ -1503,7 +1502,6 @@ pub async fn apply_novel_merge_in_tx(
                 r.get("path"),
                 PreviousState {
                     bookmark: r.get("bookmark"),
-                    unread: r.get("unread"),
                     progress: decode_sqlite_f64(&r, "progress"),
                     read_at: r.get("read_at"),
                     excluded_at: r.get("excluded_at"),
@@ -1530,13 +1528,12 @@ pub async fn apply_novel_merge_in_tx(
             };
             sqlx::query(
                 "UPDATE chapter \
-                 SET bookmark = ?3, unread = ?4, progress = ?5, read_at = ?6 \
+                 SET bookmark = ?3, progress = ?4, read_at = ?5 \
                  WHERE novel_id = ?1 AND path = ?2",
             )
             .bind(input.target_novel_id)
             .bind(target_path)
             .bind(state.bookmark)
-            .bind(state.unread)
             .bind(state.progress)
             .bind(state.read_at)
             .execute(&mut *conn)
@@ -1564,7 +1561,6 @@ pub async fn apply_novel_merge_in_tx(
         novel_id: i64,
         path: String,
         bookmark: bool,
-        unread: bool,
         progress: f64,
         is_downloaded: bool,
         content_bytes: i64,
@@ -1572,7 +1568,7 @@ pub async fn apply_novel_merge_in_tx(
     }
 
     let ch_rows = sqlx::query(
-        "SELECT id, novel_id, path, bookmark, unread, progress, is_downloaded, \
+        "SELECT id, novel_id, path, bookmark, progress, is_downloaded, \
                 content_bytes, read_at \
          FROM chapter WHERE novel_id IN (?1, ?2)",
     )
@@ -1590,7 +1586,6 @@ pub async fn apply_novel_merge_in_tx(
             novel_id: r.get("novel_id"),
             path: r.get("path"),
             bookmark: r.get::<i64, _>("bookmark") != 0,
-            unread: r.get::<i64, _>("unread") != 0,
             progress: decode_sqlite_f64(&r, "progress"),
             is_downloaded: r.get::<i64, _>("is_downloaded") != 0,
             content_bytes: r.get("content_bytes"),
@@ -1790,7 +1785,6 @@ pub async fn apply_novel_merge_in_tx(
     struct ChapterMergeUpdate {
         id: i64,
         bookmark: i64,
-        unread: i64,
         progress: f64,
         read_at: Option<i64>,
         apply_download_metadata: i64,
@@ -1815,7 +1809,6 @@ pub async fn apply_novel_merge_in_tx(
             continue;
         }
         let bookmark = target.bookmark || mapped_sources.iter().any(|s| s.bookmark);
-        let unread = target.unread && mapped_sources.iter().all(|s| s.unread);
         let progress = mapped_sources
             .iter()
             .fold(target.progress, |acc, s| acc.max(s.progress));
@@ -1834,7 +1827,6 @@ pub async fn apply_novel_merge_in_tx(
         chapter_updates.push(ChapterMergeUpdate {
             id: target.id,
             bookmark: i64::from(bookmark),
-            unread: i64::from(unread),
             progress,
             read_at,
             apply_download_metadata: i64::from(prepared.is_some()),
@@ -1851,7 +1843,7 @@ pub async fn apply_novel_merge_in_tx(
             .map(|idx| {
                 let b = idx * NOVEL_MERGE_UPDATE_PARAM_COUNT;
                 format!(
-                    "(?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{})",
+                    "(?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{}, ?{})",
                     b + 1,
                     b + 2,
                     b + 3,
@@ -1860,20 +1852,18 @@ pub async fn apply_novel_merge_in_tx(
                     b + 6,
                     b + 7,
                     b + 8,
-                    b + 9,
-                    b + 10
+                    b + 9
                 )
             })
             .collect();
         let sql = format!(
             "WITH merge_updates ( \
-               target_id, bookmark, unread, progress, read_at, apply_download_metadata, \
+               target_id, bookmark, progress, read_at, apply_download_metadata, \
                stored_content_type, content_bytes, media_bytes, media_complete \
              ) AS (VALUES {}) \
              UPDATE chapter \
              SET \
                bookmark = (SELECT bookmark FROM merge_updates WHERE target_id = chapter.id), \
-               unread = (SELECT unread FROM merge_updates WHERE target_id = chapter.id), \
                progress = (SELECT progress FROM merge_updates WHERE target_id = chapter.id), \
                read_at = (SELECT read_at FROM merge_updates WHERE target_id = chapter.id), \
                stored_content_type = CASE \
@@ -1915,7 +1905,6 @@ pub async fn apply_novel_merge_in_tx(
             query = query
                 .bind(u.id)
                 .bind(u.bookmark)
-                .bind(u.unread)
                 .bind(u.progress)
                 .bind(u.read_at)
                 .bind(u.apply_download_metadata)
@@ -2933,10 +2922,10 @@ mod tests {
                 .await
                 .unwrap();
                 sqlx::query(
-                    "INSERT INTO chapter (id, novel_id, path, name, chapter_number, position, bookmark, unread, progress, is_downloaded, content_bytes, read_at) \
-                     VALUES (11, 1, '/a/1', 'A1', '1', 1, 1, 0, 75, 1, 120, 40), \
-                            (12, 1, '/a/2', 'A2', '2', 2, 0, 1, 0, 0, 0, NULL), \
-                            (21, 2, '/b/1', 'B1', '1', 1, 0, 1, 20, 0, 0, 30)",
+                    "INSERT INTO chapter (id, novel_id, path, name, chapter_number, position, bookmark, progress, is_downloaded, content_bytes, read_at) \
+                     VALUES (11, 1, '/a/1', 'A1', '1', 1, 1, 75, 1, 120, 40), \
+                            (12, 1, '/a/2', 'A2', '2', 2, 0, 0, 0, 0, NULL), \
+                            (21, 2, '/b/1', 'B1', '1', 1, 0, 20, 0, 0, 30)",
                 )
                 .execute(&mut *conn)
                 .await

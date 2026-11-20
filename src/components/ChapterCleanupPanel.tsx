@@ -16,7 +16,9 @@ import { ResponsiveSheet, SheetActions } from "./ui/ResponsiveSheet";
 import { StatusAlert } from "./ui/StatusAlert";
 import { useStopDownloadGoalsOffer } from "./use-stop-download-goals-offer";
 
-const SERVER_OPTIONS: Record<ChapterCleanupServerMode, TranslationKey> = {
+type ManualChapterCleanupServerMode = Exclude<ChapterCleanupServerMode, "server-complete">;
+
+const SERVER_OPTIONS: Record<ManualChapterCleanupServerMode, TranslationKey> = {
   "server-present": "chapterCleanup.server.present",
   "server-coverage": "chapterCleanup.server.coverage",
   "server-contains-local": "chapterCleanup.server.contains",
@@ -31,6 +33,9 @@ const SKIP_LABELS: Record<ChapterCleanupSkipReason, TranslationKey> = {
   "server-auth": "chapterCleanup.skip.serverAuth",
   "server-unavailable": "chapterCleanup.skip.serverUnavailable",
   "server-timeout": "chapterCleanup.skip.serverTimeout",
+  "not-complete": "chapterCleanup.skip.notComplete",
+  "pending-upload": "chapterCleanup.skip.pendingUpload",
+  "active-reader": "chapterCleanup.skip.activeReader",
   "storage-error": "chapterCleanup.skip.storageError",
   "not-covered": "chapterCleanup.skip.notCovered",
   "not-contained": "chapterCleanup.skip.notContained",
@@ -152,7 +157,7 @@ export function ChapterCleanupPanel({ opened, onClose }: { opened: boolean; onCl
         value={filters.categories.ids.map(String)} disabled={disabled || categories.isLoading || categories.isError}
         error={categories.isError ? t("chapterCleanup.categories.error") : undefined}
         onChange={ids => changeFilters({ ...filters, categories: { mode: "selected", ids: ids.map(Number) } })} /> : null}
-      <Text size="sm">{t("chapterCleanup.conditions", { server: t(SERVER_OPTIONS[filters.server]), reading: t(filters.reading === "read" ? "chapterCleanup.reading.read" : "chapterCleanup.reading.all"), categories: selectedCategoryNames })}</Text>
+      <Text size="sm">{t("chapterCleanup.conditions", { server: t(SERVER_OPTIONS[filters.server as ManualChapterCleanupServerMode]), reading: t(filters.reading === "read" ? "chapterCleanup.reading.read" : "chapterCleanup.reading.all"), categories: selectedCategoryNames })}</Text>
       {!running && !confirming ? <Group><TextButton onClick={() => { void createPreview(); }} disabled={inspecting} loading={inspecting}>{t("chapterCleanup.preview")}</TextButton>
         {inspecting ? <TextButton onClick={clearPreview}>{t("common.cancel")}</TextButton> : null}</Group> : null}
       {inspecting ? <Text size="sm" role="status">{t("chapterCleanup.checking", { count: checked })}</Text> : null}

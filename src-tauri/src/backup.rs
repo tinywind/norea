@@ -244,7 +244,6 @@ struct BackupRestoreChapter {
     position: i64,
     page: String,
     bookmark: bool,
-    unread: bool,
     progress: i64,
     is_downloaded: bool,
     content_type: String,
@@ -533,7 +532,7 @@ async fn execute_restore_snapshot(
     manifest: BackupRestoreManifest,
     cache: &BackupRestoreCache,
 ) -> Result<(), String> {
-    if manifest.version != 6 {
+    if manifest.version != 7 {
         return Err(format!(
             "backup_restore_snapshot: unsupported backup version {}",
             manifest.version
@@ -708,11 +707,11 @@ async fn execute_restore_snapshot(
         sqlx::query(
             "INSERT INTO chapter (
                 id, novel_id, path, name, chapter_number, position, page,
-                bookmark, unread, progress, is_downloaded, content_bytes,
+                bookmark, progress, is_downloaded, content_bytes,
                 media_bytes, media_repair_needed, content_type,
                 stored_content_type, release_time, read_at, created_at,
                 found_at, updated_at, found_by_check
-             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21, $22)",
+             ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)",
         )
         .bind(chapter.id)
         .bind(chapter.novel_id)
@@ -722,7 +721,6 @@ async fn execute_restore_snapshot(
         .bind(chapter.position)
         .bind(chapter.page.as_str())
         .bind(bool_to_int(chapter.bookmark))
-        .bind(bool_to_int(chapter.unread))
         .bind(chapter.progress)
         .bind(bool_to_int(restored_downloaded))
         .bind(restored_content_bytes)
@@ -822,8 +820,8 @@ async fn restore_metadata_cache(
         }
     }
     sqlx::query(
-        "INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,unread,read_at)
-         SELECT n.plugin_id,n.path,c.path,c.progress,c.bookmark,c.unread,c.read_at FROM chapter c JOIN novel n ON n.id=c.novel_id",
+        "INSERT INTO work_metadata_reading_state(plugin_id,novel_path,chapter_path,progress,bookmark,read_at)
+         SELECT n.plugin_id,n.path,c.path,c.progress,c.bookmark,c.read_at FROM chapter c JOIN novel n ON n.id=c.novel_id",
     )
     .execute(&mut **tx)
     .await
@@ -1037,7 +1035,6 @@ pub struct BackupGatheredChapterDto {
     pub position: i64,
     pub page: String,
     pub bookmark: bool,
-    pub unread: bool,
     pub progress: i64,
     pub is_downloaded: bool,
     pub source_content_type: String,
@@ -1206,7 +1203,6 @@ async fn gather_backup_snapshot_in_tx(
             position,
             page,
             bookmark,
-            unread,
             progress,
             is_downloaded,
             content_type,
@@ -1240,7 +1236,6 @@ async fn gather_backup_snapshot_in_tx(
             position: row.get("position"),
             page: row.get("page"),
             bookmark: row.get::<i64, _>("bookmark") != 0,
-            unread: row.get::<i64, _>("unread") != 0,
             progress,
             is_downloaded: row.get::<i64, _>("is_downloaded") != 0,
             source_content_type: row.get("content_type"),
@@ -1672,7 +1667,7 @@ mod tests {
     #[test]
     fn restore_manifest_rejects_an_unknown_vpn_gate_verdict() {
         let json = r#"{
-            "version": 6,
+            "version": 7,
             "installedPlugins": [],
             "downloadGoals": [],
             "novels": [],
@@ -1785,7 +1780,7 @@ mod tests {
             .map(|value| format!("\"{value}\""))
             .unwrap_or_else(|| "null".to_string());
         format!(
-            r#"{{"id":{id},"novelId":1,"path":"/c/{id}","name":"Chapter {id}","chapterNumber":"{id}","position":{id},"page":"1","bookmark":false,"unread":false,"progress":40,"isDownloaded":{downloaded},"contentType":"html","sourceContentType":"text","content":{content},"contentBytes":1234,"mediaBytes":56,"releaseTime":null,"readAt":7,"createdAt":1,"foundAt":1,"foundByCheck":true,"updatedAt":1}}"#
+            r#"{{"id":{id},"novelId":1,"path":"/c/{id}","name":"Chapter {id}","chapterNumber":"{id}","position":{id},"page":"1","bookmark":false,"progress":40,"isDownloaded":{downloaded},"contentType":"html","sourceContentType":"text","content":{content},"contentBytes":1234,"mediaBytes":56,"releaseTime":null,"readAt":7,"createdAt":1,"foundAt":1,"foundByCheck":true,"updatedAt":1}}"#
         )
     }
 
@@ -1830,7 +1825,7 @@ mod tests {
             chapter
         }).collect();
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 6,
+            "version": 7,
             "novels": [{ "id": 1, "pluginId": "demo", "path": "/n/1", "name": "Novel",
                 "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1 }],
             "chapters": chapters, "categories": [], "novelCategories": [], "repositories": [],
@@ -1857,7 +1852,7 @@ mod tests {
         let pool = restore_pool().await;
         let json = format!(
             r#"{{
-                "version": 6,
+                "version": 7,
                 "installedPlugins": [],
                 "vpnGateServerVerdicts": [],
                 "downloadGoals": [],
@@ -1898,7 +1893,7 @@ mod tests {
         }
         let json = format!(
             r#"{{
-                "version": 6,
+                "version": 7,
                 "installedPlugins": [],
                 "vpnGateServerVerdicts": [],
                 "downloadGoals": [],
@@ -1923,8 +1918,8 @@ mod tests {
             .expect("restore");
         tx.commit().await.expect("commit");
 
-        let rows = sqlx::query_as::<_, (i64, i64, i64, i64, Option<String>, i64, i64)>(
-            "SELECT id, is_downloaded, content_bytes, media_bytes, stored_content_type, unread, progress
+        let rows = sqlx::query_as::<_, (i64, i64, i64, i64, Option<String>, i64)>(
+            "SELECT id, is_downloaded, content_bytes, media_bytes, stored_content_type, progress
              FROM chapter
              ORDER BY id",
         )
@@ -1934,8 +1929,8 @@ mod tests {
         assert_eq!(
             rows,
             vec![
-                (10, 1, 1234, 56, Some("html".to_string()), 0, 40),
-                (12, 0, 0, 0, None, 0, 40),
+                (10, 1, 1234, 56, Some("html".to_string()), 40),
+                (12, 0, 0, 0, None, 40),
             ]
         );
         let dirty: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM work_metadata_dirty")
@@ -1949,9 +1944,9 @@ mod tests {
             "SELECT revision FROM work_metadata_sync_journal WHERE plugin_id='demo' AND path='/n/1'",
         ).fetch_one(&pool).await.expect("read retained work revision");
         assert_eq!(pending, 1);
-        let reading: Vec<(i64, i64)> = sqlx::query_as("SELECT unread,progress FROM work_metadata_reading_state ORDER BY chapter_path")
+        let reading: Vec<i64> = sqlx::query_scalar("SELECT progress FROM work_metadata_reading_state ORDER BY chapter_path")
             .fetch_all(&pool).await.expect("read restored reading cache");
-        assert_eq!(reading, vec![(0, 40), (0, 40)]);
+        assert_eq!(reading, vec![40, 40]);
         let cache_keys: Vec<String> = sqlx::query_scalar("SELECT cache_key FROM content_sync_cache ORDER BY cache_key")
             .fetch_all(&pool).await.expect("read retained sync cache");
         assert_eq!(cache_keys, vec!["norea-content-catalog:http://server", "norea-content-device:http://server", "norea-content-work:http://server"]);
@@ -1965,7 +1960,7 @@ mod tests {
         sqlx::query("INSERT INTO work_metadata_sync_journal(plugin_id,path,revision) VALUES('demo','/original',7)")
             .execute(&pool).await.expect("seed pending revision");
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 6, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
+            "version": 7, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
             "repositories": [], "installedPlugins": [], "vpnGateServerVerdicts": [], "downloadGoals": []
         })).expect("parse manifest");
         let cache: BackupRestoreCache = serde_json::from_value(serde_json::json!({
@@ -1987,7 +1982,7 @@ mod tests {
 
     fn category_restore_manifest(categories: serde_json::Value) -> BackupRestoreManifest {
         serde_json::from_value(serde_json::json!({
-            "version": 6, "novels": [], "chapters": [], "categories": categories,
+            "version": 7, "novels": [], "chapters": [], "categories": categories,
             "novelCategories": [], "repositories": [], "installedPlugins": [],
             "vpnGateServerVerdicts": [], "downloadGoals": []
         })).expect("parse category manifest")
@@ -2084,7 +2079,7 @@ mod tests {
         let novels: Vec<_> = [1, 2].into_iter().map(|id| serde_json::json!({ "id": id, "pluginId": "demo",
             "path": format!("/n/{id}"), "name": "Novel", "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1 })).collect();
         let manifest: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 6,
+            "version": 7,
             "novels": novels,
             "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
             "installedPlugins": [], "vpnGateServerVerdicts": [],
@@ -2099,7 +2094,7 @@ mod tests {
             [(1, "keep_ahead".to_string(), Some(3), 10), (2, "none".to_string(), None, 11)]);
 
         let invalid: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 6, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
+            "version": 7, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
             "installedPlugins": [], "vpnGateServerVerdicts": [],
             "downloadGoals": [{ "novelId": 1, "kind": "keep_ahead", "count": null, "updatedAt": 10 }]
         })).expect("parse manifest");
@@ -2109,7 +2104,7 @@ mod tests {
         assert!(serde_json::from_value::<BackupRestoreNovelDownloadGoal>(serde_json::json!({
             "novelId": 1, "kind": "next10", "count": null, "updatedAt": 1 })).is_err());
         let opt_out_with_count: BackupRestoreManifest = serde_json::from_value(serde_json::json!({
-            "version": 6, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
+            "version": 7, "novels": [], "chapters": [], "categories": [], "novelCategories": [], "repositories": [],
             "installedPlugins": [], "vpnGateServerVerdicts": [],
             "downloadGoals": [{ "novelId": 1, "kind": "none", "count": 2, "updatedAt": 10 }]
         })).expect("parse manifest");
@@ -2130,7 +2125,7 @@ mod tests {
             "sourceCode": "code", "installedAt": 1, "repositoryUrl": repository });
         let manifest = |repositories: serde_json::Value| -> BackupRestoreManifest {
             serde_json::from_value(serde_json::json!({
-                "version": 6, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
+                "version": 7, "novels": [], "chapters": [], "categories": [], "novelCategories": [],
                 "repositories": repositories,
                 "installedPlugins": [plugin("bound", serde_json::json!("https://first.test/plugins.json")),
                     plugin("unknown", serde_json::Value::Null)],
@@ -2181,7 +2176,7 @@ mod tests {
             .execute(&pool)
             .await
             .expect("seed category");
-        for (version, content) in [(1, None), (2, None), (3, None), (4, None), (5, None), (6, Some("<p>old body</p>"))] {
+        for (version, content) in [(1, None), (2, None), (3, None), (4, None), (5, None), (6, None), (7, Some("<p>old body</p>"))] {
             let json = format!(
                 r#"{{"version":{version},"novels":[],"chapters":[{}],"categories":[],"novelCategories":[],"repositories":[],"installedPlugins":[],"vpnGateServerVerdicts":[],"downloadGoals":[]}}"#,
                 restore_chapter_json(10, true, content),
@@ -2412,7 +2407,7 @@ mod tests {
             }]
         });
         serde_json::json!({
-            "version": 6,
+            "version": 7,
             "novels": [{ "id": 1, "pluginId": "demo", "path": "/n/1", "name": "Novel",
                 "inLibrary": true, "isLocal": false, "createdAt": 1, "updatedAt": 1,
                 "chapterComposition": composition }],
@@ -2527,8 +2522,8 @@ mod tests {
              VALUES (1, '{\"version\":1,\"updatedAt\":5,\"entries\":[]}');
              INSERT INTO novel_override(novel_id, payload)
              VALUES (1, '{\"fields\":{\"completed\":{\"value\":true,\"updatedAt\":7}}}');
-             INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, page, bookmark, unread, progress, is_downloaded, content_type, stored_content_type, content_bytes, media_bytes, created_at, found_at, found_by_check, updated_at)
-             VALUES (10, 1, '/c/1', 'Opening', '1', 1, '1', 1, 0, 75, 1, 'text', 'html', 2048, 512, NULL, 0, 1, 150);
+             INSERT INTO chapter(id, novel_id, path, name, chapter_number, position, page, bookmark, progress, is_downloaded, content_type, stored_content_type, content_bytes, media_bytes, created_at, found_at, found_by_check, updated_at)
+             VALUES (10, 1, '/c/1', 'Opening', '1', 1, '1', 1, 75, 1, 'text', 'html', 2048, 512, NULL, 0, 1, 150);
              INSERT INTO category(id, name, sort, is_system)
              VALUES (1, 'Default', 0, 1), (7, 'Favorites', 2, 0);
              INSERT INTO novel_category(id, novel_id, category_id) VALUES (3, 1, 7);
@@ -2570,7 +2565,6 @@ mod tests {
         assert_eq!(snapshot.chapters.len(), 1);
         let ch = &snapshot.chapters[0];
         assert!(ch.bookmark);
-        assert!(!ch.unread);
         assert_eq!(ch.progress, 75);
         assert!(ch.is_downloaded);
         assert_eq!(ch.source_content_type, "text");

@@ -5,7 +5,7 @@ import { useReaderStore } from "../../store/reader";
 import { pluginManager } from "../plugins/manager";
 import { isChapterDownloadQueued } from "../tasks/chapter-download";
 import { getChapterDownloadFailureSnapshot } from "../tasks/chapter-download-failures";
-import { automaticDownloadActiveSince, goalReadingChapterId, resolveGoalTargets } from "./goal-targets";
+import { automaticDownloadActiveFilter, goalReadingChapterId, resolveGoalTargets } from "./goal-targets";
 
 /**
  * A goal novel's offline state for its library card: every covered chapter on the device,
@@ -18,11 +18,11 @@ export type DownloadGoalOfflineState = "ready" | "downloading" | "attention";
 export async function describeDownloadGoalOfflineStates(nowSeconds = Math.floor(Date.now() / 1000)): Promise<
   Map<number, DownloadGoalOfflineState>
 > {
-  const goal = useDownloadGoalSettingsStore.getState().automaticGoal;
+  const { automaticGoal: goal, automaticActiveWindow: activeWindow } = useDownloadGoalSettingsStore.getState();
   const states = new Map<number, DownloadGoalOfflineState>();
   if (goal.kind === "none") return states;
-  const activeSince = automaticDownloadActiveSince(goal, nowSeconds);
-  const novels = await listDownloadGoalNovels(activeSince);
+  const activeFilter = automaticDownloadActiveFilter(goal, activeWindow, nowSeconds);
+  const novels = await listDownloadGoalNovels(activeFilter);
   if (novels.length === 0) return states;
   await pluginManager.loadInstalledFromDb();
   const failed = new Set(getChapterDownloadFailureSnapshot().map((row) => row.chapterId));

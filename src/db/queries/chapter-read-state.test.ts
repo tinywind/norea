@@ -26,9 +26,9 @@ it("deduplicates positive integer chapter IDs before invoking db_chapter_set_rea
       rowsAffected: 3,
       chunks: 1,
       previous: [
-        { id: 1, unread: false, progress: 100 },
-        { id: 2, unread: true, progress: 0 },
-        { id: 3, unread: true, progress: 40 },
+        { id: 1, progress: 100 },
+        { id: 2, progress: 0 },
+        { id: 3, progress: 40 },
       ],
     },
     effects: {},
@@ -70,7 +70,7 @@ it("short-circuits empty or invalid read-state inputs without invoking IPC", asy
     chunks: 0,
   });
   await expect(
-    restoreChapterReadStates([{ id: 0, progress: 0, unread: true }]),
+    restoreChapterReadStates([{ id: 0, progress: 0 }]),
   ).resolves.toEqual({ rowsAffected: 0, chunks: 0 });
   expect(invokeMock).not.toHaveBeenCalled();
 });
@@ -85,7 +85,7 @@ it("enforces bulk read-state limits before invoking IPC", async () => {
   );
   await expect(
     restoreChapterReadStates(
-      oversized.map((id) => ({ id, progress: 0, unread: true })),
+      oversized.map((id) => ({ id, progress: 0 })),
     ),
   ).rejects.toThrow("exceeds");
   expect(invokeMock).not.toHaveBeenCalled();
@@ -97,14 +97,14 @@ it("forwards whole-novel, relative, and progress updates to Rust commands", asyn
       value: {
         rowsAffected: 4,
         chunks: 1,
-        previous: [{ id: 2, unread: true, progress: 0 }],
+        previous: [{ id: 2, progress: 0 }],
       },
       effects: {},
     })
     .mockResolvedValueOnce({
       value: {
         rowsAffected: 2,
-        previous: [{ id: 5, unread: false, progress: 100 }],
+        previous: [{ id: 5, progress: 100 }],
       },
       effects: {},
     })

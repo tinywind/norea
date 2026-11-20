@@ -33,7 +33,7 @@ import { fetch as appFetch } from "@tauri-apps/plugin-http";
 import { contentJournalHead, readContentJournal, listContentSyncChapters, listContentSyncWorkChapters, listUntrackedContentSyncChapters, importContentMetadata, readContentSyncCache, writeContentSyncCache, markContentInstalled, canUploadContentChapter, clearServerChapterDownloadProof, rememberServerChapterDownload } from "../../db/queries/content-sync";
 import { uploadContentChapter, fingerprintContentChapter, type CatalogEntry } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
-import { runContentSyncOperation, syncContentServer, syncReceivedWorkMigrations, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
+import { hasPendingReplaceServerUpload, runContentSyncOperation, syncContentServer, syncReceivedWorkMigrations, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
 import { recordServerWorkDeletionExclusion, setServerChapterDeletionExclusion } from "./deletion-exclusions";
 import { syncWorkMetadata } from "./works";
 import { finalizePendingNovelMigrations } from "./novel-migration";
@@ -1399,4 +1399,73 @@ it("never uploads local works or chapters during server synchronization", async 
   }] as never);
   await syncContentServer(true, true);
   expect(uploadContentChapter).not.toHaveBeenCalled();
+});
+
+it("defers auto-cleanup under replace-server only while local chapter changes remain un-uploaded", async () => {
+  const serverUrl = "http://localhost:7788";
+  const cacheKey = `norea-content-catalog:${serverUrl}`;
+  const identity = { pluginId: "p", novelPath: "/book", chapterPath: "/ch/1" };
+
+  // Non-replace-server policy never defers auto-cleanup.
+  useContentSyncStore.setState({ uploadConflictPolicy: "prefer-complete" });
+  expect(await hasPendingReplaceServerUpload(serverUrl, identity)).toBe(false);
+
+  // Under replace-server, missing cache / cursor / policy mismatch all defer conservatively.
+  useContentSyncStore.setState({ uploadConflictPolicy: "replace-server" });
+  expect(await hasPendingReplaceServerUpload(serverUrl, identity)).toBe(true);
+
+  memory.set(cacheKey, JSON.stringify({
+    cursor: 1,
+    tombstones: {},
+    uploaded: {},
+    pendingUploads: [],
+    uploadConflictPolicy: "prefer-complete",
+    localCursor: 2,
+  }));
+  expect(await hasPendingReplaceServerUpload(serverUrl, identity)).toBe(true);
+
+  memory.set(cacheKey, JSON.stringify({
+    cursor: 1,
+    tombstones: {},
+    uploaded: {},
+    pendingUploads: [],
+    uploadConflictPolicy: "replace-server",
+  }));
+  expect(await hasPendingReplaceServerUpload(serverUrl, identity)).toBe(true);
+
+  // Pending upload for this chapter defers, while unrelated pending upload does not.
+  memory.set(cacheKey, JSON.stringify({
+    cursor: 1,
+    tombstones: {},
+    uploaded: {},
+    pendingUploads: [JSON.stringify(["p", "/book", "/ch/1"])],
+    uploadConflictPolicy: "replace-server",
+    localCursor: 0,
+  }));
+  expect(await hasPendingReplaceServerUpload(serverUrl, identity)).toBe(true);
+  expect(await hasPendingReplaceServerUpload(serverUrl, { ...identity, chapterPath: "/ch/2" })).toBe(false);
+
+  // Unsynced content_sync_journal entry after localCursor defers only the changed chapter.
+  memory.set(cacheKey, JSON.stringify({
+    cursor: 1,
+    tombstones: {},
+    uploaded: {},
+    pendingUploads: [],
+    uploadConflictPolicy: "replace-server",
+    localCursor: 0,
+  }));
+  changed(`content:${JSON.stringify(["p", "/book", "/ch/1"])}`, null);
+  expect(await hasPendingReplaceServerUpload(serverUrl, identity)).toBe(true);
+  expect(await hasPendingReplaceServerUpload(serverUrl, { ...identity, chapterPath: "/ch/2" })).toBe(false);
+
+  // Once localCursor catches up to journal head, chapter is safe to clean up.
+  memory.set(cacheKey, JSON.stringify({
+    cursor: 1,
+    tombstones: {},
+    uploaded: {},
+    pendingUploads: [],
+    uploadConflictPolicy: "replace-server",
+    localCursor: 1,
+  }));
+  expect(await hasPendingReplaceServerUpload(serverUrl, identity)).toBe(false);
 });

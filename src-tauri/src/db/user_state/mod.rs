@@ -1,5 +1,4 @@
 pub mod core;
-pub mod current;
 pub mod ledger;
 pub mod materialize;
 pub mod migration;
@@ -11,9 +10,7 @@ pub mod work_categories;
 mod tests;
 
 use std::collections::HashSet;
-use std::sync::atomic::{AtomicBool, Ordering};
 
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
 use tauri::{AppHandle, State};
 
@@ -26,10 +23,6 @@ pub use core::{
     assert_user_state_available_in_tx, chapter_reference_json, chapter_work_json,
     has_user_state_schema_in_tx, load_user_chapter_rows_by_ids_in_tx, record_resume_cleared_in_tx,
     record_user_state_changes_in_tx, user_state_restore_paused_in_tx, workspace_rows_in_tx,
-};
-pub use current::{
-    apply_current_snapshot_at, bind_current_workspace_in_tx, export_current_snapshot_in_tx,
-    get_current_status_in_tx, prepare_deferred_current_retry_in_tx,
 };
 pub use ledger::{
     acknowledge_user_state_operations_in_tx, apply_local_user_state_retention_in_tx,
@@ -46,33 +39,13 @@ pub use materialize::{
 };
 pub use work_categories::{WorkCategoriesDto, WorkCategoryLookupDto};
 pub use types::{
-    anchor_to_json, parse_portable_reader_anchor, CurrentSnapshotRetryDto,
-    ResolveUserStateLedgerConflictInputDto, UserStateApplyEffectsDto, UserStateBindingDto,
-    UserStateConflictDto, UserStateCurrentApplyResultDto, UserStateCurrentStatusDto,
-    UserStateDeferredDto, UserStateLedgerStatusDto, UserStateRebindMode,
+    anchor_to_json, parse_portable_reader_anchor, ResolveUserStateLedgerConflictInputDto,
+    UserStateApplyEffectsDto, UserStateBindingDto, UserStateConflictDto, UserStateDeferredDto,
+    UserStateLedgerStatusDto, UserStateRebindMode,
 };
 
 const USER_STATE_BUSY_RETRIES: u32 = 3;
 const MAX_SAFE_INT_I64: i64 = 9_007_199_254_740_991;
-
-static CURRENT_MODE: AtomicBool = AtomicBool::new(false);
-
-pub fn is_user_state_current_mode() -> bool {
-    CURRENT_MODE.load(Ordering::SeqCst)
-}
-
-pub fn set_user_state_current_mode(enabled: bool) {
-    CURRENT_MODE.store(enabled, Ordering::SeqCst);
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct DeferredCurrentRetryPlanDto {
-    pub binding: UserStateBindingDto,
-    pub snapshot: JsonValue,
-    pub missing_keys: Vec<String>,
-    pub work_keys: Vec<String>,
-}
 
 fn ledger_tx_options() -> TxOptions {
     TxOptions {
@@ -82,12 +55,6 @@ fn ledger_tx_options() -> TxOptions {
         publish_metadata: false,
         metadata_root: MetadataRoot::None,
     }
-}
-
-#[tauri::command]
-pub fn db_user_state_set_current_mode(enabled: bool) -> Result<(), String> {
-    set_user_state_current_mode(enabled);
-    Ok(())
 }
 
 #[tauri::command]
@@ -566,102 +533,6 @@ pub async fn db_user_state_resume_after_restore(
                 Ok(())
             })
         },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn db_user_state_bind_current_workspace(
-    db: State<'_, AppDatabase>,
-    binding: UserStateBindingDto,
-) -> Result<DbMutationEnvelope<()>, String> {
-    with_write_tx(
-        db.pool_for(ReadMode::Queued),
-        ledger_tx_options(),
-        move |conn, ctx| {
-            Box::pin(async move { bind_current_workspace_in_tx(conn, ctx, &binding).await })
-        },
-    )
-    .await
-}
-
-#[tauri::command]
-pub async fn db_user_state_get_current_status(
-    db: State<'_, AppDatabase>,
-    server_url: Option<String>,
-    mode: Option<ReadMode>,
-) -> Result<UserStateCurrentStatusDto, String> {
-    let mut conn = db
-        .pool_for(mode.unwrap_or_default())
-        .acquire()
-        .await
-        .map_err(|err| format!("db user state current: acquire read connection: {err}"))?;
-    get_current_status_in_tx(&mut conn, server_url.as_deref()).await
-}
-
-#[tauri::command]
-pub async fn db_user_state_export_current_snapshot(
-    app: AppHandle,
-    db: State<'_, AppDatabase>,
-    binding: UserStateBindingDto,
-    skipped_chapter_ids: Option<Vec<i64>>,
-) -> Result<DbMutationEnvelope<JsonValue>, String> {
-    let resolved_root = crate::chapter_media::media_root(&app).ok();
-    let skipped: HashSet<i64> = skipped_chapter_ids.unwrap_or_default().into_iter().collect();
-    let opts = TxOptions {
-        remote_content_sync: false,
-        notify_content_sync: true,
-        busy_begin_retries: USER_STATE_BUSY_RETRIES,
-        publish_metadata: false,
-        metadata_root: MetadataRoot::None,
-    };
-    with_write_tx(db.pool_for(ReadMode::Queued), opts, move |conn, _ctx| {
-        Box::pin(async move {
-            export_current_snapshot_in_tx(resolved_root.as_deref(), conn, &binding, &skipped).await
-        })
-    })
-    .await
-}
-
-#[tauri::command]
-pub async fn db_user_state_prepare_deferred_current_retry(
-    db: State<'_, AppDatabase>,
-    server_url: String,
-    novel_ids: Vec<i64>,
-    mode: Option<ReadMode>,
-) -> Result<Option<DeferredCurrentRetryPlanDto>, String> {
-    let mut conn = db
-        .pool_for(mode.unwrap_or_default())
-        .acquire()
-        .await
-        .map_err(|err| format!("db user state current: acquire read connection: {err}"))?;
-    let prepared =
-        prepare_deferred_current_retry_in_tx(&mut conn, &server_url, &novel_ids).await?;
-    Ok(prepared.map(|(binding, retry)| DeferredCurrentRetryPlanDto {
-        binding,
-        snapshot: retry.snapshot,
-        missing_keys: retry.missing_keys,
-        work_keys: retry.work_keys,
-    }))
-}
-
-#[tauri::command]
-pub async fn db_user_state_apply_current_snapshot(
-    app: AppHandle,
-    db: State<'_, AppDatabase>,
-    binding: UserStateBindingDto,
-    snapshot: JsonValue,
-    retry: Option<CurrentSnapshotRetryDto>,
-    skipped_chapter_ids: Option<Vec<i64>>,
-) -> Result<DbMutationEnvelope<UserStateCurrentApplyResultDto>, String> {
-    let skipped: HashSet<i64> = skipped_chapter_ids.unwrap_or_default().into_iter().collect();
-    apply_current_snapshot_at(
-        db.pool_for(ReadMode::Queued),
-        MetadataRoot::App(app),
-        &binding,
-        &snapshot,
-        retry,
-        &skipped,
     )
     .await
 }

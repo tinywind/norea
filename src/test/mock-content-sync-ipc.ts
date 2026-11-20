@@ -1474,7 +1474,7 @@ export function createContentSyncIpcHandler(
             }
             const chapters = await db.select<UserChapterRow[]>(
               USER_CHAPTER_SELECT +
-                " WHERE c.novel_id=$1 AND (c.progress>0 OR c.unread=0 OR c.read_at IS NOT NULL OR c.bookmark=1)",
+                " WHERE c.novel_id=$1 AND (c.progress>0 OR c.read_at IS NOT NULL OR c.bookmark=1)",
               [input.id],
             );
             if (chapters.length) {
@@ -1489,7 +1489,6 @@ export function createContentSyncIpcHandler(
                 .filter(
                   (row) =>
                     (row.progress > 0 ||
-                      row.unread === 0 ||
                       row.readAt !== null) &&
                     !privateKeys.has(
                       userStateEntityKey({
@@ -1499,7 +1498,7 @@ export function createContentSyncIpcHandler(
                       }),
                     ),
                 )
-                .map((row) => ({ ...row, progress: 0, unread: 1, readAt: null }));
+                .map((row) => ({ ...row, progress: 0, readAt: null }));
               if (readingResets.length) {
                 await recordChapterRowsInDb(db, readingResets, "reading");
                 recordedAny = true;

@@ -59,11 +59,11 @@ it("stores, reads, lists, and clears novel download goals via Rust IPC", async (
   });
 });
 
-it("short-circuits null activeSince or empty id sets and deduplicates safe integer ids", async () => {
-  await expect(listDownloadGoalNovels(null)).resolves.toEqual([]);
-  await expect(listDownloadGoalNovels(400, [])).resolves.toEqual([]);
-  await expect(listGoalNovelIdsForDownloadScope("novel", [], 400)).resolves.toEqual([]);
-  await expect(listGoalNovelIdsForDownloadScope("all", [], null)).resolves.toEqual([]);
+it("short-circuits none activeFilter or empty id sets and deduplicates safe integer ids", async () => {
+  await expect(listDownloadGoalNovels({ kind: "none" })).resolves.toEqual([]);
+  await expect(listDownloadGoalNovels({ kind: "since", seconds: 400 }, [])).resolves.toEqual([]);
+  await expect(listGoalNovelIdsForDownloadScope("novel", [], { kind: "since", seconds: 400 })).resolves.toEqual([]);
+  await expect(listGoalNovelIdsForDownloadScope("all", [], { kind: "none" })).resolves.toEqual([]);
   await excludeChaptersFromDownloadGoals([]);
   expect(invokeMock).not.toHaveBeenCalled();
 
@@ -78,19 +78,20 @@ it("short-circuits null activeSince or empty id sets and deduplicates safe integ
         goal: null,
       },
     ])
-    .mockResolvedValueOnce([2]);
+    .mockResolvedValueOnce([2])
+    .mockResolvedValueOnce([]);
 
   await expect(
-    listDownloadGoalNovels(400, [3, 4, 3, Number.NaN]),
+    listDownloadGoalNovels({ kind: "since", seconds: 400 }, [3, 4, 3, Number.NaN]),
   ).resolves.toHaveLength(1);
   expect(invokeMock).toHaveBeenNthCalledWith(1, "db_novel_goal_list_novels", {
-    activeSince: 400,
+    activeFilter: { kind: "since", seconds: 400 },
     novelIds: [3, 4],
     mode: "queued",
   });
 
   await expect(
-    listGoalNovelIdsForDownloadScope("chapter", [10, 20, 20], 400),
+    listGoalNovelIdsForDownloadScope("chapter", [10, 20, 20], { kind: "since", seconds: 400 }),
   ).resolves.toEqual([2]);
   expect(invokeMock).toHaveBeenNthCalledWith(
     2,
@@ -98,10 +99,17 @@ it("short-circuits null activeSince or empty id sets and deduplicates safe integ
     {
       scope: "chapter",
       ids: [10, 20],
-      activeSince: 400,
+      activeFilter: { kind: "since", seconds: 400 },
       mode: "queued",
     },
   );
+
+  await expect(listDownloadGoalNovels({ kind: "all" })).resolves.toEqual([]);
+  expect(invokeMock).toHaveBeenNthCalledWith(3, "db_novel_goal_list_novels", {
+    activeFilter: { kind: "all" },
+    novelIds: null,
+    mode: "queued",
+  });
 });
 
 it("routes exclusions, resumeStoppedNovelDownloadGoal, and novels without goals", async () => {

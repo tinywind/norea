@@ -25,7 +25,7 @@ function novel(patch: Partial<DownloadCacheNovel> = {}): DownloadCacheNovel {
 
 function chapter(id: number, position: number, unread: boolean): DownloadCacheChapter {
   return {
-    id, novelId: 1, name: `Chapter ${position}`, position, unread, progress: unread ? 0 : 100, readAt: null,
+    id, novelId: 1, name: `Chapter ${position}`, position, progress: unread ? 0 : 100, readAt: null,
     downloadedAt: null, contentBytes: 1, mediaBytes: 0, mediaRepairNeeded: false, totalBytes: 1,
   };
 }

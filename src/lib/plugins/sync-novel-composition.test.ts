@@ -85,20 +85,20 @@ beforeEach(async () => {
   const composition = initial();
   await setChapterComposition(db, 2, composition);
   await materializeChapterComposition(db, 2, composition);
-  sqlite.exec("UPDATE chapter SET is_downloaded=1,content_bytes=900,progress=72,bookmark=1,unread=0,read_at=50 WHERE path='/b/2'");
+  sqlite.exec("UPDATE chapter SET is_downloaded=1,content_bytes=900,progress=72,bookmark=1,read_at=50 WHERE path='/b/2'");
 });
 afterEach(() => sqlite.close());
 
 describe("composed work database integration", () => {
   it("keeps the final list, files and read state after a full source renumber and title refresh", async () => {
-    const before = sqlite.prepare("SELECT id,chapter_number,content_bytes,is_downloaded,progress,bookmark,unread,read_at FROM chapter WHERE path='/b/2'").get();
+    const before = sqlite.prepare("SELECT id,chapter_number,content_bytes,is_downloaded,progress,bookmark,read_at FROM chapter WHERE path='/b/2'").get();
     const result = await syncNovelFromSource(plugin({ novelId: "work-b", path: "/b", name: "Fresh target", status: "Ongoing", chapters: [
       { path: "/b/new-2", sourceChapterId: "b2", name: "Provider revised", chapterNumber: 102 },
       { path: "/b/3", sourceChapterId: "b3", name: "Still excluded", chapterNumber: 103 },
       { path: "/b/4", sourceChapterId: "b4", name: "New ending", chapterNumber: 104 },
     ] }), { path: "/b", name: "Target" }, { novelId: 2, chapterRefreshMode: "full" });
     expect(result.changed).toBe(true);
-    expect(sqlite.prepare("SELECT id,chapter_number,content_bytes,is_downloaded,progress,bookmark,unread,read_at FROM chapter WHERE path='/b/2'").get()).toEqual(before);
+    expect(sqlite.prepare("SELECT id,chapter_number,content_bytes,is_downloaded,progress,bookmark,read_at FROM chapter WHERE path='/b/2'").get()).toEqual(before);
     const chapters = await listChaptersByNovel(2);
     expect(chapters.map(row => [row.path, row.position, row.displayChapterNumber])).toEqual([
       ["/b/2", 1, "1"], ["norea-composed:a1", 2, "2"], ["/b/1", 3, "3"], ["/b/4", 4, "4"],
@@ -123,7 +123,7 @@ describe("composed work database integration", () => {
 
   it("materializes A-only and A-primary rows before applying a merge and retains B reading state", async () => {
     sqlite.exec("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library) VALUES(1,'source-a','work-a','/a','Original',1)");
-    sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,bookmark,unread,read_at) VALUES(51,1,'/a/2','A replacement','2',1,20,0,1,40)");
+    sqlite.exec("INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,bookmark,read_at) VALUES(51,1,'/a/2','A replacement','2',1,20,0,40)");
     sqlite.exec("INSERT INTO chapter_download_goal_exclusion(chapter_id,created_at) SELECT id,77 FROM chapter WHERE path='/b/2'");
     const composition = initial();
     composition.entries[0].user = { included: false, order: 0, name: "My opening", chapterNumber: "1" };
@@ -135,7 +135,7 @@ describe("composed work database integration", () => {
       preparedDownloads: [], composition, readingStateSourcePathByTargetPath: { "norea-composed:replace-b2": "/b/2" } });
     expect(sqlite.prepare("SELECT id FROM novel WHERE id=1").get()).toBeUndefined();
     const chapters = await listChaptersByNovel(2);
-    expect(chapters[0]).toMatchObject({ path: "norea-composed:replace-b2", chapterNumber: "1002", displayChapterNumber: "1", progress: 72, bookmark: true, unread: false, readAt: 50, isDownloaded: false });
+    expect(chapters[0]).toMatchObject({ path: "norea-composed:replace-b2", chapterNumber: "1002", displayChapterNumber: "1", progress: 72, bookmark: true, readAt: 50, isDownloaded: false });
     expect(merged.chapterIdMap[51]).toBe(chapters[0].id);
     expect(sqlite.prepare("SELECT created_at FROM chapter_download_goal_exclusion WHERE chapter_id=?").get(chapters[0].id)).toEqual({ created_at: 77 });
     expect(await getChapterComposition(db, 2)).toEqual(composition);

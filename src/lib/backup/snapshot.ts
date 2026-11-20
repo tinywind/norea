@@ -64,7 +64,6 @@ interface GatheredChapterDto {
   position: number;
   page: string;
   bookmark: boolean;
-  unread: boolean;
   progress: number;
   isDownloaded: boolean;
   sourceContentType: string;
@@ -197,7 +196,6 @@ function toChapter(row: GatheredChapterDto): BackupChapter {
     position: row.position,
     page: row.page,
     bookmark: Boolean(row.bookmark),
-    unread: Boolean(row.unread),
     progress: row.progress,
     isDownloaded: Boolean(row.isDownloaded),
     sourceContentType: normalizeChapterContentType(row.sourceContentType),

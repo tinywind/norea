@@ -8,7 +8,7 @@ import {
 
 const work = { pluginId: "source", sourceNovelId: "Book-A", novelPath: "/book/a", name: "A" };
 const entity: UserStateEntity = { kind: "reading", work, chapter: { chapterPath: "/chapter/1" } };
-const operation: UserStateOperation = { operationId: "op-1", entity, baseRevision: 0, value: { progress: 0, unread: true, readAt: null } };
+const operation: UserStateOperation = { operationId: "op-1", entity, baseRevision: 0, value: { progress: 0, readAt: null } };
 const record: UserStateRecord = { entity, value: operation.value, revision: 1, operationId: "op-1", updatedAt: 20, deviceId: "device", deviceName: "Tablet" };
 const workspace = { version: 1, workspaceId: "workspace", epoch: "epoch", headRevision: 3 };
 
@@ -20,13 +20,13 @@ describe("portable user state protocol", () => {
     expect(() => parseUserStateOperation({ ...operation, entity: { ...entity, novelId: 1, chapterId: 2 } })).toThrow("unexpected field");
   });
 
-  it("retains explicit zero, unread, removal, unbookmark and null resume values", () => {
-    expect(parseUserStateOperation(operation).value).toEqual({ progress: 0, unread: true, readAt: null });
+  it("retains explicit zero, removal, unbookmark and null resume values and rejects legacy unread field", () => {
+    expect(parseUserStateOperation(operation).value).toEqual({ progress: 0, readAt: null });
     expect(parseUserStateOperation({ ...operation, entity: { kind: "bookmark", work, chapter: entity.chapter }, value: { bookmarked: false } }).value).toEqual({ bookmarked: false });
     expect(parseUserStateOperation({ ...operation, entity: { kind: "library", work }, value: { inLibrary: false, addedAt: null } }).value).toEqual({ inLibrary: false, addedAt: null });
     expect(parseUserStateOperation({ ...operation, entity: { kind: "resume", work }, value: { chapter: null, anchor: null, openedAt: null } }).value).toEqual({ chapter: null, anchor: null, openedAt: null });
-    // Existing supported databases can contain this legacy tuple; parsing never invents MAX/OR rules.
-    expect(parseUserStateOperation({ ...operation, value: { progress: 100, unread: true, readAt: 0 } }).value).toEqual({ progress: 100, unread: true, readAt: 0 });
+    expect(parseUserStateOperation({ ...operation, value: { progress: 100, readAt: 0 } }).value).toEqual({ progress: 100, readAt: 0 });
+    expect(() => parseUserStateOperation({ ...operation, value: { progress: 100, unread: true, readAt: 0 } })).toThrow("unexpected field");
   });
 
   it.each([
@@ -74,8 +74,8 @@ describe("portable user state protocol", () => {
     expect(parseUserStateOperation({ ...operation, seed: true }).seed).toBe(true);
     expect(() => parseUserStateOperation({ ...operation, seed: true, baseRevision: 2 })).toThrow("seed");
     expect(() => parseUserStateOperation({ ...operation, seed: false })).toThrow("seed");
-    expect(() => parseUserStateOperation({ ...operation, value: { progress: Infinity, unread: false, readAt: 1 } })).toThrow("progress");
-    expect(() => parseUserStateOperation({ ...operation, value: { progress: 0, unread: true, readAt: -1 } })).toThrow("read time");
+    expect(() => parseUserStateOperation({ ...operation, value: { progress: Infinity, readAt: 1 } })).toThrow("progress");
+    expect(() => parseUserStateOperation({ ...operation, value: { progress: 0, readAt: -1 } })).toThrow("read time");
   });
 
   it("rejects non-progressing or inconsistent cursor pages and duplicate revisions", () => {

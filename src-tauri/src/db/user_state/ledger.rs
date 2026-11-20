@@ -11,14 +11,13 @@ use crate::db::tx::TxContext;
 use super::core::{
     assert_user_state_available_in_tx, canonical_entity_in_tx, chapter_reference_json,
     chapter_work_json, has_user_state_schema_in_tx, intent_from_row, is_before_seed_cutoff,
-    map_user_chapter_row, populate_user_chapter_composition_ids_in_tx,
-    promote_private_work_identities_in_tx, record_chapter_rows_in_tx,
-    record_resume_cleared_in_tx, record_user_state_changes_in_tx, require_binding_in_tx,
-    resolve_category_alias_in_tx, seed_user_state_with_options_in_tx,
+    is_migration_source_held, load_held_migration_sources_in_tx, map_user_chapter_row,
+    populate_user_chapter_composition_ids_in_tx, promote_private_work_identities_in_tx,
+    record_chapter_rows_in_tx, record_resume_cleared_in_tx, record_user_state_changes_in_tx,
+    require_binding_in_tx, resolve_category_alias_in_tx, seed_user_state_with_options_in_tx,
     user_state_restore_paused_in_tx, workspace_rows_in_tx, IntentRow, UserChapterRow,
     USER_CHAPTER_SELECT,
 };
-use super::current::{is_current_work_held, load_current_held_sources_in_tx};
 use super::materialize::{
     has_pending_user_state_for_record_in_tx, materialize_user_state_record_with_options_in_tx,
     CompositionEntryCache, MaterializeError,
@@ -300,7 +299,7 @@ async fn settle_held_source_records_in_tx(
     namespace: &str,
     server_url: &str,
 ) -> Result<u64, String> {
-    let held = load_current_held_sources_in_tx(conn, server_url).await?;
+    let held = load_held_migration_sources_in_tx(conn, server_url).await?;
     if held.id_pairs.is_empty() && held.paths.is_empty() {
         return Ok(0);
     }
@@ -1632,7 +1631,7 @@ pub async fn get_user_state_ledger_status_in_tx(
         held_keys.insert(user_state_entity_key(&canon)?);
     }
 
-    let held_sources = load_current_held_sources_in_tx(conn, &binding.server_url).await?;
+    let held_sources = load_held_migration_sources_in_tx(conn, &binding.server_url).await?;
     let known_works = KnownNonLocalWorks::load_in_tx(conn).await?;
     let proj_rows = sqlx::query(
         "SELECT entity_key, applied_revision < revision AS waiting, deferred_reason, \
@@ -1666,7 +1665,7 @@ pub async fn get_user_state_ledger_status_in_tx(
                 novel_path: novel_path.clone().unwrap_or_default(),
                 name: String::new(),
             };
-            if is_current_work_held(&held_sources, &work_ref) {
+            if is_migration_source_held(&held_sources, &work_ref) {
                 continue;
             }
         }
@@ -2332,6 +2331,7 @@ pub async fn project_pending_user_state_bounded_in_tx(
                     touched_last_read_novels.insert(novel_id);
                 }
                 effects.resumes.extend(next.resumes);
+                effects.has_finished_reading |= next.has_finished_reading;
                 sqlx::query(
                     "UPDATE user_state_record \
                      SET applied_revision = revision, deferred_reason = NULL, deferred_detail = NULL \
@@ -2587,7 +2587,7 @@ fn canonical_tombstone_for_entity(entity: &JsonValue, prev_value: &JsonValue) ->
             Some(json!({ "name": name, "sort": 0, "deleted": true }))
         }
         "membership" => Some(json!({ "included": false })),
-        "reading" => Some(json!({ "progress": 0, "unread": true, "readAt": null })),
+        "reading" => Some(json!({ "progress": 0, "readAt": null })),
         "bookmark" => Some(json!({ "bookmarked": false })),
         "resume" => Some(json!({ "chapter": null, "anchor": null, "openedAt": null })),
         _ => None,
@@ -2757,7 +2757,7 @@ pub async fn reconcile_user_state_snapshot_in_tx(
         snapshot_records.push(parsed);
     }
 
-    let held_sources = load_current_held_sources_in_tx(conn, &binding.server_url).await?;
+    let held_sources = load_held_migration_sources_in_tx(conn, &binding.server_url).await?;
     let dirty_before: Vec<(String, String)> = sqlx::query(
         "SELECT plugin_id, path FROM work_metadata_dirty ORDER BY plugin_id, path",
     )
@@ -2812,7 +2812,7 @@ pub async fn reconcile_user_state_snapshot_in_tx(
         }
         if let Some(work_val) = rec.entity.get("work") {
             if let Ok(work_ref) = parse_work_reference(work_val) {
-                if is_current_work_held(&held_sources, &work_ref) {
+                if is_migration_source_held(&held_sources, &work_ref) {
                     clear_non_pending_or_seed_intent_in_tx(conn, &ws.namespace, &entity_key, true)
                         .await?;
                     continue;
@@ -2902,6 +2902,7 @@ pub async fn reconcile_user_state_snapshot_in_tx(
                             touched_last_read_novels.insert(novel_id);
                         }
                         effects.resumes.extend(next.resumes);
+                effects.has_finished_reading |= next.has_finished_reading;
                     }
                     Err(MaterializeError::Deferred(_)) => {}
                     Err(MaterializeError::Fatal(err)) => {
@@ -3096,7 +3097,6 @@ pub async fn apply_local_user_state_retention_in_tx(
                     false
                 };
                 ch.progress = 0.0;
-                ch.unread = 1;
                 ch.read_at = None;
                 if !is_private {
                     public_touched_novels.insert(ch.novel_id);
@@ -3106,7 +3106,7 @@ pub async fn apply_local_user_state_retention_in_tx(
             let encoded_ids = serde_json::to_string(&ch_ids).unwrap();
             let res = sqlx::query(
                 "UPDATE chapter \
-                 SET progress = 0, unread = 1, read_at = NULL, updated_at = unixepoch() \
+                 SET progress = 0, read_at = NULL, updated_at = unixepoch() \
                  WHERE id IN (SELECT value FROM json_each(?1))",
             )
             .bind(&encoded_ids)

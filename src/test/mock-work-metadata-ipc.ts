@@ -956,7 +956,7 @@ export function createWorkMetadataIpcHandler(
             ),
             db.select<Array<Record<string, unknown>>>(
               `SELECT id, novel_id AS novelId, path, name, chapter_number AS chapterNumber, position, page,
-                      bookmark, unread, progress, is_downloaded AS isDownloaded, content_type AS sourceContentType,
+                      bookmark, progress, is_downloaded AS isDownloaded, content_type AS sourceContentType,
                       stored_content_type AS storedContentType, content_bytes AS contentBytes, media_bytes AS mediaBytes,
                       release_time AS releaseTime, read_at AS readAt, created_at AS createdAt, found_at AS foundAt,
                       found_by_check AS foundByCheck, updated_at AS updatedAt
@@ -1008,7 +1008,6 @@ export function createWorkMetadataIpcHandler(
             chapters: chapters.map((row) => ({
               ...row,
               bookmark: sqliteBoolean(row.bookmark),
-              unread: sqliteBoolean(row.unread),
               isDownloaded: sqliteBoolean(row.isDownloaded),
               foundByCheck: sqliteBoolean(row.foundByCheck),
             })),

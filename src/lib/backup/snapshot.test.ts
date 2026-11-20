@@ -243,7 +243,7 @@ describe("gatherBackupSnapshot", () => {
     // Non-local plugin must never report isLocal: true.
     expect(manifest.novels[0]?.isLocal).toBe(false);
     expect(manifest.chapters[0]?.bookmark).toBe(false);
-    expect(manifest.chapters[0]?.unread).toBe(true);
+    expect(manifest.chapters[0]?.progress).toBe(0);
     expect(manifest.chapters[0]?.isDownloaded).toBe(false);
     expect(manifest.chapters[0]?.contentType).toBe("html");
     expect(manifest.chapters[0]?.sourceContentType).toBe("text");

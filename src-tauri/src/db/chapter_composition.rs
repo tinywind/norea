@@ -461,7 +461,6 @@ struct ExistingChapterRow {
     position: i64,
     progress: f64,
     bookmark: i64,
-    unread: i64,
     read_at: Option<i64>,
     is_downloaded: i64,
     content_bytes: i64,
@@ -652,7 +651,7 @@ pub async fn materialize_chapter_composition_in_tx(
     let previous_composition = get_chapter_composition_in_tx(&mut *conn, novel_id).await?;
 
     let raw_existing = sqlx::query(
-        "SELECT path, chapter_number, position, progress, bookmark, unread, read_at, \
+        "SELECT path, chapter_number, position, progress, bookmark, read_at, \
                 is_downloaded, content_bytes, media_bytes, media_repair_needed, \
                 (SELECT created_at FROM chapter_download_goal_exclusion WHERE chapter_id = chapter.id) AS excluded_at \
          FROM chapter WHERE novel_id = ?1",
@@ -670,7 +669,6 @@ pub async fn materialize_chapter_composition_in_tx(
             position: row.get("position"),
             progress: crate::db::decode_sqlite_f64(&row, "progress"),
             bookmark: row.get("bookmark"),
-            unread: row.get("unread"),
             read_at: row.get("read_at"),
             is_downloaded: row.get("is_downloaded"),
             content_bytes: row.get("content_bytes"),
@@ -829,13 +827,12 @@ pub async fn materialize_chapter_composition_in_tx(
     struct ReadingState {
         progress: f64,
         bookmark: i64,
-        unread: i64,
         read_at: Option<i64>,
         excluded_at: Option<i64>,
     }
 
     let reading_rows = sqlx::query(
-        "SELECT chapter_path, progress, bookmark, unread, read_at \
+        "SELECT chapter_path, progress, bookmark, read_at \
          FROM work_metadata_reading_state WHERE plugin_id = ?1 AND novel_path = ?2",
     )
     .bind(&plugin_id)
@@ -853,7 +850,6 @@ pub async fn materialize_chapter_composition_in_tx(
             ReadingState {
                 progress: crate::db::decode_sqlite_f64(&row, "progress"),
                 bookmark: row.get("bookmark"),
-                unread: row.get("unread"),
                 read_at: row.get("read_at"),
                 excluded_at: None,
             },
@@ -911,7 +907,6 @@ pub async fn materialize_chapter_composition_in_tx(
         let mut state = ReadingState {
             progress: 0.0,
             bookmark: 0,
-            unread: 1,
             read_at: None,
             excluded_at: None,
         };
@@ -919,7 +914,6 @@ pub async fn materialize_chapter_composition_in_tx(
             if let Some(prev) = by_path.get(candidate) {
                 state.progress = state.progress.max(prev.progress);
                 state.bookmark = i64::from(state.bookmark != 0 || prev.bookmark != 0);
-                state.unread = i64::from(state.unread != 0 && prev.unread != 0);
                 if let Some(read_at) = prev.read_at {
                     state.read_at = Some(state.read_at.unwrap_or(0).max(read_at));
                 }
@@ -931,7 +925,6 @@ pub async fn materialize_chapter_composition_in_tx(
             if let Some(prev) = reading_by_path.get(candidate) {
                 state.progress = state.progress.max(prev.progress);
                 state.bookmark = i64::from(state.bookmark != 0 || prev.bookmark != 0);
-                state.unread = i64::from(state.unread != 0 && prev.unread != 0);
                 if let Some(read_at) = prev.read_at {
                     state.read_at = Some(state.read_at.unwrap_or(0).max(read_at));
                 }
@@ -948,13 +941,13 @@ pub async fn materialize_chapter_composition_in_tx(
     for chunk in entries.chunks(50) {
         let mut placeholders = Vec::with_capacity(chunk.len());
         for idx in 0..chunk.len() {
-            let base = idx * 13;
-            let tuple: Vec<String> = (1..=13).map(|col| format!("?{}", base + col)).collect();
+            let base = idx * 12;
+            let tuple: Vec<String> = (1..=12).map(|col| format!("?{}", base + col)).collect();
             placeholders.push(format!("({})", tuple.join(",")));
         }
         let sql = format!(
             "INSERT INTO chapter(novel_id, path, name, chapter_number, position, page, content_type, \
-                                 release_time, progress, bookmark, unread, read_at, found_at) \
+                                 release_time, progress, bookmark, read_at, found_at) \
              VALUES {} \
              ON CONFLICT(novel_id, path) DO UPDATE SET \
                name = excluded.name, \
@@ -994,7 +987,6 @@ pub async fn materialize_chapter_composition_in_tx(
                 .bind(&source.release_time)
                 .bind(state.map_or(0.0, |s| s.progress))
                 .bind(state.map_or(0, |s| s.bookmark))
-                .bind(state.map_or(1, |s| s.unread))
                 .bind(state.and_then(|s| s.read_at))
                 .bind(now);
         }

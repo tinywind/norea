@@ -11,10 +11,7 @@ use crate::db::chapter_composition::{
 };
 
 pub const USER_STATE_VERSION: i64 = 1;
-pub const USER_STATE_CURRENT_VERSION: i64 = 2;
 pub const USER_STATE_CLIENT_BATCH_BYTES: usize = 30 * 1024 * 1024;
-pub const USER_STATE_CURRENT_MAX_ITEMS: usize = 100_000;
-pub const USER_STATE_CURRENT_MAX_BYTES: usize = 32 * 1024 * 1024;
 pub const USER_STATE_PRELINK_BASE_REVISION: i64 = -1;
 pub const STORED_CHAPTER_PREFIX: &str = "norea-stored:";
 const MAX_SAFE_INT_I64: i64 = 9_007_199_254_740_991;
@@ -83,6 +80,8 @@ pub struct UserStateApplyEffectsDto {
     pub has_more: bool,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub failed_entity_keys: Vec<String>,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub has_finished_reading: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -169,39 +168,6 @@ pub struct ResolveUserStateLedgerConflictInputDto {
     pub choice: String,
     #[serde(default)]
     pub category_name: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserStateCurrentStatusDto {
-    pub workspace_id: Option<String>,
-    pub epoch: Option<String>,
-    pub last_success_at: Option<i64>,
-    pub paused_after_restore: bool,
-    pub missing_metadata_count: i64,
-}
-
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct UserStateCurrentApplyResultDto {
-    pub resumes: Vec<UserStateResumeEffectDto>,
-    pub missing_metadata_count: usize,
-    pub changed: bool,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CurrentSnapshotRetryDto {
-    pub work_keys: Vec<String>,
-    pub previous_missing: Vec<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-#[serde(rename_all = "camelCase")]
-pub struct PreparedDeferredCurrentRetryDto {
-    pub snapshot: JsonValue,
-    pub missing_keys: Vec<String>,
-    pub work_keys: Vec<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1029,15 +995,12 @@ pub fn parse_user_state_value(kind: &str, value: &JsonValue) -> Result<JsonValue
             Ok(json!({ "included": included }))
         }
         "reading" => {
-            let row =
-                expect_object_keys(value, &["progress", "unread", "readAt"], "reading value")?;
+            let row = expect_object_keys(value, &["progress", "readAt"], "reading value")?;
             let progress =
                 parse_number_range(row.get("progress"), "reading progress", 0.0, 100.0)?;
-            let unread = parse_bool(row.get("unread"), "unread flag")?;
             let read_at = parse_nullable_time(row.get("readAt"), "read time")?;
             Ok(json!({
                 "progress": number_value_js(progress)?,
-                "unread": unread,
                 "readAt": read_at,
             }))
         }
@@ -1408,152 +1371,7 @@ pub fn parse_user_state_snapshot_response(
     })
 }
 
-pub fn parse_user_state_current_item(raw: &JsonValue) -> Result<(JsonValue, JsonValue), String> {
-    let input = expect_object_keys(raw, &["entity", "value"], "current snapshot object")?;
-    let entity = parse_user_state_entity(
-        input
-            .get("entity")
-            .ok_or_else(|| protocol_err("invalid entity"))?,
-    )?;
-    let kind = entity["kind"].as_str().unwrap();
-    let mut value = parse_user_state_value(
-        kind,
-        input
-            .get("value")
-            .ok_or_else(|| protocol_err("invalid value"))?,
-    )?;
-    if let Some(work) = entity.get("work") {
-        if work
-            .get("sourceNovelId")
-            .and_then(JsonValue::as_str)
-            .is_none()
-        {
-            return Err(protocol_err("missing stable source work identity"));
-        }
-    }
-    let chapter_ref = match kind {
-        "reading" | "bookmark" => entity.get("chapter"),
-        "resume" => value.get("chapter").filter(|v| !v.is_null()),
-        _ => None,
-    };
-    if let Some(ch) = chapter_ref {
-        let ch_path = ch
-            .get("chapterPath")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("");
-        let has_entry_id = ch
-            .get("compositionEntryId")
-            .and_then(JsonValue::as_str)
-            .is_some();
-        if ch_path.starts_with("norea-folder:")
-            || ch_path.starts_with("local-folder:")
-            || ((ch_path.starts_with("norea-composed:") || ch_path.starts_with("norea-source:"))
-                && !has_entry_id)
-            || (ch_path.starts_with(STORED_CHAPTER_PREFIX)
-                && parse_stored_chapter_path(ch_path).is_none())
-        {
-            return Err(protocol_err("unresolved current chapter identity"));
-        }
-    }
-    let non_additive = (kind == "library" && value.get("inLibrary") != Some(&JsonValue::Bool(true)))
-        || (kind == "bookmark" && value.get("bookmarked") != Some(&JsonValue::Bool(true)))
-        || (kind == "membership" && value.get("included") != Some(&JsonValue::Bool(true)))
-        || (kind == "category" && value.get("deleted") == Some(&JsonValue::Bool(true)))
-        || (kind == "resume" && value.get("chapter").is_none_or(JsonValue::is_null));
-    if non_additive {
-        return Err(protocol_err("current snapshots contain additive state only"));
-    }
-    if kind == "category" {
-        let trimmed = value
-            .get("name")
-            .and_then(JsonValue::as_str)
-            .unwrap_or("")
-            .trim()
-            .to_string();
-        if trimmed.is_empty() {
-            return Err(protocol_err("empty current category name"));
-        }
-        value["name"] = JsonValue::String(trimmed);
-    }
-    Ok((entity, value))
-}
-
-pub fn parse_user_state_current_snapshot(
-    raw: &JsonValue,
-) -> Result<(String, String, Vec<(JsonValue, JsonValue)>), String> {
-    if user_state_json_bytes(raw)? > USER_STATE_CURRENT_MAX_BYTES {
-        return Err(protocol_err("current snapshot exceeds the byte limit"));
-    }
-    let input = expect_object_keys(
-        raw,
-        &["version", "workspaceId", "epoch", "items"],
-        "current snapshot object",
-    )?;
-    let version = input.get("version").and_then(JsonValue::as_i64);
-    let Some(raw_items) = input.get("items").and_then(JsonValue::as_array) else {
-        return Err(protocol_err(
-            "invalid current snapshot version or item count",
-        ));
-    };
-    if version != Some(USER_STATE_CURRENT_VERSION) || raw_items.len() > USER_STATE_CURRENT_MAX_ITEMS
-    {
-        return Err(protocol_err(
-            "invalid current snapshot version or item count",
-        ));
-    }
-    let workspace_id =
-        parse_identifier(input.get("workspaceId"), "current workspace identity")?;
-    let epoch = parse_identifier(input.get("epoch"), "current workspace identity")?;
-    let mut items = Vec::with_capacity(raw_items.len());
-    let mut keys = HashSet::with_capacity(raw_items.len());
-    for raw_item in raw_items {
-        let (entity, value) = parse_user_state_current_item(raw_item)?;
-        let key = user_state_entity_key(&entity)?;
-        if !keys.insert(key) {
-            return Err(protocol_err("duplicate current snapshot entity"));
-        }
-        items.push((entity, value));
-    }
-    Ok((workspace_id, epoch, items))
-}
-
-pub fn merge_user_state_current_reading(
-    left: &JsonValue,
-    right: &JsonValue,
-) -> Result<JsonValue, String> {
-    let left_read_at = left
-        .get("readAt")
-        .and_then(JsonValue::as_i64)
-        .unwrap_or(-1);
-    let right_read_at = right
-        .get("readAt")
-        .and_then(JsonValue::as_i64)
-        .unwrap_or(-1);
-    if left_read_at != right_read_at {
-        return Ok(if left_read_at > right_read_at {
-            left.clone()
-        } else {
-            right.clone()
-        });
-    }
-    let left_prog = left.get("progress").and_then(JsonValue::as_f64).unwrap_or(0.0);
-    let right_prog = right
-        .get("progress")
-        .and_then(JsonValue::as_f64)
-        .unwrap_or(0.0);
-    let left_unread = left.get("unread").and_then(JsonValue::as_bool).unwrap_or(true);
-    let right_unread = right
-        .get("unread")
-        .and_then(JsonValue::as_bool)
-        .unwrap_or(true);
-    Ok(json!({
-        "progress": number_value_js(left_prog.max(right_prog))?,
-        "unread": left_unread && right_unread,
-        "readAt": left.get("readAt").cloned().unwrap_or(JsonValue::Null),
-    }))
-}
-
-pub fn merge_user_state_current_resume(
+pub fn merge_user_state_resume(
     left: &JsonValue,
     right: &JsonValue,
 ) -> Result<JsonValue, String> {

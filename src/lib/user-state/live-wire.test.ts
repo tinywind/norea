@@ -146,7 +146,7 @@ function addWorkToClient(
   client: ClientFixture,
   novelId = 1,
   work: UserStateWorkReference = DEFAULT_WORK,
-  chapters: { id: number; path: string; name: string; progress?: number; unread?: number; readAt?: number | null; bookmark?: number }[] = [
+  chapters: { id: number; path: string; name: string; progress?: number; readAt?: number | null; bookmark?: number }[] = [
     { id: novelId * 10 + 1, path: "/chapter/1", name: "Chapter 1" },
   ],
 ): void {
@@ -159,7 +159,7 @@ function addWorkToClient(
     const ch = chapters[i]!;
     client.sql
       .prepare(
-        "INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,unread,read_at,bookmark) VALUES(?,?,?,?,?,?,?,?,?,?)",
+        "INSERT INTO chapter(id,novel_id,path,name,chapter_number,position,progress,read_at,bookmark) VALUES(?,?,?,?,?,?,?,?,?)",
       )
       .run(
         ch.id,
@@ -169,7 +169,6 @@ function addWorkToClient(
         String(i + 1),
         i + 1,
         ch.progress ?? 0,
-        ch.unread ?? 1,
         ch.readAt ?? null,
         ch.bookmark ?? 0,
       );
@@ -492,7 +491,7 @@ describe("Live TCP HTTP Wire Integration (standalone node:http)", () => {
         if (count === 1) {
           publish(
             { kind: "reading", work: DEFAULT_WORK, chapter: { chapterPath: "/chapter/2", name: "Chapter 2" } },
-            { progress: 90, unread: false, readAt: 1_750_000_000 },
+            { progress: 90, readAt: 1_750_000_000 },
             "concurrent-op-2",
             "dev-remote",
             "Remote",
@@ -542,8 +541,8 @@ describe("Live TCP HTTP Wire Integration (standalone node:http)", () => {
       const clientC = createSqliteFixture("Client C");
       activateClient(clientC, serverUrl);
       addWorkToClient(clientC, 1, DEFAULT_WORK, [
-        { id: 11, path: "/chapter/old", name: "Old", progress: 100, unread: 0, readAt: 1_650_000_000 },
-        { id: 12, path: "/chapter/new", name: "New", progress: 80, unread: 0, readAt: 1_750_000_000 },
+        { id: 11, path: "/chapter/old", name: "Old", progress: 100, readAt: 1_650_000_000 },
+        { id: 12, path: "/chapter/new", name: "New", progress: 80, readAt: 1_750_000_000 },
       ]);
       await synchronizeUserState();
       const uploadedPaths = [...state.records.values()]
@@ -689,8 +688,8 @@ if (existsSync(siblingAppEntry)) {
         const clientC = createSqliteFixture("Fastify Client C");
         activateClient(clientC, baseUrl);
         addWorkToClient(clientC, 1, DEFAULT_WORK, [
-          { id: 11, path: "/chapter/old", name: "Old", progress: 100, unread: 0, readAt: Math.floor((clock - 150 * 86_400_000) / 1000) },
-          { id: 12, path: "/chapter/recent", name: "Recent", progress: 85, unread: 0, readAt: Math.floor((clock - 5 * 86_400_000) / 1000) },
+          { id: 11, path: "/chapter/old", name: "Old", progress: 100, readAt: Math.floor((clock - 150 * 86_400_000) / 1000) },
+          { id: 12, path: "/chapter/recent", name: "Recent", progress: 85, readAt: Math.floor((clock - 5 * 86_400_000) / 1000) },
         ]);
         await realFetch(`${baseUrl}/api/v1/admin/user-state/compact`, {
           method: "POST",
