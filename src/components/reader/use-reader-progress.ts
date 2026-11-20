@@ -7,6 +7,11 @@ import {
   useState,
 } from "react";
 import {
+  registerBeforeAppSuspend,
+  subscribeAppLifecycle,
+} from "../../lib/app-lifecycle";
+import { setPendingReaderProgress } from "../../lib/tasks/sync-runtime";
+import {
   type ReaderChapterScrollAnchor,
   type ReaderScrollAnchor,
 } from "../../store/reader";
@@ -176,6 +181,7 @@ export function useReaderProgress({
         return;
       }
       pendingProgressSaveRef.current = rounded;
+      setPendingReaderProgress(true);
       if (progressTimerRef.current !== null) {
         window.clearTimeout(progressTimerRef.current);
       }
@@ -184,6 +190,7 @@ export function useReaderProgress({
         flushProgress(value);
         persistScrollAnchor();
         progressTimerRef.current = null;
+        setPendingReaderProgress(false);
       }, PROGRESS_SAVE_DELAY_MS);
     },
     [flushProgress, persistScrollAnchor],
@@ -198,15 +205,21 @@ export function useReaderProgress({
       pendingProgressSaveRef.current = null;
       flushProgress(latestProgressRef.current);
       persistScrollAnchor();
+      setPendingReaderProgress(false);
     };
-    const onVisibilityChange = () => {
-      if (document.visibilityState === "hidden") persistBeforeSuspension();
-    };
-    document.addEventListener("visibilitychange", onVisibilityChange);
+    const unsubscribeLifecycle = subscribeAppLifecycle((active) => {
+      if (!active) persistBeforeSuspension();
+    });
+    const unregisterSuspend = registerBeforeAppSuspend(
+      persistBeforeSuspension,
+      "flush",
+    );
     window.addEventListener("pagehide", persistBeforeSuspension);
     return () => {
-      document.removeEventListener("visibilitychange", onVisibilityChange);
+      unsubscribeLifecycle();
+      unregisterSuspend();
       window.removeEventListener("pagehide", persistBeforeSuspension);
+      setPendingReaderProgress(false);
     };
   }, [flushProgress, persistScrollAnchor]);
 

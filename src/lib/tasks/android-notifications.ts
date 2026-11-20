@@ -1,16 +1,27 @@
 import { isAndroidRuntime } from "../tauri-runtime";
-import { isNetworkOnline, useNetworkStore } from "../network";
+import { isHostNetworkConnected, isNetworkOnline, useNetworkStore } from "../network";
 import type { TaskNotificationMode } from "../../store/notifications";
 import { TaskNotificationTracker, type TaskNotificationTranslate } from "./task-notification-model";
 import { subscribeChapterDownloadBatchProgress } from "./chapter-download";
 import { taskScheduler, type TaskRecord } from "./scheduler";
 import { parseTaskNotificationActions, type TaskNotificationAction } from "./native-notification-actions";
 import { SourceAccessNotificationTracker, type SourceAccessNotification } from "./source-access-notifications";
+import {
+  buildContentSyncNotificationGroup,
+  buildSyncFailureNotification,
+  getLastEmittedSyncFailureId,
+  getSyncRuntimeSnapshot,
+  markSyncFailureNotificationEmitted,
+  setSyncBackgroundExecutionSuspended,
+  subscribeSyncRuntime,
+} from "./sync-runtime";
 import { getVpnDownloadRuntimeSnapshot, subscribeVpnDownloadRuntime } from "./vpn-download-runtime";
 import { hasActiveVpnDownloads, vpnDownloadNotifications } from "./vpn-download-notifications";
 
 interface AndroidTaskNotificationBridge {
+  isAppActive?: () => boolean;
   isExecutionSuspended?: () => boolean;
+  setPendingBackgroundUpload?: (pending: boolean) => void;
   drainActions?: () => string;
   stop: () => void;
   update: (payload: string) => void;
@@ -36,6 +47,9 @@ export function startAndroidTaskNotifications(
   const tracker = new TaskNotificationTracker(snapshot);
   const sourceTracker = new SourceAccessNotificationTracker(snapshot);
   let lastPayload = "";
+  let lastExecutionActive = false;
+  let lastEmittedSyncFailureId = getLastEmittedSyncFailureId("android");
+  let lastClearedSyncFailureSerial = getSyncRuntimeSnapshot().failureClearedSerial;
   let executionSuspended = false;
   let publishTimer: ReturnType<typeof setTimeout> | null = null;
   let challengeRevision: string | undefined;
@@ -50,14 +64,16 @@ export function startAndroidTaskNotifications(
     if (executionSuspended) return;
     executionSuspended = true;
     taskScheduler.setBackgroundExecutionSuspended(true, t("tasks.backgroundExecutionSuspended"));
+    setSyncBackgroundExecutionSuspended(true);
     window.__NoreaAndroidTasks?.stop();
     lastPayload = "";
+    lastExecutionActive = false;
   };
   const publish = () => {
     const bridge = window.__NoreaAndroidTasks;
     if (!bridge) return;
     if (bridge.isExecutionSuspended?.()) suspendExecution();
-    const groups = tracker.groups(t, snapshot);
+    const taskGroups = tracker.groups(t, snapshot);
     const completed = tracker.takeCompletions(t);
     const revision = sourceTracker.revision(snapshot.sourceAccessBlocks);
     if (revision !== challengeRevision) {
@@ -65,11 +81,42 @@ export function startAndroidTaskNotifications(
       challenges = sourceTracker.notifications(snapshot.sourceAccessBlocks, t);
     }
     const online = isNetworkOnline();
+    const hostConnected = isHostNetworkConnected();
     const { plans, run } = getVpnDownloadRuntimeSnapshot();
     const ranges = vpnDownloadNotifications(plans, t, run?.status);
     const vpnActive = hasActiveVpnDownloads(plans);
+    const syncState = getSyncRuntimeSnapshot();
+    const syncGroup = hostConnected && !executionSuspended
+      ? buildContentSyncNotificationGroup(t, syncState)
+      : null;
+    const groups = [...taskGroups, ...(syncGroup ? [syncGroup] : [])];
     const quiet = mode !== "progress";
-    const completions = mode === "off" ? [] : completed.map(({ action, key, title, body }) => ({ action, key, title, body }));
+    const taskCompletions = mode === "off"
+      ? []
+      : completed.map(({ action, key, title, body }) => ({ action, key, title, body }));
+    const syncFailure =
+      mode !== "off" &&
+      syncState.latestFailure !== null &&
+      syncState.latestFailure.id > lastEmittedSyncFailureId
+        ? buildSyncFailureNotification(syncState.latestFailure, t)
+        : null;
+    if (syncState.latestFailure !== null && syncState.latestFailure.id > lastEmittedSyncFailureId) {
+      lastEmittedSyncFailureId = syncState.latestFailure.id;
+      markSyncFailureNotificationEmitted("android", syncState.latestFailure.id);
+    }
+    const cancelledCompletions: string[] = [];
+    if (syncState.failureClearedSerial > lastClearedSyncFailureSerial) {
+      lastClearedSyncFailureSerial = syncState.failureClearedSerial;
+      if (!syncFailure) cancelledCompletions.push("contentSync");
+    }
+    const completions = [...taskCompletions, ...(syncFailure ? [syncFailure] : [])];
+    const taskOrVpnActive = online && !executionSuspended && (taskGroups.length > 0 || vpnActive);
+    const syncExecutionActive = hostConnected && !executionSuspended && syncState.executionActive;
+    const executionActive = taskOrVpnActive || syncExecutionActive;
+    const working =
+      (online && !executionSuspended && (tracker.hasRunningWork() || vpnActive)) ||
+      syncExecutionActive;
+    lastExecutionActive = executionActive;
     const payload = {
       title: t("tasks.notification.title"), quiet,
       channels: {
@@ -78,21 +125,33 @@ export function startAndroidTaskNotifications(
         resultsName: t("tasks.notification.resultsChannel"),
         resultsDescription: t("tasks.notification.resultsChannelDescription"),
       },
-      executionActive: online && !executionSuspended && (groups.length > 0 || vpnActive),
-      working: online && !executionSuspended && (tracker.hasRunningWork() || vpnActive),
+      executionActive,
+      working,
+      requiresScraperWebViews: taskOrVpnActive,
       requestPermission: ranges.length > 0 || challenges.length > 0 || (mode !== "off" && (groups.length > 0 || completions.length > 0)),
       groups: quiet ? [] : groups.map(group => ({
         key: group.key, title: group.title,
         body: group.paused ? `${t("tasks.notification.paused")} · ${group.body}` : group.body,
-        paused: group.paused, progress: group.progress,
+        paused: group.paused,
+        pausable: group.pausable ?? true,
+        progress: group.progress,
         pauseLabel: t("tasks.notification.pause"), resumeLabel: t("tasks.notification.resume"),
       })),
       challenges, ranges, completions,
+      ...(syncExecutionActive && !taskOrVpnActive ? { syncQuietAnchor: true } : {}),
+      ...(cancelledCompletions.length > 0 ? { cancelledCompletions } : {}),
     };
     const serialized = JSON.stringify(payload);
     if (serialized === lastPayload) return;
     bridge.update(serialized);
     lastPayload = serialized;
+  };
+  const publishImmediately = () => {
+    if (publishTimer !== null) {
+      clearTimeout(publishTimer);
+      publishTimer = null;
+    }
+    publish();
   };
   const schedulePublish = () => {
     if (publishTimer !== null) return;
@@ -104,12 +163,15 @@ export function startAndroidTaskNotifications(
   const onSuspended = () => { suspendExecution(); schedulePublish(); };
   const resumeExecution = () => {
     if (!window.__NoreaAndroidTasks?.isExecutionSuspended?.()) {
-      if (executionSuspended) taskScheduler.setBackgroundExecutionSuspended(false);
+      if (executionSuspended) {
+        taskScheduler.setBackgroundExecutionSuspended(false);
+        setSyncBackgroundExecutionSuspended(false);
+      }
       executionSuspended = false;
     }
     snapshot = taskScheduler.getSnapshot();
     lastPayload = "";
-    publish();
+    publishImmediately();
     drainActions();
   };
   window.addEventListener("norea-background-execution-suspended", onSuspended);
@@ -130,6 +192,18 @@ export function startAndroidTaskNotifications(
   });
   const unsubscribeNetwork = useNetworkStore.subscribe(schedulePublish);
   const unsubscribeVpn = subscribeVpnDownloadRuntime(schedulePublish);
+  const unsubscribeSync = subscribeSyncRuntime(() => {
+    const syncState = getSyncRuntimeSnapshot();
+    const needsImmediate =
+      (!lastExecutionActive && syncState.executionActive) ||
+      (syncState.latestFailure !== null && syncState.latestFailure.id > lastEmittedSyncFailureId) ||
+      syncState.failureClearedSerial > lastClearedSyncFailureSerial;
+    if (needsImmediate) publishImmediately();
+    else schedulePublish();
+  });
+  window.__NoreaAndroidTasks?.setPendingBackgroundUpload?.(
+    getSyncRuntimeSnapshot().hasPendingBackgroundUpload,
+  );
   publish();
   drainActions();
 
@@ -137,7 +211,7 @@ export function startAndroidTaskNotifications(
     window.removeEventListener("norea-background-execution-suspended", onSuspended);
     window.removeEventListener("norea-app-resumed", resumeExecution);
     window.removeEventListener("norea-task-notification-action", drainActions);
-    unsubscribeSnapshots(); unsubscribeEvents(); unsubscribeBatches(); unsubscribeNetwork(); unsubscribeVpn();
+    unsubscribeSnapshots(); unsubscribeEvents(); unsubscribeBatches(); unsubscribeNetwork(); unsubscribeVpn(); unsubscribeSync();
     if (publishTimer !== null) clearTimeout(publishTimer);
     window.__NoreaAndroidTasks?.stop();
   };

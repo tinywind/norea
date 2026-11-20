@@ -10,6 +10,10 @@ import androidx.annotation.Keep
 @Keep
 object AndroidNetworkState {
   private var started = false
+  @Volatile
+  private var networkConnected = true
+
+  fun isConnected(): Boolean = networkConnected
 
   @JvmStatic
   private external fun publish(connectivity: Int, route: String)
@@ -28,6 +32,7 @@ object AndroidNetworkState {
 
       override fun onAvailable(network: Network) {
         current = network
+        networkConnected = true
         capabilities = null
         blocked = if (Build.VERSION.SDK_INT >= 29) null else false
         publish(0, network.toString())
@@ -48,6 +53,7 @@ object AndroidNetworkState {
       override fun onLost(network: Network) {
         if (network != current) return
         current = null
+        networkConnected = false
         capabilities = null
         publish(1, "")
       }
@@ -66,7 +72,8 @@ object AndroidNetworkState {
       }
     }
     // Only observe the app's default route, including an external VPN's policy.
-    if (manager.activeNetwork == null) publish(1, "")
+    networkConnected = manager.activeNetwork != null
+    if (!networkConnected) publish(1, "")
     manager.registerDefaultNetworkCallback(callback)
     started = true
   }

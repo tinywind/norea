@@ -7,6 +7,7 @@ export type TaskLane = "main" | "source";
 
 export type TaskNotificationGroupKey =
   | "backup"
+  | "contentSync"
   | "downloads"
   | "libraryMetadata"
   | "libraryUpdates"

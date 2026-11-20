@@ -90,6 +90,7 @@ pub struct UserStateLedgerStatusDto {
     pub cursor: i64,
     pub through: Option<i64>,
     pub pending: i64,
+    pub sendable_pending: i64,
     pub conflicts: usize,
     pub deferred: i64,
     pub projection_pending: i64,

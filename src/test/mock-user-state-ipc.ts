@@ -219,6 +219,7 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
             cursor: 0,
             through: null,
             pending: 0,
+            sendablePending: 0,
             conflicts: 0,
             deferred: 0,
             projectionPending: 0,
@@ -228,19 +229,26 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
           };
           return { handled: true, result: status };
         }
+        const pausedAfterRestore = await userStateRestorePausedInDb(db);
         const [row] = await db.select<{ pending: number }[]>(
           "SELECT COUNT(*) AS pending FROM user_state_intent WHERE COALESCE(json_extract(entity_json,'$.kind'),'')<>'library' AND COALESCE(json_extract(entity_json,'$.work.pluginId'),'')<>'local'",
         );
+        const [sendableRow] = pausedAfterRestore
+          ? [{ sendablePending: 0 }]
+          : await db.select<{ sendablePending: number }[]>(
+            "SELECT COUNT(*) AS sendablePending FROM user_state_intent WHERE COALESCE(json_extract(entity_json,'$.kind'),'')<>'library' AND COALESCE(json_extract(entity_json,'$.work.pluginId'),'')<>'local' AND (json_type(entity_json,'$.work') IS NULL OR json_extract(entity_json,'$.work.sourceNovelId') IS NOT NULL) AND COALESCE(json_extract(entity_json,'$.chapter.chapterPath'),json_extract(value_json,'$.chapter.chapterPath'),'') NOT LIKE 'norea-folder:%' AND COALESCE(json_extract(entity_json,'$.chapter.chapterPath'),json_extract(value_json,'$.chapter.chapterPath'),'') NOT LIKE 'local-folder:%'",
+          );
         const status: UserStateLedgerStatus = {
           cursor: 0,
           through: null,
           pending: row?.pending ?? 0,
+          sendablePending: sendableRow?.sendablePending ?? 0,
           conflicts: 0,
           deferred: 0,
           projectionPending: 0,
           projectionFailed: 0,
           lastSuccessAt: null,
-          pausedAfterRestore: await userStateRestorePausedInDb(db),
+          pausedAfterRestore,
         };
         return { handled: true, result: status };
       }

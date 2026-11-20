@@ -35,6 +35,7 @@ export interface ActiveTaskNotificationPayload {
 
 export interface ActiveTaskNotificationGroup extends ActiveTaskNotificationPayload {
   key: TaskNotificationGroupKey;
+  pausable?: boolean;
   paused: boolean;
   route: TaskNotificationRoute;
 }
@@ -116,7 +117,7 @@ export class TaskNotificationTracker {
     snapshot: TaskSnapshot,
     batches: readonly ChapterDownloadBatchProgressEvent[] = getChapterDownloadBatchProgress(),
   ) {
-    this.pausedGroups = new Set(snapshot.pausedTaskGroups ?? []);
+    this.syncPausedGroups(snapshot);
     for (const event of batches) this.updateBatch(event);
     const activeSince = new Map<TaskNotificationGroupKey, number>();
     for (const task of snapshot.records) {
@@ -161,7 +162,7 @@ export class TaskNotificationTracker {
   }
 
   groups(t: TaskNotificationTranslate, snapshot: TaskSnapshot): ActiveTaskNotificationGroup[] {
-    this.pausedGroups = new Set(snapshot.pausedTaskGroups ?? []);
+    this.syncPausedGroups(snapshot);
     return TASK_GROUP_ORDER.flatMap(key => {
       const state = this.states.get(key);
       if (!state || !hasActiveWork(state) || key === "backup") return [];
@@ -172,6 +173,7 @@ export class TaskNotificationTracker {
         key,
         title: taskNotificationGroupTitle(t, key),
         body: groupBody(t, key, state, progress, detail, results),
+        pausable: true,
         paused: this.pausedGroups.has(key),
         progress,
         route: taskNotificationGroupRoute(key),
@@ -211,6 +213,12 @@ export class TaskNotificationTracker {
 
   tray(t: TaskNotificationTranslate, snapshot: TaskSnapshot): TrayTaskProgressPayload {
     return trayPayload(this.groups(t, snapshot), t);
+  }
+
+  private syncPausedGroups(snapshot: TaskSnapshot): void {
+    const paused = new Set(snapshot.pausedTaskGroups ?? []);
+    if (snapshot.sourceQueuesPaused) paused.add("downloads");
+    this.pausedGroups = paused;
   }
 
   private state(key: TaskNotificationGroupKey): NotificationGroupState {
@@ -333,7 +341,7 @@ export function taskNotificationCompletionAction(
 ): TaskNotificationAction {
   const queue: TaskNotificationAction = { type: "openTasks" };
   if (key === "libraryUpdates") return { type: "openUpdates" };
-  if (key === "backup") return { type: "openBackupSettings" };
+  if (key === "backup" || key === "contentSync") return { type: "openBackupSettings" };
   if (key === "downloads" && results.failed > 0) return { type: "openAttention" };
   if (key !== "downloads" || results.succeeded === 0) return queue;
   let novelId: number | undefined;
@@ -445,6 +453,13 @@ export function buildActiveTaskNotificationPayload(snapshot: TaskSnapshot, t: Ta
   };
 }
 
+export function buildTrayTaskProgressForGroups(
+  groups: readonly ActiveTaskNotificationGroup[],
+  t: TaskNotificationTranslate,
+): TrayTaskProgressPayload {
+  return trayPayload(groups, t);
+}
+
 export function buildTrayTaskProgressPayload(snapshot: TaskSnapshot, t: TaskNotificationTranslate): TrayTaskProgressPayload {
   return trayPayload(buildActiveTaskNotificationGroups(snapshot, t), t);
 }
@@ -472,7 +487,7 @@ function backupFailureCompletion(
 }
 
 function taskNotificationGroupRoute(key: TaskNotificationGroupKey): TaskNotificationRoute {
-  if (key === "backup") return "/settings?section=backup";
+  if (key === "backup" || key === "contentSync") return "/settings?section=backup";
   return key === "downloads"
     ? "/downloads?view=storage"
     : key === "search" || key === "libraryMetadata"
@@ -483,6 +498,7 @@ function taskNotificationGroupRoute(key: TaskNotificationGroupKey): TaskNotifica
 function taskNotificationGroupTitle(t: TaskNotificationTranslate, key: TaskNotificationGroupKey): string {
   switch (key) {
     case "backup": return t("tasks.notification.backup");
+    case "contentSync": return t("tasks.notification.contentSync");
     case "downloads": return t("tasks.notification.downloads");
     case "libraryMetadata": return t("tasks.notification.libraryMetadata");
     case "libraryUpdates": return t("tasks.notification.libraryUpdates");

@@ -8,6 +8,9 @@ export type UserStatePhase = "idle" | "syncing" | "error";
 export interface UserStateRuntime {
   phase: UserStatePhase;
   error: string | null;
+  blocked?: boolean;
+  backgroundError?: string | null;
+  backgroundBlocked?: boolean;
   revision: number;
   epochMismatch?: UserStateEpochMismatch;
 }
@@ -43,7 +46,8 @@ interface UserStateStore {
   retentionByServer?: Record<string, UserStateLocalRetentionConfig>;
   retentionStatusByServer?: Record<string, UserStateServerRetentionStatus>;
   setEnabled: (serverUrl: string, enabled: boolean) => void;
-  setRuntime: (serverUrl: string, phase: UserStatePhase, error?: string | null) => void;
+  setRuntime: (serverUrl: string, phase: UserStatePhase, error?: string | null, blocked?: boolean) => void;
+  setBackgroundFailure?: (serverUrl: string, error: string | null, blocked?: boolean) => void;
   setEpochMismatch: (serverUrl: string, mismatch: UserStateEpochMismatch | null) => void;
   setRetention?: (serverUrl: string, patch: Partial<UserStateLocalRetentionConfig>) => void;
   setRetentionStatus?: (serverUrl: string, status: UserStateServerRetentionStatus | null) => void;
@@ -119,11 +123,12 @@ export const useUserStateStore = create<UserStateStore>()(persist((set) => ({
       return { enabledByServer: next };
     });
   },
-  setRuntime: (serverUrl, phase, error = null) => {
+  setRuntime: (serverUrl, phase, error = null, blocked = false) => {
     const server = normalizeContentServerUrl(serverUrl);
     set((state) => {
       const prev = state.runtimeByServer[server];
       const keepMismatch = prev?.epochMismatch;
+      const keepBackgroundError = prev?.backgroundError;
       return {
         runtimeByServer: {
           ...state.runtimeByServer,
@@ -131,7 +136,41 @@ export const useUserStateStore = create<UserStateStore>()(persist((set) => ({
             phase,
             error,
             revision: (prev?.revision ?? 0) + 1,
+            ...(blocked ? { blocked: true } : {}),
+            ...(keepBackgroundError ? {
+              backgroundError: keepBackgroundError,
+              ...(prev?.backgroundBlocked ? { backgroundBlocked: true } : {}),
+            } : {}),
             ...(keepMismatch ? { epochMismatch: keepMismatch } : {}),
+          },
+        },
+      };
+    });
+  },
+  setBackgroundFailure: (serverUrl, error, blocked = false) => {
+    const server = normalizeContentServerUrl(serverUrl);
+    set((state) => {
+      const prev = state.runtimeByServer[server];
+      if (error === null) {
+        if (!prev?.backgroundError) return state;
+        const { backgroundError: _bgErr, backgroundBlocked: _bgBlk, ...rest } = prev;
+        return {
+          runtimeByServer: {
+            ...state.runtimeByServer,
+            [server]: { ...rest, revision: prev.revision + 1 },
+          },
+        };
+      }
+      const { backgroundError: _prevBgErr, backgroundBlocked: _prevBgBlk, ...prevRest } =
+        prev ?? USER_STATE_IDLE_RUNTIME;
+      return {
+        runtimeByServer: {
+          ...state.runtimeByServer,
+          [server]: {
+            ...prevRest,
+            backgroundError: error,
+            ...(blocked ? { backgroundBlocked: true } : {}),
+            revision: (prev?.revision ?? 0) + 1,
           },
         },
       };

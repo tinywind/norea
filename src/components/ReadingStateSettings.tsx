@@ -4,11 +4,14 @@ import { useQuery } from "@tanstack/react-query";
 import { invoke } from "@tauri-apps/api/core";
 import { formatDateTimeForLocale, useTranslation, type AppLocale, type TranslationKey } from "../i18n";
 import { describeError } from "../lib/errors";
+import { subscribeAppLifecycle } from "../lib/app-lifecycle";
 import { ContentServerError } from "../lib/content-sync/client";
+import { formatUserStateErrorSummary } from "../lib/content-sync/error-summary";
 import {
   getUserStateStatus, rebindUserStateWorkspace, resolveUserStateConflict,
   resumeUserStateAfterRestore, synchronizeUserState,
 } from "../lib/user-state/sync";
+import { clearBackgroundSyncFailure } from "../lib/tasks/sync-runtime";
 import { subscribeUserStateLedgerChanges } from "../db/user-state";
 import type { ResolveUserStateConflictInput, UserStateConflict, UserStateEntity, UserStateKind, UserStateValue, UserStateValueMap } from "../lib/user-state/types";
 import { useContentSyncStore } from "../store/content-sync";
@@ -231,15 +234,16 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
       timer = setTimeout(() => { timer = undefined; void status.refetch(); }, 150);
     };
     const focus = () => { void status.refetch(); };
-    const visible = () => { if (document.visibilityState === "visible") focus(); };
     const unsubscribe = subscribeUserStateLedgerChanges(schedule);
+    const unsubscribeLifecycle = subscribeAppLifecycle((active) => {
+      if (active) focus();
+    });
     window.addEventListener("focus", focus);
-    document.addEventListener("visibilitychange", visible);
     return () => {
       clearTimeout(timer);
       unsubscribe();
+      unsubscribeLifecycle();
       window.removeEventListener("focus", focus);
-      document.removeEventListener("visibilitychange", visible);
     };
   }, [serverUrl, status.refetch]);
 
@@ -247,6 +251,7 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
     if (action.current) return;
     action.current = true;
     setBusy(true); setActionError(null);
+    clearBackgroundSyncFailure("userState", serverUrl, { force: true });
     try {
       await operation();
     } catch (cause) {
@@ -260,7 +265,12 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
   const data = status.data;
   const pausedAfterRestore = data?.pausedAfterRestore === true;
   const epochMismatch = data?.epochMismatch ?? null;
-  const error = actionError || runtime.error || (status.error ? describeError(status.error) : null);
+  const runtimeError = runtime.error
+    ? formatUserStateErrorSummary(runtime.error, runtime.blocked === true, t)
+    : runtime.backgroundError
+      ? formatUserStateErrorSummary(runtime.backgroundError, runtime.backgroundBlocked === true, t)
+      : null;
+  const error = actionError || runtimeError || (status.error ? describeError(status.error) : null);
   return (
     <SettingsSection title={t("userState.title")} description={t("userState.description")}>
       <SettingsFieldRow label={t("userState.workspace")} description={t("userState.workspaceScope")}

@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import {
   TaskNotificationTracker,
   buildTaskEventNotificationBody,
+  buildTrayTaskProgressForGroups,
   sumTaskNotificationProgress,
   taskNotificationCompletionAction,
   taskNotificationRouteForTask,
@@ -121,12 +122,29 @@ describe("incremental task notifications", () => {
     expect(taskNotificationRouteForTask(failed)).toBe("/settings?section=backup");
   });
 
-  it("keeps paused groups visible without producing a completion", () => {
+  it("keeps paused groups visible without producing a completion and reflects sourceQueuesPaused", () => {
     const tracker = new TaskNotificationTracker(snapshot([task("waiting")]));
     expect(tracker.groups(t, snapshot([], { pausedTaskGroups: ["downloads"] }))[0]).toMatchObject({
       key: "downloads", paused: true, progress: { current: 0, total: 1 },
     });
+    expect(tracker.groups(t, snapshot([], { pausedTaskGroups: [], sourceQueuesPaused: true }))[0]).toMatchObject({
+      key: "downloads", paused: true, progress: { current: 0, total: 1 },
+    });
     expect(tracker.takeCompletions(t)).toEqual([]);
+  });
+
+  it("formats tray task progress including non-pausable content sync groups", () => {
+    expect(buildTrayTaskProgressForGroups([{
+      key: "contentSync",
+      title: "Content sync",
+      body: "Syncing personal changes",
+      paused: false,
+      pausable: false,
+      route: "/settings?section=backup",
+    }], t)).toEqual({
+      summary: "Content sync",
+      items: [{ label: "Content sync - Syncing personal changes" }],
+    });
   });
 
   it("counts check child outcomes instead of a successful aggregate wrapper", () => {

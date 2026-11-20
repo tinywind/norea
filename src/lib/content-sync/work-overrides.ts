@@ -7,6 +7,14 @@ import { parseWorkOverride, type WorkOverrideV1 } from "../work-metadata/overrid
 import { isOverrideCoverFileName } from "../work-metadata/schema";
 import { ContentServerError, contentServerFetch, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
+import { isAbortError, requestAbortedError } from "../abort";
+import { isAppActive } from "../app-lifecycle";
+import {
+  beginContentSyncRun,
+  isSyncBackgroundExecutionSuspended,
+  recordBackgroundSyncFailure,
+  subscribeSyncBackgroundExecutionSuspended,
+} from "../tasks/sync-runtime";
 import { readServerNovelSource } from "./novel-source";
 import { contentWorkId } from "./works";
 
@@ -351,9 +359,47 @@ export async function pullWorkOverrideOnOpen(novelId: number, signal?: AbortSign
 }
 
 /** Sends a just-edited override without waiting for the next content sync; failures wait for that sync. */
-export async function pushWorkOverridesNow(): Promise<void> {
+export async function pushWorkOverridesNow(signal?: AbortSignal): Promise<void> {
   const settings = useContentSyncStore.getState();
   if (!settings.serverUrl) return;
-  const token = await registerContentDevice(settings.serverUrl, settings.deviceName);
-  await syncWorkOverrides(settings.serverUrl, token);
+  const runController = new AbortController();
+  const onExternalAbort = () => runController.abort(signal?.reason ?? requestAbortedError());
+  if (signal) {
+    if (signal.aborted) onExternalAbort();
+    else signal.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  if (isSyncBackgroundExecutionSuspended()) {
+    runController.abort(requestAbortedError());
+  }
+  const unsubscribeSuspended = subscribeSyncBackgroundExecutionSuspended((suspended) => {
+    if (suspended) runController.abort(requestAbortedError());
+  });
+  const effectiveSignal = runController.signal;
+  const endSyncRun = beginContentSyncRun();
+  try {
+    effectiveSignal.throwIfAborted();
+    const token = await registerContentDevice(settings.serverUrl, settings.deviceName, effectiveSignal);
+    await syncWorkOverrides(settings.serverUrl, token, true, undefined, effectiveSignal);
+  } catch (error) {
+    if (
+      !isAbortError(error) &&
+      !effectiveSignal.aborted &&
+      !isAppActive() &&
+      useContentSyncStore.getState().serverUrl === settings.serverUrl
+    ) {
+      const message = error instanceof Error ? error.message : String(error);
+      const blocked = error instanceof ContentServerError && error.status === 403;
+      recordBackgroundSyncFailure({
+        kind: "content",
+        serverUrl: settings.serverUrl,
+        rawError: message,
+        blocked,
+      });
+    }
+    throw error;
+  } finally {
+    unsubscribeSuspended();
+    signal?.removeEventListener("abort", onExternalAbort);
+    endSyncRun();
+  }
 }

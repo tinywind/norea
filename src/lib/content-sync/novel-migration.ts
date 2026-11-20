@@ -342,6 +342,7 @@ export async function finalizePendingNovelMigrations(
   token: string,
   assertCurrent: () => void = () => undefined,
   retryBlocked = true,
+  signal?: AbortSignal,
 ): Promise<boolean> {
   const jobs = await listNovelMigrations(server);
   if (!jobs.length) return false;
@@ -362,15 +363,21 @@ export async function finalizePendingNovelMigrations(
       }
       if (!job.request) {
         verifiedTargetMetadata(job);
-        const capabilities = await contentServerRequest<{ workMigrationVersion?: number; workCoverDeletionVersion?: number; workMigrationLineageVersion?: number; workMigrationCopyVersion?: number }>(server, "/capabilities", token);
+        const capabilities = signal
+          ? await contentServerRequest<{ workMigrationVersion?: number; workCoverDeletionVersion?: number; workMigrationLineageVersion?: number; workMigrationCopyVersion?: number }>(server, "/capabilities", token, "GET", undefined, signal)
+          : await contentServerRequest<{ workMigrationVersion?: number; workCoverDeletionVersion?: number; workMigrationLineageVersion?: number; workMigrationCopyVersion?: number }>(server, "/capabilities", token);
         assertCurrent();
         if (capabilities.workMigrationVersion !== 1 || capabilities.workMigrationLineageVersion !== 1) {
           throw new MigrationReviewRequiredError("Update the content server before completing this migration.");
         }
-        const source = await contentServerRequest<WorkMigrationSnapshot>(server, `/works/${sourceId}/migration-snapshot`, token);
+        const source = signal
+          ? await contentServerRequest<WorkMigrationSnapshot>(server, `/works/${sourceId}/migration-snapshot`, token, "GET", undefined, signal)
+          : await contentServerRequest<WorkMigrationSnapshot>(server, `/works/${sourceId}/migration-snapshot`, token);
         assertCurrent();
         const targetId = await contentWorkId(job.target);
-        let target = await contentServerRequest<WorkMigrationSnapshot>(server, `/works/${targetId}/migration-snapshot`, token);
+        let target = signal
+          ? await contentServerRequest<WorkMigrationSnapshot>(server, `/works/${targetId}/migration-snapshot`, token, "GET", undefined, signal)
+          : await contentServerRequest<WorkMigrationSnapshot>(server, `/works/${targetId}/migration-snapshot`, token);
         assertCurrent();
         if (!validSnapshot(source, sourceId, job.source) || !validSnapshot(target, targetId, job.target)) {
           throw new MigrationReviewRequiredError("The server migration snapshot does not match the merged works.");
@@ -390,11 +397,15 @@ export async function finalizePendingNovelMigrations(
             await saveNovelMigration(job);
           }
           assertCurrent();
-          const cleared = await contentServerRequest<WorkCatalogEntry>(server, `/works/${targetId}/cover`, token, "DELETE", { revision: job.targetCoverDeletionRevision });
+          const cleared = signal
+            ? await contentServerRequest<WorkCatalogEntry>(server, `/works/${targetId}/cover`, token, "DELETE", { revision: job.targetCoverDeletionRevision }, signal)
+            : await contentServerRequest<WorkCatalogEntry>(server, `/works/${targetId}/cover`, token, "DELETE", { revision: job.targetCoverDeletionRevision });
           assertCurrent();
           if (cleared.id !== targetId || cleared.deleted || cleared.hasCover || cleared.metadata?.cover !== null
             || !sameIdentity(cleared.metadata.identity, job.target)) throw new Error("The server did not confirm the target cover removal.");
-          target = await contentServerRequest<WorkMigrationSnapshot>(server, `/works/${targetId}/migration-snapshot`, token);
+          target = signal
+            ? await contentServerRequest<WorkMigrationSnapshot>(server, `/works/${targetId}/migration-snapshot`, token, "GET", undefined, signal)
+            : await contentServerRequest<WorkMigrationSnapshot>(server, `/works/${targetId}/migration-snapshot`, token);
           assertCurrent();
           if (!validSnapshot(target, targetId, job.target) || targetCoverNeedsRemoval(job, target)) {
             throw new MigrationReviewRequiredError("The server target cover changed before migration completion.");
@@ -410,7 +421,7 @@ export async function finalizePendingNovelMigrations(
       assertCurrent();
       await runServerWorkDeletion(server, sourceId, async () => {
         const result = await contentServerRequest<{ operationId: string; deletedWork: WorkCatalogEntry }>(
-          server, `/works/${sourceId}/finalize-migration`, token, "POST", job.request, undefined, 300,
+          server, `/works/${sourceId}/finalize-migration`, token, "POST", job.request, signal, 300,
         );
         assertCurrent();
         if (result.operationId !== job.operationId || result.deletedWork?.id !== sourceId || !result.deletedWork.deleted

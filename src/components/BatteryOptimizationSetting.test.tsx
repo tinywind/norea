@@ -34,4 +34,19 @@ describe("BatteryOptimizationSetting", () => {
     expect(markup).toContain(">Exempt<");
     expect(markup).not.toContain("Request battery optimization exemption");
   });
+
+  it("supports custom section title and description keys for content server sync", () => {
+    stubBridge(false);
+    const markup = renderToStaticMarkup(
+      <MantineProvider>
+        <BatteryOptimizationSetting
+          titleKey="contentSync.background.title"
+          descriptionKey="contentSync.battery.description"
+        />
+      </MantineProvider>,
+    );
+    expect(markup).toContain("Background sync");
+    expect(markup).toContain("An exemption keeps sync running with the screen off.");
+    expect(markup).toContain('data-settings-label="Battery optimization exemption"');
+  });
 });

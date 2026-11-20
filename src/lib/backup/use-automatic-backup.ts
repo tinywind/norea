@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useAutoBackupStore } from "../../store/auto-backup";
+import { isAppActive, subscribeAppLifecycle } from "../app-lifecycle";
 import { isTauriRuntime } from "../tauri-runtime";
 import { runAutomaticBackupIfDue } from "./auto-backup";
 
@@ -17,14 +18,16 @@ export function useAutomaticBackup(): void {
   useEffect(() => {
     if (!isTauriRuntime() || schedule === "off") return;
     const check = () => {
-      if (document.visibilityState !== "visible") return;
+      if (!isAppActive()) return;
       void runAutomaticBackupIfDue();
     };
     check();
-    document.addEventListener("visibilitychange", check);
+    const unsubscribeLifecycle = subscribeAppLifecycle((active) => {
+      if (active) check();
+    });
     const timer = window.setInterval(check, CHECK_INTERVAL_MS);
     return () => {
-      document.removeEventListener("visibilitychange", check);
+      unsubscribeLifecycle();
       window.clearInterval(timer);
     };
   }, [schedule]);

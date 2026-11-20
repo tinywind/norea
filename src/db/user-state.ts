@@ -23,6 +23,7 @@ export interface UserStateLedgerStatus {
   cursor: number;
   through: number | null;
   pending: number;
+  sendablePending?: number;
   conflicts: number;
   deferred: number;
   projectionPending: number;

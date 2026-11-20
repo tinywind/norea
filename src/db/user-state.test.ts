@@ -1759,3 +1759,49 @@ it("preserves promoted incognito progress when path-keyed records are GC'd and c
     item.value.openedAt === null,
   )).toBe(true);
 });
+
+it("excludes opaque-identity pending operations from sendablePending", async () => {
+  await bind();
+  const namespace = canonicalUserStateJson([binding.serverUrl, binding.workspaceId, binding.epoch]);
+  const insertPendingOp = (operationId: string, entityKey: string, intentSequence: number, payload: unknown) => {
+    active.sql.prepare(
+      "INSERT INTO user_state_operation(operation_id,namespace,entity_key,intent_sequence,payload,status) VALUES(?,?,?,?,?,'pending')",
+    ).run(operationId, namespace, entityKey, intentSequence, JSON.stringify(payload));
+  };
+
+  insertPendingOp("op-missing-work-id", "k-missing-work-id", 1, {
+    operationId: "op-missing-work-id",
+    entity: { kind: "reading", work: { pluginId: "source", sourceNovelId: null, novelPath: "/book", name: "Book" }, chapter: { chapterPath: "/chapter/1" } },
+    value: readingValue(50),
+    baseRevision: 0,
+  });
+  insertPendingOp("op-norea-folder", "k-norea-folder", 2, {
+    operationId: "op-norea-folder",
+    entity: { kind: "reading", work, chapter: { chapterPath: "norea-folder:slot-1" } },
+    value: readingValue(50),
+    baseRevision: 0,
+  });
+  insertPendingOp("op-local-folder-resume", "k-local-folder-resume", 3, {
+    operationId: "op-local-folder-resume",
+    entity: { kind: "resume", work },
+    value: { chapter: { chapterPath: "local-folder:slot-2", name: "Two" }, anchor: null, openedAt: 10 },
+    baseRevision: 0,
+  });
+
+  expect((await tx(active, db => getUserStateLedgerStatusInDb(db, binding))).sendablePending).toBe(0);
+
+  insertPendingOp("op-sendable-reading", "k-sendable-reading", 4, {
+    operationId: "op-sendable-reading",
+    entity: reading,
+    value: readingValue(80),
+    baseRevision: 0,
+  });
+  insertPendingOp("op-sendable-category", "k-sendable-category", 5, {
+    operationId: "op-sendable-category",
+    entity: { kind: "category", categoryId: "cat-1" },
+    value: { name: "Favorites", sort: 1, deleted: false },
+    baseRevision: 0,
+  });
+
+  expect((await tx(active, db => getUserStateLedgerStatusInDb(db, binding))).sendablePending).toBe(2);
+});

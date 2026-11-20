@@ -21,6 +21,15 @@ import {
   SourceAccessNotificationTracker,
   type SourceAccessNotification,
 } from "../lib/tasks/source-access-notifications";
+import {
+  buildContentSyncNotificationGroup,
+  buildSyncFailureNotification,
+  getLastEmittedSyncFailureId,
+  getSyncRuntimeSnapshot,
+  markSyncFailureNotificationEmitted,
+  markSyncFailureNotificationOpened,
+  subscribeSyncRuntime,
+} from "../lib/tasks/sync-runtime";
 import type { TaskNotificationMode } from "../store/notifications";
 
 interface WindowsTaskNotificationBridgeProps {
@@ -59,6 +68,7 @@ export function WindowsTaskNotificationBridge({
     const sourceTracker = new SourceAccessNotificationTracker(snapshot);
     const sentByGroup = new Map<TaskNotificationGroupKey, SentGroupState>();
     const pendingCompletions = new Map<TaskNotificationGroupKey, TaskNotificationCompletion>();
+    const pendingCancelledCompletions = new Set<TaskNotificationGroupKey>();
     let sending = false;
     let publishRequested = false;
     let disposed = false;
@@ -67,6 +77,8 @@ export function WindowsTaskNotificationBridge({
     let publishTimer: ReturnType<typeof setTimeout> | undefined;
     let publishAt = 0;
     let lastPayload = "";
+    let lastEmittedSyncFailureId = getLastEmittedSyncFailureId("windows");
+    let lastClearedSyncFailureSerial = getSyncRuntimeSnapshot().failureClearedSerial;
     let challengeRevision: string | undefined;
     let challenges: SourceAccessNotification[] = [];
 
@@ -84,10 +96,35 @@ export function WindowsTaskNotificationBridge({
       publishTimer = undefined;
       if (disposed || !ready) return;
 
-      const groups = tracker.groups(t, snapshot);
+      const syncState = getSyncRuntimeSnapshot();
+      const syncGroup = buildContentSyncNotificationGroup(t, syncState);
+      const groups = [...tracker.groups(t, snapshot), ...(syncGroup ? [syncGroup] : [])];
       const completed = tracker.takeCompletions(t);
       if (taskProgressMode !== "off") {
         for (const completion of completed) pendingCompletions.set(completion.key, completion);
+      }
+      if (syncState.latestFailure !== null && syncState.latestFailure.id > lastEmittedSyncFailureId) {
+        lastEmittedSyncFailureId = syncState.latestFailure.id;
+        markSyncFailureNotificationEmitted("windows", syncState.latestFailure.id);
+        if (taskProgressMode !== "off") {
+          const failure = buildSyncFailureNotification(syncState.latestFailure, t);
+          pendingCompletions.set("contentSync", {
+            ...failure,
+            succeeded: 0,
+            failed: 1,
+            cancelled: 0,
+            total: 1,
+            route: "/settings?section=backup",
+          });
+          pendingCancelledCompletions.delete("contentSync");
+        }
+      }
+      if (syncState.failureClearedSerial > lastClearedSyncFailureSerial) {
+        lastClearedSyncFailureSerial = syncState.failureClearedSerial;
+        if (syncState.latestFailure === null) {
+          pendingCompletions.delete("contentSync");
+          pendingCancelledCompletions.add("contentSync");
+        }
       }
       const revision = sourceTracker.revision(snapshot.sourceAccessBlocks);
       if (revision !== challengeRevision) {
@@ -125,27 +162,35 @@ export function WindowsTaskNotificationBridge({
       });
       if (retryDelay !== undefined) schedulePublish(retryDelay);
 
+      const cancelledCompletions = [...pendingCancelledCompletions];
       const payload = {
         quiet: taskProgressMode !== "progress",
         groups: presentedGroups.map(group => ({
           key: group.key, title: group.title,
           body: group.paused ? `${t("tasks.notification.paused")} · ${group.body}` : group.body,
-          paused: group.paused, progress: group.progress,
+          paused: group.paused,
+          pausable: group.pausable ?? true,
+          progress: group.progress,
           pauseLabel: t("tasks.notification.pause"), resumeLabel: t("tasks.notification.resume"),
         })),
         challenges,
         completions: [...pendingCompletions.values()].map(({ action, key, title, body }) => ({ action, key, title, body })),
+        ...(cancelledCompletions.length > 0 ? { cancelledCompletions } : {}),
       };
-      const serialized = JSON.stringify({ ...payload, completions: [] });
-      if (serialized === lastPayload && payload.completions.length === 0) return;
+      const serialized = JSON.stringify({ ...payload, completions: [], cancelledCompletions: undefined });
+      if (serialized === lastPayload && payload.completions.length === 0 && cancelledCompletions.length === 0) return;
       sending = true;
       publishRequested = false;
       const sentCompletions = new Map(pendingCompletions);
+      const sentCancellations = new Set(cancelledCompletions);
       let failed = false;
       void invoke("task_notification_reconcile", { payload })
         .then(() => {
           for (const [key, completion] of sentCompletions) {
             if (pendingCompletions.get(key) === completion) pendingCompletions.delete(key);
+          }
+          for (const key of sentCancellations) {
+            pendingCancelledCompletions.delete(key);
           }
           lastPayload = serialized;
         })
@@ -156,7 +201,7 @@ export function WindowsTaskNotificationBridge({
         })
         .finally(() => {
           sending = false;
-          if (failed || publishRequested || pendingCompletions.size > 0) {
+          if (failed || publishRequested || pendingCompletions.size > 0 || pendingCancelledCompletions.size > 0) {
             schedulePublish(failed ? MIN_PROGRESS_INTERVAL_MS : 0);
           }
         });
@@ -168,6 +213,9 @@ export function WindowsTaskNotificationBridge({
       if (action.type === "pause" || action.type === "resume") {
         onAction?.(action);
         return;
+      }
+      if (action.type === "openBackupSettings") {
+        markSyncFailureNotificationOpened();
       }
       void (async () => {
         try {
@@ -197,6 +245,13 @@ export function WindowsTaskNotificationBridge({
       tracker.updateBatch(event);
       schedulePublish();
     });
+    const unsubscribeSync = subscribeSyncRuntime(() => {
+      const syncState = getSyncRuntimeSnapshot();
+      const urgent =
+        (syncState.latestFailure !== null && syncState.latestFailure.id > lastEmittedSyncFailureId) ||
+        syncState.failureClearedSerial > lastClearedSyncFailureSerial;
+      schedulePublish(urgent ? 0 : PUBLISH_DELAY_MS);
+    });
     void listen<unknown>("task-notification-action", event => receiveAction(event.payload))
       .then(unlisten => {
         if (disposed) { unlisten(); return; }
@@ -212,6 +267,7 @@ export function WindowsTaskNotificationBridge({
       unsubscribeSnapshots();
       unsubscribeEvents();
       unsubscribeBatches();
+      unsubscribeSync();
       actionUnlisten?.();
       void invoke("task_notification_reconcile", {
         payload: { groups: [], challenges: [], completions: [], quiet: true },

@@ -16,6 +16,8 @@ interface ContentSyncStore {
   progress: { completed: number; total: number; uploaded: number; failed: number } | null;
   error: string | null;
   blocked: boolean;
+  backgroundError?: string | null;
+  backgroundBlocked?: boolean;
   deviceKey: string | null;
   setServerUrl: (url: string) => void;
   setDeviceName: (name: string) => void;
@@ -27,13 +29,14 @@ interface ContentSyncStore {
 
 export const useContentSyncStore = create<ContentSyncStore>()(persist((set) => ({
   serverUrl: "", deviceName: "", syncMode: "manual", syncIntervalMinutes: 15, status: "idle", error: null, blocked: false,
+  backgroundError: null, backgroundBlocked: false,
   deviceKey: null, progress: null,
   uploadConflictPolicy: "prefer-complete",
   lookupTimeoutSeconds: 3,
   setServerUrl: (value) => {
     const serverUrl = value.trim() ? normalizeContentServerUrl(value) : "";
     set((state) => serverUrl === state.serverUrl ? {} : ({
-      serverUrl, deviceKey: null, error: null, blocked: false, status: "idle", progress: null,
+      serverUrl, deviceKey: null, error: null, blocked: false, backgroundError: null, backgroundBlocked: false, status: "idle", progress: null,
     }));
   },
   setDeviceName: (deviceName) => set({ deviceName: deviceName.trim() }),

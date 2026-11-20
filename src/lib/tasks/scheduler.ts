@@ -380,7 +380,7 @@ export class TaskScheduler {
       lane: entry?.record.lane,
       mainQueueLength: this.mainQueue.length,
       pausedSourceIds: [...new Set([...this.pausedSourceIds, ...Object.keys(this.downloadFailureStops.sourceErrors)])].sort(),
-      pausedTaskGroups: [...this.pausedTaskGroups].sort(),
+      pausedTaskGroups: this.snapshotPausedTaskGroups(),
       priority: entry?.record.priority,
       sourceAccessScopeKey: entry?.spec.sourceAccessScopeKey,
       sourceAccessScopesBlocked: this.sourceAccess.size,
@@ -1372,7 +1372,14 @@ export class TaskScheduler {
     if (!suspended) this.requestDrain();
   }
 
+  private snapshotPausedTaskGroups(): TaskNotificationGroupKey[] {
+    const groups = new Set(this.pausedTaskGroups);
+    if (this.sourceQueuesPaused) groups.add("downloads");
+    return [...groups].sort();
+  }
+
   pauseTaskGroup(group: TaskNotificationGroupKey): boolean {
+    if (group === "downloads") return this.pauseSourceQueue();
     if (this.pausedTaskGroups.has(group)) return false;
     this.pausedTaskGroups.add(group);
     this.pauseRunningSourceTasks(undefined, entry => this.isTaskGroupPaused(entry));
@@ -1383,6 +1390,7 @@ export class TaskScheduler {
   }
 
   resumeTaskGroup(group: TaskNotificationGroupKey): boolean {
+    if (group === "downloads") return this.resumeSourceQueue();
     if (!this.pausedTaskGroups.delete(group)) return false;
     this.debug("task group resumed", undefined, { group });
     this.publishSnapshot();
@@ -1393,7 +1401,9 @@ export class TaskScheduler {
   private isTaskGroupPaused(entry: TaskEntry): boolean {
     if (entry.sourceAccessVerificationRevision !== undefined) return false;
     const group = taskNotificationGroupForKind(entry.record.kind);
-    return group !== null && this.pausedTaskGroups.has(group);
+    if (group === null) return false;
+    if (group === "downloads") return !isUiInteraction(entry) && this.sourceQueuesPaused;
+    return this.pausedTaskGroups.has(group);
   }
 
   getDownloadFailureStops(): DownloadFailureStops {
@@ -1460,7 +1470,13 @@ export class TaskScheduler {
   }
 
   pauseSourceQueue(sourceId?: string): boolean {
-    const paused = this.pauseRunningSourceTasks(sourceId, entry => !isUiInteraction(entry));
+    const paused = this.pauseRunningSourceTasks(
+      sourceId,
+      entry =>
+        isInterruptibleDownloadKind(entry.record.kind) &&
+        !isUiInteraction(entry) &&
+        entry.sourceAccessVerificationRevision === undefined,
+    );
     if (!sourceId) {
       if (this.sourceQueuesPaused) return paused > 0;
       this.sourceQueuesPaused = true;
@@ -1479,7 +1495,12 @@ export class TaskScheduler {
   resumeSourceQueue(sourceId?: string): boolean {
     if (!sourceId) {
       this.consecutiveDownloadFailures.clear();
-      if (!this.sourceQueuesPaused && this.pausedSourceIds.size === 0 && Object.keys(this.downloadFailureStops.sourceErrors).length === 0) {
+      if (
+        !this.sourceQueuesPaused &&
+        this.pausedSourceIds.size === 0 &&
+        !this.downloadFailureStops.globalError &&
+        Object.keys(this.downloadFailureStops.sourceErrors).length === 0
+      ) {
         return false;
       }
       downloadRecovery.resume();
@@ -2215,8 +2236,8 @@ export class TaskScheduler {
 
   private isSourceQueuePaused(entry: TaskEntry): boolean {
     if (this.isTaskGroupPaused(entry)) return true;
-    if (this.downloadFailureStops.globalError &&
-      (entry.record.kind === "chapter.download" || entry.record.kind === "chapter.repairMedia")) return true;
+    if (!isInterruptibleDownloadKind(entry.record.kind)) return false;
+    if (this.downloadFailureStops.globalError) return true;
     if (isUiInteraction(entry)) return false;
     const sourceId = entry.record.source?.id;
     return (
@@ -3099,7 +3120,7 @@ export class TaskScheduler {
     const sourceQueuesTotal = sourceIdsInActiveEntries.size;
     const snapshot = {
       pausedSourceIds: [...new Set([...this.pausedSourceIds, ...Object.keys(this.downloadFailureStops.sourceErrors)])].sort(),
-      pausedTaskGroups: [...this.pausedTaskGroups].sort(),
+      pausedTaskGroups: this.snapshotPausedTaskGroups(),
       records,
       recordLimit: records.length,
       recordsTruncated: false,

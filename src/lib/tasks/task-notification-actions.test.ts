@@ -1,23 +1,66 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { SourceAccessBlock, TaskRecord } from "./scheduler";
 import type { VpnDownloadPlan, VpnDownloadRangeState } from "./vpn-download-types";
-const mocks=vi.hoisted(()=>({pauseTaskGroup:vi.fn(),resumeTaskGroup:vi.fn(),getSnapshot:vi.fn(),open:vi.fn(),restored:vi.fn(),canOpenSourceAccessBrowser:vi.fn(),waitForSourceTaskSettlement:vi.fn()}));
+const mocks=vi.hoisted(()=>({
+  pauseSourceQueue:vi.fn(),pauseTaskGroup:vi.fn(),resumeTaskGroup:vi.fn(),getSnapshot:vi.fn(),open:vi.fn(),
+  restored:vi.fn(),resumeAfterFailure:vi.fn(),canOpenSourceAccessBrowser:vi.fn(),waitForSourceTaskSettlement:vi.fn(),
+  markSyncFailureOpened:vi.fn(),
+}));
 vi.mock("./scheduler",()=>({taskScheduler:mocks}));
 vi.mock("./source-access-coordinator",()=>({openSourceAccessBrowser:mocks.open,sourceAccessBlockSourceNames:()=>["Source"]}));
-vi.mock("./chapter-download",()=>({waitForChapterDownloadQueueRestoration:mocks.restored}));
-const vpn = vi.hoisted(() => ({ getSnapshot: vi.fn(), initialize: vi.fn(), open: vi.fn() }));
+vi.mock("./chapter-download",()=>({
+  resumeChapterDownloadQueueAfterFailure:mocks.resumeAfterFailure,
+  waitForChapterDownloadQueueRestoration:mocks.restored,
+}));
+vi.mock("./sync-runtime",()=>({markSyncFailureNotificationOpened:mocks.markSyncFailureOpened}));
+const vpn = vi.hoisted(() => ({ getSnapshot: vi.fn(), initialize: vi.fn(), open: vi.fn(), pauseRun: vi.fn(), resumeRun: vi.fn() }));
 vi.mock("./vpn-download-runtime", () => ({
-  getVpnDownloadRuntimeSnapshot: vpn.getSnapshot, initializeVpnDownloadRuntime: vpn.initialize, openVpnDownloadVerification: vpn.open,
+  getVpnDownloadRuntimeSnapshot: vpn.getSnapshot, initializeVpnDownloadRuntime: vpn.initialize,
+  openVpnDownloadVerification: vpn.open, pauseVpnDownloadRun: vpn.pauseRun, resumeVpnDownloadRun: vpn.resumeRun,
 }));
 import { applyTaskNotificationAction, resolveTaskNotificationDestination, type TaskNotificationTargetLookup } from "./task-notification-actions";
 const t=((key:string)=>key) as Parameters<typeof applyTaskNotificationAction>[2];
 const block: SourceAccessBlock={sourceId:"source-a",scopeKey:"plugin:source-a:site:source.test",revision:2,detectedAt:1,verificationRequested:false,challenge:{kind:"captcha",url:"https://source.test/trusted-chapter"}};
-beforeEach(()=>{vi.clearAllMocks();mocks.restored.mockResolvedValue(undefined);mocks.canOpenSourceAccessBrowser.mockReturnValue(true);mocks.waitForSourceTaskSettlement.mockResolvedValue(undefined);mocks.getSnapshot.mockReturnValue({records:[],sourceAccessBlocks:[block]});mocks.open.mockResolvedValue(true);vpn.initialize.mockResolvedValue(undefined);vpn.open.mockResolvedValue(undefined);});
-it("applies controls to the requested category without opening an activity page",async()=>{
+beforeEach(()=>{
+  vi.clearAllMocks();
+  mocks.restored.mockResolvedValue(undefined);
+  mocks.resumeAfterFailure.mockResolvedValue(true);
+  mocks.canOpenSourceAccessBrowser.mockReturnValue(true);
+  mocks.waitForSourceTaskSettlement.mockResolvedValue(undefined);
+  mocks.getSnapshot.mockReturnValue({records:[],sourceAccessBlocks:[block]});
+  mocks.open.mockResolvedValue(true);
+  vpn.getSnapshot.mockReturnValue({plans:[],run:null});
+  vpn.initialize.mockResolvedValue(undefined);
+  vpn.open.mockResolvedValue(undefined);
+  vpn.pauseRun.mockResolvedValue(undefined);
+  vpn.resumeRun.mockResolvedValue(undefined);
+});
+it("applies controls to the requested category and unifies downloads with the queue gate",async()=>{
  const openTasks=vi.fn();await applyTaskNotificationAction({type:"pause",groupKey:"libraryMetadata"},openTasks,t);
+ await applyTaskNotificationAction({type:"resume",groupKey:"libraryMetadata"},openTasks,t);
+ await applyTaskNotificationAction({type:"pause",groupKey:"downloads"},openTasks,t);
  await applyTaskNotificationAction({type:"resume",groupKey:"downloads"},openTasks,t);
  expect(mocks.pauseTaskGroup).toHaveBeenCalledExactlyOnceWith("libraryMetadata");
- expect(mocks.resumeTaskGroup).toHaveBeenCalledExactlyOnceWith("downloads");expect(openTasks).not.toHaveBeenCalled();
+ expect(mocks.resumeTaskGroup).toHaveBeenCalledExactlyOnceWith("libraryMetadata");
+ expect(mocks.pauseSourceQueue).toHaveBeenCalledOnce();
+ expect(mocks.resumeAfterFailure).toHaveBeenCalledOnce();
+ expect(vpn.pauseRun).not.toHaveBeenCalled();
+ expect(vpn.resumeRun).not.toHaveBeenCalled();
+ expect(openTasks).not.toHaveBeenCalled();
+});
+it("synchronizes downloads pause and resume with an active VPN download run",async()=>{
+ vpn.getSnapshot.mockReturnValue({plans:[],run:{status:"running"}});
+ await applyTaskNotificationAction({type:"pause",groupKey:"downloads"},vi.fn(),t);
+ expect(mocks.pauseSourceQueue).toHaveBeenCalledOnce();
+ expect(vpn.pauseRun).toHaveBeenCalledOnce();
+
+ mocks.resumeAfterFailure.mockResolvedValueOnce(false);
+ await applyTaskNotificationAction({type:"resume",groupKey:"downloads"},vi.fn(),t);
+ expect(vpn.resumeRun).not.toHaveBeenCalled();
+
+ mocks.resumeAfterFailure.mockResolvedValueOnce(true);
+ await applyTaskNotificationAction({type:"resume",groupKey:"downloads"},vi.fn(),t);
+ expect(vpn.resumeRun).toHaveBeenCalledOnce();
 });
 it("opens task details for a normal notification tap",async()=>{
  const openTasks=vi.fn();await applyTaskNotificationAction({type:"openTasks"},openTasks,t);
@@ -182,9 +225,10 @@ describe("notification targets", () => {
     expect(open).toHaveBeenCalledExactlyOnceWith({ kind: "attention" });
   });
 
-  it("opens Settings > Backup & sync for a failed automatic backup", async () => {
+  it("opens Settings > Backup & sync for a failed automatic backup or sync failure", async () => {
     const open = vi.fn();
     await applyTaskNotificationAction({ type: "openBackupSettings" }, open, t);
+    expect(mocks.markSyncFailureOpened).toHaveBeenCalledOnce();
     expect(open).toHaveBeenCalledExactlyOnceWith({ kind: "backupSettings" });
   });
 

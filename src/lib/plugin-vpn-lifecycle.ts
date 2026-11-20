@@ -12,7 +12,9 @@ import {
   type PluginVpnStatus,
 } from "./plugin-vpn";
 import { listSavedPluginVpnProfiles, type SavedVpnProfile } from "./plugin-vpn-profiles";
+import { isAppActive, subscribeAppLifecycle } from "./app-lifecycle";
 import { isNetworkOnline, useNetworkStore } from "./network";
+import { isAndroidRuntime } from "./tauri-runtime";
 import { usePluginVpnStore } from "../store/plugin-vpn";
 
 // Background work keeps the app WebView running, so a lost session is retried
@@ -191,11 +193,16 @@ export function startPluginVpnLifecycle({
     }
   });
   const foreground = () => {
-    if (document.visibilityState !== "hidden") restore();
+    if (isAppActive()) restore();
   };
-  document.addEventListener("visibilitychange", foreground);
+  const unsubscribeLifecycle = subscribeAppLifecycle((appActive) => {
+    if (appActive) restore();
+  });
   window.addEventListener("focus", foreground);
-  window.addEventListener("norea-app-resumed", restore);
+  const separateResumedListener = !isAndroidRuntime();
+  if (separateResumedListener) {
+    window.addEventListener("norea-app-resumed", restore);
+  }
   void startPluginVpnStatusListener((event) => {
     if (event.kind === "networkChanged" && isNetworkOnline()) {
       if (restoring) recoveryPending = true;
@@ -222,9 +229,11 @@ export function startPluginVpnLifecycle({
     stopStatusListener?.();
     stopNetworkListener();
     stopIntentListener();
-    document.removeEventListener("visibilitychange", foreground);
+    unsubscribeLifecycle();
     window.removeEventListener("focus", foreground);
-    window.removeEventListener("norea-app-resumed", restore);
+    if (separateResumedListener) {
+      window.removeEventListener("norea-app-resumed", restore);
+    }
     recoveryRequests.delete(requestRecovery);
   };
 }

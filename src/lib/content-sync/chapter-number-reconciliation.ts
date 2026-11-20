@@ -65,6 +65,7 @@ export async function reconcilePendingChapterNumbers(
   token: string,
   assertCurrent: () => void = () => undefined,
   uploadContent = true,
+  signal?: AbortSignal,
 ): Promise<void> {
   const pending = await listPendingChapterNumberReconciliations(server);
   if (!pending.length) return;
@@ -76,14 +77,18 @@ export async function reconcilePendingChapterNumbers(
     assertCurrent();
     const id = await contentWorkId(job.identity);
     if (!job.request) {
-      const capabilities = await contentServerRequest<{ chapterNumberReconciliationVersion?: number }>(server, "/capabilities", token);
+      const capabilities = signal
+        ? await contentServerRequest<{ chapterNumberReconciliationVersion?: number }>(server, "/capabilities", token, "GET", undefined, signal)
+        : await contentServerRequest<{ chapterNumberReconciliationVersion?: number }>(server, "/capabilities", token);
       assertCurrent();
       if (capabilities.chapterNumberReconciliationVersion !== 1) {
         throw new Error("Update the content server before synchronizing corrected chapter numbers.");
       }
       let snapshot: WorkMigrationSnapshot;
       try {
-        snapshot = await contentServerRequest<WorkMigrationSnapshot>(server, "/works/" + id + "/migration-snapshot", token);
+        snapshot = signal
+          ? await contentServerRequest<WorkMigrationSnapshot>(server, "/works/" + id + "/migration-snapshot", token, "GET", undefined, signal)
+          : await contentServerRequest<WorkMigrationSnapshot>(server, "/works/" + id + "/migration-snapshot", token);
       } catch (error) {
         if (!(error instanceof ContentServerError && error.status === 404)) throw error;
         // A server without this work can receive the corrected catalog through ordinary upload.
@@ -99,9 +104,13 @@ export async function reconcilePendingChapterNumbers(
       await saveJob(job);
     }
     assertCurrent();
-    const response = await contentServerRequest<{ operationId: string; work: WorkCatalogEntry }>(
-      server, "/works/" + id + "/reconcile-chapter-numbers", token, "POST", job.request,
-    );
+    const response = signal
+      ? await contentServerRequest<{ operationId: string; work: WorkCatalogEntry }>(
+        server, "/works/" + id + "/reconcile-chapter-numbers", token, "POST", job.request, signal,
+      )
+      : await contentServerRequest<{ operationId: string; work: WorkCatalogEntry }>(
+        server, "/works/" + id + "/reconcile-chapter-numbers", token, "POST", job.request,
+      );
     assertCurrent();
     if (response.operationId !== job.operationId || response.work?.id !== id ||
         !sameIdentity(response.work.metadata?.identity, job.identity)) {

@@ -2,11 +2,14 @@ import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { UserStateApplyEffects } from "./types";
 
 const mocks = vi.hoisted(() => ({
-  sync: vi.fn(), active: vi.fn(), applyResume: vi.fn(),
+  sync: vi.fn(), hasSendable: vi.fn(), active: vi.fn(), applyResume: vi.fn(),
   localListener: undefined as ((priority: "reading" | "normal") => void) | undefined,
   appliedListener: undefined as ((effects: UserStateApplyEffects) => void) | undefined,
 }));
-vi.mock("./sync", () => ({ synchronizeUserState: mocks.sync }));
+vi.mock("./sync", () => ({
+  synchronizeUserState: mocks.sync,
+  hasSendableUserStateChanges: mocks.hasSendable,
+}));
 vi.mock("../../db/user-state", () => ({
   setUserStateActiveServer: mocks.active,
   subscribeUserStateChanges: (listener: (priority: "reading" | "normal") => void) => {
@@ -19,11 +22,15 @@ vi.mock("../../db/user-state", () => ({
 vi.mock("../../store/reader", () => ({ useReaderStore: { getState: () => ({ applySharedResume: mocks.applyResume }) } }));
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
+import { registerBeforeAppSuspend } from "../app-lifecycle";
+import { ContentServerError } from "../content-sync/client";
 import { useNetworkStore } from "../network";
+import { getSyncRuntimeSnapshot, resetSyncRuntimeForTests } from "../tasks/sync-runtime";
 import { requestUserStateFlush } from "./events";
 import {
   startUserStateScheduler, USER_STATE_COMMAND_DEBOUNCE_MS, USER_STATE_POLL_MS, USER_STATE_READING_DEBOUNCE_MS,
 } from "./scheduler";
+import { UserStateProtocolError } from "./types";
 
 let cleanup: (() => void) | undefined;
 let documentTarget: EventTarget;
@@ -31,10 +38,12 @@ let browserWindow: EventTarget;
 let environment: { visibilityState: "visible" | "hidden" };
 let network: { onLine: boolean };
 beforeEach(() => {
+  resetSyncRuntimeForTests();
   vi.useFakeTimers(); vi.clearAllMocks();
   useContentSyncStore.setState({ serverUrl: "http://server", deviceName: "Tablet" });
   useUserStateStore.setState({ enabledByServer: {}, runtimeByServer: {} });
   mocks.sync.mockResolvedValue(undefined);
+  mocks.hasSendable.mockResolvedValue(false);
   documentTarget = new EventTarget(); browserWindow = new EventTarget();
   environment = { visibilityState: "visible" }; network = { onLine: true };
   vi.stubGlobal("window", browserWindow);
@@ -48,6 +57,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup?.();
   cleanup = undefined;
+  resetSyncRuntimeForTests();
   useNetworkStore.setState({ connectivity: "online", revision: -1 });
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -93,7 +103,7 @@ it("debounces reading state for 20 seconds but keeps commands and explicit flush
   expect(mocks.sync).toHaveBeenCalledTimes(4);
 });
 
-it("polls at one minute only while visible", async () => {
+it("polls at one minute only while visible and skips idle background flushes", async () => {
   useUserStateStore.getState().setEnabled("http://server", true);
   cleanup = startUserStateScheduler();
   await vi.advanceTimersByTimeAsync(0);
@@ -105,9 +115,9 @@ it("polls at one minute only while visible", async () => {
   environment.visibilityState = "hidden";
   documentTarget.dispatchEvent(new Event("visibilitychange"));
   await vi.advanceTimersByTimeAsync(0);
-  expect(mocks.sync).toHaveBeenCalledTimes(3);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
   await vi.advanceTimersByTimeAsync(USER_STATE_POLL_MS * 2);
-  expect(mocks.sync).toHaveBeenCalledTimes(3);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
 });
 
 it("flushes on backgrounding and again when a final hidden reading write commits", async () => {
@@ -265,4 +275,187 @@ it("pauses retries immediately when synchronizeUserState emits epochMismatch dur
   useUserStateStore.getState().setEpochMismatch("http://server", null);
   await vi.advanceTimersByTimeAsync(0);
   expect(mocks.sync).toHaveBeenCalledTimes(2);
+});
+
+it("drains before-suspend hooks before checking sendable changes and skips background retries on failure", async () => {
+  const order: string[] = [];
+  const unregister = registerBeforeAppSuspend(async () => {
+    order.push("suspend-hook");
+  }, "drain");
+  mocks.hasSendable.mockImplementation(async () => {
+    order.push("check-sendable");
+    return true;
+  });
+  useUserStateStore.getState().setEnabled("http://server", true);
+  cleanup = startUserStateScheduler();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+
+  mocks.sync.mockRejectedValueOnce(new Error("background timeout"));
+  environment.visibilityState = "hidden";
+  documentTarget.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(order).toEqual(["suspend-hook", "check-sendable"]);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
+
+  // No background retry loop while hidden.
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
+
+  // Reconnecting while hidden does not wake sync either.
+  network.onLine = false;
+  browserWindow.dispatchEvent(new Event("offline"));
+  network.onLine = true;
+  browserWindow.dispatchEvent(new Event("online"));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
+
+  unregister();
+});
+
+it("stops infinite foreground retry loops on 403 or protocol errors", async () => {
+  mocks.sync.mockRejectedValue(new ContentServerError(403, "Blocked"));
+  useUserStateStore.getState().setEnabled("http://server", true);
+  cleanup = startUserStateScheduler();
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+
+  mocks.sync.mockReset().mockRejectedValue(new UserStateProtocolError("incompatible"));
+  environment.visibilityState = "hidden";
+  documentTarget.dispatchEvent(new Event("visibilitychange"));
+  environment.visibilityState = "visible";
+  documentTarget.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+});
+
+it("keeps Android pending background upload hint continuously true across suspend flush and sync handoff", async () => {
+  const hints: boolean[] = [];
+  const setPendingBackgroundUpload = vi.fn((pending: boolean) => { hints.push(pending); });
+  Object.assign(browserWindow, {
+    __NoreaAndroidTasks: { setPendingBackgroundUpload },
+  });
+  useUserStateStore.getState().setEnabled("http://server", true);
+  cleanup = startUserStateScheduler();
+  await vi.advanceTimersByTimeAsync(0);
+  hints.length = 0;
+
+  let finishBackgroundSync!: () => void;
+  mocks.hasSendable.mockResolvedValue(true);
+  mocks.sync.mockImplementationOnce(
+    () => new Promise<void>((resolve) => { finishBackgroundSync = resolve; }),
+  );
+
+  environment.visibilityState = "hidden";
+  documentTarget.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
+  // Hint stays true without any false dip before synchronizeUserState finishes.
+  expect(hints).toEqual([true]);
+  expect(getSyncRuntimeSnapshot().hasPendingBackgroundUpload).toBe(true);
+
+  finishBackgroundSync();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(hints).toEqual([true, false]);
+  expect(getSyncRuntimeSnapshot().hasPendingBackgroundUpload).toBe(false);
+});
+
+it("skips suspend flushes and avoids waking Android FGS after 403 or non-retryable errors until resume or config change", async () => {
+  const hints: boolean[] = [];
+  const setPendingBackgroundUpload = vi.fn((pending: boolean) => { hints.push(pending); });
+  Object.assign(browserWindow, {
+    __NoreaAndroidTasks: { setPendingBackgroundUpload },
+  });
+  mocks.hasSendable.mockResolvedValue(true);
+  mocks.sync.mockRejectedValueOnce(new ContentServerError(403, "Blocked"));
+  useUserStateStore.getState().setEnabled("http://server", true);
+  cleanup = startUserStateScheduler();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+
+  hints.length = 0;
+  mocks.hasSendable.mockClear();
+
+  // Subsequent local edits and screen-off transitions must not raise the pending-upload hint or flush.
+  mocks.localListener?.("reading");
+  requestUserStateFlush();
+  environment.visibilityState = "hidden";
+  documentTarget.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+  expect(mocks.hasSendable).not.toHaveBeenCalled();
+  expect(hints).toEqual([]);
+  expect(getSyncRuntimeSnapshot().hasPendingBackgroundUpload).toBe(false);
+
+  // Returning to foreground clears nonRetryableStopped and allows one fresh attempt.
+  mocks.sync.mockRejectedValueOnce(new Error("This content server does not support shared user changes. Update the server before sharing."));
+  environment.visibilityState = "visible";
+  documentTarget.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
+
+  // Another non-retryable error (unsupported server) again suppresses background suspend flushes.
+  hints.length = 0;
+  environment.visibilityState = "hidden";
+  documentTarget.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
+  expect(mocks.hasSendable).not.toHaveBeenCalled();
+  expect(hints).toEqual([]);
+  expect(getSyncRuntimeSnapshot().hasPendingBackgroundUpload).toBe(false);
+
+  // Switching to a new enabled server resets nonRetryableStopped via restart().
+  mocks.sync.mockResolvedValue(undefined);
+  environment.visibilityState = "visible";
+  useContentSyncStore.setState({ serverUrl: "http://server-2" });
+  useUserStateStore.getState().setEnabled("http://server-2", true);
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(3);
+});
+
+it("resumes scheduling after a manual sync recovers from 403 and suppresses flushes after a manual 403 block", async () => {
+  const hints: boolean[] = [];
+  const setPendingBackgroundUpload = vi.fn((pending: boolean) => { hints.push(pending); });
+  Object.assign(browserWindow, {
+    __NoreaAndroidTasks: { setPendingBackgroundUpload },
+  });
+  mocks.hasSendable.mockResolvedValue(true);
+  mocks.sync.mockRejectedValueOnce(new ContentServerError(403, "Blocked"));
+  useUserStateStore.getState().setEnabled("http://server", true);
+  cleanup = startUserStateScheduler();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(1);
+
+  // Manual Sync Now in Settings succeeds while staying in foreground (syncing -> idle).
+  mocks.sync.mockResolvedValue(undefined);
+  useUserStateStore.getState().setRuntime("http://server", "syncing");
+  useUserStateStore.getState().setRuntime("http://server", "idle");
+
+  // Local edits and suspend flush work again without needing a foreground hide/resume cycle.
+  hints.length = 0;
+  mocks.localListener?.("reading");
+  expect(hints).toEqual([true]);
+  environment.visibilityState = "hidden";
+  documentTarget.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(2);
+
+  // Returning to foreground and hitting a manual 403 suppresses subsequent edits and suspend flushes.
+  environment.visibilityState = "visible";
+  documentTarget.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(3);
+
+  hints.length = 0;
+  mocks.hasSendable.mockClear();
+  useUserStateStore.getState().setRuntime("http://server", "error", "HTTP 403", true);
+  mocks.localListener?.("normal");
+  requestUserStateFlush();
+  environment.visibilityState = "hidden";
+  documentTarget.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(mocks.sync).toHaveBeenCalledTimes(3);
+  expect(mocks.hasSendable).not.toHaveBeenCalled();
+  expect(hints).toEqual([]);
+  expect(getSyncRuntimeSnapshot().hasPendingBackgroundUpload).toBe(false);
 });

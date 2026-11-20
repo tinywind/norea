@@ -7,6 +7,8 @@ import android.content.Context
 import android.net.Uri
 import android.os.Build
 import android.os.Environment
+import android.os.Handler
+import android.os.Looper
 import android.os.PowerManager
 import android.provider.Settings
 import android.webkit.JavascriptInterface
@@ -143,14 +145,40 @@ internal class AndroidAllFilesAccessBridge(private val activity: Activity) {
 
 internal class AndroidTaskNotificationBridge(
   private val activity: Activity,
+  private val isActivityActive: () -> Boolean,
   private val requestNotificationPermission: () -> Unit,
   private val resumeBackgroundWorkWebViews: () -> Unit,
   private val releaseBackgroundWorkWebViews: () -> Unit,
 ) {
   @Volatile
   private var destroyed = false
+  @Volatile
+  private var pendingBackgroundUpload = false
+  @Volatile
+  private var lastTitle = "Norea tasks"
   var isForegroundServiceActive = false
     private set
+  var requiresScraperWebViews = false
+    private set
+  private var preemptiveAnchorActive = false
+  private var hasActiveChallengesOrRanges = false
+  private val mainHandler = Handler(Looper.getMainLooper())
+  private val preemptiveAnchorTimeout = Runnable { releasePreemptiveAnchorIfUnused() }
+
+  @JavascriptInterface
+  fun isAppActive(): Boolean = isActivityActive()
+
+  @JavascriptInterface
+  fun setPendingBackgroundUpload(pending: Boolean) {
+    pendingBackgroundUpload = pending
+    if (!pending) {
+      mainHandler.post {
+        if (!pendingBackgroundUpload && preemptiveAnchorActive) {
+          releasePreemptiveAnchorIfUnused()
+        }
+      }
+    }
+  }
 
   @JavascriptInterface
   fun isExecutionSuspended(): Boolean = TaskBackgroundExecution.policy.suspended
@@ -158,8 +186,44 @@ internal class AndroidTaskNotificationBridge(
   @JavascriptInterface
   fun drainActions(): String = AndroidTaskNotificationActions.drain(activity)
 
-  fun suspendExecution() {
+  fun prepareBackgroundUploadAnchorIfNeeded() {
+    if (destroyed || activity.isFinishing || activity.isDestroyed) return
+    if (isForegroundServiceActive || !pendingBackgroundUpload) return
+    if (TaskBackgroundExecution.policy.suspended || !AndroidNetworkState.isConnected()) return
+    if (AndroidTaskNotifications.startPreemptiveSyncAnchor(activity, lastTitle)) {
+      isForegroundServiceActive = true
+      requiresScraperWebViews = false
+      preemptiveAnchorActive = true
+      mainHandler.removeCallbacks(preemptiveAnchorTimeout)
+      mainHandler.postDelayed(preemptiveAnchorTimeout, PREEMPTIVE_ANCHOR_TIMEOUT_MS)
+    }
+  }
+
+  fun clearPreemptiveAnchorIfIdle() {
+    if (preemptiveAnchorActive) {
+      releasePreemptiveAnchorIfUnused()
+    }
+  }
+
+  private fun releasePreemptiveAnchorIfUnused() {
+    if (!preemptiveAnchorActive) return
+    preemptiveAnchorActive = false
+    mainHandler.removeCallbacks(preemptiveAnchorTimeout)
     isForegroundServiceActive = false
+    requiresScraperWebViews = false
+    releaseBackgroundWorkWebViews()
+    try {
+      AndroidTaskNotifications.stopRuntime(activity.applicationContext)
+    } catch (error: RuntimeException) {
+      AppLog.w("NoreaTasks", "Preemptive background sync cleanup failed", error)
+    }
+  }
+
+  fun suspendExecution() {
+    preemptiveAnchorActive = false
+    mainHandler.removeCallbacks(preemptiveAnchorTimeout)
+    isForegroundServiceActive = false
+    requiresScraperWebViews = false
     releaseBackgroundWorkWebViews()
   }
 
@@ -169,6 +233,7 @@ internal class AndroidTaskNotificationBridge(
     val update = runCatching { AndroidTaskNotificationPayload.parse(payload) }.getOrNull() ?: return
     activity.runOnUiThread {
       if (destroyed || activity.isDestroyed) return@runOnUiThread
+      lastTitle = update.title
       if (update.requestPermission) {
         try {
           requestNotificationPermission()
@@ -176,10 +241,60 @@ internal class AndroidTaskNotificationBridge(
           // Permission prompts are best-effort; task execution must continue.
         }
       }
+      val decision = decideBackgroundUploadAnchor(
+        executionActive = update.executionActive,
+        hasTransientNotices =
+          update.completions.isNotEmpty() ||
+            update.cancelledCompletions.isNotEmpty() ||
+            update.challenges.isNotEmpty() ||
+            update.ranges.isNotEmpty() ||
+            hasActiveChallengesOrRanges,
+        preemptiveAnchorActive = preemptiveAnchorActive,
+        isForegroundServiceActive = isForegroundServiceActive,
+        pendingBackgroundUpload = pendingBackgroundUpload,
+        activityActive = isActivityActive(),
+        executionSuspended = TaskBackgroundExecution.policy.suspended,
+        networkConnected = AndroidNetworkState.isConnected(),
+      )
+      if (decision.action == BackgroundUploadAnchorAction.KEEP_EXISTING_NOOP) {
+        // Keep the preemptive FGS anchor alive while JS finishes flushing before background upload.
+        return@runOnUiThread
+      }
+      val effectiveUpdate = if (decision.action == BackgroundUploadAnchorAction.HOLD_SYNC_ANCHOR) {
+        // Hold or convert the active FGS onto the bounded quiet sync anchor until background upload starts.
+        update.copy(
+          quiet = true,
+          executionActive = true,
+          working = true,
+          requiresScraperWebViews = false,
+          groups = emptyList(),
+          syncQuietAnchor = true,
+        )
+      } else {
+        if (preemptiveAnchorActive) {
+          preemptiveAnchorActive = false
+          mainHandler.removeCallbacks(preemptiveAnchorTimeout)
+        }
+        update
+      }
       try {
-        val active = AndroidTaskNotifications.update(activity, update)
-        val changed = active != isForegroundServiceActive
+        val active = AndroidTaskNotifications.update(activity, effectiveUpdate)
+        hasActiveChallengesOrRanges =
+          effectiveUpdate.challenges.isNotEmpty() || effectiveUpdate.ranges.isNotEmpty()
+        if (active && decision.action == BackgroundUploadAnchorAction.HOLD_SYNC_ANCHOR) {
+          if (decision.armTimeout) {
+            preemptiveAnchorActive = true
+            mainHandler.removeCallbacks(preemptiveAnchorTimeout)
+            mainHandler.postDelayed(preemptiveAnchorTimeout, PREEMPTIVE_ANCHOR_TIMEOUT_MS)
+          }
+        } else if (!active && preemptiveAnchorActive) {
+          preemptiveAnchorActive = false
+          mainHandler.removeCallbacks(preemptiveAnchorTimeout)
+        }
+        val nextRequiresScraper = active && effectiveUpdate.requiresScraperWebViews
+        val changed = active != isForegroundServiceActive || nextRequiresScraper != requiresScraperWebViews
         isForegroundServiceActive = active
+        requiresScraperWebViews = nextRequiresScraper
         if (changed) {
           if (active) resumeBackgroundWorkWebViews() else releaseBackgroundWorkWebViews()
         }
@@ -202,13 +317,21 @@ internal class AndroidTaskNotificationBridge(
   }
 
   private fun stopRuntime() {
+    preemptiveAnchorActive = false
+    mainHandler.removeCallbacks(preemptiveAnchorTimeout)
     isForegroundServiceActive = false
+    requiresScraperWebViews = false
     releaseBackgroundWorkWebViews()
     try {
       AndroidTaskNotifications.stopRuntime(activity.applicationContext)
     } catch (error: RuntimeException) {
       AppLog.w("NoreaTasks", "Background execution cleanup failed", error)
     }
+  }
+
+  companion object {
+    // Exceeds runBeforeAppSuspend()'s 2x3s flush/drain ceiling plus debounce/IPC handoff.
+    private const val PREEMPTIVE_ANCHOR_TIMEOUT_MS = 10_000L
   }
 }
 

@@ -7,9 +7,18 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { useReaderStore } from "../../store/reader";
 import { useUserStateStore } from "../../store/user-state";
 import { isAbortError, requestAbortedError } from "../abort";
+import { isAppActive, runBeforeAppSuspend, subscribeAppLifecycle } from "../app-lifecycle";
+import { ContentServerError } from "../content-sync/client";
 import { isHostNetworkConnected, subscribeHostNetworkConnection } from "../network";
+import {
+  beginSuspendingSyncFlush,
+  isSyncBackgroundExecutionSuspended,
+  setPendingUserStateUpload,
+  subscribeSyncBackgroundExecutionSuspended,
+} from "../tasks/sync-runtime";
 import { subscribeUserStateFlush } from "./events";
-import { synchronizeUserState } from "./sync";
+import { hasSendableUserStateChanges, synchronizeUserState } from "./sync";
+import { UserStateProtocolError } from "./types";
 
 export const USER_STATE_COMMAND_DEBOUNCE_MS = 1_500;
 export const USER_STATE_READING_DEBOUNCE_MS = 20_000;
@@ -24,13 +33,25 @@ const requestDelay: Record<RequestKind, number> = {
   poll: USER_STATE_POLL_MS,
 };
 
+function isNonRetryableUserStateError(error: unknown): boolean {
+  if (error instanceof ContentServerError && error.status === 403) return true;
+  if (error instanceof UserStateProtocolError) return true;
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    /does not support shared user changes/i.test(message) ||
+    /paused after backup restore|restore.*paused|reconnect.*shared state/i.test(message)
+  );
+}
+
 /** Receive only from the configured content server; this scheduler never fetches provider pages. */
 export function startUserStateScheduler(queryClient?: QueryInvalidator): () => void {
   let disposed = false;
   let generation = 0;
   let syncing = false;
   let failures = 0;
+  let nonRetryableStopped = false;
   let retryNotBefore = 0;
+  let hasLocalEditPending = false;
   let pendingKind: RequestKind | null = null;
   let pendingDue = 0;
   let pendingAllowHidden = false;
@@ -43,10 +64,15 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
     const state = useUserStateStore.getState();
     return !disposed && !!serverUrl && state.enabledByServer[serverUrl] === true &&
       !state.runtimeByServer[serverUrl]?.epochMismatch &&
+      !isSyncBackgroundExecutionSuspended() &&
       isHostNetworkConnected();
   }
+  function isServerBlocked(): boolean {
+    const serverUrl = useContentSyncStore.getState().serverUrl;
+    return Boolean(serverUrl && useUserStateStore.getState().runtimeByServer[serverUrl]?.blocked);
+  }
   function runnable(allowHidden: boolean): boolean {
-    return configured() && (allowHidden || document.visibilityState !== "hidden");
+    return configured() && (allowHidden || isAppActive());
   }
   function clearTimer(): void {
     if (timer !== undefined) clearTimeout(timer);
@@ -84,37 +110,77 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
   async function run(): Promise<void> {
     if (syncing || pendingKind === null || !runnable(pendingAllowHidden)) return;
     const current = generation;
-    const allowHidden = pendingAllowHidden;
     pendingKind = null;
     pendingDue = 0;
     pendingAllowHidden = false;
+    hasLocalEditPending = false;
+    // Keep the native pending-upload hint active across synchronizeUserState()'s async handoff
+    // until beginUserStateSyncRun() takes over the foreground service anchor.
+    setPendingUserStateUpload(true);
     const nextController = new AbortController();
     controller = nextController;
     syncing = true;
     let failed = false;
+    let nonRetryable = false;
     try {
       await synchronizeUserState({ signal: nextController.signal });
-      if (current === generation) { failures = 0; retryNotBefore = 0; }
+      if (current === generation) {
+        failures = 0;
+        nonRetryableStopped = false;
+        retryNotBefore = 0;
+      }
     } catch (error) {
       // The durable outbox is unchanged on failure; retries reuse the same operation receipts.
-      failed = !nextController.signal.aborted && !isAbortError(error);
-      if (failed && current === generation) {
-        failures++;
-        retryNotBefore = Date.now() + Math.min(60_000, 2_000 * 2 ** Math.min(failures - 1, 5));
+      const aborted = nextController.signal.aborted || isAbortError(error);
+      nonRetryable = !aborted && isNonRetryableUserStateError(error);
+      failed = !aborted && !nonRetryable;
+      if (current === generation) {
+        if (nonRetryable) {
+          nonRetryableStopped = true;
+        } else if (failed) {
+          failures++;
+          retryNotBefore = Date.now() + Math.min(60_000, 2_000 * 2 ** Math.min(failures - 1, 5));
+        }
       }
     } finally {
       syncing = false;
       if (controller === nextController) controller = undefined;
+      if (!hasLocalEditPending || nonRetryableStopped || isServerBlocked()) {
+        setPendingUserStateUpload(false);
+      }
     }
     if (disposed) return;
     if (current !== generation) { arm(); return; }
-    if (failed) { request("immediate", allowHidden); return; }
+    if (!isAppActive()) {
+      // Never run background retry loops or periodic polling while inactive so the device can sleep.
+      if (!failed && !nonRetryable && pendingKind !== null && pendingAllowHidden) {
+        arm();
+      } else {
+        pendingKind = null;
+        pendingDue = 0;
+        pendingAllowHidden = false;
+        clearTimer();
+        setPendingUserStateUpload(false);
+      }
+      return;
+    }
+    if (failed) { request("immediate", false); return; }
+    if (nonRetryable) {
+      pendingKind = null;
+      pendingDue = 0;
+      pendingAllowHidden = false;
+      hasLocalEditPending = false;
+      clearTimer();
+      setPendingUserStateUpload(false);
+      return;
+    }
     if (pendingKind !== null) { arm(); return; }
-    if (document.visibilityState !== "hidden") request("poll");
+    request("poll");
   }
   function restart(allowHidden = false): void {
     generation++;
     failures = 0;
+    nonRetryableStopped = false;
     retryNotBefore = 0;
     pendingKind = null;
     pendingDue = 0;
@@ -122,21 +188,106 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
     clearTimer();
     controller?.abort(requestAbortedError());
     setUserStateActiveServer(useContentSyncStore.getState().serverUrl || null);
-    if (configured() && (allowHidden || document.visibilityState !== "hidden")) request("immediate", allowHidden);
+    if (!configured()) {
+      hasLocalEditPending = false;
+      setPendingUserStateUpload(false);
+      return;
+    }
+    if (allowHidden || isAppActive()) request("immediate", allowHidden);
   }
-  function onVisibilityChange(): void {
-    if (document.visibilityState === "hidden") {
-      // Flush once before the platform suspends background timers. A reading write
-      // that commits slightly later requests another hidden-safe immediate pass.
-      request("immediate", true);
-    } else {
-      request("immediate");
+  async function flushBeforeSuspend(): Promise<void> {
+    if (!configured() || nonRetryableStopped || isServerBlocked()) {
+      hasLocalEditPending = false;
+      pendingKind = null;
+      pendingDue = 0;
+      pendingAllowHidden = false;
+      clearTimer();
+      setPendingUserStateUpload(false);
+      return;
+    }
+    const endFlush = beginSuspendingSyncFlush();
+    const suspendGeneration = generation;
+    try {
+      await runBeforeAppSuspend();
+      if (
+        disposed ||
+        suspendGeneration !== generation ||
+        isAppActive() ||
+        !configured() ||
+        nonRetryableStopped ||
+        isServerBlocked()
+      ) {
+        if (!syncing && (nonRetryableStopped || isServerBlocked())) {
+          hasLocalEditPending = false;
+          setPendingUserStateUpload(false);
+        }
+        return;
+      }
+      const serverUrl = useContentSyncStore.getState().serverUrl;
+      let shouldFlush = hasLocalEditPending;
+      if (!shouldFlush && failures === 0 && typeof hasSendableUserStateChanges === "function") {
+        try {
+          shouldFlush = await hasSendableUserStateChanges(serverUrl);
+        } catch {
+          shouldFlush = false;
+        }
+      }
+      if (
+        disposed ||
+        suspendGeneration !== generation ||
+        isAppActive() ||
+        !configured() ||
+        nonRetryableStopped ||
+        isServerBlocked()
+      ) {
+        if (!syncing && (nonRetryableStopped || isServerBlocked())) {
+          hasLocalEditPending = false;
+          setPendingUserStateUpload(false);
+        }
+        return;
+      }
+      if (shouldFlush) {
+        retryNotBefore = 0;
+        setPendingUserStateUpload(true);
+        request("immediate", true);
+      } else if (!syncing) {
+        pendingKind = null;
+        pendingDue = 0;
+        pendingAllowHidden = false;
+        clearTimer();
+        setPendingUserStateUpload(false);
+      }
+    } finally {
+      endFlush();
     }
   }
-  function onOnline(): void { restart(document.visibilityState === "hidden"); }
+  function onAppLifecycleChange(appActive: boolean): void {
+    if (appActive) {
+      failures = 0;
+      nonRetryableStopped = false;
+      retryNotBefore = 0;
+      request("immediate");
+      return;
+    }
+    // Cancel foreground-only poll/retry timers immediately; flush only if sendable uploads exist.
+    if (!pendingAllowHidden) {
+      clearTimer();
+      if (pendingKind === "poll") {
+        pendingKind = null;
+        pendingDue = 0;
+      }
+    }
+    void flushBeforeSuspend();
+  }
+  function onOnline(): void {
+    if (isAppActive()) restart(false);
+  }
   function onOffline(): void { restart(false); }
   function onLocalChange(priority: UserStateChangePriority): void {
-    if (document.visibilityState === "hidden") request("immediate", true);
+    if (!configured() || nonRetryableStopped || isServerBlocked()) return;
+    hasLocalEditPending = true;
+    setPendingUserStateUpload(true);
+    if (!isAppActive()) request("immediate", true);
     else request(priority === "reading" ? "reading" : "normal");
   }
 
@@ -145,12 +296,51 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
   });
   const unsubscribeEnabled = useUserStateStore.subscribe((state, previous) => {
     const serverUrl = useContentSyncStore.getState().serverUrl;
-    const hadMismatch = serverUrl ? Boolean(previous.runtimeByServer[serverUrl]?.epochMismatch) : false;
-    const hasMismatch = serverUrl ? Boolean(state.runtimeByServer[serverUrl]?.epochMismatch) : false;
-    if (state.enabledByServer !== previous.enabledByServer || (hadMismatch && !hasMismatch)) restart();
+    const prevRuntime = serverUrl ? previous.runtimeByServer[serverUrl] : undefined;
+    const nextRuntime = serverUrl ? state.runtimeByServer[serverUrl] : undefined;
+    const hadMismatch = Boolean(prevRuntime?.epochMismatch);
+    const hasMismatch = Boolean(nextRuntime?.epochMismatch);
+    if (state.enabledByServer !== previous.enabledByServer || (hadMismatch && !hasMismatch)) {
+      restart();
+      return;
+    }
+    if (!serverUrl || prevRuntime === nextRuntime) return;
+    if (nextRuntime?.blocked) {
+      nonRetryableStopped = true;
+      hasLocalEditPending = false;
+      if (!syncing) {
+        pendingKind = null;
+        pendingDue = 0;
+        pendingAllowHidden = false;
+        clearTimer();
+        setPendingUserStateUpload(false);
+      }
+      return;
+    }
+    if (
+      nonRetryableStopped &&
+      !syncing &&
+      prevRuntime?.phase === "syncing" &&
+      nextRuntime?.phase === "idle" &&
+      !nextRuntime.error &&
+      !nextRuntime.blocked &&
+      !hasMismatch
+    ) {
+      nonRetryableStopped = false;
+      failures = 0;
+      retryNotBefore = 0;
+      if (isAppActive() && configured() && pendingKind === null) {
+        request("poll");
+      }
+    }
   });
   const unsubscribeChanges = subscribeUserStateChanges(onLocalChange);
-  const unsubscribeFlush = subscribeUserStateFlush(() => request("immediate", document.visibilityState === "hidden"));
+  const unsubscribeFlush = subscribeUserStateFlush(() => {
+    if (!configured() || nonRetryableStopped || isServerBlocked()) return;
+    hasLocalEditPending = true;
+    setPendingUserStateUpload(true);
+    request("immediate", !isAppActive());
+  });
   const unsubscribeApplied = subscribeUserStateApplied(effects => {
     for (const effect of effects.resumes) useReaderStore.getState().applySharedResume(effect);
     if (!queryClient || disposed || invalidateTimer !== undefined) return;
@@ -166,12 +356,26 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
     if (connected) onOnline();
     else onOffline();
   });
-  document.addEventListener("visibilitychange", onVisibilityChange);
+  const unsubscribeSuspended = subscribeSyncBackgroundExecutionSuspended((suspended) => {
+    if (suspended) {
+      generation++;
+      clearTimer();
+      pendingKind = null;
+      pendingDue = 0;
+      pendingAllowHidden = false;
+      controller?.abort(requestAbortedError());
+      setPendingUserStateUpload(false);
+    } else if (isAppActive()) {
+      restart(false);
+    }
+  });
+  const unsubscribeLifecycle = subscribeAppLifecycle(onAppLifecycleChange);
   restart();
   return () => {
     disposed = true;
     generation++;
     clearTimer();
+    setPendingUserStateUpload(false);
     if (invalidateTimer !== undefined) clearTimeout(invalidateTimer);
     controller?.abort(requestAbortedError());
     unsubscribeConfig();
@@ -181,6 +385,7 @@ export function startUserStateScheduler(queryClient?: QueryInvalidator): () => v
     unsubscribeApplied();
     setUserStateActiveServer(null);
     unsubscribeNetwork();
-    document.removeEventListener("visibilitychange", onVisibilityChange);
+    unsubscribeSuspended();
+    unsubscribeLifecycle();
   };
 }

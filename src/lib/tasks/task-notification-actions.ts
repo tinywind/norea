@@ -3,12 +3,24 @@ import type { UseNavigateResult } from "@tanstack/react-router";
 import { getChapterById } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { parseTaskNotificationAction, type TaskNotificationAction } from "./native-notification-actions";
-import { waitForChapterDownloadQueueRestoration } from "./chapter-download";
+import { resumeChapterDownloadQueueAfterFailure, waitForChapterDownloadQueueRestoration } from "./chapter-download";
 import { taskScheduler } from "./scheduler";
 import { openSourceAccessBrowser, sourceAccessBlockSourceNames } from "./source-access-coordinator";
+import { markSyncFailureNotificationOpened } from "./sync-runtime";
 import type { TaskNotificationTranslate } from "./task-notification-model";
 import { isVpnDownloadVerificationCurrent } from "./vpn-download-notifications";
-import { getVpnDownloadRuntimeSnapshot, initializeVpnDownloadRuntime, openVpnDownloadVerification } from "./vpn-download-runtime";
+import {
+  getVpnDownloadRuntimeSnapshot,
+  initializeVpnDownloadRuntime,
+  openVpnDownloadVerification,
+  pauseVpnDownloadRun,
+  resumeVpnDownloadRun,
+} from "./vpn-download-runtime";
+
+function hasActiveVpnDownloadRun(): boolean {
+  const run = getVpnDownloadRuntimeSnapshot()?.run;
+  return Boolean(run && run.status !== "completed" && run.status !== "cancelled");
+}
 
 let taskNotificationNavigationGeneration = 0;
 let taskNotificationSourceOpening: Promise<unknown> | null = null;
@@ -79,11 +91,21 @@ export async function applyTaskNotificationAction(
   if (!parsed) return;
   action = parsed;
   if (action.type === "pause") {
-    taskScheduler.pauseTaskGroup(action.groupKey);
+    if (action.groupKey === "downloads") {
+      taskScheduler.pauseSourceQueue();
+      if (hasActiveVpnDownloadRun()) await pauseVpnDownloadRun();
+    } else {
+      taskScheduler.pauseTaskGroup(action.groupKey);
+    }
     return;
   }
   if (action.type === "resume") {
-    taskScheduler.resumeTaskGroup(action.groupKey);
+    if (action.groupKey === "downloads") {
+      if (!await resumeChapterDownloadQueueAfterFailure()) return;
+      if (hasActiveVpnDownloadRun()) await resumeVpnDownloadRun();
+    } else {
+      taskScheduler.resumeTaskGroup(action.groupKey);
+    }
     return;
   }
   const generation = ++taskNotificationNavigationGeneration;
@@ -92,6 +114,7 @@ export async function applyTaskNotificationAction(
     return;
   }
   if (action.type === "openBackupSettings") {
+    markSyncFailureNotificationOpened();
     await open({ kind: "backupSettings" });
     return;
   }

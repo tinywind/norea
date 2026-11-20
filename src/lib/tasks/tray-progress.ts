@@ -3,6 +3,11 @@ import { isWindowsRuntime } from "../tauri-runtime";
 import { taskScheduler } from "./scheduler";
 import { subscribeChapterDownloadBatchProgress } from "./chapter-download";
 import {
+  buildContentSyncNotificationGroup,
+  subscribeSyncRuntime,
+} from "./sync-runtime";
+import {
+  buildTrayTaskProgressForGroups,
   TaskNotificationTracker,
   type TaskNotificationTranslate,
 } from "./task-notification-model";
@@ -26,7 +31,9 @@ export function startTrayTaskProgress(
       publishTimer = undefined;
       if (disposed) return;
 
-      const payload = tracker.tray(t, snapshot);
+      const syncGroup = buildContentSyncNotificationGroup(t);
+      const groups = [...tracker.groups(t, snapshot), ...(syncGroup ? [syncGroup] : [])];
+      const payload = buildTrayTaskProgressForGroups(groups, t);
       tracker.takeCompletions(t);
       const serialized = JSON.stringify(payload);
       if (serialized === lastPayload) return;
@@ -53,6 +60,7 @@ export function startTrayTaskProgress(
     tracker.updateBatch(event);
     publish();
   });
+  const unsubscribeSync = subscribeSyncRuntime(publish);
   publish();
 
   return () => {
@@ -61,6 +69,7 @@ export function startTrayTaskProgress(
     unsubscribeSnapshots();
     unsubscribeEvents();
     unsubscribeBatches();
+    unsubscribeSync();
     void invoke("tray_set_task_progress", {
       items: [],
       summary: t("tasks.tray.none"),

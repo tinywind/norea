@@ -6,7 +6,7 @@ const mocks = vi.hoisted(() => ({
   sync: vi.fn(), resume: vi.fn(), resolve: vi.fn(), rebind: vi.fn(), refetch: vi.fn(), setEnabled: vi.fn(), setRetention: vi.fn(),
   categoryName: undefined as string | undefined,
   status: { workspaceId: "workspace", epoch: "epoch", pending: 2, conflicts: [], lastSuccessAt: null } as UserStateStatus,
-  store: { enabledByServer: {} as Record<string, true>, runtimeByServer: {} },
+  store: { enabledByServer: {} as Record<string, true>, runtimeByServer: {} as Record<string, Record<string, unknown>> },
 }));
 vi.mock("react", async original => ({
   ...await original<typeof import("react")>(),
@@ -41,6 +41,7 @@ vi.mock("../lib/user-state/sync", () => ({
 }));
 import { ReadingStateSettings, userStateValueSummary } from "./ReadingStateSettings";
 import { useTranslation } from "../i18n";
+import { formatUserStateErrorSummary } from "../lib/content-sync/error-summary";
 
 interface Props {
   children?: ReactNode; label?: string; "aria-label"?: string; onClick?: () => void;
@@ -74,6 +75,7 @@ beforeEach(() => {
   mocks.categoryName = undefined;
   mocks.status = { workspaceId: "workspace", epoch: "epoch", pending: 2, conflicts: [], lastSuccessAt: null };
   mocks.store.enabledByServer = {};
+  mocks.store.runtimeByServer = {};
   mocks.sync.mockResolvedValue(undefined);
   mocks.resume.mockResolvedValue(undefined);
   mocks.resolve.mockResolvedValue(undefined);
@@ -220,4 +222,31 @@ it("keeps client retention controls disabled by default and forwards explicit op
   expect(mocks.setRetention).toHaveBeenCalledWith("https://server.example", { pruneNonLibraryEnabled: true });
   stripSwitch.props.onChange!({ currentTarget: { checked: true } });
   expect(mocks.setRetention).toHaveBeenCalledWith("https://server.example", { stripTimestampsEnabled: true });
+});
+
+it("displays background and blocked user-state failures identically to the notification summary", () => {
+  const { t } = useTranslation();
+  mocks.store.runtimeByServer["https://server.example"] = {
+    phase: "idle",
+    error: null,
+    backgroundError: "Server temporarily unavailable",
+    backgroundBlocked: false,
+    revision: 1,
+  };
+  const syncRow = () =>
+    view().find(item => item.props.label === "Sync now" && "error" in (item.props as Record<string, unknown>));
+  expect((syncRow()?.props as { error?: string } | undefined)?.error).toBe(
+    formatUserStateErrorSummary("Server temporarily unavailable", false, t),
+  );
+
+  mocks.store.runtimeByServer["https://server.example"] = {
+    phase: "idle",
+    error: null,
+    backgroundError: "HTTP 403",
+    backgroundBlocked: true,
+    revision: 2,
+  };
+  expect((syncRow()?.props as { error?: string } | undefined)?.error).toBe(
+    formatUserStateErrorSummary("HTTP 403", true, t),
+  );
 });

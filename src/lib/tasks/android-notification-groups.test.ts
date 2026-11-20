@@ -5,7 +5,11 @@ const mocks = vi.hoisted(() => ({
   getSnapshot: vi.fn(), subscribe: vi.fn(), subscribeEvents: vi.fn(),
   setBackgroundExecutionSuspended: vi.fn(),
 }));
-vi.mock("../tauri-runtime", () => ({ isAndroidRuntime: () => true }));
+vi.mock("../tauri-runtime", () => ({
+  isAndroidRuntime: () => true,
+  isTauriRuntime: () => true,
+  isWindowsRuntime: () => false,
+}));
 vi.mock("./scheduler", () => ({ taskScheduler: mocks }));
 vi.mock("./vpn-download-runtime", () => ({
   getVpnDownloadRuntimeSnapshot: () => ({ plans: [] }), subscribeVpnDownloadRuntime: () => () => {},

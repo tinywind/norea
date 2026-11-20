@@ -83,7 +83,7 @@ internal object AndroidTaskNotificationActions {
   }
 
   fun retainIdentities(context: Context, identities: Set<String>) {
-    val completionIdentities = TaskNotificationGroup.entries.map { "completion/${it.key}" }
+    val completionIdentities = TaskNotificationGroup.entries.map { "completion/${it.key}" } + "completion/backup"
     registry(context).retainIdentities(identities + completionIdentities + "execution")
   }
 

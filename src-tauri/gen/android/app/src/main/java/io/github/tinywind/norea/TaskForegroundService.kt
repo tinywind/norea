@@ -28,6 +28,16 @@ class TaskForegroundService : Service() {
     instance = this
     val request = desired
     if (intent?.action != ACTION_START || request == null || TaskBackgroundExecution.policy.suspended) {
+      if (intent?.action == ACTION_START && anchorId == null && Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+        // Satisfy Android's startForegroundService() contract before stopping on a fast start-then-stop race.
+        runCatching {
+          startForeground(
+            TASK_QUIET_NOTIFICATION_ID,
+            AndroidTaskNotifications.quietFallbackNotification(this),
+          )
+          anchorId = TASK_QUIET_NOTIFICATION_ID
+        }
+      }
       stop(this)
       return START_NOT_STICKY
     }

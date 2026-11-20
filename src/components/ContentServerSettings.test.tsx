@@ -25,7 +25,9 @@ vi.mock("../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) 
 vi.mock("../store/content-sync", () => ({ useContentSyncStore: (select: (state: Record<string, unknown>) => unknown) => select(mocks.state) }));
 vi.mock("../lib/content-sync/sync", () => ({ syncContentServer: mocks.sync }));
 
+import { BatteryOptimizationSetting } from "./BatteryOptimizationSetting";
 import { ContentServerSettings } from "./ContentServerSettings";
+import { formatContentSyncErrorSummary } from "../lib/content-sync/error-summary";
 
 interface ControlProps { children?: ReactNode; onClick?: () => void; onChange?: (value: number | string) => void; onBlur?: () => void; value?: unknown; disabled?: boolean; label?: string; "aria-label"?: string }
 function controls(node: ReactNode): ReactElement<ControlProps>[] {
@@ -153,4 +155,33 @@ it("explains that migration conflicts retain the original server copy", () => {
   const rendered = (line.type as (props: { error: string }) => ReactElement<ControlProps>)(line.props);
   expect((rendered.props.children as unknown[])[0]).toBe("contentSync.error.migrationPending");
   expect(controls(rendered).some(element => element.props.children === mocks.state.error)).toBe(true);
+});
+
+it("renders the battery optimization setting for content server background sync", () => {
+  const battery = controls(ContentServerSettings()).find(
+    element => element.type === BatteryOptimizationSetting,
+  );
+  expect(battery).toBeDefined();
+  expect(battery!.props).toMatchObject({
+    titleKey: "contentSync.background.title",
+    descriptionKey: "contentSync.battery.description",
+  });
+});
+
+it("displays persisted background sync failures identically to the notification summary", () => {
+  const raw = "Work / Chapter 12: request or response body error for url (https://server/api/v1/chapter-files)";
+  mocks.state.error = null;
+  mocks.state.blocked = false;
+  mocks.state.backgroundError = raw;
+  mocks.state.backgroundBlocked = false;
+  const line = syncErrorProp() as ReactElement<{ error: string }>;
+  const rendered = (line.type as (props: { error: string }) => ReactElement<ControlProps>)(line.props);
+  expect((rendered.props.children as unknown[])[0]).toBe(
+    formatContentSyncErrorSummary(raw, false, key => key),
+  );
+
+  mocks.stateIndex = 0;
+  mocks.state.backgroundError = "HTTP 403";
+  mocks.state.backgroundBlocked = true;
+  expect(syncErrorProp()).toBe(formatContentSyncErrorSummary("HTTP 403", true, key => key));
 });

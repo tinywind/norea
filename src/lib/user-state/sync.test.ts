@@ -23,7 +23,7 @@ vi.mock("@tauri-apps/plugin-http", () => ({ fetch: mocks.fetch }));
 
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
-import { getUserStateStatus, readUserStateResponse, rebindUserStateWorkspace, synchronizeUserState, validateUserStateAcknowledgements, validateUserStatePage } from "./sync";
+import { getUserStateStatus, hasSendableUserStateChanges, readUserStateResponse, rebindUserStateWorkspace, synchronizeUserState, validateUserStateAcknowledgements, validateUserStatePage } from "./sync";
 import { USER_STATE_MAX_BYTES, type UserStateMergeResponse } from "./types";
 
 const binding = { serverUrl: "http://server", workspaceId: "workspace", epoch: "epoch" };
@@ -725,4 +725,15 @@ it("records epochMismatch immediately when epoch rotates mid-sync on /retention 
 
   await expect(synchronizeUserState()).rejects.toThrow(/workspace changed/i);
   expect((await getUserStateStatus()).epochMismatch?.serverEpoch).toBe("epoch-3");
+});
+
+it("reports no sendable changes while the server is blocked with 403", async () => {
+  useUserStateStore.getState().setEnabled(binding.serverUrl, true);
+  expect(await hasSendableUserStateChanges(binding.serverUrl)).toBe(true);
+
+  useUserStateStore.getState().setRuntime(binding.serverUrl, "error", "HTTP 403", true);
+  expect(await hasSendableUserStateChanges(binding.serverUrl)).toBe(false);
+
+  useUserStateStore.getState().setRuntime(binding.serverUrl, "idle");
+  expect(await hasSendableUserStateChanges(binding.serverUrl)).toBe(true);
 });

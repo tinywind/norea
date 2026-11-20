@@ -26,11 +26,15 @@ const storage = {
 vi.stubGlobal("localStorage", storage);
 vi.stubGlobal("window", { localStorage: storage });
 const { useReaderPersistence } = await import("./use-reader-persistence");
+const { useContentSyncStore } = await import("../../store/content-sync");
 const { useReaderStore } = await import("../../store/reader");
 const { useLibraryStore } = await import("../../store/library");
+const { useUserStateStore } = await import("../../store/user-state");
 const { markChapterOpened, updateChapterProgress } = await import("../../db/queries/chapter");
 const { recordUserResume } = await import("../../db/user-state");
 const { requestUserStateFlush } = await import("../../lib/user-state/events");
+const { registerBeforeAppSuspend, runBeforeAppSuspend } = await import("../../lib/app-lifecycle");
+const { getSyncRuntimeSnapshot, resetSyncRuntimeForTests } = await import("../../lib/tasks/sync-runtime");
 
 let root: Root | undefined;
 let queryClient: QueryClient;
@@ -66,14 +70,21 @@ async function render() {
 
 beforeEach(() => {
   saved.clear();
+  resetSyncRuntimeForTests();
   useReaderStore.getState().resetReadingProgress();
   useLibraryStore.setState({ incognitoMode: false });
+  useContentSyncStore.setState({ ...useContentSyncStore.getInitialState(), serverUrl: "http://server" });
+  useUserStateStore.setState({ enabledByServer: { "http://server": true }, runtimeByServer: {} });
   vi.clearAllMocks();
 });
 afterEach(async () => {
+  await act(async () => {
+    await new Promise((resolve) => setTimeout(resolve, 0));
+  });
   if (root) await act(async () => root!.unmount());
   root = undefined;
   queryClient?.clear();
+  resetSyncRuntimeForTests();
   vi.unstubAllGlobals();
 });
 
@@ -140,4 +151,44 @@ it("passes allowProgressReset to reset a finished chapter on re-read movement an
     expect(updateChapterProgress).toHaveBeenCalledWith(71, 22, { recordHistory: true, allowProgressReset: true }),
   );
   expect((queryClient.getQueryData(["chapter", 71]) as { progress: number }).progress).toBe(22);
+});
+
+it("drains a progress mutation triggered during before-suspend flush and holds the pending upload hint continuously", async () => {
+  await render();
+  await vi.waitFor(() => expect(recordUserResume).toHaveBeenCalled());
+  vi.mocked(updateChapterProgress).mockClear();
+  vi.mocked(recordUserResume).mockClear();
+
+  let finishProgressWrite!: () => void;
+  vi.mocked(updateChapterProgress).mockImplementationOnce(
+    () => new Promise<void>((resolve) => { finishProgressWrite = resolve; }),
+  );
+
+  let pendingHintRightAfterFlush = false;
+  const unregisterFlush = registerBeforeAppSuspend(() => {
+    current.persistProgress({ chapterId: 71, novelId: 7, progress: 65 });
+    pendingHintRightAfterFlush = getSyncRuntimeSnapshot().hasPendingBackgroundUpload;
+  }, "flush");
+
+  try {
+    let suspendFinished = false;
+    let suspending!: Promise<void>;
+    await act(async () => {
+      suspending = runBeforeAppSuspend(5_000).then(() => { suspendFinished = true; });
+      await vi.waitFor(() => expect(updateChapterProgress).toHaveBeenCalledWith(71, 65, { recordHistory: true }));
+    });
+    expect(pendingHintRightAfterFlush).toBe(true);
+    expect(getSyncRuntimeSnapshot().hasPendingBackgroundUpload).toBe(true);
+    expect(suspendFinished).toBe(false);
+
+    await act(async () => {
+      finishProgressWrite();
+      await suspending;
+    });
+    expect(suspendFinished).toBe(true);
+    expect(recordUserResume).toHaveBeenCalledWith(71, null, expect.any(Number));
+    expect(getSyncRuntimeSnapshot().hasPendingBackgroundUpload).toBe(false);
+  } finally {
+    unregisterFlush();
+  }
 });

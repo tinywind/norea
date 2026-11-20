@@ -21,6 +21,7 @@ class MainActivity : TauriActivity() {
   private val taskNotificationBridge by lazy {
     AndroidTaskNotificationBridge(
       this,
+      { activityResumed },
       ::requestNotificationPermissionIfNeeded,
       ::resumeTaskWebViewsForBackgroundWork,
       ::releaseTaskWebViewsFromBackgroundWork,
@@ -48,6 +49,7 @@ class MainActivity : TauriActivity() {
   private var androidVpnDownloadWorkers: AndroidVpnDownloadWorkers? = null
   private var scraperBackPressedCallback: OnBackPressedCallback? = null
   private var mainWebView: WebView? = null
+  @Volatile
   private var activityResumed = false
   private var notificationPermissionRequested = false
   private var mainBackEvaluationGeneration = 0L
@@ -90,6 +92,11 @@ class MainActivity : TauriActivity() {
     AndroidActivityLifecycle.publish(id, false)
     activityResumed = false
     androidVpnDownloadWorkers?.onForegroundChanged()
+    taskNotificationBridge.prepareBackgroundUploadAnchorIfNeeded()
+    mainWebView?.evaluateJavascript(
+      "window.dispatchEvent(new Event('norea-app-paused'));",
+      null,
+    )
     super.onPause()
     resumeTaskWebViewsForBackgroundWork()
   }
@@ -100,6 +107,11 @@ class MainActivity : TauriActivity() {
     AndroidActivityLifecycle.publish(id, true)
     activityResumed = true
     TaskBackgroundExecution.policy.foreground()
+    taskNotificationBridge.clearPreemptiveAnchorIfIdle()
+    mainWebView?.let { webView ->
+      webView.resumeTimers()
+      webView.onResume()
+    }
     resumeTaskWebViewsForBackgroundWork()
     mainWebView?.post {
       mainWebView?.evaluateJavascript(
@@ -118,7 +130,9 @@ class MainActivity : TauriActivity() {
     androidVpnDownloadWorkers?.destroy()
     val vpnWorkers = AndroidVpnDownloadWorkers(this, webView, bridgeSession) { activityResumed }
     androidVpnDownloadWorkers = vpnWorkers
-    if (taskNotificationBridge.isForegroundServiceActive) vpnWorkers.setBackgroundExecutionActive(true)
+    if (taskNotificationBridge.isForegroundServiceActive && taskNotificationBridge.requiresScraperWebViews) {
+      vpnWorkers.setBackgroundExecutionActive(true)
+    }
     webView.addJavascriptInterface(AndroidBridgeInfoBridge(bridgeSession), "__NoreaAndroidBridge")
     webView.addJavascriptInterface(bridge, "__NoreaAndroidScraper")
     webView.addJavascriptInterface(AndroidSafeAreaBridge { safeAreaInsetsJson }, "__NoreaAndroidSafeArea")
@@ -288,8 +302,13 @@ class MainActivity : TauriActivity() {
         webView.onResume()
         syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = true)
       }
-      androidScraperBridge?.resumeBackgroundWorkWebViews()
-      androidVpnDownloadWorkers?.setBackgroundExecutionActive(true)
+      if (taskNotificationBridge.requiresScraperWebViews) {
+        androidScraperBridge?.resumeBackgroundWorkWebViews()
+        androidVpnDownloadWorkers?.setBackgroundExecutionActive(true)
+      } else {
+        androidScraperBridge?.releaseBackgroundWorkWebViews()
+        androidVpnDownloadWorkers?.setBackgroundExecutionActive(false)
+      }
     }
   }
 
@@ -299,6 +318,7 @@ class MainActivity : TauriActivity() {
       if (taskNotificationBridge.isForegroundServiceActive) return@post
       mainWebView?.let { webView ->
         syncBackgroundWorkWindowVisibility(webView, backgroundWorkActive = false)
+        if (!activityResumed) webView.onPause()
       }
       androidScraperBridge?.releaseBackgroundWorkWebViews()
     }

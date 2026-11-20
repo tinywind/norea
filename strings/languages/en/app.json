@@ -2129,5 +2129,11 @@
   "chapterDifference.checkFailed": "Comparison failed · Retry",
   "chapterDifference.manage": "{count} differ · Manage",
   "chapterDifference.none": "Compare server copies",
-  "chapterDifference.rowBadge": "Differs from server"
+  "chapterDifference.rowBadge": "Differs from server",
+  "tasks.notification.contentSync": "Content server sync",
+  "tasks.notification.contentSyncFailed": "Content server sync failed",
+  "tasks.notification.contentSyncWorks": "Syncing works and chapters…",
+  "tasks.notification.contentSyncBoth": "Syncing works and reading state…",
+  "contentSync.background.title": "Background sync",
+  "contentSync.battery.description": "Some devices stop app work when the screen turns off. An exemption keeps sync running with the screen off."
 }

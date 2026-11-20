@@ -9,13 +9,18 @@ const mocks = vi.hoisted(() => ({
   subscribeBatches: vi.fn(),
 }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
-vi.mock("../tauri-runtime", () => ({ isWindowsRuntime: () => true }));
+vi.mock("../tauri-runtime", () => ({
+  isAndroidRuntime: () => false,
+  isTauriRuntime: () => true,
+  isWindowsRuntime: () => true,
+}));
 vi.mock("./scheduler", () => ({ taskScheduler: mocks }));
 vi.mock("./chapter-download", () => ({
   getChapterDownloadBatchProgress: () => [],
   subscribeChapterDownloadBatchProgress: mocks.subscribeBatches,
 }));
 
+import { beginContentSyncRun, resetSyncRuntimeForTests } from "./sync-runtime";
 import { startTrayTaskProgress } from "./tray-progress";
 
 let emit: (event: TaskEvent) => void;
@@ -47,6 +52,7 @@ function snapshot(records: TaskRecord[] = []): TaskSnapshot {
 }
 
 beforeEach(() => {
+  resetSyncRuntimeForTests();
   vi.useFakeTimers();
   vi.clearAllMocks();
   emit = () => undefined;
@@ -66,6 +72,7 @@ beforeEach(() => {
 
 afterEach(() => {
   dispose?.(); dispose = undefined;
+  resetSyncRuntimeForTests();
   vi.useRealTimers();
 });
 
@@ -112,4 +119,23 @@ it("coalesces frequent snapshots without postponing publication indefinitely", a
   await vi.advanceTimersByTimeAsync(50);
 
   expect(mocks.invoke).toHaveBeenCalledTimes(1);
+});
+
+it("shows active content server sync in the tray tooltip and clears it on finish", async () => {
+  dispose = startTrayTaskProgress(t);
+  await vi.advanceTimersByTimeAsync(250);
+
+  const endSync = beginContentSyncRun();
+  await vi.advanceTimersByTimeAsync(250);
+  expect(mocks.invoke).toHaveBeenLastCalledWith("tray_set_task_progress", {
+    items: [{ label: "tasks.notification.contentSync - tasks.notification.contentSyncWorks" }],
+    summary: "tasks.notification.contentSync",
+  });
+
+  endSync();
+  await vi.advanceTimersByTimeAsync(250);
+  expect(mocks.invoke).toHaveBeenLastCalledWith("tray_set_task_progress", {
+    items: [],
+    summary: "tasks.tray.none",
+  });
 });

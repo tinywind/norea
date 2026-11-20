@@ -18,6 +18,15 @@ import {
 import { withDownloadedContentChapter, fingerprintContentChapter, uploadContentChapter, withContentChapterStage, type CatalogEntry, type ContentIdentity, type UploadConflictPolicy } from "./native";
 import { currentChapterDownloadRevision, withChapterDownloadWrite } from "../chapter-download-writes";
 import { withChapterStorageOperation } from "../chapter-storage-error";
+import { isAbortError, requestAbortedError } from "../abort";
+import { isAppActive } from "../app-lifecycle";
+import {
+  beginContentSyncRun,
+  clearBackgroundSyncFailure,
+  markDeferredContentUploadDueToDownload,
+  recordBackgroundSyncFailure,
+  setContentSyncRuntimeProgress,
+} from "../tasks/sync-runtime";
 import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity";
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
@@ -121,13 +130,17 @@ function assertDevice(server: string, token: string | null): void {
   const current = useContentSyncStore.getState();
   if (current.serverUrl !== server || current.deviceKey !== token) throw new Error("Content server changed during synchronization.");
 }
-async function pullCatalog(server: string, token: string | null, cache: CatalogCache): Promise<void> {
+async function pullCatalog(server: string, token: string | null, cache: CatalogCache, signal?: AbortSignal): Promise<void> {
   let more = true;
   let pending = 0;
   let changed = false;
   try {
     while (more) {
-      const page = await contentServerRequest<CatalogChangesPage>(server, `/catalog/changes?after=${cache.cursor}&limit=100`, token ?? undefined);
+      signal?.throwIfAborted();
+      const page = signal
+        ? await contentServerRequest<CatalogChangesPage>(server, `/catalog/changes?after=${cache.cursor}&limit=100`, token ?? undefined, "GET", undefined, signal)
+        : await contentServerRequest<CatalogChangesPage>(server, `/catalog/changes?after=${cache.cursor}&limit=100`, token ?? undefined);
+      signal?.throwIfAborted();
       assertDevice(server, token);
       if (page.hasMore && page.cursor <= cache.cursor) throw new Error("Content catalog cursor did not advance.");
       changed ||= page.items.length > 0 || cache.cursor !== page.cursor;
@@ -146,8 +159,9 @@ async function pullCatalog(server: string, token: string | null, cache: CatalogC
   }
 }
 
-async function uploadLocalContent(server: string, token: string, cache: CatalogCache, rescan: boolean, deletedWorks: ReadonlySet<string>, conflictPolicy: UploadConflictPolicy): Promise<void> {
+async function uploadLocalContent(server: string, token: string, cache: CatalogCache, rescan: boolean, deletedWorks: ReadonlySet<string>, conflictPolicy: UploadConflictPolicy, signal?: AbortSignal): Promise<void> {
   return withServerWorkDeletionExclusions(server, async deletedDirectories => {
+    signal?.throwIfAborted();
     const isDeletedWork = (row: ContentSyncChapter) => row.sourceNovelId != null && deletedDirectories.has(serverWorkDeletionKey({ pluginId: row.pluginId, novelId: row.sourceNovelId }));
     const deletions = await readServerChapterDeletionExclusions(server);
     const head = await contentJournalHead();
@@ -228,15 +242,21 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
     let uploaded = 0;
     const total = pending.size;
     const failures: string[] = [];
-    const reportProgress = () => useContentSyncStore.setState({ progress: { completed: processed, total, uploaded, failed: failures.length } });
+    const reportProgress = () => {
+      const next = { completed: processed, total, uploaded, failed: failures.length };
+      useContentSyncStore.setState({ progress: next });
+      setContentSyncRuntimeProgress(next);
+    };
     reportProgress();
     try {
       for (const id of pending) {
+        signal?.throwIfAborted();
         assertDevice(server, token);
         const row = rowsByIdentity.get(id);
         const workId = row ? await contentWorkId({ pluginId: row.pluginId, novelPath: row.novelPath }) : null;
         if (workId) await waitForServerWorkDeletion(server, workId);
         if (row?.isDownloadQueued && !isDeletedWork(row)) {
+          markDeferredContentUploadDueToDownload();
           processed++;
           reportProgress();
           continue;
@@ -252,13 +272,14 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
           continue;
         }
         const activity = watchChapterDownloadActivity(row.chapterId);
+        const chapterSignal = signal ? AbortSignal.any([signal, activity.signal]) : activity.signal;
         try {
-          activity.signal.throwIfAborted();
+          chapterSignal.throwIfAborted();
           if (!await canUploadContentChapter(row.chapterId)) continue;
-          activity.signal.throwIfAborted();
-          const lookup = await findUploadedChapter(server, token, row, activity.signal);
+          chapterSignal.throwIfAborted();
+          const lookup = await findUploadedChapter(server, token, row, chapterSignal);
           const existing = lookup?.entry;
-          activity.signal.throwIfAborted();
+          chapterSignal.throwIfAborted();
           assertDevice(server, token);
           await waitForServerWorkDeletion(server, workId!);
           if (isDeletedWork(row)) continue;
@@ -267,21 +288,21 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
             pending.delete(id);
             continue;
           }
-          await withContentChapterStage({ storageDir: storageDir(row), identity: { pluginId: row.pluginId, novelPath: row.novelPath }, signal: activity.signal }, async stagePath => {
-            activity.signal.throwIfAborted();
+          await withContentChapterStage({ storageDir: storageDir(row), identity: { pluginId: row.pluginId, novelPath: row.novelPath }, signal: chapterSignal }, async stagePath => {
+            chapterSignal.throwIfAborted();
             const fingerprint = await contentFingerprint(row, stagePath);
             assertDevice(server, token);
             await waitForServerWorkDeletion(server, workId!);
             if (!await canUploadContentChapter(row.chapterId) || isDeletedWork(row)) return;
-            activity.signal.throwIfAborted();
+            chapterSignal.throwIfAborted();
             await uploadContentChapter({
-              serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath, signal: activity.signal, conflictPolicy,
+              serverUrl: server, token, chapterId: row.chapterId, storageDir: storageDir(row), stagePath, signal: chapterSignal, conflictPolicy,
               manifest: { packageVersion: 1, identity: { pluginId: row.pluginId, novelId: row.sourceNovelId!, novelPath: row.novelPath,
                   chapterPath: existing ? existing.manifest.identity.chapterPath : row.chapterPath },
                 novel: { name: row.novelName, author: row.author, summary: row.summary, isLocal: row.isLocal },
                 chapter: { name: row.chapterName, position: row.position, chapterNumber: row.chapterNumber, page: row.page, contentType: row.contentType } },
             });
-            activity.signal.throwIfAborted();
+            chapterSignal.throwIfAborted();
             assertDevice(server, token);
             await waitForServerWorkDeletion(server, workId!);
             if (isDeletedWork(row)) return;
@@ -291,6 +312,7 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
             pending.delete(id);
           });
         } catch (error) {
+          if (signal?.aborted) throw error;
           if (error instanceof ContentServerError && (error.status === 401 || error.status === 403)) throw error;
           await waitForServerWorkDeletion(server, workId!);
           if (activity.signal.aborted || isDeletedWork(row)) continue;
@@ -381,12 +403,20 @@ export async function hasPendingReplaceServerUpload(
 }
 
 let running: Promise<void> | null = null;
+let activeSyncController: AbortController | null = null;
 let pendingSync: {
   uploadContent: boolean;
   rescan: boolean;
   retryBlockedMigrations: boolean;
+  aborted: boolean;
   promise: Promise<void>;
 } | null = null;
+
+/** Aborts any in-flight or queued content server synchronization, preserving upload checkpoints. */
+export function abortActiveContentSync(): void {
+  if (pendingSync) pendingSync.aborted = true;
+  activeSyncController?.abort(requestAbortedError());
+}
 
 export function runContentSyncOperation<T>(operation: () => Promise<T>): Promise<T> {
   const waiting = new AbortController();
@@ -418,47 +448,78 @@ async function initializeDevice(serverUrl: string, signal?: AbortSignal): Promis
   return deviceKey;
 }
 
-async function performSync(uploadContent = true, rescan = false, retryBlockedMigrations = true): Promise<void> {
+async function performSync(uploadContent = true, rescan = false, retryBlockedMigrations = true, externalSignal?: AbortSignal): Promise<void> {
   const { serverUrl, uploadConflictPolicy } = useContentSyncStore.getState();
   if (!serverUrl) return;
+  const runController = new AbortController();
+  activeSyncController = runController;
+  const onExternalAbort = () => runController.abort(externalSignal?.reason ?? requestAbortedError());
+  if (externalSignal) {
+    if (externalSignal.aborted) onExternalAbort();
+    else externalSignal.addEventListener("abort", onExternalAbort, { once: true });
+  }
+  const signal = runController.signal;
+  const endSyncRun = beginContentSyncRun();
   useContentSyncStore.setState({ status: "syncing", error: null, blocked: false, progress: null });
   try {
+    signal.throwIfAborted();
     normalizeContentServerUrl(serverUrl);
-    const token = await initializeDevice(serverUrl);
-    await reconcileCompletedNovelMigrations(serverUrl, token, () => assertDevice(serverUrl, token));
-    let incoming = await syncIncomingNovelMigrations(serverUrl, token, () => assertDevice(serverUrl, token), retryBlockedMigrations);
-    await reconcilePendingChapterNumbers(serverUrl, token, () => assertDevice(serverUrl, token), uploadContent);
+    const token = await initializeDevice(serverUrl, signal);
+    const assertCurrent = () => {
+      signal.throwIfAborted();
+      assertDevice(serverUrl, token);
+    };
+    await reconcileCompletedNovelMigrations(serverUrl, token, assertCurrent, signal);
+    let incoming = await syncIncomingNovelMigrations(serverUrl, token, assertCurrent, retryBlockedMigrations, signal);
+    await reconcilePendingChapterNumbers(serverUrl, token, assertCurrent, uploadContent, signal);
     const cache = await catalogCache(serverUrl);
-    assertDevice(serverUrl, token);
+    assertCurrent();
     if (await compactUploadedFingerprints(cache)) await saveCatalog(serverUrl, cache);
-    const { deletedWorks, changedOutsideCache } = await syncWorkMetadata(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token), rescan);
-    await syncWorkOverrides(serverUrl, token, uploadContent, () => assertDevice(serverUrl, token));
-    await pullCatalog(serverUrl, token, cache);
+    const { deletedWorks, changedOutsideCache } = await syncWorkMetadata(serverUrl, token, uploadContent, assertCurrent, rescan, signal);
+    await syncWorkOverrides(serverUrl, token, uploadContent, assertCurrent, signal);
+    await pullCatalog(serverUrl, token, cache, signal);
     if (uploadContent) {
       try {
-        await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks, uploadConflictPolicy);
-        await pullCatalog(serverUrl, token, cache);
+        await uploadLocalContent(serverUrl, token, cache, rescan, deletedWorks, uploadConflictPolicy, signal);
+        await pullCatalog(serverUrl, token, cache, signal);
         if (Object.keys(cache.tombstones).length) {
           // Handle deletions consumed after the first upload phase without another catalog loop.
-          await uploadLocalContent(serverUrl, token, cache, false, deletedWorks, uploadConflictPolicy);
+          await uploadLocalContent(serverUrl, token, cache, false, deletedWorks, uploadConflictPolicy, signal);
         }
       } finally {
         emitContentSyncUploadSettled();
       }
     }
-    assertDevice(serverUrl, token);
+    assertCurrent();
     if (changedOutsideCache.length) throw new WorkMetadataChangedOutsideCacheError(changedOutsideCache);
-    if (uploadContent && await finalizePendingNovelMigrations(serverUrl, token, () => assertDevice(serverUrl, token), retryBlockedMigrations)) {
-      incoming = await syncIncomingNovelMigrations(serverUrl, token, () => assertDevice(serverUrl, token), retryBlockedMigrations);
-      await pullCatalog(serverUrl, token, cache);
+    if (uploadContent && await finalizePendingNovelMigrations(serverUrl, token, assertCurrent, retryBlockedMigrations, signal)) {
+      incoming = await syncIncomingNovelMigrations(serverUrl, token, assertCurrent, retryBlockedMigrations, signal);
+      await pullCatalog(serverUrl, token, cache, signal);
     }
     if (incoming.pending) throw new PendingIncomingMigrationError(incoming.pending, incoming.error, incoming.retryable);
     useContentSyncStore.setState({ status: "idle" });
+    clearBackgroundSyncFailure("content", serverUrl);
   } catch (error) {
-    if (useContentSyncStore.getState().serverUrl === serverUrl) {
-      useContentSyncStore.setState({ status: "error", error: error instanceof Error ? error.message : String(error), blocked: error instanceof ContentServerError && error.status === 403 });
+    const aborted = signal.aborted && isAbortError(error);
+    if (aborted) {
+      if (useContentSyncStore.getState().serverUrl === serverUrl) {
+        useContentSyncStore.setState({ status: "idle" });
+      }
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      const blocked = error instanceof ContentServerError && error.status === 403;
+      if (useContentSyncStore.getState().serverUrl === serverUrl) {
+        useContentSyncStore.setState({ status: "error", error: message, blocked });
+        if (!isAppActive()) {
+          recordBackgroundSyncFailure({ kind: "content", serverUrl, rawError: message, blocked });
+        }
+      }
     }
     throw error;
+  } finally {
+    externalSignal?.removeEventListener("abort", onExternalAbort);
+    if (activeSyncController === runController) activeSyncController = null;
+    endSyncRun();
   }
 }
 
@@ -482,7 +543,7 @@ export function syncReceivedWorkMigrations(signal = new AbortController().signal
 }
 
 export function syncContentServer(uploadContent = true, rescan = false, retryBlockedMigrations = true): Promise<void> {
-  if (pendingSync) {
+  if (pendingSync && !pendingSync.aborted) {
     pendingSync.uploadContent ||= uploadContent;
     pendingSync.rescan ||= rescan;
     pendingSync.retryBlockedMigrations ||= retryBlockedMigrations;
@@ -493,10 +554,12 @@ export function syncContentServer(uploadContent = true, rescan = false, retryBlo
     uploadContent,
     rescan,
     retryBlockedMigrations,
+    aborted: false,
     promise: Promise.resolve(),
   };
   const promise = previous.catch(() => undefined).then(() => {
     if (pendingSync === requested) pendingSync = null;
+    if (requested.aborted) throw requestAbortedError();
     return performSync(requested.uploadContent, requested.rescan, requested.retryBlockedMigrations);
   });
   requested.promise = promise;

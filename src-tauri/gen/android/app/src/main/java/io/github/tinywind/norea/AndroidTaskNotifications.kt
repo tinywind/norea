@@ -15,6 +15,8 @@ internal data class AndroidTaskNotificationGroup(
   val title: String,
   val body: String,
   val paused: Boolean,
+  val pausable: Boolean,
+  val openAction: TaskNotificationAction,
   val progress: TaskNotificationProgress?,
   val pauseLabel: String,
   val resumeLabel: String,
@@ -79,11 +81,14 @@ internal data class AndroidTaskNotificationPayload(
   val requestPermission: Boolean,
   val executionActive: Boolean,
   val working: Boolean,
+  val requiresScraperWebViews: Boolean,
   val groups: List<AndroidTaskNotificationGroup>,
   val challenges: List<AndroidTaskNotificationChallenge>,
   val completions: List<AndroidTaskNotificationCompletion>,
+  val cancelledCompletions: List<String>,
   val channels: AndroidTaskNotificationChannels?,
   val ranges: List<AndroidTaskNotificationRange> = emptyList(),
+  val syncQuietAnchor: Boolean = false,
 ) {
   companion object {
     fun parse(payload: String): AndroidTaskNotificationPayload {
@@ -91,6 +96,10 @@ internal data class AndroidTaskNotificationPayload(
       fun objects(name: String): List<JSONObject> {
         val entries = json.optJSONArray(name) ?: JSONArray()
         return (0 until entries.length()).mapNotNull { entries.optJSONObject(it) }
+      }
+      fun strings(name: String): List<String> {
+        val entries = json.optJSONArray(name) ?: JSONArray()
+        return (0 until entries.length()).mapNotNull { entries.optString(it).takeIf { value -> value.isNotBlank() } }
       }
       return AndroidTaskNotificationPayload(
         channels = json.optJSONObject("channels")?.let {
@@ -104,22 +113,25 @@ internal data class AndroidTaskNotificationPayload(
         requestPermission = json.optBoolean("requestPermission", false),
         executionActive = json.optBoolean("executionActive", false),
         working = json.optBoolean("working", false),
+        requiresScraperWebViews = json.optBoolean("requiresScraperWebViews", true),
         groups = objects("groups").mapNotNull { entry ->
           val group = TaskNotificationGroup.fromKey(entry.optString("key")) ?: return@mapNotNull null
           val progress = entry.optJSONObject("progress")
           AndroidTaskNotificationGroup(
-            group,
-            entry.optString("title"),
-            entry.optString("body"),
-            entry.optBoolean("paused", false),
-            progress?.let {
+            group = group,
+            title = entry.optString("title"),
+            body = entry.optString("body"),
+            paused = entry.optBoolean("paused", false),
+            pausable = group.pausable && entry.optBoolean("pausable", group.pausable),
+            openAction = defaultGroupOpenAction(group),
+            progress = progress?.let {
               taskNotificationProgress(
                 it.optInt("current", -1),
                 it.takeIf { value -> value.has("total") }?.optInt("total", -1),
               )
             },
-            entry.optString("pauseLabel"),
-            entry.optString("resumeLabel"),
+            pauseLabel = entry.optString("pauseLabel"),
+            resumeLabel = entry.optString("resumeLabel"),
           )
         }.distinctBy { it.group },
         challenges = objects("challenges").mapNotNull { entry ->
@@ -141,6 +153,8 @@ internal data class AndroidTaskNotificationPayload(
             taskCompletionNotificationAction(entry.optJSONObject("action")?.let(::notificationActionFromJson)),
           )
         }.distinctBy { it.key },
+        cancelledCompletions = strings("cancelledCompletions").distinct(),
+        syncQuietAnchor = json.optBoolean("syncQuietAnchor", false),
       )
     }
   }
@@ -179,48 +193,111 @@ internal object AndroidTaskNotifications {
     }
   }
 
+  fun quietFallbackNotification(context: Context, title: String = "Norea sync"): Notification {
+    ensureChannels(context)
+    return base(context, QUIET_CHANNEL_ID, title.ifBlank { "Norea sync" }, "")
+      .setSmallIcon(android.R.drawable.stat_notify_sync)
+      .setContentIntent(
+        AndroidTaskNotificationActions.activityIntent(
+          context,
+          "group/${TaskNotificationGroup.CONTENT_SYNC.key}/open",
+          TaskNotificationAction.openBackupSettings(),
+        ),
+      )
+      .setCategory(NotificationCompat.CATEGORY_PROGRESS)
+      .setOngoing(true)
+      .setOnlyAlertOnce(true)
+      .setPriority(NotificationCompat.PRIORITY_MIN)
+      .build()
+  }
+
+  fun startPreemptiveSyncAnchor(context: Context, title: String): Boolean {
+    ensureChannels(context)
+    val notification = quietFallbackNotification(context, title)
+    return try {
+      TaskForegroundService.update(
+        context = context,
+        anchorId = TASK_QUIET_NOTIFICATION_ID,
+        notification = notification,
+        working = true,
+        groups = emptyMap(),
+      )
+      true
+    } catch (error: RuntimeException) {
+      Log.w("NoreaTasks", "Preemptive background sync service start rejected", error)
+      false
+    }
+  }
+
   fun update(context: Context, payload: AndroidTaskNotificationPayload): Boolean {
     ensureChannels(context, payload.channels)
-    val identities = payload.groups.flatMap { listOf("group/${it.group.key}/open", "group/${it.group.key}/control") }.toSet() +
-      payload.challenges.map { "source/${it.sourceId}" }.toSet() + payload.ranges.map { it.identity.tag }.toSet()
-    AndroidTaskNotificationActions.retainIdentities(context, identities)
-    val groups = payload.groups.associate { it.group.notificationId to groupNotification(context, it) }
     val plan = taskNotificationRuntimePlan(
       executionActive = payload.executionActive && !TaskBackgroundExecution.policy.suspended,
       working = payload.working,
       groups = payload.groups.map { it.group },
+      syncQuietAnchor = payload.syncQuietAnchor,
     )
+    val syncAnchorIdentity = if (plan.syncQuietAnchor) {
+      setOf("group/${TaskNotificationGroup.CONTENT_SYNC.key}/open")
+    } else {
+      emptySet()
+    }
+    val identities = payload.groups.flatMap { group ->
+      if (group.pausable) listOf("group/${group.group.key}/open", "group/${group.group.key}/control")
+      else listOf("group/${group.group.key}/open")
+    }.toSet() +
+      syncAnchorIdentity +
+      payload.challenges.map { "source/${it.sourceId}" }.toSet() + payload.ranges.map { it.identity.tag }.toSet()
+    AndroidTaskNotificationActions.retainIdentities(context, identities)
+    val groups = payload.groups.associate { it.group.notificationId to groupNotification(context, it) }
+    var fgsStartRejected = false
     if (plan.anchorId == null) {
       TaskForegroundService.stop(context)
     } else {
-      val notification = groups[plan.anchorId] ?: quietNotification(context, payload.title, payload.quiet)
+      val notification = groups[plan.anchorId]
+        ?: if (plan.syncQuietAnchor) quietFallbackNotification(context, payload.title)
+        else quietNotification(context, payload.title, payload.quiet)
       try {
         TaskForegroundService.update(context, plan.anchorId, notification, plan.holdWakeLock, groups)
       } catch (error: RuntimeException) {
         Log.w("NoreaTasks", "Background service start rejected", error)
+        fgsStartRejected = true
         TaskBackgroundExecution.suspend()
         TaskForegroundService.stop(context)
       }
     }
-    val executionActive = plan.anchorId != null && !TaskBackgroundExecution.policy.suspended
-    groups.filterKeys { !executionActive || it != plan.anchorId }.forEach { (id, notification) ->
-      notify(context, id, notification)
+    val executionActive = !fgsStartRejected && plan.anchorId != null && !TaskBackgroundExecution.policy.suspended
+    if (fgsStartRejected) {
+      TaskNotificationGroup.entries.forEach { manager(context).cancel(it.notificationId) }
+      manager(context).cancel(TASK_QUIET_NOTIFICATION_ID)
+    } else {
+      groups.filterKeys { !executionActive || it != plan.anchorId }.forEach { (id, notification) ->
+        notify(context, id, notification)
+      }
+      TaskNotificationGroup.entries.filter { it.notificationId !in groups }.forEach {
+        manager(context).cancel(it.notificationId)
+      }
+      if (plan.anchorId != TASK_QUIET_NOTIFICATION_ID) manager(context).cancel(TASK_QUIET_NOTIFICATION_ID)
     }
-    TaskNotificationGroup.entries.filter { it.notificationId !in groups }.forEach {
-      manager(context).cancel(it.notificationId)
-    }
-    if (plan.anchorId != TASK_QUIET_NOTIFICATION_ID) manager(context).cancel(TASK_QUIET_NOTIFICATION_ID)
     reconcileChallenges(context, payload.challenges)
     reconcileRanges(context, payload.ranges)
+    payload.cancelledCompletions.forEach { key ->
+      val identity = taskCompletionNotificationIdentity(key)
+      manager(context).cancel(identity.tag, identity.id)
+    }
     payload.completions.forEach { completion ->
-      val notification = base(context, COMPLETION_CHANNEL_ID, completion.title, completion.body)
-        .setSmallIcon(android.R.drawable.stat_sys_download_done)
+      val isFailureOnly = completion.key == TaskNotificationGroup.CONTENT_SYNC.key || completion.key == "backup"
+      val builder = base(context, COMPLETION_CHANNEL_ID, completion.title, completion.body)
+        .setSmallIcon(
+          if (isFailureOnly) android.R.drawable.stat_sys_warning
+          else android.R.drawable.stat_sys_download_done,
+        )
         .setContentIntent(AndroidTaskNotificationActions.activityIntent(context, "completion/${completion.key}", completion.action))
         .setAutoCancel(true)
         .setOnlyAlertOnce(true)
-        .build()
+      if (isFailureOnly) builder.setCategory(NotificationCompat.CATEGORY_ERROR)
       val identity = taskCompletionNotificationIdentity(completion.key)
-      notify(context, identity.id, notification, identity.tag)
+      notify(context, identity.id, builder.build(), identity.tag)
     }
     return executionActive
   }
@@ -234,17 +311,34 @@ internal object AndroidTaskNotifications {
 
   private fun groupNotification(context: Context, group: AndroidTaskNotificationGroup): Notification {
     val builder = base(context, PROGRESS_CHANNEL_ID, group.title, group.body)
-      .setContentIntent(AndroidTaskNotificationActions.activityIntent(context, "group/${group.group.key}/open"))
+      .setSmallIcon(
+        if (group.group == TaskNotificationGroup.CONTENT_SYNC) android.R.drawable.stat_notify_sync
+        else android.R.drawable.stat_sys_download,
+      )
+      .setContentIntent(
+        AndroidTaskNotificationActions.activityIntent(
+          context,
+          "group/${group.group.key}/open",
+          group.openAction,
+        ),
+      )
       .setCategory(NotificationCompat.CATEGORY_PROGRESS)
       .setOngoing(true)
       .setOnlyAlertOnce(true)
       .setPriority(NotificationCompat.PRIORITY_LOW)
-      .addAction(
+    if (group.pausable) {
+      builder.addAction(
         if (group.paused) android.R.drawable.ic_media_play else android.R.drawable.ic_media_pause,
         if (group.paused) group.resumeLabel else group.pauseLabel,
         AndroidTaskNotificationActions.controlIntent(context, group.group, group.paused),
       )
-    group.progress?.let { builder.setProgress(it.total, it.current, false) }
+    }
+    val progress = group.progress
+    if (progress != null) {
+      builder.setProgress(progress.total, progress.current, false)
+    } else if (group.group == TaskNotificationGroup.CONTENT_SYNC) {
+      builder.setProgress(0, 0, true)
+    }
     return builder.build()
   }
 

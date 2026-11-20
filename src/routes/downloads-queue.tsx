@@ -78,6 +78,7 @@ import { vpnDownloadAttention } from "../lib/tasks/vpn-download-notifications";
 import { pauseVpnDownloadRun, resumeVpnDownloadRun, cancelVpnDownloadRun } from "../lib/tasks/vpn-download-runtime";
 import { isDownloadWorkTask, workProgress } from "../lib/tasks/work-progress";
 import { sourceAccessBlockSourceNames } from "../lib/tasks/source-access-coordinator";
+import { taskNotificationGroupForKind } from "../lib/tasks/task-types";
 import {
   taskWorkQueueKey,
   taskScheduler,
@@ -407,13 +408,16 @@ function hasBlockingSourceTask(
 }
 
 function isSourceQueuePaused(task: TaskRecord, snapshot: TaskSnapshot): boolean {
-  if (task.kind === "source.openSite") return false;
-  return Boolean(
-    task.source &&
-      isActiveTask(task) &&
-      (snapshot.sourceQueuesPaused ||
-        snapshot.pausedSourceIds.includes(task.source.id)),
-  );
+  if (task.kind === "source.openSite" || !isActiveTask(task)) return false;
+  if (task.kind === "chapter.download" || task.kind === "chapter.repairMedia") {
+    return Boolean(
+      task.source &&
+        (snapshot.sourceQueuesPaused ||
+          snapshot.pausedSourceIds.includes(task.source.id)),
+    );
+  }
+  const group = taskNotificationGroupForKind(task.kind);
+  return group !== null && Boolean(snapshot.pausedTaskGroups?.includes(group));
 }
 
 function hasCancellableActiveTask(records: TaskRecord[]): boolean {
@@ -1167,9 +1171,13 @@ export function DownloadsQueueView({
     () => tasks.filter((task) => task.lane === "source"),
     [tasks],
   );
+  const activeDownloadWorkTasks = useMemo(
+    () => sourceTasks.filter((task) => isDownloadWorkTask(task) && isActiveTask(task)),
+    [sourceTasks],
+  );
   const hasVpnRun = Boolean(vpn.run && vpn.run.status !== "completed" && vpn.run.status !== "cancelled");
   const allPaused = hasVpnRun ? (vpn.run?.status === "paused" || vpn.run?.status === "interrupted") &&
-    (!sourceTasks.length || snapshot.sourceQueuesPaused) : snapshot.sourceQueuesPaused;
+    (!activeDownloadWorkTasks.length || snapshot.sourceQueuesPaused) : snapshot.sourceQueuesPaused;
   const ordinaryBlocks = snapshot.sourceAccessBlocks.filter(block => !block.rangeId);
   const hasAttention = useHasDownloadAttention(active, vpn, ordinaryBlocks, snapshot);
   useAttentionFocus(active, hasAttention, attentionRef);
@@ -1354,7 +1362,7 @@ export function DownloadsQueueView({
           actions={
             <>
               <IconButton
-                disabled={queueActionPending || (!sourceTasks.length && !hasVpnRun && !requests.length)}
+                disabled={queueActionPending || (!activeDownloadWorkTasks.length && !hasVpnRun && !requests.length && !snapshot.sourceQueuesPaused)}
                 label={allPaused ? t("downloads.queue.resume") : t("downloads.queue.pause")}
                 onClick={() => runQueueAction(async () => {
                   if (allPaused) {

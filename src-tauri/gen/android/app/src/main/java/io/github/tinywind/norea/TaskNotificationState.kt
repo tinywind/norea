@@ -2,11 +2,16 @@ package io.github.tinywind.norea
 
 import java.util.UUID
 
-internal enum class TaskNotificationGroup(val key: String, val notificationId: Int) {
+internal enum class TaskNotificationGroup(
+  val key: String,
+  val notificationId: Int,
+  val pausable: Boolean = true,
+) {
   DOWNLOADS("downloads", 1101),
   LIBRARY_METADATA("libraryMetadata", 1102),
   LIBRARY_UPDATES("libraryUpdates", 1103),
-  SEARCH("search", 1104);
+  SEARCH("search", 1104),
+  CONTENT_SYNC("contentSync", 1105, pausable = false);
 
   companion object {
     fun fromKey(key: String): TaskNotificationGroup? = entries.find { it.key == key }
@@ -35,19 +40,69 @@ internal data class TaskNotificationRuntimePlan(
   val anchorId: Int?,
   val quietAnchor: Boolean,
   val holdWakeLock: Boolean,
+  val syncQuietAnchor: Boolean = false,
 )
 
 internal fun taskNotificationRuntimePlan(
   executionActive: Boolean,
   working: Boolean,
   groups: List<TaskNotificationGroup>,
+  syncQuietAnchor: Boolean = false,
 ): TaskNotificationRuntimePlan {
-  if (!executionActive) return TaskNotificationRuntimePlan(null, false, false)
+  if (!executionActive) return TaskNotificationRuntimePlan(null, false, false, false)
   val group = groups.minByOrNull { it.notificationId }
+  val quietAnchor = group == null
   return TaskNotificationRuntimePlan(
     anchorId = group?.notificationId ?: TASK_QUIET_NOTIFICATION_ID,
-    quietAnchor = group == null,
+    quietAnchor = quietAnchor,
     holdWakeLock = working,
+    syncQuietAnchor = quietAnchor && syncQuietAnchor,
+  )
+}
+
+internal enum class BackgroundUploadAnchorAction {
+  PASS_THROUGH,
+  KEEP_EXISTING_NOOP,
+  HOLD_SYNC_ANCHOR,
+}
+
+internal data class BackgroundUploadAnchorDecision(
+  val action: BackgroundUploadAnchorAction,
+  val armTimeout: Boolean,
+)
+
+internal fun decideBackgroundUploadAnchor(
+  executionActive: Boolean,
+  hasTransientNotices: Boolean,
+  preemptiveAnchorActive: Boolean,
+  isForegroundServiceActive: Boolean,
+  pendingBackgroundUpload: Boolean,
+  activityActive: Boolean,
+  executionSuspended: Boolean = false,
+  networkConnected: Boolean = true,
+): BackgroundUploadAnchorDecision {
+  val preservePreemptiveAnchor =
+    !executionActive &&
+      (preemptiveAnchorActive || isForegroundServiceActive) &&
+      pendingBackgroundUpload &&
+      !activityActive &&
+      !executionSuspended &&
+      networkConnected
+  if (!preservePreemptiveAnchor) {
+    return BackgroundUploadAnchorDecision(
+      action = BackgroundUploadAnchorAction.PASS_THROUGH,
+      armTimeout = false,
+    )
+  }
+  if (preemptiveAnchorActive && !hasTransientNotices) {
+    return BackgroundUploadAnchorDecision(
+      action = BackgroundUploadAnchorAction.KEEP_EXISTING_NOOP,
+      armTimeout = false,
+    )
+  }
+  return BackgroundUploadAnchorDecision(
+    action = BackgroundUploadAnchorAction.HOLD_SYNC_ANCHOR,
+    armTimeout = !preemptiveAnchorActive,
   )
 }
 
@@ -98,7 +153,7 @@ internal data class TaskNotificationAction(
       novelId != null && novelId in 1..TASK_NOTIFICATION_MAX_SAFE_INTEGER &&
       chapterId != null && chapterId in 1..TASK_NOTIFICATION_MAX_SAFE_INTEGER
     "pause", "resume" -> target == TaskNotificationActionTarget.CONTROL &&
-      TaskNotificationGroup.fromKey(groupKey ?: "") != null
+      TaskNotificationGroup.fromKey(groupKey ?: "")?.pausable == true
     "verifySource" -> target == TaskNotificationActionTarget.ACTIVITY &&
       taskNotificationIdentifier(sourceId) != null && taskNotificationIdentifier(scopeKey, 2048) != null &&
       revision != null && revision in 1..TASK_NOTIFICATION_MAX_SAFE_INTEGER
@@ -127,6 +182,10 @@ internal data class TaskNotificationAction(
         profileId = profileId, generation = generation, checkpoint = checkpoint)
   }
 }
+
+internal fun defaultGroupOpenAction(group: TaskNotificationGroup): TaskNotificationAction =
+  if (group == TaskNotificationGroup.CONTENT_SYNC) TaskNotificationAction.openBackupSettings()
+  else TaskNotificationAction.openTasks()
 
 internal fun taskNotificationActionFromFields(field: (String) -> Any?): TaskNotificationAction? {
   val action = when (field("type")) {

@@ -7,6 +7,7 @@ import { useAppearanceStore } from "../store/appearance";
 import { useContentSyncStore } from "../store/content-sync";
 import { useDownloadGoalSettingsStore } from "../store/download-goals";
 import { isApplyingSharedReaderResume, useReaderStore } from "../store/reader";
+import { isAppActive, subscribeAppLifecycle } from "./app-lifecycle";
 import type { ChapterCleanupFilters } from "./chapter-cleanup";
 import { subscribeContentSyncUploadSettled } from "./content-sync/sync";
 import { listGoalProtectedChapterIds } from "./download-goals/goal-protection";
@@ -197,7 +198,7 @@ function schedule(delayMs: number, options?: { preserveLaterDeadline?: boolean }
 }
 
 function scheduleWhenDue(): void {
-  if (typeof document !== "undefined" && document.visibilityState !== "visible") return;
+  if (!isAppActive()) return;
   if (!finishedChapterCleanupFilters()) return;
   if (isFinishedChapterCleanupDue(Date.now(), useFinishedChapterCleanupStore.getState().lastRunAt)) {
     schedule(AFTER_START_DELAY_MS, { preserveLaterDeadline: true });
@@ -257,10 +258,9 @@ export function startFinishedChapterCleanup(queryClient?: QueryInvalidator): voi
       }
     }),
   );
-  if (typeof document !== "undefined") {
-    document.addEventListener("visibilitychange", scheduleWhenDue);
-    unsubscribers.push(() => document.removeEventListener("visibilitychange", scheduleWhenDue));
-  }
+  unsubscribers.push(subscribeAppLifecycle((active) => {
+    if (active) scheduleWhenDue();
+  }));
   const interval = setInterval(scheduleWhenDue, DUE_CHECK_INTERVAL_MS);
   unsubscribers.push(() => clearInterval(interval));
   scheduleWhenDue();

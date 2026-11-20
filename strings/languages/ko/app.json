@@ -2129,5 +2129,11 @@
   "chapterDifference.checkFailed": "비교 실패 · 다시 확인",
   "chapterDifference.manage": "서버와 다름 {count}개 · 관리",
   "chapterDifference.none": "서버 사본 비교",
-  "chapterDifference.rowBadge": "서버와 다름"
+  "chapterDifference.rowBadge": "서버와 다름",
+  "tasks.notification.contentSync": "콘텐츠 서버 동기화",
+  "tasks.notification.contentSyncFailed": "콘텐츠 서버 동기화 실패",
+  "tasks.notification.contentSyncWorks": "작품 및 챕터 동기화 중…",
+  "tasks.notification.contentSyncBoth": "작품 및 읽기 상태 동기화 중…",
+  "contentSync.background.title": "백그라운드 동기화",
+  "contentSync.battery.description": "일부 기기는 화면이 꺼지면 앱 작업을 멈춥니다. 예외로 두면 화면이 꺼져도 동기화가 계속됩니다."
 }

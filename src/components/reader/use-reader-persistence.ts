@@ -23,6 +23,8 @@ import type { PortableReaderAnchor } from "../../lib/user-state/types";
 import { describeError } from "../../lib/errors";
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
+import { registerBeforeAppSuspend } from "../../lib/app-lifecycle";
+import { beginPendingReaderWrite } from "../../lib/tasks/sync-runtime";
 import { requestUserStateFlush } from "../../lib/user-state/events";
 const FINISHED_PROGRESS = 100;
 
@@ -44,6 +46,7 @@ export function useReaderPersistence(
 ) {
   const queryClient = useQueryClient();
   const readerWriteQueueRef = useRef<Promise<unknown>>(Promise.resolve());
+  const pendingProgressFlushesRef = useRef<Set<Promise<unknown>>>(new Set());
   const incognitoMode = useLibraryStore((state) => state.incognitoMode);
   const incognitoModeRef = useRef(incognitoMode);
   useLayoutEffect(() => {
@@ -53,10 +56,35 @@ export function useReaderPersistence(
     (state) => state.setLastReadChapter,
   );
   const enqueueReaderWrite = useCallback(<T,>(write: () => Promise<T>) => {
-    const run = readerWriteQueueRef.current.catch(() => undefined).then(write);
+    const endWrite = beginPendingReaderWrite();
+    const run = readerWriteQueueRef.current
+      .catch(() => undefined)
+      .then(write)
+      .finally(endWrite);
     readerWriteQueueRef.current = run.catch(() => undefined);
     return run;
   }, []);
+
+  useEffect(
+    () =>
+      registerBeforeAppSuspend(async () => {
+        for (;;) {
+          const flushes = [...pendingProgressFlushesRef.current];
+          const tail = readerWriteQueueRef.current;
+          await Promise.all([
+            tail.then(() => undefined, () => undefined),
+            ...flushes,
+          ]);
+          if (
+            pendingProgressFlushesRef.current.size === 0 &&
+            readerWriteQueueRef.current === tail
+          ) {
+            return;
+          }
+        }
+      }, "drain"),
+    [],
+  );
 
   const progressMutation = useMutation({
     mutationFn: ({
@@ -133,11 +161,11 @@ export function useReaderPersistence(
       }
     },
   });
-  const progressMutateRef = useRef(progressMutation.mutate);
+  const progressMutateAsyncRef = useRef(progressMutation.mutateAsync);
 
   useEffect(() => {
-    progressMutateRef.current = progressMutation.mutate;
-  }, [progressMutation.mutate]);
+    progressMutateAsyncRef.current = progressMutation.mutateAsync;
+  }, [progressMutation.mutateAsync]);
 
   useEffect(() => {
     if (
@@ -183,12 +211,25 @@ export function useReaderPersistence(
   }, [chapter?.id, chapter?.content, enqueueReaderWrite]);
 
   const persistProgress = useCallback((update: ReaderProgressUpdate) => {
-    progressMutateRef.current({
-      ...update,
-      recordHistory: !incognitoModeRef.current,
-      anchor: getPortableReaderAnchor(useReaderStore.getState().chapterScrollAnchors[update.chapterId]),
-      openedAt: Math.floor(Date.now() / 1000),
-    });
+    const endPendingWrite = beginPendingReaderWrite();
+    const pending = progressMutateAsyncRef
+      .current({
+        ...update,
+        recordHistory: !incognitoModeRef.current,
+        anchor: getPortableReaderAnchor(
+          useReaderStore.getState().chapterScrollAnchors[update.chapterId],
+        ),
+        openedAt: Math.floor(Date.now() / 1000),
+      })
+      .then(
+        () => undefined,
+        () => undefined,
+      )
+      .finally(() => {
+        pendingProgressFlushesRef.current.delete(pending);
+        endPendingWrite();
+      });
+    pendingProgressFlushesRef.current.add(pending);
   }, []);
   return { incognitoMode, persistProgress };
 }

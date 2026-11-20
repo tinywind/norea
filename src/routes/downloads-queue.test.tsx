@@ -330,6 +330,24 @@ describe("task work group order", () => {
     expect($('button[aria-label="Resume downloads"]')).toHaveLength(1);
   });
 
+  it("does not label unrelated source metadata work as paused when only downloads are paused", () => {
+    const scheduler = new TaskScheduler();
+    scheduler.pauseSourceQueue();
+    const refreshTask: TaskRecord = {
+      id: "refresh-1", lane: "source", kind: "source.refreshNovel", priority: "user",
+      title: "Refresh Novel 1", source: { id: "source", name: "Source" },
+      subject: { novelId: 1, novelName: "Novel 1", pluginId: "source" }, status: "queued",
+      createdAt: 1, canCancel: true, canRetry: false, queueIndex: 0, queueSize: 1,
+    };
+    state.snapshot = {
+      ...scheduler.getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [chapter(1, 1, "queued", 0), refreshTask],
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($(".norea-task-work-status").text()).toBe("Paused");
+    expect($(".norea-downloads-other .norea-task-row-detail").text()).not.toContain("paused");
+  });
+
   it("shows novel update checks and full metadata refreshes under Other activity rather than Downloads", () => {
     const checkTask: TaskRecord = {
       id: "check-1", lane: "source", kind: "source.checkLibraryUpdates", priority: "user",
@@ -385,6 +403,87 @@ describe("task work group order", () => {
     expect(workTitles([
       chapter(1, 1, "succeeded"), chapter(2, 2, "queued", 0), chapter(3, 3, "failed"),
     ])).toEqual(["Novel 2", "Novel 3", "Novel 1"]);
+  });
+
+  it("scopes the header Pause/Resume button strictly to download tasks and VPN runs, ignoring Other activity", () => {
+    const refreshTask: TaskRecord = {
+      id: "refresh-only", lane: "source", kind: "source.refreshNovel", priority: "user",
+      title: "Refresh Novel 1", source: { id: "source", name: "Source" },
+      subject: { novelId: 1, novelName: "Novel 1", pluginId: "source" }, status: "running",
+      createdAt: 1, canCancel: true, canRetry: false, queueIndex: 0, queueSize: 1,
+    };
+
+    // Only non-download source activity exists: header Pause/Resume button must be disabled.
+    state.buttons = [];
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [refreshTask], total: 1, running: 1,
+    };
+    const $onlyOther = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    const disabledPause = $onlyOther('.norea-app-bar-actions button[aria-label="Pause downloads"]');
+    expect(disabledPause).toHaveLength(1);
+    expect(disabledPause.attr("disabled")).toBeDefined();
+
+    // Paused VPN run + non-download source activity (no ordinary download tasks, sourceQueuesPaused=false):
+    // header button must stay enabled and reflect the paused VPN download state ("Resume downloads").
+    state.vpn.run = {
+      id: "run", status: "paused", workerCount: 3,
+      captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile",
+      activeWorkers: 0, connectingWorkers: 0, closingWorkers: 0,
+    };
+    try {
+      const $pausedVpn = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+      const resumeBtn = $pausedVpn('.norea-app-bar-actions button[aria-label="Resume downloads"]');
+      expect(resumeBtn).toHaveLength(1);
+      expect(resumeBtn.attr("disabled")).toBeUndefined();
+      expect($pausedVpn('.norea-app-bar-actions button[aria-label="Pause downloads"]')).toHaveLength(0);
+    } finally {
+      state.vpn.run = undefined;
+    }
+
+    // Download task alongside non-download activity: header button tracks the unified download pause gate.
+    const scheduler = new TaskScheduler();
+    scheduler.pauseTaskGroup("downloads");
+    state.snapshot = {
+      ...scheduler.getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [chapter(1, 1, "queued", 0), refreshTask], total: 2, queued: 1, running: 1,
+    };
+    const $pausedDownload = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    const resumeDownload = $pausedDownload('.norea-app-bar-actions button[aria-label="Resume downloads"]');
+    expect(resumeDownload).toHaveLength(1);
+    expect(resumeDownload.attr("disabled")).toBeUndefined();
+
+    // Completed download history alone must not override a paused VPN run or enable Pause when idle.
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [chapter(2, 1, "succeeded")], total: 1, succeeded: 1,
+    };
+    const $completedOnly = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    expect($completedOnly('.norea-app-bar-actions button[aria-label="Pause downloads"]').attr("disabled")).toBeDefined();
+
+    state.vpn.run = {
+      id: "run", status: "paused", workerCount: 3,
+      captchaPolicy: "nextProfile", cloudflarePolicy: "nextProfile",
+      activeWorkers: 0, connectingWorkers: 0, closingWorkers: 0,
+    };
+    try {
+      const $completedWithPausedVpn = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+      const resumeWithHistory = $completedWithPausedVpn('.norea-app-bar-actions button[aria-label="Resume downloads"]');
+      expect(resumeWithHistory).toHaveLength(1);
+      expect(resumeWithHistory.attr("disabled")).toBeUndefined();
+    } finally {
+      state.vpn.run = undefined;
+    }
+
+    // A globally paused queue with zero active tasks must keep Resume enabled so the user can release the gate.
+    state.snapshot = {
+      ...scheduler.getSnapshot(), sourceQueueOrder: [], sourceQueuesTotal: 0,
+      records: [], total: 0,
+    };
+    const $pausedEmpty = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    const resumeEmpty = $pausedEmpty('.norea-app-bar-actions button[aria-label="Resume downloads"]');
+    expect(resumeEmpty).toHaveLength(1);
+    expect(resumeEmpty.attr("disabled")).toBeUndefined();
   });
 });
 

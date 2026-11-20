@@ -1547,6 +1547,7 @@ pub async fn get_user_state_ledger_status_in_tx(
                 cursor: 0,
                 through: None,
                 pending: 0,
+                sendable_pending: 0,
                 conflicts: 0,
                 deferred: 0,
                 projection_pending: 0,
@@ -1563,10 +1564,29 @@ pub async fn get_user_state_ledger_status_in_tx(
         .fetch_one(&mut *conn)
         .await
         .map_err(|err| format!("db user state: count unlinked intents: {err}"))?;
+        let sendable_pending: i64 = if paused_after_restore {
+            0
+        } else {
+            sqlx::query_scalar(
+                "SELECT COUNT(*) FROM user_state_intent \
+                 WHERE COALESCE(json_extract(entity_json, '$.kind'), '') <> 'library' \
+                   AND COALESCE(json_extract(entity_json, '$.work.pluginId'), '') <> 'local' \
+                   AND (json_type(entity_json, '$.work') IS NULL \
+                        OR json_extract(entity_json, '$.work.sourceNovelId') IS NOT NULL) \
+                   AND COALESCE(json_extract(entity_json, '$.chapter.chapterPath'), \
+                                json_extract(value_json, '$.chapter.chapterPath'), '') NOT LIKE 'norea-folder:%' \
+                   AND COALESCE(json_extract(entity_json, '$.chapter.chapterPath'), \
+                                json_extract(value_json, '$.chapter.chapterPath'), '') NOT LIKE 'local-folder:%'",
+            )
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: count unlinked sendable intents: {err}"))?
+        };
         return Ok(UserStateLedgerStatusDto {
             cursor: 0,
             through: None,
             pending,
+            sendable_pending,
             conflicts: 0,
             deferred: 0,
             projection_pending: 0,
@@ -1685,11 +1705,50 @@ pub async fn get_user_state_ledger_status_in_tx(
         }
     }
 
+    let sendable_pending: i64 = if paused_after_restore {
+        0
+    } else {
+        sqlx::query_scalar(
+            "SELECT \
+               (SELECT COUNT(*) FROM user_state_operation o \
+                WHERE o.namespace = ?1 AND o.status = 'pending' \
+                  AND COALESCE(json_extract(o.payload, '$.entity.kind'), '') <> 'library' \
+                  AND COALESCE(json_extract(o.payload, '$.entity.work.pluginId'), '') <> 'local' \
+                  AND (json_type(o.payload, '$.entity.work') IS NULL \
+                       OR json_extract(o.payload, '$.entity.work.sourceNovelId') IS NOT NULL) \
+                  AND COALESCE(json_extract(o.payload, '$.entity.chapter.chapterPath'), \
+                               json_extract(o.payload, '$.value.chapter.chapterPath'), '') NOT LIKE 'norea-folder:%' \
+                  AND COALESCE(json_extract(o.payload, '$.entity.chapter.chapterPath'), \
+                               json_extract(o.payload, '$.value.chapter.chapterPath'), '') NOT LIKE 'local-folder:%') \
+               + \
+               (SELECT COUNT(*) FROM user_state_intent i \
+                JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
+                WHERE i.sequence > p.acknowledged_sequence \
+                  AND COALESCE(json_extract(i.entity_json, '$.kind'), '') <> 'library' \
+                  AND COALESCE(json_extract(i.entity_json, '$.work.pluginId'), '') <> 'local' \
+                  AND NOT EXISTS(SELECT 1 FROM user_state_conflict c \
+                                 WHERE c.namespace = ?1 AND c.entity_key = i.entity_key) \
+                  AND NOT EXISTS(SELECT 1 FROM user_state_operation o \
+                                 WHERE o.namespace = ?1 AND o.status = 'pending' AND o.entity_key = i.entity_key) \
+                  AND (json_type(i.entity_json, '$.work') IS NULL \
+                       OR json_extract(i.entity_json, '$.work.sourceNovelId') IS NOT NULL) \
+                  AND COALESCE(json_extract(i.entity_json, '$.chapter.chapterPath'), \
+                               json_extract(i.value_json, '$.chapter.chapterPath'), '') NOT LIKE 'norea-folder:%' \
+                  AND COALESCE(json_extract(i.entity_json, '$.chapter.chapterPath'), \
+                               json_extract(i.value_json, '$.chapter.chapterPath'), '') NOT LIKE 'local-folder:%')",
+        )
+        .bind(&workspace.namespace)
+        .fetch_one(&mut *conn)
+        .await
+        .map_err(|err| format!("db user state: count sendable pending intents: {err}"))?
+    };
+
     let conflicts = list_user_state_conflicts_in_tx(conn, binding).await?.len();
     Ok(UserStateLedgerStatusDto {
         cursor: workspace.cursor,
         through: workspace.through,
         pending,
+        sendable_pending,
         conflicts,
         deferred,
         projection_pending,

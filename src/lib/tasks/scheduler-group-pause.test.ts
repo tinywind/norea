@@ -61,28 +61,70 @@ describe("notification task group pause", () => {
     expect(scheduler.getSnapshot().pausedTaskGroups).toEqual([]);
   });
 
-  it("keeps group pause independent from source and global pause", async () => {
+  it("unifies downloads group pause with global source queue pause across both entry points", async () => {
     scheduler.pauseTaskGroup("downloads");
-    scheduler.pauseSourceQueue(source.id);
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(true);
+    expect(scheduler.getSnapshot().pausedTaskGroups).toEqual(["downloads"]);
+
     const completed: string[] = [];
-    const handle = enqueue("chapter.download", async () => { completed.push("download"); });
-    scheduler.resumeTaskGroup("downloads");
+    const first = enqueue("chapter.download", async () => { completed.push("first"); });
     await settle();
     expect(completed).toEqual([]);
 
-    scheduler.pauseTaskGroup("downloads");
-    scheduler.resumeSourceQueue(source.id);
-    await settle();
-    expect(completed).toEqual([]);
-
-    scheduler.pauseSourceQueue();
-    scheduler.resumeTaskGroup("downloads");
-    await settle();
-    expect(completed).toEqual([]);
+    // Resuming from the Downloads page unlocks a pause started from the notification card.
     scheduler.resumeSourceQueue();
     await settle();
-    await handle.promise;
+    await first.promise;
+    expect(completed).toEqual(["first"]);
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(false);
+    expect(scheduler.getSnapshot().pausedTaskGroups).toEqual([]);
+
+    // Pausing from the Downloads page is reflected in pausedTaskGroups and unlocked by notification resume.
+    scheduler.pauseSourceQueue();
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(true);
+    expect(scheduler.getSnapshot().pausedTaskGroups).toEqual(["downloads"]);
+
+    const second = enqueue("chapter.download", async () => { completed.push("second"); });
+    await settle();
+    expect(completed).toEqual(["first"]);
+
+    // Per-source resume alone does not bypass the unified global download pause.
+    scheduler.pauseSourceQueue(source.id);
+    scheduler.resumeSourceQueue(source.id);
+    await settle();
+    expect(completed).toEqual(["first"]);
+
+    scheduler.resumeTaskGroup("downloads");
+    await settle();
+    await second.promise;
+    expect(completed).toEqual(["first", "second"]);
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(false);
+    expect(scheduler.getSnapshot().pausedTaskGroups).toEqual([]);
+  });
+
+  it("keeps non-download group pause independent from global download pause", async () => {
+    scheduler.pauseTaskGroup("libraryMetadata");
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(false);
+    expect(scheduler.getSnapshot().pausedTaskGroups).toEqual(["libraryMetadata"]);
+
+    const completed: string[] = [];
+    const refresh = enqueue("source.refreshNovel", async () => { completed.push("refresh"); });
+    const download = enqueue("chapter.download", async () => { completed.push("download"); });
+    await settle();
+    await download.promise;
     expect(completed).toEqual(["download"]);
+    expect(scheduler.getTask(refresh.id)?.status).toBe("queued");
+
+    scheduler.pauseSourceQueue();
+    expect(scheduler.getSnapshot().pausedTaskGroups).toEqual(["downloads", "libraryMetadata"]);
+    scheduler.resumeSourceQueue();
+    await settle();
+    expect(scheduler.getTask(refresh.id)?.status).toBe("queued");
+
+    scheduler.resumeTaskGroup("libraryMetadata");
+    await settle();
+    await refresh.promise;
+    expect(completed).toEqual(["download", "refresh"]);
   });
 
   it("gates queued main aggregates while unrelated main work can start", async () => {
@@ -211,5 +253,17 @@ describe("notification task group pause", () => {
     await settle();
     await verification.promise;
     expect(completed).toEqual(["verification"]);
+  });
+
+  it("clears global download failure stops through the unified download resume gate", () => {
+    scheduler.hydrateDownloadFailureStops({ globalError: "Disk is full", sourceErrors: {} });
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(true);
+    expect(scheduler.getSnapshot().pausedTaskGroups).toEqual(["downloads"]);
+    expect(scheduler.getDownloadFailureStops().globalError).toBe("Disk is full");
+
+    expect(scheduler.resumeTaskGroup("downloads")).toBe(true);
+    expect(scheduler.getDownloadFailureStops().globalError).toBeUndefined();
+    expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(false);
+    expect(scheduler.getSnapshot().pausedTaskGroups).toEqual([]);
   });
 });

@@ -9,6 +9,12 @@ import { waitForUserStateDeferredApply } from "../../db/user-state-core";
 import { useContentSyncStore } from "../../store/content-sync";
 import { useUserStateStore } from "../../store/user-state";
 import { isAbortError, requestAbortedError } from "../abort";
+import { isAppActive } from "../app-lifecycle";
+import {
+  beginUserStateSyncRun,
+  clearBackgroundSyncFailure,
+  recordBackgroundSyncFailure,
+} from "../tasks/sync-runtime";
 import { serializeUserStateSynchronization, withUserStateRebind, withUserStateRestore } from "./maintenance";
 import {
   ContentServerError, contentServerFetch, contentServerRequest, normalizeContentServerUrl, withContentServerLookup,
@@ -174,6 +180,27 @@ export function validateUserStateAcknowledgements(
   }
 }
 
+/** True when the configured server has at least one sendable local change waiting to upload. */
+export async function hasSendableUserStateChanges(serverUrl = selectedServer()): Promise<boolean> {
+  const normalized = serverUrl ? normalizeContentServerUrl(serverUrl) : "";
+  if (!normalized) return false;
+  const store = useUserStateStore.getState();
+  if (
+    store.enabledByServer[normalized] !== true ||
+    store.runtimeByServer[normalized]?.epochMismatch ||
+    store.runtimeByServer[normalized]?.blocked
+  ) {
+    return false;
+  }
+  const binding = await getUserStateBinding(normalized);
+  const status = await getUserStateLedgerStatus(binding ?? null);
+  if (status.pausedAfterRestore) return false;
+  const sendable =
+    status.sendablePending ??
+    Math.max(0, status.pending - status.conflicts - status.deferred);
+  return sendable > 0;
+}
+
 /** This status query reads only the local ledger; opening settings never publishes data. */
 export async function getUserStateStatus(): Promise<UserStateStatus> {
   const serverUrl = selectedServer();
@@ -225,6 +252,7 @@ async function runSynchronization(serverUrl: string, controller: AbortController
   const unsubscribe = useContentSyncStore.subscribe((state, previous) => {
     if (state.serverUrl !== previous.serverUrl) controller.abort(requestAbortedError());
   });
+  const endSyncRun = beginUserStateSyncRun();
   setUserStateActiveServer(serverUrl);
   useUserStateStore.getState().setRuntime(serverUrl, "syncing");
   try {
@@ -483,12 +511,19 @@ async function runSynchronization(serverUrl: string, controller: AbortController
     await pruneUserStateOperations(binding);
     check();
     useUserStateStore.getState().setRuntime(serverUrl, "idle");
+    clearBackgroundSyncFailure("userState", serverUrl);
   } catch (error) {
-    useUserStateStore.getState().setRuntime(serverUrl, isAbortError(error) || signal.aborted ? "idle" : "error",
-      isAbortError(error) || signal.aborted ? null : error instanceof Error ? error.message : String(error));
+    const aborted = isAbortError(error) || signal.aborted;
+    const blocked = !aborted && error instanceof ContentServerError && error.status === 403;
+    const message = aborted ? null : (error instanceof Error ? error.message : String(error));
+    useUserStateStore.getState().setRuntime(serverUrl, aborted ? "idle" : "error", message, blocked);
+    if (!aborted && message && !isAppActive()) {
+      recordBackgroundSyncFailure({ kind: "userState", serverUrl, rawError: message, blocked });
+    }
     throw error;
   } finally {
     unsubscribe();
+    endSyncRun();
   }
 }
 
@@ -542,58 +577,73 @@ export function synchronizeUserState(options: { signal?: AbortSignal } = {}): Pr
 }
 
 export async function resolveUserStateConflict(input: ResolveUserStateConflictInput): Promise<void> {
-  const serverUrl = selectedServer();
-  const binding = serverUrl ? await getUserStateBinding(serverUrl) : null;
-  if (!binding) throw new Error("Share user changes once before resolving a shared conflict.");
-  if (selectedServer() !== serverUrl) throw requestAbortedError();
-  await resolveUserStateLedgerConflict(binding, {
-    id: input.conflictId, version: input.version, choice: input.choice,
-    ...(input.categoryName === undefined ? {} : { categoryName: input.categoryName }),
-  });
-  if (selectedServer() !== serverUrl) throw requestAbortedError();
-  await synchronizeUserState();
+  const endSyncRun = beginUserStateSyncRun();
+  try {
+    const serverUrl = selectedServer();
+    const binding = serverUrl ? await getUserStateBinding(serverUrl) : null;
+    if (!binding) throw new Error("Share user changes once before resolving a shared conflict.");
+    if (selectedServer() !== serverUrl) throw requestAbortedError();
+    await resolveUserStateLedgerConflict(binding, {
+      id: input.conflictId, version: input.version, choice: input.choice,
+      ...(input.categoryName === undefined ? {} : { categoryName: input.categoryName }),
+    });
+    if (selectedServer() !== serverUrl) throw requestAbortedError();
+    await synchronizeUserState();
+  } finally {
+    endSyncRun();
+  }
 }
 
 
 /** Restored snapshot values are never converted into seeds by this explicit reconnection. */
 export async function resumeUserStateAfterRestore(): Promise<void> {
-  await withUserStateRestore(() => resumeRestoredLedger());
-  await synchronizeUserState();
+  const endSyncRun = beginUserStateSyncRun();
+  try {
+    await withUserStateRestore(() => resumeRestoredLedger());
+    await synchronizeUserState();
+  } finally {
+    endSyncRun();
+  }
 }
 
 export async function rebindUserStateWorkspace(mode: UserStateRebindMode): Promise<void> {
   const serverUrl = selectedServer();
   if (!serverUrl) throw new Error("Configure the content server before sharing user changes.");
-  await withUserStateRebind(async () => {
-    await assertUserStateAvailable();
-    const capabilities = await contentServerRequest<ContentCapabilities>(serverUrl, "/capabilities", undefined, "GET");
-    if (capabilities.userStateVersion !== USER_STATE_VERSION) {
-      throw new Error("This content server does not support shared user changes. Update the server before sharing.");
-    }
-    const token = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
-    const controller = new AbortController();
-    const workspace = parseUserStateWorkspace(await request(serverUrl, "/user-state", token, controller.signal));
-    let seedCutoffMs: number | null = null;
-    let seedAllowed: boolean | undefined;
-    if (capabilities.userStateRetentionVersion === 1) {
-      const retention = parseUserStateRetentionResponse(
-        await request(serverUrl, "/user-state/retention", token, controller.signal),
-      );
-      assertWorkspace(retention, { serverUrl, workspaceId: workspace.workspaceId, epoch: workspace.epoch });
-      seedCutoffMs = retention.seedCutoffAt;
-      seedAllowed = retention.seedAllowed;
-    }
-    const binding: UserStateBinding = {
-      serverUrl,
-      workspaceId: workspace.workspaceId,
-      epoch: workspace.epoch,
-    };
-    await rebindUserStateWorkspaceInDb(binding, mode, {
-      ...(mode === "reseed"
-        ? { seedCutoffMs, seedAllowed }
-        : { headRevision: workspace.headRevision, seedCutoffMs }),
+  const endSyncRun = beginUserStateSyncRun();
+  try {
+    await withUserStateRebind(async () => {
+      await assertUserStateAvailable();
+      const capabilities = await contentServerRequest<ContentCapabilities>(serverUrl, "/capabilities", undefined, "GET");
+      if (capabilities.userStateVersion !== USER_STATE_VERSION) {
+        throw new Error("This content server does not support shared user changes. Update the server before sharing.");
+      }
+      const token = await registerContentDevice(serverUrl, useContentSyncStore.getState().deviceName);
+      const controller = new AbortController();
+      const workspace = parseUserStateWorkspace(await request(serverUrl, "/user-state", token, controller.signal));
+      let seedCutoffMs: number | null = null;
+      let seedAllowed: boolean | undefined;
+      if (capabilities.userStateRetentionVersion === 1) {
+        const retention = parseUserStateRetentionResponse(
+          await request(serverUrl, "/user-state/retention", token, controller.signal),
+        );
+        assertWorkspace(retention, { serverUrl, workspaceId: workspace.workspaceId, epoch: workspace.epoch });
+        seedCutoffMs = retention.seedCutoffAt;
+        seedAllowed = retention.seedAllowed;
+      }
+      const binding: UserStateBinding = {
+        serverUrl,
+        workspaceId: workspace.workspaceId,
+        epoch: workspace.epoch,
+      };
+      await rebindUserStateWorkspaceInDb(binding, mode, {
+        ...(mode === "reseed"
+          ? { seedCutoffMs, seedAllowed }
+          : { headRevision: workspace.headRevision, seedCutoffMs }),
+      });
+      useUserStateStore.getState().setEpochMismatch(serverUrl, null);
     });
-    useUserStateStore.getState().setEpochMismatch(serverUrl, null);
-  });
-  await synchronizeUserState();
+    await synchronizeUserState();
+  } finally {
+    endSyncRun();
+  }
 }

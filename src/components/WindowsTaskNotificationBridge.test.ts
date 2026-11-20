@@ -19,7 +19,11 @@ vi.mock("@tauri-apps/api/core", () => ({ invoke: mocks.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({ listen: mocks.listen }));
 vi.mock("@tauri-apps/api/window", () => ({ getCurrentWindow: () => mocks }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
-vi.mock("../lib/tauri-runtime", () => ({ isWindowsRuntime: () => true }));
+vi.mock("../lib/tauri-runtime", () => ({
+  isAndroidRuntime: () => false,
+  isTauriRuntime: () => true,
+  isWindowsRuntime: () => true,
+}));
 vi.mock("../lib/tasks/scheduler", () => ({ taskScheduler: mocks }));
 vi.mock("../lib/tasks/chapter-download", () => ({
   getChapterDownloadBatchProgress: () => [],
@@ -36,12 +40,19 @@ vi.mock("../i18n", () => ({
   }),
 }));
 
+import {
+  beginContentSyncRun,
+  clearBackgroundSyncFailure,
+  recordBackgroundSyncFailure,
+  resetSyncRuntimeForTests,
+} from "../lib/tasks/sync-runtime";
 import { WindowsTaskNotificationBridge } from "./WindowsTaskNotificationBridge";
 
 interface NativePayload {
-  groups: Array<{ key: string; body: string; paused: boolean; pauseLabel: string; resumeLabel: string }>;
+  groups: Array<{ key: string; body: string; paused: boolean; pausable?: boolean; pauseLabel: string; resumeLabel: string }>;
   challenges: Array<{ sourceId: string; scopeKey: string; revision: number }>;
-  completions: Array<{ key: string; body: string }>;
+  completions: Array<{ key: string; title?: string; body: string; action?: TaskNotificationAction }>;
+  cancelledCompletions?: string[];
   quiet: boolean;
 }
 let emit: (event: TaskEvent) => void;
@@ -84,6 +95,7 @@ async function mount(mode: TaskNotificationMode, onAction?: (action: TaskNotific
 }
 
 beforeEach(() => {
+  resetSyncRuntimeForTests();
   vi.useFakeTimers(); vi.clearAllMocks();
   emit = () => undefined; emitBatch = () => undefined;
   publish = () => undefined; receiveAction = () => undefined;
@@ -95,7 +107,7 @@ beforeEach(() => {
   mocks.subscribeEvents.mockImplementation((listener: typeof emit) => { emit = listener; return vi.fn(); });
   mocks.subscribeBatches.mockImplementation((listener: typeof emitBatch) => { emitBatch = listener; return vi.fn(); });
 });
-afterEach(() => { dispose?.(); dispose = undefined; vi.useRealTimers(); });
+afterEach(() => { dispose?.(); dispose = undefined; resetSyncRuntimeForTests(); vi.useRealTimers(); });
 
 it("publishes distinct task groups with independent pause state", async () => {
   mocks.getSnapshot.mockReturnValue(snapshot([task("download"), task("metadata", "source.refreshNovel")]));
@@ -300,4 +312,126 @@ it("opens the download queue when no parent action handler is provided", async (
   receiveAction({ payload: { type: "openTasks" } });
   await vi.advanceTimersByTimeAsync(0);
   expect(mocks.navigate).toHaveBeenCalledWith({ to: "/downloads", search: { view: "queue" } });
+});
+
+it("publishes a non-pausable contentSync card and cancels background failure toasts on recovery", async () => {
+  await mount("progress");
+  const endSync = beginContentSyncRun();
+  await vi.advanceTimersByTimeAsync(250);
+  expect(payload().groups).toEqual([
+    expect.objectContaining({
+      key: "contentSync",
+      pausable: false,
+      body: "tasks.notification.contentSyncWorks",
+    }),
+  ]);
+  endSync();
+  await vi.advanceTimersByTimeAsync(250);
+  expect(payload().groups).toEqual([]);
+
+  recordBackgroundSyncFailure({
+    kind: "userState",
+    serverUrl: "http://server",
+    rawError: "Server unreachable",
+    blocked: false,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(payload().completions).toEqual([
+    expect.objectContaining({
+      key: "contentSync",
+      title: "tasks.notification.contentSyncFailed",
+      body: "Server unreachable",
+      action: { type: "openBackupSettings" },
+    }),
+  ]);
+
+  clearBackgroundSyncFailure("userState", "http://server", { force: true });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(payload().cancelledCompletions).toEqual(["contentSync"]);
+});
+
+it("does not replay emitted sync failures on remount, cancels cleared in-flight toasts, and marks open before focus", async () => {
+  let finishReconcile!: () => void;
+  await mount("progress");
+  mocks.invoke.mockImplementationOnce(() => new Promise<void>(resolve => { finishReconcile = resolve; }));
+
+  recordBackgroundSyncFailure({
+    kind: "userState",
+    serverUrl: "http://server",
+    rawError: "Server unreachable",
+    blocked: false,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(payload().completions).toHaveLength(1);
+
+  // Clearing while the initial reconcile is still in flight still sends cancelledCompletions once it settles.
+  clearBackgroundSyncFailure("userState", "http://server", { force: true });
+  await vi.advanceTimersByTimeAsync(0);
+  finishReconcile();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(payload().cancelledCompletions).toEqual(["contentSync"]);
+
+  // Remounting the bridge does not replay an already-emitted failure.
+  recordBackgroundSyncFailure({
+    kind: "content",
+    serverUrl: "http://server",
+    rawError: "Network lost",
+    blocked: false,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(payload().completions).toHaveLength(1);
+  dispose?.();
+  dispose = undefined;
+  mocks.invoke.mockClear();
+
+  await mount("completion");
+  expect(payload().completions).toEqual([]);
+
+  // Clicking openBackupSettings marks the failure opened synchronously before window.show() resolves.
+  let finishShow!: () => void;
+  mocks.show.mockImplementationOnce(() => new Promise<void>(resolve => { finishShow = resolve; }));
+  receiveAction({ payload: { type: "openBackupSettings" } });
+  // Simulate fast auto-resume clearing the failure before focus completes.
+  clearBackgroundSyncFailure("content", "http://server");
+  finishShow();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(payload().cancelledCompletions).toBeUndefined();
+});
+
+it("updates the background failure toast to a remaining active failure when the latest one clears", async () => {
+  await mount("completion");
+
+  recordBackgroundSyncFailure({
+    kind: "content",
+    serverUrl: "http://server",
+    rawError: "Content sync rejected",
+    blocked: false,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(payload().completions).toEqual([
+    expect.objectContaining({ key: "contentSync", body: "contentSync.error.generic" }),
+  ]);
+
+  recordBackgroundSyncFailure({
+    kind: "userState",
+    serverUrl: "http://server",
+    rawError: "User state rejected",
+    blocked: false,
+  });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(payload().completions).toEqual([
+    expect.objectContaining({ key: "contentSync", body: "User state rejected" }),
+  ]);
+
+  clearBackgroundSyncFailure("userState", "http://server", { force: true });
+  await vi.advanceTimersByTimeAsync(0);
+  expect(payload().completions).toEqual([
+    expect.objectContaining({
+      key: "contentSync",
+      title: "tasks.notification.contentSyncFailed",
+      body: "contentSync.error.generic",
+      action: { type: "openBackupSettings" },
+    }),
+  ]);
+  expect(payload().cancelledCompletions).toBeUndefined();
 });

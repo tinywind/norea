@@ -49,9 +49,12 @@ export function hasServerMediaManifestWithoutArchive(entry: Pick<CatalogEntry, "
   );
 }
 
+const pendingStageTransfers = new Map<string, Promise<unknown>>();
+
 export async function withContentChapterStage<T>(input: { storageDir: string; identity: Pick<ContentIdentity, "pluginId" | "novelPath">; signal?: AbortSignal; verifySource?: () => Promise<void> }, run: (stagePath: string) => Promise<T>): Promise<T> {
   input.signal?.throwIfAborted();
   const stagePath = await invoke<string>("content_sync_create_stage");
+  const removeStage = () => invoke("content_sync_remove_stage", { stagePath });
   try {
     input.signal?.throwIfAborted();
     await runWorkContentStorageOperation(input.identity.pluginId, input.identity.novelPath, async () => {
@@ -62,7 +65,16 @@ export async function withContentChapterStage<T>(input: { storageDir: string; id
     input.signal?.throwIfAborted();
     return await run(stagePath);
   } finally {
-    await invoke("content_sync_remove_stage", { stagePath });
+    const inFlight = pendingStageTransfers.get(stagePath);
+    if (inFlight) {
+      // Native HTTP may still be reading the snapshot; remove the stage once it settles.
+      void inFlight.then(removeStage, removeStage).catch((error) => {
+        // eslint-disable-next-line no-console
+        console.warn("[content-sync] cancelled upload cleanup failed", error);
+      });
+    } else {
+      await removeStage();
+    }
   }
 }
 
@@ -83,22 +95,37 @@ export async function uploadContentChapter(input: {
   if (input.manifest.identity.pluginId === "local" || input.manifest.novel.isLocal) {
     throw new Error("Local files cannot be uploaded to the content server.");
   }
+  let onAbort: (() => void) | undefined;
   try {
     input.signal?.throwIfAborted();
-    return await invoke<CatalogEntry>("content_sync_upload", {
+    const interrupted = input.signal ? new Promise<never>((_, reject) => {
+      onAbort = () => reject(input.signal!.reason);
+      input.signal!.addEventListener("abort", onAbort, { once: true });
+    }) : undefined;
+    const transfer = invoke<CatalogEntry>("content_sync_upload", {
       serverUrl: input.serverUrl, token: input.token, manifest: input.manifest,
       conflictPolicy: input.conflictPolicy,
       storageDir: input.storageDir, stagePath: input.stagePath,
+    }).catch(async (error: unknown) => {
+      const rejected = /^content sync: server returned (\d{3}): ([\s\S]*)$/.exec(String(error));
+      if (!rejected) throw error;
+      const status = Number(rejected[1]);
+      if (status === 401) {
+        const { forgetContentDeviceRegistration } = await import("./device");
+        forgetContentDeviceRegistration(input.serverUrl, input.token);
+      }
+      throw new ContentServerError(status, rejected[2]);
     });
-  } catch (error) {
-    const rejected = /^content sync: server returned (\d{3}): ([\s\S]*)$/.exec(String(error));
-    if (!rejected) throw error;
-    const status = Number(rejected[1]);
-    if (status === 401) {
-      const { forgetContentDeviceRegistration } = await import("./device");
-      forgetContentDeviceRegistration(input.serverUrl, input.token);
-    }
-    throw new ContentServerError(status, rejected[2]);
+    const tracked = transfer.finally(() => {
+      if (pendingStageTransfers.get(input.stagePath) === tracked) {
+        pendingStageTransfers.delete(input.stagePath);
+      }
+    });
+    pendingStageTransfers.set(input.stagePath, tracked);
+    if (interrupted) void tracked.catch(() => undefined);
+    return await (interrupted ? Promise.race([tracked, interrupted]) : tracked);
+  } finally {
+    if (onAbort) input.signal?.removeEventListener("abort", onAbort);
   }
 }
 

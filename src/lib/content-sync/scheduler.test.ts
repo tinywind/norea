@@ -14,24 +14,31 @@ vi.mock("../../db/content-sync-journal", () => ({ subscribeContentSyncChanges: (
 } }));
 vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []) }));
 vi.mock("./sync", () => ({
+  abortActiveContentSync: vi.fn(),
   syncContentServer: vi.fn(),
   syncReceivedWorkMigrations: vi.fn(),
   getContentSyncCursors: vi.fn(async () => ({ catalogCursor: 3, workCursor: 2 })),
 }));
 vi.mock("./client", async original => ({ ...await original<typeof import("./client")>(), contentServerRequest: vi.fn() }));
 import { useContentSyncStore } from "../../store/content-sync";
-import { contentServerRequest } from "./client";
+import { ContentServerError, contentServerRequest } from "./client";
 import { getContentSyncCursors, syncContentServer, syncReceivedWorkMigrations } from "./sync";
 import { startContentServerSync } from "./scheduler";
 import { listNovelMigrations } from "../../db/queries/content-sync";
 import { PendingNovelMigrationError } from "./novel-migration";
 import { PendingIncomingMigrationError } from "./migration-feed";
+import { WorkMetadataChangedOutsideCacheError } from "./works";
 import { useNetworkStore } from "../network";
 import { notifyChapterDownloadsSettled } from "../tasks/chapter-download-activity";
+import {
+  markDeferredContentUploadDueToDownload,
+  resetSyncRuntimeForTests,
+} from "../tasks/sync-runtime";
 
 let cleanup: (() => void) | undefined;
 let page: EventTarget & { visibilityState: string };
 beforeEach(() => {
+  resetSyncRuntimeForTests();
   vi.useFakeTimers();
   vi.clearAllMocks();
   vi.mocked(listNovelMigrations).mockResolvedValue([]);
@@ -50,6 +57,7 @@ beforeEach(() => {
 afterEach(() => {
   cleanup?.();
   cleanup = undefined;
+  resetSyncRuntimeForTests();
   useNetworkStore.setState({ connectivity: "online", revision: -1 });
   vi.useRealTimers();
   vi.unstubAllGlobals();
@@ -410,4 +418,152 @@ it("follows native host connectivity in Tauri even when navigator.onLine is stuc
   useNetworkStore.setState({ connectivity: "online", revision: 10 });
   await vi.advanceTimersByTimeAsync(0);
   expect(syncReceivedWorkMigrations).toHaveBeenCalledTimes(2);
+});
+
+it("flushes pending local uploads on hide without polling or retrying in background", async () => {
+  useContentSyncStore.setState({ syncMode: "changes" });
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(0);
+  vi.mocked(syncContentServer).mockClear();
+  vi.mocked(contentServerRequest).mockClear();
+
+  // Idle hide triggers neither a sync nor /changes waiting.
+  page.visibilityState = "hidden";
+  page.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(syncContentServer).not.toHaveBeenCalled();
+  expect(contentServerRequest).not.toHaveBeenCalled();
+
+  // A pending local upload flushes at 0ms when hiding, then stops without retry loops if it fails.
+  page.visibilityState = "visible";
+  page.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  vi.mocked(syncContentServer).mockReset().mockRejectedValue(new Error("background upload failed"));
+  vi.mocked(contentServerRequest).mockClear();
+  harness.localChange?.();
+  page.visibilityState = "hidden";
+  page.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(syncContentServer).toHaveBeenCalledTimes(1);
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(syncContentServer).toHaveBeenCalledTimes(1);
+  expect(contentServerRequest).not.toHaveBeenCalled();
+});
+
+it("triggers background download settlement sync only when deferred or local uploads exist", async () => {
+  useContentSyncStore.setState({ syncMode: "changes" });
+  page.visibilityState = "hidden";
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(0);
+
+  notifyChapterDownloadsSettled();
+  await vi.advanceTimersByTimeAsync(5_000);
+  expect(syncContentServer).not.toHaveBeenCalled();
+
+  markDeferredContentUploadDueToDownload();
+  notifyChapterDownloadsSettled();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(syncContentServer).toHaveBeenCalledTimes(1);
+  expect(contentServerRequest).not.toHaveBeenCalled();
+});
+
+it("does not wake on reconnect while hidden and stops auto-retries on 403 or outside-cache conflicts", async () => {
+  useContentSyncStore.setState({ syncMode: "changes" });
+  page.visibilityState = "hidden";
+  cleanup = startContentServerSync();
+  vi.stubGlobal("navigator", { onLine: false });
+  window.dispatchEvent(new Event("offline"));
+  vi.stubGlobal("navigator", { onLine: true });
+  window.dispatchEvent(new Event("online"));
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(syncContentServer).not.toHaveBeenCalled();
+
+  vi.mocked(syncContentServer).mockRejectedValue(new ContentServerError(403, "Blocked"));
+  page.visibilityState = "visible";
+  page.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(120_000);
+  expect(syncContentServer).toHaveBeenCalledTimes(1);
+
+  vi.mocked(syncContentServer).mockReset().mockRejectedValue(new WorkMetadataChangedOutsideCacheError(["work-1"]));
+  useContentSyncStore.getState().setSyncMode("periodic");
+  await vi.advanceTimersByTimeAsync(60 * 60_000);
+  expect(syncContentServer).toHaveBeenCalledTimes(1);
+});
+
+it("ignores spoofed Android View.VISIBLE state while the native activity is paused", async () => {
+  const androidWindow = Object.assign(new EventTarget(), {
+    __TAURI_INTERNALS__: {},
+    __NoreaAndroidBridge: {},
+    __NoreaAndroidTasks: { isAppActive: () => false },
+  });
+  vi.stubGlobal("window", androidWindow);
+  page.visibilityState = "visible";
+  useContentSyncStore.setState({ syncMode: "changes" });
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(60_000);
+  expect(syncContentServer).not.toHaveBeenCalled();
+  expect(contentServerRequest).not.toHaveBeenCalled();
+});
+
+it("keeps Android pending background upload continuously true across deferred download settlement without a false dip", async () => {
+  const hints: boolean[] = [];
+  const setPendingBackgroundUpload = vi.fn((pending: boolean) => { hints.push(pending); });
+  Object.assign(window, {
+    __NoreaAndroidTasks: { setPendingBackgroundUpload },
+  });
+  let finishUpload!: () => void;
+  vi.mocked(syncContentServer).mockImplementationOnce(
+    () => new Promise<void>((resolve) => { finishUpload = resolve; }),
+  );
+  useContentSyncStore.setState({ syncMode: "changes" });
+  page.visibilityState = "hidden";
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(0);
+
+  markDeferredContentUploadDueToDownload();
+  notifyChapterDownloadsSettled();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(syncContentServer).toHaveBeenCalledTimes(1);
+  // Hint must stay continuously true with zero intermediate false transition before upload finishes.
+  expect(hints).toEqual([true]);
+
+  finishUpload();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(hints).toEqual([true, false]);
+});
+
+it("suppresses local upload hints and suspend flushes after 403 until manual sync succeeds or app resumes", async () => {
+  const hints: boolean[] = [];
+  const setPendingBackgroundUpload = vi.fn((pending: boolean) => { hints.push(pending); });
+  Object.assign(window, {
+    __NoreaAndroidTasks: { setPendingBackgroundUpload },
+  });
+  useContentSyncStore.setState({ syncMode: "changes" });
+  vi.mocked(syncContentServer).mockRejectedValueOnce(new ContentServerError(403, "Blocked"));
+  cleanup = startContentServerSync();
+  await vi.advanceTimersByTimeAsync(0);
+  expect(syncContentServer).toHaveBeenCalledTimes(1);
+
+  hints.length = 0;
+  harness.localChange?.();
+  notifyChapterDownloadsSettled();
+  page.visibilityState = "hidden";
+  page.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(10_000);
+  expect(syncContentServer).toHaveBeenCalledTimes(1);
+  expect(hints).toEqual([]);
+
+  // Returning to foreground resets the block guard and tries once; manual recovery also clears it.
+  vi.mocked(syncContentServer).mockRejectedValueOnce(new ContentServerError(403, "Blocked"));
+  page.visibilityState = "visible";
+  page.dispatchEvent(new Event("visibilitychange"));
+  await vi.advanceTimersByTimeAsync(0);
+  expect(syncContentServer).toHaveBeenCalledTimes(2);
+
+  vi.mocked(syncContentServer).mockResolvedValue(undefined);
+  useContentSyncStore.setState({ status: "syncing", error: null, blocked: false });
+  useContentSyncStore.setState({ status: "idle", error: null, blocked: false });
+  harness.localChange?.();
+  await vi.advanceTimersByTimeAsync(1_500);
+  expect(syncContentServer).toHaveBeenCalledTimes(3);
 });

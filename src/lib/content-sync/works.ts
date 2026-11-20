@@ -85,11 +85,14 @@ export async function recordInstalledWorkMetadata(server: string, stored: Instal
   await saveCache(server, cache);
 }
 
-async function uploadWorkCover(server: string, id: string, token: string, body: Uint8Array, contentType?: string | null): Promise<void> {
+async function uploadWorkCover(server: string, id: string, token: string, body: Uint8Array, contentType?: string | null, signal?: AbortSignal): Promise<void> {
   if (body.byteLength > MAX_COVER_BYTES) throw new Error("Work cover exceeds the 10 MiB limit.");
+  signal?.throwIfAborted();
+  const timeout = AbortSignal.timeout(30_000);
+  const requestSignal = signal ? AbortSignal.any([signal, timeout]) : timeout;
   const response = await nativeFetch(`${normalizeContentServerUrl(server)}/api/v1/works/${encodeURIComponent(id)}/cover`, {
     method: "PUT", headers: { Authorization: `Bearer ${token}`, "Content-Type": contentType || "application/octet-stream" },
-    body: Uint8Array.from(body).buffer, maxRedirections: 0, connectTimeout: 10_000, signal: AbortSignal.timeout(30_000),
+    body: Uint8Array.from(body).buffer, maxRedirections: 0, connectTimeout: 10_000, signal: requestSignal,
   });
   if (!response.ok) throw new ContentServerError(response.status);
 }
@@ -109,11 +112,11 @@ export class WorkMetadataChangedOutsideCacheError extends Error {
   }
 }
 
-export async function syncWorkMetadata(server: string, token: string, upload: boolean, assertCurrent: () => void = () => undefined, rescan = false): Promise<WorkMetadataSyncResult> {
-  return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, excluded => performWorkMetadataSync(server, token, upload, assertCurrent, rescan, excluded)));
+export async function syncWorkMetadata(server: string, token: string, upload: boolean, assertCurrent: () => void = () => undefined, rescan = false, signal?: AbortSignal): Promise<WorkMetadataSyncResult> {
+  return runWorkMetadataSyncOperation(server, () => withServerWorkDeletionExclusions(server, excluded => performWorkMetadataSync(server, token, upload, assertCurrent, rescan, excluded, signal)));
 }
 
-async function performWorkMetadataSync(server: string, token: string, upload: boolean, assertCurrent: () => void, rescan: boolean, explicitDeletions: ReadonlySet<string>): Promise<WorkMetadataSyncResult> {
+async function performWorkMetadataSync(server: string, token: string, upload: boolean, assertCurrent: () => void, rescan: boolean, explicitDeletions: ReadonlySet<string>, signal?: AbortSignal): Promise<WorkMetadataSyncResult> {
   assertCurrent();
   let installed = false;
   const cache = await readCache(server);
@@ -150,7 +153,9 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
     let cursor = cache.cursor;
     let more = true;
     while (more) {
-      const page = await contentServerRequest<WorkCatalogPage>(server, `/works?after=${cursor}&limit=100`, token);
+      const page = signal
+        ? await contentServerRequest<WorkCatalogPage>(server, `/works?after=${cursor}&limit=100`, token, "GET", undefined, signal)
+        : await contentServerRequest<WorkCatalogPage>(server, `/works?after=${cursor}&limit=100`, token);
       assertCurrent();
       if (page.hasMore && page.cursor <= cursor) throw new Error("Work catalog cursor did not advance.");
       for (const entry of page.items) latestById.set(entry.id, entry);
@@ -242,11 +247,13 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
         if (!cover && seenEntry.hasCover) uploadMetadata.cover = serverMetadata.cover;
       }
       try {
-        await contentServerRequest<WorkCatalogEntry>(server, `/works/${id}${rescan && cache.deleted[id] ? "?restore=true" : ""}`, token, "PUT", uploadMetadata);
+        await (signal
+          ? contentServerRequest<WorkCatalogEntry>(server, `/works/${id}${rescan && cache.deleted[id] ? "?restore=true" : ""}`, token, "PUT", uploadMetadata, signal)
+          : contentServerRequest<WorkCatalogEntry>(server, `/works/${id}${rescan && cache.deleted[id] ? "?restore=true" : ""}`, token, "PUT", uploadMetadata));
         assertCurrent();
         await waitForServerWorkDeletion(server, id);
         if (explicitDeletions.has(file.directory)) continue;
-        if (cover) await uploadWorkCover(server, id, token, cover, uploadMetadata.cover?.contentType);
+        if (cover) await uploadWorkCover(server, id, token, cover, uploadMetadata.cover?.contentType, signal);
       } catch (error) {
         await waitForServerWorkDeletion(server, id);
         if (explicitDeletions.has(file.directory) || (error instanceof ContentServerError && error.status === 410)) { cache.deleted[id] = true; dirty = true; continue; }

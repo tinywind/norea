@@ -87,7 +87,7 @@ function jsonBatches<T>(rows: readonly T[], size: (row: T) => number): T[][] {
   if (batch.length) batches.push(batch);
   return batches;
 }
-export interface UserStateLedgerStatus { cursor: number; through: number | null; pending: number; conflicts: number; deferred: number;
+export interface UserStateLedgerStatus { cursor: number; through: number | null; pending: number; sendablePending: number; conflicts: number; deferred: number;
   projectionPending: number; projectionFailed: number;
   lastSuccessAt: number | null; pausedAfterRestore: boolean }
 
@@ -596,11 +596,38 @@ export async function getUserStateLedgerStatusInDb(db: UserStateDb, binding: Use
       projectionPending += 1;
     }
   }
+  const pausedAfterRestore = await userStateRestorePausedInDb(db);
+  const [sendable] = pausedAfterRestore
+    ? [{ sendablePending: 0 }]
+    : await db.select<{ sendablePending: number }[]>(
+      `SELECT
+        (SELECT COUNT(*) FROM user_state_operation o
+         WHERE o.namespace=$1 AND o.status='pending'
+           AND COALESCE(json_extract(o.payload,'$.entity.kind'),'')<>'library'
+           AND COALESCE(json_extract(o.payload,'$.entity.work.pluginId'),'')<>'local'
+           AND (json_type(o.payload,'$.entity.work') IS NULL OR json_extract(o.payload,'$.entity.work.sourceNovelId') IS NOT NULL)
+           AND COALESCE(json_extract(o.payload,'$.entity.chapter.chapterPath'),json_extract(o.payload,'$.value.chapter.chapterPath'),'') NOT LIKE 'norea-folder:%'
+           AND COALESCE(json_extract(o.payload,'$.entity.chapter.chapterPath'),json_extract(o.payload,'$.value.chapter.chapterPath'),'') NOT LIKE 'local-folder:%')
+        +
+        (SELECT COUNT(*) FROM user_state_intent i
+         JOIN user_state_progress p ON p.entity_key=i.entity_key AND p.namespace=$1
+         WHERE i.sequence>p.acknowledged_sequence
+           AND COALESCE(json_extract(i.entity_json,'$.kind'),'')<>'library'
+           AND COALESCE(json_extract(i.entity_json,'$.work.pluginId'),'')<>'local'
+           AND NOT EXISTS(SELECT 1 FROM user_state_conflict c WHERE c.namespace=$1 AND c.entity_key=i.entity_key)
+           AND NOT EXISTS(SELECT 1 FROM user_state_operation o WHERE o.namespace=$1 AND o.status='pending' AND o.entity_key=i.entity_key)
+           AND (json_type(i.entity_json,'$.work') IS NULL OR json_extract(i.entity_json,'$.work.sourceNovelId') IS NOT NULL)
+           AND COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') NOT LIKE 'norea-folder:%'
+           AND COALESCE(json_extract(i.entity_json,'$.chapter.chapterPath'),json_extract(i.value_json,'$.chapter.chapterPath'),'') NOT LIKE 'local-folder:%')
+        AS sendablePending`,
+      [workspace.namespace],
+    );
   return { cursor: workspace.cursor, through: workspace.through, pending: count?.pending ?? 0,
+    sendablePending: sendable?.sendablePending ?? 0,
     conflicts: (await listUserStateConflictsInDb(db, binding)).length,
     deferred: held?.deferred ?? 0,
     projectionPending, projectionFailed,
-    lastSuccessAt: workspace.lastSuccessAt, pausedAfterRestore: await userStateRestorePausedInDb(db) };
+    lastSuccessAt: workspace.lastSuccessAt, pausedAfterRestore };
 }
 
 export async function resolveUserStateLedgerConflictInDb(db: UserStateDb, binding: UserStateBinding, input: { id: string; version: string; choice: "local" | "shared"; categoryName?: string }): Promise<void> {

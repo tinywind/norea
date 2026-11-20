@@ -5,6 +5,7 @@ import { useAppearanceStore } from "../../store/appearance";
 import { useDownloadGoalSettingsStore } from "../../store/download-goals";
 import { normalizeCheckIntervalHours, useLibraryStore } from "../../store/library";
 import { isAbortError } from "../abort";
+import { isAppActive, subscribeAppLifecycle } from "../app-lifecycle";
 import { readDownloadBudgetStatus } from "../download-goals/budget";
 import { automaticDownloadActiveSince } from "../download-goals/goal-targets";
 import { isNetworkOnline } from "../network";
@@ -21,10 +22,11 @@ const HOUR_SECONDS = 60 * 60;
 let started = false;
 let running = false;
 let tick: ReturnType<typeof setInterval> | null = null;
+let unsubscribeLifecycle: (() => void) | null = null;
 /** After the user cancels an automatic check, the next one waits for the next interval. */
 let pausedUntilMs = 0;
 
-const isVisible = () => typeof document === "undefined" || document.visibilityState === "visible";
+const isVisible = () => isAppActive();
 
 function isCheckRunning(): boolean {
   return taskScheduler.getSnapshot().records.some((record) =>
@@ -115,22 +117,23 @@ function runInBackground(): void {
   void runDueChecks().catch((error: unknown) => console.warn("[freshness] automatic check failed:", error));
 }
 
-function onVisibilityChange(): void {
-  if (isVisible()) runInBackground();
+function onAppLifecycleChange(active: boolean): void {
+  if (active) runInBackground();
 }
 
 /** Starts automatic checks: now, whenever the app returns to the foreground, and every 30 minutes. */
 export function startFreshnessChecks(): void {
   if (started) return;
   started = true;
-  if (typeof document !== "undefined") document.addEventListener("visibilitychange", onVisibilityChange);
+  unsubscribeLifecycle = subscribeAppLifecycle(onAppLifecycleChange);
   tick = setInterval(runInBackground, TICK_MS);
   runInBackground();
 }
 
 /** Test hook: forget all module state. */
 export function resetFreshnessChecksForTests(): void {
-  if (typeof document !== "undefined") document.removeEventListener("visibilitychange", onVisibilityChange);
+  unsubscribeLifecycle?.();
+  unsubscribeLifecycle = null;
   if (tick !== null) clearInterval(tick);
   tick = null; started = false; running = false; pausedUntilMs = 0;
 }

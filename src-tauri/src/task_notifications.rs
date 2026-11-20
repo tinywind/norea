@@ -5,6 +5,7 @@ use tauri::{AppHandle, State};
 #[serde(rename_all = "camelCase")]
 enum TaskNotificationGroupKey {
     Backup,
+    ContentSync,
     Downloads,
     LibraryMetadata,
     LibraryUpdates,
@@ -15,12 +16,17 @@ impl TaskNotificationGroupKey {
     fn as_str(self) -> &'static str {
         match self {
             Self::Backup => "backup",
+            Self::ContentSync => "contentSync",
             Self::Downloads => "downloads",
             Self::LibraryMetadata => "libraryMetadata",
             Self::LibraryUpdates => "libraryUpdates",
             Self::Search => "search",
         }
     }
+}
+
+fn default_true() -> bool {
+    true
 }
 
 #[derive(Debug, Deserialize)]
@@ -37,8 +43,12 @@ struct TaskNotificationGroup {
     title: String,
     body: String,
     paused: bool,
+    #[serde(default = "default_true")]
+    pausable: bool,
     progress: Option<TaskNotificationProgress>,
+    #[serde(default)]
     pause_label: String,
+    #[serde(default)]
     resume_label: String,
 }
 
@@ -85,10 +95,13 @@ struct TaskNotificationCompletion {
 }
 
 #[derive(Debug, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct TaskNotificationPayload {
     groups: Vec<TaskNotificationGroup>,
     challenges: Vec<TaskNotificationChallenge>,
     completions: Vec<TaskNotificationCompletion>,
+    #[serde(default)]
+    cancelled_completions: Vec<TaskNotificationGroupKey>,
 }
 
 #[derive(Default)]
@@ -185,22 +198,38 @@ mod model {
     }
 
     pub(super) fn group_card(group: TaskNotificationGroup) -> NotificationCard {
-        let (label, argument, action) = if group.paused {
-            (
-                group.resume_label,
-                "resume",
-                TaskNotificationAction::Resume {
-                    group_key: group.key,
-                },
-            )
+        let pausable = group.pausable
+            && !matches!(
+                group.key,
+                TaskNotificationGroupKey::Backup | TaskNotificationGroupKey::ContentSync
+            );
+        let button = if pausable {
+            let (label, argument, action) = if group.paused {
+                (
+                    group.resume_label,
+                    "resume",
+                    TaskNotificationAction::Resume {
+                        group_key: group.key,
+                    },
+                )
+            } else {
+                (
+                    group.pause_label,
+                    "pause",
+                    TaskNotificationAction::Pause {
+                        group_key: group.key,
+                    },
+                )
+            };
+            Some((label, argument, action))
         } else {
-            (
-                group.pause_label,
-                "pause",
-                TaskNotificationAction::Pause {
-                    group_key: group.key,
-                },
-            )
+            None
+        };
+        let body_action = match group.key {
+            TaskNotificationGroupKey::Backup | TaskNotificationGroupKey::ContentSync => {
+                TaskNotificationAction::OpenBackupSettings
+            }
+            _ => TaskNotificationAction::OpenTasks,
         };
         NotificationCard {
             identity: NotificationIdentity {
@@ -212,8 +241,8 @@ mod model {
             body: group.body,
             progress: group.progress.and_then(progress_value),
 
-            body_action: TaskNotificationAction::OpenTasks,
-            button: Some((label, argument, action)),
+            body_action,
+            button,
         }
     }
 
@@ -439,6 +468,17 @@ mod model {
         }
     }
 
+    pub(super) fn cancelled_completion_identities(
+        keys: &[TaskNotificationGroupKey],
+    ) -> HashSet<NotificationIdentity> {
+        keys.iter()
+            .map(|key| NotificationIdentity {
+                group: COMPLETION_NOTIFICATION_GROUP.into(),
+                tag: key.as_str().into(),
+            })
+            .collect()
+    }
+
     pub(super) fn should_remove_notification(
         identity: &NotificationIdentity,
         current: &HashSet<NotificationIdentity>,
@@ -447,6 +487,15 @@ mod model {
             identity.group.as_str(),
             GROUP_NOTIFICATION_GROUP | SOURCE_NOTIFICATION_GROUP
         ) && !current.contains(identity)
+    }
+
+    pub(super) fn should_remove_notification_with_cancellations(
+        identity: &NotificationIdentity,
+        current: &HashSet<NotificationIdentity>,
+        cancelled_completions: &HashSet<NotificationIdentity>,
+    ) -> bool {
+        should_remove_notification(identity, current)
+            || (cancelled_completions.contains(identity) && !current.contains(identity))
     }
 }
 
@@ -542,7 +591,7 @@ mod windows_backend {
                 || (replacing && card.kind != NotificationKind::Completion),
         )?;
         toast.SetData(&notification_data(&card)?)?;
-        let activation_token = if card.kind == NotificationKind::Group {
+        let activation_token = if card.kind == NotificationKind::Group && card.button.is_some() {
             let callback_app = app.clone();
             let callback_card = card.clone();
             let handler =
@@ -579,6 +628,8 @@ mod windows_backend {
         payload: TaskNotificationPayload,
         state: &TaskNotificationState,
     ) -> Result<(), String> {
+        let cancelled_completions =
+            cancelled_completion_identities(&payload.cancelled_completions);
         let cards = desired_cards(payload)?;
         let current: HashSet<_> = cards.iter().map(|card| card.identity.clone()).collect();
         let app_id = HSTRING::from(notification_app_id(app));
@@ -604,7 +655,11 @@ mod windows_backend {
                     .map_err(|error| format!("Read task notification tag: {error}"))?
                     .to_string(),
             };
-            if should_remove_notification(&identity, &current) {
+            if should_remove_notification_with_cancellations(
+                &identity,
+                &current,
+                &cancelled_completions,
+            ) {
                 history
                     .RemoveGroupedTagWithId(
                         &HSTRING::from(&identity.tag),
@@ -614,9 +669,13 @@ mod windows_backend {
                     .map_err(|error| format!("Remove resolved task notification: {error}"))?;
             }
         }
-        state
-            .active
-            .retain(|identity, _| !should_remove_notification(identity, &current));
+        state.active.retain(|identity, _| {
+            !should_remove_notification_with_cancellations(
+                identity,
+                &current,
+                &cancelled_completions,
+            )
+        });
         for card in cards {
             let previous = state.active.get(&card.identity);
             match notification_update_kind(previous.map(|active| &active.card), &card) {
@@ -677,6 +736,7 @@ mod tests {
             title: "Downloads".into(),
             body: "Chapter 3".into(),
             paused,
+            pausable: true,
             progress: Some(TaskNotificationProgress { current, total }),
             pause_label: "Pause & inspect <queue>".into(),
             resume_label: "Resume".into(),
@@ -923,5 +983,63 @@ mod tests {
         assert!(serde_json::from_value::<TaskNotificationPayload>(invalid_group).is_err());
         let invalid_source = serde_json::json!({"groups":[],"challenges":[{"sourceId":"source-a","scopeKey":"scope","revision":-1,"title":"x","body":"x","actionLabel":"x"}],"completions":[]});
         assert!(serde_json::from_value::<TaskNotificationPayload>(invalid_source).is_err());
+    }
+
+    #[test]
+    fn content_sync_group_opens_backup_settings_without_action_buttons() {
+        let payload: TaskNotificationPayload = serde_json::from_value(serde_json::json!({
+            "groups": [{
+                "key": "contentSync",
+                "title": "Content server sync",
+                "body": "Syncing works and chapters…",
+                "paused": false,
+                "pausable": false
+            }],
+            "challenges": [],
+            "completions": []
+        }))
+        .unwrap();
+        let card = desired_cards(payload).unwrap().pop().unwrap();
+        assert_eq!(card.identity.tag, "contentSync");
+        assert_eq!(card.body_action, TaskNotificationAction::OpenBackupSettings);
+        assert!(card.button.is_none());
+        let xml = toast_xml(&card);
+        assert!(xml.contains("activationType=\"protocol\" launch=\"norea://settings/backup\""));
+        assert!(!xml.contains("<actions>"));
+        assert_eq!(activation_action(&card, "pause"), None);
+        assert_eq!(activation_action(&card, "resume"), None);
+    }
+
+    #[test]
+    fn content_sync_failure_result_opens_backup_settings_and_can_be_cancelled() {
+        let payload: TaskNotificationPayload = serde_json::from_value(serde_json::json!({
+            "groups": [],
+            "challenges": [],
+            "completions": [{
+                "key": "contentSync",
+                "title": "Content server sync failed",
+                "body": "Couldn't reach the content server",
+                "action": {"type": "openBackupSettings"}
+            }],
+            "cancelledCompletions": ["contentSync"]
+        }))
+        .unwrap();
+        let cancelled = cancelled_completion_identities(&payload.cancelled_completions);
+        let card = desired_cards(payload).unwrap().pop().unwrap();
+        assert_eq!(card.identity.tag, "contentSync");
+        assert!(toast_xml(&card).contains("activationType=\"protocol\" launch=\"norea://settings/backup\""));
+        let empty = std::collections::HashSet::new();
+        assert!(should_remove_notification_with_cancellations(
+            &card.identity,
+            &empty,
+            &cancelled
+        ));
+        let mut present = std::collections::HashSet::new();
+        present.insert(card.identity.clone());
+        assert!(!should_remove_notification_with_cancellations(
+            &card.identity,
+            &present,
+            &cancelled
+        ));
     }
 }

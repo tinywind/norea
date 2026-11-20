@@ -288,4 +288,135 @@ class TaskNotificationStateTest {
     assertFalse(TaskNotificationAction.verifySource("x".repeat(513), "scope", 1).accepts(TaskNotificationActionTarget.ACTIVITY))
     assertFalse(TaskNotificationAction.verifySource("source-a", "x".repeat(2049), 1).accepts(TaskNotificationActionTarget.ACTIVITY))
   }
+
+  @Test
+  fun contentSyncGroupAnchorsExecutionWithoutAcceptingPauseControls() {
+    val plan = taskNotificationRuntimePlan(
+      executionActive = true,
+      working = true,
+      groups = listOf(TaskNotificationGroup.CONTENT_SYNC),
+    )
+    assertEquals(1105, plan.anchorId)
+    assertFalse(plan.quietAnchor)
+    assertTrue(plan.holdWakeLock)
+    assertFalse(TaskNotificationGroup.CONTENT_SYNC.pausable)
+    assertFalse(TaskNotificationAction.pause("contentSync").accepts(TaskNotificationActionTarget.CONTROL))
+    assertFalse(TaskNotificationAction.resume("contentSync").accepts(TaskNotificationActionTarget.CONTROL))
+    assertNull(taskNotificationActionFromFields(mapOf("type" to "pause", "groupKey" to "contentSync")::get))
+    assertNull(taskNotificationActionFromFields(mapOf("type" to "resume", "groupKey" to "contentSync")::get))
+    assertEquals(TaskNotificationAction.openBackupSettings(), defaultGroupOpenAction(TaskNotificationGroup.CONTENT_SYNC))
+    assertEquals(TaskNotificationAction.openTasks(), defaultGroupOpenAction(TaskNotificationGroup.DOWNLOADS))
+  }
+
+  @Test
+  fun syncQuietAnchorAppliesOnlyWhenExecutionIsAnchoredQuietly() {
+    val quietSync = taskNotificationRuntimePlan(
+      executionActive = true,
+      working = true,
+      groups = emptyList(),
+      syncQuietAnchor = true,
+    )
+    assertEquals(TASK_QUIET_NOTIFICATION_ID, quietSync.anchorId)
+    assertTrue(quietSync.quietAnchor)
+    assertTrue(quietSync.syncQuietAnchor)
+    assertTrue(quietSync.holdWakeLock)
+
+    val quietTask = taskNotificationRuntimePlan(
+      executionActive = true,
+      working = true,
+      groups = emptyList(),
+      syncQuietAnchor = false,
+    )
+    assertTrue(quietTask.quietAnchor)
+    assertFalse(quietTask.syncQuietAnchor)
+
+    val visibleGroup = taskNotificationRuntimePlan(
+      executionActive = true,
+      working = true,
+      groups = listOf(TaskNotificationGroup.CONTENT_SYNC),
+      syncQuietAnchor = true,
+    )
+    assertFalse(visibleGroup.quietAnchor)
+    assertFalse(visibleGroup.syncQuietAnchor)
+
+    val stopped = taskNotificationRuntimePlan(
+      executionActive = false,
+      working = true,
+      groups = emptyList(),
+      syncQuietAnchor = true,
+    )
+    assertNull(stopped.anchorId)
+    assertFalse(stopped.syncQuietAnchor)
+  }
+
+  @Test
+  fun backgroundDownloadFinishConvertsActiveFgsIntoBoundedSyncHandoffAnchor() {
+    // Active DOWNLOADS FGS finishing with a completion notice converts to a bounded quiet sync anchor.
+    val handoffWithCompletion = decideBackgroundUploadAnchor(
+      executionActive = false,
+      hasTransientNotices = true,
+      preemptiveAnchorActive = false,
+      isForegroundServiceActive = true,
+      pendingBackgroundUpload = true,
+      activityActive = false,
+    )
+    assertEquals(
+      BackgroundUploadAnchorDecision(BackgroundUploadAnchorAction.HOLD_SYNC_ANCHOR, armTimeout = true),
+      handoffWithCompletion,
+    )
+
+    // Even in quiet/off mode with no completion notice, converting from DOWNLOADS must run an update
+    // so the download notification card and scraper WebViews are released onto the quiet sync anchor.
+    val handoffWithoutNotices = decideBackgroundUploadAnchor(
+      executionActive = false,
+      hasTransientNotices = false,
+      preemptiveAnchorActive = false,
+      isForegroundServiceActive = true,
+      pendingBackgroundUpload = true,
+      activityActive = false,
+    )
+    assertEquals(
+      BackgroundUploadAnchorDecision(BackgroundUploadAnchorAction.HOLD_SYNC_ANCHOR, armTimeout = true),
+      handoffWithoutNotices,
+    )
+
+    // Once already anchored on the quiet sync fallback, empty updates are no-ops and notices do not reset the timeout.
+    assertEquals(
+      BackgroundUploadAnchorDecision(BackgroundUploadAnchorAction.KEEP_EXISTING_NOOP, armTimeout = false),
+      decideBackgroundUploadAnchor(
+        executionActive = false,
+        hasTransientNotices = false,
+        preemptiveAnchorActive = true,
+        isForegroundServiceActive = true,
+        pendingBackgroundUpload = true,
+        activityActive = false,
+      ),
+    )
+    assertEquals(
+      BackgroundUploadAnchorDecision(BackgroundUploadAnchorAction.HOLD_SYNC_ANCHOR, armTimeout = false),
+      decideBackgroundUploadAnchor(
+        executionActive = false,
+        hasTransientNotices = true,
+        preemptiveAnchorActive = true,
+        isForegroundServiceActive = true,
+        pendingBackgroundUpload = true,
+        activityActive = false,
+      ),
+    )
+
+    // Active execution, foreground activity, cleared upload hint, offline/suspended state, or inactive FGS pass through.
+    for (decision in listOf(
+      decideBackgroundUploadAnchor(true, false, true, true, true, false),
+      decideBackgroundUploadAnchor(false, false, false, true, true, true),
+      decideBackgroundUploadAnchor(false, false, false, true, false, false),
+      decideBackgroundUploadAnchor(false, false, false, false, true, false),
+      decideBackgroundUploadAnchor(false, false, true, true, true, false, executionSuspended = true),
+      decideBackgroundUploadAnchor(false, false, true, true, true, false, networkConnected = false),
+    )) {
+      assertEquals(
+        BackgroundUploadAnchorDecision(BackgroundUploadAnchorAction.PASS_THROUGH, armTimeout = false),
+        decision,
+      )
+    }
+  }
 }

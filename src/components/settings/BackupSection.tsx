@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Select, Stack } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
 import { useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -13,8 +14,10 @@ import { useConfirm } from "../ui/ConfirmDialog";
 import { ExportIcon, ImportIcon } from "../ui/icons";
 import { exportBackupToFile, importBackupFromFile } from "../../lib/backup/io";
 import { describeError } from "../../lib/errors";
+import { usePageActivity } from "../../lib/page-activity";
 import { pluginManager } from "../../lib/plugins/manager";
 import { enqueueMainTask } from "../../lib/tasks/main-tasks";
+import { clearResolvedOpenedSyncBackgroundFailures } from "../../lib/tasks/sync-runtime";
 import { formatDateTimeForLocale, useTranslation } from "../../i18n";
 import { useAppearanceStore } from "../../store/appearance";
 import {
@@ -125,6 +128,14 @@ export function BackupSection({ isBusy, onBusyChange }: SettingsBusyProps) {
   const { t } = useTranslation();
   const confirm = useConfirm();
   const queryClient = useQueryClient();
+  const pageActive = usePageActivity();
+
+  useEffect(() => {
+    if (!pageActive) return;
+    return () => {
+      clearResolvedOpenedSyncBackgroundFailures();
+    };
+  }, [pageActive]);
 
   async function handleExport(): Promise<void> {
     const toastId = "settings:backup:export";

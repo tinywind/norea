@@ -3941,3 +3941,142 @@ async fn library_membership_stays_device_local_and_purges_legacy_library_intents
     .unwrap();
     assert_eq!(rec_state, (3, 3, None));
 }
+
+#[tokio::test]
+async fn sendable_pending_excludes_opaque_identity_pending_operations() {
+    let test_db = open_test_db().await;
+    let pool = test_db.db.pool_for(ReadMode::Queued);
+    seed_sample_work(pool).await;
+
+    let binding = sample_binding();
+    let ns = super::types::namespace_for(&binding);
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+    let b1 = binding.clone();
+    with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    let work = sample_work();
+    let opaque_ops = [
+        (
+            "op-missing-work-id",
+            "k-missing-work-id",
+            1_i64,
+            json!({
+                "operationId": "op-missing-work-id",
+                "entity": {
+                    "kind": "reading",
+                    "work": { "pluginId": "source", "sourceNovelId": null, "novelPath": "/book", "name": "Book" },
+                    "chapter": { "chapterPath": "/chapter/1" },
+                },
+                "value": { "progress": 50, "readAt": null },
+                "baseRevision": 0,
+            }),
+        ),
+        (
+            "op-norea-folder",
+            "k-norea-folder",
+            2_i64,
+            json!({
+                "operationId": "op-norea-folder",
+                "entity": {
+                    "kind": "reading",
+                    "work": work,
+                    "chapter": { "chapterPath": "norea-folder:slot-1" },
+                },
+                "value": { "progress": 50, "readAt": null },
+                "baseRevision": 0,
+            }),
+        ),
+        (
+            "op-local-folder-resume",
+            "k-local-folder-resume",
+            3_i64,
+            json!({
+                "operationId": "op-local-folder-resume",
+                "entity": { "kind": "resume", "work": work },
+                "value": { "chapter": { "chapterPath": "local-folder:slot-2", "name": "Two" }, "anchor": null, "openedAt": 10 },
+                "baseRevision": 0,
+            }),
+        ),
+    ];
+
+    for (op_id, key, seq, payload) in opaque_ops {
+        sqlx::query(
+            "INSERT INTO user_state_operation(operation_id, namespace, entity_key, intent_sequence, payload, status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
+        )
+        .bind(op_id)
+        .bind(&ns)
+        .bind(key)
+        .bind(seq)
+        .bind(payload.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    let mut read_conn = pool.acquire().await.unwrap();
+    let opaque_status = get_user_state_ledger_status_in_tx(&mut read_conn, Some(&binding))
+        .await
+        .unwrap();
+    drop(read_conn);
+    assert_eq!(opaque_status.sendable_pending, 0);
+
+    let sendable_ops = [
+        (
+            "op-sendable-reading",
+            "k-sendable-reading",
+            4_i64,
+            json!({
+                "operationId": "op-sendable-reading",
+                "entity": {
+                    "kind": "reading",
+                    "work": work,
+                    "chapter": { "chapterPath": "/chapter/1" },
+                },
+                "value": { "progress": 80, "readAt": null },
+                "baseRevision": 0,
+            }),
+        ),
+        (
+            "op-sendable-category",
+            "k-sendable-category",
+            5_i64,
+            json!({
+                "operationId": "op-sendable-category",
+                "entity": { "kind": "category", "categoryId": "cat-1" },
+                "value": { "name": "Favorites", "sort": 1, "deleted": false },
+                "baseRevision": 0,
+            }),
+        ),
+    ];
+
+    for (op_id, key, seq, payload) in sendable_ops {
+        sqlx::query(
+            "INSERT INTO user_state_operation(operation_id, namespace, entity_key, intent_sequence, payload, status) \
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending')",
+        )
+        .bind(op_id)
+        .bind(&ns)
+        .bind(key)
+        .bind(seq)
+        .bind(payload.to_string())
+        .execute(pool)
+        .await
+        .unwrap();
+    }
+
+    let mut read_conn = pool.acquire().await.unwrap();
+    let sendable_status = get_user_state_ledger_status_in_tx(&mut read_conn, Some(&binding))
+        .await
+        .unwrap();
+    drop(read_conn);
+    assert_eq!(sendable_status.sendable_pending, 2);
+}

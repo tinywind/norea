@@ -3,26 +3,21 @@ import { NumberInput, Popover, Select, Text, TextInput } from "@mantine/core";
 import { useQuery } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { invoke } from "@tauri-apps/api/core";
-import { useTranslation, type TranslationKey } from "../i18n";
-import { describeError, userFacingErrorKey } from "../lib/errors";
+import { useTranslation } from "../i18n";
+import { describeError } from "../lib/errors";
 import { ContentServerError } from "../lib/content-sync/client";
+import { contentSyncErrorKey } from "../lib/content-sync/error-summary";
 import {
   syncContentServer,
 } from "../lib/content-sync/sync";
+import { clearBackgroundSyncFailure } from "../lib/tasks/sync-runtime";
 import { useContentSyncStore } from "../store/content-sync";
+import { BatteryOptimizationSetting } from "./BatteryOptimizationSetting";
 import { SettingsAdvancedGroup, SettingsFieldRow, SettingsInlineControls, SettingsSection } from "./SettingsPrimitives";
 import { IconButton } from "./IconButton";
 import { BrowseIcon, RescanIcon, ResetIcon, SaveIcon, SyncIcon } from "./ui/icons";
 import { ReadingStateSettings } from "./ReadingStateSettings";
 import { showSettingsToast } from "./settings/settings-toast";
-
-function contentSyncErrorKey(error: string): TranslationKey {
-  if (error.startsWith("Server migration is pending for ")) return "contentSync.error.migrationPending";
-  const key = userFacingErrorKey(error);
-  if (key === "errors.network") return "contentSync.error.network";
-  if (key === "errors.timeout") return "contentSync.error.timeout";
-  return "contentSync.error.generic";
-}
 
 /** A sync failure as one plain sentence; the raw error stays one tap away for reports. */
 function ContentSyncErrorLine({ error }: { error: string }) {
@@ -60,6 +55,8 @@ export function ContentServerSettings() {
   const progress = useContentSyncStore((state) => state.progress);
   const error = useContentSyncStore((state) => state.error);
   const blocked = useContentSyncStore((state) => state.blocked);
+  const backgroundError = useContentSyncStore((state) => state.backgroundError);
+  const backgroundBlocked = useContentSyncStore((state) => state.backgroundBlocked);
   const setServerUrl = useContentSyncStore((state) => state.setServerUrl);
   const setDeviceName = useContentSyncStore((state) => state.setDeviceName);
   const setSyncMode = useContentSyncStore((state) => state.setSyncMode);
@@ -72,7 +69,9 @@ export function ContentServerSettings() {
   const [actionError, setActionError] = useState<string | null>(null);
   const disabled = busy;
   const blockedMessage = t("contentSync.blocked");
-  const syncError = actionError || (blocked ? blockedMessage : error);
+  const effectiveBlocked = blocked || (!error && Boolean(backgroundBlocked));
+  const effectiveError = error || backgroundError || null;
+  const syncError = actionError || (effectiveBlocked ? blockedMessage : effectiveError);
   const syncStatus = [
     status === "syncing" ? t("contentSync.background") : null,
     progress ? t("contentSync.progress", progress) : null,
@@ -80,6 +79,7 @@ export function ContentServerSettings() {
 
   function startSync(rescan = false) {
     setActionError(null);
+    clearBackgroundSyncFailure("content", serverUrl, { force: true });
     void syncContentServer(true, rescan).catch(cause => setActionError(describeError(cause)));
   }
 
@@ -110,6 +110,8 @@ export function ContentServerSettings() {
           />
           <IconButton label={t("contentSync.saveServerUrl")} size="lg" disabled={disabled || urlDraft === serverUrl} onClick={() => {
             void run(async () => {
+              clearBackgroundSyncFailure("content", serverUrl, { force: true });
+              clearBackgroundSyncFailure("userState", serverUrl, { force: true });
               setServerUrl(urlDraft.trim());
               showSettingsToast("ok", t("settings.toast.saved"));
             });
@@ -189,6 +191,10 @@ export function ContentServerSettings() {
       </SettingsAdvancedGroup>
     </SettingsSection>
     <ReadingStateSettings key={serverUrl} serverUrl={serverUrl} />
+    <BatteryOptimizationSetting
+      titleKey="contentSync.background.title"
+      descriptionKey="contentSync.battery.description"
+    />
     </>
   );
 }
