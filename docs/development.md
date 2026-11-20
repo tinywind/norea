@@ -164,7 +164,9 @@ pinned SHA-256 checksums before populating the tools' normal caches. This avoids
 browser-download redirect failures while retaining the same Gradle, WiX, and NSIS
 versions and all release formats. `GH_TOKEN` is scoped to each preparation step;
 local runs can use an authenticated GitHub CLI. When updating either build tool,
-update its verified checksum together with the pinned version.
+update its verified checksum together with the pinned version. The Gradle script
+also resolves the `buildSrc` plugins with retries, because the Gradle Plugin
+Portal intermittently fails to serve the `kotlin-dsl` plugin during the main build.
 
 Advanced CodeQL jobs prepare a verified language-specific CLI archive with
 `node scripts/prepare-codeql.mjs` before initialization. The script pins CLI

@@ -4,6 +4,7 @@ import { createReadStream, closeSync, openSync } from "node:fs";
 import { mkdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
 const properties = await readFile(new URL("../src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties", import.meta.url), "utf8");
@@ -34,53 +35,76 @@ async function sha256(path) {
   return digest.digest("hex");
 }
 
+let cachedDistribution = false;
 try {
-  if (await sha256(destination) === checksum) {
+  cachedDistribution = await sha256(destination) === checksum;
+  if (cachedDistribution) {
     console.log(`Verified cached Gradle ${version} distribution.`);
-    process.exit(0);
+  } else {
+    console.warn("The cached Gradle ZIP does not match the pinned checksum; downloading a verified replacement.");
   }
-  console.warn("The cached Gradle ZIP does not match the pinned checksum; downloading a verified replacement.");
 } catch (error) {
   if (error.code !== "ENOENT") throw error;
 }
-await mkdir(cacheDirectory, { recursive: true });
+if (!cachedDistribution) {
+  await mkdir(cacheDirectory, { recursive: true });
 
-for (let attempt = 1; attempt <= 3; attempt++) {
-  const partial = `${destination}.part-${process.pid}-${randomUUID()}`;
-  try {
-    // The release asset API avoids the public browser-download redirect that can return 504.
-    const release = JSON.parse(execFileSync("gh", ["api", `repos/gradle/gradle-distributions/releases/tags/v${version}`], {
-      encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
-    }));
-    const assets = release.assets?.filter(asset => asset.name === filename) ?? [];
-    const asset = assets[0];
-    if (assets.length !== 1 || !Number.isSafeInteger(asset.id) || !Number.isSafeInteger(asset.size) || asset.size <= 0 ||
-        asset.digest !== "sha256:" + checksum) {
-      throw new Error("The official Gradle release metadata does not match the pinned distribution checksum.");
-    }
-    const descriptor = openSync(partial, "wx");
-    let download;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    const partial = `${destination}.part-${process.pid}-${randomUUID()}`;
     try {
-      download = spawnSync("gh", ["api", `repos/gradle/gradle-distributions/releases/assets/${asset.id}`, "-H", "Accept: application/octet-stream"], {
-        stdio: ["ignore", descriptor, "pipe"], encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024,
-      });
+      // The release asset API avoids the public browser-download redirect that can return 504.
+      const release = JSON.parse(execFileSync("gh", ["api", `repos/gradle/gradle-distributions/releases/tags/v${version}`], {
+        encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
+      }));
+      const assets = release.assets?.filter(asset => asset.name === filename) ?? [];
+      const asset = assets[0];
+      if (assets.length !== 1 || !Number.isSafeInteger(asset.id) || !Number.isSafeInteger(asset.size) || asset.size <= 0 ||
+          asset.digest !== "sha256:" + checksum) {
+        throw new Error("The official Gradle release metadata does not match the pinned distribution checksum.");
+      }
+      const descriptor = openSync(partial, "wx");
+      let download;
+      try {
+        download = spawnSync("gh", ["api", `repos/gradle/gradle-distributions/releases/assets/${asset.id}`, "-H", "Accept: application/octet-stream"], {
+          stdio: ["ignore", descriptor, "pipe"], encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024,
+        });
+      } finally {
+        closeSync(descriptor);
+      }
+      if (download.error || download.status !== 0) {
+        throw new Error(`Gradle release asset download failed: ${download.error?.message ?? download.stderr?.trim() ?? download.status}`);
+      }
+      if ((await stat(partial)).size !== asset.size || await sha256(partial) !== checksum) {
+        throw new Error("The downloaded Gradle distribution failed size or SHA-256 verification.");
+      }
+      await rename(partial, destination);
+      console.log(`Prepared verified Gradle ${version} ZIP in the wrapper cache.`);
+      break;
+    } catch (error) {
+      if (attempt === 3) throw error;
+      console.warn(`Gradle preparation attempt ${attempt} failed: ${error.message}`);
+      await delay(attempt * 1000);
     } finally {
-      closeSync(descriptor);
+      await unlink(partial).catch(error => { if (error.code !== "ENOENT") throw error; });
     }
-    if (download.error || download.status !== 0) {
-      throw new Error(`Gradle release asset download failed: ${download.error?.message ?? download.stderr?.trim() ?? download.status}`);
-    }
-    if ((await stat(partial)).size !== asset.size || await sha256(partial) !== checksum) {
-      throw new Error("The downloaded Gradle distribution failed size or SHA-256 verification.");
-    }
-    await rename(partial, destination);
-    console.log(`Prepared verified Gradle ${version} ZIP in the wrapper cache.`);
-    break;
-  } catch (error) {
-    if (attempt === 3) throw error;
-    console.warn(`Gradle preparation attempt ${attempt} failed: ${error.message}`);
-    await delay(attempt * 1000);
-  } finally {
-    await unlink(partial).catch(error => { if (error.code !== "ENOENT") throw error; });
   }
+}
+
+// The Gradle Plugin Portal intermittently fails to serve the buildSrc `kotlin-dsl` plugin.
+// Resolve buildSrc plugins with retries so the main build reads them from Gradle's cache.
+const androidProject = fileURLToPath(new URL("../src-tauri/gen/android/", import.meta.url));
+const windows = process.platform === "win32";
+const warmupAttempts = 4;
+for (let attempt = 1; attempt <= warmupAttempts; attempt++) {
+  const warmup = spawnSync(windows ? "gradlew.bat" : "./gradlew", ["--project-dir", "buildSrc", "--no-daemon", "help"], {
+    cwd: androidProject, stdio: "inherit", shell: windows, timeout: 600_000,
+  });
+  if (!warmup.error && warmup.status === 0) {
+    console.log("Resolved buildSrc Gradle plugins.");
+    break;
+  }
+  const reason = warmup.error?.message ?? `exit status ${warmup.status ?? warmup.signal}`;
+  if (attempt === warmupAttempts) throw new Error(`Resolving buildSrc Gradle plugins failed: ${reason}`);
+  console.warn(`buildSrc Gradle plugin resolution attempt ${attempt} failed: ${reason}`);
+  await delay(attempt * 15_000);
 }
