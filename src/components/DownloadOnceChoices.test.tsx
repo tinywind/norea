@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 
@@ -74,4 +75,13 @@ it("hands a work's explicit chapter choice back to its chapter list", () => {
   expect(mocks.close).toHaveBeenCalledOnce();
   expect(mocks.select).toHaveBeenCalledOnce();
   expect(mocks.choose).not.toHaveBeenCalled();
+});
+
+it("keeps the count selector full-width and full-height across phone, tablet, and desktop sheets", () => {
+  const css = readFileSync(new URL("../styles/download-goals.css", import.meta.url), "utf8");
+  const baseRule = css.match(/\.norea-download-goal-count\s*\{([^}]*)\}/)?.[1] ?? "";
+  expect(baseRule).toMatch(/width:\s*100%;/);
+  expect(baseRule).toMatch(/max-width:\s*none;/);
+  expect(baseRule).toMatch(/min-height:\s*var\(--norea-control-md\);/);
+  expect(baseRule).not.toMatch(/20rem/);
 });

@@ -124,6 +124,28 @@ it("queues fromStartMissing chapters including earlier gaps once per selected wo
   expect(mocks.unqueued).not.toHaveBeenCalled();
 });
 
+it("aggregates mixed multi-novel selections across gaps, already-at-end, empty, and local works", async () => {
+  const chaptersByNovel = new Map<number, LibraryDownloadChapter[]>([
+    [1, [chapter(1, { isDownloaded: true }), chapter(2), chapter(3, { contentBytes: 10, mediaRepairNeeded: true }), chapter(4), chapter(5), chapter(6)]],
+    [2, [chapter(21), chapter(22), chapter(23, { isDownloaded: true })]],
+    [3, []],
+  ]);
+  mocks.getNovel.mockImplementation(async (id: number) => ({ id, pluginId: "source", name: `Book ${id}`, path: `/book/${id}`, isLocal: id === 4 }));
+  mocks.libraryChapters.mockImplementation(async (id: number) => chaptersByNovel.get(id) ?? []);
+
+  await expect(queueChapterDownloadsOnce([1, 2, 3, 4], t, client, { kind: "afterLastDownloaded", count: 2 }))
+    .resolves.toEqual({ queued: 2, skippedLocal: 1 });
+  expect(mocks.submit).toHaveBeenCalledOnce();
+  expect((await mocks.submit.mock.calls[0]![0].prepare()).jobs.map((job: { id: number }) => job.id)).toEqual([4, 5]);
+
+  mocks.submit.mockClear();
+  await expect(queueChapterDownloadsOnce([1, 2, 3, 4], t, client, { kind: "fromStartMissing", count: 2 }))
+    .resolves.toEqual({ queued: 4, skippedLocal: 1 });
+  expect(mocks.submit).toHaveBeenCalledTimes(2);
+  expect((await mocks.submit.mock.calls[0]![0].prepare()).jobs.map((job: { id: number }) => job.id)).toEqual([2, 4]);
+  expect((await mocks.submit.mock.calls[1]![0].prepare()).jobs.map((job: { id: number }) => job.id)).toEqual([21, 22]);
+});
+
 it("keeps the all-missing path paged and skips only local works without a remembered server", async () => {
   mocks.unqueued.mockResolvedValue([chapter(1), chapter(5)]);
   mocks.getNovel.mockImplementation(async (id: number) => ({ id, pluginId: "source", name: "Book", path: "/book", isLocal: id === 2 }));

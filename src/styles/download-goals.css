@@ -27,30 +27,29 @@
 }
 
 .norea-download-goal-count {
-  max-width: 20rem;
-}
-
-.norea-download-goal-count.norea-download-goal-count--automatic {
   align-items: stretch;
   box-sizing: border-box;
   height: var(--norea-control-md);
-  margin: 0 0 var(--norea-space-2);
   max-width: none;
   min-height: var(--norea-control-md);
   width: 100%;
 }
 
-.norea-download-goal-count--automatic .norea-segmented-toggle-control {
+.norea-download-goal-count .norea-segmented-toggle-control {
   display: flex;
   flex: 1 1 0;
   min-height: 0;
   min-width: 0;
 }
 
-.norea-download-goal-count--automatic .norea-segmented-toggle-label {
+.norea-download-goal-count .norea-segmented-toggle-label {
   flex: 1;
   height: 100%;
   line-height: 1;
   min-height: 0;
   padding: 0;
+}
+
+.norea-download-goal-count.norea-download-goal-count--automatic {
+  margin: 0 0 var(--norea-space-2);
 }

@@ -87,6 +87,13 @@ it("asks for an immediate download range for selected works and queues nothing w
   const choice = contents.find(element => element.type === DownloadOnceChoices)!;
   expect(choice.props.disabled).toBe(false);
   expect(onChoose).not.toHaveBeenCalled();
-  (choice.props.onChoose as (selection: unknown) => void)({ kind: "remaining" });
-  expect(onChoose).toHaveBeenCalledExactlyOnceWith({ kind: "remaining" });
+  const choose = choice.props.onChoose as (selection: unknown) => void;
+  choose({ kind: "afterLastDownloaded", count: 5 });
+  choose({ kind: "fromStartMissing", count: 10 });
+  choose({ kind: "remaining" });
+  expect(onChoose.mock.calls).toEqual([
+    [{ kind: "afterLastDownloaded", count: 5 }],
+    [{ kind: "fromStartMissing", count: 10 }],
+    [{ kind: "remaining" }],
+  ]);
 });
