@@ -113,6 +113,7 @@ export function useReaderContentMedia({
       const content = contentRef.current;
       if (!content) return;
       patchReaderMediaElements(content, patches);
+      clearSettledPendingReaderImages(content);
     },
     [],
   );
@@ -126,13 +127,6 @@ export function useReaderContentMedia({
     pendingMediaErrorRef.current = { source };
   }, []);
 
-  useEffect(() => {
-    if (!onMediaError || !pendingMediaErrorRef.current) return;
-    const { source } = pendingMediaErrorRef.current;
-    pendingMediaErrorRef.current = null;
-    onMediaError(source);
-  }, [onMediaError]);
-
   useLayoutEffect(() => {
     latestMediaElementPatchesRef.current.clear();
     resolvedLocalMediaRef.current.clear();
@@ -142,6 +136,11 @@ export function useReaderContentMedia({
     unresolvedLocalMediaSignatureRef.current = null;
     localMediaPatchGenerationRef.current += 1;
   }, [contentKey]);
+
+  useLayoutEffect(() => {
+    unresolvedLocalMediaSignatureRef.current = null;
+    pendingMediaErrorRef.current = null;
+  }, [localMediaContextKey, renderedHtml]);
 
   useLayoutEffect(() => {
     const content = contentRef.current;
@@ -188,9 +187,11 @@ export function useReaderContentMedia({
   ]);
 
   useEffect(() => {
-    unresolvedLocalMediaSignatureRef.current = null;
+    if (!onMediaError || !pendingMediaErrorRef.current) return;
+    const { source } = pendingMediaErrorRef.current;
     pendingMediaErrorRef.current = null;
-  }, [localMediaContextKey, renderedHtml]);
+    onMediaError(source);
+  }, [onMediaError]);
 
   useEffect(() => {
     if (!stableLocalMediaContext) {
@@ -230,6 +231,7 @@ export function useReaderContentMedia({
         virtualEnd: activeVirtualRangeEnd,
       }));
       patchReaderMediaElements(content, resolvedPatches);
+      clearSettledPendingReaderImages(content);
       return;
     }
     const cachedLocalPatches = [
@@ -246,6 +248,7 @@ export function useReaderContentMedia({
         virtualEnd: activeVirtualRangeEnd,
       }));
       patchReaderMediaElements(content, cachedLocalPatches);
+      clearSettledPendingReaderImages(content);
       return;
     }
     if (scopedSignature === unresolvedLocalMediaSignatureRef.current) {
@@ -320,6 +323,7 @@ export function useReaderContentMedia({
           }
           mergeMediaElementPatches(latestMediaElementPatchesRef.current, patches);
           patchReaderMediaElements(content, patches);
+          clearSettledPendingReaderImages(content);
         } else if (!cancelled) {
           logReaderMediaDebug("local-media-resolve-empty", () => ({
             generation,

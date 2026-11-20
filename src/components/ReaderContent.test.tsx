@@ -203,4 +203,21 @@ describe("prepared layout invalidation", () => {
     const pagedKeyAfter = mocks.progress.mock.lastCall![0].layoutRestoreKey;
     expect(pagedKeyAfter).not.toBe(pagedKeyBefore);
   });
+
+  it("changes scroll-mode layoutRestoreKey when height transitions from unmeasured to measured, but not across measured resizes", () => {
+    mocks.width = 400;
+    mocks.height = 0;
+    render(false, { generalSettings: { ...mocks.general, pageReader: false } });
+    const unmeasuredKey = mocks.progress.mock.lastCall![0].layoutRestoreKey;
+
+    mocks.height = 600;
+    render(false, { generalSettings: { ...mocks.general, pageReader: false } });
+    const measuredKey = mocks.progress.mock.lastCall![0].layoutRestoreKey;
+    expect(measuredKey).not.toBe(unmeasuredKey);
+
+    mocks.height = 900;
+    render(false, { generalSettings: { ...mocks.general, pageReader: false } });
+    const resizedKey = mocks.progress.mock.lastCall![0].layoutRestoreKey;
+    expect(resizedKey).toBe(measuredKey);
+  });
 });

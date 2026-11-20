@@ -33,6 +33,7 @@ vi.mock("../../db/queries/chapter", () => ({
 import { markChapterOpened } from "../../db/queries/chapter";
 import { useReaderStore } from "../../store/reader";
 import { resolveLocalChapterMediaPatches } from "../../lib/chapter-media";
+import { useReaderContentMedia } from "./use-reader-content-media";
 import { useReaderPersistence } from "./use-reader-persistence";
 import { useReaderChapterDocument } from "./use-reader-chapter-document";
 
@@ -49,7 +50,11 @@ function mountNullRenderer() {
         set innerHTML(value: string) { html = value; },
         get content() {
           const $ = load(html);
-          return { textContent: $.root().text(), querySelector: (selector: string) => $(selector).get(0) };
+          return {
+            textContent: $.root().text(),
+            querySelector: (selector: string) => $(selector).get(0),
+            querySelectorAll: () => [],
+          };
         },
       };
     },
@@ -182,4 +187,139 @@ it("uses the plugin novel ID for reader media and refreshes both context and pat
     chapterId: 11, chapterName: "Side story", chapterNumber: "1.5", chapterPosition: 2,
     novelId: 17, novelName: "A title unrelated to its ID", sourceId: "source", sourceNovelId: "updated-plugin-id",
   });
+});
+
+it("preserves a promoted prepared chapter's replayed media error instead of clobbering it on chapter switch", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  root = mountNullRenderer();
+  vi.mocked(resolveLocalChapterMediaPatches).mockResolvedValue([]);
+  const novel = { id: 37, name: "Stored work", path: "/work", pluginId: "source", sourceNovelId: "work" };
+  const chapter1 = {
+    id: 101, novelId: 37, name: "Ch 1", chapterNumber: "1", position: 1,
+    content: "<p>Clean chapter 1</p>", contentType: "html" as const, mediaRepairNeeded: false,
+  };
+  const chapter2 = {
+    id: 102, novelId: 37, name: "Ch 2", chapterNumber: "2", position: 2,
+    content: '<img src="norea-media://reader-asset/missing.jpg" />',
+    contentType: "html" as const, mediaRepairNeeded: false,
+  };
+  const chapter3 = {
+    id: 103, novelId: 37, name: "Ch 3", chapterNumber: "3", position: 3,
+    content: "<p>Clean chapter 3</p>", contentType: "html" as const, mediaRepairNeeded: false,
+  };
+  const mockChapter2Dom = {
+    querySelectorAll: () => [{
+      getAttribute: (name: string) =>
+        name === "data-norea-reader-local-media-src"
+          ? encodeURIComponent("norea-media://reader-asset/missing.jpg")
+          : null,
+      setAttribute: vi.fn(),
+      removeAttribute: vi.fn(),
+    }],
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  };
+  const chapter2ContentRef = { current: mockChapter2Dom as unknown as HTMLDivElement };
+  const contentRef = { current: null };
+  let current: ReturnType<typeof useReaderChapterDocument> | undefined;
+
+  function ChildMedia({
+    active,
+    onMediaError,
+  }: {
+    active: boolean;
+    onMediaError?: (source: string | null) => void;
+  }) {
+    useReaderContentMedia({
+      contentKey: "102:stored",
+      renderedHtml: chapter2.content,
+      localMediaContext: {
+        chapterId: chapter2.id,
+        chapterName: chapter2.name,
+        chapterNumber: chapter2.chapterNumber,
+        chapterPosition: chapter2.position,
+        novelId: novel.id,
+        novelName: novel.name,
+        sourceNovelId: novel.sourceNovelId,
+        sourceId: novel.pluginId,
+      },
+      contentRef: chapter2ContentRef,
+      activeVirtualRangeStart: 0,
+      activeVirtualRangeEnd: 0,
+      isPagedReader: false,
+      onMediaError: active ? onMediaError : undefined,
+    });
+    return null;
+  }
+
+  function ParentProbe({ activeChapter }: { activeChapter: typeof chapter1 }) {
+    current = useReaderChapterDocument({
+      chapterId: activeChapter.id,
+      chapter: activeChapter,
+      currentNovel: novel,
+      bionicReading: false,
+      contentRef,
+    });
+    return (
+      <>
+        {activeChapter.id === chapter2.id ? (
+          <ChildMedia key="102:stored" active onMediaError={current.handleRemoteMediaError} />
+        ) : null}
+        {activeChapter.id === chapter1.id ? (
+          <ChildMedia key="102:stored" active={false} />
+        ) : null}
+      </>
+    );
+  }
+
+  // Step 1: Reading chapter 1 while chapter 2 prepares in the background and hits missing media.
+  await act(async () => {
+    root!.render(
+      <QueryClientProvider client={queryClient}>
+        <ParentProbe activeChapter={chapter1} />
+      </QueryClientProvider>,
+    );
+  });
+  expect(current!.remoteMediaError).toBe(false);
+  expect(current!.mediaRepairAttention).toBe(false);
+
+  // Step 2: Advance to chapter 2, promoting the prepared ChildMedia in the exact same render.
+  await act(async () => {
+    root!.render(
+      <QueryClientProvider client={queryClient}>
+        <ParentProbe activeChapter={chapter2} />
+      </QueryClientProvider>,
+    );
+  });
+  expect(current!.remoteMediaError).toBe(true);
+  expect(current!.showMediaRepair).toBe(true);
+  expect(current!.mediaRepairAttention).toBe(true);
+
+  // Step 3: Advancing to clean chapter 3 clears remoteMediaError, and returning to chapter 2 starts clean.
+  await act(async () => {
+    root!.render(
+      <QueryClientProvider client={queryClient}>
+        <ParentProbe activeChapter={chapter3} />
+      </QueryClientProvider>,
+    );
+  });
+  expect(current!.remoteMediaError).toBe(false);
+  expect(current!.mediaRepairAttention).toBe(false);
+
+  vi.mocked(resolveLocalChapterMediaPatches).mockResolvedValue([
+    {
+      index: 0,
+      attributes: { src: "http://norea-media.localhost/reader-asset/~cache/tok/missing.jpg" },
+      sourceAttributes: { src: "norea-media://reader-asset/missing.jpg" },
+    },
+  ]);
+  await act(async () => {
+    root!.render(
+      <QueryClientProvider client={queryClient}>
+        <ParentProbe activeChapter={chapter2} />
+      </QueryClientProvider>,
+    );
+  });
+  expect(current!.remoteMediaError).toBe(false);
+  expect(current!.mediaRepairAttention).toBe(false);
 });

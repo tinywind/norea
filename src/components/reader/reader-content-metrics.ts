@@ -160,6 +160,7 @@ function getPagedTrailingTolerance(step: number): number {
 }
 
 export function getPagedPageCount(node: HTMLElement): number {
+  if (node.clientWidth <= 0) return 1;
   const maxLeft = getPagedMaxLeft(node);
   if (maxLeft <= PAGED_SCROLL_POSITION_TOLERANCE_PX) return 1;
   const step = getPagedStep(node);

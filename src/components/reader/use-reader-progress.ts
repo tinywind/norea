@@ -337,6 +337,7 @@ export function useReaderProgress({
                 clampProgress(progressToRestore)) /
               100,
         isSettled: () => {
+          if (node.clientHeight <= 0) return false;
           if (!anchor) return readerRestoreMediaSettled(content, null);
           const target = readerScrollAnchorElement(content, anchor);
           return target
@@ -397,7 +398,11 @@ export function useReaderProgress({
       applyPageInfo(getPageInfo(node, false));
       return;
     }
-    if (!isPagedReader) {
+    if (isPagedReader) {
+      if (node.clientWidth <= 0) {
+        return;
+      }
+    } else {
       if (node.clientHeight <= 0 || node.scrollHeight - node.clientHeight <= 0) {
         // Ignore scroll-clamp events when the viewport is not scrollable (e.g. unloaded images).
         return;
@@ -666,6 +671,11 @@ export function useReaderProgress({
       const node = getActiveScrollNode();
       if (!node) return;
       restoreSettleRef.current?.cancel();
+      suppressProgrammaticResetScrollRef.current = false;
+      scrollActivityVersionRef.current += 1;
+      if (pendingInitialProgressRestoreRef.current?.contentKey === contentKey) {
+        pendingInitialProgressRestoreRef.current = null;
+      }
       scrollAnchorDirtyRef.current = true;
       const clamped = clampProgress(value);
       if (clamped < 97) {
@@ -673,7 +683,10 @@ export function useReaderProgress({
       }
       if (isPagedReader) {
         scrollToProgress(node, clamped, true, "auto");
-        const nextProgress = clampProgress(getProgress(node, true));
+        const nextProgress =
+          node.clientWidth <= 0
+            ? clamped
+            : clampProgress(getProgress(node, true));
         latestProgressRef.current = nextProgress;
         setRenderedProgress(nextProgress, { force: true });
         applyPageInfo(getPageInfo(node, true));
@@ -693,6 +706,7 @@ export function useReaderProgress({
     },
     [
       applyPageInfo,
+      contentKey,
       getActiveScrollNode,
       isPagedReader,
       scheduleProgressSave,

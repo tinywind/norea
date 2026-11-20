@@ -443,7 +443,11 @@ function setReaderLocalMediaPlaceholder(
     );
     return;
   }
-  if (attribute === "src" && element instanceof HTMLImageElement) {
+  if (
+    attribute === "src" &&
+    typeof HTMLImageElement !== "undefined" &&
+    element instanceof HTMLImageElement
+  ) {
     setReaderPendingImagePlaceholder(element);
     return;
   }

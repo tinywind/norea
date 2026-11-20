@@ -590,3 +590,153 @@ it("restores all known local media from the resolved map during restoreMediaPatc
   expect(mountedImages[1]!.getAttribute("src")).toBe("http://norea-media.localhost/reader-asset/~cache/tok/missing.jpg");
   expect(mountedImages[2]!.getAttribute("src")).toBe("http://norea-media.localhost/reader-asset/~cache/tok/c.jpg");
 });
+
+it("drops a stale buffered preparing media error when renderedHtml updates in the same render as promotion", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  root = mountNullRenderer();
+  resolveLocalChapterMediaPatches
+    .mockResolvedValueOnce([] as ChapterMediaElementPatch[])
+    .mockResolvedValueOnce([
+      {
+        index: 0,
+        attributes: { src: "http://norea-media.localhost/reader-asset/~cache/tok/repaired.jpg" },
+        sourceAttributes: { src: "norea-media://reader-asset/repaired.jpg" },
+      },
+    ] satisfies ChapterMediaElementPatch[]);
+  let mockContent = createMockContainer(["norea-media://reader-asset/stale-missing.jpg"]);
+  const contentRef = { current: mockContent as unknown as HTMLDivElement };
+  const onMediaError = vi.fn();
+
+  function Probe({ active, renderedHtml }: { active: boolean; renderedHtml: string }) {
+    useReaderContentMedia({
+      contentKey: "61195:stored",
+      renderedHtml,
+      localMediaContext: { chapterId: 61195, novelId: 127, sourceId: "webtoon", sourceNovelId: "w-1" },
+      contentRef,
+      activeVirtualRangeStart: 0,
+      activeVirtualRangeEnd: 0,
+      isPagedReader: false,
+      onMediaError: active ? onMediaError : undefined,
+    });
+    return null;
+  }
+
+  // While preparing, the initial HTML fails to resolve and buffers a media error.
+  await act(async () => {
+    root!.render(<Probe active={false} renderedHtml='<img src="norea-media://reader-asset/stale-missing.jpg" />' />);
+  });
+  expect(onMediaError).not.toHaveBeenCalled();
+
+  // Promote in the exact same render that repaired HTML arrives with the same contentKey.
+  mockContent = createMockContainer(["norea-media://reader-asset/repaired.jpg"]);
+  contentRef.current = mockContent as unknown as HTMLDivElement;
+  await act(async () => {
+    root!.render(<Probe active={true} renderedHtml='<img src="norea-media://reader-asset/repaired.jpg" />' />);
+  });
+
+  expect(onMediaError).not.toHaveBeenCalled();
+});
+
+it("clears pending image styles when patchMediaElements patches an already-settled image", async () => {
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  root = mountNullRenderer();
+  const MockImage = globalThis.HTMLImageElement as unknown as new (src: string) => {
+    currentSrc: string;
+    src: string;
+    getAttribute(name: string): string | null;
+  };
+  const resolvedUrl = "http://norea-media.localhost/reader-asset/~cache/tok/already-cached.jpg";
+  class SettledMockImage extends MockImage {
+    readonly attrMap = new Map<string, string>([
+      ["src", resolvedUrl],
+      [READER_PENDING_MEDIA_ATTRIBUTE, "true"],
+      [READER_PENDING_HEIGHT_ATTRIBUTE, "true"],
+    ]);
+    complete = true;
+    naturalWidth = 800;
+    readonly style = {
+      minHeight: READER_PENDING_PLACEHOLDER_HEIGHT,
+      removeProperty: (property: string) => {
+        if (property === "min-height") this.style.minHeight = "";
+      },
+    };
+    constructor() {
+      super(resolvedUrl);
+    }
+    override getAttribute(name: string) {
+      return this.attrMap.get(name) ?? null;
+    }
+    hasAttribute(name: string) {
+      return this.attrMap.has(name);
+    }
+    setAttribute(name: string, value: string) {
+      this.attrMap.set(name, value);
+    }
+    removeAttribute(name: string) {
+      this.attrMap.delete(name);
+    }
+  }
+  const settledImage = new SettledMockImage();
+  const mockContent = {
+    querySelectorAll: () => [settledImage],
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  };
+  const contentRef = { current: mockContent as unknown as HTMLDivElement };
+  let patchMediaElements!: (patches: ChapterMediaElementPatch[]) => void;
+
+  function Probe() {
+    ({ patchMediaElements } = useReaderContentMedia({
+      contentKey: "61196:stored",
+      renderedHtml: "<p>Placeholder</p>",
+      contentRef,
+      activeVirtualRangeStart: 0,
+      activeVirtualRangeEnd: 0,
+      isPagedReader: false,
+    }));
+    return null;
+  }
+
+  await act(async () => {
+    root!.render(<Probe />);
+  });
+  // Simulate an image that was still pending during mount and finished decoding before patchMediaElements ran.
+  settledImage.attrMap.set(READER_PENDING_MEDIA_ATTRIBUTE, "true");
+  settledImage.attrMap.set(READER_PENDING_HEIGHT_ATTRIBUTE, "true");
+  settledImage.style.minHeight = READER_PENDING_PLACEHOLDER_HEIGHT;
+  patchMediaElements([{ index: 0, attributes: { src: resolvedUrl } }]);
+
+  expect(settledImage.hasAttribute(READER_PENDING_MEDIA_ATTRIBUTE)).toBe(false);
+  expect(settledImage.style.minHeight).toBe("");
+});
+
+it("protects unresolved local media sources safely when HTMLImageElement is undefined", () => {
+  vi.spyOn(console, "warn").mockImplementation(() => undefined);
+  const attributes = new Map<string, string>([
+    ["src", "norea-media%3A%2F%2Freader-asset%2Funresolved.jpg"],
+  ]);
+  const element = {
+    getAttribute: (name: string) => attributes.get(name) ?? null,
+    setAttribute: (name: string, value: string) => {
+      attributes.set(name, value);
+    },
+  };
+  vi.stubGlobal("HTMLImageElement", undefined);
+  vi.stubGlobal("document", {
+    createElement: () => ({
+      innerHTML: "",
+      content: { querySelectorAll: () => [element] },
+    }),
+  });
+
+  expect(() =>
+    protectLocalReaderMediaCached(
+      '<img src="norea-media%3A%2F%2Freader-asset%2Funresolved.jpg" />',
+      undefined,
+      true,
+    ),
+  ).not.toThrow();
+  expect(attributes.get("data-norea-reader-local-media-src")).toBe(
+    encodeURIComponent("norea-media://reader-asset/unresolved.jpg"),
+  );
+});

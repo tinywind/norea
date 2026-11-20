@@ -219,7 +219,11 @@ function ReaderContentInner(
         general.pageReader,
         general.htmlImagePagingMode,
         viewportSize.width,
-        isPagedReader ? viewportSize.height : "",
+        isPagedReader
+          ? viewportSize.height
+          : viewportSize.height > 0
+            ? "measured"
+            : "unmeasured",
         pageColumnsPerSpread,
       ].join("|"),
     [

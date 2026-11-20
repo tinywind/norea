@@ -87,6 +87,20 @@ describe("reader progress geometry", () => {
     expect(isAtReadingEnd(unmeasured, false)).toBe(false);
     expect(isAtReadingEnd(unmeasured, true)).toBe(false);
 
+    const unmeasuredPagedWithOverflow = viewport({
+      width: 0,
+      height: 600,
+      scrollWidth: 1000,
+      scrollHeight: 600,
+    });
+    unmeasuredPagedWithOverflow.scrollLeft = 500;
+    expect(getPageInfo(unmeasuredPagedWithOverflow, true)).toEqual({
+      current: 1,
+      total: 1,
+    });
+    expect(getProgress(unmeasuredPagedWithOverflow, true)).toBe(0);
+    expect(isAtReadingEnd(unmeasuredPagedWithOverflow, true)).toBe(false);
+
     const undersized = viewport({ height: 600, scrollHeight: 200 });
     scrollToProgress(undersized, 50, false, "auto");
     expect(undersized.scrollTop).toBe(0);

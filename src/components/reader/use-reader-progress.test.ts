@@ -427,4 +427,110 @@ describe("useReaderProgress scroll restore", () => {
     unmount();
     expect(onProgressChange).not.toHaveBeenCalled();
   });
+
+  it("keeps scroll restore settle alive while clientHeight is 0 and restores the saved anchor once measured", () => {
+    const viewport = new FakeViewport();
+    const content = new FakeWebtoon(viewport);
+    content.loadImages();
+    // Simulate an unmeasured viewport at mount time (clientHeight = 0, scrollHeight = 0).
+    viewport.clientHeight = 0;
+    viewport.scrollHeight = 0;
+    const onProgressChange = vi.fn();
+    reactHarness.effects = [];
+    useReaderProgress({
+      contentKey: "7:stored",
+      initialProgress: 48,
+      initialScrollAnchor: SAVED_ANCHOR,
+      isPagedReader: false,
+      layoutRestoreKey: "7:stored|layout",
+      virtualDocument: {
+        contentClassName: "reader-content",
+        segments: content.segments.map((_, index) => ({
+          estimatedHeight: 520,
+          html: "",
+          index,
+        })),
+        staticHtml: "",
+      },
+      segmentOffsets: [],
+      completedForNavigationRef: { current: false },
+      pageScrollAnimatingRef: { current: false },
+      contentRef: { current: content as unknown as HTMLDivElement },
+      getActiveScrollNode: () => viewport as unknown as HTMLDivElement,
+      enforceScrollStepFloor: vi.fn(),
+      syncScrollVirtualRange: vi.fn(),
+      cancelPagedScrollAnimation: vi.fn(),
+      onProgressChange,
+    });
+    const cleanups = reactHarness.effects
+      .map((effect) => effect())
+      .filter((cleanup) => typeof cleanup === "function");
+
+    // Advance past the 250ms minimum settle window while viewport is still unmeasured.
+    vi.advanceTimersByTime(400);
+    expect(viewport.scrollTop).toBe(0);
+
+    // Viewport finally measures; settle must still be active and restore the saved anchor.
+    viewport.clientHeight = 1000;
+    content.layout(2400);
+    vi.advanceTimersByTime(200);
+    expect(viewport.scrollTop).toBe(5 * 2400 + 600);
+    expect(onProgressChange).not.toHaveBeenCalled();
+    for (const cleanup of cleanups) cleanup();
+  });
+
+  it("cancels a pending initial rAF restore when the user explicitly seeks on a collapsed viewport", () => {
+    const { viewport, reader, onProgressChange, unmount } = openReader({
+      initialProgress: 0,
+    });
+    viewport.scrollHeight = viewport.clientHeight;
+
+    // Seek before the 16ms initial rAF fires.
+    reader.seekToProgress(50);
+    vi.advanceTimersByTime(200);
+    expect(viewport.scrollTo).toHaveBeenCalledTimes(1);
+    vi.advanceTimersByTime(400);
+
+    expect(onProgressChange).toHaveBeenCalledWith(50);
+    unmount();
+    expect(onProgressChange.mock.calls.every(([value]) => value === 50)).toBe(true);
+  });
+
+  it("ignores paged-mode scroll events while clientWidth is 0 even when scrollWidth overflows", () => {
+    const pagedNode = Object.assign(new FakeViewport(), {
+      clientWidth: 0,
+      scrollWidth: 1000,
+      scrollLeft: 500,
+    });
+    const onProgressChange = vi.fn();
+    const onPageIndexChange = vi.fn();
+    reactHarness.effects = [];
+    const reader = useReaderProgress({
+      contentKey: "9:stored",
+      initialProgress: 0,
+      isPagedReader: true,
+      layoutRestoreKey: "9:stored|layout",
+      virtualDocument: { contentClassName: "reader-content", segments: [], staticHtml: "" },
+      segmentOffsets: [],
+      completedForNavigationRef: { current: false },
+      pageScrollAnimatingRef: { current: false },
+      contentRef: { current: pagedNode as unknown as HTMLDivElement },
+      getActiveScrollNode: () => pagedNode as unknown as HTMLDivElement,
+      enforceScrollStepFloor: vi.fn(),
+      syncScrollVirtualRange: vi.fn(),
+      cancelPagedScrollAnimation: vi.fn(),
+      onProgressChange,
+      onPageIndexChange,
+    });
+    const cleanups = reactHarness.effects
+      .map((effect) => effect())
+      .filter((cleanup) => typeof cleanup === "function");
+
+    reader.updateProgressFromScroll();
+    vi.advanceTimersByTime(500);
+    for (const cleanup of cleanups) cleanup();
+
+    expect(onProgressChange).not.toHaveBeenCalled();
+    expect(onPageIndexChange).not.toHaveBeenCalled();
+  });
 });

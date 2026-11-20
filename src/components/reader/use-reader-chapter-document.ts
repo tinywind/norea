@@ -96,7 +96,9 @@ export function useReaderChapterDocument({
   >(new Map());
   const [readerDocument, setReaderDocument] =
     useState<ReaderDocumentState | null>(null);
-  const [remoteMediaError, setRemoteMediaError] = useState(false);
+  const [remoteMediaErrorChapterId, setRemoteMediaErrorChapterId] = useState<
+    number | null
+  >(null);
 
   useEffect(() => {
     if (!chapter || !isHtmlLikeChapterContentType(chapter.contentType)) return;
@@ -301,8 +303,17 @@ export function useReaderChapterDocument({
       currentNovel?.pluginId,
     ],
   );
+  const activeChapterIdRef = useRef<number | undefined>(activeChapterId);
+  activeChapterIdRef.current = activeChapterId;
+  const remoteMediaError =
+    activeChapterId !== undefined &&
+    remoteMediaErrorChapterId === activeChapterId;
   useEffect(() => {
-    setRemoteMediaError(false);
+    setRemoteMediaErrorChapterId((current) =>
+      activeChapterId !== undefined && current === activeChapterId
+        ? current
+        : null,
+    );
   }, [activeChapterId]);
   const showMediaRepair = useMemo(
     () =>
@@ -357,8 +368,13 @@ export function useReaderChapterDocument({
     activeReaderDocument?.html,
     readerPreparation.document,
   ]);
+  const setRemoteMediaError = useCallback((value: boolean) => {
+    setRemoteMediaErrorChapterId(
+      value ? (activeChapterIdRef.current ?? null) : null,
+    );
+  }, []);
   const handleRemoteMediaError = useCallback(() => {
-    setRemoteMediaError(true);
+    setRemoteMediaErrorChapterId(activeChapterIdRef.current ?? null);
   }, []);
 
   return {
