@@ -371,6 +371,57 @@ describe("reader query invalidation", () => {
     ]);
   });
 
+  it("refetches an active novel chapters query whose cache is empty after a failed load", async () => {
+    const queryClient = createQueryClient();
+    let shouldFail = true;
+    const chaptersQuery = vi.fn(async () => {
+      if (shouldFail) throw new Error("temporary read failure");
+      return [{ id: 12, ...completedDownload }];
+    });
+    const observer = new QueryObserver(queryClient, {
+      queryKey: novelChaptersQueryKey(7),
+      queryFn: chaptersQuery,
+      retry: false,
+    });
+    unsubscriptions.push(observer.subscribe(() => undefined));
+    await vi.waitFor(() => expect(observer.getCurrentResult().isError).toBe(true));
+
+    shouldFail = false;
+    await applyNovelChapterDownloadCompletion(queryClient, {
+      chapterId: 12,
+      novelId: 7,
+    });
+
+    expect(chaptersQuery).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toEqual([
+      { id: 12, ...completedDownload },
+    ]);
+  });
+
+  it("refetches active novel chapters when a cached completed chapter cannot be read back", async () => {
+    const queryClient = createQueryClient();
+    let storedChapters = [{ id: 11, isDownloaded: false }];
+    const chaptersQuery = vi.fn(async () => storedChapters);
+
+    await observeQuery(
+      queryClient,
+      novelChaptersQueryKey(7),
+      chaptersQuery,
+    );
+
+    vi.mocked(getChapterById).mockResolvedValueOnce(null);
+    storedChapters = [{ id: 12, ...completedDownload }];
+    await applyNovelChapterDownloadCompletion(queryClient, {
+      chapterId: 11,
+      novelId: 7,
+    });
+
+    expect(chaptersQuery).toHaveBeenCalledTimes(2);
+    expect(queryClient.getQueryData(novelChaptersQueryKey(7))).toEqual([
+      { id: 12, ...completedDownload },
+    ]);
+  });
+
   it("applies batched download completions once per novel and library", async () => {
     const queryClient = createQueryClient();
     const firstNovelChapters = [

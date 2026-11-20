@@ -24,6 +24,7 @@ const mocks = vi.hoisted(() => ({
   toast: vi.fn(),
   novelQuery: { isLoading: false, error: null as unknown },
   installed: false,
+  defaultChapterSort: "asc" as "asc" | "desc",
   queries: [] as { queryKey: unknown[]; enabled?: boolean }[],
   chapters: [] as ChapterListRow[],
   novel: {
@@ -47,7 +48,7 @@ vi.mock("../i18n", () => ({ useTranslation: () => ({
     ? `${values?.downloaded}/${values?.total} stored`
     : key,
 }) }));
-vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown) => unknown) => selector({ defaultChapterSort: "asc", setDefaultChapterSort: vi.fn() }) }));
+vi.mock("../store/library", () => ({ useLibraryStore: (selector: (state: unknown) => unknown) => selector({ defaultChapterSort: mocks.defaultChapterSort, setDefaultChapterSort: vi.fn() }) }));
 vi.mock("../store/reader", () => ({ useReaderStore: (selector: (state: unknown) => unknown) => selector({ lastReadChapterByNovel: {} }) }));
 vi.mock("../components/novel/use-novel-metadata", () => ({ useNovelMetadata: () => ({ sourceDuplicateChapters: [], toggle: { mutate: mocks.toggleMutate }, refreshMetadata: { mutate: mocks.refresh, isPending: mocks.refreshPending, error: mocks.metadataError }, fullRefreshMetadata: { mutate: mocks.fullRefresh, isPending: mocks.fullRefreshPending } }) }));
 vi.mock("@mantine/notifications", () => ({ notifications: { show: mocks.toast, hide: vi.fn() } }));
@@ -155,6 +156,7 @@ beforeEach(() => {
   mocks.novel.path = "/novel";
   mocks.novelQuery.isLoading = false;
   mocks.novelQuery.error = null;
+  mocks.defaultChapterSort = "asc";
   mocks.chapters = [];
   mocks.available.data = { paths: new Map(), numbers: new Map() };
   mocks.available.isLoading = false;
@@ -890,6 +892,39 @@ it("resumes an in-progress up-next chapter row without forcing fromStart", async
     expect(mocks.navigate).toHaveBeenLastCalledWith({
       to: "/reader",
       search: { chapterId: 1 },
+    });
+  });
+});
+
+it("opens the up-next chapter row from the start under descending sort", async () => {
+  const first = {
+    ...chapter,
+    id: 1,
+    position: 1,
+    progress: 100,
+    readAt: 100,
+    isDownloaded: true,
+  };
+  const second = {
+    ...chapter,
+    id: 2,
+    position: 2,
+    progress: 35,
+    readAt: null,
+    isDownloaded: true,
+  };
+  mocks.defaultChapterSort = "desc";
+  mocks.chapters = [first, second];
+
+  await withPageTree(async (find, run) => {
+    const list = chapterList(find);
+    expect((list.props.chapters as ChapterListRow[]).map((row) => row.id)).toEqual([2, 1]);
+    expect(list.props.continueChapterId).toBe(2);
+    const open = list.props.onOpen as (row: ChapterListRow) => void;
+    await run(() => open(second));
+    expect(mocks.navigate).toHaveBeenLastCalledWith({
+      to: "/reader",
+      search: { chapterId: 2, fromStart: true },
     });
   });
 });

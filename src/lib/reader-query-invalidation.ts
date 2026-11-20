@@ -25,6 +25,15 @@ export function novelChaptersQueryKey(novelId: number) {
   return ["novel", "detail", novelId, "chapters"] as const;
 }
 
+export function isNovelChaptersQueryKey(queryKey: QueryKey): boolean {
+  return (
+    queryKey.length === 4 &&
+    queryKey[0] === "novel" &&
+    queryKey[1] === "detail" &&
+    queryKey[3] === "chapters"
+  );
+}
+
 export const novelLibraryQueryKey = ["novel", "library"] as const;
 export const continueReadingQueryPrefix = [
   "novel",
@@ -75,9 +84,6 @@ export async function applyNovelChapterDownloadCompletions(
     const cachedChapterIds = cachedChapters
       ? new Set(cachedChapters.map((chapter) => chapter.id))
       : null;
-    const hasMissingCachedChapter =
-      cachedChapterIds !== null &&
-      [...chapterIds].some((chapterId) => !cachedChapterIds.has(chapterId));
     const storedChapters = await Promise.all(
       (cachedChapters ?? [])
         .filter((chapter) => chapterIds.has(chapter.id))
@@ -86,10 +92,23 @@ export async function applyNovelChapterDownloadCompletions(
     const storedById = new Map(
       storedChapters.flatMap(chapter => chapter ? [[chapter.id, chapter] as const] : []),
     );
+    let shouldRefetchChapters =
+      cachedChapterIds === null ||
+      [...chapterIds].some(
+        (chapterId) =>
+          !cachedChapterIds.has(chapterId) || !storedById.has(chapterId),
+      );
     queryClient.setQueryData<ChapterListRow[]>(
       novelChaptersQueryKey(novelId),
       (chapters) => {
-        if (!chapters) return chapters;
+        if (!chapters) {
+          shouldRefetchChapters = true;
+          return chapters;
+        }
+        const currentIds = new Set(chapters.map((chapter) => chapter.id));
+        if ([...chapterIds].some((chapterId) => !currentIds.has(chapterId))) {
+          shouldRefetchChapters = true;
+        }
         let updated: ChapterListRow[] | null = null;
         for (let index = 0; index < chapters.length; index += 1) {
           const chapter = chapters[index]!;
@@ -116,7 +135,7 @@ export async function applyNovelChapterDownloadCompletions(
     );
     invalidations.push(
       queryClient.invalidateQueries(
-        hasMissingCachedChapter
+        shouldRefetchChapters
           ? {
               exact: true,
               queryKey: novelChaptersQueryKey(novelId),

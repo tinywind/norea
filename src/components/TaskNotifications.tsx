@@ -13,6 +13,7 @@ import {
   applyNovelChapterDownloadCompletions,
   chapterHistoryNextQueryPrefix,
   continueReadingQueryPrefix,
+  isNovelChaptersQueryKey,
 } from "../lib/reader-query-invalidation";
 import {
   startAndroidBackgroundDownloadRecovery,
@@ -66,6 +67,9 @@ export function TaskNotifications() {
         queryClient.invalidateQueries({
           queryKey: ["novel", "detail"],
           refetchType: "none",
+        }),
+        queryClient.invalidateQueries({
+          predicate: (query) => isNovelChaptersQueryKey(query.queryKey),
         }),
         queryClient.invalidateQueries({
           queryKey: chapterHistoryNextQueryPrefix,

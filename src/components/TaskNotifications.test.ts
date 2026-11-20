@@ -1,5 +1,5 @@
 import { useEffect, type ReactElement } from "react";
-import { QueryClient, useQueryClient } from "@tanstack/react-query";
+import { QueryClient, QueryObserver, useQueryClient } from "@tanstack/react-query";
 import * as chapterDownloads from "../lib/tasks/chapter-download";
 import * as chapterQueries from "../db/queries/chapter";
 import { notifications, notificationsStore } from "@mantine/notifications";
@@ -178,6 +178,46 @@ describe("download completion notifications", () => {
       expect(client.getQueryData<{ isDownloaded: boolean }[]>(chaptersKey)?.every((chapter) => chapter.isDownloaded)).toBe(true);
     } finally {
       dispose(); client.clear(); vi.useRealTimers(); vi.unstubAllGlobals();
+    }
+  });
+
+  it("refetches active novel chapters without refetching novel metadata when a completion lacks novelId", async () => {
+    const client = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: Infinity } },
+    });
+    const metadataKey = ["novel", "detail", 7];
+    const chaptersKey = ["novel", "detail", 7, "chapters"];
+    let storedChapters = [{ id: 11, isDownloaded: true }];
+    const metadataQuery = vi.fn(async () => ({ id: 7, name: "Book" }));
+    const chaptersQuery = vi.fn(async () => storedChapters);
+    await client.fetchQuery({ queryKey: metadataKey, queryFn: metadataQuery, staleTime: Infinity });
+    await client.fetchQuery({ queryKey: chaptersKey, queryFn: chaptersQuery, staleTime: Infinity });
+    const stopMetadata = new QueryObserver(client, { queryKey: metadataKey, queryFn: metadataQuery }).subscribe(() => undefined);
+    const stopChapters = new QueryObserver(client, { queryKey: chaptersKey, queryFn: chaptersQuery }).subscribe(() => undefined);
+    vi.mocked(useQueryClient).mockReturnValue(client);
+    let completion: Parameters<typeof chapterDownloads.subscribeChapterDownloads>[0] | undefined;
+    vi.spyOn(chapterDownloads, "subscribeChapterDownloads").mockImplementation((listener) => { completion ??= listener; return () => {}; });
+    vi.spyOn(chapterDownloads, "subscribeChapterMediaRepairs").mockImplementation(() => () => {});
+    vi.spyOn(chapterDownloads, "subscribeChapterDownloadBatchesSettled").mockImplementation(() => () => {});
+    vi.spyOn(chapterDownloads, "startChapterDownloadQueueExecutor").mockImplementation(() => {});
+    vi.stubGlobal("requestAnimationFrame", vi.fn(() => 1));
+    vi.stubGlobal("cancelAnimationFrame", vi.fn());
+    TaskNotifications();
+    const dispose = vi.mocked(useEffect).mock.calls[0]![0]() as () => void;
+    try {
+      storedChapters = [
+        { id: 11, isDownloaded: true },
+        { id: 12, isDownloaded: true },
+      ];
+      completion!({ job: { id: 12 }, status: { kind: "done" } } as Parameters<NonNullable<typeof completion>>[0]);
+      await vi.waitFor(() => expect(client.getQueryData(chaptersKey)).toEqual([
+        { id: 11, isDownloaded: true },
+        { id: 12, isDownloaded: true },
+      ]));
+      expect(chaptersQuery).toHaveBeenCalledTimes(2);
+      expect(metadataQuery).toHaveBeenCalledTimes(1);
+    } finally {
+      stopMetadata(); stopChapters(); dispose(); client.clear(); vi.unstubAllGlobals();
     }
   });
 });
