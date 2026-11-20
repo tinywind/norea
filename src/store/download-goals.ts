@@ -123,6 +123,8 @@ export const useDownloadGoalSettingsStore = create<DownloadGoalSettingsStore>()(
   }),
   {
     name: DOWNLOAD_GOAL_SETTINGS_KEY,
+    version: 1,
+    migrate: (persisted) => normalizeDownloadGoalSettings(persisted),
     partialize: ({
       automaticGoal,
       automaticActiveWindow,

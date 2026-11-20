@@ -528,4 +528,29 @@ describe("applyBackupSnapshot", () => {
     await Promise.all([restore, sync]);
     expect(synchronize).toHaveBeenCalledOnce();
   });
+
+  it("round-trips v7 backup manifest with single progress/readAt chapters and keep-0/unlimited download goal settings", async () => {
+    const goalSetting = JSON.stringify({
+      state: {
+        automaticGoal: { kind: "entire" },
+        automaticActiveWindow: "unlimited",
+        finishedChapterKeep: 0,
+        finishedChapterKeepOffMigrated: true,
+        finishedCleanupWithoutServer: true,
+      },
+      version: 1,
+    });
+    const storage = installLocalStorage({ "download-goal-settings": goalSetting });
+    primeGather([{ ...RAW_CHAPTER, progress: 100, readAt: 1_795_179_700 }]);
+    const gathered = await gatherBackupSnapshot();
+    expect(gathered.version).toBe(7);
+    expect(gathered.chapters[0]).toMatchObject({ progress: 100, readAt: 1_795_179_700 });
+    expect("unread" in gathered.chapters[0]!).toBe(false);
+
+    const parsed = parseBackupManifest(encodeBackupManifest(gathered));
+    invokeMock.mockClear();
+    storage.clear();
+    await applyBackupSnapshot(parsed);
+    expect(storage.getItem("download-goal-settings")).toBe(goalSetting);
+  });
 });

@@ -272,11 +272,14 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     }
     const ids: number[] = [];
     if (chapterId > 0) ids.push(chapterId);
+    if (activeChapterId && activeChapterId > 0 && activeChapterId !== chapterId) {
+      ids.push(activeChapterId);
+    }
     if (preparedNextChapterId && preparedNextChapterId > 0) {
       ids.push(preparedNextChapterId);
     }
     setActiveReaderChapters(ids);
-  }, [active, chapterId, preparedNextChapterId]);
+  }, [active, activeChapterId, chapterId, preparedNextChapterId]);
   useEffect(() => () => clearActiveReaderChapters(), []);
   const readerBusy =
     readerPreparation.isPending ||

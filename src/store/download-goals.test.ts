@@ -117,3 +117,44 @@ it("keeps finished-chapter removal off unless an offered choice is stored", () =
   useDownloadGoalSettingsStore.getState().setFinishedChapterCleanup(3 as FinishedChapterKeepChoice, false);
   expect(useDownloadGoalSettingsStore.getState()).toMatchObject({ finishedChapterKeep: "off", finishedCleanupWithoutServer: false });
 });
+
+it("rewrites legacy localStorage finishedChapterKeep 0 to off with version 1 on rehydrate while preserving migrated 0", async () => {
+  storage.set(
+    DOWNLOAD_GOAL_SETTINGS_KEY,
+    JSON.stringify({ state: { finishedChapterKeep: 0, finishedCleanupWithoutServer: true }, version: 0 }),
+  );
+  await useDownloadGoalSettingsStore.persist.rehydrate();
+  expect(useDownloadGoalSettingsStore.getState()).toMatchObject({
+    finishedChapterKeep: "off",
+    finishedChapterKeepOffMigrated: true,
+    finishedCleanupWithoutServer: true,
+  });
+  const upgraded = JSON.parse(storage.get(DOWNLOAD_GOAL_SETTINGS_KEY)!) as {
+    state: Record<string, unknown>;
+    version: number;
+  };
+  expect(upgraded.version).toBe(1);
+  expect(upgraded.state).toMatchObject({
+    finishedChapterKeep: "off",
+    finishedChapterKeepOffMigrated: true,
+  });
+
+  // Explicit migrated keep-0 survives rehydrate across both v0 and v1 envelopes.
+  storage.set(
+    DOWNLOAD_GOAL_SETTINGS_KEY,
+    JSON.stringify({
+      state: {
+        finishedChapterKeep: 0,
+        finishedChapterKeepOffMigrated: true,
+        automaticActiveWindow: "unlimited",
+      },
+      version: 1,
+    }),
+  );
+  await useDownloadGoalSettingsStore.persist.rehydrate();
+  expect(useDownloadGoalSettingsStore.getState()).toMatchObject({
+    finishedChapterKeep: 0,
+    finishedChapterKeepOffMigrated: true,
+    automaticActiveWindow: "unlimited",
+  });
+});

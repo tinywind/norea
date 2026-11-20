@@ -341,3 +341,54 @@ it("resets a re-read finished chapter only once real positive movement occurs an
     progress: 45,
   });
 });
+
+it("keeps an in-reader next-chapter transition non-destructive on mount for partially-read and finished chapters", async () => {
+  const partialChapter = {
+    id: 43,
+    novelId: 7,
+    name: "Chapter 3",
+    path: "/ch/3",
+    chapterNumber: "3",
+    position: 3,
+    progress: 45,
+    bookmark: false,
+    contentType: "html",
+    content: "<p>Partial</p>",
+    isDownloaded: true,
+    mediaRepairNeeded: false,
+  };
+  useReaderStore.getState().setChapterScrollAnchor(43, {
+    novelId: 7, segmentIndex: 2, mediaOrdinal: 0, offset: 0.4, segmentCount: 5, progress: 45,
+  });
+  mocks.chapterQuery.data = partialChapter;
+  mocks.chapterListQuery.data = [partialChapter];
+  mocks.novelQuery.data = { id: 7, name: "Novel", isLocal: false, pluginId: "src" };
+  mocks.initialProgressOverride = { chapterId: 43, progress: 0, allowProgressReset: true };
+  mocks.docState = {
+    activeChapterId: 43,
+    content: "<p>Partial</p>",
+    hasChapterContent: true,
+    isPdfChapter: false,
+    readerContentKey: "43:stored",
+    readerPreparation: { document: { html: "<p>Partial</p>" }, error: null, isPending: false },
+    readerProgressPersistenceReady: true,
+  };
+
+  // Navigating forward inside the reader uses initialProgressOverride (fromStart=false),
+  // so the chapter renders from 0% without immediately erasing saved progress or anchor on mount.
+  const elements = await render(43);
+  const content = elements.find((element) => element.type === ReaderContent)!;
+  expect(content.props.initialProgress).toBe(0);
+  expect(content.props.initialScrollAnchor).toBeNull();
+  expect(useReaderStore.getState().chapterScrollAnchors[43]).toBeDefined();
+  expect(mocks.persistProgress).not.toHaveBeenCalled();
+
+  const onProgressChange = content.props.onProgressChange as (nextProgress: number) => void;
+  onProgressChange(12);
+  expect(mocks.persistProgress).toHaveBeenLastCalledWith({
+    chapterId: 43,
+    novelId: 7,
+    progress: 12,
+    allowProgressReset: true,
+  });
+});

@@ -188,10 +188,7 @@ export function useReaderChapterNavigation({
         openedChapterRef.current = null;
         void navigate({
           to: "/reader",
-          search:
-            options?.initialProgress === 0
-              ? { chapterId: targetChapter.id, fromStart: true }
-              : { chapterId: targetChapter.id },
+          search: { chapterId: targetChapter.id },
           replace: true,
         });
       }

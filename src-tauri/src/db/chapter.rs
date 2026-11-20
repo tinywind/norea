@@ -1427,7 +1427,7 @@ pub async fn update_chapter_progress_in_tx(
         sqlx::query(
             "UPDATE chapter \
              SET \
-               progress   = CASE WHEN ?3 = 0 AND progress >= 100 THEN progress ELSE ?2 END, \
+               progress   = CASE WHEN ?3 = 1 AND ?2 > 0 THEN ?2 WHEN progress >= 100 THEN progress ELSE ?2 END, \
                read_at    = CASE WHEN ?2 > 0 THEN unixepoch() ELSE read_at END, \
                updated_at = unixepoch() \
              WHERE id = ?1",
@@ -1457,7 +1457,7 @@ pub async fn update_chapter_progress_in_tx(
     sqlx::query(
         "UPDATE chapter \
          SET \
-           progress   = CASE WHEN ?3 = 0 AND progress >= 100 THEN progress ELSE ?2 END, \
+           progress   = CASE WHEN ?3 = 1 AND ?2 > 0 THEN ?2 WHEN progress >= 100 THEN progress ELSE ?2 END, \
            updated_at = unixepoch() \
          WHERE id = ?1",
     )
@@ -4813,7 +4813,19 @@ mod tests {
                 .await
                 .unwrap();
 
-                // allow_progress_reset = true rewinds a 100% chapter on explicit reread movement.
+                // allow_progress_reset = true with progress = 0 must NOT wipe 100% before real movement.
+                update_chapter_progress_in_tx(
+                    conn,
+                    ctx,
+                    &UpdateChapterProgressInputDto {
+                        chapter_id: 2,
+                        progress: 0.0,
+                        record_history: Some(true),
+                        allow_progress_reset: Some(true),
+                    },
+                )
+                .await?;
+                // allow_progress_reset = true rewinds a 100% chapter on explicit reread movement (> 0).
                 update_chapter_progress_in_tx(
                     conn,
                     ctx,
@@ -4834,6 +4846,8 @@ mod tests {
         let mut conn = pool.acquire().await.unwrap();
         let ch1 = get_chapter_by_id_in_conn(&mut conn, 1).await.unwrap().unwrap();
         assert_eq!(ch1.progress, 18.0);
+        let ch2 = get_chapter_by_id_in_conn(&mut conn, 2).await.unwrap().unwrap();
+        assert_eq!(ch2.progress, 100.0);
 
         // Restore c1 to 100% so c1, c2, c3, c5 are finished (c5 is bookmarked).
         sqlx::query("UPDATE chapter SET progress = 100 WHERE id = 1")

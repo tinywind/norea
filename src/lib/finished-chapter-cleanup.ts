@@ -11,6 +11,7 @@ import { isAppActive, subscribeAppLifecycle } from "./app-lifecycle";
 import type { ChapterCleanupFilters } from "./chapter-cleanup";
 import { subscribeContentSyncUploadSettled } from "./content-sync/sync";
 import { listGoalProtectedChapterIds } from "./download-goals/goal-protection";
+import { useNetworkStore } from "./network";
 import { getActiveReaderChapterIds, subscribeActiveReaderChapters } from "./reader-active-chapters";
 import type { QueryInvalidator } from "./reader-query-invalidation";
 import { enqueueFinishedChapterCleanup, isChapterCleanupActive } from "./tasks/chapter-cleanup";
@@ -83,6 +84,7 @@ export function isFinishedChapterCleanupDue(now: number, lastRunAt: number | nul
 
 let running: Promise<void> | null = null;
 let activeQueryClient: QueryInvalidator | null = null;
+let retryPending = false;
 
 /**
  * Removes downloaded chapters that are finished beyond the configured `finishedChapterKeep` count.
@@ -109,67 +111,83 @@ async function collectFinishedCandidates(
 
 async function runOnce(): Promise<void> {
   const filters = finishedChapterCleanupFilters();
-  if (!filters || isChapterCleanupActive()) return;
-  const serverSetting = useContentSyncStore.getState().serverUrl;
-  const candidates = await collectFinishedCandidates(filters);
-  const activeReaderIds = getActiveReaderChapterIds();
-  let skippedActiveReader = false;
-  const nonActive: ChapterCleanupCandidate[] = [];
-  for (const candidate of candidates) {
-    if (activeReaderIds.has(candidate.identity.chapter.id)) {
-      skippedActiveReader = true;
-    } else {
-      nonActive.push(candidate);
-    }
-  }
-  const novelIds = [...new Set(nonActive.map((candidate) => candidate.identity.novel.id))];
-  const goalProtectedIds =
-    novelIds.length > 0 ? await listGoalProtectedChapterIds(novelIds) : new Set<number>();
-  const eligible = nonActive.filter(
-    (candidate) => !goalProtectedIds.has(candidate.identity.chapter.id),
-  );
-  if (eligible.length === 0 || isChapterCleanupActive()) {
-    if (!isChapterCleanupActive() && !skippedActiveReader) {
-      useFinishedChapterCleanupStore.setState({ lastRunAt: Date.now() });
-    }
+  if (!filters) {
+    retryPending = false;
     return;
   }
-  const locale = useAppearanceStore.getState().appLocale;
-  const result = await enqueueFinishedChapterCleanup(
-    filters,
-    serverSetting,
-    eligible,
-    translate(locale, "finishedCleanup.task"),
-    undefined,
-    "background",
-  ).promise;
-  const deleted = result.results
-    .filter((item) => item.status === "deleted")
-    .map((item) => item.chapterId);
-  if (deleted.length > 0 && activeQueryClient) {
-    await Promise.all([
-      activeQueryClient.invalidateQueries({ queryKey: ["novel"] }),
-      activeQueryClient.invalidateQueries({ queryKey: ["chapter"] }),
-      activeQueryClient.invalidateQueries({ queryKey: ["download-cache"] }),
-    ]).catch(() => undefined);
+  if (isChapterCleanupActive()) {
+    retryPending = true;
+    return;
   }
-  const hasTransientOrDeferredSkip =
-    skippedActiveReader ||
-    result.failed > 0 ||
-    result.cancelled > 0 ||
-    result.results.some(
-      (item) =>
-        item.status === "skipped" &&
-        item.reason !== undefined &&
-        TRANSIENT_OR_DEFERRED_SKIP_REASONS.has(item.reason),
+  try {
+    const serverSetting = useContentSyncStore.getState().serverUrl;
+    const candidates = await collectFinishedCandidates(filters);
+    const activeReaderIds = getActiveReaderChapterIds();
+    let skippedActiveReader = false;
+    const nonActive: ChapterCleanupCandidate[] = [];
+    for (const candidate of candidates) {
+      if (activeReaderIds.has(candidate.identity.chapter.id)) {
+        skippedActiveReader = true;
+      } else {
+        nonActive.push(candidate);
+      }
+    }
+    const novelIds = [...new Set(nonActive.map((candidate) => candidate.identity.novel.id))];
+    const goalProtectedIds =
+      novelIds.length > 0 ? await listGoalProtectedChapterIds(novelIds) : new Set<number>();
+    const eligible = nonActive.filter(
+      (candidate) => !goalProtectedIds.has(candidate.identity.chapter.id),
     );
-  const at = Date.now();
-  useFinishedChapterCleanupStore.setState({
-    ...(hasTransientOrDeferredSkip ? {} : { lastRunAt: at }),
-    ...(deleted.length > 0
-      ? { lastRemoval: { at, deleted: deleted.length, bytesFreed: result.bytesFreed } }
-      : {}),
-  });
+    if (eligible.length === 0 || isChapterCleanupActive()) {
+      if (isChapterCleanupActive() || skippedActiveReader) {
+        retryPending = true;
+      } else {
+        retryPending = false;
+        useFinishedChapterCleanupStore.setState({ lastRunAt: Date.now() });
+      }
+      return;
+    }
+    const locale = useAppearanceStore.getState().appLocale;
+    const result = await enqueueFinishedChapterCleanup(
+      filters,
+      serverSetting,
+      eligible,
+      translate(locale, "finishedCleanup.task"),
+      undefined,
+      "background",
+    ).promise;
+    const deleted = result.results
+      .filter((item) => item.status === "deleted")
+      .map((item) => item.chapterId);
+    if (deleted.length > 0 && activeQueryClient) {
+      await Promise.all([
+        activeQueryClient.invalidateQueries({ queryKey: ["novel"] }),
+        activeQueryClient.invalidateQueries({ queryKey: ["chapter"] }),
+        activeQueryClient.invalidateQueries({ queryKey: ["download-cache"] }),
+      ]).catch(() => undefined);
+    }
+    const hasTransientOrDeferredSkip =
+      skippedActiveReader ||
+      result.failed > 0 ||
+      result.cancelled > 0 ||
+      result.results.some(
+        (item) =>
+          item.status === "skipped" &&
+          item.reason !== undefined &&
+          TRANSIENT_OR_DEFERRED_SKIP_REASONS.has(item.reason),
+      );
+    retryPending = hasTransientOrDeferredSkip;
+    const at = Date.now();
+    useFinishedChapterCleanupStore.setState({
+      ...(hasTransientOrDeferredSkip ? {} : { lastRunAt: at }),
+      ...(deleted.length > 0
+        ? { lastRemoval: { at, deleted: deleted.length, bytesFreed: result.bytesFreed } }
+        : {}),
+    });
+  } catch (error) {
+    retryPending = true;
+    throw error;
+  }
 }
 
 let started = false;
@@ -200,7 +218,10 @@ function schedule(delayMs: number, options?: { preserveLaterDeadline?: boolean }
 function scheduleWhenDue(): void {
   if (!isAppActive()) return;
   if (!finishedChapterCleanupFilters()) return;
-  if (isFinishedChapterCleanupDue(Date.now(), useFinishedChapterCleanupStore.getState().lastRunAt)) {
+  if (
+    retryPending ||
+    isFinishedChapterCleanupDue(Date.now(), useFinishedChapterCleanupStore.getState().lastRunAt)
+  ) {
     schedule(AFTER_START_DELAY_MS, { preserveLaterDeadline: true });
   }
 }
@@ -257,6 +278,16 @@ export function startFinishedChapterCleanup(queryClient?: QueryInvalidator): voi
         schedule(AFTER_START_DELAY_MS, { preserveLaterDeadline: true });
       }
     }),
+    useNetworkStore.subscribe((status, previous) => {
+      if (
+        status.connectivity === "online" &&
+        previous.connectivity !== "online" &&
+        retryPending &&
+        finishedChapterCleanupFilters()
+      ) {
+        schedule(AFTER_START_DELAY_MS, { preserveLaterDeadline: true });
+      }
+    }),
   );
   unsubscribers.push(subscribeAppLifecycle((active) => {
     if (active) scheduleWhenDue();
@@ -275,4 +306,5 @@ export function resetFinishedChapterCleanupForTests(): void {
   started = false;
   running = null;
   activeQueryClient = null;
+  retryPending = false;
 }

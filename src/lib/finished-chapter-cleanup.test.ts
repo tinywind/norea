@@ -27,6 +27,7 @@ import { emitUserStateApplied } from "../db/user-state-core";
 import { useContentSyncStore } from "../store/content-sync";
 import { useReaderStore } from "../store/reader";
 import { normalizeDownloadGoalSettings, useDownloadGoalSettingsStore } from "../store/download-goals";
+import { useNetworkStore } from "./network";
 import { clearActiveReaderChapters, setActiveReaderChapters } from "./reader-active-chapters";
 import { markUpdatesIndexDirty } from "./updates/update-index-events";
 import {
@@ -245,4 +246,78 @@ it("reschedules when finishedChapterKeep is set to 0 or when content-sync upload
   for (const listener of mocks.uploadSettledListeners) listener();
   await vi.advanceTimersByTimeAsync(31_000);
   expect(mocks.listCandidates).toHaveBeenCalledTimes(2);
+});
+
+it("retries transient skips on visibility return or network reconnect without waiting 24 hours even when lastRunAt is recent", async () => {
+  vi.useFakeTimers();
+  const visibilityListeners: (() => void)[] = [];
+  vi.stubGlobal("document", {
+    visibilityState: "visible",
+    addEventListener(event: string, listener: () => void) {
+      if (event === "visibilitychange") visibilityListeners.push(listener);
+    },
+    removeEventListener(event: string, listener: () => void) {
+      if (event === "visibilitychange") {
+        const index = visibilityListeners.indexOf(listener);
+        if (index >= 0) visibilityListeners.splice(index, 1);
+      }
+    },
+  });
+  useNetworkStore.setState({ connectivity: "online", revision: 1 });
+  useContentSyncStore.setState({ serverUrl: "https://server.test" });
+  useDownloadGoalSettingsStore.getState().setFinishedChapterCleanup(0, false);
+  const recentRunAt = Date.now() - 5 * 60 * 1000;
+  useFinishedChapterCleanupStore.setState({ lastRunAt: recentRunAt });
+
+  mocks.listCandidates.mockImplementation(async (_filters, options) =>
+    options?.afterId ? [] : [candidate(1)],
+  );
+  // First run after B->A sync fails with a transient server error.
+  mocks.enqueue.mockReturnValueOnce({
+    id: "task-1",
+    promise: Promise.resolve({
+      total: 1,
+      deleted: 0,
+      skipped: 1,
+      failed: 0,
+      cancelled: 0,
+      bytesFreed: 0,
+      results: [{ chapterId: 1, status: "skipped", reason: "server-error" }],
+    }),
+  });
+  // Second run (retry on network reconnect) succeeds cleanly.
+  mocks.enqueue.mockReturnValueOnce({
+    id: "task-2",
+    promise: Promise.resolve({
+      total: 1,
+      deleted: 1,
+      skipped: 0,
+      failed: 0,
+      cancelled: 0,
+      bytesFreed: 42,
+      results: [{ chapterId: 1, status: "deleted" }],
+    }),
+  });
+
+  startFinishedChapterCleanup();
+
+  // Shared sync triggers cleanup in 60s -> hits transient server-error.
+  emitUserStateApplied({ resumes: [], hasFinishedReading: true });
+  await vi.advanceTimersByTimeAsync(61_000);
+  expect(mocks.enqueue).toHaveBeenCalledTimes(1);
+  // lastRunAt stays unchanged.
+  expect(useFinishedChapterCleanupStore.getState().lastRunAt).toBe(recentRunAt);
+
+  // Network reconnect retries within 30s without waiting 24h!
+  useNetworkStore.setState({ connectivity: "offline", revision: 2 });
+  useNetworkStore.setState({ connectivity: "online", revision: 3 });
+  await vi.advanceTimersByTimeAsync(31_000);
+  expect(mocks.enqueue).toHaveBeenCalledTimes(2);
+  expect(useFinishedChapterCleanupStore.getState().lastRunAt).toBeGreaterThan(recentRunAt);
+  expect(useFinishedChapterCleanupStore.getState().lastRemoval).toMatchObject({ deleted: 1, bytesFreed: 42 });
+
+  // Once cleanly finished, visibilitychange does NOT re-run before 24h.
+  for (const listener of visibilityListeners) listener();
+  await vi.advanceTimersByTimeAsync(31_000);
+  expect(mocks.enqueue).toHaveBeenCalledTimes(2);
 });

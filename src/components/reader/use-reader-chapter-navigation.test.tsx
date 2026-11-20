@@ -121,10 +121,11 @@ it("navigates to an adjacent stored incomplete body without scheduling a downloa
   const nextChapter = { ...chapter, id: 12, position: 2, chapterNumber: "2", path: "/chapter/2" };
   await render({ ...chapter, isDownloaded: true }, nextChapter);
   await act(async () => current.openAdjacent(1));
-  expect(navigation.navigate).toHaveBeenCalledWith({
-    to: "/reader",
-    search: { chapterId: 12, fromStart: true },
-    replace: true,
+  expect(navigation.navigate).toHaveBeenCalledWith({ to: "/reader", search: { chapterId: 12 }, replace: true });
+  expect(current.initialProgressOverride).toEqual({
+    chapterId: 12,
+    progress: 0,
+    allowProgressReset: true,
   });
   expect(enqueueChapterDownload).not.toHaveBeenCalled();
 });
@@ -219,10 +220,11 @@ it("uses the common downloader for an adjacent content-server chapter", async ()
   const nextChapter = { ...chapter, id: 12, position: 2, chapterNumber: "2", path: "/chapter/2", contentBytes: 0 };
   await render(chapter, nextChapter);
   await act(async () => current.openAdjacent(1));
-  expect(navigation.navigate).toHaveBeenCalledWith({
-    to: "/reader",
-    search: { chapterId: 12, fromStart: true },
-    replace: true,
+  expect(navigation.navigate).toHaveBeenCalledWith({ to: "/reader", search: { chapterId: 12 }, replace: true });
+  expect(current.initialProgressOverride).toEqual({
+    chapterId: 12,
+    progress: 0,
+    allowProgressReset: true,
   });
   expect(enqueueChapterDownload).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ id: 12, chapterPath: "/chapter/2", priority: "interactive" }));
   expect(vi.mocked(enqueueChapterDownload).mock.calls[0][0]).not.toHaveProperty("serverOnly");
