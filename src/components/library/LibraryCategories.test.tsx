@@ -12,7 +12,16 @@ vi.mock("../../i18n", () => ({
 }));
 
 import { collectElements, mountBackNavigationHarness } from "../../lib/android-back-navigation.test-support";
-import { CategoryList, CategoryTabs, getLibraryCategoryEntries, type LibraryCategoryEntry } from "./LibraryCategories";
+import {
+  applyCategoryOrder,
+  categoryDndId,
+  CategoryList,
+  CategoryTabs,
+  getLibraryCategoryEntries,
+  parseCategoryDndId,
+  reorderCategoryIds,
+  type LibraryCategoryEntry,
+} from "./LibraryCategories";
 
 const categories: LibraryCategory[] = [
   { id: 1, name: "Default", sort: 0, isSystem: true, novelCount: 2 },
@@ -53,6 +62,182 @@ it("offers rename and delete only for categories the user created, beside the ro
   expect($("button[aria-current=true]").text()).toBe("categories.all120");
   expect($("[role=alert]").text()).toBe("categories.loadFailed");
   expect($("[role=alert]").text()).not.toContain("SQLITE_BUSY");
+  expect($("button[aria-label^='categories.reorderFor']")).toHaveLength(0);
+});
+
+it("adds drag handles and reorder controls only for multiple manual categories without nesting buttons", () => {
+  const multipleCategories: LibraryCategory[] = [
+    { id: 1, name: "Default", sort: 0, isSystem: true, novelCount: 2 },
+    { id: 4, name: "Reading", sort: 1, isSystem: false, novelCount: 8 },
+    { id: 7, name: "Completed", sort: 2, isSystem: false, novelCount: 3 },
+  ];
+  const multipleEntries = getLibraryCategoryEntries(
+    multipleCategories,
+    { all: 120, uncategorized: 4 },
+    (key) => key,
+  );
+  const $ = load(renderToStaticMarkup(
+    <MantineProvider>
+      <CategoryList
+        activeId={4}
+        entries={multipleEntries}
+        error={null}
+        loading={false}
+        onCreate={vi.fn()}
+        onDelete={vi.fn()}
+        onRename={vi.fn()}
+        onReorder={vi.fn()}
+        onSelect={vi.fn()}
+      />
+    </MantineProvider>,
+  ));
+
+  expect(
+    $("button[aria-label^='categories.reorderFor']")
+      .map((_, button) => $(button).attr("aria-label"))
+      .get(),
+  ).toEqual(["categories.reorderFor:Reading", "categories.reorderFor:Completed"]);
+  expect($("li[data-sortable='true']")).toHaveLength(2);
+  expect($("button button")).toHaveLength(0);
+});
+
+it("disables category drag handles while a reorder mutation is pending", () => {
+  const multipleCategories: LibraryCategory[] = [
+    { id: 4, name: "Reading", sort: 0, isSystem: false, novelCount: 8 },
+    { id: 7, name: "Completed", sort: 1, isSystem: false, novelCount: 3 },
+  ];
+  const multipleEntries = getLibraryCategoryEntries(
+    multipleCategories,
+    { all: 11, uncategorized: 0 },
+    (key) => key,
+  );
+  const $ = load(renderToStaticMarkup(
+    <MantineProvider>
+      <CategoryList
+        activeId={null}
+        entries={multipleEntries}
+        error={null}
+        loading={false}
+        onCreate={vi.fn()}
+        onDelete={vi.fn()}
+        onRename={vi.fn()}
+        onReorder={vi.fn()}
+        onSelect={vi.fn()}
+        reordering
+      />
+    </MantineProvider>,
+  ));
+
+  const handles = $("button[aria-label^='categories.reorderFor']");
+  expect(handles).toHaveLength(2);
+  expect(handles.filter((_, button) => Boolean($(button).prop("disabled")))).toHaveLength(2);
+});
+
+it("computes drag ids, reorder results, and optimistic category order while preserving system categories", () => {
+  expect(categoryDndId(12)).toBe("category:12");
+  expect(parseCategoryDndId("category:12")).toBe(12);
+  expect(parseCategoryDndId("category:0")).toBeNull();
+  expect(parseCategoryDndId("category:-1")).toBeNull();
+  expect(parseCategoryDndId("chapter:12")).toBeNull();
+
+  expect(reorderCategoryIds([4, 7, 9], 9, 4)).toEqual([9, 4, 7]);
+  expect(reorderCategoryIds([4, 7, 9], 4, 4)).toBeNull();
+  expect(reorderCategoryIds([4, 7, 9], 99, 4)).toBeNull();
+
+  const mixed: LibraryCategory[] = [
+    { id: 1, name: "Default", sort: 0, isSystem: true, novelCount: 2 },
+    { id: 4, name: "Reading", sort: 1, isSystem: false, novelCount: 8 },
+    { id: 7, name: "Completed", sort: 2, isSystem: false, novelCount: 3 },
+    { id: 9, name: "Favorites", sort: 3, isSystem: false, novelCount: 5 },
+  ];
+  expect(
+    applyCategoryOrder(mixed, [9, 4, 7]).map(({ id, name, sort, isSystem }) => ({
+      id,
+      name,
+      sort,
+      isSystem,
+    })),
+  ).toEqual([
+    { id: 1, name: "Default", sort: 0, isSystem: true },
+    { id: 9, name: "Favorites", sort: 1, isSystem: false },
+    { id: 4, name: "Reading", sort: 2, isSystem: false },
+    { id: 7, name: "Completed", sort: 3, isSystem: false },
+  ]);
+  expect(applyCategoryOrder(mixed, [9, 4])).toEqual(mixed);
+});
+
+it("invokes onReorder on drag end and overflow move actions", async () => {
+  const harness = mountBackNavigationHarness();
+  const multipleCategories: LibraryCategory[] = [
+    { id: 4, name: "Reading", sort: 0, isSystem: false, novelCount: 8 },
+    { id: 7, name: "Completed", sort: 1, isSystem: false, novelCount: 3 },
+    { id: 9, name: "Favorites", sort: 2, isSystem: false, novelCount: 5 },
+  ];
+  const multipleEntries = getLibraryCategoryEntries(
+    multipleCategories,
+    { all: 16, uncategorized: 0 },
+    (key) => key,
+  );
+  const onReorder = vi.fn();
+  let tree: ReturnType<typeof CategoryList>;
+
+  function Probe() {
+    tree = CategoryList({
+      activeId: null,
+      entries: multipleEntries,
+      error: null,
+      loading: false,
+      onCreate: vi.fn(),
+      onDelete: vi.fn(),
+      onRename: vi.fn(),
+      onReorder,
+      onSelect: vi.fn(),
+    });
+    return null;
+  }
+
+  try {
+    await harness.render(<Probe />);
+    const dndContext = collectElements(tree!).find(
+      (element) => typeof element.props.onDragEnd === "function",
+    );
+    expect(dndContext).toBeDefined();
+    (dndContext!.props.onDragEnd as (event: unknown) => void)({
+      active: { id: "category:9" },
+      over: { id: "category:4" },
+    });
+    expect(onReorder).toHaveBeenCalledExactlyOnceWith([9, 4, 7]);
+
+    onReorder.mockClear();
+    (dndContext!.props.onDragEnd as (event: unknown) => void)({
+      active: { id: "category:4" },
+      over: { id: "category:4" },
+    });
+    expect(onReorder).not.toHaveBeenCalled();
+
+    const rows = collectElements(tree!).filter(
+      (element) =>
+        typeof element.props.reorder === "object" &&
+        element.props.reorder !== null,
+    );
+    expect(rows).toHaveLength(3);
+    expect(rows[0]!.props.reorder).toMatchObject({
+      canMoveUp: false,
+      canMoveDown: true,
+    });
+    expect(rows[2]!.props.reorder).toMatchObject({
+      canMoveUp: true,
+      canMoveDown: false,
+    });
+    (rows[0]!.props.reorder as { onMoveDown: () => void }).onMoveDown();
+    expect(onReorder).toHaveBeenCalledExactlyOnceWith([7, 4, 9]);
+
+    onReorder.mockClear();
+    (rows[2]!.props.reorder as { onMoveUp: () => void }).onMoveUp();
+    expect(onReorder).toHaveBeenCalledExactlyOnceWith([4, 9, 7]);
+  } finally {
+    await harness.unmount();
+  }
 });
 
 function categoryTabsHarness() {

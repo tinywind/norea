@@ -1,15 +1,110 @@
+import {
+  closestCenter,
+  DndContext,
+  KeyboardSensor,
+  PointerSensor,
+  useSensor,
+  useSensors,
+  type DragEndEvent,
+  type Modifier,
+} from "@dnd-kit/core";
+import {
+  arrayMove,
+  SortableContext,
+  sortableKeyboardCoordinates,
+  useSortable,
+  verticalListSortingStrategy,
+} from "@dnd-kit/sortable";
+import { CSS } from "@dnd-kit/utilities";
 import { Text, UnstyledButton } from "@mantine/core";
-import { useEffect, useRef } from "react";
+import { type CSSProperties, useEffect, useMemo, useRef } from "react";
 import {
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
 } from "../../db/queries/category";
 import { useTranslation } from "../../i18n";
 import { IconButton } from "../IconButton";
-import { EditIcon, PlusIcon, TrashIcon } from "../ui/icons";
-import { OverflowMenu } from "../ui/OverflowMenu";
+import {
+  ChevronDownIcon,
+  ChevronUpIcon,
+  DragIcon,
+  EditIcon,
+  PlusIcon,
+  TrashIcon,
+} from "../ui/icons";
+import { OverflowMenu, type OverflowMenuItem } from "../ui/OverflowMenu";
 import { ResponsiveSheet } from "../ui/ResponsiveSheet";
 import { type TranslateFn } from "./LibraryViewOptions";
+
+const CATEGORY_DND_PREFIX = "category:";
+
+const restrictToVerticalAxis: Modifier = ({ transform }) => ({
+  ...transform,
+  x: 0,
+});
+
+export function categoryDndId(categoryId: number): string {
+  return `${CATEGORY_DND_PREFIX}${categoryId}`;
+}
+
+export function parseCategoryDndId(id: unknown): number | null {
+  const value = String(id);
+  if (!value.startsWith(CATEGORY_DND_PREFIX)) return null;
+  const categoryId = Number(value.slice(CATEGORY_DND_PREFIX.length));
+  return Number.isInteger(categoryId) && categoryId > 0 ? categoryId : null;
+}
+
+/** Reorders manual category ids when moving `activeId` onto `overId`, or returns `null` if unchanged. */
+export function reorderCategoryIds(
+  orderedIds: readonly number[],
+  activeId: number,
+  overId: number,
+): number[] | null {
+  const oldIndex = orderedIds.indexOf(activeId);
+  const newIndex = orderedIds.indexOf(overId);
+  if (oldIndex < 0 || newIndex < 0 || oldIndex === newIndex) return null;
+  return arrayMove([...orderedIds], oldIndex, newIndex);
+}
+
+/** Optimistically applies a new manual category order while keeping system categories ahead of manual ones. */
+export function applyCategoryOrder(
+  categories: readonly LibraryCategory[],
+  orderedIds: readonly number[],
+): LibraryCategory[] {
+  const manualCategories = categories.filter((category) => !category.isSystem);
+  if (
+    manualCategories.length !== orderedIds.length ||
+    new Set(orderedIds).size !== orderedIds.length
+  ) {
+    return [...categories];
+  }
+  const manualIndexById = new Map(
+    orderedIds.map((id, index) => [id, index] as const),
+  );
+  if (manualCategories.some((category) => !manualIndexById.has(category.id))) {
+    return [...categories];
+  }
+  let maxSystemSort: number | null = null;
+  for (const category of categories) {
+    if (category.isSystem) {
+      maxSystemSort =
+        maxSystemSort === null
+          ? category.sort
+          : Math.max(maxSystemSort, category.sort);
+    }
+  }
+  const baseSort = maxSystemSort === null ? 0 : maxSystemSort + 1;
+  return categories
+    .map((category) =>
+      category.isSystem
+        ? category
+        : { ...category, sort: baseSort + manualIndexById.get(category.id)! },
+    )
+    .sort(
+      (left, right) =>
+        left.sort - right.sort || left.name.localeCompare(right.name),
+    );
+}
 
 export interface LibraryCategoryEntry {
   /** Set for a category the user can rename or delete. */
@@ -140,6 +235,113 @@ export function CategoryTabs({ activeId, entries, onSelect }: CategoryTabsProps)
   );
 }
 
+interface CategoryRowReorderControls {
+  canMoveDown: boolean;
+  canMoveUp: boolean;
+  disabled: boolean;
+  onMoveDown: () => void;
+  onMoveUp: () => void;
+}
+
+interface SortableCategoryRowProps {
+  active: boolean;
+  category: LibraryCategory;
+  count: number;
+  onDelete: () => void;
+  onRename: () => void;
+  onSelect: () => void;
+  reorder: CategoryRowReorderControls;
+}
+
+function SortableCategoryRow({
+  active,
+  category,
+  count,
+  onDelete,
+  onRename,
+  onSelect,
+  reorder,
+}: SortableCategoryRowProps) {
+  const { t } = useTranslation();
+  const {
+    attributes,
+    isDragging,
+    listeners,
+    setNodeRef,
+    transform,
+    transition,
+  } = useSortable({
+    id: categoryDndId(category.id),
+    disabled: reorder.disabled,
+  });
+  const style: CSSProperties = {
+    transform: CSS.Translate.toString(transform),
+    transition,
+  };
+  const menuItems: OverflowMenuItem[] = [
+    {
+      disabled: reorder.disabled || !reorder.canMoveUp,
+      icon: ChevronUpIcon,
+      label: t("categories.moveUp"),
+      onClick: reorder.onMoveUp,
+    },
+    {
+      disabled: reorder.disabled || !reorder.canMoveDown,
+      icon: ChevronDownIcon,
+      label: t("categories.moveDown"),
+      onClick: reorder.onMoveDown,
+    },
+    {
+      icon: EditIcon,
+      label: t("categories.rename"),
+      onClick: onRename,
+    },
+    {
+      danger: true,
+      icon: TrashIcon,
+      label: t("categories.delete"),
+      onClick: onDelete,
+    },
+  ];
+
+  return (
+    <li
+      className="norea-library-category-row"
+      data-active={active}
+      data-dragging={isDragging ? "true" : undefined}
+      data-sortable="true"
+      ref={setNodeRef}
+      style={style}
+    >
+      <IconButton
+        {...(reorder.disabled ? undefined : attributes)}
+        {...(reorder.disabled ? undefined : listeners)}
+        className="norea-library-category-drag-handle"
+        disabled={reorder.disabled}
+        label={t("categories.reorderFor", { name: category.name })}
+        size="lg"
+        type="button"
+      >
+        <DragIcon size="1.25rem" />
+      </IconButton>
+      <UnstyledButton
+        aria-current={active ? "true" : undefined}
+        className="norea-library-category norea-state-layer"
+        onClick={onSelect}
+      >
+        <span className="norea-library-category-label">{category.name}</span>
+        <span className="norea-library-category-count">
+          {count.toLocaleString()}
+        </span>
+      </UnstyledButton>
+      <OverflowMenu
+        items={menuItems}
+        label={t("categories.actionsFor", { name: category.name })}
+      />
+    </li>
+  );
+}
+
 interface CategoryListProps {
   activeId: number | null;
   entries: readonly LibraryCategoryEntry[];
@@ -148,12 +350,15 @@ interface CategoryListProps {
   onCreate: () => void;
   onDelete: (category: LibraryCategory) => void;
   onRename: (category: LibraryCategory) => void;
+  onReorder?: (orderedIds: number[]) => void;
   onSelect: (id: number | null) => void;
+  reordering?: boolean;
 }
 
 /**
- * Category rows with counts, a per-row overflow for rename and delete, and
- * "+ Category". Shared by the desktop panel and Manage categories.
+ * Category rows with counts, drag-and-drop ordering for manual categories, a
+ * per-row overflow for move/rename/delete, and "+ Category". Shared by the
+ * desktop panel and Manage categories.
  */
 export function CategoryList({
   activeId,
@@ -163,54 +368,145 @@ export function CategoryList({
   onCreate,
   onDelete,
   onRename,
+  onReorder,
   onSelect,
+  reordering = false,
 }: CategoryListProps) {
   const { t } = useTranslation();
+  const sensors = useSensors(
+    useSensor(PointerSensor, {
+      activationConstraint: { distance: 6 },
+    }),
+    useSensor(KeyboardSensor, {
+      coordinateGetter: sortableKeyboardCoordinates,
+    }),
+  );
+  const manualCategoryIds = useMemo(
+    () =>
+      entries.flatMap((entry) => (entry.category ? [entry.category.id] : [])),
+    [entries],
+  );
+  const canReorder = Boolean(onReorder) && manualCategoryIds.length > 1;
+  const sortableCategoryIds = useMemo(
+    () => (canReorder ? manualCategoryIds.map(categoryDndId) : []),
+    [canReorder, manualCategoryIds],
+  );
+  const manualIndexById = useMemo(
+    () => new Map(manualCategoryIds.map((id, index) => [id, index] as const)),
+    [manualCategoryIds],
+  );
+
+  const moveCategory = (categoryId: number, offset: -1 | 1) => {
+    if (!onReorder || reordering) return;
+    const fromIndex = manualIndexById.get(categoryId);
+    if (fromIndex === undefined) return;
+    const targetId = manualCategoryIds[fromIndex + offset];
+    if (targetId === undefined) return;
+    const nextOrder = reorderCategoryIds(manualCategoryIds, categoryId, targetId);
+    if (nextOrder) onReorder(nextOrder);
+  };
+
+  const handleDragEnd = (event: DragEndEvent) => {
+    if (!canReorder || !onReorder || reordering) return;
+    const overId = event.over?.id;
+    if (overId === undefined) return;
+    const activeCategoryId = parseCategoryDndId(event.active.id);
+    const overCategoryId = parseCategoryDndId(overId);
+    if (activeCategoryId === null || overCategoryId === null) return;
+    const nextOrder = reorderCategoryIds(
+      manualCategoryIds,
+      activeCategoryId,
+      overCategoryId,
+    );
+    if (nextOrder) onReorder(nextOrder);
+  };
+
+  const rows = (
+    <ul aria-label={t("categories.title")}>
+      {entries.map((entry) => {
+        const active = entry.id === activeId;
+        const { category } = entry;
+        if (category && canReorder) {
+          const manualIndex = manualIndexById.get(category.id) ?? -1;
+          return (
+            <SortableCategoryRow
+              active={active}
+              category={category}
+              count={entry.count}
+              key={category.id}
+              onDelete={() => onDelete(category)}
+              onRename={() => onRename(category)}
+              onSelect={() => onSelect(entry.id)}
+              reorder={{
+                canMoveDown:
+                  manualIndex >= 0 && manualIndex < manualCategoryIds.length - 1,
+                canMoveUp: manualIndex > 0,
+                disabled: reordering,
+                onMoveDown: () => moveCategory(category.id, 1),
+                onMoveUp: () => moveCategory(category.id, -1),
+              }}
+            />
+          );
+        }
+        return (
+          <li
+            className="norea-library-category-row"
+            data-active={active}
+            key={entry.id ?? "all"}
+          >
+            <UnstyledButton
+              aria-current={active ? "true" : undefined}
+              className="norea-library-category norea-state-layer"
+              onClick={() => onSelect(entry.id)}
+            >
+              <span className="norea-library-category-label">{entry.label}</span>
+              <span className="norea-library-category-count">
+                {entry.count.toLocaleString()}
+              </span>
+            </UnstyledButton>
+            {category ? (
+              <OverflowMenu
+                items={[
+                  {
+                    icon: EditIcon,
+                    label: t("categories.rename"),
+                    onClick: () => onRename(category),
+                  },
+                  {
+                    danger: true,
+                    icon: TrashIcon,
+                    label: t("categories.delete"),
+                    onClick: () => onDelete(category),
+                  },
+                ]}
+                label={t("categories.actionsFor", { name: category.name })}
+              />
+            ) : null}
+          </li>
+        );
+      })}
+    </ul>
+  );
 
   return (
     <div className="norea-library-category-list">
-      <ul aria-label={t("categories.title")}>
-        {entries.map((entry) => {
-          const active = entry.id === activeId;
-          const { category } = entry;
-          return (
-            <li
-              className="norea-library-category-row"
-              data-active={active}
-              key={entry.id ?? "all"}
-            >
-              <UnstyledButton
-                aria-current={active ? "true" : undefined}
-                className="norea-library-category norea-state-layer"
-                onClick={() => onSelect(entry.id)}
-              >
-                <span className="norea-library-category-label">{entry.label}</span>
-                <span className="norea-library-category-count">
-                  {entry.count.toLocaleString()}
-                </span>
-              </UnstyledButton>
-              {category ? (
-                <OverflowMenu
-                  items={[
-                    {
-                      icon: EditIcon,
-                      label: t("categories.rename"),
-                      onClick: () => onRename(category),
-                    },
-                    {
-                      danger: true,
-                      icon: TrashIcon,
-                      label: t("categories.delete"),
-                      onClick: () => onDelete(category),
-                    },
-                  ]}
-                  label={t("categories.actionsFor", { name: category.name })}
-                />
-              ) : null}
-            </li>
-          );
-        })}
-      </ul>
+      {canReorder ? (
+        <DndContext
+          collisionDetection={closestCenter}
+          modifiers={[restrictToVerticalAxis]}
+          onDragEnd={handleDragEnd}
+          sensors={sensors}
+        >
+          <SortableContext
+            items={sortableCategoryIds}
+            strategy={verticalListSortingStrategy}
+          >
+            {rows}
+          </SortableContext>
+        </DndContext>
+      ) : (
+        rows
+      )}
       {loading ? (
         <Text c="dimmed" className="norea-library-category-note" size="sm">
           {t("common.loading")}

@@ -10,6 +10,7 @@ import {
   listCategories,
   NovelCategoryError,
   removeNovelsFromCategory,
+  reorderCategories,
   setNovelCategories,
   updateCategory,
 } from "./category";
@@ -92,6 +93,35 @@ describe("updateCategory", () => {
       id: 7,
       input: { name: "New Name" },
     });
+  });
+});
+
+describe("reorderCategories", () => {
+  it("forwards ordered manual category ids to db_category_reorder", async () => {
+    mockedInvoke.mockResolvedValueOnce({ value: undefined, effects: {} });
+    await reorderCategories([9, 4, 7]);
+
+    expect(mockedInvoke).toHaveBeenCalledWith("db_category_reorder", {
+      orderedIds: [9, 4, 7],
+    });
+  });
+
+  it("skips IPC when no ids are provided", async () => {
+    await reorderCategories([]);
+    expect(mockedInvoke).not.toHaveBeenCalled();
+  });
+
+  it("rejects synthetic, non-integer, or duplicate category ids before invoking IPC", async () => {
+    await expect(reorderCategories([4, -1])).rejects.toThrow(
+      "Select a manual category",
+    );
+    await expect(reorderCategories([4, 1.5])).rejects.toThrow(
+      "Select a manual category",
+    );
+    await expect(reorderCategories([4, 4])).rejects.toThrow(
+      "Category reorder ids must be unique.",
+    );
+    expect(mockedInvoke).not.toHaveBeenCalled();
   });
 });
 

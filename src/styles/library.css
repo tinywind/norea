@@ -56,6 +56,26 @@
   background: var(--norea-color-selected);
 }
 
+.norea-library-category-row[data-dragging="true"] {
+  background: var(--norea-color-surface-raised);
+  box-shadow: var(--norea-shadow-floating);
+  position: relative;
+  z-index: 1;
+}
+
+.norea-library-category-drag-handle {
+  color: var(--norea-color-ink-muted);
+  cursor: grab;
+  flex: 0 0 auto;
+  touch-action: none;
+  user-select: none;
+  -webkit-user-select: none;
+}
+
+.norea-library-category-row[data-dragging="true"] .norea-library-category-drag-handle {
+  cursor: grabbing;
+}
+
 .norea-library-category {
   align-items: center;
   border-radius: var(--norea-radius-sm);
@@ -66,6 +86,10 @@
   min-height: var(--norea-control-sm);
   min-width: 0;
   padding: 0 var(--norea-space-3);
+}
+
+.norea-library-category-row[data-sortable="true"] .norea-library-category {
+  padding-inline-start: var(--norea-space-1);
 }
 
 .norea-library-category-row[data-active="true"] .norea-library-category {

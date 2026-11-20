@@ -6,6 +6,7 @@ import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { PageFrame, StateView } from "../components/AppFrame";
 import {
+  applyCategoryOrder,
   CategoryList,
   CategoryManager,
   CategoryTabs,
@@ -41,6 +42,7 @@ import { useLibrarySelection } from "../components/library/use-library-selection
 import { LibraryGrid, LibraryGridSkeleton } from "../components/LibraryGrid";
 import { useDownloadGoalOfflineStates } from "../components/library/use-download-goal-offline-states";
 import {
+  reorderCategories,
   UNCATEGORIZED_CATEGORY_ID,
   type LibraryCategory,
 } from "../db/queries/category";
@@ -319,6 +321,38 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     },
     t,
   );
+  const reorderCategoriesMutation = useMutation({
+    meta: { errorPresentation: "toast" },
+    mutationFn: (orderedIds: number[]) => reorderCategories(orderedIds),
+    onMutate: (orderedIds) => {
+      void queryClient.cancelQueries({ queryKey: ["category", "list"] });
+      const previous = queryClient.getQueryData<LibraryCategory[]>([
+        "category",
+        "list",
+      ]);
+      if (previous) {
+        queryClient.setQueryData<LibraryCategory[]>(
+          ["category", "list"],
+          applyCategoryOrder(previous, orderedIds),
+        );
+      }
+      return { previous };
+    },
+    onError: (_error, _orderedIds, context) => {
+      if (context?.previous) {
+        queryClient.setQueryData(["category", "list"], context.previous);
+      }
+    },
+    onSettled: () => {
+      void queryClient.invalidateQueries({ queryKey: ["category"] });
+    },
+  });
+  const handleReorderCategories = useCallback(
+    (orderedIds: number[]) => {
+      reorderCategoriesMutation.mutate(orderedIds);
+    },
+    [reorderCategoriesMutation],
+  );
   const categoryListProps = {
     activeId: selectedCategoryId,
     entries: categoryEntries,
@@ -327,7 +361,9 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     onCreate: openCreateCategory,
     onDelete: setCategoryDeleteTarget,
     onRename: openRenameCategory,
+    onReorder: handleReorderCategories,
     onSelect: setSelectedCategoryId,
+    reordering: reorderCategoriesMutation.isPending,
   };
   const assignableCategories = manualCategories.filter(
     (category) => category.id !== UNCATEGORIZED_CATEGORY_ID,

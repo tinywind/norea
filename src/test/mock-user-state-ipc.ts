@@ -533,6 +533,53 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
         };
       }
 
+      if (command === "db_category_reorder") {
+        const orderedIds = args.orderedIds as number[];
+        let changed = false;
+        await options.runTransaction(async db => {
+          const rows = await db.select<{ id: number; sort: number }[]>(
+            "SELECT id, sort FROM category WHERE is_system = 0 ORDER BY sort, name",
+          );
+          const existingById = new Map(rows.map(row => [row.id, Number(row.sort)]));
+          if (
+            existingById.size !== orderedIds.length ||
+            new Set(orderedIds).size !== orderedIds.length ||
+            orderedIds.some(id => !existingById.has(id))
+          ) {
+            throw new Error("db category: reorder ids must match existing manual categories");
+          }
+          const [systemMax] = await db.select<{ maxSort: number | null }[]>(
+            "SELECT MAX(sort) AS maxSort FROM category WHERE is_system <> 0",
+          );
+          const baseSort = systemMax?.maxSort == null ? 0 : Number(systemMax.maxSort) + 1;
+          const changedIds: number[] = [];
+          for (let index = 0; index < orderedIds.length; index += 1) {
+            const id = orderedIds[index]!;
+            const nextSort = baseSort + index;
+            if (existingById.get(id) === nextSort) continue;
+            await stableCategoryIdInDb(db, id);
+            await db.execute(
+              "UPDATE category SET sort = $2 WHERE id = $1 AND is_system = 0",
+              [id, nextSort],
+            );
+            changedIds.push(id);
+          }
+          for (const id of changedIds) {
+            await recordCategoryInDb(db, id);
+          }
+          changed = changedIds.length > 0;
+        });
+        return {
+          handled: true,
+          result: {
+            value: undefined,
+            effects: changed
+              ? { userStatePriority: "normal", userStateLedgerChanged: true }
+              : {},
+          } satisfies DbMutationEnvelope<undefined>,
+        };
+      }
+
       if (command === "db_category_delete") {
         const id = args.id as number;
         await options.runTransaction(async db => {

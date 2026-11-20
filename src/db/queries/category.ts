@@ -63,6 +63,25 @@ export async function updateCategory(
   });
 }
 
+export async function reorderCategories(
+  orderedIds: readonly number[],
+): Promise<void> {
+  if (orderedIds.length === 0) return;
+  const seen = new Set<number>();
+  const normalizedIds: number[] = [];
+  for (const id of orderedIds) {
+    assertManualCategoryId(id);
+    if (seen.has(id)) {
+      throw new Error("Category reorder ids must be unique.");
+    }
+    seen.add(id);
+    normalizedIds.push(id);
+  }
+  await invokeDbMutation("db_category_reorder", {
+    orderedIds: normalizedIds,
+  });
+}
+
 export async function deleteCategory(id: number): Promise<void> {
   assertManualCategoryId(id);
   await invokeDbMutation("db_category_delete", { id });

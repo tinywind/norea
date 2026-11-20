@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use sqlx::{Row, SqliteConnection};
@@ -214,6 +214,76 @@ pub async fn update_category_in_tx(
         .await
         .map_err(|err| format!("db category: update category: {err}"))?;
     record_category_in_tx(conn, ctx, id, RecordCategoryOptions::default()).await
+}
+
+pub async fn reorder_categories_in_tx(
+    conn: &mut SqliteConnection,
+    ctx: &mut TxContext,
+    ordered_ids: &[i64],
+) -> Result<(), String> {
+    let mut seen = HashSet::with_capacity(ordered_ids.len());
+    for &id in ordered_ids {
+        assert_manual_category_id(id)?;
+        if !seen.insert(id) {
+            return Err("db category: duplicate category id in reorder".to_string());
+        }
+    }
+
+    let rows = sqlx::query("SELECT id, sort FROM category WHERE is_system = 0 ORDER BY sort, name")
+        .fetch_all(&mut *conn)
+        .await
+        .map_err(|err| format!("db category: load categories for reorder: {err}"))?;
+
+    let mut existing_by_id: HashMap<i64, i64> = HashMap::with_capacity(rows.len());
+    for row in rows {
+        existing_by_id.insert(row.get("id"), row.get("sort"));
+    }
+
+    if existing_by_id.len() != ordered_ids.len()
+        || ordered_ids.iter().any(|id| !existing_by_id.contains_key(id))
+    {
+        return Err("db category: reorder ids must match existing manual categories".to_string());
+    }
+    if ordered_ids.is_empty() {
+        return Ok(());
+    }
+
+    let max_system_sort: Option<i64> =
+        sqlx::query_scalar("SELECT MAX(sort) FROM category WHERE is_system <> 0")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|err| format!("db category: load system category sort: {err}"))?;
+    let base_sort = match max_system_sort {
+        Some(sort) => sort
+            .checked_add(1)
+            .ok_or_else(|| "db category: sort overflow".to_string())?,
+        None => 0,
+    };
+
+    let mut changed_ids = Vec::new();
+    for (index, &id) in ordered_ids.iter().enumerate() {
+        let offset =
+            i64::try_from(index).map_err(|_| "db category: sort overflow".to_string())?;
+        let next_sort = base_sort
+            .checked_add(offset)
+            .ok_or_else(|| "db category: sort overflow".to_string())?;
+        if existing_by_id.get(&id).copied() == Some(next_sort) {
+            continue;
+        }
+        stable_category_id_in_tx(conn, id, false).await?;
+        sqlx::query("UPDATE category SET sort = ?2 WHERE id = ?1 AND is_system = 0")
+            .bind(id)
+            .bind(next_sort)
+            .execute(&mut *conn)
+            .await
+            .map_err(|err| format!("db category: update category sort: {err}"))?;
+        changed_ids.push(id);
+    }
+
+    for id in changed_ids {
+        record_category_in_tx(conn, ctx, id, RecordCategoryOptions::default()).await?;
+    }
+    Ok(())
 }
 
 pub async fn delete_category_in_tx(
@@ -670,6 +740,28 @@ pub async fn db_category_update(
 }
 
 #[tauri::command]
+pub async fn db_category_reorder(
+    db: State<'_, AppDatabase>,
+    ordered_ids: Vec<i64>,
+) -> Result<DbMutationEnvelope<()>, String> {
+    let mut seen = HashSet::with_capacity(ordered_ids.len());
+    for &id in &ordered_ids {
+        assert_manual_category_id(id)?;
+        if !seen.insert(id) {
+            return Err("db category: duplicate category id in reorder".to_string());
+        }
+    }
+    with_write_tx(
+        db.pool_for(ReadMode::Queued),
+        category_tx_options(),
+        move |conn, ctx| {
+            Box::pin(async move { reorder_categories_in_tx(conn, ctx, &ordered_ids).await })
+        },
+    )
+    .await
+}
+
+#[tauri::command]
 pub async fn db_category_delete(
     db: State<'_, AppDatabase>,
     id: i64,
@@ -1016,6 +1108,174 @@ mod tests {
         let after = list_categories_in_conn(&mut conn).await.unwrap();
         assert!(after.iter().any(|c| c.id == fav_id && c.name == "Starred"));
         assert!(!after.iter().any(|c| c.id == later_id));
+    }
+
+    #[tokio::test]
+    async fn category_reorder_updates_sort_records_changed_intents_and_validates_ids() {
+        let harness = open_test_db().await;
+        let pool = harness.db.writer();
+
+        sqlx::query(
+            "INSERT INTO user_state_workspace (server_url, namespace, workspace_id, epoch) \
+             VALUES ('https://state.example', 'ns', 'ws', 'ep')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO category (id, name, sort, is_system) VALUES (1, 'Default', 0, 1)")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        with_write_tx(pool, category_tx_options(), |conn, ctx| {
+            Box::pin(async move {
+                insert_category_in_tx(
+                    conn,
+                    ctx,
+                    &InsertCategoryInputDto {
+                        name: "Alpha".to_string(),
+                        sort: None,
+                    },
+                )
+                .await?;
+                insert_category_in_tx(
+                    conn,
+                    ctx,
+                    &InsertCategoryInputDto {
+                        name: "Beta".to_string(),
+                        sort: None,
+                    },
+                )
+                .await?;
+                insert_category_in_tx(
+                    conn,
+                    ctx,
+                    &InsertCategoryInputDto {
+                        name: "Gamma".to_string(),
+                        sort: None,
+                    },
+                )
+                .await
+            })
+        })
+        .await
+        .unwrap();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let initial = list_categories_in_conn(&mut conn).await.unwrap();
+        assert_eq!(
+            initial
+                .iter()
+                .map(|c| (c.name.as_str(), c.sort, c.is_system))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Default", 0, true),
+                ("Alpha", 1, false),
+                ("Beta", 2, false),
+                ("Gamma", 3, false),
+            ]
+        );
+        let alpha_id = initial[1].id;
+        let beta_id = initial[2].id;
+        let gamma_id = initial[3].id;
+        drop(conn);
+
+        sqlx::query("DELETE FROM user_state_intent")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        // No-op reorder leaves user-state intents untouched.
+        let noop_env = with_write_tx(pool, category_tx_options(), move |conn, ctx| {
+            Box::pin(async move {
+                reorder_categories_in_tx(conn, ctx, &[alpha_id, beta_id, gamma_id]).await
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(noop_env.effects.user_state_priority, None);
+        let noop_intents: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_intent")
+            .fetch_one(pool)
+            .await
+            .unwrap();
+        assert_eq!(noop_intents, 0);
+
+        // Swap Beta and Gamma only: Alpha stays at sort 1 and needs no intent.
+        let swap_env = with_write_tx(pool, category_tx_options(), move |conn, ctx| {
+            Box::pin(async move {
+                reorder_categories_in_tx(conn, ctx, &[alpha_id, gamma_id, beta_id]).await
+            })
+        })
+        .await
+        .unwrap();
+        assert_eq!(
+            swap_env.effects.user_state_priority,
+            Some(UserStateCommitPriority::Normal)
+        );
+
+        let mut conn = pool.acquire().await.unwrap();
+        let after_swap = list_categories_in_conn(&mut conn).await.unwrap();
+        assert_eq!(
+            after_swap
+                .iter()
+                .map(|c| (c.name.as_str(), c.sort, c.is_system))
+                .collect::<Vec<_>>(),
+            vec![
+                ("Default", 0, true),
+                ("Alpha", 1, false),
+                ("Gamma", 2, false),
+                ("Beta", 3, false),
+            ]
+        );
+        let recorded: Vec<(String, i64)> = sqlx::query_as(
+            "SELECT json_extract(value_json, '$.name'), json_extract(value_json, '$.sort') \
+             FROM user_state_intent \
+             WHERE json_extract(entity_json, '$.kind') = 'category' \
+             ORDER BY json_extract(value_json, '$.sort')",
+        )
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(
+            recorded,
+            vec![("Gamma".to_string(), 2), ("Beta".to_string(), 3)]
+        );
+        drop(conn);
+
+        // Reject missing, duplicate, unknown, or system category IDs.
+        let missing_err = with_write_tx(pool, category_tx_options(), move |conn, ctx| {
+            Box::pin(async move { reorder_categories_in_tx(conn, ctx, &[alpha_id, beta_id]).await })
+        })
+        .await
+        .unwrap_err();
+        assert!(missing_err.contains("must match existing manual categories"));
+
+        let duplicate_err = with_write_tx(pool, category_tx_options(), move |conn, ctx| {
+            Box::pin(async move {
+                reorder_categories_in_tx(conn, ctx, &[alpha_id, alpha_id, gamma_id]).await
+            })
+        })
+        .await
+        .unwrap_err();
+        assert!(duplicate_err.contains("duplicate category id"));
+
+        let system_err = with_write_tx(pool, category_tx_options(), move |conn, ctx| {
+            Box::pin(async move {
+                reorder_categories_in_tx(conn, ctx, &[1, alpha_id, beta_id, gamma_id]).await
+            })
+        })
+        .await
+        .unwrap_err();
+        assert!(system_err.contains("must match existing manual categories"));
+
+        let negative_err = with_write_tx(pool, category_tx_options(), move |conn, ctx| {
+            Box::pin(async move {
+                reorder_categories_in_tx(conn, ctx, &[UNCATEGORIZED_CATEGORY_ID]).await
+            })
+        })
+        .await
+        .unwrap_err();
+        assert!(negative_err.contains("Select a manual category"));
     }
 
     #[tokio::test]

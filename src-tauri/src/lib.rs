@@ -229,6 +229,7 @@ pub fn run() {
             db::category::db_category_get_library_counts,
             db::category::db_category_insert,
             db::category::db_category_update,
+            db::category::db_category_reorder,
             db::category::db_category_delete,
             db::category::db_category_add_novels,
             db::category::db_category_remove_novels,
