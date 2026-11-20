@@ -6,7 +6,7 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex,
+        Arc, Mutex, OnceLock,
     },
     time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
@@ -662,13 +662,15 @@ fn endpoint(server: &str, suffix: &str) -> Result<reqwest::Url, String> {
     Ok(url)
 }
 
-fn http_client() -> Result<reqwest::blocking::Client, String> {
-    reqwest::blocking::Client::builder()
-        .connect_timeout(Duration::from_secs(15))
-        .timeout(Duration::from_secs(600))
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .map_err(failure)
+fn http_client() -> Result<&'static reqwest::blocking::Client, String> {
+    static CLIENT: OnceLock<Result<reqwest::blocking::Client, String>> = OnceLock::new();
+    CLIENT.get_or_init(|| {
+        reqwest::blocking::Client::builder()
+            .connect_timeout(Duration::from_secs(15))
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .map_err(failure)
+    }).as_ref().map_err(Clone::clone)
 }
 
 #[tauri::command]
@@ -872,7 +874,7 @@ fn download_chapter_files(server_url: &str, token: Option<&str>, entry: &Value, 
     for (name, size, modified) in declared {
         let mut url = endpoint(server_url, &format!("chapters/{id}/files"))?;
         url.query_pairs_mut().append_pair("revision", revision).append_pair("path", name);
-        let mut request = client.get(url);
+        let mut request = client.get(url).timeout(Duration::from_secs(600));
         if let Some(token) = token { request = request.bearer_auth(token); }
         let mut response = checked_response(request.send().map_err(failure)?)?;
         let path = destination.join(name);
