@@ -811,6 +811,26 @@ fn server_receipt_prefix(server_url: &str) -> String {
     )
 }
 
+fn prefix_upper_bound(prefix: &str) -> Option<String> {
+    for (idx, ch) in prefix.char_indices().rev() {
+        let code = ch as u32;
+        let next = if code == 0xD7FF {
+            Some('\u{E000}')
+        } else if code < 0x10FFFF {
+            char::from_u32(code + 1)
+        } else {
+            None
+        };
+        if let Some(next_ch) = next {
+            let mut out = String::with_capacity(idx + next_ch.len_utf8());
+            out.push_str(&prefix[..idx]);
+            out.push(next_ch);
+            return Some(out);
+        }
+    }
+    None
+}
+
 fn validate_incoming_record_shape(raw: &JsonValue) -> Result<(String, String, i64, String), String> {
     let Some(obj) = raw.as_object() else {
         return Err(
@@ -919,6 +939,108 @@ fn valid_summary_identity(
     })
 }
 
+#[derive(Default)]
+enum RawJsonField {
+    #[default]
+    Missing,
+    Present(JsonValue),
+}
+
+impl<'de> Deserialize<'de> for RawJsonField {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        JsonValue::deserialize(deserializer).map(Self::Present)
+    }
+}
+
+impl RawJsonField {
+    fn into_string(self) -> Option<String> {
+        match self {
+            Self::Present(JsonValue::String(value)) => Some(value),
+            _ => None,
+        }
+    }
+
+    fn as_str(&self) -> Option<&str> {
+        match self {
+            Self::Present(JsonValue::String(value)) => Some(value.as_str()),
+            _ => None,
+        }
+    }
+
+    fn as_i64(&self) -> Option<i64> {
+        match self {
+            Self::Present(JsonValue::Number(value)) => value.as_i64(),
+            _ => None,
+        }
+    }
+
+    fn as_bool(&self) -> Option<bool> {
+        match self {
+            Self::Present(JsonValue::Bool(value)) => Some(*value),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct RawSummaryIdentity {
+    #[serde(rename = "pluginId", default)]
+    plugin_id: RawJsonField,
+    #[serde(rename = "novelId", default)]
+    novel_id: RawJsonField,
+    #[serde(rename = "novelPath", default)]
+    novel_path: RawJsonField,
+}
+
+#[derive(Deserialize)]
+struct RawSummaryWork {
+    #[serde(default)]
+    id: RawJsonField,
+    #[serde(default)]
+    identity: Option<RawSummaryIdentity>,
+}
+
+#[derive(Deserialize)]
+struct RawSummaryLineage {
+    #[serde(rename = "operationId", default)]
+    operation_id: RawJsonField,
+    #[serde(default)]
+    sequence: RawJsonField,
+    #[serde(default)]
+    active: RawJsonField,
+    #[serde(rename = "legacyOperationId", default)]
+    legacy_operation_id: RawJsonField,
+    #[serde(rename = "sourceWork", default)]
+    source_work: Option<RawSummaryWork>,
+    #[serde(rename = "targetWork", default)]
+    target_work: Option<RawSummaryWork>,
+}
+
+#[derive(Deserialize)]
+struct RawSummaryPayload {
+    #[serde(default)]
+    version: RawJsonField,
+    #[serde(rename = "serverUrl", default)]
+    server_url: RawJsonField,
+    #[serde(rename = "operationId", default)]
+    operation_id: RawJsonField,
+    #[serde(default)]
+    sequence: RawJsonField,
+    #[serde(default)]
+    status: RawJsonField,
+    #[serde(default)]
+    error: RawJsonField,
+    #[serde(default)]
+    source: Option<RawSummaryIdentity>,
+    #[serde(default)]
+    target: Option<RawSummaryIdentity>,
+    #[serde(default)]
+    lineage: Option<RawSummaryLineage>,
+}
+
 pub async fn list_incoming_migration_summaries_in_conn(
     conn: &mut SqliteConnection,
     server: &str,
@@ -926,43 +1048,15 @@ pub async fn list_incoming_migration_summaries_in_conn(
 ) -> Result<Vec<IncomingMigrationSummaryDto>, String> {
     let server_url = normalize_content_server_url_strict(server, true)?;
     let prefix = server_receipt_prefix(&server_url);
-    let rows = sqlx::query(
-        "SELECT \
-           cache_key, \
-           json_valid(payload) AS is_valid, \
-           CASE WHEN json_valid(payload) THEN json_type(payload) ELSE NULL END AS root_type, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.version') = 'integer' THEN json_extract(payload, '$.version') ELSE NULL END AS version, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.serverUrl') = 'text' THEN json_extract(payload, '$.serverUrl') ELSE NULL END AS server_url, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.operationId') = 'text' THEN json_extract(payload, '$.operationId') ELSE NULL END AS operation_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.sequence') = 'integer' THEN json_extract(payload, '$.sequence') ELSE NULL END AS sequence, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.status') = 'text' THEN json_extract(payload, '$.status') ELSE NULL END AS status, \
-           CASE WHEN json_valid(payload) THEN json_type(payload, '$.error') ELSE NULL END AS error_type, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.error') = 'text' THEN json_extract(payload, '$.error') ELSE NULL END AS error_text, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.source.pluginId') = 'text' THEN json_extract(payload, '$.source.pluginId') ELSE NULL END AS source_plugin_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.source.novelId') = 'text' THEN json_extract(payload, '$.source.novelId') ELSE NULL END AS source_novel_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.source.novelPath') = 'text' THEN json_extract(payload, '$.source.novelPath') ELSE NULL END AS source_novel_path, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.target.pluginId') = 'text' THEN json_extract(payload, '$.target.pluginId') ELSE NULL END AS target_plugin_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.target.novelId') = 'text' THEN json_extract(payload, '$.target.novelId') ELSE NULL END AS target_novel_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.target.novelPath') = 'text' THEN json_extract(payload, '$.target.novelPath') ELSE NULL END AS target_novel_path, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage') = 'object' THEN 1 ELSE 0 END AS lineage_is_object, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.operationId') = 'text' THEN json_extract(payload, '$.lineage.operationId') ELSE NULL END AS lineage_operation_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.sequence') = 'integer' THEN json_extract(payload, '$.lineage.sequence') ELSE NULL END AS lineage_sequence, \
-           CASE WHEN json_valid(payload) THEN json_type(payload, '$.lineage.active') ELSE NULL END AS lineage_active_type, \
-           CASE WHEN json_valid(payload) THEN json_type(payload, '$.lineage.legacyOperationId') ELSE NULL END AS legacy_op_type, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.legacyOperationId') = 'text' THEN json_extract(payload, '$.lineage.legacyOperationId') ELSE NULL END AS legacy_operation_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.sourceWork.id') = 'text' THEN json_extract(payload, '$.lineage.sourceWork.id') ELSE NULL END AS source_work_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.sourceWork.identity.pluginId') = 'text' THEN json_extract(payload, '$.lineage.sourceWork.identity.pluginId') ELSE NULL END AS lineage_source_plugin_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.sourceWork.identity.novelId') = 'text' THEN json_extract(payload, '$.lineage.sourceWork.identity.novelId') ELSE NULL END AS lineage_source_novel_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.sourceWork.identity.novelPath') = 'text' THEN json_extract(payload, '$.lineage.sourceWork.identity.novelPath') ELSE NULL END AS lineage_source_novel_path, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.targetWork.id') = 'text' THEN json_extract(payload, '$.lineage.targetWork.id') ELSE NULL END AS target_work_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.targetWork.identity.pluginId') = 'text' THEN json_extract(payload, '$.lineage.targetWork.identity.pluginId') ELSE NULL END AS lineage_target_plugin_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.targetWork.identity.novelId') = 'text' THEN json_extract(payload, '$.lineage.targetWork.identity.novelId') ELSE NULL END AS lineage_target_novel_id, \
-           CASE WHEN json_valid(payload) AND json_type(payload, '$.lineage.targetWork.identity.novelPath') = 'text' THEN json_extract(payload, '$.lineage.targetWork.identity.novelPath') ELSE NULL END AS lineage_target_novel_path \
-         FROM content_sync_cache \
-         WHERE substr(cache_key, 1, length(?1)) = ?1 \
+    let upper = prefix_upper_bound(&prefix)
+        .expect("incoming receipt prefix ends with ASCII comma");
+    let cache_keys: Vec<String> = sqlx::query_scalar(
+        "SELECT cache_key FROM content_sync_cache \
+         WHERE cache_key >= ?1 AND cache_key < ?2 \
          ORDER BY cache_key",
     )
     .bind(&prefix)
+    .bind(&upper)
     .fetch_all(&mut *conn)
     .await
     .map_err(|err| format!("db content sync: list incoming migration summaries: {err}"))?;
@@ -970,59 +1064,62 @@ pub async fn list_incoming_migration_summaries_in_conn(
     let invalid_receipt = || {
         "Incoming work migration is invalid: stored receipt. Synchronization was held.".to_string()
     };
-    let mut out = Vec::with_capacity(rows.len());
-    for row in rows {
-        let cache_key: String = row.get("cache_key");
-        let is_valid: i64 = row.try_get("is_valid").unwrap_or(0);
-        let root_type: Option<String> = row.try_get("root_type").ok().flatten();
-        let lineage_is_object: i64 = row.try_get("lineage_is_object").unwrap_or(0);
-        if is_valid == 0 || root_type.as_deref() != Some("object") || lineage_is_object == 0 {
+    let parse_identity = |raw: Option<RawSummaryIdentity>| -> Result<MigrationWorkIdentityDto, String> {
+        let raw = raw.ok_or_else(invalid_receipt)?;
+        valid_summary_identity(
+            raw.plugin_id.into_string(),
+            raw.novel_id.into_string(),
+            raw.novel_path.into_string(),
+        )
+    };
+    let mut out = Vec::with_capacity(cache_keys.len());
+    for cache_key in cache_keys {
+        // Read and stream-parse one receipt payload at a time so multi-MB mappings/metadata
+        // are skipped without materializing every stored receipt in memory simultaneously.
+        let Some(payload) = sqlx::query_scalar::<_, String>(
+            "SELECT payload FROM content_sync_cache WHERE cache_key = ?1",
+        )
+        .bind(&cache_key)
+        .fetch_optional(&mut *conn)
+        .await
+        .map_err(|err| format!("db content sync: read incoming migration summary payload: {err}"))?
+        else {
+            continue;
+        };
+        let raw: RawSummaryPayload =
+            serde_json::from_str(&payload).map_err(|_| invalid_receipt())?;
+        drop(payload);
+
+        let Some(lineage) = raw.lineage else {
+            return Err(invalid_receipt());
+        };
+        if raw.version.as_i64() != Some(1) {
             return Err(invalid_receipt());
         }
-        let version: Option<i64> = row.try_get("version").ok().flatten();
-        if version != Some(1) {
-            return Err(invalid_receipt());
-        }
-        let raw_server: String = row
-            .try_get::<Option<String>, _>("server_url")
-            .ok()
-            .flatten()
-            .ok_or_else(invalid_receipt)?;
+        let raw_server = raw.server_url.into_string().ok_or_else(invalid_receipt)?;
         let row_server_url = normalize_content_server_url_strict(&raw_server, true)?;
-        let operation_id: String = row
-            .try_get::<Option<String>, _>("operation_id")
-            .ok()
-            .flatten()
+        let operation_id = raw
+            .operation_id
+            .into_string()
             .filter(|s| is_uuid_str(s))
             .ok_or_else(|| {
                 "Incoming work migration is invalid: operation ID. Synchronization was held."
                     .to_string()
             })?;
-        let lineage_op: Option<String> = row.try_get("lineage_operation_id").ok().flatten();
-        let sequence: i64 = row
-            .try_get::<Option<i64>, _>("sequence")
-            .ok()
-            .flatten()
+        let lineage_op = lineage.operation_id.as_str();
+        let sequence = raw
+            .sequence
+            .as_i64()
             .filter(|&n| n > 0)
             .ok_or_else(|| {
                 "Incoming work migration is invalid: sequence. Synchronization was held."
                     .to_string()
             })?;
-        let lineage_seq: Option<i64> = row.try_get("lineage_sequence").ok().flatten();
-        let active = match row
-            .try_get::<Option<String>, _>("lineage_active_type")
-            .ok()
-            .flatten()
-            .as_deref()
-        {
-            Some("true") => true,
-            Some("false") => false,
-            _ => return Err(invalid_receipt()),
-        };
-        let status: String = row
-            .try_get::<Option<String>, _>("status")
-            .ok()
-            .flatten()
+        let lineage_seq = lineage.sequence.as_i64();
+        let active = lineage.active.as_bool().ok_or_else(invalid_receipt)?;
+        let status = raw
+            .status
+            .into_string()
             .filter(|s| {
                 matches!(
                     s.as_str(),
@@ -1030,7 +1127,7 @@ pub async fn list_incoming_migration_summaries_in_conn(
                 )
             })
             .ok_or_else(invalid_receipt)?;
-        if lineage_op.as_deref() != Some(operation_id.as_str())
+        if lineage_op != Some(operation_id.as_str())
             || lineage_seq != Some(sequence)
             || (status == "inactive") != !active
         {
@@ -1044,67 +1141,40 @@ pub async fn list_incoming_migration_summaries_in_conn(
                     .to_string(),
             );
         }
-        let legacy_op_type: Option<String> = row.try_get("legacy_op_type").ok().flatten();
-        let legacy_operation_id = match legacy_op_type.as_deref() {
-            None => None,
-            Some("text") => {
-                let leg: String = row
-                    .try_get::<Option<String>, _>("legacy_operation_id")
-                    .ok()
-                    .flatten()
-                    .filter(|s| is_uuid_str(s))
-                    .ok_or_else(|| {
-                        "Incoming work migration is invalid: legacy operation ID. Synchronization was held."
-                            .to_string()
-                    })?;
-                Some(leg)
+        let legacy_operation_id = match lineage.legacy_operation_id {
+            RawJsonField::Missing => None,
+            RawJsonField::Present(JsonValue::String(leg)) if is_uuid_str(&leg) => Some(leg),
+            RawJsonField::Present(JsonValue::String(_)) => {
+                return Err(
+                    "Incoming work migration is invalid: legacy operation ID. Synchronization was held."
+                        .to_string(),
+                );
             }
-            _ => return Err(invalid_receipt()),
+            RawJsonField::Present(_) => return Err(invalid_receipt()),
         };
-        let error_type: Option<String> = row.try_get("error_type").ok().flatten();
-        let error = match error_type.as_deref() {
-            None => None,
-            Some("text") => {
-                let text: String = row
-                    .try_get::<Option<String>, _>("error_text")
-                    .ok()
-                    .flatten()
-                    .filter(|s| !s.trim().is_empty() && s.len() <= 16_384)
-                    .ok_or_else(invalid_receipt)?;
+        let error = match raw.error {
+            RawJsonField::Missing => None,
+            RawJsonField::Present(JsonValue::String(text))
+                if !text.trim().is_empty() && text.len() <= 16_384 =>
+            {
                 Some(text)
             }
-            _ => return Err(invalid_receipt()),
+            RawJsonField::Present(_) => return Err(invalid_receipt()),
         };
-        let source = valid_summary_identity(
-            row.try_get("source_plugin_id").ok().flatten(),
-            row.try_get("source_novel_id").ok().flatten(),
-            row.try_get("source_novel_path").ok().flatten(),
-        )?;
-        let target = valid_summary_identity(
-            row.try_get("target_plugin_id").ok().flatten(),
-            row.try_get("target_novel_id").ok().flatten(),
-            row.try_get("target_novel_path").ok().flatten(),
-        )?;
-        let lineage_source = valid_summary_identity(
-            row.try_get("lineage_source_plugin_id").ok().flatten(),
-            row.try_get("lineage_source_novel_id").ok().flatten(),
-            row.try_get("lineage_source_novel_path").ok().flatten(),
-        )?;
-        let lineage_target = valid_summary_identity(
-            row.try_get("lineage_target_plugin_id").ok().flatten(),
-            row.try_get("lineage_target_novel_id").ok().flatten(),
-            row.try_get("lineage_target_novel_path").ok().flatten(),
-        )?;
-        let source_work_id: String = row
-            .try_get::<Option<String>, _>("source_work_id")
-            .ok()
-            .flatten()
+        let source = parse_identity(raw.source)?;
+        let target = parse_identity(raw.target)?;
+        let raw_source_work = lineage.source_work.ok_or_else(invalid_receipt)?;
+        let raw_target_work = lineage.target_work.ok_or_else(invalid_receipt)?;
+        let lineage_source = parse_identity(raw_source_work.identity)?;
+        let lineage_target = parse_identity(raw_target_work.identity)?;
+        let source_work_id = raw_source_work
+            .id
+            .into_string()
             .filter(|s| is_hex_sha256_str(s))
             .ok_or_else(invalid_receipt)?;
-        let target_work_id: String = row
-            .try_get::<Option<String>, _>("target_work_id")
-            .ok()
-            .flatten()
+        let target_work_id = raw_target_work
+            .id
+            .into_string()
             .filter(|s| is_hex_sha256_str(s))
             .ok_or_else(invalid_receipt)?;
         if source != lineage_source
@@ -1917,13 +1987,27 @@ pub async fn db_content_sync_list_cache_entries(
 ) -> Result<Vec<ContentSyncCacheEntryDto>, String> {
     let pool = db.pool_for(read_mode.unwrap_or_default());
     let rows = if exact_substr.unwrap_or(true) {
-        sqlx::query(
-            "SELECT cache_key, payload FROM content_sync_cache \
-             WHERE substr(cache_key, 1, length(?1)) = ?1 ORDER BY cache_key",
-        )
-        .bind(prefix)
-        .fetch_all(pool)
-        .await
+        match prefix_upper_bound(&prefix) {
+            Some(upper) => {
+                sqlx::query(
+                    "SELECT cache_key, payload FROM content_sync_cache \
+                     WHERE cache_key >= ?1 AND cache_key < ?2 ORDER BY cache_key",
+                )
+                .bind(&prefix)
+                .bind(&upper)
+                .fetch_all(pool)
+                .await
+            }
+            None => {
+                sqlx::query(
+                    "SELECT cache_key, payload FROM content_sync_cache \
+                     WHERE cache_key >= ?1 ORDER BY cache_key",
+                )
+                .bind(&prefix)
+                .fetch_all(pool)
+                .await
+            }
+        }
     } else {
         sqlx::query(
             "SELECT cache_key, payload FROM content_sync_cache \
@@ -3062,5 +3146,97 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(remaining_downloaded, 0);
+    }
+
+    #[test]
+    fn prefix_upper_bound_computes_tight_utf8_range_bounds() {
+        assert_eq!(prefix_upper_bound(""), None);
+        assert_eq!(
+            prefix_upper_bound(r#"norea-content-incoming-migration:["http://a","#),
+            Some(r#"norea-content-incoming-migration:["http://a"-"#.to_string())
+        );
+        assert_eq!(
+            prefix_upper_bound("norea-content-novel-migration:"),
+            Some("norea-content-novel-migration;".to_string())
+        );
+        assert_eq!(
+            prefix_upper_bound("a\u{D7FF}"),
+            Some("a\u{E000}".to_string())
+        );
+        assert_eq!(
+            prefix_upper_bound("a\u{10FFFF}"),
+            Some("b".to_string())
+        );
+        assert_eq!(prefix_upper_bound("\u{10FFFF}"), None);
+    }
+
+    #[tokio::test]
+    async fn incoming_migration_summary_uses_index_range_scan_and_rejects_malformed_fields() {
+        let test = open_test_db().await;
+        let mut conn = test.db.writer().acquire().await.unwrap();
+        let server = "https://content.test";
+        let prefix = server_receipt_prefix(server);
+        let upper = prefix_upper_bound(&prefix).unwrap();
+
+        let plan_rows = sqlx::query(
+            "EXPLAIN QUERY PLAN \
+             SELECT cache_key FROM content_sync_cache \
+             WHERE cache_key >= ?1 AND cache_key < ?2 ORDER BY cache_key",
+        )
+        .bind(&prefix)
+        .bind(&upper)
+        .fetch_all(&mut *conn)
+        .await
+        .unwrap();
+        let details: Vec<String> = plan_rows.into_iter().map(|r| r.get("detail")).collect();
+        assert!(
+            details.iter().any(|d| d.contains("SEARCH content_sync_cache USING COVERING INDEX")),
+            "expected covering index range scan on cache_key, got: {details:?}"
+        );
+
+        // Non-matching prefix rows (including another server) must be ignored.
+        sqlx::query("INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2)")
+            .bind(r#"norea-content-incoming-migration:["https://other.test","11111111-2222-3333-4444-000000000001"]"#)
+            .bind("not-json")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        assert!(list_incoming_migration_summaries_in_conn(&mut conn, server, true)
+            .await
+            .unwrap()
+            .is_empty());
+
+        // Null error or float version inside a matching server receipt must fail closed.
+        let op_id = "11111111-2222-3333-4444-000000000099";
+        let key = incoming_receipt_key(server, op_id);
+        let src_id = "a".repeat(64);
+        let tgt_id = "b".repeat(64);
+        let bad_null_error = json!({
+            "version": 1,
+            "serverUrl": server,
+            "operationId": op_id,
+            "sequence": 1,
+            "status": "failed",
+            "error": null,
+            "source": { "pluginId": "src", "novelId": "1", "novelPath": "/1" },
+            "target": { "pluginId": "tgt", "novelId": "2", "novelPath": "/2" },
+            "lineage": {
+                "operationId": op_id,
+                "sequence": 1,
+                "active": true,
+                "sourceWork": { "id": src_id, "identity": { "pluginId": "src", "novelId": "1", "novelPath": "/1" } },
+                "targetWork": { "id": tgt_id, "identity": { "pluginId": "tgt", "novelId": "2", "novelPath": "/2" } },
+            },
+        });
+        sqlx::query("INSERT INTO content_sync_cache(cache_key, payload) VALUES (?1, ?2)")
+            .bind(&key)
+            .bind(bad_null_error.to_string())
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        let err = list_incoming_migration_summaries_in_conn(&mut conn, server, true)
+            .await
+            .unwrap_err();
+        assert!(err.contains("stored receipt"), "unexpected error: {err}");
     }
 }

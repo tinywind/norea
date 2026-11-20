@@ -241,6 +241,51 @@ describe("received migration synchronization", () => {
     expect(await syncIncomingNovelMigrations(server, "token", undefined, false)).toEqual({ applied: 1, pending: 0 });
   });
 
+  it("classifies database pool timeout and lock errors as retryable failed instead of blocked", async () => {
+    vi.mocked(applyIncomingNovelMigration).mockRejectedValueOnce(
+      new Error("db tx: begin immediate: pool timed out while waiting for an open connection"),
+    );
+    expect(await syncIncomingNovelMigrations(server, "token")).toMatchObject({
+      applied: 0,
+      pending: 1,
+      retryable: true,
+    });
+    expect((await listIncomingMigrations(server))[0]?.status).toBe("failed");
+    expect(await syncIncomingNovelMigrations(server, "token", undefined, false)).toEqual({ applied: 1, pending: 0 });
+  });
+
+  it("recovers legacy blocked receipts caused by database pool timeouts even when retryBlocked is false", async () => {
+    await saveIncomingMigration({
+      ...incomingMigrationFromLineage(server, remote[0]!),
+      status: "blocked",
+      error: "db tx: begin immediate: pool timed out while waiting for an open connection",
+    });
+    expect(await syncIncomingNovelMigrations(server, "token", undefined, false)).toEqual({ applied: 1, pending: 0 });
+    expect((await listIncomingMigrations(server, true))[0]?.status).toBe("completed");
+  });
+
+  it("does not reload all incoming migration summaries inside the migration loop for single-edge migrations", async () => {
+    const { invoke } = await import("@tauri-apps/api/core");
+    remote = Array.from({ length: 4 }, (_, index) => {
+      const seq = index + 1;
+      const item = edge("a", "b", seq);
+      item.sourceWork.id = seq.toString(16).padStart(64, "0");
+      item.sourceWork.identity = { pluginId: "a", novelId: `work-${seq}`, novelPath: `/a/${seq}` };
+      item.sourceWork.metadata.identity = { ...item.sourceWork.identity };
+      item.deletedSource.revision = item.sourceWork.revision;
+      item.targetWork.id = (seq + 100).toString(16).padStart(64, "0");
+      item.targetWork.identity = { pluginId: "b", novelId: `work-${seq}`, novelPath: `/b/${seq}` };
+      item.targetWork.metadata.identity = { ...item.targetWork.identity };
+      return item;
+    });
+    vi.mocked(invoke).mockClear();
+    expect(await syncIncomingNovelMigrations(server, "token")).toEqual({ applied: 4, pending: 0 });
+    const summaryCalls = vi.mocked(invoke).mock.calls.filter(
+      call => call[0] === "db_content_sync_list_incoming_migration_summaries",
+    );
+    expect(summaryCalls).toHaveLength(2);
+  });
+
   it("revalidates remote history once before commit instead of fetching it for every chapter", async () => {
     const actual = vi.mocked(applyIncomingNovelMigration).getMockImplementation()!;
     vi.mocked(applyIncomingNovelMigration).mockImplementationOnce(async (...args) => {

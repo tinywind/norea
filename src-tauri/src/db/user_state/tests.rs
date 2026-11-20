@@ -4080,3 +4080,189 @@ async fn sendable_pending_excludes_opaque_identity_pending_operations() {
     drop(read_conn);
     assert_eq!(sendable_status.sendable_pending, 2);
 }
+
+#[tokio::test]
+async fn user_state_cursor_query_and_pending_migration_intents_use_indexed_lookups() {
+    let test = open_test_db().await;
+    let pool = test.db.writer();
+    let binding = sample_binding();
+    let ns = super::types::namespace_for(&binding);
+    let opts = TxOptions {
+        publish_metadata: false,
+        notify_content_sync: false,
+        ..TxOptions::default()
+    };
+
+    let b1 = binding.clone();
+    with_write_tx(pool, opts, move |conn, ctx| {
+        Box::pin(async move { bind_user_state_workspace_in_tx(conn, ctx, &b1).await })
+    })
+    .await
+    .unwrap();
+
+    sqlx::query("UPDATE user_state_workspace SET cursor = 42, read_through = 50 WHERE namespace = ?1")
+        .bind(&ns)
+        .execute(pool)
+        .await
+        .unwrap();
+
+    let mut read_conn = pool.acquire().await.unwrap();
+    let cursor = super::ledger::get_user_state_cursor_in_tx(&mut read_conn, &binding)
+        .await
+        .unwrap();
+    assert_eq!(cursor.cursor, 42);
+    assert_eq!(cursor.through, Some(50));
+
+    let source_work = json!({
+        "pluginId": "source",
+        "sourceNovelId": "src-1",
+        "novelPath": "/src-1",
+        "name": "Source Work",
+    });
+    let target_work = json!({
+        "pluginId": "source",
+        "sourceNovelId": "tgt-2",
+        "novelPath": "/tgt-2",
+        "name": "Target Work",
+    });
+    let other_work = json!({
+        "pluginId": "source",
+        "sourceNovelId": "other-3",
+        "novelPath": "/other-3",
+        "name": "Other Work",
+    });
+    let src_read_ent = json!({
+        "kind": "reading",
+        "work": source_work,
+        "chapter": { "chapterPath": "/c1" },
+    });
+    let tgt_resume_ent = json!({
+        "kind": "resume",
+        "work": target_work,
+    });
+    let other_read_ent = json!({
+        "kind": "reading",
+        "work": other_work,
+        "chapter": { "chapterPath": "/c9" },
+    });
+
+    let src_read_key = user_state_entity_key(&src_read_ent).unwrap();
+    let tgt_resume_key = user_state_entity_key(&tgt_resume_ent).unwrap();
+    let other_read_key = user_state_entity_key(&other_read_ent).unwrap();
+
+    for (seq, key, ent, val) in [
+        (1_i64, &src_read_key, &src_read_ent, json!({ "progress": 50, "readAt": 100 })),
+        (2_i64, &tgt_resume_key, &tgt_resume_ent, json!({ "chapter": null, "anchor": null, "openedAt": 200 })),
+        (3_i64, &other_read_key, &other_read_ent, json!({ "progress": 80, "readAt": 300 })),
+    ] {
+        sqlx::query(
+            "INSERT INTO user_state_intent(sequence, entity_key, entity_json, value_json, seed) \
+             VALUES (?1, ?2, ?3, ?4, 0)",
+        )
+        .bind(seq)
+        .bind(key)
+        .bind(ent.to_string())
+        .bind(val.to_string())
+        .execute(&mut *read_conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO user_state_progress(namespace, entity_key, local_sequence, acknowledged_sequence, base_revision) \
+             VALUES (?1, ?2, ?3, 0, 0)",
+        )
+        .bind(&ns)
+        .bind(key)
+        .bind(seq)
+        .execute(&mut *read_conn)
+        .await
+        .unwrap();
+    }
+
+    let source_work_key = super::types::user_state_work_key_parts("source", Some("src-1"), "/src-1");
+    let target_work_key = super::types::user_state_work_key_parts("source", Some("tgt-2"), "/tgt-2");
+    let pending = super::migration::pending_intents_for_works_in_tx(
+        &mut read_conn,
+        &[&source_work_key, &target_work_key],
+    )
+    .await
+    .unwrap();
+    let keys: Vec<String> = pending.into_iter().map(|r| r.entity_key).collect();
+    assert_eq!(keys, vec![src_read_key.clone(), tgt_resume_key.clone()]);
+
+    // Mark source reading acknowledged -> only target resume remains pending.
+    sqlx::query(
+        "UPDATE user_state_progress SET acknowledged_sequence = 1 WHERE namespace = ?1 AND entity_key = ?2",
+    )
+    .bind(&ns)
+    .bind(&src_read_key)
+    .execute(&mut *read_conn)
+    .await
+    .unwrap();
+    let after_ack = super::migration::pending_intents_for_works_in_tx(
+        &mut read_conn,
+        &[&source_work_key, &target_work_key],
+    )
+    .await
+    .unwrap();
+    assert_eq!(
+        after_ack.into_iter().map(|r| r.entity_key).collect::<Vec<_>>(),
+        vec![tgt_resume_key]
+    );
+
+    // Verify EXPLAIN QUERY PLAN for pending migration range query uses indexed lookups without scanning user_state_progress.
+    let encoded_work = serde_json::to_string(&source_work_key).unwrap();
+    let plan_rows = sqlx::query(
+        "EXPLAIN QUERY PLAN \
+         SELECT i.sequence, i.entity_key, i.entity_json, i.value_json, i.seed \
+         FROM user_state_intent i \
+         WHERE i.entity_key >= ?1 AND i.entity_key < ?2 \
+           AND i.seed = 0 \
+           AND EXISTS(SELECT 1 FROM user_state_workspace w \
+                      CROSS JOIN user_state_progress p \
+                        ON p.namespace = w.namespace \
+                       AND p.entity_key = i.entity_key \
+                      WHERE i.sequence > p.acknowledged_sequence)",
+    )
+    .bind(format!(r#"["reading",{encoded_work},"#))
+    .bind(format!(r#"["reading",{encoded_work}-"#))
+    .fetch_all(&mut *read_conn)
+    .await
+    .unwrap();
+    let details: Vec<String> = plan_rows.into_iter().map(|r| r.get("detail")).collect();
+    assert!(
+        !details.iter().any(|d| d.contains("SCAN p")),
+        "expected user_state_progress PK search, got: {details:?}"
+    );
+    assert!(
+        details.iter().any(|d| d.contains("SEARCH i USING INDEX")),
+        "expected user_state_intent index range search, got: {details:?}"
+    );
+
+    // Verify ledger status sendable_intents NOT EXISTS uses covering index user_state_operation_pending_entity_idx.
+    let status_plan_rows = sqlx::query(
+        "EXPLAIN QUERY PLAN \
+         SELECT \
+           COUNT(*) AS pending, \
+           COALESCE(SUM(CASE WHEN ?2 = 0 \
+             AND NOT EXISTS(SELECT 1 FROM user_state_conflict c \
+                            WHERE c.namespace = ?1 AND c.entity_key = i.entity_key) \
+             AND NOT EXISTS(SELECT 1 FROM user_state_operation o \
+                            WHERE o.namespace = ?1 AND o.status = 'pending' AND o.entity_key = i.entity_key) \
+           THEN 1 ELSE 0 END), 0) AS sendable_intents \
+         FROM user_state_intent i \
+         JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
+         WHERE i.sequence > p.acknowledged_sequence",
+    )
+    .bind(&ns)
+    .bind(0_i64)
+    .fetch_all(&mut *read_conn)
+    .await
+    .unwrap();
+    let status_details: Vec<String> = status_plan_rows.into_iter().map(|r| r.get("detail")).collect();
+    assert!(
+        status_details
+            .iter()
+            .any(|d| d.contains("SEARCH o USING COVERING INDEX user_state_operation_pending_entity_idx")),
+        "expected covering index seek on user_state_operation_pending_entity_idx, got: {status_details:?}"
+    );
+}

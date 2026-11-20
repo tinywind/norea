@@ -1,8 +1,9 @@
-import { invokeDbMutation, invokeDbQuery } from "./ipc";
+import { invokeDbMutation, invokeDbQuery, type DbReadMode } from "./ipc";
 import { withGlobalChapterDownloadSnapshotReads } from "../lib/chapter-download-writes";
 import {
   emitUserStateApplied,
   emitUserStateLedgerChanged,
+  withBatchedUserStateLedgerNotifications,
 } from "./user-state-core";
 import {
   parsePortableReaderAnchor,
@@ -18,6 +19,11 @@ import {
   type UserStateRebindMode,
   type UserStateRecord,
 } from "../lib/user-state/types";
+
+export interface UserStateCursor {
+  cursor: number;
+  through: number | null;
+}
 
 export interface UserStateLedgerStatus {
   cursor: number;
@@ -50,7 +56,7 @@ export const USER_STATE_OPERATION_RETENTION_SECS = 7 * 24 * 60 * 60;
 
 function isUserStateDatabaseBusy(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
-  return /(?:code:\s*(?:5|6)\b|database is (?:locked|busy)|SQLITE_(?:BUSY|LOCKED))/i.test(
+  return /(?:code:\s*(?:5|6)\b|database is (?:locked|busy)|SQLITE_(?:BUSY|LOCKED)|pool timed out)/i.test(
     message,
   );
 }
@@ -108,11 +114,13 @@ export async function listUserWorkCategories(
 
 export async function getUserStateBinding(
   serverUrl?: string,
+  mode?: DbReadMode,
 ): Promise<UserStateBinding | null> {
   const target = serverUrl ?? activeServer;
   if (!target) return null;
   return invokeDbQuery<UserStateBinding | null>("db_user_state_get_binding", {
     serverUrl: target,
+    ...(mode ? { mode } : {}),
   });
 }
 
@@ -190,30 +198,45 @@ export async function prepareUserStateOperations(
   return raw.map(parseUserStateOperation);
 }
 
+export async function getUserStateCursor(
+  binding: UserStateBinding,
+  mode?: DbReadMode,
+): Promise<UserStateCursor> {
+  return invokeDbQuery<UserStateCursor>("db_user_state_get_cursor", {
+    binding,
+    ...(mode ? { mode } : {}),
+  });
+}
+
 export async function getUserStateLedgerStatus(
   binding?: UserStateBinding | null,
+  mode?: DbReadMode,
 ): Promise<UserStateLedgerStatus> {
   const current =
-    binding === undefined ? await getUserStateBinding() : binding;
+    binding === undefined ? await getUserStateBinding(undefined, mode) : binding;
   return invokeDbQuery<UserStateLedgerStatus>(
     "db_user_state_get_ledger_status",
-    { binding: current },
+    { binding: current, ...(mode ? { mode } : {}) },
   );
 }
 
 export async function listUserStateConflicts(
   binding: UserStateBinding,
+  mode?: DbReadMode,
 ): Promise<UserStateConflict[]> {
   return invokeDbQuery<UserStateConflict[]>("db_user_state_list_conflicts", {
     binding,
+    ...(mode ? { mode } : {}),
   });
 }
 
 export async function listUserStateDeferred(
   binding: UserStateBinding,
+  mode?: DbReadMode,
 ): Promise<UserStateDeferred[]> {
   return invokeDbQuery<UserStateDeferred[]>("db_user_state_list_deferred", {
     binding,
+    ...(mode ? { mode } : {}),
   });
 }
 
@@ -235,38 +258,40 @@ export async function materializePendingUserState(
   const failedEntityKeys = new Set<string>();
   let hasFinishedReading = false;
   let chunkIndex = 0;
-  for (;;) {
-    if (!allowed()) break;
-    if (chunkIndex > 0) await yieldUserStateAck();
-    if (!allowed()) break;
-    const skipEntityKeys = failedEntityKeys.size > 0 ? [...failedEntityKeys] : undefined;
-    const chunk = await retryUserStateExclusive(() =>
-      withGlobalChapterDownloadSnapshotReads(skippedChapterIds =>
-        invokeDbMutation<UserStateApplyEffects>("db_user_state_project_pending", {
-          binding,
-          skippedChapterIds,
-          limit: USER_STATE_PROJECT_CHUNK,
-          ...(skipEntityKeys ? { skipEntityKeys } : {}),
-        }),
-      ),
-    );
-    resumes.push(...chunk.resumes);
-    if (chunk.hasFinishedReading) {
-      hasFinishedReading = true;
+  return withBatchedUserStateLedgerNotifications(async () => {
+    for (;;) {
+      if (!allowed()) break;
+      if (chunkIndex > 0) await yieldUserStateAck();
+      if (!allowed()) break;
+      const skipEntityKeys = failedEntityKeys.size > 0 ? [...failedEntityKeys] : undefined;
+      const chunk = await retryUserStateExclusive(() =>
+        withGlobalChapterDownloadSnapshotReads(skippedChapterIds =>
+          invokeDbMutation<UserStateApplyEffects>("db_user_state_project_pending", {
+            binding,
+            skippedChapterIds,
+            limit: USER_STATE_PROJECT_CHUNK,
+            ...(skipEntityKeys ? { skipEntityKeys } : {}),
+          }),
+        ),
+      );
+      resumes.push(...chunk.resumes);
+      if (chunk.hasFinishedReading) {
+        hasFinishedReading = true;
+      }
+      for (const key of chunk.failedEntityKeys ?? []) {
+        failedEntityKeys.add(key);
+      }
+      chunkIndex += 1;
+      if (!chunk.hasMore) break;
     }
-    for (const key of chunk.failedEntityKeys ?? []) {
-      failedEntityKeys.add(key);
-    }
-    chunkIndex += 1;
-    if (!chunk.hasMore) break;
-  }
-  const effects: UserStateApplyEffects = {
-    resumes,
-    ...(hasFinishedReading ? { hasFinishedReading: true } : {}),
-  };
-  emitUserStateApplied(effects);
-  emitUserStateLedgerChanged();
-  return effects;
+    const effects: UserStateApplyEffects = {
+      resumes,
+      ...(hasFinishedReading ? { hasFinishedReading: true } : {}),
+    };
+    emitUserStateApplied(effects);
+    emitUserStateLedgerChanged();
+    return effects;
+  });
 }
 
 export async function applyUserStateReadPage(
@@ -294,16 +319,18 @@ export async function acknowledgeUserStateOperations(
     emitUserStateLedgerChanged();
     return { resumes: [] };
   }
-  for (let start = 0; start < results.length; start += USER_STATE_LOCAL_ACK_CHUNK) {
-    if (start > 0) await yieldUserStateAck();
-    const batch = results.slice(start, start + USER_STATE_LOCAL_ACK_CHUNK);
-    await retryUserStateExclusive(() =>
-      invokeDbMutation<UserStateApplyEffects>(
-        "db_user_state_acknowledge_operations",
-        { binding, results: batch },
-      ),
-    );
-  }
+  await withBatchedUserStateLedgerNotifications(async () => {
+    for (let start = 0; start < results.length; start += USER_STATE_LOCAL_ACK_CHUNK) {
+      if (start > 0) await yieldUserStateAck();
+      const batch = results.slice(start, start + USER_STATE_LOCAL_ACK_CHUNK);
+      await retryUserStateExclusive(() =>
+        invokeDbMutation<UserStateApplyEffects>(
+          "db_user_state_acknowledge_operations",
+          { binding, results: batch },
+        ),
+      );
+    }
+  });
   return { resumes: [] };
 }
 

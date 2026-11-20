@@ -205,6 +205,19 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
         };
       }
 
+      if (command === "db_user_state_get_cursor") {
+        const db = await options.getDb();
+        const binding = args.binding as UserStateBinding;
+        const workspace = await requireBinding(db, binding);
+        return {
+          handled: true,
+          result: {
+            cursor: workspace.cursor,
+            through: workspace.through,
+          },
+        };
+      }
+
       if (command === "db_user_state_get_ledger_status") {
         const db = await options.getDb();
         const binding = (args.binding ?? null) as UserStateBinding | null;

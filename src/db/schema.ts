@@ -534,6 +534,7 @@ export const userStateOperationTable = sqliteTable("user_state_operation", {
   acknowledgedAt: integer("acknowledged_at"),
 }, t => ({
   pendingIdx: index("user_state_operation_pending_idx").on(t.namespace, t.status, t.intentSequence),
+  pendingEntityIdx: index("user_state_operation_pending_entity_idx").on(t.namespace, t.status, t.entityKey),
   acknowledgedIdx: index("user_state_operation_acknowledged_idx").on(t.namespace, t.status, t.acknowledgedAt),
   acknowledgedAtCheck: check("user_state_operation_acknowledged_at", sql`${t.acknowledgedAt} IS NULL OR ${t.acknowledgedAt} >= 0`),
 }));

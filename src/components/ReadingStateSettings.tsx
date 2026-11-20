@@ -225,21 +225,45 @@ export function ReadingStateSettings({ serverUrl }: { serverUrl: string }) {
   const [actionError, setActionError] = useState<string | null>(null);
   const action = useRef(false);
   const working = busy || runtime.phase === "syncing";
-  useEffect(() => { if (serverUrl) void status.refetch(); }, [serverUrl, runtime.revision, status.refetch]);
+  useEffect(() => { if (serverUrl) void status.refetch({ cancelRefetch: false }); }, [serverUrl, runtime.revision, status.refetch]);
   useEffect(() => {
     if (!serverUrl) return;
     let timer: ReturnType<typeof setTimeout> | undefined;
-    const schedule = () => {
-      clearTimeout(timer);
-      timer = setTimeout(() => { timer = undefined; void status.refetch(); }, 150);
+    let disposed = false;
+    let refetching = false;
+    let pending = false;
+    const triggerRefetch = () => {
+      if (disposed) return;
+      if (refetching) {
+        pending = true;
+        return;
+      }
+      refetching = true;
+      pending = false;
+      void Promise.resolve(status.refetch({ cancelRefetch: false })).finally(() => {
+        refetching = false;
+        if (pending && !disposed) {
+          pending = false;
+          schedule();
+        }
+      });
     };
-    const focus = () => { void status.refetch(); };
+    const schedule = () => {
+      if (disposed) return;
+      clearTimeout(timer);
+      timer = setTimeout(() => {
+        timer = undefined;
+        triggerRefetch();
+      }, 300);
+    };
+    const focus = () => { triggerRefetch(); };
     const unsubscribe = subscribeUserStateLedgerChanges(schedule);
     const unsubscribeLifecycle = subscribeAppLifecycle((active) => {
       if (active) focus();
     });
     window.addEventListener("focus", focus);
     return () => {
+      disposed = true;
       clearTimeout(timer);
       unsubscribe();
       unsubscribeLifecycle();

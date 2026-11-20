@@ -14,6 +14,9 @@ let deferredNovelRecorder: ((novelIds: readonly number[]) => void) | undefined;
 let runningDeferred = false;
 let deferredRequestedWhileRunning = false;
 let deferredTask: Promise<void> | null = null;
+let ledgerBatchDepth = 0;
+let pendingBatchedLedgerChange = false;
+let pendingBatchedDeferredReady = false;
 
 export function subscribeUserStateLedgerChanges(listener: () => void): () => void {
   ledgerChanges.add(listener);
@@ -21,7 +24,35 @@ export function subscribeUserStateLedgerChanges(listener: () => void): () => voi
 }
 
 export function emitUserStateLedgerChanged(): void {
+  if (ledgerBatchDepth > 0) {
+    pendingBatchedLedgerChange = true;
+    return;
+  }
   for (const listener of ledgerChanges) listener();
+}
+
+/** Coalesce ledger change notifications and deferred apply triggers across chunked mutations. */
+export async function withBatchedUserStateLedgerNotifications<T>(
+  run: () => Promise<T>,
+): Promise<T> {
+  ledgerBatchDepth += 1;
+  try {
+    return await run();
+  } finally {
+    ledgerBatchDepth -= 1;
+    if (ledgerBatchDepth === 0) {
+      const shouldEmitLedger = pendingBatchedLedgerChange;
+      const shouldScheduleDeferred = pendingBatchedDeferredReady;
+      pendingBatchedLedgerChange = false;
+      pendingBatchedDeferredReady = false;
+      if (shouldScheduleDeferred) {
+        scheduleDeferredUserStateApply();
+      }
+      if (shouldEmitLedger) {
+        emitUserStateLedgerChanged();
+      }
+    }
+  }
 }
 
 export async function waitForUserStateDeferredApply(): Promise<void> {
@@ -108,6 +139,10 @@ export function notifyUserStateEffects(input: {
     emitUserStateLedgerChanged();
   }
   if (input.deferredReady) {
-    scheduleDeferredUserStateApply();
+    if (ledgerBatchDepth > 0) {
+      pendingBatchedDeferredReady = true;
+    } else {
+      scheduleDeferredUserStateApply();
+    }
   }
 }

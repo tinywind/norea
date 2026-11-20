@@ -148,11 +148,36 @@ function collectReachableActiveOperationIds(
   return [...operationIds];
 }
 
+function isRetryableDatabaseError(error: unknown): boolean {
+  if (error == null) return false;
+  const message = error instanceof Error ? error.message : String(error);
+  return /(?:pool timed out|database is (?:locked|busy)|SQLITE_(?:BUSY|LOCKED)|code:\s*(?:5|6)\b)/i.test(message);
+}
+
+function summaryFromIncomingMigration(record: IncomingMigration): IncomingMigrationSummary {
+  return {
+    version: record.version,
+    serverUrl: record.serverUrl,
+    operationId: record.operationId,
+    sequence: record.sequence,
+    source: record.source,
+    target: record.target,
+    status: record.status,
+    lineage: {
+      ...(record.lineage.legacyOperationId === undefined ? {} : { legacyOperationId: record.lineage.legacyOperationId }),
+      active: record.lineage.active,
+      sourceWork: { id: record.lineage.sourceWork.id, identity: record.lineage.sourceWork.identity },
+      targetWork: { id: record.lineage.targetWork.id, identity: record.lineage.targetWork.identity },
+    },
+    ...(record.error === undefined ? {} : { error: record.error }),
+  };
+}
+
 async function resolveSavedIncomingChain(
   server: string,
   record: IncomingMigration,
+  summaries: readonly IncomingMigrationSummary[],
 ): Promise<ResolvedIncomingNovelMigration> {
-  const summaries = await listIncomingMigrationSummaries(server, true);
   const reachableIds = collectReachableActiveOperationIds(record.lineage.targetWork.id, summaries)
     .filter(operationId => operationId !== record.operationId);
   const reachableRecords = await readIncomingMigrations(server, reachableIds);
@@ -186,24 +211,33 @@ export async function syncIncomingNovelMigrations(
   }
   let applied = 0;
   const installedTargets = new Map<string, InstalledNovelMetadata>();
-  const pendingSummaries = (await listIncomingMigrationSummaries(server)).sort((left, right) => left.sequence - right.sequence);
+  const allSummaries = await listIncomingMigrationSummaries(server, true);
+  const summariesByOperationId = new Map(allSummaries.map(summary => [summary.operationId, summary]));
+  const pendingSummaries = allSummaries
+    .filter(summary => summary.status !== "completed" && summary.status !== "inactive")
+    .sort((left, right) => left.sequence - right.sequence);
   for (const savedSummary of pendingSummaries) {
-    if (savedSummary.status === "blocked" && !retryBlocked) continue;
+    if (savedSummary.status === "blocked" && !retryBlocked && !isRetryableDatabaseError(savedSummary.error)) continue;
     const saved = await readIncomingMigration(server, savedSummary.operationId);
-    if (!saved || (saved.status === "blocked" && !retryBlocked)) continue;
+    if (!saved || (saved.status === "blocked" && !retryBlocked && !isRetryableDatabaseError(saved.error))) continue;
     let record = saved;
     try {
       record = await refreshReceivedMigration(server, token, record, assertCurrent, signal);
+      summariesByOperationId.set(record.operationId, summaryFromIncomingMigration(record));
       if (record.status === "inactive" || record.status === "completed") continue;
-      let resolved = await resolveSavedIncomingChain(server, record);
-      for (const edge of resolved.chain.slice(1)) {
-        const next = await readIncomingMigration(server, edge.operationId);
-        if (!next) throw new Error("A later work migration is not saved locally.");
-        await refreshReceivedMigration(server, token, next, assertCurrent, signal);
+      let resolved = await resolveSavedIncomingChain(server, record, [...summariesByOperationId.values()]);
+      if (resolved.chain.length > 1) {
+        for (const edge of resolved.chain.slice(1)) {
+          const next = await readIncomingMigration(server, edge.operationId);
+          if (!next) throw new Error("A later work migration is not saved locally.");
+          const refreshed = await refreshReceivedMigration(server, token, next, assertCurrent, signal);
+          summariesByOperationId.set(refreshed.operationId, summaryFromIncomingMigration(refreshed));
+        }
+        resolved = await resolveSavedIncomingChain(server, record, [...summariesByOperationId.values()]);
       }
-      resolved = await resolveSavedIncomingChain(server, record);
       record = { ...record, status: "pending", error: undefined };
       await saveIncomingMigration(record);
+      summariesByOperationId.set(record.operationId, summaryFromIncomingMigration(record));
       const expected = record;
       const assertLineageCurrent = async () => {
         signal.throwIfAborted(); assertCurrent();
@@ -238,25 +272,49 @@ export async function syncIncomingNovelMigrations(
         if (result.installedTargetMetadata) installedTargets.set(resolved.targetWork.id, result.installedTargetMetadata);
       }
       applied++;
+      summariesByOperationId.set(record.operationId, { ...summaryFromIncomingMigration(record), status: "completed", error: undefined });
     } catch (error) {
       signal.throwIfAborted(); assertCurrent();
       if (isAbortError(error)) throw error;
-      const status = error instanceof ContentServerTransportError || error instanceof IncomingNovelMigrationRetryableError || (error instanceof ContentServerError && (error.status >= 500 || error.status === 408 || error.status === 429)) ? "failed" : "blocked";
-      await saveIncomingMigration({ ...record, status, error: error instanceof Error ? error.message : String(error) });
+      const status =
+        error instanceof ContentServerTransportError ||
+        error instanceof IncomingNovelMigrationRetryableError ||
+        (error instanceof ContentServerError && (error.status >= 500 || error.status === 408 || error.status === 429)) ||
+        isRetryableDatabaseError(error)
+          ? "failed"
+          : "blocked";
+      const failedRecord: IncomingMigration = { ...record, status, error: error instanceof Error ? error.message : String(error) };
+      await saveIncomingMigration(failedRecord);
+      summariesByOperationId.set(failedRecord.operationId, summaryFromIncomingMigration(failedRecord));
     }
   }
   for (const installed of installedTargets.values()) {
     assertCurrent(); signal.throwIfAborted();
     await recordInstalledWorkMetadata(server, installed, installed.metadata.cover !== null);
   }
+  const finalSummaries = await listIncomingMigrationSummaries(server, true);
   const repairedCovers = await repairCompletedIncomingMigrationCovers(
     server,
     token,
-    await listIncomingMigrationSummaries(server, true),
+    finalSummaries,
     assertCurrent,
     signal,
   );
   if ((applied || repairedCovers) && typeof window !== "undefined") window.dispatchEvent(new Event("norea-content-state-changed"));
-  const pending = await listIncomingMigrationSummaries(server);
-  return { applied, pending: pending.length, ...(pending.length ? { error: pending[0]?.error, retryable: pending.some(record => record.status === "pending" || record.status === "failed") } : {}) };
+  const pending = finalSummaries.filter(record => record.status !== "completed" && record.status !== "inactive");
+  return {
+    applied,
+    pending: pending.length,
+    ...(pending.length
+      ? {
+          error: pending[0]?.error,
+          retryable: pending.some(
+            record =>
+              record.status === "pending" ||
+              record.status === "failed" ||
+              (record.status === "blocked" && isRetryableDatabaseError(record.error)),
+          ),
+        }
+      : {}),
+  };
 }

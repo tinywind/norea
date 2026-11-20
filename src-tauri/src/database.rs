@@ -234,6 +234,11 @@ pub fn schema_migrations() -> Vec<SchemaMigration> {
             description: "unify chapter reading state on progress and remove unread columns",
             sql: include_str!("migrations/0017_single_progress_model.sql"),
         },
+        SchemaMigration {
+            version: 18,
+            description: "index user-state operations by namespace, status, and entity key",
+            sql: include_str!("migrations/0018_user_state_operation_pending_entity_index.sql"),
+        },
     ]
 }
 
@@ -1676,5 +1681,75 @@ mod tests {
         .unwrap();
         assert_eq!(after_del, (2, 1, 100));
         db.close().await;
+    }
+
+    #[tokio::test]
+    async fn open_and_migrate_pools_upgrades_populated_v17_to_v18_with_pending_entity_index() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("v17_populated.db");
+        let migrations: Vec<_> = sqlx_migrations().into_iter().take(17).collect();
+
+        let v17_pool = bootstrap(&path, &migrations).await.unwrap();
+        sqlx::query(
+            "INSERT INTO user_state_operation(operation_id, namespace, entity_key, intent_sequence, payload, status, receipt, acknowledged_at) VALUES \
+             ('op-pending', 'ns-1', '[\"reading\",\"k1\"]', 1, '{}', 'pending', NULL, NULL), \
+             ('op-ack', 'ns-1', '[\"reading\",\"k2\"]', 2, '{}', 'acknowledged', '{}', 500)",
+        )
+        .execute(&v17_pool)
+        .await
+        .unwrap();
+        v17_pool.close().await;
+
+        let db = open_and_migrate_pools(&path).await.unwrap();
+        let index_exists: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM sqlite_master WHERE type = 'index' AND name = 'user_state_operation_pending_entity_idx'",
+        )
+        .fetch_optional(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(
+            index_exists.as_deref(),
+            Some("user_state_operation_pending_entity_idx")
+        );
+
+        let ops: Vec<(String, String, String, i64, Option<i64>)> = sqlx::query_as(
+            "SELECT operation_id, entity_key, status, intent_sequence, acknowledged_at \
+             FROM user_state_operation ORDER BY intent_sequence",
+        )
+        .fetch_all(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(
+            ops,
+            vec![
+                ("op-pending".into(), "[\"reading\",\"k1\"]".into(), "pending".into(), 1, None),
+                ("op-ack".into(), "[\"reading\",\"k2\"]".into(), "acknowledged".into(), 2, Some(500)),
+            ]
+        );
+
+        let plan_rows = sqlx::query(
+            "EXPLAIN QUERY PLAN \
+             SELECT 1 FROM user_state_operation \
+             WHERE namespace = 'ns-1' AND status = 'pending' AND entity_key = '[\"reading\",\"k1\"]'",
+        )
+        .fetch_all(db.reader())
+        .await
+        .unwrap();
+        let plan_details: Vec<String> = plan_rows.into_iter().map(|r| r.get("detail")).collect();
+        assert!(
+            plan_details
+                .iter()
+                .any(|detail| detail.contains("user_state_operation_pending_entity_idx")),
+            "expected pending entity lookup to use covering index, got: {plan_details:?}"
+        );
+        db.close().await;
+
+        let reopened = open_and_migrate_pools(&path).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM user_state_operation")
+            .fetch_one(reopened.reader())
+            .await
+            .unwrap();
+        assert_eq!(count, 2);
+        reopened.close().await;
     }
 }

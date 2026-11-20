@@ -30,8 +30,9 @@ use super::types::{
     random_uuid_v4, user_state_entity_key, user_state_json_bytes, user_state_work_key_parts,
     CategoryAliasPair, ParsedUserStateMergeResult, ParsedUserStateOperation, ParsedUserStateRecord,
     ResolveUserStateLedgerConflictInputDto, UserStateApplyEffectsDto, UserStateBindingDto,
-    UserStateConflictDto, UserStateDeferredDto, UserStateLedgerStatusDto, UserStateRebindMode,
-    UserStateWorkReferenceDto, USER_STATE_CLIENT_BATCH_BYTES, USER_STATE_PRELINK_BASE_REVISION,
+    UserStateConflictDto, UserStateCursorDto, UserStateDeferredDto, UserStateLedgerStatusDto,
+    UserStateRebindMode, UserStateWorkReferenceDto, USER_STATE_CLIENT_BATCH_BYTES,
+    USER_STATE_PRELINK_BASE_REVISION,
 };
 
 const USER_STATE_DB_BATCH_BYTES: usize = 8 * 1024 * 1024;
@@ -1536,6 +1537,17 @@ pub async fn list_user_state_deferred_in_tx(
     Ok(result)
 }
 
+pub async fn get_user_state_cursor_in_tx(
+    conn: &mut SqliteConnection,
+    binding: &UserStateBindingDto,
+) -> Result<UserStateCursorDto, String> {
+    let workspace = require_binding_in_tx(conn, binding).await?;
+    Ok(UserStateCursorDto {
+        cursor: workspace.cursor,
+        through: workspace.through,
+    })
+}
+
 pub async fn get_user_state_ledger_status_in_tx(
     conn: &mut SqliteConnection,
     binding: Option<&UserStateBindingDto>,
@@ -1597,62 +1609,45 @@ pub async fn get_user_state_ledger_status_in_tx(
     };
 
     let workspace = require_binding_in_tx(conn, binding).await?;
-    let pending: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM user_state_intent i \
-         JOIN user_state_progress p ON p.entity_key = i.entity_key \
-         WHERE p.namespace = ?1 AND i.sequence > p.acknowledged_sequence \
+    let counts_row = sqlx::query(
+        "SELECT \
+           COUNT(*) AS pending, \
+           COALESCE(SUM(CASE WHEN \
+             (json_type(i.entity_json, '$.work') = 'object' \
+              AND json_extract(i.entity_json, '$.work.sourceNovelId') IS NULL) \
+             OR COALESCE(json_extract(i.entity_json, '$.chapter.chapterPath'), \
+                         json_extract(i.value_json, '$.chapter.chapterPath'), '') LIKE 'norea-folder:%' \
+             OR COALESCE(json_extract(i.entity_json, '$.chapter.chapterPath'), \
+                         json_extract(i.value_json, '$.chapter.chapterPath'), '') LIKE 'local-folder:%' \
+           THEN 1 ELSE 0 END), 0) AS deferred, \
+           COALESCE(SUM(CASE WHEN ?2 = 0 \
+             AND NOT EXISTS(SELECT 1 FROM user_state_conflict c \
+                            WHERE c.namespace = ?1 AND c.entity_key = i.entity_key) \
+             AND NOT EXISTS(SELECT 1 FROM user_state_operation o \
+                            WHERE o.namespace = ?1 AND o.status = 'pending' AND o.entity_key = i.entity_key) \
+             AND (json_type(i.entity_json, '$.work') IS NULL \
+                  OR json_extract(i.entity_json, '$.work.sourceNovelId') IS NOT NULL) \
+             AND COALESCE(json_extract(i.entity_json, '$.chapter.chapterPath'), \
+                          json_extract(i.value_json, '$.chapter.chapterPath'), '') NOT LIKE 'norea-folder:%' \
+             AND COALESCE(json_extract(i.entity_json, '$.chapter.chapterPath'), \
+                          json_extract(i.value_json, '$.chapter.chapterPath'), '') NOT LIKE 'local-folder:%' \
+           THEN 1 ELSE 0 END), 0) AS sendable_intents \
+         FROM user_state_intent i \
+         JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
+         WHERE i.sequence > p.acknowledged_sequence \
            AND COALESCE(json_extract(i.entity_json, '$.kind'), '') <> 'library' \
            AND COALESCE(json_extract(i.entity_json, '$.work.pluginId'), '') <> 'local'",
     )
     .bind(&workspace.namespace)
+    .bind(if paused_after_restore { 1_i64 } else { 0_i64 })
     .fetch_one(&mut *conn)
     .await
     .map_err(|err| format!("db user state: count pending intents: {err}"))?;
 
-    let deferred: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM user_state_intent i \
-         JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
-         WHERE i.sequence > p.acknowledged_sequence \
-           AND COALESCE(json_extract(i.entity_json, '$.kind'), '') <> 'library' \
-           AND COALESCE(json_extract(i.entity_json, '$.work.pluginId'), '') <> 'local' \
-           AND ((json_type(i.entity_json, '$.work') = 'object' \
-                 AND json_extract(i.entity_json, '$.work.sourceNovelId') IS NULL) \
-                OR COALESCE(json_extract(i.entity_json, '$.chapter.chapterPath'), \
-                            json_extract(i.value_json, '$.chapter.chapterPath'), '') LIKE 'norea-folder:%' \
-                OR COALESCE(json_extract(i.entity_json, '$.chapter.chapterPath'), \
-                            json_extract(i.value_json, '$.chapter.chapterPath'), '') LIKE 'local-folder:%')",
-    )
-    .bind(&workspace.namespace)
-    .fetch_one(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: count deferred intents: {err}"))?;
+    let pending: i64 = counts_row.get("pending");
+    let deferred: i64 = counts_row.get("deferred");
+    let sendable_intents: i64 = counts_row.get("sendable_intents");
 
-    let held_intents = sqlx::query(
-        "SELECT i.entity_json FROM user_state_intent i \
-         JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
-         WHERE i.seed = 0 AND p.base_revision <> ?2 AND i.sequence > p.acknowledged_sequence \
-           AND COALESCE(json_extract(i.entity_json, '$.kind'), '') <> 'library' \
-           AND COALESCE(json_extract(i.entity_json, '$.work.pluginId'), '') <> 'local'",
-    )
-    .bind(&workspace.namespace)
-    .bind(USER_STATE_PRELINK_BASE_REVISION)
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state: load held intents: {err}"))?;
-
-    let mut held_keys: HashSet<String> = HashSet::new();
-    for r in held_intents {
-        let entity_json: String = r.get("entity_json");
-        let raw: JsonValue = serde_json::from_str(&entity_json)
-            .map_err(|err| format!("db user state: parse held entity: {err}"))?;
-        let ent = parse_user_state_entity(&raw)?;
-        held_keys.insert(user_state_entity_key(&ent)?);
-        let canon = canonical_entity_in_tx(conn, &workspace.namespace, &ent).await?;
-        held_keys.insert(user_state_entity_key(&canon)?);
-    }
-
-    let held_sources = load_held_migration_sources_in_tx(conn, &binding.server_url).await?;
-    let known_works = KnownNonLocalWorks::load_in_tx(conn).await?;
     let proj_rows = sqlx::query(
         "SELECT entity_key, applied_revision < revision AS waiting, deferred_reason, \
            json_extract(payload, '$.entity.kind') AS kind, \
@@ -1670,77 +1665,92 @@ pub async fn get_user_state_ledger_status_in_tx(
 
     let mut projection_pending: i64 = 0;
     let mut projection_failed: i64 = 0;
-    for r in proj_rows {
-        let kind: Option<String> = r.get("kind");
-        let plugin_id: Option<String> = r.get("plugin_id");
-        if kind.as_deref() == Some("library") || plugin_id.as_deref() == Some("local") {
-            continue;
-        }
-        let novel_id: Option<String> = r.get("novel_id");
-        let novel_path: Option<String> = r.get("novel_path");
-        if let Some(ref pid) = plugin_id {
-            let work_ref = UserStateWorkReferenceDto {
-                plugin_id: pid.clone(),
-                source_novel_id: novel_id.clone(),
-                novel_path: novel_path.clone().unwrap_or_default(),
-                name: String::new(),
-            };
-            if is_migration_source_held(&held_sources, &work_ref) {
-                continue;
+    if !proj_rows.is_empty() {
+        let mut held_keys: HashSet<String> = HashSet::new();
+        if pending > 0 {
+            let held_intents = sqlx::query(
+                "SELECT i.entity_json FROM user_state_intent i \
+                 JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
+                 WHERE i.seed = 0 AND p.base_revision <> ?2 AND i.sequence > p.acknowledged_sequence \
+                   AND COALESCE(json_extract(i.entity_json, '$.kind'), '') <> 'library' \
+                   AND COALESCE(json_extract(i.entity_json, '$.work.pluginId'), '') <> 'local'",
+            )
+            .bind(&workspace.namespace)
+            .bind(USER_STATE_PRELINK_BASE_REVISION)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state: load held intents: {err}"))?;
+
+            for r in held_intents {
+                let entity_json: String = r.get("entity_json");
+                let raw: JsonValue = serde_json::from_str(&entity_json)
+                    .map_err(|err| format!("db user state: parse held entity: {err}"))?;
+                let ent = parse_user_state_entity(&raw)?;
+                held_keys.insert(user_state_entity_key(&ent)?);
+                let canon = canonical_entity_in_tx(conn, &workspace.namespace, &ent).await?;
+                held_keys.insert(user_state_entity_key(&canon)?);
             }
         }
-        let deferred_reason: Option<String> = r.get("deferred_reason");
-        if deferred_reason.as_deref() == Some("projection-error") {
-            projection_failed += 1;
-            continue;
-        }
-        let applicable = kind.as_deref() == Some("category")
-            || plugin_id.as_deref().is_some_and(|pid| {
-                known_works.contains(pid, novel_id.as_deref(), novel_path.as_deref().unwrap_or(""))
-            });
-        let waiting: i64 = r.get("waiting");
-        let entity_key: String = r.get("entity_key");
-        if waiting != 0 && deferred_reason.is_none() && applicable && !held_keys.contains(&entity_key) {
-            projection_pending += 1;
+
+        let held_sources = load_held_migration_sources_in_tx(conn, &binding.server_url).await?;
+        let known_works = KnownNonLocalWorks::load_in_tx(conn).await?;
+
+        for r in proj_rows {
+            let kind: Option<String> = r.get("kind");
+            let plugin_id: Option<String> = r.get("plugin_id");
+            if kind.as_deref() == Some("library") || plugin_id.as_deref() == Some("local") {
+                continue;
+            }
+            let novel_id: Option<String> = r.get("novel_id");
+            let novel_path: Option<String> = r.get("novel_path");
+            if let Some(ref pid) = plugin_id {
+                let work_ref = UserStateWorkReferenceDto {
+                    plugin_id: pid.clone(),
+                    source_novel_id: novel_id.clone(),
+                    novel_path: novel_path.clone().unwrap_or_default(),
+                    name: String::new(),
+                };
+                if is_migration_source_held(&held_sources, &work_ref) {
+                    continue;
+                }
+            }
+            let deferred_reason: Option<String> = r.get("deferred_reason");
+            if deferred_reason.as_deref() == Some("projection-error") {
+                projection_failed += 1;
+                continue;
+            }
+            let applicable = kind.as_deref() == Some("category")
+                || plugin_id.as_deref().is_some_and(|pid| {
+                    known_works.contains(pid, novel_id.as_deref(), novel_path.as_deref().unwrap_or(""))
+                });
+            let waiting: i64 = r.get("waiting");
+            let entity_key: String = r.get("entity_key");
+            if waiting != 0 && deferred_reason.is_none() && applicable && !held_keys.contains(&entity_key) {
+                projection_pending += 1;
+            }
         }
     }
 
     let sendable_pending: i64 = if paused_after_restore {
         0
     } else {
-        sqlx::query_scalar(
-            "SELECT \
-               (SELECT COUNT(*) FROM user_state_operation o \
-                WHERE o.namespace = ?1 AND o.status = 'pending' \
-                  AND COALESCE(json_extract(o.payload, '$.entity.kind'), '') <> 'library' \
-                  AND COALESCE(json_extract(o.payload, '$.entity.work.pluginId'), '') <> 'local' \
-                  AND (json_type(o.payload, '$.entity.work') IS NULL \
-                       OR json_extract(o.payload, '$.entity.work.sourceNovelId') IS NOT NULL) \
-                  AND COALESCE(json_extract(o.payload, '$.entity.chapter.chapterPath'), \
-                               json_extract(o.payload, '$.value.chapter.chapterPath'), '') NOT LIKE 'norea-folder:%' \
-                  AND COALESCE(json_extract(o.payload, '$.entity.chapter.chapterPath'), \
-                               json_extract(o.payload, '$.value.chapter.chapterPath'), '') NOT LIKE 'local-folder:%') \
-               + \
-               (SELECT COUNT(*) FROM user_state_intent i \
-                JOIN user_state_progress p ON p.entity_key = i.entity_key AND p.namespace = ?1 \
-                WHERE i.sequence > p.acknowledged_sequence \
-                  AND COALESCE(json_extract(i.entity_json, '$.kind'), '') <> 'library' \
-                  AND COALESCE(json_extract(i.entity_json, '$.work.pluginId'), '') <> 'local' \
-                  AND NOT EXISTS(SELECT 1 FROM user_state_conflict c \
-                                 WHERE c.namespace = ?1 AND c.entity_key = i.entity_key) \
-                  AND NOT EXISTS(SELECT 1 FROM user_state_operation o \
-                                 WHERE o.namespace = ?1 AND o.status = 'pending' AND o.entity_key = i.entity_key) \
-                  AND (json_type(i.entity_json, '$.work') IS NULL \
-                       OR json_extract(i.entity_json, '$.work.sourceNovelId') IS NOT NULL) \
-                  AND COALESCE(json_extract(i.entity_json, '$.chapter.chapterPath'), \
-                               json_extract(i.value_json, '$.chapter.chapterPath'), '') NOT LIKE 'norea-folder:%' \
-                  AND COALESCE(json_extract(i.entity_json, '$.chapter.chapterPath'), \
-                               json_extract(i.value_json, '$.chapter.chapterPath'), '') NOT LIKE 'local-folder:%')",
+        let sendable_operations: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM user_state_operation o \
+             WHERE o.namespace = ?1 AND o.status = 'pending' \
+               AND COALESCE(json_extract(o.payload, '$.entity.kind'), '') <> 'library' \
+               AND COALESCE(json_extract(o.payload, '$.entity.work.pluginId'), '') <> 'local' \
+               AND (json_type(o.payload, '$.entity.work') IS NULL \
+                    OR json_extract(o.payload, '$.entity.work.sourceNovelId') IS NOT NULL) \
+               AND COALESCE(json_extract(o.payload, '$.entity.chapter.chapterPath'), \
+                            json_extract(o.payload, '$.value.chapter.chapterPath'), '') NOT LIKE 'norea-folder:%' \
+               AND COALESCE(json_extract(o.payload, '$.entity.chapter.chapterPath'), \
+                            json_extract(o.payload, '$.value.chapter.chapterPath'), '') NOT LIKE 'local-folder:%'",
         )
         .bind(&workspace.namespace)
         .fetch_one(&mut *conn)
         .await
-        .map_err(|err| format!("db user state: count sendable pending intents: {err}"))?
+        .map_err(|err| format!("db user state: count sendable pending operations: {err}"))?;
+        sendable_operations + sendable_intents
     };
 
     let conflicts = list_user_state_conflicts_in_tx(conn, binding).await?.len();

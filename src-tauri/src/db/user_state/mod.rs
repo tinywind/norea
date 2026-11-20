@@ -27,12 +27,12 @@ pub use core::{
 pub use ledger::{
     acknowledge_user_state_operations_in_tx, apply_local_user_state_retention_in_tx,
     apply_user_state_read_page_in_tx, bind_user_state_workspace_with_options_in_tx,
-    get_user_state_ledger_status_in_tx, list_user_state_conflicts_in_tx,
-    list_user_state_deferred_in_tx, prepare_user_state_operations_in_tx,
-    project_pending_user_state_bounded_in_tx, prune_acknowledged_user_state_operations_in_tx,
-    rebind_user_state_workspace_in_tx, reconcile_user_state_snapshot_in_tx,
-    resolve_user_state_ledger_conflict_in_tx, PrepareUserStateOperationsLimitsDto,
-    DEFAULT_USER_STATE_OPERATION_RETENTION_SECS,
+    get_user_state_cursor_in_tx, get_user_state_ledger_status_in_tx,
+    list_user_state_conflicts_in_tx, list_user_state_deferred_in_tx,
+    prepare_user_state_operations_in_tx, project_pending_user_state_bounded_in_tx,
+    prune_acknowledged_user_state_operations_in_tx, rebind_user_state_workspace_in_tx,
+    reconcile_user_state_snapshot_in_tx, resolve_user_state_ledger_conflict_in_tx,
+    PrepareUserStateOperationsLimitsDto, DEFAULT_USER_STATE_OPERATION_RETENTION_SECS,
 };
 pub use materialize::{
     defer_user_state_for_novel_in_tx, refresh_unattempted_user_state_identities_in_tx,
@@ -40,8 +40,8 @@ pub use materialize::{
 pub use work_categories::{WorkCategoriesDto, WorkCategoryLookupDto};
 pub use types::{
     anchor_to_json, parse_portable_reader_anchor, ResolveUserStateLedgerConflictInputDto,
-    UserStateApplyEffectsDto, UserStateBindingDto, UserStateConflictDto, UserStateDeferredDto,
-    UserStateLedgerStatusDto, UserStateRebindMode,
+    UserStateApplyEffectsDto, UserStateBindingDto, UserStateConflictDto, UserStateCursorDto,
+    UserStateDeferredDto, UserStateLedgerStatusDto, UserStateRebindMode,
 };
 
 const USER_STATE_BUSY_RETRIES: u32 = 3;
@@ -254,6 +254,20 @@ pub async fn db_user_state_prepare_operations(
         },
     )
     .await
+}
+
+#[tauri::command]
+pub async fn db_user_state_get_cursor(
+    db: State<'_, AppDatabase>,
+    binding: UserStateBindingDto,
+    mode: Option<ReadMode>,
+) -> Result<UserStateCursorDto, String> {
+    let mut conn = db
+        .pool_for(mode.unwrap_or_default())
+        .acquire()
+        .await
+        .map_err(|err| format!("db user state: acquire read connection: {err}"))?;
+    get_user_state_cursor_in_tx(&mut conn, &binding).await
 }
 
 #[tauri::command]

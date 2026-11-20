@@ -480,3 +480,32 @@ it("upgrades populated v16 storage to the single-progress model, normalizes unre
     rmSync(directory, { recursive: true });
   }
 });
+
+it("upgrades populated v17 storage to index pending user_state_operation entity lookups without altering rows", () => {
+  mkdirSync(".tmp", { recursive: true });
+  const directory = mkdtempSync(".tmp/user-state-op-entity-index-migration-");
+  const file = join(directory, "norea.db");
+  let db = new DatabaseSync(file);
+  try {
+    applyRegisteredMigrations(db, 0, 17);
+    db.exec(`INSERT INTO user_state_operation(operation_id,namespace,entity_key,intent_sequence,payload,status,receipt,acknowledged_at) VALUES
+      ('op-pending','ns','["reading","k1"]',1,'{}','pending',NULL,NULL),
+      ('op-ack','ns','["reading","k2"]',2,'{}','acknowledged','{}',100)`);
+    const before = db.prepare("SELECT * FROM user_state_operation ORDER BY intent_sequence").all();
+
+    applyRegisteredMigrations(db, 17, 18);
+    db.close();
+    db = new DatabaseSync(file);
+
+    expect(db.prepare("SELECT * FROM user_state_operation ORDER BY intent_sequence").all()).toEqual(before);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='index' AND name='user_state_operation_pending_entity_idx'").get())
+      .toEqual({ name: "user_state_operation_pending_entity_idx" });
+    const plan = db.prepare(
+      "EXPLAIN QUERY PLAN SELECT 1 FROM user_state_operation WHERE namespace = 'ns' AND status = 'pending' AND entity_key = '[\"reading\",\"k1\"]'",
+    ).all() as { detail: string }[];
+    expect(plan.some((row) => row.detail.includes("user_state_operation_pending_entity_idx"))).toBe(true);
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true });
+  }
+});

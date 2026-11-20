@@ -31,30 +31,121 @@ pub struct UserStateChapterPathBefore {
     pub path: String,
 }
 
-async fn pending_intents_in_tx(conn: &mut SqliteConnection) -> Result<Vec<IntentRow>, String> {
-    let rows = sqlx::query(
+pub(crate) async fn pending_intents_for_works_in_tx(
+    conn: &mut SqliteConnection,
+    work_keys: &[&str],
+) -> Result<Vec<IntentRow>, String> {
+    let mut unique_work_keys: Vec<&str> = Vec::with_capacity(work_keys.len());
+    for &work_key in work_keys {
+        if !unique_work_keys.contains(&work_key) {
+            unique_work_keys.push(work_key);
+        }
+    }
+    if unique_work_keys.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let has_workspace: bool =
+        sqlx::query_scalar::<_, i64>("SELECT EXISTS(SELECT 1 FROM user_state_workspace)")
+            .fetch_one(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state migration: check workspace existence: {err}"))?
+            != 0;
+
+    let mut exact_keys: Vec<String> = Vec::with_capacity(unique_work_keys.len() * 2);
+    let mut range_bounds: Vec<(String, String)> = Vec::with_capacity(unique_work_keys.len() * 3);
+    for work_key in unique_work_keys {
+        for kind in ["library", "resume"] {
+            exact_keys.push(
+                serde_json::to_string(&(kind, work_key))
+                    .map_err(|err| format!("db user state migration: encode work intent key: {err}"))?,
+            );
+        }
+        let encoded_work = serde_json::to_string(work_key)
+            .map_err(|err| format!("db user state migration: encode work key: {err}"))?;
+        for kind in ["reading", "bookmark", "membership"] {
+            range_bounds.push((
+                format!(r#"["{kind}",{encoded_work},"#),
+                format!(r#"["{kind}",{encoded_work}-"#),
+            ));
+        }
+    }
+
+    let pending_predicate = if has_workspace {
+        " AND EXISTS(SELECT 1 FROM user_state_workspace w \
+                     CROSS JOIN user_state_progress p \
+                       ON p.namespace = w.namespace \
+                      AND p.entity_key = i.entity_key \
+                     WHERE i.sequence > p.acknowledged_sequence)"
+    } else {
+        ""
+    };
+
+    let mut rows: Vec<IntentRow> = Vec::new();
+    let mut seen_sequences: HashSet<i64> = HashSet::new();
+
+    if !exact_keys.is_empty() {
+        let placeholders = (1..=exact_keys.len())
+            .map(|idx| format!("?{idx}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+        let sql = format!(
+            "SELECT i.sequence, i.entity_key, i.entity_json, i.value_json, i.seed \
+             FROM user_state_intent i \
+             WHERE i.entity_key IN ({placeholders}) \
+               AND i.seed = 0{pending_predicate}"
+        );
+        let mut query = sqlx::query(&sql);
+        for key in &exact_keys {
+            query = query.bind(key);
+        }
+        let fetched = query
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state migration: load pending work intents: {err}"))?;
+        for r in fetched {
+            let sequence: i64 = r.get("sequence");
+            if seen_sequences.insert(sequence) {
+                rows.push(IntentRow {
+                    sequence,
+                    entity_key: r.get("entity_key"),
+                    entity_json: r.get("entity_json"),
+                    value_json: r.get("value_json"),
+                    seed: r.get("seed"),
+                });
+            }
+        }
+    }
+
+    let range_sql = format!(
         "SELECT i.sequence, i.entity_key, i.entity_json, i.value_json, i.seed \
          FROM user_state_intent i \
-         WHERE i.seed = 0 \
-           AND (NOT EXISTS(SELECT 1 FROM user_state_workspace) \
-                OR EXISTS(SELECT 1 FROM user_state_progress p \
-                          WHERE p.entity_key = i.entity_key \
-                            AND i.sequence > p.acknowledged_sequence)) \
-         ORDER BY i.sequence",
-    )
-    .fetch_all(&mut *conn)
-    .await
-    .map_err(|err| format!("db user state migration: load pending intents: {err}"))?;
-    Ok(rows
-        .into_iter()
-        .map(|r| IntentRow {
-            sequence: r.get("sequence"),
-            entity_key: r.get("entity_key"),
-            entity_json: r.get("entity_json"),
-            value_json: r.get("value_json"),
-            seed: r.get("seed"),
-        })
-        .collect())
+         WHERE i.entity_key >= ?1 AND i.entity_key < ?2 \
+           AND i.seed = 0{pending_predicate}"
+    );
+    for (lower, upper) in &range_bounds {
+        let fetched = sqlx::query(&range_sql)
+            .bind(lower)
+            .bind(upper)
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db user state migration: load pending chapter intents: {err}"))?;
+        for r in fetched {
+            let sequence: i64 = r.get("sequence");
+            if seen_sequences.insert(sequence) {
+                rows.push(IntentRow {
+                    sequence,
+                    entity_key: r.get("entity_key"),
+                    entity_json: r.get("entity_json"),
+                    value_json: r.get("value_json"),
+                    seed: r.get("seed"),
+                });
+            }
+        }
+    }
+
+    rows.sort_by_key(|row| row.sequence);
+    Ok(rows)
 }
 
 pub async fn remap_pending_user_state_in_tx(
@@ -180,7 +271,7 @@ pub async fn remap_pending_user_state_in_tx(
     let mut ordered_keys: Vec<String> = Vec::new();
     let mut latest: HashMap<String, PendingRemap> = HashMap::new();
 
-    for row in pending_intents_in_tx(conn).await? {
+    for row in pending_intents_for_works_in_tx(conn, &[&source_key, &target_key]).await? {
         let (entity, value) = intent_from_row(&row)?;
         let Some(work_obj) = entity.get("work") else {
             continue;

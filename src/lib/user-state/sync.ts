@@ -1,6 +1,6 @@
 import {
   acknowledgeUserStateOperations, applyLocalUserStateRetention, applyUserStateReadPage, assertUserStateAvailable,
-  bindUserStateWorkspace, getUserStateBinding, getUserStateLedgerStatus, listUserStateConflicts,
+  bindUserStateWorkspace, getUserStateBinding, getUserStateCursor, getUserStateLedgerStatus, listUserStateConflicts,
   materializePendingUserState, prepareUserStateOperations, pruneUserStateOperations,
   rebindUserStateWorkspace as rebindUserStateWorkspaceInDb, reconcileUserStateSnapshot,
   resolveUserStateLedgerConflict, resumeUserStateAfterRestore as resumeRestoredLedger, setUserStateActiveServer,
@@ -192,8 +192,8 @@ export async function hasSendableUserStateChanges(serverUrl = selectedServer()):
   ) {
     return false;
   }
-  const binding = await getUserStateBinding(normalized);
-  const status = await getUserStateLedgerStatus(binding ?? null);
+  const binding = await getUserStateBinding(normalized, "committed");
+  const status = await getUserStateLedgerStatus(binding ?? null, "committed");
   if (status.pausedAfterRestore) return false;
   const sendable =
     status.sendablePending ??
@@ -204,9 +204,9 @@ export async function hasSendableUserStateChanges(serverUrl = selectedServer()):
 /** This status query reads only the local ledger; opening settings never publishes data. */
 export async function getUserStateStatus(): Promise<UserStateStatus> {
   const serverUrl = selectedServer();
-  const binding = serverUrl ? await getUserStateBinding(serverUrl) : null;
-  const status = await getUserStateLedgerStatus(binding ?? null);
-  const conflicts = binding ? await listUserStateConflicts(binding) : [];
+  const binding = serverUrl ? await getUserStateBinding(serverUrl, "committed") : null;
+  const status = await getUserStateLedgerStatus(binding ?? null, "committed");
+  const conflicts = binding ? await listUserStateConflicts(binding, "committed") : [];
   const store = useUserStateStore.getState();
   const runtimeMismatch = serverUrl ? store.runtimeByServer[serverUrl]?.epochMismatch : undefined;
   const epochMismatch =
@@ -389,13 +389,13 @@ async function runSynchronization(serverUrl: string, controller: AbortController
     async function pullThrough(initialTarget: number): Promise<void> {
       let target = initialTarget;
       for (;;) {
-        const status = await getUserStateLedgerStatus(binding);
+        const position = await getUserStateCursor(binding);
         check();
-        if (status.cursor === target && status.through === null) return;
-        if (status.cursor > target || (status.through !== null && status.through > target)) {
+        if (position.cursor === target && position.through === null) return;
+        if (position.cursor > target || (position.through !== null && position.through > target)) {
           throw new UserStateProtocolError("the retained cursor is ahead of this server; it was not reset");
         }
-        if (retentionSupported && retention !== null && status.cursor < retention.compactedThrough) {
+        if (retentionSupported && retention !== null && position.cursor < retention.compactedThrough) {
           snapshotAttempts += 1;
           if (snapshotAttempts > MAX_SNAPSHOT_RETRIES) {
             throw new UserStateProtocolError("snapshot reconciliation exceeded retry limit");
@@ -403,15 +403,15 @@ async function runSynchronization(serverUrl: string, controller: AbortController
           target = await reconcileFromSnapshot();
           continue;
         }
-        const through = status.through ?? target;
+        const through = position.through ?? target;
         try {
           const page = parseUserStateReadResponse(await request(serverUrl, "/user-state/read", token, signal, {
-            workspaceId: binding.workspaceId, epoch: binding.epoch, after: status.cursor, through,
+            workspaceId: binding.workspaceId, epoch: binding.epoch, after: position.cursor, through,
             ...(bulk ? {} : { limit: USER_STATE_LEGACY_MAX_BATCH }),
           }));
           check();
           assertActiveWorkspace(page);
-          validateUserStatePage(page, binding, status.cursor, through);
+          validateUserStatePage(page, binding, position.cursor, through);
           observedHead = Math.max(observedHead, page.headRevision);
           await applyUserStateReadPage(binding, page);
           check();

@@ -86,6 +86,13 @@ pub struct UserStateApplyEffectsDto {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct UserStateCursorDto {
+    pub cursor: i64,
+    pub through: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct UserStateLedgerStatusDto {
     pub cursor: i64,
     pub through: Option<i64>,

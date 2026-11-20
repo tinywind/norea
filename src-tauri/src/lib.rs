@@ -211,6 +211,7 @@ pub fn run() {
             db::user_state::db_user_state_reconcile_snapshot,
             db::user_state::db_user_state_apply_local_retention,
             db::user_state::db_user_state_prepare_operations,
+            db::user_state::db_user_state_get_cursor,
             db::user_state::db_user_state_get_ledger_status,
             db::user_state::db_user_state_list_conflicts,
             db::user_state::db_user_state_list_deferred,

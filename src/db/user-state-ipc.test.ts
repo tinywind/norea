@@ -21,6 +21,7 @@ import {
   assertUserStateAvailable,
   bindUserStateWorkspace,
   getUserStateBinding,
+  getUserStateCursor,
   getUserStateLedgerStatus,
   getUserStateRestorePaused,
   listUserStateConflicts,
@@ -108,6 +109,8 @@ describe("user-state Rust IPC wrappers", () => {
               ],
               effects: { userStateLedgerChanged: true },
             } satisfies DbMutationEnvelope<UserStateOperation[]>;
+          case "db_user_state_get_cursor":
+            return { cursor: 2, through: 2 };
           case "db_user_state_get_ledger_status":
             return {
               cursor: 2,
@@ -167,6 +170,10 @@ describe("user-state Rust IPC wrappers", () => {
       await bindUserStateWorkspace(binding);
       const ops = await prepareUserStateOperations(binding, { limit: 10 });
       expect(ops).toHaveLength(1);
+      expect(await getUserStateCursor(binding)).toEqual({
+        cursor: 2,
+        through: 2,
+      });
       expect(await getUserStateLedgerStatus(binding)).toMatchObject({
         cursor: 2,
         pending: 1,
@@ -217,8 +224,12 @@ describe("user-state Rust IPC wrappers", () => {
     }
   });
 
-  it("chunks acknowledgeUserStateOperations into 128-receipt batches", async () => {
+  it("chunks acknowledgeUserStateOperations into 128-receipt batches and coalesces ledger notifications", async () => {
     const batches: number[] = [];
+    let ledgerEvents = 0;
+    const unsubscribe = subscribeUserStateLedgerChanges(() => {
+      ledgerEvents += 1;
+    });
     vi.mocked(invoke).mockImplementation(
       async (command: string, args?: unknown) => {
         if (command === "db_user_state_acknowledge_operations") {
@@ -233,13 +244,71 @@ describe("user-state Rust IPC wrappers", () => {
       },
     );
 
-    const results = Array.from({ length: 260 }, (_, idx) => ({
-      operationId: `op-${idx}`,
-      status: "applied" as const,
-      current: null,
-    }));
-    await acknowledgeUserStateOperations(binding, results);
-    expect(batches).toEqual([128, 128, 4]);
+    try {
+      const results = Array.from({ length: 260 }, (_, idx) => ({
+        operationId: `op-${idx}`,
+        status: "applied" as const,
+        current: null,
+      }));
+      await acknowledgeUserStateOperations(binding, results);
+      expect(batches).toEqual([128, 128, 4]);
+      expect(ledgerEvents).toBe(1);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("retries pool timed out errors during acknowledgeUserStateOperations and forwards committed read mode", async () => {
+    let ackAttempts = 0;
+    vi.mocked(invoke).mockImplementation(async (command: string) => {
+      if (command === "db_user_state_acknowledge_operations") {
+        ackAttempts += 1;
+        if (ackAttempts === 1) {
+          throw new Error("db tx: begin immediate: pool timed out while waiting for an open connection");
+        }
+        return {
+          value: { resumes: [] },
+          effects: { userStateLedgerChanged: true },
+        };
+      }
+      if (command === "db_user_state_get_binding") return binding;
+      if (command === "db_user_state_get_ledger_status") {
+        return {
+          cursor: 1,
+          through: null,
+          pending: 0,
+          conflicts: 0,
+          deferred: 0,
+          projectionPending: 0,
+          projectionFailed: 0,
+          lastSuccessAt: null,
+          pausedAfterRestore: false,
+        };
+      }
+      if (command === "db_user_state_list_conflicts") return [];
+      throw new Error(`Unexpected command: ${command}`);
+    });
+
+    await acknowledgeUserStateOperations(binding, [
+      { operationId: "op-retry", status: "applied", current: null },
+    ]);
+    expect(ackAttempts).toBe(2);
+
+    await getUserStateBinding(binding.serverUrl, "committed");
+    await getUserStateLedgerStatus(binding, "committed");
+    await listUserStateConflicts(binding, "committed");
+    expect(invoke).toHaveBeenCalledWith("db_user_state_get_binding", {
+      serverUrl: binding.serverUrl,
+      mode: "committed",
+    });
+    expect(invoke).toHaveBeenCalledWith("db_user_state_get_ledger_status", {
+      binding,
+      mode: "committed",
+    });
+    expect(invoke).toHaveBeenCalledWith("db_user_state_list_conflicts", {
+      binding,
+      mode: "committed",
+    });
   });
 
   it("chunks materializePendingUserState while hasMore is true and skips failed entity keys", async () => {

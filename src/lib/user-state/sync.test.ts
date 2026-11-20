@@ -2,14 +2,14 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { UserStateOperation, UserStateReadResponse, UserStateRecord } from "./types";
 
 const mocks = vi.hoisted(() => ({
-  available: vi.fn(), resumeRestored: vi.fn(), getBinding: vi.fn(), status: vi.fn(), bind: vi.fn(), rebind: vi.fn(), reconcile: vi.fn(), applyRetention: vi.fn(),
+  available: vi.fn(), resumeRestored: vi.fn(), getBinding: vi.fn(), getCursor: vi.fn(), status: vi.fn(), bind: vi.fn(), rebind: vi.fn(), reconcile: vi.fn(), applyRetention: vi.fn(),
   prepare: vi.fn(), apply: vi.fn(), ack: vi.fn(), prune: vi.fn(),
   conflicts: vi.fn(), deferred: vi.fn(), resolve: vi.fn(), active: vi.fn(), register: vi.fn(), forget: vi.fn(), fetch: vi.fn(),
   currentSet: vi.fn(), projection: vi.fn(), recoverProjection: vi.fn(),
 }));
 vi.mock("../../db/user-state", () => ({
   assertUserStateAvailable: mocks.available, resumeUserStateAfterRestore: mocks.resumeRestored,
-  getUserStateBinding: mocks.getBinding, getUserStateLedgerStatus: mocks.status, bindUserStateWorkspace: mocks.bind,
+  getUserStateBinding: mocks.getBinding, getUserStateCursor: mocks.getCursor, getUserStateLedgerStatus: mocks.status, bindUserStateWorkspace: mocks.bind,
   rebindUserStateWorkspace: mocks.rebind, reconcileUserStateSnapshot: mocks.reconcile, applyLocalUserStateRetention: mocks.applyRetention,
   prepareUserStateOperations: mocks.prepare, applyUserStateReadPage: mocks.apply, acknowledgeUserStateOperations: mocks.ack,
   pruneUserStateOperations: mocks.prune,
@@ -46,6 +46,7 @@ beforeEach(() => {
   mocks.projection.mockResolvedValue(undefined);
   mocks.recoverProjection.mockResolvedValue({ resumes: [] });
   mocks.getBinding.mockResolvedValue(binding);
+  mocks.getCursor.mockImplementation(async () => ({ cursor, through }));
   mocks.status.mockImplementation(async () => ({ cursor, through, pending: outbox.length, conflicts: 0, deferred: 0, lastSuccessAt: null }));
   mocks.bind.mockResolvedValue(undefined);
   mocks.rebind.mockResolvedValue(undefined);
@@ -199,6 +200,7 @@ describe("user state transport", () => {
     vi.clearAllMocks();
     cursor = 0; through = null; head = 1; outbox = [operation]; records = [{ ...published, revision: 1 }];
     mocks.available.mockResolvedValue(undefined); mocks.getBinding.mockResolvedValue(binding); mocks.bind.mockResolvedValue(undefined);
+    mocks.getCursor.mockImplementation(async () => ({ cursor, through }));
     mocks.status.mockImplementation(async () => ({ cursor, through, pending: outbox.length, conflicts: 0, deferred: 0, lastSuccessAt: null }));
     mocks.prepare.mockImplementation(async () => outbox);
     mocks.apply.mockImplementation(async (_binding, page: UserStateReadResponse) => { cursor = page.nextCursor; through = page.hasMore ? page.through : null; return { resumes: [] }; });
@@ -730,10 +732,48 @@ it("records epochMismatch immediately when epoch rotates mid-sync on /retention 
 it("reports no sendable changes while the server is blocked with 403", async () => {
   useUserStateStore.getState().setEnabled(binding.serverUrl, true);
   expect(await hasSendableUserStateChanges(binding.serverUrl)).toBe(true);
+  expect(mocks.getBinding).toHaveBeenCalledWith(binding.serverUrl, "committed");
+  expect(mocks.status).toHaveBeenCalledWith(binding, "committed");
 
   useUserStateStore.getState().setRuntime(binding.serverUrl, "error", "HTTP 403", true);
   expect(await hasSendableUserStateChanges(binding.serverUrl)).toBe(false);
 
   useUserStateStore.getState().setRuntime(binding.serverUrl, "idle");
   expect(await hasSendableUserStateChanges(binding.serverUrl)).toBe(true);
+});
+
+it("uses committed reads for UI status and lightweight cursor reads during pullThrough pagination", async () => {
+  await getUserStateStatus();
+  expect(mocks.getBinding).toHaveBeenCalledWith(binding.serverUrl, "committed");
+  expect(mocks.status).toHaveBeenCalledWith(binding, "committed");
+  expect(mocks.conflicts).toHaveBeenCalledWith(binding, "committed");
+
+  mocks.getCursor.mockClear();
+  mocks.status.mockClear();
+  outbox = [];
+  head = 2;
+  records = [published, { ...published, revision: 2, operationId: "op-2", value: { bookmarked: true } }];
+  const originalFetch = mocks.fetch.getMockImplementation()!;
+  mocks.fetch.mockImplementation(async (url: string, init?: RequestInit) => {
+    if (new URL(url).pathname.endsWith("/read")) {
+      const body = JSON.parse(init?.body as string);
+      const next = body.after === 0 ? 1 : 2;
+      const pageRecords = records.filter(record => record.revision === next);
+      return Response.json({
+        version: 1,
+        workspaceId: binding.workspaceId,
+        epoch: binding.epoch,
+        headRevision: head,
+        through: body.through,
+        nextCursor: next,
+        hasMore: next < body.through,
+        records: pageRecords,
+      });
+    }
+    return originalFetch(url, init);
+  });
+
+  await synchronizeUserState();
+  expect(mocks.getCursor).toHaveBeenCalledTimes(2);
+  expect(mocks.status).toHaveBeenCalledTimes(1);
 });
