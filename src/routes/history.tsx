@@ -183,7 +183,7 @@ export function HistoryPage() {
     entry: RecentlyReadEntry,
     nextChapter: ChapterListRow | null | undefined,
   ) => {
-    if (entry.progress < FINISHED_PROGRESS) {
+    if (Math.round(entry.progress) < FINISHED_PROGRESS) {
       openChapter(entry.chapterId);
       return;
     }

@@ -122,6 +122,7 @@ export function useReaderScrollLayout({
     scrollStepAnimationRef.current?.cancel();
     scrollStepAnimationRef.current = null;
     pageScrollAnimatingRef.current = false;
+    pagedTargetPageRef.current = null;
   }, []);
 
   const enforceScrollStepFloor = useCallback(() => {
@@ -272,11 +273,9 @@ export function useReaderScrollLayout({
         }));
         if (targetPage < 1 || targetPage > getPagedPageCount(node)) {
           if (direction === 1 && pageScrollAnimatingRef.current) {
+            const finalLeft = getPagedLeft(node, getPagedPageCount(node));
             cancelPagedScrollAnimation();
-            node.scrollTo({
-              left: getPagedLeft(node, getPagedPageCount(node)),
-              behavior: "auto",
-            });
+            node.scrollLeft = finalLeft;
           }
           logReaderInput("page-step-boundary", () => ({
             source,
@@ -316,7 +315,7 @@ export function useReaderScrollLayout({
         if (direction === 1 && scrollStepAnimationRef.current) {
           const finalTop = scrollStepAnimationRef.current.targetTop;
           cancelPagedScrollAnimation();
-          node.scrollTo({ top: finalTop, behavior: "auto" });
+          node.scrollTop = finalTop;
         }
         logReaderInput("page-step-boundary", () => ({
           source,

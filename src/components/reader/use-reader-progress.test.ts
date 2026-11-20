@@ -317,4 +317,18 @@ describe("useReaderProgress scroll restore", () => {
     vi.advanceTimersByTime(1_000);
     expect(viewport.scrollTop).toBe(5 * 2400 + 600);
   });
+
+  it("forces completion, cancels pending lower-progress timers, and keeps 100% on unmount", () => {
+    const { viewport, reader, onProgressChange, unmount } = openReader({
+      initialProgress: 0,
+    });
+    viewport.scrollTop = 3_500;
+    reader.updateProgressFromScroll();
+    expect(reader.completeIfAtEnd()).toBe(false);
+    expect(reader.completeIfAtEnd({ force: true })).toBe(true);
+    expect(onProgressChange).toHaveBeenCalledWith(100);
+    vi.advanceTimersByTime(500);
+    unmount();
+    expect(onProgressChange.mock.calls.every(([progress]) => progress === 100)).toBe(true);
+  });
 });

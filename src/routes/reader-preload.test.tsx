@@ -80,7 +80,7 @@ vi.mock("../components/reader/use-reader-chapter-document", () => ({ useReaderCh
 vi.mock("../components/reader/use-reader-chapter-navigation", () => ({ useReaderChapterNavigation: () => ({
   autoDownloadingChapterId: null, awaitingChapterDownload: false, chapterUnavailable: null,
   initialProgressOverride: { chapterId: mocks.chapterId, progress: 0 }, setInitialProgressOverride: noop,
-  handleReaderBack: noop, openAdjacent: noop, openChapter: noop,
+  handleReaderBack: noop, handleBackToNovel: noop, openAdjacent: noop, openChapter: noop,
 }) }));
 vi.mock("../components/ReaderContent", () => ({ ReaderContent: (props: Record<string, unknown>) => {
   const key = String(props.contentKey);

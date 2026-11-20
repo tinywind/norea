@@ -48,7 +48,7 @@ import { useReaderScrollLayout } from "./reader/use-reader-scroll-layout";
 import { useReaderWakeLock } from "./reader/use-reader-wake-lock";
 
 export interface ReaderContentHandle {
-  completeIfAtEnd: () => boolean;
+  completeIfAtEnd: (options?: { force?: boolean }) => boolean;
   patchMediaElements: (patches: ChapterMediaElementPatch[]) => void;
   scrollByPage: (direction: 1 | -1, source?: string) => void;
   scrollToStart: () => void;
@@ -282,6 +282,7 @@ function ReaderContentInner(
       scrollToStart() {
         const node = getActiveScrollNode();
         if (!node) return;
+        completedForNavigationRef.current = false;
         cancelPagedScrollAnimation();
         node.scrollTo({ top: 0, left: 0, behavior: "auto" });
         syncScrollVirtualRange(0, node.clientHeight);

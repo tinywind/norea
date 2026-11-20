@@ -26,7 +26,17 @@ export function novelChaptersQueryKey(novelId: number) {
 }
 
 export const novelLibraryQueryKey = ["novel", "library"] as const;
+export const continueReadingQueryPrefix = [
+  "novel",
+  "library",
+  "continue-reading",
+] as const;
 export const chapterHistoryQueryKey = ["chapter", "history"] as const;
+export const chapterHistoryNextQueryPrefix = [
+  "chapter",
+  "history",
+  "next",
+] as const;
 export const chapterUpdatesQueryKey = ["chapter", "updates"] as const;
 export const downloadCacheQueryKey = ["download-cache"] as const;
 
@@ -112,6 +122,12 @@ export async function applyNovelChapterDownloadCompletions(
     queryClient.invalidateQueries({
       queryKey: novelLibraryQueryKey,
       refetchType: "none",
+    }),
+    queryClient.invalidateQueries({
+      queryKey: continueReadingQueryPrefix,
+    }),
+    queryClient.invalidateQueries({
+      queryKey: chapterHistoryNextQueryPrefix,
     }),
   );
   await Promise.all(invalidations);

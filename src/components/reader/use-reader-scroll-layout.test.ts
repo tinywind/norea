@@ -104,4 +104,34 @@ describe("quick page steps", () => {
     expect(node.scrollLeft).toBe(PAGE * 5);
     expect(onBoundaryPage).not.toHaveBeenCalled();
   });
+
+  it("snaps an in-flight paged animation to the last page before invoking onBoundaryPage(1)", () => {
+    const node = fakeNode({ scrollWidth: PAGE * 2 });
+    const { layout, onBoundaryPage } = mountLayout(true, node);
+    let leftAtBoundary = -1;
+    onBoundaryPage.mockImplementation(() => {
+      leftAtBoundary = node.scrollLeft;
+    });
+    layout.scrollByPage(1, "tap-next");
+    runFrames(now + 32);
+    expect(node.scrollLeft).toBeLessThan(PAGE);
+    layout.scrollByPage(1, "tap-next");
+    expect(onBoundaryPage).toHaveBeenCalledWith(1);
+    expect(leftAtBoundary).toBe(PAGE);
+  });
+
+  it("snaps an in-flight scroll-step animation to the bottom before invoking onBoundaryPage(1)", () => {
+    const node = fakeNode({ scrollHeight: PAGE * 2 - 40 });
+    const { layout, onBoundaryPage } = mountLayout(false, node);
+    let topAtBoundary = -1;
+    onBoundaryPage.mockImplementation(() => {
+      topAtBoundary = node.scrollTop;
+    });
+    layout.scrollByPage(1, "tap-next");
+    runFrames(now + 32);
+    expect(node.scrollTop).toBeLessThan(PAGE - 40);
+    layout.scrollByPage(1, "tap-next");
+    expect(onBoundaryPage).toHaveBeenCalledWith(1);
+    expect(topAtBoundary).toBe(PAGE - 40);
+  });
 });

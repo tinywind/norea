@@ -203,7 +203,7 @@ export function NovelWorkspace({
         {hasHistory && firstChapter ? (
           <Button
             leftSection={<FromStartIcon size="1.125rem" />}
-            onClick={() => onRead(firstChapter)}
+            onClick={() => onRead(firstChapter, { fromStart: true })}
             variant="default"
           >
             {t("novel.fromStart")}

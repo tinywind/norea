@@ -11,6 +11,8 @@ import { describeError } from "../lib/errors";
 import {
   applyNovelChapterDownloadCompletion,
   applyNovelChapterDownloadCompletions,
+  chapterHistoryNextQueryPrefix,
+  continueReadingQueryPrefix,
 } from "../lib/reader-query-invalidation";
 import {
   startAndroidBackgroundDownloadRecovery,
@@ -65,12 +67,18 @@ export function TaskNotifications() {
           queryKey: ["novel", "detail"],
           refetchType: "none",
         }),
+        queryClient.invalidateQueries({
+          queryKey: chapterHistoryNextQueryPrefix,
+        }),
       ];
       if (includeLibrary) {
         invalidations.push(
           queryClient.invalidateQueries({
             queryKey: ["novel", "library"],
             refetchType: "none",
+          }),
+          queryClient.invalidateQueries({
+            queryKey: continueReadingQueryPrefix,
           }),
         );
       }

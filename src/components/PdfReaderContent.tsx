@@ -992,23 +992,26 @@ function PdfReaderContentInner(
   useImperativeHandle(
     ref,
     () => ({
-      completeIfAtEnd() {
+      completeIfAtEnd(options?: { force?: boolean }) {
         const node = viewportRef.current;
         const currentPageCount = pageCountRef.current;
-        if (!node || currentPageCount <= 0 || !isProgressReady()) return false;
-        if (canScrollVertically(node, 1)) return false;
-        if (
-          isPagedReader &&
-          pageNumberRef.current +
-            getVisiblePageCount(
-              pageNumberRef.current,
-              currentPageCount,
-              visiblePageCountRef.current,
-            ) -
-            1 <
-            currentPageCount
-        ) {
-          return false;
+        if (hasPdfErrorRef.current || currentPageCount <= 0) return false;
+        if (!options?.force) {
+          if (!node || !isProgressReady()) return false;
+          if (canScrollVertically(node, 1)) return false;
+          if (
+            isPagedReader &&
+            pageNumberRef.current +
+              getVisiblePageCount(
+                pageNumberRef.current,
+                currentPageCount,
+                visiblePageCountRef.current,
+              ) -
+              1 <
+              currentPageCount
+          ) {
+            return false;
+          }
         }
         completedForNavigationRef.current = true;
         latestProgressRef.current = 100;
@@ -1016,6 +1019,13 @@ function PdfReaderContentInner(
         if (progressTimerRef.current !== null) {
           window.clearTimeout(progressTimerRef.current);
           progressTimerRef.current = null;
+        }
+        if (options?.force) {
+          const callback = onProgressChangeRef.current;
+          if (!callback) return false;
+          lastSavedProgressRef.current = 100;
+          callback(100);
+          return true;
         }
         flushProgress(100);
         return true;

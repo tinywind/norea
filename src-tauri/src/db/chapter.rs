@@ -2244,9 +2244,8 @@ pub async fn list_continue_reading_in_conn(
              c.name AS chapter_name, \
              c.chapter_number, \
              c.position, \
-             c.progress, \
+             CASE WHEN c.unread = 0 THEN 100.0 ELSE c.progress END AS progress, \
              c.read_at, \
-             c.unread AS chapter_unread, \
              CASE WHEN nc.id IS NOT NULL AND (nc.is_downloaded = 1 OR nc.content_bytes > 0) THEN nc.id ELSE NULL END AS next_chapter_id, \
              CASE WHEN nc.id IS NOT NULL AND (nc.is_downloaded = 1 OR nc.content_bytes > 0) THEN nc.name ELSE NULL END AS next_chapter_name, \
              CASE WHEN nc.id IS NOT NULL AND (nc.is_downloaded = 1 OR nc.content_bytes > 0) THEN nc.chapter_number ELSE NULL END AS next_chapter_number, \
@@ -2268,7 +2267,7 @@ pub async fn list_continue_reading_in_conn(
            WHERE n.in_library = 1 \
          ) \
          SELECT * FROM latest \
-         WHERE (chapter_unread = 1 AND progress < 100) OR next_chapter_id IS NOT NULL \
+         WHERE progress < 100 OR next_chapter_id IS NOT NULL \
          ORDER BY read_at DESC, position DESC, chapter_id DESC \
          LIMIT ?1",
         effective_name = super::novel::EFFECTIVE_NOVEL_NAME_SQL,
@@ -4554,6 +4553,23 @@ mod tests {
         assert_eq!(cont.len(), 1);
         assert_eq!(cont[0].chapter_id, 11);
         assert_eq!(cont[0].next_chapter_id, Some(12));
+        assert_eq!(cont[0].progress, 100.0);
+
+        // Even if a read chapter (unread = 0) had stored progress < 100, continue reading
+        // reports it as finished (100.0) so callers advance to the downloaded next chapter.
+        sqlx::query("UPDATE chapter SET unread = 0, progress = 50.0 WHERE id = 11")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
+        let cont_read_low_progress = list_continue_reading_in_conn(&mut conn, None).await.unwrap();
+        assert_eq!(cont_read_low_progress.len(), 1);
+        assert_eq!(cont_read_low_progress[0].chapter_id, 11);
+        assert_eq!(cont_read_low_progress[0].progress, 100.0);
+        assert_eq!(cont_read_low_progress[0].next_chapter_id, Some(12));
+        sqlx::query("UPDATE chapter SET progress = 100.0 WHERE id = 11")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
 
         let hist = list_reading_history_page_in_conn(
             &mut conn,

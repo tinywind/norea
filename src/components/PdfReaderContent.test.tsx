@@ -369,6 +369,38 @@ describe("PDF progress readiness", () => {
     vi.advanceTimersByTime(400);
     expect(reader.onProgressChange).not.toHaveBeenCalled();
   });
+
+  it("forces completion for a loaded PDF even while re-rendering and does not flush stale progress on unmount", async () => {
+    let resize = () => {};
+    vi.stubGlobal("ResizeObserver", class {
+      constructor(callback: () => void) { resize = callback; }
+      observe() {}
+      disconnect() {}
+    });
+    const reader = mountReader({ pageReader: true });
+    reader.resolveDocument({ numPages: 2 });
+    await reader.settle();
+    reader.page().onRendered!(1, 200);
+    reader.render();
+    reader.viewport.clientWidth = 280;
+    resize();
+    reader.render();
+    expect(reader.ref.current!.completeIfAtEnd()).toBe(false);
+    expect(reader.ref.current!.completeIfAtEnd({ force: true })).toBe(true);
+    expect(reader.onProgressChange).toHaveBeenCalledWith(100);
+    dispose?.();
+    expect(reader.onProgressChange.mock.calls.every(([progress]) => progress === 100)).toBe(true);
+  });
+
+  it("still refuses forced completion when the PDF failed to render", async () => {
+    const reader = mountReader({ pageReader: true });
+    reader.resolveDocument({ numPages: 1 });
+    await reader.settle();
+    reader.page().onRenderError!(new Error("Corrupt page"));
+    reader.render();
+    expect(reader.ref.current!.completeIfAtEnd({ force: true })).toBe(false);
+    expect(reader.onProgressChange).not.toHaveBeenCalled();
+  });
 });
 
 describe("PDF zoom steps", () => {

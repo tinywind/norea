@@ -364,7 +364,9 @@ function findLatestReadChapterId(
       chapter.readAt !== null &&
       (latest === undefined ||
         chapter.readAt > (latest.readAt ?? -1) ||
-        (chapter.readAt === latest.readAt && chapter.position > latest.position))
+        (chapter.readAt === latest.readAt &&
+          (chapter.position > latest.position ||
+            (chapter.position === latest.position && chapter.id > latest.id))))
     ) {
       latest = chapter;
     }

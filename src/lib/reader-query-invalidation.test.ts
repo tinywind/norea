@@ -230,6 +230,8 @@ describe("reader query invalidation", () => {
       { id: 12, isDownloaded: false },
     ]);
     const libraryQuery = vi.fn().mockResolvedValue([{ id: 7 }]);
+    const continueReadingQuery = vi.fn().mockResolvedValue([]);
+    const historyNextQuery = vi.fn().mockResolvedValue(null);
 
     await observeQuery(
       queryClient,
@@ -240,6 +242,16 @@ describe("reader query invalidation", () => {
       queryClient,
       ["novel", "library", { sortOrder: "nameAsc" }],
       libraryQuery,
+    );
+    await observeQuery(
+      queryClient,
+      ["novel", "library", "continue-reading", 6],
+      continueReadingQuery,
+    );
+    await observeQuery(
+      queryClient,
+      ["chapter", "history", "next", 10],
+      historyNextQuery,
     );
 
     await applyNovelChapterDownloadCompletion(queryClient, {
@@ -253,6 +265,8 @@ describe("reader query invalidation", () => {
     ]);
     expect(chaptersQuery).toHaveBeenCalledTimes(1);
     expect(libraryQuery).toHaveBeenCalledTimes(1);
+    expect(continueReadingQuery).toHaveBeenCalledTimes(2);
+    expect(historyNextQuery).toHaveBeenCalledTimes(2);
   });
 
   it("keeps incomplete installed chapters repairable and reflects a later complete download", async () => {

@@ -524,29 +524,38 @@ export function useReaderProgress({
     persistScrollAnchor();
   }, [flushProgress, persistScrollAnchor]);
 
-  const completeIfAtEnd = useCallback(() => {
-    const node = getActiveScrollNode();
-    if (!node || !isAtReadingEnd(node, isPagedReader)) return false;
-    completedForNavigationRef.current = true;
-    latestProgressRef.current = 100;
-    setRenderedProgress(100, { force: true });
-    if (progressTimerRef.current !== null) {
-      window.clearTimeout(progressTimerRef.current);
-      progressTimerRef.current = null;
-    }
-    pendingProgressSaveRef.current = null;
-    restoreSettleRef.current?.cancel();
-    flushProgress(100);
-    scrollAnchorDirtyRef.current = true;
-    persistScrollAnchor();
-    return true;
-  }, [
-    flushProgress,
-    getActiveScrollNode,
-    isPagedReader,
-    persistScrollAnchor,
-    setRenderedProgress,
-  ]);
+  const completeIfAtEnd = useCallback(
+    (options?: { force?: boolean }) => {
+      const node = getActiveScrollNode();
+      if (!options?.force && (!node || !isAtReadingEnd(node, isPagedReader))) {
+        return false;
+      }
+      completedForNavigationRef.current = true;
+      latestProgressRef.current = 100;
+      setRenderedProgress(100, { force: true });
+      if (progressTimerRef.current !== null) {
+        window.clearTimeout(progressTimerRef.current);
+        progressTimerRef.current = null;
+      }
+      pendingProgressSaveRef.current = null;
+      restoreSettleRef.current?.cancel();
+      if (!onProgressChange) {
+        return false;
+      }
+      flushProgress(100);
+      scrollAnchorDirtyRef.current = true;
+      persistScrollAnchor();
+      return true;
+    },
+    [
+      flushProgress,
+      getActiveScrollNode,
+      isPagedReader,
+      onProgressChange,
+      persistScrollAnchor,
+      setRenderedProgress,
+    ],
+  );
 
   return {
     progress,

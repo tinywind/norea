@@ -1,7 +1,6 @@
 import { Box, Loader, Text, Transition } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useNavigate } from "@tanstack/react-router";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { StateView } from "../components/AppFrame";
 import { PdfReaderContent } from "../components/PdfReaderContent";
@@ -65,11 +64,14 @@ interface ReaderPageProps {
 
 export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
   const { t } = useTranslation();
-  const navigate = useNavigate();
   const active = usePageActivity();
   const queryClient = useQueryClient();
   const contentRef = useRef<ReaderContentHandle | null>(null);
   const openedChapterRef = useRef<number | null>(null);
+  const onBeforeReaderBackRef = useRef<() => void>(() => {});
+  const handleBeforeReaderBack = useCallback(() => {
+    onBeforeReaderBackRef.current();
+  }, []);
   const chapterQuery = useQuery({
     meta: { errorPresentation: "inline" },
     ...readerChapterQueryOptions(chapterId),
@@ -126,8 +128,10 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     (state) => state.setChapterScrollAnchor,
   );
   const clearedFromStartChapterRef = useRef<number | null>(null);
+  const resetFromStartProgressRef = useRef<number | null>(null);
+  const wasActiveRef = useRef(active);
   useLayoutEffect(() => {
-    if (!fromStart) {
+    if (!active || !fromStart) {
       clearedFromStartChapterRef.current = null;
       return;
     }
@@ -136,7 +140,7 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     }
     clearedFromStartChapterRef.current = chapterId;
     setChapterScrollAnchor(chapterId, null);
-  }, [chapterId, fromStart, setChapterScrollAnchor]);
+  }, [active, chapterId, fromStart, setChapterScrollAnchor]);
 
   const chapterListQuery = useQuery({
     queryKey: chapterListQueryKey(currentNovelId),
@@ -232,6 +236,7 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     openChapter,
     openAdjacent,
     handleReaderBack,
+    handleBackToNovel,
   } = useReaderChapterNavigation({
     chapterId,
     chapter,
@@ -240,6 +245,7 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     readerProgressPersistenceReady,
     contentRef,
     openedChapterRef,
+    onBeforeBack: handleBeforeReaderBack,
   });
   const preparedNextChapter = useNextReaderChapter({
     active,
@@ -454,30 +460,97 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     [chapterNovelId, setNovelPageIndex],
   );
   const completedEndChapterRef = useRef<number | null>(null);
-  const finishCurrentLastChapter = useCallback(() => {
+  const finishCurrentChapterAtEnd = useCallback(() => {
     if (!chapter || !readerProgressPersistenceReady) return;
     completedEndChapterRef.current = chapter.id;
-    if (!contentRef.current?.completeIfAtEnd()) {
+    if (!contentRef.current?.completeIfAtEnd({ force: true })) {
       handleProgressChange(FINISHED_PROGRESS);
     }
   }, [chapter, handleProgressChange, readerProgressPersistenceReady]);
   const handleBoundaryPage = useCallback(
     (direction: 1 | -1) => {
-      if (direction === 1 && isLastChapter && chapter) {
-        finishCurrentLastChapter();
-        setEndReachedChapterId(chapter.id);
+      if (direction === 1 && chapter) {
+        finishCurrentChapterAtEnd();
+        if (isLastChapter) {
+          setEndReachedChapterId(chapter.id);
+        }
         void openAdjacent(direction, { skipComplete: true });
         return;
       }
       void openAdjacent(direction);
     },
-    [chapter, finishCurrentLastChapter, isLastChapter, openAdjacent],
+    [chapter, finishCurrentChapterAtEnd, isLastChapter, openAdjacent],
   );
   const showNovelEnd =
     hasChapterContent &&
     chapter !== undefined &&
     endReachedChapterId === chapter.id &&
     (isLastChapter || novelEndCheck.check.status === "found");
+  useLayoutEffect(() => {
+    onBeforeReaderBackRef.current = () => {
+      if (
+        !showNovelEnd ||
+        !readerProgressPersistenceReady ||
+        !chapter ||
+        completedEndChapterRef.current === chapter.id ||
+        (!chapter.unread && chapter.progress >= FINISHED_PROGRESS)
+      ) {
+        return;
+      }
+      finishCurrentChapterAtEnd();
+    };
+  }, [chapter, finishCurrentChapterAtEnd, readerProgressPersistenceReady, showNovelEnd]);
+  useEffect(() => {
+    if (!active) {
+      wasActiveRef.current = false;
+      completedEndChapterRef.current = null;
+      resetFromStartProgressRef.current = null;
+      setEndReachedChapterId(null);
+      setInitialProgressOverride(null);
+      return;
+    }
+    const reactivated = !wasActiveRef.current;
+    wasActiveRef.current = true;
+    if (reactivated && fromStart && contentRef.current) {
+      contentRef.current.scrollToStart();
+    }
+  }, [active, fromStart, setInitialProgressOverride]);
+  useEffect(() => {
+    if (completedEndChapterRef.current !== chapterId) {
+      completedEndChapterRef.current = null;
+    }
+  }, [chapterId]);
+  useEffect(() => {
+    if (!active || !fromStart) {
+      resetFromStartProgressRef.current = null;
+      return;
+    }
+    if (
+      !readerProgressPersistenceReady ||
+      !chapter ||
+      chapter.id !== chapterId ||
+      currentNovelId <= 0 ||
+      resetFromStartProgressRef.current === chapter.id
+    ) {
+      return;
+    }
+    resetFromStartProgressRef.current = chapter.id;
+    if (chapter.progress > 0 && chapter.progress < FINISHED_PROGRESS) {
+      persistProgress({
+        chapterId: chapter.id,
+        novelId: currentNovelId,
+        progress: 0,
+      });
+    }
+  }, [
+    active,
+    chapter,
+    chapterId,
+    currentNovelId,
+    fromStart,
+    persistProgress,
+    readerProgressPersistenceReady,
+  ]);
   useEffect(() => {
     if (
       !showNovelEnd ||
@@ -488,10 +561,10 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
     ) {
       return;
     }
-    finishCurrentLastChapter();
+    finishCurrentChapterAtEnd();
   }, [
     chapter,
-    finishCurrentLastChapter,
+    finishCurrentChapterAtEnd,
     readerProgressPersistenceReady,
     showNovelEnd,
   ]);
@@ -738,9 +811,7 @@ export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
             <ReaderEndOfNovel
               check={novelEndCheck.check}
               novel={currentNovel}
-              onBackToNovel={() => {
-                void navigate({ to: "/novel", search: { id: currentNovelId } });
-              }}
+              onBackToNovel={() => handleBackToNovel(currentNovelId)}
               onCheck={() => void novelEndCheck.run()}
               onContinue={() => openAdjacentChapter(1)}
             />

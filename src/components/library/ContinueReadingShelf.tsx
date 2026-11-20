@@ -9,7 +9,7 @@ import {
 } from "../../db/queries/continue-reading";
 import { useTranslation } from "../../i18n";
 import { pluginManager } from "../../lib/plugins/manager";
-import { novelLibraryQueryKey } from "../../lib/reader-query-invalidation";
+import { continueReadingQueryPrefix } from "../../lib/reader-query-invalidation";
 import { useNovelCoverSource } from "../../lib/use-novel-cover-source";
 import { useLibraryStore } from "../../store/library";
 import { ConsoleCover } from "../ConsolePrimitives";
@@ -18,8 +18,7 @@ import { ChevronDownIcon, ChevronRightIcon } from "../ui/icons";
 
 /** Under the library key, so reading progress and library changes refresh it. */
 export const continueReadingQueryKey = [
-  ...novelLibraryQueryKey,
-  "continue-reading",
+  ...continueReadingQueryPrefix,
   CONTINUE_READING_LIMIT,
 ] as const;
 

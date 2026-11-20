@@ -57,7 +57,21 @@ interface ReaderChapterNavigationOptions {
   readerProgressPersistenceReady: boolean;
   contentRef: RefObject<ReaderContentHandle | null>;
   openedChapterRef: RefObject<number | null>;
+  onBeforeBack?: () => void;
 }
+
+function isNovelHrefForId(href: string, novelId: number): boolean {
+  try {
+    const parsed = new URL(href, "http://norea.local");
+    return (
+      parsed.pathname === "/novel" &&
+      Number(parsed.searchParams.get("id")) === novelId
+    );
+  } catch {
+    return false;
+  }
+}
+
 export function useReaderChapterNavigation({
   chapterId,
   chapter,
@@ -66,6 +80,7 @@ export function useReaderChapterNavigation({
   readerProgressPersistenceReady,
   contentRef,
   openedChapterRef,
+  onBeforeBack,
 }: ReaderChapterNavigationOptions) {
   const { t } = useTranslation();
   const active = usePageActivity();
@@ -262,6 +277,9 @@ export function useReaderChapterNavigation({
   const openAdjacent = useCallback(
     async (direction: 1 | -1, options?: { skipComplete?: boolean }) => {
       if (!chapter?.novelId || chapter.position === undefined) return;
+      if (direction === 1 && !options?.skipComplete) {
+        contentRef.current?.completeIfAtEnd();
+      }
       const listedAdjacent = direction === 1 ? nextChapter : previousChapter;
       const adjacent =
         listedAdjacent ??
@@ -270,9 +288,6 @@ export function useReaderChapterNavigation({
           chapter.position,
           direction,
         ));
-      if (direction === 1 && !options?.skipComplete) {
-        contentRef.current?.completeIfAtEnd();
-      }
       if (!adjacent) return;
       openChapter(
         adjacent,
@@ -289,6 +304,7 @@ export function useReaderChapterNavigation({
   );
 
   const handleReaderBack = useCallback((): boolean => {
+    onBeforeBack?.();
     cancelPendingChapterOpen();
     const target = findPreviousAppHistoryEntry(currentHref, ["/reader"]);
     if (target) {
@@ -308,7 +324,32 @@ export function useReaderChapterNavigation({
     }
     void navigate({ to: "/" });
     return true;
-  }, [cancelPendingChapterOpen, chapter?.novelId, currentHref, navigate]);
+  }, [cancelPendingChapterOpen, chapter?.novelId, currentHref, navigate, onBeforeBack]);
+
+  const handleBackToNovel = useCallback(
+    (novelId: number): void => {
+      onBeforeBack?.();
+      cancelPendingChapterOpen();
+      if (novelId > 0) {
+        const target = findPreviousAppHistoryEntry(currentHref, ["/reader"]);
+        if (target && isNovelHrefForId(target.href, novelId)) {
+          trimAppNavigationHistoryTo(target);
+          window.history.go(-target.steps);
+          return;
+        }
+        void navigate({ to: "/novel", search: { id: novelId }, replace: true });
+        return;
+      }
+      handleReaderBack();
+    },
+    [
+      cancelPendingChapterOpen,
+      currentHref,
+      handleReaderBack,
+      navigate,
+      onBeforeBack,
+    ],
+  );
 
   usePageBackNavigation(handleReaderBack);
 
@@ -319,6 +360,7 @@ export function useReaderChapterNavigation({
     const handleReaderPopState = () => {
       window.setTimeout(() => {
         if (window.location.pathname !== "/reader") return;
+        onBeforeBack?.();
 
         const currentHref = `${window.location.pathname}${window.location.search}${window.location.hash}`;
         const target = findPreviousAppHistoryEntry(currentHref, ["/reader"]);
@@ -336,7 +378,7 @@ export function useReaderChapterNavigation({
     return () => {
       window.removeEventListener("popstate", handleReaderPopState);
     };
-  }, [active, chapter?.novelId, navigate]);
+  }, [active, chapter?.novelId, navigate, onBeforeBack]);
 
   return {
     autoDownloadingChapterId,
@@ -348,5 +390,6 @@ export function useReaderChapterNavigation({
     openChapter,
     openAdjacent,
     handleReaderBack,
+    handleBackToNovel,
   };
 }

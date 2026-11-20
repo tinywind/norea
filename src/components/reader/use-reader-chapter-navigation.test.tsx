@@ -2,11 +2,14 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { act } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
+import { getAdjacentChapter } from "../../db/queries/chapter";
 import { getNovelById } from "../../db/queries/novel";
 import { readServerNovelSource } from "../../lib/content-sync/novel-source";
+import { recordAppNavigationEntry } from "../../lib/navigation-history";
 import { useNetworkStore } from "../../lib/network";
 import { cancelChapterDownloadBatches, enqueueChapterDownload } from "../../lib/tasks/chapter-download";
 import { taskScheduler } from "../../lib/tasks/scheduler";
+import type { ReaderContentHandle } from "../ReaderContent";
 import { useReaderChapterNavigation } from "./use-reader-chapter-navigation";
 import { useNextReaderChapter } from "./use-next-reader-chapter";
 import { useReaderDocument } from "../use-reader-document";
@@ -19,6 +22,10 @@ vi.mock("@tanstack/react-router", () => ({
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: navigation.t }) }));
 vi.mock("../../lib/page-activity", () => ({ usePageActivity: () => false }));
 vi.mock("../../lib/android-back-navigation", () => ({ usePageBackNavigation: vi.fn() }));
+vi.mock("../../db/queries/chapter", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("../../db/queries/chapter")>()),
+  getAdjacentChapter: vi.fn(async () => null),
+}));
 vi.mock("../../db/queries/novel", () => ({
   getNovelById: vi.fn(async () => ({ id: 7, pluginId: "source", name: "Work", path: "/work" })),
 }));
@@ -59,10 +66,23 @@ function mount() {
   root = createRoot(container as unknown as Element);
 }
 
-function Probe({ storedChapter, nextChapter, ready = true }: { storedChapter: NavigationChapter; nextChapter?: NavigationChapter; ready?: boolean }) {
+function Probe({
+  storedChapter,
+  nextChapter,
+  ready = true,
+  contentRef = { current: null },
+  onBeforeBack,
+}: {
+  storedChapter: NavigationChapter;
+  nextChapter?: NavigationChapter;
+  ready?: boolean;
+  contentRef?: { current: ReaderContentHandle | null };
+  onBeforeBack?: () => void;
+}) {
   current = useReaderChapterNavigation({
     chapterId: storedChapter.id, chapter: storedChapter, previousChapter: undefined, nextChapter,
-    readerProgressPersistenceReady: ready, contentRef: { current: null }, openedChapterRef: { current: storedChapter.id },
+    readerProgressPersistenceReady: ready, contentRef, openedChapterRef: { current: storedChapter.id },
+    onBeforeBack,
   });
   return null;
 }
@@ -212,4 +232,52 @@ it("does not start a download when the reader closes while loading its work", as
   await act(async () => { resolveNovel(novel); });
   expect(enqueueChapterDownload).not.toHaveBeenCalled();
   expect(current.autoDownloadingChapterId).toBeNull();
+});
+
+it("completes the current chapter synchronously before awaiting adjacent lookup on forward advance", async () => {
+  mount();
+  let resolveAdjacent!: (value: null) => void;
+  vi.mocked(getAdjacentChapter).mockReturnValueOnce(new Promise((resolve) => { resolveAdjacent = resolve; }));
+  const completeIfAtEnd = vi.fn(() => true);
+  const contentRef = {
+    current: {
+      completeIfAtEnd,
+      patchMediaElements: vi.fn(),
+      scrollByPage: vi.fn(),
+      scrollToStart: vi.fn(),
+    },
+  };
+  await act(async () => root!.render(<QueryClientProvider client={queryClient}>
+    <Probe storedChapter={{ ...chapter, isDownloaded: true }} contentRef={contentRef} />
+  </QueryClientProvider>));
+
+  const pending = current.openAdjacent(1);
+  expect(completeIfAtEnd).toHaveBeenCalledOnce();
+  resolveAdjacent(null);
+  await act(async () => { await pending; });
+  expect(navigation.navigate).not.toHaveBeenCalled();
+});
+
+it("runs onBeforeBack on reader back and pops or replaces cleanly when returning to novel", async () => {
+  mount();
+  const historyGo = vi.fn();
+  Object.assign(window, { history: { go: historyGo, length: 2, back: vi.fn() } });
+  const onBeforeBack = vi.fn();
+  await act(async () => root!.render(<QueryClientProvider client={queryClient}>
+    <Probe storedChapter={{ ...chapter, isDownloaded: true }} onBeforeBack={onBeforeBack} />
+  </QueryClientProvider>));
+
+  recordAppNavigationEntry({ historyIndex: 0, href: "/", pathname: "/" });
+  recordAppNavigationEntry({ historyIndex: 1, href: "/reader?chapterId=11", pathname: "/reader" });
+  await act(async () => { current.handleBackToNovel(7); });
+  expect(onBeforeBack).toHaveBeenCalledOnce();
+  expect(navigation.navigate).toHaveBeenCalledWith({ to: "/novel", search: { id: 7 }, replace: true });
+
+  navigation.navigate.mockClear();
+  recordAppNavigationEntry({ historyIndex: 0, href: "/novel?id=7", pathname: "/novel" });
+  recordAppNavigationEntry({ historyIndex: 1, href: "/reader?chapterId=11", pathname: "/reader" });
+  await act(async () => { current.handleBackToNovel(7); });
+  expect(onBeforeBack).toHaveBeenCalledTimes(2);
+  expect(historyGo).toHaveBeenCalledWith(-1);
+  expect(navigation.navigate).not.toHaveBeenCalled();
 });
