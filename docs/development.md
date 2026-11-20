@@ -26,8 +26,8 @@ Use the same major versions as CI when possible.
 | pnpm | 10.27.0 | Package manager, pinned by `packageManager` |
 | Rust | stable | Tauri host and native plugins |
 | Java | JDK 17, preferably Temurin through SDKMAN locally | Android Gradle builds |
-| Android Gradle Plugin | 8.13.2 | Android project build plugin |
-| Kotlin Gradle Plugin | 2.0.21 | Kotlin build plugin compatible with current Tauri Android scripts |
+| Android Gradle Plugin | 9.5.1 | Android project build plugin |
+| Kotlin Gradle Plugin | 2.4.21 | Kotlin build plugin compatible with current Tauri Android scripts |
 | Android SDK platform | `android-36` | Android APK builds |
 | Android build tools | `36.0.0` | APK signing and build tools |
 | Android NDK | `29.0.14206865` | Rust Android targets |

@@ -146,6 +146,10 @@ android {
             )
         }
     }
+    compileOptions {
+        sourceCompatibility = JavaVersion.VERSION_11
+        targetCompatibility = JavaVersion.VERSION_11
+    }
     packaging {
         jniLibs {
             keepDebugSymbols += "**/libapp_lib.so"
@@ -158,7 +162,7 @@ android {
 
 kotlin {
     compilerOptions {
-        jvmTarget.set(JvmTarget.JVM_1_8)
+        jvmTarget.set(JvmTarget.JVM_11)
     }
 }
 
@@ -179,11 +183,11 @@ dependencies {
     androidTestImplementation("androidx.test.espresso:espresso-core:3.5.0")
 }
 
-val patchRustWebViewClient by tasks.registering {
+val patchRustWebViewClient = tasks.register("patchRustWebViewClient") {
     val source = layout.projectDirectory.file(
         "src/main/java/io/github/tinywind/norea/generated/RustWebViewClient.kt"
     )
-    inputs.file(source)
+    inputs.file(source).optional()
     outputs.file(source)
     outputs.upToDateWhen { false }
 
