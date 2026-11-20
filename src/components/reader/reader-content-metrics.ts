@@ -107,12 +107,18 @@ const READER_CONTROL_SELECTOR =
 
 export function isInteractiveTarget(target: EventTarget | null): boolean {
   if (isReaderInteractiveMediaTarget(target)) return true;
-  if (!(target instanceof HTMLElement)) return false;
+  const element =
+    target instanceof Element
+      ? target
+      : target instanceof Node
+        ? target.parentElement
+        : null;
+  if (!element) return false;
   // A link around a still image is not a control: the tap still pages or toggles chrome.
-  if (isReaderMediaEventTarget(target)) {
-    return !!target.closest(READER_CONTROL_SELECTOR);
+  if (isReaderMediaEventTarget(element)) {
+    return !!element.closest(READER_CONTROL_SELECTOR);
   }
-  return !!target.closest(`${READER_CONTROL_SELECTOR},a`);
+  return !!element.closest(`${READER_CONTROL_SELECTOR},a`);
 }
 
 /** True while the user holds a non-empty text selection in the document. */

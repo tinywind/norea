@@ -62,6 +62,8 @@ class FakeElement extends FakeNode {
   }
 }
 
+class FakeHtmlElement extends FakeElement {}
+
 const VIEWPORT_RECT = { left: 0, top: 0, width: 300, height: 300 };
 const ZONE_POINTS = {
   middleLeft: { clientX: 20, clientY: 150 },
@@ -79,12 +81,24 @@ function mountGestures(
     general?: Partial<ReaderGeneralSettings>;
     interactionBlocked?: boolean;
     isPagedReader?: boolean;
+    onToggleChrome?: (() => void) | undefined;
+    viewport?: Partial<{
+      clientHeight: number;
+      clientLeft: number;
+      clientTop: number;
+      clientWidth: number;
+      rect: { left: number; top: number; width: number; height: number };
+    }>;
   } = {},
 ) {
   const scrollByPage = vi.fn();
-  const onToggleChrome = vi.fn();
+  const hasOnToggleChromeOverride = "onToggleChrome" in overrides;
+  const onToggleChrome = hasOnToggleChromeOverride
+    ? overrides.onToggleChrome
+    : vi.fn();
   const nativeWheelActionLockedUntilRef = { current: 0 };
   const general = { ...READER_GENERAL_DEFAULTS, ...overrides.general };
+  const rect = overrides.viewport?.rect ?? VIEWPORT_RECT;
   const handlers = useReaderGestures({
     chromeDismissible: overrides.chromeDismissible ?? false,
     interactionBlocked: overrides.interactionBlocked ?? false,
@@ -92,7 +106,11 @@ function mountGestures(
     general,
     viewportRef: {
       current: {
-        getBoundingClientRect: () => VIEWPORT_RECT,
+        clientHeight: overrides.viewport?.clientHeight,
+        clientLeft: overrides.viewport?.clientLeft,
+        clientTop: overrides.viewport?.clientTop,
+        clientWidth: overrides.viewport?.clientWidth,
+        getBoundingClientRect: () => rect,
       } as unknown as HTMLDivElement,
     },
     getActiveScrollNode: () => null,
@@ -112,14 +130,36 @@ function pointerDown(handlers: Handlers, pointerType = "touch") {
 function mouseDown(
   handlers: Handlers,
   point: { clientX: number; clientY: number },
-  target: FakeElement = new FakeElement("p"),
+  target: FakeElement = new FakeHtmlElement("p"),
   {
+    altKey = false,
     button = 0,
+    ctrlKey = false,
     detail = 1,
+    metaKey = false,
     pointerType = "mouse",
-  }: { button?: number; detail?: number; pointerType?: string } = {},
+    shiftKey = false,
+  }: {
+    altKey?: boolean;
+    button?: number;
+    ctrlKey?: boolean;
+    detail?: number;
+    metaKey?: boolean;
+    pointerType?: string;
+    shiftKey?: boolean;
+  } = {},
 ) {
-  const event = { ...point, button, detail, target, preventDefault: vi.fn() };
+  const event = {
+    ...point,
+    altKey,
+    button,
+    ctrlKey,
+    detail,
+    metaKey,
+    shiftKey,
+    target,
+    preventDefault: vi.fn(),
+  };
   pointerDown(handlers, pointerType);
   handlers.handleMouseDown(event as unknown as Parameters<Handlers["handleMouseDown"]>[0]);
   return event;
@@ -128,7 +168,7 @@ function mouseDown(
 function tap(
   handlers: Handlers,
   point: { clientX: number; clientY: number },
-  target: FakeElement = new FakeElement("p"),
+  target: FakeElement = new FakeHtmlElement("p"),
   {
     button = 0,
     detail = 1,
@@ -175,7 +215,7 @@ beforeEach(() => {
   vi.spyOn(console, "warn").mockImplementation(() => undefined);
   selectionText = "";
   vi.stubGlobal("Element", FakeElement);
-  vi.stubGlobal("HTMLElement", FakeElement);
+  vi.stubGlobal("HTMLElement", FakeHtmlElement);
   vi.stubGlobal("Node", FakeNode);
   vi.stubGlobal("window", {
     getSelection: () => ({
@@ -334,6 +374,135 @@ describe("reader tap contract", () => {
     }
     expect(scrollByPage).toHaveBeenCalledTimes(5);
     expect(scrollByPage).toHaveBeenLastCalledWith(1, "tap-next");
+  });
+
+  it("pages on every rapid pen tap and suppresses multi-click text selection in active zones", () => {
+    const { handlers, scrollByPage } = mountGestures();
+    for (let detail = 1; detail <= 3; detail += 1) {
+      const event = tap(handlers, ZONE_POINTS.middleRight, undefined, {
+        detail,
+        pointerType: "pen",
+      });
+      if (detail === 1) {
+        expect(event.mouseDownEvent.preventDefault).not.toHaveBeenCalled();
+      } else {
+        expect(event.mouseDownEvent.preventDefault).toHaveBeenCalledOnce();
+      }
+    }
+    expect(scrollByPage).toHaveBeenCalledTimes(3);
+  });
+
+  it("preserves double-click selection in menu zones when chrome toggling is unavailable", () => {
+    const normal = mountGestures({
+      general: {
+        tapToScroll: true,
+        tapZones: { ...TAP_ZONE_DEFAULTS, topCenter: "menu" },
+      },
+      onToggleChrome: undefined,
+    });
+    expect(
+      mouseDown(normal.handlers, ZONE_POINTS.middleCenter, undefined, {
+        detail: 2,
+        pointerType: "mouse",
+      }).preventDefault,
+    ).not.toHaveBeenCalled();
+    expect(
+      mouseDown(normal.handlers, ZONE_POINTS.topCenter, undefined, {
+        detail: 2,
+        pointerType: "mouse",
+      }).preventDefault,
+    ).not.toHaveBeenCalled();
+    expect(
+      mouseDown(normal.handlers, ZONE_POINTS.middleRight, undefined, {
+        detail: 2,
+        pointerType: "mouse",
+      }).preventDefault,
+    ).toHaveBeenCalledOnce();
+
+    const noTapNoMenu = mountGestures({
+      general: { tapToScroll: false },
+      onToggleChrome: undefined,
+    });
+    expect(
+      mouseDown(noTapNoMenu.handlers, ZONE_POINTS.middleCenter, undefined, {
+        detail: 2,
+        pointerType: "mouse",
+      }).preventDefault,
+    ).not.toHaveBeenCalled();
+  });
+
+  it("does not intercept or prevent multi-clicks on the viewport scrollbar", () => {
+    const ltr = mountGestures({
+      viewport: {
+        clientWidth: 282,
+        clientHeight: 300,
+        rect: { left: 0, top: 0, width: 300, height: 300 },
+      },
+    });
+    const ltrScrollbarTap = tap(
+      ltr.handlers,
+      { clientX: 290, clientY: 150 },
+      undefined,
+      { detail: 2, pointerType: "mouse" },
+    );
+    expect(ltrScrollbarTap.mouseDownEvent.preventDefault).not.toHaveBeenCalled();
+    expect(ltr.scrollByPage).not.toHaveBeenCalled();
+
+    const rtl = mountGestures({
+      viewport: {
+        clientLeft: 18,
+        clientWidth: 282,
+        clientHeight: 300,
+        rect: { left: 0, top: 0, width: 300, height: 300 },
+      },
+    });
+    const rtlScrollbarTap = tap(
+      rtl.handlers,
+      { clientX: 8, clientY: 150 },
+      undefined,
+      { detail: 2, pointerType: "mouse" },
+    );
+    expect(rtlScrollbarTap.mouseDownEvent.preventDefault).not.toHaveBeenCalled();
+    expect(rtl.scrollByPage).not.toHaveBeenCalled();
+
+    const fractionalDpr = mountGestures({
+      viewport: {
+        clientWidth: 300,
+        clientHeight: 300,
+        rect: { left: 0, top: 0, width: 300.5, height: 300.5 },
+      },
+    });
+    const contentTap = tap(
+      fractionalDpr.handlers,
+      ZONE_POINTS.middleRight,
+      undefined,
+      { detail: 2, pointerType: "mouse" },
+    );
+    expect(contentTap.mouseDownEvent.preventDefault).toHaveBeenCalledOnce();
+    expect(fractionalDpr.scrollByPage).toHaveBeenCalledWith(1, "tap-next");
+  });
+
+  it("does not prevent multi-click mousedown when modifier keys are held or target is an SVG inside a button", () => {
+    const { handlers, scrollByPage } = mountGestures();
+    for (const modifier of ["shiftKey", "ctrlKey", "altKey", "metaKey"] as const) {
+      expect(
+        mouseDown(handlers, ZONE_POINTS.middleRight, undefined, {
+          detail: 2,
+          pointerType: "mouse",
+          [modifier]: true,
+        }).preventDefault,
+      ).not.toHaveBeenCalled();
+    }
+    const buttonSvgRect = new FakeElement(
+      "rect",
+      new FakeElement("svg", new FakeHtmlElement("button")),
+    );
+    const svgButtonTap = tap(handlers, ZONE_POINTS.middleRight, buttonSvgRect, {
+      detail: 2,
+      pointerType: "mouse",
+    });
+    expect(svgButtonTap.mouseDownEvent.preventDefault).not.toHaveBeenCalled();
+    expect(scrollByPage).not.toHaveBeenCalled();
   });
 
   it("keeps mouse drag text selection working in active tap zones", () => {

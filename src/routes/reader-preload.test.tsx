@@ -14,6 +14,7 @@ const mocks = vi.hoisted(() => ({
   tree: null as ReactNode,
   persist: vi.fn(),
   bionic: false,
+  fullPageReader: false,
 }));
 const chapters = [1, 2, 3, 9, 10].map((id, position) => ({
   id, novelId: 7, name: `Chapter ${id}`, position, chapterNumber: String(id), path: `chapter/${id}`,
@@ -60,7 +61,11 @@ vi.mock("../components/reader/use-reader-persistence", () => ({
   useReaderPersistence: () => ({ incognitoMode: false, persistProgress: mocks.persist }),
 }));
 vi.mock("../components/reader/use-reader-settings", () => ({ useReaderSettings: () => ({
-  effectiveReaderGeneral: { ...useReaderStore.getState().general, bionicReading: mocks.bionic },
+  effectiveReaderGeneral: {
+    ...useReaderStore.getState().general,
+    bionicReading: mocks.bionic,
+    fullPageReader: mocks.fullPageReader,
+  },
   effectiveReaderAppearance: useReaderStore.getState().appearance,
 }) }));
 vi.mock("../components/reader/use-reader-chapter-document", () => ({ useReaderChapterDocument: ({ chapterId }: { chapterId: number }) => {
@@ -98,7 +103,7 @@ function Probe() {
   return <Fragment>{frame.props.children as ReactNode}</Fragment>;
 }
 beforeEach(() => {
-  mocks.chapterId = 1; mocks.preparedId = 2; mocks.bionic = false;
+  mocks.chapterId = 1; mocks.preparedId = 2; mocks.bionic = false; mocks.fullPageReader = false;
   mocks.mounted.clear(); mocks.mounts.clear(); mocks.persist.mockClear();
   harness = mountBackNavigationHarness();
 });
@@ -137,4 +142,12 @@ it("keeps the current instance while replacement preparation is pending and drop
   await harness.render(<Probe />, { active: false });
   expect([...mocks.mounted.keys()]).toEqual(["9:stored"]);
   expect(mocks.persist).not.toHaveBeenCalled();
+});
+
+it("wires onToggleChrome to ReaderContent only while full-page chrome can toggle", async () => {
+  await harness.render(<Probe />);
+  expect(mocks.mounted.get("1:stored")!.props.onToggleChrome).toBeUndefined();
+  mocks.fullPageReader = true;
+  await harness.render(<Probe />);
+  expect(mocks.mounted.get("1:stored")!.props.onToggleChrome).toBeTypeOf("function");
 });

@@ -570,7 +570,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       generalSettings={effectiveReaderGeneral}
       initialProgress={readerProgress}
       localMediaContext={readerLocalMediaContext}
-      onToggleChrome={handleReaderMenuTap}
+      onToggleChrome={fullPageReader ? handleReaderMenuTap : undefined}
       onProgressChange={
         readerProgressPersistenceReady ? handleProgressChange : undefined
       }
@@ -595,7 +595,7 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       initialProgress={readerProgress}
       initialScrollAnchor={readerScrollAnchor}
       localMediaContext={readerLocalMediaContext}
-      onToggleChrome={handleReaderMenuTap}
+      onToggleChrome={fullPageReader ? handleReaderMenuTap : undefined}
       onProgressChange={
         readerProgressPersistenceReady ? handleProgressChange : undefined
       }

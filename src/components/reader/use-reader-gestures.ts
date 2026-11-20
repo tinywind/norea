@@ -17,6 +17,36 @@ import { getReaderLinkElement, openReaderLink } from "./reader-links";
 const WHEEL_PAGE_COOLDOWN_MS = 220;
 const WHEEL_PAGE_DELTA_THRESHOLD = 20;
 const NATIVE_WHEEL_ACTION_LOCK_MS = 240;
+const SCROLLBAR_DETECTION_TOLERANCE_PX = 2;
+
+function isViewportScrollbarPoint(
+  node: HTMLDivElement,
+  rect: DOMRect,
+  clientX: number,
+  clientY: number,
+): boolean {
+  const clientLeft = node.clientLeft || 0;
+  const clientTop = node.clientTop || 0;
+  if (
+    typeof node.clientWidth === "number" &&
+    node.clientWidth > 0 &&
+    rect.width - node.clientWidth > SCROLLBAR_DETECTION_TOLERANCE_PX &&
+    (clientX < rect.left + clientLeft ||
+      clientX >= rect.left + clientLeft + node.clientWidth)
+  ) {
+    return true;
+  }
+  if (
+    typeof node.clientHeight === "number" &&
+    node.clientHeight > 0 &&
+    rect.height - node.clientHeight > SCROLLBAR_DETECTION_TOLERANCE_PX &&
+    (clientY < rect.top + clientTop ||
+      clientY >= rect.top + clientTop + node.clientHeight)
+  ) {
+    return true;
+  }
+  return false;
+}
 
 interface ReaderGestureOptions {
   /** While dismissible chrome is visible, any tap hides it instead of paging. */
@@ -55,14 +85,20 @@ export function useReaderGestures({
     clientX: number,
     clientY: number,
   ): ReaderTapAction => {
-    if (chromeDismissible) return "menu";
     const node = viewportRef.current;
-    if (!node) return "none";
+    if (!node) return chromeDismissible && onToggleChrome ? "menu" : "none";
     const rect = node.getBoundingClientRect();
+    if (isViewportScrollbarPoint(node, rect, clientX, clientY)) return "none";
+    if (chromeDismissible) return onToggleChrome ? "menu" : "none";
 
     const zone = getTapZone(rect, clientX, clientY);
-    if (zone === "middleCenter") return "menu";
-    return general.tapToScroll ? general.tapZones[zone] : "none";
+    const action: ReaderTapAction =
+      zone === "middleCenter"
+        ? "menu"
+        : general.tapToScroll
+          ? general.tapZones[zone]
+          : "none";
+    return action === "menu" && !onToggleChrome ? "none" : action;
   };
 
   const handlePointerDown = (event: PointerEvent<HTMLDivElement>) => {
@@ -74,7 +110,11 @@ export function useReaderGestures({
     if (
       event.button !== 0 ||
       event.detail <= 1 ||
-      pointerTypeRef.current !== "mouse"
+      pointerTypeRef.current === "touch" ||
+      event.altKey ||
+      event.ctrlKey ||
+      event.metaKey ||
+      event.shiftKey
     ) {
       return;
     }
