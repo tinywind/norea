@@ -127,3 +127,45 @@ it("deduplicates retries for the same chapterId instead of inflating work total"
     ]),
   ).toEqual({ done: 3, total: 4 });
 });
+
+it("reduces total instead of counting cleared failed tasks as completed", () => {
+  expect(observe(queued(3))).toEqual({ done: 0, total: 3 });
+  expect(observe([chapter(1, "failed"), chapter(2, "running"), chapter(3, "queued")])).toEqual({ done: 0, total: 3 });
+
+  // Clearing failed tasks removes chapter 1; remaining active work must stay 0 / 2, not 1 / 3.
+  expect(observe([chapter(2, "running"), chapter(3, "queued")])).toEqual({ done: 0, total: 2 });
+  expect(observe([chapter(3, "running")])).toEqual({ done: 1, total: 2 });
+  expect(observe([chapter(3, "succeeded")])).toEqual({ done: 2, total: 2 });
+});
+
+it("deduplicates cancelled records for the same chapterId and re-tracks re-queued cancellations", () => {
+  const chTask = (
+    taskId: string,
+    chapterId: number,
+    status: TaskRecord["status"],
+    kind: TaskRecord["kind"] = "chapter.download",
+  ) =>
+    ({
+      id: taskId,
+      kind,
+      status,
+      subject: { novelId: 9, chapterId },
+    }) as unknown as TaskRecord;
+
+  expect(observe([chTask("t1", 1, "queued"), chTask("t2", 2, "queued"), chTask("t3", 3, "queued")])).toEqual({
+    done: 0,
+    total: 3,
+  });
+  // Chapter 1 finished and left snapshot; chapter 2 failed; chapter 3 has two cancelled records.
+  expect(
+    observe([
+      chTask("t2", 2, "failed"),
+      chTask("t3a", 3, "cancelled", "chapter.download"),
+      chTask("t3b", 3, "cancelled", "chapter.repairMedia"),
+    ]),
+  ).toEqual({ done: 1, total: 2 });
+
+  // Re-queuing chapter 3 adds 1 back, and cancelling it again removes 1 cleanly.
+  expect(observe([chTask("t2", 2, "failed"), chTask("t3c", 3, "queued")])).toEqual({ done: 1, total: 3 });
+  expect(observe([chTask("t2", 2, "failed"), chTask("t3c", 3, "cancelled")])).toEqual({ done: 1, total: 2 });
+});

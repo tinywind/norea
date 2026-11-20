@@ -4,7 +4,8 @@ import type { TaskRecord, TaskSnapshot } from "./task-types";
 interface WorkProgressState {
   unfinished: number;
   total: number;
-  seenCancelledIds: Set<string>;
+  failedChapterKeys: Set<string>;
+  cancelledChapterKeys: Set<string>;
 }
 
 const ACTIVE_STATUSES = new Set<TaskRecord["status"]>(["queued", "running"]);
@@ -28,7 +29,9 @@ function summarizeWorkTasks(tasks: readonly TaskRecord[]): {
   active: number;
   failed: number;
   nonCancelled: number;
-  cancelledOnlyIds: string[];
+  nonCancelledChapterKeys: Set<string>;
+  failedChapterKeys: Set<string>;
+  cancelledOnlyChapterKeys: Set<string>;
 } {
   const nonCancelledByChapter = new Map<string, TaskRecord>();
   const cancelledRecords: TaskRecord[] = [];
@@ -57,21 +60,30 @@ function summarizeWorkTasks(tasks: readonly TaskRecord[]): {
   }
   let active = 0;
   let failed = 0;
-  for (const record of nonCancelledByChapter.values()) {
+  const nonCancelledChapterKeys = new Set<string>();
+  const failedChapterKeys = new Set<string>();
+  for (const [chapterKey, record] of nonCancelledByChapter) {
+    nonCancelledChapterKeys.add(chapterKey);
     if (ACTIVE_STATUSES.has(record.status)) active += 1;
-    else if (record.status === "failed") failed += 1;
+    else if (record.status === "failed") {
+      failed += 1;
+      failedChapterKeys.add(chapterKey);
+    }
   }
-  const cancelledOnlyIds: string[] = [];
+  const cancelledOnlyChapterKeys = new Set<string>();
   for (const record of cancelledRecords) {
-    if (!nonCancelledByChapter.has(chapterProgressKey(record))) {
-      cancelledOnlyIds.push(record.id);
+    const chapterKey = chapterProgressKey(record);
+    if (!nonCancelledByChapter.has(chapterKey)) {
+      cancelledOnlyChapterKeys.add(chapterKey);
     }
   }
   return {
     active,
     failed,
     nonCancelled: nonCancelledByChapter.size,
-    cancelledOnlyIds,
+    nonCancelledChapterKeys,
+    failedChapterKeys,
+    cancelledOnlyChapterKeys,
   };
 }
 
@@ -102,19 +114,41 @@ export function updateWorkProgress(snapshot: Pick<TaskSnapshot, "records">): voi
     if (count.nonCancelled === 0) continue;
     const previous = progressByWork.get(key);
     const unfinished = count.active + count.failed;
-    const seenCancelledIds = previous ? previous.seenCancelledIds : new Set<string>();
+    const cancelledChapterKeys = previous
+      ? new Set(previous.cancelledChapterKeys)
+      : new Set<string>();
+    for (const chapterKey of count.nonCancelledChapterKeys) {
+      cancelledChapterKeys.delete(chapterKey);
+    }
     let newlyCancelled = 0;
-    for (const id of count.cancelledOnlyIds) {
-      if (!seenCancelledIds.has(id)) {
-        seenCancelledIds.add(id);
+    for (const chapterKey of count.cancelledOnlyChapterKeys) {
+      if (!cancelledChapterKeys.has(chapterKey)) {
+        cancelledChapterKeys.add(chapterKey);
         newlyCancelled += 1;
       }
     }
+    let clearedFailed = 0;
+    if (previous) {
+      for (const chapterKey of previous.failedChapterKeys) {
+        if (
+          !count.nonCancelledChapterKeys.has(chapterKey) &&
+          !count.cancelledOnlyChapterKeys.has(chapterKey)
+        ) {
+          clearedFailed += 1;
+        }
+      }
+    }
     const baseTotal = previous
-      ? Math.max(0, previous.total - newlyCancelled) + Math.max(0, unfinished - previous.unfinished)
+      ? Math.max(0, previous.total - newlyCancelled - clearedFailed) +
+        Math.max(0, unfinished - previous.unfinished)
       : count.nonCancelled;
     const total = Math.max(count.nonCancelled, baseTotal);
-    progressByWork.set(key, { unfinished, total, seenCancelledIds });
+    progressByWork.set(key, {
+      unfinished,
+      total,
+      failedChapterKeys: count.failedChapterKeys,
+      cancelledChapterKeys,
+    });
   }
 }
 

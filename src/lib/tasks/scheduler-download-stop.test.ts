@@ -226,4 +226,105 @@ describe("download error stop policy", () => {
       vi.resetModules();
     }
   });
+
+  it("resets the consecutive failure budget on explicit resumeSourceQueue even when the source is not paused", async () => {
+    vi.useFakeTimers();
+    const scheduler = new TaskScheduler();
+    schedulers.push(scheduler);
+    const error = new Error("HTTP 503 Service Unavailable");
+
+    const f1 = scheduler.enqueueSource({ kind: "chapter.download", title: "Ch 1", source, run: async () => { throw error; } });
+    const f2 = scheduler.enqueueSource({ kind: "chapter.download", title: "Ch 2", source, run: async () => { throw error; } });
+    void f1.promise.catch(() => undefined);
+    void f2.promise.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+    expect(scheduler.getSnapshot().pausedSourceIds).toEqual([]);
+
+    // User triggers Retry all -> resumeSourceQueue(source.id) is called while source is unpaused.
+    expect(scheduler.resumeSourceQueue(source.id)).toBe(false);
+
+    const retry1 = scheduler.enqueueSource({ kind: "chapter.download", title: "Ch 1 retry", source, run: async () => { throw error; } });
+    const retry2Run = vi.fn(async () => "ok");
+    const retry2 = scheduler.enqueueSource({ kind: "chapter.download", title: "Ch 2 retry", source, run: retry2Run });
+    void retry1.promise.catch(() => undefined);
+    await vi.advanceTimersByTimeAsync(0);
+
+    await expect(retry2.promise).resolves.toBe("ok");
+    expect(retry2Run).toHaveBeenCalledOnce();
+    expect(scheduler.getSnapshot().pausedSourceIds).toEqual([]);
+  });
+
+  it("does not deadlock a failed task if downloadRecovery.forget throws a storage error", async () => {
+    const throwingStorage = {
+      getItem: () => "{invalid-json",
+      setItem: () => { throw new Error("QuotaExceededError"); },
+      removeItem: () => undefined,
+      clear: () => undefined,
+    };
+    vi.stubGlobal("localStorage", throwingStorage);
+    vi.stubGlobal("window", { localStorage: throwingStorage });
+    vi.resetModules();
+    const { TaskScheduler: FreshTaskScheduler } = await import("./scheduler");
+    const scheduler = new FreshTaskScheduler();
+    schedulers.push(scheduler);
+    const error = new Error("HTTP 503 Service Unavailable");
+    try {
+      const task = scheduler.enqueueSource({
+        kind: "chapter.download",
+        title: "Ch 1",
+        source,
+        subject: { chapterId: 77, novelId: 1, pluginId: source.id, path: "/ch-77" },
+        run: async () => { throw error; },
+      });
+      await expect(task.promise).rejects.toBe(error);
+      expect(scheduler.getTask(task.id)?.status).toBe("failed");
+      expect(scheduler.getSnapshot().sourceQueuesPaused).toBe(true);
+      expect(scheduler.getDownloadFailureStops().globalError).toContain("Chapter storage failed");
+    } finally {
+      vi.unstubAllGlobals();
+      vi.resetModules();
+    }
+  });
+
+  it("keeps an unrelated source downloading when another source hits the 3-failure cap", async () => {
+    vi.useFakeTimers();
+    const scheduler = new TaskScheduler();
+    schedulers.push(scheduler);
+    const sourceB = { id: "source-b", name: "Source B" };
+    const error = new Error("HTTP 503 Service Unavailable");
+    const sourceBRuns: string[] = [];
+
+    for (let i = 1; i <= 3; i += 1) {
+      const failed = scheduler.enqueueSource({
+        kind: "chapter.download",
+        title: `A ${i}`,
+        source,
+        run: async () => { throw error; },
+      });
+      void failed.promise.catch(() => undefined);
+    }
+    const blockedA = vi.fn(async () => "a-4");
+    const heldA = scheduler.enqueueSource({ kind: "chapter.download", title: "A 4", source, run: blockedA });
+    void heldA.promise.catch(() => undefined);
+
+    const b1 = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "B 1",
+      source: sourceB,
+      run: async () => { sourceBRuns.push("b-1"); },
+    });
+    const b2 = scheduler.enqueueSource({
+      kind: "chapter.download",
+      title: "B 2",
+      source: sourceB,
+      run: async () => { sourceBRuns.push("b-2"); },
+    });
+
+    await vi.advanceTimersByTimeAsync(0);
+    await expect(b1.promise).resolves.toBeUndefined();
+    await expect(b2.promise).resolves.toBeUndefined();
+    expect(sourceBRuns).toEqual(["b-1", "b-2"]);
+    expect(scheduler.getSnapshot().pausedSourceIds).toEqual([source.id]);
+    expect(blockedA).not.toHaveBeenCalled();
+  });
 });

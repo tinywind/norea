@@ -238,6 +238,27 @@ describe("task work group order", () => {
     const error = $(".norea-task-row[data-status='failed'] .norea-task-row-error");
     expect(error.find(".norea-task-row-error-text").text()).toBe("Some images in this chapter could not be downloaded.");
   });
+
+  it("keeps forbidden copy for HTTP 403 media errors and uses missing-images copy for archive verification failures", () => {
+    const forbiddenMedia = {
+      ...chapter(4, 3, "failed"),
+      error: "Offline download is incomplete: 1 media assets unavailable (HTTP 403). Missing assets: 0001.jpg @ img.example.",
+    };
+    const verificationMismatch = {
+      ...chapter(5, 3, "failed"),
+      error: "Chapter media finalization failed: Chapter storage failed during archive chapter media: chapter media: media archive finalization incomplete: loose media file '0007-7.jpg' has 0 bytes, expected 183222",
+    };
+    state.snapshot = {
+      ...new TaskScheduler().getSnapshot(), sourceQueueOrder: ["source"], sourceQueuesTotal: 1,
+      records: [forbiddenMedia, verificationMismatch],
+    };
+    const $ = load(renderToStaticMarkup(<MantineProvider><DownloadsQueueView /></MantineProvider>));
+    const texts = $(".norea-task-row[data-status='failed'] .norea-task-row-error-text")
+      .map((_, element) => $(element).text())
+      .get();
+    expect(texts).toContain("The site refused access (HTTP 403). Downloads are paused. Check the site before resuming.");
+    expect(texts).toContain("Some images in this chapter could not be downloaded.");
+  });
   it("shows a promoted work above the work whose transfer is still running", () => {
     expect(workTitles([
       chapter(1, 1, "running", 2), chapter(2, 1, "queued", 3),

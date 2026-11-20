@@ -4122,6 +4122,41 @@ describe("enqueueChapterMediaRepair", () => {
     }
   });
 
+  it("does not duplicate failure recording on deduplicated repair calls or let a stale failure overwrite a newer repair", async () => {
+    const { TaskScheduler } = await vi.importActual<typeof import("./scheduler")>("./scheduler");
+    const scheduler = new TaskScheduler({ sourceQueuesPaused: false });
+    schedulerMocks.enqueueSource.mockImplementation((spec: SourceTaskSpec<void>) =>
+      scheduler.enqueueSource({ ...spec, sourceCooldownMs: 0 }));
+    vi.mocked(taskScheduler.getTaskByDedupeKey).mockImplementation(key => scheduler.getTaskByDedupeKey(key));
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    pluginMocks.loadInstalledFromDb.mockResolvedValue(undefined);
+    pluginMocks.getPlugin.mockReturnValue(undefined);
+    serverMediaMocks.hasServerChapter.mockResolvedValue(true);
+    vi.mocked(readStoredChapterContentMirror).mockResolvedValue("<p>Stored body</p>");
+
+    const gate = createDeferred<never>();
+    const incomplete = new ChapterMediaIncompleteError([
+      { fileName: "missing.png", status: 404, message: "Content server request failed (404).", url: "https://source.test/missing.png" },
+    ]);
+    vi.mocked(cacheHtmlChapterMedia).mockReturnValueOnce(gate.promise);
+
+    const first = enqueueChapterMediaRepair({
+      id: 7, novelId: 11, novelName: "Novel Eleven", pluginId: "source-a", title: "Repair Chapter 7",
+    });
+    const duplicate = enqueueChapterMediaRepair({
+      id: 7, novelId: 11, novelName: "Novel Eleven", pluginId: "source-a", title: "Repair Chapter 7",
+    });
+    expect(duplicate.id).toBe(first.id);
+    gate.reject(incomplete);
+    try {
+      await expect(first.promise).rejects.toBe(incomplete);
+      await waitForChapterDownloadQueueMutations();
+      expect(failureMocks.record).toHaveBeenCalledTimes(1);
+    } finally {
+      scheduler.cancelActiveTasks({ discardQueued: true });
+    }
+  });
+
 });
 
 

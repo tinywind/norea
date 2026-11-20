@@ -205,6 +205,18 @@ describe("single-chapter verification and immediate stop classification", () => 
     expect(isChapterMediaVerificationFailure(diskFullFinalization)).toBe(false);
     expect(classifyDownloadFailure(diskFullFinalization).failureClass).toBe("storage");
 
+    const ioErrorFinalization = new ChapterMediaFinalizationError(
+      new ChapterStorageError("archive chapter media", "chapter media: media archive finalization incomplete: cannot read media archive entry '001.jpg': Input/output error (os error 5)"),
+    );
+    expect(isChapterMediaVerificationFailure(ioErrorFinalization)).toBe(false);
+    expect(classifyDownloadFailure(ioErrorFinalization).failureClass).toBe("storage");
+
+    const permissionFinalization = new ChapterMediaFinalizationError(
+      new ChapterStorageError("archive chapter media", "chapter media: media archive finalization incomplete: Permission denied (os error 13)"),
+    );
+    expect(isChapterMediaVerificationFailure(permissionFinalization)).toBe(false);
+    expect(classifyDownloadFailure(permissionFinalization).failureClass).toBe("storage");
+
     expect(classifyDownloadFailure(new Error("Downloaded chapter metadata is missing.")).failureClass).toBe("content");
     expect(classifyDownloadFailure(new Error("Server chapter novel ID does not match the local work.")).failureClass).toBe("content");
   });

@@ -1440,7 +1440,11 @@ export class TaskScheduler {
             ? this.entries.get(failedTaskId)?.record.subject?.chapterId
             : undefined;
           if (chapterId !== undefined) {
-            downloadRecovery.forget([downloadRecoveryKey({ id: chapterId })]);
+            try {
+              downloadRecovery.forget([downloadRecoveryKey({ id: chapterId })]);
+            } catch (recoveryError) {
+              this.reportDownloadFailure(recoveryError, undefined, worker, failedTaskId);
+            }
           }
           return;
         }
@@ -1474,13 +1478,13 @@ export class TaskScheduler {
 
   resumeSourceQueue(sourceId?: string): boolean {
     if (!sourceId) {
+      this.consecutiveDownloadFailures.clear();
       if (!this.sourceQueuesPaused && this.pausedSourceIds.size === 0 && Object.keys(this.downloadFailureStops.sourceErrors).length === 0) {
         return false;
       }
       downloadRecovery.resume();
       this.sourceQueuesPaused = false;
       this.pausedSourceIds.clear();
-      this.consecutiveDownloadFailures.clear();
       this.downloadFailureStops = { sourceErrors: {} };
       this.debug("all source queues resumed");
       this.publishSnapshot();
@@ -1488,11 +1492,11 @@ export class TaskScheduler {
       return true;
     }
 
+    this.consecutiveDownloadFailures.delete(sourceId);
     const paused = this.pausedSourceIds.has(sourceId);
     if (!paused && !Object.hasOwn(this.downloadFailureStops.sourceErrors, sourceId)) return false;
     downloadRecovery.resume(sourceId);
     this.pausedSourceIds.delete(sourceId);
-    this.consecutiveDownloadFailures.delete(sourceId);
     const sourceErrors = { ...this.downloadFailureStops.sourceErrors };
     delete sourceErrors[sourceId];
     this.downloadFailureStops = { ...this.downloadFailureStops, sourceErrors };

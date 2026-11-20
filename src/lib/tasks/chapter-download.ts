@@ -377,6 +377,8 @@ function createChapterDownloadProgressReporter(
   return report;
 }
 
+const chapterMediaRepairLatestTask = new Map<number, { id: string; settled: boolean }>();
+
 function settledChapterTaskIds(chapterId: number): string[] {
   const ids: string[] = [];
   for (const key of [
@@ -1743,6 +1745,7 @@ function enqueueChapterDownloadForExecutor(
     },
   );
   forgetSettledChapterTaskIds(priorSettledTaskIds, handle.id);
+  chapterMediaRepairLatestTask.delete(job.id);
   if (!options.vpnWorker) {
     ordinaryChapterDownloadHandles.set(job.id, handle);
     const clear = () => {
@@ -1938,6 +1941,7 @@ export function enqueueChapterMediaRepair(
     kind: "chapter.repairMedia",
     retryManually: () => {
       downloadRecovery.resume(sourcePluginId, new Set([downloadRecoveryKey(job)]));
+      if (isTauriRuntime()) forgetFailures([job.id]);
       return enqueueChapterMediaRepair(job);
     },
     priority: job.priority ?? "user",
@@ -2168,38 +2172,55 @@ export function enqueueChapterMediaRepair(
     },
   });
   forgetSettledChapterTaskIds(priorSettledTaskIds, handle.id);
-  void handle.promise.then(notifyChapterDownloadsSettled, error => {
-    const current = taskScheduler.getTaskByDedupeKey(chapterMediaRepairDedupeKey(job.id));
-    if (isTaskUserCancelledError(error) && (!current || current.id === handle.id)) {
-      try { downloadRecovery.forget([downloadRecoveryKey(job)], true); }
-      catch (recoveryError) { taskScheduler.reportDownloadFailure(recoveryError); }
-    } else if (
-      isTauriRuntime() &&
-      !isTaskUserCancelledError(error) &&
-      !isAbortError(error) &&
-      !isDownloadRecoveryNextProfile(error)
-    ) {
-      const failureJob: ChapterDownloadJob = {
-        id: job.id,
-        pluginId: job.pluginId,
-        ...(job.pluginName ? { pluginName: job.pluginName } : {}),
-        chapterPath: recordedChapter?.path ?? "",
-        ...(recordedChapter?.name ? { chapterName: recordedChapter.name } : {}),
-        ...(recordedChapter?.chapterNumber ? { chapterNumber: recordedChapter.chapterNumber } : {}),
-        ...(recordedChapter?.contentType ? { contentType: normalizeChapterContentType(recordedChapter.contentType) } : {}),
-        ...(job.novelId !== undefined || recordedChapter?.novelId !== undefined
-          ? { novelId: job.novelId ?? recordedChapter?.novelId }
-          : {}),
-        ...(recordedNovelName ? { novelName: recordedNovelName } : {}),
-        repairMedia: true,
-        title: job.title,
-      };
-      void queueBackendChapterDownloadMutation("record failed chapter media repair", async () => {
-        await recordFailedChapterDownloadAttempt(failureJob, error, Date.now(), sourcePluginId);
-      });
-    }
-    notifyChapterDownloadsSettled();
-  });
+  const existingRepair = chapterMediaRepairLatestTask.get(job.id);
+  if (existingRepair && !existingRepair.settled && existingRepair.id === handle.id) {
+    return handle;
+  }
+  const repairTracker = { id: handle.id, settled: false };
+  chapterMediaRepairLatestTask.set(job.id, repairTracker);
+  void handle.promise.then(
+    () => {
+      repairTracker.settled = true;
+      if (chapterMediaRepairLatestTask.get(job.id) === repairTracker) {
+        chapterMediaRepairLatestTask.delete(job.id);
+      }
+      notifyChapterDownloadsSettled();
+    },
+    error => {
+      repairTracker.settled = true;
+      const current = taskScheduler.getTaskByDedupeKey(chapterMediaRepairDedupeKey(job.id));
+      if (isTaskUserCancelledError(error) && (!current || current.id === handle.id)) {
+        try { downloadRecovery.forget([downloadRecoveryKey(job)], true); }
+        catch (recoveryError) { taskScheduler.reportDownloadFailure(recoveryError); }
+      } else if (
+        isTauriRuntime() &&
+        !isTaskUserCancelledError(error) &&
+        !isAbortError(error) &&
+        !isDownloadRecoveryNextProfile(error)
+      ) {
+        const failureJob: ChapterDownloadJob = {
+          id: job.id,
+          pluginId: job.pluginId,
+          ...(job.pluginName ? { pluginName: job.pluginName } : {}),
+          chapterPath: recordedChapter?.path ?? "",
+          ...(recordedChapter?.name ? { chapterName: recordedChapter.name } : {}),
+          ...(recordedChapter?.chapterNumber ? { chapterNumber: recordedChapter.chapterNumber } : {}),
+          ...(recordedChapter?.contentType ? { contentType: normalizeChapterContentType(recordedChapter.contentType) } : {}),
+          ...(job.novelId !== undefined || recordedChapter?.novelId !== undefined
+            ? { novelId: job.novelId ?? recordedChapter?.novelId }
+            : {}),
+          ...(recordedNovelName ? { novelName: recordedNovelName } : {}),
+          repairMedia: true,
+          title: job.title,
+        };
+        void queueBackendChapterDownloadMutation("record failed chapter media repair", async () => {
+          if (chapterMediaRepairLatestTask.get(job.id) !== repairTracker) return;
+          await recordFailedChapterDownloadAttempt(failureJob, error, Date.now(), sourcePluginId);
+        });
+      }
+      notifyChapterDownloadsSettled();
+    },
+  );
   return handle;
 }
 

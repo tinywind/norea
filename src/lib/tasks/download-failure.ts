@@ -33,7 +33,7 @@ const MAX_SUMMARY_LENGTH = 300;
 const EXTERNAL_CHALLENGE =
   /External resource at (\S+?) requires Cloudflare verification/i;
 const STORAGE_IO_FAILURE =
-  /\b(?:no space left on device|disk (?:i\/o error|is full)|database or disk is full|database disk image is malformed|SQLITE_(?:FULL|IOERR|CORRUPT|READONLY|CANTOPEN)|read-only file system|os error (?:28|30)|storage (?:root|folder) (?:is )?(?:unavailable|not available))\b/i;
+  /\b(?:no space left on device|disk (?:i\/o error|is full)|input\/output error|permission denied|database or disk is full|database disk image is malformed|SQLITE_(?:FULL|IOERR|CORRUPT|READONLY|CANTOPEN)|read-only file system|os error (?:5|13|28|30)|storage (?:root|folder) (?:is )?(?:unavailable|not available))\b/i;
 const STORAGE_FAILURE =
   /^Chapter storage failed\b|\b(?:no space left on device|disk (?:i\/o error|is full)|database or disk is full|database disk image is malformed|SQLITE_(?:FULL|IOERR|CORRUPT|READONLY|CANTOPEN)|read-only file system|os error (?:28|30)|storage (?:root|folder) (?:is )?(?:unavailable|not available))\b/i;
 const CHAPTER_MEDIA_VERIFICATION_FAILURE =
