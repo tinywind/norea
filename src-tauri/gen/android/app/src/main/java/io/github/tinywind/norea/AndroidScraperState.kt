@@ -32,7 +32,6 @@ internal class AndroidScraperState(var key: String) {
   var pendingChallengeUrl: String? = null
   var authenticationReturnQueue: String? = null
   var userAgent: String? = null
-  @JvmField
   var webView: WebView? = null
 }
 
