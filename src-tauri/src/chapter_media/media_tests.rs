@@ -83,3 +83,45 @@ fn media_path_from_chapter_dir_does_not_extract_archived_media() {
         .join("page.png")
         .exists());
 }
+
+#[test]
+fn resolve_regular_file_len_reads_actual_bytes_when_stat_reports_zero() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let non_empty = dir.path().join("0007-7.jpg");
+    let payload = vec![0xffu8; 183_222];
+    fs::write(&non_empty, &payload).expect("write image");
+
+    assert_eq!(
+        resolve_regular_file_len(&non_empty, 0, "chapter media: read loose media file")
+            .expect("measure non-empty file when stat reports 0"),
+        183_222
+    );
+    assert_eq!(
+        resolve_regular_file_len(&non_empty, 183_222, "chapter media: read loose media file")
+            .expect("use non-zero reported length"),
+        183_222
+    );
+
+    let empty = dir.path().join("empty.jpg");
+    fs::write(&empty, []).expect("write empty file");
+    assert_eq!(
+        resolve_regular_file_len(&empty, 0, "chapter media: read loose media file")
+            .expect("measure actually empty file"),
+        0
+    );
+}
+
+#[test]
+fn copy_file_without_copy_file_range_preserves_multi_buffer_payload() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let source = dir.path().join("source.bin");
+    let part = dir.path().join("part.bin");
+    let payload: Vec<u8> = (0..183_222u32).map(|value| (value % 251) as u8).collect();
+    fs::write(&source, &payload).expect("write source");
+
+    let copied = copy_file_without_copy_file_range(&source, &part).expect("copy payload");
+
+    assert_eq!(copied, payload.len() as u64);
+    assert_eq!(fs::read(&part).expect("read part"), payload);
+    assert_eq!(fs::metadata(&part).expect("stat part").len(), payload.len() as u64);
+}

@@ -8,6 +8,7 @@ use super::manifest::{
     ChapterMediaArtifactState, ChapterMediaFinalization, ExpectedStoredChapterMedia,
     ValidChapterMediaArchiveManifest,
 };
+use super::media::regular_file_len;
 use super::paths::{
     content_chapter_dir_at, ensure_contents_nomedia, media_root,
     validate_chapter_dir_under_storage_root, MEDIA_ARCHIVE_FILE,
@@ -118,10 +119,14 @@ fn validate_loose_chapter_media(
                 "unexpected loose media file '{file_name}'"
             )));
         };
-        let actual_bytes = entry
+        let metadata = entry
             .metadata()
-            .map_err(|err| format!("chapter media: read loose media file metadata: {err}"))?
-            .len();
+            .map_err(|err| format!("chapter media: read loose media file metadata: {err}"))?;
+        let actual_bytes = regular_file_len(
+            &entry.path(),
+            &metadata,
+            "chapter media: read loose media file",
+        )?;
         if actual_bytes != *expected_bytes {
             return Ok(ChapterMediaArtifactState::Invalid(format!(
                 "loose media file '{file_name}' has {actual_bytes} bytes, expected {expected_bytes}"
@@ -176,8 +181,13 @@ fn completed_manifest_media_bytes(
     }
 
     match fs::symlink_metadata(&archive_path) {
-        Ok(metadata) if metadata.file_type().is_file() && metadata.len() > 0 => {
-            Ok(Some(metadata.len()))
+        Ok(metadata) if metadata.file_type().is_file() => {
+            let len = regular_file_len(
+                &archive_path,
+                &metadata,
+                "chapter media: read media archive",
+            )?;
+            Ok((len > 0).then_some(len))
         }
         Ok(_) => Ok(None),
         Err(err) if err.kind() == ErrorKind::NotFound => Ok(None),
@@ -433,6 +443,17 @@ fn build_validated_chapter_media_archive(
     output
         .flush()
         .map_err(|err| format!("chapter media: flush media archive: {err}"))?;
+    if !stored_files.is_empty()
+        && output
+            .get_ref()
+            .metadata()
+            .map_or(true, |metadata| metadata.len() == 0)
+    {
+        output
+            .get_ref()
+            .sync_all()
+            .map_err(|err| format!("chapter media: sync media archive: {err}"))?;
+    }
     drop(output);
 
     match validate_chapter_media_archive(&temp_archive_path, stored_files)? {
@@ -658,9 +679,13 @@ fn finalize_chapter_media_artifacts_locked(
         ChapterMediaArtifactState::Valid(file_names)
             if file_names.len() == manifest.stored_files.len() =>
         {
-            fs::symlink_metadata(&archive_path)
-                .map_err(|err| format!("chapter media: inspect published media archive: {err}"))?
-                .len()
+            let metadata = fs::symlink_metadata(&archive_path)
+                .map_err(|err| format!("chapter media: inspect published media archive: {err}"))?;
+            regular_file_len(
+                &archive_path,
+                &metadata,
+                "chapter media: read published media archive",
+            )?
         }
         ChapterMediaArtifactState::Valid(_) => {
             return Ok(ChapterMediaFinalization::Incomplete(

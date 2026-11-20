@@ -10,7 +10,7 @@ use super::paths::{
 use crate::native_stream::{self, NativeStreamState, CHAPTER_MEDIA_STREAM_DOMAIN};
 use std::{
     fs::{self, File},
-    io::{BufReader, Read},
+    io::{self, BufReader, Read, Write},
     path::{Path, PathBuf},
 };
 use tauri::{AppHandle, State};
@@ -197,6 +197,73 @@ struct ChapterMediaStoreInput {
     chapter_position: Option<i64>,
 }
 
+const MEDIA_IO_BUFFER_BYTES: usize = 64 * 1024;
+
+fn measure_readable_file_len(path: &Path) -> io::Result<u64> {
+    let mut file = File::open(path)?;
+    let mut buffer = [0u8; MEDIA_IO_BUFFER_BYTES];
+    let mut total = 0u64;
+    loop {
+        let read = file.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        total += read as u64;
+    }
+    Ok(total)
+}
+
+pub(super) fn resolve_regular_file_len(
+    path: &Path,
+    reported_len: u64,
+    context: &str,
+) -> Result<u64, String> {
+    if reported_len > 0 {
+        return Ok(reported_len);
+    }
+    let actual = measure_readable_file_len(path).map_err(|err| format!("{context}: {err}"))?;
+    if actual > 0 {
+        log::warn!(
+            "[chapter-media] stat reported 0 bytes for non-empty file path={} actual_bytes={actual}",
+            path.display()
+        );
+    }
+    Ok(actual)
+}
+
+/// Returns the file length, falling back to a direct read when `stat()` reports
+/// zero bytes (Android 15 FUSE passthrough can cache stale `st_size == 0`).
+pub(super) fn regular_file_len(
+    path: &Path,
+    metadata: &fs::Metadata,
+    context: &str,
+) -> Result<u64, String> {
+    resolve_regular_file_len(path, metadata.len(), context)
+}
+
+fn copy_file_without_copy_file_range(source_path: &Path, part_path: &Path) -> io::Result<u64> {
+    let mut input = File::open(source_path)?;
+    let mut output = File::options()
+        .write(true)
+        .create_new(true)
+        .open(part_path)?;
+    let mut buffer = [0u8; MEDIA_IO_BUFFER_BYTES];
+    let mut total = 0u64;
+    loop {
+        let read = input.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        output.write_all(&buffer[..read])?;
+        total += read as u64;
+    }
+    output.flush()?;
+    if total > 0 && output.metadata().map_or(true, |meta| meta.len() != total) {
+        output.sync_all()?;
+    }
+    Ok(total)
+}
+
 pub(super) fn move_media_source_to_part_path(
     source_path: &Path,
     part_path: &Path,
@@ -208,7 +275,7 @@ pub(super) fn move_media_source_to_part_path(
     match fs::rename(source_path, part_path) {
         Ok(()) => Ok(()),
         Err(rename_err) => {
-            if let Err(copy_err) = fs::copy(source_path, part_path) {
+            if let Err(copy_err) = copy_file_without_copy_file_range(source_path, part_path) {
                 let _ = fs::remove_file(part_path);
                 return Err(format!(
                     "{context}: move temp media: {rename_err}; copy fallback: {copy_err}"

@@ -4,6 +4,7 @@ use super::manifest::{
     parse_chapter_media_archive_manifest, read_chapter_media_archive_manifest,
     ChapterMediaArchiveManifestState, ExpectedStoredChapterMedia,
 };
+use super::media::regular_file_len;
 use super::paths::{MEDIA_ARCHIVE_FILE, MEDIA_DOWNLOAD_DIR};
 use std::{
     collections::{HashMap, HashSet},
@@ -82,10 +83,18 @@ pub(super) fn prepare_chapter_media_repair(chapter_dir: &Path) -> Result<HashMap
     let mut total = valid.values().sum();
     for file in expected.iter().filter(|file| !valid.contains_key(&file.file_name)).collect::<Vec<_>>() {
         if ambiguous.contains(&file.file_name.to_ascii_lowercase()) { continue; }
-        match fs::symlink_metadata(media_dir.join(&file.file_name)) {
-            Ok(metadata) if metadata.is_file() && file.bytes > 0 && metadata.len() == file.bytes => {
-                add_repair_bytes(&mut total, file.bytes)?;
-                valid.insert(file.file_name.clone(), file.bytes);
+        let file_path = media_dir.join(&file.file_name);
+        match fs::symlink_metadata(&file_path) {
+            Ok(metadata) if metadata.is_file() && file.bytes > 0 => {
+                let actual_bytes = regular_file_len(
+                    &file_path,
+                    &metadata,
+                    "chapter media: read repair asset",
+                )?;
+                if actual_bytes == file.bytes {
+                    add_repair_bytes(&mut total, file.bytes)?;
+                    valid.insert(file.file_name.clone(), file.bytes);
+                }
             }
             Ok(_) => {},
             Err(err) if err.kind() == io::ErrorKind::NotFound => {},

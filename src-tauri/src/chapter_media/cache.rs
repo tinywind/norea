@@ -3,7 +3,9 @@
 use super::archives::clear_content_media_artifacts;
 use super::chapter_media_blocking;
 use super::content::content_chapter_dir_from_context;
-use super::media::{media_path_in_chapter_dir, media_src_chapter_id, parse_media_src};
+use super::media::{
+    media_path_in_chapter_dir, media_src_chapter_id, parse_media_src, regular_file_len,
+};
 use super::paths::{
     content_chapter_dir_at, content_chapter_dirs_matching_identity, ensure_contents_nomedia,
     media_roots_for_lookup, safe_media_relative_path, CONTENTS_ROOT_DIR, MEDIA_ARCHIVE_FILE,
@@ -175,9 +177,13 @@ fn chapter_media_stored_entry_sizes_in_dir(
         }
         if let Some(path) = media_path_in_chapter_dir(chapter_dir, &file_name) {
             match fs::metadata(&path) {
-                Ok(metadata) if metadata.is_file() && metadata.len() > 0 => {
-                    sizes.insert(file_name, metadata.len());
-                    continue;
+                Ok(metadata) if metadata.is_file() => {
+                    let len =
+                        regular_file_len(&path, &metadata, "chapter media: read media size")?;
+                    if len > 0 {
+                        sizes.insert(file_name, len);
+                        continue;
+                    }
                 }
                 Ok(_) => {}
                 Err(err) if err.kind() == ErrorKind::NotFound => {}
