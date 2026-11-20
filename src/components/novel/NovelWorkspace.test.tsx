@@ -67,13 +67,42 @@ it("starts reading without history and offers no separate From start", () => {
   expect(buttonTexts($)).not.toContain("novel.fromStart");
 });
 
-it("continues at the last read chapter by number and offers From start", () => {
+it("continues at the downloaded next chapter by number and offers From start", () => {
   const $ = render({
-    chapters: [{ ...chapter, unread: false, progress: 100 }, { ...chapter, id: 2, position: 2, chapterNumber: "52" }],
+    chapters: [
+      { ...chapter, unread: false, progress: 100 },
+      { ...chapter, id: 2, position: 2, chapterNumber: "52", isDownloaded: true },
+    ],
     lastReadChapterId: 1,
   });
   expect(buttonTexts($)).toContain("novel.continueChapter:52");
   expect(buttonTexts($)).toContain("novel.fromStart");
+});
+
+it("shows nothing to continue when finished with no downloaded next chapter", () => {
+  const caughtUp = render({
+    chapters: [{ ...chapter, unread: false, progress: 100 }],
+    lastReadChapterId: 1,
+  });
+  const caughtUpButton = caughtUp("button").filter(
+    (_, button) => caughtUp(button).text() === "novel.nothingToContinue",
+  );
+  expect(caughtUpButton).toHaveLength(1);
+  expect(caughtUpButton.prop("disabled")).toBe(true);
+  expect(buttonTexts(caughtUp)).toContain("novel.fromStart");
+
+  const undownloaded = render({
+    chapters: [
+      { ...chapter, unread: false, progress: 100 },
+      { ...chapter, id: 2, position: 2, chapterNumber: "52", isDownloaded: false },
+    ],
+    lastReadChapterId: 1,
+  });
+  expect(
+    undownloaded("button")
+      .filter((_, button) => undownloaded(button).text() === "novel.nothingToContinue")
+      .prop("disabled"),
+  ).toBe(true);
 });
 
 it("disables the primary action only when there is no chapter", () => {

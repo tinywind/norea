@@ -95,7 +95,7 @@ describe("HistoryRow", () => {
     const current = render({ entry: { ...entry, chapterName: "1화", chapterNumber: "346378" } }).text();
     expect(current).toContain("Ch. 1 · 45% · 3h ago");
     expect(current).not.toContain("346378");
-    next.data = { id: 53, name: "346화", chapterNumber: "5677728", position: 346 } as ChapterListRow;
+    next.data = { id: 53, name: "346화", chapterNumber: "5677728", position: 346, isDownloaded: true, contentBytes: 100 } as ChapterListRow;
     const finished = render({ entry: { ...entry, progress: 100 } }).text();
     expect(finished).toContain('history.nextChapter{"number":"346"} · 3h ago');
     expect(finished).not.toContain("5677728");
@@ -158,14 +158,24 @@ describe("HistoryRow actions", () => {
     expect(onContinue).toHaveBeenCalledWith(undefined);
   });
 
-  it("names the next chapter of a finished one and continues there", async () => {
-    const nextChapter = { id: 53, position: 53 } as ChapterListRow;
+  it("names a downloaded next chapter of a finished one and continues there, but hides an undownloaded next chapter", async () => {
+    const nextChapter = { id: 53, position: 53, isDownloaded: true, contentBytes: 100 } as ChapterListRow;
     next.data = nextChapter;
     const finished = { ...entry, progress: 100 };
     expect(render({ entry: finished }).text()).toContain('history.nextChapter{"number":"53"} · 3h ago');
     const { row } = await mount(finished);
     (row.props.onClick as () => void)();
     expect(onContinue).toHaveBeenCalledWith(nextChapter);
+
+    await harness!.unmount();
+    harness = undefined;
+    onContinue.mockClear();
+
+    next.data = { id: 53, position: 53, isDownloaded: false, contentBytes: 0 } as ChapterListRow;
+    expect(render({ entry: finished }).text()).toContain("Ch. 52 · common.finished · 3h ago");
+    const { row: undownloadedRow } = await mount(finished);
+    (undownloadedRow.props.onClick as () => void)();
+    expect(onContinue).toHaveBeenCalledWith(null);
   });
 
   it("opens novel details directly and keeps removal in the overflow", async () => {

@@ -30,7 +30,7 @@ import {
 } from "../ui/icons";
 import {
   countReadChapters,
-  findContinueReadingChapter,
+  findContinueReadingTarget,
   findFirstChapter,
   formatChapterNumber,
   hasReadingHistory,
@@ -53,7 +53,7 @@ interface NovelWorkspaceProps {
   novel: NovelDetailRecord;
   /** Offline state of a novel with a download goal in effect, as its library card shows it. */
   offlineState?: DownloadGoalOfflineState;
-  onRead: (chapter: ChapterListRow) => void;
+  onRead: (chapter: ChapterListRow, options?: { fromStart?: boolean }) => void;
   /** Starts chapter selection for a one-time download. */
   onSelectChapters: () => void;
   onToggleLibrary: () => void;
@@ -103,8 +103,8 @@ export function NovelWorkspace({
   });
   const genres = useMemo(() => splitGenres(novel.genres), [novel.genres]);
   const firstChapter = useMemo(() => findFirstChapter(chapters), [chapters]);
-  const continueReadingChapter = useMemo(
-    () => findContinueReadingChapter(chapters, lastReadChapterId),
+  const continueReadingTarget = useMemo(
+    () => findContinueReadingTarget(chapters, lastReadChapterId),
     [chapters, lastReadChapterId],
   );
   const hasHistory = hasReadingHistory(chapters, lastReadChapterId);
@@ -152,17 +152,27 @@ export function NovelWorkspace({
 
       <Button
         className="norea-novel-continue"
-        disabled={!continueReadingChapter}
+        disabled={!continueReadingTarget}
         fullWidth
         leftSection={<PlayIcon size="1.25rem" />}
-        onClick={() => continueReadingChapter && onRead(continueReadingChapter)}
+        onClick={() =>
+          continueReadingTarget &&
+          onRead(
+            continueReadingTarget.chapter,
+            continueReadingTarget.fromStart ? { fromStart: true } : undefined,
+          )
+        }
         size="md"
       >
-        {hasHistory && continueReadingChapter
-          ? t("novel.continueChapter", {
-              number: formatChapterNumber(continueReadingChapter),
-            })
-          : t("novel.startReading")}
+        {continueReadingTarget
+          ? hasHistory
+            ? t("novel.continueChapter", {
+                number: formatChapterNumber(continueReadingTarget.chapter),
+              })
+            : t("novel.startReading")
+          : hasHistory
+            ? t("novel.nothingToContinue")
+            : t("novel.startReading")}
       </Button>
 
       <div className="norea-novel-actions">

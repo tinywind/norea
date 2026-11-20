@@ -98,14 +98,14 @@ it("resumes an unfinished chapter with a progress ring and opens the next chapte
   expect(resume.some((element) => element.props.sections)).toBe(true);
   expect(resume.some((element) => element.props.children === "history.chapterNumber:2")).toBe(true);
   (resume[0]!.props.onClick as () => void)();
-  expect(onOpen).toHaveBeenLastCalledWith(11);
+  expect(onOpen).toHaveBeenLastCalledWith(11, undefined);
 
   const next = await renderCard(cards[1]!);
   expect(next.some((element) => element.props.sections)).toBe(false);
   expect(next.some((element) => element.props.children === "library.continueReading.next")).toBe(true);
   expect(next.some((element) => element.props.children === "history.chapterNumber:8")).toBe(true);
   (next[0]!.props.onClick as () => void)();
-  expect(onOpen).toHaveBeenLastCalledWith(21);
+  expect(onOpen).toHaveBeenLastCalledWith(21, { fromStart: true });
 });
 
 it("labels a card with the chapter's number, not its list position", async () => {
@@ -131,7 +131,7 @@ it("shows title episodes for both a resumed chapter and the next chapter", async
   expect(current.some(element => element.props.children === "history.chapterNumber:346378")).toBe(false);
   expect(next.some(element => element.props.children === "history.chapterNumber:5677728")).toBe(false);
   (next[0]!.props.onClick as () => void)();
-  expect(onOpen).toHaveBeenCalledWith(21);
+  expect(onOpen).toHaveBeenCalledWith(21, { fromStart: true });
 });
 
 it("collapses and expands from its heading and remembers the choice", async () => {

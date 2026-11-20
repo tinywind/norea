@@ -1509,6 +1509,7 @@
   "novel.local.finishReorder": "Finish reordering chapters",
   "novel.mergeSource": "Migrate to another edition",
   "novel.continueChapter": "Continue · Ch. {number}",
+  "novel.nothingToContinue": "Nothing to continue",
   "novel.fromStart": "From start",
   "novel.inLibraryAction": "In library",
   "novel.download": "Download",

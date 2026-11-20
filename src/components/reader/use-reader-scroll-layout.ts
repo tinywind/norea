@@ -271,6 +271,13 @@ export function useReaderScrollLayout({
           snapshot: getReaderDebugSnapshot(node),
         }));
         if (targetPage < 1 || targetPage > getPagedPageCount(node)) {
+          if (direction === 1 && pageScrollAnimatingRef.current) {
+            cancelPagedScrollAnimation();
+            node.scrollTo({
+              left: getPagedLeft(node, getPagedPageCount(node)),
+              behavior: "auto",
+            });
+          }
           logReaderInput("page-step-boundary", () => ({
             source,
             direction,
@@ -306,6 +313,11 @@ export function useReaderScrollLayout({
         (direction === 1 && current >= axisMax - 2) ||
         (direction === -1 && current <= 2)
       ) {
+        if (direction === 1 && scrollStepAnimationRef.current) {
+          const finalTop = scrollStepAnimationRef.current.targetTop;
+          cancelPagedScrollAnimation();
+          node.scrollTo({ top: finalTop, behavior: "auto" });
+        }
         logReaderInput("page-step-boundary", () => ({
           source,
           direction,
@@ -356,6 +368,7 @@ export function useReaderScrollLayout({
       };
     },
     [
+      cancelPagedScrollAnimation,
       enforceScrollStepFloor,
       isPagedReader,
       onBoundaryPage,

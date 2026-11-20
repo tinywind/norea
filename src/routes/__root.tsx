@@ -209,12 +209,15 @@ function StackedPage({ entry }: { entry: PageStackEntry }) {
           sourceNovelId={parseNovelMergeSearch(entry.search).sourceNovelId}
         />
       );
-    case "/reader":
+    case "/reader": {
+      const { chapterId, fromStart } = parseReaderSearch(entry.search);
       return (
         <StackedReaderPage
-          chapterId={parseReaderSearch(entry.search).chapterId}
+          chapterId={chapterId}
+          fromStart={fromStart}
         />
       );
+    }
     case "/source": {
       const { pluginId, query } = parseSourceSearch(entry.search);
       return <StackedSourcePage pluginId={pluginId} query={query} />;

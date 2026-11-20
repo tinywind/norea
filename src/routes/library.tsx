@@ -286,8 +286,13 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     selectionMode,
   });
   const openChapter = useCallback(
-    (chapterId: number) => {
-      void navigate({ to: "/reader", search: { chapterId } });
+    (chapterId: number, options?: { fromStart?: boolean }) => {
+      void navigate({
+        to: "/reader",
+        search: options?.fromStart
+          ? { chapterId, fromStart: true }
+          : { chapterId },
+      });
     },
     [navigate],
   );

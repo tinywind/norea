@@ -342,21 +342,69 @@ export function findFirstChapter(
   }, null);
 }
 
+export interface NovelContinueReadingTarget {
+  chapter: ChapterListRow;
+  /** True when continuing advances from a finished chapter to the start of the next one. */
+  fromStart: boolean;
+}
+
+function findLatestReadChapterId(
+  chapters: readonly ChapterListRow[],
+  lastReadChapterId: number | undefined,
+): number | undefined {
+  if (
+    lastReadChapterId !== undefined &&
+    chapters.some((chapter) => chapter.id === lastReadChapterId)
+  ) {
+    return lastReadChapterId;
+  }
+  let latest: ChapterListRow | undefined;
+  for (const chapter of chapters) {
+    if (
+      chapter.readAt !== null &&
+      (latest === undefined ||
+        chapter.readAt > (latest.readAt ?? -1) ||
+        (chapter.readAt === latest.readAt && chapter.position > latest.position))
+    ) {
+      latest = chapter;
+    }
+  }
+  return latest?.id;
+}
+
+export function findContinueReadingTarget(
+  chapters: readonly ChapterListRow[],
+  lastReadChapterId: number | undefined,
+): NovelContinueReadingTarget | null {
+  const readingOrder = getReadingOrderChapters(chapters);
+  const effectiveLastReadId = findLatestReadChapterId(
+    readingOrder,
+    lastReadChapterId,
+  );
+  const lastReadIndex =
+    effectiveLastReadId === undefined
+      ? -1
+      : readingOrder.findIndex((chapter) => chapter.id === effectiveLastReadId);
+  if (lastReadIndex >= 0) {
+    const lastRead = readingOrder[lastReadIndex]!;
+    if (lastRead.unread && lastRead.progress < FINISHED_PROGRESS) {
+      return { chapter: lastRead, fromStart: false };
+    }
+    const next = readingOrder[lastReadIndex + 1];
+    return next && hasStoredChapterContent(next)
+      ? { chapter: next, fromStart: true }
+      : null;
+  }
+  const initial =
+    readingOrder.find((chapter) => chapter.unread) ?? readingOrder[0] ?? null;
+  return initial ? { chapter: initial, fromStart: false } : null;
+}
+
 export function findContinueReadingChapter(
   chapters: readonly ChapterListRow[],
   lastReadChapterId: number | undefined,
 ): ChapterListRow | null {
-  const readingOrder = getReadingOrderChapters(chapters);
-  const lastReadIndex =
-    lastReadChapterId === undefined
-      ? -1
-      : readingOrder.findIndex((chapter) => chapter.id === lastReadChapterId);
-  if (lastReadIndex >= 0) {
-    const lastRead = readingOrder[lastReadIndex]!;
-    if (lastRead.progress < FINISHED_PROGRESS) return lastRead;
-    return readingOrder[lastReadIndex + 1] ?? lastRead;
-  }
-  return readingOrder.find((chapter) => chapter.unread) ?? readingOrder[0] ?? null;
+  return findContinueReadingTarget(chapters, lastReadChapterId)?.chapter ?? null;
 }
 
 /** Whether the user has opened one of these chapters before. */
@@ -364,10 +412,7 @@ export function hasReadingHistory(
   chapters: readonly ChapterListRow[],
   lastReadChapterId: number | undefined,
 ): boolean {
-  return (
-    lastReadChapterId !== undefined &&
-    chapters.some((chapter) => chapter.id === lastReadChapterId)
-  );
+  return findLatestReadChapterId(chapters, lastReadChapterId) !== undefined;
 }
 
 export function resolveNovelSourceUrl(novel: NovelDetailRecord): string | null {

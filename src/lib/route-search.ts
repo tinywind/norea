@@ -4,6 +4,7 @@ export interface NovelSearch {
 
 export interface ReaderSearch {
   chapterId: number;
+  fromStart?: boolean;
 }
 
 export interface NovelMergeSearch {
@@ -39,7 +40,9 @@ export function parseNovelSearch(search: Record<string, unknown>): NovelSearch {
 export function parseReaderSearch(
   search: Record<string, unknown>,
 ): ReaderSearch {
-  return { chapterId: asPositiveId(search.chapterId) };
+  const chapterId = asPositiveId(search.chapterId);
+  const fromStart = search.fromStart === true || search.fromStart === "true";
+  return fromStart ? { chapterId, fromStart: true } : { chapterId };
 }
 
 export function parseNovelMergeSearch(

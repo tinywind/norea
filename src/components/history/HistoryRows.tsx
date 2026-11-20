@@ -3,6 +3,7 @@ import { useQuery } from "@tanstack/react-query";
 import type { CSSProperties } from "react";
 import {
   getAdjacentChapter,
+  hasStoredChapterContent,
   type ChapterListRow,
   type RecentlyReadEntry,
 } from "../../db/queries/chapter";
@@ -82,6 +83,12 @@ export function HistoryRow({
     queryKey: ["chapter", "history", "next", entry.chapterId] as const,
     queryFn: () => getAdjacentChapter(entry.novelId, entry.position, 1),
   });
+  const readyNextChapter =
+    nextChapter.data === undefined
+      ? undefined
+      : nextChapter.data && hasStoredChapterContent(nextChapter.data)
+        ? nextChapter.data
+        : null;
   const readAt = formatRelativeTimeForLocale(locale, entry.readAt);
   const chapterNumber = shownChapterNumber(entry);
   const meta = [
@@ -95,12 +102,12 @@ export function HistoryRow({
       <ListRow
         className="norea-history-row-open"
         leading={<HistoryCover entry={entry} />}
-        onClick={() => onContinue(finished ? nextChapter.data : undefined)}
+        onClick={() => onContinue(finished ? readyNextChapter : undefined)}
         subtitle={
           <>
             <span className="norea-history-row-meta">
-              {finished && nextChapter.data
-                ? `${t("history.nextChapter", { number: formatChapterNumber(nextChapter.data) })} · ${readAt}`
+              {finished && readyNextChapter
+                ? `${t("history.nextChapter", { number: formatChapterNumber(readyNextChapter) })} · ${readAt}`
                 : meta}
             </span>
             <span aria-hidden="true" className="norea-history-progress">

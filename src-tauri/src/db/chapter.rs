@@ -2246,18 +2246,11 @@ pub async fn list_continue_reading_in_conn(
              c.position, \
              c.progress, \
              c.read_at, \
-             (SELECT nc.id FROM chapter nc \
-               WHERE nc.novel_id = n.id AND nc.position > c.position \
-               ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS next_chapter_id, \
-             (SELECT nc.name FROM chapter nc \
-               WHERE nc.novel_id = n.id AND nc.position > c.position \
-               ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS next_chapter_name, \
-             (SELECT nc.chapter_number FROM chapter nc \
-               WHERE nc.novel_id = n.id AND nc.position > c.position \
-               ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS next_chapter_number, \
-             (SELECT nc.position FROM chapter nc \
-               WHERE nc.novel_id = n.id AND nc.position > c.position \
-               ORDER BY nc.position ASC, nc.id ASC LIMIT 1) AS next_chapter_position \
+             c.unread AS chapter_unread, \
+             CASE WHEN nc.id IS NOT NULL AND (nc.is_downloaded = 1 OR nc.content_bytes > 0) THEN nc.id ELSE NULL END AS next_chapter_id, \
+             CASE WHEN nc.id IS NOT NULL AND (nc.is_downloaded = 1 OR nc.content_bytes > 0) THEN nc.name ELSE NULL END AS next_chapter_name, \
+             CASE WHEN nc.id IS NOT NULL AND (nc.is_downloaded = 1 OR nc.content_bytes > 0) THEN nc.chapter_number ELSE NULL END AS next_chapter_number, \
+             CASE WHEN nc.id IS NOT NULL AND (nc.is_downloaded = 1 OR nc.content_bytes > 0) THEN nc.position ELSE NULL END AS next_chapter_position \
            FROM novel n \
            LEFT JOIN novel_override o ON o.novel_id = n.id \
            JOIN chapter c ON c.id = ( \
@@ -2266,10 +2259,16 @@ pub async fn list_continue_reading_in_conn(
              ORDER BY c2.read_at DESC, c2.position DESC, c2.id DESC \
              LIMIT 1 \
            ) \
+           LEFT JOIN chapter nc ON nc.id = ( \
+             SELECT nc2.id FROM chapter nc2 \
+             WHERE nc2.novel_id = n.id AND nc2.position > c.position \
+             ORDER BY nc2.position ASC, nc2.id ASC \
+             LIMIT 1 \
+           ) \
            WHERE n.in_library = 1 \
          ) \
          SELECT * FROM latest \
-         WHERE progress < 100 OR next_chapter_id IS NOT NULL \
+         WHERE (chapter_unread = 1 AND progress < 100) OR next_chapter_id IS NOT NULL \
          ORDER BY read_at DESC, position DESC, chapter_id DESC \
          LIMIT ?1",
         effective_name = super::novel::EFFECTIVE_NOVEL_NAME_SQL,
@@ -4542,6 +4541,14 @@ mod tests {
             .unwrap();
         assert!(ch13.unread);
         assert!(ch13.bookmark);
+
+        let cont_undownloaded = list_continue_reading_in_conn(&mut conn, None).await.unwrap();
+        assert!(cont_undownloaded.is_empty());
+
+        sqlx::query("UPDATE chapter SET is_downloaded = 1, content_bytes = 64 WHERE id = 12")
+            .execute(&mut *conn)
+            .await
+            .unwrap();
 
         let cont = list_continue_reading_in_conn(&mut conn, None).await.unwrap();
         assert_eq!(cont.len(), 1);

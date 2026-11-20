@@ -10,6 +10,7 @@ import {
   filterChapterList,
   findChapterForJump,
   findContinueReadingChapter,
+  findContinueReadingTarget,
   NO_CHAPTER_LIST_FILTERS,
   novelStatusLabel,
   splitGenres,
@@ -18,15 +19,18 @@ import {
 function chapter(
   id: number,
   position: number,
-  state: { progress?: number; unread?: boolean } = {},
+  state: { progress?: number; unread?: boolean; isDownloaded?: boolean; contentBytes?: number; readAt?: number | null } = {},
 ): ChapterListRow {
   const progress = state.progress ?? 0;
   return {
     id, novelId: 1, path: `/chapter/${id}`, name: `Chapter ${id}`,
     chapterNumber: String(position), position, page: "1", bookmark: false,
-    unread: state.unread ?? progress < 100, progress, isDownloaded: false,
-    sourceContentType: "html", contentType: "html", contentBytes: 0,
-    mediaBytes: 0, mediaRepairNeeded: false, releaseTime: null, readAt: null,
+    unread: state.unread ?? progress < 100, progress,
+    isDownloaded: state.isDownloaded ?? false,
+    sourceContentType: "html", contentType: "html",
+    contentBytes: state.contentBytes ?? 0,
+    mediaBytes: 0, mediaRepairNeeded: false, releaseTime: null,
+    readAt: state.readAt ?? null,
     createdAt: null, foundAt: 0, updatedAt: 0,
   };
 }
@@ -46,27 +50,53 @@ describe("findContinueReadingChapter", () => {
 
   it("resumes the last-read chapter while it is unfinished", () => {
     const chapters = [chapter(1, 1, { progress: 100 }), chapter(2, 2, { progress: 40 }), chapter(3, 3)];
-    expect(targetId(chapters, 2)).toBe(2);
+    expect(findContinueReadingTarget(chapters, 2)).toEqual({
+      chapter: chapters[1],
+      fromStart: false,
+    });
   });
 
-  it("opens the next chapter in reading order when the last-read chapter is finished", () => {
-    const chapters = [chapter(1, 1, { progress: 100 }), chapter(2, 2, { progress: 100 }), chapter(3, 3)];
-    expect(targetId(chapters, 2)).toBe(3);
+  it("opens the downloaded next chapter at 0% in reading order when the last-read chapter is finished", () => {
+    const chapters = [
+      chapter(1, 1, { progress: 100 }),
+      chapter(2, 2, { progress: 100 }),
+      chapter(3, 3, { isDownloaded: true }),
+    ];
+    expect(findContinueReadingTarget(chapters, 2)).toEqual({
+      chapter: chapters[2],
+      fromStart: true,
+    });
   });
 
   it("follows reading order when chapters are listed newest first", () => {
-    const chapters = [chapter(3, 3), chapter(2, 2), chapter(1, 1, { progress: 100 })];
+    const chapters = [
+      chapter(3, 3),
+      chapter(2, 2, { isDownloaded: true }),
+      chapter(1, 1, { progress: 100 }),
+    ];
     expect(targetId(chapters, 1)).toBe(2);
   });
 
   it("follows chapter positions rather than ids", () => {
-    const chapters = [chapter(10, 1, { progress: 100 }), chapter(5, 2), chapter(7, 3)];
+    const chapters = [
+      chapter(10, 1, { progress: 100 }),
+      chapter(5, 2, { contentBytes: 120 }),
+      chapter(7, 3),
+    ];
     expect(targetId(chapters, 10)).toBe(5);
   });
 
-  it("keeps the finished last chapter when no next chapter exists", () => {
-    const chapters = [chapter(1, 1, { progress: 100 }), chapter(2, 2, { progress: 100 })];
-    expect(targetId(chapters, 2)).toBe(2);
+  it("returns nothing when the last-read chapter is finished and the next chapter is missing or not downloaded", () => {
+    const caughtUp = [chapter(1, 1, { progress: 100 }), chapter(2, 2, { progress: 100 })];
+    expect(findContinueReadingChapter(caughtUp, 2)).toBeNull();
+
+    const undownloadedNext = [
+      chapter(1, 1, { progress: 100 }),
+      chapter(2, 2, { progress: 100 }),
+      chapter(3, 3, { isDownloaded: false, contentBytes: 0 }),
+      chapter(4, 4, { isDownloaded: true }),
+    ];
+    expect(findContinueReadingChapter(undownloadedNext, 2)).toBeNull();
   });
 
   it("opens the first unread chapter in reading order without history", () => {

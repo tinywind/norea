@@ -73,11 +73,5 @@ it("resumes an unfinished chapter and opens the next chapter of a finished one",
   });
   expect(
     getContinueReadingTarget({ ...base, nextChapterId: null, progress: 100 }),
-  ).toEqual({
-    chapterId: 11,
-    chapterName: "One",
-    chapterNumber: "1",
-    next: false,
-    position: 2,
-  });
+  ).toBeNull();
 });

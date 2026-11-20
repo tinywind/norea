@@ -260,7 +260,7 @@ export function useReaderChapterNavigation({
           : null;
 
   const openAdjacent = useCallback(
-    async (direction: 1 | -1) => {
+    async (direction: 1 | -1, options?: { skipComplete?: boolean }) => {
       if (!chapter?.novelId || chapter.position === undefined) return;
       const listedAdjacent = direction === 1 ? nextChapter : previousChapter;
       const adjacent =
@@ -270,10 +270,10 @@ export function useReaderChapterNavigation({
           chapter.position,
           direction,
         ));
-      if (!adjacent) return;
-      if (direction === 1) {
+      if (direction === 1 && !options?.skipComplete) {
         contentRef.current?.completeIfAtEnd();
       }
+      if (!adjacent) return;
       openChapter(
         adjacent,
         direction === 1 ? { initialProgress: 0 } : undefined,

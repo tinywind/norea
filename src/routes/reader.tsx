@@ -2,7 +2,7 @@ import { Box, Loader, Text, Transition } from "@mantine/core";
 import { useMediaQuery } from "@mantine/hooks";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { StateView } from "../components/AppFrame";
 import { PdfReaderContent } from "../components/PdfReaderContent";
 import { SourceAccessNotice } from "../components/SourceAccessVerifyButton";
@@ -60,9 +60,10 @@ const FINISHED_PROGRESS = 100;
 
 interface ReaderPageProps {
   chapterId: number;
+  fromStart?: boolean;
 }
 
-export function ReaderPage({ chapterId }: ReaderPageProps) {
+export function ReaderPage({ chapterId, fromStart = false }: ReaderPageProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
   const active = usePageActivity();
@@ -124,6 +125,18 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
   const setChapterScrollAnchor = useReaderStore(
     (state) => state.setChapterScrollAnchor,
   );
+  const clearedFromStartChapterRef = useRef<number | null>(null);
+  useLayoutEffect(() => {
+    if (!fromStart) {
+      clearedFromStartChapterRef.current = null;
+      return;
+    }
+    if (chapterId <= 0 || clearedFromStartChapterRef.current === chapterId) {
+      return;
+    }
+    clearedFromStartChapterRef.current = chapterId;
+    setChapterScrollAnchor(chapterId, null);
+  }, [chapterId, fromStart, setChapterScrollAnchor]);
 
   const chapterListQuery = useQuery({
     queryKey: chapterListQueryKey(currentNovelId),
@@ -247,7 +260,9 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     initialProgressOverride &&
     initialProgressOverride.chapterId === activeChapterId
       ? initialProgressOverride.progress
-      : null;
+      : fromStart && activeChapterId === chapterId
+        ? 0
+        : null;
   const readerProgress = activeInitialProgressOverride ?? progress;
   // Read once per chapter state instead of subscribing: the reader rewrites the anchor while scrolling.
   const readerScrollAnchor = useMemo(
@@ -388,7 +403,9 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
       setInitialProgressOverride((current) =>
         current?.chapterId === targetChapterId
           ? { ...current, progress: nextProgress }
-          : current,
+          : fromStart && targetChapterId === chapterId
+            ? { chapterId: targetChapterId, progress: nextProgress }
+            : current,
       );
       setEndReachedChapterId(
         nextProgress >= FINISHED_PROGRESS ? targetChapterId : null,
@@ -401,7 +418,9 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     },
     [
       chapter?.id,
+      chapterId,
       currentNovelId,
+      fromStart,
       readerProgressPersistenceReady,
       persistProgress,
     ],
@@ -434,20 +453,48 @@ export function ReaderPage({ chapterId }: ReaderPageProps) {
     },
     [chapterNovelId, setNovelPageIndex],
   );
+  const completedEndChapterRef = useRef<number | null>(null);
+  const finishCurrentLastChapter = useCallback(() => {
+    if (!chapter || !readerProgressPersistenceReady) return;
+    completedEndChapterRef.current = chapter.id;
+    if (!contentRef.current?.completeIfAtEnd()) {
+      handleProgressChange(FINISHED_PROGRESS);
+    }
+  }, [chapter, handleProgressChange, readerProgressPersistenceReady]);
   const handleBoundaryPage = useCallback(
     (direction: 1 | -1) => {
       if (direction === 1 && isLastChapter && chapter) {
+        finishCurrentLastChapter();
         setEndReachedChapterId(chapter.id);
+        void openAdjacent(direction, { skipComplete: true });
+        return;
       }
       void openAdjacent(direction);
     },
-    [chapter, isLastChapter, openAdjacent],
+    [chapter, finishCurrentLastChapter, isLastChapter, openAdjacent],
   );
   const showNovelEnd =
     hasChapterContent &&
     chapter !== undefined &&
     endReachedChapterId === chapter.id &&
     (isLastChapter || novelEndCheck.check.status === "found");
+  useEffect(() => {
+    if (
+      !showNovelEnd ||
+      !readerProgressPersistenceReady ||
+      !chapter ||
+      completedEndChapterRef.current === chapter.id ||
+      (!chapter.unread && chapter.progress >= FINISHED_PROGRESS)
+    ) {
+      return;
+    }
+    finishCurrentLastChapter();
+  }, [
+    chapter,
+    finishCurrentLastChapter,
+    readerProgressPersistenceReady,
+    showNovelEnd,
+  ]);
 
   const readerChromeThemeStyle = useMemo(
     () => getReaderChromeThemeStyle(effectiveReaderAppearance),

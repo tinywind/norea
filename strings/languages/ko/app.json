@@ -1509,6 +1509,7 @@
   "novel.local.finishReorder": "챕터 순서 변경 완료",
   "novel.mergeSource": "다른 작품판으로 옮기기",
   "novel.continueChapter": "이어 읽기 · {number}화",
+  "novel.nothingToContinue": "이어 읽을 챕터 없음",
   "novel.fromStart": "처음부터",
   "novel.inLibraryAction": "서재에 있음",
   "novel.download": "다운로드",

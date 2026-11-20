@@ -21,6 +21,7 @@ import { OverflowMenu } from "../components/ui/OverflowMenu";
 import {
   clearNovelHistory,
   getAdjacentChapter,
+  hasStoredChapterContent,
   listRecentlyRead,
   type ChapterListRow,
   type RecentlyReadEntry,
@@ -164,8 +165,16 @@ export function HistoryPage() {
     setProgressFilter("all");
   };
 
-  const openChapter = (chapterId: number) => {
-    void navigate({ to: "/reader", search: { chapterId } });
+  const openChapter = (
+    chapterId: number,
+    options?: { fromStart?: boolean },
+  ) => {
+    void navigate({
+      to: "/reader",
+      search: options?.fromStart
+        ? { chapterId, fromStart: true }
+        : { chapterId },
+    });
   };
   const openNovel = (novelId: number) => {
     void navigate({ to: "/novel", search: { id: novelId } });
@@ -179,13 +188,23 @@ export function HistoryPage() {
       return;
     }
     if (nextChapter !== undefined) {
-      openChapter(nextChapter?.id ?? entry.chapterId);
+      if (nextChapter && hasStoredChapterContent(nextChapter)) {
+        openChapter(nextChapter.id, { fromStart: true });
+      } else {
+        openNovel(entry.novelId);
+      }
       return;
     }
 
     void getAdjacentChapter(entry.novelId, entry.position, 1)
-      .then((nextChapter) => openChapter(nextChapter?.id ?? entry.chapterId))
-      .catch(() => openChapter(entry.chapterId));
+      .then((adjacent) => {
+        if (adjacent && hasStoredChapterContent(adjacent)) {
+          openChapter(adjacent.id, { fromStart: true });
+        } else {
+          openNovel(entry.novelId);
+        }
+      })
+      .catch(() => openNovel(entry.novelId));
   };
   const confirmRemove = async (entry: RecentlyReadEntry) => {
     const confirmed = await confirm({

@@ -26,6 +26,8 @@ const mocks = vi.hoisted(() => ({
 vi.mock("../db/queries/chapter", () => ({
   clearNovelHistory: vi.fn(),
   getAdjacentChapter: mocks.getAdjacentChapter,
+  hasStoredChapterContent: (chapter: { isDownloaded: boolean; contentBytes: number }) =>
+    chapter.isDownloaded || chapter.contentBytes > 0,
   listRecentlyRead: vi.fn(),
 }));
 vi.mock("../db/queries/history-search", () => ({
@@ -138,26 +140,28 @@ it("disables Clear all history when there is nothing to clear", async () => {
   expect(appBarMenu[0]!.disabled).toBe(true);
 });
 
-it("resumes an unfinished chapter and opens the known next chapter of a finished one", async () => {
+it("resumes an unfinished chapter, opens a downloaded next chapter from 0%, and opens the novel when none is downloaded", async () => {
   const { rows } = await mountPage();
   const continueRow = (index: number, next: unknown) =>
     (rows[index]!.props.onContinue as (next: unknown) => void)(next);
 
   continueRow(0, undefined);
   expect(mocks.navigate).toHaveBeenLastCalledWith({ search: { chapterId: 52 }, to: "/reader" });
-  continueRow(1, { id: 10 });
-  expect(mocks.navigate).toHaveBeenLastCalledWith({ search: { chapterId: 10 }, to: "/reader" });
+  continueRow(1, { id: 10, isDownloaded: true, contentBytes: 120 });
+  expect(mocks.navigate).toHaveBeenLastCalledWith({ search: { chapterId: 10, fromStart: true }, to: "/reader" });
+  continueRow(1, { id: 10, isDownloaded: false, contentBytes: 0 });
+  expect(mocks.navigate).toHaveBeenLastCalledWith({ search: { id: 5 }, to: "/novel" });
   continueRow(1, null);
-  expect(mocks.navigate).toHaveBeenLastCalledWith({ search: { chapterId: 9 }, to: "/reader" });
+  expect(mocks.navigate).toHaveBeenLastCalledWith({ search: { id: 5 }, to: "/novel" });
   expect(mocks.getAdjacentChapter).not.toHaveBeenCalled();
 });
 
 it("looks the next chapter up when a finished row is tapped before it loaded", async () => {
-  mocks.getAdjacentChapter.mockResolvedValueOnce({ id: 11 });
+  mocks.getAdjacentChapter.mockResolvedValueOnce({ id: 11, isDownloaded: true, contentBytes: 80 });
   const { rows } = await mountPage();
   await harness!.run(() => (rows[1]!.props.onContinue as (next: unknown) => void)(undefined));
   expect(mocks.getAdjacentChapter).toHaveBeenCalledWith(5, 52, 1);
-  expect(mocks.navigate).toHaveBeenLastCalledWith({ search: { chapterId: 11 }, to: "/reader" });
+  expect(mocks.navigate).toHaveBeenLastCalledWith({ search: { chapterId: 11, fromStart: true }, to: "/reader" });
 });
 
 it("searches the full history in SQLite only once Enter applies the query, and clear resets it", async () => {

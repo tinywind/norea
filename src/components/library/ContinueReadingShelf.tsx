@@ -45,7 +45,7 @@ function ContinueReadingCard({
   onOpen,
 }: {
   entry: ContinueReadingEntry;
-  onOpen: (chapterId: number) => void;
+  onOpen: (chapterId: number, options?: { fromStart?: boolean }) => void;
 }) {
   const { t } = useTranslation();
   const plugin = entry.novelIsLocal ? null : pluginManager.getPlugin(entry.pluginId);
@@ -63,12 +63,15 @@ function ContinueReadingCard({
     { allowSourceFallback: Boolean(plugin), plugin },
   );
   const target = getContinueReadingTarget(entry);
+  if (!target) return null;
   const progress = Math.max(0, Math.min(100, Math.round(entry.progress)));
 
   return (
     <button
       className="norea-continue-card norea-state-layer"
-      onClick={() => onOpen(target.chapterId)}
+      onClick={() =>
+        onOpen(target.chapterId, target.next ? { fromStart: true } : undefined)
+      }
       type="button"
     >
       <span aria-hidden="true" className="norea-continue-card-cover">
@@ -100,7 +103,7 @@ function ContinueReadingCard({
 
 interface ContinueReadingShelfProps {
   active: boolean;
-  onOpen: (chapterId: number) => void;
+  onOpen: (chapterId: number, options?: { fromStart?: boolean }) => void;
 }
 
 /**
@@ -118,7 +121,10 @@ export function ContinueReadingShelf({ active, onOpen }: ContinueReadingShelfPro
     queryKey: continueReadingQueryKey,
     queryFn: () => listContinueReading(CONTINUE_READING_LIMIT),
   });
-  if (!entries.data?.length) return null;
+  const readyEntries = entries.data?.filter(
+    (entry) => getContinueReadingTarget(entry) !== null,
+  );
+  if (!readyEntries?.length) return null;
   const ToggleIcon = collapsed ? ChevronRightIcon : ChevronDownIcon;
 
   return (
@@ -138,7 +144,7 @@ export function ContinueReadingShelf({ active, onOpen }: ContinueReadingShelfPro
       </h2>
       {collapsed ? null : (
         <ul className="norea-continue-shelf-list" id={listId}>
-          {entries.data.map((entry) => (
+          {readyEntries.map((entry) => (
             <li key={entry.novelId}>
               <ContinueReadingCard entry={entry} onOpen={onOpen} />
             </li>

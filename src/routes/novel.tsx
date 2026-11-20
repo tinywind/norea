@@ -503,8 +503,16 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
   usePageBackNavigation(goBack);
   const closeReaderSettings = () => setReaderSettingsOpen(false);
 
-  function openChapter(chapter: ChapterListRow): void {
-    void navigate({ to: "/reader", search: { chapterId: chapter.id } });
+  function openChapter(
+    chapter: ChapterListRow,
+    options?: { fromStart?: boolean },
+  ): void {
+    void navigate({
+      to: "/reader",
+      search: options?.fromStart
+        ? { chapterId: chapter.id, fromStart: true }
+        : { chapterId: chapter.id },
+    });
   }
 
   function deleteChapterDownload(chapterId: number): void {

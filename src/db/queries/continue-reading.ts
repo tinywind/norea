@@ -5,7 +5,7 @@ export const CONTINUE_READING_LIMIT = 6;
 
 /**
  * A library novel whose latest read chapter has a resume target: the chapter
- * itself while it is unfinished, or the next indexed chapter once it is
+ * itself while it is unfinished, or the next downloaded chapter once it is
  * finished.
  */
 export interface ContinueReadingEntry {
@@ -29,15 +29,15 @@ export interface ContinueReadingEntry {
   nextChapterPosition: number | null;
 }
 
-/** The chapter a tap resumes, following History's rule. */
+/** The chapter a tap resumes, or null when finished with no downloaded next chapter. */
 export function getContinueReadingTarget(entry: ContinueReadingEntry): {
   chapterId: number;
   chapterName: string | null;
   chapterNumber: string | null;
   next: boolean;
   position: number;
-} {
-  if (entry.progress < FINISHED_PROGRESS || entry.nextChapterId === null) {
+} | null {
+  if (entry.progress < FINISHED_PROGRESS) {
     return {
       chapterId: entry.chapterId,
       chapterName: entry.chapterName,
@@ -45,6 +45,9 @@ export function getContinueReadingTarget(entry: ContinueReadingEntry): {
       next: false,
       position: entry.position,
     };
+  }
+  if (entry.nextChapterId === null) {
+    return null;
   }
   return {
     chapterId: entry.nextChapterId,
