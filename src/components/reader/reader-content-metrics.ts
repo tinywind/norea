@@ -136,6 +136,7 @@ export function getProgress(node: HTMLElement, pageReader: boolean): number {
     if (total <= 1) return 0;
     return ((getPagedPageIndex(node) - 1) / (total - 1)) * 100;
   }
+  if (node.clientHeight <= 0) return 0;
   const maxTop = node.scrollHeight - node.clientHeight;
   return maxTop <= 0 ? 100 : (node.scrollTop / maxTop) * 100;
 }
@@ -204,8 +205,10 @@ export function isAtReadingEnd(
   pageReader: boolean,
 ): boolean {
   if (pageReader) {
+    if (node.clientWidth <= 0) return false;
     return getPagedPageIndex(node) >= getPagedPageCount(node);
   }
+  if (node.clientHeight <= 0) return false;
   const maxTop = node.scrollHeight - node.clientHeight;
   return maxTop <= 2 || node.scrollTop >= maxTop - 2;
 }
@@ -247,7 +250,7 @@ export function scrollToProgress(
     node.scrollTo({ left: getPagedLeft(node, pageIndex), behavior });
     return;
   }
-  const maxTop = node.scrollHeight - node.clientHeight;
+  const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
   node.scrollTo({ top: maxTop * ratio, behavior });
 }
 

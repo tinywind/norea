@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { READER_PENDING_MEDIA_ATTRIBUTE } from "../reader-document";
 import { SCROLL_PAGE_FRACTION } from "./reader-content-metrics";
 import { useReaderScrollLayout } from "./use-reader-scroll-layout";
 
@@ -47,11 +48,15 @@ function fakeNode(init: Partial<HTMLDivElement>) {
   } as unknown as HTMLDivElement;
 }
 
-function mountLayout(isPagedReader: boolean, node: HTMLDivElement) {
+function mountLayout(
+  isPagedReader: boolean,
+  node: HTMLDivElement,
+  content: HTMLDivElement | null = isPagedReader ? node : null,
+) {
   const onBoundaryPage = vi.fn();
   const layout = useReaderScrollLayout({
     completedForNavigationRef: { current: false },
-    contentRef: { current: isPagedReader ? node : null },
+    contentRef: { current: content },
     isPagedReader,
     onBoundaryPage,
     pageTransitionDuration: 300,
@@ -133,5 +138,36 @@ describe("quick page steps", () => {
     layout.scrollByPage(1, "tap-next");
     expect(onBoundaryPage).toHaveBeenCalledWith(1);
     expect(topAtBoundary).toBe(PAGE - 40);
+  });
+
+  it("suppresses forward boundary skips when scroll height has no overflow yet and media is still pending", () => {
+    const node = fakeNode({ clientHeight: PAGE, scrollHeight: PAGE });
+    let pending = true;
+    const content = {
+      querySelectorAll: (selector: string) =>
+        selector === "img"
+          ? [{ hasAttribute: (name: string) => pending && name === READER_PENDING_MEDIA_ATTRIBUTE }]
+          : [],
+    } as unknown as HTMLDivElement;
+    const { layout, onBoundaryPage } = mountLayout(false, node, content);
+
+    layout.scrollByPage(1, "tap-next");
+    expect(onBoundaryPage).not.toHaveBeenCalled();
+
+    pending = false;
+    layout.scrollByPage(1, "tap-next");
+    expect(onBoundaryPage).toHaveBeenCalledExactlyOnceWith(1);
+  });
+
+  it("ignores page steps while the viewport has not been measured yet", () => {
+    const scrollNode = fakeNode({ clientHeight: 0, scrollHeight: 0 });
+    const scroll = mountLayout(false, scrollNode);
+    scroll.layout.scrollByPage(1, "tap-next");
+    expect(scroll.onBoundaryPage).not.toHaveBeenCalled();
+
+    const pagedNode = fakeNode({ clientWidth: 0, scrollWidth: 0 });
+    const paged = mountLayout(true, pagedNode);
+    paged.layout.scrollByPage(1, "tap-next");
+    expect(paged.onBoundaryPage).not.toHaveBeenCalled();
   });
 });

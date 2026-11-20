@@ -81,6 +81,17 @@ describe("reader progress geometry", () => {
     expect(isAtReadingEnd(node, false)).toBe(true);
   });
 
+  it("treats unmeasured viewports as 0% and not at reading end, and clamps negative scroll bounds", () => {
+    const unmeasured = viewport({ width: 0, height: 0, scrollWidth: 0, scrollHeight: 0 });
+    expect(getProgress(unmeasured, false)).toBe(0);
+    expect(isAtReadingEnd(unmeasured, false)).toBe(false);
+    expect(isAtReadingEnd(unmeasured, true)).toBe(false);
+
+    const undersized = viewport({ height: 600, scrollHeight: 200 });
+    scrollToProgress(undersized, 50, false, "auto");
+    expect(undersized.scrollTop).toBe(0);
+  });
+
   it("keeps the visible segment anchored when preceding media gains height", () => {
     expect(
       virtualScrollAnchorDelta(150, [0, 100, 200, 300], [0, 160, 260, 360]),

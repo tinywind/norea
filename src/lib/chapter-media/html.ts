@@ -1,4 +1,5 @@
 import {
+  INERT_LOCAL_MEDIA_SRC_PREFIX,
   LOCAL_CHAPTER_MEDIA_SRC_PATTERN,
   LOCAL_MEDIA_SRC_PREFIX,
   localChapterMediaFileName,
@@ -117,6 +118,7 @@ function isSkippableMediaSource(src: string): boolean {
     src === "" ||
     src.startsWith("#") ||
     src.startsWith(LOCAL_MEDIA_SRC_PREFIX) ||
+    src.startsWith(INERT_LOCAL_MEDIA_SRC_PREFIX) ||
     /^(?:data|blob|file|asset):/i.test(src)
   );
 }

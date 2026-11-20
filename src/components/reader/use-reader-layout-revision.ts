@@ -4,11 +4,12 @@ import { useLayoutEffect, useState, type RefObject } from "react";
 export function useReaderLayoutRevision(
   contentRef: RefObject<HTMLDivElement | null>,
   renderedHtml: string,
+  enabled = true,
 ): number {
   const [revision, setRevision] = useState(0);
   useLayoutEffect(() => {
     const content = contentRef.current;
-    if (!content) return;
+    if (!enabled || !content) return;
     let disposed = false;
     let frame: number | null = null;
     const schedule = () => {
@@ -30,6 +31,6 @@ export function useReaderLayoutRevision(
       content.removeEventListener("error", schedule, true);
       fonts?.removeEventListener("loadingdone", schedule);
     };
-  }, [contentRef, renderedHtml]);
+  }, [contentRef, enabled, renderedHtml]);
   return revision;
 }

@@ -128,13 +128,16 @@ function ReaderContentInner(
   );
   const renderedHtml = readerDocument.html;
   const virtualDocument = readerDocument.virtualDocument;
-  const layoutRevision = useReaderLayoutRevision(contentRef, renderedHtml);
+  const isPagedReader = general.pageReader;
+  const layoutRevision = useReaderLayoutRevision(
+    contentRef,
+    renderedHtml,
+    isPagedReader,
+  );
   const displayStaticHtml = useMemo(
     () => stripLocalMediaFontFaces(virtualDocument.staticHtml),
     [virtualDocument.staticHtml],
   );
-
-  const isPagedReader = general.pageReader;
   const {
     viewportSize,
     activeVirtualRangeStart,
@@ -178,7 +181,6 @@ function ReaderContentInner(
   const {
     patchMediaElements,
     restoreMediaPatches,
-    resolvedLocalMediaMap,
     hasLocalMediaContext,
   } = useReaderContentMedia({
     contentKey,
@@ -212,7 +214,7 @@ function ReaderContentInner(
         appearance.textSize,
         appearance.textAlign,
         general.removeExtraParagraphSpacing,
-        layoutRevision,
+        isPagedReader ? layoutRevision : "",
         general.bionicReading,
         general.pageReader,
         general.htmlImagePagingMode,
@@ -412,12 +414,11 @@ function ReaderContentInner(
         visibleSegmentsHtml,
         "</div></div>",
       ].join(""),
-      resolvedLocalMediaMap,
+      undefined,
       hasLocalMediaContext,
     );
   }, [
     displayStaticHtml,
-    resolvedLocalMediaMap,
     shouldVirtualizeScrollContent,
     hasLocalMediaContext,
     visibleSegmentsHtml,
@@ -427,12 +428,11 @@ function ReaderContentInner(
     return protectLocalReaderMediaCached(
       displayStaticHtml +
         virtualDocument.segments.map((segment) => segment.html).join(""),
-      resolvedLocalMediaMap,
+      undefined,
       hasLocalMediaContext,
     );
   }, [
     displayStaticHtml,
-    resolvedLocalMediaMap,
     shouldVirtualizeScrollContent,
     hasLocalMediaContext,
     virtualDocument.segments,
@@ -481,7 +481,7 @@ function ReaderContentInner(
         onClick={handleClick}
         onMouseDown={handleMouseDown}
         onPointerDown={handlePointerDown}
-        onScroll={isPagedReader ? undefined : updateProgressFromScroll}
+        onScroll={preparing || isPagedReader ? undefined : updateProgressFromScroll}
         onWheel={handleWheel}
         onTouchStart={handleTouchStart}
         onTouchEnd={handleTouchEnd}
@@ -503,7 +503,7 @@ function ReaderContentInner(
           }
           dir={virtualDocument.contentDirection}
           lang={virtualDocument.contentLanguage}
-          onScroll={isPagedReader ? updateProgressFromScroll : undefined}
+          onScroll={preparing || !isPagedReader ? undefined : updateProgressFromScroll}
           style={readerContentStyle}
           dangerouslySetInnerHTML={readerContentInnerHtml}
         />

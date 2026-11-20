@@ -25,6 +25,7 @@ import {
   cacheHtmlChapterMedia,
   clearChapterMedia,
   getStoredChapterMediaBytes,
+  hasRemoteChapterMedia,
   localChapterMediaSources,
   protectRemoteChapterMediaForPartialHtml,
   resolveLocalChapterMedia,
@@ -3773,4 +3774,19 @@ it("fetches composed media through the original source and stores every artifact
   expect(storageCalls.length).toBeGreaterThan(2);
   for (const [, args] of storageCalls) expect(args).toMatchObject({ sourceId: "target-b", sourceNovelId: "target-work-b", chapterNumber: "801" });
   expect(result).toMatchObject({ mediaBytes: 3, mediaFailures: [], storedMediaCount: 1 });
+});
+
+it("treats percent-encoded inert local reader-asset URLs as non-remote in hasRemoteChapterMedia", () => {
+  expect(
+    hasRemoteChapterMedia(
+      '<img src="norea-media%3A%2F%2Freader-asset%2F0001-001.jpg" srcset="norea-media%3A%2F%2Freader-asset%2F0001-001.jpg 2x"><div style="background-image:url(\'norea-media%3A%2F%2Freader-asset%2Fbg.jpg\')"></div>',
+      "https://norea.invalid/",
+    ),
+  ).toBe(false);
+  expect(
+    hasRemoteChapterMedia(
+      '<img src="norea-media%3A%2F%2Freader-asset%2F0001-001.jpg"><img src="https://cdn.example/0002.jpg">',
+      "https://norea.invalid/",
+    ),
+  ).toBe(true);
 });

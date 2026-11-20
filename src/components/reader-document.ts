@@ -1,4 +1,5 @@
 import { load } from "cheerio";
+import { INERT_LOCAL_MEDIA_SRC_PREFIX } from "../lib/chapter-media/sources";
 import { readerHtmlHasMedia } from "./reader-virtualization";
 
 export interface ReaderVirtualSegment {
@@ -66,8 +67,7 @@ export const READER_SEGMENT_INDEX_ATTRIBUTE = "data-norea-reader-segment-index";
 export const READER_PENDING_PLACEHOLDER_SRC =
   "data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%221000%22%20height%3D%221400%22%20viewBox%3D%220%200%201000%201400%22%2F%3E";
 export const READER_PENDING_PLACEHOLDER_HEIGHT = "min(72vh, 56rem)";
-export const READER_INERT_LOCAL_MEDIA_SRC_PREFIX =
-  "norea-media%3A%2F%2Freader-asset%2F";
+export const READER_INERT_LOCAL_MEDIA_SRC_PREFIX = INERT_LOCAL_MEDIA_SRC_PREFIX;
 export const READER_DOM_PREPROCESS_MAX_HTML_LENGTH = 350_000;
 
 const READER_UNSCOPED_LOCAL_MEDIA_SRC_PATTERN =

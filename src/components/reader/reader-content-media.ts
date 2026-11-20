@@ -233,28 +233,47 @@ export function isLocalReaderMediaUrl(value: string): boolean {
 }
 
 export function mediaErrorSource(target: EventTarget | null): string | null {
-  if (target instanceof HTMLImageElement) {
-    return target.currentSrc || target.src || target.getAttribute("src");
-  }
   if (
-    target instanceof HTMLVideoElement ||
-    target instanceof HTMLAudioElement
+    typeof HTMLImageElement !== "undefined" &&
+    target instanceof HTMLImageElement
   ) {
     return target.currentSrc || target.src || target.getAttribute("src");
   }
-  if (target instanceof HTMLSourceElement) {
+  if (
+    (typeof HTMLVideoElement !== "undefined" &&
+      target instanceof HTMLVideoElement) ||
+    (typeof HTMLAudioElement !== "undefined" &&
+      target instanceof HTMLAudioElement)
+  ) {
+    return target.currentSrc || target.src || target.getAttribute("src");
+  }
+  if (
+    typeof HTMLSourceElement !== "undefined" &&
+    target instanceof HTMLSourceElement
+  ) {
     return target.src || target.getAttribute("src");
   }
-  if (target instanceof HTMLEmbedElement) {
+  if (
+    typeof HTMLEmbedElement !== "undefined" &&
+    target instanceof HTMLEmbedElement
+  ) {
     return target.src || target.getAttribute("src");
   }
-  if (target instanceof HTMLIFrameElement) {
+  if (
+    typeof HTMLIFrameElement !== "undefined" &&
+    target instanceof HTMLIFrameElement
+  ) {
     return target.src || target.getAttribute("src");
   }
-  if (target instanceof HTMLObjectElement) {
+  if (
+    typeof HTMLObjectElement !== "undefined" &&
+    target instanceof HTMLObjectElement
+  ) {
     return target.data || target.getAttribute("data");
   }
-  return target instanceof HTMLElement ? target.getAttribute("src") : null;
+  return typeof HTMLElement !== "undefined" && target instanceof HTMLElement
+    ? target.getAttribute("src")
+    : null;
 }
 
 export function mediaLogHost(value: string): string {
@@ -391,6 +410,13 @@ function setReaderLocalMediaPlaceholder(
   const resolvedValue = resolvedLocalMedia?.get(sourceValue);
   if (resolvedValue) {
     element.setAttribute(attribute, resolvedValue);
+    if (
+      attribute === "src" &&
+      typeof HTMLImageElement !== "undefined" &&
+      element instanceof HTMLImageElement
+    ) {
+      setReaderPendingImageStyles(element);
+    }
     return;
   }
   const protectedAttribute = protectedLocalMediaAttribute(attribute);
@@ -458,7 +484,7 @@ function protectLocalReaderMedia(
         allowRelative,
       );
       changed = true;
-      if (!resolvedLocalMedia?.has(value)) {
+      if (!resolvedLocalMedia?.has(restoreInertLocalMediaValue(value))) {
         protectedCount += 1;
       }
     }
@@ -508,8 +534,7 @@ export function protectLocalReaderMediaCached(
   );
 }
 
-function setReaderPendingImagePlaceholder(image: HTMLImageElement): void {
-  image.setAttribute("src", READER_PENDING_PLACEHOLDER_SRC);
+function setReaderPendingImageStyles(image: HTMLImageElement): void {
   image.setAttribute(READER_PENDING_MEDIA_ATTRIBUTE, "true");
   if (image.style.display === "") {
     image.style.display = "block";
@@ -525,8 +550,65 @@ function setReaderPendingImagePlaceholder(image: HTMLImageElement): void {
   }
 }
 
-function clearReaderPendingMedia(element: HTMLElement): void {
-  if (!element.hasAttribute(READER_PENDING_MEDIA_ATTRIBUTE)) return;
+function setReaderPendingImagePlaceholder(image: HTMLImageElement): void {
+  image.setAttribute("src", READER_PENDING_PLACEHOLDER_SRC);
+  setReaderPendingImageStyles(image);
+}
+
+function isPlaceholderMediaSrc(value: string | null): boolean {
+  const trimmed = value?.trim() ?? "";
+  return (
+    trimmed === "" ||
+    trimmed === READER_PENDING_PLACEHOLDER_SRC ||
+    trimmed === READER_EMPTY_MEDIA_PLACEHOLDER_SRC
+  );
+}
+
+export function canClearPendingReaderImage(
+  target: EventTarget | null,
+  eventKind: "load" | "error",
+): target is HTMLImageElement {
+  if (
+    typeof HTMLImageElement === "undefined" ||
+    !(target instanceof HTMLImageElement) ||
+    typeof target.hasAttribute !== "function"
+  ) {
+    return false;
+  }
+  if (!target.hasAttribute(READER_PENDING_MEDIA_ATTRIBUTE)) return false;
+  const protectedSrcAttr = protectedLocalMediaAttribute("src");
+  const protectedSrcsetAttr = protectedLocalMediaAttribute("srcset");
+  if (
+    (protectedSrcAttr && target.hasAttribute(protectedSrcAttr)) ||
+    (protectedSrcsetAttr && target.hasAttribute(protectedSrcsetAttr))
+  ) {
+    return false;
+  }
+  const src = target.getAttribute("src");
+  const srcset = target.getAttribute("srcset");
+  if (isPlaceholderMediaSrc(src) && isPlaceholderMediaSrc(srcset)) {
+    return false;
+  }
+  const currentSrc = target.currentSrc?.trim() ?? "";
+  if (
+    currentSrc === READER_PENDING_PLACEHOLDER_SRC ||
+    currentSrc === READER_EMPTY_MEDIA_PLACEHOLDER_SRC
+  ) {
+    return false;
+  }
+  if (eventKind === "load" && target.complete === false) {
+    return false;
+  }
+  return true;
+}
+
+export function clearReaderPendingMedia(element: HTMLElement): void {
+  if (
+    typeof element.hasAttribute !== "function" ||
+    !element.hasAttribute(READER_PENDING_MEDIA_ATTRIBUTE)
+  ) {
+    return;
+  }
   element.removeAttribute(READER_PENDING_MEDIA_ATTRIBUTE);
   if (element.hasAttribute(READER_PENDING_BACKGROUND_ATTRIBUTE)) {
     element.style.removeProperty("background-color");
@@ -540,6 +622,34 @@ function clearReaderPendingMedia(element: HTMLElement): void {
     element.style.removeProperty("min-height");
     element.removeAttribute(READER_PENDING_HEIGHT_ATTRIBUTE);
   }
+}
+
+export function clearSettledPendingReaderImages(container: Element): void {
+  if (typeof container.querySelectorAll !== "function") return;
+  for (const element of container.querySelectorAll("img")) {
+    if (
+      !canClearPendingReaderImage(element, "load") ||
+      !element.complete ||
+      element.naturalWidth <= 0
+    ) {
+      continue;
+    }
+    if ((element.currentSrc?.trim() ?? "") === "") continue;
+    clearReaderPendingMedia(element);
+  }
+}
+
+export function hasPendingReaderMedia(content: Element | null): boolean {
+  if (!content || typeof content.querySelectorAll !== "function") return false;
+  for (const image of content.querySelectorAll("img")) {
+    if (
+      typeof image.hasAttribute === "function" &&
+      image.hasAttribute(READER_PENDING_MEDIA_ATTRIBUTE)
+    ) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function clearProtectedLocalMediaAttribute(
@@ -700,7 +810,13 @@ export function patchReaderMediaElements(
       }
       if (changed) {
         changedCount += 1;
-        clearReaderPendingMedia(current);
+        // Keep image placeholders intact until the real image finishes loading or fails.
+        if (
+          typeof HTMLImageElement === "undefined" ||
+          !(current instanceof HTMLImageElement)
+        ) {
+          clearReaderPendingMedia(current);
+        }
       }
     }
   }
@@ -770,22 +886,31 @@ export function hasLocalMediaSourceAttributes(
 export function resolveMountedLocalMediaPatchesFromMap(
   patches: ChapterMediaElementPatch[],
   resolvedLocalMedia: ReadonlyMap<string, string>,
+  options?: { allowPartial?: boolean },
 ): ChapterMediaElementPatch[] | null {
+  const allowPartial = options?.allowPartial ?? false;
   const resolvedPatches: ChapterMediaElementPatch[] = [];
   for (const patch of patches) {
     const attributes: Record<string, string> = {};
+    const sourceAttributes: Record<string, string> = {};
     for (const attribute of READER_MEDIA_PATCH_ATTRIBUTES) {
       const source = patch.sourceAttributes?.[attribute];
       if (!source) continue;
       const resolved = resolvedLocalMedia.get(source);
-      if (!resolved) return null;
+      if (!resolved) {
+        if (!allowPartial) return null;
+        continue;
+      }
       attributes[attribute] = resolved;
+      sourceAttributes[attribute] = source;
     }
-    resolvedPatches.push({
-      index: patch.index,
-      attributes,
-      sourceAttributes: patch.sourceAttributes,
-    });
+    if (Object.keys(attributes).length > 0) {
+      resolvedPatches.push({
+        index: patch.index,
+        attributes,
+        sourceAttributes,
+      });
+    }
   }
   return resolvedPatches;
 }

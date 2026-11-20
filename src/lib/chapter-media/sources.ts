@@ -2,6 +2,9 @@ import { type ChapterMediaStorageContext } from "./types";
 
 export const LOCAL_MEDIA_SRC_PREFIX = "norea-media://reader-asset/";
 
+export const INERT_LOCAL_MEDIA_SRC_PREFIX =
+  "norea-media%3A%2F%2Freader-asset%2F";
+
 export const LOCAL_CHAPTER_MEDIA_SRC_PATTERN =
   /norea-media:\/\/reader-asset\/[A-Za-z0-9][A-Za-z0-9._-]*(?:\/[A-Za-z0-9][A-Za-z0-9._-]*)*(?=$|[^A-Za-z0-9._/-])/g;
 

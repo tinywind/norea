@@ -5,7 +5,6 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
-  useState,
 } from "react";
 import {
   resolveLocalChapterMediaPatches,
@@ -13,6 +12,9 @@ import {
   type ChapterMediaStorageContext,
 } from "../../lib/chapter-media";
 import {
+  canClearPendingReaderImage,
+  clearReaderPendingMedia,
+  clearSettledPendingReaderImages,
   collectMountedLocalMediaPatches,
   countBlankReaderMedia,
   countDataUrlReaderMedia,
@@ -61,13 +63,8 @@ export function useReaderContentMedia({
   const latestRenderedHtmlRef = useRef<string | null>(null);
   const onMediaErrorRef = useRef(onMediaError);
   onMediaErrorRef.current = onMediaError;
-  const [resolvedLocalMedia, setResolvedLocalMedia] = useState<
-    Record<string, string>
-  >({});
-  const resolvedLocalMediaMap = useMemo(
-    () => new Map(Object.entries(resolvedLocalMedia)),
-    [resolvedLocalMedia],
-  );
+  const pendingMediaErrorRef = useRef<{ source: string | null } | null>(null);
+  const resolvedLocalMediaRef = useRef<Map<string, string>>(new Map());
   const localMediaContextKey = useMemo(
     () =>
       localMediaContext
@@ -120,19 +117,79 @@ export function useReaderContentMedia({
     [],
   );
 
+  const reportMediaError = useCallback((source: string | null) => {
+    if (onMediaErrorRef.current) {
+      pendingMediaErrorRef.current = null;
+      onMediaErrorRef.current(source);
+      return;
+    }
+    pendingMediaErrorRef.current = { source };
+  }, []);
+
+  useEffect(() => {
+    if (!onMediaError || !pendingMediaErrorRef.current) return;
+    const { source } = pendingMediaErrorRef.current;
+    pendingMediaErrorRef.current = null;
+    onMediaError(source);
+  }, [onMediaError]);
+
   useLayoutEffect(() => {
     latestMediaElementPatchesRef.current.clear();
+    resolvedLocalMediaRef.current.clear();
+    pendingMediaErrorRef.current = null;
     latestLocalMediaSignatureRef.current = null;
     pendingLocalMediaSignatureRef.current = null;
     unresolvedLocalMediaSignatureRef.current = null;
     localMediaPatchGenerationRef.current += 1;
-    setResolvedLocalMedia((current) =>
-      Object.keys(current).length === 0 ? current : {},
-    );
   }, [contentKey]);
+
+  useLayoutEffect(() => {
+    const content = contentRef.current;
+    if (!content) return;
+    const handlePendingImageLoad = (event: Event) => {
+      if (canClearPendingReaderImage(event.target, "load")) {
+        clearReaderPendingMedia(event.target);
+      }
+    };
+    const handlePendingImageError = (event: Event) => {
+      if (canClearPendingReaderImage(event.target, "error")) {
+        clearReaderPendingMedia(event.target);
+      }
+      const source = mediaErrorSource(event.target);
+      if (!source) return;
+      if (isRemoteMediaUrl(source)) {
+        logReaderMediaPipeline("remote-media-error", {
+          host: mediaLogHost(source),
+        });
+        reportMediaError(source);
+        return;
+      }
+      if (isLocalReaderMediaUrl(source)) {
+        logReaderMediaPipeline("local-media-error", {
+          host: mediaLogHost(source),
+        });
+        reportMediaError(source);
+      }
+    };
+    content.addEventListener("load", handlePendingImageLoad, true);
+    content.addEventListener("error", handlePendingImageError, true);
+    clearSettledPendingReaderImages(content);
+    return () => {
+      content.removeEventListener("load", handlePendingImageLoad, true);
+      content.removeEventListener("error", handlePendingImageError, true);
+    };
+  }, [
+    activeVirtualRangeEnd,
+    activeVirtualRangeStart,
+    contentRef,
+    isPagedReader,
+    renderedHtml,
+    reportMediaError,
+  ]);
 
   useEffect(() => {
     unresolvedLocalMediaSignatureRef.current = null;
+    pendingMediaErrorRef.current = null;
   }, [localMediaContextKey, renderedHtml]);
 
   useEffect(() => {
@@ -151,13 +208,13 @@ export function useReaderContentMedia({
       contextKey: localMediaContextKey,
       renderedHtmlBytes: renderedHtml.length,
       renderedHtmlHash: readerMediaDebugHash(renderedHtml),
-      resolvedMapSize: Object.keys(resolvedLocalMediaMap).length,
+      resolvedMapSize: resolvedLocalMediaRef.current.size,
       virtualStart: activeVirtualRangeStart,
       virtualEnd: activeVirtualRangeEnd,
     }));
     const resolvedPatches = resolveMountedLocalMediaPatchesFromMap(
       rawPatches,
-      resolvedLocalMediaMap,
+      resolvedLocalMediaRef.current,
     );
     if (resolvedPatches) {
       latestLocalMediaSignatureRef.current = scopedSignature;
@@ -246,29 +303,22 @@ export function useReaderContentMedia({
         }));
         if (patches.length > 0) {
           unresolvedLocalMediaSignatureRef.current = null;
-          setResolvedLocalMedia((current) => {
-            let changed = false;
-            const next = { ...current };
-            rawPatches.forEach((rawPatch, patchIndex) => {
-              const resolvedPatch = patches[patchIndex];
-              if (!resolvedPatch) return;
-              for (const attribute of READER_MEDIA_PATCH_ATTRIBUTES) {
-                const source = rawPatch.sourceAttributes?.[attribute];
-                const resolved = resolvedPatch.attributes[attribute];
-                if (!source || !resolved || next[source] === resolved) {
-                  continue;
-                }
-                next[source] = resolved;
-                changed = true;
+          const resolvedByIndex = new Map(
+            patches.map((patch) => [patch.index, patch]),
+          );
+          for (const rawPatch of rawPatches) {
+            const resolvedPatch = resolvedByIndex.get(rawPatch.index);
+            if (!resolvedPatch) continue;
+            for (const attribute of READER_MEDIA_PATCH_ATTRIBUTES) {
+              const source = rawPatch.sourceAttributes?.[attribute];
+              const resolved = resolvedPatch.attributes[attribute];
+              if (!source || !resolved) {
+                continue;
               }
-            });
-            return changed ? next : current;
-          });
-          for (const [index, patch] of latestMediaElementPatchesRef.current) {
-            if (hasLocalMediaSourceAttributes(patch)) {
-              latestMediaElementPatchesRef.current.delete(index);
+              resolvedLocalMediaRef.current.set(source, resolved);
             }
           }
+          mergeMediaElementPatches(latestMediaElementPatchesRef.current, patches);
           patchReaderMediaElements(content, patches);
         } else if (!cancelled) {
           logReaderMediaDebug("local-media-resolve-empty", () => ({
@@ -293,7 +343,7 @@ export function useReaderContentMedia({
             rawPatchCount: rawPatches.length,
             resolvedPatchCount: patches.length,
           });
-          onMediaErrorRef.current?.(unresolvedSource);
+          reportMediaError(unresolvedSource);
         }
       } finally {
         if (pendingLocalMediaSignatureRef.current === scopedSignature) {
@@ -312,44 +362,13 @@ export function useReaderContentMedia({
     activeVirtualRangeStart,
     localMediaContextKey,
     renderedHtml,
-    resolvedLocalMediaMap,
+    reportMediaError,
     stableLocalMediaContext,
-  ]);
-
-  useEffect(() => {
-    const content = contentRef.current;
-    if (!content || !onMediaError) return;
-    const handleMediaError = (event: Event) => {
-      const source = mediaErrorSource(event.target);
-      if (!source) return;
-      if (isRemoteMediaUrl(source)) {
-        logReaderMediaPipeline("remote-media-error", {
-          host: mediaLogHost(source),
-        });
-        onMediaError(source);
-        return;
-      }
-      if (isLocalReaderMediaUrl(source)) {
-        logReaderMediaPipeline("local-media-error", {
-          host: mediaLogHost(source),
-        });
-        onMediaError(source);
-      }
-    };
-    content.addEventListener("error", handleMediaError, true);
-    return () => {
-      content.removeEventListener("error", handleMediaError, true);
-    };
-  }, [
-    activeVirtualRangeEnd,
-    activeVirtualRangeStart,
-    isPagedReader,
-    onMediaError,
-    renderedHtml,
   ]);
 
   const restoreMediaPatches = useCallback(
     (readerContentHtml: string) => {
+      const content = contentRef.current;
       const patches = [...latestMediaElementPatchesRef.current.values()];
       logReaderMediaDebug("content-html-commit", () => ({
         htmlBytes: readerContentHtml.length,
@@ -358,17 +377,35 @@ export function useReaderContentMedia({
         virtualStart: activeVirtualRangeStart,
         virtualEnd: activeVirtualRangeEnd,
       }));
-      if (patches.length === 0) return;
-      const content = contentRef.current;
-      if (content) patchReaderMediaElements(content, patches);
+      if (!content) return;
+      if (patches.length > 0) {
+        patchReaderMediaElements(content, patches);
+      }
+      if (resolvedLocalMediaRef.current.size > 0) {
+        const rawPatches = collectMountedLocalMediaPatches(content, true);
+        if (rawPatches.length > 0) {
+          const resolvedPatches = resolveMountedLocalMediaPatchesFromMap(
+            rawPatches,
+            resolvedLocalMediaRef.current,
+            { allowPartial: true },
+          );
+          if (resolvedPatches && resolvedPatches.length > 0) {
+            mergeMediaElementPatches(
+              latestMediaElementPatchesRef.current,
+              resolvedPatches,
+            );
+            patchReaderMediaElements(content, resolvedPatches);
+          }
+        }
+      }
+      clearSettledPendingReaderImages(content);
     },
-    [activeVirtualRangeEnd, activeVirtualRangeStart],
+    [activeVirtualRangeEnd, activeVirtualRangeStart, contentRef],
   );
 
   return {
     patchMediaElements,
     restoreMediaPatches,
-    resolvedLocalMediaMap,
     hasLocalMediaContext: Boolean(stableLocalMediaContext),
   };
 }

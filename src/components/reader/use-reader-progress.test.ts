@@ -28,6 +28,9 @@ class FakeViewport extends EventTarget {
   clientHeight = 1000;
   scrollHeight = 0;
   isConnected = true;
+  scrollTo = vi.fn((options?: ScrollToOptions) => {
+    if (options?.top !== undefined) this.scrollTop = options.top;
+  });
   getBoundingClientRect() {
     return { top: 0, height: this.clientHeight };
   }
@@ -330,5 +333,98 @@ describe("useReaderProgress scroll restore", () => {
     vi.advanceTimersByTime(500);
     unmount();
     expect(onProgressChange.mock.calls.every(([progress]) => progress === 100)).toBe(true);
+  });
+
+  it("does not poison progress to 100% or run a duplicate 120ms restore when opening at 0% with collapsed height", () => {
+    const { viewport, onProgressChange, unmount } = openReader({
+      initialProgress: 0,
+    });
+    viewport.scrollHeight = viewport.clientHeight;
+    vi.advanceTimersByTime(200);
+
+    expect(viewport.scrollTo).toHaveBeenCalledOnce();
+    expect(viewport.scrollTop).toBe(0);
+    unmount();
+    expect(onProgressChange).not.toHaveBeenCalled();
+  });
+
+  it("ignores scroll-clamp events during height collapse instead of saving 100% completion", () => {
+    const { viewport, reader, onProgressChange, onScrollAnchorChange, unmount } =
+      openReader({ initialProgress: 0 });
+    viewport.scrollTop = 200;
+    reader.updateProgressFromScroll();
+
+    viewport.scrollHeight = viewport.clientHeight;
+    viewport.scrollTop = 0;
+    reader.updateProgressFromScroll();
+    vi.advanceTimersByTime(500);
+    unmount();
+
+    expect(onProgressChange).not.toHaveBeenCalledWith(100);
+    expect(onScrollAnchorChange).not.toHaveBeenCalledWith(
+      expect.objectContaining({ progress: 100 }),
+    );
+  });
+
+  it("does not treat a collapsed viewport with pending images as complete without force", () => {
+    const { viewport, content, reader, onProgressChange } = openReader({
+      initialProgress: 0,
+    });
+    viewport.scrollHeight = viewport.clientHeight;
+
+    expect(reader.completeIfAtEnd()).toBe(false);
+    expect(onProgressChange).not.toHaveBeenCalled();
+
+    for (const image of content.images) {
+      image.attributes.delete(READER_PENDING_MEDIA_ATTRIBUTE);
+    }
+    expect(reader.completeIfAtEnd()).toBe(true);
+    expect(onProgressChange).toHaveBeenCalledExactlyOnceWith(100);
+  });
+
+  it("preserves restored progress instead of poisoning to 100% when settle times out with collapsed height", () => {
+    const { viewport, onProgressChange, unmount } = openReader({
+      initialProgress: 50,
+    });
+    viewport.scrollHeight = viewport.clientHeight;
+    viewport.scrollTop = 0;
+    vi.advanceTimersByTime(3_500);
+    unmount();
+
+    expect(onProgressChange).not.toHaveBeenCalledWith(100);
+  });
+
+  it("keeps requested progress when seeking to 0% on a non-scrollable viewport", () => {
+    const { viewport, reader, onProgressChange } = openReader({
+      initialProgress: 0,
+    });
+    viewport.scrollHeight = viewport.clientHeight;
+    reader.seekToProgress(0);
+    vi.advanceTimersByTime(500);
+
+    expect(onProgressChange).not.toHaveBeenCalledWith(100);
+  });
+
+  it("keeps the 120ms fallback armed when the first animation frame sees an unmeasured viewport", () => {
+    const { viewport, onProgressChange, unmount } = openReader({
+      initialProgress: 0,
+    });
+    viewport.clientHeight = 0;
+    viewport.scrollHeight = 0;
+    viewport.scrollTop = 500;
+
+    // First rAF fires while unmeasured; must not consume the fallback timeout.
+    vi.advanceTimersByTime(20);
+    expect(viewport.scrollTo).not.toHaveBeenCalled();
+
+    // Layout finishes before the 120ms fallback timeout fires.
+    viewport.clientHeight = 1000;
+    viewport.scrollHeight = 8000;
+    vi.advanceTimersByTime(120);
+
+    expect(viewport.scrollTo).toHaveBeenCalledOnce();
+    expect(viewport.scrollTop).toBe(0);
+    unmount();
+    expect(onProgressChange).not.toHaveBeenCalled();
   });
 });

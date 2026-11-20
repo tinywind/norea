@@ -8,11 +8,12 @@ let frameId: number;
 let content: EventTarget & { ownerDocument: { fonts: EventTarget & { ready: Promise<unknown> } } };
 let revision: number;
 let html: string;
+let enabled: boolean;
 let resolveFonts: () => void;
 let contentRef: { current: HTMLDivElement };
 
 function Probe() {
-  revision = useReaderLayoutRevision(contentRef, html);
+  revision = useReaderLayoutRevision(contentRef, html, enabled);
   return null;
 }
 async function flushFrames() {
@@ -34,6 +35,7 @@ beforeEach(() => {
   content = Object.assign(new EventTarget(), { ownerDocument: { fonts } });
   contentRef = { current: content as unknown as HTMLDivElement };
   html = "<p>Next</p>";
+  enabled = true;
   revision = -1;
 });
 afterEach(async () => { await harness.unmount(); vi.restoreAllMocks(); });
@@ -67,4 +69,23 @@ it("cancels old frames when the body changes and ignores completion after unmoun
   content.dispatchEvent(new Event("load"));
   expect(frames.size).toBe(0);
   expect(revision).toBe(0);
+});
+
+it("does not listen to media or font signals while disabled", async () => {
+  enabled = false;
+  await harness.render(<Probe />);
+  expect(revision).toBe(0);
+  content.dispatchEvent(new Event("load"));
+  content.dispatchEvent(new Event("error"));
+  content.ownerDocument.fonts.dispatchEvent(new Event("loadingdone"));
+  await harness.run(resolveFonts);
+  expect(frames.size).toBe(0);
+  expect(revision).toBe(0);
+
+  enabled = true;
+  await harness.render(<Probe />);
+  content.dispatchEvent(new Event("load"));
+  expect(frames.size).toBe(1);
+  await flushFrames();
+  expect(revision).toBe(1);
 });

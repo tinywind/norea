@@ -17,7 +17,10 @@ import {
   shouldVirtualizeReaderScroll,
   virtualRangeForScroll,
 } from "../reader-virtualization";
-import { readerVirtualSegmentHasMedia } from "./reader-content-media";
+import {
+  hasPendingReaderMedia,
+  readerVirtualSegmentHasMedia,
+} from "./reader-content-media";
 import {
   animateScrollTop,
   dispatchReaderScrollEvent,
@@ -258,6 +261,7 @@ export function useReaderScrollLayout({
         completedForNavigationRef.current = false;
       }
       if (isPagedReader) {
+        if (node.clientWidth <= 0) return;
         const currentPage =
           pageScrollAnimatingRef.current && pagedTargetPageRef.current !== null
             ? pagedTargetPageRef.current
@@ -298,6 +302,7 @@ export function useReaderScrollLayout({
         }));
         return;
       }
+      if (node.clientHeight <= 0) return;
       const axisMax = node.scrollHeight - node.clientHeight;
       // A step during a running step continues from where that one lands.
       const current = scrollStepAnimationRef.current?.targetTop ?? node.scrollTop;
@@ -312,6 +317,19 @@ export function useReaderScrollLayout({
         (direction === 1 && current >= axisMax - 2) ||
         (direction === -1 && current <= 2)
       ) {
+        if (
+          direction === 1 &&
+          axisMax <= 2 &&
+          hasPendingReaderMedia(contentRef.current)
+        ) {
+          logReaderInput("page-step-suppressed", () => ({
+            source,
+            direction,
+            reason: "pending-media",
+            snapshot: getReaderDebugSnapshot(node),
+          }));
+          return;
+        }
         if (direction === 1 && scrollStepAnimationRef.current) {
           const finalTop = scrollStepAnimationRef.current.targetTop;
           cancelPagedScrollAnimation();

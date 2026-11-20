@@ -16,9 +16,11 @@ import {
   type ReaderScrollAnchor,
 } from "../../store/reader";
 import { type PreparedReaderDocument } from "../reader-document";
+import { hasPendingReaderMedia } from "./reader-content-media";
 import {
   clampProgress,
   getPageInfo,
+  getPagedPageCount,
   getProgress,
   isAtReadingEnd,
   scrollToProgress,
@@ -94,6 +96,7 @@ export function useReaderProgress({
   );
   const pendingProgressSaveRef = useRef<number | null>(null);
   const progressTimerRef = useRef<number | null>(null);
+  const hasPendingProgressSaveRef = useRef(false);
   const preparationPositionRef = useRef({ preparing, progress: initialProgress, anchor: initialScrollAnchor });
   const appliedInitialContentKeyRef = useRef<
     number | string | undefined | null
@@ -104,6 +107,7 @@ export function useReaderProgress({
   const scrollActivityVersionRef = useRef(0);
   const restoreSettleRef = useRef<ReaderRestoreSettle | null>(null);
   const scrollAnchorDirtyRef = useRef(false);
+  const suppressProgrammaticResetScrollRef = useRef(false);
   const segmentOffsetsRef = useRef(segmentOffsets);
   useLayoutEffect(() => {
     segmentOffsetsRef.current = segmentOffsets;
@@ -171,8 +175,20 @@ export function useReaderProgress({
     virtualDocument.segments.length,
   ]);
 
+  const setOwnedPendingReaderProgress = useCallback((pending: boolean) => {
+    if (pending) {
+      hasPendingProgressSaveRef.current = true;
+      setPendingReaderProgress(true);
+      return;
+    }
+    if (!hasPendingProgressSaveRef.current) return;
+    hasPendingProgressSaveRef.current = false;
+    setPendingReaderProgress(false);
+  }, []);
+
   const scheduleProgressSave = useCallback(
     (value: number) => {
+      if (preparing || (!onProgressChange && !onScrollAnchorChange)) return;
       const rounded = Math.round(clampProgress(value));
       if (
         progressTimerRef.current !== null &&
@@ -181,7 +197,7 @@ export function useReaderProgress({
         return;
       }
       pendingProgressSaveRef.current = rounded;
-      setPendingReaderProgress(true);
+      setOwnedPendingReaderProgress(true);
       if (progressTimerRef.current !== null) {
         window.clearTimeout(progressTimerRef.current);
       }
@@ -190,13 +206,21 @@ export function useReaderProgress({
         flushProgress(value);
         persistScrollAnchor();
         progressTimerRef.current = null;
-        setPendingReaderProgress(false);
+        setOwnedPendingReaderProgress(false);
       }, PROGRESS_SAVE_DELAY_MS);
     },
-    [flushProgress, persistScrollAnchor],
+    [
+      flushProgress,
+      onProgressChange,
+      onScrollAnchorChange,
+      persistScrollAnchor,
+      preparing,
+      setOwnedPendingReaderProgress,
+    ],
   );
 
   useEffect(() => {
+    if (preparing) return;
     const persistBeforeSuspension = () => {
       if (progressTimerRef.current !== null) {
         window.clearTimeout(progressTimerRef.current);
@@ -205,7 +229,7 @@ export function useReaderProgress({
       pendingProgressSaveRef.current = null;
       flushProgress(latestProgressRef.current);
       persistScrollAnchor();
-      setPendingReaderProgress(false);
+      setOwnedPendingReaderProgress(false);
     };
     const unsubscribeLifecycle = subscribeAppLifecycle((active) => {
       if (!active) persistBeforeSuspension();
@@ -219,9 +243,14 @@ export function useReaderProgress({
       unsubscribeLifecycle();
       unregisterSuspend();
       window.removeEventListener("pagehide", persistBeforeSuspension);
-      setPendingReaderProgress(false);
+      setOwnedPendingReaderProgress(false);
     };
-  }, [flushProgress, persistScrollAnchor]);
+  }, [
+    flushProgress,
+    persistScrollAnchor,
+    preparing,
+    setOwnedPendingReaderProgress,
+  ]);
 
   const applyPageInfo = useCallback(
     (nextPageInfo: PageInfo) => {
@@ -243,20 +272,28 @@ export function useReaderProgress({
     (value: number) => {
       const node = getActiveScrollNode();
       if (!node) return;
+      const targetProgress = clampProgress(value);
       if (isPagedReader) {
-        scrollToProgress(node, value, true, "auto");
+        scrollToProgress(node, targetProgress, true, "auto");
         if (!completedForNavigationRef.current) {
-          const restoredProgress = clampProgress(getProgress(node, true));
+          const restoredProgress =
+            node.clientWidth <= 0 || getPagedPageCount(node) <= 1
+              ? targetProgress
+              : clampProgress(getProgress(node, true));
           latestProgressRef.current = restoredProgress;
           setRenderedProgress(restoredProgress, { force: true });
         }
         applyPageInfo(getPageInfo(node, true));
         return;
       }
-      scrollToProgress(node, value, false, "auto");
+      scrollToProgress(node, targetProgress, false, "auto");
       syncScrollVirtualRange(node.scrollTop, node.clientHeight);
       if (!completedForNavigationRef.current) {
-        const restoredProgress = clampProgress(getProgress(node, false));
+        const hasScrollableHeight =
+          node.clientHeight > 0 && node.scrollHeight - node.clientHeight > 0;
+        const restoredProgress = hasScrollableHeight
+          ? clampProgress(getProgress(node, false))
+          : targetProgress;
         latestProgressRef.current = restoredProgress;
         setRenderedProgress(restoredProgress, { force: true });
       }
@@ -312,15 +349,26 @@ export function useReaderProgress({
         onApply: () => {
           syncScrollVirtualRange(node.scrollTop, node.clientHeight);
           if (!completedForNavigationRef.current) {
-            setRenderedProgress(getProgress(node, false), { force: true });
+            const hasScrollableHeight =
+              node.clientHeight > 0 && node.scrollHeight - node.clientHeight > 0;
+            const nextProgress = hasScrollableHeight
+              ? clampProgress(getProgress(node, false))
+              : clampProgress(progressToRestore);
+            setRenderedProgress(nextProgress, { force: true });
           }
           applyPageInfo(getPageInfo(node, false));
         },
         onEnd: (reason) => {
           if (reason !== "settled" && reason !== "timeout") return;
           if (completedForNavigationRef.current) return;
-          latestProgressRef.current = clampProgress(getProgress(node, false));
-          scrollAnchorDirtyRef.current = true;
+          const hasScrollableHeight =
+            node.clientHeight > 0 && node.scrollHeight - node.clientHeight > 0;
+          latestProgressRef.current = hasScrollableHeight
+            ? clampProgress(getProgress(node, false))
+            : clampProgress(progressToRestore);
+          if (hasScrollableHeight) {
+            scrollAnchorDirtyRef.current = true;
+          }
         },
       });
     },
@@ -333,6 +381,7 @@ export function useReaderProgress({
   }, [startRestoreSettle]);
 
   const updateProgressFromScroll = useCallback(() => {
+    if (preparing) return;
     const node = getActiveScrollNode();
     if (!node) return;
     if (completedForNavigationRef.current) return;
@@ -342,12 +391,31 @@ export function useReaderProgress({
     if (restoreSettle?.active) {
       // The restore moved the page or content above it changed size; neither is reading.
       syncScrollVirtualRange(node.scrollTop, node.clientHeight);
-      setRenderedProgress(getProgress(node, false));
+      if (node.clientHeight > 0 && node.scrollHeight - node.clientHeight > 0) {
+        setRenderedProgress(getProgress(node, false));
+      }
       applyPageInfo(getPageInfo(node, false));
       return;
     }
     if (!isPagedReader) {
+      if (node.clientHeight <= 0 || node.scrollHeight - node.clientHeight <= 0) {
+        // Ignore scroll-clamp events when the viewport is not scrollable (e.g. unloaded images).
+        return;
+      }
       enforceScrollStepFloor();
+    }
+    if (suppressProgrammaticResetScrollRef.current) {
+      suppressProgrammaticResetScrollRef.current = false;
+      const atResetOrigin = isPagedReader
+        ? node.scrollLeft <= 2
+        : node.scrollTop <= 2;
+      if (atResetOrigin) {
+        if (!isPagedReader) {
+          syncScrollVirtualRange(node.scrollTop, node.clientHeight);
+        }
+        applyPageInfo(getPageInfo(node, isPagedReader));
+        return;
+      }
     }
     scrollActivityVersionRef.current += 1;
     scrollAnchorDirtyRef.current = true;
@@ -368,21 +436,60 @@ export function useReaderProgress({
     enforceScrollStepFloor,
     getActiveScrollNode,
     isPagedReader,
+    preparing,
     scheduleProgressSave,
     setRenderedProgress,
     syncScrollVirtualRange,
   ]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const previous = preparationPositionRef.current;
     const preparationChanged = previous.preparing !== preparing;
     preparationPositionRef.current = { preparing, progress: initialProgress, anchor: initialScrollAnchor };
-    const restorePreparedPosition = preparationChanged && (preparing
-      || previous.progress !== initialProgress || previous.anchor !== initialScrollAnchor);
+    const nextProgress = clampProgress(initialProgress);
+    const activeNode = getActiveScrollNode();
+    const driftedScrollOffset =
+      preparationChanged &&
+      !preparing &&
+      nextProgress === 0 &&
+      !initialScrollAnchor &&
+      activeNode !== null &&
+      (isPagedReader ? activeNode.scrollLeft > 0 : activeNode.scrollTop > 0);
+    const preparedPositionDrifted =
+      preparationChanged &&
+      !preparing &&
+      (latestProgressRef.current !== nextProgress || driftedScrollOffset);
+    const deferredScrollSettle =
+      preparationChanged &&
+      !preparing &&
+      !isPagedReader &&
+      (nextProgress > 0 || Boolean(initialScrollAnchor));
+    const restorePreparedPosition =
+      preparationChanged &&
+      (preparing ||
+        previous.progress !== initialProgress ||
+        previous.anchor !== initialScrollAnchor ||
+        preparedPositionDrifted ||
+        deferredScrollSettle);
+    if (driftedScrollOffset && activeNode) {
+      suppressProgrammaticResetScrollRef.current = true;
+      activeNode.scrollTo(
+        isPagedReader
+          ? { left: 0, behavior: "auto" }
+          : { top: 0, behavior: "auto" },
+      );
+    } else if (preparationChanged || appliedInitialContentKeyRef.current !== contentKey) {
+      suppressProgrammaticResetScrollRef.current = false;
+    }
+    if (preparationChanged && !preparing) {
+      scrollAnchorDirtyRef.current = false;
+      if (nextProgress < 97) {
+        completedForNavigationRef.current = false;
+      }
+    }
     if (appliedInitialContentKeyRef.current === contentKey && !restorePreparedPosition) return;
     appliedInitialContentKeyRef.current = contentKey;
     restoredLayoutKeyRef.current = null;
-    const nextProgress = clampProgress(initialProgress);
     pendingInitialProgressRestoreRef.current = {
       contentKey,
       progress: nextProgress,
@@ -402,8 +509,10 @@ export function useReaderProgress({
     }
   }, [
     contentKey,
+    getActiveScrollNode,
     initialProgress,
     initialScrollAnchor,
+    isPagedReader,
     preparing,
     setRenderedProgress,
     virtualDocument.segments.length,
@@ -431,6 +540,7 @@ export function useReaderProgress({
         : latestProgressRef.current;
     const content = contentRef.current;
     if (
+      !preparing &&
       pendingInitialProgress &&
       isInitialRestore &&
       !isPagedReader &&
@@ -448,20 +558,74 @@ export function useReaderProgress({
     }
     const restoreActivityVersion = scrollActivityVersionRef.current;
     let disposed = false;
-    const restore = () => {
+    let completed = false;
+    let frame: number | null = null;
+    let timeout: number | null = null;
+    const cancelPending = () => {
+      if (frame !== null) {
+        window.cancelAnimationFrame(frame);
+        frame = null;
+      }
+      if (timeout !== null) {
+        window.clearTimeout(timeout);
+        timeout = null;
+      }
+    };
+    const restore = (trigger: "frame" | "timeout") => {
+      if (trigger === "frame") {
+        frame = null;
+      } else {
+        timeout = null;
+      }
       if (disposed) return;
-      if (scrollActivityVersionRef.current !== restoreActivityVersion) return;
+      if (scrollActivityVersionRef.current !== restoreActivityVersion) {
+        disposed = true;
+        completed = true;
+        suppressProgrammaticResetScrollRef.current = false;
+        cancelPending();
+        return;
+      }
+      const activeNode = getActiveScrollNode();
+      const viewportMeasured =
+        activeNode !== null &&
+        (isPagedReader ? activeNode.clientWidth > 0 : activeNode.clientHeight > 0);
+      if (!viewportMeasured) {
+        if (trigger === "frame" && timeout !== null) {
+          // Wait for the fallback timeout if layout has not measured on the first frame.
+          return;
+        }
+        disposed = true;
+        cancelPending();
+        if (restoredLayoutKeyRef.current === layoutRestoreKey) {
+          restoredLayoutKeyRef.current = null;
+        }
+        return;
+      }
+      disposed = true;
+      completed = true;
+      cancelPending();
       restoreProgressPositionRef.current(progressToRestore);
-      if (pendingInitialProgressRestoreRef.current?.contentKey === contentKey) {
+      suppressProgrammaticResetScrollRef.current = false;
+      const scrollSettleDeferredWhilePreparing =
+        preparing &&
+        !isPagedReader &&
+        (Boolean(pendingInitialProgressRestoreRef.current?.anchor) ||
+          progressToRestore > 0);
+      if (
+        !scrollSettleDeferredWhilePreparing &&
+        pendingInitialProgressRestoreRef.current?.contentKey === contentKey
+      ) {
         pendingInitialProgressRestoreRef.current = null;
       }
     };
-    const frame = window.requestAnimationFrame(restore);
-    const timeout = window.setTimeout(restore, 120);
+    frame = window.requestAnimationFrame(() => restore("frame"));
+    timeout = window.setTimeout(() => restore("timeout"), 120);
     return () => {
       disposed = true;
-      window.cancelAnimationFrame(frame);
-      window.clearTimeout(timeout);
+      cancelPending();
+      if (!completed && restoredLayoutKeyRef.current === layoutRestoreKey) {
+        restoredLayoutKeyRef.current = null;
+      }
     };
   }, [
     contentKey,
@@ -476,12 +640,14 @@ export function useReaderProgress({
     () => () => {
       if (progressTimerRef.current !== null) {
         window.clearTimeout(progressTimerRef.current);
+        progressTimerRef.current = null;
       }
       pendingProgressSaveRef.current = null;
+      setOwnedPendingReaderProgress(false);
       cancelPagedScrollAnimation();
       flushProgress(latestProgressRef.current);
     },
-    [cancelPagedScrollAnimation, flushProgress],
+    [cancelPagedScrollAnimation, flushProgress, setOwnedPendingReaderProgress],
   );
 
   const persistOnUnmountRef = useRef(() => {});
@@ -516,7 +682,10 @@ export function useReaderProgress({
       }
       scrollToProgress(node, clamped, false, "auto");
       syncScrollVirtualRange(node.scrollTop, node.clientHeight);
-      const nextProgress = clampProgress(getProgress(node, false));
+      const nextProgress =
+        node.clientHeight > 0 && node.scrollHeight - node.clientHeight > 0
+          ? clampProgress(getProgress(node, false))
+          : clamped;
       latestProgressRef.current = nextProgress;
       setRenderedProgress(nextProgress, { force: true });
       applyPageInfo(getPageInfo(node, false));
@@ -540,7 +709,14 @@ export function useReaderProgress({
   const completeIfAtEnd = useCallback(
     (options?: { force?: boolean }) => {
       const node = getActiveScrollNode();
-      if (!options?.force && (!node || !isAtReadingEnd(node, isPagedReader))) {
+      if (
+        !options?.force &&
+        (!node ||
+          !isAtReadingEnd(node, isPagedReader) ||
+          (!isPagedReader &&
+            node.scrollHeight - node.clientHeight <= 2 &&
+            hasPendingReaderMedia(contentRef.current)))
+      ) {
         return false;
       }
       completedForNavigationRef.current = true;
@@ -551,6 +727,7 @@ export function useReaderProgress({
         progressTimerRef.current = null;
       }
       pendingProgressSaveRef.current = null;
+      setOwnedPendingReaderProgress(false);
       restoreSettleRef.current?.cancel();
       if (!onProgressChange) {
         return false;
@@ -561,11 +738,13 @@ export function useReaderProgress({
       return true;
     },
     [
+      contentRef,
       flushProgress,
       getActiveScrollNode,
       isPagedReader,
       onProgressChange,
       persistScrollAnchor,
+      setOwnedPendingReaderProgress,
       setRenderedProgress,
     ],
   );

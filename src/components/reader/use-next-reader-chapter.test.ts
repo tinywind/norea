@@ -1,9 +1,10 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { load } from "cheerio";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChapterListRow } from "../../db/queries/chapter";
 import type { ReaderChapterRow } from "../../lib/reader-chapter";
 import { chapterContentToHtml, sanitizeReaderHtml } from "../../lib/chapter-content";
 import { chapterDetailQueryKey } from "../../lib/reader-query-invalidation";
-import { prepareReaderDocument } from "../reader-document";
+import { prepareReaderDocument, READER_INERT_LOCAL_MEDIA_SRC_PREFIX } from "../reader-document";
 import { canPreRenderReaderDocument, useNextReaderChapter } from "./use-next-reader-chapter";
 
 const mocks = vi.hoisted(() => ({
@@ -30,9 +31,6 @@ vi.mock("../../lib/reader-query-invalidation", async original => ({
   ...await original<typeof import("../../lib/reader-query-invalidation")>(),
   invalidateReaderContentQueries: (...args: unknown[]) => mocks.invalidate(...args),
 }));
-vi.mock("../../lib/chapter-media", () => ({
-  hasRemoteChapterMedia: (html: string) => /src="https?:/.test(html),
-}));
 vi.mock("../../lib/tasks/chapter-download", () => ({
   subscribeChapterDownloads: (...args: unknown[]) => mocks.subscribe(...args),
 }));
@@ -55,11 +53,47 @@ const options = {
   bionicReading: false,
 };
 
+function installTemplateDocument(): void {
+  vi.stubGlobal("document", {
+    createElement(tagName: string) {
+      if (tagName !== "template") {
+        throw new Error(`Unexpected test element: ${tagName}`);
+      }
+      let $ = load("", null, false);
+      const wrap = (node: object): Element =>
+        ({
+          getAttribute: (name: string) => $(node as Parameters<typeof $>[0]).attr(name) ?? null,
+          matches: (selector: string) => $(node as Parameters<typeof $>[0]).is(selector),
+        }) as unknown as Element;
+      return {
+        get innerHTML() {
+          return $.html();
+        },
+        set innerHTML(html: string) {
+          $ = load(html, null, false);
+        },
+        content: {
+          querySelectorAll(selector: string) {
+            return $(selector)
+              .toArray()
+              .map((node) => wrap(node as object));
+          },
+        },
+      };
+    },
+  });
+}
+
 beforeEach(() => {
   vi.clearAllMocks();
+  installTemplateDocument();
   mocks.effects = [];
   mocks.data = chapter;
   mocks.isCurrent = true;
+});
+
+afterEach(() => {
+  vi.unstubAllGlobals();
 });
 
 describe("next reader chapter rendering preparation", () => {
@@ -135,12 +169,19 @@ describe("side-effect-free hidden document eligibility", () => {
 
   it("allows plain content and already stored local images", () => {
     expect(canPreRenderReaderDocument(prepareReaderDocument("<p>Next</p>", false))).toBe(true);
-    expect(canPreRenderReaderDocument(prepareReaderDocument('<img src="norea-media://reader-asset/image.jpg">', false))).toBe(true);
+    const localImageDoc = prepareReaderDocument(
+      '<p><img src="norea-media://reader-asset/0001-001.jpg" srcset="norea-media://reader-asset/0001-001.jpg 1x"><span style="background-image: url(\'norea-media://reader-asset/bg.jpg\')"></span></p>',
+      false,
+    );
+    expect(localImageDoc.html).toContain(READER_INERT_LOCAL_MEDIA_SRC_PREFIX);
+    expect(canPreRenderReaderDocument(localImageDoc)).toBe(true);
   });
 
   it.each([
     '<style>p { color: red }</style><p>Next</p>',
     '<img src="https://source.example/page.jpg">',
+    '<img src="/relative/page.jpg">',
+    '<img src="norea-media://reader-asset/0001-001.jpg"><img src="https://source.example/page.jpg">',
     '<video autoplay src="data:video/mp4;base64,AA=="></video>',
     '<iframe src="about:blank"></iframe>',
     '<p onclick="run()">Next</p>',

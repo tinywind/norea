@@ -17,7 +17,7 @@ const mocks = vi.hoisted(() => ({
   css: ".reader-content,\n  .reader-viewport-paged .reader-content { color: red; }",
   general: {} as ReaderGeneralSettings,
   appearance: {} as ReaderAppearanceSettings,
-  wake: vi.fn(), auto: vi.fn(), progress: vi.fn(), gestures: vi.fn(), layout: vi.fn(),
+  wake: vi.fn(), auto: vi.fn(), progress: vi.fn(), gestures: vi.fn(), layout: vi.fn(), layoutRevision: vi.fn(),
   gestureHandlers: {
     handleClick: vi.fn(),
     handleMouseDown: vi.fn(),
@@ -49,7 +49,12 @@ vi.mock("../store/reader", async original => {
 });
 vi.mock("./reader/use-reader-wake-lock", () => ({ useReaderWakeLock: (enabled: boolean) => mocks.wake(enabled) }));
 vi.mock("./reader/use-reader-auto-scroll", () => ({ useReaderAutoScroll: (...args: unknown[]) => mocks.auto(...args) }));
-vi.mock("./reader/use-reader-layout-revision", () => ({ useReaderLayoutRevision: () => mocks.revision }));
+vi.mock("./reader/use-reader-layout-revision", () => ({
+  useReaderLayoutRevision: (...args: unknown[]) => {
+    mocks.layoutRevision(...args);
+    return mocks.revision;
+  },
+}));
 vi.mock("./reader/use-reader-content-style", () => ({ useReaderContentStyle: () => ({ contentBoxStyle: {}, readerContentRuntimeCss: mocks.css }) }));
 vi.mock("./reader/use-reader-gestures", () => ({
   useReaderGestures: (options: unknown) => {
@@ -65,7 +70,7 @@ vi.mock("./reader/use-reader-gestures", () => ({
   },
 }));
 vi.mock("./reader/use-reader-content-media", () => ({ useReaderContentMedia: () => ({
-  patchMediaElements: vi.fn(), restoreMediaPatches: vi.fn(), resolvedLocalMediaMap: new Map(), hasLocalMediaContext: false,
+  patchMediaElements: vi.fn(), restoreMediaPatches: vi.fn(), hasLocalMediaContext: false,
 }) }));
 vi.mock("./reader/use-reader-scroll-layout", () => ({ useReaderScrollLayout: (options: unknown) => {
   mocks.layout(options);
@@ -109,9 +114,13 @@ beforeEach(() => {
 it("lays out a hidden chapter at full size without persistence, input, custom script, or global reader effects", () => {
   const elements = render(true);
   const stage = elements.find(element => element.props.className === "norea-reader-content-stage")!;
+  const viewport = elements.find(element => typeof element.props.className === "string" && element.props.className.includes("reader-viewport"))!;
+  const content = elements.find(element => typeof element.props.className === "string" && element.props.className.includes("reader-content"))!;
   expect(stage.props).toMatchObject({ "aria-hidden": true, inert: true, "data-reader-preparing": true });
   expect(stage.props.style).toMatchObject({ height: "100%", position: "absolute", inset: 0, visibility: "hidden" });
   expect(stage.props.style).not.toHaveProperty("display");
+  expect(viewport.props.onScroll).toBeUndefined();
+  expect(content.props.onScroll).toBeUndefined();
   expect(mocks.wake).toHaveBeenCalledWith(false);
   expect(mocks.auto.mock.calls[0]![1]).toBe(false);
   expect(mocks.progress.mock.calls[0]![0]).toMatchObject({
@@ -139,6 +148,7 @@ it("activates normal reader behavior only after promotion", () => {
     onMouseDown: mocks.gestureHandlers.handleMouseDown,
     onPointerDown: mocks.gestureHandlers.handlePointerDown,
   });
+  expect(viewport.props.onScroll).toBeTypeOf("function");
   expect(mocks.wake).toHaveBeenCalledWith(true);
   expect(mocks.auto.mock.calls[0]![1]).toBe(true);
   expect(mocks.progress.mock.calls[0]![0].onProgressChange).toBeTypeOf("function");
@@ -170,7 +180,27 @@ describe("prepared layout invalidation", () => {
     capture({ generalSettings: { ...mocks.general, removeExtraParagraphSpacing: !mocks.general.removeExtraParagraphSpacing } });
     capture({ generalSettings: { ...mocks.general, pageReader: true } });
     mocks.height = 900; capture({ generalSettings: { ...mocks.general, pageReader: true } });
-    mocks.revision += 1; capture();
+    mocks.revision += 1; capture({ generalSettings: { ...mocks.general, pageReader: true } });
     expect(keys.size).toBe(9);
+  });
+
+  it("excludes media/font layout revisions in scroll mode and only enables layout revision tracking in paged mode", () => {
+    render(false, { generalSettings: { ...mocks.general, pageReader: false } });
+    const scrollKeyBefore = mocks.progress.mock.lastCall![0].layoutRestoreKey;
+    expect(mocks.layoutRevision.mock.lastCall![2]).toBe(false);
+
+    mocks.revision += 1;
+    render(false, { generalSettings: { ...mocks.general, pageReader: false } });
+    const scrollKeyAfter = mocks.progress.mock.lastCall![0].layoutRestoreKey;
+    expect(scrollKeyAfter).toBe(scrollKeyBefore);
+
+    render(false, { generalSettings: { ...mocks.general, pageReader: true } });
+    const pagedKeyBefore = mocks.progress.mock.lastCall![0].layoutRestoreKey;
+    expect(mocks.layoutRevision.mock.lastCall![2]).toBe(true);
+
+    mocks.revision += 1;
+    render(false, { generalSettings: { ...mocks.general, pageReader: true } });
+    const pagedKeyAfter = mocks.progress.mock.lastCall![0].layoutRestoreKey;
+    expect(pagedKeyAfter).not.toBe(pagedKeyBefore);
   });
 });
