@@ -11,20 +11,53 @@ import { useReaderStore } from "../../store/reader";
 
 type Translate = (key: TranslationKey, values?: Record<string, string | number>) => string;
 
-export type DownloadOnceSelection = { kind: "next"; count: number } | { kind: "remaining" } | { kind: "all" };
+export type DownloadOnceSelection =
+  | { kind: "afterLastDownloaded"; count: number }
+  | { kind: "fromStartMissing"; count: number }
+  | { kind: "remaining" }
+  | { kind: "all" };
 
-/** Selects the requested reading-order range before excluding stored or already queued chapters. */
+function isDownloadableChapter(chapter: LibraryDownloadChapter): boolean {
+  return !hasStoredChapterContent(chapter) && !chapter.isDownloadQueued && !isChapterDownloadQueued(chapter.id);
+}
+
+function lastDownloadedChapterIndex(chapters: readonly LibraryDownloadChapter[]): number {
+  for (let index = chapters.length - 1; index >= 0; index -= 1) {
+    if (hasStoredChapterContent(chapters[index]!)) return index;
+  }
+  return -1;
+}
+
+function normalizeDownloadCount(count: number): number {
+  if (!Number.isFinite(count)) return 0;
+  return Math.max(0, Math.floor(count));
+}
+
+/**
+ * Selects the requested reading-order chapters for an immediate download,
+ * excluding stored and already queued chapters.
+ */
 export function selectDownloadChaptersOnce(
   chapters: readonly LibraryDownloadChapter[],
   selection: DownloadOnceSelection,
   rememberedChapterId: number | undefined,
 ): LibraryDownloadChapter[] {
+  if (selection.kind === "all") {
+    return chapters.filter(isDownloadableChapter);
+  }
+  if (selection.kind === "fromStartMissing") {
+    const count = normalizeDownloadCount(selection.count);
+    return count === 0 ? [] : chapters.filter(isDownloadableChapter).slice(0, count);
+  }
+  if (selection.kind === "afterLastDownloaded") {
+    const count = normalizeDownloadCount(selection.count);
+    if (count === 0) return [];
+    const lastIndex = lastDownloadedChapterIndex(chapters);
+    return chapters.slice(lastIndex + 1).filter(isDownloadableChapter).slice(0, count);
+  }
   const current = goalReadingChapterId(chapters, rememberedChapterId);
   const currentIndex = current === undefined ? -1 : chapters.findIndex(chapter => chapter.id === current);
-  const after = chapters.slice(currentIndex + 1);
-  const targets = selection.kind === "all" ? chapters
-    : selection.kind === "remaining" ? after : after.slice(0, Math.max(0, Math.floor(selection.count)));
-  return targets.filter(chapter => !hasStoredChapterContent(chapter) && !chapter.isDownloadQueued && !isChapterDownloadQueued(chapter.id));
+  return chapters.slice(currentIndex + 1).filter(isDownloadableChapter);
 }
 
 export interface DownloadOnceOutcome {

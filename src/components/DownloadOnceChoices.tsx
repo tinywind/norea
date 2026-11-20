@@ -8,7 +8,7 @@ import { ChevronRightIcon, DownloadIcon, SelectIcon, SettingsIcon } from "./ui/i
 import { ListRow } from "./ui/ListRow";
 import "../styles/download-goals.css";
 
-const DOWNLOAD_NEXT_CHOICES = [3, 5, 10, 30] as const;
+const DOWNLOAD_COUNT_CHOICES = [3, 5, 10, 30] as const;
 
 interface DownloadOnceChoicesProps {
   disabled: boolean;
@@ -21,7 +21,7 @@ interface DownloadOnceChoicesProps {
 export function DownloadOnceChoices({ disabled, onChoose, onClose, onSelectChapters }: DownloadOnceChoicesProps) {
   const { t } = useTranslation();
   const navigate = useNavigate();
-  const [count, setCount] = useState<number>(DOWNLOAD_NEXT_CHOICES[0]);
+  const [count, setCount] = useState<number>(DOWNLOAD_COUNT_CHOICES[0]);
   const action = (selection: DownloadOnceSelection, title: string, subtitle: string) => (
     <ListRow disabled={disabled} leading={<DownloadIcon size="1.25rem" />} onClick={() => onChoose(selection)}
       subtitle={subtitle} title={title} trailing={<ChevronRightIcon size="1.125rem" />} />
@@ -29,15 +29,28 @@ export function DownloadOnceChoices({ disabled, onChoose, onClose, onSelectChapt
   return (
     <Stack gap="xs">
       <Text c="dimmed" size="sm">{t("downloadOnce.description")}</Text>
-      {action({ kind: "next", count }, t("downloadOnce.next", { count }), t("downloadOnce.next.description", { count }))}
-      <SegmentedToggle
-        aria-label={t("downloadOnce.next.countLabel")}
-        className="norea-download-goal-count"
-        data={DOWNLOAD_NEXT_CHOICES.map(value => ({ value: String(value), label: String(value) }))}
-        disabled={disabled}
-        onChange={value => setCount(Number(value))}
-        value={String(count)}
-      />
+      <Stack className="norea-download-once-count-group" gap="xs">
+        <Text c="dimmed" size="xs">{t("downloadOnce.countLabel")}</Text>
+        <SegmentedToggle
+          aria-label={t("downloadOnce.countLabel")}
+          className="norea-download-goal-count"
+          data={DOWNLOAD_COUNT_CHOICES.map(value => ({ value: String(value), label: String(value) }))}
+          disabled={disabled}
+          fullWidth
+          onChange={value => setCount(Number(value))}
+          value={String(count)}
+        />
+      </Stack>
+      {action(
+        { kind: "afterLastDownloaded", count },
+        t("downloadOnce.afterLastDownloaded", { count }),
+        t("downloadOnce.afterLastDownloaded.description", { count }),
+      )}
+      {action(
+        { kind: "fromStartMissing", count },
+        t("downloadOnce.fromStartMissing", { count }),
+        t("downloadOnce.fromStartMissing.description", { count }),
+      )}
       {action({ kind: "remaining" }, t("downloadOnce.remaining"), t("downloadOnce.remaining.description"))}
       {action({ kind: "all" }, t("downloadOnce.all"), t("downloadOnce.all.description"))}
       {onSelectChapters ? (

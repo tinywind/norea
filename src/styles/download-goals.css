@@ -22,9 +22,11 @@
   padding-block: 0;
 }
 
+.norea-download-once-count-group {
+  margin: var(--norea-space-1) 0;
+}
+
 .norea-download-goal-count {
-  /* One-time download actions retain their own list-row alignment. */
-  margin: 0 var(--norea-space-4) var(--norea-space-2) calc(var(--norea-space-4) + 1.25rem + var(--norea-space-3));
   max-width: 20rem;
 }
 

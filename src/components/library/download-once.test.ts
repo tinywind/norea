@@ -37,10 +37,61 @@ beforeEach(() => {
   mocks.submit.mockReturnValue({ id: "request", materialized: Promise.resolve(), promise: Promise.resolve() });
 });
 
-it("keeps next-N inside its chosen range instead of filling beyond stored or queued chapters", () => {
+it("queues N chapters starting after the last downloaded chapter regardless of reading position", () => {
+  const rows = [
+    chapter(1, { isDownloaded: true, readAt: 50 }),
+    chapter(2), // skipped gap before last downloaded
+    chapter(3, { contentBytes: 10, mediaRepairNeeded: true }), // last downloaded (partial body)
+    chapter(4, { isDownloadQueued: true }),
+    chapter(5),
+    chapter(6),
+    chapter(7),
+  ];
+  mocks.queued.add(6);
+  expect(selectDownloadChaptersOnce(rows, { kind: "afterLastDownloaded", count: 2 }, 1).map(row => row.id))
+    .toEqual([5, 7]);
+  expect(selectDownloadChaptersOnce(rows, { kind: "afterLastDownloaded", count: 1 }, 6).map(row => row.id))
+    .toEqual([5]);
+});
+
+it("starts from chapter 1 for afterLastDownloaded when nothing is downloaded and returns empty when the last chapter is stored", () => {
+  const noneStored = [chapter(1), chapter(2, { isDownloadQueued: true }), chapter(3), chapter(4)];
+  expect(selectDownloadChaptersOnce(noneStored, { kind: "afterLastDownloaded", count: 2 }, 4).map(row => row.id))
+    .toEqual([1, 3]);
+
+  const lastStored = [chapter(1), chapter(2), chapter(3, { isDownloaded: true })];
+  expect(selectDownloadChaptersOnce(lastStored, { kind: "afterLastDownloaded", count: 3 }, undefined)).toEqual([]);
+});
+
+it("queues N missing chapters from chapter 1 including skipped gaps and ignoring reading position", () => {
+  const rows = [
+    chapter(1, { isDownloaded: true }),
+    chapter(2),
+    chapter(3, { contentBytes: 10, mediaRepairNeeded: true }),
+    chapter(4, { isDownloadQueued: true }),
+    chapter(5),
+    chapter(6),
+  ];
+  expect(selectDownloadChaptersOnce(rows, { kind: "fromStartMissing", count: 2 }, 6).map(row => row.id))
+    .toEqual([2, 5]);
+  expect(selectDownloadChaptersOnce(rows, { kind: "fromStartMissing", count: 5 }, 6).map(row => row.id))
+    .toEqual([2, 5, 6]);
+  mocks.queued.add(2);
+  expect(selectDownloadChaptersOnce(rows, { kind: "fromStartMissing", count: 2 }, undefined).map(row => row.id))
+    .toEqual([5, 6]);
+});
+
+it("handles empty chapter lists and non-positive or non-finite counts safely", () => {
   const rows = mocks.chapters as LibraryDownloadChapter[];
-  expect(selectDownloadChaptersOnce(rows, { kind: "next", count: 2 }, 2)).toEqual([]);
-  expect(selectDownloadChaptersOnce(rows, { kind: "next", count: 4 }, 2).map(row => row.id)).toEqual([5, 6]);
+  for (const kind of ["afterLastDownloaded", "fromStartMissing"] as const) {
+    expect(selectDownloadChaptersOnce([], { kind, count: 3 }, undefined)).toEqual([]);
+    expect(selectDownloadChaptersOnce(rows, { kind, count: 0 }, undefined)).toEqual([]);
+    expect(selectDownloadChaptersOnce(rows, { kind, count: -3 }, undefined)).toEqual([]);
+    expect(selectDownloadChaptersOnce(rows, { kind, count: Number.NaN }, undefined)).toEqual([]);
+    expect(selectDownloadChaptersOnce(rows, { kind, count: Number.POSITIVE_INFINITY }, undefined)).toEqual([]);
+  }
+  expect(selectDownloadChaptersOnce(rows, { kind: "fromStartMissing", count: 2.9 }, undefined).map(row => row.id))
+    .toEqual([1, 2]);
 });
 
 it("uses the remembered or latest reading position and leaves all-before-current chapters out", () => {
@@ -51,7 +102,8 @@ it("uses the remembered or latest reading position and leaves all-before-current
 });
 
 it("queues the same immediate range once per selected work at user priority without an automatic goal", async () => {
-  await expect(queueChapterDownloadsOnce([1, 1], t, client, { kind: "next", count: 4 })).resolves.toEqual({ queued: 2, skippedLocal: 0 });
+  await expect(queueChapterDownloadsOnce([1, 1], t, client, { kind: "afterLastDownloaded", count: 3 }))
+    .resolves.toEqual({ queued: 2, skippedLocal: 0 });
   expect(mocks.submit).toHaveBeenCalledOnce();
   const request = mocks.submit.mock.calls[0]![0];
   const batch = await request.prepare();
@@ -60,6 +112,15 @@ it("queues the same immediate range once per selected work at user priority with
     expect(job).toMatchObject({ pluginId: "source", novelId: 1, priority: "user" });
     expect(job.goal).toBeUndefined();
   }
+  expect(mocks.unqueued).not.toHaveBeenCalled();
+});
+
+it("queues fromStartMissing chapters including earlier gaps once per selected work", async () => {
+  await expect(queueChapterDownloadsOnce([1], t, client, { kind: "fromStartMissing", count: 3 }))
+    .resolves.toEqual({ queued: 3, skippedLocal: 0 });
+  expect(mocks.submit).toHaveBeenCalledOnce();
+  const batch = await mocks.submit.mock.calls[0]![0].prepare();
+  expect(batch.jobs.map((job: { id: number }) => job.id)).toEqual([1, 2, 5]);
   expect(mocks.unqueued).not.toHaveBeenCalled();
 });
 
@@ -73,7 +134,11 @@ it("keeps the all-missing path paged and skips only local works without a rememb
   expect((await mocks.submit.mock.calls[0]![0].prepare()).jobs.map((job: { id: number }) => job.id)).toEqual([1]);
 });
 
-it.each([{ kind: "all" } as const, { kind: "next", count: 4 } as const])("queues a local server-backed work through the existing user-request path for $kind", async selection => {
+it.each([
+  { kind: "all" } as const,
+  { kind: "afterLastDownloaded", count: 4 } as const,
+  { kind: "fromStartMissing", count: 4 } as const,
+])("queues a local server-backed work through the existing user-request path for $kind", async selection => {
   mocks.getNovel.mockResolvedValue({ id: 1, pluginId: "source", name: "Book", path: "/book", isLocal: true });
   mocks.serverSource.mockResolvedValue({ serverUrl: "https://content.example", workId: "server-work" });
   mocks.chapters = [chapter(3, { contentBytes: 10 }), chapter(4, { isDownloadQueued: true }), chapter(5), chapter(6)];

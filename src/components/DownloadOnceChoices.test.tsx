@@ -33,11 +33,16 @@ function render(disabled = false, selection = true) {
 const row = (tree: ReactElement<Props>[], title: string) => tree.find(element => element.type === ListRow && element.props.title === title)!;
 beforeEach(() => { vi.clearAllMocks(); mocks.slots = []; });
 
-it("chooses a one-time range only after its action is pressed, not when the count changes", () => {
+it("updates both count-based download options when count changes and queues only after an action is pressed", () => {
   render().find(element => element.type === SegmentedToggle)!.props.onChange!("10");
   expect(mocks.choose).not.toHaveBeenCalled();
-  row(render(), 'downloadOnce.next({"count":10})').props.onClick!();
-  expect(mocks.choose).toHaveBeenCalledExactlyOnceWith({ kind: "next", count: 10 });
+  const tree = render();
+  row(tree, 'downloadOnce.afterLastDownloaded({"count":10})').props.onClick!();
+  row(tree, 'downloadOnce.fromStartMissing({"count":10})').props.onClick!();
+  expect(mocks.choose.mock.calls).toEqual([
+    [{ kind: "afterLastDownloaded", count: 10 }],
+    [{ kind: "fromStartMissing", count: 10 }],
+  ]);
   expect(mocks.close).not.toHaveBeenCalled();
 });
 
@@ -52,6 +57,9 @@ it("offers immediate remaining and all ranges without an automatic policy radio 
 
 it("keeps the settings link available when source download actions cannot run", () => {
   const tree = render(true);
+  expect(tree.find(element => element.type === SegmentedToggle)!.props.disabled).toBe(true);
+  expect(row(tree, 'downloadOnce.afterLastDownloaded({"count":3})').props.disabled).toBe(true);
+  expect(row(tree, 'downloadOnce.fromStartMissing({"count":3})').props.disabled).toBe(true);
   expect(row(tree, "downloadOnce.all").props.disabled).toBe(true);
   const settings = row(tree, "downloadOnce.settings");
   expect(settings.props.disabled).not.toBe(true);

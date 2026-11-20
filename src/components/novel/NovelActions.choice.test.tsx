@@ -36,10 +36,16 @@ beforeEach(async () => {
 afterEach(async () => { await act(async () => root.unmount()); vi.unstubAllGlobals(); });
 
 it("submits the chosen range as one immediate request and reports the admitted chapters", async () => {
-  await act(async () => choice.choose({ kind: "next", count: 5 }));
-  expect(mocks.queue).toHaveBeenCalledExactlyOnceWith([3], expect.any(Function), expect.any(QueryClient), { kind: "next", count: 5 });
+  await act(async () => choice.choose({ kind: "afterLastDownloaded", count: 5 }));
+  expect(mocks.queue).toHaveBeenCalledExactlyOnceWith([3], expect.any(Function), expect.any(QueryClient), { kind: "afterLastDownloaded", count: 5 });
   expect(onClose).toHaveBeenCalledOnce();
   expect(mocks.show).toHaveBeenCalledWith({ autoClose: 3_000, color: "ok", message: "queued:2" });
+});
+
+it("submits fromStartMissing as one immediate request", async () => {
+  await act(async () => choice.choose({ kind: "fromStartMissing", count: 10 }));
+  expect(mocks.queue).toHaveBeenCalledExactlyOnceWith([3], expect.any(Function), expect.any(QueryClient), { kind: "fromStartMissing", count: 10 });
+  expect(onClose).toHaveBeenCalledOnce();
 });
 
 it("does not treat a repeated range as a saved policy that needs no request", async () => {

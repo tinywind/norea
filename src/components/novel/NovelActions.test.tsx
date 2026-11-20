@@ -41,6 +41,8 @@ it("shows stored and queued counts without presenting a persistent automatic pol
   const $ = render([chapter(1, { isDownloaded: true, contentBytes: 1 }), chapter(2), chapter(3)], new Map([[3, { kind: "queued" }]]));
   expect($("[role='status']").text()).toBe('downloadOnce.status({"stored":1,"total":3,"queued":1})');
   expect($("[role='radio'], [role='radiogroup'][aria-label='downloadGoals.section.goal']")).toHaveLength(0);
+  expect($.text()).toContain("downloadOnce.afterLastDownloaded");
+  expect($.text()).toContain("downloadOnce.fromStartMissing");
   expect($.text()).toContain("downloadOnce.remaining");
   expect($.text()).toContain("downloadOnce.all");
   expect($.text()).toContain("downloadGoals.once.selected");
