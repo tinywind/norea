@@ -59,9 +59,7 @@ RUN set -eux; \
     unzip -q /tmp/cmdline-tools.zip -d /tmp/cmdline-tools-extract; \
     mv /tmp/cmdline-tools-extract/cmdline-tools "${ANDROID_HOME}/cmdline-tools/latest"; \
     rm -rf /tmp/cmdline-tools.zip /tmp/cmdline-tools-extract; \
-    yes | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --licenses >/dev/null || true; \
-    test -d "${ANDROID_HOME}/licenses"; \
-    "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --install \
+    printf 'y\ny\ny\ny\ny\ny\ny\ny\ny\ny\n' | "${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager" --install \
       "platform-tools" \
       "platforms;${ANDROID_SDK_PLATFORM}" \
       "build-tools;${ANDROID_BUILD_TOOLS}" \
