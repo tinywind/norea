@@ -4119,14 +4119,17 @@ pub async fn db_chapter_save_content_metadata(
     db: State<'_, AppDatabase>,
     input: SaveChapterContentMetadataInputDto,
 ) -> Result<DbMutationEnvelope<ChapterMutationResultDto>, String> {
-    with_write_tx(
+    let chapter_id = input.chapter_id;
+    let envelope = with_write_tx(
         db.writer(),
-        TxOptions::with_app_metadata(app),
+        TxOptions::with_app_metadata(app.clone()),
         move |conn, _ctx| {
             Box::pin(async move { save_chapter_content_metadata_in_tx(conn, &input).await })
         },
     )
-    .await
+    .await?;
+    super::chapter_digest::refresh_chapter_payload_digest_best_effort(&app, &db, chapter_id).await;
+    Ok(envelope)
 }
 
 #[tauri::command]
@@ -4135,14 +4138,17 @@ pub async fn db_chapter_save_partial_content_metadata(
     db: State<'_, AppDatabase>,
     input: SaveChapterPartialContentMetadataInputDto,
 ) -> Result<DbMutationEnvelope<ChapterMutationResultDto>, String> {
-    with_write_tx(
+    let chapter_id = input.chapter_id;
+    let envelope = with_write_tx(
         db.writer(),
-        TxOptions::with_app_metadata(app),
+        TxOptions::with_app_metadata(app.clone()),
         move |conn, _ctx| {
             Box::pin(async move { save_chapter_partial_content_metadata_in_tx(conn, &input).await })
         },
     )
-    .await
+    .await?;
+    super::chapter_digest::refresh_chapter_payload_digest_best_effort(&app, &db, chapter_id).await;
+    Ok(envelope)
 }
 
 #[tauri::command]
@@ -4167,14 +4173,17 @@ pub async fn db_chapter_adopt_stored_content_metadata(
     db: State<'_, AppDatabase>,
     input: AdoptStoredChapterContentInputDto,
 ) -> Result<DbMutationEnvelope<ChapterMutationResultDto>, String> {
-    with_write_tx(
+    let chapter_id = input.chapter_id;
+    let envelope = with_write_tx(
         db.writer(),
-        TxOptions::with_app_metadata(app),
+        TxOptions::with_app_metadata(app.clone()),
         move |conn, _ctx| {
             Box::pin(async move { adopt_stored_chapter_content_metadata_in_tx(conn, &input).await })
         },
     )
-    .await
+    .await?;
+    super::chapter_digest::refresh_chapter_payload_digest_best_effort(&app, &db, chapter_id).await;
+    Ok(envelope)
 }
 
 #[tauri::command]

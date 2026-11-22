@@ -33,15 +33,19 @@ const mocks = vi.hoisted(() => ({
     createdAt: 1, updatedAt: 1, libraryAddedAt: null, lastReadAt: null,
   } as NovelDetailRecord,
 }));
-vi.mock("@tanstack/react-query", () => ({ useQuery: (options: { queryKey: unknown[]; enabled?: boolean }) => {
-  mocks.queries.push(options);
-  if (options.queryKey[1] === "chapter-differences") return mocks.differences;
-  return options.queryKey[0] === "content-server"
-  ? options.queryKey[1] === "novel-chapters" ? mocks.available : mocks.source
-  : options.queryKey.includes("chapters")
-    ? { data: mocks.chapters, isLoading: false }
-    : { ...mocks.novelQuery, data: mocks.novel };
-} }));
+vi.mock("@tanstack/react-query", () => ({
+  isCancelledError: () => false,
+  useQueryClient: () => ({ cancelQueries: vi.fn() }),
+  useQuery: (options: { queryKey: unknown[]; enabled?: boolean }) => {
+    mocks.queries.push(options);
+    if (options.queryKey[1] === "chapter-differences") return mocks.differences;
+    return options.queryKey[0] === "content-server"
+    ? options.queryKey[1] === "novel-chapters" ? mocks.available : mocks.source
+    : options.queryKey.includes("chapters")
+      ? { data: mocks.chapters, isLoading: false }
+      : { ...mocks.novelQuery, data: mocks.novel };
+  },
+}));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate, useRouterState: () => "/novel?id=3" }));
 vi.mock("../i18n", () => ({ useTranslation: () => ({
   t: (key: string, values?: Record<string, unknown>) => key === "novel.chapterSummary"

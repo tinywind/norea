@@ -10,6 +10,7 @@ export interface ChapterPayloadInventory {
 }
 
 export interface ChapterPayloadSnapshot extends ChapterPayloadInventory {
+  payloadHash?: string | null;
   fingerprint: string;
   payloadBytes: number;
   contentBytes: number;

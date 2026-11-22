@@ -19,6 +19,28 @@ let sessionRecoveryPromise: Promise<void> | null = null;
 let metadataRecoveryRunId = 0;
 let metadataRecoveryActive = false;
 let pendingRecoveryCancel: Promise<unknown> | null = null;
+let digestBackfillStarted = false;
+
+function startChapterPayloadDigestBackfill(): void {
+  if (digestBackfillStarted || !isTauriRuntime()) return;
+  digestBackfillStarted = true;
+  void (async () => {
+    try {
+      const { backfillChapterPayloadDigests } = await import(
+        "../lib/chapter-content/storage-platform"
+      );
+      let afterChapterId: number | undefined;
+      for (;;) {
+        const result = await backfillChapterPayloadDigests(afterChapterId, 25);
+        if (result.nextAfterChapterId === null || result.remaining <= 0) break;
+        afterChapterId = result.nextAfterChapterId;
+        await new Promise((resolve) => setTimeout(resolve, 150));
+      }
+    } catch {
+      // Backfill is opportunistic; comparison resolves any remaining digests on demand.
+    }
+  })();
+}
 
 function ensureSessionRecovered(): Promise<void> {
   if (!sessionRecoveryPromise) {
@@ -128,6 +150,7 @@ export function startWorkMetadataRecovery(rebuild = false): void {
       if (useStorageRecoveryStore.getState().status === "scanning") {
         useStorageRecoveryStore.setState({ status: "complete" });
       }
+      startChapterPayloadDigestBackfill();
     } catch (error: unknown) {
       if (metadataRecoveryRunId === runId) {
         useStorageRecoveryStore.setState({

@@ -14,6 +14,7 @@ export interface ContentCapabilities {
   userStateCurrentVersion?: number;
   workDeleteIdentityCheckVersion?: number;
   workCatalogSummaryVersion?: number;
+  chapterDigestVersion?: number;
 }
 
 interface RegisteredDevice { id: string; deviceName: string }

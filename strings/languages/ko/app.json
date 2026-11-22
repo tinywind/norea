@@ -2129,6 +2129,7 @@
   "chapterDifference.apply": "지정한 작업 적용",
   "chapterDifference.result": "{completed}화 완료 · {failed}화 재확인 필요",
   "chapterDifference.checking": "비교 중 {checked} / {total}",
+  "chapterDifference.checkingStart": "서버 사본 비교 중…",
   "chapterDifference.checkFailed": "비교 실패 · 다시 확인",
   "chapterDifference.manage": "서버와 다름 {count}개 · 관리",
   "chapterDifference.none": "서버 사본 비교",

@@ -331,6 +331,7 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
     setJumpRequest(null);
     setChapterFiltersOpen(false);
     setChapterFilters(NO_CHAPTER_LIST_FILTERS);
+    setDifferenceManagerOpen(false);
     chapterSelectionGuardRef.current = false;
   }, [id]);
 
@@ -932,7 +933,9 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
                     if (!differenceQuery.isFetching) void differenceQuery.refetch();
                   }}
                 >{differenceQuery.isFetching && !differenceQuery.data
-                    ? t("chapterDifference.checking", differenceQuery.progress)
+                    ? (differenceQuery.progress.total > 0
+                      ? t("chapterDifference.checking", differenceQuery.progress)
+                      : t("chapterDifference.checkingStart"))
                     : differenceQuery.error ? t("chapterDifference.checkFailed")
                     : differentIds.size > 0 ? t("chapterDifference.manage", { count: differentIds.size })
                     : differenceQuery.data?.errors.length ? t("chapterDifference.unchecked", { count: differenceQuery.data.errors.length })
@@ -1152,8 +1155,12 @@ export function NovelDetailPage({ id }: NovelDetailPageProps) {
       {differenceManagerOpen && managedServerWork ? <ChapterDifferenceManager
         key={`${id}:${managedServerWork.serverUrl}:${managedServerWork.workId}`}
         novelId={id} source={managedServerWork} differences={differenceQuery.data?.differences ?? []}
-        onClose={() => setDifferenceManagerOpen(false)} onRefresh={() => { void differenceQuery.refetch(); }}
-        refreshing={differenceQuery.isFetching} scanErrors={differenceQuery.data?.errors.length ?? 0}
+        onClose={() => { differenceQuery.cancel(); setDifferenceManagerOpen(false); }}
+        onRefresh={() => { void differenceQuery.refetch(); }}
+        onCancelScan={differenceQuery.cancel}
+        refreshing={differenceQuery.isFetching}
+        scanProgress={differenceQuery.progress}
+        scanErrors={differenceQuery.data?.errors.length ?? 0}
         scanError={differenceQuery.error}
       /> : null}
 

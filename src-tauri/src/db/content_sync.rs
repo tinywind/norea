@@ -2166,11 +2166,11 @@ pub async fn db_content_sync_mark_installed(
     media_bytes: i64,
     media_complete: bool,
 ) -> Result<DbMutationEnvelope<()>, String> {
-    with_write_tx(
+    let envelope = with_write_tx(
         db.writer(),
         TxOptions {
             remote_content_sync: true,
-            metadata_root: MetadataRoot::App(app),
+            metadata_root: MetadataRoot::App(app.clone()),
             ..TxOptions::default()
         },
         move |conn, _ctx| {
@@ -2198,7 +2198,9 @@ pub async fn db_content_sync_mark_installed(
             })
         },
     )
-    .await
+    .await?;
+    super::chapter_digest::refresh_chapter_payload_digest_best_effort(&app, &db, chapter_id).await;
+    Ok(envelope)
 }
 
 #[tauri::command]

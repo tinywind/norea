@@ -145,6 +145,7 @@ pub fn run() {
         .manage(android_file_open::AndroidOpenFileState::default())
         .manage(desktop_open_files)
         .manage(native_stream::NativeStreamState::default())
+        .manage(db::chapter_digest::ChapterDigestScanState::default())
         .manage(db::work_metadata::WorkMetadataRecoveryState::default())
         .manage(task_notifications::TaskNotificationState::default())
         .manage(plugin_vpn)
@@ -318,6 +319,9 @@ pub fn run() {
             db::chapter::db_chapter_reconcile_cleaned,
             db::chapter::db_chapter_get_storage_row,
             db::chapter::db_chapter_list_storage_rows,
+            db::chapter_digest::db_chapter_resolve_payload_digests,
+            db::chapter_digest::db_chapter_cancel_payload_digest_scan,
+            db::chapter_digest::db_chapter_backfill_payload_digests,
             db::chapter::db_novel_sync_from_source,
             db::download::db_download_queue_list_ordinary,
             db::download::db_download_queue_list_pending_vpn,

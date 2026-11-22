@@ -177,6 +177,32 @@ export const chapterTable = sqliteTable(
   }),
 );
 
+// ChapterPayloadDigest: cached SHA-256 payload digest for stored chapter files
+// so server comparison avoids re-hashing unchanged chapters on every scan.
+export const chapterPayloadDigestTable = sqliteTable(
+  "chapter_payload_digest",
+  {
+    chapterId: integer("chapter_id")
+      .primaryKey()
+      .notNull()
+      .references(() => chapterTable.id, { onDelete: "cascade" }),
+    storageDir: text("storage_dir").notNull(),
+    storageSignature: text("storage_signature").notNull(),
+    bodySha256: text("body_sha256").notNull(),
+    bodyBytes: integer("body_bytes").notNull(),
+    payloadHash: text("payload_hash").notNull(),
+    updatedAt: integer("updated_at", { mode: "timestamp" })
+      .notNull()
+      .default(sql`(unixepoch())`),
+  },
+  (t) => ({
+    bodyBytesCheck: check(
+      "chapter_payload_digest_body_bytes",
+      sql`${t.bodyBytes} >= 0`,
+    ),
+  }),
+);
+
 // ChapterDownloadQueue: resumable chapter download work owned by the backend
 // queue executor.
 export const chapterDownloadQueueTable = sqliteTable(

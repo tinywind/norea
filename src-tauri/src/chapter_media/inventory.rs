@@ -53,11 +53,180 @@ pub struct ChapterPayloadSnapshot {
     pub body: Option<PayloadDigest>,
     pub expected_asset_keys: Option<Vec<String>>,
     pub stored_assets: Vec<StoredAsset>,
+    pub payload_hash: Option<String>,
     pub fingerprint: String,
     pub payload_bytes: u64,
     pub content_bytes: u64,
     pub media_bytes: u64,
     pub media_complete: bool,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CachedChapterPayloadDigest {
+    pub storage_dir: String,
+    pub storage_signature: String,
+    pub body_sha256: String,
+    pub body_bytes: u64,
+    pub payload_hash: String,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ResolvedChapterPayloadDigest {
+    pub storage_dir: String,
+    pub storage_signature: String,
+    pub body_sha256: String,
+    pub body_bytes: u64,
+    pub payload_hash: String,
+    pub cache_hit: bool,
+}
+
+pub(crate) fn compute_payload_hash(
+    body: Option<&PayloadDigest>,
+    expected_asset_keys: Option<&[String]>,
+    stored_assets: &[StoredAsset],
+) -> String {
+    let sorted_expected = expected_asset_keys.map(|keys| {
+        let mut cloned = keys.to_vec();
+        cloned.sort();
+        cloned
+    });
+    let mut sorted_stored: Vec<&StoredAsset> = stored_assets.iter().collect();
+    sorted_stored.sort_by(|left, right| left.key.cmp(&right.key));
+    let canonical = serde_json::json!([
+        body.map(|item| serde_json::json!([item.sha256, item.bytes])),
+        sorted_expected,
+        sorted_stored
+            .into_iter()
+            .map(|asset| serde_json::json!([asset.key, asset.sha256, asset.bytes]))
+            .collect::<Vec<_>>(),
+    ]);
+    let encoded = serde_json::to_string(&canonical).expect("canonical payload hash json");
+    Sha256::digest(encoded.as_bytes())
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+fn format_file_stat_signature(relative: &str, meta: &fs::Metadata) -> String {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        format!(
+            "{relative}:{}:{}:{}:{}:{}:{}:{}",
+            meta.dev(),
+            meta.ino(),
+            meta.len(),
+            meta.mtime(),
+            meta.mtime_nsec(),
+            meta.ctime(),
+            meta.ctime_nsec()
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        let (secs, nanos) = meta
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| (d.as_secs(), d.subsec_nanos()))
+            .unwrap_or((0, 0));
+        format!("{relative}:{}:{secs}:{nanos}", meta.len())
+    }
+}
+
+/// Stat-only signature over all chapter payload files and `manifest.json`.
+/// Returns `Ok(None)` when no non-empty chapter body exists on disk.
+pub(crate) fn compute_storage_signature(dir: &Path) -> Result<Option<String>, String> {
+    match fs::symlink_metadata(dir) {
+        Ok(meta) if meta.file_type().is_dir() => {}
+        Ok(_) => return Err("chapter path is not a regular directory".into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(format!("inspect chapter directory: {e}")),
+    }
+
+    let mut entries: Vec<(String, fs::Metadata)> = Vec::new();
+    let mut has_html = false;
+    let mut has_pdf = false;
+    let mut html_len = 0u64;
+    let mut pdf_len = 0u64;
+    let mut partial_len = 0u64;
+
+    for name in PAYLOAD_NAMES.iter().copied().chain(std::iter::once("manifest.json")) {
+        let path = dir.join(name);
+        match fs::symlink_metadata(&path) {
+            Ok(meta) if meta.file_type().is_file() => {
+                match name {
+                    "content.html" => {
+                        has_html = true;
+                        html_len = meta.len();
+                    }
+                    "content.pdf" => {
+                        has_pdf = true;
+                        pdf_len = meta.len();
+                    }
+                    ".chapter-content.partial" => {
+                        partial_len = meta.len();
+                    }
+                    _ => {}
+                }
+                entries.push((name.to_string(), meta));
+            }
+            Ok(_) => return Err(format!("not a regular file: {}", path.display())),
+            Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+            Err(e) => return Err(format!("inspect {}: {e}", path.display())),
+        }
+    }
+
+    if has_html && has_pdf {
+        return Err("multiple published chapter bodies are present".into());
+    }
+
+    let active_body_len = if has_html {
+        html_len
+    } else if has_pdf {
+        pdf_len
+    } else {
+        partial_len
+    };
+    if active_body_len == 0 {
+        return Ok(None);
+    }
+
+    let media = dir.join("media");
+    match fs::symlink_metadata(&media) {
+        Ok(meta) if meta.file_type().is_dir() => {
+            for entry in fs::read_dir(&media).map_err(|e| format!("read media directory: {e}"))? {
+                let entry = entry.map_err(|e| format!("read media entry: {e}"))?;
+                let name = entry.file_name().to_string_lossy().to_string();
+                let base = name.strip_suffix(".part").unwrap_or(&name);
+                if is_safe_manifest_media_file_name(base) && !base.starts_with('.') {
+                    let path = entry.path();
+                    match fs::symlink_metadata(&path) {
+                        Ok(file_meta) if file_meta.file_type().is_file() => {
+                            entries.push((format!("media/{name}"), file_meta));
+                        }
+                        Ok(_) => return Err(format!("not a regular file: {}", path.display())),
+                        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+                        Err(e) => return Err(format!("inspect {}: {e}", path.display())),
+                    }
+                }
+                if entries.len() > MAX_FILES + 1 {
+                    return Err("too many payload files".into());
+                }
+            }
+        }
+        Ok(_) => return Err("media directory is not a directory".into()),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => {}
+        Err(e) => return Err(format!("inspect media directory: {e}")),
+    }
+
+    entries.sort_by(|left, right| left.0.cmp(&right.0));
+    let signature = entries
+        .iter()
+        .map(|(relative, meta)| format_file_stat_signature(relative, meta))
+        .collect::<Vec<_>>()
+        .join("|");
+    Ok(Some(signature))
 }
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -287,6 +456,7 @@ fn inspect_inventory(dir: &Path) -> Result<ChapterPayloadSnapshot, String> {
             body: None,
             expected_asset_keys: None,
             stored_assets: Vec::new(),
+            payload_hash: None,
             fingerprint: hash
                 .finalize()
                 .iter()
@@ -455,10 +625,14 @@ fn inspect_inventory(dir: &Path) -> Result<ChapterPayloadSnapshot, String> {
     if before != after {
         return Err("payload changed during inspection".into());
     }
+    let payload_hash = body
+        .as_ref()
+        .map(|_| compute_payload_hash(body.as_ref(), keys.as_deref(), &stored_assets));
     Ok(ChapterPayloadSnapshot {
         body,
         expected_asset_keys: keys,
         stored_assets,
+        payload_hash,
         fingerprint: after,
         payload_bytes,
         content_bytes,
@@ -508,6 +682,42 @@ pub(crate) fn inspect_payload_inventory_at(
     chapter_dir: &str,
 ) -> Result<ChapterPayloadSnapshot, String> {
     inspect_inventory(&resolved_payload_dir_at(root, chapter_dir)?)
+}
+
+pub(crate) fn inspect_or_reuse_payload_digest_at(
+    root: &Path,
+    chapter_dir: &str,
+    cached: Option<&CachedChapterPayloadDigest>,
+) -> Result<Option<ResolvedChapterPayloadDigest>, String> {
+    let dir = resolved_payload_dir_at(root, chapter_dir)?;
+    let Some(sig_before) = compute_storage_signature(&dir)? else {
+        return Ok(None);
+    };
+    if let Some(entry) = cached {
+        if entry.storage_dir == chapter_dir && entry.storage_signature == sig_before {
+            return Ok(Some(ResolvedChapterPayloadDigest {
+                storage_dir: entry.storage_dir.clone(),
+                storage_signature: entry.storage_signature.clone(),
+                body_sha256: entry.body_sha256.clone(),
+                body_bytes: entry.body_bytes,
+                payload_hash: entry.payload_hash.clone(),
+                cache_hit: true,
+            }));
+        }
+    }
+    let snapshot = inspect_inventory(&dir)?;
+    let (Some(body), Some(payload_hash)) = (snapshot.body, snapshot.payload_hash) else {
+        return Ok(None);
+    };
+    let storage_signature = compute_storage_signature(&dir)?.unwrap_or(sig_before);
+    Ok(Some(ResolvedChapterPayloadDigest {
+        storage_dir: chapter_dir.to_string(),
+        storage_signature,
+        body_sha256: body.sha256,
+        body_bytes: body.bytes,
+        payload_hash,
+        cache_hit: false,
+    }))
 }
 
 fn resolved_dir(app: &AppHandle, chapter_dir: &str) -> Result<PathBuf, String> {
@@ -762,5 +972,85 @@ mod tests {
         assert!(!dir.path().join("media/loose.png").exists());
         assert!(dir.path().join("manifest.json").exists());
         assert_eq!(fs::read(dir.path().join("keep.txt")).unwrap(), b"keep");
+    }
+
+    #[test]
+    fn payload_hash_uses_codepoint_order_and_digest_cache_reuses_unchanged_files() {
+        let root = tempfile::tempdir().unwrap();
+        let chapter_rel = "contents/source/work/1";
+        let chapter_dir = root.path().join(chapter_rel);
+        fs::create_dir_all(&chapter_dir).unwrap();
+        let body = b"<p>hello chapter 1</p>";
+        let img_a = b"asset-a";
+        let img_b = b"asset-B";
+        let img_z = b"asset-Z";
+        fs::write(chapter_dir.join("content.html"), body).unwrap();
+        fs::write(
+            chapter_dir.join("manifest.json"),
+            br#"{"version":1,"complete":true,"updatedAt":1,"media":{"files":[{"fileName":"a.png","path":"media/a.png","sourceUrl":"https://example.test/a.png","status":"stored","bytes":7,"updatedAt":1},{"fileName":"Z.png","path":"media/Z.png","sourceUrl":"https://example.test/Z.png","status":"stored","bytes":7,"updatedAt":1},{"fileName":"B.png","path":"media/B.png","sourceUrl":"https://example.test/B.png","status":"stored","bytes":7,"updatedAt":1}]}}"#,
+        )
+        .unwrap();
+        let archive_file = File::create(chapter_dir.join("media.zip")).unwrap();
+        let mut zip = zip::ZipWriter::new(archive_file);
+        for (name, bytes) in [("a.png", img_a), ("Z.png", img_z), ("B.png", img_b)] {
+            zip.start_file(name, zip::write::SimpleFileOptions::default())
+                .unwrap();
+            zip.write_all(bytes).unwrap();
+        }
+        zip.finish().unwrap();
+
+        let first = inspect_or_reuse_payload_digest_at(root.path(), chapter_rel, None)
+            .unwrap()
+            .unwrap();
+        assert!(!first.cache_hit);
+        let hex = |bytes: &[u8]| -> String {
+            Sha256::digest(bytes)
+                .iter()
+                .map(|b| format!("{b:02x}"))
+                .collect()
+        };
+        let expected_canonical = serde_json::to_string(&serde_json::json!([
+            [hex(body), body.len()],
+            ["media/B.png", "media/Z.png", "media/a.png"],
+            [
+                ["media/B.png", hex(img_b), img_b.len()],
+                ["media/Z.png", hex(img_z), img_z.len()],
+                ["media/a.png", hex(img_a), img_a.len()],
+            ],
+        ]))
+        .unwrap();
+        assert_eq!(first.payload_hash, hex(expected_canonical.as_bytes()));
+        assert_eq!(first.body_sha256, hex(body));
+        assert_eq!(first.body_bytes, body.len() as u64);
+
+        // Reuse when storage signature is unchanged.
+        let cached = CachedChapterPayloadDigest {
+            storage_dir: first.storage_dir.clone(),
+            storage_signature: first.storage_signature.clone(),
+            body_sha256: first.body_sha256.clone(),
+            body_bytes: first.body_bytes,
+            payload_hash: first.payload_hash.clone(),
+        };
+        let reused = inspect_or_reuse_payload_digest_at(root.path(), chapter_rel, Some(&cached))
+            .unwrap()
+            .unwrap();
+        assert!(reused.cache_hit);
+        assert_eq!(reused.payload_hash, first.payload_hash);
+
+        // Recompute when body changes.
+        fs::write(chapter_dir.join("content.html"), b"<p>updated body content</p>").unwrap();
+        let updated = inspect_or_reuse_payload_digest_at(root.path(), chapter_rel, Some(&cached))
+            .unwrap()
+            .unwrap();
+        assert!(!updated.cache_hit);
+        assert_ne!(updated.payload_hash, first.payload_hash);
+
+        // Return None when body is removed.
+        fs::remove_file(chapter_dir.join("content.html")).unwrap();
+        assert!(
+            inspect_or_reuse_payload_digest_at(root.path(), chapter_rel, Some(&cached))
+                .unwrap()
+                .is_none()
+        );
     }
 }

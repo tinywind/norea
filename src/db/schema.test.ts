@@ -509,3 +509,45 @@ it("upgrades populated v17 storage to index pending user_state_operation entity 
     rmSync(directory, { recursive: true });
   }
 });
+
+it("upgrades populated v18 storage to cache chapter payload digests and clear them when emptied or deleted", () => {
+  mkdirSync(".tmp", { recursive: true });
+  const directory = mkdtempSync(".tmp/chapter-payload-digest-migration-");
+  const file = join(directory, "norea.db");
+  let db = new DatabaseSync(file);
+  try {
+    db.exec("PRAGMA foreign_keys=ON");
+    applyRegisteredMigrations(db, 0, 18);
+    db.exec(`INSERT INTO novel(id,plugin_id,source_novel_id,path,name,in_library)
+      VALUES(1,'source','work-1','/work','Work',1);
+      INSERT INTO chapter(id,novel_id,path,name,position,is_downloaded,content_bytes) VALUES
+        (1,1,'/c1','One',1,1,120),
+        (2,1,'/c2','Two',2,1,240)`);
+    const before = db.prepare("SELECT * FROM chapter ORDER BY id").all();
+
+    applyRegisteredMigrations(db, 18, 19);
+    db.close();
+    db = new DatabaseSync(file);
+    db.exec("PRAGMA foreign_keys=ON");
+
+    expect(db.prepare("SELECT * FROM chapter ORDER BY id").all()).toEqual(before);
+    db.exec(`INSERT INTO chapter_payload_digest(chapter_id,storage_dir,storage_signature,body_sha256,body_bytes,payload_hash)
+      VALUES
+        (1,'contents/source/work-1/1','sig1','${"a".repeat(64)}',120,'${"b".repeat(64)}'),
+        (2,'contents/source/work-1/2','sig2','${"c".repeat(64)}',240,'${"d".repeat(64)}')`);
+    expect(() => db.exec(
+      `INSERT INTO chapter_payload_digest(chapter_id,storage_dir,storage_signature,body_sha256,body_bytes,payload_hash)
+       VALUES(1,'contents/source/work-1/1','sig','${"a".repeat(64)}',-1,'${"b".repeat(64)}')`,
+    )).toThrow();
+    // Clearing chapter content triggers automatic digest invalidation.
+    db.exec("UPDATE chapter SET content_bytes=0, is_downloaded=0 WHERE id=1");
+    expect(db.prepare("SELECT chapter_id FROM chapter_payload_digest ORDER BY chapter_id").all())
+      .toEqual([{ chapter_id: 2 }]);
+    // Deleting the chapter cascades digest deletion.
+    db.exec("DELETE FROM chapter WHERE id=2");
+    expect(db.prepare("SELECT chapter_id FROM chapter_payload_digest").all()).toEqual([]);
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true });
+  }
+});

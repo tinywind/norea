@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { requestAbortedError } from "../abort";
 import type { ChapterContentType } from "../chapter-content";
 import type { ChapterPayloadSnapshot } from "./inventory";
 import {
@@ -51,6 +52,20 @@ export interface FastPayloadDeleteResult {
   errors: { path: string; message: string }[];
 }
 
+export interface ResolvedChapterPayloadDigestItem {
+  chapterId: number;
+  bodySha256: string | null;
+  bodyBytes: number | null;
+  payloadHash: string | null;
+  error?: string;
+}
+
+export interface BackfillChapterPayloadDigestsResult {
+  processed: number;
+  nextAfterChapterId: number | null;
+  remaining: number;
+}
+
 function cleanupChapterDir(identity: ChapterContentStorageIdentity): string {
   const canonical = chapterStorageRelativeDir(
     { ...identity.novel, id: undefined },
@@ -61,6 +76,55 @@ function cleanupChapterDir(identity: ChapterContentStorageIdentity): string {
     throw new Error("Stored chapter directory does not match its canonical identity.");
   }
   return canonical;
+}
+
+export function chapterPayloadStorageDir(
+  identity: ChapterContentStorageIdentity,
+): string {
+  return cleanupChapterDir(identity);
+}
+
+export async function cancelChapterPayloadDigestScan(scanId: string): Promise<void> {
+  await invoke("db_chapter_cancel_payload_digest_scan", { scanId }).catch(() => undefined);
+}
+
+export async function resolveChapterPayloadDigests(
+  scanId: string,
+  items: readonly { chapterId: number; chapterDir: string }[],
+  signal?: AbortSignal,
+): Promise<ResolvedChapterPayloadDigestItem[]> {
+  if (signal?.aborted) throw requestAbortedError();
+  if (items.length === 0) return [];
+  const onAbort = () => {
+    void cancelChapterPayloadDigestScan(scanId);
+  };
+  signal?.addEventListener("abort", onAbort, { once: true });
+  try {
+    const resolved = await invoke<ResolvedChapterPayloadDigestItem[]>(
+      "db_chapter_resolve_payload_digests",
+      { scanId, items },
+    );
+    if (signal?.aborted) throw requestAbortedError();
+    return resolved;
+  } catch (error) {
+    if (signal?.aborted) throw requestAbortedError();
+    throw error;
+  } finally {
+    signal?.removeEventListener("abort", onAbort);
+  }
+}
+
+export async function backfillChapterPayloadDigests(
+  afterChapterId?: number,
+  limit?: number,
+): Promise<BackfillChapterPayloadDigestsResult> {
+  return invoke<BackfillChapterPayloadDigestsResult>(
+    "db_chapter_backfill_payload_digests",
+    {
+      afterChapterId: afterChapterId ?? null,
+      limit: limit ?? null,
+    },
+  );
 }
 
 export async function inspectChapterPayloadInventory(

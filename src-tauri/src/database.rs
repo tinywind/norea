@@ -239,6 +239,11 @@ pub fn schema_migrations() -> Vec<SchemaMigration> {
             description: "index user-state operations by namespace, status, and entity key",
             sql: include_str!("migrations/0018_user_state_operation_pending_entity_index.sql"),
         },
+        SchemaMigration {
+            version: 19,
+            description: "cache precomputed chapter payload digests",
+            sql: include_str!("migrations/0019_chapter_payload_digests.sql"),
+        },
     ]
 }
 
@@ -1750,6 +1755,83 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(count, 2);
+        reopened.close().await;
+    }
+
+    #[tokio::test]
+    async fn registered_v18_upgrade_adds_chapter_payload_digest_cache_and_invalidation_trigger() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations = sqlx_migrations();
+        let v18_pool = bootstrap(&path, &migrations[..18]).await.unwrap();
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) \
+             VALUES(1, 'source', 'work-1', '/work', 'Work', 1)",
+        )
+        .execute(&v18_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chapter(id, novel_id, path, name, position, is_downloaded, content_bytes) \
+             VALUES(1, 1, '/c1', 'One', 1, 1, 120), (2, 1, '/c2', 'Two', 2, 1, 240)",
+        )
+        .execute(&v18_pool)
+        .await
+        .unwrap();
+        v18_pool.close().await;
+
+        let db = open_and_migrate_pools(&path).await.unwrap();
+        let sha = "a".repeat(64);
+        let hash = "b".repeat(64);
+        sqlx::query(
+            "INSERT INTO chapter_payload_digest(chapter_id, storage_dir, storage_signature, body_sha256, body_bytes, payload_hash) \
+             VALUES(1, 'contents/source/work-1/1', 'sig-1', ?1, 120, ?2), \
+                   (2, 'contents/source/work-1/2', 'sig-2', ?1, 240, ?2)",
+        )
+        .bind(&sha)
+        .bind(&hash)
+        .execute(db.writer())
+        .await
+        .unwrap();
+        assert!(
+            sqlx::query(
+                "INSERT INTO chapter_payload_digest(chapter_id, storage_dir, storage_signature, body_sha256, body_bytes, payload_hash) \
+                 VALUES(99, 'contents/source/work-1/99', 'sig', ?1, 10, ?2)",
+            )
+            .bind(&sha)
+            .bind(&hash)
+            .execute(db.writer())
+            .await
+            .is_err()
+        );
+        sqlx::query("UPDATE chapter SET content_bytes = 0, is_downloaded = 0 WHERE id = 1")
+            .execute(db.writer())
+            .await
+            .unwrap();
+        let remaining: Vec<i64> =
+            sqlx::query_scalar("SELECT chapter_id FROM chapter_payload_digest ORDER BY chapter_id")
+                .fetch_all(db.writer())
+                .await
+                .unwrap();
+        assert_eq!(remaining, vec![2]);
+        sqlx::query("DELETE FROM chapter WHERE id = 2")
+            .execute(db.writer())
+            .await
+            .unwrap();
+        let after_delete: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM chapter_payload_digest")
+                .fetch_one(db.writer())
+                .await
+                .unwrap();
+        assert_eq!(after_delete, 0);
+        db.close().await;
+
+        let reopened = open_and_migrate_pools(&path).await.unwrap();
+        let chapter_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM chapter")
+            .fetch_one(reopened.reader())
+            .await
+            .unwrap();
+        assert_eq!(chapter_count, 1);
         reopened.close().await;
     }
 }

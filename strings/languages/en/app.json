@@ -2129,6 +2129,7 @@
   "chapterDifference.apply": "Apply transfers",
   "chapterDifference.result": "Completed {completed} · Retry needed {failed}",
   "chapterDifference.checking": "Comparing {checked} / {total}",
+  "chapterDifference.checkingStart": "Comparing server copies…",
   "chapterDifference.checkFailed": "Comparison failed · Retry",
   "chapterDifference.manage": "{count} differ · Manage",
   "chapterDifference.none": "Compare server copies",
