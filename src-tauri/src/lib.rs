@@ -604,3 +604,160 @@ mod navigation_tests {
         }
     }
 }
+
+#[cfg(test)]
+mod android_ipc_channel_regression_tests {
+    use std::str::FromStr;
+    use std::sync::{Arc, Mutex};
+
+    use serde::Serialize;
+    use serde_json::json;
+    use tauri::ipc::{Channel, InvokeResponseBody, JavaScriptChannelId, Response};
+    use tauri::test::{
+        INVOKE_KEY, app_manager_strong_count, mobile_channel_is_registered, mock_builder,
+        mock_context, noop_assets, send_mobile_channel_data, send_post_message_ipc,
+        unregister_mobile_channel,
+    };
+
+    #[tauri::command]
+    fn ipc_echo_object() -> serde_json::Value {
+        json!({ "ok": true })
+    }
+
+    #[tauri::command]
+    fn ipc_echo_array() -> serde_json::Value {
+        json!([1, 2, 3])
+    }
+
+    #[tauri::command]
+    fn ipc_echo_large_json() -> serde_json::Value {
+        json!({ "payload": "x".repeat(16_384) })
+    }
+
+    #[tauri::command]
+    fn ipc_echo_raw() -> Response {
+        Response::new(vec![1u8, 2, 3, 4, 5, 6, 7, 8])
+    }
+
+    #[test]
+    fn post_message_ipc_responses_do_not_leak_mobile_channels_or_webviews() {
+        let app = mock_builder()
+            .invoke_handler(tauri::generate_handler![
+                ipc_echo_object,
+                ipc_echo_array,
+                ipc_echo_large_json,
+                ipc_echo_raw,
+            ])
+            .build(mock_context(noop_assets()))
+            .unwrap();
+        let window =
+            tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+                .build()
+                .unwrap();
+        let origin = if cfg!(any(windows, target_os = "android")) {
+            "http://tauri.localhost/"
+        } else {
+            "tauri://localhost/"
+        };
+
+        let baseline_refs = app_manager_strong_count(&app);
+
+        for round in 0..25u32 {
+            for (offset, cmd) in [
+                (0u32, "ipc_echo_object"),
+                (1u32, "ipc_echo_array"),
+                (2u32, "ipc_echo_large_json"),
+                (3u32, "ipc_echo_raw"),
+            ] {
+                let callback_id = 930_000 + round * 10 + offset;
+                let error_id = 931_000 + round * 10 + offset;
+                let body = serde_json::to_string(&json!({
+                    "cmd": cmd,
+                    "callback": callback_id,
+                    "error": error_id,
+                    "payload": {},
+                    "__TAURI_INVOKE_KEY__": INVOKE_KEY,
+                }))
+                .unwrap();
+                send_post_message_ipc(&app, window.label(), origin, body);
+
+                assert!(
+                    !mobile_channel_is_registered(callback_id),
+                    "one-shot postMessage response for `{cmd}` must not register in MOBILE_CHANNELS"
+                );
+            }
+        }
+
+        assert_eq!(
+            app_manager_strong_count(&app),
+            baseline_refs,
+            "100 postMessage IPC responses must retain zero additional Webview/AppHandle references"
+        );
+    }
+
+    #[test]
+    fn mobile_plugin_channels_stay_active_while_rust_command_channels_drop() {
+        #[derive(Serialize)]
+        struct PluginEventArgs {
+            handler: Channel,
+        }
+
+        let delivered = Arc::new(Mutex::new(Vec::<String>::new()));
+        let delivered_clone = delivered.clone();
+        let plugin_channel = Channel::new(move |body| {
+            if let InvokeResponseBody::Json(payload) = body {
+                delivered_clone.lock().unwrap().push(payload);
+            }
+            Ok(())
+        });
+        let plugin_channel_id = plugin_channel.id();
+        let wire = serde_json::to_value(PluginEventArgs {
+            handler: plugin_channel,
+        })
+        .unwrap();
+        assert_eq!(wire["handler"], format!("__CHANNEL__:{plugin_channel_id}"));
+        assert!(mobile_channel_is_registered(plugin_channel_id));
+        assert!(send_mobile_channel_data(
+            plugin_channel_id,
+            json!({ "url": "norea://chapter/1" })
+        ));
+        assert_eq!(
+            delivered.lock().unwrap().as_slice(),
+            &[r#"{"url":"norea://chapter/1"}"#.to_string()]
+        );
+        unregister_mobile_channel(plugin_channel_id);
+        assert!(!mobile_channel_is_registered(plugin_channel_id));
+
+        let app = mock_builder().build(mock_context(noop_assets())).unwrap();
+        let window =
+            tauri::WebviewWindowBuilder::new(&app, "main", tauri::WebviewUrl::default())
+                .build()
+                .unwrap();
+        let baseline_refs = app_manager_strong_count(&app);
+
+        let rust_only_id = 940_001u32;
+        let rust_only = JavaScriptChannelId::from_str(&format!("__CHANNEL__:{rust_only_id}"))
+            .unwrap()
+            .channel_on::<_, serde_json::Value>(window.as_ref().clone());
+        assert!(!mobile_channel_is_registered(rust_only_id));
+        rust_only.send(json!({ "progress": 1 })).unwrap();
+        drop(rust_only);
+        assert!(!mobile_channel_is_registered(rust_only_id));
+        assert_eq!(app_manager_strong_count(&app), baseline_refs);
+
+        let forwarded_id = 940_002u32;
+        let forwarded = JavaScriptChannelId::from_str(&format!("__CHANNEL__:{forwarded_id}"))
+            .unwrap()
+            .channel_on::<_, serde_json::Value>(window.as_ref().clone());
+        let _serialized = serde_json::to_string(&forwarded).unwrap();
+        drop(forwarded);
+        assert!(mobile_channel_is_registered(forwarded_id));
+        assert!(
+            app_manager_strong_count(&app) > baseline_refs,
+            "registered mobile channel must keep its Webview alive until unregistered"
+        );
+        unregister_mobile_channel(forwarded_id);
+        assert!(!mobile_channel_is_registered(forwarded_id));
+        assert_eq!(app_manager_strong_count(&app), baseline_refs);
+    }
+}

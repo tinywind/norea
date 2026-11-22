@@ -62,6 +62,9 @@ tempfile = "3.27.0"
 [patch.crates-io]
 glib = { path = "vendor/glib" }
 openvpn-connect-sys = { path = "vendor/openvpn-connect-sys" }
+tao = { path = "vendor/tao" }
+tauri = { path = "vendor/tauri" }
+wry = { path = "vendor/wry" }
 
 [profile.release]
 opt-level = "z"
