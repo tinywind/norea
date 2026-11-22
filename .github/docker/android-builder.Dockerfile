@@ -1,5 +1,9 @@
 # Android CI/release builder assembled from official Docker Hub images.
 FROM node:24-bookworm AS node_toolchain
+ARG PNPM_VERSION=10.27.0
+RUN npm install --global --no-audit --no-fund "pnpm@${PNPM_VERSION}" \
+    && test "$(pnpm --version)" = "${PNPM_VERSION}"
+
 FROM eclipse-temurin:17-jdk-jammy AS jdk_toolchain
 FROM rust:1-slim-bookworm
 
@@ -26,10 +30,12 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
       zstd \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy Node.js 24 from official Docker Hub node image and install pinned pnpm.
-COPY --from=node_toolchain /usr/local/bin/node /usr/local/bin/npm /usr/local/bin/npx /usr/local/bin/
+# Copy Node.js 24 and pinned pnpm from the official Docker Hub node image.
+COPY --from=node_toolchain /usr/local/bin/node /usr/local/bin/node
 COPY --from=node_toolchain /usr/local/lib/node_modules /usr/local/lib/node_modules
-RUN npm install --global --no-audit --no-fund "pnpm@${PNPM_VERSION}" \
+RUN ln -sf ../lib/node_modules/npm/bin/npm-cli.js /usr/local/bin/npm \
+    && ln -sf ../lib/node_modules/npm/bin/npx-cli.js /usr/local/bin/npx \
+    && ln -sf ../lib/node_modules/pnpm/bin/pnpm.cjs /usr/local/bin/pnpm \
     && test "$(pnpm --version)" = "${PNPM_VERSION}"
 
 # Copy Temurin JDK 17 from official Docker Hub eclipse-temurin image.
