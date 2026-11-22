@@ -305,14 +305,14 @@ export function FilterOptions({
 
   return (
     <Stack gap="lg">
-      <Stack className="norea-library-option-list" gap={0}>
+      <div className="norea-library-option-list norea-library-filter-grid">
         {flags.map((flag) => (
           <Checkbox
             checked={flag.active}
             key={flag.id}
             label={
               <span className="norea-library-option-label">
-                <span>{t(flag.labelKey)}</span>
+                <span className="norea-library-option-text">{t(flag.labelKey)}</span>
                 <span className="norea-library-option-count">
                   {flag.count.toLocaleString()}
                 </span>
@@ -321,16 +321,16 @@ export function FilterOptions({
             onChange={(event) => flag.set(event.currentTarget.checked)}
           />
         ))}
-      </Stack>
+      </div>
       {statusesLoading || statusOptions.length > 0 || selectedStatuses.length > 0 ? (
         <Checkbox.Group
           label={t("library.statusFilters.title")}
           onChange={(values) => setSelectedStatuses(values)}
           value={selectedStatuses}
         >
-          <Stack className="norea-library-option-list" gap={0}>
+          <div className="norea-library-option-list norea-library-filter-grid">
             {statusesLoading && statusOptions.length === 0 ? (
-              <Text c="dimmed" size="sm">
+              <Text c="dimmed" className="norea-library-filter-grid-message" size="sm">
                 {t("library.statusFilters.loading")}
               </Text>
             ) : null}
@@ -339,7 +339,9 @@ export function FilterOptions({
                 key={option.status}
                 label={
                   <span className="norea-library-option-label">
-                    <span>{canonicalNovelStatusLabel(option.status, t)}</span>
+                    <span className="norea-library-option-text">
+                      {canonicalNovelStatusLabel(option.status, t)}
+                    </span>
                     <span className="norea-library-option-count">
                       {option.totalNovels.toLocaleString()}
                     </span>
@@ -348,7 +350,7 @@ export function FilterOptions({
                 value={option.status}
               />
             ))}
-          </Stack>
+          </div>
         </Checkbox.Group>
       ) : null}
       {sourcesLoading || sources.length > 0 || activeSourceId !== null ? (
@@ -357,10 +359,19 @@ export function FilterOptions({
           onChange={(value) => onSourceChange(value === "" ? null : value)}
           value={activeSourceId ?? ""}
         >
-          <Stack className="norea-library-option-list" gap={0}>
-            <Radio label={t("library.sources.all")} value="" />
+          <div className="norea-library-option-list norea-library-filter-grid">
+            <Radio
+              label={
+                <span className="norea-library-option-label">
+                  <span className="norea-library-option-text">
+                    {t("library.sources.all")}
+                  </span>
+                </span>
+              }
+              value=""
+            />
             {sourcesLoading && sources.length === 0 ? (
-              <Text c="dimmed" size="sm">
+              <Text c="dimmed" className="norea-library-filter-grid-message" size="sm">
                 {t("library.sources.loading")}
               </Text>
             ) : null}
@@ -369,7 +380,9 @@ export function FilterOptions({
                 key={source.pluginId}
                 label={
                   <span className="norea-library-option-label">
-                    <span>{getLibrarySourceLabel(source, t)}</span>
+                    <span className="norea-library-option-text">
+                      {getLibrarySourceLabel(source, t)}
+                    </span>
                     <span className="norea-library-option-count">
                       {source.totalNovels.toLocaleString()}
                     </span>
@@ -378,7 +391,7 @@ export function FilterOptions({
                 value={source.pluginId}
               />
             ))}
-          </Stack>
+          </div>
         </Radio.Group>
       ) : null}
       {tagsLoading || tags.length > 0 || selectedTags.length > 0 ? (
@@ -419,14 +432,14 @@ export function FilterOptions({
             size="sm"
             value={tagSearch}
           />
-          <Stack className="norea-library-option-list norea-library-tag-list" gap={0}>
+          <div className="norea-library-option-list norea-library-filter-grid norea-library-tag-list">
             {tagsLoading && mergedTagOptions.length === 0 ? (
-              <Text c="dimmed" size="sm">
+              <Text c="dimmed" className="norea-library-filter-grid-message" size="sm">
                 {t("library.tagFilters.loading")}
               </Text>
             ) : null}
             {!tagsLoading && mergedTagOptions.length === 0 && tagSearch.trim() !== "" ? (
-              <Text c="dimmed" size="sm">
+              <Text c="dimmed" className="norea-library-filter-grid-message" size="sm">
                 {t("library.tagFilters.emptySearch")}
               </Text>
             ) : null}
@@ -438,7 +451,7 @@ export function FilterOptions({
                   key={entry.tag}
                   label={
                     <span className="norea-library-option-label">
-                      <span>{entry.tag}</span>
+                      <span className="norea-library-option-text">{entry.tag}</span>
                       <span className="norea-library-option-count">
                         {entry.totalNovels.toLocaleString()}
                       </span>
@@ -448,7 +461,7 @@ export function FilterOptions({
                 />
               );
             })}
-          </Stack>
+          </div>
         </div>
       ) : null}
     </Stack>

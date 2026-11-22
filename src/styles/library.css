@@ -254,8 +254,79 @@
 }
 
 .norea-library-tag-list {
+  align-content: start;
   max-height: 15rem;
   overflow-y: auto;
+}
+
+/* Multi-column filter blocks keep the filter sheet compact while letting long labels wrap cleanly. */
+.norea-library-filter-grid {
+  align-items: stretch;
+  display: grid;
+  gap: var(--norea-space-2);
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 9.25rem), 1fr));
+}
+
+.norea-library-filter-grid-message {
+  grid-column: 1 / -1;
+}
+
+.norea-library-filter-grid :where(.mantine-Checkbox-root, .mantine-Radio-root) {
+  background: var(--norea-color-surface-raised);
+  border: 1px solid var(--norea-color-rule);
+  border-radius: var(--norea-radius-sm);
+  display: flex;
+  min-width: 0;
+  padding: var(--norea-space-2);
+  transition:
+    background-color var(--norea-duration-fast) var(--norea-ease-standard),
+    border-color var(--norea-duration-fast) var(--norea-ease-standard);
+}
+
+.norea-library-filter-grid :where(.mantine-Checkbox-root, .mantine-Radio-root):has(input:checked) {
+  background: var(--norea-color-selected);
+  border-color: var(--norea-color-accent);
+}
+
+.norea-library-filter-grid :where(.mantine-Checkbox-body, .mantine-Radio-body) {
+  align-items: center;
+  gap: var(--norea-space-2);
+  min-width: 0;
+  width: 100%;
+}
+
+.norea-library-filter-grid :where(.mantine-Checkbox-inner, .mantine-Radio-inner) {
+  flex: 0 0 auto;
+}
+
+.norea-library-filter-grid :where(.mantine-Checkbox-labelWrapper, .mantine-Radio-labelWrapper) {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.norea-library-filter-grid :where(.mantine-Checkbox-label, .mantine-Radio-label) {
+  align-items: center;
+  display: flex;
+  line-height: 1.3;
+  min-height: 1.75rem;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  padding-inline-start: 0;
+  width: 100%;
+}
+
+.norea-library-filter-grid .norea-library-option-label {
+  align-items: center;
+  gap: var(--norea-space-2);
+  min-width: 0;
+  width: 100%;
+}
+
+.norea-library-option-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
 }
 
 /* The count ends on the row's right edge, so counts line up down the list. */
@@ -268,7 +339,13 @@
 
 .norea-library-option-count {
   color: var(--norea-color-ink-muted);
+  flex: 0 0 auto;
   font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.norea-library-filter-grid .norea-library-option-count {
+  font-size: var(--norea-text-xs);
 }
 
 .norea-library-stepper-row {

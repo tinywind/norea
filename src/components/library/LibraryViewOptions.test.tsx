@@ -1,4 +1,4 @@
-import { Checkbox, TextInput } from "@mantine/core";
+import { Checkbox, Radio, TextInput } from "@mantine/core";
 import type { ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import en from "../../../strings/languages/en/app.json";
@@ -50,6 +50,7 @@ let rendered: ReactNode;
 let renderedSheet: ReactNode;
 
 function OptionsProbe({
+  sources = [],
   statuses = [
     { status: "Completed", totalNovels: 3 },
     { status: "Ongoing", totalNovels: 2 },
@@ -60,6 +61,7 @@ function OptionsProbe({
     { tag: "Romance", totalNovels: 2 },
   ],
 }: {
+  sources?: Array<{ pluginId: string; pluginName: string | null; totalNovels: number }>;
   statuses?: Array<{ status: string; totalNovels: number }>;
   tags?: Array<{ tag: string; totalNovels: number }>;
 }) {
@@ -67,7 +69,7 @@ function OptionsProbe({
     activeSourceId: null,
     counts,
     onSourceChange: vi.fn(),
-    sources: [],
+    sources,
     sourcesLoading: false,
     statuses,
     statusesLoading: false,
@@ -160,5 +162,39 @@ describe("LibraryViewOptions", () => {
       (romanceCheckbox.props.onChange as () => void)();
     });
     expect(useLibraryStore.getState().selectedTags).toEqual(["Romance"]);
+  });
+
+  it("renders all filter sections in multi-column block grids with tags at the bottom", async () => {
+    harness = mountBackNavigationHarness();
+    await harness.render(
+      <OptionsProbe
+        sources={[
+          { pluginId: "source-a", pluginName: "Very Long Source Name That Wraps Cleanly", totalNovels: 5 },
+          { pluginId: "source-b", pluginName: "Source B", totalNovels: 1 },
+        ]}
+      />,
+    );
+
+    const elements = collectElements(rendered);
+    const grids = elements.filter(
+      (el) =>
+        typeof el.props.className === "string" &&
+        el.props.className.includes("norea-library-filter-grid"),
+    );
+    expect(grids).toHaveLength(4);
+    expect(String(grids[3]?.props.className)).toContain("norea-library-tag-list");
+
+    const statusIndex = elements.findIndex(
+      (el) => el.type === Checkbox.Group && el.props.label === en["library.statusFilters.title"],
+    );
+    const sourcesIndex = elements.findIndex(
+      (el) => el.type === Radio.Group && el.props.label === en["library.sources.title"],
+    );
+    const tagsIndex = elements.findIndex(
+      (el) => el.props.role === "group" && typeof el.props["aria-labelledby"] === "string",
+    );
+    expect(statusIndex).toBeGreaterThan(-1);
+    expect(sourcesIndex).toBeGreaterThan(statusIndex);
+    expect(tagsIndex).toBeGreaterThan(sourcesIndex);
   });
 });
