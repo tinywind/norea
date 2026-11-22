@@ -1,7 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { writeSync } from "node:fs";
 import { mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -19,19 +18,27 @@ async function fixture(t) {
   return { directory, destination: join(directory, "codeql-bundle-rust-linux64.tar.zst") };
 }
 
-test("publishes a verified archive and reuses it without another download", async t => {
+test("publishes a verified archive via redirected asset download without leaking auth headers and reuses it", async t => {
   const { directory, destination } = await fixture(t);
-  let downloads = 0;
-  const run = (command, args, options) => {
-    downloads++;
-    assert.equal(command, "gh");
-    assert.deepEqual(args, ["api", "repos/github/codeql-action/releases/assets/1", "-H", "Accept: application/octet-stream"]);
-    writeSync(options.stdio[1], bytes);
-    return { status: 0 };
+  const requests = [];
+  const fetchImpl = async (url, options = {}) => {
+    requests.push({ url, headers: options.headers ?? {}, redirect: options.redirect });
+    if (url === "https://api.github.com/repos/github/codeql-action/releases/assets/1") {
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://release-assets.githubusercontent.com/bundle.tar.zst?sig=abc" },
+      });
+    }
+    return new Response(bytes, { status: 200 });
   };
-  await downloadCodeqlBundle(destination, asset, { run, wait });
-  await downloadCodeqlBundle(destination, asset, { run, wait });
-  assert.equal(downloads, 1);
+  await downloadCodeqlBundle(destination, asset, { fetchImpl, token: "secret-token", wait });
+  await downloadCodeqlBundle(destination, asset, { fetchImpl, token: "secret-token", wait });
+  assert.equal(requests.length, 2);
+  assert.equal(requests[0].headers.Accept, "application/octet-stream");
+  assert.equal(requests[0].headers.Authorization, "Bearer secret-token");
+  assert.equal(requests[0].redirect, "manual");
+  assert.equal(requests[1].url, "https://release-assets.githubusercontent.com/bundle.tar.zst?sig=abc");
+  assert.equal(requests[1].headers.Authorization, undefined);
   assert.deepEqual(await readFile(destination), bytes);
   assert.deepEqual(await readdir(directory), ["codeql-bundle-rust-linux64.tar.zst"]);
 });
@@ -41,12 +48,11 @@ test("rejects an equal-sized corrupt archive and preserves the existing file", a
   const previous = Buffer.from("previous archive");
   await writeFile(destination, previous);
   let downloads = 0;
-  const run = (_command, _args, options) => {
+  const fetchImpl = async () => {
     downloads++;
-    writeSync(options.stdio[1], Buffer.alloc(bytes.length));
-    return { status: 0 };
+    return new Response(Buffer.alloc(bytes.length), { status: 200 });
   };
-  await assert.rejects(downloadCodeqlBundle(destination, asset, { run, wait }), /SHA-256 verification/);
+  await assert.rejects(downloadCodeqlBundle(destination, asset, { fetchImpl, token: "", wait }), /SHA-256 verification/);
   assert.equal(downloads, 3);
   assert.deepEqual(await readFile(destination), previous);
   assert.deepEqual(await readdir(directory), ["codeql-bundle-rust-linux64.tar.zst"]);
@@ -56,12 +62,14 @@ test("cleans incomplete downloads and retries before publishing a replacement", 
   const { directory, destination } = await fixture(t);
   await writeFile(destination, "corrupt cache");
   let downloads = 0;
-  const run = (_command, _args, options) => {
+  const fetchImpl = async () => {
     downloads++;
-    writeSync(options.stdio[1], downloads === 1 ? bytes.subarray(0, 5) : bytes);
-    return downloads === 1 ? { status: null, error: { code: "ETIMEDOUT" } } : { status: 0 };
+    if (downloads === 1) {
+      return new Response(null, { status: 504 });
+    }
+    return new Response(bytes, { status: 200 });
   };
-  await downloadCodeqlBundle(destination, asset, { run, wait });
+  await downloadCodeqlBundle(destination, asset, { fetchImpl, token: "", wait });
   assert.equal(downloads, 2);
   assert.deepEqual(await readFile(destination), bytes);
   assert.deepEqual(await readdir(directory), ["codeql-bundle-rust-linux64.tar.zst"]);

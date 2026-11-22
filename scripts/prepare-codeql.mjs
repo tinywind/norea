@@ -1,8 +1,9 @@
-import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { closeSync, createReadStream, openSync } from "node:fs";
+import { createReadStream, createWriteStream } from "node:fs";
 import { appendFile, mkdir, rename, stat, unlink } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { setTimeout as delay } from "node:timers/promises";
 import { pathToFileURL } from "node:url";
 
@@ -42,32 +43,45 @@ async function isVerified(path, asset) {
   }
 }
 
-/** Publish only a complete, verified archive; let CodeQL init extract it. */
+/** Publish only a complete, verified archive; let CodeQL init or CLI extract it. */
 export async function downloadCodeqlBundle(destination, asset, {
-  run = spawnSync,
+  fetchImpl = fetch,
+  token = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "",
   wait = delay,
 } = {}) {
   if (await isVerified(destination, asset)) return;
   await mkdir(dirname(destination), { recursive: true });
+  const assetUrl = `https://api.github.com/repos/github/codeql-action/releases/assets/${asset.id}`;
   for (let attempt = 1; attempt <= 3; attempt++) {
     const partial = `${destination}.part-${process.pid}-${randomUUID()}`;
     try {
-      const descriptor = openSync(partial, "wx");
-      let result;
-      try {
-        result = run("gh", [
-          "api", `repos/github/codeql-action/releases/assets/${asset.id}`,
-          "-H", "Accept: application/octet-stream",
-        ], {
-          stdio: ["ignore", descriptor, "pipe"], encoding: "utf8",
-          timeout: 180_000, maxBuffer: 64 * 1024,
+      const headers = {
+        Accept: "application/octet-stream",
+        "User-Agent": "norea-ci",
+        "X-GitHub-Api-Version": "2022-11-28",
+      };
+      if (token) {
+        headers.Authorization = `Bearer ${token}`;
+      }
+      let response = await fetchImpl(assetUrl, {
+        headers,
+        redirect: "manual",
+        signal: AbortSignal.timeout(180_000),
+      });
+      if ([301, 302, 303, 307, 308].includes(response.status)) {
+        const location = response.headers.get("location");
+        if (!location) {
+          throw new Error(`The official CodeQL asset redirect (${response.status}) lacked a Location header.`);
+        }
+        response = await fetchImpl(location, {
+          headers: { "User-Agent": "norea-ci" },
+          signal: AbortSignal.timeout(180_000),
         });
-      } finally {
-        closeSync(descriptor);
       }
-      if (result.error || result.status !== 0) {
-        throw new Error(`The official CodeQL asset download failed (${result.error?.code ?? result.status}).`);
+      if (!response.ok || !response.body) {
+        throw new Error(`The official CodeQL asset download failed (HTTP ${response.status}).`);
       }
+      await pipeline(Readable.fromWeb(response.body), createWriteStream(partial, { flags: "wx" }));
       if (!await isVerified(partial, asset)) {
         throw new Error("The CodeQL bundle failed its pinned size or SHA-256 verification.");
       }

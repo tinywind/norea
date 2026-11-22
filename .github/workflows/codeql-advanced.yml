@@ -35,6 +35,10 @@ jobs:
           - language: java-kotlin
             build-mode: manual
     env:
+      CI: "true"
+      NODE_IMAGE: node:24-bookworm
+      PYTHON_IMAGE: python:3.14-slim
+      ANDROID_BUILDER_IMAGE: norea-android-builder:local
       CODEQL_ACTION_DIFF_INFORMED_QUERIES: "false"
       ANDROID_SDK_PLATFORM: android-36
       ANDROID_BUILD_TOOLS: 36.0.0
@@ -46,20 +50,30 @@ jobs:
         with:
           persist-credentials: false
 
-      - name: Set up Node for analysis tools
-        uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        with:
-          node-version: 24
-          package-manager-cache: false
-
-      - name: Prepare verified CodeQL bundle
+      - name: Prepare verified CodeQL bundle in Node container
         id: prepare-codeql
         env:
           CODEQL_LANGUAGE: ${{ matrix.language }}
           GH_TOKEN: ${{ github.token }}
-        run: node scripts/prepare-codeql.mjs
+        run: |
+          set -euo pipefail
+          mount_args=(-v "$GITHUB_WORKSPACE:/workspace:ro" -v "$RUNNER_TEMP:$RUNNER_TEMP")
+          case "$GITHUB_OUTPUT" in
+            "$RUNNER_TEMP"/*) ;;
+            *) mount_args+=(-v "$GITHUB_OUTPUT:$GITHUB_OUTPUT") ;;
+          esac
+          docker run --rm --user "$(id -u):$(id -g)" \
+            "${mount_args[@]}" \
+            -w /workspace \
+            -e CODEQL_LANGUAGE \
+            -e GH_TOKEN \
+            -e RUNNER_TEMP \
+            -e GITHUB_OUTPUT \
+            "$NODE_IMAGE" \
+            node scripts/prepare-codeql.mjs
 
       - name: Initialize CodeQL
+        if: matrix.language != 'java-kotlin'
         uses: github/codeql-action/init@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         with:
           languages: ${{ matrix.language }}
@@ -67,109 +81,184 @@ jobs:
           build-mode: ${{ matrix.build-mode }}
           queries: security-extended
 
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-        if: matrix.language == 'java-kotlin'
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
-        if: matrix.language == 'java-kotlin'
+      - name: Analyze the extracted source
+        if: matrix.language != 'java-kotlin'
+        id: analyze
+        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         with:
-          node-version: 24
-          cache: pnpm
+          category: /language:${{ matrix.language }}
+          output: .tmp/codeql-results/${{ matrix.language }}
+          upload: always
 
-      - uses: actions/setup-java@77dd5b2ce225ea11469928ac317850245a74ae78 # v6.2.0
+      - name: Set up Docker Buildx
         if: matrix.language == 'java-kotlin'
+        uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+
+      - name: Build Android toolchain container image
+        if: matrix.language == 'java-kotlin'
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
         with:
-          distribution: temurin
-          java-version: 17
+          context: .github/docker
+          file: .github/docker/android-builder.Dockerfile
+          platforms: linux/amd64
+          load: true
+          push: false
+          tags: ${{ env.ANDROID_BUILDER_IMAGE }}
+          build-args: |
+            ANDROID_SDK_PLATFORM=${{ env.ANDROID_SDK_PLATFORM }}
+            ANDROID_BUILD_TOOLS=${{ env.ANDROID_BUILD_TOOLS }}
+            ANDROID_NDK_VERSION=${{ env.ANDROID_NDK_VERSION }}
+            ANDROID_CMAKE_VERSION=${{ env.ANDROID_CMAKE_VERSION }}
+          cache-from: type=gha,scope=norea-android-builder
+          cache-to: type=gha,mode=min,scope=norea-android-builder
 
-      - uses: dtolnay/rust-toolchain@b725eda525362e7cf34af9a7243cac1e3f01a7ec # stable
+      - name: Cache pnpm store
         if: matrix.language == 'java-kotlin'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          targets: aarch64-linux-android
+          path: ${{ runner.temp }}/pnpm-store
+          key: norea-codeql-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            norea-codeql-pnpm-
 
-      - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2
+      - name: Cache Gradle home
         if: matrix.language == 'java-kotlin'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          workspaces: src-tauri
-          key: codeql-android-aarch64
+          path: ${{ runner.temp }}/gradle-home
+          key: norea-codeql-gradle-${{ hashFiles('src-tauri/gen/android/gradle/wrapper/gradle-wrapper.properties', 'src-tauri/gen/android/**/*.gradle.kts') }}
+          restore-keys: |
+            norea-codeql-gradle-
 
-      - name: Install Android build tools
+      - name: Cache Rust Android build artifacts
         if: matrix.language == 'java-kotlin'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ runner.temp }}/cargo-home/registry/index
+            ${{ runner.temp }}/cargo-home/registry/cache
+            ${{ runner.temp }}/cargo-home/git/db
+            src-tauri/target
+          key: v0-rust-codeql-android-aarch64-${{ hashFiles('src-tauri/Cargo.lock') }}-${{ github.run_id }}
+          restore-keys: |
+            v0-rust-codeql-android-aarch64-${{ hashFiles('src-tauri/Cargo.lock') }}-
+            v0-rust-codeql-android-aarch64-
+
+      - name: Build Android APK, run JVM tests, and analyze Java/Kotlin with CodeQL in container
+        if: matrix.language == 'java-kotlin'
+        id: java_codeql
+        env:
+          GH_TOKEN: ${{ github.token }}
+          CODEQL_BUNDLE: ${{ steps.prepare-codeql.outputs.tools }}
+          GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.caching=false
         run: |
-          sdkmanager="${ANDROID_HOME}/cmdline-tools/latest/bin/sdkmanager"
-          test -x "$sdkmanager"
-          yes | "$sdkmanager" --licenses >/dev/null
-          "$sdkmanager" --install \
-            "platform-tools" \
-            "platforms;${ANDROID_SDK_PLATFORM}" \
-            "build-tools;${ANDROID_BUILD_TOOLS}" \
-            "ndk;${ANDROID_NDK_VERSION}" \
-            "cmake;${ANDROID_CMAKE_VERSION}"
-          echo "NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
-          echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/container-home" "$RUNNER_TEMP/pnpm-store" "$RUNNER_TEMP/gradle-home" "$RUNNER_TEMP/cargo-home" "$RUNNER_TEMP/apk-manifests" "$RUNNER_TEMP/codeql-work"
+          docker run --rm -i --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$RUNNER_TEMP/container-home:/tmp/home" \
+            -v "$RUNNER_TEMP/pnpm-store:/pnpm-store" \
+            -v "$RUNNER_TEMP/gradle-home:/gradle-home" \
+            -v "$RUNNER_TEMP/cargo-home:/cargo-home" \
+            -v "$RUNNER_TEMP/apk-manifests:/apk-manifests" \
+            -v "$RUNNER_TEMP/codeql-work:/codeql-work" \
+            -v "$CODEQL_BUNDLE:/codeql-bundle.tar.zst:ro" \
+            -w /workspace \
+            -e CI=true \
+            -e HOME=/tmp/home \
+            -e PNPM_STORE_DIR=/pnpm-store \
+            -e GRADLE_USER_HOME=/gradle-home \
+            -e CARGO_HOME=/cargo-home \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e "GIT_CONFIG_VALUE_0=*" \
+            -e GH_TOKEN \
+            -e NOREA_BUILD_CHANNEL \
+            -e GRADLE_OPTS \
+            "$ANDROID_BUILDER_IMAGE" \
+            bash -euo pipefail <<'CONTAINER'
+          clang_bin="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/bin/clang"
+          sysroot="${NDK_HOME}/toolchains/llvm/prebuilt/linux-x86_64/sysroot"
+          resource_dir="$("$clang_bin" --print-resource-dir)"
+          test -f "${resource_dir}/include/stddef.h"
+          export BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android="--target=aarch64-linux-android24 --sysroot=${sysroot} -resource-dir=${resource_dir}"
 
-      - name: Configure Android native compilation
+          pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_DIR"
+          node scripts/prepare-gradle-cache.mjs
+
+          rm -rf /codeql-work/bundle /codeql-work/db
+          mkdir -p /codeql-work/bundle /workspace/.tmp/codeql-results/java-kotlin
+          tar --zstd -xf /codeql-bundle.tar.zst -C /codeql-work/bundle
+          codeql_bin="/codeql-work/bundle/codeql/codeql"
+          test -x "$codeql_bin"
+
+          cat <<'BUILD' > /codeql-work/build.sh
+          #!/usr/bin/env bash
+          set -euo pipefail
+          pnpm tauri android build --debug --apk --target aarch64
+          cd src-tauri/gen/android
+          ./gradlew :app:testUniversalDebugUnitTest --no-daemon
+          BUILD
+          chmod +x /codeql-work/build.sh
+
+          "$codeql_bin" database create /codeql-work/db \
+            --language=java-kotlin \
+            --source-root=/workspace \
+            --command=/codeql-work/build.sh
+
+          shopt -s globstar nullglob
+          apks=(src-tauri/gen/android/app/build/outputs/apk/**/*.apk)
+          if [ "${#apks[@]}" -eq 0 ]; then
+            echo "Nonempty Android APK required" >&2
+            exit 1
+          fi
+          for apk in "${apks[@]}"; do
+            rel="${apk#src-tauri/gen/android/app/build/outputs/apk/}"
+            manifest_out="/apk-manifests/${rel}.manifest.xml"
+            mkdir -p "$(dirname "$manifest_out")"
+            "${ANDROID_HOME}/cmdline-tools/latest/bin/apkanalyzer" manifest print "$apk" > "$manifest_out"
+          done
+
+          "$codeql_bin" database analyze /codeql-work/db \
+            codeql/java-queries:codeql-suites/java-security-extended.qls \
+            --format=sarif-latest \
+            --output=/workspace/.tmp/codeql-results/java-kotlin/java.sarif \
+            --sarif-category=/language:java-kotlin \
+            --threads=0
+          CONTAINER
+          test -s .tmp/codeql-results/java-kotlin/java.sarif
+          echo "sarif-output=.tmp/codeql-results/java-kotlin/java.sarif" >> "$GITHUB_OUTPUT"
+
+      - name: Verify compiled APK manifest and Android JVM regression reports in Python container
         if: matrix.language == 'java-kotlin'
         run: |
           set -euo pipefail
-          cmake_bin="${ANDROID_HOME}/cmake/${ANDROID_CMAKE_VERSION}/bin/cmake"
-          toolchain="${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}/toolchains/llvm/prebuilt/linux-x86_64"
-          clang_bin="${toolchain}/bin/clang"
-          test -x "$cmake_bin"
-          test -x "$clang_bin"
-          test -f "${toolchain}/lib/libclang.so"
-          resource_dir="$($clang_bin --print-resource-dir)"
-          test -f "${resource_dir}/include/stddef.h"
-          echo "CMAKE=$cmake_bin" >> "$GITHUB_ENV"
-          echo "LIBCLANG_PATH=${toolchain}/lib" >> "$GITHUB_ENV"
-          echo "BINDGEN_EXTRA_CLANG_ARGS_aarch64_linux_android=--target=aarch64-linux-android24 --sysroot=${toolchain}/sysroot -resource-dir=$resource_dir" >> "$GITHUB_ENV"
-
-      - name: Install locked frontend dependencies
-        if: matrix.language == 'java-kotlin'
-        run: pnpm install --frozen-lockfile
-
-      - name: Prepare verified Gradle distribution
-        if: matrix.language == 'java-kotlin'
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: node scripts/prepare-gradle-cache.mjs
-
-      - name: Build Android debug APK for Java and Kotlin extraction
-        if: matrix.language == 'java-kotlin'
-        env:
-          GRADLE_OPTS: -Dorg.gradle.daemon=false -Dorg.gradle.caching=false
-        run: |
-          pnpm tauri android build --debug --apk --target aarch64
-          python3 - <<'PY'
+          docker run --rm -i --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/workspace:ro" \
+            -v "$RUNNER_TEMP/apk-manifests:/apk-manifests:ro" \
+            -w /workspace \
+            "$PYTHON_IMAGE" \
+            python3 - <<'PY'
           from pathlib import Path
           from zipfile import ZipFile
-          import os
-          import subprocess
           import xml.etree.ElementTree as ET
-          apks = list(Path('src-tauri/gen/android/app/build/outputs/apk').rglob('*.apk'))
+
+          apk_root = Path('src-tauri/gen/android/app/build/outputs/apk')
+          apks = list(apk_root.rglob('*.apk'))
           assert apks and all(path.stat().st_size > 0 for path in apks), 'Nonempty Android APK required'
           for path in apks:
               with ZipFile(path) as archive:
                   names = archive.namelist()
                   assert 'AndroidManifest.xml' in names and 'classes.dex' in names
                   assert any(name.startswith('lib/arm64-v8a/') and name.endswith('.so') for name in names)
-              analyzer = Path(os.environ['ANDROID_HOME']) / 'cmdline-tools/latest/bin/apkanalyzer'
-              manifest = subprocess.check_output([str(analyzer), 'manifest', 'print', str(path)], text=True)
-              application = ET.fromstring(manifest).find('application')
+              rel = path.relative_to(apk_root)
+              manifest_path = Path('/apk-manifests') / f'{rel}.manifest.xml'
+              application = ET.parse(manifest_path).getroot().find('application')
               assert application is not None and application.get('{http://schemas.android.com/apk/res/android}allowBackup') == 'false'
               print('Compiled APK manifest: allowBackup=false')
               print(path, path.stat().st_size)
-          PY
 
-      - name: Run Android JVM regression tests
-        if: matrix.language == 'java-kotlin'
-        working-directory: src-tauri/gen/android
-        run: |
-          ./gradlew :app:testUniversalDebugUnitTest --no-daemon
-          python3 - <<'PY'
-          from pathlib import Path
-          import xml.etree.ElementTree as ET
-          reports = list(Path('app/build/test-results/testUniversalDebugUnitTest').glob('TEST-*.xml'))
+          reports = list(Path('src-tauri/gen/android/app/build/test-results/testUniversalDebugUnitTest').glob('TEST-*.xml'))
           assert reports, 'Android JVM test reports required'
           suites = [ET.parse(path).getroot() for path in reports]
           assert all(int(suite.get('failures', 0)) == int(suite.get('errors', 0)) == 0 for suite in suites)
@@ -190,19 +279,18 @@ jobs:
           print(f'Android JVM tests: {tests}, executed: {tests - skipped}, skipped: {skipped}, suites: {len(suites)}, failures: 0, errors: 0')
           PY
 
-      - name: Analyze the extracted source
-        id: analyze
-        uses: github/codeql-action/analyze@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
+      - name: Upload Java/Kotlin SARIF results
+        if: matrix.language == 'java-kotlin'
+        uses: github/codeql-action/upload-sarif@33d7b85da1a04171e211befe2c739303b9a4c066 # v4
         with:
-          category: /language:${{ matrix.language }}
-          output: .tmp/codeql-results/${{ matrix.language }}
-          upload: always
+          sarif_file: .tmp/codeql-results/java-kotlin/java.sarif
+          category: /language:java-kotlin
 
       - name: Retain CodeQL analysis evidence
-        if: always() && steps.analyze.outputs.sarif-output != ''
+        if: always() && (steps.analyze.outputs.sarif-output != '' || steps.java_codeql.outputs.sarif-output != '')
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
         with:
           name: codeql-verification-${{ matrix.language }}
-          path: ${{ steps.analyze.outputs.sarif-output }}
+          path: ${{ steps.java_codeql.outputs.sarif-output || steps.analyze.outputs.sarif-output }}
           if-no-files-found: error
           retention-days: 3

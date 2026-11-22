@@ -156,24 +156,35 @@ Pushes to `0.2` create workflow artifacts retained for 30 days and refresh the
 `dev-0.2` prerelease. Version tags matching `v*` upload collected bundles to the
 matching GitHub Release.
 
+Linux CI, cache cleanup, Android release builds, and CodeQL jobs execute
+Node.js, pnpm, Python, Rust, JDK 17, and Android SDK tooling inside Docker Hub
+containers (`node:24-bookworm`, `python:3.14-slim`, and
+`.github/docker/android-builder.Dockerfile` assembled from `node:24-bookworm`,
+`eclipse-temurin:17-jdk-jammy`, and `rust:1-slim-bookworm`). Windows workflows
+continue to run natively on `windows-latest` because MSVC, the Windows SDK,
+LLVM, and Tauri Windows bundlers require native Windows runner tooling.
+
 The Android release and Java/Kotlin analysis jobs run
-`node scripts/prepare-gradle-cache.mjs` before invoking the Gradle wrapper.
-Windows release jobs run `node scripts/prepare-windows-tools.mjs` before bundling.
-These scripts download from the upstream GitHub release asset API and verify
-pinned SHA-256 checksums before populating the tools' normal caches. This avoids
+`node scripts/prepare-gradle-cache.mjs` inside the Android builder container
+before invoking the Gradle wrapper. Windows release jobs run
+`node scripts/prepare-windows-tools.mjs` before bundling. These scripts
+download from the upstream GitHub release asset API and verify pinned SHA-256
+checksums before populating the tools' normal caches. This avoids
 browser-download redirect failures while retaining the same Gradle, WiX, and NSIS
-versions and all release formats. `GH_TOKEN` is scoped to each preparation step;
-local runs can use an authenticated GitHub CLI. When updating either build tool,
-update its verified checksum together with the pinned version. The Gradle script
-also resolves the `buildSrc` plugins with retries, because the Gradle Plugin
-Portal intermittently fails to serve the `kotlin-dsl` plugin during the main build.
+versions and all release formats. `GH_TOKEN` is scoped to each preparation step.
+When updating either build tool, update its verified checksum together with the
+pinned version. The Gradle script also resolves the `buildSrc` plugins with
+retries, because the Gradle Plugin Portal intermittently fails to serve the
+`kotlin-dsl` plugin during the main build.
 
 Advanced CodeQL jobs prepare a verified language-specific CLI archive with
-`node scripts/prepare-codeql.mjs` before initialization. The script pins CLI
-2.27.4 and official asset hashes, and passes the local archive through the
-action's `tools` input. Update those pins when intentionally updating the CLI.
-Android plugin dependencies prefer Maven Central in `buildSrc` plugin
-management, and the rustls Maven archive uses its canonical upstream raw host.
+`node scripts/prepare-codeql.mjs` inside `node:24-bookworm` before
+initialization. The script pins CLI 2.27.4 and official asset hashes, and
+passes the local archive through the action's `tools` input (or to the CodeQL
+CLI inside the Android builder container for `java-kotlin`). Update those pins
+when intentionally updating the CLI. Android plugin dependencies prefer Maven
+Central in `buildSrc` plugin management, and the rustls Maven archive uses its
+canonical upstream raw host.
 
 ## Manual Smoke Test
 

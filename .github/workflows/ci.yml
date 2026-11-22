@@ -18,6 +18,11 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  CI: "true"
+  NODE_IMAGE: node:24-bookworm
+  PNPM_VERSION: "10.27.0"
+
 jobs:
   frontend:
     name: Frontend (TypeScript check)
@@ -26,21 +31,81 @@ jobs:
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
 
-      - uses: pnpm/action-setup@73e46992e05b19abd31f2f3c20e0e7370d762115 # v6.1.1
-
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7
+      - name: Cache pnpm store
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          node-version: 24
-          cache: pnpm
+          path: ${{ runner.temp }}/pnpm-store
+          key: norea-ci-pnpm-${{ hashFiles('pnpm-lock.yaml') }}
+          restore-keys: |
+            norea-ci-pnpm-
 
-      - name: Install dependencies
-        run: pnpm install --frozen-lockfile
+      - name: Install dependencies in Node container
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/container-home" "$RUNNER_TEMP/pnpm-store" "$RUNNER_TEMP/pnpm-global"
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$RUNNER_TEMP/container-home:/tmp/home" \
+            -v "$RUNNER_TEMP/pnpm-store:/pnpm-store" \
+            -v "$RUNNER_TEMP/pnpm-global:/pnpm-global" \
+            -w /workspace \
+            -e CI=true \
+            -e HOME=/tmp/home \
+            -e PNPM_STORE_DIR=/pnpm-store \
+            -e NPM_CONFIG_PREFIX=/pnpm-global \
+            -e NPM_CONFIG_CACHE=/tmp/home/.npm \
+            -e PNPM_VERSION="$PNPM_VERSION" \
+            -e GIT_CONFIG_COUNT=1 \
+            -e GIT_CONFIG_KEY_0=safe.directory \
+            -e "GIT_CONFIG_VALUE_0=*" \
+            "$NODE_IMAGE" \
+            bash -euo pipefail -c '
+              export PATH="/pnpm-global/bin:$PATH"
+              npm install --global --no-audit --no-fund "pnpm@${PNPM_VERSION}"
+              test "$(pnpm --version)" = "$PNPM_VERSION"
+              pnpm install --frozen-lockfile --store-dir "$PNPM_STORE_DIR"
+            '
 
       - name: Type check
-        run: pnpm tsc
+        run: |
+          set -euo pipefail
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$RUNNER_TEMP/container-home:/tmp/home" \
+            -v "$RUNNER_TEMP/pnpm-global:/pnpm-global:ro" \
+            -w /workspace \
+            -e CI=true \
+            -e HOME=/tmp/home \
+            "$NODE_IMAGE" \
+            bash -euo pipefail -c '
+              export PATH="/pnpm-global/bin:$PATH"
+              pnpm tsc
+            '
 
       - name: Unit and registered migration/schema contract tests
-        run: pnpm test
+        run: |
+          set -euo pipefail
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$RUNNER_TEMP/container-home:/tmp/home" \
+            -v "$RUNNER_TEMP/pnpm-global:/pnpm-global:ro" \
+            -w /workspace \
+            -e CI=true \
+            -e HOME=/tmp/home \
+            "$NODE_IMAGE" \
+            bash -euo pipefail -c '
+              export PATH="/pnpm-global/bin:$PATH"
+              pnpm test
+            '
 
       - name: Build tool preparation tests
-        run: node --test scripts/*.node-test.mjs
+        run: |
+          set -euo pipefail
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$RUNNER_TEMP/container-home:/tmp/home" \
+            -w /workspace \
+            -e CI=true \
+            -e HOME=/tmp/home \
+            "$NODE_IMAGE" \
+            bash -euo pipefail -c 'node --test scripts/*.node-test.mjs'

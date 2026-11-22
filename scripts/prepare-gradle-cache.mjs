@@ -1,9 +1,11 @@
 import { createHash, randomUUID } from "node:crypto";
-import { execFileSync, spawnSync } from "node:child_process";
-import { createReadStream, closeSync, openSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { createReadStream, createWriteStream } from "node:fs";
 import { mkdir, readFile, rename, stat, unlink } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join, resolve } from "node:path";
+import { Readable } from "node:stream";
+import { pipeline } from "node:stream/promises";
 import { fileURLToPath } from "node:url";
 import { setTimeout as delay } from "node:timers/promises";
 
@@ -28,6 +30,58 @@ const filename = `gradle-${version}-bin.zip`;
 const gradleHome = resolve(process.env.GRADLE_USER_HOME || join(homedir(), ".gradle"));
 const cacheDirectory = join(gradleHome, "wrapper", "dists", filename.slice(0, -4), urlHash);
 const destination = join(cacheDirectory, filename);
+const githubToken = process.env.GH_TOKEN || process.env.GITHUB_TOKEN || "";
+
+function githubApiHeaders(accept) {
+  const headers = {
+    Accept: accept,
+    "User-Agent": "norea-ci",
+    "X-GitHub-Api-Version": "2022-11-28",
+  };
+  if (githubToken) {
+    headers.Authorization = `Bearer ${githubToken}`;
+  }
+  return headers;
+}
+
+async function fetchReleaseMetadata(releaseVersion) {
+  const response = await fetch(
+    `https://api.github.com/repos/gradle/gradle-distributions/releases/tags/v${encodeURIComponent(releaseVersion)}`,
+    {
+      headers: githubApiHeaders("application/vnd.github+json"),
+      signal: AbortSignal.timeout(30_000),
+    },
+  );
+  if (!response.ok) {
+    throw new Error(`GitHub release API returned HTTP ${response.status}`);
+  }
+  return response.json();
+}
+
+async function downloadReleaseAsset(assetId, partialPath) {
+  let response = await fetch(
+    `https://api.github.com/repos/gradle/gradle-distributions/releases/assets/${assetId}`,
+    {
+      headers: githubApiHeaders("application/octet-stream"),
+      redirect: "manual",
+      signal: AbortSignal.timeout(180_000),
+    },
+  );
+  if ([301, 302, 303, 307, 308].includes(response.status)) {
+    const location = response.headers.get("location");
+    if (!location) {
+      throw new Error(`Gradle release asset redirect (${response.status}) lacked a Location header.`);
+    }
+    response = await fetch(location, {
+      headers: { "User-Agent": "norea-ci" },
+      signal: AbortSignal.timeout(180_000),
+    });
+  }
+  if (!response.ok || !response.body) {
+    throw new Error(`Gradle release asset download failed with HTTP ${response.status}.`);
+  }
+  await pipeline(Readable.fromWeb(response.body), createWriteStream(partialPath, { flags: "wx" }));
+}
 
 async function sha256(path) {
   const digest = createHash("sha256");
@@ -53,27 +107,14 @@ if (!cachedDistribution) {
     const partial = `${destination}.part-${process.pid}-${randomUUID()}`;
     try {
       // The release asset API avoids the public browser-download redirect that can return 504.
-      const release = JSON.parse(execFileSync("gh", ["api", `repos/gradle/gradle-distributions/releases/tags/v${version}`], {
-        encoding: "utf8", timeout: 30_000, maxBuffer: 4 * 1024 * 1024, stdio: ["ignore", "pipe", "pipe"],
-      }));
+      const release = await fetchReleaseMetadata(version);
       const assets = release.assets?.filter(asset => asset.name === filename) ?? [];
       const asset = assets[0];
       if (assets.length !== 1 || !Number.isSafeInteger(asset.id) || !Number.isSafeInteger(asset.size) || asset.size <= 0 ||
           asset.digest !== "sha256:" + checksum) {
         throw new Error("The official Gradle release metadata does not match the pinned distribution checksum.");
       }
-      const descriptor = openSync(partial, "wx");
-      let download;
-      try {
-        download = spawnSync("gh", ["api", `repos/gradle/gradle-distributions/releases/assets/${asset.id}`, "-H", "Accept: application/octet-stream"], {
-          stdio: ["ignore", descriptor, "pipe"], encoding: "utf8", timeout: 180_000, maxBuffer: 64 * 1024,
-        });
-      } finally {
-        closeSync(descriptor);
-      }
-      if (download.error || download.status !== 0) {
-        throw new Error(`Gradle release asset download failed: ${download.error?.message ?? download.stderr?.trim() ?? download.status}`);
-      }
+      await downloadReleaseAsset(asset.id, partial);
       if ((await stat(partial)).size !== asset.size || await sha256(partial) !== checksum) {
         throw new Error("The downloaded Gradle distribution failed size or SHA-256 verification.");
       }
