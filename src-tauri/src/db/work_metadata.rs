@@ -7,7 +7,7 @@ use serde::ser::SerializeMap;
 use serde::{Deserialize, Deserializer, Serialize, Serializer};
 use serde_json::Value as JsonValue;
 use sha2::{Digest, Sha256};
-use sqlx::{Row, SqliteConnection, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection, SqlitePool};
 use tauri::{AppHandle, Emitter, State};
 
 use crate::database::AppDatabase;
@@ -1535,7 +1535,7 @@ pub async fn apply_novel_metadata_to_cache_in_tx(
                  WHERE chapter.name IS NOT excluded.name OR chapter.position IS NOT excluded.position",
                 values.join(",")
             );
-            let mut query = sqlx::query(&sql);
+            let mut query = sqlx::query(AssertSqlSafe(sql));
             for (number, title, position, path) in batch {
                 query = query
                     .bind(novel_id)
@@ -1595,7 +1595,7 @@ pub async fn persist_work_chapter_directories_in_tx(
             "INSERT INTO work_metadata_directory_cache(chapter_id, novel_id, directory) VALUES {}",
             values.join(",")
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for (chapter_id, directory) in batch {
             query = query.bind(*chapter_id).bind(novel_id).bind(directory);
         }
@@ -2015,7 +2015,7 @@ pub async fn scan_stored_novel_chapters_to_cache_in_tx(
                ON state.plugin_id = n.plugin_id AND state.novel_path = n.path AND state.chapter_path = d.path",
             values.join(",")
         );
-        let mut query = sqlx::query(&sql).bind(novel_id);
+        let mut query = sqlx::query(AssertSqlSafe(sql)).bind(novel_id);
         for (path, chapter, position, _) in batch {
             query = query
                 .bind(path)
@@ -2078,7 +2078,7 @@ pub async fn scan_stored_novel_chapters_to_cache_in_tx(
                  WHERE id IN (SELECT id FROM inspected)",
                 values.join(",")
             );
-            let mut query = sqlx::query(&sql)
+            let mut query = sqlx::query(AssertSqlSafe(sql))
                 .bind(&content_type)
                 .bind(i64::from(media_complete));
             for (id, c_bytes, m_bytes) in eligible {
@@ -2129,7 +2129,7 @@ pub async fn scan_stored_novel_chapters_to_cache_in_tx(
                     OR content_bytes <> 0 OR media_bytes <> 0 OR media_bytes_checked_at IS NOT NULL)",
             placeholders.join(",")
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for id in eligible {
             query = query.bind(id);
         }

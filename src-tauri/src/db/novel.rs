@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 use tauri::{AppHandle, State};
 
 use crate::database::AppDatabase;
@@ -862,9 +862,9 @@ fn add_param(params: &mut Vec<SqlParam>, value: SqlParam) -> String {
 }
 
 fn bind_sql_params<'q>(
-    mut query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>>,
+    mut query: sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments>,
     params: &'q [SqlParam],
-) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments<'q>> {
+) -> sqlx::query::Query<'q, sqlx::Sqlite, sqlx::sqlite::SqliteArguments> {
     for param in params {
         query = match param {
             SqlParam::Int(v) => query.bind(*v),
@@ -1096,7 +1096,7 @@ pub async fn select_library_novels_in_conn(
         spec.order_by
     );
 
-    let rows = bind_sql_params(sqlx::query(&sql), &params)
+    let rows = bind_sql_params(sqlx::query(AssertSqlSafe(sql)), &params)
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db novel: select library novels: {err}"))?;
@@ -1188,7 +1188,7 @@ pub async fn list_library_novel_ids_in_conn(
          ORDER BY n.id",
         conditions.join(" AND ")
     );
-    let rows = bind_sql_params(sqlx::query(&sql), &params)
+    let rows = bind_sql_params(sqlx::query(AssertSqlSafe(sql)), &params)
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db novel: list library novel ids: {err}"))?;
@@ -1238,7 +1238,7 @@ pub async fn get_library_novel_summary_in_conn(
          FROM library_rows",
         library_rows_cte(&conditions)
     );
-    let row = bind_sql_params(sqlx::query(&sql), &params)
+    let row = bind_sql_params(sqlx::query(AssertSqlSafe(sql)), &params)
         .fetch_one(&mut *conn)
         .await
         .map_err(|err| format!("db novel: get library novel summary: {err}"))?;
@@ -1280,7 +1280,7 @@ pub async fn count_library_stored_chapters_in_conn(
              WHERE n.id IN ({})",
             placeholders.join(", ")
         );
-        let mut q = sqlx::query_scalar::<_, Option<i64>>(&sql);
+        let mut q = sqlx::query_scalar::<_, Option<i64>>(AssertSqlSafe(sql));
         for &id in chunk {
             q = q.bind(id);
         }
@@ -1314,7 +1314,7 @@ pub async fn list_library_source_filters_in_conn(
            COALESCE(pluginName, pluginId) COLLATE NOCASE ASC",
         library_rows_cte(&conditions)
     );
-    let rows = bind_sql_params(sqlx::query(&sql), &params)
+    let rows = bind_sql_params(sqlx::query(AssertSqlSafe(sql)), &params)
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db novel: list library source filters: {err}"))?;
@@ -1358,7 +1358,7 @@ pub async fn list_library_status_filters_in_conn(
            canonicalStatus COLLATE NOCASE ASC",
         library_rows_cte(&conditions)
     );
-    let rows = bind_sql_params(sqlx::query(&sql), &params)
+    let rows = bind_sql_params(sqlx::query(AssertSqlSafe(sql)), &params)
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db novel: list library status filters: {err}"))?;
@@ -1386,7 +1386,7 @@ pub async fn list_library_tag_filters_in_conn(
          WHERE genres IS NOT NULL AND trim(genres) <> ''",
         library_rows_cte(&conditions)
     );
-    let rows = bind_sql_params(sqlx::query(&sql), &params)
+    let rows = bind_sql_params(sqlx::query(AssertSqlSafe(sql)), &params)
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db novel: list library tag filters: {err}"))?;
@@ -1432,7 +1432,7 @@ pub async fn list_library_novel_refresh_targets_in_conn(
          ORDER BY name COLLATE NOCASE ASC",
         conditions.join(" AND ")
     );
-    let rows = bind_sql_params(sqlx::query(&sql), &params)
+    let rows = bind_sql_params(sqlx::query(AssertSqlSafe(sql)), &params)
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db novel: list library refresh targets: {err}"))?;
@@ -1464,7 +1464,7 @@ pub async fn list_novels_for_update_check_in_conn(
          WHERE n.in_library = 1 \
          ORDER BY n.last_read_at IS NULL, n.last_read_at DESC, name COLLATE NOCASE ASC"
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(AssertSqlSafe(sql))
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db novel: list novels for update check: {err}"))?;
@@ -1577,7 +1577,7 @@ pub async fn get_novel_by_id_in_conn(
     id: i64,
 ) -> Result<Option<NovelDetailRecordDto>, String> {
     let sql = format!("{} WHERE n.id = ?1", select_novel_detail_fields_sql());
-    let row = sqlx::query(&sql)
+    let row = sqlx::query(AssertSqlSafe(sql))
         .bind(id)
         .fetch_optional(&mut *conn)
         .await
@@ -1594,7 +1594,7 @@ pub async fn find_novel_by_source_in_conn(
         "{} WHERE n.plugin_id = ?1 AND n.path = ?2",
         select_novel_detail_fields_sql()
     );
-    let row = sqlx::query(&sql)
+    let row = sqlx::query(AssertSqlSafe(sql))
         .bind(plugin_id)
         .bind(path)
         .fetch_optional(&mut *conn)
@@ -1913,7 +1913,7 @@ pub async fn upsert_downloaded_chapters_in_tx(
                OR is_downloaded IS NOT 1",
             values_sql.join(", ")
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(AssertSqlSafe(sql));
         for (input, content_bytes) in chunk {
             let ct = normalize_chapter_content_type(input.content_type.as_deref());
             let sct = stored_chapter_content_type(ct);
@@ -1995,7 +1995,7 @@ async fn apply_local_chapter_order_updates_in_tx(
                )",
             values_sql.join(", ")
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(AssertSqlSafe(sql));
         for (chapter_id, position, chapter_number) in chunk {
             q = q.bind(*chapter_id).bind(*position).bind(chapter_number);
         }
@@ -2514,7 +2514,7 @@ pub async fn list_check_candidates_in_conn(
          WHERE n.in_library = 1 AND n.is_local = 0 \
          ORDER BY n.id"
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(AssertSqlSafe(sql))
         .bind(active_since)
         .fetch_all(&mut *conn)
         .await

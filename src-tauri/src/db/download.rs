@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
-use sqlx::{FromRow, QueryBuilder, Sqlite, SqliteConnection, SqlitePool};
+use sqlx::{AssertSqlSafe, FromRow, QueryBuilder, Sqlite, SqliteConnection, SqlitePool};
 use tauri::{AppHandle, State};
 
 use crate::database::AppDatabase;
@@ -826,7 +826,7 @@ pub async fn list_download_cache_novels_in_conn(
         ORDER BY last_downloaded_at DESC, n.name COLLATE NOCASE ASC
         "#
     );
-    let rows: Vec<RawDownloadCacheNovelRow> = sqlx::query_as(&sql)
+    let rows: Vec<RawDownloadCacheNovelRow> = sqlx::query_as(AssertSqlSafe(sql))
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("list download cache novels: {err}"))?;
@@ -879,7 +879,7 @@ pub async fn list_download_cache_chapters_in_conn(
         ORDER BY c.position ASC, c.id ASC
         "#
     );
-    let rows: Vec<RawDownloadCacheChapterRow> = sqlx::query_as(&sql)
+    let rows: Vec<RawDownloadCacheChapterRow> = sqlx::query_as(AssertSqlSafe(sql))
         .bind(novel_id)
         .fetch_all(&mut *conn)
         .await
@@ -936,7 +936,7 @@ pub async fn list_delete_candidates_in_conn(
         TargetScope::Empty => Ok(Vec::new()),
         TargetScope::All => {
             let sql = format!("{base_select} ORDER BY c.novel_id, c.position, c.id");
-            let rows: Vec<RawDownloadCacheDeleteCandidateRow> = sqlx::query_as(&sql)
+            let rows: Vec<RawDownloadCacheDeleteCandidateRow> = sqlx::query_as(AssertSqlSafe(sql))
                 .fetch_all(&mut *conn)
                 .await
                 .map_err(|err| format!("list download cache delete candidates: {err}"))?;
@@ -1024,7 +1024,7 @@ pub async fn list_ordinary_queued_chapter_ids_in_conn(
         TargetScope::Empty => Ok(Vec::new()),
         TargetScope::All => {
             let sql = format!("{base_select} ORDER BY c.novel_id, c.position, c.id");
-            let rows: Vec<(i64, i64, i64)> = sqlx::query_as(&sql)
+            let rows: Vec<(i64, i64, i64)> = sqlx::query_as(AssertSqlSafe(sql))
                 .fetch_all(&mut *conn)
                 .await
                 .map_err(|err| format!("list ordinary queued download chapter ids: {err}"))?;
@@ -1076,7 +1076,7 @@ pub async fn delete_download_cache_chapter_in_tx(
           )
         "#
     );
-    let result = sqlx::query(&sql)
+    let result = sqlx::query(AssertSqlSafe(sql))
         .bind(chapter_id)
         .execute(&mut *conn)
         .await
@@ -1109,7 +1109,7 @@ pub async fn delete_download_cache_novel_in_tx(
           )
         "#
     );
-    let result = sqlx::query(&sql)
+    let result = sqlx::query(AssertSqlSafe(sql))
         .bind(novel_id)
         .execute(&mut *conn)
         .await
@@ -1140,7 +1140,7 @@ pub async fn delete_all_download_cache_in_tx(
           )
         "#
     );
-    let result = sqlx::query(&sql)
+    let result = sqlx::query(AssertSqlSafe(sql))
         .execute(&mut *conn)
         .await
         .map_err(|err| format!("delete all download cache: {err}"))?;

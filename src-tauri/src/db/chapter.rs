@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 use tauri::{AppHandle, State};
 
 use crate::chapter_media::is_storage_id;
@@ -791,7 +791,7 @@ async fn load_composition_displays_in_conn(
             "SELECT novel_id, payload FROM novel_chapter_composition WHERE novel_id IN ({})",
             placeholders.join(",")
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for id in chunk {
             query = query.bind(*id);
         }
@@ -877,7 +877,7 @@ pub async fn list_chapters_by_novel_in_conn(
     let sql = format!(
         "SELECT {CHAPTER_SELECT_FIELDS} FROM chapter WHERE novel_id = ?1 ORDER BY position, id"
     );
-    let mut rows: Vec<ChapterRowDto> = sqlx::query(&sql)
+    let mut rows: Vec<ChapterRowDto> = sqlx::query(AssertSqlSafe(sql))
         .bind(novel_id)
         .fetch_all(&mut *conn)
         .await
@@ -900,7 +900,7 @@ pub async fn list_library_download_chapters_in_conn(
          WHERE novel_id = ?1 \
          ORDER BY position, id"
     );
-    let raw_rows = sqlx::query(&sql)
+    let raw_rows = sqlx::query(AssertSqlSafe(sql))
         .bind(novel_id)
         .fetch_all(&mut *conn)
         .await
@@ -932,7 +932,7 @@ pub async fn list_unqueued_chapter_downloads_in_conn(
            AND NOT EXISTS(SELECT 1 FROM chapter_download_queue q WHERE q.chapter_id = chapter.id) \
          ORDER BY id LIMIT ?3"
     );
-    let mut rows: Vec<ChapterRowDto> = sqlx::query(&sql)
+    let mut rows: Vec<ChapterRowDto> = sqlx::query(AssertSqlSafe(sql))
         .bind(novel_id)
         .bind(after_chapter_id)
         .bind(MAX_ROUTE_QUERY_ROWS)
@@ -951,7 +951,7 @@ pub async fn get_chapter_by_id_in_conn(
     chapter_id: i64,
 ) -> Result<Option<ChapterRowDto>, String> {
     let sql = format!("SELECT {CHAPTER_SELECT_FIELDS} FROM chapter WHERE id = ?1");
-    let Some(raw) = sqlx::query(&sql)
+    let Some(raw) = sqlx::query(AssertSqlSafe(sql))
         .bind(chapter_id)
         .fetch_optional(&mut *conn)
         .await
@@ -985,7 +985,7 @@ pub async fn list_existing_chapter_ids_in_conn(
             "SELECT id FROM chapter WHERE id IN ({})",
             placeholders.join(", ")
         );
-        let mut query = sqlx::query_scalar::<_, i64>(&sql);
+        let mut query = sqlx::query_scalar::<_, i64>(AssertSqlSafe(sql));
         for id in chunk {
             query = query.bind(*id);
         }
@@ -1137,7 +1137,7 @@ pub async fn get_adjacent_chapter_in_conn(
              ORDER BY position DESC LIMIT 1"
         )
     };
-    let Some(raw) = sqlx::query(&sql)
+    let Some(raw) = sqlx::query(AssertSqlSafe(sql))
         .bind(novel_id)
         .bind(position)
         .fetch_optional(&mut *conn)
@@ -1174,7 +1174,7 @@ async fn migrate_source_chapter_paths_in_tx(
               AND incoming.page IS target.page \
              WHERE incoming.path IS NOT target.path"
         );
-        let mut q = sqlx::query(&select_sql);
+        let mut q = sqlx::query(AssertSqlSafe(select_sql));
         for input in chunk {
             q = q
                 .bind(input.novel_id)
@@ -1235,7 +1235,7 @@ async fn migrate_source_chapter_paths_in_tx(
                  AND incoming.page IS target.page \
             )"
     );
-    let mut update_query = sqlx::query(&update_sql);
+    let mut update_query = sqlx::query(AssertSqlSafe(update_sql));
     for input in chunk {
         update_query = update_query
             .bind(input.novel_id)
@@ -1293,7 +1293,7 @@ async fn execute_source_chapter_chunk_in_tx(
             OR content_type IS NOT excluded.content_type",
         values_sql.join(", ")
     );
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql));
     for input in chunk {
         let content_type = normalize_chapter_content_type(input.content_type.as_deref());
         query = query
@@ -1505,7 +1505,7 @@ pub async fn set_chapters_read_state_in_tx(
             "SELECT id, progress FROM chapter WHERE id IN ({})",
             sel_placeholders.join(", ")
         );
-        let mut sel_q = sqlx::query(&select_sql);
+        let mut sel_q = sqlx::query(AssertSqlSafe(select_sql));
         for id in chunk {
             sel_q = sel_q.bind(*id);
         }
@@ -1528,7 +1528,7 @@ pub async fn set_chapters_read_state_in_tx(
              WHERE id IN ({})",
             upd_placeholders.join(", ")
         );
-        let mut upd_q = sqlx::query(&update_sql).bind(progress);
+        let mut upd_q = sqlx::query(AssertSqlSafe(update_sql)).bind(progress);
         for id in chunk {
             upd_q = upd_q.bind(*id);
         }
@@ -1582,7 +1582,7 @@ pub async fn set_novels_read_state_in_tx(
             "SELECT id, progress FROM chapter \
              WHERE novel_id IN ({in_clause}) AND progress <> ?1"
         );
-        let mut sel_q = sqlx::query(&select_sql).bind(progress);
+        let mut sel_q = sqlx::query(AssertSqlSafe(select_sql)).bind(progress);
         for id in chunk {
             sel_q = sel_q.bind(*id);
         }
@@ -1602,7 +1602,7 @@ pub async fn set_novels_read_state_in_tx(
              SET progress = ?1, updated_at = unixepoch() \
              WHERE novel_id IN ({in_clause}) AND progress <> ?1"
         );
-        let mut upd_q = sqlx::query(&update_sql).bind(progress);
+        let mut upd_q = sqlx::query(AssertSqlSafe(update_sql)).bind(progress);
         for id in chunk {
             upd_q = upd_q.bind(*id);
         }
@@ -1661,7 +1661,7 @@ pub async fn restore_chapter_read_states_in_tx(
                  WHERE id IN ({})",
                 placeholders.join(", ")
             );
-            let mut q = sqlx::query(&sql).bind(progress);
+            let mut q = sqlx::query(AssertSqlSafe(sql)).bind(progress);
             for id in chunk {
                 q = q.bind(*id);
             }
@@ -1720,7 +1720,7 @@ pub async fn set_relative_chapters_read_state_in_tx(
            AND {range_predicate} \
            AND candidate.progress <> ?2"
     );
-    let prev_rows = sqlx::query(&select_sql)
+    let prev_rows = sqlx::query(AssertSqlSafe(select_sql))
         .bind(input.anchor_chapter_id)
         .bind(progress)
         .fetch_all(&mut *conn)
@@ -1748,7 +1748,7 @@ pub async fn set_relative_chapters_read_state_in_tx(
          ) \
            AND progress <> ?2"
     );
-    let result = sqlx::query(&update_sql)
+    let result = sqlx::query(AssertSqlSafe(update_sql))
         .bind(input.anchor_chapter_id)
         .bind(progress)
         .execute(&mut *conn)
@@ -1765,7 +1765,7 @@ pub async fn set_relative_chapters_read_state_in_tx(
                AND candidate.id <> reference.id \
                AND {range_predicate}"
         );
-        let target_ids: Vec<i64> = sqlx::query_scalar(&targets_sql)
+        let target_ids: Vec<i64> = sqlx::query_scalar(AssertSqlSafe(targets_sql))
             .bind(input.anchor_chapter_id)
             .fetch_all(&mut *conn)
             .await
@@ -2079,7 +2079,7 @@ pub async fn list_library_updates_in_conn(
         effective_name = super::novel::EFFECTIVE_NOVEL_NAME_SQL,
         override_cover = super::novel::OVERRIDE_COVER_SQL,
     );
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql));
     if let Some(ref cursor) = input.cursor {
         query = query
             .bind(cursor.sort_at)
@@ -2171,7 +2171,7 @@ pub async fn list_recently_read_in_conn(
         effective_name = super::novel::EFFECTIVE_NOVEL_NAME_SQL,
         override_cover = super::novel::OVERRIDE_COVER_SQL,
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(AssertSqlSafe(sql))
         .bind(normalized_limit)
         .fetch_all(&mut *conn)
         .await
@@ -2270,7 +2270,7 @@ pub async fn list_continue_reading_in_conn(
         effective_name = super::novel::EFFECTIVE_NOVEL_NAME_SQL,
         override_cover = super::novel::OVERRIDE_COVER_SQL,
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(AssertSqlSafe(sql))
         .bind(normalized_limit)
         .fetch_all(&mut *conn)
         .await
@@ -2382,7 +2382,7 @@ pub async fn list_reading_history_page_in_conn(
         override_cover = super::novel::OVERRIDE_COVER_SQL,
     );
 
-    let mut query = sqlx::query(&sql).bind(page_size + 1);
+    let mut query = sqlx::query(AssertSqlSafe(sql)).bind(page_size + 1);
     if let Some(term) = term {
         query = query.bind(term);
     }
@@ -2571,7 +2571,7 @@ pub async fn list_chapter_cleanup_candidates_in_conn(
         predicates.join(" AND ")
     );
 
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql));
     for val in binds {
         query = query.bind(val);
     }
@@ -2677,7 +2677,7 @@ pub async fn get_chapter_storage_row_in_conn(
     chapter_id: i64,
 ) -> Result<Option<ChapterStorageRowDto>, String> {
     let sql = format!("{SELECT_CHAPTER_STORAGE_ROW_SQL} WHERE c.id = ?1");
-    let row = sqlx::query(&sql)
+    let row = sqlx::query(AssertSqlSafe(sql))
         .bind(chapter_id)
         .fetch_optional(&mut *conn)
         .await
@@ -2695,7 +2695,7 @@ pub async fn list_chapter_storage_rows_in_conn(
              WHERE c.novel_id = ?1 AND c.is_downloaded = 1 \
              ORDER BY c.position, c.id"
         );
-        return Ok(sqlx::query(&sql)
+        return Ok(sqlx::query(AssertSqlSafe(sql))
             .bind(novel_id)
             .fetch_all(&mut *conn)
             .await
@@ -2711,7 +2711,7 @@ pub async fn list_chapter_storage_rows_in_conn(
              WHERE c.is_downloaded = 1 \
              ORDER BY c.novel_id, c.position, c.id"
         );
-        return Ok(sqlx::query(&sql)
+        return Ok(sqlx::query(AssertSqlSafe(sql))
             .fetch_all(&mut *conn)
             .await
             .map_err(|err| format!("db chapter: list all downloaded storage rows: {err}"))?
@@ -2741,7 +2741,7 @@ pub async fn list_chapter_storage_rows_in_conn(
                  ORDER BY c.id",
                 placeholders.join(", ")
             );
-            let mut q = sqlx::query(&sql);
+            let mut q = sqlx::query(AssertSqlSafe(sql));
             for id in chunk {
                 q = q.bind(*id);
             }
@@ -2775,7 +2775,7 @@ pub async fn list_chapter_storage_rows_in_conn(
         "{SELECT_CHAPTER_STORAGE_ROW_SQL} WHERE {} ORDER BY c.id{limit_clause}",
         clauses.join(" AND ")
     );
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql));
     for val in binds {
         query = query.bind(val);
     }
@@ -3602,7 +3602,7 @@ pub async fn sync_novel_from_source_in_tx(
     );
 
     let cover_in = optional_trimmed_text(input.cover.as_deref());
-    let novel_result = sqlx::query(&novel_upsert_sql)
+    let novel_result = sqlx::query(AssertSqlSafe(novel_upsert_sql))
         .bind(&input.plugin_id)
         .bind(&input.novel_path)
         .bind(&input.novel_name)

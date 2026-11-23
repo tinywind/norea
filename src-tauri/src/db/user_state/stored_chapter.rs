@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 use serde_json::{json, Value as JsonValue};
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 
 use super::types::{
     parse_chapter_reference, parse_stored_chapter_path, parse_work_reference, stored_chapter_digest,
@@ -159,7 +159,7 @@ async fn local_folder_candidate_in_tx(
         "SELECT {CANDIDATE_COLUMNS} FROM chapter c JOIN novel n ON n.id = c.novel_id \
          WHERE n.plugin_id = ?1 AND lower(n.source_novel_id) = lower(?2) AND c.path = ?3"
     );
-    let rows = sqlx::query(&sql)
+    let rows = sqlx::query(AssertSqlSafe(sql))
         .bind(&work.plugin_id)
         .bind(source_novel_id)
         .bind(&chapter.chapter_path)
@@ -270,7 +270,7 @@ pub async fn resolve_stored_chapter_reference_in_tx(
         "SELECT {CANDIDATE_COLUMNS} FROM chapter c JOIN novel n ON n.id = c.novel_id \
          WHERE c.novel_id = ?1 AND c.path = ?2"
     );
-    let mut rows: Vec<StoredChapterCandidate> = sqlx::query(&direct_sql)
+    let mut rows: Vec<StoredChapterCandidate> = sqlx::query(AssertSqlSafe(direct_sql))
         .bind(novel_id)
         .bind(&stored.folder_path)
         .fetch_all(&mut *conn)
@@ -286,7 +286,7 @@ pub async fn resolve_stored_chapter_reference_in_tx(
              WHERE c.novel_id = ?1 AND CAST(c.chapter_number AS REAL) = CAST(?2 AS REAL) \
              ORDER BY c.id LIMIT 3"
         );
-        rows = sqlx::query(&num_sql)
+        rows = sqlx::query(AssertSqlSafe(num_sql))
             .bind(novel_id)
             .bind(&stored.chapter_number)
             .fetch_all(&mut *conn)

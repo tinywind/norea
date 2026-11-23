@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::Deserialize;
 use serde_json::{json, Value as JsonValue};
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 
 use crate::db::tx::TxContext;
 
@@ -201,7 +201,7 @@ pub async fn purge_and_settle_local_user_state_in_tx(
         })
         .collect::<Vec<_>>()
         .join(" UNION ALL ");
-    let mut intent_query = sqlx::query_scalar::<_, String>(&intent_sql);
+    let mut intent_query = sqlx::query_scalar::<_, String>(AssertSqlSafe(intent_sql));
     for (lower, upper) in LOCAL_OR_COMPOSITION_KEY_RANGES {
         intent_query = intent_query.bind(lower).bind(upper);
     }
@@ -268,7 +268,7 @@ pub async fn purge_and_settle_local_user_state_in_tx(
             .collect::<Vec<_>>()
             .join(" UNION ALL ");
         for ns in namespaces {
-            let mut record_query = sqlx::query_scalar::<_, String>(&record_sql).bind(&ns);
+            let mut record_query = sqlx::query_scalar::<_, String>(AssertSqlSafe(record_sql.as_str())).bind(&ns);
             for (lower, upper) in LOCAL_OR_COMPOSITION_KEY_RANGES {
                 record_query = record_query.bind(lower).bind(upper);
             }
@@ -731,7 +731,7 @@ pub async fn prepare_user_state_operations_in_tx(
          ORDER BY CASE json_extract(i.entity_json, '$.kind') WHEN 'category' THEN 0 ELSE 1 END, \
                   i.sequence{limit_clause}"
     );
-    let mut query = sqlx::query(&intent_sql).bind(&ws.namespace);
+    let mut query = sqlx::query(AssertSqlSafe(intent_sql)).bind(&ws.namespace);
     if let Some(lim) = limit {
         query = query.bind(lim.saturating_add(pending_op_keys.len()) as i64);
     }
@@ -1939,7 +1939,7 @@ pub async fn resolve_user_state_ledger_conflict_in_tx(
                       ELSE lower(n.source_novel_id) = lower(?2) END) \
                  AND c.path = ?4 LIMIT 1"
             );
-            let mut matched_chapters = sqlx::query(&sql)
+            let mut matched_chapters = sqlx::query(AssertSqlSafe(sql))
                 .bind(plugin_id)
                 .bind(source_novel_id)
                 .bind(novel_path)
@@ -2503,7 +2503,7 @@ async fn clear_namespace_ledger_in_tx(
         "user_state_alias",
     ] {
         let sql = format!("DELETE FROM {table} WHERE namespace = ?1");
-        sqlx::query(&sql)
+        sqlx::query(AssertSqlSafe(sql))
             .bind(namespace)
             .execute(&mut *conn)
             .await
@@ -3140,7 +3140,7 @@ pub async fn apply_local_user_state_retention_in_tx(
             "{USER_CHAPTER_SELECT} WHERE n.in_library = 0 AND n.plugin_id <> 'local' AND n.is_local = 0 \
              AND c.read_at IS NOT NULL"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .fetch_all(&mut *conn)
             .await
             .map_err(|err| format!("db user state: load non-library retention chapters: {err}"))?;
@@ -3194,7 +3194,7 @@ pub async fn apply_local_user_state_retention_in_tx(
         let sql = format!(
             "{USER_CHAPTER_SELECT} WHERE n.plugin_id <> 'local' AND n.is_local = 0 AND c.read_at IS NOT NULL"
         );
-        let rows = sqlx::query(&sql)
+        let rows = sqlx::query(AssertSqlSafe(sql))
             .fetch_all(&mut *conn)
             .await
             .map_err(|err| format!("db user state: load timestamp retention chapters: {err}"))?;
@@ -3274,7 +3274,7 @@ pub async fn apply_local_user_state_retention_in_tx(
                     "{USER_CHAPTER_SELECT} \
                      WHERE c.novel_id IN (SELECT value FROM json_each(?1)) AND c.read_at IS NOT NULL"
                 );
-                let remaining_rows = sqlx::query(&sql)
+                let remaining_rows = sqlx::query(AssertSqlSafe(sql))
                     .bind(&encoded_public)
                     .fetch_all(&mut *conn)
                     .await

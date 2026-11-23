@@ -220,7 +220,7 @@ async fn get_work(pool: &SqlitePool, work_id: &str) -> Result<DownloadCacheDelet
 }
 
 fn push_target_filter(
-    query: &mut QueryBuilder<'_, Sqlite>,
+    query: &mut QueryBuilder<Sqlite>,
     scope: &str,
     target_ids: &[i64],
 ) -> Result<(), String> {

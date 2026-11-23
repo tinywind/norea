@@ -4,7 +4,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use serde::{Deserialize, Serialize};
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 use tauri::{AppHandle, State};
 
 use crate::chapter_media::{
@@ -111,7 +111,7 @@ async fn load_cached_digests(
              FROM chapter_payload_digest WHERE chapter_id IN ({})",
             placeholders.join(",")
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for id in chunk {
             query = query.bind(*id);
         }
@@ -187,7 +187,7 @@ async fn persist_digest_updates(
             "DELETE FROM chapter_payload_digest WHERE chapter_id IN ({})",
             placeholders.join(",")
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for id in chunk {
             query = query.bind(*id);
         }

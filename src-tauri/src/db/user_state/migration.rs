@@ -3,7 +3,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 
 use crate::db::tx::TxContext;
 
@@ -95,7 +95,7 @@ pub(crate) async fn pending_intents_for_works_in_tx(
              WHERE i.entity_key IN ({placeholders}) \
                AND i.seed = 0{pending_predicate}"
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for key in &exact_keys {
             query = query.bind(key);
         }
@@ -124,7 +124,7 @@ pub(crate) async fn pending_intents_for_works_in_tx(
            AND i.seed = 0{pending_predicate}"
     );
     for (lower, upper) in &range_bounds {
-        let fetched = sqlx::query(&range_sql)
+        let fetched = sqlx::query(AssertSqlSafe(range_sql.as_str()))
             .bind(lower)
             .bind(upper)
             .fetch_all(&mut *conn)
@@ -171,7 +171,7 @@ pub async fn remap_pending_user_state_in_tx(
     let target_work_json = serde_json::to_value(&target).unwrap();
 
     let ch_sql = format!("{USER_CHAPTER_SELECT} WHERE c.novel_id IN (?1, ?2)");
-    let mut chapters: Vec<UserChapterRow> = sqlx::query(&ch_sql)
+    let mut chapters: Vec<UserChapterRow> = sqlx::query(AssertSqlSafe(ch_sql))
         .bind(source_novel_id)
         .bind(target_novel_id)
         .fetch_all(&mut *conn)
@@ -569,7 +569,7 @@ pub async fn transfer_settled_novel_merge_resume_in_tx(
         .and_then(JsonValue::as_str);
 
     let ch_sql = format!("{USER_CHAPTER_SELECT} WHERE c.novel_id IN (?1, ?2)");
-    let mut chapters: Vec<UserChapterRow> = sqlx::query(&ch_sql)
+    let mut chapters: Vec<UserChapterRow> = sqlx::query(AssertSqlSafe(ch_sql))
         .bind(source_novel_id)
         .bind(target_novel_id)
         .fetch_all(&mut *conn)
@@ -661,7 +661,7 @@ pub async fn remap_unattempted_chapter_paths_in_tx(
              WHERE json_extract(entity_json, '$.chapter.chapterPath') IN ({in_clause}) \
                 OR json_extract(value_json, '$.chapter.chapterPath') IN ({in_clause})"
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(AssertSqlSafe(sql));
         for p in chunk {
             q = q.bind(p);
         }
