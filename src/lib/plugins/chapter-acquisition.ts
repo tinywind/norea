@@ -19,6 +19,8 @@ const MIN_CAPTURE_TIMEOUT_MS = 1_000;
 const MAX_CAPTURE_TIMEOUT_MS = 120_000;
 const MAX_DOCUMENT_START_SCRIPT_BYTES = 64 * 1024;
 const MAX_EXCLUDE_SELECTORS = 64;
+const MAX_REJECT_CONTENT_TEXT = 16;
+const MAX_REJECT_CONTENT_TEXT_LENGTH = 256;
 let captureNonceSequence = 0;
 
 export interface CapturedChapterPage {
@@ -76,6 +78,28 @@ function captureLoadStrategy(value: unknown): ChapterCaptureLoadStrategy {
   return value;
 }
 
+function rejectContentText(value: unknown): string[] | undefined {
+  if (value === undefined) return undefined;
+  if (!Array.isArray(value)) {
+    throw new Error("Chapter acquisition rejectContentText must be an array.");
+  }
+  if (value.length > MAX_REJECT_CONTENT_TEXT) {
+    throw new Error("Chapter acquisition has too many rejectContentText entries.");
+  }
+  return value.map((text, index) => {
+    if (
+      typeof text !== "string" ||
+      text.trim() === "" ||
+      text.length > MAX_REJECT_CONTENT_TEXT_LENGTH
+    ) {
+      throw new Error(
+        `Chapter acquisition rejectContentText[${index}] must be non-empty text of at most ${MAX_REJECT_CONTENT_TEXT_LENGTH} characters.`,
+      );
+    }
+    return text;
+  });
+}
+
 function absoluteHttpUrl(value: unknown): string {
   if (typeof value !== "string") {
     throw new Error("Chapter acquisition page URL must be a string.");
@@ -127,6 +151,7 @@ function validatePagePlan(
     value.interactions === undefined
       ? []
       : validateWebViewInteractions(value.interactions, "Chapter acquisition");
+  const rejectedText = rejectContentText(value.rejectContentText);
 
   return {
     type: "page",
@@ -142,6 +167,7 @@ function validatePagePlan(
           ),
         }
       : {}),
+    ...(rejectedText?.length ? { rejectContentText: rejectedText } : {}),
     ...(documentStartScript ? { documentStartScript } : {}),
     ...(value.chapterLinkSelector !== undefined
       ? { chapterLinkSelector: validSelector(value.chapterLinkSelector, "chapterLinkSelector") }
@@ -336,6 +362,14 @@ function chapterCaptureScript(
       clone.querySelectorAll(selector).forEach(function (element) { element.remove(); });
     });
     clone.querySelectorAll("script,noscript").forEach(function (element) { element.remove(); });
+    var capturedText = clone.textContent || "";
+    var rejected = (plan.rejectContentText || []).some(function (text) {
+      return capturedText.indexOf(text) >= 0;
+    });
+    if (rejected) {
+      fail("content-rejected", "Captured chapter content contains text the plugin rejects.");
+      return;
+    }
     var content = contentType === "html"
       ? clone.innerHTML
       : (clone.textContent || "");

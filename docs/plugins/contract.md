@@ -63,6 +63,7 @@ type ChapterAcquisitionPlan =
       contentSelector: string;
       readySelector?: string;
       excludeSelectors?: string[];
+      rejectContentText?: string[];
       documentStartScript?: string;
       chapterLinkSelector?: string;
       interactions?: WebViewInteraction[];
@@ -121,6 +122,13 @@ The host navigates its scraper WebView to `url`, injects
 `documentStartScript` before source scripts, waits according to `loadStrategy`,
 clones `contentSelector`, removes `excludeSelectors`, and normalizes lazy image
 sources. `readySelector` defaults to `contentSelector`.
+
+`rejectContentText` lists up to 16 exact strings of at most 256 characters.
+When the text of the cleaned capture contains one of them, the acquisition fails
+with `content-rejected` and nothing is stored. Use it for text a source puts in
+place of the chapter when it refuses a session, such as a watermark on scrambled
+decoy text. A rejection pauses that source's download queue like other
+source-wide refusals; VPN downloads follow the transient-failure recovery policy.
 
 The host does not override the browser's HTTP cache mode. Source responses
 follow the cache and revalidation directives sent by the site. When

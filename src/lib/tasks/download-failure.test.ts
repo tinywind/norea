@@ -227,6 +227,9 @@ describe("single-chapter verification and immediate stop classification", () => 
     expect(isImmediateSourceStopFailure(new Error("HTTP 401 Unauthorized"))).toBe(true);
     expect(isImmediateSourceStopFailure(new Error("webview_extract: timeout after 35000ms; the page moved to https://new.example, outside the source site https://old.example"))).toBe(true);
     expect(isImmediateSourceStopFailure(new Error("manual-action-required: Solve challenge"))).toBe(true);
+    const rejected = new Error("content-rejected: Captured chapter content contains text the plugin rejects.");
+    expect(isImmediateSourceStopFailure(rejected)).toBe(true);
+    expect(classifyDownloadFailure(rejected).failureClass).toBe("transient");
     expect(isImmediateSourceStopFailure(new PluginVpnUnavailableError())).toBe(true);
     expect(isImmediateSourceStopFailure(new ChapterMediaIncompleteError([
       { status: 404, message: "HTTP 404", url: "https://img.example/a.jpg" },

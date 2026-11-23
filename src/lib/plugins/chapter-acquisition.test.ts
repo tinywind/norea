@@ -51,11 +51,13 @@ function executeChapterCaptureScript(
     visiblePuzzle = false,
     linkTargetUrl,
     settleImageAfterFirstPoll = false,
+    capturedText = "",
   }: {
     manualAction?: "captcha" | "cloudflare" | "forbidden" | "legacy";
     visiblePuzzle?: boolean;
     linkTargetUrl?: string;
     settleImageAfterFirstPoll?: boolean;
+    capturedText?: string;
   } = {},
 ): { activeObservers: number; message: string; postedBeforeImageSettled: boolean } {
   const sourceImage = captureImage({
@@ -77,6 +79,7 @@ function executeChapterCaptureScript(
       return [];
     },
     tagName: "ARTICLE",
+    textContent: capturedText,
   };
   const sourceRoot = {
     cloneNode: () => {
@@ -205,9 +208,39 @@ describe("validateChapterAcquisitionPlan", () => {
       }),
     ).toThrow("cacheBust must be a boolean");
   });
+
+  it("keeps rejected content text exactly and refuses blank or oversized entries", () => {
+    const plan = { type: "page", url: "https://source.test/chapter/1", contentSelector: "article" };
+    expect(validateChapterAcquisitionPlan({ ...plan, rejectContentText: [" Search the original "] }))
+      .toMatchObject({ rejectContentText: [" Search the original "] });
+    expect(validateChapterAcquisitionPlan({ ...plan, rejectContentText: [] })).not.toHaveProperty("rejectContentText");
+    expect(() => validateChapterAcquisitionPlan({ ...plan, rejectContentText: "Search" })).toThrow("must be an array");
+    expect(() => validateChapterAcquisitionPlan({ ...plan, rejectContentText: [" "] })).toThrow("rejectContentText[0]");
+    expect(() => validateChapterAcquisitionPlan({ ...plan, rejectContentText: ["x".repeat(257)] }))
+      .toThrow("rejectContentText[0]");
+    expect(() => validateChapterAcquisitionPlan({ ...plan, rejectContentText: Array(17).fill("x") }))
+      .toThrow("too many rejectContentText");
+  });
 });
 
 describe("captureChapterPage", () => {
+  it("fails without content when the captured text contains rejected text", async () => {
+    mockedCaptureChapterWebView.mockImplementation(async (_url, options) =>
+      executeChapterCaptureScript(options?.beforeContentScript ?? "", {
+        capturedText: "Chapter text. Search the original on the source site. More text.",
+      }).message);
+    const plan = validateChapterAcquisitionPlan({
+      type: "page", url: "https://source.test/chapter/1", contentSelector: "article",
+      loadStrategy: "selector", rejectContentText: ["Search the original"],
+    });
+    if (plan.type !== "page") throw new Error("Expected page plan.");
+    const options = { contentType: "html", executor: "pool:0", sourceId: "source-a" } as const;
+
+    await expect(captureChapterPage(plan, options)).rejects.toThrow(/^content-rejected: /);
+    const accepted = await captureChapterPage({ ...plan, rejectContentText: ["Not in this chapter"] }, options);
+    expect(accepted.content).toContain("<img");
+  });
+
   it("disconnects capture observers before another chapter reuses the document", async () => {
     mockedCaptureChapterWebView.mockImplementationOnce(async (_url, options) => {
       const result = executeChapterCaptureScript(options?.beforeContentScript ?? "");

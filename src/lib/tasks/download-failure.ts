@@ -42,6 +42,8 @@ const CONTENT_FAILURE =
   /^(?:chapter-download: local chapter \d+ was not found|chapter-media-repair: local chapter \d+ was not found|Chapter acquisition |Plugin must declare a resource acquisition plan|content-not-found:)|This chapter is not on the content server, and its source has no matching chapter\.|Downloaded chapter metadata is missing\.|Server chapter novel ID does not match the local work\.|Content server (?:chapter|repair chapter) no longer exists locally\.|Content server (?:download|repair|media) identity does not match /i;
 /** The source site now lives at another address; retrying the old one cannot succeed. */
 const SOURCE_SITE_MOVED = /; the page moved to \S+, outside the source site /;
+/** The source served text its plugin marks as substitute content, so later chapters would be refused too. */
+const CONTENT_REJECTED = /^content-rejected:/;
 const MANUAL_ACTION_REQUIRED = /manual-action-required:/i;
 const INCOMPLETE_MEDIA_SUMMARY = /^(?:HTTP 404: )?Offline download is incomplete:/i;
 const PLUGIN_PARSE_ERROR_NAMES = new Set(["TypeError", "ReferenceError", "SyntaxError", "RangeError"]);
@@ -158,7 +160,7 @@ export function isImmediateSourceStopFailure(error: unknown): boolean {
     return true;
   }
   const message = describeError(error);
-  if (SOURCE_SITE_MOVED.test(message) || MANUAL_ACTION_REQUIRED.test(message)) {
+  if (SOURCE_SITE_MOVED.test(message) || MANUAL_ACTION_REQUIRED.test(message) || CONTENT_REJECTED.test(message)) {
     return true;
   }
   return isPluginVpnUnavailableError(error) || isNetworkUnavailableError(error);

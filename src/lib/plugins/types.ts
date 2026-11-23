@@ -24,6 +24,7 @@ export const ChapterCaptureErrorCodes = {
   InteractionFailed: "interaction-failed",
   Timeout: "timeout",
   ContentNotFound: "content-not-found",
+  ContentRejected: "content-rejected",
   CaptureFailed: "capture-failed",
   Cancelled: "cancelled",
 } as const;
@@ -123,6 +124,8 @@ export interface ChapterPageAcquisitionPlan {
   readySelector?: string;
   /** Elements removed from the cloned content before it is stored. */
   excludeSelectors?: string[];
+  /** Captured text containing any of these strings fails with content-rejected and stores nothing. */
+  rejectContentText?: string[];
   /** Runs before source page scripts and may prepare a capturable DOM root. */
   documentStartScript?: string;
   /** Optional previous/next chapter anchors. The host clicks only an exact destination match. */
