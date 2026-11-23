@@ -151,4 +151,14 @@ describe("source refreshes of a composed work", () => {
     const commit = refreshChapterComposition(previous, { pluginId: "source-b", novelId: "work-b", novelPath: "/b" }, fresh, { newId: () => "commit" });
     expect(preview.entries.map(row => row.path)).toEqual(commit.entries.map(row => row.path));
   });
+
+  it("allocates new storage numbers above existing chapter rows", () => {
+    const previous = compile([{ key: "b1", sourceChapterIds: [], targetChapterPath: "/b/1", primary: "target" }], [], [chapter("b", 1)]).composition;
+    const highest = Math.max(...previous.entries.map(row => Number(row.storageChapterNumber)));
+    const refreshed = refreshChapterComposition(previous, { pluginId: "source-b", novelId: "work-b", novelPath: "/b" }, [
+      { path: "/b/1", name: "b chapter 1", chapterNumber: 1 },
+      { path: "/b/2", name: "new", chapterNumber: 2 },
+    ], { storageNumberFloor: highest + 4 });
+    expect(refreshed.entries.find(row => row.path === "/b/2")?.storageChapterNumber).toBe(String(highest + 5));
+  });
 });

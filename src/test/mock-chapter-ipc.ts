@@ -1653,6 +1653,14 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
                 "A composed chapter list cannot be renumbered by a provider refresh.",
               );
             }
+            const rowNumbers = await db.select<{ chapter_number: string | null }[]>(
+              "SELECT chapter_number FROM chapter WHERE novel_id = $1",
+              [novelId],
+            );
+            const storageNumberFloor = rowNumbers.reduce((maximum, row) => {
+              const number = Number(row.chapter_number);
+              return row.chapter_number !== null && Number.isFinite(number) ? Math.max(maximum, Math.ceil(number)) : maximum;
+            }, 0);
             const updated = refreshChapterComposition(
               composition,
               {
@@ -1661,7 +1669,7 @@ export function createChapterIpcHandler(options: ChapterIpcBridgeOptions) {
                 novelPath: input.novelPath,
               },
               detailChapters,
-              { startPosition: input.startPosition },
+              { startPosition: input.startPosition, storageNumberFloor },
             );
             const changedEntries = updated.entries.filter(
               (entry, index) =>

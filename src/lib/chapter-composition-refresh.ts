@@ -9,7 +9,7 @@ export function refreshChapterComposition(
   previous: ChapterCompositionV1,
   identity: ChapterCompositionSourceIdentity,
   chapters: readonly ChapterItem[],
-  options: { newId?: () => string; now?: number; startPosition?: number } = {},
+  options: { newId?: () => string; now?: number; startPosition?: number; storageNumberFloor?: number } = {},
 ): ChapterCompositionV1 {
   const composition = structuredClone(previous);
   const byPath = new Map(chapters.map(chapter => [chapter.path, chapter]));
@@ -43,7 +43,7 @@ export function refreshChapterComposition(
       return update(source, chapter);
     });
   }
-  let storageNumber = composition.entries.reduce((maximum, entry) => Math.max(maximum, Math.ceil(Number(entry.storageChapterNumber))), 0);
+  let storageNumber = composition.entries.reduce((maximum, entry) => Math.max(maximum, Math.ceil(Number(entry.storageChapterNumber))), options.storageNumberFloor ?? 0);
   let order = composition.entries.filter(entry => entry.user.included).length;
   const newId = options.newId ?? (() => crypto.randomUUID());
   const paths = new Set(composition.entries.map(entry => entry.path));
