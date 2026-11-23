@@ -20,7 +20,7 @@ vi.mock("./works", async original => ({ ...await original<typeof import("./works
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
 import { installStoredNovelMetadata, listStoredNovelChapters, readStoredNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
 import { contentServerRequest } from "./client";
-import { listAllServerWorks, listServerWorks, openServerNovel, refreshServerNovel, resolveServerNovelTarget, serverCoverSource, type ServerWorkSummary } from "./browse";
+import { listAllServerWorks, listServerCatalogFilters, listServerWorks, openServerNovel, refreshServerNovel, resolveServerNovelTarget, serverCoverSource, type ServerWorkSummary } from "./browse";
 import { rememberServerNovelSource } from "./novel-source";
 import { contentWorkId, recordInstalledWorkMetadata } from "./works";
 import { findNovelBySource } from "../../db/queries/novel";
@@ -74,10 +74,33 @@ it.each(["response", "install"])("discards a server work deleted during its dela
 
 it("queries a bounded page without fetching synchronization history", async () => {
   vi.mocked(contentServerRequest).mockResolvedValue({ items: [], total: 0, hasMore: false });
-  await listServerWorks("http://server", "device", { completion: "ongoing", query: "Book & title", source: "source" }, 40);
+  await listServerWorks("http://server", "device", {
+    categories: ["cat-1"],
+    query: "Book & title",
+    source: "source",
+    statuses: ["Ongoing", "On Hiatus"],
+    tags: ["Fantasy", "Drama"],
+    uncategorized: true,
+  }, 40);
   expect(contentServerRequest).toHaveBeenCalledOnce();
   const path = vi.mocked(contentServerRequest).mock.calls[0]![1];
-  expect(path).toBe("/catalog/works?q=Book+%26+title&offset=40&limit=40&source=source&completion=ongoing");
+  expect(path).toBe("/catalog/works?q=Book+%26+title&offset=40&limit=40&source=source&status=Ongoing&status=On+Hiatus&category=cat-1&uncategorized=true&tag=Fantasy&tag=Drama");
+});
+
+it("queries server catalog filter facets with active filters", async () => {
+  vi.mocked(contentServerRequest).mockResolvedValue({ categories: [], sources: [], statuses: [], tags: [], uncategorizedCount: 0 });
+  await listServerCatalogFilters("http://server", "device", {
+    categories: ["cat-1"],
+    query: "Book",
+    source: "source",
+    statuses: ["Completed"],
+    tags: ["Fantasy"],
+    uncategorized: false,
+  });
+  expect(contentServerRequest).toHaveBeenCalledOnce();
+  expect(vi.mocked(contentServerRequest).mock.calls[0]![1]).toBe(
+    "/catalog/filters?q=Book&source=source&status=Completed&category=cat-1&tag=Fantasy",
+  );
 });
 
 it("lists every matching work in pages of 100, deduplicating shifted pages", async () => {
@@ -86,7 +109,7 @@ it("lists every matching work in pages of 100, deduplicating shifted pages", asy
     .mockResolvedValueOnce({ items: [summary("a"), summary("b")], total: 3, hasMore: true })
     .mockResolvedValueOnce({ items: [summary("b"), summary("c")], total: 3, hasMore: false });
   const progress: Array<[number, number]> = [];
-  const works = await listAllServerWorks("http://server", "device", { completion: "", query: "Book", source: "" }, (loaded, total) => progress.push([loaded, total]));
+  const works = await listAllServerWorks("http://server", "device", { categories: [], query: "Book", source: "", statuses: [], tags: [], uncategorized: false }, (loaded, total) => progress.push([loaded, total]));
   expect(works.map(work => work.id)).toEqual(["a", "b", "c"]);
   expect(vi.mocked(contentServerRequest).mock.calls.map(call => call[1])).toEqual([
     "/catalog/works?q=Book&offset=0&limit=100", "/catalog/works?q=Book&offset=2&limit=100",

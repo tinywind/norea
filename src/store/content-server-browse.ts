@@ -1,25 +1,67 @@
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
-import type { ServerWorkCompletion, ServerWorkFilter } from "../lib/content-sync/browse";
+import type { ServerWorkFilter } from "../lib/content-sync/browse";
+import { isNovelStatus, type NovelStatusValue } from "../lib/plugins/types";
 
 interface ContentServerBrowseFilters extends ServerWorkFilter {
+  categories: string[];
   draft: string;
+  statuses: NovelStatusValue[];
+  tags: string[];
 }
 
 export const EMPTY_CONTENT_SERVER_BROWSE_FILTERS: ContentServerBrowseFilters = {
-  completion: "",
+  categories: [],
   draft: "",
   query: "",
   source: "",
+  statuses: [],
+  tags: [],
+  uncategorized: false,
 };
 
-function isCompletion(value: unknown): value is ServerWorkCompletion {
-  return value === "" || value === "completed" || value === "ongoing";
+function sanitizeStatusList(raw: unknown): NovelStatusValue[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<NovelStatusValue>();
+  for (const item of raw) {
+    if (isNovelStatus(item) && !seen.has(item)) seen.add(item);
+  }
+  return [...seen];
+}
+
+function sanitizeCategoryList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const categories: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const cleaned = item.trim();
+    if (!cleaned || seen.has(cleaned)) continue;
+    seen.add(cleaned);
+    categories.push(cleaned);
+  }
+  return categories;
+}
+
+function sanitizeTagList(raw: unknown): string[] {
+  if (!Array.isArray(raw)) return [];
+  const seen = new Set<string>();
+  const tags: string[] = [];
+  for (const item of raw) {
+    if (typeof item !== "string") continue;
+    const cleaned = item.trim().replace(/^#+/, "").trim();
+    if (!cleaned) continue;
+    const key = cleaned.toLowerCase();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    tags.push(cleaned);
+  }
+  return tags;
 }
 
 interface ContentServerBrowseState {
   filtersByServer: Record<string, ContentServerBrowseFilters>;
-  setFilters: (server: string, filters: Partial<ContentServerBrowseFilters>) => void;
+  setFilters: (server: string, filters: Partial<ServerWorkFilter & { draft: string }>) => void;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -37,10 +79,13 @@ function isServerUrl(value: string): boolean {
 
 function normalizeFilters(value: Record<string, unknown>): ContentServerBrowseFilters {
   return {
-    completion: isCompletion(value.completion) ? value.completion : "",
+    categories: sanitizeCategoryList(value.categories),
     draft: typeof value.draft === "string" ? value.draft : "",
     query: typeof value.query === "string" ? value.query : "",
     source: typeof value.source === "string" ? value.source : "",
+    statuses: sanitizeStatusList(value.statuses),
+    tags: sanitizeTagList(value.tags),
+    uncategorized: value.uncategorized === true,
   };
 }
 
@@ -72,11 +117,11 @@ export const useContentServerBrowseStore = create<ContentServerBrowseState>()(
     }),
     {
       name: "content-server-browse-filters",
-      version: 1,
+      version: 2,
       storage: createJSONStorage(() => localStorage),
       partialize: state => ({ filtersByServer: state.filtersByServer }),
       migrate: (persisted, version) => ({
-        filtersByServer: version > 1 ? {} : readPersistedFilters(persisted),
+        filtersByServer: version > 2 ? {} : readPersistedFilters(persisted),
       }),
       merge: (persisted, current) => ({
         ...current,

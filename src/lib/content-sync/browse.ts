@@ -14,6 +14,7 @@ import { fetchServerChapters } from "./chapters";
 import { cacheServerChapters, isNovelMigrationSourceHeld, listNovelMigrations } from "../../db/queries/content-sync";
 import { listIncomingMigrationSummaries } from "./migration-feed-state";
 import type { MigrationWorkIdentity } from "./novel-migration-types";
+import type { NovelStatusValue } from "../plugins/types";
 
 export interface ServerWorkSummary {
   id: string;
@@ -26,19 +27,49 @@ export interface ServerWorkSummary {
 }
 export interface ServerWorkPage { items: ServerWorkSummary[]; total: number; hasMore: boolean }
 export interface ServerSourceSummary { id: string; workCount: number }
-/** Completed or ongoing works only; empty for every work. */
-export type ServerWorkCompletion = "" | "completed" | "ongoing";
-/** The server browse filter: a title search, one source ID or every source, and completion. */
-export interface ServerWorkFilter { query: string; source: string; completion: ServerWorkCompletion }
+export interface ServerStatusSummary { status: NovelStatusValue; workCount: number }
+export interface ServerCategorySummary { id: string; name: string; workCount: number }
+export interface ServerTagSummary { tag: string; workCount: number }
+export interface ServerCatalogFilters {
+  sources: ServerSourceSummary[];
+  statuses: ServerStatusSummary[];
+  categories: ServerCategorySummary[];
+  uncategorizedCount: number;
+  tags: ServerTagSummary[];
+}
+/** The server browse filter: search, source, canonical statuses, categories/uncategorized, and tags. */
+export interface ServerWorkFilter {
+  query: string;
+  source: string;
+  statuses: readonly NovelStatusValue[];
+  categories: readonly string[];
+  uncategorized: boolean;
+  tags: readonly string[];
+}
 
 /** The server's largest accepted catalog page. */
 const SERVER_WORK_PAGE_MAX = 100;
 
-export function listServerWorks(server: string, token: string, { query, source, completion }: ServerWorkFilter, offset: number, signal?: AbortSignal, limit = 40): Promise<ServerWorkPage> {
-  const params = new URLSearchParams({ q: query, offset: String(offset), limit: String(limit) });
-  if (source) params.set("source", source);
-  if (completion) params.set("completion", completion);
+function appendServerWorkFilterParams(params: URLSearchParams, filter: ServerWorkFilter): void {
+  if (filter.source) params.set("source", filter.source);
+  for (const status of filter.statuses) params.append("status", status);
+  for (const category of filter.categories) params.append("category", category);
+  if (filter.uncategorized) params.set("uncategorized", "true");
+  for (const tag of filter.tags) params.append("tag", tag);
+}
+
+export function listServerWorks(server: string, token: string, filter: ServerWorkFilter, offset: number, signal?: AbortSignal, limit = 40): Promise<ServerWorkPage> {
+  const params = new URLSearchParams({ q: filter.query, offset: String(offset), limit: String(limit) });
+  appendServerWorkFilterParams(params, filter);
   return contentServerRequest(server, `/catalog/works?${params}`, token, "GET", undefined, signal);
+}
+
+export function listServerCatalogFilters(server: string, token: string, filter: ServerWorkFilter, signal?: AbortSignal): Promise<ServerCatalogFilters> {
+  const params = new URLSearchParams();
+  if (filter.query) params.set("q", filter.query);
+  appendServerWorkFilterParams(params, filter);
+  const queryString = params.toString();
+  return contentServerRequest(server, queryString ? `/catalog/filters?${queryString}` : "/catalog/filters", token, "GET", undefined, signal);
 }
 
 /**

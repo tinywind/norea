@@ -19,7 +19,8 @@ const work = (id: string) => ({ id, novel: { name: id }, identity: { pluginId: "
 
 let root: Root;
 let selection: ReturnType<typeof useServerWorkSelection>;
-let filter: ServerWorkFilter = { completion: "", query: "", source: "" };
+const EMPTY_FILTER: ServerWorkFilter = { categories: [], query: "", source: "", statuses: [], tags: [], uncategorized: false };
+let filter: ServerWorkFilter = { ...EMPTY_FILTER };
 
 function Probe() {
   selection = useServerWorkSelection({ active: true, filter, server: "http://server", token: "device" });
@@ -29,7 +30,7 @@ const render = () => act(async () => root.render(<Probe />));
 
 beforeEach(async () => {
   vi.clearAllMocks();
-  filter = { completion: "", query: "", source: "" };
+  filter = { ...EMPTY_FILTER };
   const document = { nodeType: 9, activeElement: null, body: null as unknown, documentElement: { nodeName: "HTML" }, addEventListener() {}, removeEventListener() {} };
   const container = {
     nodeType: 1, nodeName: "DIV", tagName: "DIV", namespaceURI: "http://www.w3.org/1999/xhtml",
@@ -70,11 +71,17 @@ it("selects every matching work across unloaded pages, works in the library incl
     onPage(100, 250);
     return new Promise((resolve) => { finish = resolve; });
   });
-  filter = { completion: "completed", query: "saga", source: "source" };
+  filter = { categories: ["cat-1"], query: "saga", source: "source", statuses: ["Completed"], tags: ["Fantasy"], uncategorized: false };
   await render();
   await act(async () => selection.enter());
   await act(async () => selection.selectAll());
-  expect(mocks.listAll).toHaveBeenCalledWith("http://server", "device", { completion: "completed", query: "saga", source: "source" }, expect.any(Function), expect.any(AbortSignal));
+  expect(mocks.listAll).toHaveBeenCalledWith(
+    "http://server",
+    "device",
+    { categories: ["cat-1"], query: "saga", source: "source", statuses: ["Completed"], tags: ["Fantasy"], uncategorized: false },
+    expect.any(Function),
+    expect.any(AbortSignal),
+  );
   expect(selection.gathering).toEqual({ loaded: 100, total: 250 });
 
   await act(async () => finish([work("a"), work("b"), work("c")]));
@@ -95,7 +102,7 @@ it("discards a gather in flight and clears the selection when the filters change
   });
   await act(async () => selection.enter(work("a")));
   await act(async () => selection.selectAll());
-  filter = { completion: "ongoing", query: "", source: "" };
+  filter = { ...EMPTY_FILTER, statuses: ["Ongoing"] };
   await render();
   expect(signal.aborted).toBe(true);
   expect(selection.selected.size).toBe(0);

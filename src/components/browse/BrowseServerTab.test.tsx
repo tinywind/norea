@@ -40,7 +40,15 @@ vi.mock("@tanstack/react-query", () => ({
   useQuery: ({ queryKey }: { queryKey: string[] }) => ({
     data: queryKey[0] === "plugin"
       ? [{ id: "source-a", name: "Source A" }]
-      : queryKey[2] === "device" ? "device" : { items: [{ id: "source-a", workCount: 2 }, { id: "source-b", workCount: 1 }] },
+      : queryKey[2] === "device"
+        ? "device"
+        : {
+          categories: [{ id: "cat-1", name: "Reading", workCount: 2 }],
+          sources: [{ id: "source-a", workCount: 2 }, { id: "source-b", workCount: 1 }],
+          statuses: [{ status: "Ongoing", workCount: 2 }, { status: "Completed", workCount: 1 }],
+          tags: [{ tag: "Fantasy", workCount: 2 }],
+          uncategorizedCount: 1,
+        },
   }),
   useInfiniteQuery: ({ queryKey }: { queryKey: unknown[] }) => {
     mocks.browseQueryKeys.push(queryKey);
@@ -135,17 +143,41 @@ const filters = (elements: ReactElement<ControlProps>[]) =>
 it("names server sources after installed plugins and falls back to the id", () => {
   const props = filters(render());
   expect(props.sources.map(source => props.sourceName(source.id))).toEqual(["Source A", "source-b"]);
-  expect(props.filter).toEqual({ completion: "", query: "", source: "" });
+  expect(props.categories).toEqual([{ id: "cat-1", name: "Reading", workCount: 2 }]);
+  expect(props.statuses).toEqual([{ status: "Ongoing", workCount: 2 }, { status: "Completed", workCount: 1 }]);
+  expect(props.tags).toEqual([{ tag: "Fantasy", workCount: 2 }]);
+  expect(props.uncategorizedCount).toBe(1);
+  expect(props.filter).toEqual({
+    categories: [],
+    query: "",
+    source: "",
+    statuses: [],
+    tags: [],
+    uncategorized: false,
+  });
 });
 
-it("browses only the chosen completion and keeps it for add all and select all", () => {
-  filters(render()).onChange({ completion: "completed" });
+it("browses only the chosen statuses, categories, and tags and keeps them for add all and select all", () => {
+  filters(render()).onChange({ categories: ["cat-1"], statuses: ["Completed"], tags: ["Fantasy"], uncategorized: true });
   const elements = render();
-  expect(filters(elements).filter.completion).toBe("completed");
-  expect(mocks.browseQueryKeys.at(-1)).toEqual(["content-server", "http://server", "browse", "", "", "completed"]);
-  expect(mocks.selectionOptions.at(-1)).toMatchObject({ filter: { completion: "completed", query: "", source: "" } });
+  expect(filters(elements).filter.statuses).toEqual(["Completed"]);
+  expect(filters(elements).filter.categories).toEqual(["cat-1"]);
+  expect(filters(elements).filter.uncategorized).toBe(true);
+  expect(filters(elements).filter.tags).toEqual(["Fantasy"]);
+  expect(mocks.browseQueryKeys.at(-1)).toEqual([
+    "content-server", "http://server", "browse", "", "", ["Completed"], ["cat-1"], true, ["Fantasy"],
+  ]);
+  const expectedFilter = {
+    categories: ["cat-1"],
+    query: "",
+    source: "",
+    statuses: ["Completed"],
+    tags: ["Fantasy"],
+    uncategorized: true,
+  };
+  expect(mocks.selectionOptions.at(-1)).toMatchObject({ filter: expectedFilter });
   toolbarAction(elements, "serverLibraryAdd.addAll").onClick!();
-  expect(mocks.bulkRequest).toHaveBeenCalledWith({ count: 2, works: { completion: "completed", query: "", source: "" } });
+  expect(mocks.bulkRequest).toHaveBeenCalledWith({ count: 2, works: expectedFilter });
 });
 
 it("shows the user's categories on the cards of the works that have them", () => {
@@ -189,7 +221,9 @@ it("retains the search and source when returning from a work", () => {
   const returned = render();
   expect(returned.find(element => element.type === SearchBar)!.props.value).toBe("  saved search  ");
   expect(filters(returned).filter.source).toBe("source-a");
-  expect(mocks.browseQueryKeys.at(-1)).toEqual(["content-server", "http://server", "browse", "saved search", "source-a", ""]);
+  expect(mocks.browseQueryKeys.at(-1)).toEqual([
+    "content-server", "http://server", "browse", "saved search", "source-a", [], [], false, [],
+  ]);
 });
 
 it("keeps filters separate for each content server", () => {
@@ -197,7 +231,9 @@ it("keeps filters separate for each content server", () => {
   render().find(element => element.type === SearchBar)!.props.onSubmit!();
   mocks.server = "http://other-server";
   expect(render().find(element => element.type === SearchBar)!.props.value).toBe("");
-  expect(mocks.browseQueryKeys.at(-1)).toEqual(["content-server", "http://other-server", "browse", "", "", ""]);
+  expect(mocks.browseQueryKeys.at(-1)).toEqual([
+    "content-server", "http://other-server", "browse", "", "", [], [], false, [],
+  ]);
   mocks.server = "http://server";
   expect(render().find(element => element.type === SearchBar)!.props.value).toBe("first server");
 });
@@ -206,7 +242,10 @@ it("offers adding every matching server work, including unloaded pages, from the
   mocks.pages = [{ items: [work("first"), work("second")], total: 120, hasMore: true }];
   useContentServerBrowseStore.getState().setFilters("http://server", { query: "saga", source: "source-a" });
   toolbarAction(render(), "serverLibraryAdd.addAll").onClick!();
-  expect(mocks.bulkRequest).toHaveBeenCalledWith({ count: 120, works: { completion: "", query: "saga", source: "source-a" } });
+  expect(mocks.bulkRequest).toHaveBeenCalledWith({
+    count: 120,
+    works: { categories: [], query: "saga", source: "source-a", statuses: [], tags: [], uncategorized: false },
+  });
 });
 
 it("enters selection from the toolbar or a card's long press", () => {
@@ -215,7 +254,11 @@ it("enters selection from the toolbar or a card's long press", () => {
   expect(mocks.selection.enter).toHaveBeenCalledWith();
   elements.filter(element => element.type === QuickAddCard)[1]!.props.onSelect!();
   expect(mocks.selection.enter).toHaveBeenLastCalledWith(expect.objectContaining({ id: "second" }));
-  expect(mocks.selectionOptions.at(-1)).toMatchObject({ filter: { completion: "", query: "", source: "" }, server: "http://server", token: "device" });
+  expect(mocks.selectionOptions.at(-1)).toMatchObject({
+    filter: { categories: [], query: "", source: "", statuses: [], tags: [], uncategorized: false },
+    server: "http://server",
+    token: "device",
+  });
 });
 
 it("toggles works in selection mode, works in the library included", () => {

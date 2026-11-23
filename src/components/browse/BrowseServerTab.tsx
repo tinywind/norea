@@ -4,8 +4,7 @@ import { Button, Loader } from "@mantine/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate } from "@tanstack/react-router";
 import { useTranslation } from "../../i18n";
-import { listServerWorks, openServerNovel, type ServerSourceSummary, type ServerWorkSummary } from "../../lib/content-sync/browse";
-import { contentServerRequest } from "../../lib/content-sync/client";
+import { listServerCatalogFilters, listServerWorks, openServerNovel, type ServerWorkSummary } from "../../lib/content-sync/browse";
 import { registerContentDevice } from "../../lib/content-sync/device";
 import { describeError } from "../../lib/errors";
 import { useServerWorkCategories } from "../../lib/content-sync/use-server-work-categories";
@@ -43,8 +42,13 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
   const isInLibrary = useLibraryNovelMembership();
   const quickAdd = useQuickAddToLibrary();
   const installed = useInstalledPlugins(active && !!server);
-  const { completion, draft, query, source } = useContentServerBrowseStore(state => state.filtersByServer[server] ?? EMPTY_CONTENT_SERVER_BROWSE_FILTERS);
-  const filter = useMemo(() => ({ completion, query, source }), [completion, query, source]);
+  const { categories, draft, query, source, statuses, tags, uncategorized } = useContentServerBrowseStore(
+    state => state.filtersByServer[server] ?? EMPTY_CONTENT_SERVER_BROWSE_FILTERS,
+  );
+  const filter = useMemo(
+    () => ({ categories, query, source, statuses, tags, uncategorized }),
+    [categories, query, source, statuses, tags, uncategorized],
+  );
   const setFilters = useContentServerBrowseStore(state => state.setFilters);
   const device = useQuery({
     meta: { errorPresentation: "inline" },
@@ -53,15 +57,17 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
     enabled: active && !!server, staleTime: 60_000, retry: false,
   });
   const enabled = active && !!server && !!device.data;
-  const sources = useQuery({
+  const catalogFilters = useQuery({
     meta: { errorPresentation: "inline" },
-    queryKey: ["content-server", server, "sources"],
-    queryFn: ({ signal }) => contentServerRequest<{ items: ServerSourceSummary[] }>(server, "/catalog/sources", device.data!, "GET", undefined, signal),
-    enabled, staleTime: 30_000,
+    queryKey: ["content-server", server, "filters", query, source, statuses, categories, uncategorized, tags],
+    queryFn: ({ signal }) => listServerCatalogFilters(server, device.data!, filter, signal),
+    enabled,
+    placeholderData: previous => previous,
+    staleTime: 30_000,
   });
   const works = useInfiniteQuery({
     meta: { errorPresentation: "inline" },
-    queryKey: ["content-server", server, "browse", query, source, completion],
+    queryKey: ["content-server", server, "browse", query, source, statuses, categories, uncategorized, tags],
     initialPageParam: 0,
     queryFn: ({ pageParam, signal }) => listServerWorks(server, device.data!, filter, pageParam, signal),
     getNextPageParam: (last, _pages, offset) => last.hasMore ? offset + last.items.length : undefined,
@@ -82,7 +88,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
     () => new Map((installed.data ?? []).map(plugin => [plugin.id, plugin.name])),
     [installed.data],
   );
-  const error = device.error ?? sources.error ?? works.error ?? open.error;
+  const error = device.error ?? catalogFilters.error ?? works.error ?? open.error;
   const items = works.data?.pages.flatMap(page => page.items) ?? [];
   const matchingTotal = works.data?.pages[0]?.total ?? 0;
   const categoriesOf = useServerWorkCategories(server, items.map(work => work.identity), active);
@@ -174,11 +180,15 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
         </div>
       )}
       <ServerBrowseFilters
+        categories={catalogFilters.data?.categories ?? []}
         filter={filter}
+        filtersLoading={catalogFilters.isLoading}
         onChange={next => setFilters(server, next)}
         sourceName={id => pluginNames.get(id) ?? id}
-        sources={sources.data?.items ?? []}
-        sourcesLoading={sources.isLoading}
+        sources={catalogFilters.data?.sources ?? []}
+        statuses={catalogFilters.data?.statuses ?? []}
+        tags={catalogFilters.data?.tags ?? []}
+        uncategorizedCount={catalogFilters.data?.uncategorizedCount ?? 0}
       />
       {error ? (
         <StateView action={{ label: t("common.retry"), onClick: refresh }} color="danger"

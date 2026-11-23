@@ -134,10 +134,11 @@ it("gathers every work of a listing when the task starts", async () => {
     return [work("a"), work("b")];
   });
   const retry = vi.fn();
-  enqueueServerLibraryAdd({ categoryIds: [], count: 2, server: "http://server", works: { completion: "completed", query: "Book", source: "source" } }, t, retry);
+  const filter = { categories: [], query: "Book", source: "source", statuses: ["Completed"] as const, tags: [], uncategorized: false };
+  enqueueServerLibraryAdd({ categoryIds: [], count: 2, server: "http://server", works: filter }, t, retry);
   const taskContext = context();
   await expect(enqueuedSpec().run(taskContext)).resolves.toEqual({ added: 2, failed: [], pending: [], skipped: 0 });
-  expect(mocks.listAllServerWorks).toHaveBeenCalledWith("http://server", "device", { completion: "completed", query: "Book", source: "source" }, expect.any(Function), taskContext.signal);
+  expect(mocks.listAllServerWorks).toHaveBeenCalledWith("http://server", "device", filter, expect.any(Function), taskContext.signal);
   expect(taskContext.setDetail).toHaveBeenCalledWith("serverLibraryAdd.gathering(loaded=2,total=2)");
 });
 

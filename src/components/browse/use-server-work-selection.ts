@@ -23,7 +23,8 @@ export interface ServerWorkSelectAllProgress {
  * clears the selection and discards a gather in flight.
  */
 export function useServerWorkSelection({ active, filter, server, token }: ServerWorkSelectionOptions) {
-  const { completion, query, source } = filter;
+  const { categories, query, source, statuses, tags, uncategorized } = filter;
+  const filterKey = JSON.stringify({ categories, query, source, statuses, tags, uncategorized });
   const { t } = useTranslation();
   const [selected, setSelected] = useState<ReadonlyMap<string, ServerWorkSummary>>(() => new Map());
   const [selecting, setSelecting] = useState(false);
@@ -50,7 +51,7 @@ export function useServerWorkSelection({ active, filter, server, token }: Server
     cancelGather();
     setSelected(new Map());
     setSelectAllCount(null);
-  }, [cancelGather, completion, query, server, source]);
+  }, [cancelGather, filterKey, server]);
 
   useEffect(() => () => requestRef.current?.abort(), []);
 
@@ -80,7 +81,7 @@ export function useServerWorkSelection({ active, filter, server, token }: Server
     const controller = new AbortController();
     requestRef.current = controller;
     setGathering({ loaded: 0, total: 0 });
-    void listAllServerWorks(server, token, { completion, query, source }, (loaded, total) => {
+    void listAllServerWorks(server, token, { categories, query, source, statuses, tags, uncategorized }, (loaded, total) => {
       if (!controller.signal.aborted) setGathering({ loaded, total });
     }, controller.signal)
       .then((works) => {
@@ -97,7 +98,7 @@ export function useServerWorkSelection({ active, filter, server, token }: Server
         requestRef.current = null;
         setGathering(null);
       });
-  }, [completion, query, server, source, t, token]);
+  }, [categories, query, server, source, statuses, t, tags, token, uncategorized]);
 
   return {
     allSelected: selectAllCount !== null && selected.size > 0 && selected.size >= selectAllCount,
