@@ -319,6 +319,12 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
             pending.delete(id);
             continue;
           }
+          if (!lookup && !sourceDownloads.has(id)) {
+            // A deletion made while this pass runs shows only in the change feed; leave the
+            // chapter pending so the pass that consumes the deletion can exclude it.
+            await pullCatalog(server, token, cache, chapterSignal);
+            if (cache.tombstones[id]) continue;
+          }
           await withContentChapterStage({ storageDir: storageDir(row), identity: { pluginId: row.pluginId, novelPath: row.novelPath }, signal: chapterSignal }, async stagePath => {
             chapterSignal.throwIfAborted();
             const fingerprint = await contentFingerprint(row, stagePath);

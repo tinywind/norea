@@ -385,6 +385,9 @@ by its exact identity, including unavailable copies. The signal proves the
 chapter existed, so a 404 means an API deletion; those chapters gain an upload
 exclusion unless the local journal records a source download of the chapter
 since the previous pass. A lookup failure keeps the signal for the next pass.
+Before uploading a chapter the server does not list, other than such a source
+download, the app pulls the change feed again; a deletion made while the pass
+runs keeps the chapter pending for the pass that consumes the deletion.
 Existing siblings skip snapshot
 creation and upload; failed or queued candidates remain pending. Explicit app
 deletion exclusions suppress these uploads; whole-work exclusions also suppress

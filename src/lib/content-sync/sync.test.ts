@@ -542,6 +542,28 @@ it("keeps every stored copy of an API-deleted chapter off the server until a new
   expect(uploadContentChapter).toHaveBeenCalledOnce();
 });
 
+it("does not upload a chapter whose server deletion lands while the pass runs", async () => {
+  const key = "norea-content-catalog:http://localhost:7788";
+  const row = { chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false };
+  memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, localDiscoveryVersion: 1, tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
+  vi.mocked(listContentSyncWorkChapters).mockResolvedValue([row] as never);
+  changed('content:["p","n","c"]', null);
+  let catalogRequests = 0;
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation((url, init) => {
+    if (!String(url).includes("/catalog/changes?")) return original(url, init);
+    catalogRequests++;
+    return Promise.resolve(Response.json(catalogRequests === 2
+      ? { items: [{ deleted: true, sequence: 1, identity: { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "c" } }], cursor: 1, hasMore: false }
+      : { items: [], cursor: catalogRequests < 2 ? 0 : 1, hasMore: false }));
+  });
+  await syncContentServer();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  expect(await readServerChapterDeletionExclusions("http://localhost:7788")).toEqual(new Set(['["p","n",["path","c"]]']));
+  expect(JSON.parse(memory.get(key)!)).toMatchObject({ cursor: 1, tombstones: {}, pendingUploads: [] });
+});
+
 it("keeps a deletion signal for the next pass when its server lookup fails", async () => {
   const key = "norea-content-catalog:http://localhost:7788";
   memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, localDiscoveryVersion: 1, tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
