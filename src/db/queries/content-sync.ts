@@ -210,6 +210,11 @@ export async function readContentJournal(
   });
 }
 
+/** Journals a source fetch under `source-download:<identity>` so content sync can tell it from a copy of a deleted server chapter. */
+export async function recordContentSourceDownload(chapterId: number): Promise<boolean> {
+  return invokeDbMutation<boolean>("db_content_sync_record_source_download", { chapterId });
+}
+
 const NOVEL_MIGRATION_CACHE_PREFIX = "norea-content-novel-migration:";
 
 function migrationCacheKey(operationId: string): string {

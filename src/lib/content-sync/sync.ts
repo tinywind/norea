@@ -40,6 +40,8 @@ import {
 import { readServerChapterDeletionExclusions, serverChapterDeletionKey, serverWorkDeletionKey, setServerChapterDeletionExclusion, withServerWorkDeletionExclusions, waitForServerWorkDeletion } from "./deletion-exclusions";
 
 const LOCAL_CONTENT_DISCOVERY_VERSION = 1;
+/** Journal key prefix written by `recordContentSourceDownload`. */
+const SOURCE_DOWNLOAD_JOURNAL_PREFIX = "source-download:";
 
 interface CatalogCache {
   cursor: number;
@@ -120,6 +122,28 @@ async function findUploadedChapter(server: string, token: string, row: Pick<Cont
     throw new Error("Content server upload identity does not match the requested chapter.");
   }
   return { entry, available };
+}
+/**
+ * An API deletion hides the chapter even from an exact lookup that includes unavailable copies;
+ * a chapter whose server folder vanished outside the API is still listed there. Stored copies of
+ * API deletions stay off the server, so every device keeps the deletion until a new source fetch.
+ */
+async function excludeServerDeletedChapters(server: string, token: string, rows: readonly ContentSyncChapter[], deletions: Set<string>, signal?: AbortSignal): Promise<void> {
+  for (const row of rows) {
+    if (row.sourceNovelId == null || !hasStoredChapterContent(row)) continue;
+    const chapter = { pluginId: row.pluginId, novelId: row.sourceNovelId, novelPath: row.novelPath, chapterPath: row.chapterPath };
+    const key = serverChapterDeletionKey(chapter, row.chapterNumber);
+    if (deletions.has(key)) continue;
+    const query = new URLSearchParams({ pluginId: row.pluginId, novelPath: row.novelPath, chapterPath: row.chapterPath, includeUnavailable: "true" });
+    try {
+      await contentServerRequest<CatalogEntry>(server, `/catalog/chapter?${query}`, token, "GET", undefined, signal);
+      continue;
+    } catch (error) {
+      if (!(error instanceof ContentServerError && error.status === 404)) throw error;
+    }
+    await setServerChapterDeletionExclusion(server, chapter, row.chapterNumber, true);
+    deletions.add(key);
+  }
 }
 function isUnreadyPartialChapterSnapshotError(error: unknown): boolean {
   const message = error instanceof Error ? error.message : String(error);
@@ -211,6 +235,13 @@ async function uploadLocalContent(server: string, token: string, cache: CatalogC
         if (deletedWorks.has(await contentWorkId({ pluginId: row.pluginId, novelPath: row.novelPath }))) deletedLocalWorks.add(JSON.stringify([row.pluginId, row.novelPath]));
       }
     }
+    const sourceDownloads = new Set(changes?.filter(entry => entry.key.startsWith(SOURCE_DOWNLOAD_JOURNAL_PREFIX))
+      .map(entry => entry.key.slice(SOURCE_DOWNLOAD_JOURNAL_PREFIX.length)));
+    // Settle deletion signals before consuming them; a failed lookup keeps them for the next pass.
+    await excludeServerDeletedChapters(server, token, deletedIds.flatMap(id => {
+      const row = rowsByIdentity.get(id);
+      return row && !sourceDownloads.has(id) && !isDeletedWork(row) && !deletedLocalWorks.has(JSON.stringify([row.pluginId, row.novelPath])) ? [row] : [];
+    }), deletions, signal);
     const pending = new Set(
       [
         ...cache.pendingUploads,

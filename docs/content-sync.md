@@ -178,9 +178,16 @@ When the work is on the server or already linked to it, **Manage server data**
 opens a separate server chapter list with its own selection and pages of 100
 chapters. Explicit app deletions persist per-server upload exclusions keyed by
 plugin-owned work and chapter identities. Normal sync and local rescans do not
-undo those choices after restart. An explicit server chapter restore clears that
-chapter's exclusion. Deletions originating outside this app retain the existing
-sync policy: completed local chapters can fill missing server copies. To replace
+undo those choices after restart. A chapter deleted through the server API, from
+any device or the server console, stays deleted on every device: a device that
+still stores it records the same exclusion when the deletion reaches it, so its
+unchanged copy is not uploaded again. A later download of that chapter from its
+source on any device clears the exclusion there and uploads the new copy, and an
+explicit server chapter restore clears it too. A source download made before the
+device receives the deletion counts as the deleted copy unless it is still
+waiting in the same sync pass. A chapter folder removed from the server outside
+the API keeps the existing policy: completed local chapters can fill the missing
+server copy. To replace
 existing complete chapters, select **Replace with app data** under Upload
 conflicts, then choose **Sync now**.
 **Delete work from server** is available in the work's **Manage server data**
@@ -373,9 +380,15 @@ and server chapter deletions, then check affected stored chapters. Deleted
 chapter deltas do not include a chapter number, so the app rechecks completed
 chapters in the same work to match source paths and recovered folder identities.
 Those checks become durable local upload candidates before the deletion signal
-is consumed. Existing siblings skip snapshot creation and upload; failed or queued
-candidates remain pending. Explicit app deletion exclusions suppress these uploads;
-whole-work exclusions also suppress metadata restoration during local rescans.
+is consumed. Before consuming it, the app looks up each deleted chapter it stores
+by its exact identity, including unavailable copies. The signal proves the
+chapter existed, so a 404 means an API deletion; those chapters gain an upload
+exclusion unless the local journal records a source download of the chapter
+since the previous pass. A lookup failure keeps the signal for the next pass.
+Existing siblings skip snapshot
+creation and upload; failed or queued candidates remain pending. Explicit app
+deletion exclusions suppress these uploads; whole-work exclusions also suppress
+metadata restoration during local rescans.
 The server's change-wait endpoint returns
 cursor hints; the app then fetches the corresponding deltas. Before making a
 snapshot, the app checks whether the server already has a complete chapter.

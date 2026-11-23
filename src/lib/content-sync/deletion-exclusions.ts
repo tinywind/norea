@@ -1,5 +1,9 @@
-import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
+import type { ChapterRow } from "../../db/queries/chapter";
+import { listNovelMigrations, readContentSyncCache, recordContentSourceDownload, writeContentSyncCache } from "../../db/queries/content-sync";
+import type { NovelDetailRecord } from "../../db/queries/novel";
+import { useContentSyncStore } from "../../store/content-sync";
 import { novelStorageRelativeDir } from "../chapter-storage-path";
+import { LOCAL_PLUGIN_ID } from "../plugins/types";
 import { normalizeContentServerUrl } from "./client";
 import type { PackageManifest } from "./native";
 import { listIncomingMigrationSummaries } from "./migration-feed-state";
@@ -113,9 +117,27 @@ export async function setServerChapterDeletionExclusion(server: string, identity
   const pending = (chapterDeletionWrites.get(key) ?? Promise.resolve()).catch(() => undefined).then(async () => {
     const saved = await readContentSyncCache(key);
     const exclusions = new Set(saved ? JSON.parse(saved) as string[] : []);
+    if (exclusions.has(chapterKey) === deleted) return;
     if (deleted) exclusions.add(chapterKey); else exclusions.delete(chapterKey);
     await writeContentSyncCache(key, JSON.stringify([...exclusions]));
   }).finally(() => { if (chapterDeletionWrites.get(key) === pending) chapterDeletionWrites.delete(key); });
   chapterDeletionWrites.set(key, pending);
   await pending;
+}
+
+/**
+ * Marks a chapter just fetched from its source as a new local copy for the configured content
+ * server: lifts its deletion exclusion and journals the fetch, so sync uploads it instead of
+ * treating it as a copy of the deleted server chapter.
+ */
+export async function recordChapterSourceDownload(
+  novel: Pick<NovelDetailRecord, "pluginId" | "sourceNovelId" | "path">,
+  chapter: Pick<ChapterRow, "id" | "path" | "chapterNumber">,
+): Promise<void> {
+  const server = useContentSyncStore.getState().serverUrl;
+  if (!server || novel.sourceNovelId === null || novel.pluginId === LOCAL_PLUGIN_ID) return;
+  await setServerChapterDeletionExclusion(server, {
+    pluginId: novel.pluginId, novelId: novel.sourceNovelId, novelPath: novel.path, chapterPath: chapter.path,
+  }, chapter.chapterNumber, false);
+  await recordContentSourceDownload(chapter.id);
 }

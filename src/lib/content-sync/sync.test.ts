@@ -34,7 +34,7 @@ import { contentJournalHead, readContentJournal, listContentSyncChapters, listCo
 import { uploadContentChapter, fingerprintContentChapter, type CatalogEntry } from "./native";
 import { useContentSyncStore } from "../../store/content-sync";
 import { hasPendingReplaceServerUpload, runContentSyncOperation, syncContentServer, syncReceivedWorkMigrations, downloadServerChapter, downloadServerChapterFromServer, deleteServerChapter, restoreServerChapter } from "./sync";
-import { recordServerWorkDeletionExclusion, setServerChapterDeletionExclusion } from "./deletion-exclusions";
+import { readServerChapterDeletionExclusions, recordServerWorkDeletionExclusion, setServerChapterDeletionExclusion } from "./deletion-exclusions";
 import { syncWorkMetadata } from "./works";
 import { finalizePendingNovelMigrations } from "./novel-migration";
 import { syncIncomingNovelMigrations } from "./migration-feed";
@@ -81,6 +81,14 @@ beforeEach(() => {
     throw new Error(`Unexpected endpoint: ${url}`);
   });
 });
+
+/** The server still lists a chapter whose folder vanished outside the API, marked deleted. */
+function serveMissingFileChapter(chapterPath = "c"): void {
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?") && new URL(String(url)).searchParams.get("includeUnavailable") === "true"
+    ? Promise.resolve(Response.json({ id: "missing-files", deleted: true, complete: true, manifest: { identity: { pluginId: "p", novelId: "n", novelPath: "n", chapterPath }, chapter: {} } }))
+    : original(url, init));
+}
 
 it("uploads the plugin novel ID in the manifest and numeric directory without deriving it from the source route", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{
@@ -479,6 +487,7 @@ it("rechecks persisted completion and queue state after preparing the upload sna
 });
 
 it("rechecks a persisted server deletion without a rescan or a new local journal entry", async () => {
+  serveMissingFileChapter();
   vi.mocked(listContentSyncWorkChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
   memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, localDiscoveryVersion: 1, tombstones: { '["p","n","c"]': true }, uploaded: { '["p","n","c"]': "old" }, downloads: {}, excluded: [], pendingUploads: [] }));
   await syncContentServer();
@@ -491,12 +500,59 @@ it("rechecks a persisted server deletion without a rescan or a new local journal
   expect(uploadContentChapter).toHaveBeenCalledOnce();
 });
 
-it("allows a local content change to upload a chapter previously deleted on the server", async () => {
+it("uploads a source download journaled before the server deletion reaches this device", async () => {
+  vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
+  memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  changed('content:["p","n","c"]', null);
+  changed('source-download:["p","n","c"]', null);
+  await syncContentServer();
+  expect(uploadContentChapter).toHaveBeenCalledOnce();
+  expect(await readServerChapterDeletionExclusions("http://localhost:7788")).toEqual(new Set());
+});
+
+it("keeps an API-deleted chapter off the server when only its local metadata changed", async () => {
   vi.mocked(listContentSyncChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
   memory.set("norea-content-catalog:http://localhost:7788", JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
   changed('content:["p","n","c"]', null);
   await syncContentServer();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  expect(await readServerChapterDeletionExclusions("http://localhost:7788")).toEqual(new Set(['["p","n",["path","c"]]']));
+});
+
+it("keeps every stored copy of an API-deleted chapter off the server until a new source download", async () => {
+  const key = "norea-content-catalog:http://localhost:7788";
+  const row = { chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", chapterNumber: "1", isDownloaded: true, mediaRepairNeeded: false };
+  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, localDiscoveryVersion: 1, tombstones: { '["p","n","c"]': true }, uploaded: { '["p","n","c"]': "old" }, downloads: { '["p","n","c"]': true }, excluded: [], pendingUploads: [] }));
+  vi.mocked(listContentSyncWorkChapters).mockResolvedValue([row] as never);
+  await syncContentServer();
+  expect(native.stage).not.toHaveBeenCalled();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  expect(JSON.parse(memory.get(key)!)).toMatchObject({ tombstones: {}, pendingUploads: [] });
+  expect(await readServerChapterDeletionExclusions("http://localhost:7788")).toEqual(new Set(['["p","n",["number",1]]']));
+
+  vi.mocked(listContentSyncChapters).mockResolvedValue([row] as never);
+  changed('content:["p","n","c"]', null);
+  await syncContentServer();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+
+  await setServerChapterDeletionExclusion("http://localhost:7788", { pluginId: "p", novelId: "n", novelPath: "n", chapterPath: "c" }, "1", false);
+  changed('source-download:["p","n","c"]', null);
+  changed('content:["p","n","c"]', null);
+  await syncContentServer();
   expect(uploadContentChapter).toHaveBeenCalledOnce();
+});
+
+it("keeps a deletion signal for the next pass when its server lookup fails", async () => {
+  const key = "norea-content-catalog:http://localhost:7788";
+  memory.set(key, JSON.stringify({ cursor: 1, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, localDiscoveryVersion: 1, tombstones: { '["p","n","c"]': true }, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
+  vi.mocked(listContentSyncWorkChapters).mockResolvedValue([{ chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false }] as never);
+  const original = vi.mocked(appFetch).getMockImplementation()!;
+  vi.mocked(appFetch).mockImplementation((url, init) => String(url).includes("/catalog/chapter?")
+    ? Promise.resolve(new Response(null, { status: 503 })) : original(url, init));
+  await expect(syncContentServer()).rejects.toThrow();
+  expect(uploadContentChapter).not.toHaveBeenCalled();
+  expect(JSON.parse(memory.get(key)!).tombstones).toEqual({ '["p","n","c"]': true });
+  expect(await readServerChapterDeletionExclusions("http://localhost:7788")).toEqual(new Set());
 });
 
 it("skips every local chapter belonging to a deleted server work", async () => {
@@ -509,6 +565,7 @@ it("skips every local chapter belonging to a deleted server work", async () => {
 });
 
 it("queues a remote deletion before advancing the catalog checkpoint without local changes", async () => {
+  serveMissingFileChapter();
   const key = "norea-content-catalog:http://localhost:7788";
   const row = { chapterId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c", isDownloaded: true, mediaRepairNeeded: false, contentBytes: 10, mediaBytes: 0 };
   memory.set(key, JSON.stringify({ cursor: 0, localCursor: 0, uploadConflictPolicy: "prefer-complete", includesIncompleteChapters: true, tombstones: {}, uploaded: {}, downloads: {}, excluded: [], pendingUploads: [] }));
@@ -528,6 +585,7 @@ it("queues a remote deletion before advancing the catalog checkpoint without loc
 });
 
 it.each([false, true])("handles a deletion discovered only in the final catalog pull with one bounded upload phase (failure: %s)", async failUpload => {
+  serveMissingFileChapter();
   const key = "norea-content-catalog:http://localhost:7788";
   const row = { chapterId: 1, novelId: 1, pluginId: "p", sourceNovelId: "n", position: 1, novelPath: "n", chapterPath: "c",
     novelName: "Novel", chapterName: "One", isDownloaded: true, mediaRepairNeeded: false };

@@ -117,7 +117,12 @@ to discover durable local files that predate the local change journal. Once that
 checkpoint is recorded, ordinary synchronization returns to incremental discovery.
 
 Local deletion and server deletion are separate. Server deletion records prevent
-ordinary rescans from silently republishing removed content.
+ordinary rescans from silently republishing removed content. Every device that
+stores a chapter deleted through the server API records the deletion when it
+reaches that device; a later source download of the chapter or an explicit
+restore clears it.
+Source downloads are journaled under `source-download:` keys in the same local
+change journal, which older clients ignore.
 
 ## Shared user state
 

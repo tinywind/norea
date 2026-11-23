@@ -11,6 +11,7 @@ import {
 } from "../../db/queries/chapter-download-queue";
 import { ContentServerError, ContentServerTransportError } from "../content-sync/client";
 import { createServerChapterMediaFetcher } from "../content-sync/media-repair";
+import { recordChapterSourceDownload } from "../content-sync/deletion-exclusions";
 import { tryDownloadServerChapter } from "../content-sync/novel-source";
 import { withChapterDownloadWrite } from "../chapter-download-writes";
 import {
@@ -1431,6 +1432,10 @@ function enqueueChapterDownloadForExecutor(
         const chapterNovelId = chapter.novelId;
         const novel = await withChapterStorageOperation("Read chapter novel", () => getNovelById(chapterNovelId));
         if (!novel) throw missingLocalChapterError(job);
+        // The content is already stored; a missed record only keeps a server deletion in force.
+        const recordSourceDownload = (stored: ChapterRow) => recordChapterSourceDownload(novel, stored).catch((error: unknown) => {
+          console.warn("[chapter-download] could not record the source download for content sync:", error);
+        });
         if (sourceJob.chapterPath.startsWith(RECOVERED_CHAPTER_PATH_PREFIX)) {
           if (setSourceAccessUrl?.(getPluginBaseUrl(plugin)) === false) {
             throw new Error("Chapter download cannot access its source scope.");
@@ -1517,6 +1522,7 @@ function enqueueChapterDownloadForExecutor(
               throw missingLocalChapterError(job);
             }
             await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, storageContext));
+            await recordSourceDownload(chapter);
             await completeJob();
             reportProgress(
               { current: progressTotal, total: progressTotal },
@@ -1555,6 +1561,7 @@ function enqueueChapterDownloadForExecutor(
           if (embedded.storedMediaCount === 0) {
             await withChapterDownloadWrite(job.id, signal, () => clearChapterMedia(job.id, storageContext));
           }
+          await recordSourceDownload(chapter);
           await completeJob();
           reportProgress(
             { current: progressTotal, total: progressTotal },
@@ -1715,6 +1722,7 @@ function enqueueChapterDownloadForExecutor(
             sourceId: job.pluginId,
           }));
         }
+        await recordSourceDownload(chapter);
         await completeJob();
         reportProgress(
           { current: progressTotal, total: progressTotal },

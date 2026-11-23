@@ -1,16 +1,18 @@
 import { beforeEach, expect, it, vi } from "vitest";
 import { listIncomingMigrationSummaries } from "./migration-feed-state";
 vi.mock("./migration-feed-state", () => ({ listIncomingMigrationSummaries: vi.fn(async () => []) }));
-import { listNovelMigrations, readContentSyncCache, writeContentSyncCache } from "../../db/queries/content-sync";
+import { listNovelMigrations, readContentSyncCache, recordContentSourceDownload, writeContentSyncCache } from "../../db/queries/content-sync";
+import { useContentSyncStore } from "../../store/content-sync";
 import {
   readServerChapterDeletionExclusions,
   readServerWorkDeletionExclusions,
+  recordChapterSourceDownload,
   recordServerWorkDeletionExclusion,
   setServerChapterDeletionExclusion,
   withServerWorkDeletionExclusions,
 } from "./deletion-exclusions";
 
-vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeld: vi.fn(async () => false), readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn() }));
+vi.mock("../../db/queries/content-sync", () => ({ listNovelMigrations: vi.fn(async () => []), isNovelMigrationSourceHeld: vi.fn(async () => false), readContentSyncCache: vi.fn(), writeContentSyncCache: vi.fn(), recordContentSourceDownload: vi.fn(async () => true) }));
 const memory = new Map<string, string>();
 beforeEach(() => {
   memory.clear(); vi.clearAllMocks();
@@ -99,4 +101,23 @@ it("preserves concurrent chapter deletion exclusions on the same server", async 
     '["source","book",["number",1]]',
     '["source","book",["path","/prologue"]]',
   ]));
+});
+
+it("lifts a chapter deletion and journals a source download for the configured server", async () => {
+  useContentSyncStore.setState({ serverUrl: "http://server" });
+  const chapter = { pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/book/1" };
+  await setServerChapterDeletionExclusion("http://server", chapter, "1", true);
+  await recordChapterSourceDownload({ pluginId: "source", sourceNovelId: "book", path: "/book" }, { id: 7, path: "/book/1", chapterNumber: "1" });
+  expect(await readServerChapterDeletionExclusions("http://server")).toEqual(new Set());
+  expect(recordContentSourceDownload).toHaveBeenCalledExactlyOnceWith(7);
+});
+
+it("records no source download without a content server or for local works, and skips unchanged exclusion writes", async () => {
+  useContentSyncStore.setState({ serverUrl: "" });
+  await recordChapterSourceDownload({ pluginId: "source", sourceNovelId: "book", path: "/book" }, { id: 7, path: "/book/1", chapterNumber: "1" });
+  useContentSyncStore.setState({ serverUrl: "http://server" });
+  await recordChapterSourceDownload({ pluginId: "local", sourceNovelId: "book", path: "/book" }, { id: 8, path: "/book/1", chapterNumber: "1" });
+  expect(recordContentSourceDownload).not.toHaveBeenCalled();
+  await setServerChapterDeletionExclusion("http://server", { pluginId: "source", novelId: "book", novelPath: "/book", chapterPath: "/book/1" }, "1", false);
+  expect(writeContentSyncCache).not.toHaveBeenCalled();
 });

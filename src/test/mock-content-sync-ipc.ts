@@ -1150,6 +1150,28 @@ export function createContentSyncIpcHandler(
         return { handled: true, result: rows };
       }
 
+      if (command === "db_content_sync_record_source_download") {
+        let recorded = false;
+        let seq = 0;
+        await options.runTransaction(async (db) => {
+          const result = await db.execute(
+            `INSERT INTO content_sync_journal(state_key)
+             SELECT 'source-download:' || json_array(n.plugin_id,n.path,c.path)
+             FROM chapter c JOIN novel n ON n.id=c.novel_id WHERE c.id=$1`,
+            [args.chapterId],
+          );
+          recorded = result.rowsAffected > 0;
+          seq = await readJournalSeq(db);
+        });
+        return {
+          handled: true,
+          result: {
+            value: recorded,
+            effects: { contentSyncMaxSequence: seq },
+          } satisfies DbMutationEnvelope<boolean>,
+        };
+      }
+
       if (command === "db_content_sync_is_migration_source_held") {
         const db = await selectDb(args.readMode as string | undefined);
         const held = await isNovelMigrationSourceHeldInTestDb(
