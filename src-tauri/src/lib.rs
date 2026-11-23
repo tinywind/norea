@@ -378,6 +378,7 @@ pub fn run() {
             db::content_sync::db_content_sync_mark_installed,
             db::content_sync::db_content_sync_journal_head,
             db::content_sync::db_content_sync_read_journal,
+            db::content_sync::db_content_sync_record_source_download,
             db::content_sync::db_content_sync_is_migration_source_held,
             db::content_sync::db_content_sync_record_pending_novel_merge,
             db::content_sync::db_content_sync_list_incoming_migration_summaries,

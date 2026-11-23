@@ -2247,6 +2247,39 @@ pub async fn db_content_sync_read_journal(
         .collect())
 }
 
+/// Journal key prefix marking a chapter whose stored content was fetched from its source.
+const SOURCE_DOWNLOAD_JOURNAL_PREFIX: &str = "source-download:";
+
+async fn record_source_download_in_tx(
+    conn: &mut SqliteConnection,
+    chapter_id: i64,
+) -> Result<bool, String> {
+    let result = sqlx::query(
+        "INSERT INTO content_sync_journal(state_key) \
+         SELECT ?1 || json_array(n.plugin_id, n.path, c.path) \
+         FROM chapter c JOIN novel n ON n.id = c.novel_id \
+         WHERE c.id = ?2",
+    )
+    .bind(SOURCE_DOWNLOAD_JOURNAL_PREFIX)
+    .bind(chapter_id)
+    .execute(&mut *conn)
+    .await
+    .map_err(|err| format!("db content sync: record source download: {err}"))?;
+    Ok(result.rows_affected() > 0)
+}
+
+/// Records that the chapter's stored content came from its source rather than the content server.
+#[tauri::command]
+pub async fn db_content_sync_record_source_download(
+    db: State<'_, AppDatabase>,
+    chapter_id: i64,
+) -> Result<DbMutationEnvelope<bool>, String> {
+    with_write_tx(db.writer(), TxOptions::default(), move |conn, _ctx| {
+        Box::pin(async move { record_source_download_in_tx(conn, chapter_id).await })
+    })
+    .await
+}
+
 #[tauri::command]
 pub async fn db_content_sync_is_migration_source_held(
     db: State<'_, AppDatabase>,
@@ -2817,6 +2850,36 @@ mod tests {
         )
         .await
         .unwrap());
+    }
+
+    #[tokio::test]
+    async fn record_source_download_journals_the_chapter_identity() {
+        let test = open_test_db().await;
+        let mut conn = test.db.writer().acquire().await.unwrap();
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, path, source_novel_id, name, in_library) \
+             VALUES (1, 'src', '/café', 'book-1', 'Book', 1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO chapter(id, novel_id, path, name, position) \
+             VALUES (7, 1, '/café/ep-1', 'One', 1)",
+        )
+        .execute(&mut *conn)
+        .await
+        .unwrap();
+
+        assert!(record_source_download_in_tx(&mut conn, 7).await.unwrap());
+        assert!(!record_source_download_in_tx(&mut conn, 8).await.unwrap());
+        let key: String = sqlx::query_scalar(
+            "SELECT state_key FROM content_sync_journal ORDER BY sequence DESC LIMIT 1",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(key, r#"source-download:["src","/café","/café/ep-1"]"#);
     }
 
     #[tokio::test]
