@@ -3,6 +3,16 @@ import type { ReactElement, ReactNode } from "react";
 import { beforeEach, expect, it, vi } from "vitest";
 import type { ServerWorkPage, ServerWorkSummary } from "../../lib/content-sync/browse";
 
+// The persisted filter store binds its storage on import, before any test hook runs.
+vi.hoisted(() => {
+  const values = new Map<string, string>();
+  vi.stubGlobal("localStorage", {
+    getItem: (key: string) => values.get(key) ?? null,
+    setItem: (key: string, value: string) => { values.set(key, value); },
+    removeItem: (key: string) => { values.delete(key); },
+  });
+});
+
 const mocks = vi.hoisted(() => ({
   state: [] as unknown[],
   stateIndex: 0,
