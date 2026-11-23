@@ -215,6 +215,13 @@ it("accepts a chapter-number match within the exact work without creating anothe
   expect(downloadServerChapterFromServer).toHaveBeenCalledWith(stored, "http://configured", { token: "device-key", target: entry.manifest.identity });
 });
 
+it("treats another source chapter stored under the same number as a server miss", async () => {
+  settings.serverUrl = "http://configured";
+  vi.mocked(contentServerRequest).mockResolvedValueOnce({ ...entry, manifest: { identity: { ...entry.manifest.identity, chapterPath: "/chapter/other" }, chapter: { chapterNumber: "7" } } } as CatalogEntry);
+  expect(await tryDownloadServerChapter(job)).toBe(false);
+  expect(downloadServerChapterFromServer).not.toHaveBeenCalled();
+});
+
 describe("recovered folder chapters", () => {
   const folderJob = { ...job, chapterPath: "norea-folder:7" };
   beforeEach(async () => {

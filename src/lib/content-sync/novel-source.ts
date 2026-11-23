@@ -16,6 +16,7 @@ import {
   normalizeContentServerUrl,
   withContentServerLookup,
 } from "./client";
+import { isOtherServerChapterUnderNumber, isSameServerChapter } from "./chapter-identity";
 import { registerContentDevice } from "./device";
 import { hasServerMediaManifestWithoutArchive, type CatalogEntry } from "./native";
 import { fetchServerChapters } from "./chapters";
@@ -192,6 +193,9 @@ export async function tryDownloadServerChapter(
     throw error;
   }
   unavailableServers.delete(normalizedServer);
+  const requested = { chapterPath: chapter.path, chapterNumber };
+  const remoteIdentity = (value: CatalogEntry) => ({ chapterPath: value.manifest.identity.chapterPath, chapterNumber: value.manifest.chapter?.chapterNumber });
+  if (found && isOtherServerChapterUnderNumber(remoteIdentity(found.entry), requested)) found = null;
   if (!found) {
     if (source && (!allowSourceFallback || !(await hasInstalledSourceFallback(novel, chapter, signal)))) {
       throw new ServerChapterMissingError();
@@ -201,11 +205,7 @@ export async function tryDownloadServerChapter(
   const { entry, token } = found;
   const identity = entry.manifest.identity;
   const sameWork = identity.novelPath === novel.path;
-  const entryFolderNumber = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(identity.chapterPath)?.[1];
-  const rawEntryNumber = entry.manifest.chapter?.chapterNumber;
-  const entryChapterNumber = rawEntryNumber != null && /^\d+(?:\.\d+)?$/.test(rawEntryNumber) ? rawEntryNumber : entryFolderNumber;
-  const sameChapter = identity.chapterPath === chapter.path || Boolean(chapterNumber && entryChapterNumber && Number(entryChapterNumber) === Number(chapterNumber));
-  if (entry.deleted || identity.pluginId !== novel.pluginId || !sameWork || !sameChapter) {
+  if (entry.deleted || identity.pluginId !== novel.pluginId || !sameWork || !isSameServerChapter(remoteIdentity(entry), requested)) {
     throw new Error("Content server download identity does not match the requested chapter.");
   }
   if (

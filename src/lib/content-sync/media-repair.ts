@@ -5,6 +5,7 @@ import { useContentSyncStore } from "../../store/content-sync";
 import { withChapterStorageOperation } from "../chapter-storage-error";
 import type { ChapterMediaManifestFile } from "../chapter-media/types";
 import type { ChapterMediaRepairJob } from "../tasks/chapter-download";
+import { isSameServerChapter } from "./chapter-identity";
 import { ContentServerError, contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { forgetContentDeviceRegistration, registerContentDevice } from "./device";
 import { hasUsableServerMediaArchive, type CatalogEntry } from "./native";
@@ -53,8 +54,10 @@ export function createServerChapterMediaFetcher(
       }
       deadline.throwIfAborted();
       const identity = entry.manifest.identity;
-      const sameChapter = identity.chapterPath === chapter.path || (chapterNumber && entry.manifest.chapter.chapterNumber != null
-        && Number(entry.manifest.chapter.chapterNumber) === Number(chapterNumber));
+      const sameChapter = isSameServerChapter(
+        { chapterPath: identity.chapterPath, chapterNumber: entry.manifest.chapter.chapterNumber },
+        { chapterPath: chapter.path, chapterNumber },
+      );
       if (entry.deleted || identity.pluginId !== novel.pluginId || identity.novelId !== novel.sourceNovelId
         || identity.novelPath !== novel.path || !sameChapter) {
         throw new Error("Content server media identity does not match the requested chapter.");

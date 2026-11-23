@@ -28,6 +28,7 @@ import {
   setContentSyncRuntimeProgress,
 } from "../tasks/sync-runtime";
 import { watchChapterDownloadActivity } from "../tasks/chapter-download-activity";
+import { isOtherServerChapterUnderNumber, isSameServerChapter } from "./chapter-identity";
 import { registerContentDevice } from "./device";
 import { runWorkContentStorageOperation } from "./storage-operation";
 import { contentWorkId, getWorkSyncCursor, syncWorkMetadata, WorkMetadataChangedOutsideCacheError } from "./works";
@@ -109,11 +110,10 @@ async function findUploadedChapter(server: string, token: string, row: Pick<Cont
     available = false;
   }
   const remote = entry.manifest.identity;
-  const entryFolderNumber = /^norea-folder:(\d+(?:\.\d+)?)$/.exec(remote.chapterPath)?.[1];
-  const rawEntryNumber = entry.manifest.chapter?.chapterNumber;
-  const entryChapterNumber = rawEntryNumber != null && /^\d+(?:\.\d+)?$/.test(rawEntryNumber) ? rawEntryNumber : entryFolderNumber;
-  const sameChapter = remote.chapterPath === row.chapterPath ||
-    Boolean(chapterNumber && entryChapterNumber && Number(entryChapterNumber) === Number(chapterNumber));
+  const remoteChapter = { chapterPath: remote.chapterPath, chapterNumber: entry.manifest.chapter?.chapterNumber };
+  const localChapter = { chapterPath: row.chapterPath, chapterNumber };
+  if (isOtherServerChapterUnderNumber(remoteChapter, localChapter)) return null;
+  const sameChapter = isSameServerChapter(remoteChapter, localChapter);
   // Unavailable lookups exclude explicit deletions but may retain a missing-file catalog marker.
   if ((available && entry.deleted) || remote.pluginId !== row.pluginId || remote.novelPath !== row.novelPath || remote.novelId !== row.sourceNovelId ||
     !remote.chapterPath || !sameChapter) {

@@ -1,6 +1,7 @@
 import type { ChapterCleanupCandidate } from "../../db/queries/chapter-cleanup";
 import { useContentSyncStore } from "../../store/content-sync";
 import { isChapterPayloadInventory, type ChapterPayloadInventory } from "../chapter-content/inventory";
+import { isSameServerChapter } from "./chapter-identity";
 import { contentServerRequest, normalizeContentServerUrl, withContentServerLookup } from "./client";
 import { registerContentDevice } from "./device";
 import type { CatalogEntry, PackageManifest } from "./native";
@@ -121,9 +122,10 @@ export async function fetchCleanupServerInventory(candidate: ChapterCleanupCandi
     const query = new URLSearchParams({ pluginId: novel.pluginId, novelPath: candidate.novelPath, chapterPath: candidate.chapterPath, ...(presenceOnly ? { includeUnavailable: "true" } : {}), ...(chapterNumber ? { chapterNumber } : {}) });
     const entry = await contentServerRequest<CatalogEntry>(serverUrl, `/catalog/chapter?${query}`, token, "GET", undefined, deadline);
     const identity = entry?.manifest?.identity;
-    const sameChapter = identity?.chapterPath === candidate.chapterPath
-      || (chapterNumber !== undefined && entry?.manifest?.chapter?.chapterNumber != null
-        && Number(entry.manifest.chapter.chapterNumber) === Number(chapterNumber));
+    const sameChapter = identity !== undefined && isSameServerChapter(
+      { chapterPath: identity.chapterPath, chapterNumber: entry.manifest?.chapter?.chapterNumber },
+      { chapterPath: candidate.chapterPath, chapterNumber },
+    );
     if (entry.deleted || !entry.id || !entry.revision || identity?.pluginId !== novel.pluginId
       || identity.novelPath !== candidate.novelPath || identity.novelId !== novel.sourceNovelId || !sameChapter) {
       throw new Error("Content server chapter identity does not match the device chapter.");

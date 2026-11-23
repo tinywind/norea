@@ -116,7 +116,11 @@ rows before contacting the server. Each discovered folder is checked for its
 body and declared ZIP assets without finalizing or rewriting media. Deletions during this scan
 cannot restore stale download flags. Detailed content recovery remains part of
 opening stored content and explicit storage rescans.
-For an unfinished chapter, Norea asks the server for that chapter. Matching files
+For an unfinished chapter, Norea asks the server for that chapter. A server chapter
+matches by its source path; a chapter number identifies it only when either side is
+a recovered folder chapter, so another source chapter stored under the same number
+counts as a server miss for downloads and uploads.
+Matching files
 install into the existing local chapter; otherwise, if the work has a source path
 and an installed source plugin, Norea automatically falls back to that plugin
 on a server miss, lookup timeout/failure, or failed staging transfer (including
