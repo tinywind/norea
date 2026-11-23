@@ -4,7 +4,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 
 const MAX_COMPOSITION_BYTES: usize = 16 * 1024 * 1024;
 const CONTENT_TYPES: &[&str] = &["html", "text", "pdf", "markdown", "epub"];
@@ -964,7 +964,7 @@ pub async fn materialize_chapter_composition_in_tx(
                 OR chapter.release_time IS NOT excluded.release_time",
             placeholders.join(",")
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for entry in chunk {
             let source = &entry.sources[entry.primary_source];
             let state = inherited_state_by_path
@@ -1013,7 +1013,7 @@ pub async fn materialize_chapter_composition_in_tx(
                  JOIN inherited i ON i.path = c.path WHERE c.novel_id = ?1",
                 values.join(",")
             );
-            let mut ex_query = sqlx::query(&exclusion_sql).bind(novel_id);
+            let mut ex_query = sqlx::query(AssertSqlSafe(exclusion_sql)).bind(novel_id);
             for (path, excluded_at) in exclusions {
                 ex_query = ex_query.bind(path).bind(excluded_at);
             }
@@ -1038,7 +1038,7 @@ pub async fn materialize_chapter_composition_in_tx(
             "DELETE FROM chapter_download_queue WHERE chapter_id IN \
              (SELECT id FROM chapter WHERE novel_id = ?1 AND path IN ({in_clause}))"
         );
-        let mut queue_query = sqlx::query(&delete_queue_sql).bind(novel_id);
+        let mut queue_query = sqlx::query(AssertSqlSafe(delete_queue_sql)).bind(novel_id);
         for path in chunk {
             queue_query = queue_query.bind(*path);
         }
@@ -1049,7 +1049,7 @@ pub async fn materialize_chapter_composition_in_tx(
 
         let delete_chapter_sql =
             format!("DELETE FROM chapter WHERE novel_id = ?1 AND path IN ({in_clause})");
-        let mut chapter_query = sqlx::query(&delete_chapter_sql).bind(novel_id);
+        let mut chapter_query = sqlx::query(AssertSqlSafe(delete_chapter_sql)).bind(novel_id);
         for path in chunk {
             chapter_query = chapter_query.bind(*path);
         }

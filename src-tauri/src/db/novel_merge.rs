@@ -5,7 +5,7 @@ use serde::ser::{SerializeMap, SerializeSeq};
 use serde::{Deserialize, Serialize, Serializer};
 use serde_json::{json, Value as JsonValue};
 use sha2::{Digest, Sha256};
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 use tauri::{AppHandle, State};
 
 use crate::chapter_media::is_storage_id;
@@ -1772,7 +1772,7 @@ pub async fn apply_novel_merge_in_tx(
              GROUP BY mapping.target_id",
             values.join(", ")
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for &(src_id, tgt_id) in chunk {
             query = query.bind(src_id).bind(tgt_id);
         }
@@ -1900,7 +1900,7 @@ pub async fn apply_novel_merge_in_tx(
              WHERE id IN (SELECT target_id FROM merge_updates)",
             values.join(", ")
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for u in chunk {
             query = query
                 .bind(u.id)

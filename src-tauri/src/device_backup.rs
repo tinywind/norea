@@ -1,7 +1,7 @@
 //! Complete device database and settings snapshots. Content files are never included or changed.
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use sqlx::{sqlite::SqliteConnectOptions, Connection, SqliteConnection, SqlitePool};
+use sqlx::{sqlite::SqliteConnectOptions, AssertSqlSafe, Connection, SqliteConnection, SqlitePool};
 use std::{
     collections::HashSet,
     fs::{self, File, OpenOptions},
@@ -181,7 +181,7 @@ async fn schema(
     connection: &mut SqliteConnection,
     database: &str,
 ) -> Result<Vec<(String, String, String)>, String> {
-    sqlx::query_as(&format!("SELECT type,name,sql FROM {database}.sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name"))
+    sqlx::query_as(AssertSqlSafe(format!("SELECT type,name,sql FROM {database}.sqlite_schema WHERE sql IS NOT NULL AND name NOT LIKE 'sqlite_%' ORDER BY type,name")))
         .fetch_all(connection).await.map_err(failure)
 }
 
@@ -189,9 +189,9 @@ async fn migrations(
     connection: &mut SqliteConnection,
     database: &str,
 ) -> Result<Vec<(i64, bool, Vec<u8>)>, String> {
-    sqlx::query_as(&format!(
+    sqlx::query_as(AssertSqlSafe(format!(
         "SELECT version,success,checksum FROM {database}._sqlx_migrations ORDER BY version"
-    ))
+    )))
     .fetch_all(connection)
     .await
     .map_err(failure)
@@ -312,14 +312,14 @@ async fn restore_database(source: &Path, pool: &SqlitePool) -> Result<(), String
         let changed = async {
             for (kind, name, _) in &objects {
                 if kind == "trigger" {
-                    sqlx::query(&format!("DROP TRIGGER {}", quote_identifier(name))).execute(&mut *connection).await.map_err(failure)?;
+                    sqlx::query(AssertSqlSafe(format!("DROP TRIGGER {}", quote_identifier(name)))).execute(&mut *connection).await.map_err(failure)?;
                 }
             }
             for (kind, name, _) in &objects {
                 if kind == "table" {
                     let table = quote_identifier(name);
-                    sqlx::query(&format!("DELETE FROM main.{table}")).execute(&mut *connection).await.map_err(failure)?;
-                    sqlx::query(&format!("INSERT INTO main.{table} SELECT * FROM device_backup.{table}")).execute(&mut *connection).await.map_err(failure)?;
+                    sqlx::query(AssertSqlSafe(format!("DELETE FROM main.{table}"))).execute(&mut *connection).await.map_err(failure)?;
+                    sqlx::query(AssertSqlSafe(format!("INSERT INTO main.{table} SELECT * FROM device_backup.{table}"))).execute(&mut *connection).await.map_err(failure)?;
                 }
             }
             let has_sequence: i64 = sqlx::query_scalar("SELECT count(*) FROM main.sqlite_schema WHERE name='sqlite_sequence'").fetch_one(&mut *connection).await.map_err(failure)?;
@@ -360,7 +360,7 @@ async fn restore_database(source: &Path, pool: &SqlitePool) -> Result<(), String
                 sqlx::query("UPDATE novel_stats SET chapters_downloaded=0").execute(&mut *connection).await.map_err(failure)?;
             }
             for (kind, _, sql) in &objects {
-                if kind == "trigger" { sqlx::query(sql).execute(&mut *connection).await.map_err(failure)?; }
+                if kind == "trigger" { sqlx::query(AssertSqlSafe(sql.as_str())).execute(&mut *connection).await.map_err(failure)?; }
             }
             if sqlx::query("PRAGMA main.foreign_key_check").fetch_optional(&mut *connection).await.map_err(failure)?.is_some() {
                 return Err(failure("restored database contains broken relationships"));

@@ -16,7 +16,7 @@ use std::io::{BufReader, BufWriter, Cursor, Read, Seek, Write};
 use std::path::Path;
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, Sqlite, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, Sqlite, SqlitePool};
 use tauri::{AppHandle, State, async_runtime};
 use zip::write::SimpleFileOptions;
 use zip::{CompressionMethod, ZipArchive, ZipWriter};
@@ -769,7 +769,7 @@ async fn restore_metadata_cache(
         "chapter_download_queue",
         "download_cache_work",
     ] {
-        sqlx::query(&format!("DELETE FROM {table}"))
+        sqlx::query(AssertSqlSafe(format!("DELETE FROM {table}")))
             .execute(&mut **tx)
             .await
             .map_err(|err| format!("backup_restore_snapshot: clear {table}: {err}"))?;

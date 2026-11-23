@@ -9,7 +9,7 @@ use std::{
 
 use sqlx::migrate::{Migration as SqlxMigration, MigrationType, Migrator};
 use sqlx::sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePoolOptions};
-use sqlx::{Row, SqlitePool};
+use sqlx::{AssertSqlSafe, Row, SqlStr, SqlitePool};
 use tauri::{AppHandle, Manager};
 
 const DB_FILE: &str = "norea.db";
@@ -97,7 +97,7 @@ impl AppDatabase {
                 Some(0) => {}
                 Some(pages) => {
                     let pragma = format!("PRAGMA incremental_vacuum({pages})");
-                    sqlx::query(&pragma)
+                    sqlx::query(AssertSqlSafe(pragma))
                         .execute(&mut *conn)
                         .await
                         .map_err(|err| format!("database: run incremental_vacuum({pages}): {err}"))?;
@@ -255,7 +255,7 @@ pub fn sqlx_migrations() -> Vec<SqlxMigration> {
                 migration.version,
                 migration.description.into(),
                 MigrationType::ReversibleUp,
-                migration.sql.into(),
+                SqlStr::from_static(migration.sql),
                 false,
             )
         })
@@ -554,12 +554,12 @@ pub fn install_sqlite_pools(app: &AppHandle) -> Result<(), String> {
 mod tests {
     use super::*;
 
-    fn schema(sql: &str) -> SqlxMigration {
+    fn schema(sql: &'static str) -> SqlxMigration {
         SqlxMigration::new(
             1,
             "fixture".into(),
             MigrationType::ReversibleUp,
-            sql.to_owned().into(),
+            SqlStr::from_static(sql),
             false,
         )
     }
@@ -593,7 +593,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations[..2]).await.unwrap();
         sqlx::query("INSERT INTO novel(id,plugin_id,path,name) VALUES(1,'source','/work','Work')").execute(&pool).await.unwrap();
@@ -626,7 +626,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations[..8]).await.unwrap();
         sqlx::query("INSERT INTO vpn_download_profile_issue VALUES('batch','192.0.2.1','profile','hash','plan','range',4,'tunnel-lost',100,0,3)")
@@ -654,7 +654,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations[..3]).await.unwrap();
         sqlx::query("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Work',1)").execute(&pool).await.unwrap();
@@ -690,7 +690,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations[..4]).await.unwrap();
         sqlx::query("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Work',1),(2,'source','/other','Other',0)")
@@ -707,7 +707,7 @@ mod tests {
         let pool = bootstrap(&path, &migrations).await.unwrap();
         sqlx::query("INSERT INTO novel_download_goal VALUES(1,'keep_ahead',3,10),(2,'entire',NULL,10)").execute(&pool).await.unwrap();
         for invalid in ["(1,'entire',NULL,11)", "(2,'keep_ahead',NULL,10)", "(2,'all_remaining',5,10)", "(2,'unknown',NULL,10)", "(99,'entire',NULL,10)"] {
-            assert!(sqlx::query(&format!("INSERT INTO novel_download_goal VALUES{invalid}")).execute(&pool).await.is_err(), "{invalid}");
+            assert!(sqlx::query(AssertSqlSafe(format!("INSERT INTO novel_download_goal VALUES{invalid}"))).execute(&pool).await.is_err(), "{invalid}");
         }
         sqlx::query("DELETE FROM novel WHERE id=2").execute(&pool).await.unwrap();
         assert_eq!(sqlx::query_as::<_, (i64, String, Option<i64>)>("SELECT novel_id,kind,count FROM novel_download_goal")
@@ -721,7 +721,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations[..5]).await.unwrap();
         sqlx::query("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Work',1),(2,'source','/other','Other',1),(3,'source','/third','Third',1)")
@@ -756,7 +756,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations[..6]).await.unwrap();
         sqlx::query("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Work',1),(2,'source','/other','Other',1)")
@@ -789,7 +789,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations[..7]).await.unwrap();
         sqlx::query("INSERT INTO repository(id,url,name,added_at) VALUES(1,'https://repo.test/plugins.json','Saved',50)")
@@ -832,7 +832,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations[..12]).await.unwrap();
         sqlx::query("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,status,in_library) VALUES(1,'source','work-1','/work','Work','Ongoing',1),(2,'source','work-2','/other','Other',NULL,1)")
@@ -873,7 +873,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations[..13]).await.unwrap();
         sqlx::query("INSERT INTO novel(id,plugin_id,source_novel_id,path,name,status,in_library) VALUES(1,'source','work-1','/one','One','Ongoing',1),(2,'source','work-2','/two','Two','Completed',1),(3,'source','work-3','/three','Three','Completed',1),(4,'source','work-4','/four','Four','Ongoing',1)")
@@ -908,7 +908,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations[..1]).await.unwrap();
         sqlx::query("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Retained work',1)")
@@ -942,7 +942,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let migrations: Vec<_> = schema_migrations().into_iter().map(|migration| {
             SqlxMigration::new(migration.version, migration.description.into(),
-                MigrationType::ReversibleUp, migration.sql.into(), false)
+                MigrationType::ReversibleUp, SqlStr::from_static(migration.sql), false)
         }).collect();
         let pool = bootstrap(&path, &migrations).await.unwrap();
         sqlx::query("INSERT INTO novel(id,plugin_id,path,name,in_library) VALUES(1,'source','/work','Retained work',1)")
@@ -1000,7 +1000,7 @@ mod tests {
         let path = dir.path().join(DB_FILE);
         let first = schema(CURRENT);
         let second = SqlxMigration::new(2, "add label".into(), MigrationType::ReversibleUp,
-            "ALTER TABLE sample ADD COLUMN label TEXT NOT NULL DEFAULT 'retained';".into(), false);
+            SqlStr::from_static("ALTER TABLE sample ADD COLUMN label TEXT NOT NULL DEFAULT 'retained';"), false);
         let pool = bootstrap(&path, &[first.clone()]).await.unwrap();
         sqlx::query("INSERT INTO sample VALUES (42)").execute(&pool).await.unwrap();
         pool.close().await;
@@ -1045,7 +1045,7 @@ mod tests {
         sqlx::query("INSERT INTO sample VALUES (42)").execute(&pool).await.unwrap();
         pool.close().await;
         let second = SqlxMigration::new(2, "broken upgrade".into(), MigrationType::ReversibleUp,
-            "UPDATE sample SET value = 99; INSERT INTO missing_table VALUES (1);".into(), false);
+            SqlStr::from_static("UPDATE sample SET value = 99; INSERT INTO missing_table VALUES (1);"), false);
         assert!(bootstrap(&path, &[first.clone(), second]).await.is_err());
         let pool = bootstrap(&path, &[first]).await.unwrap();
         assert_eq!(sqlx::query_scalar::<_, i64>("SELECT value FROM sample").fetch_one(&pool).await.unwrap(), 42);
@@ -1350,7 +1350,7 @@ mod tests {
                     migration.version,
                     migration.description.into(),
                     MigrationType::ReversibleUp,
-                    migration.sql.into(),
+                    SqlStr::from_static(migration.sql),
                     false,
                 )
             })

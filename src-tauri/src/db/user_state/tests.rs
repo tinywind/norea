@@ -2,7 +2,7 @@ use std::collections::HashSet;
 use std::fs;
 
 use serde_json::{json, Value as JsonValue};
-use sqlx::Row;
+use sqlx::{AssertSqlSafe, Row};
 use tempfile::TempDir;
 
 use crate::db::chapter_composition::ChapterCompositionV1Dto;
@@ -118,7 +118,7 @@ async fn acknowledgement_batches_look_up_each_incoming_key_through_the_primary_k
         MARK_ACKNOWLEDGED_RECORDS_APPLIED_SQL,
         ADVANCE_ACKNOWLEDGED_PROGRESS_SQL,
     ] {
-        let rows = sqlx::query(&format!("EXPLAIN QUERY PLAN {sql}"))
+        let rows = sqlx::query(AssertSqlSafe(format!("EXPLAIN QUERY PLAN {sql}")))
             .bind("[\"https://state.example\",\"workspace-1\",\"epoch-1\"]")
             .bind("[{\"entityKey\":\"key\",\"revision\":1,\"intentSequence\":1,\"baseRevision\":1}]")
             .fetch_all(pool)
@@ -1780,7 +1780,7 @@ async fn populates_composition_entry_ids_and_scans_content_sync_cache_by_prefix(
     assert_eq!(rows[0].composition_entry_id, None);
     assert_eq!(rows[1].composition_entry_id.as_deref(), Some("entry-2"));
 
-    let mut direct: Vec<_> = sqlx::query(&format!("{USER_CHAPTER_SELECT} ORDER BY c.id"))
+    let mut direct: Vec<_> = sqlx::query(AssertSqlSafe(format!("{USER_CHAPTER_SELECT} ORDER BY c.id")))
         .fetch_all(&mut *conn)
         .await
         .unwrap()
@@ -3334,7 +3334,7 @@ async fn rebind_start_fresh_post_edit_mode_a_same_epoch_and_validation_guards() 
     }).await.unwrap();
 
     for table in ["user_state_conflict", "user_state_alias", "user_state_intent", "user_state_progress", "user_state_operation", "user_state_record"] {
-        let count: i64 = sqlx::query_scalar(&format!("SELECT COUNT(*) FROM {table}")).fetch_one(pool).await.unwrap();
+        let count: i64 = sqlx::query_scalar(AssertSqlSafe(format!("SELECT COUNT(*) FROM {table}"))).fetch_one(pool).await.unwrap();
         assert_eq!(count, 0, "{table} must be empty after Mode B");
     }
 

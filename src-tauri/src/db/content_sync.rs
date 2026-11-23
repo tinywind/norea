@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value as JsonValue};
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 use tauri::{AppHandle, State};
 
 use crate::database::AppDatabase;
@@ -495,7 +495,7 @@ pub async fn cache_server_chapters_in_tx(
              VALUES {} ON CONFLICT(novel_id, path) DO NOTHING",
             values_sql.join(",")
         );
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for item in batch {
             query = query
                 .bind(novel_id)
@@ -651,7 +651,7 @@ async fn select_content_sync_chapters_block_in_conn(
          ORDER BY n.id, c.position, c.id"
     );
 
-    let mut query = sqlx::query(&sql);
+    let mut query = sqlx::query(AssertSqlSafe(sql));
     for t in &targets {
         query = query.bind(t);
     }
@@ -1755,7 +1755,7 @@ pub async fn delete_local_novel_records_in_tx(
             "{USER_CHAPTER_SELECT} WHERE c.novel_id = ?1 \
              AND (c.progress > 0 OR c.read_at IS NOT NULL OR c.bookmark = 1)"
         );
-        let raw_chapters = sqlx::query(&chapter_sql)
+        let raw_chapters = sqlx::query(AssertSqlSafe(chapter_sql))
             .bind(input.id)
             .fetch_all(&mut *conn)
             .await
@@ -2484,7 +2484,7 @@ pub async fn db_content_deletion_list_downloaded_chapter_ids(
                 WHERE n.is_local = 0 \
                   AND (c.is_downloaded = 1 OR c.content_bytes > 0 OR c.media_repair_needed = 1)";
     let Some(ids) = novel_ids else {
-        return sqlx::query_scalar(&format!("{base} ORDER BY c.id"))
+        return sqlx::query_scalar(AssertSqlSafe(format!("{base} ORDER BY c.id")))
             .fetch_all(pool)
             .await
             .map_err(|err| format!("db content deletion: list downloaded chapter ids: {err}"));
@@ -2495,7 +2495,7 @@ pub async fn db_content_deletion_list_downloaded_chapter_ids(
     for chunk in unique.chunks(500) {
         let placeholders: Vec<String> = (1..=chunk.len()).map(|i| format!("?{i}")).collect();
         let sql = format!("{base} AND c.novel_id IN ({})", placeholders.join(","));
-        let mut query = sqlx::query_scalar(&sql);
+        let mut query = sqlx::query_scalar(AssertSqlSafe(sql));
         for &id in chunk {
             query = query.bind(id);
         }
@@ -2661,9 +2661,9 @@ async fn commit_download_clear_in_tx(
         "work_metadata_sync_journal",
         "work_metadata_dirty",
     ] {
-        sqlx::query(&format!(
+        sqlx::query(AssertSqlSafe(format!(
             "DELETE FROM {table} WHERE plugin_id = ?1 AND path = ?2"
-        ))
+        )))
         .bind(&input.plugin_id)
         .bind(&input.path)
         .execute(&mut *conn)

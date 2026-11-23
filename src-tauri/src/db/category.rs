@@ -1,7 +1,7 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
 use serde::{Deserialize, Serialize};
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 use tauri::{AppHandle, State};
 
 use crate::database::AppDatabase;
@@ -338,7 +338,7 @@ pub async fn add_novels_to_category_in_tx(
             "INSERT OR IGNORE INTO novel_category (novel_id, category_id) VALUES {}",
             values_sql.join(", ")
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(AssertSqlSafe(sql));
         for &novel_id in chunk {
             q = q.bind(novel_id).bind(category_id);
         }
@@ -366,7 +366,7 @@ pub async fn remove_novels_from_category_in_tx(
             "DELETE FROM novel_category WHERE category_id = ?1 AND novel_id IN ({})",
             placeholders.join(", ")
         );
-        let mut q = sqlx::query(&sql).bind(category_id);
+        let mut q = sqlx::query(AssertSqlSafe(sql)).bind(category_id);
         for &novel_id in chunk {
             q = q.bind(novel_id);
         }
@@ -396,7 +396,7 @@ pub async fn count_novels_by_category_in_conn(
              GROUP BY nc.category_id",
             placeholders.join(", ")
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(AssertSqlSafe(sql));
         for &id in chunk {
             q = q.bind(id);
         }
@@ -469,7 +469,7 @@ pub async fn set_novel_categories_in_tx(
             "SELECT COUNT(*) FROM category WHERE is_system = 0 AND id IN ({})",
             placeholders.join(", ")
         );
-        let mut q = sqlx::query_scalar::<_, i64>(&sql);
+        let mut q = sqlx::query_scalar::<_, i64>(AssertSqlSafe(sql));
         for &cat_id in &unique_category_ids {
             q = q.bind(cat_id);
         }
@@ -521,7 +521,7 @@ pub async fn set_novel_categories_in_tx(
             "DELETE FROM novel_category WHERE novel_id = ?1 AND category_id IN ({})",
             placeholders.join(", ")
         );
-        let mut q = sqlx::query(&sql).bind(novel_id);
+        let mut q = sqlx::query(AssertSqlSafe(sql)).bind(novel_id);
         for &id in &removed {
             q = q.bind(id);
         }
@@ -538,7 +538,7 @@ pub async fn set_novel_categories_in_tx(
             "INSERT OR IGNORE INTO novel_category (novel_id, category_id) VALUES {}",
             values.join(", ")
         );
-        let mut q = sqlx::query(&sql).bind(novel_id);
+        let mut q = sqlx::query(AssertSqlSafe(sql)).bind(novel_id);
         for &id in &added {
             q = q.bind(id);
         }

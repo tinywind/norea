@@ -8,7 +8,7 @@ use std::path::Path;
 
 use serde::{Deserialize, Serialize};
 use serde_json::Value as JsonValue;
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 use tauri::{AppHandle, State};
 
 use crate::database::AppDatabase;
@@ -381,7 +381,7 @@ pub async fn get_novel_override_in_conn(
     novel_id: i64,
 ) -> Result<Option<WorkOverrideV1Dto>, String> {
     let sql = format!("{SELECT_STORED_OVERRIDES} WHERE o.novel_id = ?1");
-    sqlx::query(&sql)
+    sqlx::query(AssertSqlSafe(sql))
         .bind(novel_id)
         .fetch_optional(&mut *conn)
         .await
@@ -394,7 +394,7 @@ pub async fn list_novel_overrides_in_conn(
     conn: &mut SqliteConnection,
 ) -> Result<Vec<StoredNovelOverrideDto>, String> {
     let sql = format!("{SELECT_STORED_OVERRIDES} ORDER BY n.id");
-    sqlx::query(&sql)
+    sqlx::query(AssertSqlSafe(sql))
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db novel override: list overrides: {err}"))?

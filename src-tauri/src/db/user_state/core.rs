@@ -1,7 +1,7 @@
 use std::collections::{HashMap, HashSet};
 
 use serde_json::{json, Value as JsonValue};
-use sqlx::{Row, SqliteConnection};
+use sqlx::{AssertSqlSafe, Row, SqliteConnection};
 
 use crate::db::chapter_composition::get_chapter_composition_in_tx;
 use crate::db::tx::TxContext;
@@ -223,7 +223,7 @@ pub async fn populate_user_chapter_composition_ids_in_tx(
             "SELECT novel_id, payload FROM novel_chapter_composition WHERE novel_id IN ({})",
             placeholders.join(",")
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(AssertSqlSafe(sql));
         for id in chunk {
             q = q.bind(*id);
         }
@@ -490,7 +490,7 @@ pub async fn record_user_state_changes_in_tx(
                  entity_json = excluded.entity_json, value_json = excluded.value_json, seed = 0",
             );
         }
-        let mut query = sqlx::query(&sql);
+        let mut query = sqlx::query(AssertSqlSafe(sql));
         for (ent, val) in batch {
             query = query
                 .bind(user_state_entity_key(ent)?)
@@ -556,7 +556,7 @@ pub async fn record_user_state_changes_in_tx(
                    END",
                 values_clause.join(",")
             );
-            let mut query = sqlx::query(&sql).bind(&workspace.namespace);
+            let mut query = sqlx::query(AssertSqlSafe(sql)).bind(&workspace.namespace);
             for (local_key, record_key) in &key_pairs {
                 query = query.bind(local_key).bind(record_key);
             }
@@ -614,7 +614,7 @@ pub async fn load_user_chapter_rows_by_ids_in_tx(
             "{USER_CHAPTER_SELECT} WHERE c.id IN ({})",
             placeholders.join(",")
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(AssertSqlSafe(sql));
         for id in chunk {
             q = q.bind(*id);
         }
@@ -695,7 +695,7 @@ pub async fn record_chapter_rows_in_tx(
                 "DELETE FROM user_state_private WHERE entity_key IN ({})",
                 placeholders.join(",")
             );
-            let mut q = sqlx::query(&sql);
+            let mut q = sqlx::query(AssertSqlSafe(sql));
             for k in &keys {
                 q = q.bind(k);
             }
@@ -759,7 +759,7 @@ pub async fn record_novel_chapters_in_tx(
                     "{USER_CHAPTER_SELECT} WHERE c.novel_id IN ({})",
                     placeholders.join(",")
                 );
-                let mut q = sqlx::query(&sql);
+                let mut q = sqlx::query(AssertSqlSafe(sql));
                 for id in chunk {
                     q = q.bind(*id);
                 }
@@ -819,7 +819,7 @@ pub async fn snapshot_reading_progress_clear_targets_in_tx(
          WHERE n.plugin_id <> 'local' AND n.is_local = 0 \
            AND (c.progress <> 0 OR c.read_at IS NOT NULL)"
     );
-    let reset_rows = sqlx::query(&reset_sql)
+    let reset_rows = sqlx::query(AssertSqlSafe(reset_sql))
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db user state: load reset reading chapters: {err}"))?;
@@ -847,7 +847,7 @@ pub async fn snapshot_reading_progress_clear_targets_in_tx(
                AND c.progress = 0 AND c.read_at IS NULL \
                AND c.path IN (SELECT value FROM json_each(?1))"
         );
-        let candidate_rows = sqlx::query(&untouched_sql)
+        let candidate_rows = sqlx::query(AssertSqlSafe(untouched_sql))
             .bind(&encoded_paths)
             .fetch_all(&mut *conn)
             .await
@@ -1072,7 +1072,7 @@ pub async fn record_membership_in_tx(
              FROM novel WHERE id IN ({}) AND plugin_id <> 'local' AND is_local = 0",
             placeholders.join(",")
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(AssertSqlSafe(sql));
         for id in chunk {
             q = q.bind(*id);
         }
@@ -1173,7 +1173,7 @@ pub async fn record_resume_cleared_in_tx(
                      FROM novel WHERE id IN ({}) AND plugin_id <> 'local' AND is_local = 0",
                     placeholders.join(",")
                 );
-                let mut q = sqlx::query(&sql);
+                let mut q = sqlx::query(AssertSqlSafe(sql));
                 for id in ids {
                     q = q.bind(*id);
                 }
@@ -1403,7 +1403,7 @@ pub async fn seed_user_state_with_options_in_tx(
         "{USER_CHAPTER_SELECT} WHERE n.plugin_id <> 'local' AND n.is_local = 0 \
          AND (c.progress > 0 OR c.read_at IS NOT NULL OR c.bookmark = 1)"
     );
-    let ch_rows = sqlx::query(&ch_sql)
+    let ch_rows = sqlx::query(AssertSqlSafe(ch_sql))
         .fetch_all(&mut *conn)
         .await
         .map_err(|err| format!("db user state: seed load chapters: {err}"))?;
@@ -1499,7 +1499,7 @@ pub async fn record_public_novel_reading_in_tx(
             "{USER_CHAPTER_SELECT} WHERE c.novel_id IN ({})",
             placeholders.join(",")
         );
-        let mut q = sqlx::query(&sql);
+        let mut q = sqlx::query(AssertSqlSafe(sql));
         for id in chunk {
             q = q.bind(*id);
         }
