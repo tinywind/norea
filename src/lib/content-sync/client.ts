@@ -90,6 +90,8 @@ export async function contentServerRequest<T>(serverUrl: string, path: string, t
       let message: string | undefined;
       if (response.status === 409 && /^\/works\/[^/]+\/(?:finalize-migration|migration-snapshot|reconcile-chapter-numbers|chapter-number-mappings)$/.test(path)) {
         if (typeof detail?.message === "string" && (detail.message.startsWith("Work migration: ") || detail.message.startsWith("Chapter number reconciliation conflict: "))) message = detail.message.slice(0, 1500);
+      } else if (response.status === 409 && /^\/works\/[^/?]+(?:\?|$)/.test(path) && typeof detail?.message === "string") {
+        message = `Content server request failed (409): ${detail.message.slice(0, 1500)}`;
       }
       throw new ContentServerError(response.status, message, serverCode);
     }

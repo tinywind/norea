@@ -78,6 +78,15 @@ it("retains the server's migration conflict reason for the Details view", async 
     .rejects.toMatchObject({ status: 409, message: "Work migration: target differs from the explicitly selected copy" });
 });
 
+it("retains the server's work metadata conflict reason for the Details view", async () => {
+  const reason = "Shared composition cannot safely overlay this metadata: User state: a newly discovered chapter conflicts with retained composition storage";
+  vi.mocked(nativeFetch).mockImplementation(async () => Response.json({ statusCode: 409, error: "Conflict", message: reason }, { status: 409 }));
+  for (const path of ["/works/work-id", "/works/work-id?restore=true"]) {
+    await expect(contentServerRequest("http://server", path, "device", "PUT", {}))
+      .rejects.toMatchObject({ status: 409, message: `Content server request failed (409): ${reason}` });
+  }
+});
+
 it("keeps the migration verification deadline separate from ordinary lookup deadlines", async () => {
   vi.useFakeTimers();
   vi.mocked(nativeFetch).mockResolvedValue(new Response(new ReadableStream(), { headers: { "Content-Type": "application/json" } }));
