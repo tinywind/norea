@@ -167,11 +167,8 @@ export interface ChapterContentResource {
 export type ChapterResource = ChapterContentResource | ChapterBinaryResource;
 
 export enum NovelStatus {
-  Unknown = "Unknown",
   Ongoing = "Ongoing",
   Completed = "Completed",
-  Licensed = "Licensed",
-  PublishingFinished = "Publishing Finished",
   Cancelled = "Cancelled",
   OnHiatus = "On Hiatus",
 }
@@ -184,6 +181,19 @@ const NOVEL_STATUS_VALUES: ReadonlySet<string> = new Set<string>(
 
 export function isNovelStatus(value: unknown): value is NovelStatusValue {
   return typeof value === "string" && NOVEL_STATUS_VALUES.has(value);
+}
+
+/**
+ * Coerces a persisted or filter status value to one of the four canonical
+ * `NovelStatus` constants, mapping blank, retired, or legacy non-canonical
+ * values to `NovelStatus.Ongoing`.
+ */
+export function normalizeNovelStatus(value: unknown): NovelStatusValue {
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    if (isNovelStatus(trimmed)) return trimmed;
+  }
+  return NovelStatus.Ongoing;
 }
 
 export interface NovelItem {

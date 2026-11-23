@@ -168,7 +168,7 @@ beforeEach(async () => {
 afterEach(() => sqlite.close());
 
 function plugin(): Plugin {
-  return { id: "source", parseNovel: async () => ({ novelId: "book", path: "/book", name: "Book", status: "Unknown", chapters }) } as unknown as Plugin;
+  return { id: "source", parseNovel: async () => ({ novelId: "book", path: "/book", name: "Book", status: "Ongoing", chapters }) } as unknown as Plugin;
 }
 
 async function preparedJob(): Promise<SourceChapterRenumberJournal> {

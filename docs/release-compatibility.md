@@ -25,7 +25,7 @@ The SQLite schema is persistent user data.
   freed pages and WAL frames via `PRAGMA incremental_vacuum` and
   `PRAGMA wal_checkpoint(TRUNCATE)`.
 
-The current migration set extends through 0019_chapter_payload_digests.sql.
+The current migration set extends through 0020_normalize_novel_status.sql.
 
 ## Filesystem metadata
 

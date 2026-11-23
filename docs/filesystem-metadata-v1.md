@@ -130,9 +130,8 @@ interface WorkOverrideV1 {
 ```
 
 Editable metadata fields live under `fields`: `name`, `author`, `artist`,
-`summary`, `genres`, `status` (canonical `NovelStatus` strings: `Unknown`,
-`Ongoing`, `Completed`, `Licensed`, `Publishing Finished`, `Cancelled`,
-`On Hiatus`), and `cover` (`cover.override.<ext>` where `<ext>` is one of
+`summary`, `genres`, `status` (canonical `NovelStatus` strings: `Ongoing`,
+`Completed`, `Cancelled`, `On Hiatus`), and `cover` (`cover.override.<ext>` where `<ext>` is one of
 `avif|bmp|gif|img|jpg|jpeg|png|svg|webp`). Setting any field to `null` follows
 the source metadata again while retaining the `null` entry so the reset reaches
 other devices. Legacy `completed` entries (`true`/`false`/`null`) upgrade on read

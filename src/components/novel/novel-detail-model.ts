@@ -4,7 +4,12 @@ import { type TranslationKey } from "../../i18n";
 import { displayedChapterNumber } from "../../lib/chapter-title";
 import { getPluginBaseUrl } from "../../lib/plugins/base-url";
 import { pluginManager } from "../../lib/plugins/manager";
-import { NovelStatus } from "../../lib/plugins/types";
+import {
+  isNovelStatus,
+  normalizeNovelStatus,
+  NovelStatus,
+  type NovelStatusValue,
+} from "../../lib/plugins/types";
 import { type SourceDuplicateChapterInfo } from "../../lib/plugins/sync-novel";
 import { type ChapterDownloadStatus } from "../../lib/tasks/chapter-download";
 export const FINISHED_PROGRESS = 100;
@@ -173,38 +178,29 @@ export function findChapterForJump(
 }
 
 export const CANONICAL_NOVEL_STATUSES = [
-  NovelStatus.Unknown,
   NovelStatus.Ongoing,
   NovelStatus.Completed,
-  NovelStatus.Licensed,
-  NovelStatus.PublishingFinished,
   NovelStatus.Cancelled,
   NovelStatus.OnHiatus,
 ] as const;
 
-export const CANONICAL_NOVEL_STATUS_LABEL_KEYS: Record<string, TranslationKey> = {
-  [NovelStatus.Unknown]: "novel.status.unknown",
+export const CANONICAL_NOVEL_STATUS_LABEL_KEYS: Record<NovelStatusValue, TranslationKey> = {
   [NovelStatus.Ongoing]: "novel.status.ongoing",
   [NovelStatus.Completed]: "novel.status.completed",
-  [NovelStatus.Licensed]: "novel.status.licensed",
-  [NovelStatus.PublishingFinished]: "novel.status.publishingFinished",
   [NovelStatus.Cancelled]: "novel.status.cancelled",
   [NovelStatus.OnHiatus]: "novel.status.onHiatus",
 };
 
-const NOVEL_STATUS_LABEL_KEYS: Partial<Record<string, TranslationKey>> = {
-  [NovelStatus.Ongoing]: "novel.status.ongoing",
-  [NovelStatus.Completed]: "novel.status.completed",
-  [NovelStatus.Licensed]: "novel.status.licensed",
-  [NovelStatus.PublishingFinished]: "novel.status.publishingFinished",
-  [NovelStatus.Cancelled]: "novel.status.cancelled",
-  [NovelStatus.OnHiatus]: "novel.status.onHiatus",
-};
+const RETIRED_NOVEL_STATUS_VALUES: ReadonlySet<string> = new Set([
+  "Unknown",
+  "Licensed",
+  "Publishing Finished",
+]);
 
 /**
- * The status to show for a novel: the user's status override when set, otherwise a known
- * plugin value in the app language, free text as written, and nothing for an empty or
- * "Unknown" status.
+ * The status to show for a novel: the user's status override when set, otherwise a canonical
+ * plugin value in the app language (mapping retired constants to Ongoing), free text as written,
+ * and nothing when empty.
  */
 export function novelStatusLabel(
   status: string | null,
@@ -213,19 +209,21 @@ export function novelStatusLabel(
 ): string | null {
   const effective = statusOverride ?? status;
   const value = effective?.trim();
-  if (!value || value === NovelStatus.Unknown) return null;
-  const key = NOVEL_STATUS_LABEL_KEYS[value];
-  return key ? translate(key) : value;
+  if (!value) return null;
+  if (isNovelStatus(value)) {
+    return translate(CANONICAL_NOVEL_STATUS_LABEL_KEYS[value]);
+  }
+  if (RETIRED_NOVEL_STATUS_VALUES.has(value)) {
+    return translate(CANONICAL_NOVEL_STATUS_LABEL_KEYS[NovelStatus.Ongoing]);
+  }
+  return value;
 }
 
 export function canonicalNovelStatusLabel(
   status: string | null | undefined,
   translate: (key: TranslationKey) => string,
 ): string {
-  const value = status?.trim();
-  if (!value) return translate("novel.status.unknown");
-  const key = CANONICAL_NOVEL_STATUS_LABEL_KEYS[value];
-  return key ? translate(key) : value;
+  return translate(CANONICAL_NOVEL_STATUS_LABEL_KEYS[normalizeNovelStatus(status)]);
 }
 
 export function chapterDndId(chapterId: number): string {

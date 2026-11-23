@@ -19,26 +19,27 @@ use super::{decode_sqlite_f64, decode_sqlite_opt_f64, DbMutationEnvelope, ReadMo
 pub const LOCAL_PLUGIN_ID: &str = "local";
 pub const LOCAL_NOVEL_PATH: &str = "local";
 
-pub(crate) const NOVEL_STATUS_VALUES: [&str; 7] = [
-    "Unknown",
+pub(crate) const NOVEL_STATUS_VALUES: [&str; 4] = [
     "Ongoing",
     "Completed",
-    "Licensed",
-    "Publishing Finished",
     "Cancelled",
     "On Hiatus",
 ];
+
+pub(crate) const DEFAULT_NOVEL_STATUS: &str = "Ongoing";
 
 pub(crate) fn is_novel_status(value: &str) -> bool {
     NOVEL_STATUS_VALUES.contains(&value)
 }
 
-pub(crate) fn canonical_novel_status(value: Option<&str>) -> String {
-    let trimmed = value.map(str::trim).filter(|s| !s.is_empty());
-    match trimmed {
-        None => "Unknown".to_string(),
-        Some(status) => status.to_string(),
-    }
+fn canonical_library_status_sql(expr: &str) -> String {
+    format!(
+        "CASE \
+           WHEN trim({expr}) IN ('Ongoing', 'Completed', 'Cancelled', 'On Hiatus') \
+             THEN trim({expr}) \
+           ELSE '{DEFAULT_NOVEL_STATUS}' \
+         END"
+    )
 }
 
 pub(crate) fn split_novel_tags(raw: &str) -> Vec<String> {
@@ -931,7 +932,7 @@ fn build_library_filter_conditions(
     let mut statuses: Vec<String> = Vec::new();
     for raw in filter.statuses.iter().flatten() {
         let trimmed = raw.trim();
-        if !trimmed.is_empty() && !statuses.iter().any(|existing| existing == trimmed) {
+        if is_novel_status(trimmed) && !statuses.iter().any(|existing| existing == trimmed) {
             statuses.push(trimmed.to_string());
         }
     }
@@ -940,8 +941,9 @@ fn build_library_filter_conditions(
             .into_iter()
             .map(|status| add_param(params, SqlParam::Text(status)))
             .collect();
+        let canonical_status_expr = canonical_library_status_sql(EFFECTIVE_NOVEL_STATUS_SQL);
         conditions.push(format!(
-            "COALESCE(NULLIF(trim({EFFECTIVE_NOVEL_STATUS_SQL}), ''), 'Unknown') IN ({})",
+            "{canonical_status_expr} IN ({})",
             placeholders.join(", ")
         ));
     }
@@ -1338,9 +1340,10 @@ pub async fn list_library_status_filters_in_conn(
     stripped.limit = None;
     let mut params = Vec::new();
     let conditions = build_library_filter_conditions(&stripped, &mut params);
+    let canonical_status_expr = canonical_library_status_sql("status");
     let sql = format!(
         "{} \
-         SELECT COALESCE(NULLIF(trim(status), ''), 'Unknown') AS canonicalStatus, \
+         SELECT {canonical_status_expr} AS canonicalStatus, \
                 COUNT(*) AS totalNovels \
          FROM library_rows \
          GROUP BY canonicalStatus \
@@ -1349,11 +1352,8 @@ pub async fn list_library_status_filters_in_conn(
              WHEN 'Ongoing' THEN 0 \
              WHEN 'Completed' THEN 1 \
              WHEN 'On Hiatus' THEN 2 \
-             WHEN 'Publishing Finished' THEN 3 \
-             WHEN 'Licensed' THEN 4 \
-             WHEN 'Cancelled' THEN 5 \
-             WHEN 'Unknown' THEN 6 \
-             ELSE 7 \
+             WHEN 'Cancelled' THEN 3 \
+             ELSE 4 \
            END ASC, \
            canonicalStatus COLLATE NOCASE ASC",
         library_rows_cte(&conditions)
@@ -3890,7 +3890,8 @@ mod tests {
              VALUES \
                (1, 'src', 'n1', '/n1', 'Orig One', 'Orig Author', 'Ongoing', 'Fantasy | Action', 1, 0), \
                (2, 'src', 'n2', '/n2', 'Orig Two', 'Author Two', 'Completed', '#Romance #Action', 1, 0), \
-               (3, 'src', 'n3', '/n3', 'Orig Three', 'Author Three', NULL, 'Drama, Romance', 1, 0)",
+               (3, 'src', 'n3', '/n3', 'Orig Three', 'Author Three', NULL, 'Drama, Romance', 1, 0), \
+               (4, 'src', 'n4', '/n4', 'Orig Four', 'Author Four', 'legacy-status', 'Drama', 1, 0)",
         )
         .execute(pool)
         .await
@@ -3922,15 +3923,15 @@ mod tests {
             status_counts,
             vec![
                 LibraryStatusFilterDto {
+                    status: "Ongoing".to_string(),
+                    total_novels: 2,
+                },
+                LibraryStatusFilterDto {
                     status: "Completed".to_string(),
                     total_novels: 1,
                 },
                 LibraryStatusFilterDto {
                     status: "On Hiatus".to_string(),
-                    total_novels: 1,
-                },
-                LibraryStatusFilterDto {
-                    status: "Unknown".to_string(),
                     total_novels: 1,
                 },
             ]
@@ -3954,7 +3955,7 @@ mod tests {
             &mut conn,
             &LibraryNovelPageFilterDto {
                 filter: LibraryFilterDto {
-                    statuses: Some(vec!["On Hiatus".to_string(), "Unknown".to_string()]),
+                    statuses: Some(vec!["On Hiatus".to_string(), "Ongoing".to_string()]),
                     sort_order: Some("nameAsc".to_string()),
                     ..Default::default()
                 },
@@ -3965,7 +3966,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             by_status.novels.iter().map(|n| n.id).collect::<Vec<_>>(),
-            vec![1, 3]
+            vec![1, 4, 3]
         );
         assert_eq!(
             by_status.novels[0].cover_override.as_deref(),

@@ -277,6 +277,12 @@ describe("createShimResolver", () => {
     expect(typeof resolve("urlencode")).toBe("object");
     expect(typeof resolve("@libs/fetch")).toBe("object");
     expect(resolve("@libs/novelStatus")).toEqual({ NovelStatus });
+    expect(Object.values(NovelStatus)).toEqual([
+      "Ongoing",
+      "Completed",
+      "Cancelled",
+      "On Hiatus",
+    ]);
     expect(resolve("@libs/filterInputs")).toEqual({ FilterTypes });
     expect(typeof resolve("@libs/defaultCover")).toBe("object");
     expect(typeof resolve("@libs/isAbsoluteUrl")).toBe("object");

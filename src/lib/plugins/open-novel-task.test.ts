@@ -29,9 +29,9 @@ function makePlugin(id = "demo"): Plugin {
     iconUrl: "https://demo.test/icon.png",
     getBaseUrl: () => "https://demo.test",
     popularNovels: () => Promise.resolve([]),
-    parseNovel: () => Promise.resolve({ novelId: "novel", name: "", path: "", status: "Unknown", chapters: [] }),
+    parseNovel: () => Promise.resolve({ novelId: "novel", name: "", path: "", status: "Ongoing", chapters: [] }),
     parseNovelSince: () =>
-      Promise.resolve({ novelId: "novel", name: "", path: "", status: "Unknown", chapters: [] }),
+      Promise.resolve({ novelId: "novel", name: "", path: "", status: "Ongoing", chapters: [] }),
     getChapterAcquisitionPlan: () => ({ type: "resource" }),
     searchNovels: () => Promise.resolve([]),
   };

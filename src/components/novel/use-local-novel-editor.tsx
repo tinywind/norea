@@ -21,7 +21,7 @@ import { syncLocalChapterStorageAfterOrderChange } from "../../lib/local-chapter
 import { pickLocalFiles } from "../../lib/local-file-picker";
 import { clearLocalImportFileCache, localImportFileSizeLimit } from "../../lib/local-import";
 import { importLocalFileToLibrary } from "../../lib/local-import-library";
-import { isNovelStatus, NovelStatus } from "../../lib/plugins/types";
+import { isNovelStatus, normalizeNovelStatus, NovelStatus } from "../../lib/plugins/types";
 import { LOCAL_NOVEL_PATH } from "../../lib/local-library-identity";
 import { type DefaultChapterSort } from "../../store/library";
 import { LocalCoverPicker } from "../LocalCoverPicker";
@@ -39,7 +39,7 @@ const EMPTY_LOCAL_NOVEL_FORM: LocalNovelMetadataInput = {
   summary: "",
   author: "",
   artist: "",
-  status: NovelStatus.Unknown,
+  status: NovelStatus.Ongoing,
   genres: "",
 };
 
@@ -55,7 +55,7 @@ function localMetadataFromNovel(
     summary: novel.summary ?? "",
     author: novel.author ?? "",
     artist: novel.artist ?? "",
-    status: isNovelStatus(novel.status) ? novel.status : NovelStatus.Unknown,
+    status: normalizeNovelStatus(novel.status),
     genres: novel.genres ?? "",
   };
 }
@@ -316,13 +316,13 @@ export function useLocalNovelEditor(
                 onChange={(value) => {
                   setLocalMetadataForm((current) => ({
                     ...current,
-                    status: isNovelStatus(value) ? value : NovelStatus.Unknown,
+                    status: isNovelStatus(value) ? value : NovelStatus.Ongoing,
                   }));
                 }}
                 value={
                   isNovelStatus(localMetadataForm.status)
                     ? localMetadataForm.status
-                    : NovelStatus.Unknown
+                    : NovelStatus.Ongoing
                 }
               />
               <TextInput

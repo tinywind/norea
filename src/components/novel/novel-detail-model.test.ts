@@ -11,6 +11,7 @@ import {
   findChapterForJump,
   findContinueReadingChapter,
   findContinueReadingTarget,
+  canonicalNovelStatusLabel,
   NO_CHAPTER_LIST_FILTERS,
   novelStatusLabel,
   splitGenres,
@@ -273,12 +274,26 @@ describe("novelStatusLabel", () => {
   it("shows the source status until the user sets a canonical status override", () => {
     expect(novelStatusLabel("Ongoing", translate)).toBe("novel.status.ongoing");
     expect(novelStatusLabel("연재중", translate)).toBe("연재중");
-    expect(novelStatusLabel("Unknown", translate)).toBeNull();
+    expect(novelStatusLabel("Unknown", translate)).toBe("novel.status.ongoing");
+    expect(novelStatusLabel("Licensed", translate)).toBe("novel.status.ongoing");
+    expect(novelStatusLabel("Publishing Finished", translate)).toBe("novel.status.ongoing");
     expect(novelStatusLabel("Ongoing", translate, "Completed")).toBe("novel.status.completed");
     expect(novelStatusLabel("Ongoing", translate, "On Hiatus")).toBe("novel.status.onHiatus");
-    expect(novelStatusLabel("Completed", translate, "Unknown")).toBeNull();
+    expect(novelStatusLabel(null, translate)).toBeNull();
     expect(novelStatusLabel(null, translate, "Ongoing")).toBe("novel.status.ongoing");
     expect(novelStatusLabel("Completed", translate, null)).toBe("novel.status.completed");
+  });
+
+  it("maps canonical, blank, retired, and legacy filter statuses to canonical labels", () => {
+    expect(canonicalNovelStatusLabel("Ongoing", translate)).toBe("novel.status.ongoing");
+    expect(canonicalNovelStatusLabel("Completed", translate)).toBe("novel.status.completed");
+    expect(canonicalNovelStatusLabel("Cancelled", translate)).toBe("novel.status.cancelled");
+    expect(canonicalNovelStatusLabel("On Hiatus", translate)).toBe("novel.status.onHiatus");
+    expect(canonicalNovelStatusLabel("Unknown", translate)).toBe("novel.status.ongoing");
+    expect(canonicalNovelStatusLabel("Licensed", translate)).toBe("novel.status.ongoing");
+    expect(canonicalNovelStatusLabel("Publishing Finished", translate)).toBe("novel.status.ongoing");
+    expect(canonicalNovelStatusLabel(null, translate)).toBe("novel.status.ongoing");
+    expect(canonicalNovelStatusLabel("legacy-ongoing", translate)).toBe("novel.status.ongoing");
   });
 });
 

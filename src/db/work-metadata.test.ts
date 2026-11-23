@@ -117,7 +117,7 @@ it("keeps the newer source refresh when an earlier response finishes last", asyn
   let started!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; });
   const parsing = new Promise<void>(resolve => { started = resolve; });
-  const detail = (name: string) => ({ novelId: "book", name, author: name, summary: name, status: "Unknown", path: "/book",
+  const detail = (name: string) => ({ novelId: "book", name, author: name, summary: name, status: "Ongoing", path: "/book",
     chapters: [{ chapterNumber: 1, name, path: "/chapter/1" }] });
   const earlier = syncNovelFromSource({ id: "source", parseNovel: async () => {
     started(); await gate; return detail("Earlier response");
@@ -139,7 +139,7 @@ it("rechecks refresh order when an earlier response was already waiting for the 
   const waiting = new Promise<void>(resolve => { queued = resolve; });
   const transact = databaseClient.transaction.getMockImplementation()!;
   databaseClient.transaction.mockImplementationOnce(async run => { queued(); await gate; return transact(run); });
-  const plugin = (name: string) => ({ id: "source", parseNovel: async () => ({ novelId: "book", name, path: "/book", status: "Unknown", chapters: [{ chapterNumber: 1, name, path: "/chapter/1" }] }) } as unknown as Plugin);
+  const plugin = (name: string) => ({ id: "source", parseNovel: async () => ({ novelId: "book", name, path: "/book", status: "Ongoing", chapters: [{ chapterNumber: 1, name, path: "/chapter/1" }] }) } as unknown as Plugin);
   const earlier = syncNovelFromSource(plugin("Earlier response"), { name: "Book", path: "/book" });
   await waiting;
   const latest = syncNovelFromSource(plugin("Latest response"), { name: "Book", path: "/book" });
@@ -160,7 +160,7 @@ it.each([true, false])("notifies committed metadata when a superseding request f
     const result = await transact(run);
     committed(); await gate; return result;
   });
-  const earlier = syncNovelFromSource({ id: "source", parseNovel: async () => ({ novelId: "book", name: "Committed title", path: "/book", status: "Unknown", chapters: [] }) } as unknown as Plugin, { name: "Book", path: "/book" }, { notifyUpdatesIndex });
+  const earlier = syncNovelFromSource({ id: "source", parseNovel: async () => ({ novelId: "book", name: "Committed title", path: "/book", status: "Ongoing", chapters: [] }) } as unknown as Plugin, { name: "Book", path: "/book" }, { notifyUpdatesIndex });
   const outcome = expect(earlier).rejects.toThrow("source offline");
   await saved;
   const changed = vi.fn();
@@ -177,7 +177,7 @@ it.each([true, false])("notifies committed metadata when a superseding request f
 it.each(["rebuild", "rescan"])("retains refreshed details and titles when an older file returns before %s", async mode => {
   const original = fixture(); original.chapters = { "1": "Old opening" };
   save(original); await initializeWorkMetadata(db);
-  const plugin = { id: "source", parseNovel: async () => ({ novelId: "book", name: "Latest title", author: "Latest author", summary: "Latest summary", status: "Unknown", path: "/book",
+  const plugin = { id: "source", parseNovel: async () => ({ novelId: "book", name: "Latest title", author: "Latest author", summary: "Latest summary", status: "Ongoing", path: "/book",
     chapters: [{ chapterNumber: 1, name: "Latest opening", path: "/chapter/1" }, { chapterNumber: 2, name: "Latest second", path: "/chapter/2" }] }) } as unknown as Plugin;
   await syncNovelFromSource(plugin, { name: "Book", path: "/book" });
   const [before] = await readWorkMetadataSyncFiles();
@@ -290,7 +290,7 @@ it("keeps refreshed work details durable when a later server document omits them
 it("republishes recovered work details on an unchanged full source refresh", async () => {
   await initializeWorkMetadata(db);
   const plugin = { id: "source", parseNovel: async () => ({
-    novelId: "book", name: "Complete book", path: "/book", author: "Writer", summary: "Full summary", status: "Unknown",
+    novelId: "book", name: "Complete book", path: "/book", author: "Writer", summary: "Full summary", status: "Ongoing",
     chapters: [{ chapterNumber: 1, name: "Full opening", path: "/chapter/1" }],
   }) } as unknown as Plugin;
   await syncNovelFromSource(plugin, { name: "Complete book", path: "/book" });
@@ -334,7 +334,7 @@ it("uses the current work document after a slow first recovery scan", async () =
 
 it("preserves a plugin novel ID through source sync, work files, upload discovery, and backup restore", async () => {
   const plugin = { id: "source", parseNovel: async () => ({
-    novelId: "literal-42", name: "A title unrelated to the ID", path: "/source-route?book=42", status: "Unknown",
+    novelId: "literal-42", name: "A title unrelated to the ID", path: "/source-route?book=42", status: "Ongoing",
     chapters: [{ chapterNumber: 1.5, name: "Side story", path: "/chapter/side-story" }],
   }) } as unknown as Plugin;
   await syncNovelFromSource(plugin, { name: "A title unrelated to the ID", path: "/source-route?book=42" });
@@ -358,10 +358,10 @@ it("rejects source novel ID reuse by another path and ID changes for an existing
   const changedId = { ...fixture(), identity: { ...fixture().identity, novelId: "replacement-id" } };
   await expect(applyNovelMetadataToCache(db, changedId)).rejects.toThrow("novel ID changed");
   const plugin = { id: "source", parseNovel: async () => ({
-    novelId: "book", name: "Book", path: "/another-source-route", status: "Unknown", chapters: [],
+    novelId: "book", name: "Book", path: "/another-source-route", status: "Ongoing", chapters: [],
   }) } as unknown as Plugin;
   await expect(syncNovelFromSource(plugin, { name: "Book", path: "/another-source-route" })).rejects.toThrow();
-  plugin.parseNovel = async () => ({ novelId: "replacement-id", name: "Book", path: "/book", status: "Unknown", chapters: [] });
+  plugin.parseNovel = async () => ({ novelId: "replacement-id", name: "Book", path: "/book", status: "Ongoing", chapters: [] });
   await expect(syncNovelFromSource(plugin, { name: "Book", path: "/book" })).rejects.toThrow("changed a stored novel ID");
   expect(sqlite.prepare("SELECT path,source_novel_id FROM novel").all()).toEqual([{ path: "/book", source_novel_id: "book" }]);
   expect(storage.files.get(path)).toEqual(original);
@@ -466,7 +466,7 @@ it("merges fetched chapter titles and preserves them across download changes and
 
 it("fetches a full catalog before incremental refreshes and publishes source titles to the work file", async () => {
   save(fixture()); await initializeWorkMetadata(db);
-  const detail = (numbers: number[]) => ({ novelId: "book", name: "Disk title", path: "/book", status: "Unknown" as const, chapters: numbers.map(chapterNumber => ({ chapterNumber, name: `Title ${chapterNumber}`, path: `/chapter/${chapterNumber}` })) });
+  const detail = (numbers: number[]) => ({ novelId: "book", name: "Disk title", path: "/book", status: "Ongoing" as const, chapters: numbers.map(chapterNumber => ({ chapterNumber, name: `Title ${chapterNumber}`, path: `/chapter/${chapterNumber}` })) });
   const plugin = { id: "source", parseNovel: vi.fn(async () => detail([1, 2, 3])), parseNovelSince: vi.fn(async () => detail([3, 4])) } as unknown as Plugin;
   const item = { name: "Disk title", path: "/book" };
   await syncNovelFromSource(plugin, item, { novelId: 1, chapterRefreshMode: "since" });
@@ -506,7 +506,7 @@ it("restores local reading state when a saved catalog rebuilds deleted cache row
 
 it("refreshes the complete source list after restoring a catalog without source chapter paths", async () => {
   save({ ...fixture(), chapters: { "1": "Opening", "2": "Second", "3": "Third" } }); await initializeWorkMetadata(db);
-  const detail = { novelId: "book", name: "Disk title", path: "/book", status: "Unknown", chapters: [1, 2, 3].map(chapterNumber => ({ chapterNumber, name: `Title ${chapterNumber}`, path: `/chapter/${chapterNumber}` })) };
+  const detail = { novelId: "book", name: "Disk title", path: "/book", status: "Ongoing", chapters: [1, 2, 3].map(chapterNumber => ({ chapterNumber, name: `Title ${chapterNumber}`, path: `/chapter/${chapterNumber}` })) };
   const plugin = { id: "source", parseNovel: vi.fn(async () => detail), parseNovelSince: vi.fn(async () => ({ ...detail, chapters: [detail.chapters[2]!] })) } as unknown as Plugin;
   await syncNovelFromSource(plugin, { name: "Disk title", path: "/book" }, { novelId: 1, chapterRefreshMode: "since" });
   expect(plugin.parseNovel).toHaveBeenCalledOnce();
@@ -515,7 +515,7 @@ it("refreshes the complete source list after restoring a catalog without source 
 
 it("resumes incremental fetches after a full refresh leaves archived source chapters unresolved", async () => {
   save({ ...fixture(), chapters: { "1": "Opening", "2": "Removed from the source", "3": "Third" } }); await initializeWorkMetadata(db);
-  const detail = { novelId: "book", name: "Disk title", path: "/book", status: "Unknown", chapters: [1, 3].map(chapterNumber => ({ chapterNumber, name: `Title ${chapterNumber}`, path: `/chapter/${chapterNumber}` })) };
+  const detail = { novelId: "book", name: "Disk title", path: "/book", status: "Ongoing", chapters: [1, 3].map(chapterNumber => ({ chapterNumber, name: `Title ${chapterNumber}`, path: `/chapter/${chapterNumber}` })) };
   const plugin = { id: "source", parseNovel: vi.fn(async () => detail), parseNovelSince: vi.fn(async () => ({ ...detail, chapters: [detail.chapters[1]!] })) } as unknown as Plugin;
   const options = { novelId: 1, chapterRefreshMode: "since" as const };
   await syncNovelFromSource(plugin, { name: "Disk title", path: "/book" }, options);
@@ -1089,14 +1089,14 @@ it.each([true, false])("publishes fresh migration metadata and preserves reading
   try {
     await syncNovelFromSource({
       id: "source", getBaseUrl: () => "https://source.test/", parseNovel: async () => ({
-        novelId: "book", name: "Fresh title", path: "/book", summary: "Fresh summary", status: "Unknown", rating: 0,
+        novelId: "book", name: "Fresh title", path: "/book", summary: "Fresh summary", status: "Ongoing", rating: 0,
         ...(hasCover ? { cover: "https://source.test/cover.png" } : {}),
         chapters: [{ chapterNumber: 1, name: "Fresh chapter", path: "/chapter/1" }],
       }),
     } as unknown as Plugin, { name: "Stale search title", path: "/book", cover: "https://source.test/stale-search.jpg" }, {
       preserveMissingMetadata: false, refreshCover: true,
     });
-    const expected = { name: "Fresh title", author: null, artist: null, summary: "Fresh summary", status: "Unknown", genres: null, rating: 0 };
+    const expected = { name: "Fresh title", author: null, artist: null, summary: "Fresh summary", status: "Ongoing", genres: null, rating: 0 };
     expect(sqlite.prepare("SELECT name,author,artist,summary,status,genres,rating FROM novel").get()).toEqual(expected);
     const [stored] = await listStoredNovelMetadata();
     expect(stored!.metadata.novel).toEqual({ ...expected, isLocal: false });
@@ -1955,7 +1955,7 @@ it.each(["source refresh", "incoming metadata"])("rejects reuse of a pruned reci
   const source = { ...metadata.chapterComposition!.entries[0]!.sources[0]!, chapterPath: "/source/new", name: "New source chapter" };
   const update = () => {
     if (mode === "source refresh") {
-      return syncNovelFromSource({ id: "source", parseNovel: async () => ({ novelId: "book", name: "Fresh title", path: "/book", status: "Unknown",
+      return syncNovelFromSource({ id: "source", parseNovel: async () => ({ novelId: "book", name: "Fresh title", path: "/book", status: "Ongoing",
         chapters: [{ path: source.chapterPath, name: source.name, chapterNumber: 4 }] }) } as unknown as Plugin,
       { name: "Book", path: "/book" }, { novelId, chapterRefreshMode: "full" });
     }

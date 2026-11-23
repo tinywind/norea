@@ -31,6 +31,7 @@ import {
   type LibrarySortField,
 } from "../../lib/library-settings-options";
 import { useShallow } from "zustand/react/shallow";
+import { normalizeNovelStatus, type NovelStatusValue } from "../../lib/plugins/types";
 import { useLibraryStore, type LibraryDisplayMode } from "../../store/library";
 import { CANONICAL_NOVEL_STATUSES, canonicalNovelStatusLabel } from "../novel/novel-detail-model";
 import { IconButton } from "../IconButton";
@@ -248,20 +249,19 @@ export function FilterOptions({
   const tagHeadingId = useId();
 
   const statusOptions = useMemo(() => {
-    const countsByStatus = new Map(
-      statuses.map((entry) => [entry.status, entry.totalNovels]),
-    );
-    const ordered: string[] = [];
+    const countsByStatus = new Map<NovelStatusValue, number>();
+    for (const entry of statuses) {
+      const canonical = normalizeNovelStatus(entry.status);
+      countsByStatus.set(
+        canonical,
+        (countsByStatus.get(canonical) ?? 0) + entry.totalNovels,
+      );
+    }
+    const ordered: NovelStatusValue[] = [];
     for (const status of CANONICAL_NOVEL_STATUSES) {
       if ((countsByStatus.get(status) ?? 0) > 0 || selectedStatuses.includes(status)) {
         ordered.push(status);
       }
-    }
-    for (const entry of statuses) {
-      if (!ordered.includes(entry.status)) ordered.push(entry.status);
-    }
-    for (const selected of selectedStatuses) {
-      if (!ordered.includes(selected)) ordered.push(selected);
     }
     return ordered.map((status) => ({
       status,

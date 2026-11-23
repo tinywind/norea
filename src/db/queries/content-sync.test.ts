@@ -224,7 +224,7 @@ it("reuses a metadata catalog placeholder through server import and the next sou
   ]);
   await markContentInstalled(chapterId, "html", 512, 16, true);
   const plugin = {
-    id: "source", parseNovel: async () => ({ novelId: "work", name: "A work", path: "/work", status: "Unknown", chapters: [{ path: "/chapter", name: "Opening", chapterNumber: 1 }] }),
+    id: "source", parseNovel: async () => ({ novelId: "work", name: "A work", path: "/work", status: "Ongoing", chapters: [{ path: "/chapter", name: "Opening", chapterNumber: 1 }] }),
   } as unknown as Plugin;
   await expect(syncNovelFromSource(plugin, { name: "A work", path: "/work" }, { novelId: 42, notifyUpdatesIndex: false })).resolves.toMatchObject({ novelId: 42, chapterCount: 1 });
   expect(sqlite.prepare("SELECT id,path,progress,bookmark,unread,read_at,is_downloaded,content_bytes,media_bytes FROM chapter").all()).toEqual([

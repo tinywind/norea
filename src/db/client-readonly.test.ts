@@ -217,9 +217,10 @@ beforeEach(() => {
     if (command === "db_novel_list_library_status_filters") {
       const { conditions, params } = buildFilter(args.filter as never);
       return db.select<Array<{ status: string; totalNovels: number }>>(
-        `SELECT COALESCE(NULLIF(trim(n.status), ''), 'Unknown') AS status, COUNT(*) AS totalNovels
+        `SELECT CASE WHEN trim(n.status) IN ('Ongoing', 'Completed', 'Cancelled', 'On Hiatus')
+                     THEN trim(n.status) ELSE 'Ongoing' END AS status, COUNT(*) AS totalNovels
          FROM novel n LEFT JOIN novel_stats s ON s.novel_id = n.id
-         WHERE ${conditions.join(" AND ")} GROUP BY COALESCE(NULLIF(trim(n.status), ''), 'Unknown')`,
+         WHERE ${conditions.join(" AND ")} GROUP BY status`,
         params,
       );
     }
@@ -275,7 +276,7 @@ it.each([false, true])("filters the library and its panels before a sync write s
       { totalNovels: 1 },
       { totalNovels: 1 },
       [{ pluginId: "source", totalNovels: 1 }],
-      [{ status: "Unknown", totalNovels: 1 }],
+      [{ status: "Ongoing", totalNovels: 1 }],
       [],
       [{ id: 1, name: "Reading", novelCount: 1 }],
       { total: 1, uncategorized: 0 },

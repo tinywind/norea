@@ -3360,6 +3360,7 @@ pub fn refresh_chapter_composition(
     novel_path: &str,
     chapters: &[SyncSourceChapterItemDto],
     start_position: i64,
+    storage_number_floor: i64,
 ) -> Result<ChapterCompositionV1Dto, String> {
     let mut composition = previous.clone();
     let by_path: HashMap<&str, &SyncSourceChapterItemDto> =
@@ -3433,7 +3434,8 @@ pub fn refresh_chapter_composition(
         .filter_map(|e| e.storage_chapter_number.parse::<f64>().ok())
         .map(|n| n.ceil() as i64)
         .max()
-        .unwrap_or(0);
+        .unwrap_or(0)
+        .max(storage_number_floor);
     let mut order: i64 = composition
         .entries
         .iter()
@@ -3657,6 +3659,20 @@ pub async fn sync_novel_from_source_in_tx(
                 "A composed chapter list cannot be renumbered by a provider refresh.".to_string(),
             );
         }
+        // A chapter row can hold a storage number the composition no longer lists.
+        let row_numbers: Vec<Option<String>> =
+            sqlx::query_scalar("SELECT chapter_number FROM chapter WHERE novel_id = ?1")
+                .bind(novel_id)
+                .fetch_all(&mut *conn)
+                .await
+                .map_err(|err| format!("db sync novel: read chapter storage numbers: {err}"))?;
+        let storage_number_floor = row_numbers
+            .iter()
+            .filter_map(|number| number.as_deref()?.parse::<f64>().ok())
+            .filter(|number| number.is_finite())
+            .map(|number| number.ceil() as i64)
+            .max()
+            .unwrap_or(0);
         let updated = refresh_chapter_composition(
             comp,
             &input.plugin_id,
@@ -3664,6 +3680,7 @@ pub async fn sync_novel_from_source_in_tx(
             &input.novel_path,
             &input.chapters,
             input.start_position,
+            storage_number_floor,
         )?;
         let changed_entries = updated
             .entries
@@ -4363,6 +4380,60 @@ mod tests {
     use super::*;
     use crate::db::test_support::open_test_db;
     use std::time::Duration;
+
+    #[test]
+    fn refresh_chapter_composition_allocates_above_existing_chapter_rows() {
+        let source = |path: &str, number: i64| ChapterSourceSnapshotDto {
+            plugin_id: "demo-plugin".to_string(),
+            novel_id: "book-1".to_string(),
+            novel_path: "/book-1".to_string(),
+            chapter_path: path.to_string(),
+            source_chapter_id: None,
+            chapter_number: Some(number.to_string()),
+            name: format!("Episode {number}"),
+            position: number,
+            page: "1".to_string(),
+            content_type: "html".to_string(),
+            release_time: None,
+        };
+        let previous = ChapterCompositionV1Dto {
+            version: 1,
+            updated_at: 1000,
+            entries: vec![ChapterCompositionEntryDto {
+                id: "entry-1".to_string(),
+                path: "/ep/1".to_string(),
+                storage_chapter_number: "1".to_string(),
+                sources: vec![source("/ep/1", 1)],
+                primary_source: 0,
+                user: ChapterCompositionUserDto {
+                    included: true,
+                    order: 1,
+                    name: None,
+                    chapter_number: Some("1".to_string()),
+                },
+            }],
+        };
+        let chapters: Vec<SyncSourceChapterItemDto> = [1, 2]
+            .iter()
+            .map(|number| SyncSourceChapterItemDto {
+                path: format!("/ep/{number}"),
+                name: format!("Episode {number}"),
+                chapter_number: f64::from(*number),
+                source_chapter_id: None,
+                page: None,
+                release_time: None,
+                content_type: None,
+            })
+            .collect();
+
+        let updated = refresh_chapter_composition(
+            &previous, "demo-plugin", "book-1", "/book-1", &chapters, 1, 5,
+        )
+        .unwrap();
+
+        let added = updated.entries.iter().find(|entry| entry.path == "/ep/2").unwrap();
+        assert_eq!(added.storage_chapter_number, "6");
+    }
 
     #[tokio::test]
     async fn upsert_source_chapters_migrates_paths_and_projects_composition_display() {

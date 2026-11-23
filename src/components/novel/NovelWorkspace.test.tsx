@@ -145,8 +145,9 @@ it("labels the library toggle with its state and hides Download for local works"
   expect(buttonTexts(local)).not.toContain("novel.download");
 });
 
-it("shows a known status in the app language and omits Unknown", () => {
+it("shows a known status in the app language and maps retired Unknown to Ongoing", () => {
   expect(render({ novel: { ...props.novel, status: "Ongoing" } }).text()).toContain("novel.status.ongoing · Source");
+  expect(render({ novel: { ...props.novel, status: "Unknown" } }).text()).toContain("novel.status.ongoing · Source");
   expect(render({ novel: { ...props.novel, status: "Unknown" } }).text()).not.toContain("Unknown");
 });
 

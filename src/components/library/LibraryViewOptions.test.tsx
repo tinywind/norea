@@ -197,4 +197,37 @@ describe("LibraryViewOptions", () => {
     expect(sourcesIndex).toBeGreaterThan(statusIndex);
     expect(tagsIndex).toBeGreaterThan(sourcesIndex);
   });
+
+  it("merges legacy or retired status counts into canonical Ongoing without duplicating options", async () => {
+    locale.strings = ko;
+    harness = mountBackNavigationHarness();
+    await harness.render(
+      <OptionsProbe
+        statuses={[
+          { status: "Ongoing", totalNovels: 34 },
+          { status: "Completed", totalNovels: 6 },
+          { status: "On Hiatus", totalNovels: 1 },
+          { status: "\uC5F0\uC7AC\uC911", totalNovels: 1 },
+          { status: "Unknown", totalNovels: 2 },
+        ]}
+      />,
+    );
+
+    const statusGroup = collectElements(rendered).find(
+      (el) => el.type === Checkbox.Group && el.props.label === ko["library.statusFilters.title"],
+    )!;
+    const statusCheckboxes = collectElements(statusGroup.props.children as ReactNode).filter(
+      (el) => el.type === Checkbox,
+    );
+    expect(statusCheckboxes.map((checkbox) => checkbox.props.value)).toEqual([
+      "Ongoing",
+      "Completed",
+      "On Hiatus",
+    ]);
+    const ongoingLabel = statusCheckboxes[0]!.props.label as {
+      props?: { children?: Array<{ props?: { children?: string } }> };
+    };
+    expect(ongoingLabel?.props?.children?.[0]?.props?.children).toBe(ko["novel.status.ongoing"]);
+    expect(ongoingLabel?.props?.children?.[1]?.props?.children).toBe("37");
+  });
 });

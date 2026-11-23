@@ -1392,14 +1392,14 @@ mod tests {
             None,
             1,
             "status",
-            json!("Licensed"),
+            json!("Cancelled"),
             101,
         )
         .await
         .unwrap();
         assert_eq!(
             same_clock.value.fields,
-            fields(&[("status", json!("Licensed"), 102)])
+            fields(&[("status", json!("Cancelled"), 102)])
         );
         let cleared = set_field(
             &test_db,
@@ -1425,6 +1425,9 @@ mod tests {
             (1, "completed", json!(true), 600),
             (1, "cover", json!("cover.override.png"), 600),
             (1, "status", json!("yes"), 600),
+            (1, "status", json!("Unknown"), 600),
+            (1, "status", json!("Licensed"), 600),
+            (1, "status", json!("Publishing Finished"), 600),
             (1, "Status", json!("Completed"), 600),
             (1, "status", json!("Completed"), 0),
             (99, "status", json!("Completed"), 600),
@@ -2201,7 +2204,7 @@ mod tests {
                 "missing-cover",
                 "/missing-cover",
                 json!({
-                    "status": { "value": "Licensed", "updatedAt": 20 },
+                    "status": { "value": "Cancelled", "updatedAt": 20 },
                     "cover": { "value": "cover.override.jpg", "updatedAt": 20 }
                 }),
             )),
@@ -2246,7 +2249,7 @@ mod tests {
                 ),
                 (
                     "/missing-cover".to_string(),
-                    r#"{"fields":{"status":{"value":"Licensed","updatedAt":20}}}"#.to_string()
+                    r#"{"fields":{"status":{"value":"Cancelled","updatedAt":20}}}"#.to_string()
                 ),
             ]
         );

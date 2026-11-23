@@ -680,7 +680,7 @@ app launch. This is not an always-on idle VPN service.
 The host sandbox provides canonical runtime constants and helpers on the
 whitelisted `@libs/*` modules:
 
-- `@libs/novelStatus`: `NovelStatus` (`"Unknown"`, `"Ongoing"`, `"Completed"`, `"Licensed"`, `"Publishing Finished"`, `"Cancelled"`, `"On Hiatus"`).
+- `@libs/novelStatus`: `NovelStatus` (`"Ongoing"`, `"Completed"`, `"Cancelled"`, `"On Hiatus"`).
 - `@libs/filterInputs`: `FilterTypes` (`"Text"`, `"Picker"`, `"Checkbox"`, `"Switch"`, `"XCheckbox"`). Every declared filter entry must use a valid `FilterTypes` discriminant, a non-empty `label`, matching default `value` type (`boolean` for `Switch`, `string` for `Text`/`Picker`, `string[]` for `Checkbox`, `{ include?, exclude? }` for `XCheckbox`), and an `options` array where required.
 - `@libs/pluginInputs`: `inputs` / `pluginInputs`, `PluginInputTypes` (`"Text"`, `"Url"`, `"Password"`, `"Number"`, `"Switch"`, `"Select"`), and `PluginInstallModes` (`"single"`, `"multiSource"`). `Switch` inputs require a `boolean` default `value` when specified and must not declare `options`; `Select` inputs require a non-empty `options` array; textual inputs use `string` values.
 - `@libs/webView`: `webViewFetch`, `webViewLoad`, `webViewNavigate`, `ChapterCaptureLoadStrategies`, `ChapterCaptureErrorCodes`, `SourceAccessChallengeKinds`, `SourceAccessErrorCodes`, and `WebViewInteractionTypes`.
@@ -776,9 +776,9 @@ source-path fallback is generated.
 
 `SourceNovel.status` is required from both `parseNovel` and `parseNovelSince` and
 must be one of the `NovelStatus` constants from `@libs/novelStatus`
-(`"Completed"`, `"Ongoing"`, `"On Hiatus"`, `"Cancelled"`,
-`"Publishing Finished"`, `"Licensed"`, or `"Unknown"`). The host rejects missing
-or unrecognized status values. `SourceNovel.rating` is an optional finite number
+(`"Ongoing"`, `"Completed"`, `"On Hiatus"`, or `"Cancelled"`). The host rejects
+missing or unrecognized status values; when a source does not publish a more
+specific state, return `NovelStatus.Ongoing`. `SourceNovel.rating` is an optional finite number
 from 0 to 5. The host stores both with the work metadata and rejects ratings
 outside that range. A partial metadata refresh preserves an existing rating when
 the source omits it; a full replacement clears an omitted rating.

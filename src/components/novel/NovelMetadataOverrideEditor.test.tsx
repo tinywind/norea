@@ -157,6 +157,15 @@ describe("NovelMetadataOverrideEditor", () => {
     const elements = collectElements(rendered);
     const inputs = elements.filter((el) => el.type === TextInput);
     const select = elements.find((el) => el.type === Select)!;
+    expect(
+      (select.props.data as Array<{ value: string }>).map((option) => option.value),
+    ).toEqual([
+      "__follow_source__",
+      "Ongoing",
+      "Completed",
+      "Cancelled",
+      "On Hiatus",
+    ]);
     const summary = elements.find((el) => el.type === Textarea)!;
     const chooseCoverBtn = elements.find(
       (el) => el.type === Button && el.props.children === "library.localNovel.coverChoose",

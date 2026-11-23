@@ -244,6 +244,11 @@ pub fn schema_migrations() -> Vec<SchemaMigration> {
             description: "cache precomputed chapter payload digests",
             sql: include_str!("migrations/0019_chapter_payload_digests.sql"),
         },
+        SchemaMigration {
+            version: 20,
+            description: "rewrite retired novel statuses to Ongoing",
+            sql: include_str!("migrations/0020_normalize_novel_status.sql"),
+        },
     ]
 }
 
@@ -1832,6 +1837,87 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(chapter_count, 1);
+        reopened.close().await;
+    }
+
+    #[tokio::test]
+    async fn registered_v19_upgrade_rewrites_retired_novel_statuses_to_ongoing() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join(DB_FILE);
+        let migrations = sqlx_migrations();
+        let v19_pool = bootstrap(&path, &migrations[..19]).await.unwrap();
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, status, in_library) \
+             VALUES \
+               (1, 'source', 'w1', '/w1', 'One', 'Unknown', 1), \
+               (2, 'source', 'w2', '/w2', 'Two', 'Licensed', 1), \
+               (3, 'source', 'w3', '/w3', 'Three', 'Publishing Finished', 1), \
+               (4, 'source', 'w4', '/w4', 'Four', 'Completed', 1), \
+               (5, 'source', 'w5', '/w5', 'Five', NULL, 1)",
+        )
+        .execute(&v19_pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO novel_override(novel_id, payload) VALUES (1, ?1), (2, ?2), (3, ?3), (4, ?4)",
+        )
+        .bind(r#"{"fields":{"status":{"value":"Unknown","updatedAt":100},"note":{"value":"kept","updatedAt":5}}}"#)
+        .bind(r#"{"fields":{"status":{"value":"Licensed","updatedAt":200}}}"#)
+        .bind(r#"{"fields":{"status":{"value":"Publishing Finished","updatedAt":300}}}"#)
+        .bind(r#"{"fields":{"status":{"value":"Completed","updatedAt":400}}}"#)
+        .execute(&v19_pool)
+        .await
+        .unwrap();
+        v19_pool.close().await;
+
+        let db = open_and_migrate_pools(&path).await.unwrap();
+        let novel_statuses: Vec<(i64, Option<String>)> =
+            sqlx::query_as("SELECT id, status FROM novel ORDER BY id")
+                .fetch_all(db.reader())
+                .await
+                .unwrap();
+        assert_eq!(
+            novel_statuses,
+            vec![
+                (1, Some("Ongoing".into())),
+                (2, Some("Ongoing".into())),
+                (3, Some("Ongoing".into())),
+                (4, Some("Completed".into())),
+                (5, None),
+            ]
+        );
+        let override_statuses: Vec<(i64, Option<String>, Option<i64>)> = sqlx::query_as(
+            "SELECT novel_id, json_extract(payload, '$.fields.status.value'), \
+                    json_extract(payload, '$.fields.status.updatedAt') \
+             FROM novel_override ORDER BY novel_id",
+        )
+        .fetch_all(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(
+            override_statuses,
+            vec![
+                (1, Some("Ongoing".into()), Some(100)),
+                (2, Some("Ongoing".into()), Some(200)),
+                (3, Some("Ongoing".into()), Some(300)),
+                (4, Some("Completed".into()), Some(400)),
+            ]
+        );
+        let note: Option<String> = sqlx::query_scalar(
+            "SELECT json_extract(payload, '$.fields.note.value') FROM novel_override WHERE novel_id = 1",
+        )
+        .fetch_one(db.reader())
+        .await
+        .unwrap();
+        assert_eq!(note.as_deref(), Some("kept"));
+        db.close().await;
+
+        let reopened = open_and_migrate_pools(&path).await.unwrap();
+        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM novel")
+            .fetch_one(reopened.reader())
+            .await
+            .unwrap();
+        assert_eq!(count, 5);
         reopened.close().await;
     }
 }

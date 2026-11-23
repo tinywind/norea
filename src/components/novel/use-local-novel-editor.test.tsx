@@ -91,11 +91,8 @@ it("uses canonical NovelStatus choices for local work publication status", async
     .find((element) => element.props.label === "library.localNovel.status");
   expect(select).toBeDefined();
   expect((select!.props.data as Array<{ value: string }>).map((item) => item.value)).toEqual([
-    "Unknown",
     "Ongoing",
     "Completed",
-    "Licensed",
-    "Publishing Finished",
     "Cancelled",
     "On Hiatus",
   ]);

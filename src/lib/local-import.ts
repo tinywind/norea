@@ -538,7 +538,7 @@ function singleChapterConversion(
       name: analysis.title,
       novelId: "local",
       path: analysis.pathKey,
-      status: NovelStatus.Unknown,
+      status: NovelStatus.Ongoing,
       chapters: [
         {
           name: chapter.name,
@@ -612,7 +612,7 @@ async function convertEpub(
         novelId: "local",
         path: analysis.pathKey,
         author: epub.author,
-        status: NovelStatus.Unknown,
+        status: NovelStatus.Ongoing,
         chapters: [
           {
             name: chapter.name,

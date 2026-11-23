@@ -551,3 +551,53 @@ it("upgrades populated v18 storage to cache chapter payload digests and clear th
     rmSync(directory, { recursive: true });
   }
 });
+
+it("upgrades populated v19 storage to rewrite retired novel statuses to Ongoing", () => {
+  mkdirSync(".tmp", { recursive: true });
+  const directory = mkdtempSync(".tmp/novel-status-migration-");
+  const file = join(directory, "norea.db");
+  let db = new DatabaseSync(file);
+  try {
+    db.exec("PRAGMA foreign_keys=ON");
+    applyRegisteredMigrations(db, 0, 19);
+    db.exec(`INSERT INTO novel(id,plugin_id,source_novel_id,path,name,status,in_library) VALUES
+      (1,'source','w1','/w1','One','Unknown',1),
+      (2,'source','w2','/w2','Two','Licensed',1),
+      (3,'source','w3','/w3','Three','Publishing Finished',1),
+      (4,'source','w4','/w4','Four','Completed',1),
+      (5,'source','w5','/w5','Five',NULL,1);
+      INSERT INTO novel_override(novel_id,payload) VALUES
+        (1,'{"fields":{"status":{"value":"Unknown","updatedAt":100},"note":{"value":"kept","updatedAt":5}}}'),
+        (2,'{"fields":{"status":{"value":"Licensed","updatedAt":200}}}'),
+        (3,'{"fields":{"status":{"value":"Publishing Finished","updatedAt":300}}}'),
+        (4,'{"fields":{"status":{"value":"Completed","updatedAt":400}}}')`);
+
+    applyRegisteredMigrations(db, 19, 20);
+    db.close();
+    db = new DatabaseSync(file);
+
+    expect(db.prepare("SELECT id, status FROM novel ORDER BY id").all()).toEqual([
+      { id: 1, status: "Ongoing" },
+      { id: 2, status: "Ongoing" },
+      { id: 3, status: "Ongoing" },
+      { id: 4, status: "Completed" },
+      { id: 5, status: null },
+    ]);
+    expect(
+      db.prepare(
+        "SELECT novel_id AS id, json_extract(payload,'$.fields.status.value') AS status, json_extract(payload,'$.fields.status.updatedAt') AS updatedAt FROM novel_override ORDER BY novel_id",
+      ).all(),
+    ).toEqual([
+      { id: 1, status: "Ongoing", updatedAt: 100 },
+      { id: 2, status: "Ongoing", updatedAt: 200 },
+      { id: 3, status: "Ongoing", updatedAt: 300 },
+      { id: 4, status: "Completed", updatedAt: 400 },
+    ]);
+    expect(
+      db.prepare("SELECT json_extract(payload,'$.fields.note.value') AS note FROM novel_override WHERE novel_id=1").get(),
+    ).toEqual({ note: "kept" });
+  } finally {
+    db.close();
+    rmSync(directory, { recursive: true });
+  }
+});

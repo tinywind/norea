@@ -123,7 +123,7 @@ describe("syncNovelFromSource", () => {
             summary: missing,
             author: missing,
             artist: missing,
-            status: NovelStatus.Unknown,
+            status: NovelStatus.Ongoing,
             genres: missing,
           }),
         }),
@@ -140,7 +140,7 @@ describe("syncNovelFromSource", () => {
           summary: null,
           author: null,
           artist: null,
-          status: "Unknown",
+          status: "Ongoing",
           genres: null,
           rating: null,
         }),
@@ -323,7 +323,18 @@ describe("syncNovelFromSource", () => {
     },
   );
 
-  it.each([undefined, null, "", " \t\n ", "ongoing", "연재중", "On break"])(
+  it.each([
+    undefined,
+    null,
+    "",
+    " \t\n ",
+    "ongoing",
+    "Unknown",
+    "Licensed",
+    "Publishing Finished",
+    "\uC5F0\uC7AC\uC911",
+    "On break",
+  ])(
     "rejects invalid parseNovel status %j before invoking IPC",
     async (status) => {
       await expect(
@@ -342,7 +353,18 @@ describe("syncNovelFromSource", () => {
     },
   );
 
-  it.each([undefined, null, "", " \t\n ", "ongoing", "연재중", "On break"])(
+  it.each([
+    undefined,
+    null,
+    "",
+    " \t\n ",
+    "ongoing",
+    "Unknown",
+    "Licensed",
+    "Publishing Finished",
+    "\uC5F0\uC7AC\uC911",
+    "On break",
+  ])(
     "rejects invalid parseNovelSince status %j before invoking publish IPC",
     async (status) => {
       await expect(
