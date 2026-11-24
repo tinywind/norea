@@ -87,11 +87,14 @@ export async function contentServerRequest<T>(serverUrl: string, path: string, t
       }
       const detail = await response.json().catch(() => null) as { message?: unknown; code?: unknown } | null;
       const serverCode = typeof detail?.code === "string" ? detail.code : undefined;
+      const detailMessage = typeof detail?.message === "string" ? detail.message.trim() : "";
       let message: string | undefined;
       if (response.status === 409 && /^\/works\/[^/]+\/(?:finalize-migration|migration-snapshot|reconcile-chapter-numbers|chapter-number-mappings)$/.test(path)) {
-        if (typeof detail?.message === "string" && (detail.message.startsWith("Work migration: ") || detail.message.startsWith("Chapter number reconciliation conflict: "))) message = detail.message.slice(0, 1500);
-      } else if (response.status === 409 && /^\/works\/[^/?]+(?:\?|$)/.test(path) && typeof detail?.message === "string") {
-        message = `Content server request failed (409): ${detail.message.slice(0, 1500)}`;
+        if (detailMessage && (detailMessage.startsWith("Work migration: ") || detailMessage.startsWith("Chapter number reconciliation conflict: "))) message = detailMessage.slice(0, 1500);
+      } else if (response.status === 409 && /^\/works\/[^/?]+(?:\?|$)/.test(path) && detailMessage) {
+        message = `Content server request failed (409): ${detailMessage.slice(0, 1500)}`;
+      } else if (response.status === 400 && detailMessage) {
+        message = `Content server request failed (400): ${detailMessage.slice(0, 1500)}`;
       }
       throw new ContentServerError(response.status, message, serverCode);
     }

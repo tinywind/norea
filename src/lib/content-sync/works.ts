@@ -1,3 +1,4 @@
+import { isNovelStatus, normalizeNovelStatus } from "../plugins/types";
 import { canonicalMetadataValue } from "../work-metadata/schema";
 import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { fetch as nativeFetch } from "@tauri-apps/plugin-http";
@@ -259,6 +260,15 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
         const serverMetadata = parseNovelMetadata(seenEntry.metadata);
         uploadMetadata = mergeIncomingNovelMetadata(serverMetadata, metadata);
         if (!cover && seenEntry.hasCover) uploadMetadata.cover = serverMetadata.cover;
+      }
+      if (uploadMetadata.novel.status !== null && !isNovelStatus(uploadMetadata.novel.status)) {
+        uploadMetadata = {
+          ...uploadMetadata,
+          novel: {
+            ...uploadMetadata.novel,
+            status: normalizeNovelStatus(uploadMetadata.novel.status),
+          },
+        };
       }
       try {
         await (signal

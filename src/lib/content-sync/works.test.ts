@@ -716,3 +716,33 @@ it("shares the work metadata cache across trailing-slash server URLs and preserv
   expect(remote?.cover).toEqual(metadata().cover);
   expect(remoteCover).toEqual(new Uint8Array([9, 9]));
 });
+
+it.each([
+  ["\uC5F0\uC7AC\uC911", "Ongoing"],
+  ["Unknown", "Ongoing"],
+  ["   ", "Ongoing"],
+  [" Completed ", "Completed"],
+  [null, null],
+] as const)("normalizes legacy local status %j to %j on upload without rewriting the local file", async (localStatus, expectedStatus) => {
+  const stored = metadata();
+  stored.novel.status = localStatus;
+  local = [{ directory: "contents/example/book", metadata: stored }];
+
+  await syncWorkMetadata("http://server", "device", true);
+
+  expect(remote?.novel.status).toBe(expectedStatus);
+  expect(local[0]!.metadata.novel.status).toBe(localStatus);
+  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+});
+
+it("keeps a canonical server status when merging a legacy local status from the current delta", async () => {
+  remote = { ...metadata(), novel: { ...metadata().novel, status: "Completed" } };
+  sequence = 1;
+  const stored = metadata();
+  stored.novel.status = "\uC5F0\uC7AC\uC911";
+  local = [{ directory: "contents/example/book", metadata: stored }];
+
+  await syncWorkMetadata("http://server", "device", true);
+
+  expect(remote?.novel.status).toBe("Completed");
+});

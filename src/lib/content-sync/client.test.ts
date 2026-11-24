@@ -87,6 +87,22 @@ it("retains the server's work metadata conflict reason for the Details view", as
   }
 });
 
+it("retains the server's bad-request reason for 400 responses and falls back when absent or blank", async () => {
+  vi.mocked(nativeFetch).mockResolvedValueOnce(Response.json({
+    statusCode: 400, error: "Bad Request", message: "  work metadata: invalid novel status  ",
+  }, { status: 400 }));
+  await expect(contentServerRequest("http://server", "/works/work-id", "device", "PUT", {}))
+    .rejects.toMatchObject({ status: 400, message: "Content server request failed (400): work metadata: invalid novel status" });
+
+  vi.mocked(nativeFetch).mockResolvedValueOnce(Response.json({ statusCode: 400, message: "   " }, { status: 400 }));
+  await expect(contentServerRequest("http://server", "/works/work-id", "device", "PUT", {}))
+    .rejects.toMatchObject({ status: 400, message: "Content server request failed (400)." });
+
+  vi.mocked(nativeFetch).mockResolvedValueOnce(new Response(null, { status: 400 }));
+  await expect(contentServerRequest("http://server", "/catalog/chapter", "device", "GET"))
+    .rejects.toMatchObject({ status: 400, message: "Content server request failed (400)." });
+});
+
 it("keeps the migration verification deadline separate from ordinary lookup deadlines", async () => {
   vi.useFakeTimers();
   vi.mocked(nativeFetch).mockResolvedValue(new Response(new ReadableStream(), { headers: { "Content-Type": "application/json" } }));
