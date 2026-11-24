@@ -198,7 +198,7 @@ describe("LibraryViewOptions", () => {
     expect(tagsIndex).toBeGreaterThan(sourcesIndex);
   });
 
-  it("merges legacy or retired status counts into canonical Ongoing and keeps zero-count statuses visible", async () => {
+  it("merges legacy or retired status counts into canonical Ongoing without duplicating options", async () => {
     locale.strings = ko;
     harness = mountBackNavigationHarness();
     await harness.render(
@@ -206,6 +206,7 @@ describe("LibraryViewOptions", () => {
         statuses={[
           { status: "Ongoing", totalNovels: 34 },
           { status: "Completed", totalNovels: 6 },
+          { status: "On Hiatus", totalNovels: 1 },
           { status: "\uC5F0\uC7AC\uC911", totalNovels: 1 },
           { status: "Unknown", totalNovels: 2 },
         ]}
@@ -221,21 +222,12 @@ describe("LibraryViewOptions", () => {
     expect(statusCheckboxes.map((checkbox) => checkbox.props.value)).toEqual([
       "Ongoing",
       "Completed",
-      "Cancelled",
       "On Hiatus",
     ]);
-    const labelTextAndCount = (checkbox: (typeof statusCheckboxes)[number]) => {
-      const label = checkbox.props.label as {
-        props?: { children?: Array<{ props?: { children?: string } }> };
-      };
-      return [
-        label?.props?.children?.[0]?.props?.children,
-        label?.props?.children?.[1]?.props?.children,
-      ];
+    const ongoingLabel = statusCheckboxes[0]!.props.label as {
+      props?: { children?: Array<{ props?: { children?: string } }> };
     };
-    expect(labelTextAndCount(statusCheckboxes[0]!)).toEqual([ko["novel.status.ongoing"], "37"]);
-    expect(labelTextAndCount(statusCheckboxes[1]!)).toEqual([ko["novel.status.completed"], "6"]);
-    expect(labelTextAndCount(statusCheckboxes[2]!)).toEqual([ko["novel.status.cancelled"], "0"]);
-    expect(labelTextAndCount(statusCheckboxes[3]!)).toEqual([ko["novel.status.onHiatus"], "0"]);
+    expect(ongoingLabel?.props?.children?.[0]?.props?.children).toBe(ko["novel.status.ongoing"]);
+    expect(ongoingLabel?.props?.children?.[1]?.props?.children).toBe("37");
   });
 });

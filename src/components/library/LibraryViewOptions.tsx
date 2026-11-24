@@ -257,11 +257,17 @@ export function FilterOptions({
         (countsByStatus.get(canonical) ?? 0) + entry.totalNovels,
       );
     }
-    return CANONICAL_NOVEL_STATUSES.map((status) => ({
+    const ordered: NovelStatusValue[] = [];
+    for (const status of CANONICAL_NOVEL_STATUSES) {
+      if ((countsByStatus.get(status) ?? 0) > 0 || selectedStatuses.includes(status)) {
+        ordered.push(status);
+      }
+    }
+    return ordered.map((status) => ({
       status,
       totalNovels: countsByStatus.get(status) ?? 0,
     }));
-  }, [statuses]);
+  }, [selectedStatuses, statuses]);
 
   const mergedTagOptions = useMemo(() => {
     const byKey = new Map<string, LibraryTagFilter>();
@@ -316,18 +322,19 @@ export function FilterOptions({
           />
         ))}
       </div>
-      <Checkbox.Group
-        label={t("library.statusFilters.title")}
-        onChange={(values) => setSelectedStatuses(values)}
-        value={selectedStatuses}
-      >
-        <div className="norea-library-option-list norea-library-filter-grid">
-          {statusesLoading && statuses.length === 0 && selectedStatuses.length === 0 ? (
-            <Text c="dimmed" className="norea-library-filter-grid-message" size="sm">
-              {t("library.statusFilters.loading")}
-            </Text>
-          ) : (
-            statusOptions.map((option) => (
+      {statusesLoading || statusOptions.length > 0 || selectedStatuses.length > 0 ? (
+        <Checkbox.Group
+          label={t("library.statusFilters.title")}
+          onChange={(values) => setSelectedStatuses(values)}
+          value={selectedStatuses}
+        >
+          <div className="norea-library-option-list norea-library-filter-grid">
+            {statusesLoading && statusOptions.length === 0 ? (
+              <Text c="dimmed" className="norea-library-filter-grid-message" size="sm">
+                {t("library.statusFilters.loading")}
+              </Text>
+            ) : null}
+            {statusOptions.map((option) => (
               <Checkbox
                 key={option.status}
                 label={
@@ -342,10 +349,10 @@ export function FilterOptions({
                 }
                 value={option.status}
               />
-            ))
-          )}
-        </div>
-      </Checkbox.Group>
+            ))}
+          </div>
+        </Checkbox.Group>
+      ) : null}
       {sourcesLoading || sources.length > 0 || activeSourceId !== null ? (
         <Radio.Group
           label={t("library.sources.title")}

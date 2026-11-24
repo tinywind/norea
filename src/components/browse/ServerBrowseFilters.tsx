@@ -24,7 +24,6 @@ import "../../styles/library.css";
 const QUICK_STATUSES: readonly NovelStatusValue[] = [
   NovelStatus.Ongoing,
   NovelStatus.Completed,
-  NovelStatus.OnHiatus,
 ];
 
 /** Sentinel checkbox value for uncategorized works; real user-state category IDs forbid `$`. */
@@ -118,11 +117,17 @@ export function ServerBrowseFilters({
         (countsByStatus.get(canonical) ?? 0) + entry.workCount,
       );
     }
-    return CANONICAL_NOVEL_STATUSES.map((status) => ({
+    const ordered: NovelStatusValue[] = [];
+    for (const status of CANONICAL_NOVEL_STATUSES) {
+      if ((countsByStatus.get(status) ?? 0) > 0 || selectedStatuses.includes(status)) {
+        ordered.push(status);
+      }
+    }
+    return ordered.map((status) => ({
       status,
       workCount: countsByStatus.get(status) ?? 0,
     }));
-  }, [statuses]);
+  }, [selectedStatuses, statuses]);
 
   const sourceOptions = useMemo(() => {
     const items = [...sources];
@@ -312,20 +317,21 @@ export function ServerBrowseFilters({
               </div>
             </Checkbox.Group>
           ) : null}
-          <Checkbox.Group
-            label={t("library.statusFilters.title")}
-            onChange={(values) =>
-              onChange({ statuses: values.filter(isNovelStatus) })
-            }
-            value={[...selectedStatuses]}
-          >
-            <div className="norea-library-option-list norea-library-filter-grid">
-              {filtersLoading && statuses.length === 0 && selectedStatuses.length === 0 ? (
-                <Text c="dimmed" className="norea-library-filter-grid-message" size="sm">
-                  {t("library.statusFilters.loading")}
-                </Text>
-              ) : (
-                statusOptions.map((option) => (
+          {filtersLoading || statusOptions.length > 0 || selectedStatuses.length > 0 ? (
+            <Checkbox.Group
+              label={t("library.statusFilters.title")}
+              onChange={(values) =>
+                onChange({ statuses: values.filter(isNovelStatus) })
+              }
+              value={[...selectedStatuses]}
+            >
+              <div className="norea-library-option-list norea-library-filter-grid">
+                {filtersLoading && statusOptions.length === 0 ? (
+                  <Text c="dimmed" className="norea-library-filter-grid-message" size="sm">
+                    {t("library.statusFilters.loading")}
+                  </Text>
+                ) : null}
+                {statusOptions.map((option) => (
                   <Checkbox
                     key={option.status}
                     label={
@@ -340,10 +346,10 @@ export function ServerBrowseFilters({
                     }
                     value={option.status}
                   />
-                ))
-              )}
-            </div>
-          </Checkbox.Group>
+                ))}
+              </div>
+            </Checkbox.Group>
+          ) : null}
           {filtersLoading || sourceOptions.length > 0 || source !== "" ? (
             <Radio.Group
               label={t("library.sources.title")}
