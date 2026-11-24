@@ -96,6 +96,27 @@ class AndroidAppLoggingDeviceTest {
   }
 
   @Test
+  fun directoryDestinationClosesFileDescriptorsAcrossRepeatedAppendsAndReads() {
+    val app = isolatedContext()
+    val root = File(app.filesDir, "log-test-fd-${System.nanoTime()}").apply { mkdirs() }
+    val destination = AndroidDirectoryLogDestination(root, "logs", app.packageName)
+    val runtime = destination.create(AppLogCategory.RUNTIME, 1)
+    val crash = destination.create(AppLogCategory.CRASH, 1)
+    destination.append(crash, "crash-body".toByteArray(), false)
+    repeat(100) { index ->
+      destination.append(runtime, "line-$index\n".toByteArray(), false)
+    }
+    repeat(50) {
+      assertEquals("crash-body", String(destination.read(crash)))
+    }
+    val openTargets = File("/proc/self/fd").listFiles().orEmpty().mapNotNull { entry ->
+      runCatching { android.system.Os.readlink(entry.path) }.getOrNull()
+    }
+    val leaked = openTargets.filter { it.startsWith(File(root, "logs").canonicalPath) }
+    assertTrue("Leaked log file descriptors: ${leaked.size}", leaked.isEmpty())
+  }
+
+  @Test
   fun failedPrimaryUsesRealPublicDownloadsAndProviderDenialUsesPrivateTemp() {
     val blocked = File(isolatedContext().filesDir, "log-test-blocked").apply { writeText("owned blocker") }
     withRoot(blocked.path) { app ->

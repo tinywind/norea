@@ -12,6 +12,7 @@ import android.system.Os
 import android.system.OsConstants
 import androidx.documentfile.provider.DocumentFile
 import java.io.File
+import java.io.FileDescriptor
 import java.io.FileOutputStream
 import java.io.FileInputStream
 
@@ -53,6 +54,35 @@ internal class AndroidLogDestinations(private val context: Context) {
       if (selected.startsWith("file://")) File(Uri.parse(selected).path!!) else File(selected), "logs", context.packageName)
 }
 
+// On Android, FileInputStream(FileDescriptor) and FileOutputStream(FileDescriptor)
+// do not take ownership of the descriptor, so closing the stream leaves an Os.open()
+// file descriptor open unless closed explicitly.
+internal inline fun <T> useFileDescriptor(
+  fd: FileDescriptor,
+  close: (FileDescriptor) -> Unit,
+  block: (FileDescriptor) -> T,
+): T {
+  var primary: Throwable? = null
+  try {
+    return block(fd)
+  } catch (error: Throwable) {
+    primary = error
+    throw error
+  } finally {
+    if (fd.valid()) {
+      if (primary == null) {
+        close(fd)
+      } else {
+        try {
+          close(fd)
+        } catch (closeError: Throwable) {
+          primary.addSuppressed(closeError)
+        }
+      }
+    }
+  }
+}
+
 internal class AndroidDirectoryLogDestination(
   private val root: File,
   private val child: String,
@@ -65,12 +95,13 @@ internal class AndroidDirectoryLogDestination(
     if (create) check(parent.isDirectory || parent.mkdirs()) { "Log root is unavailable" }
     val logs = File(parent, child)
     if (create && !logs.exists()) check(logs.mkdir()) { "Cannot create log directory" }
-    val fd = Os.open(logs.path, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW, 0)
-    if (!OsConstants.S_ISDIR(Os.fstat(fd).st_mode)) {
-      Os.close(fd)
-      throw IllegalStateException("Log path is not a directory")
+    val owned = useFileDescriptor(
+      Os.open(logs.path, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW, 0),
+      Os::close,
+    ) { fd ->
+      check(OsConstants.S_ISDIR(Os.fstat(fd).st_mode)) { "Log path is not a directory" }
+      ParcelFileDescriptor.dup(fd)
     }
-    val owned = try { ParcelFileDescriptor.dup(fd) } finally { Os.close(fd) }
     return owned.use { operation(File("/proc/self/fd/${it.fd}"), logs) }
   }
 
@@ -84,21 +115,33 @@ internal class AndroidDirectoryLogDestination(
 
   override fun create(category: AppLogCategory, sequence: Long): AppLogFile = directory(true) { opened, logs ->
     val name = AppLogNames.create(namespace, category, sequence)
-    val fd = Os.open(File(opened, name).path,
-      OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_WRONLY or OsConstants.O_NOFOLLOW, 0x180)
-    Os.close(fd)
+    useFileDescriptor(
+      Os.open(
+        File(opened, name).path,
+        OsConstants.O_CREAT or OsConstants.O_EXCL or OsConstants.O_WRONLY or OsConstants.O_NOFOLLOW,
+        0x180,
+      ),
+      Os::close,
+    ) {}
     AppLogFile(File(logs, name).path, name, sequence, 0)
   }
 
   override fun append(file: AppLogFile, bytes: ByteArray, flush: Boolean) = directory(false) { opened, _ ->
     require(File(file.name).name == file.name && file.name.startsWith("norea-$namespace-"))
-    val fd = Os.open(File(opened, file.name).path,
-      OsConstants.O_APPEND or OsConstants.O_WRONLY or OsConstants.O_NOFOLLOW, 0)
-    FileOutputStream(fd).use { output ->
-      val stat = Os.fstat(fd)
-      check(OsConstants.S_ISREG(stat.st_mode) && stat.st_size + bytes.size <= APP_LOG_FILE_BYTES)
-      output.write(bytes)
-      if (flush) output.fd.sync()
+    useFileDescriptor(
+      Os.open(
+        File(opened, file.name).path,
+        OsConstants.O_APPEND or OsConstants.O_WRONLY or OsConstants.O_NOFOLLOW,
+        0,
+      ),
+      Os::close,
+    ) { fd ->
+      FileOutputStream(fd).use { output ->
+        val stat = Os.fstat(fd)
+        check(OsConstants.S_ISREG(stat.st_mode) && stat.st_size + bytes.size <= APP_LOG_FILE_BYTES)
+        output.write(bytes)
+        if (flush) output.fd.sync()
+      }
     }
   }
 
@@ -110,19 +153,23 @@ internal class AndroidDirectoryLogDestination(
 
   fun read(file: AppLogFile): ByteArray = directory(false) { opened, _ ->
     require(File(file.name).name == file.name && AppLogNames.sequence(namespace, AppLogCategory.CRASH, file.name) != null)
-    val fd = Os.open(File(opened, file.name).path, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW, 0)
-    FileInputStream(fd).use { input ->
-      val stat = Os.fstat(fd)
-      check(OsConstants.S_ISREG(stat.st_mode) && stat.st_size <= APP_LOG_FILE_BYTES)
-      val bytes = ByteArray(APP_LOG_FILE_BYTES + 1)
-      var count = 0
-      while (count < bytes.size) {
-        val read = input.read(bytes, count, bytes.size - count)
-        if (read < 0) break
-        count += read
+    useFileDescriptor(
+      Os.open(File(opened, file.name).path, OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW, 0),
+      Os::close,
+    ) { fd ->
+      FileInputStream(fd).use { input ->
+        val stat = Os.fstat(fd)
+        check(OsConstants.S_ISREG(stat.st_mode) && stat.st_size <= APP_LOG_FILE_BYTES)
+        val bytes = ByteArray(APP_LOG_FILE_BYTES + 1)
+        var count = 0
+        while (count < bytes.size) {
+          val read = input.read(bytes, count, bytes.size - count)
+          if (read < 0) break
+          count += read
+        }
+        check(count <= APP_LOG_FILE_BYTES)
+        bytes.copyOf(count)
       }
-      check(count <= APP_LOG_FILE_BYTES)
-      bytes.copyOf(count)
     }
   }
 }
@@ -130,13 +177,15 @@ internal class AndroidDirectoryLogDestination(
 private fun appendLogDocument(context: Context, uri: Uri, bytes: ByteArray, flush: Boolean) {
   val descriptor = context.contentResolver.openFileDescriptor(uri, "wa")
     ?: throw IllegalStateException("Log document cannot be opened")
-  ParcelFileDescriptor.AutoCloseOutputStream(descriptor).use { output ->
-    val fd = descriptor.fileDescriptor
-    val size = Os.lseek(fd, 0, OsConstants.SEEK_END)
-    check(size >= 0 && size + bytes.size <= APP_LOG_FILE_BYTES) { "Log document exceeds the file limit" }
-    output.write(bytes)
-    output.flush()
-    if (flush) Os.fsync(fd)
+  descriptor.use { owned ->
+    ParcelFileDescriptor.AutoCloseOutputStream(owned).use { output ->
+      val fd = owned.fileDescriptor
+      val size = Os.lseek(fd, 0, OsConstants.SEEK_END)
+      check(size >= 0 && size + bytes.size <= APP_LOG_FILE_BYTES) { "Log document exceeds the file limit" }
+      output.write(bytes)
+      output.flush()
+      if (flush) Os.fsync(fd)
+    }
   }
 }
 

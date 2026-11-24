@@ -1,6 +1,9 @@
 package io.github.tinywind.norea
 
 import java.io.File
+import java.io.FileDescriptor
+import java.io.IOException
+import java.io.RandomAccessFile
 import java.nio.file.Files
 import org.junit.Assert.*
 import org.junit.Rule
@@ -36,5 +39,37 @@ class AndroidLogDestinationsTest {
       .write(AppLogCategory.CRASH, "do-not-write".toByteArray())
     assertTrue(result is AppLogWriteResult.Unavailable)
     assertTrue(oldRoot.listFiles()!!.isEmpty())
+  }
+
+  @Test
+  fun useFileDescriptorClosesValidDescriptorOnNormalCompletionAndFailure() {
+    val file = temporary.newFile("descriptor.log")
+    RandomAccessFile(file, "rw").use { handle ->
+      var closeCount = 0
+      val value = useFileDescriptor(handle.fd, { closeCount++ }) { fd ->
+        assertTrue(fd.valid())
+        "ok"
+      }
+      assertEquals("ok", value)
+      assertEquals(1, closeCount)
+
+      closeCount = 0
+      val thrown = assertThrows(IllegalStateException::class.java) {
+        useFileDescriptor(handle.fd, {
+          closeCount++
+          throw IOException("close-failed")
+        }) {
+          throw IllegalStateException("write-failed")
+        }
+      }
+      assertEquals("write-failed", thrown.message)
+      assertEquals(1, closeCount)
+      assertEquals(1, thrown.suppressed.size)
+      assertEquals("close-failed", thrown.suppressed[0].message)
+    }
+
+    var closedInvalid = 0
+    useFileDescriptor(FileDescriptor(), { closedInvalid++ }) {}
+    assertEquals(0, closedInvalid)
   }
 }
