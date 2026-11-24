@@ -1,0 +1,7 @@
+scripts:
+  setup: |
+    pnpm install
+setupAgentStartupPolicy: wait-for-setup
+worktree:
+  sharedDirectories:
+    - .claude/local
