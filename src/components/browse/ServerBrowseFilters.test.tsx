@@ -81,15 +81,18 @@ afterEach(async () => {
 
 beforeEach(() => onChange.mockClear());
 
-it.each([en, ko])("offers Ongoing and Completed as pressable status chips beside the filter sheet, without Clear when nothing is filtered", async (strings) => {
+it.each([en, ko])("offers Ongoing, Completed, and On Hiatus as pressable status chips beside the filter sheet, without Clear when nothing is filtered", async (strings) => {
   locale.strings = strings;
   const { chip } = await render();
   expect(chip(strings["novel.status.ongoing"])[0]!.props.selected).toBe(false);
   expect(chip(strings["novel.status.completed"])[0]!.props.selected).toBe(false);
+  expect(chip(strings["novel.status.onHiatus"])[0]!.props.selected).toBe(false);
   expect(chip(strings["contentSync.filters.more"])).toHaveLength(1);
   expect(chip(strings["common.clear"])).toHaveLength(0);
   (chip(strings["novel.status.completed"])[0]!.props.onClick as () => void)();
   expect(onChange).toHaveBeenLastCalledWith({ statuses: ["Completed"] });
+  (chip(strings["novel.status.onHiatus"])[0]!.props.onClick as () => void)();
+  expect(onChange).toHaveBeenLastCalledWith({ statuses: ["On Hiatus"] });
 });
 
 it.each([en, ko])("counts categories, uncategorized, statuses, source, and tags, toggles active chips off, and clears all filters", async (strings) => {
@@ -97,19 +100,20 @@ it.each([en, ko])("counts categories, uncategorized, statuses, source, and tags,
   const { chip } = await render({
     categories: ["cat-reading"],
     source: "source-a",
-    statuses: ["Ongoing", "On Hiatus"],
+    statuses: ["Ongoing", "Cancelled"],
     tags: ["Fantasy"],
     uncategorized: true,
   });
   expect(chip(strings["novel.status.ongoing"])[0]!.props.selected).toBe(true);
-  expect(chip(strings["novel.status.onHiatus"])[0]!.props.selected).toBe(true);
+  expect(chip(strings["novel.status.onHiatus"])[0]!.props.selected).toBe(false);
+  expect(chip(strings["novel.status.cancelled"])[0]!.props.selected).toBe(true);
   expect(chip("Reading")[0]!.props.selected).toBe(true);
   expect(chip(strings["categories.uncategorized"])[0]!.props.selected).toBe(true);
   expect(chip("Fantasy")[0]!.props.selected).toBe(true);
   expect(chip(strings["contentSync.filters.moreActive"].replace("{count}", "6"))).toHaveLength(1);
 
   (chip(strings["novel.status.ongoing"])[0]!.props.onClick as () => void)();
-  expect(onChange).toHaveBeenLastCalledWith({ statuses: ["On Hiatus"] });
+  expect(onChange).toHaveBeenLastCalledWith({ statuses: ["Cancelled"] });
 
   (chip("Reading")[0]!.props.onClick as () => void)();
   expect(onChange).toHaveBeenLastCalledWith({ categories: [] });
@@ -154,7 +158,9 @@ it("renders categories, canonical statuses, sources, and searchable tags with th
   expect(onChange).toHaveBeenLastCalledWith({ categories: ["cat-reading"], uncategorized: true });
 
   const statusCheckboxes = collectElements(checkboxGroups[1]!.props.children as ReactNode).filter(element => element.type === Checkbox);
-  expect(statusCheckboxes.map(box => box.props.value)).toEqual(["Ongoing", "Completed", "On Hiatus"]);
+  expect(statusCheckboxes.map(box => box.props.value)).toEqual(["Ongoing", "Completed", "Cancelled", "On Hiatus"]);
+  const cancelledCounts = collectElements(statusCheckboxes[2]!.props.label as ReactNode).filter(element => element.props.className === "norea-library-option-count");
+  expect(cancelledCounts[0]!.props.children).toBe("0");
   (checkboxGroups[1]!.props.onChange as (values: string[]) => void)(["Completed", "On Hiatus"]);
   expect(onChange).toHaveBeenLastCalledWith({ statuses: ["Completed", "On Hiatus"] });
 
