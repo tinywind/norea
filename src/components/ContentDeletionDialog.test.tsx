@@ -9,6 +9,7 @@ import { prepareContentDeletion, runContentDeletion, type ContentDeletionRequest
 const mocks = vi.hoisted(() => ({
   request: null as ContentDeletionRequest | null,
   captureFooter: undefined as ((footer: ReactNode) => void) | undefined,
+  captureSheet: undefined as ((sheet: { children: ReactNode; footer: ReactNode; title: ReactNode }) => void) | undefined,
   cancelQueries: vi.fn(async (): Promise<void> => undefined),
   invalidateQueries: vi.fn(async () => undefined),
 }));
@@ -38,6 +39,10 @@ vi.mock("./use-stop-download-goals-offer", () => ({ useStopDownloadGoalsOffer: (
 vi.mock("./ui/ResponsiveSheet", async original => {
   const actual = await original<typeof import("./ui/ResponsiveSheet")>();
   return { ...actual, ResponsiveSheet: (props: Parameters<typeof actual.ResponsiveSheet>[0]) => {
+    if (mocks.captureSheet) {
+      mocks.captureSheet({ children: props.children, footer: props.footer, title: props.title });
+      return null;
+    }
     if (!mocks.captureFooter) return <actual.ResponsiveSheet {...props} />;
     mocks.captureFooter(props.footer);
     return null;
@@ -133,4 +138,88 @@ it("states the deletion in one sentence ahead of the optional checkboxes", () =>
   expect($.text()).not.toContain("contentDeletion.hint");
   expect(render({ kind: "downloads", scope: "all", title: "Downloads", serverUrl: "" })("p").text())
     .toBe("contentDeletion.summary.allDownloads");
+});
+
+it("isolates library server deletion inside a danger zone with warning copy", () => {
+  const $ = render({ ...unshelve, downloadedCount: 4, serverWork: true });
+  const dangerZone = $(".norea-content-deletion-danger-zone");
+  expect(dangerZone).toHaveLength(1);
+  expect(dangerZone.text()).toContain("contentDeletion.serverDangerTitle");
+  expect(dangerZone.text()).toContain("contentDeletion.serverDangerWarning");
+  expect(dangerZone.find("input[type='checkbox']")).toHaveLength(1);
+  expect(
+    dangerZone.find(`label[for='${dangerZone.find("input[type='checkbox']").attr("id")}']`).text(),
+  ).toBe("contentDeletion.alsoDeleteFromServer");
+
+  expect(render({ ...unshelve, downloadedCount: 4, serverWork: false })(".norea-content-deletion-danger-zone")).toHaveLength(0);
+  expect(render({ ...unshelve, serverUrl: "", downloadedCount: 4 })(".norea-content-deletion-danger-zone")).toHaveLength(0);
+});
+
+it("requires a second confirmation step before deleting from the server during library removal", async () => {
+  const harness = mountBackNavigationHarness();
+  let sheet: { children: ReactNode; footer: ReactNode; title: ReactNode } | undefined;
+  mocks.request = { kind: "library", ids: [3, 4], title: "Remove 2 works", serverUrl: "http://server.test", downloadedCount: 5, serverWork: true };
+  mocks.captureSheet = value => { sheet = value; };
+  vi.mocked(prepareContentDeletion).mockClear().mockResolvedValue([]);
+  vi.mocked(runContentDeletion).mockClear().mockResolvedValue([]);
+  try {
+    await harness.render(<ContentDeletionDialog />);
+    const serverCheckbox = collectElements(sheet!.children).find(
+      element => element.props.label === "contentDeletion.alsoDeleteFromServer",
+    )!;
+    await harness.run(() => (serverCheckbox.props.onChange as (event: { currentTarget: { checked: boolean } }) => void)({
+      currentTarget: { checked: true },
+    }));
+
+    const reviewButton = collectElements(sheet!.footer).find(
+      element => element.props.children === "contentDeletion.reviewServerDeletion",
+    )!;
+    expect(reviewButton).toBeDefined();
+    await harness.run(() => (reviewButton.props.onClick as () => void)());
+
+    expect(prepareContentDeletion).not.toHaveBeenCalled();
+    expect(runContentDeletion).not.toHaveBeenCalled();
+    expect(sheet!.title).toBe("contentDeletion.serverConfirmTitle");
+    const stepTwoFooter = collectElements(sheet!.footer);
+    const backButton = stepTwoFooter.find(element => element.props.children === "common.back")!;
+    const confirmButton = stepTwoFooter.find(element => element.props.children === "contentDeletion.confirmServerDeletion")!;
+    expect(backButton).toBeDefined();
+    expect(confirmButton).toBeDefined();
+
+    await harness.run(() => (backButton.props.onClick as () => void)());
+    expect(sheet!.title).toBe("contentDeletion.unshelveTitle");
+    expect(prepareContentDeletion).not.toHaveBeenCalled();
+
+    const reviewAgain = collectElements(sheet!.footer).find(
+      element => element.props.children === "contentDeletion.reviewServerDeletion",
+    )!;
+    await harness.run(() => (reviewAgain.props.onClick as () => void)());
+    const finalConfirm = collectElements(sheet!.footer).find(
+      element => element.props.children === "contentDeletion.confirmServerDeletion",
+    )!;
+    await harness.run(() => (finalConfirm.props.onClick as () => void)());
+
+    expect(prepareContentDeletion).toHaveBeenCalledExactlyOnceWith(mocks.request, { local: false, server: true });
+    expect(runContentDeletion).toHaveBeenCalledOnce();
+  } finally {
+    mocks.captureSheet = undefined;
+    await harness.unmount();
+  }
+});
+
+it("renders bulk server work deletion summary, danger warning, and local deletion option", () => {
+  const $ = render({
+    kind: "server-works",
+    title: "Delete 2 works",
+    works: [
+      { source: { serverUrl: "http://server.test", workId: "w1" }, name: "First" },
+      { source: { serverUrl: "http://server.test", workId: "w2" }, name: "Second" },
+    ],
+  });
+  expect($("h2 .norea-responsive-sheet-title-text").text()).toBe("contentDeletion.title");
+  expect($.text()).toContain("contentDeletion.summary.serverWorks:2");
+  expect($.text()).toContain("contentDeletion.serverDangerTitle");
+  expect($.text()).toContain("contentDeletion.serverDangerWarning");
+  expect(optionLabels($)).toEqual(["contentDeletion.localWorks"]);
+  expect($("button").last().text()).toBe("contentDeletion.confirm");
 });

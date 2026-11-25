@@ -334,3 +334,55 @@ it("keeps one server deletion per chapter beside the chunked device deletion", a
   expect(plan.map(action => action.id)).toEqual(["device:chapters:0", "server:1", "server:2", "server:3"]);
   expect(plan[0]).toMatchObject({ name: "C1 – C3", downloadedChapterIds: [1, 2, 3] });
 });
+
+it("deletes multiple selected server works, gates optional local removal per work, and retries only failed works", async () => {
+  const firstIdentity = { pluginId: "source", novelId: "book-1", novelPath: "/book/1" };
+  const secondIdentity = { pluginId: "source", novelId: "book-2", novelPath: "/book/2" };
+  const firstEntry = { id: "work-1", deleted: true, metadata: { identity: firstIdentity } };
+  const secondEntry = { id: "work-2", deleted: true, metadata: { identity: secondIdentity } };
+  const firstLocal = { ...novel, id: 1, sourceNovelId: "book-1", path: "/book/1", name: "First" };
+  const secondLocal = { ...novel, id: 2, sourceNovelId: "book-2", path: "/book/2", name: "Second" };
+  vi.mocked(deleteServerWork)
+    .mockResolvedValueOnce(firstEntry as never)
+    .mockRejectedValueOnce(new Error("offline"))
+    .mockResolvedValueOnce(secondEntry as never);
+  vi.mocked(findLocalDeletionNovel).mockImplementation(async identity =>
+    identity.novelPath === "/book/1" ? firstLocal as never : secondLocal as never);
+
+  const plan = await prepareContentDeletion({
+    kind: "server-works",
+    title: "Delete 2 selected works",
+    works: [
+      { source: { serverUrl: source.serverUrl, workId: "work-1" }, name: "First", identity: firstIdentity },
+      { source: { serverUrl: source.serverUrl, workId: "work-1" }, name: "First duplicate", identity: firstIdentity },
+      { source: { serverUrl: source.serverUrl, workId: "work-2" }, name: "Second", identity: secondIdentity },
+    ],
+  }, { local: true, server: false });
+
+  expect(plan.map(action => [action.id, action.side, action.requires])).toEqual([
+    ["server-work:work-1", "server", undefined],
+    ["local-work:work-1", "device", "server-work:work-1"],
+    ["server-work:work-2", "server", undefined],
+    ["local-work:work-2", "device", "server-work:work-2"],
+  ]);
+
+  const first = await runContentDeletion(plan);
+  expect(first.map(result => [result.id, result.status])).toEqual([
+    ["server-work:work-1", "succeeded"],
+    ["local-work:work-1", "succeeded"],
+    ["server-work:work-2", "failed"],
+    ["local-work:work-2", "failed"],
+  ]);
+  expect(deleteLocalNovelRecords).toHaveBeenCalledExactlyOnceWith(firstLocal, { recordUserStateRemoval: true });
+
+  const retried = await runContentDeletion(plan, first);
+  expect(retried.every(result => result.status === "succeeded")).toBe(true);
+  expect(deleteServerWork).toHaveBeenCalledTimes(3);
+  expect(deleteServerWork).toHaveBeenLastCalledWith(
+    { serverUrl: source.serverUrl, workId: "work-2" },
+    expect.any(Function),
+    secondIdentity,
+  );
+  expect(deleteLocalNovelRecords).toHaveBeenCalledTimes(2);
+  expect(deleteLocalNovelRecords).toHaveBeenLastCalledWith(secondLocal, { recordUserStateRemoval: true });
+});

@@ -3,7 +3,7 @@ import type { ContentDeletionRequest } from "../lib/content-deletion";
 import { useContentSyncStore } from "./content-sync";
 
 type ContentDeletionInput =
-  | Extract<ContentDeletionRequest, { kind: "server-work" | "server-chapters" }>
+  | Extract<ContentDeletionRequest, { kind: "server-work" | "server-works" | "server-chapters" }>
   | Omit<Extract<ContentDeletionRequest, { kind: "library" }>, "serverUrl">
   | Omit<Extract<ContentDeletionRequest, { kind: "downloads" }>, "serverUrl">;
 interface PendingDeletion { id: number; request: ContentDeletionRequest; resolve: (changed: boolean) => void }
@@ -12,7 +12,10 @@ let nextId = 0;
 
 export function confirmContentDeletion(input: ContentDeletionInput): Promise<boolean> {
   if (useContentDeletionStore.getState().pending) return Promise.resolve(false);
-  const request: ContentDeletionRequest = "source" in input ? input : { ...input, serverUrl: useContentSyncStore.getState().serverUrl };
+  const request: ContentDeletionRequest =
+    input.kind === "server-work" || input.kind === "server-works" || input.kind === "server-chapters"
+      ? input
+      : { ...input, serverUrl: useContentSyncStore.getState().serverUrl };
   return new Promise(resolve => useContentDeletionStore.setState({ pending: { id: ++nextId, request, resolve } }));
 }
 

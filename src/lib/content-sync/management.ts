@@ -8,7 +8,7 @@ import { runServerWorkDeletion } from "./deletion-exclusions";
 import type { ServerNovelSource } from "./novel-source";
 import { contentWorkId, recordDeletedWorkMetadata, type WorkCatalogEntry } from "./works";
 
-type ExpectedWorkIdentity = Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath"> & { novelId?: string | null };
+export type ExpectedWorkIdentity = Pick<NovelMetadataV1["identity"], "pluginId" | "novelPath"> & { novelId?: string | null };
 const conditionalDeleteContentType = "application/vnd.norea.work-identity-delete+json";
 const matchesIdentity = (actual: NovelMetadataV1["identity"], expected: ExpectedWorkIdentity) =>
   actual.pluginId === expected.pluginId && actual.novelPath === expected.novelPath &&

@@ -12,7 +12,7 @@ import type { ServerChapterSummary } from "./content-sync/chapters";
 import { ContentServerError, contentServerRequest } from "./content-sync/client";
 import { registerContentDevice } from "./content-sync/device";
 import { setServerChapterDeletionExclusion } from "./content-sync/deletion-exclusions";
-import { deleteSelectedServerChapters, deleteServerWork, loadServerWorkIdentity } from "./content-sync/management";
+import { deleteSelectedServerChapters, deleteServerWork, loadServerWorkIdentity, type ExpectedWorkIdentity } from "./content-sync/management";
 import type { CatalogEntry } from "./content-sync/native";
 import type { ServerNovelSource } from "./content-sync/novel-source";
 import { runWorkContentStorageOperation } from "./content-sync/storage-operation";
@@ -23,6 +23,12 @@ import { clearNovelCoverDisplayCache } from "./novel-cover-storage";
 import { cancelNovelChapterDownloadWork, deleteDownloadCache } from "./tasks/download-cache-delete";
 
 const DEVICE_CHAPTER_CHUNK_SIZE = 200;
+
+export interface ServerWorkDeletionTarget {
+  source: ServerNovelSource;
+  name: string;
+  identity?: ExpectedWorkIdentity;
+}
 
 export type ContentDeletionRequest = (
   | {
@@ -36,6 +42,7 @@ export type ContentDeletionRequest = (
   }
   | { kind: "downloads"; scope: "chapter" | "novel" | "all"; ids?: readonly number[]; serverUrl: string }
   | { kind: "server-work"; source: ServerNovelSource }
+  | { kind: "server-works"; works: readonly ServerWorkDeletionTarget[] }
   | { kind: "server-chapters"; source: ServerNovelSource; chapters: readonly ServerChapterSummary[] }
 ) & { title: string };
 export interface ContentDeletionOptions { local: boolean; server: boolean }
@@ -114,32 +121,56 @@ async function deleteMatchingServerChapter(serverUrl: string, novel: NovelDetail
   await setServerChapterDeletionExclusion(serverUrl, identity, entry.manifest.chapter.chapterNumber, true);
 }
 
+function pushServerWorkDeletionActions(
+  actions: ContentDeletionAction[],
+  target: ServerWorkDeletionTarget,
+  options: ContentDeletionOptions,
+  idSuffix = "",
+): void {
+  let deleted: WorkCatalogEntry | undefined;
+  let local: { novel: NovelDetailRecord; directory: string; chapterIds: number[] } | null | undefined;
+  const serverActionId = `server-work${idSuffix}`;
+  const localActionId = `local-work${idSuffix}`;
+  actions.push({ id: serverActionId, side: "server", name: target.name, source: target.source, run: async () => {
+    if (deleted) await recordDeletedWorkMetadata(target.source.serverUrl, deleted);
+    else deleted = await (target.identity
+      ? deleteServerWork(target.source, entry => { deleted = entry; }, target.identity)
+      : deleteServerWork(target.source, entry => { deleted = entry; })) ?? undefined;
+    return deleted;
+  } });
+  if (options.local) actions.push({ id: localActionId, side: "device", name: target.name, requires: serverActionId, run: async () => {
+    if (local === undefined) {
+      const identity = deleted?.metadata.identity
+        ?? (target.identity && target.identity.novelId != null
+          ? { pluginId: target.identity.pluginId, novelId: target.identity.novelId, novelPath: target.identity.novelPath }
+          : undefined);
+      const novel = identity ? await findLocalDeletionNovel(identity) : null;
+      local = novel ? { novel, directory: novelStorageRelativeDir(novel), chapterIds: (await listChaptersByNovel(novel.id)).map(chapter => chapter.id) } : null;
+    }
+    if (!local) return;
+    const { novel, directory, chapterIds } = local;
+    await cancelNovelChapterDownloadWork([novel.id]);
+    await runWorkContentStorageOperation(novel.pluginId, novel.path, async () => {
+      await deleteLocalNovelRecords(novel, { recordUserStateRemoval: true });
+      useReaderStore.getState().removeNovelReaderState(novel.id);
+      forgetNovelStorageDirs(novel.id, chapterIds);
+      clearNovelCoverDisplayCache(novel.id, { pluginId: novel.pluginId, path: novel.path });
+      await removeChapterStorageDirectory(directory);
+    });
+  } });
+}
+
 export async function prepareContentDeletion(request: ContentDeletionRequest, options: ContentDeletionOptions): Promise<ContentDeletionAction[]> {
   const actions: ContentDeletionAction[] = [];
   if (request.kind === "server-work") {
-    let deleted: WorkCatalogEntry | undefined;
-    let local: { novel: NovelDetailRecord; directory: string; chapterIds: number[] } | null | undefined;
-    actions.push({ id: "server-work", side: "server", name: request.title, source: request.source, run: async () => {
-      if (deleted) await recordDeletedWorkMetadata(request.source.serverUrl, deleted);
-      else deleted = await deleteServerWork(request.source, entry => { deleted = entry; }) ?? undefined;
-      return deleted;
-    } });
-    if (options.local) actions.push({ id: "local-work", side: "device", name: request.title, requires: "server-work", run: async () => {
-      if (local === undefined) {
-        const novel = await findLocalDeletionNovel(deleted!.metadata.identity);
-        local = novel ? { novel, directory: novelStorageRelativeDir(novel), chapterIds: (await listChaptersByNovel(novel.id)).map(chapter => chapter.id) } : null;
-      }
-      if (!local) return;
-      const { novel, directory, chapterIds } = local;
-      await cancelNovelChapterDownloadWork([novel.id]);
-      await runWorkContentStorageOperation(novel.pluginId, novel.path, async () => {
-        await deleteLocalNovelRecords(novel, { recordUserStateRemoval: true });
-        useReaderStore.getState().removeNovelReaderState(novel.id);
-        forgetNovelStorageDirs(novel.id, chapterIds);
-        clearNovelCoverDisplayCache(novel.id, { pluginId: novel.pluginId, path: novel.path });
-        await removeChapterStorageDirectory(directory);
-      });
-    } });
+    pushServerWorkDeletionActions(actions, { name: request.title, source: request.source }, options);
+    return actions;
+  }
+  if (request.kind === "server-works") {
+    const uniqueWorks = new Map(request.works.map(work => [work.source.workId, work]));
+    for (const work of uniqueWorks.values()) {
+      pushServerWorkDeletionActions(actions, work, options, `:${work.source.workId}`);
+    }
     return actions;
   }
   if (request.kind === "server-chapters") {

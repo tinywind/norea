@@ -1,4 +1,4 @@
-import { useEffect, useMemo } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { createPortal } from "react-dom";
 import { Button, Loader } from "@mantine/core";
 import { useInfiniteQuery, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -9,13 +9,14 @@ import { registerContentDevice } from "../../lib/content-sync/device";
 import { describeError } from "../../lib/errors";
 import { useServerWorkCategories } from "../../lib/content-sync/use-server-work-categories";
 import { useLibraryNovelMembership } from "../../lib/use-library-novel-membership";
+import { confirmContentDeletion } from "../../store/content-deletion";
 import { useContentSyncStore } from "../../store/content-sync";
 import { EMPTY_CONTENT_SERVER_BROWSE_FILTERS, useContentServerBrowseStore } from "../../store/content-server-browse";
 import { StateView } from "../AppFrame";
 import { ContentServerCover } from "../ContentServerCover";
 import { IconButton } from "../IconButton";
 import { SearchBar } from "../SearchBar";
-import { AddToLibraryIcon, CheckIcon, DownloadIcon, InLibraryIcon, RefreshIcon, SelectIcon } from "../ui/icons";
+import { AddToLibraryIcon, CheckIcon, DownloadIcon, InLibraryIcon, RefreshIcon, SelectIcon, TrashIcon } from "../ui/icons";
 import { SelectionAction, SelectionBar } from "../ui/SelectionBar";
 import { CoverGridSkeleton } from "./CoverGridSkeleton";
 import { QuickAddCard } from "./QuickAddCard";
@@ -75,6 +76,7 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
   });
   const selection = useServerWorkSelection({ active, filter, server, token: device.data });
   const bulkAdd = useServerLibraryAdd(server);
+  const [deletingFromServer, setDeletingFromServer] = useState(false);
   const open = useMutation({
     meta: { errorPresentation: "inline" },
     mutationFn: (work: ServerWorkSummary) => openServerNovel(server, work),
@@ -124,22 +126,46 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
     selection.exit();
     void downloadServerWorksOnce(selectedWorks, null, t, queryClient, server);
   };
+  const deleteSelectedFromServer = () => {
+    if (deletingFromServer || selectedWorks.length === 0) return;
+    setDeletingFromServer(true);
+    void confirmContentDeletion({
+      kind: "server-works",
+      title: t("serverLibraryAdd.deleteSelectedConfirm", { count: selectedWorks.length }),
+      works: selectedWorks.map(work => ({
+        identity: work.identity,
+        name: work.novel.name,
+        source: { serverUrl: server, workId: work.id },
+      })),
+    })
+      .then(changed => {
+        if (changed) selection.exit();
+      })
+      .finally(() => setDeletingFromServer(false));
+  };
 
   const selectionBar = selection.selectionMode ? (
         <SelectionBar
           actions={
             <>
               <SelectionAction
-                disabled={newWorks.length === 0 || !!selection.gathering}
+                disabled={newWorks.length === 0 || !!selection.gathering || deletingFromServer}
                 icon={AddToLibraryIcon}
                 label={t("quickAdd.add")}
                 onClick={() => bulkAdd.request({ count: newWorks.length, onStarted: selection.exit, works: newWorks })}
               />
               <SelectionAction
-                disabled={selectedWorks.length === 0 || !!selection.gathering}
+                disabled={selectedWorks.length === 0 || !!selection.gathering || deletingFromServer}
                 icon={DownloadIcon}
                 label={t("serverLibraryAdd.downloadAll")}
                 onClick={downloadAll}
+              />
+              <SelectionAction
+                color="danger"
+                disabled={selectedWorks.length === 0 || !!selection.gathering || deletingFromServer}
+                icon={TrashIcon}
+                label={t("serverLibraryAdd.deleteFromServer")}
+                onClick={deleteSelectedFromServer}
               />
             </>
           }

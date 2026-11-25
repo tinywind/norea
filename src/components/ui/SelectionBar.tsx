@@ -94,7 +94,8 @@ export function SelectionBar({
   );
 }
 
-interface SelectionActionProps extends ComponentPropsWithRef<"button"> {
+interface SelectionActionProps extends Omit<ComponentPropsWithRef<"button">, "color"> {
+  color?: "danger";
   icon: AppIcon;
   label: string;
 }
@@ -102,6 +103,7 @@ interface SelectionActionProps extends ComponentPropsWithRef<"button"> {
 /** A labeled selection action: icon over label on phones, inline above. */
 export function SelectionAction({
   className,
+  color,
   disabled,
   icon: Icon,
   label,
@@ -111,6 +113,7 @@ export function SelectionAction({
   return (
     <Button
       className={`norea-selection-action${className ? ` ${className}` : ""}`}
+      color={color}
       disabled={disabled}
       leftSection={<Icon size="1.25rem" />}
       onClick={onClick}

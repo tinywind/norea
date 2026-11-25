@@ -674,3 +674,27 @@ body[data-norea-reader-bars] {
 .norea-source-access-copy:only-child {
   grid-column: 1 / -1;
 }
+
+.norea-content-deletion-danger-zone {
+  background: var(--norea-color-danger-soft);
+  border: 1px solid var(--norea-color-danger-border);
+  border-radius: var(--norea-radius-md);
+  display: grid;
+  gap: var(--norea-space-2);
+  padding: var(--norea-space-3);
+}
+
+.norea-content-deletion-danger-heading {
+  align-items: center;
+  color: var(--norea-color-danger);
+  display: flex;
+  font-size: var(--norea-text-sm);
+  font-weight: var(--norea-weight-bold);
+  gap: var(--norea-space-2);
+}
+
+.norea-content-deletion-danger-copy {
+  color: var(--norea-color-ink-muted);
+  font-size: var(--norea-text-sm);
+  margin: 0;
+}

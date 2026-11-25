@@ -27,6 +27,7 @@ const mocks = vi.hoisted(() => ({
   categories: new Map<string, string[]>(),
   categoryLookups: [] as unknown[][],
   bulkRequest: vi.fn(),
+  confirmDeletion: vi.fn(async (_input: unknown) => false),
   downloadAll: vi.fn(),
   selection: {
     allSelected: false, deselectAll: vi.fn(), enter: vi.fn(), exit: vi.fn(), gathering: null as { loaded: number; total: number } | null,
@@ -68,6 +69,7 @@ vi.mock("@tanstack/react-query", () => ({
 }));
 vi.mock("@tanstack/react-router", () => ({ useNavigate: () => mocks.navigate }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t: (key: string) => key }) }));
+vi.mock("../../store/content-deletion", () => ({ confirmContentDeletion: (input: unknown) => mocks.confirmDeletion(input) }));
 vi.mock("../../store/content-sync", () => ({ useContentSyncStore: (select: (state: { serverUrl: string; deviceName: string }) => unknown) => select({ serverUrl: mocks.server, deviceName: "Phone" }) }));
 vi.mock("../../store/content-server-browse", async original => {
   const actual = await original<typeof import("../../store/content-server-browse")>();
@@ -346,4 +348,33 @@ it("downloads right away when every selected work is already in the library", ()
   expect(mocks.selection.exit).toHaveBeenCalled();
   expect(mocks.downloadAll).toHaveBeenCalledWith(
     [expect.objectContaining({ id: "first" }), expect.objectContaining({ id: "second" })], null, expect.any(Function), expect.anything(), "http://server");
+});
+
+it("deletes selected server works through the confirmation dialog and exits selection only when deletion succeeds", async () => {
+  Object.assign(mocks.selection, { selectionMode: true, selected: new Map() });
+  expect(action(render(), "serverLibraryAdd.deleteFromServer").props.disabled).toBe(true);
+
+  Object.assign(mocks.selection, { selectionMode: true, selected: new Map([["first", work("first")], ["second", work("second")]]) });
+  mocks.confirmDeletion.mockResolvedValueOnce(false);
+  const deleteAction = action(render(), "serverLibraryAdd.deleteFromServer");
+  expect(deleteAction.props.disabled).toBe(false);
+  deleteAction.props.onClick!();
+  await vi.waitFor(() => {
+    expect(action(render(), "serverLibraryAdd.deleteFromServer").props.disabled).toBe(false);
+  });
+  expect(mocks.confirmDeletion).toHaveBeenCalledWith({
+    kind: "server-works",
+    title: "serverLibraryAdd.deleteSelectedConfirm",
+    works: [
+      { identity: { pluginId: "plugin", novelPath: "/first" }, name: "first", source: { serverUrl: "http://server", workId: "first" } },
+      { identity: { pluginId: "plugin", novelPath: "/second" }, name: "second", source: { serverUrl: "http://server", workId: "second" } },
+    ],
+  });
+  expect(mocks.selection.exit).not.toHaveBeenCalled();
+
+  mocks.confirmDeletion.mockResolvedValueOnce(true);
+  action(render(), "serverLibraryAdd.deleteFromServer").props.onClick!();
+  await vi.waitFor(() => {
+    expect(mocks.selection.exit).toHaveBeenCalledOnce();
+  });
 });
