@@ -304,6 +304,10 @@ pub struct StoredNovelChapterDto {
     pub media_complete: bool,
 }
 
+fn default_upload_eligible() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct WorkMetadataSyncFileDto {
@@ -312,6 +316,8 @@ pub struct WorkMetadataSyncFileDto {
     pub directory: String,
     pub fingerprint: String,
     pub revision: i64,
+    #[serde(default = "default_upload_eligible")]
+    pub upload_eligible: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1724,8 +1730,19 @@ pub async fn read_work_metadata_sync_file_in_tx(
     novel_path: &str,
 ) -> Result<Option<WorkMetadataSyncFileDto>, String> {
     let row = sqlx::query(
-        "SELECT f.plugin_id, f.path, f.directory, f.fingerprint, COALESCE(j.revision, 0) AS revision \
+        "SELECT f.plugin_id, f.path, f.directory, f.fingerprint, COALESCE(j.revision, 0) AS revision, \
+                CASE \
+                  WHEN COALESCE(n.in_library, 0) = 1 \
+                    OR EXISTS ( \
+                      SELECT 1 FROM chapter c \
+                      WHERE c.novel_id = f.novel_id \
+                        AND (c.is_downloaded = 1 OR c.content_bytes > 0 OR c.media_repair_needed = 1) \
+                    ) \
+                  THEN 1 \
+                  ELSE 0 \
+                END AS upload_eligible \
          FROM work_metadata_file_cache f \
+         LEFT JOIN novel n ON n.id = f.novel_id \
          LEFT JOIN work_metadata_sync_journal j \
            ON j.plugin_id = f.plugin_id AND j.path = f.path \
          WHERE f.plugin_id = ?1 AND f.path = ?2",
@@ -1742,6 +1759,7 @@ pub async fn read_work_metadata_sync_file_in_tx(
         directory: r.get("directory"),
         fingerprint: r.get("fingerprint"),
         revision: r.get("revision"),
+        upload_eligible: r.get::<i64, _>("upload_eligible") != 0,
     }))
 }
 
@@ -2637,8 +2655,19 @@ pub async fn list_sync_files_from_pool(
     pool: &SqlitePool,
 ) -> Result<Vec<WorkMetadataSyncFileDto>, String> {
     let rows = sqlx::query(
-        "SELECT f.plugin_id, f.path, f.directory, f.fingerprint, COALESCE(j.revision, 0) AS revision \
+        "SELECT f.plugin_id, f.path, f.directory, f.fingerprint, COALESCE(j.revision, 0) AS revision, \
+                CASE \
+                  WHEN COALESCE(n.in_library, 0) = 1 \
+                    OR EXISTS ( \
+                      SELECT 1 FROM chapter c \
+                      WHERE c.novel_id = f.novel_id \
+                        AND (c.is_downloaded = 1 OR c.content_bytes > 0 OR c.media_repair_needed = 1) \
+                    ) \
+                  THEN 1 \
+                  ELSE 0 \
+                END AS upload_eligible \
          FROM work_metadata_file_cache f \
+         LEFT JOIN novel n ON n.id = f.novel_id \
          LEFT JOIN work_metadata_sync_journal j \
            ON j.plugin_id = f.plugin_id AND j.path = f.path",
     )
@@ -2654,6 +2683,7 @@ pub async fn list_sync_files_from_pool(
             directory: r.get("directory"),
             fingerprint: r.get("fingerprint"),
             revision: r.get("revision"),
+            upload_eligible: r.get::<i64, _>("upload_eligible") != 0,
         })
         .collect())
 }
@@ -4974,6 +5004,77 @@ mod tests {
                 .await
                 .unwrap();
         assert_eq!(total_chapters_stat, 2);
+
+        test_db.db.close().await;
+    }
+
+    #[tokio::test]
+    async fn sync_files_mark_only_library_and_stored_chapter_works_upload_eligible() {
+        let test_db = open_test_db().await;
+        let pool = test_db.db.writer();
+
+        sqlx::query(
+            "INSERT INTO novel(id, plugin_id, source_novel_id, path, name, in_library) VALUES \
+             (1, 'source', 'browse-only', '/browse-only', 'Browse Only', 0), \
+             (2, 'source', 'in-lib', '/in-lib', 'In Library', 1), \
+             (3, 'source', 'downloaded', '/downloaded', 'Downloaded Only', 0), \
+             (4, 'source', 'repair', '/repair', 'Repair Needed', 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO chapter(id, novel_id, path, name, position, is_downloaded, content_bytes, media_repair_needed) VALUES \
+             (11, 1, '/ch/1', 'Ch 1', 1, 0, 0, 0), \
+             (31, 3, '/ch/1', 'Ch 1', 1, 1, 128, 0), \
+             (41, 4, '/ch/1', 'Ch 1', 1, 0, 0, 1)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO work_metadata_file_cache(plugin_id, path, novel_id, directory, fingerprint) VALUES \
+             ('source', '/browse-only', 1, 'contents/source/browse-only', 'fp1'), \
+             ('source', '/in-lib', 2, 'contents/source/in-lib', 'fp2'), \
+             ('source', '/downloaded', 3, 'contents/source/downloaded', 'fp3'), \
+             ('source', '/repair', 4, 'contents/source/repair', 'fp4')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let files = list_sync_files_from_pool(pool).await.unwrap();
+        let eligibility: HashMap<String, bool> = files
+            .into_iter()
+            .map(|f| (f.path, f.upload_eligible))
+            .collect();
+        assert_eq!(eligibility.get("/browse-only"), Some(&false));
+        assert_eq!(eligibility.get("/in-lib"), Some(&true));
+        assert_eq!(eligibility.get("/downloaded"), Some(&true));
+        assert_eq!(eligibility.get("/repair"), Some(&true));
+
+        {
+            let mut conn = pool.acquire().await.unwrap();
+            let browse_only =
+                read_work_metadata_sync_file_in_tx(&mut conn, "source", "/browse-only")
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(!browse_only.upload_eligible);
+
+            sqlx::query("UPDATE novel SET in_library = 1 WHERE id = 1")
+                .execute(&mut *conn)
+                .await
+                .unwrap();
+            let shelved =
+                read_work_metadata_sync_file_in_tx(&mut conn, "source", "/browse-only")
+                    .await
+                    .unwrap()
+                    .unwrap();
+            assert!(shelved.upload_eligible);
+        }
 
         test_db.db.close().await;
     }

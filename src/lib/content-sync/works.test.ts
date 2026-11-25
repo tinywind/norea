@@ -27,7 +27,7 @@ const metadata = (name = "Book"): NovelMetadataV1 => ({
 const memory = new Map<string, string>();
 const localCovers = new Map<string, Uint8Array | null>();
 const revisions = new Map<string, number>();
-let local: { directory: string; metadata: NovelMetadataV1 }[];
+let local: { directory: string; metadata: NovelMetadataV1; uploadEligible?: boolean }[];
 let remote: NovelMetadataV1 | undefined;
 let remoteCover: Uint8Array | undefined;
 let sequence: number;
@@ -44,12 +44,14 @@ beforeEach(() => {
       for (const entry of local) revisions.set(entry.directory, (revisions.get(entry.directory) ?? 1) + 1);
     }
     return Promise.all(local.map(async entry => ({ pluginId: entry.metadata.identity.pluginId, path: entry.metadata.identity.novelPath,
-      directory: entry.directory, fingerprint: await storedNovelMetadataFingerprint(entry.metadata), revision: revisions.get(entry.directory) ?? 1 })));
+      directory: entry.directory, fingerprint: await storedNovelMetadataFingerprint(entry.metadata), revision: revisions.get(entry.directory) ?? 1,
+      ...(entry.uploadEligible !== undefined ? { uploadEligible: entry.uploadEligible } : {}) })));
   });
   vi.mocked(readWorkMetadataSyncFile).mockImplementation(async identity => {
     const entry = local.find(entry => entry.metadata.identity.pluginId === identity.pluginId && entry.metadata.identity.novelPath === identity.novelPath);
     return entry ? { pluginId: identity.pluginId, path: identity.novelPath, directory: entry.directory,
-      fingerprint: await storedNovelMetadataFingerprint(entry.metadata), revision: revisions.get(entry.directory) ?? 1 } : null;
+      fingerprint: await storedNovelMetadataFingerprint(entry.metadata), revision: revisions.get(entry.directory) ?? 1,
+      ...(entry.uploadEligible !== undefined ? { uploadEligible: entry.uploadEligible } : {}) } : null;
   });
   vi.mocked(readStoredNovelMetadata).mockImplementation(async directory => structuredClone(local.find(entry => entry.directory === directory) ?? null));
   vi.mocked(readStoredNovelCover).mockImplementation(async directory => localCovers.has(directory) ? localCovers.get(directory)! : new Uint8Array([1, 2, 3]));
@@ -745,4 +747,21 @@ it("keeps a canonical server status when merging a legacy local status from the 
   await syncWorkMetadata("http://server", "device", true);
 
   expect(remote?.novel.status).toBe("Completed");
+});
+
+it("skips uploading non-library browse-only works until they become upload-eligible", async () => {
+  const stored = { ...metadata(), cover: null };
+  local = [{ directory: "contents/example/book", metadata: stored, uploadEligible: false }];
+  localCovers.set("contents/example/book", null);
+
+  await syncWorkMetadata("http://server", "device", true);
+
+  expect(puts).toBe(0);
+  expect(remote).toBeUndefined();
+
+  local[0]!.uploadEligible = true;
+  await syncWorkMetadata("http://server", "device", true);
+
+  expect(puts).toBe(1);
+  expect(remote?.novel.name).toBe("Book");
 });

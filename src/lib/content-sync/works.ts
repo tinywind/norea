@@ -234,6 +234,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
     const changedOutsideCache: string[] = [];
     for (const [identity, file] of byIdentity) {
       if (file.pluginId === "local") continue;
+      if (file.uploadEligible === false) continue;
       const version = workMetadataFileVersion(file)!;
       const id = await contentWorkId({ pluginId: file.pluginId, novelPath: file.path });
       knownWorks.set(id, { identity, directory: file.directory });
@@ -247,6 +248,7 @@ async function performWorkMetadataSync(server: string, token: string, upload: bo
       const current = await workMetadataFingerprint(metadata, cover);
       const currentFile = await readWorkMetadataSyncFile(metadata.identity);
       if (workMetadataFileVersion(currentFile) !== version) continue;
+      if (currentFile?.uploadEligible === false) continue;
       if (await storedNovelMetadataFingerprint(metadata) !== file.fingerprint) {
         changedOutsideCache.push(metadata.novel.name || metadata.identity.novelPath);
         continue;

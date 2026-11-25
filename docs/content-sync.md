@@ -84,8 +84,9 @@ with a media manifest but no non-empty `media.zip`, ordinary chapter downloads
 fall back to the source plugin instead of installing the media-less copy.
 Invalid manifests and unsafe archives remain errors.
 
-All works are synchronization targets; library membership does not select the
-sync scope. Opening any work refreshes that work from the connected server in
+Library works and works with locally stored chapters are uploaded to the content
+server; un-shelved browse previews without stored chapters stay local until added
+to the library or downloaded. Opening any work refreshes that work from the connected server in
 the background, independently of the scheduled sync mode. Saved information is
 shown immediately. This request retrieves only the selected work's metadata,
 cover, and chapter summaries without downloading chapter bodies. Metadata transfers

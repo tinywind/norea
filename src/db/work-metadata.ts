@@ -27,6 +27,8 @@ export interface WorkMetadataSyncFile extends KnownMetadataFile {
   pluginId: string;
   path: string;
   revision: number;
+  /** True when the work is in the library or has locally stored chapter content. */
+  uploadEligible?: boolean;
 }
 
 export interface WorkMetadataRecoveryProgress {

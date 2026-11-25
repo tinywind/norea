@@ -298,27 +298,54 @@ export function createWorkMetadataIpcHandler(
             await flushWorkMetadata(transaction);
           });
         }
-        const rows = await db.select<WorkMetadataSyncFile[]>(
-          `SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision
-           FROM work_metadata_file_cache f LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path`,
+        const rows = await db.select<
+          Array<Omit<WorkMetadataSyncFile, "uploadEligible"> & { uploadEligible: number }>
+        >(
+          `SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision,
+                  CASE
+                    WHEN COALESCE(n.in_library,0)=1
+                      OR EXISTS(SELECT 1 FROM chapter c WHERE c.novel_id=f.novel_id AND (c.is_downloaded=1 OR c.content_bytes>0 OR c.media_repair_needed=1))
+                    THEN 1 ELSE 0
+                  END AS uploadEligible
+           FROM work_metadata_file_cache f
+           LEFT JOIN novel n ON n.id=f.novel_id
+           LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path`,
         );
         return {
           handled: true,
-          result: { value: rows, effects: {} } satisfies DbMutationEnvelope<
-            WorkMetadataSyncFile[]
-          >,
+          result: {
+            value: rows.map((row) => ({
+              ...row,
+              uploadEligible: Boolean(row.uploadEligible),
+            })),
+            effects: {},
+          } satisfies DbMutationEnvelope<WorkMetadataSyncFile[]>,
         };
       }
 
       if (command === "db_work_metadata_read_sync_file") {
         const db = await options.getDb();
-        const [file] = await db.select<WorkMetadataSyncFile[]>(
-          `SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision
-           FROM work_metadata_file_cache f LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path
+        const [file] = await db.select<
+          Array<Omit<WorkMetadataSyncFile, "uploadEligible"> & { uploadEligible: number }>
+        >(
+          `SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision,
+                  CASE
+                    WHEN COALESCE(n.in_library,0)=1
+                      OR EXISTS(SELECT 1 FROM chapter c WHERE c.novel_id=f.novel_id AND (c.is_downloaded=1 OR c.content_bytes>0 OR c.media_repair_needed=1))
+                    THEN 1 ELSE 0
+                  END AS uploadEligible
+           FROM work_metadata_file_cache f
+           LEFT JOIN novel n ON n.id=f.novel_id
+           LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path
            WHERE f.plugin_id=$1 AND f.path=$2`,
           [args.pluginId, args.novelPath],
         );
-        return { handled: true, result: file ?? null };
+        return {
+          handled: true,
+          result: file
+            ? { ...file, uploadEligible: Boolean(file.uploadEligible) }
+            : null,
+        };
       }
 
       if (command === "db_work_metadata_persist_cover") {
@@ -687,12 +714,24 @@ export function createWorkMetadataIpcHandler(
               [metadata.identity.pluginId, metadata.identity.novelPath],
             );
             await rememberStoredNovelMetadata(db, directory, metadata, true);
-            const [syncFile] = await db.select<WorkMetadataSyncFile[]>(
-              `SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision
-               FROM work_metadata_file_cache f LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path
+            const [syncFileRow] = await db.select<
+              Array<Omit<WorkMetadataSyncFile, "uploadEligible"> & { uploadEligible: number }>
+            >(
+              `SELECT f.plugin_id AS pluginId,f.path,f.directory,f.fingerprint,COALESCE(j.revision,0) AS revision,
+                      CASE
+                        WHEN COALESCE(n.in_library,0)=1
+                          OR EXISTS(SELECT 1 FROM chapter c WHERE c.novel_id=f.novel_id AND (c.is_downloaded=1 OR c.content_bytes>0 OR c.media_repair_needed=1))
+                        THEN 1 ELSE 0
+                      END AS uploadEligible
+               FROM work_metadata_file_cache f
+               LEFT JOIN novel n ON n.id=f.novel_id
+               LEFT JOIN work_metadata_sync_journal j ON j.plugin_id=f.plugin_id AND j.path=f.path
                WHERE f.plugin_id=$1 AND f.path=$2`,
               [metadata.identity.pluginId, metadata.identity.novelPath],
             );
+            const syncFile = syncFileRow
+              ? { ...syncFileRow, uploadEligible: Boolean(syncFileRow.uploadEligible) }
+              : undefined;
             if (!syncFile) {
               throw new Error(
                 "Installed work metadata is missing from the local index.",
