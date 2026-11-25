@@ -150,9 +150,28 @@ it("detects an image MIME type when the response uses application/octet-stream",
 
 it("opens an existing local work without overwriting edits or deleting locally known chapters", async () => {
   const id = await contentWorkId(metadata.identity);
+  vi.mocked(readStoredNovelMetadata).mockResolvedValueOnce({ directory: "contents/source/book", metadata });
   expect(await openServerNovel("http://server", { id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: true, chapterCount: 1 })).toBe(42);
   expect(installStoredNovelMetadata).not.toHaveBeenCalled();
   expect(contentServerRequest).not.toHaveBeenCalled();
+  expect(rememberServerNovelSource).toHaveBeenCalledWith(42, { serverUrl: "http://server", workId: id });
+});
+
+it("reinstalls metadata and cover when opening an existing local work whose local files were removed", async () => {
+  const id = await contentWorkId(metadata.identity);
+  const coverBytes = new Uint8Array([255, 216, 255]);
+  const serverMetadata: NovelMetadataV1 = {
+    ...metadata,
+    cover: { fileName: "cover.jpg", contentType: "image/jpeg" },
+  };
+  vi.mocked(contentServerRequest).mockResolvedValueOnce({ id, metadata: serverMetadata, hasCover: true });
+  vi.mocked(nativeFetch).mockResolvedValueOnce(new Response(coverBytes, { headers: { "content-type": "image/jpeg" } }));
+  expect(await openServerNovel("http://server", {
+    id, sequence: 1, identity: metadata.identity, novel: metadata.novel, hasCover: true, chapterCount: 1,
+  })).toBe(42);
+  expect(contentServerRequest).toHaveBeenCalledExactlyOnceWith("http://server", `/works/${id}`, "device");
+  expect(installStoredNovelMetadata).toHaveBeenCalledWith(serverMetadata, coverBytes, expect.any(Function));
+  expect(recordInstalledWorkMetadata).toHaveBeenCalledWith("http://server", installed, true);
   expect(rememberServerNovelSource).toHaveBeenCalledWith(42, { serverUrl: "http://server", workId: id });
 });
 
@@ -199,6 +218,7 @@ it("reindexes a work omitted by device restore from its preserved original files
   expect(cacheServerChapters).not.toHaveBeenCalled();
   expect(rememberServerNovelSource).toHaveBeenCalledWith(42, { serverUrl: "http://server", workId: id });
   // The next open reuses the recovered DB row instead of repeating the failed install.
+  vi.mocked(readStoredNovelMetadata).mockResolvedValueOnce(original);
   await expect(openServerNovel("http://server", work)).resolves.toBe(42);
   expect(installStoredNovelMetadata).toHaveBeenCalledOnce();
   expect(contentServerRequest).toHaveBeenCalledOnce();

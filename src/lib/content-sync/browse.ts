@@ -1,6 +1,6 @@
 import { mergeIncomingNovelMetadata } from "../work-metadata/merge";
 import { findNovelBySource } from "../../db/queries/novel";
-import { knownNovelMetadataDirectory, reindexPreservedWorkMetadata } from "../../db/work-metadata";
+import { knownNovelMetadataDirectory, readWorkMetadataSyncFile, reindexPreservedWorkMetadata } from "../../db/work-metadata";
 import { useContentSyncStore } from "../../store/content-sync";
 import { bytesToBase64 } from "../base64";
 import { availableNovelMetadataDirectory, installStoredNovelMetadata, listStoredNovelChapters, parseNovelMetadata, readStoredNovelMetadata, type NovelMetadataV1 } from "../work-metadata";
@@ -203,6 +203,12 @@ export async function openServerNovel(server: string, work: ServerWorkSummary): 
   const target = await resolveServerNovelTarget(server, work);
   if (!target.novel) return refreshServerNovel(target.source, true);
   if (target.migrated) return refreshServerNovel(target.source, false, { id: target.novel.id, identity: target.identity });
+  const directory = knownNovelMetadataDirectory(target.identity)
+    ?? (await readWorkMetadataSyncFile(target.identity))?.directory
+    ?? await availableNovelMetadataDirectory({ identity: target.identity, novel: work.novel });
+  if (!await readStoredNovelMetadata(directory)) {
+    return refreshServerNovel(target.source, false);
+  }
   await rememberServerNovelSource(target.novel.id, target.source);
   return target.novel.id;
 }
