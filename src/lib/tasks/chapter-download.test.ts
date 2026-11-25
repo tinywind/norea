@@ -4094,8 +4094,11 @@ describe("enqueueChapterMediaRepair", () => {
         expect.any(Number),
         "source-a",
       );
-      const savedRecovery = JSON.parse(storageValues.get("download-recovery-runtime") ?? '{"jobs":[],"episodes":[]}');
-      expect(savedRecovery.jobs).toEqual([]);
+      const savedRecovery = JSON.parse(storageValues.get("download-recovery-runtime") ?? '{"version":2,"policies":[],"sourcePolicies":{},"policyOverrides":[],"episodes":[],"siteResets":[]}');
+      expect(savedRecovery.jobs).toBeUndefined();
+      expect(savedRecovery.policies).toEqual([]);
+      expect(savedRecovery.sourcePolicies).toEqual({});
+      expect(savedRecovery.policyOverrides).toEqual([]);
       expect(savedRecovery.episodes).toEqual([]);
 
       const recordedJob = (failureMocks.record.mock.calls[0] as unknown[])[0];
@@ -4545,5 +4548,103 @@ describe("composed chapter source routing", () => {
       title: "Repair 7",
     });
     expect(taskScheduler.forgetSettledTask).toHaveBeenCalledWith("old-repair-7");
+  });
+
+  it("compacts an oversized legacy v1 recovery payload, prunes stale entries, and resumes queued downloads after a quota stop", async () => {
+    vi.resetModules();
+    const storageValues = new Map<string, string>();
+    const quotaLimit = 5 * 1024 * 1024;
+    const totalChars = () => [...storageValues.values()].reduce((sum, entry) => sum + entry.length, 0);
+    const storage = {
+      getItem: (key: string) => storageValues.get(key) ?? null,
+      setItem: (key: string, value: string) => {
+        const prev = storageValues.get(key)?.length ?? 0;
+        if (totalChars() - prev + value.length > quotaLimit) {
+          throw new DOMException("Quota exceeded", "QuotaExceededError");
+        }
+        storageValues.set(key, value);
+      },
+      removeItem: (key: string) => { storageValues.delete(key); },
+    };
+    const defaultPolicy = getDownloadRecoveryPolicy();
+    const legacyJobs = [
+      ["chapter:7", "source-a", "Chapter 7", 0],
+      ["chapter:8", "source-a", "Deleted Chapter 8", 0],
+      ...Array.from({ length: 85_200 }, (_, i) => [
+        `chapter:${100 + i}`,
+        "source-stale",
+        `Stale Chapter ${100 + i} - Long Title Entry`,
+        0,
+      ]),
+    ];
+    const legacyPayload = JSON.stringify({
+      version: 1,
+      policies: [defaultPolicy],
+      jobs: legacyJobs,
+      episodes: [],
+      siteResets: [],
+    });
+    expect(legacyPayload.length).toBeGreaterThan(5_000_000);
+    storageValues.set("download-recovery-runtime", legacyPayload);
+
+    recoveryHarness.current = new DownloadRecoveryController(storage);
+    const downloads = await import("./chapter-download");
+    const { scheduler, handles } = await schedulerFixture(true);
+    const { initializeDownloadFailureStopPersistence } = await import("./download-failure-stop");
+    storageValues.set(
+      "download-failure-stops",
+      JSON.stringify({
+        version: 1,
+        sourceErrors: {},
+        globalError: "Chapter storage failed during Save download recovery state: exceeded the quota.",
+      }),
+    );
+    const stopPersistence = initializeDownloadFailureStopPersistence(scheduler, storage);
+    vi.mocked(taskScheduler.resumeSourceQueue).mockImplementation((sourceId?: string) => scheduler.resumeSourceQueue(sourceId));
+    vi.mocked(isTauriRuntime).mockReturnValue(true);
+    vi.mocked(tryDownloadServerChapter).mockResolvedValue(true);
+    vi.mocked(listExistingChapterIds).mockResolvedValue([7]);
+    const activeJob: ChapterDownloadJob = {
+      id: 7,
+      pluginId: "source-a",
+      novelId: 11,
+      chapterPath: "/chapter/7",
+      title: "Chapter 7",
+    };
+    const deletedJob: ChapterDownloadJob = {
+      id: 8,
+      pluginId: "source-a",
+      novelId: 11,
+      chapterPath: "/chapter/8",
+      title: "Deleted Chapter 8",
+    };
+    backendQueueValues.set(7, activeJob);
+    backendQueueValues.set(8, deletedJob);
+
+    try {
+      expect(scheduler.getDownloadFailureStops().globalError).toContain("exceeded the quota");
+      const resumed = await downloads.resumeChapterDownloadQueueAfterFailure();
+      expect(resumed).toBe(true);
+      await handles[0]!.promise;
+      await downloads.waitForChapterDownloadQueueMutations();
+
+      expect(scheduler.getDownloadFailureStops()).toEqual({ sourceErrors: {} });
+      expect(backendQueueValues.has(7)).toBe(false);
+      expect(backendQueueValues.has(8)).toBe(false);
+      const persistedRecovery = JSON.parse(storageValues.get("download-recovery-runtime")!);
+      expect(persistedRecovery).toEqual({
+        version: 2,
+        policies: [],
+        sourcePolicies: {},
+        policyOverrides: [],
+        episodes: [],
+        siteResets: [],
+      });
+      expect(storageValues.get("download-recovery-runtime")!.length).toBeLessThan(150);
+    } finally {
+      stopPersistence();
+      scheduler.cancelActiveTasks({ discardQueued: true });
+      await Promise.allSettled(handles.map(handle => handle.promise));
+    }
   });
 });

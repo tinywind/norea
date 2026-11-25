@@ -14,7 +14,7 @@ import { cancelSourceAccessWait } from "./source-access-coordinator";
 import { usePluginVpnStore } from "../../store/plugin-vpn";
 import { useVpnDownloadStore } from "../../store/vpn-download";
 import { useSiteBrowserStore } from "../../store/site-browser";
-import { downloadRecovery, downloadRecoveryKey } from "./download-recovery";
+import { downloadRecovery, downloadRecoveryKey, type DownloadRecoveryJob } from "./download-recovery";
 import { androidCloseVpnDownloadWorker, androidConfigureVpnDownloadWorker, androidShowVpnDownloadWorker } from "../android-scraper";
 import { describeError } from "../errors";
 import { isAbortError } from "../abort";
@@ -29,7 +29,10 @@ import { listAutomaticPluginVpnProfiles, recordAutomaticPluginVpnProfileResult, 
 import { connectPluginVpnDownloadWorker, disconnectPluginVpnDownloadWorker, getPluginVpnDownloadGenerationFloor, stopPluginVpnDownloadWorkers } from "../plugin-vpn-download-workers";
 import { listSavedPluginVpnProfiles, SAVED_PLUGIN_VPN_PROFILES_CHANGED_EVENT } from "../plugin-vpn-profiles";
 import { isAndroidRuntime, isTauriRuntime } from "../tauri-runtime";
-import { installChapterDownloadBatchInterceptor } from "./chapter-download-batch-interceptor";
+import {
+  installChapterDownloadBatchInterceptor,
+  notifyInterceptedDownloadRecoveryRestored,
+} from "./chapter-download-batch-interceptor";
 import { cancelChapterDownloadRequest, getChapterDownloadRequestSnapshot, subscribeChapterDownloadRequests } from "./chapter-download-requests";
 import { beginChapterDownloadVpnHandover, cancelChapterDownloadTasks, discardQueuedChapterDownloads, enqueueVpnDownloadChapter, publishVpnDownloadBatchProgress, type ChapterDownloadVpnHandover, type ChapterDownloadBatchHandle, type ChapterDownloadBatchJob, type ChapterDownloadBatchResult, type ChapterDownloadJob } from "./chapter-download";
 import { forgetChapterDownloadFailures, recordFailedChapterDownloadAttempt } from "./chapter-download-failures";
@@ -108,6 +111,7 @@ let reservedProfiles: string[] = [];
 let automaticStopEpoch = 0;
 let deviceRestore: symbol | undefined;
 let initialization: Promise<void> | undefined;
+let vpnRuntimeRestored = false;
 let activeRun: ActiveRun | undefined;
 let snapshot: VpnDownloadRuntimeSnapshot = {
   drafts: [], plans: [], loading: true, error: null,
@@ -422,7 +426,12 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
     publish({ capabilities: capabilities() });
     const settings = useVpnDownloadStore.getState();
     coordinator.setWorkerLimit(settings.mode === "single" ? 1 : Math.min(settings.workerCount, snapshot.capabilities.maxWorkers || MAX_VPN_DOWNLOAD_WORKERS));
-    if (!isTauriRuntime()) { publish({ loading: false }); return; }
+    if (!isTauriRuntime()) {
+      vpnRuntimeRestored = true;
+      notifyInterceptedDownloadRecoveryRestored();
+      publish({ loading: false });
+      return;
+    }
     await coordinator.restore();
     for (const plan of coordinator.getPlans()) if (plan.ranges.some(range => range.userPaused && range.pauseReason === "work-paused")) {
       pausedWorks.add(JSON.stringify([plan.pluginId, plan.novelId]));
@@ -443,10 +452,20 @@ export function initializeVpnDownloadRuntime(): Promise<void> {
     }
     const resumeAfterRestart = activeRun?.status === "interrupted" && !afterDeviceRestore && resumesAfterRestart(pending.map(({ job }) => job));
     const labels: Record<string, Record<number, string>> = {};
+    const restoredRecoveryJobs: DownloadRecoveryJob[] = pending.map(({ job }) => job);
     for (const plan of coordinator.getPlans()) {
       const catalog = await persistVpnDownload("loading VPN chapter labels", () => listChaptersByNovel(plan.novelId));
       labels[plan.id] = Object.fromEntries(catalog.map(chapter => [chapter.id, chapter.name]));
+      for (const range of plan.ranges) {
+        if (range.phase === "cancelled") continue;
+        for (const id of range.selectedChapterIds.slice(range.checkpoint)) {
+          restoredRecoveryJobs.push({ id, pluginId: plan.pluginId, title: labels[plan.id]?.[id] ?? plan.title });
+        }
+      }
     }
+    if (restoredRecoveryJobs.length > 0) downloadRecovery.restore(restoredRecoveryJobs);
+    vpnRuntimeRestored = true;
+    notifyInterceptedDownloadRecoveryRestored();
     publish({ loading: false, chapterLabels: labels });
     const seen = new Set<string>();
     subscribeChapterDownloadRequests(syncBatches);
@@ -1126,7 +1145,36 @@ function cancelBatch(id: string): boolean {
   return true;
 }
 
-installChapterDownloadBatchInterceptor({ enqueue: enqueueBatch, enqueueChapter: enqueueSingleChapter, cancel: cancelBatch, isQueued: id => ownedUnfinishedChapterIds.has(id) });
+function restoredVpnDownloadRecoveryState() {
+  if (!vpnRuntimeRestored) return null;
+  const keys = new Set<string>();
+  const sourceIds = new Set<string>();
+  for (const draft of drafts.values()) {
+    if (draft.jobs.length > 0) sourceIds.add(draft.work.pluginId);
+    for (const job of draft.jobs) keys.add(downloadRecoveryKey(job));
+  }
+  for (const plan of coordinator.getPlans()) {
+    for (const range of plan.ranges) {
+      if (range.phase === "cancelled") continue;
+      const remaining = range.selectedChapterIds.slice(range.checkpoint);
+      if (remaining.length > 0) sourceIds.add(plan.pluginId);
+      for (const id of remaining) keys.add(downloadRecoveryKey({ id }));
+    }
+  }
+  for (const job of activeRun?.waitingHandover.values() ?? []) {
+    keys.add(downloadRecoveryKey(job));
+    sourceIds.add(job.pluginId);
+  }
+  return { keys, sourceIds };
+}
+
+installChapterDownloadBatchInterceptor({
+  enqueue: enqueueBatch,
+  enqueueChapter: enqueueSingleChapter,
+  cancel: cancelBatch,
+  isQueued: id => ownedUnfinishedChapterIds.has(id),
+  getRestoredRecoveryState: restoredVpnDownloadRecoveryState,
+});
 
 export async function resumeVpnDownloadRange(planId: string, rangeId: string, restartPass = false): Promise<void> {
   await initializeVpnDownloadRuntime();
