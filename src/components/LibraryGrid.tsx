@@ -17,6 +17,8 @@ interface LibraryGridProps {
   novels: readonly LibraryNovel[];
   displayMode: LibraryDisplayMode;
   novelsPerRow: number;
+  /** Currently active category tab; omitted from item labels so the tab's own category is not repeated. */
+  selectedCategoryId?: number | null;
   showDownloadBadges: boolean;
   showUnreadBadges: boolean;
   showNumberBadges: boolean;
@@ -33,6 +35,7 @@ export function LibraryGrid({
   novels,
   displayMode,
   novelsPerRow,
+  selectedCategoryId = null,
   showDownloadBadges,
   showUnreadBadges,
   showNumberBadges,
@@ -49,6 +52,7 @@ export function LibraryGrid({
     onActivate,
     onLongPress,
     selected: selectedIds?.has(novel.id) ?? false,
+    selectedCategoryId,
     selectionMode,
     showDownloadBadges,
     showNumberBadges,
@@ -145,6 +149,7 @@ interface LibraryItemProps {
   onActivate?: (id: number) => void;
   onLongPress?: (id: number) => void;
   selected: boolean;
+  selectedCategoryId: number | null;
   selectionMode: boolean;
   showDownloadBadges: boolean;
   showNumberBadges: boolean;
@@ -214,6 +219,7 @@ const LibraryCard = memo(function LibraryCard({
   onActivate,
   onLongPress,
   selected,
+  selectedCategoryId,
   selectionMode,
   showDownloadBadges,
   showNumberBadges,
@@ -225,6 +231,7 @@ const LibraryCard = memo(function LibraryCard({
   const progress = getReadingPercent(novel);
   const coverOnly = displayMode === "cover-only";
   const author = getCreatorLabel(novel, t);
+  const categoryText = formatVisibleCategories(novel, selectedCategoryId);
 
   return (
     <button
@@ -257,6 +264,15 @@ const LibraryCard = memo(function LibraryCard({
         {displayMode === "compact" ? (
           <span className="norea-library-card-overlay">
             <span className="norea-library-card-title">{novel.name}</span>
+            {categoryText ? (
+              <span
+                aria-label={`${t("categories.title")}: ${categoryText}`}
+                className="norea-library-card-categories"
+                title={categoryText}
+              >
+                {categoryText}
+              </span>
+            ) : null}
           </span>
         ) : null}
       </span>
@@ -264,6 +280,15 @@ const LibraryCard = memo(function LibraryCard({
         <span className="norea-library-card-text">
           <span className="norea-library-card-title">{novel.name}</span>
           <span className="norea-library-card-author">{author}</span>
+          {categoryText ? (
+            <span
+              aria-label={`${t("categories.title")}: ${categoryText}`}
+              className="norea-library-card-categories"
+              title={categoryText}
+            >
+              {categoryText}
+            </span>
+          ) : null}
         </span>
       ) : null}
       {progress > 0 ? (
@@ -280,6 +305,7 @@ const LibraryListRow = memo(function LibraryListRow({
   onActivate,
   onLongPress,
   selected,
+  selectedCategoryId,
   selectionMode,
   showDownloadBadges,
   showNumberBadges,
@@ -289,6 +315,7 @@ const LibraryListRow = memo(function LibraryListRow({
   const press = useLibraryItemPress(novel.id, onActivate, onLongPress);
   const coverSource = useNovelCoverSource(novel, { allowSourceFallback: true });
   const progress = getReadingPercent(novel);
+  const categoryText = formatVisibleCategories(novel, selectedCategoryId);
 
   return (
     <ListRow
@@ -304,6 +331,15 @@ const LibraryListRow = memo(function LibraryListRow({
       subtitle={
         <>
           <span className="norea-library-row-author">{getCreatorLabel(novel, t)}</span>
+          {categoryText ? (
+            <span
+              aria-label={`${t("categories.title")}: ${categoryText}`}
+              className="norea-library-row-categories"
+              title={categoryText}
+            >
+              {categoryText}
+            </span>
+          ) : null}
           <span
             aria-hidden="true"
             className="norea-library-row-progress"
@@ -343,7 +379,10 @@ function LibraryBadges({
   showDownloadBadges,
   showNumberBadges,
   showUnreadBadges,
-}: Omit<LibraryItemProps, "onActivate" | "onLongPress" | "selected" | "selectionMode">) {
+}: Omit<
+  LibraryItemProps,
+  "onActivate" | "onLongPress" | "selected" | "selectedCategoryId" | "selectionMode"
+>) {
   const { t } = useTranslation();
   const unread = showUnreadBadges && novel.chaptersUnread > 0;
   const goalState = showDownloadBadges ? offlineState : undefined;
@@ -385,6 +424,18 @@ function LibraryBadges({
 
 function getReadingPercent(novel: LibraryNovel) {
   return Math.max(0, Math.min(100, Math.round(novel.readingProgress)));
+}
+
+function formatVisibleCategories(
+  novel: LibraryNovel,
+  selectedCategoryId: number | null,
+): string {
+  const categories = novel.categories;
+  if (!categories || categories.length === 0) return "";
+  return categories
+    .filter((category) => selectedCategoryId === null || category.id !== selectedCategoryId)
+    .map((category) => category.name)
+    .join(", ");
 }
 
 function getCreatorLabel(

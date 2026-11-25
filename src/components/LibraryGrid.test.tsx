@@ -139,6 +139,71 @@ it("shows the title only on the cover in covers-only mode", () => {
   expect($("li > button").first().text()).not.toContain("Author");
 });
 
+it.each<LibraryDisplayMode>(["comfortable", "compact", "list"])(
+  "shows assigned categories in %s mode while omitting the active category tab",
+  (displayMode) => {
+    const categorized: LibraryNovel = {
+      ...novel,
+      categories: [
+        { id: 1, name: "Star" },
+        { id: 2, name: "Reading" },
+      ],
+    };
+    const onlyReading: LibraryNovel = {
+      ...novel,
+      id: 8,
+      name: "Single",
+      categories: [{ id: 2, name: "Reading" }],
+    };
+    const renderWithTab = (selectedCategoryId: number | null) =>
+      load(renderToStaticMarkup(
+        <MantineProvider>
+          <LibraryGrid
+            displayMode={displayMode}
+            novels={[categorized, onlyReading]}
+            novelsPerRow={3}
+            selectedCategoryId={selectedCategoryId}
+            showDownloadBadges={false}
+            showNumberBadges={false}
+            showUnreadBadges={false}
+          />
+        </MantineProvider>,
+      ));
+
+    const allTab = renderWithTab(null);
+    const allLabels = allTab('[aria-label^="categories.title:"]').map((_, el) => allTab(el).text()).get();
+    expect(allLabels).toEqual(["Star, Reading", "Reading"]);
+
+    const readingTab = renderWithTab(2);
+    const readingLabels = readingTab('[aria-label^="categories.title:"]').map((_, el) => readingTab(el).text()).get();
+    expect(readingLabels).toEqual(["Star"]);
+  },
+);
+
+it("keeps categories hidden in covers-only mode and styles compact categories as high-contrast pills", () => {
+  const categorized: LibraryNovel = {
+    ...novel,
+    categories: [{ id: 1, name: "Star" }],
+  };
+  const $ = load(renderToStaticMarkup(
+    <MantineProvider>
+      <LibraryGrid
+        displayMode="cover-only"
+        novels={[categorized]}
+        novelsPerRow={3}
+        selectedCategoryId={null}
+        showDownloadBadges={false}
+        showNumberBadges={false}
+        showUnreadBadges={false}
+      />
+    </MantineProvider>,
+  ));
+  expect($('[aria-label^="categories.title:"]')).toHaveLength(0);
+  const css = readFileSync(new URL("../styles/library.css", import.meta.url), "utf8");
+  expect(css).toMatch(/\.norea-library-card-overlay \.norea-library-card-categories \{[^}]*background: var\(--norea-color-accent\);/);
+  expect(css).toMatch(/\.norea-library-card-overlay \.norea-library-card-categories \{[^}]*color: var\(--norea-color-on-accent\);/);
+});
+
 it.each<LibraryDisplayMode>(["comfortable", "list"])("announces one busy status for the %s loading skeleton", (displayMode) => {
   const $ = load(renderToStaticMarkup(
     <MantineProvider>

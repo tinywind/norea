@@ -189,21 +189,6 @@
   padding: 0;
 }
 
-.norea-novel-category-label {
-  background: var(--norea-color-accent-soft);
-  border-radius: var(--norea-radius-full);
-  color: var(--norea-color-on-accent-soft);
-  font-family: var(--norea-font-ui);
-  font-size: var(--norea-text-sm);
-  font-weight: var(--norea-weight-medium);
-  line-height: 2rem;
-  max-width: 100%;
-  overflow: hidden;
-  padding-inline: var(--norea-space-3);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .norea-novel-category-sheet .mantine-Checkbox-label {
   align-items: center;
   display: flex;

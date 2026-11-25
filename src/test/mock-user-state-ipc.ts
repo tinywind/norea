@@ -607,7 +607,7 @@ export function createUserStateIpcHandler(options: UserStateIpcBridgeOptions) {
         const uniqueCategoryIds = args.categoryIds as number[];
         await options.runTransaction(async db => {
           const works = await db.select<{ id: number }[]>(
-            "SELECT id FROM novel WHERE id = $1 AND in_library = 1",
+            "SELECT id FROM novel WHERE id = $1",
             [novelId],
           );
           if (works.length === 0) throw new Error("novel-category:work-not-found");

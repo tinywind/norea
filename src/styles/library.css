@@ -734,9 +734,23 @@
   white-space: nowrap;
 }
 
+.norea-library-card-categories,
+.norea-library-row-categories {
+  color: var(--norea-color-accent);
+  display: block;
+  font-family: var(--norea-font-ui);
+  font-size: var(--norea-text-xs);
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .norea-library-card-overlay {
-  background: linear-gradient(transparent, rgba(0, 0, 0, 0.75));
+  background: linear-gradient(transparent 0%, rgba(0, 0, 0, 0.52) 38%, rgba(0, 0, 0, 0.88) 100%);
   bottom: 0;
+  display: grid;
+  gap: var(--norea-space-1);
   left: 0;
   padding: var(--norea-space-6) var(--norea-space-2) var(--norea-space-2);
   position: absolute;
@@ -746,6 +760,17 @@
 
 .norea-library-card-overlay .norea-library-card-title {
   color: #fff;
+}
+
+.norea-library-card-overlay .norea-library-card-categories {
+  background: var(--norea-color-accent);
+  border-radius: var(--norea-radius-sm);
+  box-sizing: border-box;
+  color: var(--norea-color-on-accent);
+  font-weight: var(--norea-weight-bold);
+  justify-self: start;
+  line-height: 1.25;
+  padding: 0.0625rem var(--norea-space-1);
 }
 
 .norea-library-list {

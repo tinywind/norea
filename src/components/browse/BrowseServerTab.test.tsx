@@ -86,7 +86,7 @@ vi.mock("../../lib/content-sync/use-server-work-categories", () => ({
 vi.mock("./use-server-work-selection", () => ({
   useServerWorkSelection: (options: unknown) => { mocks.selectionOptions.push(options); return mocks.selection; },
 }));
-vi.mock("./use-server-library-add", () => ({ useServerLibraryAdd: () => ({ request: mocks.bulkRequest, sheet: null }) }));
+vi.mock("./use-server-library-add", () => ({ useServerLibraryAdd: () => ({ request: mocks.bulkRequest }) }));
 vi.mock("./server-download-all", () => ({ downloadServerWorksOnce: mocks.downloadAll }));
 vi.mock("./use-quick-add", () => ({
   useQuickAddToLibrary: () => ({ add: mocks.quickAdd, categorySheet: null, isPending: () => false }),

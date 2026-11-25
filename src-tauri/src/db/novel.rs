@@ -129,6 +129,13 @@ const LIBRARY_STORED_CHAPTER_COUNT_SQL: &str = "(COALESCE(s.chapters_downloaded,
   WHERE stored.novel_id = n.id AND stored.is_downloaded = 0 AND stored.content_bytes > 0 \
 ))";
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LibraryNovelCategoryDto {
+    pub id: i64,
+    pub name: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct LibraryNovelDto {
@@ -149,6 +156,8 @@ pub struct LibraryNovelDto {
     pub reading_progress: f64,
     pub last_read_at: Option<i64>,
     pub last_updated_at: i64,
+    #[serde(default)]
+    pub categories: Vec<LibraryNovelCategoryDto>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
@@ -1069,6 +1078,47 @@ fn build_library_cursor_clause(
     }
 }
 
+async fn load_library_novel_categories_in_conn(
+    conn: &mut SqliteConnection,
+    novel_ids: &[i64],
+) -> Result<std::collections::HashMap<i64, Vec<LibraryNovelCategoryDto>>, String> {
+    let mut by_novel: std::collections::HashMap<i64, Vec<LibraryNovelCategoryDto>> =
+        std::collections::HashMap::new();
+    if novel_ids.is_empty() {
+        return Ok(by_novel);
+    }
+    for chunk in novel_ids.chunks(500) {
+        let placeholders: Vec<String> = (1..=chunk.len()).map(|idx| format!("?{idx}")).collect();
+        let sql = format!(
+            "SELECT nc.novel_id, c.id, c.name \
+             FROM novel_category nc \
+             JOIN category c ON c.id = nc.category_id AND c.is_system = 0 \
+             WHERE nc.novel_id IN ({}) \
+             ORDER BY c.sort, c.name",
+            placeholders.join(", ")
+        );
+        let mut query = sqlx::query(AssertSqlSafe(sql));
+        for &novel_id in chunk {
+            query = query.bind(novel_id);
+        }
+        let rows = query
+            .fetch_all(&mut *conn)
+            .await
+            .map_err(|err| format!("db novel: load library novel categories: {err}"))?;
+        for row in rows {
+            let novel_id: i64 = row.get("novel_id");
+            by_novel
+                .entry(novel_id)
+                .or_default()
+                .push(LibraryNovelCategoryDto {
+                    id: row.get("id"),
+                    name: row.get("name"),
+                });
+        }
+    }
+    Ok(by_novel)
+}
+
 pub async fn select_library_novels_in_conn(
     conn: &mut SqliteConnection,
     filter: &LibraryNovelPageFilterDto,
@@ -1103,16 +1153,21 @@ pub async fn select_library_novels_in_conn(
         .await
         .map_err(|err| format!("db novel: select library novels: {err}"))?;
 
+    let novel_ids: Vec<i64> = rows.iter().map(|row| row.get("id")).collect();
+    let mut categories_by_novel =
+        load_library_novel_categories_in_conn(&mut *conn, &novel_ids).await?;
+
     Ok(rows
         .into_iter()
         .map(|row| {
+            let id: i64 = row.get("id");
             let plugin_id: String = row.get("pluginId");
             let raw_is_local: i64 = row.get("isLocal");
             let is_local = is_local_novel(&plugin_id, raw_is_local);
             let raw_cover: Option<String> = row.get("cover");
             let in_library_raw: i64 = row.get("inLibrary");
             LibraryNovelDto {
-                id: row.get("id"),
+                id,
                 plugin_name: row.get("pluginName"),
                 source_novel_id: row.get("sourceNovelId"),
                 path: row.get("path"),
@@ -1137,6 +1192,7 @@ pub async fn select_library_novels_in_conn(
                 last_read_at: row.get("lastReadAt"),
                 last_updated_at: row.get("lastUpdatedAt"),
                 plugin_id,
+                categories: categories_by_novel.remove(&id).unwrap_or_default(),
             }
         })
         .collect())
@@ -3988,5 +4044,65 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(check_list[0].name, "Custom One");
+    }
+
+    #[tokio::test]
+    async fn select_library_novels_returns_ordered_manual_categories() {
+        let harness = open_test_db().await;
+        let pool = harness.db.writer();
+        sqlx::query(
+            "INSERT INTO novel (id, plugin_id, source_novel_id, path, name, in_library, is_local) \
+             VALUES \
+               (1, 'src', 'n1', '/n1', 'Alpha', 1, 0), \
+               (2, 'src', 'n2', '/n2', 'Beta', 1, 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO category (id, name, sort, is_system) \
+             VALUES \
+               (1, 'Default', 0, 1), \
+               (2, 'Reading', 2, 0), \
+               (3, 'Starred', 1, 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO novel_category (novel_id, category_id) VALUES (1, 1), (1, 2), (1, 3)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let page = list_library_novel_page_in_conn(
+            &mut conn,
+            &LibraryNovelPageFilterDto {
+                filter: LibraryFilterDto {
+                    sort_order: Some("nameAsc".to_string()),
+                    ..Default::default()
+                },
+                cursor: None,
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(page.novels.len(), 2);
+        assert_eq!(
+            page.novels[0].categories,
+            vec![
+                LibraryNovelCategoryDto {
+                    id: 3,
+                    name: "Starred".to_string(),
+                },
+                LibraryNovelCategoryDto {
+                    id: 2,
+                    name: "Reading".to_string(),
+                },
+            ]
+        );
+        assert!(page.novels[1].categories.is_empty());
     }
 }

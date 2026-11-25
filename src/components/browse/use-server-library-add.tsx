@@ -1,14 +1,12 @@
-import { Button, Checkbox, Group, Loader, Stack, Text } from "@mantine/core";
+import { Button, Group } from "@mantine/core";
 import { notifications } from "@mantine/notifications";
-import { useQuery, useQueryClient, type QueryClient } from "@tanstack/react-query";
-import { useState, type ReactNode } from "react";
-import { listCategories } from "../../db/queries/category";
+import { useQueryClient, type QueryClient } from "@tanstack/react-query";
+import type { ReactNode } from "react";
 import { useTranslation } from "../../i18n";
 import { isAbortError } from "../../lib/abort";
 import type { ServerWorkSummary } from "../../lib/content-sync/browse";
 import { describeError } from "../../lib/errors";
 import type { TaskHandle } from "../../lib/tasks/scheduler";
-import { ResponsiveSheet, SheetActions } from "../ui/ResponsiveSheet";
 import {
   enqueueServerLibraryAdd,
   failedWorkNames,
@@ -84,78 +82,35 @@ export interface ServerLibraryAddPrompt {
 }
 
 /**
- * The confirm sheet for a bulk server add: the work count and an optional
- * set of manual categories for the added works. A prompt with
- * `downloadChaptersOf` also queues those works' chapters after the add.
- * Render `sheet` once in the page.
+ * Starts a bulk server library add immediately without opening a category selection sheet.
+ * A request with `downloadChaptersOf` also queues those works' chapters after the add.
  */
 export function useServerLibraryAdd(server: string): {
   request: (prompt: ServerLibraryAddPrompt) => void;
-  sheet: ReactNode;
 } {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
-  const [prompt, setPrompt] = useState<ServerLibraryAddPrompt | null>(null);
-  const [categoryIds, setCategoryIds] = useState<number[]>([]);
-  const categoriesQuery = useQuery({
-    meta: { errorPresentation: "inline" },
-    queryKey: ["category", "list"],
-    queryFn: () => listCategories(),
-    enabled: prompt !== null,
-  });
-  const categories = (categoriesQuery.data ?? []).filter(category => !category.isSystem);
-  const close = () => setPrompt(null);
-  const confirm = () => {
-    if (!prompt) return;
-    const handle = startServerLibraryAdd({ categoryIds, count: prompt.count, server, works: prompt.works }, t, queryClient);
-    if (prompt.downloadChaptersOf) void downloadServerWorksOnce(prompt.downloadChaptersOf, handle.promise, t, queryClient, server);
-    notifications.show({ message: t("serverLibraryAdd.started", { count: prompt.count }) });
-    prompt.onStarted?.();
-    setPrompt(null);
-  };
-
-  const sheet = (
-    <ResponsiveSheet
-      footer={
-        <SheetActions>
-          <Button onClick={close} type="button" variant="default">{t("common.cancel")}</Button>
-          <Button disabled={!prompt} onClick={confirm} type="button">{t("quickAdd.add")}</Button>
-        </SheetActions>
-      }
-      onClose={close}
-      opened={prompt !== null}
-      title={t("serverLibraryAdd.confirmTitle", { count: prompt?.count ?? 0 })}
-    >
-      <Stack gap="md">
-        <Text c="dimmed" size="sm">
-          {t(prompt?.downloadChaptersOf ? "serverLibraryAdd.downloadAllConfirmMessage" : "serverLibraryAdd.confirmMessage")}
-        </Text>
-        <Text fw="var(--norea-weight-bold)" size="sm">{t("serverLibraryAdd.categories")}</Text>
-        {categoriesQuery.isPending ? <Loader size="sm" /> : null}
-        {categoriesQuery.error ? <Text c="danger" role="alert" size="sm">{t("categories.loadFailed")}</Text> : null}
-        {categories.map(category => (
-          <Checkbox
-            checked={categoryIds.includes(category.id)}
-            key={category.id}
-            label={category.name}
-            onChange={(event) => {
-              const checked = event.currentTarget.checked;
-              setCategoryIds(current => checked ? [...current, category.id] : current.filter(id => id !== category.id));
-            }}
-          />
-        ))}
-        {!categoriesQuery.isPending && !categoriesQuery.error && categories.length === 0 ? (
-          <Text c="dimmed" size="sm">{t("categories.noManual")}</Text>
-        ) : null}
-      </Stack>
-    </ResponsiveSheet>
-  );
 
   return {
-    request: (next) => {
-      setCategoryIds([]);
-      setPrompt(next);
+    request: (prompt) => {
+      const handle = startServerLibraryAdd(
+        { categoryIds: [], count: prompt.count, server, works: prompt.works },
+        t,
+        queryClient,
+      );
+      if (prompt.downloadChaptersOf) {
+        void downloadServerWorksOnce(
+          prompt.downloadChaptersOf,
+          handle.promise,
+          t,
+          queryClient,
+          server,
+        );
+      }
+      notifications.show({
+        message: t("serverLibraryAdd.started", { count: prompt.count }),
+      });
+      prompt.onStarted?.();
     },
-    sheet,
   };
 }

@@ -14,6 +14,11 @@ import type { LibrarySortOrder } from "../../store/library";
 
 export const LOCAL_PLUGIN_ID = "local";
 
+export interface LibraryNovelCategory {
+  id: number;
+  name: string;
+}
+
 /**
  * Shape returned by the Library list query.
  */
@@ -35,6 +40,7 @@ export interface LibraryNovel {
   readingProgress: number;
   lastReadAt: number | null;
   lastUpdatedAt: number;
+  categories?: readonly LibraryNovelCategory[];
 }
 
 export interface LibraryFilter {

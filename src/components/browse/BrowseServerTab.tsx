@@ -267,7 +267,6 @@ export function BrowseServerTab({ active, onSelectionModeChange, selectionHeader
       </div>
       {open.isPending ? <div className="norea-search-progress" role="status"><Loader size="xs" />{t("common.loading")}</div> : null}
       {quickAdd.categorySheet}
-      {bulkAdd.sheet}
       {works.hasNextPage ? (
         <Button className="norea-source-load-more" loading={works.isFetchingNextPage} onClick={() => { void works.fetchNextPage(); }} variant="default">
           {t("common.loadMore")}

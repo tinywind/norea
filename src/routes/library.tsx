@@ -345,6 +345,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: ["category"] });
+      void queryClient.invalidateQueries({ queryKey: ["novel", "library"] });
     },
   });
   const handleReorderCategories = useCallback(
@@ -559,6 +560,7 @@ export function LibraryPage({ active = true }: LibraryPageProps) {
                     novels={rows}
                     displayMode={displayMode}
                     novelsPerRow={novelsPerRow}
+                    selectedCategoryId={selectedCategoryId}
                     showDownloadBadges={showDownloadBadges}
                     showUnreadBadges={showUnreadBadges}
                     showNumberBadges={showNumberBadges}

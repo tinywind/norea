@@ -137,7 +137,7 @@ export class NovelCategoryError extends Error {
   constructor(readonly code: "work-not-found" | "category-not-found") {
     super(
       code === "work-not-found"
-        ? "The work is no longer in the library."
+        ? "The work is no longer available."
         : "A selected category is no longer available.",
     );
     this.name = "NovelCategoryError";

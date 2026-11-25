@@ -452,11 +452,11 @@ pub async fn set_novel_categories_in_tx(
     }
 
     let work_exists: Option<i64> =
-        sqlx::query_scalar("SELECT id FROM novel WHERE id = ?1 AND in_library = 1")
+        sqlx::query_scalar("SELECT id FROM novel WHERE id = ?1")
             .bind(novel_id)
             .fetch_optional(&mut *conn)
             .await
-            .map_err(|err| format!("db category: check library work: {err}"))?;
+            .map_err(|err| format!("db category: check work: {err}"))?;
     if work_exists.is_none() {
         return Err("novel-category:work-not-found".to_string());
     }
@@ -1671,5 +1671,98 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(intent_count, 0);
+    }
+
+    #[tokio::test]
+    async fn set_novel_categories_allows_non_library_work_without_inflating_library_counts() {
+        let harness = open_test_db().await;
+        let pool = harness.db.writer();
+
+        sqlx::query(
+            "INSERT INTO user_state_workspace (server_url, namespace, workspace_id, epoch) \
+             VALUES ('https://state.example', 'ns', 'ws', 'ep')",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+        sqlx::query("INSERT INTO category (id, name, sort, is_system) VALUES (1, 'Default', 0, 1)")
+            .execute(pool)
+            .await
+            .unwrap();
+        sqlx::query(
+            "INSERT INTO novel (id, plugin_id, source_novel_id, path, name, in_library, is_local) \
+             VALUES (10, 'src', 'server-10', '/server-10', 'Server Preview', 0, 0)",
+        )
+        .execute(pool)
+        .await
+        .unwrap();
+
+        with_write_tx(pool, category_tx_options(), |conn, ctx| {
+            Box::pin(async move {
+                insert_category_in_tx(
+                    conn,
+                    ctx,
+                    &InsertCategoryInputDto {
+                        name: "Favorites".to_string(),
+                        sort: None,
+                    },
+                )
+                .await
+            })
+        })
+        .await
+        .unwrap();
+
+        let mut conn = pool.acquire().await.unwrap();
+        let fav_id = list_categories_in_conn(&mut conn)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| !c.is_system)
+            .unwrap()
+            .id;
+        drop(conn);
+
+        sqlx::query("DELETE FROM user_state_intent")
+            .execute(pool)
+            .await
+            .unwrap();
+
+        with_write_tx(pool, category_tx_options(), move |conn, ctx| {
+            Box::pin(async move { set_novel_categories_in_tx(conn, ctx, 10, &[fav_id]).await })
+        })
+        .await
+        .unwrap();
+
+        let mut conn = pool.acquire().await.unwrap();
+        assert_eq!(
+            get_novel_category_ids_in_conn(&mut conn, 10).await.unwrap(),
+            vec![fav_id]
+        );
+        let fav = list_categories_in_conn(&mut conn)
+            .await
+            .unwrap()
+            .into_iter()
+            .find(|c| c.id == fav_id)
+            .unwrap();
+        assert_eq!(fav.novel_count, 0);
+
+        let intent_included: i64 = sqlx::query_scalar(
+            "SELECT json_extract(value_json, '$.included') \
+             FROM user_state_intent \
+             WHERE json_extract(entity_json, '$.kind') = 'membership'",
+        )
+        .fetch_one(&mut *conn)
+        .await
+        .unwrap();
+        assert_eq!(intent_included, 1);
+        drop(conn);
+
+        let missing_work = with_write_tx(pool, category_tx_options(), move |conn, ctx| {
+            Box::pin(async move { set_novel_categories_in_tx(conn, ctx, 999, &[fav_id]).await })
+        })
+        .await
+        .unwrap_err();
+        assert_eq!(missing_work, "novel-category:work-not-found");
     }
 }

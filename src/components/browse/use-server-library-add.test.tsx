@@ -9,20 +9,8 @@ const mocks = vi.hoisted(() => ({
   hide: vi.fn(),
   invalidate: vi.fn(),
   show: vi.fn(),
-  state: [] as unknown[],
-  stateIndex: 0,
-}));
-vi.mock("react", async original => ({ ...await original<typeof import("react")>(),
-  useState: (initial: unknown) => {
-    const index = mocks.stateIndex++;
-    if (!(index in mocks.state)) mocks.state[index] = initial;
-    return [mocks.state[index], (next: unknown) => {
-      mocks.state[index] = typeof next === "function" ? next(mocks.state[index]) : next;
-    }];
-  },
 }));
 vi.mock("@tanstack/react-query", () => ({
-  useQuery: () => ({ data: [], error: null, isPending: false }),
   useQueryClient: () => queryClient,
 }));
 vi.mock("../../i18n", () => ({ useTranslation: () => ({ t }) }));
@@ -53,37 +41,29 @@ function retryButton(call: number): ReactElement<{ onClick: () => void }> {
 
 beforeEach(() => {
   vi.clearAllMocks();
-  mocks.state.length = 0;
 });
 
-const renderHook = () => {
-  mocks.stateIndex = 0;
-  return useServerLibraryAdd("http://server");
-};
-function confirmButton(node: ReactNode): ReactElement<{ onClick: () => void }> | undefined {
-  if (Array.isArray(node)) return node.map(confirmButton).find(Boolean);
-  if (!isValidElement<{ children?: ReactNode; footer?: ReactNode; onClick?: () => void }>(node)) return undefined;
-  if (node.props.children === "quickAdd.add" && node.props.onClick) return node as ReactElement<{ onClick: () => void }>;
-  return confirmButton(node.props.footer) ?? confirmButton(node.props.children);
-}
+const renderHook = () => useServerLibraryAdd("http://server");
 
-it("queues the prompted works' chapters with the confirmed add's task promise", () => {
+it("starts adding and queues the prompted works' chapters immediately without a category modal", () => {
   const promise = new Promise(() => undefined);
   mocks.enqueue.mockReturnValue({ id: "task", promise });
   const onStarted = vi.fn();
-  renderHook().request({ count: 1, downloadChaptersOf: [work("a"), work("b")], onStarted, works: [work("a")] });
-  confirmButton(renderHook().sheet)!.props.onClick();
+  const hook = renderHook();
+  expect("sheet" in hook).toBe(false);
+  hook.request({ count: 1, downloadChaptersOf: [work("a"), work("b")], onStarted, works: [work("a")] });
   expect(mocks.enqueue).toHaveBeenCalledWith({ categoryIds: [], count: 1, server: "http://server", works: [work("a")] }, t, expect.any(Function));
   expect(mocks.downloadAll).toHaveBeenCalledWith([work("a"), work("b")], promise, t, queryClient, "http://server");
+  expect(mocks.show).toHaveBeenCalledWith({ message: "serverLibraryAdd.started:1" });
   expect(onStarted).toHaveBeenCalled();
 });
 
-it("only adds when the prompt names no works to download", () => {
+it("adds immediately without queuing downloads when the prompt names no works to download", () => {
   mocks.enqueue.mockReturnValue({ id: "task", promise: new Promise(() => undefined) });
   renderHook().request({ count: 1, works: [work("a")] });
-  confirmButton(renderHook().sheet)!.props.onClick();
-  expect(mocks.enqueue).toHaveBeenCalled();
+  expect(mocks.enqueue).toHaveBeenCalledWith({ categoryIds: [], count: 1, server: "http://server", works: [work("a")] }, t, expect.any(Function));
   expect(mocks.downloadAll).not.toHaveBeenCalled();
+  expect(mocks.show).toHaveBeenCalledWith({ message: "serverLibraryAdd.started:1" });
 });
 
 it("toasts the summary once the background add finishes and refreshes library queries", async () => {

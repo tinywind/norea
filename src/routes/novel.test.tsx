@@ -72,13 +72,14 @@ vi.mock("../components/novel/use-local-novel-editor", () => ({ useLocalNovelEdit
 vi.mock("../components/ReaderSettingsPanel", () => ({ ReaderSettingsPanel: () => null }));
 vi.mock("../components/library/use-download-goal-offline-states", () => ({ useDownloadGoalOfflineStates: () => undefined }));
 vi.mock("../components/novel/NovelCheckPausedNotice", () => ({ NovelCheckPausedNotice: () => null }));
-vi.mock("../components/novel/ServerWorkCategories", () => ({ ServerWorkCategories: () => null }));
+vi.mock("../components/novel/NovelCategoryEditor", () => ({ NovelCategoryEditor: () => null }));
 vi.mock("../components/novel/NovelMetadataOverrideEditor", () => ({ NovelMetadataOverrideEditor: () => null }));
 vi.mock("../lib/plugins/manager", () => ({ pluginManager: { getPlugin: () => mocks.installed ? { id: "source-a", name: "Source", getBaseUrl: () => "https://source.example" } : undefined } }));
 vi.mock("../lib/tasks/source-tasks", () => ({ enqueueOpenSiteTask: vi.fn() }));
 vi.mock("../lib/content-sync/novel-source", () => ({ readServerNovelSource: vi.fn(), listServerChapterAvailability: vi.fn() }));
 
 import { NovelDetailPage } from "./novel";
+import { NovelCategoryEditor } from "../components/novel/NovelCategoryEditor";
 import { PageActivityContext } from "../lib/page-activity";
 import { buildMissingChapterDownloadTargets, buildPreviousChapterDownloadTargets } from "../components/novel/novel-detail-model";
 import { collectElements, mountBackNavigationHarness } from "../lib/android-back-navigation.test-support";
@@ -527,6 +528,43 @@ it("shows no category toast when the library toggle removes the novel", async ()
     await harness.unmount();
   }
 });
+
+it("renders the interactive category editor for a server work even when it is not in the library", async () => {
+  mocks.novel.inLibrary = false;
+  mocks.source.data = { serverUrl: "http://server", workId: "work-3" };
+  const harness = mountBackNavigationHarness();
+  let tree: ReturnType<typeof NovelDetailPage> | undefined;
+  function PageProbe() {
+    tree = NovelDetailPage({ id: 3 });
+    return null;
+  }
+  try {
+    await harness.render(<PageProbe />);
+    const workspace = collectElements(tree).find((element) => propsHasCategoryChips(element.props))!;
+    const editor = collectElements(workspace.props.categoryChips as ReturnType<typeof NovelDetailPage>)[0]!;
+    expect(editor.type).toBe(NovelCategoryEditor);
+    expect(editor.props.novelId).toBe(3);
+    expect(editor.props.sheetOpen).toBe(false);
+
+    await harness.run(() => (editor.props.onOpenSheet as () => void)());
+    const reopened = collectElements(
+      collectElements(tree).find((element) => propsHasCategoryChips(element.props))!.props.categoryChips as ReturnType<typeof NovelDetailPage>,
+    )[0]!;
+    expect(reopened.props.sheetOpen).toBe(true);
+
+    mocks.source.data = null;
+    await harness.render(<PageProbe />);
+    const nonServerWorkspace = collectElements(tree).find((element) => propsHasCategoryChips(element.props))!;
+    expect(nonServerWorkspace.props.categoryChips).toBeNull();
+  } finally {
+    mocks.source.data = null;
+    await harness.unmount();
+  }
+});
+
+function propsHasCategoryChips(props: Record<string, unknown>): boolean {
+  return "categoryChips" in props;
+}
 
 async function withPageTree(check: (find: (predicate: (props: Record<string, unknown>) => boolean) => ReturnType<typeof collectElements>[number] | undefined, run: (callback: () => void) => Promise<void>) => Promise<void>) {
   const harness = mountBackNavigationHarness();

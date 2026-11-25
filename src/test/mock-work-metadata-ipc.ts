@@ -920,10 +920,29 @@ export function createWorkMetadataIpcHandler(
           `${cte} SELECT * FROM library_rows ORDER BY id DESC`,
           params,
         );
+        const novelIds = rawRows.map(row => Number(row.id));
+        const categoriesByNovel = new Map<number, Array<{ id: number; name: string }>>();
+        if (novelIds.length > 0) {
+          const placeholders = novelIds.map((_, index) => `$${index + 1}`).join(", ");
+          const catRows = await db.select<Array<{ novelId: number; id: number; name: string }>>(
+            `SELECT nc.novel_id AS novelId, c.id AS id, c.name AS name
+             FROM novel_category nc
+             JOIN category c ON c.id = nc.category_id AND c.is_system = 0
+             WHERE nc.novel_id IN (${placeholders})
+             ORDER BY c.sort, c.name`,
+            novelIds,
+          );
+          for (const cat of catRows) {
+            const list = categoriesByNovel.get(cat.novelId) ?? [];
+            list.push({ id: cat.id, name: cat.name });
+            categoriesByNovel.set(cat.novelId, list);
+          }
+        }
         const mapped = rawRows.map(row => {
           const isLocal = row.pluginId === "local" && Boolean(row.isLocal);
           return {
             ...row,
+            categories: categoriesByNovel.get(Number(row.id)) ?? [],
             inLibrary: Boolean(row.inLibrary),
             isLocal,
           };
