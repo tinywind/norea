@@ -153,9 +153,18 @@ it("retains populated local fields during a sparse server catalog update", async
   };
   sequence++;
   await syncWorkMetadata("http://server", "device", false);
-  expect(local[0].metadata).toEqual(saved);
-  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
+  expect(local[0].metadata).toEqual({
+    ...saved,
+    novel: { ...saved.novel, name: "New title" },
+    chapters: { "1": "Opening", "2": "Second" },
+  });
+  expect(saved.novel.name).toBe("Book");
   expect(remote.novel.summary).toBeNull();
+
+  remote = { ...remote, novel: { ...remote.novel, summary: "Updated summary", rating: 0 } };
+  sequence++;
+  await syncWorkMetadata("http://server", "device", false);
+  expect(local[0].metadata.novel).toEqual({ ...saved.novel, name: "New title", summary: "Updated summary", rating: 0 });
 });
 
 it("keeps local metadata after server work deletion and restores only on explicit rescan", async () => {
@@ -487,7 +496,7 @@ it("keeps a removed work absent even when its old sync journal remains", async (
   expect(puts).toBe(0);
 });
 
-it("retains the version explicitly opened when ordinary sync sees a newer server revision", async () => {
+it("accepts a later server revision after an opened work records its remote installation", async () => {
   local = [{ directory: "contents/example/book", metadata: metadata() }];
   await syncWorkMetadata("http://server", "device", true);
   const opened = metadata("Opened server revision");
@@ -497,7 +506,7 @@ it("retains the version explicitly opened when ordinary sync sees a newer server
   });
   remote = metadata("Newest server revision"); sequence++;
   await syncWorkMetadata("http://server", "device", true);
-  expect(local[0].metadata.novel.name).toBe("Opened server revision");
+  expect(local[0].metadata.novel.name).toBe("Newest server revision");
   expect(remote.novel.name).toBe("Newest server revision");
   expect(puts).toBe(1);
 });
@@ -645,11 +654,11 @@ it.each([false, true])("does not replay an old missing-cover revision over an ac
     return Response.json({ items, cursor, hasMore: cursor < 3 });
   });
   await syncWorkMetadata("http://server", "device", false);
-  expect(local[0].metadata).toEqual(metadata());
-  expect(installStoredNovelMetadata).not.toHaveBeenCalled();
-  expect(vi.mocked(nativeFetch).mock.calls.some(([input]) => String(input).endsWith("/cover"))).toBe(false);
+  expect(local[0].metadata).toEqual(latest);
+  expect(installStoredNovelMetadata).toHaveBeenCalledOnce();
+  expect(vi.mocked(nativeFetch).mock.calls.filter(([input]) => String(input).endsWith("/cover"))).toHaveLength(1);
   expect(await canPullWorkMetadata("http://server", await readWorkMetadataSyncFile(latest.identity),
-    await workMetadataFingerprint(metadata(), new Uint8Array([1, 2, 3])))).toBe(true);
+    await workMetadataFingerprint(latest, new Uint8Array([1, 2, 3])))).toBe(true);
   await syncWorkMetadata("http://server", "device", true);
   expect(vi.mocked(nativeFetch).mock.calls.some(([, init]) => init?.method === "PUT")).toBe(false);
 });
@@ -796,4 +805,115 @@ it("skips uploading non-library browse-only works until they become upload-eligi
 
   expect(puts).toBe(1);
   expect(remote?.novel.name).toBe("Book");
+});
+
+it.each([false, true])("pulls server work metadata, new chapters, status, and cover updates for a synced local work (upload: %s)", async upload => {
+  const directory = "contents/example/book";
+  local = [{ directory, metadata: { ...metadata(), chapters: { "1": "Ch 1", "52": "Ch 52" } } }];
+  await syncWorkMetadata("http://server", "device", true);
+  await syncWorkMetadata("http://server", "device", true);
+  expect(puts).toBe(1);
+
+  remote = {
+    ...remote!,
+    novel: { ...remote!.novel, status: "Completed", genres: "Fantasy, Action", summary: "Updated summary" },
+    chapters: { "1": "Ch 1", "52": "Ch 52", "53": "Ch 53" },
+  };
+  remoteCover = new Uint8Array([7, 8, 9]);
+  sequence++;
+
+  const changed = vi.fn();
+  window.addEventListener("norea-content-state-changed", changed);
+  await syncWorkMetadata("http://server", "device", upload);
+
+  expect(local[0]!.metadata.novel).toMatchObject({
+    status: "Completed",
+    genres: "Fantasy, Action",
+    summary: "Updated summary",
+  });
+  expect(local[0]!.metadata.chapters).toEqual({ "1": "Ch 1", "52": "Ch 52", "53": "Ch 53" });
+  expect(localCovers.get(directory)).toEqual(new Uint8Array([7, 8, 9]));
+  expect(changed).toHaveBeenCalledTimes(1);
+  expect(puts).toBe(1);
+
+  // A cover-only update with unchanged novel.json also pulls onto the local work.
+  remoteCover = new Uint8Array([4, 5, 6]);
+  sequence++;
+  await syncWorkMetadata("http://server", "device", upload);
+  expect(localCovers.get(directory)).toEqual(new Uint8Array([4, 5, 6]));
+  expect(puts).toBe(1);
+
+  // Subsequent unchanged upload sync does not re-upload pulled state.
+  await syncWorkMetadata("http://server", "device", true);
+  expect(puts).toBe(1);
+});
+
+it("keeps an unchanged source refresh or local edit completed during a remote cover download", async () => {
+  const directory = "contents/example/book";
+  local = [{ directory, metadata: metadata() }];
+  await syncWorkMetadata("http://server", "device", true);
+  remote = metadata("Remote edit");
+  sequence++;
+  const request = vi.mocked(nativeFetch).getMockImplementation()!;
+  vi.mocked(nativeFetch).mockImplementation(async (input, init) => {
+    if (String(input).endsWith("/cover") && init?.method === "GET") revisions.set(directory, 2);
+    return request(input, init);
+  });
+  await syncWorkMetadata("http://server", "device", false);
+  expect(local[0]!.metadata.novel.name).toBe("Book");
+
+  vi.mocked(nativeFetch).mockImplementation(request);
+  await syncWorkMetadata("http://server", "device", true);
+  expect(remote?.novel.name).toBe("Book");
+  expect(puts).toBe(2);
+});
+
+it("does not advance the cursor when downloading a cover for an existing local work fails", async () => {
+  const directory = "contents/example/book";
+  local = [{ directory, metadata: metadata() }];
+  await syncWorkMetadata("http://server", "device", true);
+  await syncWorkMetadata("http://server", "device", true);
+  const baselineCursor = JSON.parse(memory.get("norea-content-works:http://server")!).cursor;
+
+  remote = { ...remote!, chapters: { "1": "New chapter" } };
+  remoteCover = new Uint8Array([9, 8, 7]);
+  sequence++;
+  const request = vi.mocked(nativeFetch).getMockImplementation()!;
+  let failCover = true;
+  vi.mocked(nativeFetch).mockImplementation((input, init) =>
+    failCover && String(input).endsWith("/cover") && init?.method === "GET"
+      ? Promise.resolve(new Response(null, { status: 503 }))
+      : request(input, init));
+
+  await expect(syncWorkMetadata("http://server", "device", false)).rejects.toThrow("503");
+  expect(JSON.parse(memory.get("norea-content-works:http://server")!).cursor).toBe(baselineCursor);
+  expect(local[0]!.metadata.chapters).toEqual({});
+
+  failCover = false;
+  await syncWorkMetadata("http://server", "device", false);
+  expect(JSON.parse(memory.get("norea-content-works:http://server")!).cursor).toBe(sequence);
+  expect(local[0]!.metadata.chapters).toEqual({ "1": "New chapter" });
+  expect(localCovers.get(directory)).toEqual(new Uint8Array([9, 8, 7]));
+});
+
+it("marks a local work deleted when its remote cover and work both return 404 during pull", async () => {
+  const directory = "contents/example/book";
+  local = [{ directory, metadata: metadata() }];
+  await syncWorkMetadata("http://server", "device", true);
+  await syncWorkMetadata("http://server", "device", true);
+  const id = await contentWorkId(metadata().identity);
+  const nextSeq = sequence + 1;
+  vi.mocked(nativeFetch).mockImplementation(async input => {
+    const url = new URL(String(input));
+    if (url.pathname.endsWith("/works")) {
+      return Response.json({ items: [{ id, sequence: nextSeq, metadata: metadata("Removed remotely"), hasCover: true }], cursor: nextSeq, hasMore: false });
+    }
+    return new Response(null, { status: 404 });
+  });
+
+  const { deletedWorks } = await syncWorkMetadata("http://server", "device", false);
+
+  expect(deletedWorks.has(id)).toBe(true);
+  expect(local[0]!.metadata.novel.name).toBe("Book");
+  expect(JSON.parse(memory.get("norea-content-works:http://server")!)).toMatchObject({ cursor: nextSeq, deleted: { [id]: true } });
 });

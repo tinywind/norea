@@ -261,20 +261,20 @@ describe("production incoming metadata paths", () => {
     expect(state.metadata.get(coverPath)).toEqual(oldCover);
   });
 
-  it("keeps the local catalog when there are no server number mappings", async () => {
+  it("keeps an ordinary partial catalog merge when the server explicitly has no mappings", async () => {
     mappings = [];
     remote.metadata.chapters = { "1000": "First", "4000": "Fourth" };
     await pull();
-    expect(metadata().chapters).toEqual(originalCatalog);
+    expect(metadata().chapters).toEqual({ ...originalCatalog, "4000": "Fourth" });
     expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();
     expect(state.payloads.has(directory + "/1000")).toBe(true);
   });
 
-  it.each([null, {}])("retains local chapter names with a legacy server (%j)", async value => {
+  it.each([null, {}])("retains the ordinary partial-catalog behavior of a legacy server (%j)", async value => {
     capabilities = value;
     remote.metadata.chapters = { "1000": "First", "4000": "Fourth" };
     await pull();
-    expect(metadata().chapters).toEqual(originalCatalog);
+    expect(metadata().chapters).toEqual({ ...originalCatalog, "4000": "Fourth" });
     expect(proofReads).toBe(0);
     expect(prepareChapterStorageTransfer).not.toHaveBeenCalled();
   });
@@ -282,7 +282,7 @@ describe("production incoming metadata paths", () => {
   it("requires no proof request for an ordinary addition", async () => {
     remote.metadata.chapters = { ...originalCatalog, "4000": "Fourth" };
     await pull();
-    expect(metadata().chapters).toEqual(originalCatalog);
+    expect(metadata().chapters).toEqual(remote.metadata.chapters);
     expect(nativeFetch).not.toHaveBeenCalledWith(expect.stringContaining("/capabilities"), expect.anything());
   });
 
@@ -327,7 +327,7 @@ describe("production incoming metadata paths", () => {
     await pull();
     expectCanonical(before);
     expect(prepareChapterStorageTransfer).toHaveBeenCalledOnce();
-    expect(metadata().novel.name).not.toBe("Updated title");
+    expect(metadata().novel.name).toBe("Updated title");
   });
 
   it("preserves all source and target files when a destination is occupied", async () => {
